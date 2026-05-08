@@ -50,9 +50,9 @@ async addProductVariant(
 
 }
 
-@Get('products-by-category/:id')
+@Get('products-by-category')
 async getProductsByCategoryId(
-  @Param('id') id: string,
+  @Query('id') id?: string,
   @Query('page') page: number = 1,
   @Query('limit') limit: number = 10
 ) {

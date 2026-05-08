@@ -197,7 +197,7 @@ private async getChildrenRecursiveOnlyId(parentId: string): Promise<string[]> {
 }
 
 async getProductsByCategoryId(
-  parentCategoryId: string,
+  parentCategoryId?: string,
   page: number = 1,
   limit: number = 10
 ): Promise<any> {
@@ -205,18 +205,19 @@ async getProductsByCategoryId(
   const productModel = this.databaseService.repositories.productModel;
   const productVariantModel = this.databaseService.repositories.productVariantModel;
 
-  // 1️⃣ Get all category IDs (parent + children)
-  const categoryIds = await this.getChildrenRecursiveOnlyId(parentCategoryId);
-
-  // Include parent category ID
-  categoryIds.unshift(parentCategoryId);
-
-  // 2️⃣ Build product query
-  const query: any = {
+  let query: any = {
     status: "active",
-    isDelete: false,
-    categoryId: { $in: categoryIds }
+    isDelete: false
   };
+
+  // 1️⃣ Agar category ID di gayi hai to filter lagao
+  if (parentCategoryId) {
+    const categoryIds = await this.getChildrenRecursiveOnlyId(parentCategoryId);
+
+    categoryIds.unshift(parentCategoryId);
+
+    query.categoryId = { $in: categoryIds };
+  }
 
   const skip = (page - 1) * limit;
 
@@ -230,7 +231,7 @@ async getProductsByCategoryId(
 
   const productIds = products.map(p => p._id.toString());
 
-  // 3️⃣ Get variants for these products
+  // 2️⃣ Variants fetch
   const variants = await productVariantModel.find({
     productId: { $in: productIds },
     status: "active",
@@ -238,8 +239,11 @@ async getProductsByCategoryId(
   }).lean();
 
   const variantMap: Record<string, any[]> = {};
+
   for (const v of variants) {
-    if (!variantMap[v.productId]) variantMap[v.productId] = [];
+    if (!variantMap[v.productId]) {
+      variantMap[v.productId] = [];
+    }
     variantMap[v.productId].push(v);
   }
 
@@ -249,7 +253,10 @@ async getProductsByCategoryId(
   }));
 
   return {
+
+
     message: "Products fetched successfully",
+    success: true,
     data: {
       total,
       page,
@@ -258,7 +265,6 @@ async getProductsByCategoryId(
     }
   };
 }
-
 
 
 }
