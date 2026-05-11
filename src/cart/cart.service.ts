@@ -13,55 +13,65 @@ import { AddToCartDto } from './dto/add-to-cart.dto';
 @Injectable()
 export class CartService {
  constructor(private readonly databaseService: DatabaseService) {}
+
 async addToCart(userId: string, dto: AddToCartDto) {
   try {
-    // 1. find cart
-    let cart = await this.databaseService.repositories.cartModel.findOne({ userId, isDelete: false });
+    const cartModel = this.databaseService.repositories.cartModel;
+    const productModel = this.databaseService.repositories.productModel;
+    const variantModel = this.databaseService.repositories.productVariantModel;
 
-    // 2. if no cart → create new
+    // 1️⃣ Get product
+    const product = await productModel.findById(dto.productId).lean();
+    if (!product) {
+      throw new BadRequestException('Product not found');
+    }
+
+    // 2️⃣ Get variant
+    const variant = await variantModel.findById(dto.productVariantId).lean();
+    if (!variant) {
+      throw new BadRequestException('Product variant not found');
+    }
+
+    // 3️⃣ find cart
+    let cart = await cartModel.findOne({ userId, isDelete: false });
+
+    // 4️⃣ prepare cart item
+    const newItem = {
+      productId: dto.productId,
+      productVariantId: dto.productVariantId,
+      name: product.name,
+      quantity: dto.quantity || 1,
+      price: variant.price,
+      images: variant.images || [],
+    };
+
+    // 5️⃣ create cart if not exists
     if (!cart) {
-      cart = await this.databaseService.repositories.cartModel.create({
+      cart = await cartModel.create({
         userId,
-        items: [
-          {
-            productId: dto.productId,
-            productVariantId: dto.productVariantId,
-            name: dto.name,
-            quantity: dto.quantity || 1,
-            price: dto.price,
-            image: dto.image,
-          },
-        ],
+        items: [newItem],
       });
 
       return {
-        message: 'Cart created and product added successfully',
+        message: 'Cart created and item added successfully',
         data: cart,
       };
     }
 
-    // 3. check existing item
-    const existingItemIndex = cart.items.findIndex(
+    // 6️⃣ check existing item
+    const existingIndex = cart.items.findIndex(
       (item) =>
         item.productId === dto.productId &&
         item.productVariantId === dto.productVariantId,
     );
 
-    if (existingItemIndex > -1) {
-      cart.items[existingItemIndex].quantity += dto.quantity || 1;
+    if (existingIndex > -1) {
+      cart.items[existingIndex].quantity += dto.quantity || 1;
     } else {
-      cart.items.push({
-        productId: dto.productId,
-        productVariantId: dto.productVariantId,
-        name: dto.name,
-        quantity: dto.quantity || 1,
-        price: dto.price,
-        image: dto.image,
-      } as any);
+      cart.items.push(newItem as any);
     }
 
- 
-
+    // 7️⃣ save cart
     await cart.save();
 
     return {
@@ -75,49 +85,59 @@ async addToCart(userId: string, dto: AddToCartDto) {
     );
   }
 }
-
 async getCart(userId: string) {
   try {
+    // User ka cart find karo
     const cart = await this.databaseService.repositories.cartModel.findOne({
       userId,
       isDelete: false,
     });
 
+    // Agar cart nahi mila
     if (!cart) {
       return {
         message: 'Cart is empty',
         data: {
+          userId,
           items: [],
-          totalPrice: 0,
           totalItems: 0,
+          totalPrice: 0,
         },
       };
     }
 
-    let totalPrice = 0;
+ 
     let totalItems = 0;
+    let totalPrice = 0;
 
+    // Cart items map karo
     const items = cart.items.map((item) => {
+      // Ek item ka total
       const itemTotal = item.price * item.quantity;
 
-      totalPrice += itemTotal;
+      // Overall totals me add karo
       totalItems += item.quantity;
+      totalPrice += itemTotal;
 
       return {
         productId: item.productId,
         productVariantId: item.productVariantId,
-        name: item.name,
-        image: item.image,
 
-        unitPrice: item.price,          // single item price
-        quantity: item.quantity,        // kitni quantity hai
-        itemTotal: itemTotal,           // price × quantity
+        name: item.name,
+
+        image: item.images, // Assuming you want the first image
+
+        unitPrice: item.price,      // single product price
+        quantity: item.quantity,    // quantity
+        itemTotal: itemTotal,       // quantity × price
       };
     });
 
+    // Final response
     return {
       message: 'Cart fetched successfully',
       data: {
+        userId,
         items,
         totalItems,
         totalPrice,
@@ -129,7 +149,6 @@ async getCart(userId: string) {
     );
   }
 }
-
 async addToWishlist(userId: string, body: any) {
   try {
     const { productId, productVariantId } = body;

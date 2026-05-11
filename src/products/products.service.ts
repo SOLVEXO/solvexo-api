@@ -266,5 +266,111 @@ async getProductsByCategoryId(
   };
 }
 
+async getProductById(productId: string) {
+  const productModel = this.databaseService.repositories.productModel;
+  const productVariantModel = this.databaseService.repositories.productVariantModel;
+  const sellerModel = this.databaseService.repositories.sellerModel; // 👈 seller model
+
+  // 1️⃣ Get product
+  const product = await productModel.findOne({
+    _id: productId,
+    status: "active",
+    isDelete: false
+  }).lean();
+
+  if (!product) {
+    return {
+      message: "Product not found",
+      success: false,
+      data: null
+    };
+  }
+
+  // 2️⃣ Get seller name
+  const seller = await sellerModel.findOne({
+    _id: product.sellerId
+  }).select("name").lean();
+
+  // 👇 inject seller name into product
+  const productWithSeller = {
+    ...product,
+    sellerName: seller ? seller.name : null
+  };
+
+  // 3️⃣ Get variants
+  const variants = await productVariantModel.find({
+    productId: productId,
+    status: "active",
+    isDelete: false
+  }).lean();
+
+  const defaultVariant = variants.length > 0
+    ? variants.reduce((min, v) => v.price < min.price ? v : min, variants[0])
+    : null;
+
+  return {
+    message: "Product fetched successfully",
+    success: true,
+    data: {
+      product: productWithSeller, // 👈 updated product
+      variants,
+      defaultVariant
+    }
+  };
+}
+async getVariantById(variantId: string) {
+  const productModel = this.databaseService.repositories.productModel;
+  const productVariantModel = this.databaseService.repositories.productVariantModel;
+  const sellerModel = this.databaseService.repositories.sellerModel;
+
+  // 1️⃣ Get variant
+  const variant = await productVariantModel.findOne({
+    _id: variantId,
+    status: "active",
+    isDelete: false
+  }).lean();
+
+  if (!variant) {
+    return {
+      message: "Variant not found",
+      success: false,
+      data: null
+    };
+  }
+
+  // 2️⃣ Get product using variant.productId
+  const product = await productModel.findOne({
+    _id: variant.productId,
+    status: "active",
+    isDelete: false
+  }).lean();
+
+  if (!product) {
+    return {
+      message: "Product not found",
+      success: false,
+      data: null
+    };
+  }
+
+  // 3️⃣ Get seller name
+  const seller = await sellerModel.findOne({
+    _id: product.sellerId
+  }).select("name").lean();
+
+  const productWithSeller = {
+    ...product,
+    sellerName: seller ? seller.name : null
+  };
+
+  return {
+    message: "Variant & Product fetched successfully",
+    success: true,
+    data: {
+      variant,
+      product: productWithSeller
+    }
+  };
+}
 
 }

@@ -40,8 +40,8 @@ export class DatabaseService {
     @InjectModel(schema.wishList.name)
     private wishListModel: Model<schema.wishListDocument>,
 
-    @InjectModel(schema.Review.name)
-    private reviewModel: Model<schema.ReviewDocument>,
+    @InjectModel(schema.Rating.name)
+    private ratingModel: Model<schema.RatingDocument>,
 
     
   ) { }
@@ -62,7 +62,7 @@ export class DatabaseService {
       refundModel: this.refundModel,
       cartModel: this.cartModel,
       wishListModel: this.wishListModel,
-      reviewModel: this.reviewModel,
+      ratingModel: this.ratingModel,
       
     };
   }

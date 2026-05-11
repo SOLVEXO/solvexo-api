@@ -59,5 +59,16 @@ async getProductsByCategoryId(
   return this.ProductsService.getProductsByCategoryId(id, page, limit);
 }
 
+@Get('getProductById/:id')
+async getProductById(@Param('id') id: string) {
+  return this.ProductsService.getProductById(id);
+}
+
+@Get('getVariantById/:variantId')
+async getVariantById(@Param('variantId') variantId: string) {
+  return this.ProductsService.getVariantById(variantId);
+}
+
+
 }
 

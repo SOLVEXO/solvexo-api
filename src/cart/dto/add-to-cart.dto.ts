@@ -10,19 +10,8 @@ export class AddToCartDto {
   @IsString()
   productVariantId?: string;
 
-  @IsOptional()
-  @IsString()
-  name?: string;
-
-  @IsOptional()
+    @IsOptional()
   @IsNumber()
   quantity?: number;
 
-  @IsOptional()
-  @IsNumber()
-  price?: number;
-
-  @IsOptional()
-  @IsString()
-  image?: string;
 }

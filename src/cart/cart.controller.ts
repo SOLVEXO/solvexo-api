@@ -16,13 +16,13 @@ export class CartController {
 
     return this.cartService.addToCart(userId, dto);
   }
-    @UseGuards(JwtAuthGuard)
-  @Get('get-cart')
-  async getCart(@Req() req: any) {
-    const { userId } = req.user;
+  //   @UseGuards(JwtAuthGuard)
+  // @Get('get-cart')
+  // async getCart(@Req() req: any) {
+  //   const { userId } = req.user;
 
-    return this.cartService.getCart(userId);
-  }
+  //   return this.cartService.getCart(userId);
+  // }
 
   @UseGuards(JwtAuthGuard)
 @Post('add-to-wishlist')

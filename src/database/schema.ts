@@ -10,7 +10,8 @@ export {Product, ProductDocument, ProductSchema} from '../products/schemas/produ
 export {ProductVariant, ProductVariantDocument, ProductVariantSchema} from '../products/schemas/productVariant.schema'
 export {Cart, CartDocument, CartSchema } from '../cart/schemas/cart.schema'
 export { wishList, wishListDocument, wishListSchema } from '../cart/schemas/wishlist.schema'
-export { Review, ReviewDocument, ReviewSchema } from '../rating/schema/rating.schema';
+export { Rating, RatingDocument, RatingSchema } from '../rating/schema/rating.schema';
+
 
 
 

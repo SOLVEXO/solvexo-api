@@ -32,7 +32,7 @@ export class RatingService {
 
     // 3. prevent duplicate review (one user per product)
     const existingReview =
-      await this.databaseService.repositories.reviewModel.findOne({
+      await this.databaseService.repositories.ratingModel.findOne({
         userId,
         productId,
         isDelete: false,
@@ -44,24 +44,23 @@ export class RatingService {
 
     // 4. create review
     const review =
-      await this.databaseService.repositories.reviewModel.create({
+      await this.databaseService.repositories.ratingModel.create({
         userId,
         productId,
         productVariantId,
-        rating,
-        comment,
+        rating
       });
 
     // 5. calculate total ratings (count)
     const totalRatings =
-      await this.databaseService.repositories.reviewModel.countDocuments({
+      await this.databaseService.repositories.ratingModel.countDocuments({
         productId,
         isDelete: false,
       });
 
     // 6. calculate rating sum (aggregate)
     const result =
-      await this.databaseService.repositories.reviewModel.aggregate([
+      await this.databaseService.repositories.ratingModel.aggregate([
         {
           $match: {
             productId,

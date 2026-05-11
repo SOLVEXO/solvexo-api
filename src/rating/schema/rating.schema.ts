@@ -1,10 +1,10 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Document } from 'mongoose';
 
-export type ReviewDocument = Review & Document;
+export type RatingDocument = Rating & Document;
 
 @Schema({ timestamps: true })
-export class Review {
+export class Rating {
 
   @Prop({ required: true })
   userId: string;
@@ -18,14 +18,10 @@ export class Review {
   @Prop({ required: true, min: 1, max: 5 })
   rating: number;
 
-  @Prop({ required: false })
-  comment: string;
-
-
 }
 
-export const ReviewSchema = SchemaFactory.createForClass(Review);
+export const RatingSchema = SchemaFactory.createForClass(Rating);
 
 // indexes
-ReviewSchema.index({ productId: 1 });
-ReviewSchema.index({ userId: 1 });
+RatingSchema.index({ productId: 1 });
+RatingSchema.index({ userId: 1 });
