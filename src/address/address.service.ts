@@ -81,6 +81,10 @@ export class AddressService {
         { new: true },
       );
 
+      if (!updated) {
+        throw new Error('Address not found');
+      }
+
       return {
         message: 'Address updated successfully',
         data: updated,
@@ -92,6 +96,25 @@ export class AddressService {
     }
   }
 
+  async getAddressById(addressId: string) {
+  try {
+
+    const address = await this.databaseService.repositories.addressModel.findById(addressId);
+
+    return {
+      message: 'Address fetched successfully',
+      data: address,
+    };
+
+  } catch (error) {
+
+    return {
+      message: error.message,
+    };
+
+  }
+}
+  
   // service
 
 async getDefaultAddress(userId: string) {

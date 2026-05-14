@@ -25,6 +25,14 @@ export class CartController {
   }
 
   @UseGuards(JwtAuthGuard)
+@Post('update-cart-quantity')
+async updateCartQuantity(@Req() req: any) {
+  const { userId } = req.user;
+
+  return this.cartService.updateCartQuantity(userId, req.body);
+}
+
+  @UseGuards(JwtAuthGuard)
 @Post('add-to-wishlist')
 async addToWishlist(@Req() req: any, @Body() body: any) {
   const { userId } = req.user;

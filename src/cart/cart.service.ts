@@ -85,6 +85,60 @@ async addToCart(userId: string, dto: AddToCartDto) {
     );
   }
 }
+
+async updateCartQuantity(userId: string, requestBody: any) {
+  try {
+    const cartModel = this.databaseService.repositories.cartModel;
+
+    const { productId, productVariantId, action } = requestBody;
+
+    const cart = await cartModel.findOne({
+      userId,
+      isDelete: false,
+    });
+
+    if (!cart) {
+      throw new BadRequestException('Cart not found');
+    }
+
+    const itemIndex = cart.items.findIndex(
+      (item) =>
+        item.productId === productId &&
+        item.productVariantId === productVariantId,
+    );
+
+    if (itemIndex === -1) {
+      throw new BadRequestException('Item not found in cart');
+    }
+
+    // 1️⃣ update quantity
+    if (action === 'increase') {
+      cart.items[itemIndex].quantity += 1;
+    } else if (action === 'decrease') {
+      if (cart.items[itemIndex].quantity === 1) {
+        throw new BadRequestException('Quantity cannot be less than 1');
+      }
+      cart.items[itemIndex].quantity -= 1;
+    } else {
+      throw new BadRequestException('Invalid action');
+    }
+
+    await cart.save();
+
+    // 2️⃣ sirf updated item return karo
+    const updatedItem = cart.items[itemIndex];
+
+    return {
+      message: 'Cart quantity updated successfully',
+      data: updatedItem,
+    };
+
+  } catch (error: any) {
+    throw new BadRequestException(
+      error.message || 'Failed to update quantity',
+    );
+  }
+}
 async getCart(userId: string) {
   try {
     // User ka cart find karo
