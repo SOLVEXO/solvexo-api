@@ -13,6 +13,8 @@ export { wishList, wishListDocument, wishListSchema } from '../cart/schemas/wish
 export { Rating, RatingDocument, RatingSchema } from '../rating/schema/rating.schema';
 export { Address, AddressDocument, AddressSchema } from '../address/adress.schema';
 export { UserPaymentMethod, UserPaymentMethodDocument, UserPaymentMethodSchema } from '../payment/UserPaymentMethod.schema';
+export { ShippingZone, ShippingZoneDocument, ShippingZoneSchema } from '../checkout/shipping.schema';   
+export { Checkout, CheckoutDocument, CheckoutSchema } from '../checkout/checkout.schema';
 
 
 

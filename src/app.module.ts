@@ -16,6 +16,7 @@ import { UploadModule } from './upload/upload.module';
 import { BannersModule } from './banner/banner.module';
 import { FaqModule } from './faqs/faq.module';
 import { RefundRequestModule } from './refund-request/refund-request.module';
+import { checkoutModule } from './checkout/checkout.modoule';
 // import { RedisModule } from './redis/redis.module';
 
 @Module({
@@ -37,6 +38,7 @@ import { RefundRequestModule } from './refund-request/refund-request.module';
     BannersModule,
     FaqModule,
     RefundRequestModule,
+    checkoutModule,
     // RedisModule
   ],
   controllers: [AppController],

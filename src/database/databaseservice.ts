@@ -46,6 +46,12 @@ export class DatabaseService {
     @InjectModel(schema.UserPaymentMethod.name)
     private userPaymentMethodModel: Model<schema.UserPaymentMethodDocument>,
 
+    @InjectModel(schema.ShippingZone.name)
+    private shippingZoneModel: Model<schema.ShippingZoneDocument>,  
+
+    @InjectModel(schema.Checkout.name)
+    private checkoutModel: Model<schema.CheckoutDocument>,
+
     
   ) { }
 
@@ -66,6 +72,8 @@ export class DatabaseService {
       ratingModel: this.ratingModel,
       addressModel: this.addressModel,
       userPaymentMethodModel: this.userPaymentMethodModel,
+      shippingZoneModel: this.shippingZoneModel,
+      checkoutModel: this.checkoutModel,
     };
   }
 }
