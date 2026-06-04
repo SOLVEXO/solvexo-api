@@ -2,8 +2,6 @@ import {
     Controller,
     Get,
     Post,
-    Put,
-    Delete,
     Body,
     Param,
     Req,
@@ -13,7 +11,6 @@ import {
 
 import { ProductsService } from './products.service';
 import { CreateProductDto } from './dto/create-product.dto';
-import { AuthGuard } from '@nestjs/passport';
 import { UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { Roles } from '../auth/decorators/roles.decorator'
@@ -48,6 +45,30 @@ async addProductVariant(
     createProductVariantDto
   );
 
+}
+
+@UseGuards(JwtAuthGuard, RolesGuard)
+@Roles('seller')
+@Post('create-product')
+async createProduct(@Req() req: any, @Body() body: any) {
+  const { userId: sellerId } = req.user;
+  return this.ProductsService.createProduct(sellerId, body);
+}
+
+@UseGuards(JwtAuthGuard, RolesGuard)
+@Roles('seller')
+@Post('create-variant')
+async createVariant(@Req() req: any, @Body() body: any) {
+  const { userId: sellerId } = req.user;
+  return this.ProductsService.createVariant(sellerId, body);
+}
+
+@UseGuards(JwtAuthGuard, RolesGuard)
+@Roles('seller')
+@Post('update-product-and-variant')
+async updateProduct(@Req() req: any, @Body() body: any) {
+  const { userId: sellerId } = req.user;
+  return this.ProductsService.updateProduct(sellerId, body);
 }
 
 @Get('products-by-category')

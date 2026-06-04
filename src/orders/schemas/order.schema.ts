@@ -1,152 +1,133 @@
-import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
-import { HydratedDocument, Types } from 'mongoose';
 
+
+
+import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
+import { HydratedDocument } from 'mongoose';
 
 export type OrderDocument = HydratedDocument<Order>;
 
-// Embedded subdocument for order items
 @Schema({ _id: false })
 export class OrderItem {
-    @Prop({ type: Types.ObjectId, ref: 'Product', required: true })
-    product: Types.ObjectId;
+  @Prop({ type: String, required: true })
+  productId: string;
 
-    @Prop({ required: true })
-    name: string;
+  @Prop({ type: String, default: null })
+  variantId: string | null;
 
-    @Prop({ required: true, min: 1 })
-    quantity: number;
+  @Prop({ type: String, required: true })
+  sellerId: string;
 
-    @Prop({ required: true })
-    price: number;
+  @Prop({ type: String, required: true })
+  name: string;
 
-    @Prop()
-    image?: string;
+  @Prop({ type: String, default: null })
+  image: string | null;
+
+  @Prop({ required: true })
+  quantity: number;
+
+  @Prop({ required: true })
+  price: number;
+
+  @Prop({ required: true })
+  totalPrice: number;
 }
 
 export const OrderItemSchema = SchemaFactory.createForClass(OrderItem);
 
 @Schema({ _id: false })
-export class ShippingAddress {
+export class OrderShippingAddress {
+  @Prop({ type: String, required: true })
+  recipientName: string;
 
-    @Prop({ required: true })
-    fullName: string;
+  @Prop({ type: String, required: true })
+  phoneNumber: string;
 
-    @Prop({ required: true })
-    phone: string;
+  @Prop({ type: String, required: true })
+  addressLine1: string;
 
-    @Prop({ required: true })
-    addressLine1: string;
+  @Prop({ type: String, default: null })
+  addressLine2: string | null;
 
-    @Prop()
-    addressLine2?: string;
+  @Prop({ type: String, required: true })
+  city: string;
 
-    @Prop({ required: true })
-    city: string;
+  @Prop({ type: String, required: true })
+  state: string;
 
-    @Prop({ required: true })
-    state: string;
-
-    @Prop({ required: true })
-    zipCode: string;
-
-    @Prop({ required: true })
-    country: string;
+  @Prop({ type: String, required: true })
+  zipCode: string;
 }
 
-export const ShippingAddressSchema =
-    SchemaFactory.createForClass(ShippingAddress);
+export const OrderShippingAddressSchema =
+  SchemaFactory.createForClass(OrderShippingAddress);
 
-
-// Embedded subdocument for payment result
-@Schema({ _id: false })
-export class PaymentResult {
-    @Prop()
-    id?: string;
-
-    @Prop()
-    status?: string;
-
-    @Prop()
-    updateTime?: string;
-
-    @Prop()
-    emailAddress?: string;
-}
-
-export const PaymentResultSchema = SchemaFactory.createForClass(PaymentResult);
-
-// Main Order schema
 @Schema({ timestamps: true })
 export class Order {
-    _id: string;
+  @Prop({ type: String, required: true, index: true })
+  userId: string;
 
+  @Prop({ type: String, required: true, index: true })
+  checkoutId: string;
 
+  @Prop({ type: [OrderItemSchema], required: true })
+  orderItems: OrderItem[];
 
-    @Prop({ type: Types.ObjectId, ref: 'User', required: true })
-    user: Types.ObjectId | string;
+  @Prop({ type: OrderShippingAddressSchema, required: true })
+  shippingAddress: OrderShippingAddress;
 
-    @Prop({ type: [OrderItemSchema], required: true })
-    orderItems: OrderItem[];
+  @Prop({ required: true, default: 0 })
+  subtotal: number;
 
-    @Prop({ type: ShippingAddressSchema, required: true })
-    shippingAddress: ShippingAddress;
+  @Prop({ required: true, default: 0 })
+  shippingFee: number;
 
-    @Prop({
-        required: true,
-        enum: ['cash_on_delivery', 'credit_card', 'debit_card', 'paypal', 'stripe'],
-    })
-    paymentMethod: string;
+  @Prop({ required: true, default: 0 })
+  taxAmount: number;
 
-    @Prop({ type: PaymentResultSchema })
-    paymentResult?: PaymentResult;
+  @Prop({ required: true })
+  totalAmount: number;
 
-    @Prop({ required: true, default: 0.0 })
-    itemsPrice: number;
+  @Prop({ enum: ['cash_on_delivery', 'stripe'], required: true })
+  paymentType: string;
 
-    @Prop({ required: true, default: 0.0 })
-    shippingPrice: number;
+  @Prop({
+    enum: ['unpaid', 'paid', 'failed'],
+    default: 'unpaid',
+    index: true,
+  })
+  paymentStatus: string;
 
-    @Prop({ required: true, default: 0.0 })
-    taxPrice: number;
+  @Prop({ default: false })
+  isPaid: boolean;
 
-    @Prop({ required: true, default: 0.0 })
-    totalPrice: number;
+  @Prop({ type: Date, default: null })
+  paidAt: Date | null;
 
-    @Prop({ required: true, default: false })
-    isPaid: boolean;
+  @Prop({
+    enum: ['pending', 'processing', 'shipped', 'delivered', 'cancelled'],
+    default: 'pending',
+    index: true,
+  })
+  orderStatus: string;
 
-    @Prop()
-    paidAt?: Date;
+  @Prop({ default: false })
+  isDelivered: boolean;
 
-    @Prop({ required: true, default: false })
-    isDelivered: boolean;
+  @Prop({ type: Date, default: null })
+  deliveredAt: Date | null;
 
-    @Prop()
-    deliveredAt?: Date;
+  @Prop({ default: false })
+  isDelete: boolean;
 
-    @Prop({
-        required: true,
-        enum: ['pending', 'processing', 'shipped', 'delivered', 'cancelled'],
-        default: 'pending',
-    })
-    orderStatus: string;
-
-    createdAt?: Date;
-    updatedAt?: Date;
+  createdAt?: Date;
+  updatedAt?: Date;
 }
 
 export const OrderSchema = SchemaFactory.createForClass(Order);
 
-// Indexes for faster queries
-OrderSchema.index({ user: 1 });
+OrderSchema.index({ userId: 1 });
+OrderSchema.index({ checkoutId: 1 });
 OrderSchema.index({ orderStatus: 1 });
+OrderSchema.index({ paymentStatus: 1 });
 OrderSchema.index({ createdAt: -1 });
-OrderSchema.index({ isPaid: 1 });
-OrderSchema.index({ isDelivered: 1 });
-
-// Remove __v from JSON
-OrderSchema.methods.toJSON = function () {
-    const obj = this.toObject();
-    delete obj.__v;
-    return obj;
-};

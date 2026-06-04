@@ -1,20 +1,9 @@
 import { Module } from '@nestjs/common';
-import { PaymentController } from './payment.controller';
-import { PaymentService } from './payment.service';
-import { AuthModule } from 'src/auth/auth.module';  
-import { RedisModule } from 'src/redis/redis.module';  
-
-
-
-
+import { PaymentProcessingController } from './payment.controller';
+import { PaymentProcessingService } from  './payment.service';
 
 @Module({
- 
-   imports: [AuthModule, RedisModule], 
-  controllers: [ PaymentController],
-  providers: [PaymentService], 
-  exports: [PaymentService], 
-
+  controllers: [PaymentProcessingController],
+  providers: [PaymentProcessingService],
 })
-
-export class PaymentModule {}
+export class PaymentProcessingModule {}

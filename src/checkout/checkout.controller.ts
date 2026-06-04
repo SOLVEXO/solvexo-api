@@ -52,4 +52,40 @@ async getShippingZones() {
     return this.checkoutService.createCheckout(userId, body);
   }
 
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+@Post('addShippingInCheckout')
+  async addShippingInCheckout(
+    @Req() req: any,
+    @Body() body: any
+  ) {
+  const { userId } = req.user;
+
+    return this.checkoutService.addShippingInCheckout(userId, body);
+  }
+
+  
+  @UseGuards(JwtAuthGuard, RolesGuard)
+@Post('changeCheckoutAddress')
+  async changeCheckoutAddress(
+    @Req() req: any,
+    @Body() body: any
+  ) {
+  const { userId } = req.user;
+
+    return this.checkoutService.changeCheckoutAddress(userId, body);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+@Get('getCheckout')
+async getCheckout(
+  @Req() req: any,
+  @Query('checkoutId') checkoutId: string,
+) {
+  const { userId } = req.user;
+
+  return this.checkoutService.getCheckout(userId, checkoutId);
+}
+
+
 }

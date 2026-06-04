@@ -28,8 +28,7 @@ export class DatabaseService {
     private bannerModel: Model<schema.BannerDocument>,
     @InjectModel(schema.User.name)
     private faqModel: Model<schema.FaqDocument>,
-    @InjectModel(schema.User.name)
-    private refundModel: Model<schema.RefundRequestDocument>,
+
 
      @InjectModel(schema.Cart.name)
     private cartModel: Model<schema.CartDocument>,
@@ -51,8 +50,16 @@ export class DatabaseService {
 
     @InjectModel(schema.Checkout.name)
     private checkoutModel: Model<schema.CheckoutDocument>,
-
     
+    @InjectModel(schema.Order.name)
+    private orderModel: Model<schema.OrderDocument>,
+
+    @InjectModel(schema.PaymentTransaction.name)
+    private paymentTransactionModel: Model<schema.PaymentTransactionDocument>,
+
+    @InjectModel(schema.Store.name)
+    private storeModel: Model<schema.StoreDocument>,
+
   ) { }
 
   get repositories() {
@@ -66,7 +73,7 @@ export class DatabaseService {
       otpModel: this.otpModel,
       bannerModel: this.bannerModel,
       faqModel: this.faqModel,
-      refundModel: this.refundModel,
+        
       cartModel: this.cartModel,
       wishListModel: this.wishListModel,
       ratingModel: this.ratingModel,
@@ -74,6 +81,9 @@ export class DatabaseService {
       userPaymentMethodModel: this.userPaymentMethodModel,
       shippingZoneModel: this.shippingZoneModel,
       checkoutModel: this.checkoutModel,
+      orderModel: this.orderModel,
+      paymentTransactionModel: this.paymentTransactionModel,
+      storeModel: this.storeModel,
     };
   }
 }

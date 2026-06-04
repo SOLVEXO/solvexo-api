@@ -8,7 +8,7 @@ export type SellerDocument = Seller & Document;
 export class Seller {
 
 
- @Prop()
+ @Prop()                 
   name: string;
 
   @Prop({ required: true, unique: true })
@@ -54,8 +54,14 @@ export class Seller {
   role: string;
 
 
-    @Prop({default: false })
-    isDelete: boolean ;
+    @Prop({ default: false })
+    isDelete: boolean;
+
+    @Prop({ default: null })
+    storeId!: string;
+
+    @Prop({ default: false })
+    isOnboarded!: boolean;
 }
 
 
