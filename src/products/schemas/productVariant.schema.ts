@@ -35,19 +35,6 @@ export class ProductVariant {
   @Prop({ type: [String], default: [] })
   images: string[];
 
-  // digital/educational only
-  @Prop({ type: String, default: null })
-  fileUrl!: string | null;
-
-  @Prop({ type: String, default: null })
-  fileName!: string | null;
-
-  @Prop({ type: Number, default: null })
-  fileSize!: number | null;
-
-  @Prop({ type: String, default: null })
-  fileMimeType!: string | null;
-
   @Prop({ default: false })
   isDefault!: boolean;
 
