@@ -17,9 +17,9 @@ import { RedisService } from '../redis/redis.service'
 export class AuthService {
    private googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID); // 👈 Google Client
   constructor(
-   
+
     private databaseService: DatabaseService,
-      private readonly otpService: OtpService, 
+      private readonly otpService: OtpService,
       private readonly redisService: RedisService,
 
     private readonly jwtService: JwtService

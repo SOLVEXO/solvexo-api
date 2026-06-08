@@ -13,6 +13,8 @@ async function bootstrap() {
 
   app.use(cookieParser());
 
+  const port = parseInt(process.env.PORT || '3002');
+
   const config = new DocumentBuilder()
     .setTitle('Qchicken API')
     .setDescription('Qchicken API')
@@ -31,21 +33,18 @@ async function bootstrap() {
   const whitelist = [
     'http://localhost:3000',
     'http://localhost:5173',
-  'http://127.0.0.1:3000',
+    'http://127.0.0.1:3000',
     'https://api.edudeen.com',
-
-    
   ];
 
   app.enableCors({
     origin: (origin, cb) => {
-    
       if (!origin) return cb(null, true);
       if (whitelist.includes(origin)) return cb(null, true);
       console.log('Blocked Origin:', origin);
       return cb(new Error('Not allowed by CORS'), false);
     },
-    credentials: true, // << required if withCredentials on client
+    credentials: true,
     methods: ['GET','HEAD','PUT','PATCH','POST','DELETE','OPTIONS'],
     allowedHeaders: ['Content-Type','Authorization','X-Requested-With','Accept','Origin'],
     exposedHeaders: ['Content-Length','X-Request-Id'],
@@ -58,7 +57,7 @@ async function bootstrap() {
     },
   });
 
-  await app.listen(3002, '0.0.0.0');
-  console.log('Server running on http://localhost:3002');
+  await app.listen(port, '0.0.0.0');
+  console.log(`Server running on http://localhost:${port}`);
 }
 bootstrap();
