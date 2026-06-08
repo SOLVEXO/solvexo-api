@@ -17,6 +17,9 @@ import { checkoutModule } from './checkout/checkout.modoule';
 import { OrdersModule } from './orders/orders.module';
 import { PaymentProcessingModule } from './payment/payment.module';
 import { StoreModule } from './store/store.module';
+import { EmployeeModule } from './pos/employee/employee.module';
+import { RegisterSessionModule } from './pos/register-session/register-session.module';
+import { SalesModule } from './pos/sales/sales.module';
 
 @Module({
   imports: [
@@ -36,6 +39,9 @@ import { StoreModule } from './store/store.module';
     OrdersModule,
     PaymentProcessingModule,
     StoreModule,
+    EmployeeModule,
+    RegisterSessionModule,
+    SalesModule,
   ],
   controllers: [AppController],
   providers: [AppService],

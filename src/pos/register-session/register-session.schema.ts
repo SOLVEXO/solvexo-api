@@ -10,13 +10,13 @@ export class RegisterSession {
   storeId: string;
 
   @Prop({ required: true })
-  registerId: string;           // store.registers ka _id
+  registerId: string;
 
   @Prop({ required: true })
-  employeeId: string;           // kisne khola
+  employeeId: string;
 
   @Prop({ default: null })
-  shiftId: string;              // store.shifts ka _id
+  shiftId: string;
 
   @Prop({ required: true })
   openedAt: Date;
@@ -25,28 +25,28 @@ export class RegisterSession {
   closedAt: Date;
 
   @Prop({ type: Number, default: 0 })
-  openingCash: number;          // float (jaise 100)
+  openingCash: number;
 
   @Prop({ type: Number, default: null })
-  closingCash: number;          // band karte waqt asal ginti
+  closingCash: number;
 
   @Prop({ type: Number, default: 0 })
-  expectedCash: number;         // openingCash + cashSales
+  expectedCash: number;
 
   @Prop({ type: Number, default: 0 })
-  cashDifference: number;       // closingCash − expectedCash
+  cashDifference: number;
 
   @Prop({ type: Number, default: 0 })
-  cashSales: number;            // is session me cash se kitna
+  cashSales: number;
 
   @Prop({ type: Number, default: 0 })
-  cardSales: number;            // card se kitna
+  cardSales: number;
 
   @Prop({ type: Number, default: 0 })
-  totalSales: number;           // total bikri
+  totalSales: number;
 
   @Prop({ type: Number, default: 0 })
-  totalTransactions: number;    // kitni bikriyaan
+  totalTransactions: number;
 
   @Prop({ enum: ['open', 'closed'], default: 'open' })
   status: string;

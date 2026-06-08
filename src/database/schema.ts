@@ -25,6 +25,9 @@ export { PaymentTransaction, PaymentTransactionDocument, PaymentTransactionSchem
 
 
 export { Store, StoreDocument, StoreSchema } from '../store/schemas/store.schema';
+export { Employee, EmployeeDocument, EmployeeSchema } from '../pos/employee/employee.schema';
+export { Sale, SaleDocument, SaleSchema } from '../pos/sales/sales.schema';
+export { RegisterSession, RegisterSessionDocument, RegisterSessionSchema } from '../pos/register-session/register-session.schema';
 
 export type { Otp, OtpSchema } from '../otp/schemas/otp.schema';
 export type { OtpDocument } from '../otp/schemas/otp.schema';

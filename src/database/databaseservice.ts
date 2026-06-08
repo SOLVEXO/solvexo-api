@@ -60,6 +60,15 @@ export class DatabaseService {
     @InjectModel(schema.Store.name)
     private storeModel: Model<schema.StoreDocument>,
 
+    @InjectModel(schema.Employee.name)
+    private employeeModel: Model<schema.EmployeeDocument>,
+
+    @InjectModel(schema.Sale.name)
+    private saleModel: Model<schema.SaleDocument>,
+
+    @InjectModel(schema.RegisterSession.name)
+    private registerSessionModel: Model<schema.RegisterSessionDocument>,
+
   ) { }
 
   get repositories() {
@@ -84,6 +93,9 @@ export class DatabaseService {
       orderModel: this.orderModel,
       paymentTransactionModel: this.paymentTransactionModel,
       storeModel: this.storeModel,
+      employeeModel: this.employeeModel,
+      saleModel: this.saleModel,
+      registerSessionModel: this.registerSessionModel,
     };
   }
 }

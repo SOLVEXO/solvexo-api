@@ -15,7 +15,7 @@ export class Employee {
   storeId: string;
 
   @Prop({ required: true })
-  sellerId: string;             // maalik (quick filter)
+  sellerId: string;
 
   @Prop({ required: true })
   name: string;
@@ -24,13 +24,13 @@ export class Employee {
   email: string;
 
   @Prop({ select: false })
-  pin: string;                  // 4-digit POS login PIN (hashed)
+  pin: string;
 
   @Prop({ enum: Object.values(EmployeeRole), default: EmployeeRole.CASHIER })
   role: string;
 
   @Prop({ type: [String], default: [] })
-  shiftIds: string[];           // store.shifts ke _id (kis shift pe assign)
+  shiftIds: string[];
 
   @Prop({ enum: ['active', 'inactive'], default: 'active' })
   status: string;
