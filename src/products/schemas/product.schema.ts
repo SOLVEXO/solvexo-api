@@ -10,6 +10,62 @@ export enum ProductType {
   EDUCATIONAL = 'educational',
 }
 
+export enum LicenseType {
+  PERSONAL = 'personal',                 // Personal Use Only
+  SINGLE_CLASSROOM = 'single_classroom', // One teacher, one classroom
+  SCHOOL = 'school',                     // Entire school building
+  COMMERCIAL = 'commercial',             // Use in their business
+}
+
+export enum DownloadLimit {
+  UNLIMITED = 'unlimited',
+  ONE = '1',
+  THREE = '3',
+  FIVE = '5',
+}
+
+// ---- digital sub-schemas (sirf digital/educational ke liye) ----
+
+@Schema({ _id: false })
+export class DigitalFile {
+  @Prop({ required: true })
+  url: string;
+
+  @Prop({ required: true })
+  name: string;
+
+  @Prop({ type: Number, default: null })
+  size: number | null; // bytes
+
+  @Prop({ type: String, default: null })
+  mimeType: string | null;
+}
+export const DigitalFileSchema = SchemaFactory.createForClass(DigitalFile);
+
+@Schema({ _id: false })
+export class DigitalConfig {
+  @Prop({ type: [DigitalFileSchema], default: [] })
+  files: DigitalFile[];
+
+  @Prop({ type: String, enum: Object.values(DownloadLimit), default: DownloadLimit.UNLIMITED })
+  downloadLimit: DownloadLimit;
+
+  @Prop({ type: Number, default: null })
+  linkExpiryDays: number | null; // null = never expires
+
+  @Prop({ default: false })
+  pdfStampingEnabled: boolean;
+
+  @Prop({ type: String, enum: Object.values(LicenseType), default: LicenseType.PERSONAL })
+  licenseType: LicenseType;
+
+  @Prop({ type: String, default: null })
+  buyerDeliveryMessage: string | null;
+}
+export const DigitalConfigSchema = SchemaFactory.createForClass(DigitalConfig);
+
+// ---- main product ----
+
 @Schema({ timestamps: true })
 export class Product {
 
@@ -25,15 +81,15 @@ export class Product {
   @Prop({ type: String, unique: true })
   slug: string;
 
-  @Prop({ type: String, default: null })
-  description: string | null;
+  @Prop({ type: String, required: true })
+  description: string;
 
-  @Prop({
-    type: String,
-    enum: Object.values(ProductType),
-    required: true,
-  })
+  @Prop({ type: String, enum: Object.values(ProductType), required: true })
   productType: ProductType;
+
+  // hamesha 'physical' ya 'digital' — educational bhi digital count hota hai
+  @Prop({ type: String, enum: ['physical', 'digital'], required: true })
+  type: string;
 
   @Prop({ type: String, required: true })
   categoryId: string;
@@ -41,11 +97,16 @@ export class Product {
   @Prop({ type: String, default: null })
   subCategoryId: string | null;
 
+  // product gallery / cover images (dono type ke liye)
   @Prop({ type: [String], default: [] })
   images: string[];
 
   @Prop({ type: [String], default: [] })
   tags: string[];
+
+  // digital/educational config — physical pe null rahega
+  @Prop({ type: DigitalConfigSchema, default: null })
+  digital: DigitalConfig | null;
 
   // analytics
   @Prop({ default: 0 })
@@ -89,6 +150,7 @@ ProductSchema.index({ storeId: 1 });
 ProductSchema.index({ name: 1 });
 ProductSchema.index({ categoryId: 1 });
 ProductSchema.index({ productType: 1 });
+ProductSchema.index({ type: 1 });
 ProductSchema.index({ purchaseCount: -1 });
 ProductSchema.index({ viewCount: -1 });
 ProductSchema.index({ tags: 1 });

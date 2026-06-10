@@ -2,9 +2,11 @@ import {
   Injectable,
   UnauthorizedException,
   BadRequestException,
+  NotFoundException,
 } from '@nestjs/common';
 
 import { DatabaseService } from 'src/database/databaseservice';
+import { ProductType as StoreProductType } from 'src/store/schemas/store.schema';
 import { CreateProductDto } from './dto/create-product.dto';
 import { CreateProductVariantDto } from './dto/productVariant.dto';
 
@@ -622,6 +624,266 @@ async getVariantById(variantId: string) {
       variant,
       product: productWithSeller
     }
+  };
+}
+
+// ─── NEW APIS ───────────────────────────────────────────────────────────────
+
+async addPhysicalProduct(sellerId: string, body: any) {
+  const { storeModel, sellerModel, productModel, productVariantModel } =
+    this.databaseService.repositories;
+
+  const seller = await sellerModel.findOne({ _id: sellerId, status: 'active', isDelete: false });
+  if (!seller) throw new UnauthorizedException('Unauthorized seller');
+
+  const store = await storeModel.findOne({ sellerId, isDelete: false });
+  if (!store) throw new BadRequestException('Store not found. Please create a store first');
+  if (store.status !== 'active') throw new BadRequestException('Your store is not active');
+
+  const allowsPhysical =
+    store.productTypes?.includes(StoreProductType.PHYSICAL_PRODUCTS) ||
+    store.productTypes?.includes(StoreProductType.EDUCATIONAL_RESOURCES);
+  if (!allowsPhysical) throw new BadRequestException('Your store does not support physical products');
+
+  const {
+    name, description, subCategoryId, images, tags,
+    isListedOnSolvexo, status,
+    price, compareAtPrice, size, color, stock, shippingWeight,
+  } = body;
+
+  if (!name) throw new BadRequestException('Product name is required');
+  if (price === undefined || price === null) throw new BadRequestException('Price is required');
+
+  const categoryId = store.categoryId;
+  if (!categoryId) throw new BadRequestException('Your store has no category selected');
+
+  const baseSlug = name.toLowerCase().trim().replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-').replace(/-+/g, '-');
+  let slug = baseSlug;
+  let count = 1;
+  while (await productModel.findOne({ slug })) {
+    slug = `${baseSlug}-${count++}`;
+  }
+
+  const product = await productModel.create({
+    sellerId,
+    storeId: store._id.toString(),
+    name,
+    slug,
+    description: description ?? null,
+    productType: 'physical',
+    type: 'physical',
+    categoryId,
+    subCategoryId: subCategoryId ?? null,
+    images: images ?? [],
+    tags: tags ?? [],
+    digital: null,
+    isListedOnSolvexo: isListedOnSolvexo ?? false,
+    status: status ?? 'draft',
+  });
+
+  const sku = `SKU-${product._id.toString().slice(-6).toUpperCase()}-${Date.now().toString().slice(-4)}`;
+
+  const defaultVariant = await productVariantModel.create({
+    productId: product._id.toString(),
+    sku,
+    price,
+    compareAtPrice: compareAtPrice ?? null,
+    size: size ?? null,
+    color: color ?? null,
+    stock: stock ?? 0,
+    shippingWeight: shippingWeight ?? null,
+    images: [],
+    isDefault: true,
+  });
+
+  return {
+    success: true,
+    message: 'Physical product created successfully',
+    data: { product, defaultVariant },
+  };
+}
+
+async addDigitalProduct(sellerId: string, body: any) {
+  const { storeModel, sellerModel, productModel, productVariantModel } =
+    this.databaseService.repositories;
+
+  const seller = await sellerModel.findOne({ _id: sellerId, status: 'active', isDelete: false });
+  if (!seller) throw new UnauthorizedException('Unauthorized seller');
+
+  const store = await storeModel.findOne({ sellerId, isDelete: false });
+  if (!store) throw new BadRequestException('Store not found. Please create a store first');
+  if (store.status !== 'active') throw new BadRequestException('Your store is not active');
+
+  const allowsDigital =
+    store.productTypes?.includes(StoreProductType.DIGITAL_DOWNLOADS) ||
+    store.productTypes?.includes(StoreProductType.EDUCATIONAL_RESOURCES);
+  if (!allowsDigital) throw new BadRequestException('Your store does not support digital products');
+
+  const {
+    name, description, productType, subCategoryId, images, tags,
+    isListedOnSolvexo, status,
+    price, compareAtPrice,
+    digital,
+  } = body;
+
+  if (!name) throw new BadRequestException('Product name is required');
+  if (price === undefined || price === null) throw new BadRequestException('Price is required');
+
+  // educational or digital
+  const finalProductType = productType === 'educational' ? 'educational' : 'digital';
+
+  const categoryId = store.categoryId;
+  if (!categoryId) throw new BadRequestException('Your store has no category selected');
+
+  const baseSlug = name.toLowerCase().trim().replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-').replace(/-+/g, '-');
+  let slug = baseSlug;
+  let count = 1;
+  while (await productModel.findOne({ slug })) {
+    slug = `${baseSlug}-${count++}`;
+  }
+
+  const product = await productModel.create({
+    sellerId,
+    storeId: store._id.toString(),
+    name,
+    slug,
+    description: description ?? null,
+    productType: finalProductType,
+    type: 'digital',
+    categoryId,
+    subCategoryId: subCategoryId ?? null,
+    images: images ?? [],
+    tags: tags ?? [],
+    digital: digital ?? null,
+    isListedOnSolvexo: isListedOnSolvexo ?? false,
+    status: status ?? 'draft',
+  });
+
+  const sku = `SKU-${product._id.toString().slice(-6).toUpperCase()}-${Date.now().toString().slice(-4)}`;
+
+  const defaultVariant = await productVariantModel.create({
+    productId: product._id.toString(),
+    sku,
+    price,
+    compareAtPrice: compareAtPrice ?? null,
+    size: null,
+    color: null,
+    stock: 0,
+    shippingWeight: null,
+    images: [],
+    isDefault: true,
+  });
+
+  return {
+    success: true,
+    message: 'Digital product created successfully',
+    data: { product, defaultVariant },
+  };
+}
+
+async getSellerProductById(sellerId: string, productId: string) {
+  const { productModel, productVariantModel } = this.databaseService.repositories;
+
+  const product = await productModel.findOne({
+    _id: productId,
+    sellerId,
+    isDelete: false,
+  }).lean();
+
+  if (!product) throw new NotFoundException('Product not found');
+
+  const variants = await productVariantModel.find({
+    productId,
+    isDelete: false,
+  }).lean();
+
+  const defaultVariant = variants.find((v: any) => v.isDefault) || variants[0] || null;
+
+  return {
+    success: true,
+    message: 'Product fetched successfully',
+    data: { product, variants, defaultVariant },
+  };
+}
+
+async editProduct(sellerId: string, body: any) {
+  const { productModel, productVariantModel, sellerModel } = this.databaseService.repositories;
+
+  const {
+    productId, variantId,
+    name, description, subCategoryId, images, tags, isListedOnSolvexo, status,
+    digital,
+    price, compareAtPrice, size, color, stock, shippingWeight,
+  } = body;
+
+  if (!productId) throw new BadRequestException('productId is required');
+
+  const seller = await sellerModel.findOne({ _id: sellerId, status: 'active', isDelete: false });
+  if (!seller) throw new UnauthorizedException('Unauthorized seller');
+
+  const product = await productModel.findOne({ _id: productId, isDelete: false });
+  if (!product) throw new BadRequestException('Product not found');
+  if (product.sellerId !== sellerId) throw new UnauthorizedException('You are not authorized to edit this product');
+
+  const productUpdate: any = {};
+
+  if (name && name !== product.name) {
+    const baseSlug = name.toLowerCase().trim().replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-').replace(/-+/g, '-');
+    let slug = baseSlug;
+    let count = 1;
+    while (await productModel.findOne({ slug, _id: { $ne: productId } })) {
+      slug = `${baseSlug}-${count++}`;
+    }
+    productUpdate.name = name;
+    productUpdate.slug = slug;
+  }
+
+  if (description !== undefined) productUpdate.description = description;
+  if (subCategoryId !== undefined) productUpdate.subCategoryId = subCategoryId;
+  if (images !== undefined) productUpdate.images = images;
+  if (tags !== undefined) productUpdate.tags = tags;
+  if (isListedOnSolvexo !== undefined) productUpdate.isListedOnSolvexo = isListedOnSolvexo;
+  if (status !== undefined) productUpdate.status = status;
+  if (digital !== undefined && product.type === 'digital') productUpdate.digital = digital;
+
+  const updatedProduct = Object.keys(productUpdate).length > 0
+    ? await productModel.findByIdAndUpdate(productId, productUpdate, { new: true })
+    : product;
+
+  let targetVariant: any;
+  if (variantId) {
+    targetVariant = await productVariantModel.findOne({ _id: variantId, productId, isDelete: false });
+    if (!targetVariant) throw new BadRequestException('Variant not found');
+  } else {
+    targetVariant = await productVariantModel.findOne({ productId, isDefault: true, isDelete: false });
+  }
+
+  let updatedVariant = targetVariant;
+
+  if (targetVariant) {
+    const variantUpdate: any = {};
+
+    if (price !== undefined) variantUpdate.price = price;
+    if (compareAtPrice !== undefined) variantUpdate.compareAtPrice = compareAtPrice;
+
+    if (product.type === 'physical') {
+      if (size !== undefined) variantUpdate.size = size;
+      if (color !== undefined) variantUpdate.color = color;
+      if (stock !== undefined) variantUpdate.stock = stock;
+      if (shippingWeight !== undefined) variantUpdate.shippingWeight = shippingWeight;
+    }
+
+    if (Object.keys(variantUpdate).length > 0) {
+      updatedVariant = await productVariantModel.findByIdAndUpdate(
+        targetVariant._id, variantUpdate, { new: true }
+      );
+    }
+  }
+
+  return {
+    success: true,
+    message: 'Product updated successfully',
+    data: { product: updatedProduct, variant: updatedVariant },
   };
 }
 

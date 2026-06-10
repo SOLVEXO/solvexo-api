@@ -5,13 +5,12 @@ import {
     Body,
     Param,
     Req,
-    Query
+    Query,
+    UseGuards,
 } from '@nestjs/common';
-
 
 import { ProductsService } from './products.service';
 import { CreateProductDto } from './dto/create-product.dto';
-import { UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { Roles } from '../auth/decorators/roles.decorator'
 import { RolesGuard } from '../auth/guards/roles.guard'; 
@@ -90,6 +89,37 @@ async getVariantById(@Param('variantId') variantId: string) {
   return this.ProductsService.getVariantById(variantId);
 }
 
+@UseGuards(JwtAuthGuard, RolesGuard)
+@Roles('seller')
+@Post('add-physical-product')
+async addPhysicalProduct(@Req() req: any, @Body() body: any) {
+  const { userId: sellerId } = req.user;
+  return this.ProductsService.addPhysicalProduct(sellerId, body);
+}
+
+@UseGuards(JwtAuthGuard, RolesGuard)
+@Roles('seller')
+@Post('add-digital-product')
+async addDigitalProduct(@Req() req: any, @Body() body: any) {
+  const { userId: sellerId } = req.user;
+  return this.ProductsService.addDigitalProduct(sellerId, body);
+}
+
+@UseGuards(JwtAuthGuard, RolesGuard)
+@Roles('seller')
+@Get('get-my-product/:productId')
+async getSellerProductById(@Req() req: any, @Param('productId') productId: string) {
+  const { userId: sellerId } = req.user;
+  return this.ProductsService.getSellerProductById(sellerId, productId);
+}
+
+@UseGuards(JwtAuthGuard, RolesGuard)
+@Roles('seller')
+@Post('edit-product')
+async editProduct(@Req() req: any, @Body() body: any) {
+  const { userId: sellerId } = req.user;
+  return this.ProductsService.editProduct(sellerId, body);
+}
 
 }
 
