@@ -13,9 +13,9 @@ import { UploadModule } from './upload/upload.module';
 import { BannersModule } from './banner/banner.module';
 import { FaqModule } from './faqs/faq.module';
 // import { RefundRequestModule } from './refund-request/refund-request.module';
-import { checkoutModule } from './checkout/checkout.modoule';
-import { OrdersModule } from './orders/orders.module';
-import { PaymentProcessingModule } from './payment/payment.module';
+import { CheckoutModule } from './checkout/checkout.modoule';
+// import { OrdersModule } from './orders/orders.module';
+import { PaymentModule } from './payment/payment.module';
 import { StoreModule } from './store/store.module';
 
 @Module({
@@ -32,9 +32,11 @@ import { StoreModule } from './store/store.module';
     BannersModule,
     FaqModule,
     // RefundRequestModule,
-    checkoutModule,
-    OrdersModule,
-    PaymentProcessingModule,
+    CheckoutModule,
+    // checkoutModule,
+    // OrdersModule,
+    PaymentModule,
+    // PaymentProcessingModule,
     StoreModule,
   ],
   controllers: [AppController],

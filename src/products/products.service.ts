@@ -636,20 +636,23 @@ async addPhysicalProduct(sellerId: string, body: any) {
   const seller = await sellerModel.findOne({ _id: sellerId, status: 'active', isDelete: false });
   if (!seller) throw new UnauthorizedException('Unauthorized seller');
 
-  const store = await storeModel.findOne({ sellerId, isDelete: false });
-  if (!store) throw new BadRequestException('Store not found. Please create a store first');
+  const {
+    storeId,
+    name, description, subCategoryId, images, tags,
+    isListedOnSolvexo, status,
+    price, compareAtPrice, size, color, stock, shippingWeight,
+  } = body;
+
+  if (!storeId) throw new BadRequestException('storeId is required');
+
+  const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
+  if (!store) throw new BadRequestException('Store not found');
   if (store.status !== 'active') throw new BadRequestException('Your store is not active');
 
   const allowsPhysical =
     store.productTypes?.includes(StoreProductType.PHYSICAL_PRODUCTS) ||
     store.productTypes?.includes(StoreProductType.EDUCATIONAL_RESOURCES);
   if (!allowsPhysical) throw new BadRequestException('Your store does not support physical products');
-
-  const {
-    name, description, subCategoryId, images, tags,
-    isListedOnSolvexo, status,
-    price, compareAtPrice, size, color, stock, shippingWeight,
-  } = body;
 
   if (!name) throw new BadRequestException('Product name is required');
   if (price === undefined || price === null) throw new BadRequestException('Price is required');
@@ -710,8 +713,18 @@ async addDigitalProduct(sellerId: string, body: any) {
   const seller = await sellerModel.findOne({ _id: sellerId, status: 'active', isDelete: false });
   if (!seller) throw new UnauthorizedException('Unauthorized seller');
 
-  const store = await storeModel.findOne({ sellerId, isDelete: false });
-  if (!store) throw new BadRequestException('Store not found. Please create a store first');
+  const {
+    storeId,
+    name, description, productType, subCategoryId, images, tags,
+    isListedOnSolvexo, status,
+    price, compareAtPrice,
+    digital,
+  } = body;
+
+  if (!storeId) throw new BadRequestException('storeId is required');
+
+  const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
+  if (!store) throw new BadRequestException('Store not found');
   if (store.status !== 'active') throw new BadRequestException('Your store is not active');
 
   const allowsDigital =
@@ -719,17 +732,9 @@ async addDigitalProduct(sellerId: string, body: any) {
     store.productTypes?.includes(StoreProductType.EDUCATIONAL_RESOURCES);
   if (!allowsDigital) throw new BadRequestException('Your store does not support digital products');
 
-  const {
-    name, description, productType, subCategoryId, images, tags,
-    isListedOnSolvexo, status,
-    price, compareAtPrice,
-    digital,
-  } = body;
-
   if (!name) throw new BadRequestException('Product name is required');
   if (price === undefined || price === null) throw new BadRequestException('Price is required');
 
-  // educational or digital
   const finalProductType = productType === 'educational' ? 'educational' : 'digital';
 
   const categoryId = store.categoryId;
@@ -780,6 +785,7 @@ async addDigitalProduct(sellerId: string, body: any) {
     data: { product, defaultVariant },
   };
 }
+
 
 async getSellerProductById(sellerId: string, productId: string) {
   const { productModel, productVariantModel } = this.databaseService.repositories;

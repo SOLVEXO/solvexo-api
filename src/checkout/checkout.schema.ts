@@ -14,6 +14,31 @@ export class CheckoutItem {
   @Prop({ type: String, required: true })
   sellerId: string;
 
+  @Prop({ type: String, required: true })
+  storeId: string;
+
+  @Prop({ type: String, enum: ['physical', 'digital'], required: true })
+  type: string;
+
+  // snapshot fields
+  @Prop({ type: String, required: true })
+  name: string;
+
+  @Prop({ type: String, default: null })
+  image: string | null;
+
+  @Prop({ type: String, default: null })
+  sku: string | null;
+
+  @Prop({ type: String, default: null })
+  size: string | null;
+
+  @Prop({ type: String, default: null })
+  color: string | null;
+
+  @Prop({ type: String, default: null })
+  licenseType: string | null;
+
   @Prop({ required: true })
   quantity: number;
 
@@ -31,17 +56,23 @@ export class Checkout {
   @Prop({ type: String, required: true })
   userId: string;
 
-  @Prop({ type: String, required: true })
-  addressId: string;
-
   @Prop({ type: String, default: null })
-  shippingOptionId: string | null;
+  addressId: string | null;
 
-  @Prop({ type: String, default: null })
-  paymentMethodId: string | null;
+  @Prop({ type: String, default: 'USD' })
+  currency: string;
 
   @Prop({ type: [CheckoutItemSchema], default: [] })
   items: CheckoutItem[];
+
+  @Prop({ type: String, default: null })
+  shippingZoneId: string | null;
+
+  @Prop({ type: String, enum: ['cash_on_delivery', 'stripe'], default: null })
+  paymentType: string | null;
+
+  @Prop({ type: String, default: null })
+  paymentMethodId: string | null;
 
   @Prop({ default: 0 })
   subtotal: number;
@@ -56,6 +87,7 @@ export class Checkout {
   totalAmount: number;
 
   @Prop({
+    type: String,
     enum: ['pending', 'payment_pending', 'completed', 'expired', 'cancelled'],
     default: 'pending',
   })
@@ -71,13 +103,7 @@ export class Checkout {
 export const CheckoutSchema = SchemaFactory.createForClass(Checkout);
 
 CheckoutSchema.index({ userId: 1 });
-CheckoutSchema.index({ addressId: 1 });
-CheckoutSchema.index({ shippingOptionId: 1 });
-CheckoutSchema.index({ paymentMethodId: 1 });
 CheckoutSchema.index({ status: 1 });
 CheckoutSchema.index({ createdAt: -1 });
-
-// nested item search ke liye optional indexes
-CheckoutSchema.index({ 'items.productId': 1 });
-CheckoutSchema.index({ 'items.variantId': 1 });
 CheckoutSchema.index({ 'items.sellerId': 1 });
+CheckoutSchema.index({ 'items.storeId': 1 });
