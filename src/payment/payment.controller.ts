@@ -42,9 +42,17 @@ export class PaymentController {
     return this.paymentService.initiatePayment(userId, body);
   }
 
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('user')
+  @Post('cod-payment')
+  async codPayment(@Req() req: any, @Body() body: any) {
+    const { userId } = req.user;
+    return this.paymentService.codPayment(userId, body);
+  }
+
   @Post('stripe-webhook')
   async stripeWebhook(
-    @Req() req: RawBodyRequest<any>,
+    @Req() req: RawBodyRequest<any> ,
     @Headers('stripe-signature') signature: string,
   ) {
     return this.paymentService.stripeWebhook(req.rawBody, signature);

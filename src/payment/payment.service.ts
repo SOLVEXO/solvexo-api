@@ -299,7 +299,7 @@ export class PaymentService {
     private readonly databaseService: DatabaseService,
     private readonly configService: ConfigService,
   ) {
-    const secretKey = this.configService.get<string>('STRIPE_SECRET_KEY')?.trim() || '';
+    const secretKey = this.configService.get<string>('stripe_Secret_Key')?.trim() || '';
     this.stripe = new Stripe(secretKey, { apiVersion: '2025-04-30.basil' as any });
   }
 
@@ -308,24 +308,42 @@ async initiatePayment(userId: string, body: any) {
 
   if (!checkoutId) throw new BadRequestException('checkoutId is required');
 
-  const { checkoutModel, paymentTransactionModel } = this.databaseService.repositories;
+  const { checkoutModel, paymentTransactionModel, productVariantModel } =
+    this.databaseService.repositories;
 
   const checkout = await checkoutModel.findOne({ _id: checkoutId, userId, isDelete: false });
   if (!checkout) throw new NotFoundException('Checkout not found');
   if (checkout.status === 'completed') throw new BadRequestException('Checkout already completed');
   if (checkout.status === 'cancelled') throw new BadRequestException('Checkout is cancelled');
 
-  // --- ISSUE 5: expiry — status + actual date dono check ---
+  // expiry — status + actual date dono
   if (checkout.status === 'expired') {
     throw new BadRequestException('Checkout has expired');
   }
   if (checkout.expiredAt && checkout.expiredAt < new Date()) {
-    // cron ne update nahi kiya to bhi yahin mark kar do (lazy expiry)
     await checkoutModel.findByIdAndUpdate(checkout._id, { status: 'expired' });
     throw new BadRequestException('Checkout has expired');
   }
 
-  // --- ISSUE 1 + 2: duplicate intent guard — pehle se pending transaction hai to reuse ---
+  // --- STOCK CHECK (payment se pehle, sirf check — minus nahi) ---
+  const physicalItems = checkout.items.filter((i: any) => i.type === 'physical');
+  for (const item of physicalItems) {
+    const variant = await productVariantModel.findOne({
+      _id: item.variantId,
+      isDelete: false,
+    });
+
+    if (!variant) {
+      throw new BadRequestException(`Item not available: ${item.name}`);
+    }
+    if (variant.stock < item.quantity) {
+      throw new BadRequestException(
+        `Insufficient stock for ${item.name}. Available: ${variant.stock}, required: ${item.quantity}`,
+      );
+    }
+  }
+
+  // --- duplicate intent guard ---
   const existing = await paymentTransactionModel.findOne({
     checkoutId: checkout._id.toString(),
     status: 'pending',
@@ -337,7 +355,6 @@ async initiatePayment(userId: string, body: any) {
     try {
       const pi = await this.stripe.paymentIntents.retrieve(existing.stripePaymentIntentId);
 
-      // intent abhi bhi usable hai (succeeded/canceled nahi) + amount same → reuse
       const reusable = ['requires_payment_method', 'requires_confirmation', 'requires_action'].includes(pi.status);
       const amountMatches = pi.amount === Math.round(checkout.totalAmount * 100);
 
@@ -353,18 +370,16 @@ async initiatePayment(userId: string, body: any) {
         };
       }
 
-      // purana intent ab valid nahi (amount badla ya cancel ho gaya) → cancel karke naya banayenge
       if (reusable) {
         await this.stripe.paymentIntents.cancel(pi.id).catch(() => null);
       }
       await paymentTransactionModel.findByIdAndUpdate(existing._id, { status: 'failed' });
     } catch {
-      // retrieve fail hua to neeche naya intent ban jaayega
       await paymentTransactionModel.findByIdAndUpdate(existing._id, { status: 'failed' });
     }
   }
 
-  // --- ISSUE 3 + 4: try/catch + idempotency key ---
+  // --- intent create (try/catch + idempotency key) ---
   let paymentIntent: any;
   try {
     paymentIntent = await this.stripe.paymentIntents.create(
@@ -372,14 +387,12 @@ async initiatePayment(userId: string, body: any) {
         amount: Math.round(checkout.totalAmount * 100),
         currency: checkout.currency?.toLowerCase() || 'usd',
         metadata: { checkoutId: checkout._id.toString(), userId },
-        // redirect-based methods (Klarna/Affirm/CashApp/etc.) off — sirf card
         automatic_payment_methods: {
           enabled: true,
           allow_redirects: 'never',
         },
       },
       {
-        // same checkout pe retry pe Stripe duplicate intent nahi banayega
         idempotencyKey: `checkout_${checkout._id.toString()}`,
       },
     );
@@ -392,7 +405,6 @@ async initiatePayment(userId: string, body: any) {
   await paymentTransactionModel.create({
     userId,
     checkoutId: checkout._id.toString(),
-    orderId: null,
     paymentType: 'stripe',
     amount: checkout.totalAmount,
     status: 'pending',
@@ -438,8 +450,7 @@ async stripeWebhook(rawBody: Buffer, signature: string) {
   const { checkoutModel, paymentTransactionModel, orderModel, addressModel, cartModel } =
     this.databaseService.repositories;
 
-  // --- ISSUE 3: atomic lock — pending => completed ek hi atomic step me ---
-  // agar webhook dobara aaya, doosri baar ye null return karega (kyunki status pending nahi raha)
+  // --- atomic lock — pending => completed ---
   const transaction = await paymentTransactionModel.findOneAndUpdate(
     {
       stripePaymentIntentId: paymentIntent.id,
@@ -450,7 +461,6 @@ async stripeWebhook(rawBody: Buffer, signature: string) {
     { new: true },
   );
 
-  // null => ya to transaction nahi mila, ya already completed (duplicate webhook) => kuch mat karo
   if (!transaction) return { received: true };
 
   const checkout = await checkoutModel.findOne({ _id: checkoutId, isDelete: false });
@@ -458,30 +468,26 @@ async stripeWebhook(rawBody: Buffer, signature: string) {
     return { received: true };
   }
 
-  // --- ISSUE 2: order creation try/catch ---
-  let order: any;
+  // --- order creation try/catch ---
+  let orders: any[];
   try {
-    order = await this.createOrder(userId, checkout, orderModel, addressModel);
+    orders = await this.createOrder(userId, checkout, orderModel, addressModel);
   } catch (err: any) {
-    // lock wapas khol do taaki Stripe ka retry dobara try kar sake
     await paymentTransactionModel.findByIdAndUpdate(transaction._id, {
       status: 'pending',
       paidAt: null,
     });
     console.error('createOrder failed in webhook:', err?.message, { checkoutId, userId });
-    // Stripe ko 4xx/5xx do taaki wo retry kare (received:true mat bhejo)
     throw new BadRequestException('Order creation failed, will retry');
   }
 
-  // order ban gaya => transaction me orderId set
+  // saare bane orders ki ids transaction me
   await paymentTransactionModel.findByIdAndUpdate(transaction._id, {
-    orderId: order._id.toString(),
+    orderIds: orders.map((o) => o._id.toString()),
   });
 
-  // checkout complete
   await checkoutModel.findByIdAndUpdate(checkoutId, { status: 'completed' });
 
-  // cart clear
   await cartModel.findOneAndUpdate(
     { userId, status: 'active', isDelete: false },
     { status: 'inactive' },
@@ -489,28 +495,135 @@ async stripeWebhook(rawBody: Buffer, signature: string) {
 
   return { received: true };
 }
+async codPayment(userId: string, body: any) {
+  const { checkoutId } = body;
+  if (!checkoutId) throw new BadRequestException('checkoutId is required');
 
-  private async createOrder(userId: string, checkout: any, orderModel: any, addressModel: any) {
-    // items ko storeId ke hisaab se group karo
+  const { checkoutModel, paymentTransactionModel, orderModel, addressModel, cartModel, productVariantModel } =
+    this.databaseService.repositories;
+
+  const checkout = await checkoutModel.findOne({ _id: checkoutId, userId, isDelete: false });
+  if (!checkout) throw new NotFoundException('Checkout not found');
+  if (checkout.status === 'completed') throw new BadRequestException('Checkout already completed');
+  if (checkout.status === 'cancelled') throw new BadRequestException('Checkout is cancelled');
+  if (checkout.status === 'expired') throw new BadRequestException('Checkout has expired');
+  if (checkout.expiredAt && checkout.expiredAt < new Date()) {
+    await checkoutModel.findByIdAndUpdate(checkout._id, { status: 'expired' });
+    throw new BadRequestException('Checkout has expired');
+  }
+
+  const hasDigital = checkout.items.some((i: any) => i.type === 'digital');
+  if (hasDigital) throw new BadRequestException('Cash on Delivery is not available for digital products');
+
+  for (const item of checkout.items) {
+    const variant = await productVariantModel.findOne({ _id: item.variantId, isDelete: false });
+    if (!variant) throw new BadRequestException(`Item not available: ${item.name}`);
+    if (variant.stock < item.quantity) {
+      throw new BadRequestException(
+        `Insufficient stock for ${item.name}. Available: ${variant.stock}, required: ${item.quantity}`,
+      );
+    }
+  }
+
+  await checkoutModel.findByIdAndUpdate(checkoutId, {
+    paymentType: 'cash_on_delivery',
+    status: 'payment_pending',
+  });
+
+  const orders = await this.createOrder(userId, checkout, orderModel, addressModel, 'cash_on_delivery', false);
+
+  await paymentTransactionModel.create({
+    userId,
+    checkoutId: checkout._id.toString(),
+    orderIds: orders.map((o: any) => o._id.toString()),
+    paymentType: 'cash_on_delivery',
+    amount: checkout.totalAmount,
+    status: 'completed',
+    stripePaymentIntentId: null,
+    stripeClientSecret: null,
+    paidAt: null,
+  });
+
+  await checkoutModel.findByIdAndUpdate(checkoutId, { status: 'completed' });
+  await cartModel.findOneAndUpdate(
+    { userId, status: 'active', isDelete: false },
+    { status: 'inactive', items: [] },
+  );
+
+  return {
+    success: true,
+    message: 'Order placed successfully (Cash on Delivery)',
+    data: { orders },
+  };
+}
+
+private async createOrder(
+  userId: string,
+  checkout: any,
+  orderModel: any,
+  addressModel: any,
+  paymentType: string = 'stripe',
+  isPaid: boolean = true,
+) {
+  const { productVariantModel } = this.databaseService.repositories;
+
+  const physicalItems = checkout.items.filter((i: any) => i.type === 'physical');
+  const digitalItems = checkout.items.filter((i: any) => i.type === 'digital');
+
+  // --- STOCK MINUS (atomic, sirf physical) ---
+  const decremented: { variantId: string; quantity: number }[] = [];
+
+  for (const item of physicalItems) {
+    const res = await productVariantModel.updateOne(
+      { _id: item.variantId, stock: { $gte: item.quantity }, isDelete: false },
+      { $inc: { stock: -item.quantity } },
+    );
+
+    if (res.modifiedCount === 0) {
+      for (const d of decremented) {
+        await productVariantModel.updateOne(
+          { _id: d.variantId },
+          { $inc: { stock: d.quantity } },
+        );
+      }
+      throw new BadRequestException(`Stock not available for item: ${item.name}`);
+    }
+    decremented.push({ variantId: item.variantId, quantity: item.quantity });
+  }
+
+  // --- shipping address (physical ke liye) ---
+  let shippingAddress: any = null;
+  if (checkout.addressId) {
+    const address = await addressModel.findOne({ _id: checkout.addressId, isDelete: false });
+    if (address) {
+      shippingAddress = {
+        recipientName: address.recipientName,
+        phoneNumber: address.phoneNumber,
+        addressLine1: address.addressLine1,
+        addressLine2: address.addressLine2 ?? null,
+        city: address.city,
+        state: address.state,
+        zipCode: address.zipCode,
+      };
+    }
+  }
+
+  // --- helper: ek type ke items ko store-wise sellerOrders me ---
+  const buildSellerOrders = (items: any[]) => {
     const storeMap: Record<string, any[]> = {};
-
-    for (const item of checkout.items) {
+    for (const item of items) {
       const key = item.storeId || item.sellerId;
       if (!storeMap[key]) storeMap[key] = [];
       storeMap[key].push(item);
     }
 
-    const sellerOrders = Object.entries(storeMap).map(([key, items]) => {
-      const hasPhysical = items.some((i) => i.type === 'physical');
-      const hasDigital = items.some((i) => i.type === 'digital');
-      const fulfillmentType = hasPhysical && hasDigital ? 'mixed' : hasPhysical ? 'physical' : 'digital';
-      const subtotal = items.reduce((s, i) => s + i.totalPrice, 0);
-
+    return Object.values(storeMap).map((storeItems) => {
+      const subtotal = storeItems.reduce((s, i) => s + i.totalPrice, 0);
       return {
-        sellerId: items[0].sellerId,
-        storeId: items[0].storeId,
-        fulfillmentType,
-        items: items.map((i) => ({
+        sellerId: storeItems[0].sellerId,
+        storeId: storeItems[0].storeId,
+        fulfillmentType: storeItems[0].type, // 'physical' ya 'digital'
+        items: storeItems.map((i) => ({
           productId: i.productId,
           variantId: i.variantId,
           type: i.type,
@@ -534,45 +647,68 @@ async stripeWebhook(rawBody: Buffer, signature: string) {
         cancelReason: null,
       };
     });
+  };
 
-    // shipping address (sirf physical ho to)
-    let shippingAddress: any = null;
-    if (checkout.addressId) {
-      const address = await addressModel.findOne({ _id: checkout.addressId, isDelete: false });
-      if (address) {
-        shippingAddress = {
-          recipientName: address.recipientName,
-          phoneNumber: address.phoneNumber,
-          addressLine1: address.addressLine1,
-          addressLine2: address.addressLine2 ?? null,
-          city: address.city,
-          state: address.state,
-          zipCode: address.zipCode,
-        };
-      }
-    }
+  // unique orderNumber (counter se taaki same-ms collision na ho)
+  let seq = 0;
+  const genOrderNumber = () =>
+    `ORD-${Date.now()}-${seq++}-${Math.floor(Math.random() * 9000 + 1000)}`;
 
-    const orderNumber = `ORD-${Date.now()}-${Math.floor(Math.random() * 9000 + 1000)}`;
+  const createdOrders: any[] = [];
 
-    const order = await orderModel.create({
-      orderNumber,
+  // === PHYSICAL ORDER ===
+  if (physicalItems.length > 0) {
+    const sellerOrders = buildSellerOrders(physicalItems);
+    const subtotal = physicalItems.reduce((s: number, i: any) => s + i.totalPrice, 0);
+    const shippingFee = checkout.shippingFee || 0;
+
+    const physicalOrder = await orderModel.create({
+      orderNumber: genOrderNumber(),
       userId,
       checkoutId: checkout._id.toString(),
       currency: checkout.currency || 'USD',
       sellerOrders,
       shippingAddress,
-      subtotal: checkout.subtotal,
-      shippingFee: checkout.shippingFee || 0,
-      taxAmount: checkout.taxAmount || 0,
-      totalAmount: checkout.totalAmount,
-      paymentType: 'stripe',
-      paymentStatus: 'paid',
-      isPaid: true,
-      paidAt: new Date(),
+      subtotal,
+      shippingFee,
+      taxAmount: 0,
+      totalAmount: subtotal + shippingFee,
+      paymentType,
+      paymentStatus: isPaid ? 'paid' : 'unpaid',
+      isPaid,
+      paidAt: isPaid ? new Date() : null,
       orderStatus: 'pending',
       isDelete: false,
     });
-
-    return order;
+    createdOrders.push(physicalOrder);
   }
+
+  // === DIGITAL ORDER ===
+  if (digitalItems.length > 0) {
+    const sellerOrders = buildSellerOrders(digitalItems);
+    const subtotal = digitalItems.reduce((s: number, i: any) => s + i.totalPrice, 0);
+
+    const digitalOrder = await orderModel.create({
+      orderNumber: genOrderNumber(),
+      userId,
+      checkoutId: checkout._id.toString(),
+      currency: checkout.currency || 'USD',
+      sellerOrders,
+      shippingAddress: null,
+      subtotal,
+      shippingFee: 0,
+      taxAmount: 0,
+      totalAmount: subtotal,
+      paymentType,
+      paymentStatus: isPaid ? 'paid' : 'unpaid',
+      isPaid,
+      paidAt: isPaid ? new Date() : null,
+      orderStatus: 'pending',
+      isDelete: false,
+    });
+    createdOrders.push(digitalOrder);
+  }
+
+  return createdOrders;
+}
 }

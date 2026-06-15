@@ -86,32 +86,9 @@
 
 // // shipping-zone.service.ts
 
-// async getShippingZones() {
 
-//   try {
 
-//     const shippingZoneModel =
-//       this.databaseService.repositories.shippingZoneModel;
 
-//     // get all shipping zones
-//     const shippingZones =
-//       await shippingZoneModel.find({
-//         isDelete: false
-//       })
-//       .sort({ createdAt: -1 });
-
-//     return {
-//       message: 'Shipping zones fetched successfully',
-//       data: shippingZones
-//     };
-
-//   } catch (error) {
-
-//     throw error;
-
-//   }
-
-// }
 
 // async createCheckout(userId: string, body: any) {
 //   const { addressId, shippingOptionId } = body;
@@ -515,13 +492,42 @@ export class CheckoutService {
       isDelete: false,
     });
 
+    const hasDigital = checkoutItems.some((i) => i.type === 'digital');
+
     return {
       success: true,
       message: 'Checkout created successfully',
       data: {
         checkout,
+        allowedPaymentMethods: hasDigital ? ['stripe'] : ['stripe', 'cash_on_delivery'],
         summary: { subtotal, shippingFee: 0, taxAmount, totalAmount },
       },
     };
   }
+
+  async getShippingZones() {
+
+  try {
+
+    const shippingZoneModel =
+      this.databaseService.repositories.shippingZoneModel;
+
+    // get all shipping zones
+    const shippingZones =
+      await shippingZoneModel.find({
+        isDelete: false
+      })
+      .sort({ createdAt: -1 });
+
+    return {
+      message: 'Shipping zones fetched successfully',
+      data: shippingZones
+    };
+
+  } catch (error) {
+
+    throw error;
+
+  }
+}
 }

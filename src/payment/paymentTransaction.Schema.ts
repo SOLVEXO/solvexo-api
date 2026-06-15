@@ -11,8 +11,9 @@ export class PaymentTransaction {
   @Prop({ type: String, required: true, index: true })
   checkoutId: string;
 
-  @Prop({ type: String, default: null })
-  orderId: string | null;
+  // ek payment se bane saare orders (physical + digital)
+  @Prop({ type: [String], default: [] })
+  orderIds: string[];
 
   @Prop({ enum: ['cash_on_delivery', 'stripe'], required: true })
   paymentType: string;
@@ -48,5 +49,5 @@ export const PaymentTransactionSchema =
 
 PaymentTransactionSchema.index({ userId: 1 });
 PaymentTransactionSchema.index({ checkoutId: 1 });
-PaymentTransactionSchema.index({ orderId: 1 });
+PaymentTransactionSchema.index({ orderIds: 1 });
 PaymentTransactionSchema.index({ stripePaymentIntentId: 1 });

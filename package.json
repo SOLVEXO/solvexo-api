@@ -42,9 +42,11 @@
     "passport": "^0.7.0",
     "passport-google-oauth20": "^2.0.0",
     "passport-jwt": "^4.0.1",
+    "pdf-lib": "^1.17.1",
     "redis": "^5.11.0",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
+    "streamifier": "^0.1.1",
     "stripe": "^22.1.1"
   },
   "devDependencies": {
@@ -60,6 +62,7 @@
     "@types/multer": "^2.0.0",
     "@types/node": "^22.10.7",
     "@types/nodemailer": "^7.0.10",
+    "@types/streamifier": "^0.1.2",
     "@types/supertest": "^6.0.2",
     "eslint": "^9.18.0",
     "eslint-config-prettier": "^10.0.1",

@@ -14,7 +14,7 @@ import { BannersModule } from './banner/banner.module';
 import { FaqModule } from './faqs/faq.module';
 // import { RefundRequestModule } from './refund-request/refund-request.module';
 import { CheckoutModule } from './checkout/checkout.modoule';
-// import { OrdersModule } from './orders/orders.module';
+import { OrdersModule } from './orders/orders.module';
 import { PaymentModule } from './payment/payment.module';
 import { StoreModule } from './store/store.module';
 
@@ -34,10 +34,12 @@ import { StoreModule } from './store/store.module';
     // RefundRequestModule,
     CheckoutModule,
     // checkoutModule,
+    OrdersModule,
     // OrdersModule,
     PaymentModule,
     // PaymentProcessingModule,
     StoreModule,
+
   ],
   controllers: [AppController],
   providers: [AppService],

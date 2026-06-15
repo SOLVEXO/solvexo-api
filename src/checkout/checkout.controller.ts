@@ -90,7 +90,7 @@
 
 // }
 
-import { Controller, Post, Delete, Param, Req, UseGuards } from '@nestjs/common';
+import { Controller, Post, Delete, Param, Req, UseGuards, Get } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -115,4 +115,12 @@ export class CheckoutController {
     const { userId } = req.user;
     return this.checkoutService.deleteCheckout(userId, checkoutId);
   }
+
+  @Get('getShippingZones')
+async getShippingZones() {
+
+  return this.checkoutService.getShippingZones();
+
+}
+
 }

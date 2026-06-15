@@ -66,6 +66,9 @@ export class OrderItem {
 
   @Prop({ default: 0 })
   refundedAmount: number;
+
+  @Prop({ default: 0 })
+  downloadCount!: number;
 }
 
 export const OrderItemSchema = SchemaFactory.createForClass(OrderItem);
