@@ -1,341 +1,114 @@
-// import {
-//   Injectable,
-//   BadRequestException,
-//   NotFoundException,
-// } from '@nestjs/common';
-// import { ConfigService } from '@nestjs/config';
-// import { DatabaseService } from 'src/database/databaseservice';
-// import Stripe from 'stripe';
 
-// @Injectable()
-// export class PaymentProcessingService {
-//   private stripe: InstanceType<typeof Stripe>;
-
-//   constructor(
-//     private readonly databaseService: DatabaseService,
-//     private readonly configService: ConfigService,
-//   ) {
-//     const secretKey =
-//       this.configService.get<string>('stripe_Secret_Key')?.trim() || '';
-//     this.stripe = new Stripe(secretKey, {
-//       apiVersion: '2025-04-30.basil' as any,
-//     });
-//   }
-
-//   async selectPayment(userId: string, body: any) {
-//     const { checkoutId, paymentType } = body;
-
-//     if (!checkoutId) throw new BadRequestException('checkoutId is required');
-//     if (!paymentType) throw new BadRequestException('paymentType is required');
-//     if (!['cash_on_delivery', 'stripe'].includes(paymentType)) {
-//       throw new BadRequestException(
-//         'paymentType must be cash_on_delivery or stripe',
-//       );
-//     }
-
-//     const checkout =
-//       await this.databaseService.repositories.checkoutModel.findOne({
-//         _id: checkoutId,
-//         userId,
-//         isDelete: false,
-//       });
-
-//     if (!checkout) throw new NotFoundException('Checkout not found');
-
-//     if (checkout.status === 'completed')
-//       throw new BadRequestException('Checkout already completed');
-
-//     if (checkout.status === 'expired')
-//       throw new BadRequestException('Checkout has expired');
-
-//     if (!checkout.shippingOptionId)
-//       throw new BadRequestException(
-//         'Please add shipping option to checkout first',
-//       );
-
-//     if (paymentType === 'cash_on_delivery') {
-//       return this.processCOD(userId, checkout);
-//     } else {
-//       return this.processStripe(userId, checkout);
-//     }
-//   }
-
-//   private async processCOD(userId: string, checkout: any) {
-//     const order = await this.createOrderFromCheckout(
-//       userId,
-//       checkout,
-//       'cash_on_delivery',
-//       false,
-//     );
-
-//     await this.databaseService.repositories.paymentTransactionModel.create({
-//       userId,
-//       checkoutId: checkout._id.toString(),
-//       orderId: order._id.toString(),
-//       paymentType: 'cash_on_delivery',
-//       amount: checkout.totalAmount,
-//       status: 'completed',
-//       paidAt: null,
-//     });
-
-//     checkout.status = 'completed';
-//     await checkout.save();
-
-//     await this.clearUserCart(userId);
-
-//     return {
-//       success: true,
-//       message: 'Order placed successfully (Cash on Delivery)',
-//       data: { order },
-//     };
-//   }
-
-//   private async processStripe(userId: string, checkout: any) {
-//     const paymentIntent = await this.stripe.paymentIntents.create({
-//       amount: Math.round(checkout.totalAmount * 100),
-//       currency: 'usd',
-//       metadata: {
-//         checkoutId: checkout._id.toString(),
-//         userId,
-//       },
-//     });
-
-//     const transaction =
-//       await this.databaseService.repositories.paymentTransactionModel.create({
-//         userId,
-//         checkoutId: checkout._id.toString(),
-//         orderId: null,
-//         paymentType: 'stripe',
-//         amount: checkout.totalAmount,
-//         status: 'pending',
-//         stripePaymentIntentId: paymentIntent.id,
-//         stripeClientSecret: paymentIntent.client_secret,
-//       });
-
-//     checkout.status = 'payment_pending';
-//     await checkout.save();
-
-//     return {
-//       success: true,
-//       message: 'Stripe payment initiated',
-//       data: {
-//         clientSecret: paymentIntent.client_secret,
-//         paymentIntentId: paymentIntent.id,
-//         transactionId: transaction._id,
-//         amount: checkout.totalAmount,
-//       },
-//     };
-//   }
-
-//   async verifyStripePayment(userId: string, body: any) {
-//     const { checkoutId, paymentIntentId } = body;
-
-//     if (!checkoutId) throw new BadRequestException('checkoutId is required');
-//     if (!paymentIntentId)
-//       throw new BadRequestException('paymentIntentId is required');
-
-//     const checkout =
-//       await this.databaseService.repositories.checkoutModel.findOne({
-//         _id: checkoutId,
-//         userId,
-//         isDelete: false,
-//       });
-
-//     if (!checkout) throw new NotFoundException('Checkout not found');
-
-//     if (checkout.status === 'completed')
-//       throw new BadRequestException('Checkout already completed');
-
-//     const transaction =
-//       await this.databaseService.repositories.paymentTransactionModel.findOne({
-//         checkoutId: checkoutId.toString(),
-//         stripePaymentIntentId: paymentIntentId,
-//         userId,
-//         isDelete: false,
-//       });
-
-//     if (!transaction) throw new NotFoundException('Transaction not found');
-
-//     if (transaction.status === 'completed')
-//       throw new BadRequestException('Payment already verified');
-
-//     const paymentIntent =
-//       await this.stripe.paymentIntents.retrieve(paymentIntentId);
-
-//     if (paymentIntent.status !== 'succeeded') {
-//       transaction.status = 'failed';
-//       await transaction.save();
-//       throw new BadRequestException(
-//         `Payment not successful. Stripe status: ${paymentIntent.status}`,
-//       );
-//     }
-
-//     const order = await this.createOrderFromCheckout(
-//       userId,
-//       checkout,
-//       'stripe',
-//       true,
-//     );
-
-//     transaction.status = 'completed';
-//     transaction.orderId = order._id.toString();
-//     transaction.paidAt = new Date();
-//     await transaction.save();
-
-//     checkout.status = 'completed';
-//     await checkout.save();
-
-//     await this.clearUserCart(userId);
-
-//     return {
-//       success: true,
-//       message: 'Payment verified and order placed successfully',
-//       data: { order, transaction },
-//     };
-//   }
-
-//   private async createOrderFromCheckout(
-//     userId: string,
-//     checkout: any,
-//     paymentType: string,
-//     isPaid: boolean,
-//   ) {
-//     const address =
-//       await this.databaseService.repositories.addressModel.findOne({
-//         _id: checkout.addressId,
-//         isDelete: false,
-//       });
-
-//     if (!address) throw new NotFoundException('Address not found');
-
-//     const orderItems: any[] = [];
-
-//     for (const item of checkout.items) {
-//       const product =
-//         await this.databaseService.repositories.productModel.findOne({
-//           _id: item.productId,
-//           isDelete: false,
-//         });
-
-//       if (!product)
-//         throw new NotFoundException(`Product not found: ${item.productId}`);
-
-//       let image: string | null = null;
-
-//       if (item.variantId) {
-//         const variant =
-//           await this.databaseService.repositories.productVariantModel.findOne({
-//             _id: item.variantId,
-//             isDelete: false,
-//           });
-//         image = variant?.images?.[0] || null;
-//       }
-
-//       orderItems.push({
-//         productId: item.productId,
-//         variantId: item.variantId || null,
-//         sellerId: item.sellerId,
-//         name: product.name,
-//         image,
-//         quantity: item.quantity,
-//         price: item.price,
-//         totalPrice: item.totalPrice,
-//       });
-//     }
-
-//     const shippingAddress = {
-//       recipientName: address.recipientName,
-//       phoneNumber: address.phoneNumber,
-//       addressLine1: address.addressLine1,
-//       addressLine2: address.addressLine2 || null,
-//       city: address.city,
-//       state: address.state,
-//       zipCode: address.zipCode,
-//     };
-
-//     const order = await this.databaseService.repositories.orderModel.create({
-//       userId,
-//       checkoutId: checkout._id.toString(),
-//       orderItems,
-//       shippingAddress,
-//       subtotal: checkout.subtotal,
-//       shippingFee: checkout.shippingFee || 0,
-//       taxAmount: checkout.taxAmount || 0,
-//       totalAmount: checkout.totalAmount,
-//       paymentType,
-//       paymentStatus: isPaid ? 'paid' : 'unpaid',
-//       isPaid,
-//       paidAt: isPaid ? new Date() : null,
-//       orderStatus: 'pending',
-//       isDelivered: false,
-//       deliveredAt: null,
-//     });
-
-//     return order;
-//   }
-
-//   private async clearUserCart(userId: string) {
-//     await this.databaseService.repositories.cartModel.findOneAndUpdate(
-//       { userId, status: 'active', isDelete: false },
-//       { status: 'inactive' },
-//     );
-//   }
-// }
 
 import {
   Injectable,
   BadRequestException,
   NotFoundException,
 } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
+// import { ConfigService } from '@nestjs/config';
 import { DatabaseService } from 'src/database/databaseservice';
-import Stripe from 'stripe';
+// import Stripe from 'stripe';
 
 @Injectable()
 export class PaymentService {
-  private stripe: InstanceType<typeof Stripe>;
+  // private stripe: InstanceType<typeof Stripe>;
 
   constructor(
     private readonly databaseService: DatabaseService,
-    private readonly configService: ConfigService,
+    // private readonly configService: ConfigService,
   ) {
-    const secretKey = this.configService.get<string>('stripe_Secret_Key')?.trim() || '';
-    this.stripe = new Stripe(secretKey, { apiVersion: '2025-04-30.basil' as any });
+    // const secretKey = this.configService.get<string>('stripe_Secret_Key')?.trim() || '';
+    // this.stripe = new Stripe(secretKey, { apiVersion: '2025-04-30.basil' as any });
   }
 
-async initiatePayment(userId: string, body: any) {
-  const { checkoutId } = body;
+// async initiatePayment(userId: string, body: any) {
+//   const { checkoutId } = body;
+//   if (!checkoutId) throw new BadRequestException('checkoutId is required');
+//   const { checkoutModel, paymentTransactionModel, productVariantModel } = this.databaseService.repositories;
+//   const checkout = await checkoutModel.findOne({ _id: checkoutId, userId, isDelete: false });
+//   if (!checkout) throw new NotFoundException('Checkout not found');
+//   if (checkout.status === 'completed') throw new BadRequestException('Checkout already completed');
+//   if (checkout.status === 'cancelled') throw new BadRequestException('Checkout is cancelled');
+//   if (checkout.status === 'expired') throw new BadRequestException('Checkout has expired');
+//   if (checkout.expiredAt && checkout.expiredAt < new Date()) {
+//     await checkoutModel.findByIdAndUpdate(checkout._id, { status: 'expired' });
+//     throw new BadRequestException('Checkout has expired');
+//   }
+//   const physicalItems = checkout.items.filter((i: any) => i.type === 'physical');
+//   for (const item of physicalItems) {
+//     const variant = await productVariantModel.findOne({ _id: item.variantId, isDelete: false });
+//     if (!variant) throw new BadRequestException(`Item not available: ${item.name}`);
+//     if (variant.stock < item.quantity) throw new BadRequestException(`Insufficient stock for ${item.name}`);
+//   }
+//   const existing = await paymentTransactionModel.findOne({ checkoutId: checkout._id.toString(), status: 'pending', paymentType: 'stripe', isDelete: false });
+//   if (existing && existing.stripePaymentIntentId) {
+//     try {
+//       const pi = await this.stripe.paymentIntents.retrieve(existing.stripePaymentIntentId);
+//       const reusable = ['requires_payment_method', 'requires_confirmation', 'requires_action'].includes(pi.status);
+//       const amountMatches = pi.amount === Math.round(checkout.totalAmount * 100);
+//       if (reusable && amountMatches) return { success: true, message: 'Payment already initiated', data: { clientSecret: pi.client_secret, paymentIntentId: pi.id, amount: checkout.totalAmount } };
+//       if (reusable) await this.stripe.paymentIntents.cancel(pi.id).catch(() => null);
+//       await paymentTransactionModel.findByIdAndUpdate(existing._id, { status: 'failed' });
+//     } catch { await paymentTransactionModel.findByIdAndUpdate(existing._id, { status: 'failed' }); }
+//   }
+//   let paymentIntent: any;
+//   try {
+//     paymentIntent = await this.stripe.paymentIntents.create({ amount: Math.round(checkout.totalAmount * 100), currency: checkout.currency?.toLowerCase() || 'usd', metadata: { checkoutId: checkout._id.toString(), userId }, automatic_payment_methods: { enabled: true, allow_redirects: 'never' } }, { idempotencyKey: `checkout_${checkout._id.toString()}` });
+//   } catch (err: any) { throw new BadRequestException(`Payment initiation failed: ${err?.message || 'Stripe error'}`); }
+//   await paymentTransactionModel.create({ userId, checkoutId: checkout._id.toString(), paymentType: 'stripe', amount: checkout.totalAmount, status: 'pending', stripePaymentIntentId: paymentIntent.id, stripeClientSecret: paymentIntent.client_secret });
+//   await checkoutModel.findByIdAndUpdate(checkoutId, { paymentType: 'stripe', status: 'payment_pending' });
+//   return { success: true, message: 'Payment initiated', data: { clientSecret: paymentIntent.client_secret, paymentIntentId: paymentIntent.id, amount: checkout.totalAmount } };
+// }
 
+// async stripeWebhook(rawBody: Buffer, signature: string) {
+//   const webhookSecret = this.configService.get<string>('STRIPE_WEBHOOK_SECRET_TEST') || '';
+//   let event: any;
+//   try { event = this.stripe.webhooks.constructEvent(rawBody, signature, webhookSecret); }
+//   catch { throw new BadRequestException('Invalid Stripe webhook signature'); }
+//   if (event.type !== 'payment_intent.succeeded') return { received: true };
+//   const paymentIntent = event.data.object as any;
+//   const checkoutId = paymentIntent.metadata?.checkoutId;
+//   const userId = paymentIntent.metadata?.userId;
+//   if (!checkoutId || !userId) return { received: true };
+//   const { checkoutModel, paymentTransactionModel, orderModel, addressModel, cartModel } = this.databaseService.repositories;
+//   const transaction = await paymentTransactionModel.findOneAndUpdate({ stripePaymentIntentId: paymentIntent.id, status: 'pending', isDelete: false }, { status: 'completed', paidAt: new Date() }, { new: true });
+//   if (!transaction) return { received: true };
+//   const checkout = await checkoutModel.findOne({ _id: checkoutId, isDelete: false });
+//   if (!checkout || checkout.status === 'completed') return { received: true };
+//   let orders: any[];
+//   try { orders = await this.createOrder(userId, checkout, orderModel, addressModel); }
+//   catch (err: any) {
+//     await paymentTransactionModel.findByIdAndUpdate(transaction._id, { status: 'pending', paidAt: null });
+//     console.error('createOrder failed in webhook:', err?.message, { checkoutId, userId });
+//     throw new BadRequestException('Order creation failed, will retry');
+//   }
+//   await paymentTransactionModel.findByIdAndUpdate(transaction._id, { orderIds: orders.map((o) => o._id.toString()) });
+//   await checkoutModel.findByIdAndUpdate(checkoutId, { status: 'completed' });
+//   await cartModel.findOneAndUpdate({ userId, status: 'active', isDelete: false }, { status: 'inactive' });
+//   return { received: true };
+// }
+
+async placeOrder(userId: string, body: any) {
+  const { checkoutId } = body;
   if (!checkoutId) throw new BadRequestException('checkoutId is required');
 
-  const { checkoutModel, paymentTransactionModel, productVariantModel } =
+  const { checkoutModel, paymentTransactionModel, orderModel, addressModel, cartModel, productVariantModel } =
     this.databaseService.repositories;
 
   const checkout = await checkoutModel.findOne({ _id: checkoutId, userId, isDelete: false });
   if (!checkout) throw new NotFoundException('Checkout not found');
   if (checkout.status === 'completed') throw new BadRequestException('Checkout already completed');
   if (checkout.status === 'cancelled') throw new BadRequestException('Checkout is cancelled');
-
-  // expiry — status + actual date dono
-  if (checkout.status === 'expired') {
-    throw new BadRequestException('Checkout has expired');
-  }
+  if (checkout.status === 'expired') throw new BadRequestException('Checkout has expired');
   if (checkout.expiredAt && checkout.expiredAt < new Date()) {
     await checkoutModel.findByIdAndUpdate(checkout._id, { status: 'expired' });
     throw new BadRequestException('Checkout has expired');
   }
 
-  // --- STOCK CHECK (payment se pehle, sirf check — minus nahi) ---
   const physicalItems = checkout.items.filter((i: any) => i.type === 'physical');
   for (const item of physicalItems) {
-    const variant = await productVariantModel.findOne({
-      _id: item.variantId,
-      isDelete: false,
-    });
-
-    if (!variant) {
-      throw new BadRequestException(`Item not available: ${item.name}`);
-    }
+    const variant = await productVariantModel.findOne({ _id: item.variantId, isDelete: false });
+    if (!variant) throw new BadRequestException(`Item not available: ${item.name}`);
     if (variant.stock < item.quantity) {
       throw new BadRequestException(
         `Insufficient stock for ${item.name}. Available: ${variant.stock}, required: ${item.quantity}`,
@@ -343,157 +116,36 @@ async initiatePayment(userId: string, body: any) {
     }
   }
 
-  // --- duplicate intent guard ---
-  const existing = await paymentTransactionModel.findOne({
-    checkoutId: checkout._id.toString(),
-    status: 'pending',
-    paymentType: 'stripe',
-    isDelete: false,
-  });
-
-  if (existing && existing.stripePaymentIntentId) {
-    try {
-      const pi = await this.stripe.paymentIntents.retrieve(existing.stripePaymentIntentId);
-
-      const reusable = ['requires_payment_method', 'requires_confirmation', 'requires_action'].includes(pi.status);
-      const amountMatches = pi.amount === Math.round(checkout.totalAmount * 100);
-
-      if (reusable && amountMatches) {
-        return {
-          success: true,
-          message: 'Payment already initiated',
-          data: {
-            clientSecret: pi.client_secret,
-            paymentIntentId: pi.id,
-            amount: checkout.totalAmount,
-          },
-        };
-      }
-
-      if (reusable) {
-        await this.stripe.paymentIntents.cancel(pi.id).catch(() => null);
-      }
-      await paymentTransactionModel.findByIdAndUpdate(existing._id, { status: 'failed' });
-    } catch {
-      await paymentTransactionModel.findByIdAndUpdate(existing._id, { status: 'failed' });
-    }
-  }
-
-  // --- intent create (try/catch + idempotency key) ---
-  let paymentIntent: any;
-  try {
-    paymentIntent = await this.stripe.paymentIntents.create(
-      {
-        amount: Math.round(checkout.totalAmount * 100),
-        currency: checkout.currency?.toLowerCase() || 'usd',
-        metadata: { checkoutId: checkout._id.toString(), userId },
-        automatic_payment_methods: {
-          enabled: true,
-          allow_redirects: 'never',
-        },
-      },
-      {
-        idempotencyKey: `checkout_${checkout._id.toString()}`,
-      },
-    );
-  } catch (err: any) {
-    throw new BadRequestException(
-      `Payment initiation failed: ${err?.message || 'Stripe error'}`,
-    );
-  }
-
-  await paymentTransactionModel.create({
-    userId,
-    checkoutId: checkout._id.toString(),
-    paymentType: 'stripe',
-    amount: checkout.totalAmount,
-    status: 'pending',
-    stripePaymentIntentId: paymentIntent.id,
-    stripeClientSecret: paymentIntent.client_secret,
-  });
-
   await checkoutModel.findByIdAndUpdate(checkoutId, {
     paymentType: 'stripe',
     status: 'payment_pending',
   });
 
-  return {
-    success: true,
-    message: 'Payment initiated',
-    data: {
-      clientSecret: paymentIntent.client_secret,
-      paymentIntentId: paymentIntent.id,
-      amount: checkout.totalAmount,
-    },
-  };
-}
-async stripeWebhook(rawBody: Buffer, signature: string) {
-  const webhookSecret = this.configService.get<string>('STRIPE_WEBHOOK_SECRET') || '';
+  const orders = await this.createOrder(userId, checkout, orderModel, addressModel, 'stripe', true);
 
-  let event: any;
-  try {
-    event = this.stripe.webhooks.constructEvent(rawBody, signature, webhookSecret);
-  } catch {
-    throw new BadRequestException('Invalid Stripe webhook signature');
-  }
-
-  if (event.type !== 'payment_intent.succeeded') {
-    return { received: true };
-  }
-
-  const paymentIntent = event.data.object as any;
-  const checkoutId = paymentIntent.metadata?.checkoutId;
-  const userId = paymentIntent.metadata?.userId;
-
-  if (!checkoutId || !userId) return { received: true };
-
-  const { checkoutModel, paymentTransactionModel, orderModel, addressModel, cartModel } =
-    this.databaseService.repositories;
-
-  // --- atomic lock — pending => completed ---
-  const transaction = await paymentTransactionModel.findOneAndUpdate(
-    {
-      stripePaymentIntentId: paymentIntent.id,
-      status: 'pending',
-      isDelete: false,
-    },
-    { status: 'completed', paidAt: new Date() },
-    { new: true },
-  );
-
-  if (!transaction) return { received: true };
-
-  const checkout = await checkoutModel.findOne({ _id: checkoutId, isDelete: false });
-  if (!checkout || checkout.status === 'completed') {
-    return { received: true };
-  }
-
-  // --- order creation try/catch ---
-  let orders: any[];
-  try {
-    orders = await this.createOrder(userId, checkout, orderModel, addressModel);
-  } catch (err: any) {
-    await paymentTransactionModel.findByIdAndUpdate(transaction._id, {
-      status: 'pending',
-      paidAt: null,
-    });
-    console.error('createOrder failed in webhook:', err?.message, { checkoutId, userId });
-    throw new BadRequestException('Order creation failed, will retry');
-  }
-
-  // saare bane orders ki ids transaction me
-  await paymentTransactionModel.findByIdAndUpdate(transaction._id, {
-    orderIds: orders.map((o) => o._id.toString()),
+  await paymentTransactionModel.create({
+    userId,
+    checkoutId: checkout._id.toString(),
+    orderIds: orders.map((o: any) => o._id.toString()),
+    paymentType: 'stripe',
+    amount: checkout.totalAmount,
+    status: 'completed',
+    stripePaymentIntentId: null,
+    stripeClientSecret: null,
+    paidAt: new Date(),
   });
 
   await checkoutModel.findByIdAndUpdate(checkoutId, { status: 'completed' });
-
   await cartModel.findOneAndUpdate(
     { userId, status: 'active', isDelete: false },
-    { status: 'inactive' },
+    { status: 'inactive', items: [] },
   );
 
-  return { received: true };
+  return {
+    success: true,
+    message: 'Order placed successfully',
+    data: { orders: orders.map((o: any) => this.formatOrder(o)) },
+  };
 }
 async codPayment(userId: string, body: any) {
   const { checkoutId } = body;
@@ -553,7 +205,38 @@ async codPayment(userId: string, body: any) {
   return {
     success: true,
     message: 'Order placed successfully (Cash on Delivery)',
-    data: { orders },
+    data: { orders: orders.map((o: any) => this.formatOrder(o)) },
+  };
+}
+
+private formatOrder(order: any) {
+  const allItems = order.sellerOrders.flatMap((so: any) =>
+    so.items.map((item: any) => ({
+      name: item.name,
+      image: item.image ?? null,
+      sku: item.sku ?? null,
+      quantity: item.quantity,
+      price: item.price,
+      totalPrice: item.totalPrice,
+      type: item.type,
+    })),
+  );
+
+  return {
+    orderId: order._id,
+    orderNumber: order.orderNumber,
+    orderDate: order.createdAt,
+    paymentDate: order.paidAt ?? null,
+    paymentMethod: order.paymentType,
+    isPaid: order.isPaid,
+    orderStatus: order.orderStatus,
+    deliveryAddress: order.shippingAddress ?? null,
+    items: allItems,
+    summary: {
+      subtotal: order.subtotal,
+      shipping: order.shippingFee,
+      total: order.totalAmount,
+    },
   };
 }
 

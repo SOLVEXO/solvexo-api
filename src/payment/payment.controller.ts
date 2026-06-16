@@ -24,7 +24,7 @@
 //   }
 // }
 
-import { Controller, Post, Body, Req, Headers, UseGuards, RawBodyRequest } from '@nestjs/common';
+import { Controller, Post, Body, Req, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -36,10 +36,10 @@ export class PaymentController {
 
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('user')
-  @Post('initiate-payment')
-  async initiatePayment(@Req() req: any, @Body() body: any) {
+  @Post('place-order')
+  async placeOrder(@Req() req: any, @Body() body: any) {
     const { userId } = req.user;
-    return this.paymentService.initiatePayment(userId, body);
+    return this.paymentService.placeOrder(userId, body);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -50,11 +50,14 @@ export class PaymentController {
     return this.paymentService.codPayment(userId, body);
   }
 
-  @Post('stripe-webhook')
-  async stripeWebhook(
-    @Req() req: RawBodyRequest<any> ,
-    @Headers('stripe-signature') signature: string,
-  ) {
-    return this.paymentService.stripeWebhook(req.rawBody, signature);
-  }
+  // @Post('initiate-payment')
+  // async initiatePayment(@Req() req: any, @Body() body: any) {
+  //   const { userId } = req.user;
+  //   return this.paymentService.initiatePayment(userId, body);
+  // }
+
+  // @Post('stripe-webhook')
+  // async stripeWebhook(@Req() req: RawBodyRequest<any>, @Headers('stripe-signature') signature: string) {
+  //   return this.paymentService.stripeWebhook(req.rawBody, signature);
+  // }
 }

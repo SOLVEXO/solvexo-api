@@ -29,7 +29,7 @@
 //   }
 // }
 
-import { Controller, Get, Put, Param, Query, Req, Res, UseGuards } from '@nestjs/common';
+import { Controller, Get, Put, Param, Query, Body, Req, Res, UseGuards } from '@nestjs/common';
 import { Response } from 'express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -58,6 +58,14 @@ export class OrdersController {
   @Put('mark-paid/:orderId')
   async markPaid(@Param('orderId') orderId: string) {
     return this.ordersService.markPaid(orderId);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller', 'admin')
+  @Put('update-status')
+  async updateSellerOrderStatus(@Req() req: any, @Body() body: any) {
+    const { userId } = req.user;
+    return this.ordersService.updateSellerOrderStatus(userId, body);
   }
 
   // stamped PDF stream — browser direct download

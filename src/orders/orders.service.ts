@@ -1,79 +1,4 @@
-// import {
-//   Injectable,
-//   NotFoundException,
-//   BadRequestException,
-//   ForbiddenException,
-// } from '@nestjs/common';
-// import { DatabaseService } from 'src/database/databaseservice';
 
-// @Injectable()
-// export class OrdersService {
-//   constructor(private readonly databaseService: DatabaseService) {}
-
-//   async getMyOrders(userId: string) {
-//     const orders = await this.databaseService.repositories.orderModel
-//       .find({ userId, isDelete: false })
-//       .sort({ createdAt: -1 });
-
-//     return {
-//       success: true,
-//       count: orders.length,
-//       data: orders,
-//     };
-//   }
-
-//   async getOrderById(userId: string, orderId: string) {
-//     if (!orderId) throw new BadRequestException('orderId is required');
-
-//     const order = await this.databaseService.repositories.orderModel.findOne({
-//       _id: orderId,
-//       isDelete: false,
-//     });
-
-//     if (!order) throw new NotFoundException('Order not found');
-
-//     if (order.userId !== userId) {
-//       throw new ForbiddenException('You are not authorized to view this order');
-//     }
-
-//     return {
-//       success: true,
-//       data: order,
-//     };
-//   }
-
-//   async cancelOrder(userId: string, orderId: string) {
-//     if (!orderId) throw new BadRequestException('orderId is required');
-
-//     const order = await this.databaseService.repositories.orderModel.findOne({
-//       _id: orderId,
-//       isDelete: false,
-//     });
-
-//     if (!order) throw new NotFoundException('Order not found');
-
-//     if (order.userId !== userId) {
-//       throw new ForbiddenException(
-//         'You are not authorized to cancel this order',
-//       );
-//     }
-
-//     if (!['pending', 'processing'].includes(order.orderStatus)) {
-//       throw new BadRequestException(
-//         `Order cannot be cancelled. Current status: ${order.orderStatus}`,
-//       );
-//     }
-
-//     order.orderStatus = 'cancelled';
-//     await order.save();
-
-//     return {
-//       success: true,
-//       message: 'Order cancelled successfully',
-//       data: order,
-//     };
-//   }
-// }
 
 import { Injectable, BadRequestException, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { DatabaseService } from 'src/database/databaseservice';
@@ -205,6 +130,69 @@ export class OrdersService {
         remaining,
       },
     };
+  }
+
+  async updateSellerOrderStatus(sellerId: string, body: any) {
+    const { orderId, status, tracking } = body;
+
+    if (!orderId) throw new BadRequestException('orderId is required');
+    if (!status) throw new BadRequestException('status is required');
+
+    const validStatuses = ['processing', 'shipped', 'delivered', 'completed'];
+    if (!validStatuses.includes(status)) {
+      throw new BadRequestException(`Invalid status. Allowed: ${validStatuses.join(', ')}`);
+    }
+
+    const { orderModel } = this.databaseService.repositories;
+
+    const order = await orderModel.findOne({ _id: orderId, isDelete: false });
+    if (!order) throw new NotFoundException('Order not found');
+
+    const sellerOrderIndex = order.sellerOrders.findIndex(
+      (so: any) => so.sellerId === sellerId,
+    );
+    if (sellerOrderIndex === -1) throw new ForbiddenException('Unauthorized');
+
+    if (status === 'shipped' && !tracking) {
+      throw new BadRequestException('tracking info required when status is shipped');
+    }
+
+    const updateData: any = {};
+
+    // sellerOrder status
+    updateData[`sellerOrders.${sellerOrderIndex}.status`] = status;
+
+    // saare items same status
+    const soItems = order.sellerOrders[sellerOrderIndex].items;
+    soItems.forEach((_: any, itemIndex: number) => {
+      updateData[`sellerOrders.${sellerOrderIndex}.items.${itemIndex}.status`] = status;
+    });
+
+    // status-specific fields
+    if (status === 'shipped') {
+      updateData[`sellerOrders.${sellerOrderIndex}.shippedAt`] = new Date();
+      updateData[`sellerOrders.${sellerOrderIndex}.tracking`] = tracking;
+    }
+    if (status === 'delivered') {
+      updateData[`sellerOrders.${sellerOrderIndex}.deliveredAt`] = new Date();
+    }
+
+    // overall orderStatus derive
+    const allStatuses = order.sellerOrders.map((so: any, idx: number) =>
+      idx === sellerOrderIndex ? status : so.status,
+    );
+
+    if (allStatuses.every((s: string) => s === 'completed')) {
+      updateData.orderStatus = 'completed';
+    } else if (allStatuses.some((s: string) => ['shipped', 'delivered'].includes(s))) {
+      updateData.orderStatus = 'partially_shipped';
+    } else if (allStatuses.every((s: string) => s === 'processing')) {
+      updateData.orderStatus = 'processing';
+    }
+
+    await orderModel.findByIdAndUpdate(orderId, { $set: updateData });
+
+    return { success: true, message: `Order status updated to ${status}` };
   }
 
   async markPaid(orderId: string) {
