@@ -115,6 +115,18 @@ async getSellerProductById(@Req() req: any, @Param('productId') productId: strin
 
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles('seller')
+@Get('store-products/:storeId')
+async getStoreProducts(
+  @Req() req: any,
+  @Param('storeId') storeId: string,
+  @Query() query: any,
+) {
+  const { userId: sellerId } = req.user;
+  return this.ProductsService.getStoreProducts(sellerId, storeId, query);
+}
+
+@UseGuards(JwtAuthGuard, RolesGuard)
+@Roles('seller')
 @Post('edit-product')
 async editProduct(@Req() req: any, @Body() body: any) {
   const { userId: sellerId } = req.user;

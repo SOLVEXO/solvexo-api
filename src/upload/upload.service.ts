@@ -64,6 +64,7 @@ export class UploadService {
     const expiresAt = Math.floor(Date.now() / 1000) + expirySeconds;
     return cloudinary.url(publicId, {
       sign_url: true,
+      secure: true,
       type: 'private',
       resource_type: resourceType as any,
       expires_at: expiresAt,

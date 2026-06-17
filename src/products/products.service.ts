@@ -812,6 +812,57 @@ async getSellerProductById(sellerId: string, productId: string) {
   };
 }
 
+async getStoreProducts(sellerId: string, storeId: string, query: any) {
+  if (!storeId) throw new BadRequestException('storeId is required');
+
+  const { productModel, productVariantModel, storeModel } = this.databaseService.repositories;
+
+  const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
+  if (!store) throw new UnauthorizedException('Store not found or unauthorized');
+
+  const page = parseInt(query.page) || 1;
+  const limit = 10;
+  const skip = (page - 1) * limit;
+
+  const filter: any = { storeId, sellerId, isDelete: false };
+  if (query.type && query.type !== 'all') filter.type = query.type;
+  if (query.status && query.status !== 'all') filter.status = query.status;
+
+  const total = await productModel.countDocuments(filter);
+  const totalPages = Math.ceil(total / limit);
+
+  const products = await productModel
+    .find(filter)
+    .sort({ createdAt: -1 })
+    .skip(skip)
+    .limit(limit)
+    .lean();
+
+  const productIds = products.map((p: any) => p._id.toString());
+  const allVariants = await productVariantModel
+    .find({ productId: { $in: productIds }, isDelete: false })
+    .lean();
+
+  const variantMap: Record<string, any[]> = {};
+  for (const v of allVariants) {
+    if (!variantMap[v.productId]) variantMap[v.productId] = [];
+    variantMap[v.productId].push(v);
+  }
+
+  const data = products.map((product: any) => ({
+    ...product,
+    variants: variantMap[product._id.toString()] || [],
+  }));
+
+  return {
+    success: true,
+    data: {
+      pagination: { page, limit, totalPages, total },
+      products: data,
+    },
+  };
+}
+
 async editProduct(sellerId: string, body: any) {
   const { productModel, productVariantModel, sellerModel } = this.databaseService.repositories;
 

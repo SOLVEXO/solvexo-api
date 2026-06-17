@@ -12,6 +12,120 @@ export class OrdersService {
     private readonly uploadService: UploadService,
   ) {}
 
+  async getSellerOrders(sellerId: string, storeId: string, query: any) {
+    if (!storeId) throw new BadRequestException('storeId is required');
+
+    const { orderModel, storeModel, userModel } = this.databaseService.repositories;
+
+    // store ownership check
+    const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
+    if (!store) throw new ForbiddenException('Store not found or unauthorized');
+
+    const page = parseInt(query.page) || 1;
+    const limit = 10;
+    const skip = (page - 1) * limit;
+
+    // base filter — is store ke orders
+    const matchFilter: any = {
+      'sellerOrders.storeId': storeId,
+      isDelete: false,
+    };
+
+    if (query.type && query.type !== 'all') {
+      matchFilter['sellerOrders.fulfillmentType'] = query.type;
+    }
+    if (query.status && query.status !== 'all') {
+      matchFilter['sellerOrders.status'] = query.status;
+    }
+    if (query.time && query.time !== 'all') {
+      const now = new Date();
+      if (query.time === 'today') {
+        matchFilter.createdAt = { $gte: new Date(now.setHours(0, 0, 0, 0)) };
+      } else if (query.time === 'week') {
+        const week = new Date(); week.setDate(week.getDate() - 7);
+        matchFilter.createdAt = { $gte: week };
+      } else if (query.time === 'month') {
+        const month = new Date(); month.setMonth(month.getMonth() - 1);
+        matchFilter.createdAt = { $gte: month };
+      }
+    }
+
+    const totalOrders = await orderModel.countDocuments(matchFilter);
+    const totalPages = Math.ceil(totalOrders / limit);
+
+    const orders = await orderModel
+      .find(matchFilter)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean();
+
+    // stats — all orders for this store (no pagination)
+    const allOrders = await orderModel.find({ 'sellerOrders.storeId': storeId, isDelete: false }).lean();
+
+    let totalRevenue = 0;
+    let pendingCount = 0;
+
+    for (const order of allOrders) {
+      const so = (order.sellerOrders as any[]).find((s: any) => s.storeId === storeId);
+      if (!so) continue;
+      if (['completed', 'delivered'].includes(so.status)) {
+        totalRevenue += so.subtotal || 0;
+      }
+      if (['pending', 'processing'].includes(so.status)) {
+        pendingCount++;
+      }
+    }
+
+    const avgOrder = allOrders.length > 0 ? totalRevenue / allOrders.length : 0;
+
+    // order rows format
+    const rows = await Promise.all(
+      orders.map(async (order: any) => {
+        const so = order.sellerOrders.find((s: any) => s.storeId === storeId);
+        if (!so) return null;
+
+        const user = await userModel.findOne({ _id: order.userId }).select('name email').lean();
+        const firstItem = so.items?.[0];
+
+        return {
+          orderId: order._id,
+          orderNumber: order.orderNumber,
+          customer: {
+            name: (user as any)?.name || 'Unknown',
+            email: (user as any)?.email || '',
+          },
+          product: firstItem?.name || '',
+          type: so.fulfillmentType,
+          date: order.createdAt,
+          amount: so.subtotal,
+          status: so.status,
+          isPaid: order.isPaid,
+          paymentType: order.paymentType,
+        };
+      }),
+    );
+
+    return {
+      success: true,
+      data: {
+        stats: {
+          totalOrders,
+          revenue: totalRevenue,
+          pending: pendingCount,
+          avgOrder: parseFloat(avgOrder.toFixed(2)),
+        },
+        pagination: {
+          page,
+          limit,
+          totalPages,
+          totalOrders,
+        },
+        orders: rows.filter(Boolean),
+      },
+    };
+  }
+
   async getDownloadUrls(userId: string, orderId: string, productId: string) {
     if (!orderId) throw new BadRequestException('orderId is required');
     if (!productId) throw new BadRequestException('productId is required');
@@ -133,9 +247,10 @@ export class OrdersService {
   }
 
   async updateSellerOrderStatus(sellerId: string, body: any) {
-    const { orderId, status, tracking } = body;
+    const { orderId, storeId, status, tracking } = body;
 
     if (!orderId) throw new BadRequestException('orderId is required');
+    if (!storeId) throw new BadRequestException('storeId is required');
     if (!status) throw new BadRequestException('status is required');
 
     const validStatuses = ['processing', 'shipped', 'delivered', 'completed'];
@@ -143,13 +258,17 @@ export class OrdersService {
       throw new BadRequestException(`Invalid status. Allowed: ${validStatuses.join(', ')}`);
     }
 
-    const { orderModel } = this.databaseService.repositories;
+    const { orderModel, storeModel } = this.databaseService.repositories;
+
+    // store ownership check
+    const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
+    if (!store) throw new ForbiddenException('Store not found or unauthorized');
 
     const order = await orderModel.findOne({ _id: orderId, isDelete: false });
     if (!order) throw new NotFoundException('Order not found');
 
     const sellerOrderIndex = order.sellerOrders.findIndex(
-      (so: any) => so.sellerId === sellerId,
+      (so: any) => so.storeId === storeId && so.sellerId === sellerId,
     );
     if (sellerOrderIndex === -1) throw new ForbiddenException('Unauthorized');
 

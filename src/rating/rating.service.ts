@@ -1,105 +1,74 @@
-import {
-  Injectable,
-  UnauthorizedException,
-  BadRequestException,
-} from '@nestjs/common';
-
+import { Injectable, BadRequestException } from '@nestjs/common';
 import { DatabaseService } from 'src/database/databaseservice';
-
 
 @Injectable()
 export class RatingService {
-  constructor(
-    private databaseService: DatabaseService,
-  ) {}
+  constructor(private databaseService: DatabaseService) {}
 
   async addReview(userId: string, body: any) {
-  try {
-    const { productId, productVariantId, rating, comment } = body;
+    const { productId, productVariantId, orderId, rating, comment, isAnonymous, media } = body;
 
-    // 1. validate rating
-    if (rating < 1 || rating > 5) {
+    if (!productId) throw new BadRequestException('productId is required');
+
+    const { productModel, ratingModel } = this.databaseService.repositories;
+
+    // 1. product check
+    const product = await productModel.findOne({ _id: productId, isDelete: false });
+    if (!product) throw new BadRequestException('Product not found');
+
+    // 2. existing review check
+    const existing = await ratingModel.findOne({ userId, productId, isDelete: false });
+
+    if (existing) {
+      // already reviewed — sirf comment allow hai
+      if (rating !== undefined || media !== undefined || isAnonymous !== undefined) {
+        throw new BadRequestException('Rating, media and isAnonymous can only be set once');
+      }
+
+      if (!comment) throw new BadRequestException('Only comment can be added to an existing review');
+
+      await ratingModel.findByIdAndUpdate(existing._id, {
+        $push: { comments: { text: comment, createdAt: new Date() } },
+      });
+
+      return { success: true, message: 'Comment added', data: await ratingModel.findById(existing._id).lean() };
+    }
+
+    // 3. pehli baar — rating agar di hai toh validate
+    if (rating !== undefined && (rating < 1 || rating > 5)) {
       throw new BadRequestException('Rating must be between 1 and 5');
     }
 
-    // 2. check product exists
-    const product =
-      await this.databaseService.repositories.productModel.findById(productId);
-
-    if (!product) {
-      throw new BadRequestException('Product not found');
-    }
-
-    // 3. prevent duplicate review (one user per product)
-    const existingReview =
-      await this.databaseService.repositories.ratingModel.findOne({
-        userId,
-        productId,
-        isDelete: false,
-      });
-
-    if (existingReview) {
-      throw new BadRequestException('You already reviewed this product');
-    }
-
-    // 4. create review
-    const review =
-      await this.databaseService.repositories.ratingModel.create({
-        userId,
-        productId,
-        productVariantId,
-        rating
-      });
-
-    // 5. calculate total ratings (count)
-    const totalRatings =
-      await this.databaseService.repositories.ratingModel.countDocuments({
-        productId,
-        isDelete: false,
-      });
-
-    // 6. calculate rating sum (aggregate)
-    const result =
-      await this.databaseService.repositories.ratingModel.aggregate([
-        {
-          $match: {
-            productId,
-            isDelete: false,
-          },
-        },
-        {
-          $group: {
-            _id: null,
-            totalSum: { $sum: "$rating" },
-          },
-        },
-      ]);
-
-    const ratingSum = result.length > 0 ? result[0].totalSum : 0;
-
-    // 7. calculate average
-    const averageRating = totalRatings
-      ? ratingSum / totalRatings
-      : 0;
-
-    // 8. update product
-    await this.databaseService.repositories.productModel.findByIdAndUpdate(
+    // 4. review create
+    const reviewData: any = {
+      userId,
       productId,
-      {
-          ratingSum,
-        averageRating,
-      },
-    );
-
-    return {
-      message: 'Review added successfully',
-      data: review,
+      productVariantId: productVariantId || null,
+      orderId: orderId || null,
+      rating: rating ?? null,
+      media: media || [],
+      isAnonymous: isAnonymous ?? false,
+      comments: [],
     };
 
-  } catch (error: any) {
-    throw new BadRequestException(
-      error.message || 'Failed to add review',
-    );
+    if (comment) {
+      reviewData.comments.push({ text: comment, createdAt: new Date() });
+    }
+
+    const review = await ratingModel.create(reviewData);
+
+    // 5. product averageRating update (sirf agar rating di)
+    if (rating) {
+      const newRatingSum = (product.ratingSum || 0) + rating;
+      const totalRatings = await ratingModel.countDocuments({ productId, isDelete: false, rating: { $ne: null } });
+      const averageRating = newRatingSum / totalRatings;
+
+      await productModel.findByIdAndUpdate(productId, {
+        ratingSum: newRatingSum,
+        averageRating: parseFloat(averageRating.toFixed(2)),
+      });
+    }
+
+    return { success: true, message: 'Review added', data: review };
   }
-}
 }

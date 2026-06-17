@@ -92,7 +92,7 @@ async placeOrder(userId: string, body: any) {
   const { checkoutId } = body;
   if (!checkoutId) throw new BadRequestException('checkoutId is required');
 
-  const { checkoutModel, paymentTransactionModel, orderModel, addressModel, cartModel, productVariantModel } =
+  const { checkoutModel, paymentTransactionModel, orderModel, addressModel, productVariantModel, cartModel } =
     this.databaseService.repositories;
 
   const checkout = await checkoutModel.findOne({ _id: checkoutId, userId, isDelete: false });
@@ -138,7 +138,7 @@ async placeOrder(userId: string, body: any) {
   await checkoutModel.findByIdAndUpdate(checkoutId, { status: 'completed' });
   await cartModel.findOneAndUpdate(
     { userId, status: 'active', isDelete: false },
-    { status: 'inactive', items: [] },
+    { items: [] },
   );
 
   return {
@@ -151,7 +151,7 @@ async codPayment(userId: string, body: any) {
   const { checkoutId } = body;
   if (!checkoutId) throw new BadRequestException('checkoutId is required');
 
-  const { checkoutModel, paymentTransactionModel, orderModel, addressModel, cartModel, productVariantModel } =
+  const { checkoutModel, paymentTransactionModel, orderModel, addressModel, productVariantModel, cartModel } =
     this.databaseService.repositories;
 
   const checkout = await checkoutModel.findOne({ _id: checkoutId, userId, isDelete: false });
@@ -199,7 +199,7 @@ async codPayment(userId: string, body: any) {
   await checkoutModel.findByIdAndUpdate(checkoutId, { status: 'completed' });
   await cartModel.findOneAndUpdate(
     { userId, status: 'active', isDelete: false },
-    { status: 'inactive', items: [] },
+    { items: [] },
   );
 
   return {
@@ -248,7 +248,7 @@ private async createOrder(
   paymentType: string = 'stripe',
   isPaid: boolean = true,
 ) {
-  const { productVariantModel } = this.databaseService.repositories;
+  const { productVariantModel, productModel } = this.databaseService.repositories;
 
   const physicalItems = checkout.items.filter((i: any) => i.type === 'physical');
   const digitalItems = checkout.items.filter((i: any) => i.type === 'digital');
@@ -390,6 +390,13 @@ private async createOrder(
       isDelete: false,
     });
     createdOrders.push(digitalOrder);
+  }
+
+  // purchaseCount increment — har item ke product pe
+  for (const item of checkout.items) {
+    await productModel.findByIdAndUpdate(item.productId, {
+      $inc: { purchaseCount: item.quantity },
+    });
   }
 
   return createdOrders;

@@ -68,6 +68,18 @@ export class OrdersController {
     return this.ordersService.updateSellerOrderStatus(userId, body);
   }
 
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller', 'admin')
+  @Get('seller-orders/:storeId')
+  async getSellerOrders(
+    @Req() req: any,
+    @Param('storeId') storeId: string,
+    @Query() query: any,
+  ) {
+    const { userId } = req.user;
+    return this.ordersService.getSellerOrders(userId, storeId, query);
+  }
+
   // stamped PDF stream — browser direct download
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('user')
