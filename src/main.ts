@@ -59,7 +59,8 @@ async function bootstrap() {
     },
   });
 
-  await app.listen(3002, '0.0.0.0');
+  const server = await app.listen(3002, '0.0.0.0');
+  server.setTimeout(300000);
   console.log('Server running on http://localhost:3002');
 }
 bootstrap();

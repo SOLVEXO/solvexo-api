@@ -3,6 +3,8 @@
 import { Injectable, BadRequestException, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { DatabaseService } from 'src/database/databaseservice';
 import { UploadService } from 'src/upload/upload.service';
+import { JwtService } from '@nestjs/jwt';
+import { ConfigService } from '@nestjs/config';
 
 
 @Injectable()
@@ -10,6 +12,8 @@ export class OrdersService {
   constructor(
     private readonly databaseService: DatabaseService,
     private readonly uploadService: UploadService,
+    private readonly jwtService: JwtService,
+    private readonly configService: ConfigService,
   ) {}
 
   async getSellerOrders(sellerId: string, storeId: string, query: any) {
@@ -142,16 +146,11 @@ export class OrdersService {
 
     // 3. product is in this order
     let targetItem: any = null;
-    let sellerOrderIndex = -1;
-    let itemIndex = -1;
 
-    for (let si = 0; si < order.sellerOrders.length; si++) {
-      const so = order.sellerOrders[si];
-      for (let ii = 0; ii < so.items.length; ii++) {
-        if (so.items[ii].productId === productId) {
-          targetItem = so.items[ii];
-          sellerOrderIndex = si;
-          itemIndex = ii;
+    for (const so of order.sellerOrders) {
+      for (const item of so.items) {
+        if (item.productId === productId) {
+          targetItem = item;
           break;
         }
       }
@@ -177,7 +176,7 @@ export class OrdersService {
       }
     }
 
-    // 6. download limit check
+    // 6. download limit check (sirf block karo — count downloadByToken mein increment hoga)
     const downloadLimit = product.digital.downloadLimit;
     if (downloadLimit !== 'unlimited') {
       const limitNum = parseInt(downloadLimit);
@@ -186,49 +185,30 @@ export class OrdersService {
       }
     }
 
-    // 7. downloadCount++ (atomic) + first download pe order complete
-    const updatePath = `sellerOrders.${sellerOrderIndex}.items.${itemIndex}.downloadCount`;
-    const isFirstDownload = targetItem.downloadCount === 0;
-    await orderModel.findByIdAndUpdate(orderId, {
-      $inc: { [updatePath]: 1 },
-      ...(isFirstDownload && { orderStatus: 'completed' }),
-    });
-
-    // 8. generate URLs for all files
+    // 7. generate tokens for all files
     const files = product.digital.files;
     const isPdfStamping = product.digital.pdfStampingEnabled;
 
-    const result = await Promise.all(
-      files.map(async (file: any, index: number) => {
-        const isPdf = file.mimeType === 'application/pdf';
+    const result = files.map((file: any, index: number) => {
+      const resolvedMimeType = this.uploadService.resolveMimeType(file.name, file.mimeType ?? 'application/octet-stream');
+      const isPdf = resolvedMimeType === 'application/pdf';
 
-        if (isPdf && isPdfStamping) {
-          // stamping wala → alag endpoint se stream hoga
-          return {
-            index,
-            fileName: file.name,
-            mimeType: file.mimeType,
-            size: file.size,
-            type: 'stamped',
-            streamUrl: `/api/orders/stream-pdf?orderId=${orderId}&productId=${productId}&fileIndex=${index}`,
-          };
-        }
+      const token = this.jwtService.sign(
+        { userId, orderId, productId, fileIndex: index },
+        { secret: this.configService.get<string>('JWT_SECRET'), expiresIn: '10m' },
+      );
 
-        // normal signed URL
-        const resourceType = file.mimeType?.startsWith('video/') ? 'video' : file.mimeType?.startsWith('image/') ? 'image' : 'raw';
-        const signedUrl = this.uploadService.generateSignedUrl(file.url, resourceType, 3600);
-
-        return {
-          index,
-          fileName: file.name,
-          mimeType: file.mimeType,
-          size: file.size,
-          type: 'signed_url',
-          url: signedUrl,
-          expiresIn: '1 hour',
-        };
-      }),
-    );
+      return {
+        index,
+        fileName: file.name,
+        mimeType: resolvedMimeType,
+        size: file.size,
+        type: isPdf && isPdfStamping ? 'stamped' : 'download',
+        endpoint: isPdf && isPdfStamping ? '/api/orders/stream-pdf-token' : '/api/orders/download-file',
+        token,
+        expiresIn: '10 minutes',
+      };
+    });
 
     const remaining = product.digital.downloadLimit === 'unlimited'
       ? 'unlimited'
@@ -331,6 +311,45 @@ export class OrdersService {
     return { success: true, message: 'Order marked as paid' };
   }
 
+  async downloadFile(userId: string, orderId: string, productId: string, fileIndex: number) {
+    const { orderModel, productModel } = this.databaseService.repositories;
+
+    const order = await orderModel.findOne({ _id: orderId, isDelete: false });
+    if (!order) throw new NotFoundException('Order not found');
+    if (order.userId !== userId) throw new ForbiddenException('Unauthorized');
+    if (!order.isPaid) throw new BadRequestException('Order is not paid');
+
+    const product = await productModel.findOne({ _id: productId, isDelete: false });
+    if (!product?.digital?.files?.length) throw new NotFoundException('Product files not found');
+
+    const file = product.digital.files[fileIndex];
+    if (!file) throw new NotFoundException('File not found');
+
+    const mimeType = this.uploadService.resolveMimeType(file.name, file.mimeType ?? 'application/octet-stream');
+    const resourceType = mimeType.startsWith('video/') ? 'video' : mimeType.startsWith('image/') ? 'image' : 'raw';
+    const signedUrl = this.uploadService.generateSignedUrl(file.url, resourceType, 300);
+
+    const response = await fetch(signedUrl);
+    if (!response.ok) throw new BadRequestException('Failed to fetch file from storage');
+
+    const arrayBuffer = await response.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+
+    return { buffer, fileName: file.name, mimeType };
+  }
+
+  async streamStampedPdfByToken(token: string) {
+    let payload: any;
+    try {
+      payload = this.jwtService.verify(token, {
+        secret: this.configService.get<string>('JWT_SECRET'),
+      });
+    } catch {
+      throw new BadRequestException('Download link expired or invalid');
+    }
+    return this.streamStampedPdf(payload.userId, payload.orderId, payload.productId, payload.fileIndex);
+  }
+
   async streamStampedPdf(userId: string, orderId: string, productId: string, fileIndex: number) {
     const { orderModel, productModel, userModel } = this.databaseService.repositories;
 
@@ -355,5 +374,107 @@ export class OrdersService {
       fileName: file.name,
       mimeType: 'application/pdf',
     };
+  }
+
+  async getDownloadLink(userId: string, orderId: string, productId: string, fileIndex: number) {
+    const { orderModel, productModel } = this.databaseService.repositories;
+
+    const order = await orderModel.findOne({ _id: orderId, isDelete: false });
+    if (!order) throw new NotFoundException('Order not found');
+    if (order.userId !== userId) throw new ForbiddenException('Unauthorized');
+    if (!order.isPaid) throw new BadRequestException('Order is not paid yet');
+
+    const product = await productModel.findOne({ _id: productId, isDelete: false });
+    if (!product?.digital?.files?.length) throw new NotFoundException('Product files not found');
+
+    const file = product.digital.files[fileIndex];
+    if (!file) throw new NotFoundException('File not found at this index');
+
+    const token = this.jwtService.sign(
+      { userId, orderId, productId, fileIndex },
+      {
+        secret: this.configService.get<string>('JWT_SECRET'),
+        expiresIn: '10m',
+      },
+    );
+
+    const resolvedMimeType = this.uploadService.resolveMimeType(file.name, file.mimeType ?? 'application/octet-stream');
+    const isPdfStamped = resolvedMimeType === 'application/pdf' && product.digital?.pdfStampingEnabled;
+
+    return {
+      success: true,
+      data: {
+        token,
+        endpoint: isPdfStamped ? '/api/orders/stream-pdf-token' : '/api/orders/download-file',
+        fileName: file.name,
+        expiresIn: '10 minutes',
+      },
+    };
+  }
+
+  async downloadByToken(token: string) {
+    let payload: any;
+    try {
+      payload = this.jwtService.verify(token, {
+        secret: this.configService.get<string>('JWT_SECRET'),
+      });
+    } catch {
+      throw new BadRequestException('Download link expired or invalid');
+    }
+
+    const { userId, orderId, productId, fileIndex } = payload;
+    const { orderModel, productModel } = this.databaseService.repositories;
+
+    const order = await orderModel.findOne({ _id: orderId, isDelete: false });
+    if (!order) throw new NotFoundException('Order not found');
+    if (order.userId !== userId) throw new ForbiddenException('Unauthorized');
+    if (!order.isPaid) throw new BadRequestException('Order is not paid');
+
+    const product = await productModel.findOne({ _id: productId, isDelete: false });
+    if (!product?.digital?.files?.length) throw new NotFoundException('Product files not found');
+
+    const file = product.digital.files[fileIndex];
+    if (!file) throw new NotFoundException('File not found');
+
+    // download limit check
+    const downloadLimit = product.digital?.downloadLimit;
+    if (downloadLimit && downloadLimit !== 'unlimited') {
+      const limitNum = parseInt(downloadLimit);
+
+      // order mein is product ka downloadCount nikalo
+      let currentCount = 0;
+      let sellerOrderIndex = -1;
+      let itemIndex = -1;
+
+      for (let si = 0; si < order.sellerOrders.length; si++) {
+        const so = order.sellerOrders[si];
+        for (let ii = 0; ii < so.items.length; ii++) {
+          if (so.items[ii].productId === productId) {
+            currentCount = so.items[ii].downloadCount || 0;
+            sellerOrderIndex = si;
+            itemIndex = ii;
+            break;
+          }
+        }
+      }
+
+      if (currentCount >= limitNum) {
+        throw new BadRequestException(`Download limit reached (${limitNum}/${limitNum})`);
+      }
+
+      // count increment
+      const updatePath = `sellerOrders.${sellerOrderIndex}.items.${itemIndex}.downloadCount`;
+      await orderModel.findByIdAndUpdate(orderId, { $inc: { [updatePath]: 1 } });
+    }
+
+    const mimeType = this.uploadService.resolveMimeType(file.name, file.mimeType ?? 'application/octet-stream');
+    const resourceType = mimeType.startsWith('video/') ? 'video' : mimeType.startsWith('image/') ? 'image' : 'raw';
+    const signedUrl = this.uploadService.generateSignedUrl(file.url, resourceType, 300);
+
+    const response = await fetch(signedUrl);
+    if (!response.ok) throw new BadRequestException('Failed to fetch file from storage');
+
+    const arrayBuffer = await response.arrayBuffer();
+    return { buffer: Buffer.from(arrayBuffer), fileName: file.name, mimeType };
   }
 }

@@ -36,7 +36,8 @@ export class UploadService {
 
   // ── PRIVATE upload (digital products) ──
   async uploadPrivateFile(file: Express.Multer.File): Promise<{ publicId: string; resourceType: string; fileName: string; fileSize: number; mimeType: string }> {
-    const resourceType = this.getResourceType(file.mimetype);
+    const mimeType = this.getMimeTypeFromExtension(file.originalname) || file.mimetype;
+    const resourceType = this.getResourceType(mimeType);
     return new Promise((resolve, reject) => {
       const uploadStream = cloudinary.uploader.upload_stream(
         {
@@ -51,7 +52,7 @@ export class UploadService {
             resourceType,
             fileName: file.originalname,
             fileSize: file.size,
-            mimeType: file.mimetype,
+            mimeType,
           });
         },
       );
@@ -60,14 +61,18 @@ export class UploadService {
   }
 
   // ── SIGNED URL generate ──
-  generateSignedUrl(publicId: string, resourceType: string = 'raw', expirySeconds: number = 3600): string {
+  generateSignedUrl(publicId: string, resourceType: string = 'raw', expirySeconds: number = 3600, fileName?: string): string {
     const expiresAt = Math.floor(Date.now() / 1000) + expirySeconds;
+    const safeFileName = fileName
+      ? fileName.replace(/[^a-zA-Z0-9._-]/g, '_')
+      : undefined;
     return cloudinary.url(publicId, {
       sign_url: true,
       secure: true,
       type: 'private',
       resource_type: resourceType as any,
       expires_at: expiresAt,
+      flags: safeFileName ? `attachment:${safeFileName}` : 'attachment',
     });
   }
 
@@ -123,5 +128,35 @@ export class UploadService {
     if (mimetype.startsWith('image/')) return 'image';
     if (mimetype.startsWith('video/')) return 'video';
     return 'raw';
+  }
+
+  resolveMimeType(fileName: string, fallback: string): string {
+    return this.getMimeTypeFromExtension(fileName) ?? fallback;
+  }
+
+  private getMimeTypeFromExtension(fileName: string): string | null {
+    const ext = fileName.split('.').pop()?.toLowerCase();
+    const map: Record<string, string> = {
+      pdf: 'application/pdf',
+      epub: 'application/epub+zip',
+      zip: 'application/zip',
+      mp3: 'audio/mpeg',
+      mp4: 'video/mp4',
+      png: 'image/png',
+      jpg: 'image/jpeg',
+      jpeg: 'image/jpeg',
+      gif: 'image/gif',
+      webp: 'image/webp',
+      svg: 'image/svg+xml',
+      doc: 'application/msword',
+      docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      xls: 'application/vnd.ms-excel',
+      xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      ppt: 'application/vnd.ms-powerpoint',
+      pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      txt: 'text/plain',
+      csv: 'text/csv',
+    };
+    return ext ? (map[ext] ?? null) : null;
   }
 }

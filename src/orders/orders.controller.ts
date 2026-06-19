@@ -80,6 +80,51 @@ export class OrdersController {
     return this.ordersService.getSellerOrders(userId, storeId, query);
   }
 
+  // Step 1: JWT se download link lo (10 min valid)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('user')
+  @Get('get-download-link')
+  async getDownloadLink(
+    @Req() req: any,
+    @Query('orderId') orderId: string,
+    @Query('productId') productId: string,
+    @Query('fileIndex') fileIndex: string,
+  ) {
+    const { userId } = req.user;
+    const index = parseInt(fileIndex) || 0;
+    return this.ordersService.getDownloadLink(userId, orderId, productId, index);
+  }
+
+  // Step 2: yeh URL browser mein paste karo — seedha download (no auth header)
+  @Get('download-file')
+  async downloadFile(
+    @Res() res: Response,
+    @Query('token') token: string,
+  ) {
+    const { buffer, fileName, mimeType } = await this.ordersService.downloadByToken(token);
+    res.set({
+      'Content-Type': mimeType,
+      'Content-Disposition': `attachment; filename="${fileName}"`,
+      'Content-Length': buffer.length,
+    });
+    res.end(buffer);
+  }
+
+  // stamped PDF via token — browser direct download (no JWT header)
+  @Get('stream-pdf-token')
+  async streamPdfByToken(
+    @Res() res: Response,
+    @Query('token') token: string,
+  ) {
+    const { buffer, fileName } = await this.ordersService.streamStampedPdfByToken(token);
+    res.set({
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `attachment; filename="${fileName}"`,
+      'Content-Length': buffer.length,
+    });
+    res.end(buffer);
+  }
+
   // stamped PDF stream — browser direct download
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('user')

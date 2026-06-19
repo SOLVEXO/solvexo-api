@@ -14,10 +14,23 @@ import { OrdersService } from './orders.service';
 import { AuthModule } from 'src/auth/auth.module';
 import { UploadModule } from 'src/upload/upload.module';
 import { RedisModule } from 'src/redis/redis.module';
-
+import { JwtModule } from '@nestjs/jwt';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 
 @Module({
-  imports: [AuthModule, UploadModule, RedisModule],
+  imports: [
+    AuthModule,
+    UploadModule,
+    RedisModule,
+    ConfigModule,
+    JwtModule.registerAsync({
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => ({
+        secret: config.get<string>('JWT_SECRET'),
+      }),
+    }),
+  ],
   controllers: [OrdersController],
   providers: [OrdersService],
   exports: [OrdersService],
