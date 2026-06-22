@@ -412,6 +412,258 @@ export class OrdersService {
     };
   }
 
+  async cancelOrder(userId: string, orderId: string, body: any) {
+    const { reason, itemIds } = body;
+    if (!reason) throw new BadRequestException('reason is required');
+
+    const { orderModel, productVariantModel } = this.databaseService.repositories;
+
+    const order = await orderModel.findOne({ _id: orderId, userId, isDelete: false });
+    if (!order) throw new NotFoundException('Order not found');
+
+    if (order.orderStatus === 'completed') throw new BadRequestException('Completed orders cannot be cancelled');
+    if (order.orderStatus === 'cancelled') throw new BadRequestException('Order is already cancelled');
+
+    const now = new Date();
+    const BLOCKED = ['shipped', 'delivered', 'completed', 'cancelled'];
+
+    // flatten all items with their indices
+    const allItems: { soIndex: number; itemIndex: number; item: any }[] = [];
+    order.sellerOrders.forEach((so: any, soIndex: number) => {
+      so.items.forEach((item: any, itemIndex: number) => {
+        allItems.push({ soIndex, itemIndex, item });
+      });
+    });
+
+    let targetItems: { soIndex: number; itemIndex: number; item: any }[];
+
+    if (itemIds && Array.isArray(itemIds) && itemIds.length > 0) {
+      // item-level cancel
+      targetItems = [];
+      for (const itemId of itemIds) {
+        const found = allItems.find(({ item }) => item._id.toString() === itemId);
+        if (!found) throw new BadRequestException(`Item not found: ${itemId}`);
+        if (found.item.status === 'cancelled') throw new BadRequestException(`Item "${found.item.name}" is already cancelled`);
+        if (BLOCKED.includes(found.item.status)) throw new BadRequestException(`Item "${found.item.name}" cannot be cancelled — status: ${found.item.status}`);
+        targetItems.push(found);
+      }
+    } else {
+      // full order cancel — koi bhi item shipped nahi honi chahiye
+      const blockedItem = allItems.find(({ item }) => BLOCKED.slice(0, 3).includes(item.status));
+      if (blockedItem) throw new BadRequestException(`Cannot cancel order — "${blockedItem.item.name}" is already ${blockedItem.item.status}`);
+      targetItems = allItems.filter(({ item }) => item.status !== 'cancelled');
+    }
+
+    if (targetItems.length === 0) throw new BadRequestException('No items to cancel');
+
+    const updateData: any = {};
+
+    for (const { soIndex, itemIndex, item } of targetItems) {
+      updateData[`sellerOrders.${soIndex}.items.${itemIndex}.status`] = 'cancelled';
+      updateData[`sellerOrders.${soIndex}.items.${itemIndex}.cancelledAt`] = now;
+      updateData[`sellerOrders.${soIndex}.items.${itemIndex}.cancelReason`] = reason;
+      if (order.isPaid) {
+        updateData[`sellerOrders.${soIndex}.items.${itemIndex}.refundedAmount`] = item.totalPrice;
+      }
+
+      // physical item — stock wapas restore
+      if (item.type === 'physical' && item.variantId) {
+        await productVariantModel.findByIdAndUpdate(item.variantId, { $inc: { stock: item.quantity } });
+      }
+    }
+
+    // sellerOrder status recalculate
+    order.sellerOrders.forEach((so: any, soIndex: number) => {
+      const updatedStatuses = so.items.map((item: any, itemIndex: number) => {
+        const wasUpdated = targetItems.find((t) => t.soIndex === soIndex && t.itemIndex === itemIndex);
+        return wasUpdated ? 'cancelled' : item.status;
+      });
+      if (updatedStatuses.every((s: string) => s === 'cancelled')) {
+        updateData[`sellerOrders.${soIndex}.status`] = 'cancelled';
+        updateData[`sellerOrders.${soIndex}.cancelledAt`] = now;
+        updateData[`sellerOrders.${soIndex}.cancelReason`] = reason;
+      }
+    });
+
+    // overall orderStatus recalculate
+    const updatedSOStatuses = order.sellerOrders.map((so: any, soIndex: number) =>
+      updateData[`sellerOrders.${soIndex}.status`] ?? so.status,
+    );
+    if (updatedSOStatuses.every((s: string) => s === 'cancelled')) {
+      updateData.orderStatus = 'cancelled';
+    }
+
+    // refund status — sirf DB update, no real Stripe call (stripePaymentIntentId null hai)
+    if (order.isPaid) {
+      updateData.paymentStatus = 'refunded';
+    }
+
+    await orderModel.findByIdAndUpdate(orderId, { $set: updateData });
+
+    return {
+      success: true,
+      message: targetItems.length === allItems.length ? 'Order cancelled successfully' : `${targetItems.length} item(s) cancelled successfully`,
+      data: {
+        orderId,
+        cancelledItems: targetItems.length,
+        refundProcessed: order.isPaid,
+      },
+    };
+  }
+
+  async returnRequest(userId: string, orderId: string, body: any) {
+    const { reason, itemIds } = body;
+    if (!reason) throw new BadRequestException('reason is required');
+
+    const { orderModel } = this.databaseService.repositories;
+
+    const order = await orderModel.findOne({ _id: orderId, userId, isDelete: false });
+    if (!order) throw new NotFoundException('Order not found');
+
+    if (order.orderStatus === 'cancelled') throw new BadRequestException('Cancelled orders cannot be returned');
+    if (['pending', 'processing', 'partially_shipped'].includes(order.orderStatus))
+      throw new BadRequestException('Order not yet delivered');
+
+    const now = new Date();
+
+    const allItems: { soIndex: number; itemIndex: number; item: any; so: any }[] = [];
+    order.sellerOrders.forEach((so: any, soIndex: number) => {
+      so.items.forEach((item: any, itemIndex: number) => {
+        allItems.push({ soIndex, itemIndex, item, so });
+      });
+    });
+
+    let targetItems: typeof allItems;
+
+    if (itemIds && Array.isArray(itemIds) && itemIds.length > 0) {
+      targetItems = [];
+      for (const itemId of itemIds) {
+        const found = allItems.find(({ item }) => item._id.toString() === itemId);
+        if (!found) throw new BadRequestException(`Item not found: ${itemId}`);
+        targetItems.push(found);
+      }
+    } else {
+      targetItems = [...allItems];
+    }
+
+    for (const { item, so } of targetItems) {
+      if (item.type === 'digital') throw new BadRequestException(`"${item.name}" is a digital product — cannot be returned`);
+      if (!['delivered', 'completed'].includes(so.status)) throw new BadRequestException(`"${item.name}" is not yet delivered`);
+      if (item.status === 'cancelled') throw new BadRequestException(`Cancelled item "${item.name}" cannot be returned`);
+      if (item.returnStatus !== 'none') throw new BadRequestException(`Return already requested for "${item.name}"`);
+    }
+
+    const updateData: any = {};
+
+    for (const { soIndex, itemIndex } of targetItems) {
+      updateData[`sellerOrders.${soIndex}.items.${itemIndex}.returnStatus`] = 'requested';
+      updateData[`sellerOrders.${soIndex}.items.${itemIndex}.returnReason`] = reason;
+      updateData[`sellerOrders.${soIndex}.items.${itemIndex}.returnRequestedAt`] = now;
+    }
+
+    // sellerOrder returnStatus recalculate
+    order.sellerOrders.forEach((so: any, soIndex: number) => {
+      const physicalActive = so.items.filter((i: any) => i.type === 'physical' && i.status !== 'cancelled');
+      if (physicalActive.length === 0) return;
+
+      const updatedStatuses = physicalActive.map((item: any) => {
+        const globalIdx = so.items.indexOf(item);
+        const wasUpdated = targetItems.find((t) => t.soIndex === soIndex && t.itemIndex === globalIdx);
+        return wasUpdated ? 'requested' : item.returnStatus;
+      });
+
+      const allRequested = updatedStatuses.every((s: string) => s !== 'none');
+      updateData[`sellerOrders.${soIndex}.returnStatus`] = allRequested ? 'requested' : 'partial_requested';
+    });
+
+    await orderModel.findByIdAndUpdate(orderId, { $set: updateData });
+
+    return {
+      success: true,
+      message: `Return requested for ${targetItems.length} item(s)`,
+      data: { orderId, requestedItems: targetItems.length },
+    };
+  }
+
+  async returnAction(sellerId: string, orderId: string, body: any) {
+    const { storeId, itemIds, action, rejectReason } = body;
+    if (!storeId) throw new BadRequestException('storeId is required');
+    if (!itemIds || !Array.isArray(itemIds) || itemIds.length === 0) throw new BadRequestException('itemIds are required');
+    if (!action || !['approve', 'reject'].includes(action)) throw new BadRequestException('action must be approve or reject');
+
+    const { orderModel, storeModel } = this.databaseService.repositories;
+
+    const order = await orderModel.findOne({ _id: orderId, isDelete: false });
+    if (!order) throw new NotFoundException('Order not found');
+
+    const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
+    if (!store) throw new ForbiddenException('Store not found or unauthorized');
+
+    const soIndex = order.sellerOrders.findIndex((so: any) => so.storeId === storeId);
+    if (soIndex === -1) throw new BadRequestException('No orders found for this store');
+
+    const sellerOrder = order.sellerOrders[soIndex];
+    const updateData: any = {};
+    const targetItems: { itemIndex: number; item: any }[] = [];
+
+    for (const itemId of itemIds) {
+      const itemIndex = sellerOrder.items.findIndex((i: any) => i._id.toString() === itemId);
+      if (itemIndex === -1) throw new BadRequestException(`Item not found: ${itemId}`);
+      const item = sellerOrder.items[itemIndex];
+      if (item.returnStatus !== 'requested') throw new BadRequestException(`"${item.name}" has no pending return request`);
+      targetItems.push({ itemIndex, item });
+    }
+
+    for (const { itemIndex, item } of targetItems) {
+      if (action === 'approve') {
+        updateData[`sellerOrders.${soIndex}.items.${itemIndex}.returnStatus`] = 'approved';
+        updateData[`sellerOrders.${soIndex}.items.${itemIndex}.refundedAmount`] = item.totalPrice;
+      } else {
+        updateData[`sellerOrders.${soIndex}.items.${itemIndex}.returnStatus`] = 'rejected';
+        if (rejectReason) {
+          updateData[`sellerOrders.${soIndex}.items.${itemIndex}.returnRejectReason`] = rejectReason;
+        }
+      }
+    }
+
+    // sellerOrder returnStatus recalculate
+    const updatedStatuses = sellerOrder.items.map((item: any, itemIndex: number) => {
+      const wasUpdated = targetItems.find((t) => t.itemIndex === itemIndex);
+      if (!wasUpdated) return item.returnStatus;
+      return action === 'approve' ? 'approved' : 'rejected';
+    });
+
+    const physicalStatuses = sellerOrder.items
+      .map((item: any, i: number) => ({ item, returnStatus: updatedStatuses[i] }))
+      .filter(({ item }) => item.type === 'physical' && item.status !== 'cancelled')
+      .map(({ returnStatus }) => returnStatus);
+
+    if (physicalStatuses.every((s: string) => s === 'approved')) {
+      updateData[`sellerOrders.${soIndex}.returnStatus`] = 'approved';
+    } else if (physicalStatuses.every((s: string) => s === 'rejected')) {
+      updateData[`sellerOrders.${soIndex}.returnStatus`] = 'rejected';
+    } else {
+      updateData[`sellerOrders.${soIndex}.returnStatus`] = 'partial_requested';
+    }
+
+    if (action === 'approve' && order.isPaid) {
+      updateData.paymentStatus = 'refunded';
+    }
+
+    await orderModel.findByIdAndUpdate(orderId, { $set: updateData });
+
+    return {
+      success: true,
+      message: action === 'approve' ? `Return approved for ${targetItems.length} item(s)` : `Return rejected for ${targetItems.length} item(s)`,
+      data: {
+        orderId,
+        action,
+        processedItems: targetItems.length,
+        refundProcessed: action === 'approve' && order.isPaid,
+      },
+    };
+  }
+
   async downloadByToken(token: string) {
     let payload: any;
     try {

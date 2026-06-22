@@ -29,7 +29,7 @@
 //   }
 // }
 
-import { Controller, Get, Put, Param, Query, Body, Req, Res, UseGuards } from '@nestjs/common';
+import { Controller, Get, Put, Post, Param, Query, Body, Req, Res, UseGuards } from '@nestjs/common';
 import { Response } from 'express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -78,6 +78,42 @@ export class OrdersController {
   ) {
     const { userId } = req.user;
     return this.ordersService.getSellerOrders(userId, storeId, query);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('user')
+  @Post('cancel/:orderId')
+  async cancelOrder(
+    @Req() req: any,
+    @Param('orderId') orderId: string,
+    @Body() body: any,
+  ) {
+    const { userId } = req.user;
+    return this.ordersService.cancelOrder(userId, orderId, body);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('user')
+  @Post('return-request/:orderId')
+  async returnRequest(
+    @Req() req: any,
+    @Param('orderId') orderId: string,
+    @Body() body: any,
+  ) {
+    const { userId } = req.user;
+    return this.ordersService.returnRequest(userId, orderId, body);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller', 'admin')
+  @Put('return-action/:orderId')
+  async returnAction(
+    @Req() req: any,
+    @Param('orderId') orderId: string,
+    @Body() body: any,
+  ) {
+    const { userId: sellerId } = req.user;
+    return this.ordersService.returnAction(sellerId, orderId, body);
   }
 
   // Step 1: JWT se download link lo (10 min valid)

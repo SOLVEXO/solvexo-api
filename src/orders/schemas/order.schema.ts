@@ -69,6 +69,19 @@ export class OrderItem {
 
   @Prop({ default: 0 })
   downloadCount!: number;
+
+  // return fields
+  @Prop({ type: String, enum: ['none', 'requested', 'approved', 'rejected'], default: 'none' })
+  returnStatus!: string;
+
+  @Prop({ type: String, default: null })
+  returnReason!: string | null;
+
+  @Prop({ type: Date, default: null })
+  returnRequestedAt!: Date | null;
+
+  @Prop({ type: String, default: null })
+  returnRejectReason!: string | null;
 }
 
 export const OrderItemSchema = SchemaFactory.createForClass(OrderItem);
@@ -134,6 +147,9 @@ export class SellerOrder {
 
   @Prop({ type: String, default: null })
   cancelReason: string | null;
+
+  @Prop({ type: String, enum: ['none', 'partial_requested', 'requested', 'approved', 'rejected'], default: 'none' })
+  returnStatus!: string;
 }
 
 export const SellerOrderSchema = SchemaFactory.createForClass(SellerOrder);
