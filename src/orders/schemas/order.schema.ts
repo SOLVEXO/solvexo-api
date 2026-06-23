@@ -148,7 +148,7 @@ export class SellerOrder {
   @Prop({ type: String, default: null })
   cancelReason: string | null;
 
-  @Prop({ type: String, enum: ['none', 'partial_requested', 'requested', 'approved', 'rejected'], default: 'none' })
+  @Prop({ type: String, enum: ['none', 'partial_requested', 'requested', 'partial_approved', 'approved', 'rejected'], default: 'none' })
   returnStatus!: string;
 }
 
@@ -240,6 +240,9 @@ export class Order {
     default: 'pending',
   })
   orderStatus: string;
+
+  @Prop({ default: false })
+  hasReturnApproved!: boolean;
 
   @Prop({ default: false })
   isDelete: boolean;

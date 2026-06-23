@@ -20,7 +20,7 @@ export class CheckoutService {
     return { success: true, message: 'Checkout deleted successfully' };
   }
 
-  async createCheckout(userId: string) {
+  async createCheckout(userId: string, body: any = {}) {
     const {
       cartModel, productModel, productVariantModel,
       addressModel, checkoutModel,
@@ -30,10 +30,22 @@ export class CheckoutService {
     if (!cart) throw new BadRequestException('Cart not found');
     if (!cart.items || cart.items.length === 0) throw new BadRequestException('Cart is empty');
 
+    // agar items array diya to sirf woh, warna sab cart items
+    const selectedItems: any[] = body.items && Array.isArray(body.items) && body.items.length > 0
+      ? cart.items.filter((cartItem: any) =>
+          body.items.some((sel: any) =>
+            sel.productId === cartItem.productId &&
+            sel.variantId === cartItem.productVariantId,
+          ),
+        )
+      : cart.items;
+
+    if (selectedItems.length === 0) throw new BadRequestException('None of the provided items found in cart');
+
     const checkoutItems: any[] = [];
     let hasPhysical = false;
 
-    for (const cartItem of cart.items) {
+    for (const cartItem of selectedItems) {
       const product = await productModel.findOne({ _id: cartItem.productId, status: 'active', isDelete: false });
       if (!product) throw new BadRequestException(`Product not found: ${cartItem.productId}`);
 

@@ -301,12 +301,23 @@ export class OrdersService {
     if (!order) throw new NotFoundException('Order not found');
     if (order.isPaid) throw new BadRequestException('Order is already paid');
 
-    await orderModel.findByIdAndUpdate(orderId, {
+    const now = new Date();
+    const updateData: any = {
       isPaid: true,
       paymentStatus: 'paid',
-      paidAt: new Date(),
+      paidAt: now,
       orderStatus: 'completed',
+    };
+
+    order.sellerOrders.forEach((so: any, soIndex: number) => {
+      updateData[`sellerOrders.${soIndex}.status`] = 'completed';
+      updateData[`sellerOrders.${soIndex}.deliveredAt`] = now;
+      so.items.forEach((_: any, itemIndex: number) => {
+        updateData[`sellerOrders.${soIndex}.items.${itemIndex}.status`] = 'completed';
+      });
     });
+
+    await orderModel.findByIdAndUpdate(orderId, { $set: updateData });
 
     return { success: true, message: 'Order marked as paid' };
   }
@@ -511,6 +522,100 @@ export class OrdersService {
     };
   }
 
+  async getSellerReturns(sellerId: string, query: any) {
+    const { orderModel, storeModel, userModel } = this.databaseService.repositories;
+    const { storeId, status, page: pageStr } = query;
+
+    const page = parseInt(pageStr) || 1;
+    const limit = 10;
+    const skip = (page - 1) * limit;
+
+    let storeIds: string[];
+
+    if (storeId) {
+      const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
+      if (!store) throw new ForbiddenException('Store not found or unauthorized');
+      storeIds = [storeId];
+    } else {
+      const stores = await storeModel.find({ sellerId, isDelete: false }).select('_id').lean();
+      storeIds = (stores as any[]).map((s) => s._id.toString());
+      if (storeIds.length === 0) throw new BadRequestException('No stores found for this seller');
+    }
+
+    const allOrders = await orderModel
+      .find({ 'sellerOrders.storeId': { $in: storeIds }, isDelete: false })
+      .lean();
+
+    // flatten to individual return items
+    const returnItems: { order: any; so: any; item: any }[] = [];
+    let totalOrderItems = 0;
+
+    for (const order of allOrders) {
+      for (const so of order.sellerOrders) {
+        if (!storeIds.includes(so.storeId)) continue;
+        totalOrderItems += so.items.length;
+        for (const item of so.items) {
+          if (!item.returnStatus || item.returnStatus === 'none') continue;
+          if (status && status !== 'all' && item.returnStatus !== status) continue;
+          returnItems.push({ order, so, item });
+        }
+      }
+    }
+
+    // stats
+    const openRequests = returnItems.filter(({ item }) => item.returnStatus === 'requested').length;
+    const returnRate = totalOrderItems > 0
+      ? parseFloat(((returnItems.length / totalOrderItems) * 100).toFixed(1))
+      : 0;
+
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const totalRefunded = returnItems
+      .filter(({ item }) => item.returnStatus === 'approved' && item.returnRequestedAt && new Date(item.returnRequestedAt) >= thirtyDaysAgo)
+      .reduce((sum, { item }) => sum + (item.refundedAmount || 0), 0);
+
+    // paginate
+    const total = returnItems.length;
+    const totalPages = Math.ceil(total / limit);
+    const paginated = returnItems.slice(skip, skip + limit);
+
+    const list = await Promise.all(
+      paginated.map(async ({ order, so, item }) => {
+        const user = await userModel.findById(order.userId).select('name email').lean();
+        return {
+          orderId: order._id,
+          orderNumber: order.orderNumber,
+          itemId: item._id,
+          customer: {
+            name: (user as any)?.name || 'Unknown',
+            email: (user as any)?.email || null,
+          },
+          storeId: so.storeId,
+          productName: item.name,
+          productImage: item.image || null,
+          returnReason: item.returnReason,
+          amount: item.totalPrice,
+          refundedAmount: item.refundedAmount || 0,
+          returnStatus: item.returnStatus,
+          returnRejectReason: item.returnRejectReason || null,
+          returnRequestedAt: item.returnRequestedAt,
+        };
+      }),
+    );
+
+    return {
+      success: true,
+      data: {
+        stats: {
+          openRequests,
+          returnRate: `${returnRate}%`,
+          totalRefunded,
+        },
+        pagination: { page, limit, totalPages, total },
+        returns: list,
+      },
+    };
+  }
+
   async returnRequest(userId: string, orderId: string, body: any) {
     const { reason, itemIds } = body;
     if (!reason) throw new BadRequestException('reason is required');
@@ -521,7 +626,7 @@ export class OrdersService {
     if (!order) throw new NotFoundException('Order not found');
 
     if (order.orderStatus === 'cancelled') throw new BadRequestException('Cancelled orders cannot be returned');
-    if (['pending', 'processing', 'partially_shipped'].includes(order.orderStatus))
+    if (['pending', 'processing'].includes(order.orderStatus))
       throw new BadRequestException('Order not yet delivered');
 
     const now = new Date();
@@ -550,7 +655,7 @@ export class OrdersService {
       if (item.type === 'digital') throw new BadRequestException(`"${item.name}" is a digital product — cannot be returned`);
       if (!['delivered', 'completed'].includes(so.status)) throw new BadRequestException(`"${item.name}" is not yet delivered`);
       if (item.status === 'cancelled') throw new BadRequestException(`Cancelled item "${item.name}" cannot be returned`);
-      if (item.returnStatus !== 'none') throw new BadRequestException(`Return already requested for "${item.name}"`);
+      if (item.returnStatus && item.returnStatus !== 'none') throw new BadRequestException(`Return already requested for "${item.name}"`);
     }
 
     const updateData: any = {};
@@ -566,14 +671,17 @@ export class OrdersService {
       const physicalActive = so.items.filter((i: any) => i.type === 'physical' && i.status !== 'cancelled');
       if (physicalActive.length === 0) return;
 
-      const updatedStatuses = physicalActive.map((item: any) => {
+      const effectiveStatuses = physicalActive.map((item: any) => {
         const globalIdx = so.items.indexOf(item);
         const wasUpdated = targetItems.find((t) => t.soIndex === soIndex && t.itemIndex === globalIdx);
-        return wasUpdated ? 'requested' : item.returnStatus;
+        return wasUpdated ? 'requested' : (item.returnStatus || 'none');
       });
 
-      const allRequested = updatedStatuses.every((s: string) => s !== 'none');
-      updateData[`sellerOrders.${soIndex}.returnStatus`] = allRequested ? 'requested' : 'partial_requested';
+      const allRequested = effectiveStatuses.every((s: string) => s === 'requested');
+      const anyRequested = effectiveStatuses.some((s: string) => s === 'requested');
+
+      if (allRequested) updateData[`sellerOrders.${soIndex}.returnStatus`] = 'requested';
+      else if (anyRequested) updateData[`sellerOrders.${soIndex}.returnStatus`] = 'partial_requested';
     });
 
     await orderModel.findByIdAndUpdate(orderId, { $set: updateData });
@@ -627,27 +735,35 @@ export class OrdersService {
     }
 
     // sellerOrder returnStatus recalculate
-    const updatedStatuses = sellerOrder.items.map((item: any, itemIndex: number) => {
-      const wasUpdated = targetItems.find((t) => t.itemIndex === itemIndex);
-      if (!wasUpdated) return item.returnStatus;
+    const physicalActive = sellerOrder.items.filter(
+      (item: any) => item.type === 'physical' && item.status !== 'cancelled',
+    );
+
+    const effectiveStatuses = physicalActive.map((item: any) => {
+      const globalIdx = sellerOrder.items.indexOf(item);
+      const wasUpdated = targetItems.find((t) => t.itemIndex === globalIdx);
+      if (!wasUpdated) return item.returnStatus || 'none';
       return action === 'approve' ? 'approved' : 'rejected';
     });
 
-    const physicalStatuses = sellerOrder.items
-      .map((item: any, i: number) => ({ item, returnStatus: updatedStatuses[i] }))
-      .filter(({ item }) => item.type === 'physical' && item.status !== 'cancelled')
-      .map(({ returnStatus }) => returnStatus);
+    const allApproved  = effectiveStatuses.every((s: string) => s === 'approved');
+    const anyApproved  = effectiveStatuses.some((s: string) => s === 'approved');
+    const allRequested = effectiveStatuses.every((s: string) => s === 'requested');
+    const anyRequested = effectiveStatuses.some((s: string) => s === 'requested');
+    const allRejected  = effectiveStatuses.filter((s: string) => s !== 'none').every((s: string) => s === 'rejected');
 
-    if (physicalStatuses.every((s: string) => s === 'approved')) {
-      updateData[`sellerOrders.${soIndex}.returnStatus`] = 'approved';
-    } else if (physicalStatuses.every((s: string) => s === 'rejected')) {
-      updateData[`sellerOrders.${soIndex}.returnStatus`] = 'rejected';
-    } else {
-      updateData[`sellerOrders.${soIndex}.returnStatus`] = 'partial_requested';
-    }
+    let newSellerReturnStatus: string;
+    if (allApproved)       newSellerReturnStatus = 'approved';
+    else if (anyApproved)  newSellerReturnStatus = 'partial_approved'; // approved wins even if kuch rejected
+    else if (allRequested) newSellerReturnStatus = 'requested';
+    else if (anyRequested) newSellerReturnStatus = 'partial_requested';
+    else if (allRejected)  newSellerReturnStatus = 'rejected';
+    else                   newSellerReturnStatus = 'none';
 
-    if (action === 'approve' && order.isPaid) {
-      updateData.paymentStatus = 'refunded';
+    updateData[`sellerOrders.${soIndex}.returnStatus`] = newSellerReturnStatus;
+
+    if (action === 'approve') {
+      updateData.hasReturnApproved = true;
     }
 
     await orderModel.findByIdAndUpdate(orderId, { $set: updateData });

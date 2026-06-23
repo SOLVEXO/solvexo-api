@@ -103,9 +103,9 @@ export class CheckoutController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('user')
   @Post('create-checkout')
-  async createCheckout(@Req() req: any) {
+  async createCheckout(@Req() req: any, @Body() body: any) {
     const { userId } = req.user;
-    return this.checkoutService.createCheckout(userId);
+    return this.checkoutService.createCheckout(userId, body);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)

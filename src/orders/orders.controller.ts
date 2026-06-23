@@ -93,6 +93,14 @@ export class OrdersController {
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller', 'admin')
+  @Get('returns')
+  async getSellerReturns(@Req() req: any, @Query() query: any) {
+    const { userId: sellerId } = req.user;
+    return this.ordersService.getSellerReturns(sellerId, query);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('user')
   @Post('return-request/:orderId')
   async returnRequest(
