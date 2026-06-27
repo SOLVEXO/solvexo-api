@@ -1,9 +1,7 @@
 name: Deploy solvexo-api Staging
-
 on:
   push:
     branches: [staging]
-
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -17,9 +15,10 @@ jobs:
           port: ${{ secrets.VPS_PORT }}
           script: |
             cd /home/deploy/apps/solvexo-api
-            git pull origin staging
+            git fetch origin
+            git reset --hard origin/staging
             npm ci
             npm run build
             pm2 restart solvexo-api-staging || pm2 start dist/main.js --name "solvexo-api-staging"
             pm2 save
-            echo "solvexo-api staging deployed"
+            echo "solvexo-api staging deployed at $(date)"
