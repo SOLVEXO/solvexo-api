@@ -16,6 +16,90 @@ export class OrdersService {
     private readonly configService: ConfigService,
   ) {}
 
+  async getOrdersByUserId(userId: string, query: any) {
+    const { orderModel } = this.databaseService.repositories;
+
+    const page = parseInt(query.page) || 1;
+    const limit = parseInt(query.limit) || 10;
+    const skip = (page - 1) * limit;
+
+    const filter: any = { userId, isDelete: false };
+
+    if (query.status && query.status !== 'all') {
+      filter.orderStatus = query.status;
+    }
+
+    const total = await orderModel.countDocuments(filter);
+    const totalPages = Math.ceil(total / limit);
+
+    const orders = await orderModel
+      .find(filter)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean();
+
+    const list = orders.map((order: any) => ({
+      orderId: order._id,
+      orderNumber: order.orderNumber,
+      orderStatus: order.orderStatus,
+      paymentType: order.paymentType,
+      paymentStatus: order.paymentStatus,
+      isPaid: order.isPaid,
+      subtotal: order.subtotal,
+      shippingFee: order.shippingFee,
+      taxAmount: order.taxAmount,
+      totalAmount: order.totalAmount,
+      currency: order.currency,
+      shippingAddress: order.shippingAddress,
+      stores: order.sellerOrders.map((so: any) => ({
+        storeId: so.storeId,
+        fulfillmentType: so.fulfillmentType,
+        status: so.status,
+        subtotal: so.subtotal,
+        itemCount: so.items.length,
+        items: so.items.map((item: any) => ({
+          itemId: item._id,
+          productId: item.productId,
+          name: item.name,
+          image: item.image,
+          sku: item.sku,
+          type: item.type,
+          quantity: item.quantity,
+          price: item.price,
+          totalPrice: item.totalPrice,
+          status: item.status,
+        })),
+        tracking: so.tracking,
+        shippedAt: so.shippedAt,
+        deliveredAt: so.deliveredAt,
+      })),
+      createdAt: order.createdAt,
+      paidAt: order.paidAt,
+    }));
+
+    return {
+      success: true,
+      data: {
+        pagination: { page, limit, totalPages, total },
+        orders: list,
+      },
+    };
+  }
+
+  async getOrderById(userId: string, orderId: string) {
+    const { orderModel } = this.databaseService.repositories;
+
+    const order = await orderModel.findOne({ _id: orderId, isDelete: false }).lean();
+    if (!order) throw new NotFoundException('Order not found');
+    if ((order as any).userId !== userId) throw new ForbiddenException('Unauthorized');
+
+    return {
+      success: true,
+      data: order,
+    };
+  }
+
   async getSellerOrders(sellerId: string, storeId: string, query: any) {
     if (!storeId) throw new BadRequestException('storeId is required');
 

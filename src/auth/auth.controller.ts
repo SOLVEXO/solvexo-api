@@ -1,9 +1,10 @@
 /* eslint-disable prettier/prettier */
-import { Body, Controller, Post, Req, Get } from '@nestjs/common';
+import { Body, Controller, Post, Req, Get, Patch } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
 import { SocialLoginDto } from './dto/social-login.dto';
+import { UpdateProfileDto } from './dto/update-profile.dto';
 import { AuthGuard } from '@nestjs/passport';
 import { UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -64,13 +65,17 @@ export class AuthController {
 }
 
   @UseGuards(JwtAuthGuard)
-@Get('getprofile')
-async getProfile( @Req() req: any  ) {
-    const {userId , role} = req.user
-    console.log(userId, role)
-  return this.authService.getProfile(userId, role);
-}
+  @Get('getprofile')
+  async getProfile(@Req() req: any) {
+    const { userId, role } = req.user;
+    return this.authService.getProfile(userId, role);
+  }
 
-
+  @UseGuards(JwtAuthGuard)
+  @Patch('edit-profile')
+  async editProfile(@Req() req: any, @Body() updateProfileDto: UpdateProfileDto) {
+    const { userId, role } = req.user;
+    return this.authService.editProfile(userId, role, updateProfileDto);
+  }
 
 }

@@ -1,4 +1,4 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { Injectable, UnauthorizedException, BadRequestException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import * as bcrypt from 'bcrypt';
@@ -6,6 +6,7 @@ import { JwtService } from '@nestjs/jwt';
 import { RegisterDto } from './dto/register.dto';
 import { SocialLoginDto  } from './dto/social-login.dto';
 import { LoginDto } from './dto/login.dto';
+import { UpdateProfileDto } from './dto/update-profile.dto';
 import { OtpService } from 'src/otp/otp.service';
 import { DatabaseService } from "src/database/databaseservice";
 import { OAuth2Client } from 'google-auth-library';
@@ -402,6 +403,40 @@ async resetPassword(email: string, role: string, otp: string, newPassword: strin
     };
   } catch (error) {
     throw new UnauthorizedException(error.message || 'Password reset failed');
+  }
+}
+
+async editProfile(userId: string, role: string, dto: UpdateProfileDto) {
+  try {
+    let userModel;
+
+    if (role === 'user') {
+      userModel = this.databaseService.repositories.userModel;
+    } else if (role === 'seller') {
+      userModel = this.databaseService.repositories.sellerModel;
+    } else if (role === 'admin') {
+      userModel = this.databaseService.repositories.adminModel;
+    } else {
+      throw new BadRequestException('Invalid role');
+    }
+
+    const user = await userModel.findByIdAndUpdate(
+      userId,
+      { $set: dto },
+      { new: true, runValidators: true },
+    ).select('-password -otp -otpExpiresAt');
+
+    if (!user) {
+      throw new BadRequestException('User not found');
+    }
+
+    return {
+      message: 'Profile updated successfully',
+      success: true,
+      data: user,
+    };
+  } catch (error) {
+    throw new BadRequestException(error.message || 'Failed to update profile');
   }
 }
 

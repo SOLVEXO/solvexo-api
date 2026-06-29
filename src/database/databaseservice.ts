@@ -24,7 +24,7 @@ export class DatabaseService {
 
     @InjectModel(schema.User.name)
     private otpModel: Model<schema.OtpDocument>,
-    @InjectModel(schema.User.name)
+    @InjectModel(schema.Banner.name)
     private bannerModel: Model<schema.BannerDocument>,
     @InjectModel(schema.User.name)
     private faqModel: Model<schema.FaqDocument>,
@@ -60,6 +60,15 @@ export class DatabaseService {
     @InjectModel(schema.Store.name)
     private storeModel: Model<schema.StoreDocument>,
 
+    @InjectModel(schema.Employee.name)
+    private employeeModel: Model<schema.EmployeeDocument>,
+
+    @InjectModel(schema.RegisterSession.name)
+    private registerSessionModel: Model<schema.RegisterSessionDocument>,
+
+    @InjectModel(schema.Sale.name)
+    private saleModel: Model<schema.SaleDocument>,
+
   ) { }
 
   get repositories() {
@@ -84,6 +93,9 @@ export class DatabaseService {
       orderModel: this.orderModel,
       paymentTransactionModel: this.paymentTransactionModel,
       storeModel: this.storeModel,
+      employeeModel: this.employeeModel,
+      registerSessionModel: this.registerSessionModel,
+      saleModel: this.saleModel,
     };
   }
 }

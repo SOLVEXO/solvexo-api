@@ -1,3 +1,4 @@
+/* eslint-disable prettier/prettier */
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument } from 'mongoose';
 
@@ -5,22 +6,25 @@ export type BannerDocument = HydratedDocument<Banner>;
 
 @Schema({ timestamps: true })
 export class Banner {
-    _id: string;
+  _id: string;
 
-    @Prop({ required: true })
-    imageUrl: string;
+  @Prop({ required: true })
+  bannerImage: string;
 
-    @Prop({ default: '' })
-    publicId: string;
+  @Prop({ default: '' })
+  publicId: string;
 
-    @Prop({ default: true })
-    isActive: boolean;
+  @Prop({ type: String, default: null })
+  urlOnTap: string | null;
 
-    @Prop({ default: 0 })
-    order: number; // display order
+  @Prop({ default: true })
+  isActive: boolean;
 
-    createdAt?: Date;
-    updatedAt?: Date;
+  @Prop({ default: 0 })
+  order: number;
+
+  createdAt?: Date;
+  updatedAt?: Date;
 }
 
 export const BannerSchema = SchemaFactory.createForClass(Banner);
@@ -29,7 +33,7 @@ BannerSchema.index({ isActive: 1 });
 BannerSchema.index({ order: 1 });
 
 BannerSchema.methods.toJSON = function () {
-    const obj = this.toObject();
-    delete obj.__v;
-    return obj;
+  const obj = this.toObject();
+  delete obj.__v;
+  return obj;
 };

@@ -4,49 +4,77 @@ import { Document } from 'mongoose';
 
 export type RegisterSessionDocument = RegisterSession & Document;
 
+@Schema({ _id: true, timestamps: true })
+export class CashAdjustment {
+  @Prop({ enum: ['cash_in', 'cash_out'], required: true })
+  type: string;
+
+  @Prop({ type: Number, required: true })
+  amount: number;
+
+  @Prop({ required: true })
+  reason: string;
+
+  @Prop({ required: true })
+  employeeId: string;
+
+  @Prop({ type: Date, default: () => new Date() })
+  createdAt: Date;
+}
+export const CashAdjustmentSchema = SchemaFactory.createForClass(CashAdjustment);
+
 @Schema({ timestamps: true })
 export class RegisterSession {
   @Prop({ required: true })
   storeId: string;
 
   @Prop({ required: true })
-  registerId: string;           // store.registers ka _id
+  registerId: string;
 
   @Prop({ required: true })
-  employeeId: string;           // kisne khola
+  employeeId: string;
 
-  @Prop({ default: null })
-  shiftId: string;              // store.shifts ka _id
+  @Prop({ type: String, default: null })
+  shiftId: string | null;
 
   @Prop({ required: true })
   openedAt: Date;
 
-  @Prop({ default: null })
-  closedAt: Date;
+  @Prop({ type: Date, default: null })
+  closedAt: Date | null;
 
   @Prop({ type: Number, default: 0 })
-  openingCash: number;          // float (jaise 100)
+  openingCash: number;
 
   @Prop({ type: Number, default: null })
-  closingCash: number;          // band karte waqt asal ginti
+  closingCash: number | null;
 
   @Prop({ type: Number, default: 0 })
-  expectedCash: number;         // openingCash + cashSales
+  expectedCash: number;
 
   @Prop({ type: Number, default: 0 })
-  cashDifference: number;       // closingCash − expectedCash
+  cashDifference: number;
 
   @Prop({ type: Number, default: 0 })
-  cashSales: number;            // is session me cash se kitna
+  cashSales: number;
 
   @Prop({ type: Number, default: 0 })
-  cardSales: number;            // card se kitna
+  cardSales: number;
 
   @Prop({ type: Number, default: 0 })
-  totalSales: number;           // total bikri
+  otherSales: number;
 
   @Prop({ type: Number, default: 0 })
-  totalTransactions: number;    // kitni bikriyaan
+  totalSales: number;
+
+  @Prop({ type: Number, default: 0 })
+  totalTransactions: number;
+
+  @Prop({ type: Number, default: 0 })
+  totalRefunds: number;
+
+  @Prop({ type: [CashAdjustmentSchema], default: [] })
+  cashAdjustments: CashAdjustment[];
 
   @Prop({ enum: ['open', 'closed'], default: 'open' })
   status: string;
@@ -58,3 +86,4 @@ RegisterSessionSchema.index({ storeId: 1, status: 1 });
 RegisterSessionSchema.index({ employeeId: 1 });
 RegisterSessionSchema.index({ registerId: 1 });
 RegisterSessionSchema.index({ shiftId: 1 });
+RegisterSessionSchema.index({ storeId: 1, createdAt: -1 });

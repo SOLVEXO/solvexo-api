@@ -19,6 +19,7 @@ import { PaymentModule } from './payment/payment.module';
 import { StoreModule } from './store/store.module';
 import { InventoryModule } from './inventory/inventory.module';
 import { RatingModule } from './rating/rating.module';
+import { PosModule } from './pos/pos.module';
 
 @Module({
   imports: [
@@ -43,6 +44,7 @@ import { RatingModule } from './rating/rating.module';
     StoreModule,
     InventoryModule,
     RatingModule,
+    PosModule,
   ],
   controllers: [AppController],
   providers: [AppService],

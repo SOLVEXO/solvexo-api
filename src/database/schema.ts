@@ -1,6 +1,5 @@
 /* eslint-disable prettier/prettier */
 
-import e from 'express'
 
 export { User, UserDocument, UserSchema } from '../users/schemas/user.schema'
 export { Seller, SellerDocument, SellerSchema } from '../seller/seller.schema'
@@ -25,11 +24,13 @@ export { PaymentTransaction, PaymentTransactionDocument, PaymentTransactionSchem
 
 
 export { Store, StoreDocument, StoreSchema } from '../store/schemas/store.schema';
+export { Employee, EmployeeDocument, EmployeeSchema } from '../pos/schemas/employee.schema';
+export { RegisterSession, RegisterSessionDocument, RegisterSessionSchema } from '../pos/schemas/register-session.schema';
+export { Sale, SaleDocument, SaleSchema } from '../pos/schemas/sales.schema';
 
 export type { Otp, OtpSchema } from '../otp/schemas/otp.schema';
 export type { OtpDocument } from '../otp/schemas/otp.schema';
-export type { Banner, BannerSchema } from '../banner/schemas/banner.schema';
-export type { BannerDocument } from '../banner/schemas/banner.schema';
+export { Banner, BannerDocument, BannerSchema } from '../banner/schemas/banner.schema';
 export type { Faq, FaqSchema } from '../faqs/schemas/faq.schema';
 export type { FaqDocument } from '../faqs/schemas/faq.schema';
 

@@ -4,22 +4,25 @@ import { Document } from 'mongoose';
 
 export type SaleDocument = Sale & Document;
 
-@Schema({ _id: false })
+@Schema({ _id: true })
 export class SaleItem {
   @Prop({ required: true })
   productId: string;
 
   @Prop({ required: true })
-  variantId: string;            // asli bikne wali cheez (price/stock isi pe)
+  variantId: string;
 
   @Prop({ required: true })
   name: string;                 // snapshot — "Ceramic Mug (Blue)"
 
   @Prop({ required: true })
-  sku: string;                  // variant ka sku — "MUG-001"
+  sku: string;
+
+  @Prop({ type: String, default: null })
+  image: string | null;         // product image snapshot
 
   @Prop({ type: Number, required: true })
-  price: number;                // snapshot — bikri ke waqt ki keemat
+  price: number;                // snapshot — price at time of sale
 
   @Prop({ type: Number, required: true })
   qty: number;
@@ -31,17 +34,20 @@ export const SaleItemSchema = SchemaFactory.createForClass(SaleItem);
 
 @Schema({ timestamps: true })
 export class Sale {
+  @Prop({ required: true, unique: true })
+  saleNumber: string;           // human-readable receipt number e.g. "POS-00001"
+
   @Prop({ required: true })
   storeId: string;
 
   @Prop({ required: true })
-  sessionId: string;            // kis register session me — shift report isi se
+  sessionId: string;
 
   @Prop({ required: true })
   registerId: string;
 
   @Prop({ required: true })
-  employeeId: string;           // kis cashier ne bechi
+  employeeId: string;
 
   @Prop({ type: [SaleItemSchema], default: [] })
   items: SaleItem[];
@@ -61,19 +67,27 @@ export class Sale {
   @Prop({ enum: ['cash', 'card', 'other'], default: 'cash' })
   paymentMethod: string;
 
-  @Prop({ default: null })
-  customerId: string;           // optional — Walk-in pe null
+  @Prop({ type: String, default: null })
+  customerId: string | null;
 
   @Prop({ default: 'Walk-in' })
-  customerName: string;         // "Walk-in", "Sarah M."
+  customerName: string;
+
+  @Prop({ type: String, default: null })
+  notes: string | null;
+
+  @Prop({ type: Date, default: null })
+  heldAt: Date | null;          // timestamp when sale was put on hold
 
   @Prop({ enum: ['completed', 'held', 'refunded'], default: 'completed' })
-  status: string;               // "Hold Current Sale" → held
+  status: string;
 }
 
 export const SaleSchema = SchemaFactory.createForClass(Sale);
 
 SaleSchema.index({ storeId: 1, createdAt: -1 });
+SaleSchema.index({ storeId: 1, status: 1 });
 SaleSchema.index({ sessionId: 1 });
 SaleSchema.index({ employeeId: 1 });
+SaleSchema.index({ saleNumber: 1 }, { unique: true });
 SaleSchema.index({ 'items.variantId': 1 });

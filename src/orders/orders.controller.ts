@@ -40,6 +40,14 @@ import { OrdersService } from './orders.service';
 export class OrdersController {
   constructor(private readonly ordersService: OrdersService) {}
 
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('user')
+  @Get('my-orders')
+  async getOrdersByUserId(@Req() req: any, @Query() query: any) {
+    const { userId } = req.user;
+    return this.ordersService.getOrdersByUserId(userId, query);
+  }
+
   // signed URLs (non-stamped) + stamped stream URLs list
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('user')
@@ -194,5 +202,14 @@ export class OrdersController {
     });
 
     res.end(buffer);
+  }
+
+  // must be last — catches any GET /:orderId after all static routes
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('user')
+  @Get(':orderId')
+  async getOrderById(@Req() req: any, @Param('orderId') orderId: string) {
+    const { userId } = req.user;
+    return this.ordersService.getOrderById(userId, orderId);
   }
 }
