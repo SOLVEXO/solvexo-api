@@ -20,6 +20,7 @@ import { StoreModule } from './store/store.module';
 import { InventoryModule } from './inventory/inventory.module';
 import { RatingModule } from './rating/rating.module';
 import { PosModule } from './pos/pos.module';
+import { MessagingModule } from './messaging/messaging.module';
 
 @Module({
   imports: [
@@ -45,6 +46,7 @@ import { PosModule } from './pos/pos.module';
     InventoryModule,
     RatingModule,
     PosModule,
+    MessagingModule,
   ],
   controllers: [AppController],
   providers: [AppService],

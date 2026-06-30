@@ -1,0 +1,51 @@
+/* eslint-disable prettier/prettier */
+import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
+import { Document } from 'mongoose';
+
+export type ConversationDocument = Conversation & Document;
+
+@Schema({ timestamps: true })
+export class Conversation {
+  @Prop({ type: String, required: true }) buyerId: string;
+  @Prop({ type: String, required: true }) storeId: string;
+  @Prop({ type: String, required: true }) sellerId: string;
+
+  // Snapshot of the latest message — updated on every send
+  @Prop({ type: Object, default: null })
+  lastMessage: {
+    messageId: string;
+    text: string | null;
+    type: string;
+    senderId: string;
+    senderRole: string;
+    sentAt: Date;
+  } | null;
+
+  @Prop({ type: Number, default: 0 }) buyerUnread: number;
+  @Prop({ type: Number, default: 0 }) sellerUnread: number;
+
+  // Seller-side inbox controls
+  @Prop({ type: Boolean, default: false }) isPinned: boolean;
+  @Prop({ type: Boolean, default: false }) isArchived: boolean;
+  @Prop({ type: Boolean, default: false }) isMuted: boolean;
+
+  // Soft-delete per side (restores on new message from that side)
+  @Prop({ type: Boolean, default: false }) deletedByBuyer: boolean;
+  @Prop({ type: Boolean, default: false }) deletedBySeller: boolean;
+
+  // Block state — mirrors Block documents for fast read
+  @Prop({ type: Boolean, default: false }) blockedByBuyer: boolean;
+  @Prop({ type: Boolean, default: false }) blockedBySeller: boolean;
+}
+
+export const ConversationSchema = SchemaFactory.createForClass(Conversation);
+
+// One conversation per buyer+store pair
+ConversationSchema.index({ buyerId: 1, storeId: 1 }, { unique: true });
+// Seller inbox query (by store, sorted by last activity)
+ConversationSchema.index({ storeId: 1, updatedAt: -1 });
+// Buyer inbox query
+ConversationSchema.index({ buyerId: 1, updatedAt: -1 });
+// Seller pinned/archived queries
+ConversationSchema.index({ storeId: 1, isPinned: 1, updatedAt: -1 });
+ConversationSchema.index({ storeId: 1, isArchived: 1, updatedAt: -1 });

@@ -27,6 +27,10 @@ export { Store, StoreDocument, StoreSchema } from '../store/schemas/store.schema
 export { Employee, EmployeeDocument, EmployeeSchema } from '../pos/schemas/employee.schema';
 export { RegisterSession, RegisterSessionDocument, RegisterSessionSchema } from '../pos/schemas/register-session.schema';
 export { Sale, SaleDocument, SaleSchema } from '../pos/schemas/sales.schema';
+export { Conversation, ConversationDocument, ConversationSchema } from '../messaging/schemas/conversation.schema';
+export { Message, MessageDocument, MessageSchema } from '../messaging/schemas/message.schema';
+export { Block, BlockDocument, BlockSchema } from '../messaging/schemas/block.schema';
+export { Report, ReportDocument, ReportSchema } from '../messaging/schemas/report.schema';
 
 export type { Otp, OtpSchema } from '../otp/schemas/otp.schema';
 export type { OtpDocument } from '../otp/schemas/otp.schema';

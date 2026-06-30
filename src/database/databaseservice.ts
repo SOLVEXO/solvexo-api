@@ -69,6 +69,18 @@ export class DatabaseService {
     @InjectModel(schema.Sale.name)
     private saleModel: Model<schema.SaleDocument>,
 
+    @InjectModel(schema.Conversation.name)
+    private conversationModel: Model<schema.ConversationDocument>,
+
+    @InjectModel(schema.Message.name)
+    private messageModel: Model<schema.MessageDocument>,
+
+    @InjectModel(schema.Block.name)
+    private blockModel: Model<schema.BlockDocument>,
+
+    @InjectModel(schema.Report.name)
+    private reportModel: Model<schema.ReportDocument>,
+
   ) { }
 
   get repositories() {
@@ -96,6 +108,10 @@ export class DatabaseService {
       employeeModel: this.employeeModel,
       registerSessionModel: this.registerSessionModel,
       saleModel: this.saleModel,
+      conversationModel: this.conversationModel,
+      messageModel: this.messageModel,
+      blockModel: this.blockModel,
+      reportModel: this.reportModel,
     };
   }
 }
