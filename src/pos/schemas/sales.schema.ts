@@ -29,6 +29,9 @@ export class SaleItem {
 
   @Prop({ type: Number, required: true })
   lineTotal: number;            // price × qty
+
+  @Prop({ type: Number, default: 0 })
+  refundedQty: number;          // cumulative qty refunded from this line
 }
 export const SaleItemSchema = SchemaFactory.createForClass(SaleItem);
 
@@ -79,8 +82,20 @@ export class Sale {
   @Prop({ type: Date, default: null })
   heldAt: Date | null;          // timestamp when sale was put on hold
 
-  @Prop({ enum: ['completed', 'held', 'refunded'], default: 'completed' })
+  @Prop({ enum: ['completed', 'held', 'refunded', 'voided', 'partially_refunded'], default: 'completed' })
   status: string;
+
+  @Prop({ type: String, default: null })
+  idempotencyKey: string | null;
+
+  @Prop({ type: Date, default: null })
+  voidedAt: Date | null;
+
+  @Prop({ type: String, default: null })
+  voidedBy: string | null;      // employeeId who voided
+
+  @Prop({ type: Number, default: 0 })
+  refundedAmount: number;       // cumulative amount refunded (for partial refunds)
 }
 
 export const SaleSchema = SchemaFactory.createForClass(Sale);
@@ -91,3 +106,4 @@ SaleSchema.index({ sessionId: 1 });
 SaleSchema.index({ employeeId: 1 });
 SaleSchema.index({ saleNumber: 1 }, { unique: true });
 SaleSchema.index({ 'items.variantId': 1 });
+SaleSchema.index({ idempotencyKey: 1 }, { sparse: true });

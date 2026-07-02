@@ -1,8 +1,9 @@
 /* eslint-disable prettier/prettier */
 import {
   Controller, Get, Post, Patch, Delete,
-  Body, Param, Query, Req, UseGuards,
+  Body, Param, Query, Req, Res, UseGuards,
 } from '@nestjs/common';
+import { Response } from 'express';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { PosService } from './pos.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -16,6 +17,13 @@ import { CloseSessionDto } from './dto/close-session.dto';
 import { CreateSaleDto } from './dto/create-sale.dto';
 import { CompleteSaleDto } from './dto/complete-sale.dto';
 import { CashAdjustmentDto } from './dto/cash-adjustment.dto';
+import { RefundSaleDto } from './dto/refund-sale.dto';
+import { ForceCloseSessionDto } from './dto/force-close-session.dto';
+import { UpdateRegisterDto } from './dto/update-register.dto';
+import { UpdateShiftDto } from './dto/update-shift.dto';
+import { ResetPinDto } from './dto/reset-pin.dto';
+import { UpdateSaleItemsDto } from './dto/update-sale-items.dto';
+import { UpdatePosSettingsDto } from './dto/update-pos-settings.dto';
 
 @ApiTags('POS')
 @ApiBearerAuth()
@@ -94,12 +102,8 @@ export class PosController {
     return this.posService.addShift(req.user.userId, storeId, body);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
-  @Delete('shifts/:storeId/:shiftId')
-  removeShift(@Req() req: any, @Param('storeId') storeId: string, @Param('shiftId') shiftId: string) {
-    return this.posService.removeShift(req.user.userId, storeId, shiftId);
-  }
+  // Deletion is handled by deleteShift() below (supports ?force=true and the
+  // assigned-employee guard) — kept as the single handler for this route.
 
   // ═══════════════════════════════════════════════════════════════════════════
   // PRODUCT SEARCH & BROWSE  (seller only)
@@ -141,8 +145,8 @@ export class PosController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('seller')
   @Get('sessions/active')
-  getActiveSession(@Query('storeId') storeId: string, @Query('registerId') registerId: string) {
-    return this.posService.getActiveSession(storeId, registerId);
+  getActiveSession(@Req() req: any, @Query('storeId') storeId: string, @Query('registerId') registerId: string) {
+    return this.posService.getActiveSession(req.user.userId, storeId, registerId);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -210,8 +214,8 @@ export class PosController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('seller')
   @Post('sales/:saleId/refund')
-  refundSale(@Req() req: any, @Param('saleId') saleId: string) {
-    return this.posService.refundSale(req.user.userId, saleId);
+  refundSale(@Req() req: any, @Param('saleId') saleId: string, @Body() dto: RefundSaleDto) {
+    return this.posService.refundSale(req.user.userId, saleId, dto);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -219,6 +223,135 @@ export class PosController {
   @Delete('sales/:saleId/discard')
   discardHeldSale(@Req() req: any, @Param('saleId') saleId: string) {
     return this.posService.discardHeldSale(req.user.userId, saleId);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // REGISTER CRUD EXTENSIONS  (seller only)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Get('registers/:storeId')
+  listRegisters(@Req() req: any, @Param('storeId') storeId: string) {
+    return this.posService.listRegisters(req.user.userId, storeId);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Get('registers/:storeId/:registerId')
+  getRegisterById(@Req() req: any, @Param('storeId') storeId: string, @Param('registerId') registerId: string) {
+    return this.posService.getRegisterById(req.user.userId, storeId, registerId);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Patch('registers/:storeId/:registerId')
+  updateRegister(@Req() req: any, @Param('storeId') storeId: string, @Param('registerId') registerId: string, @Body() dto: UpdateRegisterDto) {
+    return this.posService.updateRegister(req.user.userId, storeId, registerId, dto);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // SHIFT CRUD EXTENSIONS  (seller only)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Get('shifts/:storeId')
+  listShifts(@Req() req: any, @Param('storeId') storeId: string) {
+    return this.posService.listShifts(req.user.userId, storeId);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Get('shifts/:storeId/:shiftId')
+  getShiftById(@Req() req: any, @Param('storeId') storeId: string, @Param('shiftId') shiftId: string) {
+    return this.posService.getShiftById(req.user.userId, storeId, shiftId);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Patch('shifts/:storeId/:shiftId')
+  updateShift(@Req() req: any, @Param('storeId') storeId: string, @Param('shiftId') shiftId: string, @Body() dto: UpdateShiftDto) {
+    return this.posService.updateShift(req.user.userId, storeId, shiftId, dto);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Delete('shifts/:storeId/:shiftId')
+  deleteShift(@Req() req: any, @Param('storeId') storeId: string, @Param('shiftId') shiftId: string, @Query('force') force: string) {
+    return this.posService.deleteShift(req.user.userId, storeId, shiftId, force === 'true');
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // EMPLOYEE EXTENSIONS  (seller only) — storeId-scoped routes
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Get('employees/:storeId/:employeeId')
+  getEmployeeById(@Req() req: any, @Param('storeId') storeId: string, @Param('employeeId') employeeId: string) {
+    return this.posService.getEmployeeById(req.user.userId, storeId, employeeId);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Patch('employees/:storeId/:employeeId')
+  updateEmployeeV2(@Req() req: any, @Param('storeId') storeId: string, @Param('employeeId') employeeId: string, @Body() dto: UpdateEmployeeDto) {
+    return this.posService.updateEmployeeV2(req.user.userId, storeId, employeeId, dto);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Delete('employees/:storeId/:employeeId')
+  removeEmployeeV2(@Req() req: any, @Param('storeId') storeId: string, @Param('employeeId') employeeId: string) {
+    return this.posService.removeEmployeeV2(req.user.userId, storeId, employeeId);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Post('employees/:storeId/:employeeId/reset-pin')
+  resetPin(@Req() req: any, @Param('storeId') storeId: string, @Param('employeeId') employeeId: string, @Body() dto: ResetPinDto) {
+    return this.posService.resetPin(req.user.userId, storeId, employeeId, dto);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // SESSION EXTENSIONS  (seller only)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Post('sessions/:sessionId/force-close')
+  forceCloseSession(@Req() req: any, @Param('sessionId') sessionId: string, @Body() dto: ForceCloseSessionDto) {
+    return this.posService.forceCloseSession(req.user.userId, sessionId, dto);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // PRODUCT BARCODE LOOKUP  (seller only)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Get('products/barcode/:storeId/:barcode')
+  getProductByBarcode(@Req() req: any, @Param('storeId') storeId: string, @Param('barcode') barcode: string) {
+    return this.posService.getProductByBarcode(req.user.userId, storeId, barcode);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // SALES EXTENSIONS  (seller only)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Post('sales/:saleId/void')
+  voidSale(@Req() req: any, @Param('saleId') saleId: string, @Body() dto: { reason?: string; actingEmployeeId?: string }) {
+    return this.posService.voidSale(req.user.userId, saleId, dto);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Patch('sales/:saleId/items')
+  editHeldSaleItems(@Req() req: any, @Param('saleId') saleId: string, @Body() dto: UpdateSaleItemsDto) {
+    return this.posService.editHeldSaleItems(req.user.userId, saleId, dto);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -230,5 +363,67 @@ export class PosController {
   @Get('reports/daily')
   getDailyReport(@Req() req: any, @Query('storeId') storeId: string, @Query() query: any) {
     return this.posService.getDailyReport(req.user.userId, storeId, query);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Get('reports/range')
+  getDateRangeReport(@Req() req: any, @Query('storeId') storeId: string, @Query() query: any) {
+    return this.posService.getDateRangeReport(req.user.userId, storeId, query);
+  }
+
+  // static /reports/daily/export before parameterized /reports/:x
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Get('reports/daily/export')
+  async exportDailyReport(@Req() req: any, @Query('storeId') storeId: string, @Query() query: any, @Res() res: Response) {
+    const csv = await this.posService.exportDailyReportCsv(req.user.userId, storeId, query);
+    const filename = `pos-report-${query.date ?? new Date().toISOString().split('T')[0]}.csv`;
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(csv);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Get('reports/register/:registerId')
+  getRegisterReport(@Req() req: any, @Param('registerId') registerId: string, @Query() query: any) {
+    return this.posService.getRegisterReport(req.user.userId, registerId, query);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Get('reports/employee/:employeeId')
+  getEmployeeReport(@Req() req: any, @Param('employeeId') employeeId: string, @Query() query: any) {
+    return this.posService.getEmployeeReport(req.user.userId, employeeId, query);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // POS SETTINGS  (seller only)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Get('settings/:storeId')
+  getPosSettings(@Req() req: any, @Param('storeId') storeId: string) {
+    return this.posService.getPosSettings(req.user.userId, storeId);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Patch('settings/:storeId')
+  updatePosSettings(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: UpdatePosSettingsDto) {
+    return this.posService.updatePosSettings(req.user.userId, storeId, dto);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // AUDIT LOGS  (seller only)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Get('audit-logs/:storeId')
+  getAuditLogs(@Req() req: any, @Param('storeId') storeId: string, @Query() query: any) {
+    return this.posService.getAuditLogs(req.user.userId, storeId, query);
   }
 }

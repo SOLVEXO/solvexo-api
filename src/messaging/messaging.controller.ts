@@ -22,7 +22,7 @@ import { ReportDto } from './dto/report.dto';
 @UseGuards(JwtAuthGuard)
 @Controller('api/messaging')
 export class MessagingController {
-  constructor(private readonly messagingService: MessagingService) {}
+  constructor(private readonly messagingService: MessagingService) { }
 
   // ═══════════════════════════════════════════════════════════════════════════
   // CONVERSATIONS

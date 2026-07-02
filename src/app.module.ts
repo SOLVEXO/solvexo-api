@@ -21,6 +21,8 @@ import { InventoryModule } from './inventory/inventory.module';
 import { RatingModule } from './rating/rating.module';
 import { PosModule } from './pos/pos.module';
 import { MessagingModule } from './messaging/messaging.module';
+import { FinanceModule } from './finance/finance.module';
+import { SubscriptionsModule } from './subscriptions/subscriptions.module';
 
 @Module({
   imports: [
@@ -47,6 +49,8 @@ import { MessagingModule } from './messaging/messaging.module';
     RatingModule,
     PosModule,
     MessagingModule,
+    FinanceModule,
+    SubscriptionsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

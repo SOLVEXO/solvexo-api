@@ -13,6 +13,9 @@ export class ProductVariant {
   @Prop({ required: true })
   sku: string;
 
+  @Prop({ type: String, default: null })
+  barcode: string | null;
+
   @Prop({ required: true })
   price: number;
 
@@ -49,3 +52,4 @@ export const ProductVariantSchema = SchemaFactory.createForClass(ProductVariant)
 
 ProductVariantSchema.index({ productId: 1 });
 ProductVariantSchema.index({ sku: 1 });
+ProductVariantSchema.index({ barcode: 1 }, { sparse: true });

@@ -14,6 +14,7 @@ import { OrdersService } from './orders.service';
 import { AuthModule } from 'src/auth/auth.module';
 import { UploadModule } from 'src/upload/upload.module';
 import { RedisModule } from 'src/redis/redis.module';
+import { FinanceModule } from 'src/finance/finance.module';
 import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 
@@ -22,6 +23,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
     AuthModule,
     UploadModule,
     RedisModule,
+    FinanceModule,
     ConfigModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],

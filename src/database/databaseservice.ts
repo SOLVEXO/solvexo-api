@@ -69,6 +69,12 @@ export class DatabaseService {
     @InjectModel(schema.Sale.name)
     private saleModel: Model<schema.SaleDocument>,
 
+    @InjectModel(schema.PosAuditLog.name)
+    private posAuditLogModel: Model<schema.PosAuditLogDocument>,
+
+    @InjectModel(schema.PosSettings.name)
+    private posSettingsModel: Model<schema.PosSettingsDocument>,
+
     @InjectModel(schema.Conversation.name)
     private conversationModel: Model<schema.ConversationDocument>,
 
@@ -80,6 +86,33 @@ export class DatabaseService {
 
     @InjectModel(schema.Report.name)
     private reportModel: Model<schema.ReportDocument>,
+
+    @InjectModel(schema.SellerBalance.name)
+    private sellerBalanceModel: Model<schema.SellerBalanceDocument>,
+
+    @InjectModel(schema.Transaction.name)
+    private transactionModel: Model<schema.TransactionDocument>,
+
+    @InjectModel(schema.Payout.name)
+    private payoutModel: Model<schema.PayoutDocument>,
+
+    @InjectModel(schema.PayoutMethod.name)
+    private payoutMethodModel: Model<schema.PayoutMethodDocument>,
+
+    @InjectModel(schema.PayoutSchedule.name)
+    private payoutScheduleModel: Model<schema.PayoutScheduleDocument>,
+
+    @InjectModel(schema.TaxReport.name)
+    private taxReportModel: Model<schema.TaxReportDocument>,
+
+    @InjectModel(schema.SubscriptionPlan.name)
+    private subscriptionPlanModel: Model<schema.SubscriptionPlanDocument>,
+
+    @InjectModel(schema.Subscription.name)
+    private subscriptionModel: Model<schema.SubscriptionDocument>,
+
+    @InjectModel(schema.SubscriptionInvoice.name)
+    private subscriptionInvoiceModel: Model<schema.SubscriptionInvoiceDocument>,
 
   ) { }
 
@@ -108,10 +141,21 @@ export class DatabaseService {
       employeeModel: this.employeeModel,
       registerSessionModel: this.registerSessionModel,
       saleModel: this.saleModel,
+      posAuditLogModel: this.posAuditLogModel,
+      posSettingsModel: this.posSettingsModel,
       conversationModel: this.conversationModel,
       messageModel: this.messageModel,
       blockModel: this.blockModel,
       reportModel: this.reportModel,
+      sellerBalanceModel: this.sellerBalanceModel,
+      transactionModel: this.transactionModel,
+      payoutModel: this.payoutModel,
+      payoutMethodModel: this.payoutMethodModel,
+      payoutScheduleModel: this.payoutScheduleModel,
+      taxReportModel: this.taxReportModel,
+      subscriptionPlanModel: this.subscriptionPlanModel,
+      subscriptionModel: this.subscriptionModel,
+      subscriptionInvoiceModel: this.subscriptionInvoiceModel,
     };
   }
 }

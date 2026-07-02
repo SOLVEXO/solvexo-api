@@ -78,6 +78,15 @@ export class RegisterSession {
 
   @Prop({ enum: ['open', 'closed'], default: 'open' })
   status: string;
+
+  @Prop({ type: String, default: null })
+  forceClosedBy: string | null;  // sellerId or employeeId
+
+  @Prop({ type: String, default: null })
+  forceCloseReason: string | null;
+
+  @Prop({ type: Date, default: null })
+  forceCloseAt: Date | null;
 }
 
 export const RegisterSessionSchema = SchemaFactory.createForClass(RegisterSession);

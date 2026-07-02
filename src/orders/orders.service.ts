@@ -5,6 +5,7 @@ import { DatabaseService } from 'src/database/databaseservice';
 import { UploadService } from 'src/upload/upload.service';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
+import { FinanceService } from 'src/finance/finance.service';
 
 
 @Injectable()
@@ -14,6 +15,7 @@ export class OrdersService {
     private readonly uploadService: UploadService,
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
+    private readonly financeService: FinanceService,
   ) {}
 
   async getOrdersByUserId(userId: string, query: any) {
@@ -375,6 +377,21 @@ export class OrdersService {
 
     await orderModel.findByIdAndUpdate(orderId, { $set: updateData });
 
+    // Record sale in finance ledger when seller marks their order completed
+    if (status === 'completed') {
+      const so = order.sellerOrders[sellerOrderIndex];
+      try {
+        await this.financeService.recordSale(
+          so.storeId, so.sellerId,
+          orderId,
+          so.subtotal,
+          `Sale — Order #${orderId}`,
+        );
+      } catch (e) {
+        console.error('Finance recordSale failed:', e?.message);
+      }
+    }
+
     return { success: true, message: `Order status updated to ${status}` };
   }
 
@@ -402,6 +419,20 @@ export class OrdersService {
     });
 
     await orderModel.findByIdAndUpdate(orderId, { $set: updateData });
+
+    // Record sale in finance ledger for each store's sub-order
+    for (const so of order.sellerOrders) {
+      try {
+        await this.financeService.recordSale(
+          so.storeId, so.sellerId,
+          orderId,
+          so.subtotal,
+          `Sale — Order #${orderId}`,
+        );
+      } catch (e) {
+        console.error('Finance recordSale failed:', e?.message);
+      }
+    }
 
     return { success: true, message: 'Order marked as paid' };
   }

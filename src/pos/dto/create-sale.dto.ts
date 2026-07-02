@@ -88,4 +88,9 @@ export class CreateSaleDto {
   @IsOptional()
   @IsEnum(['completed', 'held'])
   status?: 'completed' | 'held';
+
+  @ApiProperty({ required: false, example: 'idem_abc123', description: 'Client-generated key — prevents duplicate sales on retry' })
+  @IsOptional()
+  @IsString()
+  idempotencyKey?: string;
 }
