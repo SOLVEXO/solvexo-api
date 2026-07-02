@@ -31,11 +31,12 @@ async function bootstrap() {
   const whitelist = [
     'http://localhost:3000',
     'http://localhost:5173',
-  'http://127.0.0.1:3000',
+    'http://localhost:5174',
+    'http://127.0.0.1:3000',
+    'http://127.0.0.1:5173',
+    'https://staging.solvexo.store',
+    'https://solvexo.store',
     'https://api.edudeen.com',
-    
-
-    
   ];
 
   app.enableCors({
@@ -59,8 +60,9 @@ async function bootstrap() {
     },
   });
 
-  const server = await app.listen(3002, '0.0.0.0');
+  const port = process.env.PORT || 3002;
+  const server = await app.listen(port, '0.0.0.0');
   server.setTimeout(300000);
-  console.log('Server running on http://localhost:3002');
+  console.log(`Server running on http://localhost:${port}`);
 }
 bootstrap();

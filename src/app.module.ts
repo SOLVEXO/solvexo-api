@@ -21,8 +21,12 @@ import { InventoryModule } from './inventory/inventory.module';
 import { RatingModule } from './rating/rating.module';
 import { PosModule } from './pos/pos.module';
 import { MessagingModule } from './messaging/messaging.module';
+<<<<<<< Updated upstream
 import { FinanceModule } from './finance/finance.module';
 import { SubscriptionsModule } from './subscriptions/subscriptions.module';
+=======
+import { SchedulerModule } from './scheduler/scheduler.module';
+>>>>>>> Stashed changes
 
 @Module({
   imports: [
@@ -49,8 +53,12 @@ import { SubscriptionsModule } from './subscriptions/subscriptions.module';
     RatingModule,
     PosModule,
     MessagingModule,
+<<<<<<< Updated upstream
     FinanceModule,
     SubscriptionsModule,
+=======
+    SchedulerModule,
+>>>>>>> Stashed changes
   ],
   controllers: [AppController],
   providers: [AppService],

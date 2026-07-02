@@ -60,6 +60,9 @@ export class DatabaseService {
     @InjectModel(schema.Store.name)
     private storeModel: Model<schema.StoreDocument>,
 
+    @InjectModel(schema.StoreFollower.name)
+    private storeFollowerModel: Model<schema.StoreFollowerDocument>,
+
     @InjectModel(schema.Employee.name)
     private employeeModel: Model<schema.EmployeeDocument>,
 
@@ -138,6 +141,7 @@ export class DatabaseService {
       orderModel: this.orderModel,
       paymentTransactionModel: this.paymentTransactionModel,
       storeModel: this.storeModel,
+      storeFollowerModel: this.storeFollowerModel,
       employeeModel: this.employeeModel,
       registerSessionModel: this.registerSessionModel,
       saleModel: this.saleModel,

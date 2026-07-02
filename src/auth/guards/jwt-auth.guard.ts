@@ -24,16 +24,17 @@ export class JwtAuthGuard extends AuthGuard('jwt') {
     const request = context.switchToHttp().getRequest();
     const token = request.headers.authorization?.split(' ')[1];
 
-    console.log('Token from header:', token); // Debug log
-
     if (!token) {
       throw new UnauthorizedException('Token missing');
     }
 
-    const isValid = await this.redisService.get(token);
-     console.log(isValid); 
-    if (!isValid) {
-      throw new UnauthorizedException('Session expired, please login again');
+    // Only enforce Redis session check when Redis is actually connected.
+    // If Redis is down, Passport's JWT signature check (above) is sufficient.
+    if (this.redisService.isConnected) {
+      const isValid = await this.redisService.get(token);
+      if (!isValid) {
+        throw new UnauthorizedException('Session expired, please login again');
+      }
     }
 
     return true;

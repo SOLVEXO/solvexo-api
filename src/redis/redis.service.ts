@@ -1,42 +1,56 @@
-import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+/* eslint-disable prettier/prettier */
+import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from '@nestjs/common';
 import { createClient, RedisClientType } from 'redis';
-import { ConfigModule } from '@nestjs/config';
-
 
 @Injectable()
 export class RedisService implements OnModuleInit, OnModuleDestroy {
   private client: RedisClientType;
+  private connected = false;
+  private readonly logger = new Logger(RedisService.name);
 
   constructor() {
+    const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379';
 
-    // const redisUrl = process.env.REDIS_URL ||  'redis://localhost:6379';
+    this.client = createClient({ url: redisUrl });
 
-    this.client = createClient({
-      // url: redisUrl,
+    this.client.on('error', () => {
+      if (this.connected) {
+        this.connected = false;
+        this.logger.warn('Redis disconnected');
+      }
     });
-
-    this.client.on('error', (err) => console.error('Redis Client Error', err));
   }
 
   async onModuleInit() {
-    await this.client.connect();
-    console.log('Redis connected');
+    try {
+      await this.client.connect();
+      this.connected = true;
+      this.logger.log('Redis connected');
+    } catch {
+      this.logger.warn('Redis unavailable — OTP/session features disabled');
+    }
   }
 
   async onModuleDestroy() {
-    await this.client.quit();
-    console.log('Redis disconnected');
+    if (this.connected) {
+      await this.client.quit();
+    }
   }
 
   async set(key: string, value: string, ttl: number) {
+    if (!this.connected) return;
     await this.client.set(key, value, { EX: ttl });
   }
 
-  async get(key: string) {
+  get isConnected() { return this.connected; }
+
+  async get(key: string): Promise<string | null> {
+    if (!this.connected) return null;
     return await this.client.get(key);
   }
 
   async del(key: string) {
-    return await this.client.del(key);
+    if (!this.connected) return;
+    await this.client.del(key);
   }
 }

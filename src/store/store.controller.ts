@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Controller, Post, Get, Body, Req, Param, UseGuards } from '@nestjs/common';
+import { Controller, Post, Get, Body, Req, Param, Query, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -38,5 +38,73 @@ export class StoreController {
     const { userId } = req.user;
     const { storeId, ...updateData } = body;
     return this.storeService.updateStore(userId, storeId, updateData);
+  }
+
+  // ── Builder APIs ──────────────────────────────────────────────────────────
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Post('save-builder-config')
+  async saveBuilderConfig(@Req() req: any, @Body() body: any) {
+    const { userId } = req.user;
+    return this.storeService.saveBuilderConfig(userId, body);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Get('builder-config/:storeId')
+  async getBuilderConfig(@Req() req: any, @Param('storeId') storeId: string) {
+    const { userId } = req.user;
+    return this.storeService.getBuilderConfig(userId, storeId);
+  }
+
+  // ── Public Storefront APIs ────────────────────────────────────────────────
+
+  @Get('public/:slug')
+  async getPublicStore(@Param('slug') slug: string) {
+    return this.storeService.getPublicStore(slug);
+  }
+
+  @Get('public/:storeId/products')
+  async getPublicStoreProducts(
+    @Param('storeId') storeId: string,
+    @Query() query: any,
+  ) {
+    return this.storeService.getPublicStoreProducts(storeId, query);
+  }
+
+  @Get('public/:storeId/filters')
+  async getPublicStoreFilters(@Param('storeId') storeId: string) {
+    return this.storeService.getPublicStoreFilters(storeId);
+  }
+
+  // ── Follow APIs ───────────────────────────────────────────────────────────
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('user')
+  @Post(':storeId/follow')
+  async followStore(@Req() req: any, @Param('storeId') storeId: string) {
+    const { userId } = req.user;
+    return this.storeService.followStore(userId, storeId);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('user')
+  @Get(':storeId/follow-status')
+  async getFollowStatus(@Req() req: any, @Param('storeId') storeId: string) {
+    const { userId } = req.user;
+    return this.storeService.getFollowStatus(userId, storeId);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Get(':storeId/followers')
+  async getStoreFollowers(
+    @Req() req: any,
+    @Param('storeId') storeId: string,
+    @Query() query: any,
+  ) {
+    const { userId } = req.user;
+    return this.storeService.getStoreFollowers(userId, storeId, query);
   }
 }

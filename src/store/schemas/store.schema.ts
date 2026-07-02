@@ -163,8 +163,21 @@ export class Store {
   @Prop({ type: [ShiftSchema], default: [] })
   shifts: Shift[];
 
+  @Prop({ type: Object, default: null })
+  builderConfig: Record<string, any> | null;
+
+  @Prop({ type: String, default: null })
+  coverImage: string | null;
+
+  @Prop({ type: Number, default: 0 })
+  followersCount: number;
+
   @Prop({ enum: ['active', 'inactive', 'suspended'], default: 'active' })
   status: string;
+
+  // admin-granted badges, e.g. ['top_seller', 'verified', 'featured']
+  @Prop({ type: [String], default: [] })
+  badges: string[];
 
   @Prop({ default: false })
   isDelete: boolean;

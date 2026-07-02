@@ -133,8 +133,11 @@ export class Product {
   @Prop({ type: Date, default: null })
   lastWishlistedAt: Date | null;
 
-  @Prop({ enum: ['active', 'inactive', 'draft'], default: 'draft' })
+  @Prop({ enum: ['active', 'inactive', 'draft', 'scheduled'], default: 'draft' })
   status: string;
+
+  @Prop({ type: Date, default: null })
+  scheduledAt: Date | null;
 
   @Prop({ default: false })
   isListedOnSolvexo: boolean;
@@ -155,3 +158,4 @@ ProductSchema.index({ purchaseCount: -1 });
 ProductSchema.index({ viewCount: -1 });
 ProductSchema.index({ tags: 1 });
 ProductSchema.index({ status: 1 });
+ProductSchema.index({ scheduledAt: 1 });

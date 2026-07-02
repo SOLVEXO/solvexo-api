@@ -523,7 +523,8 @@ async getProductsByCategoryId(
 async getProductById(productId: string) {
   const productModel = this.databaseService.repositories.productModel;
   const productVariantModel = this.databaseService.repositories.productVariantModel;
-  const sellerModel = this.databaseService.repositories.sellerModel; // 👈 seller model
+  const sellerModel = this.databaseService.repositories.sellerModel;
+  const storeModel = this.databaseService.repositories.storeModel;
 
   // 1️⃣ Get product
   const product = await productModel.findOne({
@@ -545,13 +546,20 @@ async getProductById(productId: string) {
     _id: product.sellerId
   }).select("name").lean();
 
-  // 👇 inject seller name into product
+  // 3️⃣ Get store slug
+  const store = await storeModel.findOne({
+    _id: product.storeId,
+    isDelete: false
+  }).select("slug name").lean();
+
   const productWithSeller = {
     ...product,
-    sellerName: seller ? seller.name : null
+    sellerName: seller ? seller.name : null,
+    storeSlug: store ? store.slug : null,
+    storeName: store ? store.name : null,
   };
 
-  // 3️⃣ Get variants
+  // 4️⃣ Get variants
   const variants = await productVariantModel.find({
     productId: productId,
     status: "active",
@@ -566,7 +574,7 @@ async getProductById(productId: string) {
     message: "Product fetched successfully",
     success: true,
     data: {
-      product: productWithSeller, // 👈 updated product
+      product: productWithSeller,
       variants,
       defaultVariant
     }
@@ -639,7 +647,7 @@ async addPhysicalProduct(sellerId: string, body: any) {
   const {
     storeId,
     name, description, subCategoryId, images, tags,
-    isListedOnSolvexo, status,
+    isListedOnSolvexo, status, scheduledAt,
     price, compareAtPrice, size, color, stock, shippingWeight,
   } = body;
 
@@ -656,6 +664,10 @@ async addPhysicalProduct(sellerId: string, body: any) {
 
   if (!name) throw new BadRequestException('Product name is required');
   if (price === undefined || price === null) throw new BadRequestException('Price is required');
+
+  if (status === 'scheduled' && !scheduledAt) {
+    throw new BadRequestException('scheduledAt is required when status is scheduled');
+  }
 
   const categoryId = store.categoryId;
   if (!categoryId) throw new BadRequestException('Your store has no category selected');
@@ -682,6 +694,7 @@ async addPhysicalProduct(sellerId: string, body: any) {
     digital: null,
     isListedOnSolvexo: isListedOnSolvexo ?? false,
     status: status ?? 'draft',
+    scheduledAt: status === 'scheduled' ? new Date(scheduledAt) : null,
   });
 
   const sku = `SKU-${product._id.toString().slice(-6).toUpperCase()}-${Date.now().toString().slice(-4)}`;
@@ -716,7 +729,7 @@ async addDigitalProduct(sellerId: string, body: any) {
   const {
     storeId,
     name, description, productType, subCategoryId, images, tags,
-    isListedOnSolvexo, status,
+    isListedOnSolvexo, status, scheduledAt,
     price, compareAtPrice,
     digital,
   } = body;
@@ -734,6 +747,10 @@ async addDigitalProduct(sellerId: string, body: any) {
 
   if (!name) throw new BadRequestException('Product name is required');
   if (price === undefined || price === null) throw new BadRequestException('Price is required');
+
+  if (status === 'scheduled' && !scheduledAt) {
+    throw new BadRequestException('scheduledAt is required when status is scheduled');
+  }
 
   const finalProductType = productType === 'educational' ? 'educational' : 'digital';
 
@@ -762,6 +779,7 @@ async addDigitalProduct(sellerId: string, body: any) {
     digital: digital ?? null,
     isListedOnSolvexo: isListedOnSolvexo ?? false,
     status: status ?? 'draft',
+    scheduledAt: status === 'scheduled' ? new Date(scheduledAt) : null,
   });
 
   const sku = `SKU-${product._id.toString().slice(-6).toUpperCase()}-${Date.now().toString().slice(-4)}`;
@@ -868,7 +886,7 @@ async editProduct(sellerId: string, body: any) {
 
   const {
     productId, variantId,
-    name, description, subCategoryId, images, tags, isListedOnSolvexo, status,
+    name, description, subCategoryId, images, tags, isListedOnSolvexo, status, scheduledAt,
     digital,
     price, compareAtPrice, size, color, stock, shippingWeight,
   } = body;
@@ -900,7 +918,13 @@ async editProduct(sellerId: string, body: any) {
   if (images !== undefined) productUpdate.images = images;
   if (tags !== undefined) productUpdate.tags = tags;
   if (isListedOnSolvexo !== undefined) productUpdate.isListedOnSolvexo = isListedOnSolvexo;
-  if (status !== undefined) productUpdate.status = status;
+  if (status !== undefined) {
+    if (status === 'scheduled' && !scheduledAt) {
+      throw new BadRequestException('scheduledAt is required when status is scheduled');
+    }
+    productUpdate.status = status;
+    productUpdate.scheduledAt = status === 'scheduled' ? new Date(scheduledAt) : null;
+  }
   if (digital !== undefined && product.type === 'digital') productUpdate.digital = digital;
 
   const updatedProduct = Object.keys(productUpdate).length > 0
