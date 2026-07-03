@@ -1,6 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { ApiProperty } from '@nestjs/swagger';
-import { IsString, IsNotEmpty, IsNumber, Min, Max, IsOptional } from 'class-validator';
+import { IsString, IsNotEmpty, IsNumber, Min, Max, IsOptional, IsBoolean, IsArray } from 'class-validator';
 
 export class AddReviewDto {
 
@@ -14,15 +14,32 @@ export class AddReviewDto {
   @IsString()
   productVariantId?: string;
 
-  @ApiProperty({ minimum: 1, maximum: 5 })
+  @ApiProperty({ required: false, description: 'Order this review is tied to — enables the "Verified Purchase" badge' })
+  @IsOptional()
+  @IsString()
+  orderId?: string;
+
+  @ApiProperty({ required: false, minimum: 1, maximum: 5 })
+  @IsOptional()
   @IsNumber()
   @Min(1)
   @Max(5)
-  rating: number;
+  rating?: number;
 
   @ApiProperty({ required: false })
   @IsOptional()
   @IsString()
   comment?: string;
+
+  @ApiProperty({ required: false, default: false })
+  @IsOptional()
+  @IsBoolean()
+  isAnonymous?: boolean;
+
+  @ApiProperty({ required: false, type: [String] })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  media?: string[];
 
 }
