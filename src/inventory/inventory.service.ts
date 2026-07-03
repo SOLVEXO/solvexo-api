@@ -91,6 +91,7 @@ export class InventoryService {
         stock: stockDisplay,
         stockStatus,
         status: product.status,
+        scheduledAt: product.scheduledAt ?? null,
         price,
         allTimeSales: product.purchaseCount || 0,
       };

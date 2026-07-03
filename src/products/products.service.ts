@@ -550,13 +550,15 @@ async getProductById(productId: string) {
   const store = await storeModel.findOne({
     _id: product.storeId,
     isDelete: false
-  }).select("slug name").lean();
+  }).select("slug name logo followersCount").lean();
 
   const productWithSeller = {
     ...product,
     sellerName: seller ? seller.name : null,
     storeSlug: store ? store.slug : null,
     storeName: store ? store.name : null,
+    storeLogo: store ? store.logo : null,
+    storeFollowersCount: store ? (store.followersCount ?? 0) : 0,
   };
 
   // 4️⃣ Get variants
