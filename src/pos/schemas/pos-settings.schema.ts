@@ -26,6 +26,9 @@ export class PosSettings {
 
   @Prop({ type: String, default: null })
   currencySymbol: string | null;
+
+  @Prop({ type: Number, default: 0 })
+  saleCounter: number;         // atomically incremented to mint saleNumber ("POS-00001") per store
 }
 
 export const PosSettingsSchema = SchemaFactory.createForClass(PosSettings);

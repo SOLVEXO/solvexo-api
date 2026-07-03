@@ -37,8 +37,8 @@ export const SaleItemSchema = SchemaFactory.createForClass(SaleItem);
 
 @Schema({ timestamps: true })
 export class Sale {
-  @Prop({ required: true, unique: true })
-  saleNumber: string;           // human-readable receipt number e.g. "POS-00001"
+  @Prop({ required: true })
+  saleNumber: string;           // human-readable receipt number e.g. "POS-00001" — unique per store, see compound index below
 
   @Prop({ required: true })
   storeId: string;
@@ -104,6 +104,6 @@ SaleSchema.index({ storeId: 1, createdAt: -1 });
 SaleSchema.index({ storeId: 1, status: 1 });
 SaleSchema.index({ sessionId: 1 });
 SaleSchema.index({ employeeId: 1 });
-SaleSchema.index({ saleNumber: 1 }, { unique: true });
+SaleSchema.index({ storeId: 1, saleNumber: 1 }, { unique: true });
 SaleSchema.index({ 'items.variantId': 1 });
 SaleSchema.index({ idempotencyKey: 1 }, { sparse: true });

@@ -48,9 +48,16 @@ export class PosService {
     return store;
   }
 
+  // Atomic per-store counter — countDocuments() would race under concurrent
+  // checkouts (two terminals could read the same count and mint the same
+  // saleNumber); $inc via findOneAndUpdate is race-free.
   private async generateSaleNumber(storeId: string): Promise<string> {
-    const count = await this.r.saleModel.countDocuments({ storeId });
-    return `POS-${String(count + 1).padStart(5, '0')}`;
+    const settings = await this.r.posSettingsModel.findOneAndUpdate(
+      { storeId },
+      { $inc: { saleCounter: 1 } },
+      { new: true, upsert: true },
+    );
+    return `POS-${String(settings.saleCounter).padStart(5, '0')}`;
   }
 
   // ── EMPLOYEE MANAGEMENT ───────────────────────────────────────────────────
@@ -566,27 +573,39 @@ export class PosService {
       tax = settings ? parseFloat(((settings as any).taxRate * subtotal).toFixed(2)) : 0;
     }
     const total = subtotal - discount + tax;
-    const saleNumber = await this.generateSaleNumber(dto.storeId);
 
-    const sale = await this.r.saleModel.create({
-      saleNumber,
-      storeId: dto.storeId,
-      sessionId: dto.sessionId,
-      registerId: dto.registerId,
-      employeeId: dto.employeeId,
-      items: saleItems,
-      subtotal,
-      discount,
-      tax,
-      total,
-      paymentMethod: dto.paymentMethod,
-      customerId: dto.customerId ?? null,
-      customerName: dto.customerName ?? 'Walk-in',
-      notes: dto.notes ?? null,
-      heldAt: isHeld ? new Date() : null,
-      status: isHeld ? 'held' : 'completed',
-      idempotencyKey: dto.idempotencyKey ?? null,
-    });
+    // saleNumber is only unique per-store, and two terminals in the same store
+    // can check out at nearly the same instant — retry with a fresh number on
+    // a rare duplicate-key collision instead of failing the sale outright.
+    let sale: any;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const saleNumber = await this.generateSaleNumber(dto.storeId);
+      try {
+        sale = await this.r.saleModel.create({
+          saleNumber,
+          storeId: dto.storeId,
+          sessionId: dto.sessionId,
+          registerId: dto.registerId,
+          employeeId: dto.employeeId,
+          items: saleItems,
+          subtotal,
+          discount,
+          tax,
+          total,
+          paymentMethod: dto.paymentMethod,
+          customerId: dto.customerId ?? null,
+          customerName: dto.customerName ?? 'Walk-in',
+          notes: dto.notes ?? null,
+          heldAt: isHeld ? new Date() : null,
+          status: isHeld ? 'held' : 'completed',
+          idempotencyKey: dto.idempotencyKey ?? null,
+        });
+        break;
+      } catch (err: any) {
+        if (err?.code === 11000 && err?.keyPattern?.saleNumber && attempt < 4) continue;
+        throw err;
+      }
+    }
 
     if (!isHeld) {
       // decrement stock and update session totals only when completing
