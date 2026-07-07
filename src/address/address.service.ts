@@ -151,6 +151,43 @@ async getDefaultAddress(userId: string) {
   }
 }
 
+  async deleteAddress(userId: string, addressId: string) {
+    try {
+      const deleted = await this.databaseService.repositories.addressModel.findOneAndUpdate(
+        { _id: addressId, userId },
+        { $set: { isDelete: true } },
+        { new: true },
+      );
+
+      if (!deleted) {
+        return {
+          success: false,
+          message: 'Address not found',
+        };
+      }
+
+      // If the deleted address was the default, promote another one so the
+      // user isn't left without a default (matches setDefaultAddress's
+      // "only one default at a time" invariant).
+      if (deleted.isDefault) {
+        await this.databaseService.repositories.addressModel.findOneAndUpdate(
+          { userId, isDelete: false },
+          { $set: { isDefault: true } },
+        );
+      }
+
+      return {
+        success: true,
+        message: 'Address deleted successfully',
+      };
+    } catch (error) {
+      return {
+        success: false,
+        message: error.message,
+      };
+    }
+  }
+
   async setDefaultAddress(userId: string, addressId: string) {
     try {
       // remove old default
@@ -167,11 +204,13 @@ async getDefaultAddress(userId: string) {
       );
 
       return {
+        success: true,
         message: 'Default address updated',
         data: updated,
       };
     } catch (error) {
       return {
+        success: false,
         message: error.message,
       };
     }
