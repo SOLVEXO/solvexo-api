@@ -27,9 +27,8 @@ export class CategoriesController {
  @Roles( 'seller', 'admin')
     @Post('add-category')
 async addCategory( @Req() req: any , @Body() createCategoryDto: CreateCategoryDto) {
-    const {sellerId , role} = req.user
-    console.log(sellerId, role)
-  return this.categoriesService.addCategory(role, sellerId, createCategoryDto);
+    const { userId, role } = req.user;
+  return this.categoriesService.addCategory(userId, role, createCategoryDto);
 }
 
 @Get('category-tree')

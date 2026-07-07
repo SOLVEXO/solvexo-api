@@ -4,6 +4,7 @@ import {
     BadRequestException,
     ConflictException,
     UnauthorizedException,
+    ForbiddenException,
 
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
@@ -17,13 +18,13 @@ import { UpdateCategoryDto } from './dto/update-category.dto';
 export class CategoriesService {
    constructor(private readonly databaseService: DatabaseService) {}
 
-  async addCategory(sellerId: string ,role: string, createCategoryDto: CreateCategoryDto) {
-    
+  async addCategory(userId: string, role: string, createCategoryDto: CreateCategoryDto) {
+
        // ADMIN CHECK
     if (role === 'admin') {
 
       const admin = await this.databaseService.repositories.adminModel.findOne({
-        _id: sellerId,
+        _id: userId,
         status: 'active',
         isDelete: false
       });
@@ -38,7 +39,7 @@ export class CategoriesService {
     if (role === 'seller') {
 
       const seller = await this.databaseService.repositories.sellerModel.findOne({
-        _id: sellerId,
+        _id: userId,
         status: 'active',
         isDelete: false
       });
@@ -49,36 +50,66 @@ export class CategoriesService {
 
     }
 
-
-
   try {
 
     const { name, parentId, image, description, sortOrder } = createCategoryDto;
-
     const categoryModel = this.databaseService.repositories.categoryModel;
 
-    // check duplicate category
-    const existingCategory = await categoryModel.findOne({ name, status: "active", isDelete: false });
+    // 🔒 Permission model:
+    // - Main categories (no parentId) → admin only. This is the curated
+    //   top-level taxonomy sellers pick from when creating a store.
+    // - Subcategories (parentId set) → admin OR seller, optionally, and
+    //   only nested one level under an existing main category (no
+    //   sub-of-a-sub — keeps the tree exactly 2 levels deep).
+    let parent: any = null;
+    if (!parentId) {
+      if (role !== 'admin') {
+        throw new ForbiddenException('Only admins can create main categories');
+      }
+    } else {
+      parent = await categoryModel.findOne({ _id: parentId, status: 'active', isDelete: false });
+      if (!parent) {
+        throw new BadRequestException('Parent category not found');
+      }
+      if (parent.parentId) {
+        throw new BadRequestException('Categories can only be nested one level deep — pick a main category as the parent');
+      }
+    }
+
+    // check duplicate category — scoped to the same parent, so the same
+    // name can exist under different main categories without colliding.
+    const existingCategory = await categoryModel.findOne({
+      name,
+      parentId: parentId ?? null,
+      status: "active",
+      isDelete: false,
+    });
 
     if (existingCategory) {
-      throw new UnauthorizedException('Category already exists');
+      throw new ConflictException('A category with this name already exists here');
     }
 
     const category = await categoryModel.create({
       name,
-      parentId: parentId,
+      parentId: parentId ?? null,
       image: image ,
       description: description,
-      sortOrder: sortOrder || 0
+      sortOrder: sortOrder || 0,
+      createdBy: userId,
+      createdByRole: role,
     });
 
     return {
+      success: true,
       message: 'Category created successfully',
       data: category
     };
 
   } catch (error) {
-    throw new UnauthorizedException(error.message || 'Failed to create category');
+    if (error instanceof ForbiddenException || error instanceof BadRequestException || error instanceof ConflictException) {
+      throw error;
+    }
+    throw new BadRequestException(error.message || 'Failed to create category');
   }
 }
 
@@ -143,14 +174,18 @@ async getCategoryTreeNested(categoryId?: string) {
     });
 
     if (!category) {
-      throw new UnauthorizedException('Category not found');
+      throw new NotFoundException('Category not found');
     }
 
     const children = await this.getChildrenRecursive(categoryId);
 
     return {
-      ...category.toObject(),
-      children
+      success: true,
+      message: 'Category tree fetched successfully',
+      data: {
+        ...category.toObject(),
+        children
+      }
     };
   }
 
@@ -173,6 +208,7 @@ for (const cat of rootCategories) {
 }
 
   return {
+    success: true,
     message: "All category trees fetched successfully",
     data: result
   };
@@ -225,6 +261,7 @@ async getCategoryWithChildren(categoryId: string): Promise<any> {
   });
 
   return {
+    success: true,
     message: 'Category with children fetched successfully',
     data: {
       category,    // parent category
@@ -244,6 +281,7 @@ async getAllCategories(): Promise<any> {
   });
 
   return {
+    success: true,
     message: 'All categories fetched successfully',
     data: categories
   };
