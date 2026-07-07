@@ -425,30 +425,6 @@ async updateProduct(sellerId: string, body: any) {
   };
 }
 
-private async getChildrenRecursiveOnlyId(parentId: string): Promise<string[]> {
-  const categoryModel = this.databaseService.repositories.categoryModel;
-
-  // Initialize array with parentId included
-  let ids: string[] = [parentId]; // 👈 parent id included here
-
-  // Only active & not deleted children
-  const children = await categoryModel.find({
-    parentId,
-    status: "active",
-    isDelete: false
-  });
-
-  for (const child of children) {
-    ids.push(child._id.toString()); // add child id
-
-    // recursively get sub-children ids
-    const subChildIds = await this.getChildrenRecursiveOnlyId(child._id.toString());
-
-    ids = ids.concat(subChildIds); // add all sub-children ids
-  }
-
-  return ids;
-}
 
 async getProductsByCategoryId(
   parentCategoryId?: string,
@@ -465,12 +441,29 @@ async getProductsByCategoryId(
   };
 
   // 1️⃣ Agar category ID di gayi hai to filter lagao
+  //
+  // A `Product` stores its category as two separate flat fields, not a
+  // nested chain: `categoryId` (always the seller's store's main category)
+  // and an optional `subCategoryId`. Categories are also capped at exactly
+  // 2 levels (main → sub, enforced in CategoriesService), so there's no
+  // deeper tree to walk here.
+  //
+  // So: browsing a MAIN category means "any product under it, with or
+  // without a subcategory" → filter by `categoryId`. Browsing a
+  // SUBCATEGORY means "only products tagged with this specific
+  // subcategory" → filter by `subCategoryId`.
   if (parentCategoryId) {
-    const categoryIds = await this.getChildrenRecursiveOnlyId(parentCategoryId);
+    const category = await this.databaseService.repositories.categoryModel.findOne({
+      _id: parentCategoryId,
+      status: 'active',
+      isDelete: false,
+    });
 
-    categoryIds.unshift(parentCategoryId);
-
-    query.categoryId = { $in: categoryIds };
+    if (category?.parentId) {
+      query.subCategoryId = parentCategoryId;
+    } else {
+      query.categoryId = parentCategoryId;
+    }
   }
 
   const skip = (page - 1) * limit;

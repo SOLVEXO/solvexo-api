@@ -21,10 +21,24 @@ export class StoreService {
       .replace(/-+/g, '-');
   }
 
+  // A store's category must be one of the admin-curated main categories —
+  // not a subcategory, and not an arbitrary/made-up id.
+  private async assertValidRootCategory(categoryId: string) {
+    const category = await this.databaseService.repositories.categoryModel.findOne({
+      _id: categoryId,
+      status: 'active',
+      isDelete: false,
+    });
+    if (!category) throw new BadRequestException('Selected category not found');
+    if (category.parentId) throw new BadRequestException('Store category must be a main category, not a subcategory');
+  }
+
   async createStore(sellerId: string, body: any) {
     const { name, logo, categoryId, description, sellerType, productTypes } = body;
 
     if (!name) throw new BadRequestException('Store name is required');
+
+    if (categoryId) await this.assertValidRootCategory(categoryId);
 
     if (sellerType && !Object.values(SellerType).includes(sellerType)) {
       throw new BadRequestException('Invalid sellerType');
@@ -172,7 +186,10 @@ export class StoreService {
     }
 
     if (status !== undefined) updateData.status = status;
-    if (body.categoryId !== undefined) updateData.categoryId = body.categoryId;
+    if (body.categoryId !== undefined) {
+      if (body.categoryId) await this.assertValidRootCategory(body.categoryId);
+      updateData.categoryId = body.categoryId;
+    }
 
     const updated = await this.databaseService.repositories.storeModel.findByIdAndUpdate(
       store._id,
