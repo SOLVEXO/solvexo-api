@@ -1,111 +1,89 @@
-// import {
-//     Injectable,
-//     NotFoundException,
-//     BadRequestException,
-//     UnauthorizedException,
-// } from '@nestjs/common';
-// import { InjectModel } from '@nestjs/mongoose';
-// import { Model } from 'mongoose';
-// import { User, UserDocument } from './schemas/user.schema';
-// import { UpdateProfileDto } from './dto/update-profile.dto';
-// import { ChangePasswordDto } from './dto/change-password.dto';
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+  UnauthorizedException,
+} from '@nestjs/common';
+import * as bcrypt from 'bcrypt';
+import { DatabaseService } from 'src/database/databaseservice';
+import { UpdateProfileDto } from './dto/update-profile.dto';
+import { ChangePasswordDto } from './dto/change-password.dto';
 
-// @Injectable()
-// export class UsersService {
-//     constructor(
-//         @InjectModel(User.name)
-//         private userModel: Model<UserDocument>,
-//     ) { }
+@Injectable()
+export class UsersService {
+  constructor(private readonly db: DatabaseService) {}
 
-//     async getProfile(userId: string) {
-//         const user = await this.userModel.findById(userId);
+  private get userModel() {
+    return this.db.repositories.userModel;
+  }
 
-//         if (!user) {
-//             throw new NotFoundException('User not found');
-//         }
+  async getProfile(userId: string) {
+    const user = await this.userModel.findById(userId).select('-password -otp -otpExpiresAt');
+    if (!user) throw new NotFoundException('User not found');
+    return user;
+  }
 
-//         return user;
-//     }
+  async updateProfile(userId: string, dto: UpdateProfileDto) {
+    const user = await this.userModel.findById(userId);
+    if (!user) throw new NotFoundException('User not found');
 
-//     async updateProfile(userId: string, dto: UpdateProfileDto) {
-//         const user = await this.userModel.findById(userId);
+    user.name = dto.name ?? user.name;
+    user.phone = dto.phone ?? user.phone;
+    user.profileImage = dto.profileImage ?? user.profileImage;
+    user.address = dto.address ?? user.address;
 
-//         if (!user) {
-//             throw new NotFoundException('User not found');
-//         }
+    if (dto.email && dto.email !== user.email) {
+      const emailExists = await this.userModel.findOne({ email: dto.email });
+      if (emailExists) throw new BadRequestException('Email already in use');
+      user.email = dto.email;
+      user.isVerified = false;
+    }
 
-//         user.name = dto.name ?? user.name;
-//         user.phone = dto.phone ?? user.phone;
-//         user.profileImage = dto.profileImage ?? user.profileImage;
-//         user.address = dto.address ?? user.address;
+    await user.save();
+    const updatedUser = await this.userModel
+      .findById(userId)
+      .select('-password -otp -otpExpiresAt');
 
-//         if (dto.email && dto.email !== user.email) {
-//             const emailExists = await this.userModel.findOne({ email: dto.email });
-//             if (emailExists) {
-//                 throw new BadRequestException('Email already in use');
-//             }
-//             user.email = dto.email;
-//             user.isEmailVerified = false;
-//         }
+    return {
+      success: true,
+      message: 'Profile updated successfully',
+      data: updatedUser,
+    };
+  }
 
-//         const updatedUser = await user.save();
+  async changePassword(userId: string, dto: ChangePasswordDto) {
+    const { currentPassword, newPassword } = dto;
 
-//         return {
-//             success: true,
-//             message: 'Profile updated successfully',
-//             data: updatedUser,
-//         };
-//     }
+    const user = await this.userModel.findById(userId);
+    if (!user) throw new NotFoundException('User not found');
 
-//     async changePassword(userId: string, dto: ChangePasswordDto) {
-//         const { currentPassword, newPassword } = dto;
+    if (!user.password) {
+      throw new BadRequestException('Cannot change password for social-login accounts');
+    }
 
-//         if (!currentPassword || !newPassword) {
-//             throw new BadRequestException(
-//                 'Please provide current and new password',
-//             );
-//         }
+    const isMatch = await bcrypt.compare(currentPassword, user.password);
+    if (!isMatch) throw new UnauthorizedException('Current password is incorrect');
 
-//         if (newPassword.length < 6) {
-//             throw new BadRequestException(
-//                 'New password must be at least 6 characters',
-//             );
-//         }
+    user.password = await bcrypt.hash(newPassword, 10);
+    await user.save();
 
-//         const user = await this.userModel
-//             .findById(userId)
-//             .select('+password');
+    return {
+      success: true,
+      message: 'Password changed successfully',
+    };
+  }
 
-//         if (!user?.password) {
-//             throw new BadRequestException(
-//                 'Cannot change password for OAuth accounts',
-//             );
-//         }
+  async deleteAccount(userId: string) {
+    const user = await this.userModel.findById(userId);
+    if (!user) throw new NotFoundException('User not found');
 
+    user.isDelete = true;
+    user.status = 'deleted';
+    await user.save();
 
-
-//         user.password = newPassword;
-//         await user.save();
-
-//         return {
-//             success: true,
-//             message: 'Password changed successfully',
-//         };
-//     }
-
-//     async deleteAccount(userId: string) {
-//         const user = await this.userModel.findById(userId);
-
-//         if (!user) {
-//             throw new NotFoundException('User not found');
-//         }
-
-//         user.isActive = false;
-//         await user.save();
-
-//         return {
-//             success: true,
-//             message: 'Account deactivated successfully',
-//         };
-//     }
-// }
+    return {
+      success: true,
+      message: 'Account deactivated successfully',
+    };
+  }
+}

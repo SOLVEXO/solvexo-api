@@ -8,6 +8,7 @@ import { categoryModule } from './categories/categories.module';
 import { ProductsModule } from './products/product.module';
 import { CartModule } from './cart/cart.module';
 import { AddressModule } from './address/address.module';
+import { UsersModule } from './users/users.module';
 import { OtpModule } from './otp/otp.module';
 import { UploadModule } from './upload/upload.module';
 import { BannersModule } from './banner/banner.module';
@@ -34,6 +35,7 @@ import { SchedulerModule } from './scheduler/scheduler.module';
     ProductsModule,
     CartModule,
     AddressModule,
+    UsersModule,
     OtpModule,
     UploadModule,
     BannersModule,
