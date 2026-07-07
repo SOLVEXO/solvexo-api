@@ -9,11 +9,13 @@ import { DatabaseService } from 'src/database/databaseservice';
 import { ProductType as StoreProductType } from 'src/store/schemas/store.schema';
 import { CreateProductDto } from './dto/create-product.dto';
 import { CreateProductVariantDto } from './dto/productVariant.dto';
+import { ActivityLogService } from 'src/activity-log/activity-log.service';
 
 @Injectable()
 export class ProductsService {
   constructor(
     private databaseService: DatabaseService,
+    private activityLogService: ActivityLogService,
   ) {}
 async addProduct(
   sellerId: string,
@@ -335,7 +337,7 @@ async createVariant(sellerId: string, body: any) {
   };
 }
 
-async updateProduct(sellerId: string, body: any) {
+async updateProduct(sellerId: string, body: any, ip?: string, userAgent?: string) {
   const { productModel, productVariantModel, sellerModel } = this.databaseService.repositories;
 
   const {
@@ -392,6 +394,7 @@ async updateProduct(sellerId: string, body: any) {
   }
 
   let updatedVariant = targetVariant;
+  const oldPrice = targetVariant ? (targetVariant as any).price : undefined;
 
   if (targetVariant) {
     const variantUpdate: any = {};
@@ -417,6 +420,23 @@ async updateProduct(sellerId: string, body: any) {
       );
     }
   }
+
+  const priceChanged = price !== undefined && oldPrice !== undefined && price !== oldPrice;
+
+  this.activityLogService.log({
+    storeId: (updatedProduct as any).storeId,
+    category: 'products',
+    action: priceChanged ? 'product_price_updated' : 'product_updated',
+    description: priceChanged
+      ? `${(updatedProduct as any).name}: $${oldPrice} → $${price}`
+      : `Updated ${(updatedProduct as any).name}`,
+    actorId: sellerId,
+    actorRole: 'seller',
+    targetId: productId,
+    targetType: 'product',
+    ip,
+    userAgent,
+  });
 
   return {
     success: true,

@@ -3,12 +3,16 @@ import { DatabaseService } from 'src/database/databaseservice';
 import { AddReviewDto } from './dto/add-review.dto';
 import { EditReviewDto } from './dto/edit-review.dto';
 import { SellerReplyDto } from './dto/seller-reply.dto';
+import { LoyaltyService } from 'src/loyalty/loyalty.service';
 
 const DELIVERED_ITEM_STATUSES = ['delivered', 'completed'];
 
 @Injectable()
 export class RatingService {
-  constructor(private databaseService: DatabaseService) {}
+  constructor(
+    private databaseService: DatabaseService,
+    private loyaltyService: LoyaltyService,
+  ) {}
 
   private get r() {
     return this.databaseService.repositories;
@@ -128,6 +132,10 @@ export class RatingService {
     const review = await ratingModel.create(reviewData);
 
     if (rating) await this.recalcProductRating(productId);
+
+    if (isVerifiedPurchase && rating && product.storeId) {
+      this.loyaltyService.awardReviewPoints(product.storeId, userId).catch(() => {});
+    }
 
     return { success: true, message: 'Review added', data: review };
   }

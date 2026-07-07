@@ -126,7 +126,7 @@ export class FinanceController {
 
   @Patch(':storeId/payout-schedule')
   updatePayoutSchedule(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: UpdatePayoutScheduleDto) {
-    return this.financeService.updatePayoutSchedule(req.user.userId, storeId, dto);
+    return this.financeService.updatePayoutSchedule(req.user.userId, storeId, dto, req.ip, req.headers['user-agent']);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

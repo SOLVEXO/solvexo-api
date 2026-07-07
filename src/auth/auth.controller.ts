@@ -28,8 +28,8 @@ export class AuthController {
 
   // ✅ Login
   @Post('login')
-  async login(@Body() loginDto: LoginDto) {
-    return this.authService.login(loginDto);
+  async login(@Req() req: any, @Body() loginDto: LoginDto) {
+    return this.authService.login(loginDto, req.ip, req.headers['user-agent']);
   }
 
   

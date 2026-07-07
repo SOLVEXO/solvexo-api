@@ -7,6 +7,7 @@ import { DatabaseService } from 'src/database/databaseservice';
 import { RequestPayoutDto } from './dto/request-payout.dto';
 import { AddPayoutMethodDto } from './dto/add-payout-method.dto';
 import { UpdatePayoutScheduleDto } from './dto/update-payout-schedule.dto';
+import { ActivityLogService } from 'src/activity-log/activity-log.service';
 
 // ── Platform fee constants ───────────────────────────────────────────────────
 const PLATFORM_FEE_RATE       = 0.08;   // 8% per sale
@@ -17,7 +18,10 @@ const ESTIMATED_TAX_RATE      = 0.15;   // 15% estimate shown in UI
 
 @Injectable()
 export class FinanceService {
-  constructor(private readonly db: DatabaseService) {}
+  constructor(
+    private readonly db: DatabaseService,
+    private readonly activityLogService: ActivityLogService,
+  ) {}
 
   // ── Shorthand repo getters ───────────────────────────────────────────────
 
@@ -389,9 +393,10 @@ export class FinanceService {
     return this.getOrCreateSchedule(storeId, sellerId);
   }
 
-  async updatePayoutSchedule(sellerId: string, storeId: string, dto: UpdatePayoutScheduleDto) {
+  async updatePayoutSchedule(sellerId: string, storeId: string, dto: UpdatePayoutScheduleDto, ip?: string, userAgent?: string) {
     await this.verifyStoreOwnership(sellerId, storeId);
     const schedule = await this.getOrCreateSchedule(storeId, sellerId);
+    const oldFrequency = schedule.frequency;
 
     if (dto.frequency !== undefined) schedule.frequency = dto.frequency;
     if (dto.dayOfWeek !== undefined) schedule.dayOfWeek = dto.dayOfWeek;
@@ -405,6 +410,21 @@ export class FinanceService {
     if (nextDate) schedule.nextPayoutAt = nextDate;
 
     await schedule.save();
+
+    this.activityLogService.log({
+      storeId,
+      category: 'finance',
+      action: 'payout_schedule_changed',
+      description: dto.frequency && dto.frequency !== oldFrequency
+        ? `${oldFrequency} → ${dto.frequency} payout schedule`
+        : 'Payout schedule updated',
+      actorId: sellerId,
+      actorRole: 'seller',
+      targetType: 'payout_schedule',
+      ip,
+      userAgent,
+    });
+
     return schedule;
   }
 
@@ -549,7 +569,7 @@ export class FinanceService {
    * Record a refund — reverses the net sale amount from available or pending balance.
    * Call this from OrdersService when a refund is issued.
    */
-  async recordRefund(storeId: string, sellerId: string, orderId: string, refundAmount: number) {
+  async recordRefund(storeId: string, sellerId: string, orderId: string, refundAmount: number, actorId?: string, actorRole?: string) {
     const balance = await this.getOrCreateBalance(storeId, sellerId);
     const balanceBefore = balance.availableBalance;
 
@@ -574,6 +594,17 @@ export class FinanceService {
       referenceId: orderId,
       referenceType: 'order',
       status: 'completed',
+    });
+
+    this.activityLogService.log({
+      storeId,
+      category: 'finance',
+      action: 'refund_issued',
+      description: `Order #${orderId} — $${refundAmount.toFixed(2)} refunded`,
+      actorId: actorId ?? sellerId,
+      actorRole: actorRole ?? 'seller',
+      targetId: orderId,
+      targetType: 'order',
     });
   }
 }

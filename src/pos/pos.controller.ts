@@ -39,7 +39,7 @@ export class PosController {
   @Roles('seller')
   @Post('employees')
   addEmployee(@Req() req: any, @Body() dto: CreateEmployeeDto) {
-    return this.posService.addEmployee(req.user.userId, dto);
+    return this.posService.addEmployee(req.user.userId, dto, req.ip, req.headers['user-agent']);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
