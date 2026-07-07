@@ -62,6 +62,9 @@ export class Rating {
   isFlagged!: boolean;
 
   @Prop({ default: false })
+  isVerifiedPurchase!: boolean;
+
+  @Prop({ default: false })
   isDelete!: boolean;
 
   createdAt!: Date;

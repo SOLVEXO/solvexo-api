@@ -7,11 +7,6 @@ export class SellerReplyDto {
   @ApiProperty()
   @IsString()
   @IsNotEmpty()
-  reviewId: string;
-
-  @ApiProperty()
-  @IsString()
-  @IsNotEmpty()
-  comment: string;
+  text: string;
 
 }
