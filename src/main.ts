@@ -39,11 +39,16 @@ async function bootstrap() {
     'https://api.edudeen.com',
   ];
 
+  // Vite auto-picks the next free port when 3000 is taken (3001, 3002, ...) — rather than
+  // chase that in the whitelist, allow any localhost/127.0.0.1 port outside production.
+  const isLocalDevOrigin = (origin: string) =>
+    process.env.NODE_ENV !== 'production' && /^https?:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin);
+
   app.enableCors({
     origin: (origin, cb) => {
-    
+
       if (!origin) return cb(null, true);
-      if (whitelist.includes(origin)) return cb(null, true);
+      if (whitelist.includes(origin) || isLocalDevOrigin(origin)) return cb(null, true);
       console.log('Blocked Origin:', origin);
       return cb(new Error('Not allowed by CORS'), false);
     },

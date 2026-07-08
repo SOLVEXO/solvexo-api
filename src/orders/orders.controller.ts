@@ -73,7 +73,7 @@ export class OrdersController {
   @Put('update-status')
   async updateSellerOrderStatus(@Req() req: any, @Body() body: any) {
     const { userId } = req.user;
-    return this.ordersService.updateSellerOrderStatus(userId, body);
+    return this.ordersService.updateSellerOrderStatus(userId, body, req.ip, req.headers['user-agent']);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -129,7 +129,7 @@ export class OrdersController {
     @Body() body: any,
   ) {
     const { userId: sellerId } = req.user;
-    return this.ordersService.returnAction(sellerId, orderId, body);
+    return this.ordersService.returnAction(sellerId, orderId, body, req.ip, req.headers['user-agent']);
   }
 
   // Step 1: JWT se download link lo (10 min valid)

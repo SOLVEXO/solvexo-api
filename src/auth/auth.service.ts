@@ -13,18 +13,49 @@ import { OAuth2Client } from 'google-auth-library';
 // import axios from 'axios';
 import { stat } from 'fs';
 import { RedisService } from '../redis/redis.service'
+import { ActivityLogService } from 'src/activity-log/activity-log.service';
 
 @Injectable()
 export class AuthService {
    private googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID); // 👈 Google Client
   constructor(
-   
+
     private databaseService: DatabaseService,
-      private readonly otpService: OtpService, 
+      private readonly otpService: OtpService,
       private readonly redisService: RedisService,
+      private readonly activityLogService: ActivityLogService,
 
     private readonly jwtService: JwtService
   ) {}
+
+  /** Seller logins/edits are logged against their store's activity feed; users/admins have no store to attach to. */
+  private async logSellerSecurityEvent(
+    sellerId: string,
+    category: 'security' | 'customers',
+    action: string,
+    description: string,
+    ip?: string,
+    userAgent?: string,
+    isSecurityAlert = false,
+  ) {
+    try {
+      const store = await this.databaseService.repositories.storeModel.findOne({ sellerId, isDelete: false });
+      if (!store) return;
+      await this.activityLogService.log({
+        storeId: String(store._id),
+        category,
+        action,
+        description,
+        actorId: sellerId,
+        actorRole: 'seller',
+        ip,
+        userAgent,
+        isSecurityAlert,
+      });
+    } catch {
+      // logging must never break auth
+    }
+  }
 
 
 async signup(RegisterDto: RegisterDto) {
@@ -93,10 +124,10 @@ async signup(RegisterDto: RegisterDto) {
 }
 
 
-async login(loginDto: LoginDto) {
+async login(loginDto: LoginDto, ip?: string, userAgent?: string) {
   try {
     const { email, password, role } = loginDto;
- 
+
   let userModel;
 
     if (role === 'user') {
@@ -105,13 +136,13 @@ async login(loginDto: LoginDto) {
       userModel = this.databaseService.repositories.sellerModel;
     } else if (role === 'admin') {
       userModel = this.databaseService.repositories.adminModel;
-    } 
-    
+    }
+
     else {
       throw new UnauthorizedException('Invalid user type');
     }
- 
-    
+
+
 
 
     const existingUser = await userModel.findOne({ email });
@@ -119,15 +150,22 @@ async login(loginDto: LoginDto) {
       throw new UnauthorizedException('Invalid email or password');
     }
 
-  
+
     const isPasswordMatch = await bcrypt.compare(password, existingUser.password);
     if (!isPasswordMatch) {
+      if (role === 'seller') {
+        this.logSellerSecurityEvent(existingUser._id.toString(), 'security', 'login_failed', `Failed login attempt from ${ip ?? 'unknown IP'}`, ip, userAgent, true);
+      }
       throw new UnauthorizedException('Invalid email or password');
     }
 
     if (!existingUser.isVerified) {
   throw new UnauthorizedException('Account not verified. Please verify OTP first');
 }
+
+    if (role === 'seller') {
+      this.logSellerSecurityEvent(existingUser._id.toString(), 'security', 'login_success', `Login from ${ip ?? 'unknown IP'}`, ip, userAgent, false);
+    }
 
    
     const payload = {

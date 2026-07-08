@@ -7,10 +7,15 @@ import {
 } from '@nestjs/common';
 import { DatabaseService } from 'src/database/databaseservice';
 import { SellerType, ProductType, resolveTools } from './schemas/store.schema';
+import { ActivityLogService } from 'src/activity-log/activity-log.service';
+import { UpdateStoreCustomerDto } from './dto/update-store-customer.dto';
 
 @Injectable()
 export class StoreService {
-  constructor(private readonly databaseService: DatabaseService) {}
+  constructor(
+    private readonly databaseService: DatabaseService,
+    private readonly activityLogService: ActivityLogService,
+  ) {}
 
   private generateSlug(name: string): string {
     return name
@@ -433,5 +438,82 @@ export class StoreService {
       success: true,
       data: { following: !!existing },
     };
+  }
+
+  // ── 7. Store customers (staff-facing: only people who have ordered from this store) ────
+
+  async getStoreCustomers(sellerId: string, storeId: string, query: any) {
+    const store = await this.databaseService.repositories.storeModel.findOne({ _id: storeId, isDelete: false });
+    if (!store) throw new NotFoundException('Store not found');
+    if (store.sellerId !== sellerId) throw new UnauthorizedException('You are not authorized to view this store\'s customers');
+
+    const { orderModel, userModel } = this.databaseService.repositories;
+
+    const page = parseInt(query.page) || 1;
+    const limit = parseInt(query.limit) || 20;
+    const skip = (page - 1) * limit;
+
+    const customerIds = await orderModel.distinct('userId', { 'sellerOrders.storeId': storeId, isDelete: false });
+    const total = customerIds.length;
+    const pageIds = customerIds.slice(skip, skip + limit);
+
+    const customers = await userModel.find({ _id: { $in: pageIds } }).select('name email phone createdAt').lean();
+
+    return {
+      success: true,
+      data: {
+        pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+        customers,
+      },
+    };
+  }
+
+  async updateStoreCustomer(
+    sellerId: string,
+    storeId: string,
+    customerId: string,
+    dto: UpdateStoreCustomerDto,
+    ip?: string,
+    userAgent?: string,
+  ) {
+    const store = await this.databaseService.repositories.storeModel.findOne({ _id: storeId, isDelete: false });
+    if (!store) throw new NotFoundException('Store not found');
+    if (store.sellerId !== sellerId) throw new UnauthorizedException('You are not authorized to edit this store\'s customers');
+
+    const { orderModel, userModel } = this.databaseService.repositories;
+
+    const hasOrderedHere = await orderModel.exists({ userId: customerId, 'sellerOrders.storeId': storeId, isDelete: false });
+    if (!hasOrderedHere) throw new BadRequestException('This customer has no orders with your store');
+
+    const update: any = {};
+    if (dto.name !== undefined) update.name = dto.name;
+    if (dto.phone !== undefined) update.phone = dto.phone;
+    if (dto.email !== undefined) {
+      update.email = dto.email;
+      update.isVerified = false; // new email hasn't gone through OTP yet
+    }
+
+    if (Object.keys(update).length === 0) throw new BadRequestException('Nothing to update');
+
+    const customer = await userModel
+      .findByIdAndUpdate(customerId, update, { new: true, runValidators: true })
+      .select('-password -otp -otpExpiresAt');
+
+    if (!customer) throw new NotFoundException('Customer not found');
+
+    this.activityLogService.log({
+      storeId,
+      category: 'customers',
+      action: 'customer_profile_updated',
+      description: `${(customer as any).name} — updated ${Object.keys(update).filter((k) => k !== 'isVerified').join(', ')}`,
+      actorId: sellerId,
+      actorRole: 'seller',
+      targetId: customerId,
+      targetType: 'customer',
+      ip,
+      userAgent,
+    });
+
+    return { success: true, message: 'Customer updated', data: customer };
   }
 }

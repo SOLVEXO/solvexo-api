@@ -6,6 +6,8 @@ import { UploadService } from 'src/upload/upload.service';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { FinanceService } from 'src/finance/finance.service';
+import { ActivityLogService } from 'src/activity-log/activity-log.service';
+import { LoyaltyService } from 'src/loyalty/loyalty.service';
 
 
 @Injectable()
@@ -16,6 +18,8 @@ export class OrdersService {
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
     private readonly financeService: FinanceService,
+    private readonly activityLogService: ActivityLogService,
+    private readonly loyaltyService: LoyaltyService,
   ) {}
 
   async getOrdersByUserId(userId: string, query: any) {
@@ -312,7 +316,7 @@ export class OrdersService {
     };
   }
 
-  async updateSellerOrderStatus(sellerId: string, body: any) {
+  async updateSellerOrderStatus(sellerId: string, body: any, ip?: string, userAgent?: string) {
     const { orderId, storeId, status, tracking } = body;
 
     if (!orderId) throw new BadRequestException('orderId is required');
@@ -390,7 +394,23 @@ export class OrdersService {
       } catch (e) {
         console.error('Finance recordSale failed:', e?.message);
       }
+
+      this.loyaltyService.awardPurchasePoints(so.storeId, order.userId, orderId, so.subtotal).catch(() => {});
     }
+
+    const so = order.sellerOrders[sellerOrderIndex];
+    this.activityLogService.log({
+      storeId: so.storeId,
+      category: 'orders',
+      action: status === 'shipped' ? 'order_fulfilled' : `order_${status}`,
+      description: tracking ? `Order #${orderId} — shipped via ${tracking.carrier ?? tracking}` : `Order #${orderId} — status changed to ${status}`,
+      actorId: sellerId,
+      actorRole: 'seller',
+      targetId: orderId,
+      targetType: 'order',
+      ip,
+      userAgent,
+    });
 
     return { success: true, message: `Order status updated to ${status}` };
   }
@@ -432,6 +452,8 @@ export class OrdersService {
       } catch (e) {
         console.error('Finance recordSale failed:', e?.message);
       }
+
+      this.loyaltyService.awardPurchasePoints(so.storeId, order.userId, orderId, so.subtotal).catch(() => {});
     }
 
     return { success: true, message: 'Order marked as paid' };
@@ -808,7 +830,7 @@ export class OrdersService {
     };
   }
 
-  async returnAction(sellerId: string, orderId: string, body: any) {
+  async returnAction(sellerId: string, orderId: string, body: any, ip?: string, userAgent?: string) {
     const { storeId, itemIds, action, rejectReason } = body;
     if (!storeId) throw new BadRequestException('storeId is required');
     if (!itemIds || !Array.isArray(itemIds) || itemIds.length === 0) throw new BadRequestException('itemIds are required');
@@ -883,6 +905,34 @@ export class OrdersService {
 
     await orderModel.findByIdAndUpdate(orderId, { $set: updateData });
 
+    let refundProcessed = false;
+    if (action === 'approve' && order.isPaid) {
+      const refundAmount = targetItems.reduce((sum, t) => sum + (t.item.totalPrice || 0), 0);
+      if (refundAmount > 0) {
+        try {
+          await this.financeService.recordRefund(storeId, sellerId, orderId, refundAmount, sellerId, 'seller');
+          refundProcessed = true;
+        } catch (e) {
+          console.error('Finance recordRefund failed:', e?.message);
+        }
+
+        this.loyaltyService.clawbackPurchasePoints(storeId, order.userId, orderId, refundAmount).catch(() => {});
+      }
+    }
+
+    this.activityLogService.log({
+      storeId,
+      category: 'orders',
+      action: action === 'approve' ? 'return_approved' : 'return_rejected',
+      description: `Order #${orderId} — ${targetItems.length} item(s) return ${action === 'approve' ? 'approved' : 'rejected'}`,
+      actorId: sellerId,
+      actorRole: 'seller',
+      targetId: orderId,
+      targetType: 'order',
+      ip,
+      userAgent,
+    });
+
     return {
       success: true,
       message: action === 'approve' ? `Return approved for ${targetItems.length} item(s)` : `Return rejected for ${targetItems.length} item(s)`,
@@ -890,7 +940,7 @@ export class OrdersService {
         orderId,
         action,
         processedItems: targetItems.length,
-        refundProcessed: action === 'approve' && order.isPaid,
+        refundProcessed,
       },
     };
   }

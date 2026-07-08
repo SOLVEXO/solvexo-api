@@ -25,11 +25,15 @@ import { MessagingModule } from './messaging/messaging.module';
 import { FinanceModule } from './finance/finance.module';
 import { SubscriptionsModule } from './subscriptions/subscriptions.module';
 import { SchedulerModule } from './scheduler/scheduler.module';
+import { ActivityLogModule } from './activity-log/activity-log.module';
+import { MarketingModule } from './marketing/marketing.module';
+import { LoyaltyModule } from './loyalty/loyalty.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     DatabaseModule,
+    ActivityLogModule,
     AuthModule,
     categoryModule,
     ProductsModule,
@@ -55,6 +59,8 @@ import { SchedulerModule } from './scheduler/scheduler.module';
     FinanceModule,
     SubscriptionsModule,
     SchedulerModule,
+    MarketingModule,
+    LoyaltyModule,
   ],
   controllers: [AppController],
   providers: [AppService],
