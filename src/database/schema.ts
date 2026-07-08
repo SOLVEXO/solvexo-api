@@ -49,6 +49,12 @@ export type { OtpDocument } from '../otp/schemas/otp.schema';
 export { Banner, BannerDocument, BannerSchema } from '../banner/schemas/banner.schema';
 export type { Faq, FaqSchema } from '../faqs/schemas/faq.schema';
 export type { FaqDocument } from '../faqs/schemas/faq.schema';
+export { ActivityLog, ActivityLogDocument, ActivityLogSchema } from '../activity-log/schemas/activity-log.schema';
+export { Coupon, CouponDocument, CouponSchema } from '../marketing/schemas/coupon.schema';
+export { LoyaltyProgram, LoyaltyProgramDocument, LoyaltyProgramSchema } from '../loyalty/schemas/loyalty-program.schema';
+export { LoyaltyMember, LoyaltyMemberDocument, LoyaltyMemberSchema } from '../loyalty/schemas/loyalty-member.schema';
+export { LoyaltyTransaction, LoyaltyTransactionDocument, LoyaltyTransactionSchema } from '../loyalty/schemas/loyalty-transaction.schema';
+export { Reward, RewardDocument, RewardSchema } from '../loyalty/schemas/reward.schema';
 
 
 

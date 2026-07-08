@@ -1,9 +1,10 @@
 /* eslint-disable prettier/prettier */
-import { Controller, Post, Get, Body, Req, Param, Query, UseGuards } from '@nestjs/common';
+import { Controller, Post, Get, Patch, Body, Req, Param, Query, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { StoreService } from './store.service';
+import { UpdateStoreCustomerDto } from './dto/update-store-customer.dto';
 
 @Controller('api/store')
 export class StoreController {
@@ -106,5 +107,28 @@ export class StoreController {
   ) {
     const { userId } = req.user;
     return this.storeService.getStoreFollowers(userId, storeId, query);
+  }
+
+  // ── Customers (staff-facing) ─────────────────────────────────────────────
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Get(':storeId/customers')
+  async getStoreCustomers(@Req() req: any, @Param('storeId') storeId: string, @Query() query: any) {
+    const { userId } = req.user;
+    return this.storeService.getStoreCustomers(userId, storeId, query);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Patch(':storeId/customers/:customerId')
+  async updateStoreCustomer(
+    @Req() req: any,
+    @Param('storeId') storeId: string,
+    @Param('customerId') customerId: string,
+    @Body() dto: UpdateStoreCustomerDto,
+  ) {
+    const { userId } = req.user;
+    return this.storeService.updateStoreCustomer(userId, storeId, customerId, dto, req.ip, req.headers['user-agent']);
   }
 }

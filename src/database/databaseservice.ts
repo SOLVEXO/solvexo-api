@@ -117,6 +117,24 @@ export class DatabaseService {
     @InjectModel(schema.SubscriptionInvoice.name)
     private subscriptionInvoiceModel: Model<schema.SubscriptionInvoiceDocument>,
 
+    @InjectModel(schema.ActivityLog.name)
+    private activityLogModel: Model<schema.ActivityLogDocument>,
+
+    @InjectModel(schema.Coupon.name)
+    private couponModel: Model<schema.CouponDocument>,
+
+    @InjectModel(schema.LoyaltyProgram.name)
+    private loyaltyProgramModel: Model<schema.LoyaltyProgramDocument>,
+
+    @InjectModel(schema.LoyaltyMember.name)
+    private loyaltyMemberModel: Model<schema.LoyaltyMemberDocument>,
+
+    @InjectModel(schema.LoyaltyTransaction.name)
+    private loyaltyTransactionModel: Model<schema.LoyaltyTransactionDocument>,
+
+    @InjectModel(schema.Reward.name)
+    private rewardModel: Model<schema.RewardDocument>,
+
   ) { }
 
   get repositories() {
@@ -160,6 +178,12 @@ export class DatabaseService {
       subscriptionPlanModel: this.subscriptionPlanModel,
       subscriptionModel: this.subscriptionModel,
       subscriptionInvoiceModel: this.subscriptionInvoiceModel,
+      activityLogModel: this.activityLogModel,
+      couponModel: this.couponModel,
+      loyaltyProgramModel: this.loyaltyProgramModel,
+      loyaltyMemberModel: this.loyaltyMemberModel,
+      loyaltyTransactionModel: this.loyaltyTransactionModel,
+      rewardModel: this.rewardModel,
     };
   }
 }

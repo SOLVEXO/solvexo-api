@@ -67,7 +67,7 @@ async createVariant(@Req() req: any, @Body() body: any) {
 @Post('update-product-and-variant')
 async updateProduct(@Req() req: any, @Body() body: any) {
   const { userId: sellerId } = req.user;
-  return this.ProductsService.updateProduct(sellerId, body);
+  return this.ProductsService.updateProduct(sellerId, body, req.ip, req.headers['user-agent']);
 }
 
 @Get('products-by-category')

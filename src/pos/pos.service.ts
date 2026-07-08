@@ -31,10 +31,14 @@ import { UpdateShiftDto } from './dto/update-shift.dto';
 import { ResetPinDto } from './dto/reset-pin.dto';
 import { UpdateSaleItemsDto } from './dto/update-sale-items.dto';
 import { UpdatePosSettingsDto } from './dto/update-pos-settings.dto';
+import { ActivityLogService } from 'src/activity-log/activity-log.service';
 
 @Injectable()
 export class PosService {
-  constructor(private readonly databaseService: DatabaseService) {}
+  constructor(
+    private readonly databaseService: DatabaseService,
+    private readonly activityLogService: ActivityLogService,
+  ) {}
 
   private get r() {
     return this.databaseService.repositories;
@@ -62,7 +66,7 @@ export class PosService {
 
   // ── EMPLOYEE MANAGEMENT ───────────────────────────────────────────────────
 
-  async addEmployee(sellerId: string, dto: CreateEmployeeDto) {
+  async addEmployee(sellerId: string, dto: CreateEmployeeDto, ip?: string, userAgent?: string) {
     await this.verifyStoreOwnership(dto.storeId, sellerId);
 
     const existing = await this.r.employeeModel.findOne({
@@ -85,6 +89,20 @@ export class PosService {
     });
 
     const { pin: _, ...safe } = (employee as any).toObject();
+
+    this.activityLogService.log({
+      storeId: dto.storeId,
+      category: 'settings',
+      action: 'team_member_added',
+      description: `${dto.name} — ${dto.role ?? 'cashier'} role`,
+      actorId: sellerId,
+      actorRole: 'seller',
+      targetId: String(employee._id),
+      targetType: 'employee',
+      ip,
+      userAgent,
+    });
+
     return { success: true, message: 'Employee added successfully', data: safe };
   }
 
