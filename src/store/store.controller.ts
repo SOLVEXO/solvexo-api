@@ -1,6 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { Controller, Post, Get, Patch, Body, Req, Param, Query, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { OptionalJwtAuthGuard } from '../auth/guards/optional-jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { StoreService } from './store.service';
@@ -66,12 +67,14 @@ export class StoreController {
     return this.storeService.getPublicStore(slug);
   }
 
+  @UseGuards(OptionalJwtAuthGuard)
   @Get('public/:storeId/products')
   async getPublicStoreProducts(
+    @Req() req: any,
     @Param('storeId') storeId: string,
     @Query() query: any,
   ) {
-    return this.storeService.getPublicStoreProducts(storeId, query);
+    return this.storeService.getPublicStoreProducts(storeId, query, req.user?.userId ?? null);
   }
 
   @Get('public/:storeId/filters')

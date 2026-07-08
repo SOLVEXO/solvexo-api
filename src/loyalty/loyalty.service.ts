@@ -166,12 +166,16 @@ export class LoyaltyService {
   }
 
   /** Called by OrdersService when a sub-order is marked completed — computes the points from the store's own rate. */
-  async awardPurchasePoints(storeId: string, userId: string, orderId: string, subtotal: number) {
+  /** `multiplier` (default 1x) — subscribers with a loyalty_multiplier benefit earn more per dollar. */
+  async awardPurchasePoints(storeId: string, userId: string, orderId: string, subtotal: number, multiplier = 1) {
     const program = await this.getOrCreateProgram(storeId);
     if (!program.isEnabled) return null;
-    const points = Math.round(subtotal * program.pointsPerDollar);
+    const points = Math.round(subtotal * program.pointsPerDollar * multiplier);
     if (points <= 0) return null;
-    return this.awardPoints(storeId, userId, 'purchase', points, { orderId, description: `Order #${orderId} completed` });
+    const description = multiplier > 1
+      ? `Order #${orderId} completed (${multiplier}x member bonus)`
+      : `Order #${orderId} completed`;
+    return this.awardPoints(storeId, userId, 'purchase', points, { orderId, description });
   }
 
   /**

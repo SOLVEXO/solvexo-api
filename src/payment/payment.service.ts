@@ -319,6 +319,8 @@ private async createOrder(
           quantity: i.quantity,
           price: i.price,
           totalPrice: i.totalPrice,
+          originalPrice: i.originalPrice ?? null,
+          subscriberDiscountUSD: i.subscriberDiscountUSD ?? 0,
           status: 'pending',
         })),
         subtotal,
@@ -344,6 +346,7 @@ private async createOrder(
     const sellerOrders = buildSellerOrders(physicalItems);
     const subtotal = physicalItems.reduce((s: number, i: any) => s + i.totalPrice, 0);
     const shippingFee = checkout.shippingFee || 0;
+    const subscriberDiscountTotal = physicalItems.reduce((s: number, i: any) => s + (i.subscriberDiscountUSD ?? 0), 0);
 
     const physicalOrder = await orderModel.create({
       orderNumber: genOrderNumber(),
@@ -355,6 +358,7 @@ private async createOrder(
       subtotal,
       shippingFee,
       taxAmount: 0,
+      subscriberDiscountTotal,
       totalAmount: subtotal + shippingFee,
       paymentType,
       paymentStatus: isPaid ? 'paid' : 'unpaid',
@@ -371,6 +375,7 @@ private async createOrder(
   if (digitalItems.length > 0) {
     const sellerOrders = buildSellerOrders(digitalItems);
     const subtotal = digitalItems.reduce((s: number, i: any) => s + i.totalPrice, 0);
+    const subscriberDiscountTotal = digitalItems.reduce((s: number, i: any) => s + (i.subscriberDiscountUSD ?? 0), 0);
 
     const digitalOrder = await orderModel.create({
       orderNumber: genOrderNumber(),
@@ -382,6 +387,7 @@ private async createOrder(
       subtotal,
       shippingFee: 0,
       taxAmount: 0,
+      subscriberDiscountTotal,
       totalAmount: subtotal,
       paymentType,
       paymentStatus: isPaid ? 'paid' : 'unpaid',

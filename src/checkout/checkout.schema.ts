@@ -47,6 +47,15 @@ export class CheckoutItem {
 
   @Prop({ required: true })
   totalPrice: number;
+
+  // Set only when a subscriber discount was applied server-side. `price`/
+  // `totalPrice` above already reflect the discounted amount — these are
+  // kept for receipt display ("you saved $X") and analytics.
+  @Prop({ type: Number, default: null })
+  originalPrice: number | null;
+
+  @Prop({ type: Number, default: 0 })
+  subscriberDiscountUSD: number;
 }
 
 export const CheckoutItemSchema = SchemaFactory.createForClass(CheckoutItem);
@@ -82,6 +91,11 @@ export class Checkout {
 
   @Prop({ default: 0 })
   taxAmount: number;
+
+  // Total subscriber-benefit savings applied server-side (line-item discounts
+  // + shipping waiver). Shown to the buyer as "you saved $X with your membership".
+  @Prop({ default: 0 })
+  subscriberSavingsUSD: number;
 
   @Prop({ required: true })
   totalAmount: number;

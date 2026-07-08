@@ -8,6 +8,7 @@ import { ConfigService } from '@nestjs/config';
 import { FinanceService } from 'src/finance/finance.service';
 import { ActivityLogService } from 'src/activity-log/activity-log.service';
 import { LoyaltyService } from 'src/loyalty/loyalty.service';
+import { SubscriptionBenefitsService } from 'src/subscriptions/subscription-benefits.service';
 
 
 @Injectable()
@@ -20,7 +21,15 @@ export class OrdersService {
     private readonly financeService: FinanceService,
     private readonly activityLogService: ActivityLogService,
     private readonly loyaltyService: LoyaltyService,
+    private readonly subscriptionBenefits: SubscriptionBenefitsService,
   ) {}
+
+  /** Subscribers earn points at their plan's configured multiplier (default 1x). */
+  private async awardLoyaltyPointsWithMultiplier(storeId: string, userId: string, orderId: string, subtotal: number) {
+    const benefitsEntry = await this.subscriptionBenefits.getActiveBenefits(userId, storeId);
+    const multiplier = benefitsEntry ? this.subscriptionBenefits.getLoyaltyMultiplier(benefitsEntry.benefits) : 1;
+    return this.loyaltyService.awardPurchasePoints(storeId, userId, orderId, subtotal, multiplier);
+  }
 
   async getOrdersByUserId(userId: string, query: any) {
     const { orderModel } = this.databaseService.repositories;
@@ -55,6 +64,7 @@ export class OrdersService {
       subtotal: order.subtotal,
       shippingFee: order.shippingFee,
       taxAmount: order.taxAmount,
+      subscriberDiscountTotal: order.subscriberDiscountTotal ?? 0,
       totalAmount: order.totalAmount,
       currency: order.currency,
       shippingAddress: order.shippingAddress,
@@ -74,6 +84,8 @@ export class OrdersService {
           quantity: item.quantity,
           price: item.price,
           totalPrice: item.totalPrice,
+          originalPrice: item.originalPrice ?? null,
+          subscriberDiscountUSD: item.subscriberDiscountUSD ?? 0,
           status: item.status,
         })),
         tracking: so.tracking,
@@ -395,7 +407,7 @@ export class OrdersService {
         console.error('Finance recordSale failed:', e?.message);
       }
 
-      this.loyaltyService.awardPurchasePoints(so.storeId, order.userId, orderId, so.subtotal).catch(() => {});
+      this.awardLoyaltyPointsWithMultiplier(so.storeId, order.userId, orderId, so.subtotal).catch(() => {});
     }
 
     const so = order.sellerOrders[sellerOrderIndex];
@@ -453,7 +465,7 @@ export class OrdersService {
         console.error('Finance recordSale failed:', e?.message);
       }
 
-      this.loyaltyService.awardPurchasePoints(so.storeId, order.userId, orderId, so.subtotal).catch(() => {});
+      this.awardLoyaltyPointsWithMultiplier(so.storeId, order.userId, orderId, so.subtotal).catch(() => {});
     }
 
     return { success: true, message: 'Order marked as paid' };

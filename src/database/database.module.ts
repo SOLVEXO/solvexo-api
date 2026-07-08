@@ -55,6 +55,7 @@ import { DatabaseService } from './databaseservice'
       { name: schema.SubscriptionPlan.name, schema: schema.SubscriptionPlanSchema },
       { name: schema.Subscription.name, schema: schema.SubscriptionSchema },
       { name: schema.SubscriptionInvoice.name, schema: schema.SubscriptionInvoiceSchema },
+      { name: schema.SubscriptionPaymentAttempt.name, schema: schema.SubscriptionPaymentAttemptSchema },
       { name: schema.ActivityLog.name, schema: schema.ActivityLogSchema },
       { name: schema.Coupon.name, schema: schema.CouponSchema },
       { name: schema.LoyaltyProgram.name, schema: schema.LoyaltyProgramSchema },

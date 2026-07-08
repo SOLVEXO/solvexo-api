@@ -2,9 +2,10 @@
 import { ApiProperty } from '@nestjs/swagger';
 import {
   IsString, IsOptional, IsNumber,
-  IsEnum, IsArray, IsPositive,
+  IsEnum, IsArray, IsPositive, ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
+import { PlanBenefitDto } from './plan-benefit.dto';
 
 export class UpdatePlanDto {
   @ApiProperty({ required: false })
@@ -41,6 +42,13 @@ export class UpdatePlanDto {
   @IsArray()
   @IsString({ each: true })
   features?: string[];
+
+  @ApiProperty({ required: false, type: [PlanBenefitDto] })
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => PlanBenefitDto)
+  benefits?: PlanBenefitDto[];
 
   @ApiProperty({ required: false, enum: ['active', 'archived'] })
   @IsOptional()

@@ -13,6 +13,7 @@ export const ACTIVITY_LOG_CATEGORIES = [
   'settings',
   'security',
   'loyalty',
+  'subscriptions',
 ] as const;
 
 export type ActivityLogCategory = (typeof ACTIVITY_LOG_CATEGORIES)[number];

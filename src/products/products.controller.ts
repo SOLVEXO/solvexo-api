@@ -12,8 +12,9 @@ import {
 import { ProductsService } from './products.service';
 import { CreateProductDto } from './dto/create-product.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { OptionalJwtAuthGuard } from '../auth/guards/optional-jwt-auth.guard';
 import { Roles } from '../auth/decorators/roles.decorator'
-import { RolesGuard } from '../auth/guards/roles.guard'; 
+import { RolesGuard } from '../auth/guards/roles.guard';
 import { CreateProductVariantDto} from './dto/productVariant.dto'
 
 @Controller('api/products')
@@ -70,18 +71,21 @@ async updateProduct(@Req() req: any, @Body() body: any) {
   return this.ProductsService.updateProduct(sellerId, body, req.ip, req.headers['user-agent']);
 }
 
+@UseGuards(OptionalJwtAuthGuard)
 @Get('products-by-category')
 async getProductsByCategoryId(
+  @Req() req: any,
   @Query('id') id?: string,
   @Query('page') page: number = 1,
   @Query('limit') limit: number = 10
 ) {
-  return this.ProductsService.getProductsByCategoryId(id, page, limit);
+  return this.ProductsService.getProductsByCategoryId(id, page, limit, req.user?.userId ?? null);
 }
 
+@UseGuards(OptionalJwtAuthGuard)
 @Get('getProductById/:id')
-async getProductById(@Param('id') id: string) {
-  return this.ProductsService.getProductById(id);
+async getProductById(@Req() req: any, @Param('id') id: string) {
+  return this.ProductsService.getProductById(id, req.user?.userId ?? null);
 }
 
 @Get('getVariantById/:variantId')

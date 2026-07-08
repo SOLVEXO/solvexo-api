@@ -23,21 +23,25 @@ export class EmailService {
         otp: string,
         type: string = 'email_verification',
     ): Promise<boolean> {
-        try {
-            const subject = this.getEmailSubject(type);
-            const html = this.getEmailTemplate(otp, type);
+        const subject = this.getEmailSubject(type);
+        const html = this.getEmailTemplate(otp, type);
+        return this.sendMail(email, subject, html);
+    }
 
+    /** Generic transactional email — used by any module (e.g. subscription notifications). */
+    async sendMail(to: string, subject: string, html: string): Promise<boolean> {
+        try {
             const info = await this.transporter.sendMail({
                 from: `"${process.env.APP_NAME || 'Your App'}" <${process.env.SMTP_FROM || process.env.SMTP_USER}>`,
-                to: email,
+                to,
                 subject,
                 html,
             });
 
-            console.log('✅ OTP Email sent:', info.messageId);
+            console.log('✅ Email sent:', info.messageId);
             return true;
         } catch (error) {
-            console.error('❌ Error sending OTP email:', error);
+            console.error('❌ Error sending email:', error);
             return false;
         }
     }

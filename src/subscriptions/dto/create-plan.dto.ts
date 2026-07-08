@@ -2,9 +2,10 @@
 import { ApiProperty } from '@nestjs/swagger';
 import {
   IsString, IsNotEmpty, IsOptional, IsNumber,
-  IsEnum, IsArray, IsPositive,
+  IsEnum, IsArray, IsPositive, ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
+import { PlanBenefitDto } from './plan-benefit.dto';
 
 export class CreatePlanDto {
   @ApiProperty({ example: 'Pro Plan' })
@@ -50,4 +51,15 @@ export class CreatePlanDto {
   @IsArray()
   @IsString({ each: true })
   features?: string[];
+
+  @ApiProperty({
+    required: false,
+    type: [PlanBenefitDto],
+    description: 'Structured, server-enforced benefits (discount, shipping, early access, loyalty multiplier, credits, priority support/booking).',
+  })
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => PlanBenefitDto)
+  benefits?: PlanBenefitDto[];
 }

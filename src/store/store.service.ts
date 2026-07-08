@@ -9,12 +9,14 @@ import { DatabaseService } from 'src/database/databaseservice';
 import { SellerType, ProductType, resolveTools } from './schemas/store.schema';
 import { ActivityLogService } from 'src/activity-log/activity-log.service';
 import { UpdateStoreCustomerDto } from './dto/update-store-customer.dto';
+import { SubscriptionBenefitsService } from 'src/subscriptions/subscription-benefits.service';
 
 @Injectable()
 export class StoreService {
   constructor(
     private readonly databaseService: DatabaseService,
     private readonly activityLogService: ActivityLogService,
+    private readonly subscriptionBenefits: SubscriptionBenefitsService,
   ) {}
 
   private generateSlug(name: string): string {
@@ -287,7 +289,7 @@ export class StoreService {
   }
 
   // ── 4. Public store products ──────────────────────────────────────────────
-  async getPublicStoreProducts(storeId: string, query: any) {
+  async getPublicStoreProducts(storeId: string, query: any, customerId?: string | null) {
     if (!storeId) throw new BadRequestException('storeId is required');
 
     const store = await this.databaseService.repositories.storeModel.findOne({
@@ -323,11 +325,39 @@ export class StoreService {
       .limit(limit)
       .lean();
 
+    // Cheapest active variant per product — powers the card price and, when
+    // the buyer has an active subscription to this store, the member price.
+    const productIds = products.map((p: any) => p._id.toString());
+    const variants = await this.databaseService.repositories.productVariantModel.find({
+      productId: { $in: productIds }, status: 'active', isDelete: false,
+    }).sort({ price: 1 }).lean();
+    const cheapestByProduct = new Map<string, any>();
+    for (const v of variants) {
+      if (!cheapestByProduct.has(v.productId)) cheapestByProduct.set(v.productId, v);
+    }
+
+    const benefits = await this.subscriptionBenefits.getActiveBenefits(customerId, storeId);
+
+    const enrichedProducts = products.map((p: any) => {
+      const variant = cheapestByProduct.get(p._id.toString());
+      const base: any = { ...p, defaultVariantPrice: variant?.price ?? null };
+      if (variant && benefits) {
+        const discount = this.subscriptionBenefits.resolveProductDiscount(benefits.benefits, p, variant.price);
+        if (discount) {
+          base.subscriberPrice = discount.subscriberPrice;
+          base.youSaveUSD = discount.savingsUSD;
+          base.discountPercent = discount.discountPercent;
+          base.subscriberPlanName = benefits.planName;
+        }
+      }
+      return base;
+    });
+
     return {
       success: true,
       data: {
         pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
-        products,
+        products: enrichedProducts,
       },
     };
   }

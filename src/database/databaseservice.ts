@@ -117,6 +117,9 @@ export class DatabaseService {
     @InjectModel(schema.SubscriptionInvoice.name)
     private subscriptionInvoiceModel: Model<schema.SubscriptionInvoiceDocument>,
 
+    @InjectModel(schema.SubscriptionPaymentAttempt.name)
+    private subscriptionPaymentAttemptModel: Model<schema.SubscriptionPaymentAttemptDocument>,
+
     @InjectModel(schema.ActivityLog.name)
     private activityLogModel: Model<schema.ActivityLogDocument>,
 
@@ -178,6 +181,7 @@ export class DatabaseService {
       subscriptionPlanModel: this.subscriptionPlanModel,
       subscriptionModel: this.subscriptionModel,
       subscriptionInvoiceModel: this.subscriptionInvoiceModel,
+      subscriptionPaymentAttemptModel: this.subscriptionPaymentAttemptModel,
       activityLogModel: this.activityLogModel,
       couponModel: this.couponModel,
       loyaltyProgramModel: this.loyaltyProgramModel,

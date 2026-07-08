@@ -42,6 +42,14 @@ export class OrderItem {
   @Prop({ required: true })
   totalPrice: number;
 
+  // Set only when a subscriber discount was applied at checkout — kept for
+  // order-history display ("member savings: $X") and seller analytics.
+  @Prop({ type: Number, default: null })
+  originalPrice: number | null;
+
+  @Prop({ type: Number, default: 0 })
+  subscriberDiscountUSD: number;
+
   // cancel/refund item-level pe
   @Prop({
     type: String,
@@ -212,6 +220,11 @@ export class Order {
 
   @Prop({ required: true, default: 0 })
   taxAmount: number;
+
+  // Total subscriber-benefit savings across all items in this order —
+  // powers seller analytics ("revenue from subscribers", "benefit usage").
+  @Prop({ default: 0 })
+  subscriberDiscountTotal: number;
 
   @Prop({ required: true })
   totalAmount: number;

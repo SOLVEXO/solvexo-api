@@ -43,6 +43,7 @@ export { TaxReport, TaxReportDocument, TaxReportSchema } from '../finance/schema
 export { SubscriptionPlan, SubscriptionPlanDocument, SubscriptionPlanSchema } from '../subscriptions/schemas/subscription-plan.schema';
 export { Subscription, SubscriptionDocument, SubscriptionSchema } from '../subscriptions/schemas/subscription.schema';
 export { SubscriptionInvoice, SubscriptionInvoiceDocument, SubscriptionInvoiceSchema } from '../subscriptions/schemas/subscription-invoice.schema';
+export { SubscriptionPaymentAttempt, SubscriptionPaymentAttemptDocument, SubscriptionPaymentAttemptSchema } from '../subscriptions/schemas/subscription-payment-attempt.schema';
 
 export type { Otp, OtpSchema } from '../otp/schemas/otp.schema';
 export type { OtpDocument } from '../otp/schemas/otp.schema';

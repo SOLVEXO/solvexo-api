@@ -10,13 +10,35 @@ import { ProductType as StoreProductType } from 'src/store/schemas/store.schema'
 import { CreateProductDto } from './dto/create-product.dto';
 import { CreateProductVariantDto } from './dto/productVariant.dto';
 import { ActivityLogService } from 'src/activity-log/activity-log.service';
+import { SubscriptionBenefitsService } from 'src/subscriptions/subscription-benefits.service';
 
 @Injectable()
 export class ProductsService {
   constructor(
     private databaseService: DatabaseService,
     private activityLogService: ActivityLogService,
+    private subscriptionBenefits: SubscriptionBenefitsService,
   ) {}
+
+  // Attaches subscriberPrice/youSaveUSD/discountPercent/planName to each
+  // variant when the requester has an active, discount-granting subscription
+  // to the product's store. Never hides or restricts the product itself —
+  // this only ever adds optional pricing metadata.
+  private applySubscriberPricing(variants: any[], product: { _id: any; categoryId?: string; subCategoryId?: string | null }, benefitsEntry: { benefits: any[]; planName: string } | undefined) {
+    if (!benefitsEntry) return variants;
+    return variants.map((v: any) => {
+      const discount = this.subscriptionBenefits.resolveProductDiscount(benefitsEntry.benefits, product as any, v.price);
+      if (!discount) return v;
+      return {
+        ...v,
+        subscriberPrice: discount.subscriberPrice,
+        youSaveUSD: discount.savingsUSD,
+        discountPercent: discount.discountPercent,
+        subscriberPlanName: benefitsEntry.planName,
+        minOrderValueUSD: discount.minOrderValueUSD,
+      };
+    });
+  }
 async addProduct(
   sellerId: string,
   role: string,
@@ -449,7 +471,8 @@ async updateProduct(sellerId: string, body: any, ip?: string, userAgent?: string
 async getProductsByCategoryId(
   parentCategoryId?: string,
   page: number = 1,
-  limit: number = 10
+  limit: number = 10,
+  customerId?: string | null,
 ): Promise<any> {
 
   const productModel = this.databaseService.repositories.productModel;
@@ -514,9 +537,14 @@ async getProductsByCategoryId(
     variantMap[v.productId].push(v);
   }
 
+  // Batch-resolve subscriber pricing across every distinct store present in
+  // this page of results — one query instead of N.
+  const storeIds = [...new Set(products.map(p => p.storeId).filter(Boolean))];
+  const benefitsMap = await this.subscriptionBenefits.getActiveBenefitsBatch(customerId, storeIds as string[]);
+
   const productsWithVariants = products.map(p => ({
     ...p,
-    variants: variantMap[p._id.toString()] || []
+    variants: this.applySubscriberPricing(variantMap[p._id.toString()] || [], p, benefitsMap.get(p.storeId)),
   }));
 
   return {
@@ -533,7 +561,7 @@ async getProductsByCategoryId(
   };
 }
 
-async getProductById(productId: string) {
+async getProductById(productId: string, customerId?: string | null) {
   const productModel = this.databaseService.repositories.productModel;
   const productVariantModel = this.databaseService.repositories.productVariantModel;
   const sellerModel = this.databaseService.repositories.sellerModel;
@@ -575,11 +603,14 @@ async getProductById(productId: string) {
   };
 
   // 4️⃣ Get variants
-  const variants = await productVariantModel.find({
+  const rawVariants = await productVariantModel.find({
     productId: productId,
     status: "active",
     isDelete: false
   }).lean();
+
+  const benefitsEntry = await this.subscriptionBenefits.getActiveBenefits(customerId, product.storeId);
+  const variants = this.applySubscriberPricing(rawVariants, product, benefitsEntry ?? undefined);
 
   const defaultVariant = variants.length > 0
     ? variants.reduce((min, v) => v.price < min.price ? v : min, variants[0])

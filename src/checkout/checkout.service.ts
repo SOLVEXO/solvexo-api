@@ -2,10 +2,16 @@
 
 import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
 import { DatabaseService } from 'src/database/databaseservice';
+import { SubscriptionBenefitsService } from 'src/subscriptions/subscription-benefits.service';
 
 @Injectable()
 export class CheckoutService {
-  constructor(private readonly databaseService: DatabaseService) {}
+  constructor(
+    private readonly databaseService: DatabaseService,
+    private readonly subscriptionBenefits: SubscriptionBenefitsService,
+  ) {}
+
+  private round(n: number) { return Math.round(n * 100) / 100; }
 
   async deleteCheckout(userId: string, checkoutId: string) {
     const { checkoutModel } = this.databaseService.repositories;
@@ -45,6 +51,18 @@ export class CheckoutService {
     const checkoutItems: any[] = [];
     let hasPhysical = false;
 
+    // Cache one lookup per store so a multi-item cart from the same store
+    // doesn't re-query the buyer's subscription per item.
+    const benefitsCache = new Map<string, { benefits: any[]; planName: string } | null>();
+    const getBenefits = async (storeId: string) => {
+      if (!benefitsCache.has(storeId)) {
+        benefitsCache.set(storeId, await this.subscriptionBenefits.getActiveBenefits(userId, storeId));
+      }
+      return benefitsCache.get(storeId);
+    };
+
+    let subscriberSavingsUSD = 0;
+
     for (const cartItem of selectedItems) {
       const product = await productModel.findOne({ _id: cartItem.productId, status: 'active', isDelete: false });
       if (!product) throw new BadRequestException(`Product not found: ${cartItem.productId}`);
@@ -59,6 +77,17 @@ export class CheckoutService {
         }
       }
 
+      // Subscriber pricing is resolved server-side only — the client never
+      // supplies a discount, it can only ever be computed from the buyer's
+      // real active subscription to this product's store.
+      const benefitsEntry = await getBenefits(product.storeId);
+      const discount = benefitsEntry
+        ? this.subscriptionBenefits.resolveProductDiscount(benefitsEntry.benefits, product as any, variant.price)
+        : null;
+      const unitPrice = discount?.subscriberPrice ?? variant.price;
+      const lineDiscount = discount ? this.round(discount.savingsUSD * cartItem.quantity) : 0;
+      subscriberSavingsUSD += lineDiscount;
+
       checkoutItems.push({
         productId: product._id.toString(),
         variantId: variant._id.toString(),
@@ -72,8 +101,10 @@ export class CheckoutService {
         color: variant.color ?? null,
         licenseType: product.digital?.licenseType ?? null,
         quantity: cartItem.quantity,
-        price: variant.price,
-        totalPrice: variant.price * cartItem.quantity,
+        price: unitPrice,
+        totalPrice: this.round(unitPrice * cartItem.quantity),
+        originalPrice: discount ? variant.price : null,
+        subscriberDiscountUSD: lineDiscount,
       });
     }
 
@@ -85,9 +116,37 @@ export class CheckoutService {
       defaultAddressId = defaultAddress._id.toString();
     }
 
-    const subtotal = checkoutItems.reduce((sum, i) => sum + i.totalPrice, 0);
+    const subtotal = this.round(checkoutItems.reduce((sum, i) => sum + i.totalPrice, 0));
     const taxAmount = 0;
-    const totalAmount = subtotal + taxAmount;
+    const totalAmount = this.round(subtotal + taxAmount);
+
+    // Checkout-time upsell: for any store in this cart the buyer is NOT
+    // subscribed to, but which has an active plan offering a discount,
+    // surface what they'd have saved — the highest-intent moment to convert.
+    const subscriptionSavingsHints: Array<{ storeId: string; storeName: string; planId: string; planName: string; potentialSavingsUSD: number }> = [];
+    const storeIdsInCart = [...new Set(checkoutItems.map((i) => i.storeId))];
+    for (const sid of storeIdsInCart) {
+      if (benefitsCache.get(sid)) continue; // already subscribed here
+      const plan = await this.databaseService.repositories.subscriptionPlanModel
+        .findOne({ storeId: sid, status: 'active', isDelete: false, 'benefits.type': 'discount' })
+        .sort({ monthlyPriceUSD: 1 })
+        .lean();
+      if (!plan) continue;
+      const storeItems = checkoutItems.filter((i) => i.storeId === sid);
+      let potentialSavings = 0;
+      for (const item of storeItems) {
+        const d = this.subscriptionBenefits.resolveProductDiscount((plan as any).benefits, { _id: item.productId } as any, item.price);
+        if (d) potentialSavings += this.round(d.savingsUSD * item.quantity);
+      }
+      if (potentialSavings > 0) {
+        const store = await this.databaseService.repositories.storeModel.findById(sid).select('name').lean();
+        subscriptionSavingsHints.push({
+          storeId: sid, storeName: (store as any)?.name ?? 'this store',
+          planId: (plan as any)._id.toString(), planName: (plan as any).name,
+          potentialSavingsUSD: this.round(potentialSavings),
+        });
+      }
+    }
 
     // Client-reported attribution — a mobile app has no meaningful
     // Referer/UTM headers, so this can only ever be as good as what the app
@@ -109,6 +168,7 @@ export class CheckoutService {
       subtotal,
       shippingFee: 0,
       taxAmount,
+      subscriberSavingsUSD: this.round(subscriberSavingsUSD),
       totalAmount,
       status: 'pending',
       attributionSource,
@@ -124,7 +184,8 @@ export class CheckoutService {
       data: {
         checkout,
         allowedPaymentMethods: hasDigital ? ['stripe'] : ['stripe', 'cash_on_delivery'],
-        summary: { subtotal, shippingFee: 0, taxAmount, totalAmount },
+        summary: { subtotal, shippingFee: 0, taxAmount, totalAmount, subscriberSavingsUSD: this.round(subscriberSavingsUSD) },
+        subscriptionSavingsHints,
       },
     };
   }
@@ -149,8 +210,24 @@ export class CheckoutService {
     const shippingZone = await shippingZoneModel.findOne({ _id: shippingZoneId, isDelete: false });
     if (!shippingZone) throw new NotFoundException('Shipping zone not found');
 
-    const shippingFee = shippingZone.shippingPrice || 0;
-    const totalAmount = checkout.subtotal + shippingFee;
+    let shippingFee = shippingZone.shippingPrice || 0;
+
+    // Free/discounted shipping benefit — only applied when every item in the
+    // checkout belongs to a single store (the shipping fee itself is a flat,
+    // whole-checkout amount, not per-seller, so a mixed-store cart can't
+    // unambiguously attribute the waiver to one store's membership).
+    const storeIdsInCheckout = [...new Set((checkout.items as any[]).map((i) => i.storeId))];
+    if (storeIdsInCheckout.length === 1) {
+      const benefitsEntry = await this.subscriptionBenefits.getActiveBenefits(userId, storeIdsInCheckout[0]);
+      if (benefitsEntry) {
+        const shippingBenefit = this.subscriptionBenefits.resolveShippingBenefit(benefitsEntry.benefits);
+        if (shippingBenefit && (shippingBenefit.minOrderValueForShippingUSD == null || checkout.subtotal >= shippingBenefit.minOrderValueForShippingUSD)) {
+          shippingFee = this.round(shippingFee * (1 - shippingBenefit.discountPercent / 100));
+        }
+      }
+    }
+
+    const totalAmount = this.round(checkout.subtotal + shippingFee);
 
     await checkoutModel.findByIdAndUpdate(checkoutId, {
       shippingZoneId,
