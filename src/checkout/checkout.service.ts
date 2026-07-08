@@ -123,7 +123,7 @@ export class CheckoutService {
     // Checkout-time upsell: for any store in this cart the buyer is NOT
     // subscribed to, but which has an active plan offering a discount,
     // surface what they'd have saved — the highest-intent moment to convert.
-    const subscriptionSavingsHints: Array<{ storeId: string; storeName: string; planId: string; planName: string; potentialSavingsUSD: number }> = [];
+    const subscriptionSavingsHints: Array<{ storeId: string; storeName: string; storeSlug: string; planId: string; planName: string; potentialSavingsUSD: number }> = [];
     const storeIdsInCart = [...new Set(checkoutItems.map((i) => i.storeId))];
     for (const sid of storeIdsInCart) {
       if (benefitsCache.get(sid)) continue; // already subscribed here
@@ -139,9 +139,9 @@ export class CheckoutService {
         if (d) potentialSavings += this.round(d.savingsUSD * item.quantity);
       }
       if (potentialSavings > 0) {
-        const store = await this.databaseService.repositories.storeModel.findById(sid).select('name').lean();
+        const store = await this.databaseService.repositories.storeModel.findById(sid).select('name slug').lean();
         subscriptionSavingsHints.push({
-          storeId: sid, storeName: (store as any)?.name ?? 'this store',
+          storeId: sid, storeName: (store as any)?.name ?? 'this store', storeSlug: (store as any)?.slug ?? '',
           planId: (plan as any)._id.toString(), planName: (plan as any).name,
           potentialSavingsUSD: this.round(potentialSavings),
         });
