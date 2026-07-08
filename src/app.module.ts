@@ -28,6 +28,7 @@ import { SchedulerModule } from './scheduler/scheduler.module';
 import { ActivityLogModule } from './activity-log/activity-log.module';
 import { MarketingModule } from './marketing/marketing.module';
 import { LoyaltyModule } from './loyalty/loyalty.module';
+import { AnalyticsModule } from './analytics/analytics.module';
 
 @Module({
   imports: [
@@ -61,6 +62,7 @@ import { LoyaltyModule } from './loyalty/loyalty.module';
     SchedulerModule,
     MarketingModule,
     LoyaltyModule,
+    AnalyticsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

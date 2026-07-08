@@ -96,6 +96,17 @@ export class Checkout {
   @Prop({ type: Date, default: null })
   expiredAt: Date | null;
 
+  // Marketing attribution — client-reported (mobile app has no meaningful
+  // Referer/UTM headers), captured at checkout-creation time and copied onto
+  // the resulting Order(s) for analytics. Defaults to 'other' when the
+  // client doesn't send one; never inferred/fabricated server-side.
+  @Prop({
+    type: String,
+    enum: ['marketplace_search', 'direct_link', 'social_media', 'email', 'other'],
+    default: 'other',
+  })
+  attributionSource: string;
+
   @Prop({ default: false })
   isDelete: boolean;
 }

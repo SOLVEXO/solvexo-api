@@ -244,6 +244,17 @@ export class Order {
   @Prop({ default: false })
   hasReturnApproved!: boolean;
 
+  // Copied from Checkout.attributionSource at order-creation time — see
+  // that field's comment for why this can only ever be client-reported.
+  // Absent on every order created before this field existed (never
+  // backfilled — analytics must treat missing/'other' as "unknown", not zero).
+  @Prop({
+    type: String,
+    enum: ['marketplace_search', 'direct_link', 'social_media', 'email', 'other'],
+    default: 'other',
+  })
+  attributionSource: string;
+
   @Prop({ default: false })
   isDelete: boolean;
 
@@ -255,6 +266,7 @@ export const OrderSchema = SchemaFactory.createForClass(Order);
 
 OrderSchema.index({ orderNumber: 1 }, { unique: true });
 OrderSchema.index({ userId: 1 });
+OrderSchema.index({ attributionSource: 1 });
 OrderSchema.index({ checkoutId: 1 });
 OrderSchema.index({ 'sellerOrders.sellerId': 1, 'sellerOrders.status': 1 });
 OrderSchema.index({ 'sellerOrders.storeId': 1 });

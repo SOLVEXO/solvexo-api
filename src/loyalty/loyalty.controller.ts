@@ -92,6 +92,16 @@ export class LoyaltyController {
     return this.loyaltyService.deleteReward(req.user.userId, storeId, rewardId);
   }
 
+  // Seller's own management view needs inactive rewards too (to re-enable
+  // them) — the buyer-facing `:storeId/rewards` below always filters to
+  // active-only, so this is a distinct route rather than a query param to
+  // keep the public endpoint's contract simple.
+  @Roles('seller')
+  @Get(':storeId/rewards/manage')
+  getRewardsForManagement(@Req() req: any, @Param('storeId') storeId: string) {
+    return this.loyaltyService.getRewardsForSeller(req.user.userId, storeId);
+  }
+
   // ── PUBLIC/BUYER: REWARDS CATALOG + BALANCE + REDEEM ──────────────────────
 
   @Get(':storeId/rewards')

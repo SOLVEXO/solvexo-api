@@ -89,6 +89,15 @@ export class CheckoutService {
     const taxAmount = 0;
     const totalAmount = subtotal + taxAmount;
 
+    // Client-reported attribution — a mobile app has no meaningful
+    // Referer/UTM headers, so this can only ever be as good as what the app
+    // itself reports (e.g. "opened via a shared product link"). Unknown or
+    // invalid values fall back to 'other' rather than being rejected.
+    const validAttributionSources = ['marketplace_search', 'direct_link', 'social_media', 'email', 'other'];
+    const attributionSource = validAttributionSources.includes(body.attributionSource)
+      ? body.attributionSource
+      : 'other';
+
     const checkout = await checkoutModel.create({
       userId,
       addressId: defaultAddressId,
@@ -102,6 +111,7 @@ export class CheckoutService {
       taxAmount,
       totalAmount,
       status: 'pending',
+      attributionSource,
       expiredAt: new Date(Date.now() + 30 * 60 * 1000),
       isDelete: false,
     });

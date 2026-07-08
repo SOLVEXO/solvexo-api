@@ -282,6 +282,12 @@ export class LoyaltyService {
     return { success: true, data: rewards };
   }
 
+  /** Seller's own management view — includes inactive rewards so they can be re-enabled. */
+  async getRewardsForSeller(sellerId: string, storeId: string) {
+    await this.verifyStoreOwnership(storeId, sellerId);
+    return this.getRewards(storeId, false);
+  }
+
   async updateReward(sellerId: string, storeId: string, rewardId: string, dto: UpdateRewardDto) {
     await this.verifyStoreOwnership(storeId, sellerId);
     const reward = await this.r.rewardModel.findOne({ _id: rewardId, storeId, isDelete: false });

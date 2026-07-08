@@ -361,6 +361,7 @@ private async createOrder(
       isPaid,
       paidAt: isPaid ? new Date() : null,
       orderStatus: 'pending',
+      attributionSource: checkout.attributionSource ?? 'other',
       isDelete: false,
     });
     createdOrders.push(physicalOrder);
@@ -387,6 +388,7 @@ private async createOrder(
       isPaid,
       paidAt: isPaid ? new Date() : null,
       orderStatus: 'pending',
+      attributionSource: checkout.attributionSource ?? 'other',
       isDelete: false,
     });
     createdOrders.push(digitalOrder);
