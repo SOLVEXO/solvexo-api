@@ -354,6 +354,11 @@ export class OrdersService {
     );
     if (sellerOrderIndex === -1) throw new ForbiddenException('Unauthorized');
 
+    // Guards against double-crediting the finance ledger if this sellerOrder was already
+    // completed before this call (duplicate/retried request, double-click, etc.) — mirrors
+    // the `order.isPaid` guard already used in `markPaid` below for the same reason.
+    const wasAlreadyCompleted = order.sellerOrders[sellerOrderIndex].status === 'completed';
+
     if (status === 'shipped' && !tracking) {
       throw new BadRequestException('tracking info required when status is shipped');
     }
@@ -393,8 +398,9 @@ export class OrdersService {
 
     await orderModel.findByIdAndUpdate(orderId, { $set: updateData });
 
-    // Record sale in finance ledger when seller marks their order completed
-    if (status === 'completed') {
+    // Record sale in finance ledger when seller marks their order completed — only on the
+    // transition into `completed`, never again if it was already completed (see guard above).
+    if (status === 'completed' && !wasAlreadyCompleted) {
       const so = order.sellerOrders[sellerOrderIndex];
       try {
         await this.financeService.recordSale(

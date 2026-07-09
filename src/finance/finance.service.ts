@@ -8,12 +8,14 @@ import { RequestPayoutDto } from './dto/request-payout.dto';
 import { AddPayoutMethodDto } from './dto/add-payout-method.dto';
 import { UpdatePayoutScheduleDto } from './dto/update-payout-schedule.dto';
 import { ActivityLogService } from 'src/activity-log/activity-log.service';
+import { round } from 'src/common/number.util';
+import { verifyStoreExists, verifyStoreOwnershipStrict } from 'src/common/store-ownership.util';
 
 // ── Platform fee constants ───────────────────────────────────────────────────
-const PLATFORM_FEE_RATE       = 0.08;   // 8% per sale
-const PAYMENT_PROCESSING_RATE = 0.029;  // 2.9%
-const PAYMENT_PROCESSING_FIXED = 0.30;  // $0.30 per transaction
-const CLEARING_DAYS           = 3;      // days before pending → available
+export const PLATFORM_FEE_RATE       = 0.08;   // 8% per sale
+export const PAYMENT_PROCESSING_RATE = 0.029;  // 2.9%
+export const PAYMENT_PROCESSING_FIXED = 0.30;  // $0.30 per transaction
+export const CLEARING_DAYS           = 3;      // days before pending → available
 const ESTIMATED_TAX_RATE      = 0.15;   // 15% estimate shown in UI
 
 @Injectable()
@@ -31,16 +33,20 @@ export class FinanceService {
   private get methodModel()    { return this.db.repositories.payoutMethodModel; }
   private get scheduleModel()  { return this.db.repositories.payoutScheduleModel; }
   private get taxModel()       { return this.db.repositories.taxReportModel; }
+  private get storeModel()     { return this.db.repositories.storeModel; }
+  private get sellerModel()    { return this.db.repositories.sellerModel; }
 
   // ── Helpers ──────────────────────────────────────────────────────────────
 
-  private round(n: number) { return Math.round(n * 100) / 100; }
+  private round(n: number) { return round(n); }
 
   private async verifyStoreOwnership(sellerId: string, storeId: string) {
-    const store = await this.db.repositories.storeModel.findById(storeId);
-    if (!store || store.isDelete) throw new NotFoundException('Store not found');
-    if (store.sellerId.toString() !== sellerId) throw new ForbiddenException('Access denied');
-    return store;
+    return verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
+  }
+
+  /** Admin-facing equivalent — admins may act on any store, so this only checks the store exists (not who owns it). */
+  private async verifyStoreExistsForAdmin(storeId: string) {
+    return verifyStoreExists(this.storeModel, storeId);
   }
 
   async getOrCreateBalance(storeId: string, sellerId: string) {
@@ -184,21 +190,26 @@ export class FinanceService {
   // TRANSACTIONS
   // ═══════════════════════════════════════════════════════════════════════════
 
-  async getTransactions(sellerId: string, storeId: string, query: any) {
-    await this.verifyStoreOwnership(sellerId, storeId);
-
-    const page  = Math.max(1, parseInt(query.page) || 1);
-    const limit = Math.min(100, parseInt(query.limit) || 20);
-    const skip  = (page - 1) * limit;
-
-    const filter: any = { storeId };
+  /** Shared filter builder — used by the seller's own transaction list/export and by the admin platform-wide equivalents. */
+  private buildTransactionFilter(query: any, extra?: Record<string, any>): Record<string, any> {
+    const filter: Record<string, any> = { ...extra };
     if (query.type)    filter.type   = query.type;
     if (query.status)  filter.status = query.status;
+    if (query.storeId) filter.storeId = query.storeId;
+    if (query.sellerId) filter.sellerId = query.sellerId;
     if (query.from || query.to) {
       filter.createdAt = {};
       if (query.from) filter.createdAt.$gte = new Date(query.from);
       if (query.to)   filter.createdAt.$lte = new Date(query.to);
     }
+    return filter;
+  }
+
+  /** Shared paginated transaction query — used by both the seller and admin transaction-list endpoints. */
+  private async queryTransactions(filter: Record<string, any>, query: any, maxLimit = 100) {
+    const page  = Math.max(1, parseInt(query.page) || 1);
+    const limit = Math.min(maxLimit, parseInt(query.limit) || 20);
+    const skip  = (page - 1) * limit;
 
     const [transactions, total] = await Promise.all([
       this.txModel.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
@@ -208,27 +219,27 @@ export class FinanceService {
     return { transactions, total, page, limit, pages: Math.ceil(total / limit) };
   }
 
-  async exportTransactionsCsv(sellerId: string, storeId: string, query: any): Promise<string> {
-    await this.verifyStoreOwnership(sellerId, storeId);
-
-    const filter: any = { storeId };
-    if (query.type)  filter.type  = query.type;
-    if (query.from || query.to) {
-      filter.createdAt = {};
-      if (query.from) filter.createdAt.$gte = new Date(query.from);
-      if (query.to)   filter.createdAt.$lte = new Date(query.to);
-    }
-
-    const txs = await this.txModel.find(filter).sort({ createdAt: -1 }).limit(5000).lean();
-
-    const header = 'Date,Description,Type,Amount,Balance After,Status\n';
+  private transactionsToCsv(txs: any[]): string {
+    const header = 'Date,Store,Description,Type,Amount,Balance After,Status\n';
     const rows = txs.map((t: any) => {
       const date = new Date(t.createdAt).toISOString().split('T')[0];
       const amount = t.amount >= 0 ? `+$${t.amount.toFixed(2)}` : `-$${Math.abs(t.amount).toFixed(2)}`;
-      return `"${date}","${t.description}","${t.type}","${amount}","$${t.balanceAfter.toFixed(2)}","${t.status}"`;
+      return `"${date}","${t.storeId}","${t.description}","${t.type}","${amount}","$${t.balanceAfter.toFixed(2)}","${t.status}"`;
     }).join('\n');
-
     return header + rows;
+  }
+
+  async getTransactions(sellerId: string, storeId: string, query: any) {
+    await this.verifyStoreOwnership(sellerId, storeId);
+    const filter = this.buildTransactionFilter(query, { storeId });
+    return this.queryTransactions(filter, query);
+  }
+
+  async exportTransactionsCsv(sellerId: string, storeId: string, query: any): Promise<string> {
+    await this.verifyStoreOwnership(sellerId, storeId);
+    const filter = this.buildTransactionFilter(query, { storeId });
+    const txs = await this.txModel.find(filter).sort({ createdAt: -1 }).limit(5000).lean();
+    return this.transactionsToCsv(txs);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -513,6 +524,324 @@ export class FinanceService {
       },
       currentMonth: thisMonthStats,
     };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ADMIN — platform-wide drill-down + payout lifecycle management.
+  // Admins act on any store, so these skip seller-ownership checks (existence
+  // only, via `verifyStoreExistsForAdmin`) and skip storeId-scoping on ledger
+  // queries where the admin explicitly wants a platform-wide view.
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  async adminGetSellerFinancialDetails(storeId: string) {
+    const store = await this.verifyStoreExistsForAdmin(storeId);
+
+    const [balance, schedule, methods, recentPayouts, seller] = await Promise.all([
+      this.getOrCreateBalance(storeId, store.sellerId),
+      this.getOrCreateSchedule(storeId, store.sellerId),
+      this.methodModel.find({ storeId }).sort({ isDefault: -1, createdAt: -1 }).lean(),
+      this.payoutModel.find({ storeId }).sort({ createdAt: -1 }).limit(10).lean(),
+      this.sellerModel.findById(store.sellerId).select('name email').lean(),
+    ]);
+
+    return {
+      store: { storeId, name: store.name, sellerId: store.sellerId },
+      seller: seller ? { name: (seller as any).name, email: (seller as any).email } : null,
+      balance: {
+        availableBalance: balance.availableBalance,
+        pendingBalance: balance.pendingBalance,
+        totalRevenue: balance.totalRevenue,
+        totalFees: balance.totalFees,
+        totalRefunds: balance.totalRefunds,
+        totalPayouts: balance.totalPayouts,
+        currency: balance.currency,
+      },
+      payoutSchedule: {
+        frequency: schedule.frequency,
+        isEnabled: schedule.isEnabled,
+        minimumAmount: schedule.minimumAmount,
+        nextPayoutAt: schedule.nextPayoutAt,
+      },
+      payoutMethods: methods,
+      recentPayouts,
+    };
+  }
+
+  async adminGetSellerTransactions(storeId: string, query: any) {
+    await this.verifyStoreExistsForAdmin(storeId);
+    const filter = this.buildTransactionFilter(query, { storeId });
+    return this.queryTransactions(filter, query);
+  }
+
+  async adminGetPlatformTransactions(query: any) {
+    const filter = this.buildTransactionFilter(query);
+    return this.queryTransactions(filter, query);
+  }
+
+  async adminExportTransactionsCsv(query: any): Promise<string> {
+    const filter = this.buildTransactionFilter(query);
+    const txs = await this.txModel.find(filter).sort({ createdAt: -1 }).limit(5000).lean();
+    return this.transactionsToCsv(txs);
+  }
+
+  async adminGetPayoutQueue(query: any) {
+    const page  = Math.max(1, parseInt(query.page) || 1);
+    const limit = Math.min(100, parseInt(query.limit) || 20);
+    const skip  = (page - 1) * limit;
+
+    const filter: Record<string, any> = {};
+    if (query.status)   filter.status   = query.status;
+    if (query.storeId)  filter.storeId  = query.storeId;
+    if (query.sellerId) filter.sellerId = query.sellerId;
+
+    const [payouts, total, statusRows] = await Promise.all([
+      this.payoutModel.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+      this.payoutModel.countDocuments(filter),
+      this.payoutModel.aggregate([{ $group: { _id: '$status', count: { $sum: 1 }, amount: { $sum: '$amount' } } }]),
+    ]);
+
+    const statusCounts: Record<string, { count: number; amount: number }> = {
+      pending: { count: 0, amount: 0 }, processing: { count: 0, amount: 0 },
+      completed: { count: 0, amount: 0 }, failed: { count: 0, amount: 0 },
+    };
+    for (const row of statusRows as any[]) {
+      if (statusCounts[row._id]) statusCounts[row._id] = { count: row.count, amount: this.round(row.amount) };
+    }
+
+    return { payouts, total, page, limit, pages: Math.ceil(total / limit), statusCounts };
+  }
+
+  /**
+   * Marks a pending/processing payout as completed. There is no live payment-processor
+   * integration anywhere in this codebase (payouts, like COD orders, are fulfilled
+   * manually outside the app) — this records that an admin has confirmed the transfer
+   * was actually sent via their bank/PayPal/Stripe dashboard. It does not itself move money.
+   */
+  async adminApprovePayout(payoutId: string, adminId: string, ip?: string, userAgent?: string) {
+    const payout = await this.payoutModel.findById(payoutId);
+    if (!payout) throw new NotFoundException('Payout not found');
+    if (!['pending', 'processing'].includes(payout.status)) {
+      throw new BadRequestException(`Cannot approve a payout with status "${payout.status}"`);
+    }
+
+    payout.status = 'completed';
+    payout.processedAt = new Date();
+    await payout.save();
+
+    this.activityLogService.log({
+      storeId: payout.storeId,
+      category: 'finance',
+      action: 'payout_approved',
+      description: `Payout of $${payout.amount.toFixed(2)} approved and marked completed`,
+      actorId: adminId,
+      actorRole: 'admin',
+      targetId: payoutId,
+      targetType: 'payout',
+      ip, userAgent,
+    });
+
+    return payout;
+  }
+
+  /** Rejects a pending/processing payout and returns the deducted funds to the seller's available balance via a reversing ledger entry (the original ledger history is never edited). */
+  async adminRejectPayout(payoutId: string, adminId: string, reason: string, ip?: string, userAgent?: string) {
+    const payout = await this.payoutModel.findById(payoutId);
+    if (!payout) throw new NotFoundException('Payout not found');
+    if (!['pending', 'processing'].includes(payout.status)) {
+      throw new BadRequestException(`Cannot reject a payout with status "${payout.status}"`);
+    }
+
+    const balance = await this.getOrCreateBalance(payout.storeId, payout.sellerId);
+    const balanceBefore = balance.availableBalance;
+    balance.availableBalance = this.round(balance.availableBalance + payout.amount);
+    balance.totalPayouts = this.round(balance.totalPayouts - payout.amount);
+    await balance.save();
+
+    payout.status = 'failed';
+    payout.failureReason = reason;
+    payout.processedAt = new Date();
+    await payout.save();
+
+    await this.txModel.create({
+      storeId: payout.storeId,
+      sellerId: payout.sellerId,
+      type: 'adjustment',
+      amount: payout.amount,
+      balanceBefore,
+      balanceAfter: balance.availableBalance,
+      description: `Payout rejected — funds returned (${reason})`,
+      referenceId: payoutId,
+      referenceType: 'payout',
+      status: 'completed',
+      metadata: { rejectedBy: adminId, reason },
+    });
+
+    this.activityLogService.log({
+      storeId: payout.storeId,
+      category: 'finance',
+      action: 'payout_rejected',
+      description: `Payout of $${payout.amount.toFixed(2)} rejected — ${reason}`,
+      actorId: adminId,
+      actorRole: 'admin',
+      targetId: payoutId,
+      targetType: 'payout',
+      ip, userAgent,
+    });
+
+    return payout;
+  }
+
+  /** Re-attempts a previously-rejected payout — re-deducts the balance (rejecting already refunded it) and puts it back into `processing`. */
+  async adminRetryFailedPayout(payoutId: string, adminId: string, ip?: string, userAgent?: string) {
+    const payout = await this.payoutModel.findById(payoutId);
+    if (!payout) throw new NotFoundException('Payout not found');
+    if (payout.status !== 'failed') throw new BadRequestException('Only failed payouts can be retried');
+
+    const balance = await this.getOrCreateBalance(payout.storeId, payout.sellerId);
+    if (payout.amount > balance.availableBalance) {
+      throw new BadRequestException(
+        `Cannot retry — available balance ($${balance.availableBalance.toFixed(2)}) is less than the payout amount ($${payout.amount.toFixed(2)})`,
+      );
+    }
+
+    const balanceBefore = balance.availableBalance;
+    balance.availableBalance = this.round(balance.availableBalance - payout.amount);
+    balance.totalPayouts = this.round(balance.totalPayouts + payout.amount);
+    await balance.save();
+
+    payout.status = 'processing';
+    payout.failureReason = null;
+    payout.processedAt = null;
+    await payout.save();
+
+    await this.txModel.create({
+      storeId: payout.storeId,
+      sellerId: payout.sellerId,
+      type: 'payout',
+      amount: -payout.amount,
+      balanceBefore,
+      balanceAfter: balance.availableBalance,
+      description: `Payout retry — ${payout.payoutMethodSnapshot?.bankName || payout.payoutMethodSnapshot?.type || 'payout method'}`,
+      referenceId: payoutId,
+      referenceType: 'payout',
+      status: 'completed',
+      metadata: { retriedBy: adminId },
+    });
+
+    this.activityLogService.log({
+      storeId: payout.storeId,
+      category: 'finance',
+      action: 'payout_retried',
+      description: `Payout of $${payout.amount.toFixed(2)} re-queued for processing`,
+      actorId: adminId,
+      actorRole: 'admin',
+      targetId: payoutId,
+      targetType: 'payout',
+      ip, userAgent,
+    });
+
+    return payout;
+  }
+
+  /** Admin-initiated off-cycle payout (corrections/manual reconciliation) — completed immediately, no approval step needed since an admin is the one creating it. */
+  async adminCreateManualPayout(
+    storeId: string, adminId: string,
+    amount: number, payoutMethodId: string | undefined, notes: string | undefined,
+    ip?: string, userAgent?: string,
+  ) {
+    const store = await this.verifyStoreExistsForAdmin(storeId);
+    if (amount <= 0) throw new BadRequestException('Amount must be greater than zero');
+
+    const balance = await this.getOrCreateBalance(storeId, store.sellerId);
+    if (amount > balance.availableBalance) {
+      throw new BadRequestException(`Insufficient balance — available: $${balance.availableBalance.toFixed(2)}`);
+    }
+
+    let methodSnapshot: { type: string; bankName: string | null; accountLast4?: string } = {
+      type: 'manual', bankName: null, accountLast4: 'ADMIN',
+    };
+    let resolvedMethodId = 'admin-manual';
+    if (payoutMethodId) {
+      const method = await this.methodModel.findOne({ _id: payoutMethodId, storeId });
+      if (!method) throw new NotFoundException('Payout method not found');
+      methodSnapshot = { type: method.type, bankName: method.bankName, accountLast4: method.accountLast4 ?? undefined };
+      resolvedMethodId = payoutMethodId;
+    }
+
+    const balanceBefore = balance.availableBalance;
+    balance.availableBalance = this.round(balance.availableBalance - amount);
+    balance.totalPayouts = this.round(balance.totalPayouts + amount);
+    await balance.save();
+
+    const payout = await this.payoutModel.create({
+      storeId, sellerId: store.sellerId, amount,
+      payoutMethodId: resolvedMethodId,
+      payoutMethodSnapshot: methodSnapshot,
+      notes: notes || 'Manual payout issued by admin',
+      status: 'completed',
+      processedAt: new Date(),
+    });
+
+    await this.txModel.create({
+      storeId, sellerId: store.sellerId,
+      type: 'payout',
+      amount: -amount,
+      balanceBefore,
+      balanceAfter: balance.availableBalance,
+      description: notes || 'Manual payout (admin-initiated)',
+      referenceId: (payout as any)._id.toString(),
+      referenceType: 'payout',
+      status: 'completed',
+      metadata: { manualByAdmin: adminId },
+    });
+
+    this.activityLogService.log({
+      storeId,
+      category: 'finance',
+      action: 'manual_payout_issued',
+      description: `Admin issued a manual payout of $${amount.toFixed(2)}`,
+      actorId: adminId,
+      actorRole: 'admin',
+      targetId: (payout as any)._id.toString(),
+      targetType: 'payout',
+      ip, userAgent,
+    });
+
+    return payout;
+  }
+
+  /**
+   * Promotes sale transactions past the clearing window from `pendingBalance` to
+   * `availableBalance` — previously `CLEARING_DAYS` was defined but nothing ever
+   * acted on it, so pending balances never became payout-eligible. Idempotent:
+   * once a transaction's status flips to `completed` it's excluded from the next run.
+   * Invoked hourly by `SchedulerService` and exposed to admins as a manual trigger.
+   */
+  async processClearingBalances(): Promise<{ processed: number; totalAmount: number }> {
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - CLEARING_DAYS);
+
+    const pendingSales = await this.txModel.find({
+      type: 'sale', status: 'pending', createdAt: { $lte: cutoff },
+    }).lean();
+
+    let processed = 0;
+    let totalAmount = 0;
+
+    for (const tx of pendingSales as any[]) {
+      const netAmount = tx.metadata?.netAmount ?? 0;
+      if (netAmount > 0) {
+        const balance = await this.getOrCreateBalance(tx.storeId, tx.sellerId);
+        balance.pendingBalance = this.round(Math.max(0, balance.pendingBalance - netAmount));
+        balance.availableBalance = this.round(balance.availableBalance + netAmount);
+        await balance.save();
+        totalAmount = this.round(totalAmount + netAmount);
+      }
+      await this.txModel.updateOne({ _id: tx._id }, { $set: { status: 'completed' } });
+      processed += 1;
+    }
+
+    return { processed, totalAmount };
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

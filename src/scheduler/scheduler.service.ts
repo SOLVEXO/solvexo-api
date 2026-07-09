@@ -4,6 +4,7 @@ import { Cron } from '@nestjs/schedule';
 import { DatabaseService } from 'src/database/databaseservice';
 import { LoyaltyService } from 'src/loyalty/loyalty.service';
 import { SubscriptionsService } from 'src/subscriptions/subscriptions.service';
+import { FinanceService } from 'src/finance/finance.service';
 
 @Injectable()
 export class SchedulerService {
@@ -13,6 +14,7 @@ export class SchedulerService {
     private readonly databaseService: DatabaseService,
     private readonly loyaltyService: LoyaltyService,
     private readonly subscriptionsService: SubscriptionsService,
+    private readonly financeService: FinanceService,
   ) {}
 
   @Cron('* * * * *')
@@ -57,6 +59,17 @@ export class SchedulerService {
     const result = await this.subscriptionsService.finalizeEndOfPeriodCancellations();
     if (result.canceled > 0) {
       this.logger.log(`Finalized ${result.canceled} end-of-period subscription cancellation(s)`);
+    }
+  }
+
+  // Runs hourly — promotes sale transactions past their clearing window from pending to
+  // available balance. Previously nothing ever acted on `CLEARING_DAYS`, so seller balances
+  // could never actually become payout-eligible (see the Finance module audit).
+  @Cron('15 * * * *')
+  async processFinanceClearingBalances() {
+    const result = await this.financeService.processClearingBalances();
+    if (result.processed > 0) {
+      this.logger.log(`Finance clearing: ${result.processed} transaction(s) cleared, $${result.totalAmount.toFixed(2)} moved to available balance`);
     }
   }
 }

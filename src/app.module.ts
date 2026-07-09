@@ -29,6 +29,8 @@ import { ActivityLogModule } from './activity-log/activity-log.module';
 import { MarketingModule } from './marketing/marketing.module';
 import { LoyaltyModule } from './loyalty/loyalty.module';
 import { AnalyticsModule } from './analytics/analytics.module';
+import { AdminAnalyticsModule } from './admin-analytics/admin-analytics.module';
+import { AdminFinanceModule } from './admin-finance/admin-finance.module';
 
 @Module({
   imports: [
@@ -63,6 +65,8 @@ import { AnalyticsModule } from './analytics/analytics.module';
     MarketingModule,
     LoyaltyModule,
     AnalyticsModule,
+    AdminAnalyticsModule,
+    AdminFinanceModule,
   ],
   controllers: [AppController],
   providers: [AppService],
