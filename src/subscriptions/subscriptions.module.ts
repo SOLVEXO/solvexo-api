@@ -25,6 +25,6 @@ import { RedisModule } from '../redis/redis.module';
     SubscriptionNotificationsService,
     EmailService,
   ],
-  exports: [SubscriptionsService, SubscriptionBenefitsService],
+  exports: [SubscriptionsService, SubscriptionBenefitsService, PaymentGatewayService],
 })
 export class SubscriptionsModule {}

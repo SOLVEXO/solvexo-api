@@ -138,6 +138,9 @@ export class DatabaseService {
     @InjectModel(schema.Reward.name)
     private rewardModel: Model<schema.RewardDocument>,
 
+    @InjectModel(schema.PlatformSubscription.name)
+    private platformSubscriptionModel: Model<schema.PlatformSubscriptionDocument>,
+
   ) { }
 
   get repositories() {
@@ -188,6 +191,7 @@ export class DatabaseService {
       loyaltyMemberModel: this.loyaltyMemberModel,
       loyaltyTransactionModel: this.loyaltyTransactionModel,
       rewardModel: this.rewardModel,
+      platformSubscriptionModel: this.platformSubscriptionModel,
     };
   }
 }

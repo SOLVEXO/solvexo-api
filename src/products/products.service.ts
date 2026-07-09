@@ -11,6 +11,7 @@ import { CreateProductDto } from './dto/create-product.dto';
 import { CreateProductVariantDto } from './dto/productVariant.dto';
 import { ActivityLogService } from 'src/activity-log/activity-log.service';
 import { SubscriptionBenefitsService } from 'src/subscriptions/subscription-benefits.service';
+import { PlatformSubscriptionsService } from 'src/platform-subscriptions/platform-subscriptions.service';
 
 @Injectable()
 export class ProductsService {
@@ -18,6 +19,7 @@ export class ProductsService {
     private databaseService: DatabaseService,
     private activityLogService: ActivityLogService,
     private subscriptionBenefits: SubscriptionBenefitsService,
+    private platformSubscriptions: PlatformSubscriptionsService,
   ) {}
 
   // Attaches subscriberPrice/youSaveUSD/discountPercent/planName to each
@@ -208,6 +210,18 @@ async createProduct(sellerId: string, body: any) {
   if (!store) throw new BadRequestException('Store not found. Please create a store first');
   if (store.status !== 'active') throw new BadRequestException('Your store is not active');
 
+  // Platform-tier product limit — first real enforcement of Store.plan.
+  const storeId = store._id.toString();
+  const productLimit = await this.platformSubscriptions.getProductLimitForStore(storeId);
+  if (productLimit !== null) {
+    const currentCount = await productModel.countDocuments({ storeId, isDelete: false });
+    if (currentCount >= productLimit) {
+      throw new BadRequestException(
+        `Product limit reached for your current plan (${productLimit}). Upgrade to add more products.`,
+      );
+    }
+  }
+
   const {
     name, description, productType, subCategoryId,
     images, tags, isListedOnSolvexo, status,
@@ -247,7 +261,7 @@ async createProduct(sellerId: string, body: any) {
 
   const product = await productModel.create({
     sellerId,
-    storeId: store._id.toString(),
+    storeId,
     name,
     slug,
     description: description ?? null,
