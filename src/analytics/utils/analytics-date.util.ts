@@ -113,6 +113,15 @@ export function enumerateBuckets(from: Date, to: Date, granularity: BucketGranul
   return buckets;
 }
 
+/** The bucket boundary immediately after `bucket` at the given granularity — used to test whether a timestamp falls inside a specific bucket. */
+export function nextBucket(bucket: Date, granularity: BucketGranularity): Date {
+  const next = new Date(bucket);
+  if (granularity === 'day') next.setUTCDate(next.getUTCDate() + 1);
+  else if (granularity === 'week') next.setUTCDate(next.getUTCDate() + 7);
+  else next.setUTCMonth(next.getUTCMonth() + 1);
+  return next;
+}
+
 function truncateToBucket(date: Date, granularity: BucketGranularity): Date {
   const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
   if (granularity === 'month') {

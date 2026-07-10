@@ -1,15 +1,29 @@
 /* eslint-disable prettier/prettier */
-import { ForbiddenException, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { DatabaseService } from '../database/databaseservice';
 import { RedisService } from '../redis/redis.service';
+import { verifyStoreOwnershipOrForbidden } from '../common/store-ownership.util';
 import {
   BucketGranularity,
   absoluteChange,
   enumerateBuckets,
+  nextBucket as nextBucketUtil,
   percentChange,
   resolveDateRange,
   trendFor,
 } from './utils/analytics-date.util';
+import { round } from './utils/analytics-number.util';
+import { buildAnalyticsCacheKey, withAnalyticsCache } from './utils/analytics-cache.util';
+import {
+  aggregateProductSales as aggregateProductSalesUtil,
+  allTimeCustomerAggregate as allTimeCustomerAggregateUtil,
+  itemRefundSumField,
+  notCancelledCond,
+  periodTotals as periodTotalsUtil,
+  repeatBuyerPercent as repeatBuyerPercentUtil,
+  returningBuyerSet as returningBuyerSetUtil,
+  sellerOrderMatchStage,
+} from './utils/order-aggregation.util';
 import { toCsv } from './utils/csv.util';
 import { PdfReportBuilder } from './utils/pdf-report.util';
 
@@ -28,37 +42,21 @@ export class AnalyticsService {
   }
 
   private round(n: number) {
-    return Math.round(n * 100) / 100;
+    return round(n);
   }
 
   // ─── Ownership + caching ────────────────────────────────────────────────
 
   private async verifyStoreOwnership(storeId: string, sellerId: string) {
-    const store = await this.r.storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
-    if (!store) throw new ForbiddenException('Store not found or unauthorized');
-    return store;
+    return verifyStoreOwnershipOrForbidden(this.r.storeModel, storeId, sellerId);
   }
 
   private async cached<T>(cacheKey: string, compute: () => Promise<T>): Promise<T> {
-    if (this.redis.isConnected) {
-      const hit = await this.redis.get(cacheKey);
-      if (hit) {
-        try {
-          return JSON.parse(hit) as T;
-        } catch {
-          // fall through and recompute on a corrupt cache entry
-        }
-      }
-    }
-    const result = await compute();
-    if (this.redis.isConnected) {
-      await this.redis.set(cacheKey, JSON.stringify(result), CACHE_TTL_SECONDS);
-    }
-    return result;
+    return withAnalyticsCache(this.redis, cacheKey, CACHE_TTL_SECONDS, compute);
   }
 
   private key(section: string, storeId: string, query: Record<string, any>) {
-    return `analytics:${storeId}:${section}:${JSON.stringify(query)}`;
+    return buildAnalyticsCacheKey('analytics', storeId, section, query);
   }
 
   // ─── Shared aggregation building blocks ────────────────────────────────
@@ -66,88 +64,36 @@ export class AnalyticsService {
   // embedded `sellerOrders` array (there's no top-level storeId on Order —
   // an order can span multiple sellers) and match this store. Cancelled
   // sellerOrders are excluded from every revenue/order metric — they
-  // represent no completed business activity by convention (documented in
-  // the analytics report).
+  // represent no completed business activity by convention. This scoping
+  // logic (and the aggregations below) is shared with `AdminAnalyticsService`
+  // via `./utils/order-aggregation.util` — seller analytics scopes every call
+  // with `{ 'sellerOrders.storeId': storeId }`; admin analytics omits the
+  // scope for platform-wide totals, or scopes by sellerId for drill-downs.
 
   private matchStage(storeId: string, from: Date, to: Date) {
-    return [
-      { $match: { isDelete: false, createdAt: { $gte: from, $lte: to } } },
-      { $unwind: '$sellerOrders' },
-      { $match: { 'sellerOrders.storeId': storeId } },
-    ];
+    return sellerOrderMatchStage(from, to, { 'sellerOrders.storeId': storeId });
   }
 
   private notCancelled() {
-    return { $ne: ['$sellerOrders.status', 'cancelled'] };
+    return notCancelledCond();
   }
 
   /** Sum of item-level refunds for the current sellerOrder — `$sum` over an array field works as an array accumulator outside `$group`. */
   private itemRefundField() {
-    return { $sum: '$sellerOrders.items.refundedAmount' };
+    return itemRefundSumField();
   }
 
   private async periodTotals(storeId: string, from: Date, to: Date) {
-    const rows = await this.r.orderModel.aggregate([
-      ...this.matchStage(storeId, from, to),
-      { $addFields: { itemRefund: this.itemRefundField() } },
-      {
-        $group: {
-          _id: null,
-          orderCount: { $sum: { $cond: [this.notCancelled(), 1, 0] } },
-          cancelledCount: { $sum: { $cond: [this.notCancelled(), 0, 1] } },
-          refundedCount: { $sum: { $cond: [{ $eq: ['$sellerOrders.status', 'refunded'] }, 1, 0] } },
-          grossRevenue: { $sum: { $cond: [this.notCancelled(), '$sellerOrders.subtotal', 0] } },
-          refundAmount: { $sum: { $cond: [this.notCancelled(), '$itemRefund', 0] } },
-          buyerIds: { $addToSet: { $cond: [this.notCancelled(), '$userId', '$$REMOVE'] } },
-        },
-      },
-    ]);
-
-    const row = rows[0] ?? {
-      orderCount: 0, cancelledCount: 0, refundedCount: 0, grossRevenue: 0, refundAmount: 0, buyerIds: [],
-    };
-    const netRevenue = this.round(row.grossRevenue - row.refundAmount);
-    return {
-      orderCount: row.orderCount,
-      cancelledCount: row.cancelledCount,
-      refundedCount: row.refundedCount,
-      grossRevenue: this.round(row.grossRevenue),
-      refundAmount: this.round(row.refundAmount),
-      netRevenue,
-      avgOrderValue: row.orderCount > 0 ? this.round(netRevenue / row.orderCount) : 0,
-      uniqueBuyerCount: (row.buyerIds ?? []).length,
-      buyerIds: (row.buyerIds ?? []) as string[],
-    };
+    return periodTotalsUtil(this.r.orderModel, from, to, { 'sellerOrders.storeId': storeId });
   }
 
   private async repeatBuyerPercent(storeId: string, from: Date, to: Date): Promise<number> {
-    const rows = await this.r.orderModel.aggregate([
-      ...this.matchStage(storeId, from, to),
-      { $match: { 'sellerOrders.status': { $ne: 'cancelled' } } },
-      { $group: { _id: '$userId', orders: { $sum: 1 } } },
-      {
-        $group: {
-          _id: null,
-          totalCustomers: { $sum: 1 },
-          repeatCustomers: { $sum: { $cond: [{ $gte: ['$orders', 2] }, 1, 0] } },
-        },
-      },
-    ]);
-    const row = rows[0];
-    if (!row || row.totalCustomers === 0) return 0;
-    return this.round((row.repeatCustomers / row.totalCustomers) * 100);
+    return repeatBuyerPercentUtil(this.r.orderModel, from, to, { 'sellerOrders.storeId': storeId });
   }
 
   /** Buyers among `buyerIds` who already had a non-cancelled order for this store before `from`. */
   private async returningBuyerSet(storeId: string, buyerIds: string[], from: Date): Promise<Set<string>> {
-    if (buyerIds.length === 0) return new Set();
-    const rows = await this.r.orderModel.aggregate([
-      { $match: { isDelete: false, userId: { $in: buyerIds }, createdAt: { $lt: from } } },
-      { $unwind: '$sellerOrders' },
-      { $match: { 'sellerOrders.storeId': storeId, 'sellerOrders.status': { $ne: 'cancelled' } } },
-      { $group: { _id: '$userId' } },
-    ]);
-    return new Set(rows.map((r: any) => r._id));
+    return returningBuyerSetUtil(this.r.orderModel, buyerIds, from, { 'sellerOrders.storeId': storeId });
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -349,33 +295,9 @@ export class AnalyticsService {
     });
   }
 
-  /** Shared item-level sales aggregation reused by top-products and product-performance. */
+  /** Shared item-level sales aggregation reused by top-products and product-performance (and by admin analytics, platform-wide). */
   private async aggregateProductSales(storeId: string, from: Date, to: Date) {
-    const rows = await this.r.orderModel.aggregate([
-      ...this.matchStage(storeId, from, to),
-      { $match: { 'sellerOrders.status': { $ne: 'cancelled' } } },
-      { $unwind: '$sellerOrders.items' },
-      {
-        $group: {
-          _id: '$sellerOrders.items.productId',
-          name: { $first: '$sellerOrders.items.name' },
-          orderCount: { $sum: 1 },
-          unitsSold: { $sum: '$sellerOrders.items.quantity' },
-          grossRevenue: { $sum: '$sellerOrders.items.totalPrice' },
-          refundedAmount: { $sum: '$sellerOrders.items.refundedAmount' },
-        },
-      },
-    ]);
-
-    return rows.map((r: any) => ({
-      productId: r._id,
-      name: r.name,
-      orderCount: r.orderCount,
-      unitsSold: r.unitsSold,
-      grossRevenue: this.round(r.grossRevenue),
-      refundedAmount: this.round(r.refundedAmount),
-      netRevenue: this.round(r.grossRevenue - r.refundedAmount),
-    }));
+    return aggregateProductSalesUtil(this.r.orderModel, from, to, { 'sellerOrders.storeId': storeId });
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -384,29 +306,7 @@ export class AnalyticsService {
 
   /** All-time per-customer aggregate for this store — the base for LTV, and for classifying new vs returning within any period. */
   private async allTimeCustomerAggregate(storeId: string) {
-    const rows = await this.r.orderModel.aggregate([
-      { $match: { isDelete: false } },
-      { $unwind: '$sellerOrders' },
-      { $match: { 'sellerOrders.storeId': storeId, 'sellerOrders.status': { $ne: 'cancelled' } } },
-      { $addFields: { itemRefund: this.itemRefundField() } },
-      {
-        $group: {
-          _id: '$userId',
-          firstOrderAt: { $min: '$createdAt' },
-          lastOrderAt: { $max: '$createdAt' },
-          totalOrders: { $sum: 1 },
-          grossRevenue: { $sum: '$sellerOrders.subtotal' },
-          refundAmount: { $sum: '$itemRefund' },
-        },
-      },
-    ]);
-    return rows.map((r: any) => ({
-      userId: r._id,
-      firstOrderAt: r.firstOrderAt as Date,
-      lastOrderAt: r.lastOrderAt as Date,
-      totalOrders: r.totalOrders,
-      lifetimeValue: this.round(r.grossRevenue - r.refundAmount),
-    }));
+    return allTimeCustomerAggregateUtil(this.r.orderModel, { 'sellerOrders.storeId': storeId });
   }
 
   async getCustomerAnalytics(sellerId: string, storeId: string, query: any) {
@@ -487,11 +387,7 @@ export class AnalyticsService {
   }
 
   private nextBucket(bucket: Date, granularity: BucketGranularity): Date {
-    const next = new Date(bucket);
-    if (granularity === 'day') next.setUTCDate(next.getUTCDate() + 1);
-    else if (granularity === 'week') next.setUTCDate(next.getUTCDate() + 7);
-    else next.setUTCMonth(next.getUTCMonth() + 1);
-    return next;
+    return nextBucketUtil(bucket, granularity);
   }
 
   // ═══════════════════════════════════════════════════════════════════════

@@ -136,10 +136,7 @@ async placeOrder(userId: string, body: any) {
   });
 
   await checkoutModel.findByIdAndUpdate(checkoutId, { status: 'completed' });
-  await cartModel.findOneAndUpdate(
-    { userId, status: 'active', isDelete: false },
-    { items: [] },
-  );
+  await this.removeCheckedOutItemsFromCart(userId, checkout, cartModel);
 
   return {
     success: true,
@@ -147,6 +144,23 @@ async placeOrder(userId: string, body: any) {
     data: { orders: orders.map((o: any) => this.formatOrder(o)) },
   };
 }
+
+// Remove ONLY the lines that were part of this checkout — a checkout created
+// from selected cart items must leave the unselected lines in the cart.
+// (Previously this blanked the whole cart with `{ items: [] }`.)
+private async removeCheckedOutItemsFromCart(userId: string, checkout: any, cartModel: any) {
+  const purchasedLines = (checkout.items as any[]).map((i: any) => ({
+    productId: i.productId,
+    productVariantId: i.variantId,
+  }));
+  if (purchasedLines.length === 0) return;
+
+  await cartModel.findOneAndUpdate(
+    { userId, status: 'active', isDelete: false },
+    { $pull: { items: { $or: purchasedLines } } },
+  );
+}
+
 async codPayment(userId: string, body: any) {
   const { checkoutId } = body;
   if (!checkoutId) throw new BadRequestException('checkoutId is required');
@@ -197,10 +211,7 @@ async codPayment(userId: string, body: any) {
   });
 
   await checkoutModel.findByIdAndUpdate(checkoutId, { status: 'completed' });
-  await cartModel.findOneAndUpdate(
-    { userId, status: 'active', isDelete: false },
-    { items: [] },
-  );
+  await this.removeCheckedOutItemsFromCart(userId, checkout, cartModel);
 
   return {
     success: true,

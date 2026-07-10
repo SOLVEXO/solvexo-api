@@ -5,6 +5,7 @@ import { DatabaseService } from 'src/database/databaseservice';
 import { LoyaltyService } from 'src/loyalty/loyalty.service';
 import { SubscriptionsService } from 'src/subscriptions/subscriptions.service';
 import { PlatformSubscriptionsService } from 'src/platform-subscriptions/platform-subscriptions.service';
+import { FinanceService } from 'src/finance/finance.service';
 
 @Injectable()
 export class SchedulerService {
@@ -15,6 +16,7 @@ export class SchedulerService {
     private readonly loyaltyService: LoyaltyService,
     private readonly subscriptionsService: SubscriptionsService,
     private readonly platformSubscriptionsService: PlatformSubscriptionsService,
+    private readonly financeService: FinanceService,
   ) {}
 
   @Cron('* * * * *')
@@ -82,6 +84,17 @@ export class SchedulerService {
     const result = await this.platformSubscriptionsService.finalizeEndOfPeriodCancellations();
     if (result.downgraded > 0) {
       this.logger.log(`Finalized ${result.downgraded} end-of-period platform tier downgrade(s)`);
+    }
+  }
+
+  // Runs hourly — promotes sale transactions past their clearing window from pending to
+  // available balance. Previously nothing ever acted on `CLEARING_DAYS`, so seller balances
+  // could never actually become payout-eligible (see the Finance module audit).
+  @Cron('15 * * * *')
+  async processFinanceClearingBalances() {
+    const result = await this.financeService.processClearingBalances();
+    if (result.processed > 0) {
+      this.logger.log(`Finance clearing: ${result.processed} transaction(s) cleared, $${result.totalAmount.toFixed(2)} moved to available balance`);
     }
   }
 }
