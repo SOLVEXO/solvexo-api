@@ -34,6 +34,21 @@ export class SubscriptionPlan {
   // 'suspended' is an admin-forced state (moderation) — distinct from the
   // seller's own 'archived' action; hidden from buyer browse either way.
   @Prop({ type: String, enum: ['active', 'archived', 'suspended'], default: 'active' }) status: string;
+
+  // ── Stripe catalog mirror ──────────────────────────────────────────────
+  // A Stripe Product/Price pair is created lazily (on first subscribe, not on
+  // plan creation) so plans that are never actually subscribed to don't
+  // accumulate unused Stripe catalog objects. Price objects are immutable in
+  // Stripe, so editing monthlyPriceUSD/yearlyPriceUSD does NOT update these —
+  // it invalidates them (see StripePaymentProvider.getOrCreatePrice), and a
+  // fresh Price is created on the next subscribe/renewal under the same Product.
+  @Prop({ type: String, default: null }) stripeProductId: string | null;
+  @Prop({ type: String, default: null }) stripeMonthlyPriceId: string | null;
+  @Prop({ type: String, default: null }) stripeYearlyPriceId: string | null;
+  // Bumped whenever monthlyPriceUSD/yearlyPriceUSD changes, so the Stripe
+  // provider knows its cached Price ids are stale without a live Stripe call.
+  @Prop({ type: Number, default: 0 }) priceRevision: number;
+
   @Prop({ default: false }) isDelete: boolean;
 }
 

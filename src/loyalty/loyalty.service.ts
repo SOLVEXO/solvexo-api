@@ -9,6 +9,7 @@ import { CreateRewardDto } from './dto/create-reward.dto';
 import { UpdateRewardDto } from './dto/update-reward.dto';
 import { AwardPointsDto } from './dto/award-points.dto';
 import type { LoyaltyTransactionType } from './schemas/loyalty-transaction.schema';
+import { EntitlementsService } from 'src/platform-plans/entitlements.service';
 
 const EARN_TYPES: LoyaltyTransactionType[] = ['purchase', 'review', 'referral', 'birthday'];
 
@@ -17,6 +18,7 @@ export class LoyaltyService {
   constructor(
     private readonly databaseService: DatabaseService,
     private readonly activityLogService: ActivityLogService,
+    private readonly entitlementsService: EntitlementsService,
   ) {}
 
   private get r() {
@@ -50,6 +52,12 @@ export class LoyaltyService {
 
   async updateProgram(sellerId: string, storeId: string, dto: UpdateProgramDto) {
     await this.verifyStoreOwnership(storeId, sellerId);
+
+    // Platform-plan feature gate — Loyalty & Rewards is a Business+ tier feature.
+    if (dto.isEnabled === true) {
+      await this.entitlementsService.assertFeatureAllowed(storeId, 'loyaltyProgramAllowed', 'The Loyalty & Rewards program');
+    }
+
     const program = await this.getOrCreateProgram(storeId);
 
     if (dto.isEnabled !== undefined) program.isEnabled = dto.isEnabled;

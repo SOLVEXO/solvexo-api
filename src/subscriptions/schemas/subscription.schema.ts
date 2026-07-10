@@ -4,7 +4,7 @@ import { Document } from 'mongoose';
 
 export type SubscriptionDocument = Subscription & Document;
 
-@Schema({ timestamps: true })
+@Schema({ timestamps: true, optimisticConcurrency: true })
 export class Subscription {
   @Prop({ type: String, required: true }) planId: string;
   @Prop({ type: String, required: true }) customerId: string;
@@ -53,8 +53,20 @@ export class Subscription {
   }>;
 
   @Prop({ type: String, enum: ['manual', 'stripe'], default: 'manual' }) paymentProvider: string;
-  // Will hold the Stripe subscription ID once integrated; null for manual provider
+  // Stripe subscription ID (`sub_...`) once integrated; null for the manual provider
   @Prop({ type: String, default: null }) providerSubscriptionId: string | null;
+  // Stripe customer ID (`cus_...`) — one per buyer, reused across every plan they subscribe to
+  @Prop({ type: String, default: null }) stripeCustomerId: string | null;
+  // Snapshot of the payment method type used for the most recent successful charge
+  // (card, manual, etc.) — powers "revenue by payment method" analytics.
+  @Prop({ type: String, default: null }) lastPaymentMethodType: string | null;
+  // Denormalized from the buyer's default address at subscribe time — powers
+  // "revenue by country" analytics without a join on every aggregation.
+  @Prop({ type: String, default: null }) billingCountry: string | null;
+
+  // Renewal-reminder email dedupe — set when the "renews in N days" reminder is
+  // sent for the *current* nextBillingDate, cleared whenever nextBillingDate moves.
+  @Prop({ type: Date, default: null }) renewalReminderSentAt: Date | null;
 
   @Prop({ default: false }) isDelete: boolean;
 }
@@ -67,3 +79,13 @@ SubscriptionSchema.index({ sellerId: 1, createdAt: -1 });
 SubscriptionSchema.index({ customerId: 1 });
 SubscriptionSchema.index({ planId: 1 });
 SubscriptionSchema.index({ nextBillingDate: 1, status: 1 }); // for billing jobs
+SubscriptionSchema.index({ stripeCustomerId: 1 });
+SubscriptionSchema.index({ providerSubscriptionId: 1 });
+SubscriptionSchema.index({ billingCountry: 1 });
+// Prevents the double-subscribe race: two concurrent POST /subscribe calls for
+// the same customer+plan can no longer both succeed — the second hits E11000,
+// which the service layer converts into a clean 409 Conflict.
+SubscriptionSchema.index(
+  { customerId: 1, planId: 1 },
+  { unique: true, partialFilterExpression: { status: { $in: ['active', 'paused'] } } },
+);

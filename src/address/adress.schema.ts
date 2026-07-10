@@ -43,6 +43,12 @@ export class Address {
   @Prop({ type: String, required: true })
   zipCode: string;
 
+  // 🌎 ISO-3166 alpha-2 country code (e.g. 'US', 'PK'). Optional/nullable —
+  // added for revenue-by-country analytics; existing addresses predate this
+  // field and simply fall into an "unknown" bucket until re-saved.
+  @Prop({ type: String, default: null })
+  country: string | null;
+
   // ⭐ default address
   @Prop({ type: Boolean, default: false })
   isDefault: boolean;

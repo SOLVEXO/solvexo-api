@@ -26,6 +26,9 @@ export class Conversation {
 
   // Seller-side inbox controls
   @Prop({ type: Boolean, default: false }) isPinned: boolean;
+  // Buyer has an active priority_support subscription benefit at this store —
+  // seller inbox sorts/highlights these above regular conversations.
+  @Prop({ type: Boolean, default: false }) isPriority: boolean;
   @Prop({ type: Boolean, default: false }) isArchived: boolean;
   @Prop({ type: Boolean, default: false }) isMuted: boolean;
 
@@ -48,4 +51,5 @@ ConversationSchema.index({ storeId: 1, updatedAt: -1 });
 ConversationSchema.index({ buyerId: 1, updatedAt: -1 });
 // Seller pinned/archived queries
 ConversationSchema.index({ storeId: 1, isPinned: 1, updatedAt: -1 });
+ConversationSchema.index({ storeId: 1, isPriority: 1, updatedAt: -1 });
 ConversationSchema.index({ storeId: 1, isArchived: 1, updatedAt: -1 });

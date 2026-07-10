@@ -62,6 +62,12 @@ export class Seller {
 
     @Prop({ default: false })
     isOnboarded!: boolean;
+
+    // Stripe Customer for PLATFORM-PLAN billing (seller paying Solvexo) — a
+    // completely separate Stripe customer from any `User.stripeCustomerId`
+    // the same person might also have as a buyer of someone else's VIP plan.
+    @Prop({ type: String, default: null })
+    stripeCustomerId: string | null;
 }
 
 

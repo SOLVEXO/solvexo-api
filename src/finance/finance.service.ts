@@ -10,6 +10,7 @@ import { UpdatePayoutScheduleDto } from './dto/update-payout-schedule.dto';
 import { ActivityLogService } from 'src/activity-log/activity-log.service';
 import { round } from 'src/common/number.util';
 import { verifyStoreExists, verifyStoreOwnershipStrict } from 'src/common/store-ownership.util';
+import { EntitlementsService } from 'src/platform-plans/entitlements.service';
 
 // ── Platform fee constants ───────────────────────────────────────────────────
 export const PLATFORM_FEE_RATE       = 0.08;   // 8% per sale
@@ -23,6 +24,7 @@ export class FinanceService {
   constructor(
     private readonly db: DatabaseService,
     private readonly activityLogService: ActivityLogService,
+    private readonly entitlementsService: EntitlementsService,
   ) {}
 
   // ── Shorthand repo getters ───────────────────────────────────────────────
@@ -851,9 +853,16 @@ export class FinanceService {
   /**
    * Record a completed sale and deduct platform + processing fees.
    * Call this from OrdersService when an order is marked as completed.
+   *
+   * The platform-fee rate is now resolved per-store from the store's
+   * PlatformPlan (`transactionFeeRate`) instead of the flat `PLATFORM_FEE_RATE`
+   * constant — this is the single biggest financial incentive to upgrade a
+   * platform tier (3% → 1% → 0.5% → 0%). `PLATFORM_FEE_RATE` remains as the
+   * fallback for a store with no platform-plan record yet (pre-launch stores).
    */
   async recordSale(storeId: string, sellerId: string, orderId: string, saleAmount: number, description: string) {
-    const platformFee   = this.round(saleAmount * PLATFORM_FEE_RATE);
+    const platformFeeRate = await this.entitlementsService.getTransactionFeeRate(storeId);
+    const platformFee   = this.round(saleAmount * platformFeeRate);
     const processingFee = this.round(saleAmount * PAYMENT_PROCESSING_RATE + PAYMENT_PROCESSING_FIXED);
     const netAmount     = this.round(saleAmount - platformFee - processingFee);
 
@@ -887,9 +896,57 @@ export class FinanceService {
       amount: -(platformFee + processingFee),
       balanceBefore,
       balanceAfter: balance.availableBalance,
-      description: `Platform Fee (${PLATFORM_FEE_RATE * 100}%) + Processing — Order #${orderId}`,
+      description: `Platform Fee (${(platformFeeRate * 100).toFixed(1)}%) + Processing — Order #${orderId}`,
       referenceId: orderId,
       referenceType: 'order',
+      status: 'completed',
+    });
+  }
+
+  /**
+   * Credits a seller's balance with their share of subscription revenue
+   * collected from their own store's subscribers. Mirrors `recordSale`'s
+   * ledger shape (pending → available after CLEARING_DAYS via the same
+   * clearing cron) so subscription and order revenue behave identically
+   * from the seller's point of view. `platformCommissionUSD` is passed in
+   * already computed by the caller (SubscriptionsService), since the
+   * commission rate for subscription revenue is configured independently
+   * of the order-sale PLATFORM_FEE_RATE.
+   */
+  async recordSubscriptionRevenue(
+    storeId: string, sellerId: string, invoiceId: string,
+    sellerPayoutUSD: number, platformCommissionUSD: number, description: string,
+  ) {
+    const balance = await this.getOrCreateBalance(storeId, sellerId);
+    const balanceBefore = balance.availableBalance;
+
+    balance.pendingBalance = this.round(balance.pendingBalance + sellerPayoutUSD);
+    balance.totalRevenue   = this.round(balance.totalRevenue + sellerPayoutUSD + platformCommissionUSD);
+    balance.totalFees      = this.round(balance.totalFees + platformCommissionUSD);
+    await balance.save();
+
+    await this.txModel.create({
+      storeId, sellerId,
+      type: 'sale',
+      amount: this.round(sellerPayoutUSD + platformCommissionUSD),
+      balanceBefore,
+      balanceAfter: balance.availableBalance,
+      description,
+      referenceId: invoiceId,
+      referenceType: 'subscription_invoice',
+      status: 'pending',
+      metadata: { platformCommissionUSD, sellerPayoutUSD, clearingDays: CLEARING_DAYS, revenueType: 'subscription' },
+    });
+
+    await this.txModel.create({
+      storeId, sellerId,
+      type: 'fee',
+      amount: -platformCommissionUSD,
+      balanceBefore,
+      balanceAfter: balance.availableBalance,
+      description: `Platform subscription commission — invoice reference ${invoiceId}`,
+      referenceId: invoiceId,
+      referenceType: 'subscription_invoice',
       status: 'completed',
     });
   }
@@ -898,11 +955,18 @@ export class FinanceService {
    * Record a refund — reverses the net sale amount from available or pending balance.
    * Call this from OrdersService when a refund is issued.
    */
-  async recordRefund(storeId: string, sellerId: string, orderId: string, refundAmount: number, actorId?: string, actorRole?: string) {
+  async recordRefund(
+    storeId: string, sellerId: string, referenceId: string, refundAmount: number,
+    actorId?: string, actorRole?: string,
+    opts?: { referenceType?: 'order' | 'subscription_invoice' | 'platform_plan_invoice'; description?: string; targetType?: string },
+  ) {
+    const referenceType = opts?.referenceType ?? 'order';
     const balance = await this.getOrCreateBalance(storeId, sellerId);
     const balanceBefore = balance.availableBalance;
 
-    // Deduct from available first, then pending if not enough
+    // Deduct from available first, then pending if not enough. Platform
+    // commission already taken at sale/charge time is NOT refunded — the
+    // seller absorbs the full refund amount, same policy as order refunds.
     if (balance.availableBalance >= refundAmount) {
       balance.availableBalance = this.round(balance.availableBalance - refundAmount);
     } else {
@@ -919,9 +983,9 @@ export class FinanceService {
       amount: -refundAmount,
       balanceBefore,
       balanceAfter: balance.availableBalance,
-      description: `Refund — Order #${orderId}`,
-      referenceId: orderId,
-      referenceType: 'order',
+      description: opts?.description ?? `Refund — Order #${referenceId}`,
+      referenceId,
+      referenceType,
       status: 'completed',
     });
 
@@ -929,11 +993,11 @@ export class FinanceService {
       storeId,
       category: 'finance',
       action: 'refund_issued',
-      description: `Order #${orderId} — $${refundAmount.toFixed(2)} refunded`,
+      description: opts?.description ?? `Order #${referenceId} — $${refundAmount.toFixed(2)} refunded`,
       actorId: actorId ?? sellerId,
       actorRole: actorRole ?? 'seller',
-      targetId: orderId,
-      targetType: 'order',
+      targetId: referenceId,
+      targetType: opts?.targetType ?? 'order',
     });
   }
 }

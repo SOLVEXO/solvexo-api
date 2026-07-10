@@ -25,12 +25,17 @@ export class SubscriptionPaymentAttempt {
 
   @Prop({ type: Number, required: true }) amountUSD: number;
   @Prop({ type: String, default: null }) failureReason: string | null;
+  // Stripe decline code (e.g. 'insufficient_funds', 'card_declined') — powers
+  // dunning analytics segmentation beyond a free-text reason string.
+  @Prop({ type: String, default: null }) failureCode: string | null;
 
   @Prop({ type: String, default: null }) invoiceId: string | null;
   @Prop({ type: String, default: null }) providerChargeId: string | null;
+  @Prop({ type: String, default: null }) stripePaymentIntentId: string | null;
 }
 
 export const SubscriptionPaymentAttemptSchema = SchemaFactory.createForClass(SubscriptionPaymentAttempt);
 SubscriptionPaymentAttemptSchema.index({ subscriptionId: 1, createdAt: -1 });
 SubscriptionPaymentAttemptSchema.index({ storeId: 1, createdAt: -1 });
 SubscriptionPaymentAttemptSchema.index({ outcome: 1, createdAt: -1 });
+SubscriptionPaymentAttemptSchema.index({ failureCode: 1, createdAt: -1 });

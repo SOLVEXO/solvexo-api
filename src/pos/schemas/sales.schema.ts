@@ -49,6 +49,11 @@ export class Sale {
   @Prop({ required: true })
   registerId: string;
 
+  // Denormalized from the RegisterSession at sale-creation time — powers
+  // per-location sales reporting without a join.
+  @Prop({ type: String, default: null })
+  locationId: string | null;
+
   @Prop({ required: true })
   employeeId: string;
 
@@ -102,6 +107,7 @@ export const SaleSchema = SchemaFactory.createForClass(Sale);
 
 SaleSchema.index({ storeId: 1, createdAt: -1 });
 SaleSchema.index({ storeId: 1, status: 1 });
+SaleSchema.index({ locationId: 1, createdAt: -1 });
 SaleSchema.index({ sessionId: 1 });
 SaleSchema.index({ employeeId: 1 });
 SaleSchema.index({ storeId: 1, saleNumber: 1 }, { unique: true });

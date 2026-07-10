@@ -10,6 +10,8 @@ import { SellerType, ProductType, resolveTools } from './schemas/store.schema';
 import { ActivityLogService } from 'src/activity-log/activity-log.service';
 import { UpdateStoreCustomerDto } from './dto/update-store-customer.dto';
 import { SubscriptionBenefitsService } from 'src/subscriptions/subscription-benefits.service';
+import { EntitlementsService } from 'src/platform-plans/entitlements.service';
+import { SellerPlatformSubscriptionsService } from 'src/platform-plans/seller-platform-subscriptions.service';
 
 @Injectable()
 export class StoreService {
@@ -17,6 +19,8 @@ export class StoreService {
     private readonly databaseService: DatabaseService,
     private readonly activityLogService: ActivityLogService,
     private readonly subscriptionBenefits: SubscriptionBenefitsService,
+    private readonly entitlementsService: EntitlementsService,
+    private readonly sellerPlatformSubscriptionsService: SellerPlatformSubscriptionsService,
   ) {}
 
   private generateSlug(name: string): string {
@@ -90,11 +94,53 @@ export class StoreService {
       isOnboarded: true,
     });
 
+    // Every store always has exactly one platform-plan subscription — auto
+    // start on the free tier so onboarding has zero friction (see EntitlementsService).
+    await this.sellerPlatformSubscriptionsService.ensureDefaultSubscription(store._id.toString(), sellerId);
+
     return {
       success: true,
       message: 'Store created successfully',
       data: store,
     };
+  }
+
+  /** Platform-plan-gated: only stores on a plan with `customDomainAllowed` may set a custom domain. */
+  async setCustomDomain(sellerId: string, storeId: string, domain: string | null) {
+    const store = await this.databaseService.repositories.storeModel.findOne({ _id: storeId, isDelete: false });
+    if (!store) throw new NotFoundException('Store not found');
+    if (store.sellerId !== sellerId) throw new UnauthorizedException('Unauthorized');
+
+    if (domain) {
+      await this.entitlementsService.assertFeatureAllowed(storeId, 'customDomainAllowed', 'Custom domain');
+    }
+
+    store.customDomain = domain;
+    await store.save();
+
+    this.activityLogService.log({
+      storeId, category: 'settings', action: 'custom_domain_updated',
+      description: domain ? `Custom domain set to ${domain}` : 'Custom domain removed',
+      actorId: sellerId, actorRole: 'seller',
+    });
+
+    return { success: true, message: 'Custom domain updated', data: { customDomain: store.customDomain } };
+  }
+
+  /** Platform-plan-gated: only stores on a plan with `whiteLabelAllowed` may hide Solvexo branding. */
+  async setWhiteLabel(sellerId: string, storeId: string, enabled: boolean) {
+    const store = await this.databaseService.repositories.storeModel.findOne({ _id: storeId, isDelete: false });
+    if (!store) throw new NotFoundException('Store not found');
+    if (store.sellerId !== sellerId) throw new UnauthorizedException('Unauthorized');
+
+    if (enabled) {
+      await this.entitlementsService.assertFeatureAllowed(storeId, 'whiteLabelAllowed', 'White-label branding');
+    }
+
+    store.whiteLabelEnabled = enabled;
+    await store.save();
+
+    return { success: true, message: 'White-label setting updated', data: { whiteLabelEnabled: store.whiteLabelEnabled } };
   }
 
   // seller ke saare stores

@@ -29,4 +29,9 @@ export class UpdateEmployeeDto {
   @IsOptional()
   @IsString()
   status?: string;
+
+  @ApiProperty({ required: false, description: 'StoreLocation _id, or null to unassign' })
+  @IsOptional()
+  @IsString()
+  locationId?: string | null;
 }

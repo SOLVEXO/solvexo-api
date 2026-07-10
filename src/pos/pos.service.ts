@@ -32,12 +32,14 @@ import { ResetPinDto } from './dto/reset-pin.dto';
 import { UpdateSaleItemsDto } from './dto/update-sale-items.dto';
 import { UpdatePosSettingsDto } from './dto/update-pos-settings.dto';
 import { ActivityLogService } from 'src/activity-log/activity-log.service';
+import { EntitlementsService } from 'src/platform-plans/entitlements.service';
 
 @Injectable()
 export class PosService {
   constructor(
     private readonly databaseService: DatabaseService,
     private readonly activityLogService: ActivityLogService,
+    private readonly entitlementsService: EntitlementsService,
   ) {}
 
   private get r() {
@@ -50,6 +52,12 @@ export class PosService {
     const store = await this.r.storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
     if (!store) throw new ForbiddenException('Store not found or unauthorized');
     return store;
+  }
+
+  private async assertLocationBelongsToStore(storeId: string, locationId: string | null | undefined) {
+    if (!locationId) return;
+    const location = await this.r.storeLocationModel.findOne({ _id: locationId, storeId, isDelete: false });
+    if (!location) throw new BadRequestException('Location not found in this store');
   }
 
   // Atomic per-store counter — countDocuments() would race under concurrent
@@ -76,6 +84,10 @@ export class PosService {
     });
     if (existing) throw new BadRequestException('Employee with this email already exists in this store');
 
+    // Platform-plan staff-seat gate — see EntitlementsService.
+    await this.entitlementsService.assertCanAddStaff(dto.storeId);
+    await this.assertLocationBelongsToStore(dto.storeId, dto.locationId);
+
     const hashedPin = await bcrypt.hash(dto.pin, 10);
 
     const employee = await this.r.employeeModel.create({
@@ -86,6 +98,7 @@ export class PosService {
       pin: hashedPin,
       role: dto.role ?? 'cashier',
       shiftIds: dto.shiftIds ?? [],
+      locationId: dto.locationId ?? null,
     });
 
     const { pin: _, ...safe } = (employee as any).toObject();
@@ -120,6 +133,7 @@ export class PosService {
   async updateEmployee(sellerId: string, employeeId: string, dto: UpdateEmployeeDto) {
     const employee = await this.r.employeeModel.findOne({ _id: employeeId, sellerId, isDelete: false });
     if (!employee) throw new NotFoundException('Employee not found');
+    if (dto.locationId !== undefined) await this.assertLocationBelongsToStore(employee.storeId, dto.locationId);
 
     const updateData: any = { ...dto };
     if (dto.pin) updateData.pin = await bcrypt.hash(dto.pin, 10);
@@ -182,13 +196,14 @@ export class PosService {
 
   // ── REGISTER & SHIFT MANAGEMENT ───────────────────────────────────────────
 
-  async addRegister(sellerId: string, storeId: string, body: { name: string; defaultFloatCash?: number }) {
+  async addRegister(sellerId: string, storeId: string, body: { name: string; defaultFloatCash?: number; locationId?: string }) {
     if (!body.name) throw new BadRequestException('Register name is required');
     await this.verifyStoreOwnership(storeId, sellerId);
+    await this.assertLocationBelongsToStore(storeId, body.locationId);
 
     const updated = await this.r.storeModel.findByIdAndUpdate(
       storeId,
-      { $push: { registers: { name: body.name, defaultFloatCash: body.defaultFloatCash ?? 100, status: 'active' } } },
+      { $push: { registers: { name: body.name, defaultFloatCash: body.defaultFloatCash ?? 100, status: 'active', locationId: body.locationId ?? null } } },
       { new: true },
     );
 
@@ -385,6 +400,7 @@ export class PosService {
     const session = await this.r.registerSessionModel.create({
       storeId: dto.storeId,
       registerId: dto.registerId,
+      locationId: (register as any).locationId ?? null,
       employeeId: dto.employeeId,
       shiftId: dto.shiftId ?? null,
       openedAt: new Date(),
@@ -604,6 +620,7 @@ export class PosService {
           storeId: dto.storeId,
           sessionId: dto.sessionId,
           registerId: dto.registerId,
+          locationId: (session as any).locationId ?? null,
           employeeId: dto.employeeId,
           items: saleItems,
           subtotal,
@@ -845,6 +862,7 @@ export class PosService {
       createdAt: { $gte: startOfDay, $lte: endOfDay },
     };
     if (query.registerId) filter.registerId = query.registerId;
+    if (query.locationId) filter.locationId = query.locationId;
 
     const sales = await this.r.saleModel.find(filter).lean();
 
@@ -964,11 +982,13 @@ export class PosService {
     await this.verifyStoreOwnership(storeId, sellerId);
     const store = await this.r.storeModel.findOne({ _id: storeId, 'registers._id': registerId });
     if (!store) throw new NotFoundException('Register not found');
+    if (dto.locationId !== undefined) await this.assertLocationBelongsToStore(storeId, dto.locationId);
 
     const setFields: any = {};
     if (dto.name !== undefined) setFields['registers.$.name'] = dto.name;
     if (dto.defaultFloatCash !== undefined) setFields['registers.$.defaultFloatCash'] = dto.defaultFloatCash;
     if (dto.status !== undefined) setFields['registers.$.status'] = dto.status;
+    if (dto.locationId !== undefined) setFields['registers.$.locationId'] = dto.locationId;
 
     const updated = await this.r.storeModel.findOneAndUpdate(
       { _id: storeId, 'registers._id': registerId },
@@ -1058,6 +1078,7 @@ export class PosService {
     await this.verifyStoreOwnership(storeId, sellerId);
     const employee = await this.r.employeeModel.findOne({ _id: employeeId, storeId, isDelete: false });
     if (!employee) throw new NotFoundException('Employee not found');
+    if (dto.locationId !== undefined) await this.assertLocationBelongsToStore(storeId, dto.locationId);
 
     const updateData: any = { ...dto };
     if (dto.pin) updateData.pin = await bcrypt.hash(dto.pin, 10);
@@ -1264,16 +1285,19 @@ export class PosService {
     to.setHours(23, 59, 59, 999);
 
     const statusFilter = ['completed', 'partially_refunded'];
+    const locationFilter = query.locationId ? { locationId: query.locationId } : {};
     const sales = await this.r.saleModel.find({
       storeId,
       status: { $in: statusFilter },
       createdAt: { $gte: from, $lte: to },
+      ...locationFilter,
     }).lean();
 
     const refunds = await this.r.saleModel.find({
       storeId,
       status: { $in: ['refunded', 'voided'] },
       createdAt: { $gte: from, $lte: to },
+      ...locationFilter,
     }).lean();
 
     let totalRevenue = 0;

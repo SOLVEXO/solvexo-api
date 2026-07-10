@@ -14,13 +14,16 @@ export const ACTIVITY_LOG_CATEGORIES = [
   'security',
   'loyalty',
   'subscriptions',
+  'platform_plans',
 ] as const;
 
 export type ActivityLogCategory = (typeof ACTIVITY_LOG_CATEGORIES)[number];
 
 @Schema({ timestamps: true })
 export class ActivityLog {
-  @Prop({ required: true })
+  // 'platform' sentinel = a platform-level action with no single store
+  // (e.g. admin creating/editing a PlatformPlan) rather than a real store id.
+  @Prop({ type: String, default: 'platform' })
   storeId: string;
 
   @Prop({ type: String, default: null })
