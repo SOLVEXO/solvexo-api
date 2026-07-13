@@ -139,6 +139,10 @@ export class Product {
   @Prop({ type: Date, default: null })
   scheduledAt: Date | null;
 
+  // early_access plan benefit — non-subscribers can't see this product until this passes
+  @Prop({ type: Date, default: null })
+  earlyAccessUntil: Date | null;
+
   @Prop({ default: false })
   isListedOnSolvexo: boolean;
 

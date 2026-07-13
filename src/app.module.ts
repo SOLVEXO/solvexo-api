@@ -1,5 +1,8 @@
 import { Module } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule } from '@nestjs/config';
+import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { EventEmitterModule } from '@nestjs/event-emitter';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { DatabaseModule } from './database/database.module';
@@ -32,11 +35,22 @@ import { AnalyticsModule } from './analytics/analytics.module';
 import { PlatformSubscriptionsModule } from './platform-subscriptions/platform-subscriptions.module';
 import { AdminAnalyticsModule } from './admin-analytics/admin-analytics.module';
 import { AdminFinanceModule } from './admin-finance/admin-finance.module';
+import { QueueModule } from './queues/queue.module';
+import { HealthModule } from './health/health.module';
+import { PlatformPlansModule } from './platform-plans/platform-plans.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
+    EventEmitterModule.forRoot(),
+    ThrottlerModule.forRoot([
+      // Platform-wide default: 100 req/min per IP. Endpoints that need a tighter
+      // (payment/webhook) or looser (public browse) limit override via @Throttle().
+      { name: 'default', ttl: 60_000, limit: 100 },
+    ]),
     DatabaseModule,
+    QueueModule,
+    HealthModule,
     ActivityLogModule,
     AuthModule,
     categoryModule,
@@ -62,6 +76,7 @@ import { AdminFinanceModule } from './admin-finance/admin-finance.module';
     MessagingModule,
     FinanceModule,
     SubscriptionsModule,
+    PlatformPlansModule,
     SchedulerModule,
     MarketingModule,
     LoyaltyModule,
@@ -71,6 +86,9 @@ import { AdminFinanceModule } from './admin-finance/admin-finance.module';
     AdminFinanceModule,
   ],
   controllers: [AppController],
-  providers: [AppService],
+  providers: [
+    AppService,
+    { provide: APP_GUARD, useClass: ThrottlerGuard },
+  ],
 })
 export class AppModule {}

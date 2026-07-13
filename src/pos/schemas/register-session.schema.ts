@@ -31,6 +31,11 @@ export class RegisterSession {
   @Prop({ required: true })
   registerId: string;
 
+  // Denormalized from the register at session-open time — lets per-location
+  // reports query RegisterSession directly without joining through Store.registers.
+  @Prop({ type: String, default: null })
+  locationId: string | null;
+
   @Prop({ required: true })
   employeeId: string;
 
@@ -96,3 +101,4 @@ RegisterSessionSchema.index({ employeeId: 1 });
 RegisterSessionSchema.index({ registerId: 1 });
 RegisterSessionSchema.index({ shiftId: 1 });
 RegisterSessionSchema.index({ storeId: 1, createdAt: -1 });
+RegisterSessionSchema.index({ locationId: 1, createdAt: -1 });

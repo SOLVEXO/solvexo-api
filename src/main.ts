@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { NestFactory } from '@nestjs/core';
+import { ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module';
 import cookieParser from 'cookie-parser';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
@@ -8,8 +9,15 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, { rawBody: true });
 
-  
-
+  // Global request validation — previously several controllers (Rating, Analytics,
+  // AdminFinance, AdminAnalytics) each applied their own local ValidationPipe while
+  // others (notably Subscriptions) applied none at all, meaning class-validator
+  // decorators on those DTOs were silently never enforced. A single global pipe
+  // closes that gap for every controller uniformly. whitelist strips unknown
+  // properties instead of rejecting the request, so existing clients that send a
+  // few extra fields keep working; forbidNonWhitelisted stays off for the same
+  // backward-compatibility reason.
+  app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true, forbidNonWhitelisted: false }));
 
   app.use(cookieParser());
 

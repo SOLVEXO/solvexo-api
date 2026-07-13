@@ -32,4 +32,9 @@ export class CreateEmployeeDto {
   @IsOptional()
   @IsArray()
   shiftIds?: string[];
+
+  @ApiProperty({ required: false, description: 'StoreLocation _id this employee is assigned to — omit for unrestricted (any branch)' })
+  @IsOptional()
+  @IsString()
+  locationId?: string;
 }

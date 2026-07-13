@@ -22,12 +22,37 @@ export class SubscriptionInvoice {
   // a 'proration' invoice that represents a credit issued, not a charge.
   @Prop({ type: Number, required: true }) amountUSD: number;
 
-  @Prop({ type: String, enum: ['paid', 'failed', 'pending'], default: 'pending' }) status: string;
+  // 'pending' is now a real, reachable state — a Stripe invoice can be created
+  // and awaiting async payment confirmation (e.g. 3DS/SCA challenge) before
+  // resolving to 'paid' or 'failed' via webhook.
+  @Prop({ type: String, enum: ['paid', 'failed', 'pending', 'refunded', 'partially_refunded'], default: 'pending' }) status: string;
 
   @Prop({ type: Date, default: null }) paidAt: Date | null;
+  @Prop({ type: Date, default: null }) refundedAt: Date | null;
+  @Prop({ type: Number, default: 0 }) refundedAmountUSD: number;
+  @Prop({ type: String, default: null }) providerRefundId: string | null;
 
-  // Will hold Stripe charge/invoice ID once integrated; null for manual provider
+  // Stripe charge/PaymentIntent id once integrated; null for the manual provider
   @Prop({ type: String, default: null }) providerChargeId: string | null;
+  @Prop({ type: String, default: null }) stripeInvoiceId: string | null;
+  @Prop({ type: String, default: null }) stripePaymentIntentId: string | null;
+  @Prop({ type: String, default: null }) hostedInvoiceUrl: string | null;
+  @Prop({ type: String, default: null }) invoicePdfUrl: string | null;
+
+  @Prop({ type: String, default: 'usd' }) currency: string;
+  @Prop({ type: String, default: null }) paymentMethodType: string | null; // 'card' | 'manual' | ...
+  @Prop({ type: String, default: null }) countryCode: string | null;
+
+  // ── Platform/seller revenue split (see PlatformCommissionService) ────────
+  // Every OTHER revenue line in this platform (order sales, via
+  // FinanceService.recordSale) splits into a seller-owed net amount + a
+  // platform commission. Subscription revenue previously had NO split at all
+  // (100% silently retained, seller never credited) — these two fields make
+  // that split explicit and auditable per-invoice, and drive the seller's
+  // actual SellerBalance credit (see SubscriptionsService.creditSellerPayout).
+  @Prop({ type: Number, default: 0 }) platformCommissionUSD: number;
+  @Prop({ type: Number, default: 0 }) sellerPayoutUSD: number;
+  @Prop({ type: Boolean, default: false }) payoutCredited: boolean;
 
   @Prop({ default: false }) isDelete: boolean;
 }
@@ -38,3 +63,6 @@ SubscriptionInvoiceSchema.index({ storeId: 1, createdAt: -1 });
 SubscriptionInvoiceSchema.index({ sellerId: 1, createdAt: -1 });
 SubscriptionInvoiceSchema.index({ invoiceNumber: 1 }, { unique: true });
 SubscriptionInvoiceSchema.index({ status: 1 });
+SubscriptionInvoiceSchema.index({ stripeInvoiceId: 1 });
+SubscriptionInvoiceSchema.index({ countryCode: 1, createdAt: -1 });
+SubscriptionInvoiceSchema.index({ paymentMethodType: 1, createdAt: -1 });

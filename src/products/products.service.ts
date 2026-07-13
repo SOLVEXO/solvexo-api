@@ -11,7 +11,7 @@ import { CreateProductDto } from './dto/create-product.dto';
 import { CreateProductVariantDto } from './dto/productVariant.dto';
 import { ActivityLogService } from 'src/activity-log/activity-log.service';
 import { SubscriptionBenefitsService } from 'src/subscriptions/subscription-benefits.service';
-import { PlatformSubscriptionsService } from 'src/platform-subscriptions/platform-subscriptions.service';
+import { EntitlementsService } from 'src/platform-plans/entitlements.service';
 
 @Injectable()
 export class ProductsService {
@@ -19,8 +19,24 @@ export class ProductsService {
     private databaseService: DatabaseService,
     private activityLogService: ActivityLogService,
     private subscriptionBenefits: SubscriptionBenefitsService,
-    private platformSubscriptions: PlatformSubscriptionsService,
+    private entitlementsService: EntitlementsService,
   ) {}
+
+  /** Stamps a fresh product with an early-access window if the store has any active plan configuring one — non-subscribers can't see it until this passes. */
+  private async applyEarlyAccessWindow(product: any) {
+    const hours = await this.subscriptionBenefits.getStoreEarlyAccessHours(product.storeId);
+    if (!hours) return;
+    product.earlyAccessUntil = new Date(Date.now() + hours * 60 * 60 * 1000);
+    await product.save();
+  }
+
+  /** True if this product should stay hidden from this requester right now (still in its early-access window and the requester isn't a subscriber with early_access). */
+  private async isHiddenByEarlyAccess(product: any, customerId?: string | null): Promise<boolean> {
+    if (!product.earlyAccessUntil || product.earlyAccessUntil <= new Date()) return false;
+    if (!customerId) return true;
+    const entry = await this.subscriptionBenefits.getActiveBenefits(customerId, product.storeId);
+    return !entry || !this.subscriptionBenefits.hasEarlyAccess(entry.benefits);
+  }
 
   // Attaches subscriberPrice/youSaveUSD/discountPercent/planName to each
   // variant when the requester has an active, discount-granting subscription
@@ -210,17 +226,13 @@ async createProduct(sellerId: string, body: any) {
   if (!store) throw new BadRequestException('Store not found. Please create a store first');
   if (store.status !== 'active') throw new BadRequestException('Your store is not active');
 
-  // Platform-tier product limit — first real enforcement of Store.plan.
   const storeId = store._id.toString();
-  const productLimit = await this.platformSubscriptions.getProductLimitForStore(storeId);
-  if (productLimit !== null) {
-    const currentCount = await productModel.countDocuments({ storeId, isDelete: false });
-    if (currentCount >= productLimit) {
-      throw new BadRequestException(
-        `Product limit reached for your current plan (${productLimit}). Upgrade to add more products.`,
-      );
-    }
-  }
+
+  // Platform-plan product-count gate (Starter/Free etc.) — EntitlementsService
+  // is the single owner of platform-tier limits; the older
+  // PlatformSubscriptionsService gate was dropped here to avoid two competing
+  // plan systems both blocking product creation.
+  await this.entitlementsService.assertCanCreateProduct(storeId);
 
   const {
     name, description, productType, subCategoryId,
@@ -273,6 +285,8 @@ async createProduct(sellerId: string, body: any) {
     isListedOnSolvexo: isListedOnSolvexo ?? false,
     status: status ?? 'draft',
   });
+
+  if (product.status === 'active') await this.applyEarlyAccessWindow(product);
 
   const sku = `SKU-${product._id.toString().slice(-6).toUpperCase()}-${Date.now().toString().slice(-4)}`;
 
@@ -587,6 +601,10 @@ async getProductById(productId: string, customerId?: string | null) {
     status: "active",
     isDelete: false
   }).lean();
+
+  if (product && (await this.isHiddenByEarlyAccess(product, customerId))) {
+    return { message: "Product not found", success: false, data: null };
+  }
 
   if (!product) {
     return {

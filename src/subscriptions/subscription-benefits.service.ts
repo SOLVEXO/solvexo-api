@@ -137,6 +137,31 @@ export class SubscriptionBenefitsService {
     return benefit?.multiplier ?? 1;
   }
 
+  hasEarlyAccess(benefits: PlanBenefit[]): boolean {
+    return benefits.some(b => b.type === 'early_access' && b.enabled !== false);
+  }
+
+  /**
+   * Longest `early_access` window configured across any of the store's
+   * active plans — used to stamp `Product.earlyAccessUntil` at
+   * publish/activation time (before any specific buyer is known). Returns
+   * null if no active plan configures this benefit, so callers can skip the
+   * early-access window entirely.
+   */
+  async getStoreEarlyAccessHours(storeId: string): Promise<number | null> {
+    const plans = await this.db.repositories.subscriptionPlanModel
+      .find({ storeId, status: 'active', isDelete: false }).select('benefits').lean();
+
+    let maxHours: number | null = null;
+    for (const plan of plans as any[]) {
+      const benefit = (plan.benefits ?? []).find((b: any) => b.type === 'early_access' && b.enabled !== false && b.earlyAccessHours > 0);
+      if (benefit && (maxHours === null || benefit.earlyAccessHours > maxHours)) {
+        maxHours = benefit.earlyAccessHours;
+      }
+    }
+    return maxHours;
+  }
+
   // ── Profitability estimation ─────────────────────────────────────────────
 
   async estimatePlanProfitability(storeId: string, benefits: PlanBenefit[], planPriceMonthlyUSD: number): Promise<PlanHealthEstimate> {

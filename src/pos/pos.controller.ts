@@ -6,6 +6,7 @@ import {
 import { Response } from 'express';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { PosService } from './pos.service';
+import { StoreLocationService } from './store-location.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -24,12 +25,64 @@ import { UpdateShiftDto } from './dto/update-shift.dto';
 import { ResetPinDto } from './dto/reset-pin.dto';
 import { UpdateSaleItemsDto } from './dto/update-sale-items.dto';
 import { UpdatePosSettingsDto } from './dto/update-pos-settings.dto';
+import { CreateStoreLocationDto } from './dto/create-store-location.dto';
+import { UpdateStoreLocationDto } from './dto/update-store-location.dto';
 
 @ApiTags('POS')
 @ApiBearerAuth()
 @Controller('api/pos')
 export class PosController {
-  constructor(private readonly posService: PosService) {}
+  constructor(
+    private readonly posService: PosService,
+    private readonly storeLocationService: StoreLocationService,
+  ) {}
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // MULTI-LOCATION POS (seller only) — physical branches under one store
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Post('locations/:storeId')
+  createLocation(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: CreateStoreLocationDto) {
+    return this.storeLocationService.createLocation(req.user.userId, storeId, dto);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Get('locations/:storeId')
+  listLocations(@Req() req: any, @Param('storeId') storeId: string) {
+    return this.storeLocationService.listLocations(req.user.userId, storeId);
+  }
+
+  // combined "all branches" comparison — must be before the parameterized :locationId route
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Get('locations/:storeId/overview')
+  getLocationsOverview(@Req() req: any, @Param('storeId') storeId: string, @Query() query: any) {
+    return this.storeLocationService.getLocationsOverview(req.user.userId, storeId, query);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Get('locations/:storeId/:locationId')
+  getLocationById(@Req() req: any, @Param('storeId') storeId: string, @Param('locationId') locationId: string) {
+    return this.storeLocationService.getLocationById(req.user.userId, storeId, locationId);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Patch('locations/:storeId/:locationId')
+  updateLocation(@Req() req: any, @Param('storeId') storeId: string, @Param('locationId') locationId: string, @Body() dto: UpdateStoreLocationDto) {
+    return this.storeLocationService.updateLocation(req.user.userId, storeId, locationId, dto);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Delete('locations/:storeId/:locationId')
+  archiveLocation(@Req() req: any, @Param('storeId') storeId: string, @Param('locationId') locationId: string, @Query('force') force: string) {
+    return this.storeLocationService.archiveLocation(req.user.userId, storeId, locationId, force === 'true');
+  }
 
   // ═══════════════════════════════════════════════════════════════════════════
   // EMPLOYEE MANAGEMENT  (seller only)

@@ -20,4 +20,9 @@ export class UpdateRegisterDto {
   @IsOptional()
   @IsEnum(['active', 'inactive'])
   status?: string;
+
+  @ApiProperty({ required: false, description: 'StoreLocation _id, or null to unassign' })
+  @IsOptional()
+  @IsString()
+  locationId?: string | null;
 }

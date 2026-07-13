@@ -5,7 +5,8 @@ import { ActivityLogCategory } from './schemas/activity-log.schema';
 import { ActivityLogGateway } from './activity-log.gateway';
 
 export interface LogActivityInput {
-  storeId: string;
+  /** Omit for a platform-level action with no single store (e.g. admin managing a PlatformPlan) — stored as the 'platform' sentinel. */
+  storeId?: string;
   category: ActivityLogCategory;
   action: string;
   description?: string | null;
@@ -33,7 +34,7 @@ export class ActivityLogService {
   async log(data: LogActivityInput): Promise<void> {
     try {
       const entry = await this.databaseService.repositories.activityLogModel.create({
-        storeId: data.storeId,
+        storeId: data.storeId ?? 'platform',
         actorId: data.actorId ?? null,
         actorName: data.actorName ?? null,
         actorRole: data.actorRole ?? null,
@@ -48,7 +49,7 @@ export class ActivityLogService {
         metadata: data.metadata ?? null,
       });
 
-      this.gateway.emitNewActivity(data.storeId, entry.toObject());
+      this.gateway.emitNewActivity(data.storeId ?? 'platform', entry.toObject());
     } catch (err) {
       // logging must never break the operation that triggered it — but we
       // still want visibility that an entry was lost, so it's not silent.

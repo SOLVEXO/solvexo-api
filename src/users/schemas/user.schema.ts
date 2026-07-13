@@ -58,6 +58,12 @@ export class User {
 
     @Prop({default: false })
     isDelete: boolean ;
+
+    // One Stripe Customer object per platform user, shared across every seller's
+    // subscription plan they subscribe to (a buyer should never get a second
+    // Stripe Customer just because they joined a second store's plan).
+    @Prop({ type: String, default: null, index: true })
+    stripeCustomerId: string | null;
 }
 
 

@@ -35,6 +35,20 @@ export class StoreController {
 
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('seller')
+  @Patch(':storeId/custom-domain')
+  async setCustomDomain(@Req() req: any, @Param('storeId') storeId: string, @Body() body: { domain: string | null }) {
+    return this.storeService.setCustomDomain(req.user.userId, storeId, body.domain ?? null);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Patch(':storeId/white-label')
+  async setWhiteLabel(@Req() req: any, @Param('storeId') storeId: string, @Body() body: { enabled: boolean }) {
+    return this.storeService.setWhiteLabel(req.user.userId, storeId, !!body.enabled);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
   @Post('update-store')
   async updateStore(@Req() req: any, @Body() body: any) {
     const { userId } = req.user;

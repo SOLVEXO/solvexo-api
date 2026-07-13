@@ -29,7 +29,7 @@ export class Transaction {
   @Prop({ type: String, default: null }) referenceId: string | null;
   @Prop({
     type: String,
-    enum: ['order', 'payout', 'manual', null],
+    enum: ['order', 'payout', 'manual', 'subscription_invoice', 'platform_plan_invoice', null],
     default: null,
   })
   referenceType: string | null;

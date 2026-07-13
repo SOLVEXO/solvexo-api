@@ -85,6 +85,12 @@ export class Register {
 
   @Prop({ enum: ['active', 'inactive'], default: 'active' })
   status: string;
+
+  // Which physical branch (StoreLocation) this register belongs to — null
+  // means unassigned/legacy (predates multi-location POS), grouped under an
+  // "Unassigned" bucket in per-location reports rather than requiring a migration.
+  @Prop({ type: String, default: null })
+  locationId: string | null;
 }
 export const RegisterSchema = SchemaFactory.createForClass(Register);
 
@@ -168,6 +174,15 @@ export class Store {
 
   @Prop({ type: String, default: null })
   coverImage: string | null;
+
+  // Platform-plan-gated features (see EntitlementsService) — dedicated fields
+  // rather than buried inside the opaque `builderConfig` blob, so backend
+  // enforcement doesn't depend on parsing arbitrary frontend-owned JSON.
+  @Prop({ type: String, default: null })
+  customDomain: string | null;
+
+  @Prop({ type: Boolean, default: false })
+  whiteLabelEnabled: boolean;
 
   @Prop({ type: Number, default: 0 })
   followersCount: number;

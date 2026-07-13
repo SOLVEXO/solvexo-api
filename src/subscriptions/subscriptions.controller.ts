@@ -1,18 +1,24 @@
 /* eslint-disable prettier/prettier */
 import {
   Controller, Get, Post, Patch, Delete,
-  Param, Body, Query, Req, Res, UseGuards,
+  Param, Body, Query, Req, Res, UseGuards, UseInterceptors,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { Response } from 'express';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { SubscriptionsService } from './subscriptions.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { IdempotencyInterceptor } from '../common/idempotency.interceptor';
 import { CreatePlanDto } from './dto/create-plan.dto';
 import { UpdatePlanDto } from './dto/update-plan.dto';
 import { SubscribeDto } from './dto/subscribe.dto';
 import { ChangePlanDto } from './dto/change-plan.dto';
+import { CancelSubscriptionDto } from './dto/cancel-subscription.dto';
+import { EstimatePlanHealthDto } from './dto/estimate-plan-health.dto';
+import { UpdateNotificationPreferencesDto } from './dto/update-notification-preferences.dto';
+import { RefundInvoiceDto } from './dto/refund-invoice.dto';
 
 @ApiTags('Subscriptions')
 @Controller('api/subscriptions')
@@ -31,9 +37,14 @@ export class SubscriptionsController {
 
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard)
+  @UseInterceptors(IdempotencyInterceptor)
+  // Tighter than the platform default (100/min) — this endpoint moves money
+  // and creates provider-side objects, so it's worth a stricter ceiling even
+  // with idempotency-key protection already in front of it.
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Post('subscribe')
   subscribe(@Req() req: any, @Body() dto: SubscribeDto) {
-    return this.subscriptionsService.subscribe(req.user.userId, dto);
+    return this.subscriptionsService.subscribe(req.user.userId, dto, req.headers['idempotency-key']);
   }
 
   @ApiBearerAuth()
@@ -45,9 +56,69 @@ export class SubscriptionsController {
 
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard)
+  @Post('my/setup-intent')
+  createSetupIntent(@Req() req: any) {
+    return this.subscriptionsService.createSetupIntent(req.user.userId);
+  }
+
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @Post('my/billing-portal')
+  createBillingPortalSession(@Req() req: any, @Body() body: { returnUrl: string }) {
+    return this.subscriptionsService.createBillingPortalSession(req.user.userId, body.returnUrl);
+  }
+
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @Get('my/benefits/:storeId')
+  getBenefitsSummary(@Req() req: any, @Param('storeId') storeId: string) {
+    return this.subscriptionsService.getBenefitsSummary(req.user.userId, storeId);
+  }
+
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @Get('my/credits')
+  getCreditWallets(@Req() req: any) {
+    return this.subscriptionsService.getCreditWallets(req.user.userId);
+  }
+
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @Post('my/credits/:storeId/spend')
+  spendCredit(
+    @Req() req: any,
+    @Param('storeId') storeId: string,
+    @Body() body: { creditType: 'download' | 'service'; amount: number; reason: string },
+  ) {
+    return this.subscriptionsService.spendCredit(req.user.userId, storeId, body.creditType, body.amount, body.reason);
+  }
+
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @Get('my/notification-preferences')
+  getNotificationPreferences(@Req() req: any) {
+    return this.subscriptionsService.getNotificationPreferences(req.user.userId);
+  }
+
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @Patch('my/notification-preferences')
+  updateNotificationPreferences(@Req() req: any, @Body() dto: UpdateNotificationPreferencesDto) {
+    return this.subscriptionsService.updateNotificationPreferences(req.user.userId, { ...dto });
+  }
+
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
   @Get('my/:id')
   getMySubscriptionById(@Req() req: any, @Param('id') id: string) {
     return this.subscriptionsService.getMySubscriptionById(req.user.userId, id);
+  }
+
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @Get('my/:id/timeline')
+  getSubscriptionTimeline(@Req() req: any, @Param('id') id: string) {
+    return this.subscriptionsService.getSubscriptionTimeline(req.user.userId, id);
   }
 
   @ApiBearerAuth()
@@ -67,15 +138,16 @@ export class SubscriptionsController {
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard)
   @Patch('my/:id/cancel')
-  selfCancel(@Req() req: any, @Param('id') id: string, @Query('atPeriodEnd') atPeriodEnd: string, @Body() body: { reason?: string } = {}) {
+  selfCancel(@Req() req: any, @Param('id') id: string, @Query('atPeriodEnd') atPeriodEnd: string, @Body() body: CancelSubscriptionDto) {
     return this.subscriptionsService.selfCancelSubscription(req.user.userId, id, atPeriodEnd === 'true', body.reason);
   }
 
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard)
+  @UseInterceptors(IdempotencyInterceptor)
   @Patch('my/:id/change-plan')
   changePlan(@Req() req: any, @Param('id') id: string, @Body() dto: ChangePlanDto) {
-    return this.subscriptionsService.changePlan(req.user.userId, id, dto);
+    return this.subscriptionsService.changePlan(req.user.userId, id, dto, req.headers['idempotency-key']);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -88,6 +160,46 @@ export class SubscriptionsController {
   @Get('admin/overview')
   adminOverview() {
     return this.subscriptionsService.adminGetOverview();
+  }
+
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('admin')
+  @Get('admin/revenue-breakdown')
+  adminRevenueBreakdown(@Query() query: any) {
+    return this.subscriptionsService.adminGetRevenueBreakdown(query);
+  }
+
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('admin')
+  @Get('admin/churn-cohorts')
+  adminChurnCohorts(@Query() query: any) {
+    return this.subscriptionsService.adminGetChurnCohorts(query);
+  }
+
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('admin')
+  @Get('admin/ltv')
+  adminLtv() {
+    return this.subscriptionsService.adminGetLtv();
+  }
+
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('admin')
+  @Get('admin/webhooks')
+  adminWebhookHistory(@Query() query: any) {
+    return this.subscriptionsService.adminGetWebhookHistory(query);
+  }
+
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('admin')
+  @Post('admin/webhooks/:id/retry')
+  adminRetryWebhook(@Param('id') id: string) {
+    return this.subscriptionsService.adminRetryWebhook(id);
   }
 
   @ApiBearerAuth()
@@ -130,6 +242,14 @@ export class SubscriptionsController {
   @Get('admin/subscriptions/:id')
   adminSubscriptionDetail(@Param('id') id: string) {
     return this.subscriptionsService.adminGetSubscriptionDetail(id);
+  }
+
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('admin')
+  @Post('admin/invoices/:invoiceId/refund')
+  adminRefundInvoice(@Req() req: any, @Param('invoiceId') invoiceId: string, @Body() dto: RefundInvoiceDto) {
+    return this.subscriptionsService.adminRefundInvoice(req.user.userId, invoiceId, dto.amountUSD, dto.reason);
   }
 
   @ApiBearerAuth()
@@ -203,6 +323,14 @@ export class SubscriptionsController {
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('seller')
+  @Get(':storeId/analytics/advanced')
+  getAdvancedAnalytics(@Req() req: any, @Param('storeId') storeId: string) {
+    return this.subscriptionsService.getAdvancedSellerAnalytics(req.user.userId, storeId);
+  }
+
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
   @Get(':storeId/export')
   async exportCsv(@Req() req: any, @Param('storeId') storeId: string, @Query() query: any, @Res() res: Response) {
     const csv = await this.subscriptionsService.exportCsv(req.user.userId, storeId, query);
@@ -252,9 +380,23 @@ export class SubscriptionsController {
     @Param('storeId') storeId: string,
     @Param('id') id: string,
     @Query('atPeriodEnd') atPeriodEnd: string,
-    @Body() body: { reason?: string } = {},
+    @Body() body: CancelSubscriptionDto,
   ) {
     return this.subscriptionsService.cancelSubscription(req.user.userId, storeId, id, atPeriodEnd === 'true', body.reason);
+  }
+
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Post(':storeId/subscribers/:id/invoices/:invoiceId/refund')
+  sellerRefundInvoice(
+    @Req() req: any,
+    @Param('storeId') storeId: string,
+    @Param('id') id: string,
+    @Param('invoiceId') invoiceId: string,
+    @Body() dto: RefundInvoiceDto,
+  ) {
+    return this.subscriptionsService.sellerRefundInvoice(req.user.userId, storeId, id, invoiceId, dto.amountUSD, dto.reason);
   }
 
   @ApiBearerAuth()
@@ -264,7 +406,7 @@ export class SubscriptionsController {
   estimatePlanHealth(
     @Req() req: any,
     @Param('storeId') storeId: string,
-    @Body() body: { benefits?: any[]; monthlyPriceUSD: number },
+    @Body() body: EstimatePlanHealthDto,
   ) {
     return this.subscriptionsService.estimatePlanHealth(req.user.userId, storeId, body.benefits ?? [], body.monthlyPriceUSD);
   }

@@ -63,6 +63,17 @@ export class CheckoutService {
 
     let subscriberSavingsUSD = 0;
 
+    // Pass 1: resolve product/variant, validate stock, and compute each
+    // store's RAW (pre-discount) subtotal. A discount benefit's
+    // `minOrderValueUSD` must be checked against the order value, but the
+    // order value isn't known until every line in the cart has been priced —
+    // so resolving and applying the discount in a single pass (as before)
+    // meant `minOrderValueUSD` was accepted by the API/DTO but never actually
+    // enforced; every subscriber discount applied unconditionally regardless
+    // of cart size.
+    const rawItems: Array<{ product: any; variant: any; cartItem: any }> = [];
+    const storeSubtotals = new Map<string, number>();
+
     for (const cartItem of selectedItems) {
       const product = await productModel.findOne({ _id: cartItem.productId, status: 'active', isDelete: false });
       if (!product) throw new BadRequestException(`Product not found: ${cartItem.productId}`);
@@ -77,13 +88,24 @@ export class CheckoutService {
         }
       }
 
+      rawItems.push({ product, variant, cartItem });
+      storeSubtotals.set(product.storeId, this.round((storeSubtotals.get(product.storeId) ?? 0) + variant.price * cartItem.quantity));
+    }
+
+    // Pass 2: resolve subscriber pricing now that each store's raw subtotal is known.
+    for (const { product, variant, cartItem } of rawItems) {
       // Subscriber pricing is resolved server-side only — the client never
       // supplies a discount, it can only ever be computed from the buyer's
       // real active subscription to this product's store.
       const benefitsEntry = await getBenefits(product.storeId);
-      const discount = benefitsEntry
+      let discount = benefitsEntry
         ? this.subscriptionBenefits.resolveProductDiscount(benefitsEntry.benefits, product as any, variant.price)
         : null;
+
+      if (discount?.minOrderValueUSD != null && (storeSubtotals.get(product.storeId) ?? 0) < discount.minOrderValueUSD) {
+        discount = null; // cart doesn't meet this store's minimum order value for the discount
+      }
+
       const unitPrice = discount?.subscriberPrice ?? variant.price;
       const lineDiscount = discount ? this.round(discount.savingsUSD * cartItem.quantity) : 0;
       subscriberSavingsUSD += lineDiscount;

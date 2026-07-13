@@ -120,6 +120,42 @@ export class DatabaseService {
     @InjectModel(schema.SubscriptionPaymentAttempt.name)
     private subscriptionPaymentAttemptModel: Model<schema.SubscriptionPaymentAttemptDocument>,
 
+    @InjectModel(schema.SubscriptionCounter.name)
+    private subscriptionCounterModel: Model<schema.SubscriptionCounterDocument>,
+
+    @InjectModel(schema.WebhookEvent.name)
+    private webhookEventModel: Model<schema.WebhookEventDocument>,
+
+    @InjectModel(schema.SubscriptionCreditWallet.name)
+    private subscriptionCreditWalletModel: Model<schema.SubscriptionCreditWalletDocument>,
+
+    @InjectModel(schema.SubscriptionNotificationPreference.name)
+    private subscriptionNotificationPreferenceModel: Model<schema.SubscriptionNotificationPreferenceDocument>,
+
+    @InjectModel(schema.IdempotencyRecord.name)
+    private idempotencyRecordModel: Model<schema.IdempotencyRecordDocument>,
+
+    @InjectModel(schema.PlatformPlan.name)
+    private platformPlanModel: Model<schema.PlatformPlanDocument>,
+
+    @InjectModel(schema.SellerPlatformSubscription.name)
+    private sellerPlatformSubscriptionModel: Model<schema.SellerPlatformSubscriptionDocument>,
+
+    @InjectModel(schema.PlatformPlanInvoice.name)
+    private platformPlanInvoiceModel: Model<schema.PlatformPlanInvoiceDocument>,
+
+    @InjectModel(schema.PlatformPlanPaymentAttempt.name)
+    private platformPlanPaymentAttemptModel: Model<schema.PlatformPlanPaymentAttemptDocument>,
+
+    @InjectModel(schema.AiCreditsWallet.name)
+    private aiCreditsWalletModel: Model<schema.AiCreditsWalletDocument>,
+
+    @InjectModel(schema.PlatformAddonPurchase.name)
+    private platformAddonPurchaseModel: Model<schema.PlatformAddonPurchaseDocument>,
+
+    @InjectModel(schema.StoreLocation.name)
+    private storeLocationModel: Model<schema.StoreLocationDocument>,
+
     @InjectModel(schema.ActivityLog.name)
     private activityLogModel: Model<schema.ActivityLogDocument>,
 
@@ -185,6 +221,18 @@ export class DatabaseService {
       subscriptionModel: this.subscriptionModel,
       subscriptionInvoiceModel: this.subscriptionInvoiceModel,
       subscriptionPaymentAttemptModel: this.subscriptionPaymentAttemptModel,
+      subscriptionCounterModel: this.subscriptionCounterModel,
+      webhookEventModel: this.webhookEventModel,
+      subscriptionCreditWalletModel: this.subscriptionCreditWalletModel,
+      subscriptionNotificationPreferenceModel: this.subscriptionNotificationPreferenceModel,
+      idempotencyRecordModel: this.idempotencyRecordModel,
+      platformPlanModel: this.platformPlanModel,
+      sellerPlatformSubscriptionModel: this.sellerPlatformSubscriptionModel,
+      platformPlanInvoiceModel: this.platformPlanInvoiceModel,
+      platformPlanPaymentAttemptModel: this.platformPlanPaymentAttemptModel,
+      aiCreditsWalletModel: this.aiCreditsWalletModel,
+      platformAddonPurchaseModel: this.platformAddonPurchaseModel,
+      storeLocationModel: this.storeLocationModel,
       activityLogModel: this.activityLogModel,
       couponModel: this.couponModel,
       loyaltyProgramModel: this.loyaltyProgramModel,

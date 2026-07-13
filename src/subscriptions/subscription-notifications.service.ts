@@ -108,6 +108,22 @@ export class SubscriptionNotificationsService {
     await this.send(to, `Action needed: payment failed for ${data.storeName}`, html);
   }
 
+  async sendRenewalReminder(to: string, data: {
+    customerName: string; storeName: string; planName: string; amountUSD: number; renewalDate: Date; daysUntilRenewal: number;
+  }) {
+    const html = shell('Your subscription renews soon', `
+      <p>Hi ${data.customerName},</p>
+      <p>Your subscription to <strong>${data.storeName}</strong> — ${data.planName} will renew in
+      <strong>${data.daysUntilRenewal} day${data.daysUntilRenewal === 1 ? '' : 's'}</strong> (${data.renewalDate.toDateString()}).</p>
+      <div class="box">
+        <div class="row"><span class="label">Renewal amount</span><span class="value">${money(data.amountUSD)}</span></div>
+        <div class="row"><span class="label">Renewal date</span><span class="value">${data.renewalDate.toDateString()}</span></div>
+      </div>
+      <p style="text-align:center;color:#666;font-size:13px;">No action needed if your payment method is up to date.</p>
+    `);
+    await this.send(to, `Your ${data.storeName} subscription renews in ${data.daysUntilRenewal} day${data.daysUntilRenewal === 1 ? '' : 's'}`, html);
+  }
+
   async sendSubscriptionCanceledDueToFailedPayments(to: string, data: {
     customerName: string; storeName: string; planName: string; maxAttempts: number;
   }) {
