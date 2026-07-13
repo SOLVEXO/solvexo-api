@@ -225,9 +225,23 @@ export class RatingService {
 
     const filter: any = { productId, isDelete: false };
     if (query.rating) filter.rating = parseInt(query.rating);
+    if (query.hasMedia === 'true') filter.media = { $exists: true, $ne: [] };
+    if (query.verifiedOnly === 'true') filter.isVerifiedPurchase = true;
+
+    const sortMap: Record<string, any> = {
+      newest: { createdAt: -1 },
+      oldest: { createdAt: 1 },
+      highest_rating: { rating: -1, createdAt: -1 },
+      lowest_rating: { rating: 1, createdAt: -1 },
+      most_helpful: { createdAt: -1 }, // re-sorted in-memory below (array length isn't sortable in Mongo without a stored count)
+    };
+    const sort = sortMap[query.sort] ?? sortMap.newest;
 
     const total = await ratingModel.countDocuments(filter);
-    const reviews = await ratingModel.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean();
+    let reviews = await ratingModel.find(filter).sort(sort).skip(skip).limit(limit).lean();
+    if (query.sort === 'most_helpful') {
+      reviews = reviews.sort((a: any, b: any) => (b.helpfulUserIds?.length ?? 0) - (a.helpfulUserIds?.length ?? 0));
+    }
 
     const allForStats = await ratingModel.find({ productId, isDelete: false, rating: { $ne: null } }).select('rating').lean();
     const ratingBreakdown: Record<string, number> = { '5': 0, '4': 0, '3': 0, '2': 0, '1': 0 };
@@ -251,6 +265,8 @@ export class RatingService {
           media: r.media,
           isVerifiedPurchase: r.isVerifiedPurchase,
           sellerReply: r.sellerReply || null,
+          helpfulCount: r.helpfulUserIds?.length ?? 0,
+          helpfulByMe: !!viewerId && (r.helpfulUserIds ?? []).includes(viewerId),
           createdAt: r.createdAt,
         };
       }),
@@ -263,6 +279,25 @@ export class RatingService {
         pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
         reviews: list,
       },
+    };
+  }
+
+  /** Toggle the caller's "helpful" vote on a review — idempotent, no self-vote block (own-review voting is harmless). */
+  async toggleHelpful(userId: string, reviewId: string) {
+    const { ratingModel } = this.r;
+    const review = await this.findReviewOrThrow(reviewId);
+
+    const alreadyVoted = (review.helpfulUserIds ?? []).includes(userId);
+    await ratingModel.findByIdAndUpdate(reviewId, alreadyVoted
+      ? { $pull: { helpfulUserIds: userId } }
+      : { $addToSet: { helpfulUserIds: userId } },
+    );
+
+    const updated = await ratingModel.findById(reviewId).select('helpfulUserIds').lean();
+    return {
+      success: true,
+      message: alreadyVoted ? 'Removed helpful vote' : 'Marked as helpful',
+      data: { helpfulCount: (updated as any)?.helpfulUserIds?.length ?? 0, helpfulByMe: !alreadyVoted },
     };
   }
 

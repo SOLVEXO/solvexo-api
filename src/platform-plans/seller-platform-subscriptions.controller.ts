@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Controller, Get, Post, Patch, Param, Body, Req, UseGuards, UseInterceptors } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Param, Body, Req, Query, UseGuards, UseInterceptors } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { SellerPlatformSubscriptionsService } from './seller-platform-subscriptions.service';
 import { EntitlementsService } from './entitlements.service';
@@ -48,6 +48,14 @@ export class SellerPlatformSubscriptionsController {
   @Get(':storeId/entitlements')
   getEntitlements(@Req() req: any, @Param('storeId') storeId: string) {
     return this.entitlementsService.getEntitlementsSummary(storeId).then((data) => ({ success: true, data }));
+  }
+
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Get(':storeId/invoices')
+  listInvoices(@Req() req: any, @Param('storeId') storeId: string, @Query() query: any) {
+    return this.sellerPlatformSubscriptionsService.listInvoices(req.user.userId, storeId, query);
   }
 
   @ApiBearerAuth()

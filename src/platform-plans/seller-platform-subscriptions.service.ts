@@ -173,6 +173,25 @@ export class SellerPlatformSubscriptionsService {
     return { success: true, data: { ...sub, plan } };
   }
 
+  /** Seller's own platform-plan billing history for one store — invoice list + download links. */
+  async listInvoices(sellerId: string, storeId: string, query: any) {
+    await this.verifyStoreOwnership(storeId, sellerId);
+
+    const page = Math.max(1, parseInt(query.page) || 1);
+    const limit = Math.min(50, parseInt(query.limit) || 20);
+    const skip = (page - 1) * limit;
+
+    const filter: any = { storeId, isDelete: false };
+    if (query.status) filter.status = query.status;
+
+    const [invoices, total] = await Promise.all([
+      this.invoiceModel.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+      this.invoiceModel.countDocuments(filter),
+    ]);
+
+    return { success: true, data: { invoices, total, page, limit, pages: Math.ceil(total / limit) } };
+  }
+
   /**
    * Admin-only refund for a platform-plan invoice (seller-to-Solvexo billing
    * — there is no seller-balance credit to reverse here, unlike buyer-VIP-plan

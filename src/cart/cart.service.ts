@@ -2,6 +2,7 @@ import {
   Injectable,
   UnauthorizedException,
   BadRequestException,
+  ForbiddenException,
 } from '@nestjs/common';
 
 import { DatabaseService } from 'src/database/databaseservice';
@@ -451,7 +452,7 @@ async getWishlistItem(userId: string, query: any) {
   }
 }
 
-async removeFromWishlist(wishlistId: string) {
+async removeFromWishlist(userId: string, wishlistId: string) {
   try {
     // 1. find wishlist item
     const wishlistItem =
@@ -459,6 +460,9 @@ async removeFromWishlist(wishlistId: string) {
 
     if (!wishlistItem) {
       throw new BadRequestException('Wishlist item not found');
+    }
+    if (wishlistItem.userId !== userId) {
+      throw new ForbiddenException('Access denied');
     }
 
     // 2. delete wishlist item

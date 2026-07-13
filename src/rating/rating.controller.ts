@@ -49,6 +49,15 @@ export class RatingController {
     return this.ratingService.deleteReview(userId, reviewId);
   }
 
+  // Any logged-in buyer can vote — toggles on/off, not role-restricted to 'user'
+  // since a seller/admin browsing as a customer should be able to vote too.
+  @UseGuards(JwtAuthGuard)
+  @Post(':reviewId/helpful')
+  async toggleHelpful(@Req() req: any, @Param('reviewId') reviewId: string) {
+    const { userId } = req.user;
+    return this.ratingService.toggleHelpful(userId, reviewId);
+  }
+
   // ═══════════════════════════════════════════════════════════════════════════
   // PUBLIC / BUYER-FACING — read reviews for a product
   // ═══════════════════════════════════════════════════════════════════════════

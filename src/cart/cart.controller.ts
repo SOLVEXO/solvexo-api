@@ -75,10 +75,12 @@ async getWishlistItem(@Req() req: any, @Query() query: any) {
   return this.cartService.getWishlistItem(userId, query);
 }
 
- 
-   @Post('remove-from-wishlist')
-  async removeFromWishlist(@Body('wishlistId') wishlistId: string) {
-    return await this.cartService.removeFromWishlist(wishlistId);
+
+  @UseGuards(JwtAuthGuard)
+  @Post('remove-from-wishlist')
+  async removeFromWishlist(@Req() req: any, @Body('wishlistId') wishlistId: string) {
+    const { userId } = req.user;
+    return await this.cartService.removeFromWishlist(userId, wishlistId);
   }
 
   @UseGuards(JwtAuthGuard)

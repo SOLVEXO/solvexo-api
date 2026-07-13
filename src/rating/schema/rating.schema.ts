@@ -64,6 +64,11 @@ export class Rating {
   @Prop({ default: false })
   isVerifiedPurchase!: boolean;
 
+  // Buyers who marked this review "helpful" — count is derived, not stored,
+  // so it's always consistent with the array (no separate counter to drift).
+  @Prop({ type: [String], default: [] })
+  helpfulUserIds!: string[];
+
   @Prop({ default: false })
   isDelete!: boolean;
 

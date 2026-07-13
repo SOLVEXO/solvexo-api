@@ -15,6 +15,7 @@ import { EditMessageDto } from './dto/edit-message.dto';
 import { BlockDto } from './dto/block.dto';
 import { ReportDto } from './dto/report.dto';
 import { SubscriptionBenefitsService } from 'src/subscriptions/subscription-benefits.service';
+import { MessagingGateway } from './messaging.gateway';
 
 @Injectable()
 export class MessagingService {
@@ -22,6 +23,7 @@ export class MessagingService {
     private readonly db: DatabaseService,
     private readonly uploadService: UploadService,
     private readonly subscriptionBenefits: SubscriptionBenefitsService,
+    private readonly gateway: MessagingGateway,
   ) { }
 
   // ── Helpers ──────────────────────────────────────────────────────────────
@@ -308,14 +310,19 @@ export class MessagingService {
 
     const unreadIncrement = role === 'user' ? { sellerUnread: 1 } : { buyerUnread: 1 };
 
-    await this.convModel.findByIdAndUpdate(conversationId, {
+    const updatedConv = await this.convModel.findByIdAndUpdate(conversationId, {
       lastMessage: lastMessageSnapshot,
       $inc: unreadIncrement,
       // Restore soft-delete if sender had deleted
       ...(role === 'user' ? { deletedByBuyer: false } : { deletedBySeller: false }),
       // Restore for the other side too (message reactivates conversation)
       ...(role === 'user' ? { deletedBySeller: false } : { deletedByBuyer: false }),
-    });
+    }, { new: true }).lean();
+
+    this.gateway.emitNewMessage(conversationId, message);
+    if (updatedConv) {
+      this.gateway.emitConversationUpdate([conv.buyerId, conv.sellerId], updatedConv);
+    }
 
     return message;
   }
@@ -374,6 +381,7 @@ export class MessagingService {
     message.isEdited = true;
     message.editedAt = new Date();
     await message.save();
+    this.gateway.emitMessageEdited(message.conversationId, message);
     return message;
   }
 
@@ -402,6 +410,7 @@ export class MessagingService {
     }
 
     await message.save();
+    this.gateway.emitMessageDeleted(message.conversationId, messageId);
     return { deleted: true };
   }
 
@@ -437,6 +446,7 @@ export class MessagingService {
     const unreadReset = role === 'user' ? { buyerUnread: 0 } : { sellerUnread: 0 };
     await this.convModel.findByIdAndUpdate(conversationId, { $set: unreadReset });
 
+    this.gateway.emitMessagesSeen(conversationId, userId, lastMessageId);
     return { seen: true };
   }
 
