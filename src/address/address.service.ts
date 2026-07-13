@@ -39,6 +39,7 @@ export class AddressService {
   state: body.state,
   city: body.city,
   zipCode: body.zipCode,
+  country: body.country || null,
   isDefault: body.isDefault || false,
 });
       return {
