@@ -145,24 +145,83 @@ export class StoreService {
 
   // seller ke saare stores
   async getMyStores(sellerId: string) {
-    const stores = await this.databaseService.repositories.storeModel
-      .find({ sellerId, isDelete: false })
-      .lean();
+    const { storeModel, sellerModel, productModel, orderModel } =
+      this.databaseService.repositories;
 
-    const seller = await this.databaseService.repositories.sellerModel
-      .findById(sellerId)
-      .select('name email')
-      .lean();
+    const stores = await storeModel.find({ sellerId, isDelete: false }).lean();
 
-    const data = stores.map((store) => ({
-      ...store,
-      sellerName: seller?.name ?? null,
-      sellerEmail: seller?.email ?? null,
-    }));
+    const seller = await sellerModel.findById(sellerId).select('name email').lean();
+
+    // Products use string storeIds (created via `store._id.toString()`), and
+    // sellerOrders.storeId is a string too — match with string ids.
+    const storeIds = stores.map((s: any) => s._id.toString());
+
+    // Per-store product counts — one grouped aggregation instead of N counts.
+    const productCounts = storeIds.length
+      ? await productModel.aggregate([
+          { $match: { storeId: { $in: storeIds }, isDelete: false } },
+          { $group: { _id: '$storeId', count: { $sum: 1 } } },
+        ])
+      : [];
+    const productCountByStore = new Map<string, number>(
+      productCounts.map((r: any) => [r._id, r.count]),
+    );
+
+    // Per-store all-time sales — same revenue formula the seller analytics
+    // uses (non-cancelled sellerOrders, item totals minus item refunds).
+    const salesRows = storeIds.length
+      ? await orderModel.aggregate([
+          { $match: { isDelete: false } },
+          { $unwind: '$sellerOrders' },
+          {
+            $match: {
+              'sellerOrders.storeId': { $in: storeIds },
+              'sellerOrders.status': { $ne: 'cancelled' },
+            },
+          },
+          {
+            $project: {
+              storeId: '$sellerOrders.storeId',
+              gross: { $sum: '$sellerOrders.items.totalPrice' },
+              refunds: { $sum: '$sellerOrders.items.refundedAmount' },
+            },
+          },
+          {
+            $group: {
+              _id: '$storeId',
+              gross: { $sum: '$gross' },
+              refunds: { $sum: '$refunds' },
+            },
+          },
+        ])
+      : [];
+    const round = (n: number) => Math.round(n * 100) / 100;
+    const salesByStore = new Map<string, number>(
+      salesRows.map((r: any) => [r._id, round((r.gross ?? 0) - (r.refunds ?? 0))]),
+    );
+
+    const data = stores.map((store: any) => {
+      const id = store._id.toString();
+      return {
+        ...store,
+        sellerName: seller?.name ?? null,
+        sellerEmail: seller?.email ?? null,
+        productCount: productCountByStore.get(id) ?? 0,
+        totalSalesUSD: salesByStore.get(id) ?? 0,
+      };
+    });
+
+    // Header strip on the "Your Stores" screen — totals across every store.
+    const summary = {
+      storeCount: data.length,
+      totalProducts: data.reduce((sum, s: any) => sum + s.productCount, 0),
+      totalRevenueUSD: round(data.reduce((sum, s: any) => sum + s.totalSalesUSD, 0)),
+    };
 
     return {
       success: true,
       count: data.length,
+      summary,
       data,
     };
   }

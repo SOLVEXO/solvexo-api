@@ -14,6 +14,7 @@ export const ACTIVITY_LOG_CATEGORIES = [
   'security',
   'loyalty',
   'subscriptions',
+  'platform_billing',
   'platform_plans',
 ] as const;
 

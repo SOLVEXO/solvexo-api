@@ -32,6 +32,7 @@ import { ActivityLogModule } from './activity-log/activity-log.module';
 import { MarketingModule } from './marketing/marketing.module';
 import { LoyaltyModule } from './loyalty/loyalty.module';
 import { AnalyticsModule } from './analytics/analytics.module';
+import { PlatformSubscriptionsModule } from './platform-subscriptions/platform-subscriptions.module';
 import { AdminAnalyticsModule } from './admin-analytics/admin-analytics.module';
 import { AdminFinanceModule } from './admin-finance/admin-finance.module';
 import { QueueModule } from './queues/queue.module';
@@ -80,6 +81,7 @@ import { PlatformPlansModule } from './platform-plans/platform-plans.module';
     MarketingModule,
     LoyaltyModule,
     AnalyticsModule,
+    PlatformSubscriptionsModule,
     AdminAnalyticsModule,
     AdminFinanceModule,
   ],

@@ -37,13 +37,20 @@ async addToCart(userId: string, dto: AddToCartDto) {
     let cart = await cartModel.findOne({ userId, isDelete: false });
 
     // 4️⃣ prepare cart item
+    // Variant images are optional overrides — most variants have none, so
+    // fall back to the product's images or the cart renders imageless items.
+    const itemImages =
+      variant.images && variant.images.length > 0
+        ? variant.images
+        : product.images || [];
+
     const newItem = {
       productId: dto.productId,
       productVariantId: dto.productVariantId,
       name: product.name,
       quantity: dto.quantity || 1,
       price: variant.price,
-      images: variant.images || [],
+      images: itemImages,
     };
 
     // 5️⃣ create cart if not exists
@@ -165,6 +172,27 @@ async getCart(userId: string) {
     let totalItems = 0;
     let totalPrice = 0;
 
+    // Items stored before the add-to-cart image fallback existed (or whose
+    // variant had no images) carry `images: []` — backfill from the product
+    // documents in one batched query so old carts render images too.
+    const missingImageProductIds = [
+      ...new Set(
+        cart.items
+          .filter((item: any) => !item.images || item.images.length === 0)
+          .map((item: any) => item.productId),
+      ),
+    ];
+    const productImagesById = new Map<string, string[]>();
+    if (missingImageProductIds.length > 0) {
+      const products = await this.databaseService.repositories.productModel
+        .find({ _id: { $in: missingImageProductIds } })
+        .select('images')
+        .lean();
+      for (const p of products as any[]) {
+        productImagesById.set(p._id.toString(), p.images || []);
+      }
+    }
+
     // Cart items map karo
     const items = cart.items.map((item) => {
       // Ek item ka total
@@ -174,13 +202,18 @@ async getCart(userId: string) {
       totalItems += item.quantity;
       totalPrice += itemTotal;
 
+      const images =
+        item.images && item.images.length > 0
+          ? item.images
+          : productImagesById.get(item.productId) || [];
+
       return {
         productId: item.productId,
         productVariantId: item.productVariantId,
 
         name: item.name,
 
-        image: item.images, // Assuming you want the first image
+        image: images,
 
         unitPrice: item.price,      // single product price
         quantity: item.quantity,    // quantity

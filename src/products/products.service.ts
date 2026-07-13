@@ -226,8 +226,13 @@ async createProduct(sellerId: string, body: any) {
   if (!store) throw new BadRequestException('Store not found. Please create a store first');
   if (store.status !== 'active') throw new BadRequestException('Your store is not active');
 
-  // Platform-plan product-count gate (Starter/Free etc.) — see EntitlementsService.
-  await this.entitlementsService.assertCanCreateProduct(store._id.toString());
+  const storeId = store._id.toString();
+
+  // Platform-plan product-count gate (Starter/Free etc.) — EntitlementsService
+  // is the single owner of platform-tier limits; the older
+  // PlatformSubscriptionsService gate was dropped here to avoid two competing
+  // plan systems both blocking product creation.
+  await this.entitlementsService.assertCanCreateProduct(storeId);
 
   const {
     name, description, productType, subCategoryId,
@@ -268,7 +273,7 @@ async createProduct(sellerId: string, body: any) {
 
   const product = await productModel.create({
     sellerId,
-    storeId: store._id.toString(),
+    storeId,
     name,
     slug,
     description: description ?? null,

@@ -74,6 +74,7 @@ import { DatabaseService } from './databaseservice'
       { name: schema.LoyaltyMember.name, schema: schema.LoyaltyMemberSchema },
       { name: schema.LoyaltyTransaction.name, schema: schema.LoyaltyTransactionSchema },
       { name: schema.Reward.name, schema: schema.RewardSchema },
+      { name: schema.PlatformSubscription.name, schema: schema.PlatformSubscriptionSchema },
     ]),
   ],
   exports: [MongooseModule, DatabaseService],

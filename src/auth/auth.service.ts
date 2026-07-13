@@ -60,7 +60,7 @@ export class AuthService {
 
 async signup(RegisterDto: RegisterDto) {
   try {
-    const { name, email, password, phone , address, role } = RegisterDto;
+    const { name, email, password, phone , address, role, profileImage } = RegisterDto;
 
     let userModel;
 
@@ -98,6 +98,7 @@ async signup(RegisterDto: RegisterDto) {
       password: hashedPassword,
       phone,
       address,
+      profileImage,
       role,
       otp,
       otpExpiresAt,

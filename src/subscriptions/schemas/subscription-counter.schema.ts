@@ -12,7 +12,10 @@ export type SubscriptionCounterDocument = SubscriptionCounter & Document;
  */
 @Schema({ timestamps: true, collection: 'subscription_counters' })
 export class SubscriptionCounter {
-  @Prop({ type: String, required: true, unique: true }) _id: string;
+  // `_id` is the counter key itself (e.g. `invoice-202607`). No `unique:`
+  // here — MongoDB's built-in `_id` index already guarantees uniqueness, and
+  // declaring a second index on `_id` triggers a Mongoose warning.
+  @Prop({ type: String, required: true }) _id: string;
   @Prop({ type: Number, required: true, default: 0 }) seq: number;
 }
 

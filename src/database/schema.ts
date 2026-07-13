@@ -68,6 +68,7 @@ export { LoyaltyProgram, LoyaltyProgramDocument, LoyaltyProgramSchema } from '..
 export { LoyaltyMember, LoyaltyMemberDocument, LoyaltyMemberSchema } from '../loyalty/schemas/loyalty-member.schema';
 export { LoyaltyTransaction, LoyaltyTransactionDocument, LoyaltyTransactionSchema } from '../loyalty/schemas/loyalty-transaction.schema';
 export { Reward, RewardDocument, RewardSchema } from '../loyalty/schemas/reward.schema';
+export { PlatformSubscription, PlatformSubscriptionDocument, PlatformSubscriptionSchema } from '../platform-subscriptions/schemas/platform-subscription.schema';
 
 
 
