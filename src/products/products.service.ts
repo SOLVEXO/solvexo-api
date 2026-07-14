@@ -589,6 +589,89 @@ async getProductsByCategoryId(
   };
 }
 
+/** Variants + subscriber pricing for a page of lean product docs — the same
+ *  shaping `getProductsByCategoryId` does, reusable for search/recently-viewed. */
+private async attachVariantsAndPricing(products: any[], customerId?: string | null) {
+  const productVariantModel = this.databaseService.repositories.productVariantModel;
+
+  const productIds = products.map(p => p._id.toString());
+  const variants = await productVariantModel.find({
+    productId: { $in: productIds },
+    status: "active",
+    isDelete: false,
+  }).lean();
+
+  const variantMap: Record<string, any[]> = {};
+  for (const v of variants) {
+    if (!variantMap[v.productId]) variantMap[v.productId] = [];
+    variantMap[v.productId].push(v);
+  }
+
+  const storeIds = [...new Set(products.map(p => p.storeId).filter(Boolean))];
+  const benefitsMap = await this.subscriptionBenefits.getActiveBenefitsBatch(customerId ?? null, storeIds as string[]);
+
+  return products.map(p => ({
+    ...p,
+    variants: this.applySubscriberPricing(variantMap[p._id.toString()] || [], p, benefitsMap.get(p.storeId)),
+  }));
+}
+
+/** Keyword search over active products (name/description, case-insensitive).
+ *  Same response shape as `getProductsByCategoryId` so the app parses both
+ *  with one model. */
+async searchProducts(q: string, page: number = 1, limit: number = 20, customerId?: string | null) {
+  const productModel = this.databaseService.repositories.productModel;
+
+  const term = (q || '').trim();
+  if (!term) {
+    return { message: 'Search query is required', success: true, data: { total: 0, page, limit, products: [] } };
+  }
+
+  // User input goes into a regex — escape it so "c++" or "50% off" can't
+  // break the query or turn into a pathological pattern.
+  const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const regex = new RegExp(escaped, 'i');
+
+  const query: any = {
+    status: 'active',
+    isDelete: false,
+    $or: [{ name: regex }, { description: regex }],
+  };
+
+  const skip = (page - 1) * limit;
+  const total = await productModel.countDocuments(query);
+  const products = await productModel.find(query)
+    .sort({ createdAt: -1 })
+    .skip(skip)
+    .limit(limit)
+    .lean();
+
+  const productsWithVariants = await this.attachVariantsAndPricing(products, customerId);
+
+  return {
+    message: 'Products fetched successfully',
+    success: true,
+    data: { total, page, limit, products: productsWithVariants },
+  };
+}
+
+/** Active products for an explicit id list, preserving the given order —
+ *  ids whose product is gone/inactive are silently dropped. */
+async getShapedProductsByIds(productIds: string[], customerId?: string | null) {
+  if (!productIds.length) return [];
+  const productModel = this.databaseService.repositories.productModel;
+
+  const products = await productModel.find({
+    _id: { $in: productIds },
+    status: 'active',
+    isDelete: false,
+  }).lean();
+
+  const shaped = await this.attachVariantsAndPricing(products, customerId);
+  const byId = new Map(shaped.map(p => [p._id.toString(), p]));
+  return productIds.map(id => byId.get(id)).filter(Boolean);
+}
+
 async getProductById(productId: string, customerId?: string | null) {
   const productModel = this.databaseService.repositories.productModel;
   const productVariantModel = this.databaseService.repositories.productVariantModel;

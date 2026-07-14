@@ -23,6 +23,7 @@ import { PaymentModule } from './payment/payment.module';
 import { StoreModule } from './store/store.module';
 import { InventoryModule } from './inventory/inventory.module';
 import { RatingModule } from './rating/rating.module';
+import { SearchModule } from './search/search.module';
 import { PosModule } from './pos/pos.module';
 import { MessagingModule } from './messaging/messaging.module';
 import { FinanceModule } from './finance/finance.module';
@@ -39,6 +40,7 @@ import { QueueModule } from './queues/queue.module';
 import { HealthModule } from './health/health.module';
 import { PlatformPlansModule } from './platform-plans/platform-plans.module';
 import { SeoModule } from './seo/seo.module';
+import { AiStudioModule } from './ai-studio/ai-studio.module';
 
 @Module({
   imports: [
@@ -73,11 +75,13 @@ import { SeoModule } from './seo/seo.module';
     StoreModule,
     InventoryModule,
     RatingModule,
+    SearchModule,
     PosModule,
     MessagingModule,
     FinanceModule,
     SubscriptionsModule,
     PlatformPlansModule,
+    AiStudioModule,
     SchedulerModule,
     MarketingModule,
     LoyaltyModule,

@@ -212,6 +212,17 @@ export class DatabaseService {
 
     @InjectModel(schema.SeoAuditResult.name)
     private seoAuditResultModel: Model<schema.SeoAuditResultDocument>,
+    @InjectModel(schema.RecentSearch.name)
+    private recentSearchModel: Model<schema.RecentSearchDocument>,
+
+    @InjectModel(schema.RecentlyViewed.name)
+    private recentlyViewedModel: Model<schema.RecentlyViewedDocument>,
+
+    @InjectModel(schema.AiGeneration.name)
+    private aiGenerationModel: Model<schema.AiGenerationDocument>,
+
+    @InjectModel(schema.AiCreditTransaction.name)
+    private aiCreditTransactionModel: Model<schema.AiCreditTransactionDocument>,
 
   ) { }
 
@@ -288,6 +299,10 @@ export class DatabaseService {
       seoCoreWebVitalsSnapshotModel: this.seoCoreWebVitalsSnapshotModel,
       seoAiSuggestionLogModel: this.seoAiSuggestionLogModel,
       seoAuditResultModel: this.seoAuditResultModel,
+      recentSearchModel: this.recentSearchModel,
+      recentlyViewedModel: this.recentlyViewedModel,
+      aiGenerationModel: this.aiGenerationModel,
+      aiCreditTransactionModel: this.aiCreditTransactionModel,
     };
   }
 }
