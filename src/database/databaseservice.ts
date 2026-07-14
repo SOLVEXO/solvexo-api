@@ -177,6 +177,18 @@ export class DatabaseService {
     @InjectModel(schema.PlatformSubscription.name)
     private platformSubscriptionModel: Model<schema.PlatformSubscriptionDocument>,
 
+    @InjectModel(schema.RecentSearch.name)
+    private recentSearchModel: Model<schema.RecentSearchDocument>,
+
+    @InjectModel(schema.RecentlyViewed.name)
+    private recentlyViewedModel: Model<schema.RecentlyViewedDocument>,
+
+    @InjectModel(schema.AiGeneration.name)
+    private aiGenerationModel: Model<schema.AiGenerationDocument>,
+
+    @InjectModel(schema.AiCreditTransaction.name)
+    private aiCreditTransactionModel: Model<schema.AiCreditTransactionDocument>,
+
   ) { }
 
   get repositories() {
@@ -240,6 +252,10 @@ export class DatabaseService {
       loyaltyTransactionModel: this.loyaltyTransactionModel,
       rewardModel: this.rewardModel,
       platformSubscriptionModel: this.platformSubscriptionModel,
+      recentSearchModel: this.recentSearchModel,
+      recentlyViewedModel: this.recentlyViewedModel,
+      aiGenerationModel: this.aiGenerationModel,
+      aiCreditTransactionModel: this.aiCreditTransactionModel,
     };
   }
 }
