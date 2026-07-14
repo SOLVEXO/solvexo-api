@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Controller, Get, Post, Delete, Param, Body, Query, Req, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Delete, Param, Body, Query, Req, UseGuards, UseInterceptors } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
 import { RolesGuard } from 'src/auth/guards/roles.guard';
@@ -9,6 +9,7 @@ import { EntitlementsService } from 'src/platform-plans/entitlements.service';
 import { verifyStoreOwnershipStrict } from 'src/common/store-ownership.util';
 import { SeoIntegrationsService } from '../services/seo-integrations.service';
 import { ConnectIntegrationDto, GetAuthUrlDto, assertValidProvider } from '../dto/connect-integration.dto';
+import { SeoResponseInterceptor } from '../seo-response.interceptor';
 
 // Per-store GSC/Bing connection — realistically only meaningful once a store
 // has its own domain to verify, hence gated behind `searchConsoleIntegrationAllowed`
@@ -17,6 +18,7 @@ import { ConnectIntegrationDto, GetAuthUrlDto, assertValidProvider } from '../dt
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles('seller')
+@UseInterceptors(SeoResponseInterceptor)
 @Controller('api/store/:storeId/seo/integrations')
 export class SellerSeoIntegrationsController {
   constructor(

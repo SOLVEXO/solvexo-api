@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Controller, Get, Post, Patch, Delete, Param, Body, Query, Req, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, Param, Body, Query, Req, UseGuards, UseInterceptors } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
 import { RolesGuard } from 'src/auth/guards/roles.guard';
@@ -7,6 +7,7 @@ import { Roles } from 'src/auth/decorators/roles.decorator';
 import { SeoRedirectsService } from '../services/seo-redirects.service';
 import { CreateRedirectDto } from '../dto/create-redirect.dto';
 import { UpdateRedirectDto } from '../dto/update-redirect.dto';
+import { SeoResponseInterceptor } from '../seo-response.interceptor';
 
 // Platform-level redirects — storeId is always null here. Store-scoped
 // redirects are managed by the seller controller (seo-redirects.controller.ts
@@ -15,6 +16,7 @@ import { UpdateRedirectDto } from '../dto/update-redirect.dto';
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles('admin')
+@UseInterceptors(SeoResponseInterceptor)
 @Controller('api/admin/seo/redirects')
 export class AdminSeoRedirectsController {
   constructor(private readonly redirects: SeoRedirectsService) {}

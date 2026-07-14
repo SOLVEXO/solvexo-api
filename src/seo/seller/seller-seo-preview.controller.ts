@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Controller, Get, Param, Req, UseGuards, BadRequestException } from '@nestjs/common';
+import { Controller, Get, Param, Req, UseGuards, UseInterceptors, BadRequestException } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
 import { RolesGuard } from 'src/auth/guards/roles.guard';
@@ -7,6 +7,7 @@ import { Roles } from 'src/auth/decorators/roles.decorator';
 import { DatabaseService } from 'src/database/databaseservice';
 import { verifyStoreOwnershipStrict } from 'src/common/store-ownership.util';
 import { SeoResolutionService, SeoEntityType } from '../services/seo-resolution.service';
+import { SeoResponseInterceptor } from '../seo-response.interceptor';
 
 const VALID_ENTITY_TYPES: SeoEntityType[] = ['product', 'category', 'store'];
 
@@ -21,6 +22,7 @@ const VALID_ENTITY_TYPES: SeoEntityType[] = ['product', 'category', 'store'];
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles('seller')
+@UseInterceptors(SeoResponseInterceptor)
 @Controller('api/store/:storeId/seo/preview')
 export class SellerSeoPreviewController {
   constructor(

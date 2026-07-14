@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Controller, Get, Post, Patch, Delete, Param, Body, Query, Req, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, Param, Body, Query, Req, UseGuards, UseInterceptors } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
 import { RolesGuard } from 'src/auth/guards/roles.guard';
@@ -7,11 +7,13 @@ import { Roles } from 'src/auth/decorators/roles.decorator';
 import { SeoCanonicalService } from '../services/seo-canonical.service';
 import { CreateCanonicalRuleDto } from '../dto/create-canonical-rule.dto';
 import { UpdateCanonicalRuleDto } from '../dto/update-canonical-rule.dto';
+import { SeoResponseInterceptor } from '../seo-response.interceptor';
 
 @ApiTags('Admin SEO — Canonical Rules')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles('admin')
+@UseInterceptors(SeoResponseInterceptor)
 @Controller('api/admin/seo/canonical-rules')
 export class AdminSeoCanonicalController {
   constructor(private readonly canonical: SeoCanonicalService) {}

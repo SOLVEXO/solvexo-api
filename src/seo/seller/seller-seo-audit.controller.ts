@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Controller, Get, Post, Param, Query, Req, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Param, Query, Req, UseGuards, UseInterceptors } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
 import { RolesGuard } from 'src/auth/guards/roles.guard';
@@ -8,11 +8,13 @@ import { DatabaseService } from 'src/database/databaseservice';
 import { EntitlementsService } from 'src/platform-plans/entitlements.service';
 import { verifyStoreOwnershipStrict } from 'src/common/store-ownership.util';
 import { SeoAuditService } from '../services/seo-audit.service';
+import { SeoResponseInterceptor } from '../seo-response.interceptor';
 
 @ApiTags('Seller SEO — Audit')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles('seller')
+@UseInterceptors(SeoResponseInterceptor)
 @Controller('api/store/:storeId/seo/audit')
 export class SellerSeoAuditController {
   constructor(

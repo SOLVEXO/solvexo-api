@@ -1,11 +1,12 @@
 /* eslint-disable prettier/prettier */
-import { Controller, Get, Patch, Param, Body, Req, UseGuards } from '@nestjs/common';
+import { Controller, Get, Patch, Param, Body, Req, UseGuards, UseInterceptors } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
 import { RolesGuard } from 'src/auth/guards/roles.guard';
 import { Roles } from 'src/auth/decorators/roles.decorator';
 import { SeoContentService } from '../services/seo-content.service';
 import { UpdateSeoMetaDto } from '../dto/update-seo-meta.dto';
+import { SeoResponseInterceptor } from '../seo-response.interceptor';
 
 // Root/main categories are admin-curated (CategoriesService.addCategory
 // requires role==='admin' to create one with no parentId), so category SEO
@@ -14,6 +15,7 @@ import { UpdateSeoMetaDto } from '../dto/update-seo-meta.dto';
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles('admin')
+@UseInterceptors(SeoResponseInterceptor)
 @Controller('api/admin/seo/categories')
 export class AdminSeoCategoryController {
   constructor(private readonly seoContent: SeoContentService) {}

@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Controller, Get, Patch, Param, Body, Req, UseGuards } from '@nestjs/common';
+import { Controller, Get, Patch, Param, Body, Req, UseGuards, UseInterceptors } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
 import { RolesGuard } from 'src/auth/guards/roles.guard';
@@ -7,6 +7,7 @@ import { Roles } from 'src/auth/decorators/roles.decorator';
 import { DatabaseService } from 'src/database/databaseservice';
 import { verifyStoreOwnershipStrict } from 'src/common/store-ownership.util';
 import { SeoContentService } from '../services/seo-content.service';
+import { SeoResponseInterceptor } from '../seo-response.interceptor';
 
 class UpdatePageSeoDto {
   metaTitle?: string;
@@ -23,6 +24,7 @@ class UpdatePageSeoDto {
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles('seller')
+@UseInterceptors(SeoResponseInterceptor)
 @Controller('api/store/:storeId/seo/content')
 export class SellerContentSeoController {
   constructor(

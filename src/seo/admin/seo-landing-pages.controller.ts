@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Controller, Get, Post, Patch, Delete, Param, Body, Query, Req, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, Param, Body, Query, Req, UseGuards, UseInterceptors } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
 import { RolesGuard } from 'src/auth/guards/roles.guard';
@@ -7,11 +7,13 @@ import { Roles } from 'src/auth/decorators/roles.decorator';
 import { SeoLandingPagesService } from '../services/seo-landing-pages.service';
 import { CreateLandingPageDto } from '../dto/create-landing-page.dto';
 import { UpdateLandingPageDto } from '../dto/update-landing-page.dto';
+import { SeoResponseInterceptor } from '../seo-response.interceptor';
 
 @ApiTags('Admin SEO — Landing Pages')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles('admin')
+@UseInterceptors(SeoResponseInterceptor)
 @Controller('api/admin/seo/landing-pages')
 export class SeoLandingPagesController {
   constructor(private readonly landingPages: SeoLandingPagesService) {}

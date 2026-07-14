@@ -1,15 +1,17 @@
 /* eslint-disable prettier/prettier */
-import { Controller, Get, Post, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, UseGuards, UseInterceptors } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
 import { RolesGuard } from 'src/auth/guards/roles.guard';
 import { Roles } from 'src/auth/decorators/roles.decorator';
 import { SeoSitemapService } from '../services/seo-sitemap.service';
+import { SeoResponseInterceptor } from '../seo-response.interceptor';
 
 @ApiTags('Admin SEO — Sitemap')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles('admin')
+@UseInterceptors(SeoResponseInterceptor)
 @Controller('api/admin/seo/sitemap')
 export class AdminSeoSitemapController {
   constructor(private readonly sitemapService: SeoSitemapService) {}

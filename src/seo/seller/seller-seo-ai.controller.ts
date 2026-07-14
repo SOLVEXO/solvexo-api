@@ -10,6 +10,7 @@ import { IdempotencyInterceptor } from 'src/common/idempotency.interceptor';
 import { verifyStoreOwnershipStrict } from 'src/common/store-ownership.util';
 import { SeoAiService } from '../services/seo-ai.service';
 import { GenerateAiSuggestionDto, GenerateAiSuggestionBulkDto } from '../dto/generate-ai-suggestion.dto';
+import { SeoResponseInterceptor } from '../seo-response.interceptor';
 
 // AI generation costs real money (AI credits + the underlying Claude API
 // call) — idempotency-protected so a client retry never double-charges the
@@ -18,6 +19,7 @@ import { GenerateAiSuggestionDto, GenerateAiSuggestionBulkDto } from '../dto/gen
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles('seller')
+@UseInterceptors(SeoResponseInterceptor)
 @Controller('api/store/:storeId/seo/ai')
 export class SellerSeoAiController {
   constructor(

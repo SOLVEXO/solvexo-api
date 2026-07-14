@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Controller, Get, Post, Patch, Delete, Param, Body, Query, Req, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, Param, Body, Query, Req, UseGuards, UseInterceptors } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
 import { RolesGuard } from 'src/auth/guards/roles.guard';
@@ -10,11 +10,13 @@ import { verifyStoreOwnershipStrict } from 'src/common/store-ownership.util';
 import { SeoRedirectsService } from '../services/seo-redirects.service';
 import { CreateRedirectDto } from '../dto/create-redirect.dto';
 import { UpdateRedirectDto } from '../dto/update-redirect.dto';
+import { SeoResponseInterceptor } from '../seo-response.interceptor';
 
 @ApiTags('Seller SEO — Redirects')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles('seller')
+@UseInterceptors(SeoResponseInterceptor)
 @Controller('api/store/:storeId/seo/redirects')
 export class SellerSeoRedirectsController {
   constructor(

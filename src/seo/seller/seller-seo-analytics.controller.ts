@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Controller, Get, Param, Query, Req, UseGuards } from '@nestjs/common';
+import { Controller, Get, Param, Query, Req, UseGuards, UseInterceptors } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
 import { RolesGuard } from 'src/auth/guards/roles.guard';
@@ -7,6 +7,7 @@ import { Roles } from 'src/auth/decorators/roles.decorator';
 import { DatabaseService } from 'src/database/databaseservice';
 import { verifyStoreOwnershipStrict } from 'src/common/store-ownership.util';
 import { SeoAdminAnalyticsService } from '../services/seo-admin-analytics.service';
+import { SeoResponseInterceptor } from '../seo-response.interceptor';
 
 // Store-scoped SEO analytics — reuses the exact same scoped read logic as
 // the admin dashboard (SeoAdminAnalyticsService already accepts a scope
@@ -15,6 +16,7 @@ import { SeoAdminAnalyticsService } from '../services/seo-admin-analytics.servic
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles('seller')
+@UseInterceptors(SeoResponseInterceptor)
 @Controller('api/store/:storeId/seo/analytics')
 export class SellerSeoAnalyticsController {
   constructor(

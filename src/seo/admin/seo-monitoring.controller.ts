@@ -1,11 +1,12 @@
 /* eslint-disable prettier/prettier */
-import { Controller, Get, Post, Query, Body, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Query, Body, UseGuards, UseInterceptors } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { IsArray, IsString } from 'class-validator';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
 import { RolesGuard } from 'src/auth/guards/roles.guard';
 import { Roles } from 'src/auth/decorators/roles.decorator';
 import { SeoMonitoringService } from '../services/seo-monitoring.service';
+import { SeoResponseInterceptor } from '../seo-response.interceptor';
 
 class RefreshCwvDto {
   @IsArray() @IsString({ each: true })
@@ -16,6 +17,7 @@ class RefreshCwvDto {
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles('admin')
+@UseInterceptors(SeoResponseInterceptor)
 @Controller('api/admin/seo/monitoring')
 export class AdminSeoMonitoringController {
   constructor(private readonly monitoring: SeoMonitoringService) {}
