@@ -112,6 +112,53 @@ export class Shift {
   status: string;
 }
 export const ShiftSchema = SchemaFactory.createForClass(Shift);
+
+// Store's own SEO embed — a superset of the shared `SeoMeta` shape (see
+// seo/schemas/seo-meta.schema.ts) with two store-only additions: `checklist`
+// (Technical Checklist — automated-check results merged with manual
+// seller-ticked items at read time by StoreSeoService) and `pages` (per
+// page-builder-page meta override, keyed by the page id already present in
+// `builderConfig`). Deliberately a separate class rather than extending
+// SeoMeta via inheritance — Mongoose subdocument inheritance has enough
+// footguns that duplicating ~9 fields is the safer, more readable choice.
+@Schema({ _id: false })
+export class StoreSeoChecklistItem {
+  @Prop({ required: true }) key: string; // e.g. 'https_enabled', 'sitemap_submitted'
+  @Prop({ type: Boolean, default: false }) done: boolean;
+  @Prop({ type: Date, default: null }) completedAt: Date | null;
+}
+export const StoreSeoChecklistItemSchema = SchemaFactory.createForClass(StoreSeoChecklistItem);
+
+@Schema({ _id: false })
+export class StoreSeo {
+  @Prop({ type: String, default: null }) metaTitle: string | null;
+  @Prop({ type: String, default: null }) metaDescription: string | null;
+  @Prop({ type: String, default: null }) ogImage: string | null;
+  @Prop({ type: String, default: null }) ogTitle: string | null;
+  @Prop({ type: String, default: null }) ogDescription: string | null;
+  @Prop({ type: String, enum: ['summary', 'summary_large_image'], default: 'summary_large_image' })
+  twitterCard: string;
+  @Prop({ type: String, default: null }) canonicalUrlOverride: string | null;
+  @Prop({ type: Boolean, default: false }) noindex: boolean;
+  @Prop({ type: [String], default: [] }) keywords: string[];
+  @Prop({ type: Boolean, default: false }) aiGenerated: boolean;
+  @Prop({ type: Date, default: null }) updatedAt: Date | null;
+
+  @Prop({ type: [StoreSeoChecklistItemSchema], default: [] })
+  checklist: StoreSeoChecklistItem[];
+
+  // Record<pageId, seo-meta-shaped object>, stored as a plain Object since
+  // builder-config page ids are frontend-generated and open-ended.
+  @Prop({ type: Object, default: () => ({}) })
+  pages: Record<string, {
+    metaTitle?: string | null;
+    metaDescription?: string | null;
+    ogImage?: string | null;
+    noindex?: boolean;
+  }>;
+}
+export const StoreSeoSchema = SchemaFactory.createForClass(StoreSeo);
+
 @Schema({ timestamps: true })
 export class Store {
   @Prop({ required: true })
@@ -196,6 +243,9 @@ export class Store {
 
   @Prop({ default: false })
   isDelete: boolean;
+
+  @Prop({ type: StoreSeoSchema, default: () => ({}) })
+  seo: StoreSeo;
 }
 
 export const StoreSchema = SchemaFactory.createForClass(Store);

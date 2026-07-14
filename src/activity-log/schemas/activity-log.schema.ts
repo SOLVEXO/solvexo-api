@@ -16,6 +16,7 @@ export const ACTIVITY_LOG_CATEGORIES = [
   'subscriptions',
   'platform_billing',
   'platform_plans',
+  'seo',
 ] as const;
 
 export type ActivityLogCategory = (typeof ACTIVITY_LOG_CATEGORIES)[number];

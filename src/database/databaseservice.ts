@@ -177,6 +177,42 @@ export class DatabaseService {
     @InjectModel(schema.PlatformSubscription.name)
     private platformSubscriptionModel: Model<schema.PlatformSubscriptionDocument>,
 
+    @InjectModel(schema.PlatformSeoSettings.name)
+    private platformSeoSettingsModel: Model<schema.PlatformSeoSettingsDocument>,
+
+    @InjectModel(schema.SeoRedirect.name)
+    private seoRedirectModel: Model<schema.SeoRedirectDocument>,
+
+    @InjectModel(schema.SeoCanonicalRule.name)
+    private seoCanonicalRuleModel: Model<schema.SeoCanonicalRuleDocument>,
+
+    @InjectModel(schema.SeoLandingPage.name)
+    private seoLandingPageModel: Model<schema.SeoLandingPageDocument>,
+
+    @InjectModel(schema.SeoSitemapCache.name)
+    private seoSitemapCacheModel: Model<schema.SeoSitemapCacheDocument>,
+
+    @InjectModel(schema.SeoIntegration.name)
+    private seoIntegrationModel: Model<schema.SeoIntegrationDocument>,
+
+    @InjectModel(schema.SeoCrawlLog.name)
+    private seoCrawlLogModel: Model<schema.SeoCrawlLogDocument>,
+
+    @InjectModel(schema.SeoIndexSnapshot.name)
+    private seoIndexSnapshotModel: Model<schema.SeoIndexSnapshotDocument>,
+
+    @InjectModel(schema.SeoAnalyticsSnapshot.name)
+    private seoAnalyticsSnapshotModel: Model<schema.SeoAnalyticsSnapshotDocument>,
+
+    @InjectModel(schema.SeoCoreWebVitalsSnapshot.name)
+    private seoCoreWebVitalsSnapshotModel: Model<schema.SeoCoreWebVitalsSnapshotDocument>,
+
+    @InjectModel(schema.SeoAiSuggestionLog.name)
+    private seoAiSuggestionLogModel: Model<schema.SeoAiSuggestionLogDocument>,
+
+    @InjectModel(schema.SeoAuditResult.name)
+    private seoAuditResultModel: Model<schema.SeoAuditResultDocument>,
+
   ) { }
 
   get repositories() {
@@ -240,6 +276,18 @@ export class DatabaseService {
       loyaltyTransactionModel: this.loyaltyTransactionModel,
       rewardModel: this.rewardModel,
       platformSubscriptionModel: this.platformSubscriptionModel,
+      platformSeoSettingsModel: this.platformSeoSettingsModel,
+      seoRedirectModel: this.seoRedirectModel,
+      seoCanonicalRuleModel: this.seoCanonicalRuleModel,
+      seoLandingPageModel: this.seoLandingPageModel,
+      seoSitemapCacheModel: this.seoSitemapCacheModel,
+      seoIntegrationModel: this.seoIntegrationModel,
+      seoCrawlLogModel: this.seoCrawlLogModel,
+      seoIndexSnapshotModel: this.seoIndexSnapshotModel,
+      seoAnalyticsSnapshotModel: this.seoAnalyticsSnapshotModel,
+      seoCoreWebVitalsSnapshotModel: this.seoCoreWebVitalsSnapshotModel,
+      seoAiSuggestionLogModel: this.seoAiSuggestionLogModel,
+      seoAuditResultModel: this.seoAuditResultModel,
     };
   }
 }

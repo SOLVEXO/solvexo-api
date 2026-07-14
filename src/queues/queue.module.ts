@@ -52,6 +52,39 @@ import { QUEUE_NAMES } from './queue.constants';
           removeOnFail: { count: 5000 },
         },
       },
+      {
+        // Building a full multi-store, chunked product sitemap can be slow —
+        // triggered by cron + manual admin/seller "regenerate" action.
+        name: QUEUE_NAMES.SEO_SITEMAP,
+        defaultJobOptions: {
+          attempts: 3,
+          backoff: { type: 'exponential', delay: 15_000 },
+          removeOnComplete: { count: 100 },
+          removeOnFail: { count: 500 },
+        },
+      },
+      {
+        // Audit runs call external PSI/CWV APIs with real latency.
+        name: QUEUE_NAMES.SEO_AUDIT,
+        defaultJobOptions: {
+          attempts: 3,
+          backoff: { type: 'exponential', delay: 10_000 },
+          removeOnComplete: { count: 1000 },
+          removeOnFail: { count: 1000 },
+        },
+      },
+      {
+        // AI generation is credit-metered per item — its own queue so retry/
+        // backoff tuning doesn't have to compromise between "cheap audit
+        // check" and "costs real AI-credit-wallet money" semantics.
+        name: QUEUE_NAMES.SEO_AI,
+        defaultJobOptions: {
+          attempts: 2, // don't retry a credit-consuming call many times on failure
+          backoff: { type: 'exponential', delay: 5_000 },
+          removeOnComplete: { count: 1000 },
+          removeOnFail: { count: 1000 },
+        },
+      },
     ),
   ],
   exports: [BullModule],

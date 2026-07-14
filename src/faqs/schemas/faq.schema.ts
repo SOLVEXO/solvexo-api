@@ -1,5 +1,6 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument } from 'mongoose';
+import { SeoMeta, SeoMetaSchema } from 'src/seo/schemas/seo-meta.schema';
 
 export type FaqDocument = HydratedDocument<Faq>;
 
@@ -21,6 +22,10 @@ export class Faq {
 
     @Prop({ default: true })
     isActive: boolean;
+
+    // Help Center SEO override — admin-only, edited via api/admin/seo/faqs/:id.
+    @Prop({ type: SeoMetaSchema, default: () => ({}) })
+    seo: SeoMeta;
 
     createdAt?: Date;
     updatedAt?: Date;

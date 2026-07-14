@@ -3,6 +3,7 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { Faq, FaqDocument } from './schemas/faq.schema';
 import { CreateFaqDto, UpdateFaqDto } from './dto/faq.dto';
+import { UpdateSeoMetaDto } from 'src/seo/dto/update-seo-meta.dto';
 
 @Injectable()
 export class FaqService {
@@ -173,5 +174,25 @@ export class FaqService {
             query,
             data: faqs,
         };
+    }
+
+    // ─────────────────────────────────────────
+    // ADMIN SEO — Help Center meta override
+    // ─────────────────────────────────────────
+
+    async getSeo(id: string) {
+        const faq = await this.faqModel.findById(id).exec();
+        if (!faq) throw new NotFoundException('FAQ not found');
+        return faq.seo ?? {};
+    }
+
+    async updateSeo(id: string, dto: UpdateSeoMetaDto) {
+        const faq = await this.faqModel.findById(id).exec();
+        if (!faq) throw new NotFoundException('FAQ not found');
+
+        faq.seo = { ...(faq.seo as any), ...dto, updatedAt: new Date() } as any;
+        await faq.save();
+
+        return { success: true, data: faq.seo };
     }
 }

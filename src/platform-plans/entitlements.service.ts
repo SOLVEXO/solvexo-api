@@ -20,6 +20,10 @@ export interface PlatformPlanLimits {
   prioritySupport: boolean;
   marketplaceFeaturedBadge: boolean;
   slaUptimePercent: number | null;
+  advancedSeoToolsAllowed: boolean;
+  seoAiSuggestionsAllowed: boolean;
+  searchConsoleIntegrationAllowed: boolean;
+  customRedirectsAllowed: boolean;
 }
 
 // Used only as a last-resort fallback for a store that somehow has no
@@ -33,6 +37,7 @@ const FALLBACK_LIMITS: PlatformPlanLimits = {
   loyaltyProgramAllowed: false, subscriptionProductsAllowed: false, advancedAnalyticsAllowed: false,
   abandonedCartRecoveryAllowed: false, emailCampaignsAllowed: false, apiWebhooksAllowed: false,
   dedicatedAccountManager: false, prioritySupport: false, marketplaceFeaturedBadge: false, slaUptimePercent: null,
+  advancedSeoToolsAllowed: false, seoAiSuggestionsAllowed: false, searchConsoleIntegrationAllowed: false, customRedirectsAllowed: false,
 };
 
 const BOOLEAN_FEATURES: Array<{ key: keyof PlatformPlanLimits; label: string }> = [
@@ -44,6 +49,10 @@ const BOOLEAN_FEATURES: Array<{ key: keyof PlatformPlanLimits; label: string }> 
   { key: 'abandonedCartRecoveryAllowed', label: 'Abandoned cart recovery' },
   { key: 'emailCampaignsAllowed', label: 'Email campaigns' },
   { key: 'apiWebhooksAllowed', label: 'API access & webhooks' },
+  { key: 'advancedSeoToolsAllowed', label: 'Advanced SEO tools (audit, score, checklist)' },
+  { key: 'seoAiSuggestionsAllowed', label: 'AI-generated SEO suggestions' },
+  { key: 'searchConsoleIntegrationAllowed', label: 'Search Console / Bing Webmaster integration' },
+  { key: 'customRedirectsAllowed', label: 'Custom redirects & canonical overrides' },
 ];
 
 /**

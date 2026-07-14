@@ -4,6 +4,7 @@ import { ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module';
 import cookieParser from 'cookie-parser';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import { SeoMonitoringService } from './seo/services/seo-monitoring.service';
 
 
 async function bootstrap() {
@@ -20,6 +21,18 @@ async function bootstrap() {
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true, forbidNonWhitelisted: false }));
 
   app.use(cookieParser());
+
+  // Crawl-hit logging (SeoMonitoringService buffers + batches the actual DB
+  // write — see architecture plan Refinement #5) — attached here rather than
+  // as a per-controller interceptor so it observes every route uniformly,
+  // including the public SEO delivery routes bots actually hit.
+  const seoMonitoringService = app.get(SeoMonitoringService);
+  app.use((req: any, res: any, next: () => void) => {
+    res.on('finish', () => {
+      seoMonitoringService.recordHitIfBot(req.headers['user-agent'], req.path, res.statusCode, null, req.ip);
+    });
+    next();
+  });
 
   const config = new DocumentBuilder()
     .setTitle('Qchicken API')

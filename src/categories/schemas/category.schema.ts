@@ -1,6 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Document, Types } from 'mongoose';
+import { SeoMeta, SeoMetaSchema } from 'src/seo/schemas/seo-meta.schema';
 
 export type CategoryDocument = Category & Document;
 
@@ -39,6 +40,13 @@ description: string | null;
 
   @Prop({ type: String, enum: ['admin', 'seller'], default: null })
   createdByRole: string | null;
+
+  // Admin-managed SEO override for this category's marketplace page. See
+  // seo/schemas/seo-meta.schema.ts — root categories are admin-only anyway
+  // (CategoriesService.addCategory), so this is edited exclusively via
+  // admin/seo/categories/:id, never by sellers.
+  @Prop({ type: SeoMetaSchema, default: () => ({}) })
+  seo: SeoMeta;
 
 }
 

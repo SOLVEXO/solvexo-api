@@ -1,6 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Document } from 'mongoose';
+import { SeoMeta, SeoMetaSchema } from 'src/seo/schemas/seo-meta.schema';
 
 export type ProductDocument = Product & Document;
 
@@ -148,6 +149,12 @@ export class Product {
 
   @Prop({ default: false })
   isDelete: boolean;
+
+  // SEO overrides — see seo/schemas/seo-meta.schema.ts. Absent/empty until a
+  // seller edits it or SeoAiService generates a suggestion; falls back to
+  // category → store → global template via SeoResolutionService.
+  @Prop({ type: SeoMetaSchema, default: () => ({}) })
+  seo: SeoMeta;
 }
 
 export const ProductSchema = SchemaFactory.createForClass(Product);

@@ -38,6 +38,7 @@ import { AdminFinanceModule } from './admin-finance/admin-finance.module';
 import { QueueModule } from './queues/queue.module';
 import { HealthModule } from './health/health.module';
 import { PlatformPlansModule } from './platform-plans/platform-plans.module';
+import { SeoModule } from './seo/seo.module';
 
 @Module({
   imports: [
@@ -84,6 +85,7 @@ import { PlatformPlansModule } from './platform-plans/platform-plans.module';
     PlatformSubscriptionsModule,
     AdminAnalyticsModule,
     AdminFinanceModule,
+    SeoModule,
   ],
   controllers: [AppController],
   providers: [

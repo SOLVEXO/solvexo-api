@@ -53,6 +53,10 @@ export class PlatformPlan {
       prioritySupport: false,
       marketplaceFeaturedBadge: false,
       slaUptimePercent: null,
+      advancedSeoToolsAllowed: false,
+      seoAiSuggestionsAllowed: false,
+      searchConsoleIntegrationAllowed: false,
+      customRedirectsAllowed: false,
     }),
   })
   limits: {
@@ -73,6 +77,10 @@ export class PlatformPlan {
     prioritySupport: boolean;
     marketplaceFeaturedBadge: boolean;
     slaUptimePercent: number | null;
+    advancedSeoToolsAllowed: boolean;      // gates SEO Audit, Score Engine, Technical Checklist automation
+    seoAiSuggestionsAllowed: boolean;      // gates AI-generated meta suggestions (consumes AiCreditsWallet)
+    searchConsoleIntegrationAllowed: boolean; // gates per-store Google Search Console / Bing Webmaster connection
+    customRedirectsAllowed: boolean;       // gates seller-managed redirect rules & canonical overrides
   };
 
   @Prop({ type: String, enum: ['active', 'archived'], default: 'active' }) status: string;

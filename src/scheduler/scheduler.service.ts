@@ -10,6 +10,9 @@ import { RedisService } from 'src/redis/redis.service';
 import { SellerPlatformSubscriptionsService } from 'src/platform-plans/seller-platform-subscriptions.service';
 import { AiCreditsService } from 'src/platform-plans/ai-credits.service';
 import { PlatformAddonsService } from 'src/platform-plans/platform-addons.service';
+import { SeoSitemapService } from 'src/seo/services/seo-sitemap.service';
+import { SeoMonitoringService } from 'src/seo/services/seo-monitoring.service';
+import { SeoAuditService } from 'src/seo/services/seo-audit.service';
 
 @Injectable()
 export class SchedulerService {
@@ -25,6 +28,9 @@ export class SchedulerService {
     private readonly sellerPlatformSubscriptionsService: SellerPlatformSubscriptionsService,
     private readonly aiCreditsService: AiCreditsService,
     private readonly platformAddonsService: PlatformAddonsService,
+    private readonly seoSitemapService: SeoSitemapService,
+    private readonly seoMonitoringService: SeoMonitoringService,
+    private readonly seoAuditService: SeoAuditService,
   ) {}
 
   /**
@@ -203,6 +209,64 @@ export class SchedulerService {
       if (result.processed > 0) {
         this.logger.log(`Add-on renewals: ${result.processed} processed, ${result.succeeded} succeeded, ${result.failed} failed`);
       }
+    });
+  }
+
+  // Runs daily — rebuilds every chunked sitemap (products/stores/categories/
+  // pages) so new/changed/removed listings stay reflected in what Google/
+  // Bing crawl. Always queued (seo-sitemap), never generated inline here —
+  // this method just enqueues the job and returns immediately.
+  @Cron('0 4 * * *')
+  async regenerateSitemaps() {
+    await this.runLocked('seo-sitemap-regenerate', 5 * 60_000, async () => {
+      await this.seoSitemapService.enqueueRegenerate();
+    });
+  }
+
+  // Runs nightly — pulls index coverage + search performance for every
+  // connected GSC/Bing integration (platform + every store).
+  @Cron('0 1 * * *')
+  async syncSearchConsoleData() {
+    await this.runLocked('seo-search-console-sync', 20 * 60_000, async () => {
+      const result = await this.seoMonitoringService.syncAllSearchConsoleData();
+      if (result.synced + result.failed > 0) {
+        this.logger.log(`SEO search console sync: ${result.synced} synced, ${result.failed} failed`);
+      }
+    });
+  }
+
+  // Runs nightly — pulls organic-session counts for every connected GA4 integration.
+  @Cron('30 1 * * *')
+  async syncGoogleAnalyticsData() {
+    await this.runLocked('seo-ga4-sync', 20 * 60_000, async () => {
+      const result = await this.seoMonitoringService.syncAllGoogleAnalyticsData();
+      if (result.synced + result.failed > 0) {
+        this.logger.log(`SEO GA4 sync: ${result.synced} synced, ${result.failed} failed`);
+      }
+    });
+  }
+
+  // Runs weekly (Sunday 03:00) — pulls Core Web Vitals field data (CrUX) for
+  // the platform's top-trafficked product/store pages. Capped list, not the
+  // whole catalog — the PageSpeed Insights API has real per-call latency and
+  // rate limits.
+  @Cron('0 3 * * 0')
+  async refreshCoreWebVitals() {
+    await this.runLocked('seo-cwv-refresh', 30 * 60_000, async () => {
+      const urls = await this.seoMonitoringService.getTopUrlsForCwv();
+      const result = await this.seoMonitoringService.refreshCoreWebVitals(urls, null);
+      this.logger.log(`Core Web Vitals refresh: ${result.measured} measured, ${result.failed} failed`);
+    });
+  }
+
+  // Runs daily — auto-runs the SEO audit for every store whose platform plan
+  // includes `advancedSeoToolsAllowed`, so sellers on qualifying plans see a
+  // fresh score without manually clicking "run audit".
+  @Cron('0 5 * * *')
+  async runScheduledSeoAudits() {
+    await this.runLocked('seo-scheduled-audits', 30 * 60_000, async () => {
+      const result = await this.seoAuditService.enqueueScheduledRuns();
+      this.logger.log(`Scheduled SEO audits: ${result.queued} store(s) queued`);
     });
   }
 }

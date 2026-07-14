@@ -39,4 +39,13 @@ export class PlatformPlanLimitsDto {
   @ApiProperty({ required: false })
   @IsOptional() @Type(() => Number) @IsNumber()
   slaUptimePercent?: number;
+
+  @ApiProperty({ required: false, description: 'Gates SEO Audit, Score Engine, Technical Checklist automation' })
+  @IsOptional() @IsBoolean() advancedSeoToolsAllowed?: boolean;
+  @ApiProperty({ required: false, description: 'Gates AI-generated SEO suggestions (consumes AiCreditsWallet)' })
+  @IsOptional() @IsBoolean() seoAiSuggestionsAllowed?: boolean;
+  @ApiProperty({ required: false, description: 'Gates per-store Google Search Console / Bing Webmaster integration' })
+  @IsOptional() @IsBoolean() searchConsoleIntegrationAllowed?: boolean;
+  @ApiProperty({ required: false, description: 'Gates seller-managed redirect rules & canonical overrides' })
+  @IsOptional() @IsBoolean() customRedirectsAllowed?: boolean;
 }

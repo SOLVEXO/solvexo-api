@@ -69,6 +69,18 @@ export { LoyaltyMember, LoyaltyMemberDocument, LoyaltyMemberSchema } from '../lo
 export { LoyaltyTransaction, LoyaltyTransactionDocument, LoyaltyTransactionSchema } from '../loyalty/schemas/loyalty-transaction.schema';
 export { Reward, RewardDocument, RewardSchema } from '../loyalty/schemas/reward.schema';
 export { PlatformSubscription, PlatformSubscriptionDocument, PlatformSubscriptionSchema } from '../platform-subscriptions/schemas/platform-subscription.schema';
+export { PlatformSeoSettings, PlatformSeoSettingsDocument, PlatformSeoSettingsSchema } from '../seo/schemas/platform-seo-settings.schema';
+export { SeoRedirect, SeoRedirectDocument, SeoRedirectSchema } from '../seo/schemas/seo-redirect.schema';
+export { SeoCanonicalRule, SeoCanonicalRuleDocument, SeoCanonicalRuleSchema } from '../seo/schemas/seo-canonical-rule.schema';
+export { SeoLandingPage, SeoLandingPageDocument, SeoLandingPageSchema } from '../seo/schemas/seo-landing-page.schema';
+export { SeoSitemapCache, SeoSitemapCacheDocument, SeoSitemapCacheSchema } from '../seo/schemas/seo-sitemap-cache.schema';
+export { SeoIntegration, SeoIntegrationDocument, SeoIntegrationSchema } from '../seo/schemas/seo-integration.schema';
+export { SeoCrawlLog, SeoCrawlLogDocument, SeoCrawlLogSchema } from '../seo/schemas/seo-crawl-log.schema';
+export { SeoIndexSnapshot, SeoIndexSnapshotDocument, SeoIndexSnapshotSchema } from '../seo/schemas/seo-index-snapshot.schema';
+export { SeoAnalyticsSnapshot, SeoAnalyticsSnapshotDocument, SeoAnalyticsSnapshotSchema } from '../seo/schemas/seo-analytics-snapshot.schema';
+export { SeoCoreWebVitalsSnapshot, SeoCoreWebVitalsSnapshotDocument, SeoCoreWebVitalsSnapshotSchema } from '../seo/schemas/seo-cwv-snapshot.schema';
+export { SeoAiSuggestionLog, SeoAiSuggestionLogDocument, SeoAiSuggestionLogSchema } from '../seo/schemas/seo-ai-suggestion-log.schema';
+export { SeoAuditResult, SeoAuditResultDocument, SeoAuditResultSchema } from '../seo/schemas/seo-audit-result.schema';
 
 
 
