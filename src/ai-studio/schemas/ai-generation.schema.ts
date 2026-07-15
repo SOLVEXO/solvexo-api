@@ -14,17 +14,29 @@ export const AI_TOOL_TYPES = [
 ] as const;
 export type AiToolType = (typeof AI_TOOL_TYPES)[number];
 
+export const AI_GENERATION_SCOPES = ['seller', 'platform'] as const;
+export type AiGenerationScope = (typeof AI_GENERATION_SCOPES)[number];
+
 /**
  * One row per generation attempt — "Regenerate" always creates a NEW row
  * (linked via `sessionId` + `regeneratedFromId`), never overwrites, so sellers
  * can browse prior generations. For the Image Enhancer this row doubles as the
  * async job record: the endpoint returns `_id` as the `jobId` and the client
  * polls until `status` leaves 'processing'.
+ *
+ * `scope: 'platform'` rows are admin-triggered generations for Solvexo's own
+ * marketplace content (landing pages, platform announcements, banners) —
+ * `sellerId`/`storeId` are null and `adminId` is set instead; these never
+ * charge a seller's AiCreditsWallet (see AdminAiStudioService).
  */
 @Schema({ timestamps: true })
 export class AiGeneration {
-  @Prop({ type: String, required: true }) sellerId: string;
-  @Prop({ type: String, required: true }) storeId: string;
+  @Prop({ type: String, enum: AI_GENERATION_SCOPES, default: 'seller' })
+  scope: AiGenerationScope;
+
+  @Prop({ type: String, default: null }) sellerId: string | null;
+  @Prop({ type: String, default: null }) storeId: string | null;
+  @Prop({ type: String, default: null }) adminId: string | null;
 
   @Prop({ type: String, enum: AI_TOOL_TYPES, required: true })
   toolType: AiToolType;
@@ -62,3 +74,5 @@ export const AiGenerationSchema = SchemaFactory.createForClass(AiGeneration);
 AiGenerationSchema.index({ storeId: 1, createdAt: -1 });
 AiGenerationSchema.index({ storeId: 1, toolType: 1, createdAt: -1 });
 AiGenerationSchema.index({ sessionId: 1 });
+AiGenerationSchema.index({ scope: 1, createdAt: -1 });
+AiGenerationSchema.index({ toolType: 1, status: 1, createdAt: -1 });
