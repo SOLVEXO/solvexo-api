@@ -85,6 +85,18 @@ import { QUEUE_NAMES } from './queue.constants';
           removeOnFail: { count: 1000 },
         },
       },
+      {
+        // Push/email dispatch for the Notifications module — kept off the request
+        // path so a slow FCM/SMTP call never blocks the order/message/etc. flow
+        // that triggered the notification.
+        name: QUEUE_NAMES.NOTIFICATIONS,
+        defaultJobOptions: {
+          attempts: 4,
+          backoff: { type: 'exponential', delay: 10_000 },
+          removeOnComplete: { count: 5000 },
+          removeOnFail: { count: 5000 },
+        },
+      },
     ),
   ],
   exports: [BullModule],

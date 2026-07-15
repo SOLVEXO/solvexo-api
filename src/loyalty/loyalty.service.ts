@@ -10,6 +10,8 @@ import { UpdateRewardDto } from './dto/update-reward.dto';
 import { AwardPointsDto } from './dto/award-points.dto';
 import type { LoyaltyTransactionType } from './schemas/loyalty-transaction.schema';
 import { EntitlementsService } from 'src/platform-plans/entitlements.service';
+import { NotificationsService } from 'src/notifications/notifications.service';
+import { NOTIFICATION_TYPES } from 'src/notifications/notification.types';
 
 const EARN_TYPES: LoyaltyTransactionType[] = ['purchase', 'review', 'referral', 'birthday'];
 
@@ -19,6 +21,7 @@ export class LoyaltyService {
     private readonly databaseService: DatabaseService,
     private readonly activityLogService: ActivityLogService,
     private readonly entitlementsService: EntitlementsService,
+    private readonly notificationsService: NotificationsService,
   ) {}
 
   private get r() {
@@ -141,6 +144,7 @@ export class LoyaltyService {
 
     const member = await this.getOrCreateMember(storeId, userId);
     const isEarn = EARN_TYPES.includes(type);
+    const previousTier = member.currentTier;
 
     member.pointsBalance = Math.max(0, member.pointsBalance + points);
     if (isEarn) {
@@ -162,6 +166,28 @@ export class LoyaltyService {
       description: opts.description ?? `${points > 0 ? '+' : ''}${points} points (${type})`,
       actorId: userId, actorRole: 'user', targetId: String(member._id), targetType: 'loyalty_member',
     });
+
+    if (isEarn && points > 0) {
+      if (member.currentTier && member.currentTier !== previousTier) {
+        this.notificationsService.notify({
+          recipientId: userId,
+          recipientRole: 'user',
+          type: NOTIFICATION_TYPES.LOYALTY_TIER_UPGRADE,
+          title: `You've reached ${member.currentTier} tier!`,
+          body: `Congrats — your loyalty tier was upgraded to ${member.currentTier}.`,
+          data: { storeId, tier: member.currentTier },
+        }).catch(() => {});
+      } else {
+        this.notificationsService.notify({
+          recipientId: userId,
+          recipientRole: 'user',
+          type: NOTIFICATION_TYPES.LOYALTY_POINTS_EARNED,
+          title: 'Points earned',
+          body: `You earned ${points} loyalty point${points === 1 ? '' : 's'}.`,
+          data: { storeId, points },
+        }).catch(() => {});
+      }
+    }
 
     return tx;
   }

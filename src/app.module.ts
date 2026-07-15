@@ -41,6 +41,7 @@ import { HealthModule } from './health/health.module';
 import { PlatformPlansModule } from './platform-plans/platform-plans.module';
 import { SeoModule } from './seo/seo.module';
 import { AiStudioModule } from './ai-studio/ai-studio.module';
+import { NotificationsModule } from './notifications/notifications.module';
 
 @Module({
   imports: [
@@ -53,6 +54,7 @@ import { AiStudioModule } from './ai-studio/ai-studio.module';
     ]),
     DatabaseModule,
     QueueModule,
+    NotificationsModule,
     HealthModule,
     ActivityLogModule,
     AuthModule,

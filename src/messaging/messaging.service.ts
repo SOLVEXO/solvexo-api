@@ -16,6 +16,8 @@ import { BlockDto } from './dto/block.dto';
 import { ReportDto } from './dto/report.dto';
 import { SubscriptionBenefitsService } from 'src/subscriptions/subscription-benefits.service';
 import { MessagingGateway } from './messaging.gateway';
+import { NotificationsService } from 'src/notifications/notifications.service';
+import { NOTIFICATION_TYPES } from 'src/notifications/notification.types';
 
 @Injectable()
 export class MessagingService {
@@ -24,6 +26,7 @@ export class MessagingService {
     private readonly uploadService: UploadService,
     private readonly subscriptionBenefits: SubscriptionBenefitsService,
     private readonly gateway: MessagingGateway,
+    private readonly notificationsService: NotificationsService,
   ) { }
 
   // ── Helpers ──────────────────────────────────────────────────────────────
@@ -322,6 +325,21 @@ export class MessagingService {
     this.gateway.emitNewMessage(conversationId, message);
     if (updatedConv) {
       this.gateway.emitConversationUpdate([conv.buyerId, conv.sellerId], updatedConv);
+    }
+
+    // Only raise an inbox/push notification if the recipient isn't actively viewing the
+    // thread — avoids double-buzzing someone who already sees the message live via socket.
+    const recipientId = role === 'user' ? conv.sellerId : conv.buyerId;
+    const recipientRole = role === 'user' ? 'seller' : 'user';
+    if (!this.gateway.isOnline(recipientId)) {
+      this.notificationsService.notify({
+        recipientId,
+        recipientRole,
+        type: NOTIFICATION_TYPES.NEW_MESSAGE,
+        title: 'New message',
+        body: dto.type === 'text' ? dto.text!.trim().slice(0, 120) : 'Sent an attachment',
+        data: { conversationId },
+      }).catch(() => {});
     }
 
     return message;

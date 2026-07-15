@@ -25,6 +25,8 @@ import { ChangePlanDto } from './dto/change-plan.dto';
 import { PlanBenefitDto } from './dto/plan-benefit.dto';
 import { QUEUE_NAMES, SUBSCRIPTION_EMAIL_JOB } from 'src/queues/queue.constants';
 import type { SubscriptionNotificationPreference } from './schemas/subscription-notification-preference.schema';
+import { NotificationsService } from 'src/notifications/notifications.service';
+import { NOTIFICATION_TYPES } from 'src/notifications/notification.types';
 
 // Dunning: how many consecutive renewal-charge failures before we give up
 // and cancel the subscription, and how long to wait before each retry.
@@ -52,6 +54,7 @@ export class SubscriptionsService {
     private readonly benefitsService: SubscriptionBenefitsService,
     private readonly financeService: FinanceService,
     private readonly entitlementsService: EntitlementsService,
+    private readonly notificationsService: NotificationsService,
     private readonly config: ConfigService,
     @InjectConnection() private readonly connection: Connection,
     @InjectQueue(QUEUE_NAMES.SUBSCRIPTION_EMAILS) private readonly emailQueue: Queue,
@@ -294,6 +297,14 @@ export class SubscriptionsService {
           customerName, storeName, planName, maxAttempts: MAX_RENEWAL_ATTEMPTS,
         });
       }
+      this.notificationsService.notify({
+        recipientId: sub.customerId,
+        recipientRole: 'user',
+        type: NOTIFICATION_TYPES.SUBSCRIPTION_CANCELLED,
+        title: 'Membership canceled',
+        body: `Your ${storeName} membership was canceled after ${MAX_RENEWAL_ATTEMPTS} failed payment attempts.`,
+        data: { subscriptionId: String(sub._id) },
+      }).catch(() => {});
       return { canceled: true };
     }
 
@@ -307,6 +318,14 @@ export class SubscriptionsService {
         attemptNumber: sub.failedPaymentAttempts, maxAttempts: MAX_RENEWAL_ATTEMPTS, nextRetryDate: retryAt,
       });
     }
+    this.notificationsService.notify({
+      recipientId: sub.customerId,
+      recipientRole: 'user',
+      type: NOTIFICATION_TYPES.SUBSCRIPTION_PAYMENT_FAILED,
+      title: 'Membership payment failed',
+      body: `We couldn't process your ${storeName} membership payment — we'll retry on ${retryAt.toDateString()}.`,
+      data: { subscriptionId: String(sub._id) },
+    }).catch(() => {});
     return { canceled: false };
   }
 
@@ -1904,6 +1923,14 @@ export class SubscriptionsService {
         customerName, storeName, planName: (plan as any)?.name ?? 'your plan',
         amountUSD: sub.amountUSD, renewalDate: sub.nextBillingDate, daysUntilRenewal,
       }, sub.customerId);
+      this.notificationsService.notify({
+        recipientId: sub.customerId,
+        recipientRole: 'user',
+        type: NOTIFICATION_TYPES.SUBSCRIPTION_RENEWAL_REMINDER,
+        title: 'Membership renews soon',
+        body: `Your ${storeName} membership renews in ${daysUntilRenewal} day${daysUntilRenewal === 1 ? '' : 's'}.`,
+        data: { subscriptionId: String(sub._id) },
+      }).catch(() => {});
 
       sub.renewalReminderSentAt = now;
       await sub.save();

@@ -7,6 +7,8 @@ import {
 } from '@nestjs/common';
 // import { ConfigService } from '@nestjs/config';
 import { DatabaseService } from 'src/database/databaseservice';
+import { NotificationsService } from 'src/notifications/notifications.service';
+import { NOTIFICATION_TYPES } from 'src/notifications/notification.types';
 // import Stripe from 'stripe';
 
 @Injectable()
@@ -15,6 +17,7 @@ export class PaymentService {
 
   constructor(
     private readonly databaseService: DatabaseService,
+    private readonly notificationsService: NotificationsService,
     // private readonly configService: ConfigService,
   ) {
     // const secretKey = this.configService.get<string>('stripe_Secret_Key')?.trim() || '';
@@ -416,6 +419,22 @@ private async createOrder(
     await productModel.findByIdAndUpdate(item.productId, {
       $inc: { purchaseCount: item.quantity },
     });
+  }
+
+  const notifiedSellers = new Set<string>();
+  for (const createdOrder of createdOrders) {
+    for (const so of createdOrder.sellerOrders) {
+      if (notifiedSellers.has(`${createdOrder._id}:${so.sellerId}`)) continue;
+      notifiedSellers.add(`${createdOrder._id}:${so.sellerId}`);
+      this.notificationsService.notify({
+        recipientId: so.sellerId,
+        recipientRole: 'seller',
+        type: NOTIFICATION_TYPES.ORDER_PLACED,
+        title: 'New order received',
+        body: `You have a new order #${createdOrder.orderNumber} for ${so.items.length} item(s).`,
+        data: { orderId: createdOrder._id.toString() },
+      }).catch(() => {});
+    }
   }
 
   return createdOrders;

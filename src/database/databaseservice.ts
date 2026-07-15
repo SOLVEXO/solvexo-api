@@ -224,6 +224,15 @@ export class DatabaseService {
     @InjectModel(schema.AiCreditTransaction.name)
     private aiCreditTransactionModel: Model<schema.AiCreditTransactionDocument>,
 
+    @InjectModel(schema.Notification.name)
+    private notificationModel: Model<schema.NotificationDocument>,
+
+    @InjectModel(schema.DeviceToken.name)
+    private deviceTokenModel: Model<schema.DeviceTokenDocument>,
+
+    @InjectModel(schema.NotificationPreference.name)
+    private notificationPreferenceModel: Model<schema.NotificationPreferenceDocument>,
+
   ) { }
 
   get repositories() {
@@ -303,6 +312,9 @@ export class DatabaseService {
       recentlyViewedModel: this.recentlyViewedModel,
       aiGenerationModel: this.aiGenerationModel,
       aiCreditTransactionModel: this.aiCreditTransactionModel,
+      notificationModel: this.notificationModel,
+      deviceTokenModel: this.deviceTokenModel,
+      notificationPreferenceModel: this.notificationPreferenceModel,
     };
   }
 }

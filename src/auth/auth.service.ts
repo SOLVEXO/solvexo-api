@@ -10,6 +10,7 @@ import { UpdateProfileDto } from './dto/update-profile.dto';
 import { OtpService } from 'src/otp/otp.service';
 import { DatabaseService } from "src/database/databaseservice";
 import { OAuth2Client } from 'google-auth-library';
+import * as appleSignin from 'apple-signin-auth';
 // import axios from 'axios';
 import { stat } from 'fs';
 import { RedisService } from '../redis/redis.service'
@@ -212,6 +213,113 @@ return {
 
   } catch (error) {
     throw new UnauthorizedException(error.message || 'Login failed');
+  }
+}
+
+/** Verifies the provider token server-side so a forged socialId/email pair can't be used to hijack an account. */
+private async verifySocialToken(authProvider: string, socialId: string, token?: string) {
+  if (!token) {
+    throw new UnauthorizedException('Missing provider token for verification');
+  }
+
+  if (authProvider === 'google') {
+    const ticket = await this.googleClient.verifyIdToken({
+      idToken: token,
+      audience: process.env.GOOGLE_CLIENT_ID,
+    });
+    const payload = ticket.getPayload();
+    if (!payload || payload.sub !== socialId) {
+      throw new UnauthorizedException('Invalid Google token');
+    }
+  } else if (authProvider === 'facebook') {
+    const resp = await fetch(
+      `https://graph.facebook.com/me?fields=id&access_token=${encodeURIComponent(token)}`,
+    );
+    const data: any = await resp.json();
+    if (!data?.id || data.id !== socialId) {
+      throw new UnauthorizedException('Invalid Facebook token');
+    }
+  } else if (authProvider === 'apple') {
+    const payload = await appleSignin.verifyIdToken(token, {
+      audience: process.env.APPLE_CLIENT_ID,
+    });
+    if (!payload || payload.sub !== socialId) {
+      throw new UnauthorizedException('Invalid Apple token');
+    }
+  } else {
+    throw new UnauthorizedException('Unsupported auth provider');
+  }
+}
+
+/** Social login always creates/looks up a buyer (role: 'user') account — sellers keep using email/password + onboarding. */
+async socialLogin(dto: SocialLoginDto) {
+  try {
+    const { authProvider, socialId, userName, email, image, fcmToken, token } = dto;
+
+    await this.verifySocialToken(authProvider, socialId, token);
+
+    const userModel = this.databaseService.repositories.userModel;
+    let user = await userModel.findOne({
+      $or: [{ email }, { providerId: socialId, authProvider }],
+    });
+
+    if (!user) {
+      user = new userModel({
+        name: userName,
+        email,
+        role: 'user',
+        isVerified: true,
+        authProvider,
+        providerId: socialId,
+        profileImage: image || null,
+        fcmToken: fcmToken || undefined,
+      });
+      await user.save();
+    } else {
+      let changed = false;
+      if (!user.providerId) {
+        user.providerId = socialId;
+        changed = true;
+      }
+      if (!user.authProvider) {
+        user.authProvider = authProvider;
+        changed = true;
+      }
+      if (fcmToken && user.fcmToken !== fcmToken) {
+        user.fcmToken = fcmToken;
+        changed = true;
+      }
+      if (!user.isVerified) {
+        user.isVerified = true;
+        changed = true;
+      }
+      if (changed) await user.save();
+    }
+
+    const payload = { sub: user._id, email: user.email, role: user.role };
+    const accessToken = this.jwtService.sign(payload);
+    await this.redisService.set(accessToken, user._id.toString(), 24 * 60 * 60);
+    const refreshToken = this.jwtService.sign(payload, { expiresIn: '7d' });
+
+    return {
+      message: 'Social login successful',
+      success: true,
+      data: {
+        user: {
+          id: user._id,
+          name: user.name,
+          email: user.email,
+          role: user.role,
+          image: user.profileImage || null,
+        },
+        token: {
+          accessToken,
+          refreshToken,
+        },
+      },
+    };
+  } catch (error) {
+    throw new UnauthorizedException(error.message || 'Social login failed');
   }
 }
 
