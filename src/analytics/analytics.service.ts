@@ -97,6 +97,47 @@ export class AnalyticsService {
   }
 
   // ═══════════════════════════════════════════════════════════════════════
+  // TODAY SUMMARY — seller dashboard's "Today's Revenue" live card. Compares
+  // today-so-far against the *same elapsed window* yesterday (not all of
+  // yesterday) so the percent change is apples-to-apples regardless of what
+  // time of day it's checked. Deliberately omits "visitors"/"conversion
+  // rate" — there is no storefront visit/session tracking anywhere in this
+  // codebase to compute them from (see subscriptions.service.ts's identical
+  // disclaimer for subscriber conversion rate); inventing those numbers
+  // would violate the app's "no fake data" rule, so the app hides those
+  // stat cells instead of receiving placeholder values.
+  // ═══════════════════════════════════════════════════════════════════════
+
+  private readonly TODAY_CACHE_TTL_SECONDS = 30; // short — card is labeled "Live"
+
+  async getTodaySummary(sellerId: string, storeId: string) {
+    await this.verifyStoreOwnership(storeId, sellerId);
+
+    const now = new Date();
+    const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    const elapsedMs = now.getTime() - todayStart.getTime();
+    const yesterdayStart = new Date(todayStart.getTime() - 24 * 60 * 60 * 1000);
+    const yesterdaySameTime = new Date(yesterdayStart.getTime() + elapsedMs);
+
+    return withAnalyticsCache(this.redis, this.key('today', storeId, {}), this.TODAY_CACHE_TTL_SECONDS, async () => {
+      const [today, yesterday] = await Promise.all([
+        this.periodTotals(storeId, todayStart, now),
+        this.periodTotals(storeId, yesterdayStart, yesterdaySameTime),
+      ]);
+
+      return {
+        success: true,
+        data: {
+          revenue: today.netRevenue,
+          revenueChangePercent: percentChange(today.netRevenue, yesterday.netRevenue),
+          ordersCount: today.orderCount,
+          avgOrderValue: today.avgOrderValue,
+        },
+      };
+    });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
   // A. OVERVIEW
   // ═══════════════════════════════════════════════════════════════════════
 

@@ -76,6 +76,18 @@ export class StoreController {
 
   // ── Public Storefront APIs ────────────────────────────────────────────────
 
+  // Static segments ('public', 'public/top') must be declared before the
+  // 'public/:slug' param route below, or they'd be swallowed by it.
+  @Get('public')
+  async listPublicStores(@Query() query: any) {
+    return this.storeService.listPublicStores(query);
+  }
+
+  @Get('public/top')
+  async getTopStores(@Query('limit') limit?: string) {
+    return this.storeService.getTopStores(Math.min(20, parseInt(limit || '10') || 10));
+  }
+
   @Get('public/:slug')
   async getPublicStore(@Param('slug') slug: string) {
     return this.storeService.getPublicStore(slug);

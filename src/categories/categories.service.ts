@@ -8,7 +8,7 @@ import {
 
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
+import { Model, isValidObjectId } from 'mongoose';
 
 import { DatabaseService } from 'src/database/databaseservice';
 import { CreateCategoryDto } from './dto/create-category.dto';
@@ -167,6 +167,13 @@ async getCategoryTreeNested(categoryId?: string) {
 
   // 🔹 CASE 1: agar id di hui hai
   if (categoryId) {
+    // A non-ObjectId string (e.g. a category name leaking in from stale
+    // data) would otherwise throw an unhandled Mongoose CastError here,
+    // which Nest surfaces as an opaque 500 — fail with a clear 400 instead.
+    if (!isValidObjectId(categoryId)) {
+      throw new BadRequestException('Invalid category id');
+    }
+
     const category = await categoryModel.findOne({
       _id: categoryId,
       status: "active",
@@ -241,6 +248,10 @@ private async getChildrenRecursive(parentId: string): Promise<any[]> {
 
 async getCategoryWithChildren(categoryId: string): Promise<any> {
   const categoryModel = this.databaseService.repositories.categoryModel;
+
+  if (!isValidObjectId(categoryId)) {
+    throw new BadRequestException('Invalid category id');
+  }
 
   // Parent category (only active & not deleted)
   const category = await categoryModel.findOne({

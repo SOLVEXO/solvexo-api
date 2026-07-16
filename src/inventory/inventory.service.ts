@@ -116,4 +116,55 @@ export class InventoryService {
       },
     };
   }
+
+  // Store-wide low-stock summary for the seller dashboard's alert card —
+  // unlike getStoreInventory above, this isn't paginated (it needs the true
+  // store-wide count/list, not just the current page) and only returns the
+  // items that actually need attention. Digital products are excluded —
+  // they always have `stock: 0` and would otherwise show up as permanently
+  // low/out of stock.
+  async getLowStockSummary(sellerId: string, storeId: string) {
+    if (!storeId) throw new BadRequestException('storeId is required');
+
+    const { productModel, productVariantModel, storeModel } = this.databaseService.repositories;
+
+    const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
+    if (!store) throw new ForbiddenException('Store not found or unauthorized');
+
+    const products = await productModel
+      .find({ storeId, sellerId, isDelete: false, status: 'active', type: { $ne: 'digital' } })
+      .select('name')
+      .lean();
+
+    const productIds = products.map((p: any) => p._id.toString());
+    const variants = productIds.length
+      ? await productVariantModel
+          .find({ productId: { $in: productIds }, isDelete: false })
+          .select('productId stock')
+          .lean()
+      : [];
+
+    const stockByProduct = new Map<string, number>();
+    for (const v of variants) {
+      stockByProduct.set(v.productId, (stockByProduct.get(v.productId) ?? 0) + (v.stock || 0));
+    }
+
+    const items = products
+      .map((p: any) => ({
+        productId: p._id,
+        name: p.name,
+        stock: stockByProduct.get(p._id.toString()) ?? 0,
+      }))
+      .filter((p) => p.stock > 0 && p.stock <= LOW_STOCK_THRESHOLD)
+      .sort((a, b) => a.stock - b.stock);
+
+    return {
+      success: true,
+      data: {
+        count: items.length,
+        threshold: LOW_STOCK_THRESHOLD,
+        items,
+      },
+    };
+  }
 }

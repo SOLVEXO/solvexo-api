@@ -2,6 +2,7 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { DatabaseService } from 'src/database/databaseservice';
 import { ProductsService } from 'src/products/products.service';
+import { StoreService } from 'src/store/store.service';
 
 const MAX_RECENT_SEARCHES = 15;
 const MAX_RECENTLY_VIEWED = 30;
@@ -15,6 +16,7 @@ export class SearchService {
   constructor(
     private readonly databaseService: DatabaseService,
     private readonly productsService: ProductsService,
+    private readonly storeService: StoreService,
   ) {}
 
   private get r() {
@@ -32,6 +34,14 @@ export class SearchService {
       this.recordSearch(userId, q).catch(() => undefined);
     }
     return result;
+  }
+
+  // ── Store search ────────────────────────────────────────────────────────────
+  // Delegates straight to StoreService.listPublicStores — no recent-search
+  // history side effect for stores (that history is product-only today).
+
+  async searchStores(q: string, page: number, limit: number) {
+    return this.storeService.listPublicStores({ q, page, limit });
   }
 
   // ── Recent searches ────────────────────────────────────────────────────────

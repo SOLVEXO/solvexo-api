@@ -5,11 +5,12 @@ import { SearchService } from './search.service';
 import { AuthModule } from 'src/auth/auth.module';
 import { RedisModule } from 'src/redis/redis.module';
 import { ProductsModule } from 'src/products/product.module';
+import { StoreModule } from 'src/store/store.module';
 
 @Module({
   // RedisModule is required by JwtAuthGuard/OptionalJwtAuthGuard (session
   // check) — guards resolve DI from the consuming module's context.
-  imports: [AuthModule, RedisModule, ProductsModule],
+  imports: [AuthModule, RedisModule, ProductsModule, StoreModule],
   controllers: [SearchController],
   providers: [SearchService],
   exports: [SearchService],

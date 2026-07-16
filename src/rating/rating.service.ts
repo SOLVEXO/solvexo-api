@@ -55,6 +55,26 @@ export class RatingService {
     await productModel.findByIdAndUpdate(productId, { ratingSum: sum, averageRating: average });
   }
 
+  // Same recompute-from-scratch approach as recalcProductRating, but scoped
+  // to Rating.storeId (denormalized from Product.storeId at review-create
+  // time) so Store.averageRating/reviewCount stay correct across stores that
+  // sell many products.
+  private async recalcStoreRating(storeId: string | null | undefined) {
+    if (!storeId) return;
+    const { storeModel, ratingModel } = this.r;
+
+    const agg = await ratingModel.aggregate([
+      { $match: { storeId, isDelete: false, rating: { $ne: null } } },
+      { $group: { _id: null, sum: { $sum: '$rating' }, count: { $sum: 1 } } },
+    ]);
+
+    const sum = agg[0]?.sum ?? 0;
+    const count = agg[0]?.count ?? 0;
+    const average = count > 0 ? parseFloat((sum / count).toFixed(2)) : 0;
+
+    await storeModel.findByIdAndUpdate(storeId, { averageRating: average, reviewCount: count });
+  }
+
   // A review is a "Verified Purchase" if the reviewer has a non-deleted order
   // containing this product (and variant, if given) with an item that was
   // actually delivered/completed — not just placed.
@@ -131,7 +151,10 @@ export class RatingService {
 
     const review = await ratingModel.create(reviewData);
 
-    if (rating) await this.recalcProductRating(productId);
+    if (rating) {
+      await this.recalcProductRating(productId);
+      await this.recalcStoreRating(product.storeId);
+    }
 
     if (isVerifiedPurchase && rating && product.storeId) {
       this.loyaltyService.awardReviewPoints(product.storeId, userId).catch(() => {});
@@ -163,7 +186,10 @@ export class RatingService {
 
     await ratingModel.findByIdAndUpdate(reviewId, { $set: update });
 
-    if (dto.rating !== undefined) await this.recalcProductRating(review.productId);
+    if (dto.rating !== undefined) {
+      await this.recalcProductRating(review.productId);
+      await this.recalcStoreRating(review.storeId);
+    }
 
     return { success: true, message: 'Review updated', data: await ratingModel.findById(reviewId).lean() };
   }
@@ -176,7 +202,10 @@ export class RatingService {
 
     await ratingModel.findByIdAndUpdate(reviewId, { isDelete: true });
 
-    if (review.rating) await this.recalcProductRating(review.productId);
+    if (review.rating) {
+      await this.recalcProductRating(review.productId);
+      await this.recalcStoreRating(review.storeId);
+    }
 
     return { success: true, message: 'Review deleted' };
   }
@@ -473,7 +502,10 @@ export class RatingService {
 
     await this.r.ratingModel.findByIdAndUpdate(reviewId, { isDelete: true });
 
-    if (review.rating) await this.recalcProductRating(review.productId);
+    if (review.rating) {
+      await this.recalcProductRating(review.productId);
+      await this.recalcStoreRating(review.storeId);
+    }
 
     return { success: true, message: 'Review removed' };
   }
