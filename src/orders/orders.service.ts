@@ -9,6 +9,8 @@ import { FinanceService } from 'src/finance/finance.service';
 import { ActivityLogService } from 'src/activity-log/activity-log.service';
 import { LoyaltyService } from 'src/loyalty/loyalty.service';
 import { SubscriptionBenefitsService } from 'src/subscriptions/subscription-benefits.service';
+import { NotificationsService } from 'src/notifications/notifications.service';
+import { NOTIFICATION_TYPES } from 'src/notifications/notification.types';
 
 
 @Injectable()
@@ -22,6 +24,7 @@ export class OrdersService {
     private readonly activityLogService: ActivityLogService,
     private readonly loyaltyService: LoyaltyService,
     private readonly subscriptionBenefits: SubscriptionBenefitsService,
+    private readonly notificationsService: NotificationsService,
   ) {}
 
   /** Subscribers earn points at their plan's configured multiplier (default 1x). */
@@ -430,6 +433,19 @@ export class OrdersService {
       userAgent,
     });
 
+    if (status === 'shipped' || status === 'delivered') {
+      this.notificationsService.notify({
+        recipientId: order.userId,
+        recipientRole: 'user',
+        type: status === 'shipped' ? NOTIFICATION_TYPES.ORDER_SHIPPED : NOTIFICATION_TYPES.ORDER_DELIVERED,
+        title: status === 'shipped' ? 'Your order has shipped' : 'Your order was delivered',
+        body: status === 'shipped'
+          ? `Order #${orderId} is on its way${tracking?.carrier ? ` via ${tracking.carrier}` : ''}.`
+          : `Order #${orderId} has been delivered.`,
+        data: { orderId, status },
+      }).catch(() => {});
+    }
+
     return { success: true, message: `Order status updated to ${status}` };
   }
 
@@ -473,6 +489,15 @@ export class OrdersService {
 
       this.awardLoyaltyPointsWithMultiplier(so.storeId, order.userId, orderId, so.subtotal).catch(() => {});
     }
+
+    this.notificationsService.notify({
+      recipientId: order.userId,
+      recipientRole: 'user',
+      type: NOTIFICATION_TYPES.PAYMENT_SUCCESS,
+      title: 'Payment received',
+      body: `We've received your payment for order #${orderId}.`,
+      data: { orderId },
+    }).catch(() => {});
 
     return { success: true, message: 'Order marked as paid' };
   }
@@ -665,6 +690,18 @@ export class OrdersService {
     }
 
     await orderModel.findByIdAndUpdate(orderId, { $set: updateData });
+
+    const affectedSellerIds = [...new Set(targetItems.map(({ soIndex }) => order.sellerOrders[soIndex].sellerId))];
+    affectedSellerIds.forEach((sellerOrderSellerId) => {
+      this.notificationsService.notify({
+        recipientId: sellerOrderSellerId,
+        recipientRole: 'seller',
+        type: NOTIFICATION_TYPES.ORDER_CANCELLED,
+        title: 'Order cancelled by buyer',
+        body: `Order #${orderId} was cancelled by the buyer — ${reason}`,
+        data: { orderId },
+      }).catch(() => {});
+    });
 
     return {
       success: true,

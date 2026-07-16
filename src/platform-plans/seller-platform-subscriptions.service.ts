@@ -7,6 +7,8 @@ import { PlatformPlanNotificationsService } from './platform-plan-notifications.
 import { PaymentGatewayService } from 'src/subscriptions/payment-gateway/payment-gateway.service';
 import { verifyStoreOwnershipStrict } from 'src/common/store-ownership.util';
 import { SubscribePlatformPlanDto, ChangePlatformPlanDto } from './dto/subscribe-platform-plan.dto';
+import { NotificationsService } from 'src/notifications/notifications.service';
+import { NOTIFICATION_TYPES } from 'src/notifications/notification.types';
 
 const MAX_RENEWAL_ATTEMPTS = 3;
 const RETRY_INTERVAL_DAYS = 1;
@@ -24,6 +26,7 @@ export class SellerPlatformSubscriptionsService {
     private readonly gateway: PaymentGatewayService,
     private readonly activityLogService: ActivityLogService,
     private readonly notifications: PlatformPlanNotificationsService,
+    private readonly notificationsService: NotificationsService,
   ) {}
 
   private get planModel() { return this.db.repositories.platformPlanModel; }
@@ -117,6 +120,14 @@ export class SellerPlatformSubscriptionsService {
             sellerName, storeName, planName: freePlan.name, maxAttempts: MAX_RENEWAL_ATTEMPTS,
           });
         }
+        this.notificationsService.notify({
+          recipientId: sub.sellerId,
+          recipientRole: 'seller',
+          type: NOTIFICATION_TYPES.PLATFORM_PLAN_PAYMENT_FAILED,
+          title: 'Plan downgraded',
+          body: `${storeName} was moved to the ${freePlan.name} plan after ${MAX_RENEWAL_ATTEMPTS} failed payment attempts.`,
+          data: { subscriptionId: String(sub._id) },
+        }).catch(() => {});
         this.activityLogService.log({
           storeId: sub.storeId, category: 'platform_plans', action: 'plan_downgraded_payment_failure',
           description: `Store auto-downgraded to free plan after ${MAX_RENEWAL_ATTEMPTS} failed payment attempts`,
@@ -139,6 +150,14 @@ export class SellerPlatformSubscriptionsService {
         maxAttempts: MAX_RENEWAL_ATTEMPTS, nextRetryDate: retryAt,
       });
     }
+    this.notificationsService.notify({
+      recipientId: sub.sellerId,
+      recipientRole: 'seller',
+      type: NOTIFICATION_TYPES.PLATFORM_PLAN_PAYMENT_FAILED,
+      title: 'Plan payment failed',
+      body: `We couldn't process your ${storeName} plan payment — we'll retry on ${retryAt.toDateString()}.`,
+      data: { subscriptionId: String(sub._id) },
+    }).catch(() => {});
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -515,13 +534,21 @@ export class SellerPlatformSubscriptionsService {
         this.planModel.findById(sub.platformPlanId).select('name').lean(),
       ]);
       const trialEndsAt: Date = sub.trialEndsAt ?? now;
+      const daysLeft = Math.max(0, Math.round((trialEndsAt.getTime() - now.getTime()) / (24 * 60 * 60 * 1000)));
       if (sellerEmail) {
-        const daysLeft = Math.max(0, Math.round((trialEndsAt.getTime() - now.getTime()) / (24 * 60 * 60 * 1000)));
         await this.notifications.sendTrialEndingSoon(sellerEmail, {
           sellerName, storeName, planName: (plan as any)?.name ?? 'your plan',
           amountUSD: sub.amountUSD, daysLeft, trialEndsAt,
         });
       }
+      this.notificationsService.notify({
+        recipientId: sub.sellerId,
+        recipientRole: 'seller',
+        type: NOTIFICATION_TYPES.PLATFORM_PLAN_RENEWAL_REMINDER,
+        title: 'Trial ending soon',
+        body: `Your ${storeName} plan trial ends in ${daysLeft} day(s).`,
+        data: { subscriptionId: String(sub._id) },
+      }).catch(() => {});
       sub.trialReminderSent = true;
       await sub.save();
       sent++;

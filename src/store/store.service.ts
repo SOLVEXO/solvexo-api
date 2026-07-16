@@ -12,6 +12,8 @@ import { UpdateStoreCustomerDto } from './dto/update-store-customer.dto';
 import { SubscriptionBenefitsService } from 'src/subscriptions/subscription-benefits.service';
 import { EntitlementsService } from 'src/platform-plans/entitlements.service';
 import { SellerPlatformSubscriptionsService } from 'src/platform-plans/seller-platform-subscriptions.service';
+import { NotificationsService } from 'src/notifications/notifications.service';
+import { NOTIFICATION_TYPES } from 'src/notifications/notification.types';
 
 @Injectable()
 export class StoreService {
@@ -21,6 +23,7 @@ export class StoreService {
     private readonly subscriptionBenefits: SubscriptionBenefitsService,
     private readonly entitlementsService: EntitlementsService,
     private readonly sellerPlatformSubscriptionsService: SellerPlatformSubscriptionsService,
+    private readonly notificationsService: NotificationsService,
   ) {}
 
   private generateSlug(name: string): string {
@@ -508,6 +511,16 @@ export class StoreService {
     await this.databaseService.repositories.storeModel.findByIdAndUpdate(storeId, {
       $inc: { followersCount: 1 },
     });
+
+    this.notificationsService.notify({
+      recipientId: store.sellerId,
+      recipientRole: 'seller',
+      type: NOTIFICATION_TYPES.NEW_FOLLOWER,
+      title: 'New follower',
+      body: `Someone just started following ${store.name}.`,
+      data: { storeId },
+    }).catch(() => {});
+
     return { success: true, message: 'Following', following: true };
   }
 
