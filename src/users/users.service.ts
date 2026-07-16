@@ -51,10 +51,24 @@ export class UsersService {
     };
   }
 
-  async changePassword(userId: string, dto: ChangePasswordDto) {
+  // Buyers and sellers are separate Mongoose collections (see
+  // auth.service.ts's login/editProfile/etc.) — change-password must branch
+  // on role the same way, or it 404s for every seller/admin caller.
+  async changePassword(userId: string, role: string, dto: ChangePasswordDto) {
     const { currentPassword, newPassword } = dto;
 
-    const user = await this.userModel.findById(userId);
+    let model;
+    if (role === 'user') {
+      model = this.db.repositories.userModel;
+    } else if (role === 'seller') {
+      model = this.db.repositories.sellerModel;
+    } else if (role === 'admin') {
+      model = this.db.repositories.adminModel;
+    } else {
+      throw new UnauthorizedException('Invalid user type');
+    }
+
+    const user = await model.findById(userId);
     if (!user) throw new NotFoundException('User not found');
 
     if (!user.password) {

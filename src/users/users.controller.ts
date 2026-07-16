@@ -38,6 +38,6 @@ export class UsersController {
   @ApiOperation({ summary: 'Change user password' })
   @ApiResponse({ status: 200, description: 'Password changed successfully' })
   changePassword(@Req() req: any, @Body() dto: ChangePasswordDto) {
-    return this.usersService.changePassword(req.user.userId, dto);
+    return this.usersService.changePassword(req.user.userId, req.user.role, dto);
   }
 }

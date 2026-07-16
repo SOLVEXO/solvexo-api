@@ -6,8 +6,9 @@ import { AuthModule } from 'src/auth/auth.module';
 import { RedisModule } from 'src/redis/redis.module';
 
 @Module({
-  imports: [AuthModule, RedisModule], 
+  imports: [AuthModule, RedisModule],
   controllers: [StoreController],
   providers: [StoreService],
+  exports: [StoreService],
 })
 export class StoreModule {}

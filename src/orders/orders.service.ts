@@ -131,7 +131,7 @@ export class OrdersService {
     if (!store) throw new ForbiddenException('Store not found or unauthorized');
 
     const page = parseInt(query.page) || 1;
-    const limit = 10;
+    const limit = Math.min(50, parseInt(query.limit) || 10);
     const skip = (page - 1) * limit;
 
     // base filter — is store ke orders

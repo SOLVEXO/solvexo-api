@@ -234,6 +234,14 @@ export class Store {
   @Prop({ type: Number, default: 0 })
   followersCount: number;
 
+  // Persisted rollup from Rating docs (storeId-scoped) — recalculated by
+  // RatingService.recalcStoreRating(), same pattern as Product.averageRating.
+  @Prop({ type: Number, default: 0 })
+  averageRating: number;
+
+  @Prop({ type: Number, default: 0 })
+  reviewCount: number;
+
   @Prop({ enum: ['active', 'inactive', 'suspended'], default: 'active' })
   status: string;
 
@@ -254,3 +262,5 @@ StoreSchema.index({ sellerId: 1 });
 StoreSchema.index({ slug: 1 });
 StoreSchema.index({ name: 1 });
 StoreSchema.index({ sellerType: 1 });
+StoreSchema.index({ averageRating: -1 });
+StoreSchema.index({ followersCount: -1 });

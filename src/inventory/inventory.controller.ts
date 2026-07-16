@@ -19,4 +19,12 @@ export class InventoryController {
     const { userId } = req.user;
     return this.inventoryService.getStoreInventory(userId, storeId, query);
   }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller', 'admin')
+  @Get('low-stock-summary/:storeId')
+  async getLowStockSummary(@Req() req: any, @Param('storeId') storeId: string) {
+    const { userId } = req.user;
+    return this.inventoryService.getLowStockSummary(userId, storeId);
+  }
 }

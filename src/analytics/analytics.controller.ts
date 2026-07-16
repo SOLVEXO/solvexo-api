@@ -20,6 +20,11 @@ import { ExportQueryDto } from './dto/export-query.dto';
 export class AnalyticsController {
   constructor(private readonly analyticsService: AnalyticsService) {}
 
+  @Get('today')
+  getTodaySummary(@Req() req: any, @Query() query: AnalyticsQueryDto) {
+    return this.analyticsService.getTodaySummary(req.user.userId, query.storeId);
+  }
+
   @Get('overview')
   getOverview(@Req() req: any, @Query() query: AnalyticsQueryDto) {
     return this.analyticsService.getOverview(req.user.userId, query.storeId, query);

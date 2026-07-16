@@ -14,6 +14,7 @@ import { EntitlementsService } from 'src/platform-plans/entitlements.service';
 import { SellerPlatformSubscriptionsService } from 'src/platform-plans/seller-platform-subscriptions.service';
 import { NotificationsService } from 'src/notifications/notifications.service';
 import { NOTIFICATION_TYPES } from 'src/notifications/notification.types';
+import { RedisService } from 'src/redis/redis.service';
 
 @Injectable()
 export class StoreService {
@@ -24,6 +25,7 @@ export class StoreService {
     private readonly entitlementsService: EntitlementsService,
     private readonly sellerPlatformSubscriptionsService: SellerPlatformSubscriptionsService,
     private readonly notificationsService: NotificationsService,
+    private readonly redisService: RedisService,
   ) {}
 
   private generateSlug(name: string): string {
@@ -389,11 +391,101 @@ export class StoreService {
         coverImage: store.coverImage ?? null,
         description: store.description,
         followersCount: store.followersCount ?? 0,
+        averageRating: store.averageRating ?? 0,
+        reviewCount: store.reviewCount ?? 0,
         builderConfig: store.builderConfig ?? null,
         sellerType: (store as any).sellerType ?? null,
         badges: (store as any).badges ?? [],
       },
     };
+  }
+
+  private shapeStoreListItem(store: any, productCount: number | null = null): any {
+    return {
+      storeId: store._id,
+      name: store.name,
+      slug: store.slug,
+      logo: store.logo ?? null,
+      coverImage: store.coverImage ?? null,
+      description: store.description ?? null,
+      categoryId: store.categoryId ?? null,
+      followersCount: store.followersCount ?? 0,
+      averageRating: store.averageRating ?? 0,
+      reviewCount: store.reviewCount ?? 0,
+      sellerType: store.sellerType ?? null,
+      badges: store.badges ?? [],
+      ...(productCount !== null ? { productCount } : {}),
+    };
+  }
+
+  // ── 3b. Public stores — browse / search ───────────────────────────────────
+  // Backs both the buyer "Stores" browse screen and `api/search/stores`
+  // (SearchService.searchStores delegates straight into this).
+  async listPublicStores(query: any) {
+    const { storeModel, productModel } = this.databaseService.repositories;
+
+    const page = Math.max(1, parseInt(query.page) || 1);
+    const limit = Math.min(50, parseInt(query.limit) || 20);
+    const skip = (page - 1) * limit;
+
+    const filter: any = { status: 'active', isDelete: false };
+    if (query.categoryId && query.categoryId !== 'all') filter.categoryId = query.categoryId;
+
+    const term = (query.q || '').trim();
+    if (term) {
+      const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      filter.name = new RegExp(escaped, 'i');
+    }
+
+    const sortMap: Record<string, any> = {
+      rating: { averageRating: -1, reviewCount: -1 },
+      followers: { followersCount: -1 },
+      newest: { createdAt: -1 },
+    };
+    const sort = sortMap[query.sort] ?? sortMap.followers;
+
+    const total = await storeModel.countDocuments(filter);
+    const stores = await storeModel.find(filter).sort(sort).skip(skip).limit(limit).lean();
+
+    const storeIds = stores.map((s: any) => s._id.toString());
+    const productCounts = storeIds.length
+      ? await productModel.aggregate([
+          { $match: { storeId: { $in: storeIds }, isDelete: false } },
+          { $group: { _id: '$storeId', count: { $sum: 1 } } },
+        ])
+      : [];
+    const productCountByStore = new Map<string, number>(productCounts.map((r: any) => [r._id, r.count]));
+
+    return {
+      success: true,
+      data: {
+        pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+        stores: stores.map((s: any) =>
+          this.shapeStoreListItem(s, productCountByStore.get(s._id.toString()) ?? 0),
+        ),
+      },
+    };
+  }
+
+  // ── 3c. Top stores — cached for the home-screen row ───────────────────────
+  async getTopStores(limit: number) {
+    const cacheKey = `top-stores:${limit}`;
+    const cached = await this.redisService.get(cacheKey);
+    if (cached) {
+      return { success: true, data: { stores: JSON.parse(cached) } };
+    }
+
+    const { storeModel } = this.databaseService.repositories;
+    const stores = await storeModel
+      .find({ status: 'active', isDelete: false })
+      .sort({ averageRating: -1, followersCount: -1 })
+      .limit(limit)
+      .lean();
+
+    const shaped = stores.map((s: any) => this.shapeStoreListItem(s));
+    await this.redisService.set(cacheKey, JSON.stringify(shaped), 600);
+
+    return { success: true, data: { stores: shaped } };
   }
 
   // ── 4. Public store products ──────────────────────────────────────────────
