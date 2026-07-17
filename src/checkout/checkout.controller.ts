@@ -148,11 +148,7 @@ async getShippingZones() {
   @Delete('remove-coupon/:checkoutId')
   async removeCoupon(@Req() req: any, @Param('checkoutId') checkoutId: string) {
     const { userId } = req.user;
-    return this.checkoutService.removeCoupon(userId, checkoutId);
-  @Post('remove-coupon')
-  async removeCoupon(@Req() req: any, @Body() body: any) {
-    const { userId } = req.user;
-    return this.checkoutService.removeCoupon(userId, body);
+    return this.checkoutService.removeCoupon(userId, { checkoutId });
   }
 
 }

@@ -396,6 +396,7 @@ export class StoreService {
         builderConfig: store.builderConfig ?? null,
         sellerType: (store as any).sellerType ?? null,
         badges: (store as any).badges ?? [],
+        createdAt: (store as any).createdAt,
       },
     };
   }
@@ -475,14 +476,25 @@ export class StoreService {
       return { success: true, data: { stores: JSON.parse(cached) } };
     }
 
-    const { storeModel } = this.databaseService.repositories;
+    const { storeModel, productModel } = this.databaseService.repositories;
     const stores = await storeModel
       .find({ status: 'active', isDelete: false })
       .sort({ averageRating: -1, followersCount: -1 })
       .limit(limit)
       .lean();
 
-    const shaped = stores.map((s: any) => this.shapeStoreListItem(s));
+    const storeIds = stores.map((s: any) => s._id.toString());
+    const productCounts = storeIds.length
+      ? await productModel.aggregate([
+          { $match: { storeId: { $in: storeIds }, isDelete: false } },
+          { $group: { _id: '$storeId', count: { $sum: 1 } } },
+        ])
+      : [];
+    const productCountByStore = new Map<string, number>(productCounts.map((r: any) => [r._id, r.count]));
+
+    const shaped = stores.map((s: any) =>
+      this.shapeStoreListItem(s, productCountByStore.get(s._id.toString()) ?? 0),
+    );
     await this.redisService.set(cacheKey, JSON.stringify(shaped), 600);
 
     return { success: true, data: { stores: shaped } };

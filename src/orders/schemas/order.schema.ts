@@ -231,16 +231,13 @@ export class Order {
   @Prop({ default: 0 })
   subscriberDiscountTotal: number;
 
-  // Coupon discount carried over from the parent Checkout, prorated onto this
-  // order's share of the checkout subtotal when a checkout splits into a
-  // physical + digital order pair — see PaymentService.placeOrder.
-  // Copied from Checkout.couponCode/couponDiscountTotalUSD at order-creation
-  // time — see CheckoutService.applyCoupon.
+  // Sum of each item's couponDiscountUSD (already applied per-item at
+  // checkout time — see CheckoutService.distributeCouponDiscount), copied
+  // through at order-creation time for receipt display and seller analytics.
   @Prop({ type: String, default: null })
   couponCode: string | null;
 
   @Prop({ default: 0 })
-  couponDiscountUSD: number;
   couponDiscountTotal: number;
 
   @Prop({ required: true })
