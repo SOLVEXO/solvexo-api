@@ -135,5 +135,20 @@ async getShippingZones() {
     return this.checkoutService.addShippingInCheckout(userId, body);
   }
 
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('user')
+  @Post('apply-coupon')
+  async applyCoupon(@Req() req: any, @Body() body: any) {
+    const { userId } = req.user;
+    return this.checkoutService.applyCoupon(userId, body);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('user')
+  @Post('remove-coupon')
+  async removeCoupon(@Req() req: any, @Body() body: any) {
+    const { userId } = req.user;
+    return this.checkoutService.removeCoupon(userId, body);
+  }
 
 }

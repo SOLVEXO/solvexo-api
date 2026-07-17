@@ -56,6 +56,20 @@ export class CheckoutItem {
 
   @Prop({ type: Number, default: 0 })
   subscriberDiscountUSD: number;
+
+  // Coupon discount allocated to this line (only set for items belonging to
+  // the coupon's store — see CheckoutService.applyCoupon). `price`/
+  // `totalPrice` above already reflect the discount; these two "before"
+  // fields are the pre-coupon baseline so removing/replacing a coupon can
+  // cleanly revert without compounding.
+  @Prop({ type: Number, default: 0 })
+  couponDiscountUSD: number;
+
+  @Prop({ type: Number, default: null })
+  priceBeforeCoupon: number | null;
+
+  @Prop({ type: Number, default: null })
+  totalPriceBeforeCoupon: number | null;
 }
 
 export const CheckoutItemSchema = SchemaFactory.createForClass(CheckoutItem);
@@ -96,6 +110,19 @@ export class Checkout {
   // + shipping waiver). Shown to the buyer as "you saved $X with your membership".
   @Prop({ default: 0 })
   subscriberSavingsUSD: number;
+
+  // Store-scoped coupon applied via CheckoutService.applyCoupon — a coupon
+  // only ever discounts the items belonging to its own store, even in a
+  // multi-store cart. `couponStoreId` records which store's items the
+  // discount was distributed across (see CheckoutItem.couponDiscountUSD).
+  @Prop({ type: String, default: null })
+  couponCode: string | null;
+
+  @Prop({ type: String, default: null })
+  couponStoreId: string | null;
+
+  @Prop({ default: 0 })
+  couponDiscountTotalUSD: number;
 
   @Prop({ required: true })
   totalAmount: number;
