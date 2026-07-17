@@ -10,7 +10,6 @@ import {
 } from '@nestjs/common';
 
 import { ProductsService } from './products.service';
-import { CreateProductDto } from './dto/create-product.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { OptionalJwtAuthGuard } from '../auth/guards/optional-jwt-auth.guard';
 import { Roles } from '../auth/decorators/roles.decorator'
@@ -75,6 +74,7 @@ async updateProduct(@Req() req: any, @Body() body: any) {
 
 @UseGuards(OptionalJwtAuthGuard, FeatureFlagGuard)
 @RequireFeature('marketplace')
+@UseGuards(OptionalJwtAuthGuard)
 @Get('products-by-category')
 async getProductsByCategoryId(
   @Req() req: any,

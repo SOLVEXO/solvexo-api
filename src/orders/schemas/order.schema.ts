@@ -50,6 +50,11 @@ export class OrderItem {
   @Prop({ type: Number, default: 0 })
   subscriberDiscountUSD: number;
 
+  // Coupon discount allocated to this line at checkout — see
+  // CheckoutItem.couponDiscountUSD, copied through at order creation.
+  @Prop({ type: Number, default: 0 })
+  couponDiscountUSD: number;
+
   // cancel/refund item-level pe
   @Prop({
     type: String,
@@ -229,11 +234,14 @@ export class Order {
   // Coupon discount carried over from the parent Checkout, prorated onto this
   // order's share of the checkout subtotal when a checkout splits into a
   // physical + digital order pair — see PaymentService.placeOrder.
+  // Copied from Checkout.couponCode/couponDiscountTotalUSD at order-creation
+  // time — see CheckoutService.applyCoupon.
   @Prop({ type: String, default: null })
   couponCode: string | null;
 
   @Prop({ default: 0 })
   couponDiscountUSD: number;
+  couponDiscountTotal: number;
 
   @Prop({ required: true })
   totalAmount: number;

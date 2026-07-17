@@ -86,14 +86,24 @@ export class InventoryService {
         productId: product._id,
         sku,
         name: product.name,
+        description: product.description ?? null,
         image: product.images?.[0] ?? null,
+        images: product.images ?? [],
         type: product.type,
         stock: stockDisplay,
         stockStatus,
         status: product.status,
         scheduledAt: product.scheduledAt ?? null,
         price,
+        compareAtPrice: defaultVariant?.compareAtPrice ?? null,
         allTimeSales: product.purchaseCount || 0,
+        tags: product.tags ?? [],
+        // physical-only (defaultVariant fields)
+        size: defaultVariant?.size ?? null,
+        color: defaultVariant?.color ?? null,
+        shippingWeight: defaultVariant?.shippingWeight ?? null,
+        // digital-only — full config so re-opening Edit repopulates correctly
+        digital: product.digital ?? null,
       };
     });
 
