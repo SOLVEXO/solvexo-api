@@ -6,11 +6,20 @@ export type CouponDocument = Coupon & Document;
 
 @Schema({ timestamps: true })
 export class Coupon {
-  @Prop({ required: true })
-  storeId: string;
+  // 'platform' coupons (admin-issued, e.g. WELCOME10) have no single store —
+  // storeId/sellerId stay null and the code is looked up globally instead.
+  @Prop({ type: String, enum: ['seller', 'platform'], default: 'seller' })
+  scope: 'seller' | 'platform';
 
-  @Prop({ required: true })
-  sellerId: string;
+  @Prop({ type: String, default: null })
+  storeId: string | null;
+
+  @Prop({ type: String, default: null })
+  sellerId: string | null;
+
+  // set only for scope: 'platform' — which admin created it
+  @Prop({ type: String, default: null })
+  adminId: string | null;
 
   @Prop({ required: true, uppercase: true, trim: true })
   code: string;
@@ -42,5 +51,14 @@ export class Coupon {
 
 export const CouponSchema = SchemaFactory.createForClass(Coupon);
 
-CouponSchema.index({ storeId: 1, code: 1 }, { unique: true });
+// Uniqueness is scope-specific: a seller's code only needs to be unique within
+// their own store; a platform code (storeId null) must be unique globally.
+CouponSchema.index(
+  { storeId: 1, code: 1 },
+  { unique: true, partialFilterExpression: { scope: 'seller' } },
+);
+CouponSchema.index(
+  { code: 1 },
+  { unique: true, partialFilterExpression: { scope: 'platform' } },
+);
 CouponSchema.index({ storeId: 1, isActive: 1 });

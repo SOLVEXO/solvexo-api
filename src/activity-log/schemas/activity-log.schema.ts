@@ -18,6 +18,8 @@ export const ACTIVITY_LOG_CATEGORIES = [
   'platform_plans',
   'seo',
   'ai_studio',
+  'announcements',
+  'moderation',
 ] as const;
 
 export type ActivityLogCategory = (typeof ACTIVITY_LOG_CATEGORIES)[number];

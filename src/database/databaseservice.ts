@@ -233,6 +233,15 @@ export class DatabaseService {
     @InjectModel(schema.NotificationPreference.name)
     private notificationPreferenceModel: Model<schema.NotificationPreferenceDocument>,
 
+    @InjectModel(schema.PlatformConfig.name)
+    private platformConfigModel: Model<schema.PlatformConfigDocument>,
+
+    @InjectModel(schema.Announcement.name)
+    private announcementModel: Model<schema.AnnouncementDocument>,
+
+    @InjectModel(schema.Campaign.name)
+    private campaignModel: Model<schema.CampaignDocument>,
+
   ) { }
 
   get repositories() {
@@ -315,6 +324,9 @@ export class DatabaseService {
       notificationModel: this.notificationModel,
       deviceTokenModel: this.deviceTokenModel,
       notificationPreferenceModel: this.notificationPreferenceModel,
+      platformConfigModel: this.platformConfigModel,
+      announcementModel: this.announcementModel,
+      campaignModel: this.campaignModel,
     };
   }
 }

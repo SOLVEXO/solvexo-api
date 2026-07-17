@@ -9,7 +9,9 @@ export class Report {
   @Prop({ type: String, required: true }) reporterId: string;
   @Prop({ type: String, required: true }) reporterRole: string;
 
-  @Prop({ type: String, enum: ['user', 'message', 'conversation'], required: true }) targetType: string;
+  // 'listing' | 'seller' | 'review' added for admin Content Moderation
+  // (marketplace-wide flags), on top of the original messaging-abuse types.
+  @Prop({ type: String, enum: ['user', 'message', 'conversation', 'listing', 'seller', 'review'], required: true }) targetType: string;
   @Prop({ type: String, required: true }) targetId: string;
 
   @Prop({ type: String, required: true }) reason: string;
@@ -17,6 +19,12 @@ export class Report {
 
   @Prop({ type: String, enum: ['pending', 'reviewed', 'resolved'], default: 'pending' }) status: string;
   @Prop({ type: String, default: null }) adminNotes: string | null;
+
+  // Content Moderation additions
+  @Prop({ type: String, enum: ['high', 'medium', 'low'], default: 'low' }) riskLevel: string;
+  @Prop({ type: String, enum: ['approved', 'removed'], default: null }) resolution: string | null;
+  @Prop({ type: String, default: null }) reviewedBy: string | null;
+  @Prop({ type: Date, default: null }) resolvedAt: Date | null;
 }
 
 export const ReportSchema = SchemaFactory.createForClass(Report);

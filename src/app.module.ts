@@ -42,6 +42,12 @@ import { PlatformPlansModule } from './platform-plans/platform-plans.module';
 import { SeoModule } from './seo/seo.module';
 import { AiStudioModule } from './ai-studio/ai-studio.module';
 import { NotificationsModule } from './notifications/notifications.module';
+import { AdminConfigModule } from './admin-config/admin-config.module';
+import { AdminAnnouncementsModule } from './admin-announcements/admin-announcements.module';
+import { AdminMarketplaceModule } from './admin-marketplace/admin-marketplace.module';
+import { AdminModerationModule } from './admin-moderation/admin-moderation.module';
+import { AdminUsersModule } from './admin-users/admin-users.module';
+import { AdminMarketingModule } from './admin-marketing/admin-marketing.module';
 
 @Module({
   imports: [
@@ -92,6 +98,12 @@ import { NotificationsModule } from './notifications/notifications.module';
     AdminAnalyticsModule,
     AdminFinanceModule,
     SeoModule,
+    AdminConfigModule,
+    AdminAnnouncementsModule,
+    AdminMarketplaceModule,
+    AdminModerationModule,
+    AdminUsersModule,
+    AdminMarketingModule,
   ],
   controllers: [AppController],
   providers: [

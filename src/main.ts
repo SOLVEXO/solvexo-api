@@ -5,6 +5,7 @@ import { AppModule } from './app.module';
 import cookieParser from 'cookie-parser';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { SeoMonitoringService } from './seo/services/seo-monitoring.service';
+import { AdminConfigService } from './admin-config/admin-config.service';
 
 
 async function bootstrap() {
@@ -31,6 +32,26 @@ async function bootstrap() {
     res.on('finish', () => {
       seoMonitoringService.recordHitIfBot(req.headers['user-agent'], req.path, res.statusCode, null, req.ip);
     });
+    next();
+  });
+
+  // Platform-wide maintenance mode (admin-config feature) — short-circuits
+  // every request with a 503 the frontend recognizes and redirects to a
+  // maintenance page for, EXCEPT admin/auth/health routes so an admin can
+  // still log in and turn it back off. AdminConfigService caches the flag
+  // in-memory for a few seconds, so this adds no real per-request DB cost.
+  const adminConfigService = app.get(AdminConfigService);
+  app.use(async (req: any, res: any, next: () => void) => {
+    if (req.path.startsWith('/api/admin') || req.path.startsWith('/api/auth') || req.path.startsWith('/health') || req.path === '/api') {
+      return next();
+    }
+    if (await adminConfigService.isMaintenanceMode()) {
+      return res.status(503).json({
+        success: false,
+        maintenanceMode: true,
+        message: 'Solvexo is currently undergoing scheduled maintenance. Please check back shortly.',
+      });
+    }
     next();
   });
 

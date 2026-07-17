@@ -16,6 +16,8 @@ import { OptionalJwtAuthGuard } from '../auth/guards/optional-jwt-auth.guard';
 import { Roles } from '../auth/decorators/roles.decorator'
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { CreateProductVariantDto} from './dto/productVariant.dto'
+import { FeatureFlagGuard } from '../admin-config/guards/feature-flag.guard';
+import { RequireFeature } from '../admin-config/decorators/require-feature.decorator';
 
 @Controller('api/products')
 export class productController {
@@ -71,7 +73,8 @@ async updateProduct(@Req() req: any, @Body() body: any) {
   return this.ProductsService.updateProduct(sellerId, body, req.ip, req.headers['user-agent']);
 }
 
-@UseGuards(OptionalJwtAuthGuard)
+@UseGuards(OptionalJwtAuthGuard, FeatureFlagGuard)
+@RequireFeature('marketplace')
 @Get('products-by-category')
 async getProductsByCategoryId(
   @Req() req: any,
@@ -82,7 +85,8 @@ async getProductsByCategoryId(
   return this.ProductsService.getProductsByCategoryId(id, page, limit, req.user?.userId ?? null);
 }
 
-@UseGuards(OptionalJwtAuthGuard)
+@UseGuards(OptionalJwtAuthGuard, FeatureFlagGuard)
+@RequireFeature('marketplace')
 @Get('getProductById/:id')
 async getProductById(@Req() req: any, @Param('id') id: string) {
   return this.ProductsService.getProductById(id, req.user?.userId ?? null);
@@ -101,8 +105,9 @@ async addPhysicalProduct(@Req() req: any, @Body() body: any) {
   return this.ProductsService.addPhysicalProduct(sellerId, body);
 }
 
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, FeatureFlagGuard)
 @Roles('seller')
+@RequireFeature('digitalUploads')
 @Post('add-digital-product')
 async addDigitalProduct(@Req() req: any, @Body() body: any) {
   const { userId: sellerId } = req.user;

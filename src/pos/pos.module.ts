@@ -5,9 +5,10 @@ import { PosService } from './pos.service';
 import { StoreLocationService } from './store-location.service';
 import { AuthModule } from 'src/auth/auth.module';
 import { RedisModule } from 'src/redis/redis.module';
+import { AdminConfigModule } from 'src/admin-config/admin-config.module';
 
 @Module({
-  imports: [AuthModule, RedisModule],
+  imports: [AuthModule, RedisModule, AdminConfigModule],
   controllers: [PosController],
   providers: [PosService, StoreLocationService],
 })

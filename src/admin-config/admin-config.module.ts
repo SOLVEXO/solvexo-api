@@ -1,0 +1,15 @@
+/* eslint-disable prettier/prettier */
+import { Module } from '@nestjs/common';
+import { AuthModule } from '../auth/auth.module';
+import { RedisModule } from '../redis/redis.module';
+import { AdminConfigController } from './admin-config.controller';
+import { AdminConfigService } from './admin-config.service';
+import { FeatureFlagGuard } from './guards/feature-flag.guard';
+
+@Module({
+  imports: [AuthModule, RedisModule],
+  controllers: [AdminConfigController],
+  providers: [AdminConfigService, FeatureFlagGuard],
+  exports: [AdminConfigService, FeatureFlagGuard],
+})
+export class AdminConfigModule {}

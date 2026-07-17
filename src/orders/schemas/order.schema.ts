@@ -226,6 +226,15 @@ export class Order {
   @Prop({ default: 0 })
   subscriberDiscountTotal: number;
 
+  // Coupon discount carried over from the parent Checkout, prorated onto this
+  // order's share of the checkout subtotal when a checkout splits into a
+  // physical + digital order pair — see PaymentService.placeOrder.
+  @Prop({ type: String, default: null })
+  couponCode: string | null;
+
+  @Prop({ default: 0 })
+  couponDiscountUSD: number;
+
   @Prop({ required: true })
   totalAmount: number;
 

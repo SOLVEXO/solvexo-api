@@ -6,6 +6,8 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { StoreService } from './store.service';
 import { UpdateStoreCustomerDto } from './dto/update-store-customer.dto';
+import { FeatureFlagGuard } from '../admin-config/guards/feature-flag.guard';
+import { RequireFeature } from '../admin-config/decorators/require-feature.decorator';
 
 @Controller('api/store')
 export class StoreController {
@@ -58,8 +60,9 @@ export class StoreController {
 
   // ── Builder APIs ──────────────────────────────────────────────────────────
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, FeatureFlagGuard)
   @Roles('seller')
+  @RequireFeature('storeBuilder')
   @Post('save-builder-config')
   async saveBuilderConfig(@Req() req: any, @Body() body: any) {
     const { userId } = req.user;

@@ -2,6 +2,7 @@
 import { Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
 import { RedisModule } from '../redis/redis.module';
+import { AdminConfigModule } from '../admin-config/admin-config.module';
 import { AiStudioController } from './ai-studio.controller';
 import { AiStudioService } from './ai-studio.service';
 import { AiStudioCreditsService } from './ai-studio-credits.service';
@@ -33,7 +34,7 @@ import { ImageEnhanceService } from './providers/image-enhance.service';
  * See src/ai-studio/README.md for env vars and provider plug-in points.
  */
 @Module({
-  imports: [AuthModule, RedisModule],
+  imports: [AuthModule, RedisModule, AdminConfigModule],
   controllers: [AiStudioController, AdminAiStudioController],
   providers: [
     AiStudioService,

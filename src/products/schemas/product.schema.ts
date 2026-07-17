@@ -147,6 +147,11 @@ export class Product {
   @Prop({ default: false })
   isListedOnSolvexo: boolean;
 
+  // admin marketplace-management toggle — highlights the listing on the
+  // marketplace homepage, separate from seller-controlled fields above
+  @Prop({ default: false })
+  isFeatured: boolean;
+
   @Prop({ default: false })
   isDelete: boolean;
 

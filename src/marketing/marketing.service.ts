@@ -135,4 +135,90 @@ export class MarketingService {
 
     return { success: true, message: 'Coupon deleted' };
   }
+
+  // ─── Platform-wide sale campaigns (admin-created, seller opt-in) ────────
+
+  async getJoinableCampaigns(sellerId: string, storeId: string) {
+    await this.verifyStoreOwnership(storeId, sellerId);
+
+    const now = new Date();
+    const campaigns = await this.r.campaignModel
+      .find({ isDelete: false, status: 'active', endDate: { $gte: now } })
+      .sort({ startDate: 1 })
+      .lean();
+
+    const data = campaigns.map((c) => ({ ...c, isJoined: c.participatingStoreIds.includes(storeId) }));
+    return { success: true, data };
+  }
+
+  async joinCampaign(sellerId: string, storeId: string, campaignId: string, ip?: string, userAgent?: string) {
+    await this.verifyStoreOwnership(storeId, sellerId);
+
+    const campaign = await this.r.campaignModel.findOne({ _id: campaignId, isDelete: false, status: 'active' });
+    if (!campaign) throw new NotFoundException('Campaign not found or not active');
+
+    if (!campaign.participatingStoreIds.includes(storeId)) {
+      await this.r.campaignModel.findByIdAndUpdate(campaignId, { $addToSet: { participatingStoreIds: storeId } });
+    }
+
+    this.activityLogService.log({
+      storeId,
+      category: 'marketing',
+      action: 'campaign_joined',
+      description: `Joined platform campaign "${campaign.name}"`,
+      actorId: sellerId,
+      actorRole: 'seller',
+      targetId: campaignId,
+      targetType: 'campaign',
+      ip,
+      userAgent,
+    });
+
+    return { success: true, message: 'Joined campaign' };
+  }
+
+  async leaveCampaign(sellerId: string, storeId: string, campaignId: string, ip?: string, userAgent?: string) {
+    await this.verifyStoreOwnership(storeId, sellerId);
+
+    const campaign = await this.r.campaignModel.findOne({ _id: campaignId, isDelete: false });
+    if (!campaign) throw new NotFoundException('Campaign not found');
+
+    await this.r.campaignModel.findByIdAndUpdate(campaignId, { $pull: { participatingStoreIds: storeId } });
+
+    this.activityLogService.log({
+      storeId,
+      category: 'marketing',
+      action: 'campaign_left',
+      description: `Left platform campaign "${campaign.name}"`,
+      actorId: sellerId,
+      actorRole: 'seller',
+      targetId: campaignId,
+      targetType: 'campaign',
+      ip,
+      userAgent,
+    });
+
+    return { success: true, message: 'Left campaign' };
+  }
+
+  // ─── Public consumption (buyer marketplace/homepage banner) ────────────
+  async getPublicActiveCampaigns() {
+    const now = new Date();
+    const campaigns = await this.r.campaignModel
+      .find({ isDelete: false, status: 'active', startDate: { $lte: now }, endDate: { $gte: now } })
+      .sort({ endDate: 1 })
+      .lean();
+
+    const data = campaigns.map((c) => ({
+      _id: c._id,
+      name: c.name,
+      description: c.description,
+      bannerImage: c.bannerImage,
+      endDate: c.endDate,
+      discountType: c.discountType,
+      discountValue: c.discountValue,
+      storeCount: c.participatingStoreIds.length,
+    }));
+    return { success: true, data };
+  }
 }

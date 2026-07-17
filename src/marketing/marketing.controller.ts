@@ -35,4 +35,21 @@ export class MarketingController {
   deleteCoupon(@Req() req: any, @Param('storeId') storeId: string, @Param('couponId') couponId: string) {
     return this.marketingService.deleteCoupon(req.user.userId, storeId, couponId, req.ip, req.headers['user-agent']);
   }
+
+  // ─── Platform-wide sale campaigns (admin-created, seller opt-in) ────────
+
+  @Get(':storeId/campaigns')
+  getJoinableCampaigns(@Req() req: any, @Param('storeId') storeId: string) {
+    return this.marketingService.getJoinableCampaigns(req.user.userId, storeId);
+  }
+
+  @Post(':storeId/campaigns/:campaignId/join')
+  joinCampaign(@Req() req: any, @Param('storeId') storeId: string, @Param('campaignId') campaignId: string) {
+    return this.marketingService.joinCampaign(req.user.userId, storeId, campaignId, req.ip, req.headers['user-agent']);
+  }
+
+  @Delete(':storeId/campaigns/:campaignId/leave')
+  leaveCampaign(@Req() req: any, @Param('storeId') storeId: string, @Param('campaignId') campaignId: string) {
+    return this.marketingService.leaveCampaign(req.user.userId, storeId, campaignId, req.ip, req.headers['user-agent']);
+  }
 }

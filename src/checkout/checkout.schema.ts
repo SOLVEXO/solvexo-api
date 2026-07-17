@@ -97,6 +97,15 @@ export class Checkout {
   @Prop({ default: 0 })
   subscriberSavingsUSD: number;
 
+  // Coupon (seller store coupon OR platform-wide coupon) applied at checkout
+  // time via CheckoutService.applyCoupon — distinct from subscriberSavingsUSD,
+  // which is a membership benefit, not a code the buyer typed in.
+  @Prop({ type: String, default: null })
+  couponCode: string | null;
+
+  @Prop({ default: 0 })
+  couponDiscountUSD: number;
+
   @Prop({ required: true })
   totalAmount: number;
 

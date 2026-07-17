@@ -24,6 +24,8 @@ export class PaymentService {
     // this.stripe = new Stripe(secretKey, { apiVersion: '2025-04-30.basil' as any });
   }
 
+  private round(n: number) { return Math.round(n * 100) / 100; }
+
 // async initiatePayment(userId: string, body: any) {
 //   const { checkoutId } = body;
 //   if (!checkoutId) throw new BadRequestException('checkoutId is required');
@@ -355,12 +357,20 @@ private async createOrder(
 
   const createdOrders: any[] = [];
 
+  // Coupon discount was computed against the WHOLE checkout's subtotal
+  // (CheckoutService.applyCoupon) but a checkout can split into a physical +
+  // digital Order pair here — prorate it by each group's share of the
+  // checkout subtotal, same reasoning as the existing per-item
+  // subscriberDiscountUSD split above.
+  const couponDiscountRatio = checkout.subtotal > 0 ? (checkout.couponDiscountUSD || 0) / checkout.subtotal : 0;
+
   // === PHYSICAL ORDER ===
   if (physicalItems.length > 0) {
     const sellerOrders = buildSellerOrders(physicalItems);
     const subtotal = physicalItems.reduce((s: number, i: any) => s + i.totalPrice, 0);
     const shippingFee = checkout.shippingFee || 0;
     const subscriberDiscountTotal = physicalItems.reduce((s: number, i: any) => s + (i.subscriberDiscountUSD ?? 0), 0);
+    const couponDiscountUSD = this.round(subtotal * couponDiscountRatio);
 
     const physicalOrder = await orderModel.create({
       orderNumber: genOrderNumber(),
@@ -373,7 +383,9 @@ private async createOrder(
       shippingFee,
       taxAmount: 0,
       subscriberDiscountTotal,
-      totalAmount: subtotal + shippingFee,
+      couponCode: checkout.couponCode ?? null,
+      couponDiscountUSD,
+      totalAmount: this.round(subtotal + shippingFee - couponDiscountUSD),
       paymentType,
       paymentStatus: isPaid ? 'paid' : 'unpaid',
       isPaid,
@@ -390,6 +402,7 @@ private async createOrder(
     const sellerOrders = buildSellerOrders(digitalItems);
     const subtotal = digitalItems.reduce((s: number, i: any) => s + i.totalPrice, 0);
     const subscriberDiscountTotal = digitalItems.reduce((s: number, i: any) => s + (i.subscriberDiscountUSD ?? 0), 0);
+    const couponDiscountUSD = this.round(subtotal * couponDiscountRatio);
 
     const digitalOrder = await orderModel.create({
       orderNumber: genOrderNumber(),
@@ -402,7 +415,9 @@ private async createOrder(
       shippingFee: 0,
       taxAmount: 0,
       subscriberDiscountTotal,
-      totalAmount: subtotal,
+      couponCode: checkout.couponCode ?? null,
+      couponDiscountUSD,
+      totalAmount: this.round(subtotal - couponDiscountUSD),
       paymentType,
       paymentStatus: isPaid ? 'paid' : 'unpaid',
       isPaid,

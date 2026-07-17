@@ -94,3 +94,7 @@ export { AiCreditTransaction, AiCreditTransactionDocument, AiCreditTransactionSc
 export { Notification, NotificationDocument, NotificationSchema } from '../notifications/schemas/notification.schema';
 export { DeviceToken, DeviceTokenDocument, DeviceTokenSchema } from '../notifications/schemas/device-token.schema';
 export { NotificationPreference, NotificationPreferenceDocument, NotificationPreferenceSchema } from '../notifications/schemas/notification-preference.schema';
+
+export { PlatformConfig, PlatformConfigDocument, PlatformConfigSchema } from '../admin-config/schemas/platform-config.schema';
+export { Announcement, AnnouncementDocument, AnnouncementSchema } from '../admin-announcements/schemas/announcement.schema';
+export { Campaign, CampaignDocument, CampaignSchema } from '../marketing/schemas/campaign.schema';
