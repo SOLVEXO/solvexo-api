@@ -7,8 +7,6 @@ import {
 
 import { DatabaseService } from 'src/database/databaseservice';
 import { ProductType as StoreProductType } from 'src/store/schemas/store.schema';
-import { CreateProductDto } from './dto/create-product.dto';
-import { CreateProductVariantDto } from './dto/productVariant.dto';
 import { ActivityLogService } from 'src/activity-log/activity-log.service';
 import { SubscriptionBenefitsService } from 'src/subscriptions/subscription-benefits.service';
 import { EntitlementsService } from 'src/platform-plans/entitlements.service';
@@ -57,445 +55,21 @@ export class ProductsService {
       };
     });
   }
-async addProduct(
-  sellerId: string,
-  role: string,
-  createProductDto: CreateProductDto
-) {
-  try {
 
-    const productModel = this.databaseService.repositories.productModel;
-
-    // ADMIN CHECK
-    if (role === 'admin') {
-
-      const admin = await this.databaseService.repositories.adminModel.findOne({
-        _id: sellerId,
-        status: 'active',
-        isDelete: false
-      });
-
-      if (!admin) {
-        throw new UnauthorizedException('Unauthorized admin');
-      }
-
-    }
-
-    // SELLER CHECK
-    if (role === 'seller') {
-
-      const seller = await this.databaseService.repositories.sellerModel.findOne({
-        _id: sellerId,
-        status: 'active',
-        isDelete: false
-      });
-
-      if (!seller) {
-        throw new UnauthorizedException('Unauthorized seller');
-      }
-
-    }
-
-    const {
-      name,
-      slug,
-      description,
-      categoryId
-    } = createProductDto;
-
-    // check duplicate product for same seller
-    const existingProduct = await productModel.findOne({
-      name,
-      slug,
-      categoryId,
-      sellerId,
-      status: 'active',
-      isDelete: false
-    });
-
-    if (existingProduct) {
-      throw new BadRequestException('Product already exists');
-    }
-
-    const product = await productModel.create({
-      name,
-      slug,
-      description: description ,
-      sellerId,
-      categoryId
-    });
-
+  // Strips the private Cloudinary file manifest (publicId/name/size/mimeType)
+  // from a digital product's `digital.files` before it's shown to a
+  // non-owner — pre-purchase browsers only need to know *how many* files
+  // they'll get, never the storage manifest itself. The actual bytes are
+  // only ever reachable through OrdersService's signed download flow after
+  // payment, regardless of this — but the manifest shouldn't leak either.
+  private sanitizeDigitalForPublicView<T extends { digital?: any }>(product: T): T {
+    if (!product?.digital) return product;
+    const { files, ...safeDigital } = product.digital;
     return {
-      message: 'Product created successfully',
-      data: product
+      ...product,
+      digital: { ...safeDigital, fileCount: Array.isArray(files) ? files.length : 0 },
     };
-
-  } catch (error: any) {
-
-    throw new BadRequestException(
-      error.message || 'Failed to create product'
-    );
-
   }
-}
-
-
-async addProductVariant(
-  sellerId: string,
-  role: string,
-  createProductVariantDto: CreateProductVariantDto
-) {
-
-  try {
-
-    const productModel = this.databaseService.repositories.productModel;
-    const variantModel = this.databaseService.repositories.productVariantModel;
-
-    const {
-      productId,
-      sku,
-      size,
-      color,
-      price,
-      stock,
-      images
-    } = createProductVariantDto;
-
-   
-    const product = await productModel.findOne({
-      _id: productId,
-      status: 'active',
-      isDelete: false
-    });
-
-    if (!product) {
-      throw new BadRequestException('Product not found');
-    }
-
-    // seller authorization
-    if (role === 'seller' && product.sellerId.toString() !== sellerId) {
-      throw new UnauthorizedException('Unauthorized seller');
-    }
-
-    // duplicate SKU check
-    const existingVariant = await variantModel.findOne({
-      sku,
-      productId,
-      isDelete: false,
-      status: 'active'
-    });
-
-    if (existingVariant) {
-      throw new BadRequestException('Variant with this SKU already exists');
-    }
-
-    const variant = await variantModel.create({
-      productId,
-      sku,
-      size: size || null,
-      color: color || null,
-      price,
-      stock: stock || 0,
-      images: images || []
-    });
-
-    return {
-      message: 'Product variant created successfully',
-      data: variant
-    };
-
-  } catch (error: any) {
-
-    throw new BadRequestException(
-      error.message || 'Failed to create product variant'
-    );
-
-  }
-
-}
-
-
-async createProduct(sellerId: string, body: any) {
-  const { storeModel, sellerModel, productModel, productVariantModel } =
-    this.databaseService.repositories;
-
-  const seller = await sellerModel.findOne({ _id: sellerId, status: 'active', isDelete: false });
-  if (!seller) throw new UnauthorizedException('Unauthorized seller');
-
-  const store = await storeModel.findOne({ sellerId, isDelete: false });
-  if (!store) throw new BadRequestException('Store not found. Please create a store first');
-  if (store.status !== 'active') throw new BadRequestException('Your store is not active');
-
-  const storeId = store._id.toString();
-
-  // Platform-plan product-count gate (Starter/Free etc.) — EntitlementsService
-  // is the single owner of platform-tier limits; the older
-  // PlatformSubscriptionsService gate was dropped here to avoid two competing
-  // plan systems both blocking product creation.
-  await this.entitlementsService.assertCanCreateProduct(storeId);
-
-  const {
-    name, description, productType, subCategoryId,
-    images, tags, isListedOnSolvexo, status,
-    price, compareAtPrice, stock, shippingWeight,
-    size, color, fileUrl, fileName, fileSize, fileMimeType,
-  } = body;
-
-  if (!name) throw new BadRequestException('Product name is required');
-  if (!productType) throw new BadRequestException('Product type is required');
-  if (price === undefined || price === null) throw new BadRequestException('Price is required');
-
-  const validTypes = ['physical', 'digital', 'educational'];
-  if (!validTypes.includes(productType)) throw new BadRequestException('Invalid product type');
-
-  if (store.productTypes?.length > 0) {
-    const storeTypeMap: Record<string, string> = {
-      physical_products: 'physical',
-      digital_downloads: 'digital',
-      educational_resources: 'educational',
-    };
-    const allowedTypes = store.productTypes.map((t: string) => storeTypeMap[t]).filter(Boolean);
-    if (!allowedTypes.includes(productType)) {
-      throw new BadRequestException(`Your store does not support "${productType}" product type`);
-    }
-  }
-
-  const categoryId = store.categoryId;
-  if (!categoryId) throw new BadRequestException('Your store has no category selected');
-
-  const baseSlug = name.toLowerCase().trim().replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-').replace(/-+/g, '-');
-  let slug = baseSlug;
-  let count = 1;
-  while (await productModel.findOne({ slug })) {
-    slug = `${baseSlug}-${count}`;
-    count++;
-  }
-
-  const product = await productModel.create({
-    sellerId,
-    storeId,
-    name,
-    slug,
-    description: description ?? null,
-    productType,
-    categoryId,
-    subCategoryId: subCategoryId ?? null,
-    images: images ?? [],
-    tags: tags ?? [],
-    isListedOnSolvexo: isListedOnSolvexo ?? false,
-    status: status ?? 'draft',
-  });
-
-  if (product.status === 'active') await this.applyEarlyAccessWindow(product);
-
-  const sku = `SKU-${product._id.toString().slice(-6).toUpperCase()}-${Date.now().toString().slice(-4)}`;
-
-  let variantData: any = {
-    productId: product._id.toString(),
-    sku,
-    price,
-    compareAtPrice: compareAtPrice ?? null,
-    isDefault: true,
-    images: [],
-  };
-
-  if (productType === 'physical') {
-    variantData.size = size ?? null;
-    variantData.color = color ?? null;
-    variantData.stock = stock ?? 0;
-    variantData.shippingWeight = shippingWeight ?? null;
-    variantData.fileUrl = null;
-    variantData.fileName = null;
-    variantData.fileSize = null;
-    variantData.fileMimeType = null;
-  } else {
-    if (!fileUrl) throw new BadRequestException('fileUrl is required for digital/educational products');
-    variantData.fileUrl = fileUrl;
-    variantData.fileName = fileName ?? null;
-    variantData.fileSize = fileSize ?? null;
-    variantData.fileMimeType = fileMimeType ?? null;
-    variantData.size = null;
-    variantData.color = null;
-    variantData.stock = 0;
-    variantData.shippingWeight = null;
-  }
-
-  const defaultVariant = await productVariantModel.create(variantData);
-
-  return {
-    success: true,
-    message: 'Product created successfully',
-    data: { product, defaultVariant },
-  };
-}
-
-async createVariant(sellerId: string, body: any) {
-  const { productModel, productVariantModel, sellerModel } =
-    this.databaseService.repositories;
-
-  const seller = await sellerModel.findOne({ _id: sellerId, status: 'active', isDelete: false });
-  if (!seller) throw new UnauthorizedException('Unauthorized seller');
-
-  const { productId, price, compareAtPrice, size, color, stock, shippingWeight, images, fileUrl, fileName, fileSize, fileMimeType } = body;
-
-  if (!productId) throw new BadRequestException('productId is required');
-  if (price === undefined || price === null) throw new BadRequestException('Price is required');
-
-  const product = await productModel.findOne({ _id: productId, isDelete: false });
-  if (!product) throw new BadRequestException('Product not found');
-
-  if (product.sellerId !== sellerId) throw new UnauthorizedException('You are not authorized to add variant to this product');
-
-  const sku = `SKU-${productId.slice(-6).toUpperCase()}-${Date.now().toString().slice(-4)}`;
-
-  let variantData: any = {
-    productId,
-    sku,
-    price,
-    compareAtPrice: compareAtPrice ?? null,
-    isDefault: false,
-    images: images ?? [],
-  };
-
-  if (product.productType === 'physical') {
-    variantData.size = size ?? null;
-    variantData.color = color ?? null;
-    variantData.stock = stock ?? 0;
-    variantData.shippingWeight = shippingWeight ?? null;
-    variantData.fileUrl = null;
-    variantData.fileName = null;
-    variantData.fileSize = null;
-    variantData.fileMimeType = null;
-  } else {
-    if (!fileUrl) throw new BadRequestException('fileUrl is required for digital/educational products');
-    variantData.fileUrl = fileUrl;
-    variantData.fileName = fileName ?? null;
-    variantData.fileSize = fileSize ?? null;
-    variantData.fileMimeType = fileMimeType ?? null;
-    variantData.size = null;
-    variantData.color = null;
-    variantData.stock = 0;
-    variantData.shippingWeight = null;
-  }
-
-  const variant = await productVariantModel.create(variantData);
-
-  return {
-    success: true,
-    message: 'Variant added successfully',
-    data: variant,
-  };
-}
-
-async updateProduct(sellerId: string, body: any, ip?: string, userAgent?: string) {
-  const { productModel, productVariantModel, sellerModel } = this.databaseService.repositories;
-
-  const {
-    productId, variantId,
-    name, description, subCategoryId, images, tags, isListedOnSolvexo, status,
-    price, compareAtPrice, stock, shippingWeight, size, color,
-    fileUrl, fileName, fileSize, fileMimeType,
-  } = body;
-
-  if (!productId) throw new BadRequestException('productId is required');
-
-  const seller = await sellerModel.findOne({ _id: sellerId, status: 'active', isDelete: false });
-  if (!seller) throw new UnauthorizedException('Unauthorized seller');
-
-  const product = await productModel.findOne({ _id: productId, isDelete: false });
-  if (!product) throw new BadRequestException('Product not found');
-
-  if (product.sellerId !== sellerId) throw new UnauthorizedException('You are not authorized to edit this product');
-
-  // ── Product update ──
-  const productUpdate: any = {};
-
-  if (name && name !== product.name) {
-    const baseSlug = name.toLowerCase().trim().replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-').replace(/-+/g, '-');
-    let slug = baseSlug;
-    let count = 1;
-    while (await productModel.findOne({ slug, _id: { $ne: productId } })) {
-      slug = `${baseSlug}-${count}`;
-      count++;
-    }
-    productUpdate.name = name;
-    productUpdate.slug = slug;
-  }
-
-  if (description !== undefined) productUpdate.description = description;
-  if (subCategoryId !== undefined) productUpdate.subCategoryId = subCategoryId;
-  if (images !== undefined) productUpdate.images = images;
-  if (tags !== undefined) productUpdate.tags = tags;
-  if (isListedOnSolvexo !== undefined) productUpdate.isListedOnSolvexo = isListedOnSolvexo;
-  if (status !== undefined) productUpdate.status = status;
-
-  const updatedProduct = Object.keys(productUpdate).length > 0
-    ? await productModel.findByIdAndUpdate(productId, productUpdate, { new: true })
-    : product;
-
-  // ── Variant update ──
-  let targetVariant: any;
-
-  if (variantId) {
-    targetVariant = await productVariantModel.findOne({ _id: variantId, productId, isDelete: false });
-    if (!targetVariant) throw new BadRequestException('Variant not found');
-  } else {
-    targetVariant = await productVariantModel.findOne({ productId, isDefault: true, isDelete: false });
-  }
-
-  let updatedVariant = targetVariant;
-  const oldPrice = targetVariant ? (targetVariant as any).price : undefined;
-
-  if (targetVariant) {
-    const variantUpdate: any = {};
-
-    if (price !== undefined) variantUpdate.price = price;
-    if (compareAtPrice !== undefined) variantUpdate.compareAtPrice = compareAtPrice;
-
-    if (product.productType === 'physical') {
-      if (size !== undefined) variantUpdate.size = size;
-      if (color !== undefined) variantUpdate.color = color;
-      if (stock !== undefined) variantUpdate.stock = stock;
-      if (shippingWeight !== undefined) variantUpdate.shippingWeight = shippingWeight;
-    } else {
-      if (fileUrl !== undefined) variantUpdate.fileUrl = fileUrl;
-      if (fileName !== undefined) variantUpdate.fileName = fileName;
-      if (fileSize !== undefined) variantUpdate.fileSize = fileSize;
-      if (fileMimeType !== undefined) variantUpdate.fileMimeType = fileMimeType;
-    }
-
-    if (Object.keys(variantUpdate).length > 0) {
-      updatedVariant = await productVariantModel.findByIdAndUpdate(
-        targetVariant._id, variantUpdate, { new: true }
-      );
-    }
-  }
-
-  const priceChanged = price !== undefined && oldPrice !== undefined && price !== oldPrice;
-
-  this.activityLogService.log({
-    storeId: (updatedProduct as any).storeId,
-    category: 'products',
-    action: priceChanged ? 'product_price_updated' : 'product_updated',
-    description: priceChanged
-      ? `${(updatedProduct as any).name}: $${oldPrice} → $${price}`
-      : `Updated ${(updatedProduct as any).name}`,
-    actorId: sellerId,
-    actorRole: 'seller',
-    targetId: productId,
-    targetType: 'product',
-    ip,
-    userAgent,
-  });
-
-  return {
-    success: true,
-    message: 'Updated successfully',
-    data: { product: updatedProduct, variant: updatedVariant },
-  };
-}
-
-
 async getProductsByCategoryId(
   parentCategoryId?: string,
   page: number = 1,
@@ -570,7 +144,7 @@ async getProductsByCategoryId(
   const storeIds = [...new Set(products.map(p => p.storeId).filter(Boolean))];
   const benefitsMap = await this.subscriptionBenefits.getActiveBenefitsBatch(customerId, storeIds as string[]);
 
-  const productsWithVariants = products.map(p => ({
+  const productsWithVariants = products.map(p => this.sanitizeDigitalForPublicView({
     ...p,
     variants: this.applySubscriberPricing(variantMap[p._id.toString()] || [], p, benefitsMap.get(p.storeId)),
   }));
@@ -610,7 +184,7 @@ private async attachVariantsAndPricing(products: any[], customerId?: string | nu
   const storeIds = [...new Set(products.map(p => p.storeId).filter(Boolean))];
   const benefitsMap = await this.subscriptionBenefits.getActiveBenefitsBatch(customerId ?? null, storeIds as string[]);
 
-  return products.map(p => ({
+  return products.map(p => this.sanitizeDigitalForPublicView({
     ...p,
     variants: this.applySubscriberPricing(variantMap[p._id.toString()] || [], p, benefitsMap.get(p.storeId)),
   }));
@@ -708,14 +282,14 @@ async getProductById(productId: string, customerId?: string | null) {
     isDelete: false
   }).select("slug name logo followersCount").lean();
 
-  const productWithSeller = {
+  const productWithSeller = this.sanitizeDigitalForPublicView({
     ...product,
     sellerName: seller ? seller.name : null,
     storeSlug: store ? store.slug : null,
     storeName: store ? store.name : null,
     storeLogo: store ? store.logo : null,
     storeFollowersCount: store ? (store.followersCount ?? 0) : 0,
-  };
+  });
 
   // 4️⃣ Get variants
   const rawVariants = await productVariantModel.find({
@@ -781,10 +355,10 @@ async getVariantById(variantId: string) {
     _id: product.sellerId
   }).select("name").lean();
 
-  const productWithSeller = {
+  const productWithSeller = this.sanitizeDigitalForPublicView({
     ...product,
     sellerName: seller ? seller.name : null
-  };
+  });
 
   return {
     message: "Variant & Product fetched successfully",

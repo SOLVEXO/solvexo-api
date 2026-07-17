@@ -295,4 +295,164 @@ export class CheckoutService {
 
   }
 }
+
+  /** Validates a seller-created coupon against this checkout and, if valid,
+   *  distributes its discount across only the items belonging to the
+   *  coupon's own store (a coupon never discounts another seller's items in
+   *  a mixed-store cart). Replacing an already-applied coupon reverts the
+   *  old one first so discounts never compound. */
+  async applyCoupon(userId: string, body: any) {
+    const { checkoutId, code } = body;
+    if (!checkoutId) throw new BadRequestException('checkoutId is required');
+    if (!code || !String(code).trim()) throw new BadRequestException('Coupon code is required');
+
+    const { checkoutModel, couponModel } = this.databaseService.repositories;
+
+    const checkout = await checkoutModel.findOne({ _id: checkoutId, userId, isDelete: false });
+    if (!checkout) throw new NotFoundException('Checkout not found');
+    if (checkout.status === 'completed') throw new BadRequestException('Checkout already completed');
+    if (checkout.status === 'cancelled') throw new BadRequestException('Checkout is cancelled');
+    if (checkout.status === 'expired') throw new BadRequestException('Checkout has expired');
+    if (checkout.expiredAt && checkout.expiredAt < new Date()) {
+      await checkoutModel.findByIdAndUpdate(checkout._id, { status: 'expired' });
+      throw new BadRequestException('Checkout has expired');
+    }
+
+    const normalizedCode = String(code).trim().toUpperCase();
+    const items = checkout.items as any[];
+    const storeIdsInCheckout = [...new Set(items.map((i) => i.storeId))];
+
+    const coupon = await couponModel.findOne({
+      code: normalizedCode,
+      storeId: { $in: storeIdsInCheckout },
+      isActive: true,
+      isDelete: false,
+    });
+    if (!coupon) throw new BadRequestException('This coupon code is invalid or not applicable to items in your cart');
+    if (coupon.expiresAt && coupon.expiresAt < new Date()) throw new BadRequestException('This coupon has expired');
+    if (coupon.usageLimit != null && coupon.usageCount >= coupon.usageLimit) {
+      throw new BadRequestException('This coupon has reached its usage limit');
+    }
+
+    // Revert any previously-applied coupon first so re-applying (or
+    // switching codes) always computes from a clean, undiscounted baseline.
+    this.revertCouponFromItems(items);
+
+    const storeItems = items.filter((i) => i.storeId === coupon.storeId);
+    const storeSubtotal = this.round(storeItems.reduce((s, i) => s + i.totalPrice, 0));
+
+    if (coupon.minOrderAmount != null && storeSubtotal < coupon.minOrderAmount) {
+      throw new BadRequestException(
+        `This coupon requires a minimum order of $${coupon.minOrderAmount} from this store`,
+      );
+    }
+
+    const totalDiscount = coupon.discountType === 'percentage'
+      ? this.round(storeSubtotal * (coupon.discountValue / 100))
+      : Math.min(coupon.discountValue, storeSubtotal);
+
+    this.distributeCouponDiscount(storeItems, totalDiscount);
+
+    const newSubtotal = this.round(items.reduce((s, i) => s + i.totalPrice, 0));
+    const newTotal = this.round(newSubtotal + (checkout.shippingFee || 0));
+
+    await checkoutModel.findByIdAndUpdate(checkoutId, {
+      items: items.map((i: any) => (i.toObject ? i.toObject() : i)),
+      subtotal: newSubtotal,
+      totalAmount: newTotal,
+      couponCode: normalizedCode,
+      couponStoreId: coupon.storeId,
+      couponDiscountTotalUSD: totalDiscount,
+    });
+
+    return {
+      success: true,
+      message: 'Coupon applied',
+      data: {
+        checkoutId,
+        couponCode: normalizedCode,
+        couponDiscountUSD: totalDiscount,
+        subtotal: newSubtotal,
+        shippingFee: checkout.shippingFee || 0,
+        totalAmount: newTotal,
+      },
+    };
+  }
+
+  async removeCoupon(userId: string, body: any) {
+    const { checkoutId } = body;
+    if (!checkoutId) throw new BadRequestException('checkoutId is required');
+
+    const { checkoutModel } = this.databaseService.repositories;
+
+    const checkout = await checkoutModel.findOne({ _id: checkoutId, userId, isDelete: false });
+    if (!checkout) throw new NotFoundException('Checkout not found');
+    if (checkout.status === 'completed') throw new BadRequestException('Checkout already completed');
+
+    const items = checkout.items as any[];
+    this.revertCouponFromItems(items);
+
+    const newSubtotal = this.round(items.reduce((s, i) => s + i.totalPrice, 0));
+    const newTotal = this.round(newSubtotal + (checkout.shippingFee || 0));
+
+    await checkoutModel.findByIdAndUpdate(checkoutId, {
+      items: items.map((i: any) => (i.toObject ? i.toObject() : i)),
+      subtotal: newSubtotal,
+      totalAmount: newTotal,
+      couponCode: null,
+      couponStoreId: null,
+      couponDiscountTotalUSD: 0,
+    });
+
+    return {
+      success: true,
+      message: 'Coupon removed',
+      data: {
+        checkoutId,
+        subtotal: newSubtotal,
+        shippingFee: checkout.shippingFee || 0,
+        totalAmount: newTotal,
+      },
+    };
+  }
+
+  /** Restores each item's pre-coupon price/totalPrice in place (mutates the
+   *  passed array) — a no-op for items that never had a coupon applied. */
+  private revertCouponFromItems(items: any[]) {
+    for (const item of items) {
+      if (item.totalPriceBeforeCoupon != null) {
+        item.price = item.priceBeforeCoupon;
+        item.totalPrice = item.totalPriceBeforeCoupon;
+        item.priceBeforeCoupon = null;
+        item.totalPriceBeforeCoupon = null;
+        item.couponDiscountUSD = 0;
+      }
+    }
+  }
+
+  /** Distributes [totalDiscount] proportionally across [storeItems] by each
+   *  item's share of the store subtotal, mutating price/totalPrice in
+   *  place. The last item absorbs the rounding remainder so the sum of
+   *  per-item discounts always equals `totalDiscount` exactly. */
+  private distributeCouponDiscount(storeItems: any[], totalDiscount: number) {
+    if (totalDiscount <= 0 || storeItems.length === 0) return;
+    const storeSubtotal = storeItems.reduce((s, i) => s + i.totalPrice, 0);
+    if (storeSubtotal <= 0) return;
+
+    let allocated = 0;
+    storeItems.forEach((item, idx) => {
+      item.priceBeforeCoupon = item.price;
+      item.totalPriceBeforeCoupon = item.totalPrice;
+
+      const isLast = idx === storeItems.length - 1;
+      const share = isLast
+        ? this.round(totalDiscount - allocated)
+        : this.round(totalDiscount * (item.totalPrice / storeSubtotal));
+      allocated = this.round(allocated + share);
+
+      item.couponDiscountUSD = share;
+      item.totalPrice = this.round(item.totalPrice - share);
+      item.price = item.quantity > 0 ? this.round(item.totalPrice / item.quantity) : item.totalPrice;
+    });
+  }
 }

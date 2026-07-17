@@ -50,6 +50,11 @@ export class OrderItem {
   @Prop({ type: Number, default: 0 })
   subscriberDiscountUSD: number;
 
+  // Coupon discount allocated to this line at checkout — see
+  // CheckoutItem.couponDiscountUSD, copied through at order creation.
+  @Prop({ type: Number, default: 0 })
+  couponDiscountUSD: number;
+
   // cancel/refund item-level pe
   @Prop({
     type: String,
@@ -225,6 +230,14 @@ export class Order {
   // powers seller analytics ("revenue from subscribers", "benefit usage").
   @Prop({ default: 0 })
   subscriberDiscountTotal: number;
+
+  // Copied from Checkout.couponCode/couponDiscountTotalUSD at order-creation
+  // time — see CheckoutService.applyCoupon.
+  @Prop({ type: String, default: null })
+  couponCode: string | null;
+
+  @Prop({ default: 0 })
+  couponDiscountTotal: number;
 
   @Prop({ required: true })
   totalAmount: number;
