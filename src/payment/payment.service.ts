@@ -189,6 +189,16 @@ export class PaymentService {
    *  fallback — the `findOneAndUpdate({status:'pending'})` guard means
    *  whichever caller gets there first wins; the other sees no matching
    *  document and just returns the already-finalized order ids. */
+  /** Fetches order docs by id and shapes them the same way COD orders are
+   *  shaped (`formatOrder`) — the frontend's order-success screen renders
+   *  Stripe and COD orders identically, so both paths must hand it the same shape. */
+  private async formatOrdersByIds(orderIds: string[]) {
+    if (!orderIds.length) return [];
+    const { orderModel } = this.databaseService.repositories;
+    const orders = await orderModel.find({ _id: { $in: orderIds }, isDelete: false }).lean();
+    return orders.map((o: any) => this.formatOrder(o));
+  }
+
   private async finalizePaymentIntent(paymentIntentId: string): Promise<{ orderIds: string[] } | null> {
     const { checkoutModel, paymentTransactionModel, orderModel, addressModel, cartModel } =
       this.databaseService.repositories;
@@ -232,10 +242,12 @@ export class PaymentService {
     return { orderIds: orders.map((o: any) => o._id.toString()) };
   }
 
-  /** Lets the app poll after `presentPaymentSheet()` succeeds client-side,
-   *  since webhook delivery timing can't be relied on from a mobile client
-   *  (and won't reach `localhost` in local dev without a tunnel/Stripe CLI
-   *  at all). Actively re-checks Stripe if the webhook hasn't landed yet. */
+  /** Lets the app poll after `stripe.confirmPayment()` resolves client-side,
+   *  since webhook delivery timing can't be relied on (and won't reach
+   *  `localhost` in local dev without a tunnel/Stripe CLI at all). Actively
+   *  re-checks Stripe if the webhook hasn't landed yet. Returns the same
+   *  `orders` shape as `codPayment` so the order-success screen doesn't need
+   *  a separate code path per payment method. */
   async getPaymentStatus(userId: string, checkoutId: string) {
     if (!checkoutId) throw new BadRequestException('checkoutId is required');
 
@@ -248,7 +260,8 @@ export class PaymentService {
       const transaction = await paymentTransactionModel.findOne({
         checkoutId, status: 'completed', isDelete: false,
       });
-      return { success: true, data: { status: 'completed', orderIds: transaction?.orderIds ?? [] } };
+      const orders = await this.formatOrdersByIds(transaction?.orderIds ?? []);
+      return { success: true, data: { status: 'completed', orders } };
     }
 
     const pending = await paymentTransactionModel.findOne({
@@ -260,17 +273,18 @@ export class PaymentService {
         const pi = await this.stripe.paymentIntents.retrieve(pending.stripePaymentIntentId);
         if (pi.status === 'succeeded') {
           const result = await this.finalizePaymentIntent(pi.id);
-          return { success: true, data: { status: 'completed', orderIds: result?.orderIds ?? [] } };
+          const orders = await this.formatOrdersByIds(result?.orderIds ?? []);
+          return { success: true, data: { status: 'completed', orders } };
         }
         if (pi.status === 'canceled') {
-          return { success: true, data: { status: 'failed', orderIds: [] } };
+          return { success: true, data: { status: 'failed', orders: [] } };
         }
       } catch (err: any) {
         console.error('getPaymentStatus Stripe retrieve failed:', err?.message);
       }
     }
 
-    return { success: true, data: { status: 'pending', orderIds: [] } };
+    return { success: true, data: { status: 'pending', orders: [] } };
   }
 
   // Remove ONLY the lines that were part of this checkout — a checkout created

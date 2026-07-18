@@ -91,6 +91,16 @@ export class StoreController {
     return this.storeService.getTopStores(Math.min(20, parseInt(limit || '10') || 10));
   }
 
+  @Get('public/platform-stats')
+  async getPlatformStats() {
+    return this.storeService.getPlatformStats();
+  }
+
+  @Get('public/testimonials')
+  async getTestimonials(@Query('limit') limit?: string) {
+    return this.storeService.getTestimonials(Math.min(12, parseInt(limit || '6') || 6));
+  }
+
   @Get('public/:slug')
   async getPublicStore(@Param('slug') slug: string) {
     return this.storeService.getPublicStore(slug);

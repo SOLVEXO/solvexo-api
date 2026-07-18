@@ -1,4 +1,13 @@
 /* eslint-disable prettier/prettier */
+import dns from 'dns';
+
+// On this machine Windows advertises stale fec0::/IPv6 site-local addresses as DNS
+// servers on some virtual adapters (Wi-Fi Direct, etc). The OS resolver skips them
+// and falls back to a working server, but Node's resolver (c-ares) does not, causing
+// ECONNREFUSED/EAI_AGAIN on the Mongo SRV lookup and Redis hostname lookup at startup.
+// Pinning known-good public resolvers here bypasses that adapter-ordering issue.
+dns.setServers(['8.8.8.8', '1.1.1.1']);
+
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module';

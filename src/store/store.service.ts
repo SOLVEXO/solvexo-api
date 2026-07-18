@@ -500,6 +500,86 @@ export class StoreService {
     return { success: true, data: { stores: shaped } };
   }
 
+  // ── 3d. Platform-wide stats — homepage stat strip (real numbers, cached) ──
+  async getPlatformStats() {
+    const cacheKey = 'platform-stats:v1';
+    const cached = await this.redisService.get(cacheKey);
+    if (cached) return { success: true, data: JSON.parse(cached) };
+
+    const { sellerModel, orderModel, ratingModel } = this.databaseService.repositories;
+
+    const [sellersCount, gmvAgg, ratingAgg] = await Promise.all([
+      sellerModel.countDocuments({ isDelete: false, status: 'active' }),
+      orderModel.aggregate([
+        { $match: { isPaid: true } },
+        { $group: { _id: null, total: { $sum: '$totalAmount' } } },
+      ]),
+      ratingModel.aggregate([
+        { $match: { isDelete: false, rating: { $ne: null } } },
+        { $group: { _id: null, avg: { $avg: '$rating' }, count: { $sum: 1 } } },
+      ]),
+    ]);
+
+    const data = {
+      sellersCount,
+      gmv: gmvAgg[0]?.total ?? 0,
+      avgRating: ratingAgg[0]?.avg ?? 0,
+      ratingCount: ratingAgg[0]?.count ?? 0,
+    };
+
+    await this.redisService.set(cacheKey, JSON.stringify(data), 600);
+    return { success: true, data };
+  }
+
+  // ── 3e. Testimonials — real, well-written reviews for the homepage social-proof
+  // section. Anonymous reviews stay anonymous; only reviews with real comment text
+  // qualify (a bare star rating with no words makes a poor testimonial). ──
+  async getTestimonials(limit: number) {
+    const cacheKey = `platform-testimonials:${limit}`;
+    const cached = await this.redisService.get(cacheKey);
+    if (cached) return { success: true, data: JSON.parse(cached) };
+
+    const { ratingModel, userModel, storeModel } = this.databaseService.repositories;
+
+    const candidates = await ratingModel
+      .find({
+        isDelete: false,
+        isFlagged: false,
+        rating: { $gte: 4 },
+        'comments.0': { $exists: true },
+      })
+      .sort({ rating: -1, isVerifiedPurchase: -1, createdAt: -1 })
+      .limit(limit * 3) // over-fetch — some will drop after the length filter below
+      .lean();
+
+    const withText = candidates
+      .map((r: any) => ({ ...r, text: r.comments?.[r.comments.length - 1]?.text?.trim() ?? '' }))
+      .filter((r: any) => r.text.length >= 25)
+      .slice(0, limit);
+
+    const userIds  = [...new Set(withText.map((r: any) => r.userId))];
+    const storeIds = [...new Set(withText.map((r: any) => r.storeId).filter(Boolean))];
+
+    const [users, stores] = await Promise.all([
+      userIds.length ? userModel.find({ _id: { $in: userIds } }).select('name').lean() : [],
+      storeIds.length ? storeModel.find({ _id: { $in: storeIds } }).select('name').lean() : [],
+    ]);
+    const userNameById  = new Map<string, string>(users.map((u: any): [string, string] => [u._id.toString(), u.name]));
+    const storeNameById = new Map<string, string>(stores.map((s: any): [string, string] => [s._id.toString(), s.name]));
+
+    const data = withText.map((r: any) => ({
+      id: r._id.toString(),
+      name: r.isAnonymous ? 'Verified Buyer' : (userNameById.get(r.userId) ?? 'Verified Buyer'),
+      storeName: r.storeId ? (storeNameById.get(r.storeId) ?? null) : null,
+      rating: r.rating,
+      text: r.text,
+      isVerifiedPurchase: r.isVerifiedPurchase,
+    }));
+
+    await this.redisService.set(cacheKey, JSON.stringify(data), 600);
+    return { success: true, data };
+  }
+
   // ── 4. Public store products ──────────────────────────────────────────────
   async getPublicStoreProducts(storeId: string, query: any, customerId?: string | null) {
     if (!storeId) throw new BadRequestException('storeId is required');
