@@ -245,7 +245,7 @@ export class Store {
   @Prop({ enum: ['active', 'inactive', 'suspended'], default: 'active' })
   status: string;
 
-  // admin-granted badges, e.g. ['top_seller', 'verified', 'featured']
+  // admin-granted badges, e.g. ['top_seller', 'verified', 'featured', 'verified_educator']
   @Prop({ type: [String], default: [] })
   badges: string[];
 

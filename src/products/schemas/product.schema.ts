@@ -11,6 +11,18 @@ export enum ProductType {
   EDUCATIONAL = 'educational',
 }
 
+export enum EducationLevel {
+  PRESCHOOL             = 'preschool',
+  PRIMARY_SCHOOL        = 'primary_school',
+  MIDDLE_SCHOOL         = 'middle_school',
+  SECONDARY_SCHOOL      = 'secondary_school',
+  COLLEGE               = 'college',
+  UNIVERSITY            = 'university',
+  PROFESSIONAL_COURSES  = 'professional_courses',
+  ISLAMIC_EDUCATION     = 'islamic_education',
+  OTHER                 = 'other',
+}
+
 export enum LicenseType {
   PERSONAL = 'personal',                 // Personal Use Only
   SINGLE_CLASSROOM = 'single_classroom', // One teacher, one classroom
@@ -98,6 +110,19 @@ export class Product {
   @Prop({ type: String, default: null })
   subCategoryId: string | null;
 
+  // sirf productType === 'educational' ke liye — controlled Tier-1 taxonomy (9 values)
+  @Prop({ type: String, enum: Object.values(EducationLevel), default: null })
+  educationLevel: EducationLevel | null;
+
+  // sirf educationLevel === 'other' ke liye — seller ka raw free-text label
+  @Prop({ type: String, default: null })
+  customLevel: string | null;
+
+  // customLevel se derive hota hai (regex + alias lookup) — sirf grouping/filtering ke liye,
+  // buyer ko raw nahi dikhaya jata (see EducationLevelService.normalizeCustomLevel)
+  @Prop({ type: String, default: null })
+  normalizedCustomLevel: string | null;
+
   // product gallery / cover images (dono type ke liye)
   @Prop({ type: [String], default: [] })
   images: string[];
@@ -169,6 +194,8 @@ ProductSchema.index({ storeId: 1 });
 ProductSchema.index({ name: 1 });
 ProductSchema.index({ categoryId: 1 });
 ProductSchema.index({ productType: 1 });
+ProductSchema.index({ educationLevel: 1 });
+ProductSchema.index({ normalizedCustomLevel: 1 });
 ProductSchema.index({ type: 1 });
 ProductSchema.index({ purchaseCount: -1 });
 ProductSchema.index({ viewCount: -1 });

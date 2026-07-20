@@ -74,6 +74,25 @@ export class GenerateWorksheetDto extends BaseGenerateDto {
   includeAnswerKey: boolean;
 }
 
+/** Public "Try AI Worksheet Builder for free" trial — no seller/store, no credits.
+ *  Capped lower than the seller tool (max 6 questions vs 40) to bound provider cost. */
+export class GenerateWorksheetTrialDto {
+  @IsString() @IsNotEmpty() @MaxLength(120)
+  subject: string;
+
+  @IsString() @IsNotEmpty() @MaxLength(60)
+  gradeLevel: string;
+
+  @IsArray() @ArrayNotEmpty() @ArrayMaxSize(5) @IsString({ each: true })
+  topics: string[];
+
+  @Type(() => Number) @IsInt() @Min(1) @Max(6)
+  questionCount: number;
+
+  @IsBoolean()
+  includeAnswerKey: boolean;
+}
+
 export class GeneratePriceDto extends BaseGenerateDto {
   @IsOptional() @IsMongoId()
   productId?: string;

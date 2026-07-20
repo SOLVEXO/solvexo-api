@@ -20,7 +20,10 @@ export class DatabaseService {
 
       @InjectModel(schema.ProductVariant.name)
     private productVariantModel: Model<schema.ProductVariantDocument>,
- 
+
+    @InjectModel(schema.EducationLevelAlias.name)
+    private educationLevelAliasModel: Model<schema.EducationLevelAliasDocument>,
+
 
     @InjectModel(schema.User.name)
     private otpModel: Model<schema.OtpDocument>,
@@ -252,6 +255,7 @@ export class DatabaseService {
       categoryModel: this.categoryModel,
       productModel: this.productModel,
       productVariantModel: this.productVariantModel,
+      educationLevelAliasModel: this.educationLevelAliasModel,
       otpModel: this.otpModel,
       bannerModel: this.bannerModel,
       faqModel: this.faqModel,

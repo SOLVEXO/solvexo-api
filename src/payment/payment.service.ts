@@ -371,6 +371,7 @@ export class PaymentService {
         price: item.price,
         totalPrice: item.totalPrice,
         type: item.type,
+        productType: item.productType ?? null,
       })),
     );
 
@@ -462,6 +463,7 @@ export class PaymentService {
             productId: i.productId,
             variantId: i.variantId,
             type: i.type,
+            productType: i.productType ?? null,
             name: i.name,
             image: i.image ?? null,
             sku: i.sku ?? null,

@@ -50,10 +50,15 @@ export class MessagingService {
     return msg;
   }
 
+  // Access is decided by whether this account is actually a participant in
+  // THIS conversation (its buyerId or sellerId), never by the account's JWT
+  // role — an account can be a buyer in one conversation and a seller (of a
+  // different store) in another, so role alone can't tell you which side
+  // you're on here.
   private assertConversationAccess(conv: any, userId: string, role: string) {
     if (role === 'admin') return;
-    if (role === 'user' && conv.buyerId.toString() !== userId) throw new ForbiddenException('Access denied');
-    if (role === 'seller' && conv.sellerId.toString() !== userId) throw new ForbiddenException('Access denied');
+    const isParticipant = conv.buyerId.toString() === userId || conv.sellerId.toString() === userId;
+    if (!isParticipant) throw new ForbiddenException('Access denied');
   }
 
   // Spam detection hook: score based on URL density and length
@@ -73,6 +78,7 @@ export class MessagingService {
     const { storeId } = dto;
     const store = await this.db.repositories.storeModel.findById(storeId);
     if (!store || store.isDelete) throw new NotFoundException('Store not found');
+    if (store.sellerId.toString() === buyerId) throw new BadRequestException('You cannot message your own store');
 
     // Check if buyer is blocked by seller or vice versa
     const block = await this.blkModel.findOne({
@@ -124,19 +130,22 @@ export class MessagingService {
 
     let filter: any = {};
 
-    if (role === 'user') {
-      filter = { buyerId: userId, deletedByBuyer: false };
-    } else if (role === 'seller') {
-      // Seller queries by a specific storeId they own
-      if (!query.storeId) throw new BadRequestException('storeId is required for seller inbox');
+    // Disambiguate by the query shape, not the account's JWT role: a
+    // storeId means "show me this store's inbox" (only that store's owner
+    // may pass it); no storeId means "show me MY OWN conversations as a
+    // buyer" — which must work even for an account that also happens to
+    // have a seller role elsewhere.
+    if (role === 'admin') {
+      if (query.storeId) filter.storeId = query.storeId;
+      if (query.buyerId) filter.buyerId = query.buyerId;
+    } else if (query.storeId) {
       const store = await this.db.repositories.storeModel.findById(query.storeId);
       if (!store || store.sellerId.toString() !== userId) throw new ForbiddenException('Access denied');
       filter = { storeId: query.storeId, deletedBySeller: false };
       if (query.isArchived !== undefined) filter.isArchived = query.isArchived === 'true';
       if (query.isPinned !== undefined) filter.isPinned = query.isPinned === 'true';
-    } else if (role === 'admin') {
-      if (query.storeId) filter.storeId = query.storeId;
-      if (query.buyerId) filter.buyerId = query.buyerId;
+    } else {
+      filter = { buyerId: userId, deletedByBuyer: false };
     }
 
     if (query.q) {
@@ -144,7 +153,7 @@ export class MessagingService {
     }
 
     // Priority (priority_support subscribers) sort above regular conversations, seller inbox only.
-    const sort: any = role === 'seller' ? { isPriority: -1, updatedAt: -1 } : { updatedAt: -1 };
+    const sort: any = query.storeId ? { isPriority: -1, updatedAt: -1 } : { updatedAt: -1 };
 
     const [conversations, total] = await Promise.all([
       this.convModel.find(filter).sort(sort).skip(skip).limit(limit).lean(),
@@ -157,7 +166,7 @@ export class MessagingService {
 
     const [buyers, stores] = await Promise.all([
       this.db.repositories.userModel.find({ _id: { $in: buyerIds } }).select('name profileImage').lean(),
-      this.db.repositories.storeModel.find({ _id: { $in: storeIds } }).select('name logo').lean(),
+      this.db.repositories.storeModel.find({ _id: { $in: storeIds } }).select('name logo slug badges').lean(),
     ]);
 
     const buyerMap = Object.fromEntries(buyers.map((b: any) => [b._id.toString(), b]));
@@ -178,7 +187,7 @@ export class MessagingService {
 
     const [buyer, store] = await Promise.all([
       this.db.repositories.userModel.findById(conv.buyerId).select('name profileImage email').lean(),
-      this.db.repositories.storeModel.findById(conv.storeId).select('name logo').lean(),
+      this.db.repositories.storeModel.findById(conv.storeId).select('name logo slug badges').lean(),
     ]);
 
     return { ...conv.toObject(), buyer, store };
@@ -212,7 +221,7 @@ export class MessagingService {
     const conv = await this.getConversationOrThrow(conversationId);
     this.assertConversationAccess(conv, userId, role);
 
-    if (role === 'user') conv.deletedByBuyer = true;
+    if (conv.buyerId.toString() === userId) conv.deletedByBuyer = true;
     else conv.deletedBySeller = true;
     await conv.save();
     return { deleted: true };
@@ -222,12 +231,12 @@ export class MessagingService {
     if (!q || q.trim().length < 2) throw new BadRequestException('Search query must be at least 2 characters');
 
     let filter: any = {};
-    if (role === 'user') filter.buyerId = userId;
-    else if (role === 'seller') {
-      if (!storeId) throw new BadRequestException('storeId required for seller search');
+    if (storeId) {
       const store = await this.db.repositories.storeModel.findById(storeId);
       if (!store || store.sellerId.toString() !== userId) throw new ForbiddenException('Access denied');
       filter.storeId = storeId;
+    } else {
+      filter.buyerId = userId;
     }
 
     // Search in last message text
@@ -244,6 +253,10 @@ export class MessagingService {
   async sendMessage(userId: string, role: string, conversationId: string, dto: SendMessageDto) {
     const conv = await this.getConversationOrThrow(conversationId);
     this.assertConversationAccess(conv, userId, role);
+    // Which side of THIS conversation the sender is on — not their JWT role,
+    // since the same account can be a buyer here and a seller elsewhere.
+    const iAmBuyer = conv.buyerId.toString() === userId;
+    const senderRole = role === 'admin' ? 'admin' : iAmBuyer ? 'user' : 'seller';
 
     // Block check
     if (conv.blockedByBuyer || conv.blockedBySeller) {
@@ -289,7 +302,7 @@ export class MessagingService {
     const message = await this.msgModel.create({
       conversationId,
       senderId: userId,
-      senderRole: role,
+      senderRole,
       type: dto.type,
       text: dto.text?.trim() || null,
       attachments: dto.attachments || [],
@@ -307,19 +320,19 @@ export class MessagingService {
       text: dto.text?.trim() || null,
       type: dto.type,
       senderId: userId,
-      senderRole: role,
+      senderRole,
       sentAt: new Date(),
     };
 
-    const unreadIncrement = role === 'user' ? { sellerUnread: 1 } : { buyerUnread: 1 };
+    const unreadIncrement = iAmBuyer ? { sellerUnread: 1 } : { buyerUnread: 1 };
 
     const updatedConv = await this.convModel.findByIdAndUpdate(conversationId, {
       lastMessage: lastMessageSnapshot,
       $inc: unreadIncrement,
       // Restore soft-delete if sender had deleted
-      ...(role === 'user' ? { deletedByBuyer: false } : { deletedBySeller: false }),
+      ...(iAmBuyer ? { deletedByBuyer: false } : { deletedBySeller: false }),
       // Restore for the other side too (message reactivates conversation)
-      ...(role === 'user' ? { deletedBySeller: false } : { deletedByBuyer: false }),
+      ...(iAmBuyer ? { deletedBySeller: false } : { deletedByBuyer: false }),
     }, { new: true }).lean();
 
     this.gateway.emitNewMessage(conversationId, message);
@@ -329,8 +342,8 @@ export class MessagingService {
 
     // Only raise an inbox/push notification if the recipient isn't actively viewing the
     // thread — avoids double-buzzing someone who already sees the message live via socket.
-    const recipientId = role === 'user' ? conv.sellerId : conv.buyerId;
-    const recipientRole = role === 'user' ? 'seller' : 'user';
+    const recipientId = iAmBuyer ? conv.sellerId : conv.buyerId;
+    const recipientRole = iAmBuyer ? 'seller' : 'user';
     if (!this.gateway.isOnline(recipientId)) {
       this.notificationsService.notify({
         recipientId,
@@ -460,11 +473,17 @@ export class MessagingService {
       },
     );
 
-    // Reset unread counter for current user's side
-    const unreadReset = role === 'user' ? { buyerUnread: 0 } : { sellerUnread: 0 };
-    await this.convModel.findByIdAndUpdate(conversationId, { $set: unreadReset });
+    // Reset unread counter for current user's side (by actual participancy
+    // in this conversation, not JWT role — see assertConversationAccess).
+    const unreadReset = conv.buyerId.toString() === userId ? { buyerUnread: 0 } : { sellerUnread: 0 };
+    const updatedConv = await this.convModel.findByIdAndUpdate(conversationId, { $set: unreadReset }, { new: true }).lean();
 
     this.gateway.emitMessagesSeen(conversationId, userId, lastMessageId);
+    // Without this, the reader's own inbox list (this tab or any other) never
+    // learns the unread badge should clear until a full refetch.
+    if (updatedConv) {
+      this.gateway.emitConversationUpdate([conv.buyerId, conv.sellerId], updatedConv);
+    }
     return { seen: true };
   }
 
@@ -602,7 +621,7 @@ export class MessagingService {
     const conv = await this.getConversationOrThrow(conversationId);
     const [buyer, store, messages] = await Promise.all([
       this.db.repositories.userModel.findById(conv.buyerId).select('name profileImage email').lean(),
-      this.db.repositories.storeModel.findById(conv.storeId).select('name logo').lean(),
+      this.db.repositories.storeModel.findById(conv.storeId).select('name logo slug badges').lean(),
       this.msgModel.find({ conversationId }).sort({ createdAt: -1 }).limit(50).lean(),
     ]);
     return { ...conv.toObject(), buyer, store, recentMessages: messages.reverse() };

@@ -14,6 +14,13 @@ export class OrderItem {
   @Prop({ type: String, enum: ['physical', 'digital'], required: true })
   type: string;
 
+  // The product's own category — 'educational' collapses to `type: 'digital'` above
+  // for fulfillment purposes, but is kept here too so order history/labels can
+  // still say "Educational" instead of a generic "Digital". Absent on orders
+  // placed before this field existed — display code must fall back to `type`.
+  @Prop({ type: String, enum: ['physical', 'digital', 'educational'], default: null })
+  productType: string | null;
+
   // snapshot fields
   @Prop({ type: String, required: true })
   name: string;

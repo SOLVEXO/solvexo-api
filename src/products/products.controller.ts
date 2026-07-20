@@ -28,9 +28,26 @@ async getProductsByCategoryId(
   @Req() req: any,
   @Query('id') id?: string,
   @Query('page') page: number = 1,
-  @Query('limit') limit: number = 10
+  @Query('limit') limit: number = 10,
+  @Query('productType') productType?: string,
+  @Query('educationLevel') educationLevel?: string,
+  @Query('normalizedCustomLevel') normalizedCustomLevel?: string,
 ) {
-  return this.ProductsService.getProductsByCategoryId(id, page, limit, req.user?.userId ?? null);
+  return this.ProductsService.getProductsByCategoryId(id, page, limit, req.user?.userId ?? null, productType, educationLevel, normalizedCustomLevel);
+}
+
+@UseGuards(FeatureFlagGuard)
+@RequireFeature('marketplace')
+@Get('education/facets')
+async getEducationFacets() {
+  return this.ProductsService.getEducationFacets();
+}
+
+@UseGuards(JwtAuthGuard, RolesGuard)
+@Roles('seller')
+@Get('education/custom-level-suggestions')
+async getCustomLevelSuggestions(@Query('q') q: string = '') {
+  return this.ProductsService.getCustomLevelSuggestions(q);
 }
 
 @UseGuards(OptionalJwtAuthGuard, FeatureFlagGuard)

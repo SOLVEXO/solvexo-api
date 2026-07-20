@@ -25,6 +25,10 @@ export class AnalyticsController {
     return this.analyticsService.getTodaySummary(req.user.userId, query.storeId);
   }
 
+  // ─── Every route below accepts an optional `storeId` on its DTO — present,
+  // it scopes to that one store (ownership verified); omitted, it aggregates
+  // across every store the seller owns, powering the cross-store view.
+
   @Get('overview')
   getOverview(@Req() req: any, @Query() query: AnalyticsQueryDto) {
     return this.analyticsService.getOverview(req.user.userId, query.storeId, query);

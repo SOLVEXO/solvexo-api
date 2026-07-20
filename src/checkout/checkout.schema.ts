@@ -20,6 +20,12 @@ export class CheckoutItem {
   @Prop({ type: String, enum: ['physical', 'digital'], required: true })
   type: string;
 
+  // Product's own category (educational collapses into `type: 'digital'` above
+  // for fulfillment) — carried through to the placed Order so history/labels
+  // can distinguish it later.
+  @Prop({ type: String, enum: ['physical', 'digital', 'educational'], default: null })
+  productType: string | null;
+
   // snapshot fields
   @Prop({ type: String, required: true })
   name: string;

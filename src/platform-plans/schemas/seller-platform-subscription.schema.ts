@@ -33,6 +33,12 @@ export class SellerPlatformSubscription {
   @Prop({ type: Date, required: true }) currentPeriodEnd: Date;
   @Prop({ type: Date, required: true }) nextBillingDate: Date;
   @Prop({ type: Date, default: null }) canceledAt: Date | null;
+  // "Cancel Subscription" schedules a downgrade to the free plan at currentPeriodEnd
+  // rather than revoking paid access mid-period the seller already paid for — the
+  // same convention Stripe/Shopify/Paddle all use. finalizeScheduledCancellations()
+  // executes it once the period actually ends; reactivateSubscription() undoes it.
+  @Prop({ type: Boolean, default: false }) cancelAtPeriodEnd: boolean;
+  @Prop({ type: String, default: null }) cancelReason: string | null;
 
   @Prop({ type: Number, default: 0 }) totalPaidUSD: number;
   @Prop({ type: Number, default: 0 }) failedPaymentAttempts: number;

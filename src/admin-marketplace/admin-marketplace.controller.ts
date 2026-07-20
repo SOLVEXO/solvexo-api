@@ -7,6 +7,7 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { AdminMarketplaceService } from './admin-marketplace.service';
 import { MarketplaceListingQueryDto } from './dto/marketplace-listing-query.dto';
 import { SetFeaturedDto } from './dto/set-featured.dto';
+import { SetStoreBadgeDto } from './dto/set-store-badge.dto';
 
 @ApiTags('Admin Marketplace')
 @ApiBearerAuth()
@@ -39,5 +40,10 @@ export class AdminMarketplaceController {
   @Patch('listings/:id/remove')
   remove(@Req() req: any, @Param('id') id: string) {
     return this.adminMarketplaceService.remove(id, this.meta(req));
+  }
+
+  @Patch('stores/:id/badge')
+  setStoreBadge(@Req() req: any, @Param('id') id: string, @Body() dto: SetStoreBadgeDto) {
+    return this.adminMarketplaceService.setStoreBadge(id, dto.badge, dto.grant, this.meta(req));
   }
 }

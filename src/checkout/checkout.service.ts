@@ -116,6 +116,7 @@ export class CheckoutService {
         sellerId: product.sellerId,
         storeId: product.storeId,
         type: product.type,
+        productType: product.productType ?? null,
         name: product.name,
         image: product.images?.[0] ?? null,
         sku: variant.sku ?? null,

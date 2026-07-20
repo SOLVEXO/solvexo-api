@@ -14,7 +14,7 @@ import { ImageEnhanceService } from './providers/image-enhance.service';
 import { AiToolType } from './schemas/ai-generation.schema';
 import {
   AcceptGenerationDto, GenerateEmailDto, GenerateImageEnhanceDto, GenerateListingDto,
-  GeneratePriceDto, GenerateSeoDto, GenerateWorksheetDto,
+  GeneratePriceDto, GenerateSeoDto, GenerateWorksheetDto, GenerateWorksheetTrialDto,
 } from './dto/generate.dto';
 import {
   EMAIL_CAMPAIGN_SCHEMA, LISTING_WRITER_SCHEMA, PRICE_EXPLANATION_SCHEMA, SEO_WRITING_SCHEMA,
@@ -186,6 +186,31 @@ export class AiStudioService {
         };
       },
     });
+  }
+
+  /** Public "Try free" version of the worksheet builder — no store/seller, no
+   *  credit wallet, no generation history. Cost is bounded entirely by the
+   *  DTO's own caps (max 6 questions) plus the controller's rate limit. */
+  async generateWorksheetTrial(dto: GenerateWorksheetTrialDto) {
+    try {
+      const { system, prompt } = buildWorksheetPrompt(dto);
+      const result = await this.textGeneration.generate({
+        system, prompt, tier: 'standard', schema: WORKSHEET_SCHEMA, maxTokens: 2000,
+      });
+      return {
+        success: true,
+        data: { title: result.json!.title, sections: result.json!.sections, provider: result.provider },
+      };
+    } catch (error) {
+      const providerError = error instanceof AiProviderError ? error : null;
+      const message = providerError?.message ?? 'Generation failed unexpectedly.';
+      this.logger.error(`worksheet_builder trial failed: ${message}`);
+      throw new HttpException({
+        success: false,
+        errorCode: providerError?.retryable ?? true ? AI_PROVIDER_UNAVAILABLE : AI_GENERATION_REJECTED,
+        message,
+      }, providerError?.retryable ?? true ? HttpStatus.SERVICE_UNAVAILABLE : HttpStatus.UNPROCESSABLE_ENTITY);
+    }
   }
 
   async generatePrice(sellerId: string, storeId: string, dto: GeneratePriceDto) {

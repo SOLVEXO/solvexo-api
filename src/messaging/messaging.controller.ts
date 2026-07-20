@@ -28,9 +28,11 @@ export class MessagingController {
   // CONVERSATIONS
   // ═══════════════════════════════════════════════════════════════════════════
 
-  // Buyer starts or retrieves a conversation with a store
+  // Starts or retrieves a conversation with a store, acting as the buyer side.
+  // Also open to 'seller' accounts — a seller is still allowed to message a
+  // DIFFERENT store as a customer (see the self-message guard in the service).
   @UseGuards(RolesGuard)
-  @Roles('user')
+  @Roles('user', 'seller')
   @Post('conversations')
   startConversation(@Req() req: any, @Body() dto: StartConversationDto) {
     return this.messagingService.startOrGetConversation(req.user.userId, dto);

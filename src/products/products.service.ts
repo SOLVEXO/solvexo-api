@@ -10,6 +10,10 @@ import { ProductType as StoreProductType } from 'src/store/schemas/store.schema'
 import { ActivityLogService } from 'src/activity-log/activity-log.service';
 import { SubscriptionBenefitsService } from 'src/subscriptions/subscription-benefits.service';
 import { EntitlementsService } from 'src/platform-plans/entitlements.service';
+import { EducationLevel } from './schemas/product.schema';
+import { EducationLevelService } from './education-level.service';
+
+const EDUCATION_LEVEL_VALUES: string[] = Object.values(EducationLevel);
 
 @Injectable()
 export class ProductsService {
@@ -18,6 +22,7 @@ export class ProductsService {
     private activityLogService: ActivityLogService,
     private subscriptionBenefits: SubscriptionBenefitsService,
     private entitlementsService: EntitlementsService,
+    private educationLevelService: EducationLevelService,
   ) {}
 
   /** Stamps a fresh product with an early-access window if the store has any active plan configuring one — non-subscribers can't see it until this passes. */
@@ -75,6 +80,9 @@ async getProductsByCategoryId(
   page: number = 1,
   limit: number = 10,
   customerId?: string | null,
+  productType?: string,
+  educationLevel?: string,
+  normalizedCustomLevel?: string,
 ): Promise<any> {
 
   const productModel = this.databaseService.repositories.productModel;
@@ -84,6 +92,14 @@ async getProductsByCategoryId(
     status: "active",
     isDelete: false
   };
+
+  // 0️⃣ Optional productType/educationLevel filters — used by verticals like the
+  // Education marketplace to show only `productType: 'educational'` listings
+  // from the same shared catalog, instead of a separate one. normalizedCustomLevel
+  // is the Tier-2 drill-down, only meaningful when educationLevel === 'other'.
+  if (productType) query.productType = productType;
+  if (educationLevel) query.educationLevel = educationLevel;
+  if (normalizedCustomLevel) query.normalizedCustomLevel = normalizedCustomLevel;
 
   // 1️⃣ Agar category ID di gayi hai to filter lagao
   //
@@ -397,6 +413,8 @@ async addPhysicalProduct(sellerId: string, body: any) {
     store.productTypes?.includes(StoreProductType.EDUCATIONAL_RESOURCES);
   if (!allowsPhysical) throw new BadRequestException('Your store does not support physical products');
 
+  await this.entitlementsService.assertCanCreateProduct(storeId);
+
   if (!name) throw new BadRequestException('Product name is required');
   if (price === undefined || price === null) throw new BadRequestException('Price is required');
 
@@ -466,7 +484,7 @@ async addDigitalProduct(sellerId: string, body: any) {
     name, description, productType, subCategoryId, images, tags,
     isListedOnSolvexo, status, scheduledAt,
     price, compareAtPrice,
-    digital,
+    digital, educationLevel, customLevel,
   } = body;
 
   if (!storeId) throw new BadRequestException('storeId is required');
@@ -480,6 +498,8 @@ async addDigitalProduct(sellerId: string, body: any) {
     store.productTypes?.includes(StoreProductType.EDUCATIONAL_RESOURCES);
   if (!allowsDigital) throw new BadRequestException('Your store does not support digital products');
 
+  await this.entitlementsService.assertCanCreateProduct(storeId);
+
   if (!name) throw new BadRequestException('Product name is required');
   if (price === undefined || price === null) throw new BadRequestException('Price is required');
 
@@ -488,6 +508,25 @@ async addDigitalProduct(sellerId: string, body: any) {
   }
 
   const finalProductType = productType === 'educational' ? 'educational' : 'digital';
+
+  // Tier-1/Tier-2 education taxonomy — required only for educational products.
+  let finalEducationLevel: string | null = null;
+  let normalizedFields: { customLevel: string | null; normalizedCustomLevel: string | null } = {
+    customLevel: null, normalizedCustomLevel: null,
+  };
+  if (finalProductType === 'educational') {
+    if (!educationLevel || !EDUCATION_LEVEL_VALUES.includes(educationLevel)) {
+      throw new BadRequestException(`educationLevel is required and must be one of: ${EDUCATION_LEVEL_VALUES.join(', ')}`);
+    }
+    finalEducationLevel = educationLevel;
+    if (educationLevel === EducationLevel.OTHER) {
+      if (!customLevel || !String(customLevel).trim()) {
+        throw new BadRequestException('customLevel is required when educationLevel is "other"');
+      }
+      const normalized = await this.educationLevelService.normalizeCustomLevel(String(customLevel));
+      normalizedFields = { customLevel: normalized.customLevel, normalizedCustomLevel: normalized.normalizedCustomLevel };
+    }
+  }
 
   const categoryId = store.categoryId;
   if (!categoryId) throw new BadRequestException('Your store has no category selected');
@@ -509,6 +548,9 @@ async addDigitalProduct(sellerId: string, body: any) {
     type: 'digital',
     categoryId,
     subCategoryId: subCategoryId ?? null,
+    educationLevel: finalEducationLevel,
+    customLevel: normalizedFields.customLevel,
+    normalizedCustomLevel: normalizedFields.normalizedCustomLevel,
     images: images ?? [],
     tags: tags ?? [],
     digital: digital ?? null,
@@ -622,7 +664,7 @@ async editProduct(sellerId: string, body: any) {
   const {
     productId, variantId,
     name, description, subCategoryId, images, tags, isListedOnSolvexo, status, scheduledAt,
-    digital,
+    digital, educationLevel, customLevel,
     price, compareAtPrice, size, color, stock, shippingWeight,
   } = body;
 
@@ -661,6 +703,29 @@ async editProduct(sellerId: string, body: any) {
     productUpdate.scheduledAt = status === 'scheduled' ? new Date(scheduledAt) : null;
   }
   if (digital !== undefined && product.type === 'digital') productUpdate.digital = digital;
+
+  if (educationLevel !== undefined && product.productType === 'educational') {
+    if (!EDUCATION_LEVEL_VALUES.includes(educationLevel)) {
+      throw new BadRequestException(`educationLevel must be one of: ${EDUCATION_LEVEL_VALUES.join(', ')}`);
+    }
+    productUpdate.educationLevel = educationLevel;
+  }
+  if (product.productType === 'educational') {
+    const effectiveLevel = productUpdate.educationLevel ?? product.educationLevel;
+    if (effectiveLevel === EducationLevel.OTHER) {
+      if (customLevel !== undefined) {
+        if (!String(customLevel).trim()) throw new BadRequestException('customLevel is required when educationLevel is "other"');
+        const normalized = await this.educationLevelService.normalizeCustomLevel(String(customLevel));
+        productUpdate.customLevel = normalized.customLevel;
+        productUpdate.normalizedCustomLevel = normalized.normalizedCustomLevel;
+      } else if (!product.customLevel) {
+        throw new BadRequestException('customLevel is required when educationLevel is "other"');
+      }
+    } else if (productUpdate.educationLevel !== undefined) {
+      productUpdate.customLevel = null;
+      productUpdate.normalizedCustomLevel = null;
+    }
+  }
 
   const updatedProduct = Object.keys(productUpdate).length > 0
     ? await productModel.findByIdAndUpdate(productId, productUpdate, { new: true })
@@ -701,6 +766,18 @@ async editProduct(sellerId: string, body: any) {
     message: 'Product updated successfully',
     data: { product: updatedProduct, variant: updatedVariant },
   };
+}
+
+/** GET /api/products/education/facets — public, backs the Education marketplace's dynamic filter chips. */
+async getEducationFacets() {
+  const facets = await this.educationLevelService.getFacets();
+  return { success: true, data: facets };
+}
+
+/** GET /api/products/education/custom-level-suggestions — seller-only autocomplete while typing a custom level. */
+async getCustomLevelSuggestions(q: string) {
+  const suggestions = await this.educationLevelService.getCustomLevelSuggestions(q);
+  return { success: true, data: suggestions };
 }
 
 }

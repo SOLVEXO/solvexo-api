@@ -24,6 +24,10 @@ export class CreatePlatformPlanDto {
   @IsOptional() @Type(() => Number) @IsNumber()
   sortOrder?: number;
 
+  @ApiProperty({ required: false, default: true, description: 'Show this plan on the public pricing page. Set false for a negotiated/legacy plan an admin still wants assignable but not self-serve.' })
+  @IsOptional() @IsBoolean()
+  isPubliclyVisible?: boolean;
+
   @ApiProperty({ required: false, default: false })
   @IsOptional() @IsBoolean()
   isFree?: boolean;

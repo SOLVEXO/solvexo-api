@@ -34,3 +34,4 @@ export const PlatformPlanInvoiceSchema = SchemaFactory.createForClass(PlatformPl
 PlatformPlanInvoiceSchema.index({ storeId: 1, createdAt: -1 });
 PlatformPlanInvoiceSchema.index({ invoiceNumber: 1 }, { unique: true });
 PlatformPlanInvoiceSchema.index({ status: 1 });
+PlatformPlanInvoiceSchema.index({ stripeInvoiceId: 1 });

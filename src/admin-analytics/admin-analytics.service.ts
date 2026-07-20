@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { Injectable } from '@nestjs/common';
+import { isValidObjectId } from 'mongoose';
 import { DatabaseService } from '../database/databaseservice';
 import { RedisService } from '../redis/redis.service';
 import {
@@ -507,7 +508,10 @@ export class AdminAnalyticsService {
 
       const byCategory = new Map<string, { orderCount: number; unitsSold: number; revenue: number }>();
       for (const p of productSales) {
-        const categoryId = categoryByProduct.get(p.productId) ?? 'uncategorized';
+        // `|| ` (not `??`) deliberately — a product can have `categoryId: ''` (falsy but
+        // not nullish), which would otherwise slip past into the Category `$in` lookup
+        // below and crash it with a Mongoose ObjectId cast error.
+        const categoryId = categoryByProduct.get(p.productId) || 'uncategorized';
         const entry = byCategory.get(categoryId) ?? { orderCount: 0, unitsSold: 0, revenue: 0 };
         entry.orderCount += p.orderCount;
         entry.unitsSold += p.unitsSold;
@@ -515,13 +519,22 @@ export class AdminAnalyticsService {
         byCategory.set(categoryId, entry);
       }
 
-      const categoryIds = [...byCategory.keys()].filter((id) => id !== 'uncategorized');
+      // Some products have a legacy `categoryId` that's a free-text category name
+      // (e.g. "Technology") instead of a real Category `_id` reference — only the
+      // ones that actually look like a Mongo ObjectId are safe to send into the
+      // `$in` lookup below; anything else would crash it with a cast error.
+      const allIds = [...byCategory.keys()].filter((id) => id !== 'uncategorized');
+      const categoryIds = allIds.filter((id) => isValidObjectId(id));
       const categories = await this.r.categoryModel.find({ _id: { $in: categoryIds } }).select('name').lean();
       const nameMap = new Map(categories.map((c: any) => [c._id.toString(), c.name]));
 
       const rows = [...byCategory.entries()].map(([categoryId, v]) => ({
         categoryId,
-        name: categoryId === 'uncategorized' ? 'Uncategorized' : (nameMap.get(categoryId) ?? 'Unknown'),
+        name: categoryId === 'uncategorized'
+          ? 'Uncategorized'
+          : isValidObjectId(categoryId)
+            ? (nameMap.get(categoryId) ?? 'Unknown')
+            : categoryId, // legacy free-text category name — already human-readable as-is
         orderCount: v.orderCount,
         unitsSold: v.unitsSold,
         revenue: round(v.revenue),

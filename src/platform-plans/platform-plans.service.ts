@@ -46,6 +46,7 @@ export class PlatformPlansService {
       featureBullets: dto.featureBullets ?? [],
       limits: { ...DEFAULT_LIMITS, ...dto.limits },
       status: 'active',
+      isPubliclyVisible: dto.isPubliclyVisible ?? true,
     });
 
     this.activityLogService.log({
@@ -102,6 +103,7 @@ export class PlatformPlansService {
     if (dto.featureBullets !== undefined) plan.featureBullets = dto.featureBullets;
     if (dto.limits !== undefined) plan.limits = { ...plan.limits, ...dto.limits } as any;
     if (dto.status !== undefined) plan.status = dto.status;
+    if (dto.isPubliclyVisible !== undefined) plan.isPubliclyVisible = dto.isPubliclyVisible;
 
     await plan.save();
 
@@ -168,7 +170,7 @@ export class PlatformPlansService {
     const from = query.from ? new Date(query.from) : new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
     const to = query.to ? new Date(query.to) : new Date();
 
-    const [totalAgg, byPlanRaw, activeByPlan] = await Promise.all([
+    const [totalAgg, byPlanRaw, activeByPlan, activeSubs] = await Promise.all([
       this.db.repositories.platformPlanInvoiceModel.aggregate([
         { $match: { status: 'paid', isDelete: false, paidAt: { $gte: from, $lte: to } } },
         { $group: { _id: null, total: { $sum: '$amountUSD' }, count: { $sum: 1 } } },
@@ -182,16 +184,40 @@ export class PlatformPlansService {
         { $match: { isDelete: false, status: { $in: ['trialing', 'active', 'past_due'] } } },
         { $group: { _id: '$platformPlanId', count: { $sum: 1 } } },
       ]),
+      // MRR/ARR — a live snapshot of currently-recurring revenue, not a
+      // date-range sum of past invoices (that's totalRevenueUSD/byPlan below).
+      this.subModel.find({
+        isDelete: false, status: { $in: ['active', 'past_due'] }, amountUSD: { $gt: 0 },
+      }).select('platformPlanId amountUSD billingInterval').lean(),
     ]);
 
-    const planIds = [...new Set([...byPlanRaw.map((r: any) => r._id), ...activeByPlan.map((r: any) => r._id)])];
+    const planIds = [...new Set([...byPlanRaw.map((r: any) => r._id), ...activeByPlan.map((r: any) => r._id), ...activeSubs.map((s: any) => s.platformPlanId)])];
     const plans = await this.planModel.find({ _id: { $in: planIds } }).select('name isFree').lean();
     const planMap = Object.fromEntries(plans.map((p: any) => [p._id.toString(), p]));
     const activeCountMap = Object.fromEntries(activeByPlan.map((r: any) => [r._id, r.count]));
 
+    const monthlyAmount = (s: any) => (s.billingInterval === 'yearly' ? s.amountUSD / 12 : s.amountUSD);
+    const mrr = this.round(activeSubs.reduce((sum: number, s: any) => sum + monthlyAmount(s), 0));
+    const mrrByPlan = new Map<string, number>();
+    for (const s of activeSubs) {
+      mrrByPlan.set(s.platformPlanId, (mrrByPlan.get(s.platformPlanId) ?? 0) + monthlyAmount(s));
+    }
+
+    const activeSubscribersCount = await this.subModel.countDocuments({
+      isDelete: false, status: { $in: ['trialing', 'active', 'past_due'] },
+    });
+
     return {
       success: true,
       data: {
+        mrr,
+        arr: this.round(mrr * 12),
+        activeSubscribers: activeSubscribersCount,
+        planBreakdown: Object.keys(activeCountMap).map((planId) => ({
+          planName: planMap[planId]?.name ?? 'Unknown',
+          subscriberCount: activeCountMap[planId] ?? 0,
+          mrrUSD: this.round(mrrByPlan.get(planId) ?? 0),
+        })),
         totalRevenueUSD: this.round(totalAgg[0]?.total ?? 0),
         totalInvoicesPaid: totalAgg[0]?.count ?? 0,
         byPlan: byPlanRaw.map((r: any) => ({
@@ -207,7 +233,11 @@ export class PlatformPlansService {
   // ── Public ─────────────────────────────────────────────────────────────
 
   async browsePlans() {
-    const plans = await this.planModel.find({ status: 'active', isDelete: false }).sort({ sortOrder: 1 }).lean();
+    // `isPubliclyVisible` defaults to true on new plans, but existing plans created
+    // before this field existed have it entirely absent in Mongo (not backfilled) —
+    // `{ $ne: false }` matches both `true` and "field missing", so no migration is
+    // needed and no pre-existing plan silently disappears from the pricing page.
+    const plans = await this.planModel.find({ status: 'active', isPubliclyVisible: { $ne: false }, isDelete: false }).sort({ sortOrder: 1 }).lean();
     return {
       success: true,
       data: plans.map((p: any) => ({

@@ -45,33 +45,56 @@ export class AnalyticsService {
     return round(n);
   }
 
-  // ─── Ownership + caching ────────────────────────────────────────────────
+  // ─── Ownership + scope + caching ───────────────────────────────────────
+  // Every seller analytics method below (except `today` and export/PDF, which
+  // stay single-store) accepts `storeId: string | null | undefined` — a real
+  // id scopes to that one store (ownership verified); omitting it scopes
+  // across every store the seller owns instead, powering the cross-store
+  // seller dashboard/analytics view with the exact same aggregation logic.
 
   private async verifyStoreOwnership(storeId: string, sellerId: string) {
     return verifyStoreOwnershipOrForbidden(this.r.storeModel, storeId, sellerId);
+  }
+
+  private async getOwnedStoreIds(sellerId: string): Promise<string[]> {
+    const stores = await this.r.storeModel.find({ sellerId, isDelete: false }).select('_id').lean();
+    return stores.map((s: any) => s._id.toString());
+  }
+
+  /** Resolves the `sellerOrders.storeId` match for either one verified store or every store the seller owns. */
+  private async resolveScope(sellerId: string, storeId?: string | null): Promise<{ scope: Record<string, any>; storeIds: string[] }> {
+    if (storeId) {
+      await this.verifyStoreOwnership(storeId, sellerId);
+      return { scope: { 'sellerOrders.storeId': storeId }, storeIds: [storeId] };
+    }
+    const storeIds = await this.getOwnedStoreIds(sellerId);
+    return { scope: { 'sellerOrders.storeId': { $in: storeIds } }, storeIds };
   }
 
   private async cached<T>(cacheKey: string, compute: () => Promise<T>): Promise<T> {
     return withAnalyticsCache(this.redis, cacheKey, CACHE_TTL_SECONDS, compute);
   }
 
-  private key(section: string, storeId: string, query: Record<string, any>) {
-    return buildAnalyticsCacheKey('analytics', storeId, section, query);
+  /** `scopeLabel` is the real storeId for a single-store call, or `seller:<sellerId>` for the cross-store one — keeps their cache entries distinct. */
+  private key(section: string, scopeLabel: string, query: Record<string, any>) {
+    return buildAnalyticsCacheKey('analytics', scopeLabel, section, query);
+  }
+
+  private scopeLabel(sellerId: string, storeId?: string | null) {
+    return storeId ?? `seller:${sellerId}`;
   }
 
   // ─── Shared aggregation building blocks ────────────────────────────────
   // Every seller-scoped Order aggregation starts the same way: unwind the
   // embedded `sellerOrders` array (there's no top-level storeId on Order —
-  // an order can span multiple sellers) and match this store. Cancelled
-  // sellerOrders are excluded from every revenue/order metric — they
-  // represent no completed business activity by convention. This scoping
-  // logic (and the aggregations below) is shared with `AdminAnalyticsService`
-  // via `./utils/order-aggregation.util` — seller analytics scopes every call
-  // with `{ 'sellerOrders.storeId': storeId }`; admin analytics omits the
-  // scope for platform-wide totals, or scopes by sellerId for drill-downs.
+  // an order can span multiple sellers) and match the resolved scope.
+  // Cancelled sellerOrders are excluded from every revenue/order metric —
+  // they represent no completed business activity by convention. This
+  // scoping logic (and the aggregations below) is shared with
+  // `AdminAnalyticsService` via `./utils/order-aggregation.util`.
 
-  private matchStage(storeId: string, from: Date, to: Date) {
-    return sellerOrderMatchStage(from, to, { 'sellerOrders.storeId': storeId });
+  private matchStage(scope: Record<string, any>, from: Date, to: Date) {
+    return sellerOrderMatchStage(from, to, scope);
   }
 
   private notCancelled() {
@@ -83,21 +106,21 @@ export class AnalyticsService {
     return itemRefundSumField();
   }
 
-  private async periodTotals(storeId: string, from: Date, to: Date) {
-    return periodTotalsUtil(this.r.orderModel, from, to, { 'sellerOrders.storeId': storeId });
+  private async periodTotals(scope: Record<string, any>, from: Date, to: Date) {
+    return periodTotalsUtil(this.r.orderModel, from, to, scope);
   }
 
-  private async repeatBuyerPercent(storeId: string, from: Date, to: Date): Promise<number> {
-    return repeatBuyerPercentUtil(this.r.orderModel, from, to, { 'sellerOrders.storeId': storeId });
+  private async repeatBuyerPercent(scope: Record<string, any>, from: Date, to: Date): Promise<number> {
+    return repeatBuyerPercentUtil(this.r.orderModel, from, to, scope);
   }
 
-  /** Buyers among `buyerIds` who already had a non-cancelled order for this store before `from`. */
-  private async returningBuyerSet(storeId: string, buyerIds: string[], from: Date): Promise<Set<string>> {
-    return returningBuyerSetUtil(this.r.orderModel, buyerIds, from, { 'sellerOrders.storeId': storeId });
+  /** Buyers among `buyerIds` who already had a non-cancelled order within this scope before `from`. */
+  private async returningBuyerSet(scope: Record<string, any>, buyerIds: string[], from: Date): Promise<Set<string>> {
+    return returningBuyerSetUtil(this.r.orderModel, buyerIds, from, scope);
   }
 
   // ═══════════════════════════════════════════════════════════════════════
-  // TODAY SUMMARY — seller dashboard's "Today's Revenue" live card. Compares
+  // TODAY SUMMARY — store dashboard's "Today's Revenue" live card. Compares
   // today-so-far against the *same elapsed window* yesterday (not all of
   // yesterday) so the percent change is apples-to-apples regardless of what
   // time of day it's checked. Deliberately omits "visitors"/"conversion
@@ -105,13 +128,16 @@ export class AnalyticsService {
   // codebase to compute them from (see subscriptions.service.ts's identical
   // disclaimer for subscriber conversion rate); inventing those numbers
   // would violate the app's "no fake data" rule, so the app hides those
-  // stat cells instead of receiving placeholder values.
+  // stat cells instead of receiving placeholder values. Single-store only —
+  // this is the per-store dashboard's widget, not the cross-store one.
   // ═══════════════════════════════════════════════════════════════════════
 
   private readonly TODAY_CACHE_TTL_SECONDS = 30; // short — card is labeled "Live"
 
-  async getTodaySummary(sellerId: string, storeId: string) {
+  async getTodaySummary(sellerId: string, storeIdInput: string | null | undefined) {
+    const storeId = this.requireStoreId(storeIdInput);
     await this.verifyStoreOwnership(storeId, sellerId);
+    const scope = { 'sellerOrders.storeId': storeId };
 
     const now = new Date();
     const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
@@ -121,8 +147,8 @@ export class AnalyticsService {
 
     return withAnalyticsCache(this.redis, this.key('today', storeId, {}), this.TODAY_CACHE_TTL_SECONDS, async () => {
       const [today, yesterday] = await Promise.all([
-        this.periodTotals(storeId, todayStart, now),
-        this.periodTotals(storeId, yesterdayStart, yesterdaySameTime),
+        this.periodTotals(scope, todayStart, now),
+        this.periodTotals(scope, yesterdayStart, yesterdaySameTime),
       ]);
 
       return {
@@ -141,20 +167,20 @@ export class AnalyticsService {
   // A. OVERVIEW
   // ═══════════════════════════════════════════════════════════════════════
 
-  async getOverview(sellerId: string, storeId: string, query: any) {
-    await this.verifyStoreOwnership(storeId, sellerId);
+  async getOverview(sellerId: string, storeId: string | null | undefined, query: any) {
+    const { scope, storeIds } = await this.resolveScope(sellerId, storeId);
     const { from, to, previousFrom, previousTo } = resolveDateRange(query);
     const compare = query.compareToPreviousPeriod === true || query.compareToPreviousPeriod === 'true';
 
-    return this.cached(this.key('overview', storeId, { from, to, compare }), async () => {
+    return this.cached(this.key('overview', this.scopeLabel(sellerId, storeId), { from, to, compare }), async () => {
       const [current, previous, repeatBuyerPct, prevRepeatBuyerPct] = await Promise.all([
-        this.periodTotals(storeId, from, to),
-        this.periodTotals(storeId, previousFrom, previousTo),
-        this.repeatBuyerPercent(storeId, from, to),
-        this.repeatBuyerPercent(storeId, previousFrom, previousTo),
+        this.periodTotals(scope, from, to),
+        this.periodTotals(scope, previousFrom, previousTo),
+        this.repeatBuyerPercent(scope, from, to),
+        this.repeatBuyerPercent(scope, previousFrom, previousTo),
       ]);
 
-      const returningSet = await this.returningBuyerSet(storeId, current.buyerIds, from);
+      const returningSet = await this.returningBuyerSet(scope, current.buyerIds, from);
       const newCustomersCount = current.uniqueBuyerCount - returningSet.size;
       const returningCustomersCount = returningSet.size;
 
@@ -162,6 +188,7 @@ export class AnalyticsService {
 
       const data: Record<string, any> = {
         period: { from, to },
+        storeCount: storeIds.length,
         grossRevenue: current.grossRevenue,
         totalRevenue: current.netRevenue, // "totalRevenue" = net of refunds, per spec
         totalRevenueChangePercent: percentChange(current.netRevenue, previous.netRevenue),
@@ -199,13 +226,13 @@ export class AnalyticsService {
   // B. REVENUE OVER TIME
   // ═══════════════════════════════════════════════════════════════════════
 
-  async getRevenueOverTime(sellerId: string, storeId: string, query: any) {
-    await this.verifyStoreOwnership(storeId, sellerId);
+  async getRevenueOverTime(sellerId: string, storeId: string | null | undefined, query: any) {
+    const { scope } = await this.resolveScope(sellerId, storeId);
     const { from, to, granularity } = resolveDateRange(query);
 
-    return this.cached(this.key('revenue-over-time', storeId, { from, to }), async () => {
+    return this.cached(this.key('revenue-over-time', this.scopeLabel(sellerId, storeId), { from, to }), async () => {
       const rows = await this.r.orderModel.aggregate([
-        ...this.matchStage(storeId, from, to),
+        ...this.matchStage(scope, from, to),
         {
           $addFields: {
             itemRefund: this.itemRefundField(),
@@ -237,13 +264,13 @@ export class AnalyticsService {
   // C. ORDERS OVER TIME
   // ═══════════════════════════════════════════════════════════════════════
 
-  async getOrdersOverTime(sellerId: string, storeId: string, query: any) {
-    await this.verifyStoreOwnership(storeId, sellerId);
+  async getOrdersOverTime(sellerId: string, storeId: string | null | undefined, query: any) {
+    const { scope } = await this.resolveScope(sellerId, storeId);
     const { from, to, granularity } = resolveDateRange(query);
 
-    return this.cached(this.key('orders-over-time', storeId, { from, to }), async () => {
+    return this.cached(this.key('orders-over-time', this.scopeLabel(sellerId, storeId), { from, to }), async () => {
       const rows = await this.r.orderModel.aggregate([
-        ...this.matchStage(storeId, from, to),
+        ...this.matchStage(scope, from, to),
         { $addFields: { bucket: { $dateTrunc: { date: '$createdAt', unit: granularity, timezone: 'UTC' } } } },
         {
           $group: {
@@ -274,13 +301,13 @@ export class AnalyticsService {
   // D. TRAFFIC SOURCES
   // ═══════════════════════════════════════════════════════════════════════
 
-  async getTrafficSources(sellerId: string, storeId: string, query: any) {
-    await this.verifyStoreOwnership(storeId, sellerId);
+  async getTrafficSources(sellerId: string, storeId: string | null | undefined, query: any) {
+    const { scope } = await this.resolveScope(sellerId, storeId);
     const { from, to } = resolveDateRange(query);
 
-    return this.cached(this.key('traffic-sources', storeId, { from, to }), async () => {
+    return this.cached(this.key('traffic-sources', this.scopeLabel(sellerId, storeId), { from, to }), async () => {
       const rows = await this.r.orderModel.aggregate([
-        ...this.matchStage(storeId, from, to),
+        ...this.matchStage(scope, from, to),
         { $match: { 'sellerOrders.status': { $ne: 'cancelled' } } },
         {
           $group: {
@@ -313,14 +340,14 @@ export class AnalyticsService {
   // E. TOP PRODUCTS
   // ═══════════════════════════════════════════════════════════════════════
 
-  async getTopProducts(sellerId: string, storeId: string, query: any) {
-    await this.verifyStoreOwnership(storeId, sellerId);
+  async getTopProducts(sellerId: string, storeId: string | null | undefined, query: any) {
+    const { scope } = await this.resolveScope(sellerId, storeId);
     const { from, to } = resolveDateRange(query);
     const limit = Number(query.limit) || 10;
     const sort = query.sort === 'units_sold' ? 'units_sold' : 'revenue';
 
-    return this.cached(this.key('top-products', storeId, { from, to, limit, sort }), async () => {
-      const rows = await this.aggregateProductSales(storeId, from, to);
+    return this.cached(this.key('top-products', this.scopeLabel(sellerId, storeId), { from, to, limit, sort }), async () => {
+      const rows = await this.aggregateProductSales(scope, from, to);
       rows.sort((a, b) => (sort === 'units_sold' ? b.unitsSold - a.unitsSold : b.netRevenue - a.netRevenue));
 
       return {
@@ -337,30 +364,30 @@ export class AnalyticsService {
   }
 
   /** Shared item-level sales aggregation reused by top-products and product-performance (and by admin analytics, platform-wide). */
-  private async aggregateProductSales(storeId: string, from: Date, to: Date) {
-    return aggregateProductSalesUtil(this.r.orderModel, from, to, { 'sellerOrders.storeId': storeId });
+  private async aggregateProductSales(scope: Record<string, any>, from: Date, to: Date) {
+    return aggregateProductSalesUtil(this.r.orderModel, from, to, scope);
   }
 
   // ═══════════════════════════════════════════════════════════════════════
   // F. CUSTOMER ANALYTICS
   // ═══════════════════════════════════════════════════════════════════════
 
-  /** All-time per-customer aggregate for this store — the base for LTV, and for classifying new vs returning within any period. */
-  private async allTimeCustomerAggregate(storeId: string) {
-    return allTimeCustomerAggregateUtil(this.r.orderModel, { 'sellerOrders.storeId': storeId });
+  /** All-time per-customer aggregate for this scope — the base for LTV, and for classifying new vs returning within any period. */
+  private async allTimeCustomerAggregate(scope: Record<string, any>) {
+    return allTimeCustomerAggregateUtil(this.r.orderModel, scope);
   }
 
-  async getCustomerAnalytics(sellerId: string, storeId: string, query: any) {
-    await this.verifyStoreOwnership(storeId, sellerId);
+  async getCustomerAnalytics(sellerId: string, storeId: string | null | undefined, query: any) {
+    const { scope } = await this.resolveScope(sellerId, storeId);
     const { from, to, granularity } = resolveDateRange(query);
 
-    return this.cached(this.key('customers', storeId, { from, to }), async () => {
-      const allTime = await this.allTimeCustomerAggregate(storeId);
+    return this.cached(this.key('customers', this.scopeLabel(sellerId, storeId), { from, to }), async () => {
+      const allTime = await this.allTimeCustomerAggregate(scope);
       const firstOrderMap = new Map(allTime.map((c) => [c.userId, c.firstOrderAt]));
 
-      // New vs returning per bucket, using each buyer's all-time first order date for this store.
+      // New vs returning per bucket, using each buyer's all-time first order date within this scope.
       const periodRows = await this.r.orderModel.aggregate([
-        ...this.matchStage(storeId, from, to),
+        ...this.matchStage(scope, from, to),
         { $match: { 'sellerOrders.status': { $ne: 'cancelled' } } },
         { $addFields: { bucket: { $dateTrunc: { date: '$createdAt', unit: granularity, timezone: 'UTC' } } } },
         { $group: { _id: { bucket: '$bucket', userId: '$userId' } } },
@@ -370,7 +397,7 @@ export class AnalyticsService {
       for (const row of periodRows as any[]) {
         const bucketTime = row._id.bucket.getTime();
         const firstOrderAt = firstOrderMap.get(row._id.userId);
-        // "New" in this bucket = their all-time first order for this store falls within it.
+        // "New" in this bucket = their all-time first order within this scope falls within it.
         const isNew = !!firstOrderAt && firstOrderAt >= row._id.bucket && firstOrderAt < this.nextBucket(row._id.bucket, granularity);
         const entry = bucketTotals.get(bucketTime) ?? { newCustomers: 0, returningCustomers: 0 };
         if (isNew) entry.newCustomers += 1; else entry.returningCustomers += 1;
@@ -382,7 +409,7 @@ export class AnalyticsService {
         return { date: bucket, ...totals };
       });
 
-      // Lifetime value summary + top customers (all-time LTV for this store).
+      // Lifetime value summary + top customers (all-time LTV within this scope).
       const avgLifetimeValue = allTime.length > 0
         ? this.round(allTime.reduce((sum, c) => sum + c.lifetimeValue, 0) / allTime.length)
         : 0;
@@ -404,7 +431,7 @@ export class AnalyticsService {
 
       // Geographic breakdown — physical orders only (digital orders have no shippingAddress).
       const geoRows = await this.r.orderModel.aggregate([
-        ...this.matchStage(storeId, from, to),
+        ...this.matchStage(scope, from, to),
         { $match: { 'sellerOrders.status': { $ne: 'cancelled' }, shippingAddress: { $ne: null } } },
         { $group: { _id: '$shippingAddress.state', orders: { $sum: 1 }, revenue: { $sum: '$sellerOrders.subtotal' } } },
         { $sort: { revenue: -1 } },
@@ -435,16 +462,16 @@ export class AnalyticsService {
   // F2. PRODUCT PERFORMANCE (paginated, beyond top-N)
   // ═══════════════════════════════════════════════════════════════════════
 
-  async getProductPerformance(sellerId: string, storeId: string, query: any) {
-    await this.verifyStoreOwnership(storeId, sellerId);
+  async getProductPerformance(sellerId: string, storeId: string | null | undefined, query: any) {
+    const { scope, storeIds } = await this.resolveScope(sellerId, storeId);
     const { from, to } = resolveDateRange(query);
     const page = Number(query.page) || 1;
     const limit = Number(query.limit) || 20;
 
-    return this.cached(this.key('product-performance', storeId, { from, to, page, limit }), async () => {
+    return this.cached(this.key('product-performance', this.scopeLabel(sellerId, storeId), { from, to, page, limit }), async () => {
       const [sales, products] = await Promise.all([
-        this.aggregateProductSales(storeId, from, to),
-        this.r.productModel.find({ storeId, isDelete: false }).select('name').lean(),
+        this.aggregateProductSales(scope, from, to),
+        this.r.productModel.find({ storeId: { $in: storeIds }, isDelete: false }).select('name').lean(),
       ]);
 
       const salesMap = new Map(sales.map((s) => [s.productId, s]));
@@ -493,18 +520,18 @@ export class AnalyticsService {
   // F3. INVENTORY INSIGHTS
   // ═══════════════════════════════════════════════════════════════════════
 
-  async getInventoryInsights(sellerId: string, storeId: string) {
-    await this.verifyStoreOwnership(storeId, sellerId);
+  async getInventoryInsights(sellerId: string, storeId: string | null | undefined) {
+    const { scope, storeIds } = await this.resolveScope(sellerId, storeId);
 
-    return this.cached(this.key('inventory-insights', storeId, {}), async () => {
+    return this.cached(this.key('inventory-insights', this.scopeLabel(sellerId, storeId), {}), async () => {
       // Sell-through measured over the trailing 30 days — a fixed, well-understood window for a store-wide inventory snapshot (this endpoint has no range param).
       const to = new Date();
       const from = new Date();
       from.setDate(from.getDate() - 30);
 
       const [products, sales30d] = await Promise.all([
-        this.r.productModel.find({ storeId, isDelete: false, status: 'active' }).select('name').lean(),
-        this.aggregateProductSales(storeId, from, to),
+        this.r.productModel.find({ storeId: { $in: storeIds }, isDelete: false, status: 'active' }).select('name').lean(),
+        this.aggregateProductSales(scope, from, to),
       ]);
 
       const productIds = products.map((p: any) => p._id.toString());
@@ -566,13 +593,13 @@ export class AnalyticsService {
   // F4. PAYMENT METHOD BREAKDOWN
   // ═══════════════════════════════════════════════════════════════════════
 
-  async getPaymentMethods(sellerId: string, storeId: string, query: any) {
-    await this.verifyStoreOwnership(storeId, sellerId);
+  async getPaymentMethods(sellerId: string, storeId: string | null | undefined, query: any) {
+    const { scope } = await this.resolveScope(sellerId, storeId);
     const { from, to } = resolveDateRange(query);
 
-    return this.cached(this.key('payment-methods', storeId, { from, to }), async () => {
+    return this.cached(this.key('payment-methods', this.scopeLabel(sellerId, storeId), { from, to }), async () => {
       const rows = await this.r.orderModel.aggregate([
-        ...this.matchStage(storeId, from, to),
+        ...this.matchStage(scope, from, to),
         { $match: { 'sellerOrders.status': { $ne: 'cancelled' } } },
         { $group: { _id: '$paymentType', count: { $sum: 1 }, revenue: { $sum: '$sellerOrders.subtotal' } } },
       ]);
@@ -594,18 +621,18 @@ export class AnalyticsService {
   // F5. REVENUE BREAKDOWN — orders vs subscriptions
   // ═══════════════════════════════════════════════════════════════════════
 
-  async getRevenueBreakdown(sellerId: string, storeId: string, query: any) {
-    const store = await this.verifyStoreOwnership(storeId, sellerId);
+  async getRevenueBreakdown(sellerId: string, storeId: string | null | undefined, query: any) {
+    const { scope } = await this.resolveScope(sellerId, storeId);
     const { from, to } = resolveDateRange(query);
 
-    return this.cached(this.key('revenue-breakdown', storeId, { from, to }), async () => {
-      const orderTotals = await this.periodTotals(storeId, from, to);
+    return this.cached(this.key('revenue-breakdown', this.scopeLabel(sellerId, storeId), { from, to }), async () => {
+      const orderTotals = await this.periodTotals(scope, from, to);
 
       // Subscription plans are seller-scoped, not store-scoped, in this codebase's data
-      // model (a seller with multiple stores would see the same recurring-revenue figure
-      // on each store's analytics) — flagged explicitly rather than silently misattributed.
+      // model — so this figure is identical whether viewing one store or every store
+      // (flagged explicitly rather than silently misattributed to a single store).
       const subRows = await this.r.subscriptionInvoiceModel.aggregate([
-        { $match: { sellerId: store.sellerId, status: 'paid', isDelete: false, paidAt: { $gte: from, $lte: to } } },
+        { $match: { sellerId, status: 'paid', isDelete: false, paidAt: { $gte: from, $lte: to } } },
         { $group: { _id: null, total: { $sum: '$amountUSD' } } },
       ]);
       const recurringRevenue = this.round(subRows[0]?.total ?? 0);
@@ -616,25 +643,32 @@ export class AnalyticsService {
           oneTimeOrderRevenue: orderTotals.netRevenue,
           recurringSubscriptionRevenue: recurringRevenue,
           totalRevenue: this.round(orderTotals.netRevenue + recurringRevenue),
-          note: 'Subscription revenue is scoped to the seller (not this specific store) — this codebase\'s Subscription plans are not store-attributed.',
+          note: 'Subscription revenue is scoped to the seller (not one specific store) — this codebase\'s Subscription plans are not store-attributed.',
         },
       };
     });
   }
 
   // ═══════════════════════════════════════════════════════════════════════
-  // G. EXPORT
+  // G. EXPORT — single-store only for now; not part of the cross-store view.
   // ═══════════════════════════════════════════════════════════════════════
 
-  async exportCsv(sellerId: string, storeId: string, query: any): Promise<string> {
+  private requireStoreId(storeId: string | null | undefined): string {
+    if (!storeId) throw new Error('storeId is required for export');
+    return storeId;
+  }
+
+  async exportCsv(sellerId: string, storeIdInput: string | null | undefined, query: any): Promise<string> {
+    const storeId = this.requireStoreId(storeIdInput);
     await this.verifyStoreOwnership(storeId, sellerId);
+    const scope = { 'sellerOrders.storeId': storeId };
     const { from, to } = resolveDateRange(query);
     const section = query.section ?? 'revenue';
 
     switch (section) {
       case 'orders': {
         const rows = await this.r.orderModel.aggregate([
-          ...this.matchStage(storeId, from, to),
+          ...this.matchStage(scope, from, to),
           { $project: { _id: 0, orderNumber: 1, createdAt: 1, status: '$sellerOrders.status', subtotal: '$sellerOrders.subtotal', paymentType: 1 } },
           { $sort: { createdAt: -1 } },
           { $limit: 5000 },
@@ -645,7 +679,7 @@ export class AnalyticsService {
         );
       }
       case 'products': {
-        const rows = await this.aggregateProductSales(storeId, from, to);
+        const rows = await this.aggregateProductSales(scope, from, to);
         rows.sort((a, b) => b.netRevenue - a.netRevenue);
         return toCsv(
           ['Product ID', 'Name', 'Order Count', 'Units Sold', 'Gross Revenue', 'Refunded', 'Net Revenue'],
@@ -653,7 +687,7 @@ export class AnalyticsService {
         );
       }
       case 'customers': {
-        const allTime = await this.allTimeCustomerAggregate(storeId);
+        const allTime = await this.allTimeCustomerAggregate(scope);
         const users = await this.r.userModel.find({ _id: { $in: allTime.map((c) => c.userId) } }).select('name email').lean();
         const userMap = new Map(users.map((u: any) => [u._id.toString(), u]));
         return toCsv(
@@ -674,7 +708,8 @@ export class AnalyticsService {
     }
   }
 
-  async exportPdf(sellerId: string, storeId: string, query: any): Promise<Buffer> {
+  async exportPdf(sellerId: string, storeIdInput: string | null | undefined, query: any): Promise<Buffer> {
+    const storeId = this.requireStoreId(storeIdInput);
     const store = await this.verifyStoreOwnership(storeId, sellerId);
     const { from, to } = resolveDateRange(query);
 

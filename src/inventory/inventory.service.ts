@@ -90,6 +90,7 @@ export class InventoryService {
         image: product.images?.[0] ?? null,
         images: product.images ?? [],
         type: product.type,
+        productType: product.productType,
         stock: stockDisplay,
         stockStatus,
         status: product.status,

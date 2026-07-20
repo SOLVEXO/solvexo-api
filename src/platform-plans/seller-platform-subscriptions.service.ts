@@ -75,6 +75,54 @@ export class SellerPlatformSubscriptionsService {
     }
   }
 
+  /**
+   * Pure proration math, no side effects — shared by `changePlan` (which acts
+   * on it) and `previewChangePlan` (which only shows it to the seller before
+   * they confirm). Keeping this in one place is what guarantees the preview
+   * the seller sees is EXACTLY what they'll be charged, never an approximation.
+   */
+  private computeProration(sub: any, newPlan: any, newInterval: 'monthly' | 'yearly') {
+    const newAmountUSD = newPlan.isFree
+      ? 0
+      : (newInterval === 'yearly' ? (newPlan.yearlyPriceUSD ?? this.round((newPlan.monthlyPriceUSD ?? 0) * 12)) : (newPlan.monthlyPriceUSD ?? 0));
+
+    const now = new Date();
+    const totalPeriodMs = sub.currentPeriodEnd.getTime() - sub.currentPeriodStart.getTime();
+    const remainingMs = Math.max(0, sub.currentPeriodEnd.getTime() - now.getTime());
+    const remainingRatio = totalPeriodMs > 0 ? Math.min(1, remainingMs / totalPeriodMs) : 0;
+    const unusedCredit = this.round((sub.amountUSD ?? 0) * remainingRatio);
+    const totalCreditAvailable = this.round(unusedCredit + (sub.creditBalanceUSD ?? 0));
+    const netDue = this.round(newAmountUSD - totalCreditAvailable);
+
+    return {
+      newAmountUSD, remainingRatio, unusedCredit,
+      existingCreditBalanceUSD: this.round(sub.creditBalanceUSD ?? 0),
+      totalCreditAvailable, netDue, isFreeMoveIn: newAmountUSD === 0,
+      willChargeUSD: netDue > 0 ? netDue : 0,
+      willCreditUSD: netDue < 0 ? this.round(-netDue) : 0,
+    };
+  }
+
+  /**
+   * Moves a store to the platform's free plan — the terminal state for both
+   * "dunning exhausted" (applyDunningFailure) and "cancellation reached period
+   * end" (finalizeScheduledCancellations). No store is ever left with zero
+   * plan record; it always lands on whichever plan has `isFree: true`.
+   */
+  private async downgradeToFree(sub: any): Promise<any | null> {
+    const freePlan = await this.planModel.findOne({ isFree: true, status: 'active', isDelete: false });
+    if (!freePlan) return null;
+    sub.platformPlanId = (freePlan as any)._id.toString();
+    sub.amountUSD = 0;
+    sub.status = 'active';
+    sub.failedPaymentAttempts = 0;
+    sub.cancelAtPeriodEnd = false;
+    sub.canceledAt = null;
+    sub.cancelReason = null;
+    await this.syncFeaturedBadge(sub.storeId, freePlan);
+    return freePlan;
+  }
+
   private async getSellerAndStoreNames(sellerId: string, storeId: string) {
     const [seller, store] = await Promise.all([
       this.db.repositories.sellerModel.findById(sellerId).select('name email').lean(),
@@ -108,13 +156,8 @@ export class SellerPlatformSubscriptionsService {
       // Unlike the buyer system, we never fully "cancel" a store's platform
       // access — every store must always be on SOME tier. Exhausting
       // dunning demotes the store back to the free plan instead.
-      const freePlan = await this.planModel.findOne({ isFree: true, status: 'active', isDelete: false });
+      const freePlan = await this.downgradeToFree(sub);
       if (freePlan) {
-        sub.platformPlanId = (freePlan as any)._id.toString();
-        sub.amountUSD = 0;
-        sub.status = 'active';
-        sub.failedPaymentAttempts = 0;
-        await this.syncFeaturedBadge(sub.storeId, freePlan);
         if (sellerEmail) {
           await this.notifications.sendDowngradedDueToFailedPayments(sellerEmail, {
             sellerName, storeName, planName: freePlan.name, maxAttempts: MAX_RENEWAL_ATTEMPTS,
@@ -278,15 +321,9 @@ export class SellerPlatformSubscriptionsService {
       throw new BadRequestException('This is already your current plan');
     }
 
-    const newAmountUSD = newPlan.isFree ? 0 : (newInterval === 'yearly' ? (newPlan.yearlyPriceUSD ?? this.round((newPlan.monthlyPriceUSD ?? 0) * 12)) : (newPlan.monthlyPriceUSD ?? 0));
-
     const now = new Date();
-    const totalPeriodMs = sub.currentPeriodEnd.getTime() - sub.currentPeriodStart.getTime();
-    const remainingMs = Math.max(0, sub.currentPeriodEnd.getTime() - now.getTime());
-    const remainingRatio = totalPeriodMs > 0 ? Math.min(1, remainingMs / totalPeriodMs) : 0;
-    const unusedCredit = this.round((sub.amountUSD ?? 0) * remainingRatio);
-    const totalCreditAvailable = this.round(unusedCredit + (sub.creditBalanceUSD ?? 0));
-    const netDue = this.round(newAmountUSD - totalCreditAvailable);
+    const { newAmountUSD, totalCreditAvailable, netDue, isFreeMoveIn } = this.computeProration(sub, newPlan, newInterval as 'monthly' | 'yearly');
+    void totalCreditAvailable; // surfaced via previewChangePlan; changePlan itself only needs netDue
 
     const historyEntry = {
       fromPlanId: sub.platformPlanId, fromPlanName: oldPlan?.name ?? 'Unknown',
@@ -295,7 +332,6 @@ export class SellerPlatformSubscriptionsService {
 
     let invoice: any = null;
     let message: string;
-    const isFreeMoveIn = newAmountUSD === 0;
 
     if (isFreeMoveIn) {
       sub.creditBalanceUSD = 0; // moving to free forfeits any remaining paid-tier credit
@@ -390,10 +426,18 @@ export class SellerPlatformSubscriptionsService {
     sub.nextBillingDate = sub.currentPeriodEnd;
     sub.failedPaymentAttempts = 0;
     sub.canceledAt = null;
+    // Any change of plan — including re-subscribing before a scheduled
+    // cancellation reached period end — implicitly clears that schedule.
+    const hadPendingCancellation = sub.cancelAtPeriodEnd;
+    sub.cancelAtPeriodEnd = false;
+    sub.cancelReason = null;
     sub.status = 'active';
     sub.planHistory = [...(sub.planHistory ?? []), historyEntry];
     await sub.save();
     await this.syncFeaturedBadge(storeId, newPlan);
+    if (hadPendingCancellation && this.gateway.isProviderDrivenBilling && sub.providerSubscriptionId) {
+      await this.gateway.unscheduleProviderCancellation(sub.providerSubscriptionId);
+    }
 
     if (this.gateway.isProviderDrivenBilling && sub.providerSubscriptionId) {
       const newProviderPriceId = newInterval === 'yearly' ? newPlan.stripeYearlyPriceId : newPlan.stripeMonthlyPriceId;
@@ -430,6 +474,138 @@ export class SellerPlatformSubscriptionsService {
     return { success: true, message, data: { subscription: sub, invoice } };
   }
 
+  /**
+   * Dry-run of `changePlan`'s exact proration math — no DB write, no charge,
+   * no Stripe call. This is what the seller-facing "confirm your plan change"
+   * modal calls before showing an amount, so the number it shows can never
+   * drift from what `changePlan` actually charges a moment later.
+   */
+  async previewChangePlan(sellerId: string, storeId: string, dto: ChangePlatformPlanDto | SubscribePlatformPlanDto) {
+    await this.verifyStoreOwnership(storeId, sellerId);
+
+    const sub = await this.subModel.findOne({ storeId, isDelete: false }).lean();
+    if (!sub) throw new NotFoundException('This store has no platform-plan record yet');
+
+    const newPlanId = 'newPlatformPlanId' in dto ? dto.newPlatformPlanId : dto.platformPlanId;
+    const newInterval = ('newBillingInterval' in dto ? dto.newBillingInterval : dto.billingInterval) as 'monthly' | 'yearly';
+
+    const [currentPlan, newPlan] = await Promise.all([
+      this.planModel.findById((sub as any).platformPlanId).lean(),
+      this.planModel.findOne({ _id: newPlanId, isDelete: false, status: 'active' }).lean(),
+    ]);
+    if (!newPlan) throw new NotFoundException('Target platform plan not found or inactive');
+    if ((newPlan as any).isCustomPricing) throw new BadRequestException('This plan requires contacting sales — it has no self-serve checkout');
+    if (String((sub as any).platformPlanId) === String(newPlanId) && (sub as any).billingInterval === newInterval) {
+      throw new BadRequestException('This is already your current plan');
+    }
+
+    const proration = this.computeProration(sub, newPlan, newInterval);
+    const direction = String((sub as any).platformPlanId) === String(newPlanId)
+      ? (newInterval === 'yearly' ? 'billing_interval_change' : 'billing_interval_change')
+      : (proration.newAmountUSD > ((sub as any).amountUSD ?? 0) ? 'upgrade' : 'downgrade');
+
+    return {
+      success: true,
+      data: {
+        direction,
+        currentPlanName: (currentPlan as any)?.name ?? 'Unknown',
+        currentAmountUSD: (sub as any).amountUSD ?? 0,
+        newPlanName: newPlan.name,
+        newAmountUSD: proration.newAmountUSD,
+        newBillingInterval: newInterval,
+        remainingDaysInCurrentPeriod: Math.max(0, Math.ceil((new Date((sub as any).currentPeriodEnd).getTime() - Date.now()) / (24 * 60 * 60 * 1000))),
+        unusedCreditFromCurrentPlanUSD: proration.unusedCredit,
+        existingCreditBalanceUSD: proration.existingCreditBalanceUSD,
+        totalCreditAppliedUSD: proration.totalCreditAvailable,
+        amountDueTodayUSD: proration.willChargeUSD,
+        creditAppliedToBalanceUSD: proration.willCreditUSD,
+        effectiveImmediately: true,
+      },
+    };
+  }
+
+  /**
+   * Explicit "Cancel Subscription" — schedules a downgrade to the free plan
+   * at the end of the period the seller already paid for (Stripe/Shopify/
+   * Paddle convention). Access and entitlements are unaffected until then;
+   * `finalizeScheduledCancellations()` executes the actual downgrade.
+   */
+  async cancelSubscription(sellerId: string, storeId: string, reason?: string) {
+    await this.verifyStoreOwnership(storeId, sellerId);
+
+    const sub = await this.subModel.findOne({ storeId, isDelete: false });
+    if (!sub) throw new NotFoundException('This store has no platform-plan record yet');
+    if ((sub.amountUSD ?? 0) === 0) throw new BadRequestException('You are already on the free plan — there is nothing to cancel');
+    if (sub.cancelAtPeriodEnd) throw new BadRequestException(`Cancellation is already scheduled for ${sub.currentPeriodEnd.toDateString()}`);
+
+    sub.cancelAtPeriodEnd = true;
+    sub.canceledAt = new Date();
+    sub.cancelReason = reason?.trim() || null;
+    await sub.save();
+
+    if (this.gateway.isProviderDrivenBilling && sub.providerSubscriptionId) {
+      await this.gateway.scheduleProviderCancellation(sub.providerSubscriptionId);
+    }
+
+    this.activityLogService.log({
+      storeId, category: 'platform_plans', action: 'plan_cancel_scheduled',
+      description: `Cancellation scheduled — plan reverts to the free tier on ${sub.currentPeriodEnd.toDateString()}${reason ? ` (reason: ${reason})` : ''}`,
+      actorId: sellerId, actorRole: 'seller', targetId: sub._id.toString(), targetType: 'seller_platform_subscription',
+    });
+    this.notificationsService.notify({
+      recipientId: sellerId, recipientRole: 'seller',
+      type: NOTIFICATION_TYPES.PLATFORM_PLAN_RENEWAL_REMINDER,
+      title: 'Cancellation scheduled',
+      body: `Your plan will revert to the free tier on ${sub.currentPeriodEnd.toDateString()}. You keep full access until then.`,
+      data: { subscriptionId: String(sub._id) },
+    }).catch(() => {});
+
+    return {
+      success: true,
+      message: `Your plan will move to the free tier on ${sub.currentPeriodEnd.toDateString()} — you keep full access until then.`,
+      data: { subscription: sub },
+    };
+  }
+
+  /** Undoes a still-pending `cancelSubscription` — the subscription keeps renewing normally. */
+  async reactivateSubscription(sellerId: string, storeId: string) {
+    await this.verifyStoreOwnership(storeId, sellerId);
+
+    const sub = await this.subModel.findOne({ storeId, isDelete: false });
+    if (!sub) throw new NotFoundException('This store has no platform-plan record yet');
+    if (!sub.cancelAtPeriodEnd) {
+      throw new BadRequestException('There is no pending cancellation to undo — choose a plan to subscribe instead.');
+    }
+
+    sub.cancelAtPeriodEnd = false;
+    sub.canceledAt = null;
+    sub.cancelReason = null;
+    await sub.save();
+
+    if (this.gateway.isProviderDrivenBilling && sub.providerSubscriptionId) {
+      await this.gateway.unscheduleProviderCancellation(sub.providerSubscriptionId);
+    }
+
+    this.activityLogService.log({
+      storeId, category: 'platform_plans', action: 'plan_cancel_reversed',
+      description: 'Scheduled cancellation reversed — plan continues renewing normally',
+      actorId: sellerId, actorRole: 'seller', targetId: sub._id.toString(), targetType: 'seller_platform_subscription',
+    });
+
+    return { success: true, message: 'Your subscription will continue renewing as normal.', data: { subscription: sub } };
+  }
+
+  /** Stripe-hosted self-service portal for platform-plan billing — card updates, past invoices — same gateway method the buyer-billing system already uses. */
+  async createBillingPortalSession(sellerId: string, storeId: string, returnUrl: string) {
+    await this.verifyStoreOwnership(storeId, sellerId);
+    const sub = await this.subModel.findOne({ storeId, isDelete: false }).lean();
+    if (!sub || !(sub as any).stripeCustomerId) {
+      throw new BadRequestException('No Stripe billing profile exists yet for this store — subscribe to a paid plan first.');
+    }
+    const result = await this.gateway.createBillingPortalSession((sub as any).stripeCustomerId, returnUrl);
+    return { success: true, data: result };
+  }
+
   // ═══════════════════════════════════════════════════════════════════════
   // Billing automation — mirrors SubscriptionsService.processRenewals()
   // ═══════════════════════════════════════════════════════════════════════
@@ -440,6 +616,7 @@ export class SellerPlatformSubscriptionsService {
       status: { $in: ['active', 'past_due'] },
       paymentProvider: 'manual',
       amountUSD: { $gt: 0 }, // free-plan stores never "renew" a charge
+      cancelAtPeriodEnd: { $ne: true }, // a scheduled cancellation reverts to free at period end instead of renewing
       nextBillingDate: { $lte: now },
       isDelete: false,
     });
@@ -514,6 +691,36 @@ export class SellerPlatformSubscriptionsService {
       expired++;
     }
     return { expired };
+  }
+
+  /**
+   * Executes `cancelSubscription()`'s promise once the paid period the seller
+   * already covered actually ends — for manual-provider subs only (a
+   * Stripe-driven cancellation resolves itself via the `customer.subscription.deleted`
+   * webhook once Stripe's own `cancel_at_period_end` fires). Runs daily via SchedulerService.
+   */
+  async finalizeScheduledCancellations(): Promise<{ downgraded: number }> {
+    const now = new Date();
+    const due = await this.subModel.find({
+      cancelAtPeriodEnd: true,
+      currentPeriodEnd: { $lte: now },
+      isDelete: false,
+      $or: [{ paymentProvider: 'manual' }, { providerSubscriptionId: null }],
+    });
+
+    let downgraded = 0;
+    for (const sub of due) {
+      const freePlan = await this.downgradeToFree(sub);
+      if (!freePlan) continue;
+      await sub.save();
+      downgraded++;
+      this.activityLogService.log({
+        storeId: sub.storeId, category: 'platform_plans', action: 'plan_downgraded_cancellation',
+        description: `Scheduled cancellation reached period end — store moved to the ${freePlan.name} plan`,
+        actorRole: 'system', targetId: sub._id.toString(), targetType: 'seller_platform_subscription',
+      });
+    }
+    return { downgraded };
   }
 
   /** Sends a one-time "trial ends in ≤3 days" email per store — runs daily via SchedulerService. */
@@ -615,13 +822,11 @@ export class SellerPlatformSubscriptionsService {
   async handleSubscriptionDeleted(subscription: any): Promise<void> {
     const sub = await this.subModel.findOne({ providerSubscriptionId: subscription.id, isDelete: false });
     if (!sub) return;
-    const freePlan = await this.planModel.findOne({ isFree: true, status: 'active', isDelete: false });
-    if (freePlan) {
-      sub.platformPlanId = (freePlan as any)._id.toString();
-      sub.amountUSD = 0;
-    }
+    // Covers both a scheduled cancelSubscription() reaching its period end on
+    // Stripe's side and any other way a Stripe subscription ends — either way
+    // the store lands on the free plan, never with no plan at all.
+    await this.downgradeToFree(sub);
     sub.providerSubscriptionId = null;
-    sub.status = 'active';
     await sub.save();
   }
 

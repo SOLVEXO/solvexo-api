@@ -4,6 +4,7 @@ import { AuthModule } from '../auth/auth.module';
 import { RedisModule } from '../redis/redis.module';
 import { AdminConfigModule } from '../admin-config/admin-config.module';
 import { AiStudioController } from './ai-studio.controller';
+import { PublicWorksheetTrialController } from './public-worksheet-trial.controller';
 import { AiStudioService } from './ai-studio.service';
 import { AiStudioCreditsService } from './ai-studio-credits.service';
 import { AdminAiStudioController } from './admin-ai-studio.controller';
@@ -35,7 +36,7 @@ import { ImageEnhanceService } from './providers/image-enhance.service';
  */
 @Module({
   imports: [AuthModule, RedisModule, AdminConfigModule],
-  controllers: [AiStudioController, AdminAiStudioController],
+  controllers: [AiStudioController, PublicWorksheetTrialController, AdminAiStudioController],
   providers: [
     AiStudioService,
     AiStudioCreditsService,

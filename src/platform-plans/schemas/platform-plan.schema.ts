@@ -18,8 +18,12 @@ export type PlatformPlanDocument = PlatformPlan & Document;
 export class PlatformPlan {
   @Prop({ type: String, required: true }) name: string;
   @Prop({ type: String, default: null }) description: string | null;
-  @Prop({ type: String, default: null }) badge: string | null; // e.g. "Popular"
+  @Prop({ type: String, default: null }) badge: string | null; // e.g. "Popular" / "Recommended"
   @Prop({ type: Number, default: 0 }) sortOrder: number;
+  // Lets an admin keep a plan assignable (e.g. a negotiated legacy/grandfathered
+  // tier) without it appearing on the public pricing page's self-serve list —
+  // distinct from `status`, which controls whether the plan can be used at all.
+  @Prop({ type: Boolean, default: true }) isPubliclyVisible: boolean;
 
   // ── Billing ───────────────────────────────────────────────────────────────
   @Prop({ type: Boolean, default: false }) isFree: boolean;

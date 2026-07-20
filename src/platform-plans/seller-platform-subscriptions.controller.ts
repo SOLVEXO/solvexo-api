@@ -7,7 +7,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { IdempotencyInterceptor } from '../common/idempotency.interceptor';
-import { ChangePlatformPlanDto } from './dto/subscribe-platform-plan.dto';
+import { ChangePlatformPlanDto, CancelPlatformPlanDto, BillingPortalDto } from './dto/subscribe-platform-plan.dto';
 import { RefundInvoiceDto } from '../subscriptions/dto/refund-invoice.dto';
 
 @ApiTags('Platform Plans — Seller')
@@ -65,5 +65,38 @@ export class SellerPlatformSubscriptionsController {
   @Patch(':storeId/change-plan')
   changePlan(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: ChangePlatformPlanDto) {
     return this.sellerPlatformSubscriptionsService.changePlan(req.user.userId, storeId, dto, req.headers['idempotency-key']);
+  }
+
+  /** Dry-run of change-plan's exact proration math — what the "confirm your plan change" modal shows before the seller commits. */
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Post(':storeId/preview-change-plan')
+  previewChangePlan(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: ChangePlatformPlanDto) {
+    return this.sellerPlatformSubscriptionsService.previewChangePlan(req.user.userId, storeId, dto);
+  }
+
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Post(':storeId/cancel')
+  cancelSubscription(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: CancelPlatformPlanDto) {
+    return this.sellerPlatformSubscriptionsService.cancelSubscription(req.user.userId, storeId, dto.reason);
+  }
+
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Post(':storeId/reactivate')
+  reactivateSubscription(@Req() req: any, @Param('storeId') storeId: string) {
+    return this.sellerPlatformSubscriptionsService.reactivateSubscription(req.user.userId, storeId);
+  }
+
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Post(':storeId/billing-portal')
+  createBillingPortalSession(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: BillingPortalDto) {
+    return this.sellerPlatformSubscriptionsService.createBillingPortalSession(req.user.userId, storeId, dto.returnUrl);
   }
 }

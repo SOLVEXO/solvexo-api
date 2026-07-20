@@ -84,6 +84,7 @@ export class OrdersService {
           image: item.image,
           sku: item.sku,
           type: item.type,
+          productType: item.productType ?? null,
           quantity: item.quantity,
           price: item.price,
           totalPrice: item.totalPrice,
@@ -121,22 +122,28 @@ export class OrdersService {
     };
   }
 
-  async getSellerOrders(sellerId: string, storeId: string, query: any) {
-    if (!storeId) throw new BadRequestException('storeId is required');
-
+  /** `storeId` omitted (null) means "every store this seller owns" — used by the
+   *  seller-wide dashboard, as opposed to a single store's own orders page. */
+  async getSellerOrders(sellerId: string, storeId: string | null, query: any) {
     const { orderModel, storeModel, userModel } = this.databaseService.repositories;
 
-    // store ownership check
-    const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
-    if (!store) throw new ForbiddenException('Store not found or unauthorized');
+    let storeIds: string[];
+    if (storeId) {
+      const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
+      if (!store) throw new ForbiddenException('Store not found or unauthorized');
+      storeIds = [storeId];
+    } else {
+      const stores = await storeModel.find({ sellerId, isDelete: false }).select('_id').lean();
+      storeIds = stores.map((s: any) => s._id.toString());
+    }
 
     const page = parseInt(query.page) || 1;
     const limit = Math.min(50, parseInt(query.limit) || 10);
     const skip = (page - 1) * limit;
 
-    // base filter — is store ke orders
+    // base filter — orders touching any of the scoped store(s)
     const matchFilter: any = {
-      'sellerOrders.storeId': storeId,
+      'sellerOrders.storeId': { $in: storeIds },
       isDelete: false,
     };
 
@@ -169,14 +176,14 @@ export class OrdersService {
       .limit(limit)
       .lean();
 
-    // stats — all orders for this store (no pagination)
-    const allOrders = await orderModel.find({ 'sellerOrders.storeId': storeId, isDelete: false }).lean();
+    // stats — all orders across the scoped store(s) (no pagination)
+    const allOrders = await orderModel.find({ 'sellerOrders.storeId': { $in: storeIds }, isDelete: false }).lean();
 
     let totalRevenue = 0;
     let pendingCount = 0;
 
     for (const order of allOrders) {
-      const so = (order.sellerOrders as any[]).find((s: any) => s.storeId === storeId);
+      const so = (order.sellerOrders as any[]).find((s: any) => storeIds.includes(s.storeId));
       if (!so) continue;
       if (['completed', 'delivered'].includes(so.status)) {
         totalRevenue += so.subtotal || 0;
@@ -191,7 +198,7 @@ export class OrdersService {
     // order rows format
     const rows = await Promise.all(
       orders.map(async (order: any) => {
-        const so = order.sellerOrders.find((s: any) => s.storeId === storeId);
+        const so = order.sellerOrders.find((s: any) => storeIds.includes(s.storeId));
         if (!so) return null;
 
         const user = await userModel.findOne({ _id: order.userId }).select('name email').lean();
@@ -206,6 +213,7 @@ export class OrdersService {
           },
           product: firstItem?.name || '',
           type: so.fulfillmentType,
+          productType: firstItem?.productType ?? null,
           date: order.createdAt,
           amount: so.subtotal,
           status: so.status,

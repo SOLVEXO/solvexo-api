@@ -183,6 +183,22 @@ export class StripePaymentProvider implements IPaymentGateway {
     }
   }
 
+  async scheduleProviderCancellation(providerSubscriptionId: string): Promise<void> {
+    try {
+      await this.stripe.subscriptions.update(providerSubscriptionId, { cancel_at_period_end: true });
+    } catch (err: any) {
+      this.logger.warn(`Stripe schedule-cancellation non-fatal error for ${providerSubscriptionId}: ${err?.message}`);
+    }
+  }
+
+  async unscheduleProviderCancellation(providerSubscriptionId: string): Promise<void> {
+    try {
+      await this.stripe.subscriptions.update(providerSubscriptionId, { cancel_at_period_end: false });
+    } catch (err: any) {
+      this.logger.warn(`Stripe unschedule-cancellation non-fatal error for ${providerSubscriptionId}: ${err?.message}`);
+    }
+  }
+
   async createSetupIntent(providerCustomerId: string): Promise<SetupIntentResult> {
     const setupIntent = await this.stripe.setupIntents.create({
       customer: providerCustomerId,

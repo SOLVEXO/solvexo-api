@@ -85,6 +85,12 @@ export interface IPaymentGateway {
 
   cancelProviderSubscription(providerSubscriptionId: string): Promise<void>;
 
+  /** Marks the provider subscription to stop at the end of the current paid period (Stripe: `cancel_at_period_end: true`) instead of ending access immediately. */
+  scheduleProviderCancellation(providerSubscriptionId: string): Promise<void>;
+
+  /** Undoes a still-pending `scheduleProviderCancellation` — the subscription keeps renewing normally. */
+  unscheduleProviderCancellation(providerSubscriptionId: string): Promise<void>;
+
   /** Idempotent from the caller's perspective as long as the caller passes a stable idempotencyKey. */
   getOrCreateCustomer(customerId: string, email: string, name: string): Promise<CreateCustomerResult>;
 

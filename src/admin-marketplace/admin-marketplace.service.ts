@@ -21,7 +21,7 @@ export class AdminMarketplaceService {
     return this.databaseService.repositories;
   }
 
-  private log(action: string, description: string, meta: AuditMeta, targetId?: string) {
+  private log(action: string, description: string, meta: AuditMeta, targetId?: string, targetType: 'product' | 'store' = 'product') {
     this.activityLogService.log({
       storeId: 'platform',
       category: 'products',
@@ -30,7 +30,7 @@ export class AdminMarketplaceService {
       actorId: meta.adminId,
       actorRole: 'admin',
       targetId,
-      targetType: 'product',
+      targetType,
       ip: meta.ip,
       userAgent: meta.userAgent,
     });
@@ -87,8 +87,10 @@ export class AdminMarketplaceService {
 
     const productIds = products.map((p) => String(p._id));
     const sellerIds = [...new Set(products.map((p) => p.sellerId))];
-    const [sellers, openReports, priceRows] = await Promise.all([
+    const storeIds = [...new Set(products.map((p) => p.storeId).filter(Boolean))];
+    const [sellers, stores, openReports, priceRows] = await Promise.all([
       this.r.sellerModel.find({ _id: { $in: sellerIds } }, { name: 1 }),
+      this.r.storeModel.find({ _id: { $in: storeIds } }, { badges: 1 }),
       this.r.reportModel.find(
         { targetType: 'listing', status: { $ne: 'resolved' }, targetId: { $in: productIds } },
         { targetId: 1 },
@@ -99,6 +101,7 @@ export class AdminMarketplaceService {
       ]),
     ]);
     const sellerNameById = new Map(sellers.map((s) => [String(s._id), s.name]));
+    const badgesByStoreId = new Map(stores.map((s) => [String(s._id), s.badges ?? []]));
     const flaggedIdSet = new Set(openReports.map((r) => r.targetId));
     const priceByProductId = new Map(priceRows.map((row) => [row._id, row.minPrice]));
 
@@ -107,6 +110,8 @@ export class AdminMarketplaceService {
       title: p.name,
       sellerId: p.sellerId,
       sellerName: sellerNameById.get(p.sellerId) ?? 'Unknown',
+      storeId: p.storeId,
+      storeBadges: badgesByStoreId.get(p.storeId) ?? [],
       categoryId: p.categoryId,
       price: priceByProductId.get(String(p._id)) ?? null,
       purchaseCount: p.purchaseCount,
@@ -140,5 +145,28 @@ export class AdminMarketplaceService {
     await this.r.productModel.findByIdAndUpdate(id, { $set: { isDelete: true, status: 'inactive' } });
     this.log('listing_removed', `Listing "${product.name}" removed by admin`, meta, id);
     return { success: true, message: 'Listing removed' };
+  }
+
+  /** Grants/revokes a trust badge (e.g. 'verified_educator') on a store — reuses
+   *  the existing `Store.badges: string[]` field the marketplace listing/store
+   *  UI already reads; this is just the first admin action that writes it. */
+  async setStoreBadge(storeId: string, badge: string, grant: boolean, meta: AuditMeta) {
+    const store = await this.r.storeModel.findOne({ _id: storeId, isDelete: false });
+    if (!store) throw new NotFoundException('Store not found');
+
+    const current: string[] = store.badges ?? [];
+    const next = grant
+      ? (current.includes(badge) ? current : [...current, badge])
+      : current.filter((b) => b !== badge);
+
+    await this.r.storeModel.findByIdAndUpdate(storeId, { $set: { badges: next } });
+    this.log(
+      grant ? 'store_badge_granted' : 'store_badge_revoked',
+      `Badge "${badge}" ${grant ? 'granted to' : 'revoked from'} store "${store.name}"`,
+      meta,
+      storeId,
+      'store',
+    );
+    return { success: true, message: grant ? 'Badge granted' : 'Badge revoked', data: { badges: next } };
   }
 }

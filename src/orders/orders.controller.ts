@@ -76,6 +76,16 @@ export class OrdersController {
     return this.ordersService.updateSellerOrderStatus(userId, body, req.ip, req.headers['user-agent']);
   }
 
+  // Static path — must be declared before `seller-orders/:storeId` below, otherwise
+  // that param route would swallow this literal segment as `storeId: 'my'`.
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller', 'admin')
+  @Get('seller-orders/my')
+  async getMySellerOrders(@Req() req: any, @Query() query: any) {
+    const { userId } = req.user;
+    return this.ordersService.getSellerOrders(userId, null, query);
+  }
+
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('seller', 'admin')
   @Get('seller-orders/:storeId')
