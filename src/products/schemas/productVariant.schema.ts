@@ -32,6 +32,11 @@ export class ProductVariant {
   @Prop({ default: 0 })
   stock: number;
 
+  // physical only — when true, `stock` is ignored everywhere (cart, checkout,
+  // payment, POS, inventory dashboard) and the product is always purchasable.
+  @Prop({ default: false })
+  unlimitedStock: boolean;
+
   @Prop({ type: String, default: null })
   shippingWeight!: string | null;
 

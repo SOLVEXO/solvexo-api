@@ -578,7 +578,7 @@ export class PosService {
       const variant = await this.r.productVariantModel.findOne({ _id: item.variantId, productId: item.productId, isDelete: false });
       if (!variant) throw new BadRequestException(`Variant not found: ${item.variantId}`);
 
-      if (!isHeld && variant.stock < item.qty) {
+      if (!isHeld && !variant.unlimitedStock && variant.stock < item.qty) {
         throw new BadRequestException(`Insufficient stock for "${variant.sku}" — available: ${variant.stock}`);
       }
 
@@ -644,8 +644,12 @@ export class PosService {
 
     if (!isHeld) {
       // decrement stock and update session totals only when completing
+      // (unlimited-stock variants are skipped so they never go negative)
       for (const item of dto.items) {
-        await this.r.productVariantModel.findByIdAndUpdate(item.variantId, { $inc: { stock: -item.qty } });
+        await this.r.productVariantModel.updateOne(
+          { _id: item.variantId, unlimitedStock: { $ne: true } },
+          { $inc: { stock: -item.qty } },
+        );
       }
       await this._incrementSessionTotals(dto.sessionId, total, dto.paymentMethod);
     }
@@ -664,7 +668,7 @@ export class PosService {
     for (const item of (sale as any).items) {
       const variant = await this.r.productVariantModel.findOne({ _id: item.variantId, isDelete: false });
       if (!variant) throw new BadRequestException(`Variant no longer available: ${item.sku}`);
-      if (variant.stock < item.qty) {
+      if (!variant.unlimitedStock && variant.stock < item.qty) {
         throw new BadRequestException(`Insufficient stock for "${item.sku}" — available: ${variant.stock}`);
       }
     }
@@ -689,9 +693,12 @@ export class PosService {
       { new: true },
     );
 
-    // now decrement stock and update session
+    // now decrement stock and update session (unlimited-stock variants skipped)
     for (const item of (sale as any).items) {
-      await this.r.productVariantModel.findByIdAndUpdate(item.variantId, { $inc: { stock: -item.qty } });
+      await this.r.productVariantModel.updateOne(
+        { _id: item.variantId, unlimitedStock: { $ne: true } },
+        { $inc: { stock: -item.qty } },
+      );
     }
     await this._incrementSessionTotals((sale as any).sessionId, total, dto.paymentMethod);
 

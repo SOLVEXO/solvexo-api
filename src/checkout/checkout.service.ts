@@ -83,7 +83,7 @@ export class CheckoutService {
 
       if (product.type === 'physical') {
         hasPhysical = true;
-        if (variant.stock < cartItem.quantity) {
+        if (!variant.unlimitedStock && variant.stock < cartItem.quantity) {
           throw new BadRequestException(`Insufficient stock for: ${product.name}`);
         }
       }
