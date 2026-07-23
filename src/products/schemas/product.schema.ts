@@ -150,6 +150,9 @@ export class Product {
   @Prop({ default: 0 })
   ratingSum: number;
 
+  @Prop({ default: 0 })
+  totalRatings: number;
+
   @Prop({ type: Date, default: null })
   lastViewedAt: Date | null;
 

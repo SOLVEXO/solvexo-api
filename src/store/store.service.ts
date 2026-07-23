@@ -506,10 +506,11 @@ export class StoreService {
     const cached = await this.redisService.get(cacheKey);
     if (cached) return { success: true, data: JSON.parse(cached) };
 
-    const { sellerModel, orderModel, ratingModel } = this.databaseService.repositories;
+    const { sellerModel, userModel, orderModel, ratingModel } = this.databaseService.repositories;
 
-    const [sellersCount, gmvAgg, ratingAgg] = await Promise.all([
+    const [sellersCount, buyersCount, gmvAgg, ratingAgg] = await Promise.all([
       sellerModel.countDocuments({ isDelete: false, status: 'active' }),
+      userModel.countDocuments({ isDelete: false }),
       orderModel.aggregate([
         { $match: { isPaid: true } },
         { $group: { _id: null, total: { $sum: '$totalAmount' } } },
@@ -522,6 +523,7 @@ export class StoreService {
 
     const data = {
       sellersCount,
+      buyersCount,
       gmv: gmvAgg[0]?.total ?? 0,
       avgRating: ratingAgg[0]?.avg ?? 0,
       ratingCount: ratingAgg[0]?.count ?? 0,

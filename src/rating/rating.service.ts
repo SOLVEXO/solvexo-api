@@ -52,7 +52,7 @@ export class RatingService {
     const count = agg[0]?.count ?? 0;
     const average = count > 0 ? parseFloat((sum / count).toFixed(2)) : 0;
 
-    await productModel.findByIdAndUpdate(productId, { ratingSum: sum, averageRating: average });
+    await productModel.findByIdAndUpdate(productId, { ratingSum: sum, averageRating: average, totalRatings: count });
   }
 
   // Same recompute-from-scratch approach as recalcProductRating, but scoped
