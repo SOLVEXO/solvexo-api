@@ -67,7 +67,7 @@ export class PaymentService {
     for (const item of physicalItems) {
       const variant = await productVariantModel.findOne({ _id: item.variantId, isDelete: false });
       if (!variant) throw new BadRequestException(`Item not available: ${item.name}`);
-      if (variant.stock < item.quantity) {
+      if (!variant.unlimitedStock && variant.stock < item.quantity) {
         throw new BadRequestException(`Insufficient stock for ${item.name}`);
       }
     }
@@ -325,7 +325,7 @@ export class PaymentService {
     for (const item of checkout.items) {
       const variant = await productVariantModel.findOne({ _id: item.variantId, isDelete: false });
       if (!variant) throw new BadRequestException(`Item not available: ${item.name}`);
-      if (variant.stock < item.quantity) {
+      if (!variant.unlimitedStock && variant.stock < item.quantity) {
         throw new BadRequestException(
           `Insufficient stock for ${item.name}. Available: ${variant.stock}, required: ${item.quantity}`,
         );
@@ -406,10 +406,13 @@ export class PaymentService {
     const physicalItems = checkout.items.filter((i: any) => i.type === 'physical');
     const digitalItems = checkout.items.filter((i: any) => i.type === 'digital');
 
-    // --- STOCK MINUS (atomic, sirf physical) ---
+    // --- STOCK MINUS (atomic, sirf physical, unlimited variants skip decrement) ---
     const decremented: { variantId: string; quantity: number }[] = [];
 
     for (const item of physicalItems) {
+      const variant = await productVariantModel.findOne({ _id: item.variantId, isDelete: false }).select('unlimitedStock').lean();
+      if (!variant || (variant as any).unlimitedStock) continue;
+
       const res = await productVariantModel.updateOne(
         { _id: item.variantId, stock: { $gte: item.quantity }, isDelete: false },
         { $inc: { stock: -item.quantity } },

@@ -665,9 +665,12 @@ export class OrdersService {
         updateData[`sellerOrders.${soIndex}.items.${itemIndex}.refundedAmount`] = item.totalPrice;
       }
 
-      // physical item — stock wapas restore
+      // physical item — stock wapas restore (skip unlimited-stock variants)
       if (item.type === 'physical' && item.variantId) {
-        await productVariantModel.findByIdAndUpdate(item.variantId, { $inc: { stock: item.quantity } });
+        await productVariantModel.updateOne(
+          { _id: item.variantId, unlimitedStock: { $ne: true } },
+          { $inc: { stock: item.quantity } },
+        );
       }
     }
 

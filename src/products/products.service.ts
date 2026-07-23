@@ -399,7 +399,7 @@ async addPhysicalProduct(sellerId: string, body: any) {
     storeId,
     name, description, subCategoryId, images, tags,
     isListedOnSolvexo, status, scheduledAt,
-    price, compareAtPrice, size, color, stock, shippingWeight,
+    price, compareAtPrice, size, color, stock, unlimitedStock, shippingWeight,
   } = body;
 
   if (!storeId) throw new BadRequestException('storeId is required');
@@ -460,6 +460,7 @@ async addPhysicalProduct(sellerId: string, body: any) {
     size: size ?? null,
     color: color ?? null,
     stock: stock ?? 0,
+    unlimitedStock: !!unlimitedStock,
     shippingWeight: shippingWeight ?? null,
     images: [],
     isDefault: true,
@@ -665,7 +666,7 @@ async editProduct(sellerId: string, body: any) {
     productId, variantId,
     name, description, subCategoryId, images, tags, isListedOnSolvexo, status, scheduledAt,
     digital, educationLevel, customLevel,
-    price, compareAtPrice, size, color, stock, shippingWeight,
+    price, compareAtPrice, size, color, stock, unlimitedStock, shippingWeight,
   } = body;
 
   if (!productId) throw new BadRequestException('productId is required');
@@ -751,6 +752,7 @@ async editProduct(sellerId: string, body: any) {
       if (size !== undefined) variantUpdate.size = size;
       if (color !== undefined) variantUpdate.color = color;
       if (stock !== undefined) variantUpdate.stock = stock;
+      if (unlimitedStock !== undefined) variantUpdate.unlimitedStock = !!unlimitedStock;
       if (shippingWeight !== undefined) variantUpdate.shippingWeight = shippingWeight;
     }
 

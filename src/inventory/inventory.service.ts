@@ -51,12 +51,13 @@ export class InventoryService {
     const productList = products.map((product: any) => {
       const variants = variantMap[product._id.toString()] || [];
       const isDigital = product.type === 'digital';
+      const hasUnlimitedVariant = variants.some((v: any) => v.unlimitedStock);
 
       let stockDisplay: string | number = '∞ Unlimited';
       let stockStatus = 'active';
       let price = 0;
 
-      if (!isDigital) {
+      if (!isDigital && !hasUnlimitedVariant) {
         const totalStock = variants.reduce((sum: number, v: any) => sum + (v.stock || 0), 0);
         stockDisplay = totalStock;
 
@@ -72,7 +73,7 @@ export class InventoryService {
           inStock++;
         }
       } else {
-        inStock++; // digital always in stock
+        inStock++; // digital, or has an unlimited-stock variant — always in stock
       }
 
       // default variant ki price, fallback to min price
@@ -151,16 +152,22 @@ export class InventoryService {
     const variants = productIds.length
       ? await productVariantModel
           .find({ productId: { $in: productIds }, isDelete: false })
-          .select('productId stock')
+          .select('productId stock unlimitedStock')
           .lean()
       : [];
 
     const stockByProduct = new Map<string, number>();
+    const unlimitedProducts = new Set<string>();
     for (const v of variants) {
+      if ((v as any).unlimitedStock) {
+        unlimitedProducts.add(v.productId);
+        continue;
+      }
       stockByProduct.set(v.productId, (stockByProduct.get(v.productId) ?? 0) + (v.stock || 0));
     }
 
     const items = products
+      .filter((p: any) => !unlimitedProducts.has(p._id.toString()))
       .map((p: any) => ({
         productId: p._id,
         name: p.name,
