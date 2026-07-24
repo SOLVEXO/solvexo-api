@@ -15,6 +15,8 @@ import { SellerPlatformSubscriptionsService } from 'src/platform-plans/seller-pl
 import { NotificationsService } from 'src/notifications/notifications.service';
 import { NOTIFICATION_TYPES } from 'src/notifications/notification.types';
 import { RedisService } from 'src/redis/redis.service';
+import { MarketingService } from 'src/marketing/marketing.service';
+import { pickPrimaryCampaignForBadge } from 'src/marketing/campaign-pricing.util';
 
 @Injectable()
 export class StoreService {
@@ -26,6 +28,7 @@ export class StoreService {
     private readonly sellerPlatformSubscriptionsService: SellerPlatformSubscriptionsService,
     private readonly notificationsService: NotificationsService,
     private readonly redisService: RedisService,
+    private readonly marketingService: MarketingService,
   ) {}
 
   private generateSlug(name: string): string {
@@ -380,6 +383,9 @@ export class StoreService {
     }).lean();
     if (!store) throw new NotFoundException('Store not found');
 
+    const campaigns = await this.marketingService.getActiveCampaignsForStore(store._id.toString());
+    const primaryCampaign = pickPrimaryCampaignForBadge(campaigns);
+
     return {
       success: true,
       data: {
@@ -397,6 +403,13 @@ export class StoreService {
         sellerType: (store as any).sellerType ?? null,
         badges: (store as any).badges ?? [],
         createdAt: (store as any).createdAt,
+        activeCampaign: primaryCampaign ? {
+          campaignId: primaryCampaign.campaignId,
+          name: primaryCampaign.name,
+          discountType: primaryCampaign.discountType,
+          discountValue: primaryCampaign.discountValue,
+          endDate: primaryCampaign.endDate,
+        } : null,
       },
     };
   }
@@ -632,9 +645,22 @@ export class StoreService {
 
     const benefits = await this.subscriptionBenefits.getActiveBenefits(customerId, storeId);
 
+    // Every product on this page belongs to the same store, so this is one
+    // lookup for the whole page, not per-product — same active-campaign
+    // resolution checkout pricing uses.
+    const storeCampaigns = await this.marketingService.getActiveCampaignsForStore(storeId);
+    const primaryCampaign = pickPrimaryCampaignForBadge(storeCampaigns);
+    const activeCampaignBadge = primaryCampaign ? {
+      campaignId: primaryCampaign.campaignId,
+      name: primaryCampaign.name,
+      discountType: primaryCampaign.discountType,
+      discountValue: primaryCampaign.discountValue,
+      endDate: primaryCampaign.endDate,
+    } : null;
+
     const enrichedProducts = products.map((p: any) => {
       const variant = cheapestByProduct.get(p._id.toString());
-      const base: any = { ...p, defaultVariantPrice: variant?.price ?? null };
+      const base: any = { ...p, defaultVariantPrice: variant?.price ?? null, activeCampaign: activeCampaignBadge };
       if (variant && benefits) {
         const discount = this.subscriptionBenefits.resolveProductDiscount(benefits.benefits, p, variant.price);
         if (discount) {
@@ -789,14 +815,59 @@ export class StoreService {
 
     const customerIds = await orderModel.distinct('userId', { 'sellerOrders.storeId': storeId, isDelete: false });
     const total = customerIds.length;
-    const pageIds = customerIds.slice(skip, skip + limit);
 
-    const customers = await userModel.find({ _id: { $in: pageIds } }).select('name email phone createdAt').lean();
+    const matchStage = { $match: { userId: { $in: customerIds }, isDelete: false, 'sellerOrders.storeId': storeId } };
+    const unwindStages = [
+      matchStage,
+      { $unwind: '$sellerOrders' },
+      { $match: { 'sellerOrders.storeId': storeId } },
+    ];
+
+    const [stats, [totals]] = await Promise.all([
+      orderModel.aggregate([
+        ...unwindStages,
+        {
+          $group: {
+            _id: '$userId',
+            orderCount: { $sum: 1 },
+            totalSpent: { $sum: '$sellerOrders.subtotal' },
+            lastOrderAt: { $max: '$createdAt' },
+          },
+        },
+        { $sort: { lastOrderAt: -1 } },
+        { $skip: skip },
+        { $limit: limit },
+      ]),
+      orderModel.aggregate([
+        ...unwindStages,
+        { $group: { _id: null, totalOrders: { $sum: 1 }, totalRevenue: { $sum: '$sellerOrders.subtotal' } } },
+      ]),
+    ]);
+
+    const pageIds = stats.map((s) => s._id);
+    const users = await userModel.find({ _id: { $in: pageIds } }).select('name email phone createdAt').lean() as unknown as
+      { _id: unknown; name: string; email: string; phone: string; createdAt: Date }[];
+    const userMap = new Map(users.map((u) => [String(u._id), u]));
+
+    const customers = stats.map((s) => {
+      const u = userMap.get(String(s._id));
+      return {
+        _id: s._id,
+        name: u?.name ?? 'Unknown',
+        email: u?.email ?? '',
+        phone: u?.phone ?? '',
+        createdAt: u?.createdAt ?? null,
+        orderCount: s.orderCount,
+        totalSpent: s.totalSpent,
+        lastOrderAt: s.lastOrderAt,
+      };
+    });
 
     return {
       success: true,
       data: {
         pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+        summary: { totalOrders: totals?.totalOrders ?? 0, totalRevenue: totals?.totalRevenue ?? 0 },
         customers,
       },
     };

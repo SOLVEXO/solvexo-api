@@ -3,12 +3,15 @@
 import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
 import { DatabaseService } from 'src/database/databaseservice';
 import { SubscriptionBenefitsService } from 'src/subscriptions/subscription-benefits.service';
+import { MarketingService } from 'src/marketing/marketing.service';
+import { pickBestCampaign } from 'src/marketing/campaign-pricing.util';
 
 @Injectable()
 export class CheckoutService {
   constructor(
     private readonly databaseService: DatabaseService,
     private readonly subscriptionBenefits: SubscriptionBenefitsService,
+    private readonly marketingService: MarketingService,
   ) {}
 
   private round(n: number) { return Math.round(n * 100) / 100; }
@@ -131,6 +134,34 @@ export class CheckoutService {
       });
     }
 
+    // Pass 3: automatic platform-campaign discount. Resolved per store — a
+    // store can be opted into more than one currently-active campaign, so
+    // whichever one currently saves the buyer the most on that store's
+    // (already subscriber-priced) subtotal wins (see pickBestCampaign).
+    // Applied on top of subscriber pricing, same as a "sale on top of your
+    // membership price" would read to a buyer — never on the raw list price.
+    let campaignSavingsUSD = 0;
+    const appliedCampaigns: Array<{ campaignId: string; name: string; storeId: string; discountUSD: number; sponsorType: 'seller' | 'platform' }> = [];
+    const cartStoreIds = [...new Set(checkoutItems.map((i) => i.storeId))];
+    const activeCampaignsByStore = await this.marketingService.getActiveCampaignsForStores(cartStoreIds);
+
+    for (const storeId of cartStoreIds) {
+      const campaigns = activeCampaignsByStore.get(storeId);
+      if (!campaigns || campaigns.length === 0) continue;
+
+      const storeItems = checkoutItems.filter((i) => i.storeId === storeId);
+      const storeSubtotal = this.round(storeItems.reduce((s, i) => s + i.totalPrice, 0));
+      const best = pickBestCampaign(campaigns, storeSubtotal);
+      if (!best || best.discountAmount <= 0) continue;
+
+      this.distributeCampaignDiscount(storeItems, best.discountAmount, best.campaign.campaignId, best.campaign.sponsorType);
+      campaignSavingsUSD = this.round(campaignSavingsUSD + best.discountAmount);
+      appliedCampaigns.push({
+        campaignId: best.campaign.campaignId, name: best.campaign.name, storeId,
+        discountUSD: best.discountAmount, sponsorType: best.campaign.sponsorType,
+      });
+    }
+
     let defaultAddressId: string | null = null;
 
     if (hasPhysical) {
@@ -192,6 +223,7 @@ export class CheckoutService {
       shippingFee: 0,
       taxAmount,
       subscriberSavingsUSD: this.round(subscriberSavingsUSD),
+      campaignDiscountTotalUSD: campaignSavingsUSD,
       totalAmount,
       status: 'pending',
       attributionSource,
@@ -207,8 +239,13 @@ export class CheckoutService {
       data: {
         checkout,
         allowedPaymentMethods: hasDigital ? ['stripe'] : ['stripe', 'cash_on_delivery'],
-        summary: { subtotal, shippingFee: 0, taxAmount, totalAmount, subscriberSavingsUSD: this.round(subscriberSavingsUSD) },
+        summary: {
+          subtotal, shippingFee: 0, taxAmount, totalAmount,
+          subscriberSavingsUSD: this.round(subscriberSavingsUSD),
+          campaignDiscountUSD: campaignSavingsUSD,
+        },
         subscriptionSavingsHints,
+        appliedCampaigns,
       },
     };
   }
@@ -348,11 +385,23 @@ export class CheckoutService {
       );
     }
 
-    const totalDiscount = coupon.discountType === 'percentage'
-      ? this.round(storeSubtotal * (coupon.discountValue / 100))
-      : Math.min(coupon.discountValue, storeSubtotal);
+    // Items already discounted by an active platform campaign ("sale" items)
+    // don't stack with a coupon code on top — standard "not combinable with
+    // other offers" rule, and it also keeps a line from being discounted
+    // twice down toward/below $0. minOrderAmount above still checks the
+    // buyer's full spend at the store, but the coupon itself only ever comes
+    // out of the non-sale portion.
+    const eligibleItems = storeItems.filter((i) => !(i.campaignDiscountUSD > 0));
+    if (eligibleItems.length === 0) {
+      throw new BadRequestException('This coupon can\'t be combined with the active sale on these items.');
+    }
+    const eligibleSubtotal = this.round(eligibleItems.reduce((s, i) => s + i.totalPrice, 0));
 
-    this.distributeCouponDiscount(storeItems, totalDiscount);
+    const totalDiscount = coupon.discountType === 'percentage'
+      ? this.round(eligibleSubtotal * (coupon.discountValue / 100))
+      : Math.min(coupon.discountValue, eligibleSubtotal);
+
+    this.distributeCouponDiscount(eligibleItems, totalDiscount);
 
     const newSubtotal = this.round(items.reduce((s, i) => s + i.totalPrice, 0));
     const newTotal = this.round(newSubtotal + (checkout.shippingFee || 0));
@@ -431,27 +480,54 @@ export class CheckoutService {
     }
   }
 
-  /** Distributes [totalDiscount] proportionally across [storeItems] by each
-   *  item's share of the store subtotal, mutating price/totalPrice in
-   *  place. The last item absorbs the rounding remainder so the sum of
-   *  per-item discounts always equals `totalDiscount` exactly. */
-  private distributeCouponDiscount(storeItems: any[], totalDiscount: number) {
-    if (totalDiscount <= 0 || storeItems.length === 0) return;
-    const storeSubtotal = storeItems.reduce((s, i) => s + i.totalPrice, 0);
-    if (storeSubtotal <= 0) return;
+  /** Splits [totalDiscount] proportionally across [items] by each item's
+   *  share of their combined totalPrice, invoking [applyToItem] once per item
+   *  with its allocated share. The last item absorbs the rounding remainder
+   *  so per-item shares always sum to `totalDiscount` exactly. Shared math
+   *  behind both coupon and campaign discount application — only the fields
+   *  each writes differ, not the allocation itself. */
+  private proportionallyDistribute(items: any[], totalDiscount: number, applyToItem: (item: any, share: number) => void) {
+    if (totalDiscount <= 0 || items.length === 0) return;
+    const combinedSubtotal = items.reduce((s, i) => s + i.totalPrice, 0);
+    if (combinedSubtotal <= 0) return;
 
     let allocated = 0;
-    storeItems.forEach((item, idx) => {
-      item.priceBeforeCoupon = item.price;
-      item.totalPriceBeforeCoupon = item.totalPrice;
-
-      const isLast = idx === storeItems.length - 1;
+    items.forEach((item, idx) => {
+      const isLast = idx === items.length - 1;
       const share = isLast
         ? this.round(totalDiscount - allocated)
-        : this.round(totalDiscount * (item.totalPrice / storeSubtotal));
+        : this.round(totalDiscount * (item.totalPrice / combinedSubtotal));
       allocated = this.round(allocated + share);
+      applyToItem(item, share);
+    });
+  }
 
+  /** Distributes a coupon's discount across the items it applies to, mutating
+   *  price/totalPrice in place and keeping the pre-coupon baseline so
+   *  removing/replacing a coupon can cleanly revert without compounding. */
+  private distributeCouponDiscount(storeItems: any[], totalDiscount: number) {
+    this.proportionallyDistribute(storeItems, totalDiscount, (item, share) => {
+      item.priceBeforeCoupon = item.price;
+      item.totalPriceBeforeCoupon = item.totalPrice;
       item.couponDiscountUSD = share;
+      item.totalPrice = this.round(item.totalPrice - share);
+      item.price = item.quantity > 0 ? this.round(item.totalPrice / item.quantity) : item.totalPrice;
+    });
+  }
+
+  /** Distributes an automatic platform-campaign discount across a store's
+   *  items, mutating price/totalPrice in place. Unlike a coupon, a campaign
+   *  discount is never toggled off by the buyer, so it needs no "before"
+   *  revert fields — it's simply recomputed fresh every time a checkout is
+   *  (re)created from the cart. `originalPrice` is set only if a subscriber
+   *  discount hasn't already set it, so it always reflects the true pre-any-
+   *  discount price for receipt display. */
+  private distributeCampaignDiscount(storeItems: any[], totalDiscount: number, campaignId: string, sponsorType: 'seller' | 'platform') {
+    this.proportionallyDistribute(storeItems, totalDiscount, (item, share) => {
+      if (item.originalPrice == null) item.originalPrice = item.price;
+      item.campaignId = campaignId;
+      item.campaignDiscountUSD = share;
+      item.campaignSponsorType = sponsorType;
       item.totalPrice = this.round(item.totalPrice - share);
       item.price = item.quantity > 0 ? this.round(item.totalPrice / item.quantity) : item.totalPrice;
     });

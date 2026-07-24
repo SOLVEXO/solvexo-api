@@ -76,6 +76,22 @@ export class CheckoutItem {
 
   @Prop({ type: Number, default: null })
   totalPriceBeforeCoupon: number | null;
+
+  // Automatic platform-campaign discount (see MarketingService's active-campaign
+  // lookup) — resolved once at checkout-creation time from the item's store's
+  // active campaign, same "computed server-side, never client-supplied" rule as
+  // subscriberDiscountUSD. `price`/`totalPrice` above already reflect it.
+  @Prop({ type: String, default: null })
+  campaignId: string | null;
+
+  @Prop({ type: Number, default: 0 })
+  campaignDiscountUSD: number;
+
+  // Who bears campaignDiscountUSD's cost — see Campaign.sponsorType. Carried
+  // onto the placed Order so PaymentService/OrdersService know, without a
+  // lookup, whether to restore the seller's payout for this line.
+  @Prop({ type: String, enum: ['seller', 'platform'], default: null })
+  campaignSponsorType: 'seller' | 'platform' | null;
 }
 
 export const CheckoutItemSchema = SchemaFactory.createForClass(CheckoutItem);
@@ -131,6 +147,12 @@ export class Checkout {
 
   @Prop({ default: 0 })
   couponDiscountTotalUSD: number;
+
+  // Sum of every item's campaignDiscountUSD — a multi-store cart can have a
+  // different active campaign per store, so (unlike couponCode/couponStoreId)
+  // there's no single "the" campaign at the checkout level, only this total.
+  @Prop({ default: 0 })
+  campaignDiscountTotalUSD: number;
 
   @Prop({ required: true })
   totalAmount: number;

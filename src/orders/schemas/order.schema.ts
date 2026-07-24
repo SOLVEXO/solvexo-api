@@ -62,6 +62,21 @@ export class OrderItem {
   @Prop({ type: Number, default: 0 })
   couponDiscountUSD: number;
 
+  // Automatic platform-campaign discount allocated to this line at checkout —
+  // see CheckoutItem.campaignId/campaignDiscountUSD, copied through as-is.
+  @Prop({ type: String, default: null })
+  campaignId: string | null;
+
+  @Prop({ type: Number, default: 0 })
+  campaignDiscountUSD: number;
+
+  // Who bears campaignDiscountUSD — see Campaign.sponsorType /
+  // CheckoutItem.campaignSponsorType. 'platform' means this line's discount
+  // was reimbursed to the seller (see SellerOrder.platformSponsoredDiscountUSD),
+  // not absorbed out of their own payout.
+  @Prop({ type: String, enum: ['seller', 'platform'], default: null })
+  campaignSponsorType: 'seller' | 'platform' | null;
+
   // cancel/refund item-level pe
   @Prop({
     type: String,
@@ -137,6 +152,13 @@ export class SellerOrder {
 
   @Prop({ required: true, default: 0 })
   subtotal: number;
+
+  // Sum of this store's items' campaignDiscountUSD where campaignSponsorType
+  // is 'platform' — the amount FinanceService.recordSale credits back on top
+  // of `subtotal` so a platform-sponsored discount never reduces this
+  // seller's own payout (see FinanceService.recordSale's saleAmount param).
+  @Prop({ type: Number, default: 0 })
+  platformSponsoredDiscountUSD: number;
 
   // derived from items
   @Prop({
@@ -246,6 +268,19 @@ export class Order {
 
   @Prop({ default: 0 })
   couponDiscountTotal: number;
+
+  // Sum of every sellerOrder item's campaignDiscountUSD — see
+  // Checkout.campaignDiscountTotalUSD for why there's no single order-level
+  // campaignId (a multi-store order can carry a different campaign per store).
+  @Prop({ default: 0 })
+  campaignDiscountTotal: number;
+
+  // Sum of every sellerOrder's platformSponsoredDiscountUSD — how much of
+  // campaignDiscountTotal above the platform is covering (vs. sellers
+  // absorbing it themselves). 0 whenever no participating campaign on this
+  // order is sponsorType: 'platform'.
+  @Prop({ default: 0 })
+  platformSponsoredDiscountTotal: number;
 
   @Prop({ required: true })
   totalAmount: number;

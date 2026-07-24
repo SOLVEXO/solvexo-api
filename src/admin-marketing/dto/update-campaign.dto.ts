@@ -38,4 +38,9 @@ export class UpdateCampaignDto {
   @IsNumber()
   @Min(0)
   discountValue?: number;
+
+  @ApiProperty({ enum: ['seller', 'platform'], required: false })
+  @IsOptional()
+  @IsEnum(['seller', 'platform'])
+  sponsorType?: 'seller' | 'platform';
 }

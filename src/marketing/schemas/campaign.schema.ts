@@ -34,6 +34,24 @@ export class Campaign {
   @Prop({ type: Number, default: null })
   discountValue: number | null;
 
+  // Who actually bears the cost of the discount:
+  // - 'seller' (default, existing behavior): the discount comes straight out of
+  //   the participating seller's own payout — same as a seller's own Coupon.
+  // - 'platform': the platform reimburses the seller for the discounted amount
+  //   at sale time (see FinanceService.recordSale), so a participating seller's
+  //   payout is unaffected — the buyer still sees the same lower price, the
+  //   platform absorbs the difference instead of the seller.
+  @Prop({ type: String, enum: ['seller', 'platform'], default: 'seller' })
+  sponsorType: 'seller' | 'platform';
+
+  // Running total of what this campaign has cost the platform in sponsored
+  // discounts so far (only ever non-zero for sponsorType: 'platform') — kept
+  // in lockstep with the ledger via the same $inc call that writes the
+  // corresponding Transaction (see FinanceService.recordSale), so it can
+  // never drift from the auditable transaction history it summarizes.
+  @Prop({ type: Number, default: 0 })
+  totalPlatformSubsidyUSD: number;
+
   @Prop({ type: [String], default: [] })
   participatingStoreIds: string[];
 

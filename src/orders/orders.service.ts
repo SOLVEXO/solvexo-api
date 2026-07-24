@@ -11,6 +11,16 @@ import { LoyaltyService } from 'src/loyalty/loyalty.service';
 import { SubscriptionBenefitsService } from 'src/subscriptions/subscription-benefits.service';
 import { NotificationsService } from 'src/notifications/notifications.service';
 import { NOTIFICATION_TYPES } from 'src/notifications/notification.types';
+import { round } from 'src/common/number.util';
+
+/** A sellerOrder's true payout basis for FinanceService.recordSale — restores
+ *  the platform-sponsored portion of any campaign discount on top of the
+ *  (already net-of-discount) `subtotal`, so a platform-sponsored sale never
+ *  reduces what the seller is credited. Seller-sponsored discounts and coupons
+ *  still reduce the seller's payout exactly as they reduce `subtotal` today. */
+function sellerPayoutBasis(so: any): number {
+  return round(so.subtotal + (so.platformSponsoredDiscountUSD ?? 0));
+}
 
 
 @Injectable()
@@ -413,12 +423,16 @@ export class OrdersService {
     // transition into `completed`, never again if it was already completed (see guard above).
     if (status === 'completed' && !wasAlreadyCompleted) {
       const so = order.sellerOrders[sellerOrderIndex];
+      const platformSponsoredUSD = so.platformSponsoredDiscountUSD ?? 0;
+      const sponsoredCampaignId = so.items.find((i: any) => i.campaignSponsorType === 'platform')?.campaignId ?? null;
       try {
         await this.financeService.recordSale(
           so.storeId, so.sellerId,
           orderId,
-          so.subtotal,
+          sellerPayoutBasis(so),
           `Sale — Order #${orderId}`,
+          platformSponsoredUSD,
+          sponsoredCampaignId,
         );
       } catch (e) {
         console.error('Finance recordSale failed:', e?.message);
@@ -484,12 +498,16 @@ export class OrdersService {
 
     // Record sale in finance ledger for each store's sub-order
     for (const so of order.sellerOrders) {
+      const platformSponsoredUSD = so.platformSponsoredDiscountUSD ?? 0;
+      const sponsoredCampaignId = so.items.find((i: any) => i.campaignSponsorType === 'platform')?.campaignId ?? null;
       try {
         await this.financeService.recordSale(
           so.storeId, so.sellerId,
           orderId,
-          so.subtotal,
+          sellerPayoutBasis(so),
           `Sale — Order #${orderId}`,
+          platformSponsoredUSD,
+          sponsoredCampaignId,
         );
       } catch (e) {
         console.error('Finance recordSale failed:', e?.message);

@@ -458,6 +458,11 @@ export class PaymentService {
 
       return Object.values(storeMap).map((storeItems) => {
         const subtotal = storeItems.reduce((s, i) => s + i.totalPrice, 0);
+        // Only items whose campaign is platform-sponsored count toward this
+        // restoring this seller's payout — see FinanceService.recordSale.
+        const platformSponsoredDiscountUSD = storeItems.reduce(
+          (s, i) => s + (i.campaignSponsorType === 'platform' ? (i.campaignDiscountUSD ?? 0) : 0), 0,
+        );
         return {
           sellerId: storeItems[0].sellerId,
           storeId: storeItems[0].storeId,
@@ -479,9 +484,13 @@ export class PaymentService {
             originalPrice: i.originalPrice ?? null,
             subscriberDiscountUSD: i.subscriberDiscountUSD ?? 0,
             couponDiscountUSD: i.couponDiscountUSD ?? 0,
+            campaignId: i.campaignId ?? null,
+            campaignDiscountUSD: i.campaignDiscountUSD ?? 0,
+            campaignSponsorType: i.campaignSponsorType ?? null,
             status: 'pending',
           })),
           subtotal,
+          platformSponsoredDiscountUSD,
           status: 'pending',
           tracking: null,
           shippedAt: null,
@@ -511,6 +520,10 @@ export class PaymentService {
       const shippingFee = checkout.shippingFee || 0;
       const subscriberDiscountTotal = physicalItems.reduce((s: number, i: any) => s + (i.subscriberDiscountUSD ?? 0), 0);
       const couponDiscountTotal = physicalItems.reduce((s: number, i: any) => s + (i.couponDiscountUSD ?? 0), 0);
+      const campaignDiscountTotal = physicalItems.reduce((s: number, i: any) => s + (i.campaignDiscountUSD ?? 0), 0);
+      const platformSponsoredDiscountTotal = physicalItems.reduce(
+        (s: number, i: any) => s + (i.campaignSponsorType === 'platform' ? (i.campaignDiscountUSD ?? 0) : 0), 0,
+      );
 
       const physicalOrder = await orderModel.create({
         orderNumber: genOrderNumber(),
@@ -525,6 +538,8 @@ export class PaymentService {
         subscriberDiscountTotal,
         couponCode: couponDiscountTotal > 0 ? checkout.couponCode : null,
         couponDiscountTotal,
+        campaignDiscountTotal,
+        platformSponsoredDiscountTotal,
         totalAmount: this.round(subtotal + shippingFee),
         paymentType,
         paymentStatus: isPaid ? 'paid' : 'unpaid',
@@ -543,6 +558,10 @@ export class PaymentService {
       const subtotal = digitalItems.reduce((s: number, i: any) => s + i.totalPrice, 0);
       const subscriberDiscountTotal = digitalItems.reduce((s: number, i: any) => s + (i.subscriberDiscountUSD ?? 0), 0);
       const couponDiscountTotal = digitalItems.reduce((s: number, i: any) => s + (i.couponDiscountUSD ?? 0), 0);
+      const campaignDiscountTotal = digitalItems.reduce((s: number, i: any) => s + (i.campaignDiscountUSD ?? 0), 0);
+      const platformSponsoredDiscountTotal = digitalItems.reduce(
+        (s: number, i: any) => s + (i.campaignSponsorType === 'platform' ? (i.campaignDiscountUSD ?? 0) : 0), 0,
+      );
 
       const digitalOrder = await orderModel.create({
         orderNumber: genOrderNumber(),
@@ -557,6 +576,8 @@ export class PaymentService {
         subscriberDiscountTotal,
         couponCode: couponDiscountTotal > 0 ? checkout.couponCode : null,
         couponDiscountTotal,
+        campaignDiscountTotal,
+        platformSponsoredDiscountTotal,
         totalAmount: this.round(subtotal),
         paymentType,
         paymentStatus: isPaid ? 'paid' : 'unpaid',

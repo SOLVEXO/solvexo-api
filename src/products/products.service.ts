@@ -4,12 +4,15 @@ import {
   BadRequestException,
   NotFoundException,
 } from '@nestjs/common';
+import { isValidObjectId } from 'mongoose';
 
 import { DatabaseService } from 'src/database/databaseservice';
 import { ProductType as StoreProductType } from 'src/store/schemas/store.schema';
 import { ActivityLogService } from 'src/activity-log/activity-log.service';
 import { SubscriptionBenefitsService } from 'src/subscriptions/subscription-benefits.service';
 import { EntitlementsService } from 'src/platform-plans/entitlements.service';
+import { MarketingService } from 'src/marketing/marketing.service';
+import { pickPrimaryCampaignForBadge } from 'src/marketing/campaign-pricing.util';
 import { EducationLevel } from './schemas/product.schema';
 import { EducationLevelService } from './education-level.service';
 
@@ -23,7 +26,35 @@ export class ProductsService {
     private subscriptionBenefits: SubscriptionBenefitsService,
     private entitlementsService: EntitlementsService,
     private educationLevelService: EducationLevelService,
+    private marketingService: MarketingService,
   ) {}
+
+  /** Attaches an `activeCampaign` badge summary (or null) to each product,
+   *  based on whether its store currently has an active platform-sale
+   *  campaign. Same lookup CheckoutService uses to enforce the discount, so
+   *  a product never shows a "sale" badge checkout wouldn't actually honor.
+   *  One batched query for the whole page, not per-product. */
+  private async attachCampaignBadges<T extends { storeId?: string }>(products: T[]): Promise<T[]> {
+    const storeIds = [...new Set(products.map(p => p.storeId).filter(Boolean))] as string[];
+    const campaignsByStore = storeIds.length
+      ? await this.marketingService.getActiveCampaignsForStores(storeIds)
+      : new Map();
+
+    return products.map(p => {
+      const campaigns = p.storeId ? campaignsByStore.get(p.storeId) : undefined;
+      const primary = campaigns ? pickPrimaryCampaignForBadge(campaigns) : null;
+      return {
+        ...p,
+        activeCampaign: primary ? {
+          campaignId: primary.campaignId,
+          name: primary.name,
+          discountType: primary.discountType,
+          discountValue: primary.discountValue,
+          endDate: primary.endDate,
+        } : null,
+      };
+    });
+  }
 
   /** Stamps a fresh product with an early-access window if the store has any active plan configuring one — non-subscribers can't see it until this passes. */
   private async applyEarlyAccessWindow(product: any) {
@@ -83,6 +114,7 @@ async getProductsByCategoryId(
   productType?: string,
   educationLevel?: string,
   normalizedCustomLevel?: string,
+  campaignId?: string,
 ): Promise<any> {
 
   const productModel = this.databaseService.repositories.productModel;
@@ -100,6 +132,29 @@ async getProductsByCategoryId(
   if (productType) query.productType = productType;
   if (educationLevel) query.educationLevel = educationLevel;
   if (normalizedCustomLevel) query.normalizedCustomLevel = normalizedCustomLevel;
+
+  // "Shop the Sale" — an expired/unknown/inactive/malformed campaignId (e.g. a
+  // stale bookmark to a sale that's since ended) yields an intentionally
+  // empty result, not an error: it should read as "nothing left on sale",
+  // not a 404/500.
+  if (campaignId) {
+    const campaign = isValidObjectId(campaignId)
+      ? await this.databaseService.repositories.campaignModel.findOne({
+          _id: campaignId,
+          isDelete: false,
+          status: 'active',
+          startDate: { $lte: new Date() },
+          endDate: { $gte: new Date() },
+        }).select('participatingStoreIds sponsorType').lean()
+      : null;
+    // A platform-sponsored campaign applies to every store — no storeId
+    // restriction at all, same universal rule as getActiveCampaignsForStores.
+    if (campaign && campaign.sponsorType !== 'platform') {
+      query.storeId = { $in: campaign.participatingStoreIds ?? [] };
+    } else if (!campaign) {
+      query.storeId = { $in: [] };
+    }
+  }
 
   // 1️⃣ Agar category ID di gayi hai to filter lagao
   //
@@ -160,10 +215,10 @@ async getProductsByCategoryId(
   const storeIds = [...new Set(products.map(p => p.storeId).filter(Boolean))];
   const benefitsMap = await this.subscriptionBenefits.getActiveBenefitsBatch(customerId, storeIds as string[]);
 
-  const productsWithVariants = products.map(p => this.sanitizeDigitalForPublicView({
+  const productsWithVariants = await this.attachCampaignBadges(products.map(p => this.sanitizeDigitalForPublicView({
     ...p,
     variants: this.applySubscriberPricing(variantMap[p._id.toString()] || [], p, benefitsMap.get(p.storeId)),
-  }));
+  })));
 
   return {
 
@@ -200,10 +255,10 @@ private async attachVariantsAndPricing(products: any[], customerId?: string | nu
   const storeIds = [...new Set(products.map(p => p.storeId).filter(Boolean))];
   const benefitsMap = await this.subscriptionBenefits.getActiveBenefitsBatch(customerId ?? null, storeIds as string[]);
 
-  return products.map(p => this.sanitizeDigitalForPublicView({
+  return this.attachCampaignBadges(products.map(p => this.sanitizeDigitalForPublicView({
     ...p,
     variants: this.applySubscriberPricing(variantMap[p._id.toString()] || [], p, benefitsMap.get(p.storeId)),
-  }));
+  })));
 }
 
 /** Keyword search over active products (name/description, case-insensitive).
@@ -298,14 +353,14 @@ async getProductById(productId: string, customerId?: string | null) {
     isDelete: false
   }).select("slug name logo followersCount").lean();
 
-  const productWithSeller = this.sanitizeDigitalForPublicView({
+  const [productWithSeller] = await this.attachCampaignBadges([this.sanitizeDigitalForPublicView({
     ...product,
     sellerName: seller ? seller.name : null,
     storeSlug: store ? store.slug : null,
     storeName: store ? store.name : null,
     storeLogo: store ? store.logo : null,
     storeFollowersCount: store ? (store.followersCount ?? 0) : 0,
-  });
+  })]);
 
   // 4️⃣ Get variants
   const rawVariants = await productVariantModel.find({

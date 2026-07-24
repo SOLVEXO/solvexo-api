@@ -4,6 +4,7 @@ import { DatabaseService } from 'src/database/databaseservice';
 import { ActivityLogService } from 'src/activity-log/activity-log.service';
 import { CreateCouponDto } from './dto/create-coupon.dto';
 import { UpdateCouponDto } from './dto/update-coupon.dto';
+import { ActiveCampaignForStore } from './campaign-pricing.util';
 
 @Injectable()
 export class MarketingService {
@@ -147,7 +148,10 @@ export class MarketingService {
       .sort({ startDate: 1 })
       .lean();
 
-    const data = campaigns.map((c) => ({ ...c, isJoined: c.participatingStoreIds.includes(storeId) }));
+    const data = campaigns.map((c) => ({
+      ...c,
+      isJoined: c.sponsorType === 'platform' ? true : c.participatingStoreIds.includes(storeId),
+    }));
     return { success: true, data };
   }
 
@@ -156,6 +160,9 @@ export class MarketingService {
 
     const campaign = await this.r.campaignModel.findOne({ _id: campaignId, isDelete: false, status: 'active' });
     if (!campaign) throw new NotFoundException('Campaign not found or not active');
+    if (campaign.sponsorType === 'platform') {
+      throw new BadRequestException('This is a platform-sponsored campaign — every store is automatically included, there\'s nothing to join.');
+    }
 
     if (!campaign.participatingStoreIds.includes(storeId)) {
       await this.r.campaignModel.findByIdAndUpdate(campaignId, { $addToSet: { participatingStoreIds: storeId } });
@@ -182,6 +189,9 @@ export class MarketingService {
 
     const campaign = await this.r.campaignModel.findOne({ _id: campaignId, isDelete: false });
     if (!campaign) throw new NotFoundException('Campaign not found');
+    if (campaign.sponsorType === 'platform') {
+      throw new BadRequestException('This is a platform-sponsored campaign — every store is automatically included and can\'t opt out individually.');
+    }
 
     await this.r.campaignModel.findByIdAndUpdate(campaignId, { $pull: { participatingStoreIds: storeId } });
 
@@ -201,13 +211,98 @@ export class MarketingService {
     return { success: true, message: 'Left campaign' };
   }
 
+  // ─── Shared "is this store on sale right now" lookup ────────────────────
+  // The single source of truth for what counts as an active campaign for a
+  // store — checkout pricing (CheckoutService), marketplace/product badges
+  // (ProductsService) and the store page (StoreService) all resolve through
+  // this one query instead of each re-deriving the status+date-window rule.
+  //
+  // sponsorType: 'platform' campaigns apply to EVERY store unconditionally —
+  // participatingStoreIds is meaningless for them (there's nothing for a
+  // seller to opt into when the platform is footing the bill, and a new store
+  // created mid-campaign must be included without any extra enrollment step).
+  // sponsorType: 'seller' campaigns still only apply to stores whose seller
+  // explicitly joined, via participatingStoreIds, exactly as before.
+  /** One query for any number of stores — callers doing this per-listing-page
+   *  (marketplace, store products) must call it once for the whole page of
+   *  storeIds, never per-product, to keep it O(1) queries regardless of
+   *  result-set size. */
+  async getActiveCampaignsForStores(storeIds: string[]): Promise<Map<string, ActiveCampaignForStore[]>> {
+    const map = new Map<string, ActiveCampaignForStore[]>();
+    if (storeIds.length === 0) return map;
+
+    const uniqueIds = [...new Set(storeIds)];
+    const now = new Date();
+    const campaigns = await this.r.campaignModel
+      .find({
+        isDelete: false,
+        status: 'active',
+        startDate: { $lte: now },
+        endDate: { $gte: now },
+        $or: [
+          { sponsorType: 'platform' },
+          { participatingStoreIds: { $in: uniqueIds } },
+        ],
+      })
+      .select('name endDate discountType discountValue participatingStoreIds sponsorType')
+      .lean();
+
+    for (const c of campaigns) {
+      const summary: ActiveCampaignForStore = {
+        campaignId: String(c._id),
+        name: c.name,
+        discountType: c.discountType ?? null,
+        discountValue: c.discountValue ?? null,
+        endDate: c.endDate,
+        sponsorType: c.sponsorType ?? 'seller',
+      };
+      const applicableStoreIds = summary.sponsorType === 'platform'
+        ? uniqueIds
+        : c.participatingStoreIds.filter((id) => uniqueIds.includes(id));
+      for (const storeId of applicableStoreIds) {
+        const existing = map.get(storeId);
+        if (existing) existing.push(summary);
+        else map.set(storeId, [summary]);
+      }
+    }
+    return map;
+  }
+
+  async getActiveCampaignsForStore(storeId: string): Promise<ActiveCampaignForStore[]> {
+    const map = await this.getActiveCampaignsForStores([storeId]);
+    return map.get(storeId) ?? [];
+  }
+
   // ─── Public consumption (buyer marketplace/homepage banner) ────────────
   async getPublicActiveCampaigns() {
     const now = new Date();
     const campaigns = await this.r.campaignModel
-      .find({ isDelete: false, status: 'active', startDate: { $lte: now }, endDate: { $gte: now } })
+      .find({
+        isDelete: false,
+        status: 'active',
+        startDate: { $lte: now },
+        endDate: { $gte: now },
+        // A seller-sponsored campaign with no participating stores discounts
+        // nothing — showing it as a live "Up to X% off" banner with a real
+        // countdown would be advertising a sale that doesn't actually exist
+        // yet. Platform-sponsored campaigns skip this check entirely: they
+        // apply to every store the moment they're active, regardless of
+        // participatingStoreIds (see getActiveCampaignsForStores).
+        $or: [
+          { sponsorType: 'platform' },
+          { 'participatingStoreIds.0': { $exists: true } },
+        ],
+      })
       .sort({ endDate: 1 })
       .lean();
+
+    // Only computed if actually needed — a "how many stores" count is
+    // meaningless for participatingStoreIds on a platform-sponsored campaign,
+    // it's every active store instead.
+    const hasPlatformSponsored = campaigns.some((c) => c.sponsorType === 'platform');
+    const activeStoreCount = hasPlatformSponsored
+      ? await this.r.storeModel.countDocuments({ isDelete: false, status: 'active' })
+      : 0;
 
     const data = campaigns.map((c) => ({
       _id: c._id,
@@ -217,7 +312,8 @@ export class MarketingService {
       endDate: c.endDate,
       discountType: c.discountType,
       discountValue: c.discountValue,
-      storeCount: c.participatingStoreIds.length,
+      sponsorType: c.sponsorType ?? 'seller',
+      storeCount: c.sponsorType === 'platform' ? activeStoreCount : c.participatingStoreIds.length,
     }));
     return { success: true, data };
   }

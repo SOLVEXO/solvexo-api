@@ -36,4 +36,12 @@ export class CreateCampaignDto {
   @IsNumber()
   @Min(0)
   discountValue?: number;
+
+  @ApiProperty({
+    enum: ['seller', 'platform'], required: false, default: 'seller',
+    description: '"seller" (default): participating sellers give the discount out of their own payout. "platform": the platform reimburses sellers, so participation costs them nothing.',
+  })
+  @IsOptional()
+  @IsEnum(['seller', 'platform'])
+  sponsorType?: 'seller' | 'platform';
 }

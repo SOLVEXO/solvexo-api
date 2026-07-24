@@ -860,7 +860,18 @@ export class FinanceService {
    * platform tier (3% → 1% → 0.5% → 0%). `PLATFORM_FEE_RATE` remains as the
    * fallback for a store with no platform-plan record yet (pre-launch stores).
    */
-  async recordSale(storeId: string, sellerId: string, orderId: string, saleAmount: number, description: string) {
+  /**
+   * `platformSponsoredUSD` (default 0) is the portion of `saleAmount` that
+   * came from a `sponsorType: 'platform'` campaign discount — the caller
+   * (OrdersService) has already folded it INTO `saleAmount` so the seller is
+   * credited as if that discount never happened; this param only controls
+   * the extra audit-trail entry and the `campaignId`'s running subsidy
+   * total below, it does not change the balance math itself.
+   */
+  async recordSale(
+    storeId: string, sellerId: string, orderId: string, saleAmount: number, description: string,
+    platformSponsoredUSD = 0, campaignId?: string | null,
+  ) {
     const platformFeeRate = await this.entitlementsService.getTransactionFeeRate(storeId);
     const platformFee   = this.round(saleAmount * platformFeeRate);
     const processingFee = this.round(saleAmount * PAYMENT_PROCESSING_RATE + PAYMENT_PROCESSING_FIXED);
@@ -901,6 +912,33 @@ export class FinanceService {
       referenceType: 'order',
       status: 'completed',
     });
+
+    // Ledger: platform-subsidy audit entry — informational only, doesn't move
+    // the balance again (already folded into `saleAmount`/netAmount above);
+    // it exists purely so the seller's transaction history and the admin
+    // finance dashboard can both explain why this sale paid out more than
+    // the buyer's checkout total for that store.
+    if (platformSponsoredUSD > 0) {
+      await this.txModel.create({
+        storeId, sellerId,
+        type: 'platform_subsidy',
+        amount: platformSponsoredUSD,
+        balanceBefore: balance.availableBalance,
+        balanceAfter: balance.availableBalance,
+        description: `Platform-sponsored sale discount — Order #${orderId}`,
+        referenceId: orderId,
+        referenceType: 'order',
+        status: 'completed',
+        metadata: { campaignId: campaignId ?? null },
+      });
+
+      if (campaignId) {
+        await this.db.repositories.campaignModel.findByIdAndUpdate(
+          campaignId,
+          { $inc: { totalPlatformSubsidyUSD: platformSponsoredUSD } },
+        );
+      }
+    }
   }
 
   /**

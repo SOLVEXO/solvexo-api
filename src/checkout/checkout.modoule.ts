@@ -18,9 +18,10 @@ import { CheckoutService } from './checkout.service';
 import { CheckoutController } from './checkout.controller';
 import { AuthModule } from 'src/auth/auth.module';
 import { RedisModule } from 'src/redis/redis.module';
+import { MarketingModule } from 'src/marketing/marketing.module';
 
 @Module({
-   imports: [AuthModule, RedisModule], 
+   imports: [AuthModule, RedisModule, MarketingModule],
   controllers: [CheckoutController],
   providers: [CheckoutService],
   exports: [CheckoutService],

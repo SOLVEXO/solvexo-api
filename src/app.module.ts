@@ -16,6 +16,7 @@ import { OtpModule } from './otp/otp.module';
 import { UploadModule } from './upload/upload.module';
 import { BannersModule } from './banner/banner.module';
 import { FaqModule } from './faqs/faq.module';
+import { NewsletterModule } from './newsletter/newsletter.module';
 // import { RefundRequestModule } from './refund-request/refund-request.module';
 import { CheckoutModule } from './checkout/checkout.modoule';
 import { OrdersModule } from './orders/orders.module';
@@ -73,6 +74,7 @@ import { AdminMarketingModule } from './admin-marketing/admin-marketing.module';
     UploadModule,
     BannersModule,
     FaqModule,
+    NewsletterModule,
     // RefundRequestModule,
     CheckoutModule,
     // checkoutModule,

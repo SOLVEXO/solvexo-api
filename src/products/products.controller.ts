@@ -32,8 +32,9 @@ async getProductsByCategoryId(
   @Query('productType') productType?: string,
   @Query('educationLevel') educationLevel?: string,
   @Query('normalizedCustomLevel') normalizedCustomLevel?: string,
+  @Query('campaignId') campaignId?: string,
 ) {
-  return this.ProductsService.getProductsByCategoryId(id, page, limit, req.user?.userId ?? null, productType, educationLevel, normalizedCustomLevel);
+  return this.ProductsService.getProductsByCategoryId(id, page, limit, req.user?.userId ?? null, productType, educationLevel, normalizedCustomLevel, campaignId);
 }
 
 @UseGuards(FeatureFlagGuard)

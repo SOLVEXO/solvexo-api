@@ -12,7 +12,7 @@ export class Transaction {
   // Type of financial event
   @Prop({
     type: String,
-    enum: ['sale', 'payout', 'fee', 'refund', 'adjustment'],
+    enum: ['sale', 'payout', 'fee', 'refund', 'adjustment', 'platform_subsidy'],
     required: true,
   })
   type: string;

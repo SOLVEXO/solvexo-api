@@ -45,6 +45,9 @@ export class AdminMarketingService {
     if (new Date(dto.endDate) <= new Date(dto.startDate)) {
       throw new BadRequestException('endDate must be after startDate');
     }
+    if (dto.discountType === 'percentage' && dto.discountValue != null && dto.discountValue > 100) {
+      throw new BadRequestException('Percentage discount cannot exceed 100');
+    }
 
     const campaign = await this.r.campaignModel.create({
       name: dto.name,
@@ -54,6 +57,7 @@ export class AdminMarketingService {
       endDate: new Date(dto.endDate),
       discountType: dto.discountType ?? null,
       discountValue: dto.discountValue ?? null,
+      sponsorType: dto.sponsorType ?? 'seller',
       createdBy: meta.adminId,
     });
 
@@ -75,7 +79,19 @@ export class AdminMarketingService {
   }
 
   async updateCampaign(id: string, dto: UpdateCampaignDto, meta: AuditMeta) {
-    await this.findCampaignOrThrow(id);
+    const existing = await this.findCampaignOrThrow(id);
+    const effectiveType = dto.discountType !== undefined ? dto.discountType : existing.discountType;
+    const effectiveValue = dto.discountValue !== undefined ? dto.discountValue : existing.discountValue;
+    if (effectiveType === 'percentage' && effectiveValue != null && effectiveValue > 100) {
+      throw new BadRequestException('Percentage discount cannot exceed 100');
+    }
+    if (
+      (dto.startDate !== undefined || dto.endDate !== undefined) &&
+      new Date(dto.endDate ?? existing.endDate) <= new Date(dto.startDate ?? existing.startDate)
+    ) {
+      throw new BadRequestException('endDate must be after startDate');
+    }
+
     const update: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(dto)) {
       if (value === undefined) continue;
