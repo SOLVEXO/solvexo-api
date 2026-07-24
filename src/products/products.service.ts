@@ -229,7 +229,7 @@ async getProductsByCategoryId(
   const total = await productModel.countDocuments(query);
 
   const products = await productModel.find(query)
-    .sort({ createdAt: -1 })
+    .sort({ createdAt: -1, _id: -1 })
     .skip(skip)
     .limit(limit)
     .lean();
@@ -328,7 +328,7 @@ async searchProducts(q: string, page: number = 1, limit: number = 20, customerId
   const skip = (page - 1) * limit;
   const total = await productModel.countDocuments(query);
   const products = await productModel.find(query)
-    .sort({ createdAt: -1 })
+    .sort({ createdAt: -1, _id: -1 })
     .skip(skip)
     .limit(limit)
     .lean();
