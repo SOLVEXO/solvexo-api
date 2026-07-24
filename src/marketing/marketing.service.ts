@@ -274,8 +274,22 @@ export class MarketingService {
   }
 
   // ─── Public consumption (buyer marketplace/homepage banner) ────────────
-  async getPublicActiveCampaigns() {
+  // `storeType` (a Store.productTypes value, e.g. 'educational_resources')
+  // scopes seller-sponsored campaigns to only those with at least one
+  // participating store of that type — used by EducationMarketplace so a
+  // physical/digital-only seller's campaign never shows there. Platform-
+  // sponsored campaigns are unaffected: they apply store-wide regardless.
+  async getPublicActiveCampaigns(storeType?: string) {
     const now = new Date();
+
+    let eligibleStoreIds: string[] | null = null;
+    if (storeType) {
+      const stores = await this.r.storeModel
+        .find({ productTypes: storeType, isDelete: false, status: 'active' }, '_id')
+        .lean();
+      eligibleStoreIds = stores.map((s) => String(s._id));
+    }
+
     const campaigns = await this.r.campaignModel
       .find({
         isDelete: false,
@@ -290,7 +304,9 @@ export class MarketingService {
         // participatingStoreIds (see getActiveCampaignsForStores).
         $or: [
           { sponsorType: 'platform' },
-          { 'participatingStoreIds.0': { $exists: true } },
+          eligibleStoreIds
+            ? { participatingStoreIds: { $in: eligibleStoreIds } }
+            : { 'participatingStoreIds.0': { $exists: true } },
         ],
       })
       // Admin-controlled rotation order first (see Campaign.order), soonest-

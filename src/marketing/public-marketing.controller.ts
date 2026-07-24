@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, Query } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { MarketingService } from './marketing.service';
 
@@ -13,7 +13,7 @@ export class PublicMarketingController {
   constructor(private readonly marketingService: MarketingService) {}
 
   @Get('campaigns')
-  getActiveCampaigns() {
-    return this.marketingService.getPublicActiveCampaigns();
+  getActiveCampaigns(@Query('storeType') storeType?: string) {
+    return this.marketingService.getPublicActiveCampaigns(storeType);
   }
 }

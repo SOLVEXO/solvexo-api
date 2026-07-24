@@ -86,6 +86,14 @@ export class AdminMarketingService {
   }
 
   async listCampaigns(status?: string) {
+    // Self-healing read: expiring here (not just via the scheduled cron)
+    // means the admin list is never stale — a campaign whose endDate just
+    // passed a second ago shows as 'ended' with its order slot already
+    // freed the moment this page is loaded/refreshed, not up to 5 minutes
+    // later. The cron (SchedulerService.expireCampaigns) stays as a backstop
+    // for campaigns nobody happens to be viewing right now.
+    await this.expireCampaigns();
+
     const filter: Record<string, unknown> = { isDelete: false };
     if (status) filter.status = status;
     const campaigns = await this.r.campaignModel.find(filter).sort({ createdAt: -1 });
@@ -137,6 +145,40 @@ export class AdminMarketingService {
     await this.r.campaignModel.findByIdAndUpdate(id, { $set: { isDelete: true } });
     this.log('campaign_deleted', `Campaign "${campaign.name}" deleted`, meta, id);
     return { success: true, message: 'Campaign deleted' };
+  }
+
+  /** Cron-driven (see SchedulerService): a campaign whose endDate has passed
+   *  stops being served everywhere read paths already check `endDate`, but its
+   *  `status` field never flipped off 'active' and it kept its rotation
+   *  `order` forever — this is what actually moves it to 'ended', frees its
+   *  order slot, and compacts the remaining active campaigns' order values
+   *  (0, 1, 2, … with no gaps) so a newly-first campaign really shows as
+   *  first instead of leaving a hole where the expired one used to sit. */
+  async expireCampaigns(): Promise<{ expired: number }> {
+    const now = new Date();
+    const expiring = await this.r.campaignModel
+      .find({ isDelete: false, status: 'active', endDate: { $lt: now } })
+      .select('_id')
+      .lean();
+    if (expiring.length === 0) return { expired: 0 };
+
+    await this.r.campaignModel.updateMany(
+      { _id: { $in: expiring.map((c) => c._id) } },
+      { $set: { status: 'ended', order: 0 } },
+    );
+
+    const stillActive = await this.r.campaignModel
+      .find({ isDelete: false, status: 'active' })
+      .sort({ order: 1 })
+      .select('_id order')
+      .lean();
+    const reorderOps = stillActive
+      .map((c, i) => ({ id: c._id, from: c.order, to: i }))
+      .filter((c) => c.from !== c.to)
+      .map((c) => ({ updateOne: { filter: { _id: c.id }, update: { $set: { order: c.to } } } }));
+    if (reorderOps.length > 0) await this.r.campaignModel.bulkWrite(reorderOps);
+
+    return { expired: expiring.length };
   }
 
   // ─── Platform-wide coupons (scope: 'platform') ──────────────────────────

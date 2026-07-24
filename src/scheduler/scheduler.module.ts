@@ -7,9 +7,10 @@ import { PlatformSubscriptionsModule } from '../platform-subscriptions/platform-
 import { FinanceModule } from '../finance/finance.module';
 import { RedisModule } from '../redis/redis.module';
 import { SeoModule } from '../seo/seo.module';
+import { AdminMarketingModule } from '../admin-marketing/admin-marketing.module';
 
 @Module({
-  imports: [ScheduleModule.forRoot(), SubscriptionsModule, PlatformSubscriptionsModule, FinanceModule, RedisModule, SeoModule],
+  imports: [ScheduleModule.forRoot(), SubscriptionsModule, PlatformSubscriptionsModule, FinanceModule, RedisModule, SeoModule, AdminMarketingModule],
   providers: [SchedulerService],
 })
 export class SchedulerModule {}

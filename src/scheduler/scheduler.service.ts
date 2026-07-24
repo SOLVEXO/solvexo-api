@@ -13,6 +13,7 @@ import { PlatformAddonsService } from 'src/platform-plans/platform-addons.servic
 import { SeoSitemapService } from 'src/seo/services/seo-sitemap.service';
 import { SeoMonitoringService } from 'src/seo/services/seo-monitoring.service';
 import { SeoAuditService } from 'src/seo/services/seo-audit.service';
+import { AdminMarketingService } from 'src/admin-marketing/admin-marketing.service';
 
 @Injectable()
 export class SchedulerService {
@@ -31,6 +32,7 @@ export class SchedulerService {
     private readonly seoSitemapService: SeoSitemapService,
     private readonly seoMonitoringService: SeoMonitoringService,
     private readonly seoAuditService: SeoAuditService,
+    private readonly adminMarketingService: AdminMarketingService,
   ) {}
 
   /**
@@ -153,6 +155,25 @@ export class SchedulerService {
       const result = await this.platformSubscriptionsService.finalizeEndOfPeriodCancellations();
       if (result.downgraded > 0) {
         this.logger.log(`Finalized ${result.downgraded} end-of-period platform tier downgrade(s)`);
+      }
+    });
+  }
+
+  // Runs every minute (same cadence as activateScheduledProducts above, for
+  // the same reason — a time-based state flip) — moves platform sale
+  // Campaigns whose endDate has passed from 'active' to 'ended' and compacts
+  // the remaining active campaigns' rotation `order` values so there's never
+  // a gap where an expired campaign's slot used to be. This is just the
+  // backstop for when nobody's actively viewing the admin list — the list
+  // read itself (AdminMarketingService.listCampaigns) also self-heals on
+  // every load, which is what actually makes this feel instant rather than
+  // capped at a 1-minute lag.
+  @Cron('* * * * *')
+  async expireCampaigns() {
+    await this.runLocked('campaign-expiry', 50_000, async () => {
+      const result = await this.adminMarketingService.expireCampaigns();
+      if (result.expired > 0) {
+        this.logger.log(`Campaigns expired: ${result.expired} moved to 'ended', rotation order compacted`);
       }
     });
   }
