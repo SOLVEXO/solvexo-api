@@ -54,6 +54,19 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     await this.client.del(key);
   }
 
+  /**
+   * Atomic increment-with-expiry for fixed-window rate-limit counters. Returns
+   * the post-increment count, or null if Redis is unavailable — callers must
+   * fail-open (allow the request) rather than block legitimate traffic just
+   * because Redis itself is down.
+   */
+  async incrWithTtl(key: string, ttlSeconds: number): Promise<number | null> {
+    if (!this.connected) return null;
+    const count = await this.client.incr(key);
+    if (count === 1) await this.client.expire(key, ttlSeconds);
+    return count;
+  }
+
   // ── Distributed locking (Redlock-lite, single-instance Redis) ────────────
   // Used to serialize cron jobs (renewals, dunning, cancellation finalization)
   // across horizontally-scaled app instances so the same subscription is never

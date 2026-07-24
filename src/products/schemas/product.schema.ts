@@ -56,6 +56,30 @@ export class DigitalFile {
 export const DigitalFileSchema = SchemaFactory.createForClass(DigitalFile);
 
 @Schema({ _id: false })
+export class DigitalPreview {
+  @Prop({ default: false })
+  enabled: boolean;
+
+  // index into DigitalConfig.files — which uploaded file the preview is derived from
+  @Prop({ type: Number, default: null })
+  sourceFileIndex: number | null;
+
+  // ── server-managed only (never set directly by the seller-facing request body) ──
+  // PDFs/audio are stored as resource_type 'raw' (see UploadService.getResourceType),
+  // but Cloudinary can only rasterize PDF pages / trim clips on 'image'/'video'
+  // resource types. These two fields point at a lazily-created shadow copy of the
+  // source asset under a transform-capable resource type, prepared once when the
+  // seller enables preview (see ProductsService.prepareDigitalPreview). Stay null
+  // for image/video source files, which are already transform-capable in place.
+  @Prop({ type: String, default: null })
+  previewSourcePublicId: string | null;
+
+  @Prop({ type: String, enum: ['image', 'video'], default: null })
+  previewSourceResourceType: 'image' | 'video' | null;
+}
+export const DigitalPreviewSchema = SchemaFactory.createForClass(DigitalPreview);
+
+@Schema({ _id: false })
 export class DigitalConfig {
   @Prop({ type: [DigitalFileSchema], default: [] })
   files: DigitalFile[];
@@ -74,6 +98,9 @@ export class DigitalConfig {
 
   @Prop({ type: String, default: null })
   buyerDeliveryMessage: string | null;
+
+  @Prop({ type: DigitalPreviewSchema, default: () => ({}) })
+  preview: DigitalPreview;
 }
 export const DigitalConfigSchema = SchemaFactory.createForClass(DigitalConfig);
 
