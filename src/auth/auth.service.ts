@@ -29,6 +29,16 @@ export class AuthService {
     private readonly jwtService: JwtService
   ) {}
 
+  /** Deletes the Redis session key for this access token so `JwtAuthGuard` rejects it immediately, instead of waiting out its TTL. */
+  async logout(token: string) {
+    await this.redisService.del(token);
+    return {
+      success: true,
+      message: 'Logged out successfully',
+      data: null,
+    };
+  }
+
   /** Seller logins/edits are logged against their store's activity feed; users/admins have no store to attach to. */
   private async logSellerSecurityEvent(
     sellerId: string,

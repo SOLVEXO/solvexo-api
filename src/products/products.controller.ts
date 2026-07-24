@@ -62,6 +62,15 @@ async getVariantById(@Param('variantId') variantId: string) {
   return this.ProductsService.getVariantById(variantId);
 }
 
+// Public, pre-purchase preview of a digital product — watermarked/trimmed
+// derivative only, never the original file. Same guard as getProductById.
+@UseGuards(OptionalJwtAuthGuard, FeatureFlagGuard)
+@RequireFeature('digitalUploads')
+@Get('preview/:id')
+async getProductPreview(@Req() req: any, @Param('id') id: string) {
+  return this.ProductsService.getProductPreview(id, req.ip);
+}
+
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles('seller')
 @Post('add-physical-product')

@@ -4,6 +4,14 @@ import { ConfigService } from '@nestjs/config';
 import { v2 as cloudinary } from 'cloudinary';
 import * as streamifier from 'streamifier';
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
+import {
+  PREVIEW_PDF_PAGE_COUNT,
+  PREVIEW_CLIP_SECONDS,
+  PREVIEW_IMAGE_MAX_WIDTH,
+  PREVIEW_WATERMARK_TEXT,
+  PREVIEW_URL_TTL_SECONDS,
+  PREVIEW_SOURCE_FOLDER,
+} from '../products/constants/preview.constants';
 
 @Injectable()
 export class UploadService {
@@ -76,13 +84,18 @@ export class UploadService {
     });
   }
 
-  // ── PDF buffer download from Cloudinary (private) ──
-  async downloadPrivatePdfBuffer(publicId: string): Promise<Buffer> {
-    const signedUrl = this.generateSignedUrl(publicId, 'raw', 300); // 5 min — sirf download ke liye
+  // ── Private buffer download from Cloudinary (generic) ──
+  async downloadPrivateFileBuffer(publicId: string, resourceType: string = 'raw'): Promise<Buffer> {
+    const signedUrl = this.generateSignedUrl(publicId, resourceType, 300); // 5 min — sirf download ke liye
     const response = await fetch(signedUrl);
-    if (!response.ok) throw new BadRequestException('Failed to download PDF from storage');
+    if (!response.ok) throw new BadRequestException('Failed to download file from storage');
     const arrayBuffer = await response.arrayBuffer();
     return Buffer.from(arrayBuffer);
+  }
+
+  // ── PDF buffer download from Cloudinary (private) ──
+  async downloadPrivatePdfBuffer(publicId: string): Promise<Buffer> {
+    return this.downloadPrivateFileBuffer(publicId, 'raw');
   }
 
   // ── PDF Stamping ──
@@ -122,6 +135,106 @@ export class UploadService {
 
     const stampedBytes = await pdfDoc.save();
     return Buffer.from(stampedBytes);
+  }
+
+  // ── Preview: signed, transformation-scoped URLs (never the original file) ──
+  private signedTransformUrl(
+    publicId: string,
+    resourceType: string,
+    transformation: any[],
+    expirySeconds: number,
+    extra: Record<string, any> = {},
+  ): string {
+    const expiresAt = Math.floor(Date.now() / 1000) + expirySeconds;
+    return cloudinary.url(publicId, {
+      resource_type: resourceType as any,
+      type: 'private',
+      sign_url: true,
+      secure: true,
+      expires_at: expiresAt,
+      transformation,
+      ...extra,
+    });
+  }
+
+  private previewWatermarkOverlay(fontSize: number) {
+    return {
+      overlay: {
+        font_family: 'Arial',
+        font_size: fontSize,
+        font_weight: 'bold',
+        text: PREVIEW_WATERMARK_TEXT,
+      },
+      gravity: 'center',
+      color: '#FFFFFF',
+      opacity: 40,
+    };
+  }
+
+  // ── Preview: lazily create a transform-capable shadow copy for raw-stored pdf/audio ──
+  // Cloudinary can only rasterize PDF pages / trim clips on 'image'/'video' resource
+  // types, but pdf/audio digital-product files are stored as 'raw' (see getResourceType
+  // below — intentionally left unchanged so the paid download path never regresses).
+  async ensurePreviewSourceAsset(
+    publicId: string,
+    originalResourceType: string,
+    targetResourceType: 'image' | 'video',
+  ): Promise<string> {
+    if (originalResourceType === targetResourceType) return publicId;
+    const buffer = await this.downloadPrivateFileBuffer(publicId, originalResourceType);
+    return new Promise((resolve, reject) => {
+      const uploadStream = cloudinary.uploader.upload_stream(
+        { folder: PREVIEW_SOURCE_FOLDER, resource_type: targetResourceType, type: 'private' },
+        (error, result) => {
+          if (error || !result) return reject(new BadRequestException(error?.message || 'Preview source preparation failed'));
+          resolve(result.public_id);
+        },
+      );
+      streamifier.createReadStream(buffer).pipe(uploadStream);
+    });
+  }
+
+  generatePreviewImageUrl(publicId: string, expirySeconds: number = PREVIEW_URL_TTL_SECONDS): string {
+    return this.signedTransformUrl(
+      publicId,
+      'image',
+      [{ width: PREVIEW_IMAGE_MAX_WIDTH, crop: 'limit' }, this.previewWatermarkOverlay(48)],
+      expirySeconds,
+      { format: 'jpg' },
+    );
+  }
+
+  generatePreviewPdfPageUrls(
+    publicId: string,
+    pageCount: number = PREVIEW_PDF_PAGE_COUNT,
+    expirySeconds: number = PREVIEW_URL_TTL_SECONDS,
+  ): string[] {
+    return Array.from({ length: pageCount }, (_, i) =>
+      this.signedTransformUrl(
+        publicId,
+        'image',
+        [{ page: i + 1 }, { width: PREVIEW_IMAGE_MAX_WIDTH, crop: 'limit' }, this.previewWatermarkOverlay(48)],
+        expirySeconds,
+        { format: 'jpg' },
+      ),
+    );
+  }
+
+  generatePreviewVideoUrl(publicId: string, clipSeconds: number = PREVIEW_CLIP_SECONDS, expirySeconds: number = PREVIEW_URL_TTL_SECONDS): string {
+    return this.signedTransformUrl(
+      publicId,
+      'video',
+      [
+        { start_offset: 0, end_offset: clipSeconds },
+        { overlay: { font_family: 'Arial', font_size: 32, font_weight: 'bold', text: PREVIEW_WATERMARK_TEXT }, gravity: 'south_east', x: 20, y: 20, color: '#FFFFFF', opacity: 60 },
+      ],
+      expirySeconds,
+    );
+  }
+
+  generatePreviewAudioUrl(publicId: string, clipSeconds: number = PREVIEW_CLIP_SECONDS, expirySeconds: number = PREVIEW_URL_TTL_SECONDS): string {
+    // Cloudinary stores/transforms audio under resource_type 'video' — no separate 'audio' type.
+    return this.signedTransformUrl(publicId, 'video', [{ start_offset: 0, end_offset: clipSeconds }], expirySeconds);
   }
 
   private getResourceType(mimetype: string): string {

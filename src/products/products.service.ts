@@ -3,6 +3,8 @@ import {
   UnauthorizedException,
   BadRequestException,
   NotFoundException,
+  HttpException,
+  HttpStatus,
 } from '@nestjs/common';
 
 import { DatabaseService } from 'src/database/databaseservice';
@@ -12,6 +14,12 @@ import { SubscriptionBenefitsService } from 'src/subscriptions/subscription-bene
 import { EntitlementsService } from 'src/platform-plans/entitlements.service';
 import { EducationLevel } from './schemas/product.schema';
 import { EducationLevelService } from './education-level.service';
+import { UploadService } from 'src/upload/upload.service';
+import { RedisService } from 'src/redis/redis.service';
+import {
+  PREVIEW_RATE_LIMIT_MAX,
+  PREVIEW_RATE_LIMIT_WINDOW_SECONDS,
+} from './constants/preview.constants';
 
 const EDUCATION_LEVEL_VALUES: string[] = Object.values(EducationLevel);
 
@@ -23,6 +31,8 @@ export class ProductsService {
     private subscriptionBenefits: SubscriptionBenefitsService,
     private entitlementsService: EntitlementsService,
     private educationLevelService: EducationLevelService,
+    private uploadService: UploadService,
+    private redisService: RedisService,
   ) {}
 
   /** Stamps a fresh product with an early-access window if the store has any active plan configuring one — non-subscribers can't see it until this passes. */
@@ -69,12 +79,99 @@ export class ProductsService {
   // payment, regardless of this — but the manifest shouldn't leak either.
   private sanitizeDigitalForPublicView<T extends { digital?: any }>(product: T): T {
     if (!product?.digital) return product;
-    const { files, ...safeDigital } = product.digital;
+    const { files, preview, ...safeDigital } = product.digital;
     return {
       ...product,
-      digital: { ...safeDigital, fileCount: Array.isArray(files) ? files.length : 0 },
+      digital: {
+        ...safeDigital,
+        fileCount: Array.isArray(files) ? files.length : 0,
+        previewAvailable: !!preview?.enabled,
+      },
     };
   }
+
+  /**
+   * Called from addDigitalProduct/editProduct whenever a seller's `digital`
+   * payload is saved. If preview is enabled, resolves the chosen source file
+   * and — for pdf/audio only, since those are stored under Cloudinary
+   * resource_type 'raw' and can't be transformed in place — lazily prepares a
+   * transform-capable shadow copy via UploadService.ensurePreviewSourceAsset.
+   * `existingPreview` is the product's current `digital.preview` (or null for
+   * a brand-new product) so we can skip re-preparing an unchanged source file.
+   */
+  private async prepareDigitalPreview(existingPreview: any, digital: any): Promise<any> {
+    if (!digital?.preview?.enabled) {
+      return { ...digital, preview: { enabled: false, sourceFileIndex: null, previewSourcePublicId: null, previewSourceResourceType: null } };
+    }
+
+    const sourceFileIndex = digital.preview.sourceFileIndex ?? 0;
+    const file = digital.files?.[sourceFileIndex];
+    if (!file) throw new BadRequestException('preview.sourceFileIndex does not match any uploaded file');
+
+    const mimeType = file.mimeType || this.uploadService.resolveMimeType(file.name, '');
+    const unchanged = existingPreview?.enabled && existingPreview?.sourceFileIndex === sourceFileIndex && existingPreview?.previewSourcePublicId;
+
+    let previewSourcePublicId: string | null = unchanged ? existingPreview.previewSourcePublicId : null;
+    let previewSourceResourceType: 'image' | 'video' | null = unchanged ? existingPreview.previewSourceResourceType : null;
+
+    if (!unchanged) {
+      if (mimeType === 'application/pdf') {
+        previewSourcePublicId = await this.uploadService.ensurePreviewSourceAsset(file.url, 'raw', 'image');
+        previewSourceResourceType = 'image';
+      } else if (mimeType.startsWith('audio/')) {
+        previewSourcePublicId = await this.uploadService.ensurePreviewSourceAsset(file.url, 'raw', 'video');
+        previewSourceResourceType = 'video';
+      } else if (mimeType.startsWith('image/') || mimeType.startsWith('video/')) {
+        previewSourcePublicId = null; // already transform-capable in place
+        previewSourceResourceType = null;
+      } else {
+        throw new BadRequestException(`Preview is not supported for file type "${mimeType}"`);
+      }
+    }
+
+    return { ...digital, preview: { enabled: true, sourceFileIndex, previewSourcePublicId, previewSourceResourceType } };
+  }
+
+  /** Public, pre-purchase preview of a digital product — always a watermarked/trimmed derivative, never the original file. */
+  async getProductPreview(productId: string, clientIp: string) {
+    const rateLimitKey = `preview:rl:${clientIp}:${productId}`;
+    const count = await this.redisService.incrWithTtl(rateLimitKey, PREVIEW_RATE_LIMIT_WINDOW_SECONDS);
+    if (count !== null && count > PREVIEW_RATE_LIMIT_MAX) {
+      throw new HttpException({ success: false, message: 'Too many preview requests — please try again later' }, HttpStatus.TOO_MANY_REQUESTS);
+    }
+
+    const { productModel } = this.databaseService.repositories;
+    const product = await productModel.findOne({ _id: productId, status: 'active', isDelete: false }).lean();
+    if (!product) throw new NotFoundException('Product not found');
+    if (product.type !== 'digital' || !product.digital?.preview?.enabled) {
+      throw new BadRequestException('Preview is not available for this product');
+    }
+
+    const sourceFileIndex = product.digital.preview.sourceFileIndex ?? 0;
+    const file = product.digital.files?.[sourceFileIndex];
+    if (!file) throw new BadRequestException('Preview source file not found');
+
+    const mimeType = file.mimeType || this.uploadService.resolveMimeType(file.name, '');
+    const expiresAt = Math.floor(Date.now() / 1000) + 300;
+
+    if (mimeType === 'application/pdf') {
+      if (!product.digital.preview.previewSourcePublicId) throw new BadRequestException('Preview is not ready for this product yet');
+      const pages = this.uploadService.generatePreviewPdfPageUrls(product.digital.preview.previewSourcePublicId);
+      return { success: true, data: { type: 'pdf', pages, expiresAt } };
+    }
+    if (mimeType.startsWith('image/')) {
+      return { success: true, data: { type: 'image', url: this.uploadService.generatePreviewImageUrl(file.url), expiresAt } };
+    }
+    if (mimeType.startsWith('video/')) {
+      return { success: true, data: { type: 'video', url: this.uploadService.generatePreviewVideoUrl(file.url), expiresAt } };
+    }
+    if (mimeType.startsWith('audio/')) {
+      if (!product.digital.preview.previewSourcePublicId) throw new BadRequestException('Preview is not ready for this product yet');
+      return { success: true, data: { type: 'audio', url: this.uploadService.generatePreviewAudioUrl(product.digital.preview.previewSourcePublicId), expiresAt } };
+    }
+    throw new BadRequestException('Preview is not supported for this file type');
+  }
+
 async getProductsByCategoryId(
   parentCategoryId?: string,
   page: number = 1,
@@ -554,7 +651,7 @@ async addDigitalProduct(sellerId: string, body: any) {
     normalizedCustomLevel: normalizedFields.normalizedCustomLevel,
     images: images ?? [],
     tags: tags ?? [],
-    digital: digital ?? null,
+    digital: digital ? await this.prepareDigitalPreview(null, digital) : null,
     isListedOnSolvexo: isListedOnSolvexo ?? false,
     status: status ?? 'draft',
     scheduledAt: status === 'scheduled' ? new Date(scheduledAt) : null,
@@ -703,7 +800,9 @@ async editProduct(sellerId: string, body: any) {
     productUpdate.status = status;
     productUpdate.scheduledAt = status === 'scheduled' ? new Date(scheduledAt) : null;
   }
-  if (digital !== undefined && product.type === 'digital') productUpdate.digital = digital;
+  if (digital !== undefined && product.type === 'digital') {
+    productUpdate.digital = await this.prepareDigitalPreview(product.digital?.preview, digital);
+  }
 
   if (educationLevel !== undefined && product.productType === 'educational') {
     if (!EDUCATION_LEVEL_VALUES.includes(educationLevel)) {

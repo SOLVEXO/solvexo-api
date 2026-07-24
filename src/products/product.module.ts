@@ -5,13 +5,14 @@ import { EducationLevelService } from './education-level.service';
 import { AuthModule } from 'src/auth/auth.module';
 import { RedisModule } from 'src/redis/redis.module';
 import { AdminConfigModule } from 'src/admin-config/admin-config.module';
+import { UploadModule } from 'src/upload/upload.module';
 
 
 
 
 @Module({
 
-   imports: [AuthModule, RedisModule, AdminConfigModule],
+   imports: [AuthModule, RedisModule, AdminConfigModule, UploadModule],
   controllers: [ productController],
   providers: [ProductsService, EducationLevelService ],
   exports: [ProductsService ],
