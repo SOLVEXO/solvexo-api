@@ -55,6 +55,12 @@ export class Campaign {
   @Prop({ type: [String], default: [] })
   participatingStoreIds: string[];
 
+  // Controls rotation order in the buyer-facing DealsBanner when multiple
+  // campaigns are active at once (0 = shown first) — same convention as
+  // Banner.order. Admin-set, independent of endDate/createdAt.
+  @Prop({ type: Number, default: 0 })
+  order: number;
+
   @Prop({ type: String, default: null })
   createdBy: string | null;
 

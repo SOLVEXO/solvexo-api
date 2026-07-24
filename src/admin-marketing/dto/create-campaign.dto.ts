@@ -44,4 +44,9 @@ export class CreateCampaignDto {
   @IsOptional()
   @IsEnum(['seller', 'platform'])
   sponsorType?: 'seller' | 'platform';
+
+  @ApiProperty({ required: false, example: 0, description: 'Rotation order in the buyer-facing deals banner when multiple campaigns are active (0 = shown first). Defaults to appended-last.' })
+  @IsOptional()
+  @IsNumber()
+  order?: number;
 }

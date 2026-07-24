@@ -716,7 +716,7 @@ export class StoreService {
       await this.databaseService.repositories.storeModel.findByIdAndUpdate(storeId, {
         $inc: { followersCount: -1 },
       });
-      return { success: true, message: 'Unfollowed', following: false };
+      return { success: true, message: 'Unfollowed', data: { following: false } };
     }
 
     await this.databaseService.repositories.storeFollowerModel.create({ userId, storeId });
@@ -733,7 +733,7 @@ export class StoreService {
       data: { storeId },
     }).catch(() => {});
 
-    return { success: true, message: 'Following', following: true };
+    return { success: true, message: 'Following', data: { following: true } };
   }
 
   // ── 7. Get store followers (seller only) ─────────────────────────────────

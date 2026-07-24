@@ -293,7 +293,9 @@ export class MarketingService {
           { 'participatingStoreIds.0': { $exists: true } },
         ],
       })
-      .sort({ endDate: 1 })
+      // Admin-controlled rotation order first (see Campaign.order), soonest-
+      // ending as the tiebreaker for campaigns left at their default order.
+      .sort({ order: 1, endDate: 1 })
       .lean();
 
     // Only computed if actually needed — a "how many stores" count is

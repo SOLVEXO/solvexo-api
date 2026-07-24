@@ -13,8 +13,7 @@ import { UploadModule } from 'src/upload/upload.module';
 
 @Module({
 
-   imports: [AuthModule, RedisModule, AdminConfigModule, MarketingModule],
-   imports: [AuthModule, RedisModule, AdminConfigModule, UploadModule],
+   imports: [AuthModule, RedisModule, AdminConfigModule, MarketingModule, UploadModule],
   controllers: [ productController],
   providers: [ProductsService, EducationLevelService ],
   exports: [ProductsService ],

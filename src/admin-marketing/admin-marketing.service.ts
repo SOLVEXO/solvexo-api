@@ -41,6 +41,20 @@ export class AdminMarketingService {
 
   // ─── Campaigns ───────────────────────────────────────────────────────────
 
+  /** Two campaigns can never share a rotation position — whichever one holds
+   *  a number keeps it exclusively, so a second campaign trying to claim the
+   *  same slot is rejected with the name of who's already there, rather than
+   *  silently creating an ambiguous tie in the deals-banner rotation order. */
+  private async assertOrderAvailable(order: number | undefined, excludeId?: string) {
+    if (order == null) return;
+    const filter: Record<string, unknown> = { isDelete: false, order };
+    if (excludeId) filter._id = { $ne: excludeId };
+    const conflict = await this.r.campaignModel.findOne(filter).select('name').lean();
+    if (conflict) {
+      throw new ConflictException(`Position ${order} is already used by "${conflict.name}" — choose a different number.`);
+    }
+  }
+
   async createCampaign(dto: CreateCampaignDto, meta: AuditMeta) {
     if (new Date(dto.endDate) <= new Date(dto.startDate)) {
       throw new BadRequestException('endDate must be after startDate');
@@ -48,6 +62,11 @@ export class AdminMarketingService {
     if (dto.discountType === 'percentage' && dto.discountValue != null && dto.discountValue > 100) {
       throw new BadRequestException('Percentage discount cannot exceed 100');
     }
+    await this.assertOrderAvailable(dto.order);
+
+    // Defaults to "appended last" in the rotation, same convention as
+    // Banner.order, unless the admin explicitly set a position.
+    const currentCount = dto.order == null ? await this.r.campaignModel.countDocuments({ isDelete: false }) : 0;
 
     const campaign = await this.r.campaignModel.create({
       name: dto.name,
@@ -58,6 +77,7 @@ export class AdminMarketingService {
       discountType: dto.discountType ?? null,
       discountValue: dto.discountValue ?? null,
       sponsorType: dto.sponsorType ?? 'seller',
+      order: dto.order ?? currentCount,
       createdBy: meta.adminId,
     });
 
@@ -90,6 +110,9 @@ export class AdminMarketingService {
       new Date(dto.endDate ?? existing.endDate) <= new Date(dto.startDate ?? existing.startDate)
     ) {
       throw new BadRequestException('endDate must be after startDate');
+    }
+    if (dto.order !== undefined && dto.order !== existing.order) {
+      await this.assertOrderAvailable(dto.order, id);
     }
 
     const update: Record<string, unknown> = {};

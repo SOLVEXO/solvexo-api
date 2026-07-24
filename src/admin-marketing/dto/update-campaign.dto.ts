@@ -43,4 +43,9 @@ export class UpdateCampaignDto {
   @IsOptional()
   @IsEnum(['seller', 'platform'])
   sponsorType?: 'seller' | 'platform';
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsNumber()
+  order?: number;
 }
