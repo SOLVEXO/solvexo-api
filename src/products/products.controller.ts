@@ -34,10 +34,9 @@ async getProductsByCategoryId(
   @Query('normalizedCustomLevel') normalizedCustomLevel?: string,
   @Query('campaignId') campaignId?: string,
 ) {
-  return this.ProductsService.getProductsByCategoryId(id, page, limit, req.user?.userId ?? null, productType, educationLevel, normalizedCustomLevel, campaignId);
   const page = Math.max(1, parseInt(pageQuery as string) || 1);
   const limit = Math.min(50, Math.max(1, parseInt(limitQuery as string) || 10));
-  return this.ProductsService.getProductsByCategoryId(id, page, limit, req.user?.userId ?? null, productType, educationLevel, normalizedCustomLevel);
+  return this.ProductsService.getProductsByCategoryId(id, page, limit, req.user?.userId ?? null, productType, educationLevel, normalizedCustomLevel, campaignId);
 }
 
 @UseGuards(FeatureFlagGuard)
