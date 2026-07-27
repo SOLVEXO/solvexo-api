@@ -77,7 +77,7 @@ export class AdminAiStudioService {
     const byTool: Record<string, { succeeded: number; failed: number; processing: number }> = {};
     let totalGenerations = 0;
     let totalSucceeded = 0;
-    for (const row of byToolStatus as any[]) {
+    for (const row of byToolStatus) {
       const tool = row._id.tool as string;
       const status = row._id.status as string;
       byTool[tool] ??= { succeeded: 0, failed: 0, processing: 0 };
@@ -86,7 +86,7 @@ export class AdminAiStudioService {
       if (status === 'succeeded') totalSucceeded += row.count;
     }
 
-    const storeIds = (topStores as any[]).map((r) => r._id).filter(Boolean);
+    const storeIds = (topStores).map((r) => r._id).filter(Boolean);
     const stores = storeIds.length
       ? await this.db.repositories.storeModel.find({ _id: { $in: storeIds } }).select('name slug').lean()
       : [];
@@ -98,10 +98,10 @@ export class AdminAiStudioService {
         days,
         totalGenerations,
         successRate: totalGenerations > 0 ? Math.round((totalSucceeded / totalGenerations) * 100) : 0,
-        totalCreditsSpent: (spendAgg[0] as any)?.totalCredits ?? 0,
-        capturedTransactionCount: (spendAgg[0] as any)?.count ?? 0,
+        totalCreditsSpent: (spendAgg[0])?.totalCredits ?? 0,
+        capturedTransactionCount: (spendAgg[0])?.count ?? 0,
         byTool,
-        topStores: (topStores as any[]).map((r) => ({
+        topStores: (topStores).map((r) => ({
           storeId: r._id,
           storeName: storeById.get(r._id)?.name ?? null,
           storeSlug: storeById.get(r._id)?.slug ?? null,

@@ -1,4 +1,3 @@
-/* eslint-disable prettier/prettier */
 import { Global, Module } from '@nestjs/common';
 import { LoyaltyController } from './loyalty.controller';
 import { LoyaltyService } from './loyalty.service';

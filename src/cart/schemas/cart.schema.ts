@@ -6,7 +6,6 @@ export type CartDocument = Cart & Document;
 // Embedded subdocument for cart items
 @Schema({ _id: false })
 export class CartItem {
-
   @Prop({ type: String, required: true })
   productId: string;
 
@@ -32,7 +31,6 @@ export const CartItemSchema = SchemaFactory.createForClass(CartItem);
 // Main Cart schema
 @Schema({ timestamps: true })
 export class Cart {
-
   @Prop({ type: String, required: true })
   userId: string;
 
@@ -45,7 +43,7 @@ export class Cart {
   @Prop({ default: 0 })
   totalPrice: number;
 
-  @Prop({ default: "active" })
+  @Prop({ default: 'active' })
   status: string;
 
   @Prop({ default: false })

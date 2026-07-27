@@ -394,7 +394,7 @@ export class AnalyticsService {
       ]);
 
       const bucketTotals = new Map<number, { newCustomers: number; returningCustomers: number }>();
-      for (const row of periodRows as any[]) {
+      for (const row of periodRows) {
         const bucketTime = row._id.bucket.getTime();
         const firstOrderAt = firstOrderMap.get(row._id.userId);
         // "New" in this bucket = their all-time first order within this scope falls within it.

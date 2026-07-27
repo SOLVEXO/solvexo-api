@@ -51,7 +51,7 @@ export class ActivityLogGateway implements OnGatewayConnection, OnGatewayDisconn
       if (!token) throw new Error('Missing token');
 
       const payload = this.jwtService.verify(token, { secret: process.env.JWT_SECRET });
-      (client.data as any).userId = payload.sub;
+      (client.data).userId = payload.sub;
     } catch {
       client.disconnect();
     }
@@ -63,7 +63,7 @@ export class ActivityLogGateway implements OnGatewayConnection, OnGatewayDisconn
 
   @SubscribeMessage('join-store')
   async handleJoinStore(@ConnectedSocket() client: Socket, @MessageBody() storeId: string) {
-    const sellerId = (client.data as any).userId;
+    const sellerId = (client.data).userId;
     if (!sellerId || !storeId) {
       client.emit('activity:error', 'storeId required');
       return;

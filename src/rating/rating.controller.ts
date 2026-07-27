@@ -1,4 +1,18 @@
-import { Controller, Post, Put, Patch, Delete, Get, Body, Param, Req, Query, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Put,
+  Patch,
+  Delete,
+  Get,
+  Body,
+  Param,
+  Req,
+  Query,
+  UseGuards,
+  UsePipes,
+  ValidationPipe,
+} from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { OptionalJwtAuthGuard } from '../auth/guards/optional-jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -36,7 +50,11 @@ export class RatingController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('user')
   @Patch(':reviewId')
-  async editReview(@Req() req: any, @Param('reviewId') reviewId: string, @Body() body: EditReviewDto) {
+  async editReview(
+    @Req() req: any,
+    @Param('reviewId') reviewId: string,
+    @Body() body: EditReviewDto,
+  ) {
     const { userId } = req.user;
     return this.ratingService.editReview(userId, reviewId, body);
   }
@@ -64,7 +82,11 @@ export class RatingController {
 
   @UseGuards(OptionalJwtAuthGuard)
   @Get('product/:productId')
-  async getProductReviews(@Req() req: any, @Param('productId') productId: string, @Query() query: any) {
+  async getProductReviews(
+    @Req() req: any,
+    @Param('productId') productId: string,
+    @Query() query: any,
+  ) {
     const viewerId = req.user?.userId ?? null;
     return this.ratingService.getProductReviews(productId, query, viewerId);
   }
@@ -76,7 +98,11 @@ export class RatingController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('seller', 'admin')
   @Get('store-reviews/:storeId')
-  async getStoreReviews(@Req() req: any, @Param('storeId') storeId: string, @Query() query: any) {
+  async getStoreReviews(
+    @Req() req: any,
+    @Param('storeId') storeId: string,
+    @Query() query: any,
+  ) {
     const { userId: sellerId, role } = req.user;
     return this.ratingService.getStoreReviews(sellerId, role, storeId, query);
   }
@@ -84,7 +110,11 @@ export class RatingController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('seller', 'admin')
   @Post('reply/:reviewId')
-  async replyToReview(@Req() req: any, @Param('reviewId') reviewId: string, @Body() body: SellerReplyDto) {
+  async replyToReview(
+    @Req() req: any,
+    @Param('reviewId') reviewId: string,
+    @Body() body: SellerReplyDto,
+  ) {
     const { userId: sellerId, role } = req.user;
     return this.ratingService.replyToReview(sellerId, role, reviewId, body);
   }
@@ -92,7 +122,11 @@ export class RatingController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('seller', 'admin')
   @Put('edit-reply/:reviewId')
-  async editReply(@Req() req: any, @Param('reviewId') reviewId: string, @Body() body: SellerReplyDto) {
+  async editReply(
+    @Req() req: any,
+    @Param('reviewId') reviewId: string,
+    @Body() body: SellerReplyDto,
+  ) {
     const { userId: sellerId, role } = req.user;
     return this.ratingService.editReply(sellerId, role, reviewId, body);
   }
@@ -116,7 +150,10 @@ export class RatingController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('seller', 'admin')
   @Delete('admin/:reviewId')
-  async moderateDeleteReview(@Req() req: any, @Param('reviewId') reviewId: string) {
+  async moderateDeleteReview(
+    @Req() req: any,
+    @Param('reviewId') reviewId: string,
+  ) {
     const { userId: sellerId, role } = req.user;
     return this.ratingService.moderateDeleteReview(sellerId, role, reviewId);
   }

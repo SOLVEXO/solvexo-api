@@ -1,4 +1,3 @@
-/* eslint-disable prettier/prettier */
 import { Injectable, ExecutionContext } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { RedisService } from 'src/redis/redis.service';

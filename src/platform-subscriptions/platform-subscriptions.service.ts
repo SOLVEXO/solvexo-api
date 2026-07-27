@@ -333,7 +333,7 @@ export class PlatformSubscriptionsService {
         } else {
           sub.failedPaymentAttempts = (sub.failedPaymentAttempts ?? 0) + 1;
           const { sellerName, sellerEmail, storeName } = await this.getSellerAndStoreNames(sub.sellerId, sub.storeId);
-          const tierName = PLATFORM_TIERS[sub.tier as StorePlan]?.name ?? sub.tier;
+          const tierName = PLATFORM_TIERS[sub.tier]?.name ?? sub.tier;
 
           if (sub.failedPaymentAttempts >= MAX_RENEWAL_ATTEMPTS) {
             const fromTier = sub.tier;

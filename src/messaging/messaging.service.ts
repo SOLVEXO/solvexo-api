@@ -230,7 +230,7 @@ export class MessagingService {
   async searchConversations(userId: string, role: string, q: string, storeId?: string) {
     if (!q || q.trim().length < 2) throw new BadRequestException('Search query must be at least 2 characters');
 
-    let filter: any = {};
+    const filter: any = {};
     if (storeId) {
       const store = await this.db.repositories.storeModel.findById(storeId);
       if (!store || store.sellerId.toString() !== userId) throw new ForbiddenException('Access denied');

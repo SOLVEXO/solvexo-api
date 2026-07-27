@@ -8,16 +8,16 @@ import { AdminConfigModule } from 'src/admin-config/admin-config.module';
 import { MarketingModule } from 'src/marketing/marketing.module';
 import { UploadModule } from 'src/upload/upload.module';
 
-
-
-
 @Module({
-
-   imports: [AuthModule, RedisModule, AdminConfigModule, MarketingModule, UploadModule],
-  controllers: [ productController],
-  providers: [ProductsService, EducationLevelService ],
-  exports: [ProductsService ],
-
+  imports: [
+    AuthModule,
+    RedisModule,
+    AdminConfigModule,
+    MarketingModule,
+    UploadModule,
+  ],
+  controllers: [productController],
+  providers: [ProductsService, EducationLevelService],
+  exports: [ProductsService],
 })
-
 export class ProductsModule {}

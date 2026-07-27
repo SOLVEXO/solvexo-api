@@ -18,7 +18,9 @@ export class UsersService {
   }
 
   async getProfile(userId: string) {
-    const user = await this.userModel.findById(userId).select('-password -otp -otpExpiresAt');
+    const user = await this.userModel
+      .findById(userId)
+      .select('-password -otp -otpExpiresAt');
     if (!user) throw new NotFoundException('User not found');
     return user;
   }
@@ -72,11 +74,14 @@ export class UsersService {
     if (!user) throw new NotFoundException('User not found');
 
     if (!user.password) {
-      throw new BadRequestException('Cannot change password for social-login accounts');
+      throw new BadRequestException(
+        'Cannot change password for social-login accounts',
+      );
     }
 
     const isMatch = await bcrypt.compare(currentPassword, user.password);
-    if (!isMatch) throw new UnauthorizedException('Current password is incorrect');
+    if (!isMatch)
+      throw new UnauthorizedException('Current password is incorrect');
 
     user.password = await bcrypt.hash(newPassword, 10);
     await user.save();
@@ -87,13 +92,49 @@ export class UsersService {
     };
   }
 
-  async deleteAccount(userId: string) {
+  // Buyers and sellers are separate collections (see changePassword's comment
+  // above) — this must branch on role too, or a seller's delete request 404s
+  // against the buyer collection while their seller account stays fully live.
+  async deleteAccount(userId: string, role: string) {
+    if (role === 'seller') {
+      return this.deleteSellerAccount(userId);
+    }
+
+    if (role !== 'user') {
+      throw new UnauthorizedException('Invalid user type');
+    }
+
     const user = await this.userModel.findById(userId);
     if (!user) throw new NotFoundException('User not found');
 
     user.isDelete = true;
     user.status = 'deleted';
     await user.save();
+
+    return {
+      success: true,
+      message: 'Account deactivated successfully',
+    };
+  }
+
+  // Deactivates the seller account AND suspends every store they own, so
+  // deleting an account doesn't leave live listings/storefronts behind under
+  // a "deleted" seller — every public-facing store/product query in this
+  // codebase (marketplace, search, follows, top stores, etc.) already filters
+  // on `status: 'active'`, so this alone removes them everywhere without
+  // needing a separate pass over each store's products.
+  private async deleteSellerAccount(sellerId: string) {
+    const seller = await this.db.repositories.sellerModel.findById(sellerId);
+    if (!seller) throw new NotFoundException('Seller not found');
+
+    seller.isDelete = true;
+    seller.status = 'deleted';
+    await seller.save();
+
+    await this.db.repositories.storeModel.updateMany(
+      { sellerId, isDelete: false },
+      { $set: { status: 'suspended' } },
+    );
 
     return {
       success: true,

@@ -94,7 +94,7 @@ export class SeoResolutionService {
     const settings = await this.platformSeoService.getSettings();
     const template = settings.metaTemplates?.find((t: any) => t.key === 'product');
 
-    const seo = (product as any).seo ?? {};
+    const seo = (product).seo ?? {};
     const categorySeo = (category as any)?.seo ?? {};
     const storeSeo = (store as any)?.seo ?? {};
     const storeName = (store as any)?.name ?? '';
@@ -193,7 +193,7 @@ export class SeoResolutionService {
 
     const settings = await this.platformSeoService.getSettings();
     const template = settings.metaTemplates?.find((t: any) => t.key === 'store');
-    const seo = (store as any).seo ?? {};
+    const seo = (store).seo ?? {};
 
     const title = seo.metaTitle
       ?? renderTemplate(template?.titleTemplate, { storeName: store.name })

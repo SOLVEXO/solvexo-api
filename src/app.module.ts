@@ -17,6 +17,7 @@ import { UploadModule } from './upload/upload.module';
 import { BannersModule } from './banner/banner.module';
 import { FaqModule } from './faqs/faq.module';
 import { NewsletterModule } from './newsletter/newsletter.module';
+import { ContactModule } from './contact/contact.module';
 // import { RefundRequestModule } from './refund-request/refund-request.module';
 import { CheckoutModule } from './checkout/checkout.modoule';
 import { OrdersModule } from './orders/orders.module';
@@ -75,6 +76,7 @@ import { AdminMarketingModule } from './admin-marketing/admin-marketing.module';
     BannersModule,
     FaqModule,
     NewsletterModule,
+    ContactModule,
     // RefundRequestModule,
     CheckoutModule,
     // checkoutModule,
@@ -108,9 +110,6 @@ import { AdminMarketingModule } from './admin-marketing/admin-marketing.module';
     AdminMarketingModule,
   ],
   controllers: [AppController],
-  providers: [
-    AppService,
-    { provide: APP_GUARD, useClass: ThrottlerGuard },
-  ],
+  providers: [AppService, { provide: APP_GUARD, useClass: ThrottlerGuard }],
 })
 export class AppModule {}

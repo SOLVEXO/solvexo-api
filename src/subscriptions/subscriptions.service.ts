@@ -217,7 +217,7 @@ export class SubscriptionsService {
       const sellerPayoutUSD = this.round(invoice.amountUSD - platformCommissionUSD);
 
       await this.financeService.recordSubscriptionRevenue(
-        invoice.storeId, invoice.sellerId, (invoice as any)._id.toString(),
+        invoice.storeId, invoice.sellerId, (invoice)._id.toString(),
         sellerPayoutUSD, platformCommissionUSD,
         `Subscription revenue — invoice ${invoice.invoiceNumber}`,
       );
@@ -241,7 +241,7 @@ export class SubscriptionsService {
       const wallet = await this.creditWalletModel.findOneAndUpdate(
         { customerId: sub.customerId, storeId: sub.storeId, creditType: benefit.creditType ?? 'download' },
         {
-          $setOnInsert: { subscriptionId: (sub as any)._id?.toString?.() ?? sub._id },
+          $setOnInsert: { subscriptionId: (sub)._id?.toString?.() ?? sub._id },
           $inc: { balance: benefit.creditsPerCycle, totalGranted: benefit.creditsPerCycle },
         },
         { upsert: true, new: true },
@@ -713,7 +713,7 @@ export class SubscriptionsService {
       const started = new Date(sub.startedAt).toISOString().split('T')[0];
       const nextBill = new Date(sub.nextBillingDate).toISOString().split('T')[0];
       return [
-        sub._id.toString(), `"${c.name ?? ''}"`, `"${c.email ?? ''}"`, `"${(p as any).name ?? ''}"`,
+        sub._id.toString(), `"${c.name ?? ''}"`, `"${c.email ?? ''}"`, `"${(p).name ?? ''}"`,
         sub.billingInterval, sub.amountUSD.toFixed(2), sub.status, started, nextBill, sub.totalPaidUSD.toFixed(2),
       ].join(',');
     });
@@ -992,7 +992,7 @@ export class SubscriptionsService {
       throw err;
     }
 
-    const subId = (sub as any)._id.toString();
+    const subId = (sub)._id.toString();
 
     // ── Stripe-backed subscription: Stripe owns the billing cycle from here ──
     // We only ever *create* it; every renewal outcome (paid/failed) arrives
@@ -1255,7 +1255,7 @@ export class SubscriptionsService {
         attemptType: 'proration', outcome: charge.success ? 'success' : 'failed',
         amountUSD: netDue, failureReason: charge.success ? null : (charge.failureReason ?? 'Payment declined'),
         failureCode: charge.failureCode ?? null,
-        invoiceId: (invoice as any)._id.toString(), providerChargeId: charge.providerChargeId,
+        invoiceId: (invoice)._id.toString(), providerChargeId: charge.providerChargeId,
       });
 
       if (!charge.success) {

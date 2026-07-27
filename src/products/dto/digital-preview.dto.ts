@@ -7,12 +7,21 @@ import { IsBoolean, IsInt, IsOptional, Min } from 'class-validator';
 // validation of `sourceFileIndex` happens inline in
 // ProductsService.prepareDigitalPreview.
 export class DigitalPreviewDto {
-  @ApiProperty({ required: false, example: true, description: 'Enable a watermarked/trimmed preview for this product' })
+  @ApiProperty({
+    required: false,
+    example: true,
+    description: 'Enable a watermarked/trimmed preview for this product',
+  })
   @IsOptional()
   @IsBoolean()
   enabled?: boolean;
 
-  @ApiProperty({ required: false, example: 0, description: 'Index into digital.files to derive the preview from', minimum: 0 })
+  @ApiProperty({
+    required: false,
+    example: 0,
+    description: 'Index into digital.files to derive the preview from',
+    minimum: 0,
+  })
   @IsOptional()
   @IsInt()
   @Min(0)

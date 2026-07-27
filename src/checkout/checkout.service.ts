@@ -1,6 +1,8 @@
-
-
-import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  BadRequestException,
+  NotFoundException,
+} from '@nestjs/common';
 import { DatabaseService } from 'src/database/databaseservice';
 import { SubscriptionBenefitsService } from 'src/subscriptions/subscription-benefits.service';
 import { MarketingService } from 'src/marketing/marketing.service';
@@ -14,15 +16,24 @@ export class CheckoutService {
     private readonly marketingService: MarketingService,
   ) {}
 
-  private round(n: number) { return Math.round(n * 100) / 100; }
+  private round(n: number) {
+    return Math.round(n * 100) / 100;
+  }
 
   async deleteCheckout(userId: string, checkoutId: string) {
     const { checkoutModel } = this.databaseService.repositories;
 
-    const checkout = await checkoutModel.findOne({ _id: checkoutId, userId, isDelete: false });
+    const checkout = await checkoutModel.findOne({
+      _id: checkoutId,
+      userId,
+      isDelete: false,
+    });
     if (!checkout) throw new BadRequestException('Checkout not found');
 
-    if (checkout.paymentType !== null) throw new BadRequestException('Cannot delete checkout after payment attempt');
+    if (checkout.paymentType !== null)
+      throw new BadRequestException(
+        'Cannot delete checkout after payment attempt',
+      );
 
     await checkoutModel.deleteOne({ _id: checkoutId });
 
@@ -31,35 +42,52 @@ export class CheckoutService {
 
   async createCheckout(userId: string, body: any = {}) {
     const {
-      cartModel, productModel, productVariantModel,
-      addressModel, checkoutModel,
+      cartModel,
+      productModel,
+      productVariantModel,
+      addressModel,
+      checkoutModel,
     } = this.databaseService.repositories;
 
-    const cart = await cartModel.findOne({ userId, status: 'active', isDelete: false });
+    const cart = await cartModel.findOne({
+      userId,
+      status: 'active',
+      isDelete: false,
+    });
     if (!cart) throw new BadRequestException('Cart not found');
-    if (!cart.items || cart.items.length === 0) throw new BadRequestException('Cart is empty');
+    if (!cart.items || cart.items.length === 0)
+      throw new BadRequestException('Cart is empty');
 
     // agar items array diya to sirf woh, warna sab cart items
-    const selectedItems: any[] = body.items && Array.isArray(body.items) && body.items.length > 0
-      ? cart.items.filter((cartItem: any) =>
-          body.items.some((sel: any) =>
-            sel.productId === cartItem.productId &&
-            sel.variantId === cartItem.productVariantId,
-          ),
-        )
-      : cart.items;
+    const selectedItems: any[] =
+      body.items && Array.isArray(body.items) && body.items.length > 0
+        ? cart.items.filter((cartItem: any) =>
+            body.items.some(
+              (sel: any) =>
+                sel.productId === cartItem.productId &&
+                sel.variantId === cartItem.productVariantId,
+            ),
+          )
+        : cart.items;
 
-    if (selectedItems.length === 0) throw new BadRequestException('None of the provided items found in cart');
+    if (selectedItems.length === 0)
+      throw new BadRequestException('None of the provided items found in cart');
 
     const checkoutItems: any[] = [];
     let hasPhysical = false;
 
     // Cache one lookup per store so a multi-item cart from the same store
     // doesn't re-query the buyer's subscription per item.
-    const benefitsCache = new Map<string, { benefits: any[]; planName: string } | null>();
+    const benefitsCache = new Map<
+      string,
+      { benefits: any[]; planName: string } | null
+    >();
     const getBenefits = async (storeId: string) => {
       if (!benefitsCache.has(storeId)) {
-        benefitsCache.set(storeId, await this.subscriptionBenefits.getActiveBenefits(userId, storeId));
+        benefitsCache.set(
+          storeId,
+          await this.subscriptionBenefits.getActiveBenefits(userId, storeId),
+        );
       }
       return benefitsCache.get(storeId);
     };
@@ -78,21 +106,43 @@ export class CheckoutService {
     const storeSubtotals = new Map<string, number>();
 
     for (const cartItem of selectedItems) {
-      const product = await productModel.findOne({ _id: cartItem.productId, status: 'active', isDelete: false });
-      if (!product) throw new BadRequestException(`Product not found: ${cartItem.productId}`);
+      const product = await productModel.findOne({
+        _id: cartItem.productId,
+        status: 'active',
+        isDelete: false,
+      });
+      if (!product)
+        throw new BadRequestException(
+          `Product not found: ${cartItem.productId}`,
+        );
 
-      const variant = await productVariantModel.findOne({ _id: cartItem.productVariantId, status: 'active', isDelete: false });
-      if (!variant) throw new BadRequestException(`Variant not found: ${cartItem.productVariantId}`);
+      const variant = await productVariantModel.findOne({
+        _id: cartItem.productVariantId,
+        status: 'active',
+        isDelete: false,
+      });
+      if (!variant)
+        throw new BadRequestException(
+          `Variant not found: ${cartItem.productVariantId}`,
+        );
 
       if (product.type === 'physical') {
         hasPhysical = true;
         if (!variant.unlimitedStock && variant.stock < cartItem.quantity) {
-          throw new BadRequestException(`Insufficient stock for: ${product.name}`);
+          throw new BadRequestException(
+            `Insufficient stock for: ${product.name}`,
+          );
         }
       }
 
       rawItems.push({ product, variant, cartItem });
-      storeSubtotals.set(product.storeId, this.round((storeSubtotals.get(product.storeId) ?? 0) + variant.price * cartItem.quantity));
+      storeSubtotals.set(
+        product.storeId,
+        this.round(
+          (storeSubtotals.get(product.storeId) ?? 0) +
+            variant.price * cartItem.quantity,
+        ),
+      );
     }
 
     // Pass 2: resolve subscriber pricing now that each store's raw subtotal is known.
@@ -102,15 +152,24 @@ export class CheckoutService {
       // real active subscription to this product's store.
       const benefitsEntry = await getBenefits(product.storeId);
       let discount = benefitsEntry
-        ? this.subscriptionBenefits.resolveProductDiscount(benefitsEntry.benefits, product as any, variant.price)
+        ? this.subscriptionBenefits.resolveProductDiscount(
+            benefitsEntry.benefits,
+            product,
+            variant.price,
+          )
         : null;
 
-      if (discount?.minOrderValueUSD != null && (storeSubtotals.get(product.storeId) ?? 0) < discount.minOrderValueUSD) {
+      if (
+        discount?.minOrderValueUSD != null &&
+        (storeSubtotals.get(product.storeId) ?? 0) < discount.minOrderValueUSD
+      ) {
         discount = null; // cart doesn't meet this store's minimum order value for the discount
       }
 
       const unitPrice = discount?.subscriberPrice ?? variant.price;
-      const lineDiscount = discount ? this.round(discount.savingsUSD * cartItem.quantity) : 0;
+      const lineDiscount = discount
+        ? this.round(discount.savingsUSD * cartItem.quantity)
+        : 0;
       subscriberSavingsUSD += lineDiscount;
 
       checkoutItems.push({
@@ -141,62 +200,110 @@ export class CheckoutService {
     // Applied on top of subscriber pricing, same as a "sale on top of your
     // membership price" would read to a buyer — never on the raw list price.
     let campaignSavingsUSD = 0;
-    const appliedCampaigns: Array<{ campaignId: string; name: string; storeId: string; discountUSD: number; sponsorType: 'seller' | 'platform' }> = [];
+    const appliedCampaigns: Array<{
+      campaignId: string;
+      name: string;
+      storeId: string;
+      discountUSD: number;
+      sponsorType: 'seller' | 'platform';
+    }> = [];
     const cartStoreIds = [...new Set(checkoutItems.map((i) => i.storeId))];
-    const activeCampaignsByStore = await this.marketingService.getActiveCampaignsForStores(cartStoreIds);
+    const activeCampaignsByStore =
+      await this.marketingService.getActiveCampaignsForStores(cartStoreIds);
 
     for (const storeId of cartStoreIds) {
       const campaigns = activeCampaignsByStore.get(storeId);
       if (!campaigns || campaigns.length === 0) continue;
 
       const storeItems = checkoutItems.filter((i) => i.storeId === storeId);
-      const storeSubtotal = this.round(storeItems.reduce((s, i) => s + i.totalPrice, 0));
+      const storeSubtotal = this.round(
+        storeItems.reduce((s, i) => s + i.totalPrice, 0),
+      );
       const best = pickBestCampaign(campaigns, storeSubtotal);
       if (!best || best.discountAmount <= 0) continue;
 
-      this.distributeCampaignDiscount(storeItems, best.discountAmount, best.campaign.campaignId, best.campaign.sponsorType);
+      this.distributeCampaignDiscount(
+        storeItems,
+        best.discountAmount,
+        best.campaign.campaignId,
+        best.campaign.sponsorType,
+      );
       campaignSavingsUSD = this.round(campaignSavingsUSD + best.discountAmount);
       appliedCampaigns.push({
-        campaignId: best.campaign.campaignId, name: best.campaign.name, storeId,
-        discountUSD: best.discountAmount, sponsorType: best.campaign.sponsorType,
+        campaignId: best.campaign.campaignId,
+        name: best.campaign.name,
+        storeId,
+        discountUSD: best.discountAmount,
+        sponsorType: best.campaign.sponsorType,
       });
     }
 
     let defaultAddressId: string | null = null;
 
     if (hasPhysical) {
-      const defaultAddress = await addressModel.findOne({ userId, isDefault: true, isDelete: false });
-      if (!defaultAddress) throw new BadRequestException('No default address found. Please set a default address first');
+      const defaultAddress = await addressModel.findOne({
+        userId,
+        isDefault: true,
+        isDelete: false,
+      });
+      if (!defaultAddress)
+        throw new BadRequestException(
+          'No default address found. Please set a default address first',
+        );
       defaultAddressId = defaultAddress._id.toString();
     }
 
-    const subtotal = this.round(checkoutItems.reduce((sum, i) => sum + i.totalPrice, 0));
+    const subtotal = this.round(
+      checkoutItems.reduce((sum, i) => sum + i.totalPrice, 0),
+    );
     const taxAmount = 0;
     const totalAmount = this.round(subtotal + taxAmount);
 
     // Checkout-time upsell: for any store in this cart the buyer is NOT
     // subscribed to, but which has an active plan offering a discount,
     // surface what they'd have saved — the highest-intent moment to convert.
-    const subscriptionSavingsHints: Array<{ storeId: string; storeName: string; storeSlug: string; planId: string; planName: string; potentialSavingsUSD: number }> = [];
+    const subscriptionSavingsHints: Array<{
+      storeId: string;
+      storeName: string;
+      storeSlug: string;
+      planId: string;
+      planName: string;
+      potentialSavingsUSD: number;
+    }> = [];
     const storeIdsInCart = [...new Set(checkoutItems.map((i) => i.storeId))];
     for (const sid of storeIdsInCart) {
       if (benefitsCache.get(sid)) continue; // already subscribed here
       const plan = await this.databaseService.repositories.subscriptionPlanModel
-        .findOne({ storeId: sid, status: 'active', isDelete: false, 'benefits.type': 'discount' })
+        .findOne({
+          storeId: sid,
+          status: 'active',
+          isDelete: false,
+          'benefits.type': 'discount',
+        })
         .sort({ monthlyPriceUSD: 1 })
         .lean();
       if (!plan) continue;
       const storeItems = checkoutItems.filter((i) => i.storeId === sid);
       let potentialSavings = 0;
       for (const item of storeItems) {
-        const d = this.subscriptionBenefits.resolveProductDiscount((plan as any).benefits, { _id: item.productId } as any, item.price);
+        const d = this.subscriptionBenefits.resolveProductDiscount(
+          (plan as any).benefits,
+          { _id: item.productId } as any,
+          item.price,
+        );
         if (d) potentialSavings += this.round(d.savingsUSD * item.quantity);
       }
       if (potentialSavings > 0) {
-        const store = await this.databaseService.repositories.storeModel.findById(sid).select('name slug').lean();
+        const store = await this.databaseService.repositories.storeModel
+          .findById(sid)
+          .select('name slug')
+          .lean();
         subscriptionSavingsHints.push({
-          storeId: sid, storeName: (store as any)?.name ?? 'this store', storeSlug: (store as any)?.slug ?? '',
-          planId: (plan as any)._id.toString(), planName: (plan as any).name,
+          storeId: sid,
+          storeName: (store as any)?.name ?? 'this store',
+          storeSlug: (store as any)?.slug ?? '',
+          planId: (plan as any)._id.toString(),
+          planName: (plan as any).name,
           potentialSavingsUSD: this.round(potentialSavings),
         });
       }
@@ -206,8 +313,16 @@ export class CheckoutService {
     // Referer/UTM headers, so this can only ever be as good as what the app
     // itself reports (e.g. "opened via a shared product link"). Unknown or
     // invalid values fall back to 'other' rather than being rejected.
-    const validAttributionSources = ['marketplace_search', 'direct_link', 'social_media', 'email', 'other'];
-    const attributionSource = validAttributionSources.includes(body.attributionSource)
+    const validAttributionSources = [
+      'marketplace_search',
+      'direct_link',
+      'social_media',
+      'email',
+      'other',
+    ];
+    const attributionSource = validAttributionSources.includes(
+      body.attributionSource,
+    )
       ? body.attributionSource
       : 'other';
 
@@ -238,9 +353,14 @@ export class CheckoutService {
       message: 'Checkout created successfully',
       data: {
         checkout,
-        allowedPaymentMethods: hasDigital ? ['stripe'] : ['stripe', 'cash_on_delivery'],
+        allowedPaymentMethods: hasDigital
+          ? ['stripe']
+          : ['stripe', 'cash_on_delivery'],
         summary: {
-          subtotal, shippingFee: 0, taxAmount, totalAmount,
+          subtotal,
+          shippingFee: 0,
+          taxAmount,
+          totalAmount,
           subscriberSavingsUSD: this.round(subscriberSavingsUSD),
           campaignDiscountUSD: campaignSavingsUSD,
         },
@@ -254,20 +374,33 @@ export class CheckoutService {
     const { checkoutId, shippingZoneId } = body;
 
     if (!checkoutId) throw new BadRequestException('checkoutId is required');
-    if (!shippingZoneId) throw new BadRequestException('shippingZoneId is required');
+    if (!shippingZoneId)
+      throw new BadRequestException('shippingZoneId is required');
 
-    const { checkoutModel, shippingZoneModel } = this.databaseService.repositories;
+    const { checkoutModel, shippingZoneModel } =
+      this.databaseService.repositories;
 
-    const checkout = await checkoutModel.findOne({ _id: checkoutId, userId, isDelete: false });
+    const checkout = await checkoutModel.findOne({
+      _id: checkoutId,
+      userId,
+      isDelete: false,
+    });
     if (!checkout) throw new NotFoundException('Checkout not found');
-    if (checkout.status === 'completed') throw new BadRequestException('Checkout already completed');
-    if (checkout.status === 'expired') throw new BadRequestException('Checkout has expired');
+    if (checkout.status === 'completed')
+      throw new BadRequestException('Checkout already completed');
+    if (checkout.status === 'expired')
+      throw new BadRequestException('Checkout has expired');
     if (checkout.expiredAt && checkout.expiredAt < new Date()) {
-      await checkoutModel.findByIdAndUpdate(checkout._id, { status: 'expired' });
+      await checkoutModel.findByIdAndUpdate(checkout._id, {
+        status: 'expired',
+      });
       throw new BadRequestException('Checkout has expired');
     }
 
-    const shippingZone = await shippingZoneModel.findOne({ _id: shippingZoneId, isDelete: false });
+    const shippingZone = await shippingZoneModel.findOne({
+      _id: shippingZoneId,
+      isDelete: false,
+    });
     if (!shippingZone) throw new NotFoundException('Shipping zone not found');
 
     let shippingFee = shippingZone.shippingPrice || 0;
@@ -276,13 +409,27 @@ export class CheckoutService {
     // checkout belongs to a single store (the shipping fee itself is a flat,
     // whole-checkout amount, not per-seller, so a mixed-store cart can't
     // unambiguously attribute the waiver to one store's membership).
-    const storeIdsInCheckout = [...new Set((checkout.items as any[]).map((i) => i.storeId))];
+    const storeIdsInCheckout = [
+      ...new Set((checkout.items as any[]).map((i) => i.storeId)),
+    ];
     if (storeIdsInCheckout.length === 1) {
-      const benefitsEntry = await this.subscriptionBenefits.getActiveBenefits(userId, storeIdsInCheckout[0]);
+      const benefitsEntry = await this.subscriptionBenefits.getActiveBenefits(
+        userId,
+        storeIdsInCheckout[0],
+      );
       if (benefitsEntry) {
-        const shippingBenefit = this.subscriptionBenefits.resolveShippingBenefit(benefitsEntry.benefits);
-        if (shippingBenefit && (shippingBenefit.minOrderValueForShippingUSD == null || checkout.subtotal >= shippingBenefit.minOrderValueForShippingUSD)) {
-          shippingFee = this.round(shippingFee * (1 - shippingBenefit.discountPercent / 100));
+        const shippingBenefit =
+          this.subscriptionBenefits.resolveShippingBenefit(
+            benefitsEntry.benefits,
+          );
+        if (
+          shippingBenefit &&
+          (shippingBenefit.minOrderValueForShippingUSD == null ||
+            checkout.subtotal >= shippingBenefit.minOrderValueForShippingUSD)
+        ) {
+          shippingFee = this.round(
+            shippingFee * (1 - shippingBenefit.discountPercent / 100),
+          );
         }
       }
     }
@@ -309,30 +456,25 @@ export class CheckoutService {
   }
 
   async getShippingZones() {
+    try {
+      const shippingZoneModel =
+        this.databaseService.repositories.shippingZoneModel;
 
-  try {
+      // get all shipping zones
+      const shippingZones = await shippingZoneModel
+        .find({
+          isDelete: false,
+        })
+        .sort({ createdAt: -1 });
 
-    const shippingZoneModel =
-      this.databaseService.repositories.shippingZoneModel;
-
-    // get all shipping zones
-    const shippingZones =
-      await shippingZoneModel.find({
-        isDelete: false
-      })
-      .sort({ createdAt: -1 });
-
-    return {
-      message: 'Shipping zones fetched successfully',
-      data: shippingZones
-    };
-
-  } catch (error) {
-
-    throw error;
-
+      return {
+        message: 'Shipping zones fetched successfully',
+        data: shippingZones,
+      };
+    } catch (error) {
+      throw error;
+    }
   }
-}
 
   /** Validates a seller-created coupon against this checkout and, if valid,
    *  distributes its discount across only the items belonging to the
@@ -342,17 +484,27 @@ export class CheckoutService {
   async applyCoupon(userId: string, body: any) {
     const { checkoutId, code } = body;
     if (!checkoutId) throw new BadRequestException('checkoutId is required');
-    if (!code || !String(code).trim()) throw new BadRequestException('Coupon code is required');
+    if (!code || !String(code).trim())
+      throw new BadRequestException('Coupon code is required');
 
     const { checkoutModel, couponModel } = this.databaseService.repositories;
 
-    const checkout = await checkoutModel.findOne({ _id: checkoutId, userId, isDelete: false });
+    const checkout = await checkoutModel.findOne({
+      _id: checkoutId,
+      userId,
+      isDelete: false,
+    });
     if (!checkout) throw new NotFoundException('Checkout not found');
-    if (checkout.status === 'completed') throw new BadRequestException('Checkout already completed');
-    if (checkout.status === 'cancelled') throw new BadRequestException('Checkout is cancelled');
-    if (checkout.status === 'expired') throw new BadRequestException('Checkout has expired');
+    if (checkout.status === 'completed')
+      throw new BadRequestException('Checkout already completed');
+    if (checkout.status === 'cancelled')
+      throw new BadRequestException('Checkout is cancelled');
+    if (checkout.status === 'expired')
+      throw new BadRequestException('Checkout has expired');
     if (checkout.expiredAt && checkout.expiredAt < new Date()) {
-      await checkoutModel.findByIdAndUpdate(checkout._id, { status: 'expired' });
+      await checkoutModel.findByIdAndUpdate(checkout._id, {
+        status: 'expired',
+      });
       throw new BadRequestException('Checkout has expired');
     }
 
@@ -366,8 +518,12 @@ export class CheckoutService {
       isActive: true,
       isDelete: false,
     });
-    if (!coupon) throw new BadRequestException('This coupon code is invalid or not applicable to items in your cart');
-    if (coupon.expiresAt && coupon.expiresAt < new Date()) throw new BadRequestException('This coupon has expired');
+    if (!coupon)
+      throw new BadRequestException(
+        'This coupon code is invalid or not applicable to items in your cart',
+      );
+    if (coupon.expiresAt && coupon.expiresAt < new Date())
+      throw new BadRequestException('This coupon has expired');
     if (coupon.usageLimit != null && coupon.usageCount >= coupon.usageLimit) {
       throw new BadRequestException('This coupon has reached its usage limit');
     }
@@ -377,9 +533,14 @@ export class CheckoutService {
     this.revertCouponFromItems(items);
 
     const storeItems = items.filter((i) => i.storeId === coupon.storeId);
-    const storeSubtotal = this.round(storeItems.reduce((s, i) => s + i.totalPrice, 0));
+    const storeSubtotal = this.round(
+      storeItems.reduce((s, i) => s + i.totalPrice, 0),
+    );
 
-    if (coupon.minOrderAmount != null && storeSubtotal < coupon.minOrderAmount) {
+    if (
+      coupon.minOrderAmount != null &&
+      storeSubtotal < coupon.minOrderAmount
+    ) {
       throw new BadRequestException(
         `This coupon requires a minimum order of $${coupon.minOrderAmount} from this store`,
       );
@@ -391,15 +552,22 @@ export class CheckoutService {
     // twice down toward/below $0. minOrderAmount above still checks the
     // buyer's full spend at the store, but the coupon itself only ever comes
     // out of the non-sale portion.
-    const eligibleItems = storeItems.filter((i) => !(i.campaignDiscountUSD > 0));
+    const eligibleItems = storeItems.filter(
+      (i) => !(i.campaignDiscountUSD > 0),
+    );
     if (eligibleItems.length === 0) {
-      throw new BadRequestException('This coupon can\'t be combined with the active sale on these items.');
+      throw new BadRequestException(
+        "This coupon can't be combined with the active sale on these items.",
+      );
     }
-    const eligibleSubtotal = this.round(eligibleItems.reduce((s, i) => s + i.totalPrice, 0));
+    const eligibleSubtotal = this.round(
+      eligibleItems.reduce((s, i) => s + i.totalPrice, 0),
+    );
 
-    const totalDiscount = coupon.discountType === 'percentage'
-      ? this.round(eligibleSubtotal * (coupon.discountValue / 100))
-      : Math.min(coupon.discountValue, eligibleSubtotal);
+    const totalDiscount =
+      coupon.discountType === 'percentage'
+        ? this.round(eligibleSubtotal * (coupon.discountValue / 100))
+        : Math.min(coupon.discountValue, eligibleSubtotal);
 
     this.distributeCouponDiscount(eligibleItems, totalDiscount);
 
@@ -435,9 +603,14 @@ export class CheckoutService {
 
     const { checkoutModel } = this.databaseService.repositories;
 
-    const checkout = await checkoutModel.findOne({ _id: checkoutId, userId, isDelete: false });
+    const checkout = await checkoutModel.findOne({
+      _id: checkoutId,
+      userId,
+      isDelete: false,
+    });
     if (!checkout) throw new NotFoundException('Checkout not found');
-    if (checkout.status === 'completed') throw new BadRequestException('Checkout already completed');
+    if (checkout.status === 'completed')
+      throw new BadRequestException('Checkout already completed');
 
     const items = checkout.items as any[];
     this.revertCouponFromItems(items);
@@ -486,7 +659,11 @@ export class CheckoutService {
    *  so per-item shares always sum to `totalDiscount` exactly. Shared math
    *  behind both coupon and campaign discount application — only the fields
    *  each writes differ, not the allocation itself. */
-  private proportionallyDistribute(items: any[], totalDiscount: number, applyToItem: (item: any, share: number) => void) {
+  private proportionallyDistribute(
+    items: any[],
+    totalDiscount: number,
+    applyToItem: (item: any, share: number) => void,
+  ) {
     if (totalDiscount <= 0 || items.length === 0) return;
     const combinedSubtotal = items.reduce((s, i) => s + i.totalPrice, 0);
     if (combinedSubtotal <= 0) return;
@@ -511,7 +688,10 @@ export class CheckoutService {
       item.totalPriceBeforeCoupon = item.totalPrice;
       item.couponDiscountUSD = share;
       item.totalPrice = this.round(item.totalPrice - share);
-      item.price = item.quantity > 0 ? this.round(item.totalPrice / item.quantity) : item.totalPrice;
+      item.price =
+        item.quantity > 0
+          ? this.round(item.totalPrice / item.quantity)
+          : item.totalPrice;
     });
   }
 
@@ -522,14 +702,22 @@ export class CheckoutService {
    *  (re)created from the cart. `originalPrice` is set only if a subscriber
    *  discount hasn't already set it, so it always reflects the true pre-any-
    *  discount price for receipt display. */
-  private distributeCampaignDiscount(storeItems: any[], totalDiscount: number, campaignId: string, sponsorType: 'seller' | 'platform') {
+  private distributeCampaignDiscount(
+    storeItems: any[],
+    totalDiscount: number,
+    campaignId: string,
+    sponsorType: 'seller' | 'platform',
+  ) {
     this.proportionallyDistribute(storeItems, totalDiscount, (item, share) => {
       if (item.originalPrice == null) item.originalPrice = item.price;
       item.campaignId = campaignId;
       item.campaignDiscountUSD = share;
       item.campaignSponsorType = sponsorType;
       item.totalPrice = this.round(item.totalPrice - share);
-      item.price = item.quantity > 0 ? this.round(item.totalPrice / item.quantity) : item.totalPrice;
+      item.price =
+        item.quantity > 0
+          ? this.round(item.totalPrice / item.quantity)
+          : item.totalPrice;
     });
   }
 }

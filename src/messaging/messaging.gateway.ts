@@ -57,8 +57,8 @@ export class MessagingGateway implements OnGatewayConnection, OnGatewayDisconnec
 
       const payload = this.jwtService.verify(token, { secret: process.env.JWT_SECRET });
       const userId = payload.sub;
-      (client.data as any).userId = userId;
-      (client.data as any).joinedConversations = new Set<string>();
+      (client.data).userId = userId;
+      (client.data).joinedConversations = new Set<string>();
 
       client.join(`user:${userId}`);
 
@@ -73,7 +73,7 @@ export class MessagingGateway implements OnGatewayConnection, OnGatewayDisconnec
   }
 
   handleDisconnect(client: Socket) {
-    const userId = (client.data as any)?.userId;
+    const userId = (client.data)?.userId;
     if (!userId) return;
 
     const count = Math.max(0, (this.onlineCounts.get(userId) || 1) - 1);
@@ -84,7 +84,7 @@ export class MessagingGateway implements OnGatewayConnection, OnGatewayDisconnec
       this.onlineCounts.set(userId, count);
     }
 
-    const joined: Set<string> = (client.data as any)?.joinedConversations || new Set();
+    const joined: Set<string> = (client.data)?.joinedConversations || new Set();
     joined.forEach((conversationId) => {
       client.to(`conversation:${conversationId}`).emit('typing', { conversationId, userId, isTyping: false });
     });
@@ -98,7 +98,7 @@ export class MessagingGateway implements OnGatewayConnection, OnGatewayDisconnec
 
   @SubscribeMessage('join-conversation')
   async handleJoinConversation(@ConnectedSocket() client: Socket, @MessageBody() conversationId: string) {
-    const userId = (client.data as any).userId;
+    const userId = (client.data).userId;
     if (!userId || !conversationId) return;
 
     const conv = await this.databaseService.repositories.conversationModel.findById(conversationId).lean();
@@ -108,7 +108,7 @@ export class MessagingGateway implements OnGatewayConnection, OnGatewayDisconnec
     }
 
     client.join(`conversation:${conversationId}`);
-    (client.data as any).joinedConversations.add(conversationId);
+    (client.data).joinedConversations.add(conversationId);
 
     const otherUserId = conv.buyerId === userId ? conv.sellerId : conv.buyerId;
     client.emit('messaging:joined', { conversationId, otherUserId, otherOnline: this.isOnline(otherUserId) });
@@ -117,7 +117,7 @@ export class MessagingGateway implements OnGatewayConnection, OnGatewayDisconnec
   @SubscribeMessage('leave-conversation')
   handleLeaveConversation(@ConnectedSocket() client: Socket, @MessageBody() conversationId: string) {
     client.leave(`conversation:${conversationId}`);
-    (client.data as any)?.joinedConversations?.delete(conversationId);
+    (client.data)?.joinedConversations?.delete(conversationId);
   }
 
   @SubscribeMessage('typing')
@@ -125,7 +125,7 @@ export class MessagingGateway implements OnGatewayConnection, OnGatewayDisconnec
     @ConnectedSocket() client: Socket,
     @MessageBody() body: { conversationId: string; isTyping: boolean },
   ) {
-    const userId = (client.data as any).userId;
+    const userId = (client.data).userId;
     if (!userId || !body?.conversationId) return;
     client.to(`conversation:${body.conversationId}`).emit('typing', {
       conversationId: body.conversationId,

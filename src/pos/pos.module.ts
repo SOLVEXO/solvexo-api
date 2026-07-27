@@ -1,4 +1,3 @@
-/* eslint-disable prettier/prettier */
 import { Module } from '@nestjs/common';
 import { PosController } from './pos.controller';
 import { PosService } from './pos.service';

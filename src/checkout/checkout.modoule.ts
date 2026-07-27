@@ -21,7 +21,7 @@ import { RedisModule } from 'src/redis/redis.module';
 import { MarketingModule } from 'src/marketing/marketing.module';
 
 @Module({
-   imports: [AuthModule, RedisModule, MarketingModule],
+  imports: [AuthModule, RedisModule, MarketingModule],
   controllers: [CheckoutController],
   providers: [CheckoutService],
   exports: [CheckoutService],

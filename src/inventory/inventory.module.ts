@@ -5,7 +5,6 @@ import { AuthModule } from '../auth/auth.module';
 import { DatabaseModule } from '../database/database.module';
 import { RedisModule } from '../redis/redis.module';
 
-
 @Module({
   imports: [AuthModule, DatabaseModule, RedisModule],
   controllers: [InventoryController],

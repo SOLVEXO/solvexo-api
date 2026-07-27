@@ -18,7 +18,11 @@ export class OrderItem {
   // for fulfillment purposes, but is kept here too so order history/labels can
   // still say "Educational" instead of a generic "Digital". Absent on orders
   // placed before this field existed — display code must fall back to `type`.
-  @Prop({ type: String, enum: ['physical', 'digital', 'educational'], default: null })
+  @Prop({
+    type: String,
+    enum: ['physical', 'digital', 'educational'],
+    default: null,
+  })
   productType: string | null;
 
   // snapshot fields
@@ -106,7 +110,11 @@ export class OrderItem {
   downloadCount!: number;
 
   // return fields
-  @Prop({ type: String, enum: ['none', 'requested', 'approved', 'rejected'], default: 'none' })
+  @Prop({
+    type: String,
+    enum: ['none', 'requested', 'approved', 'rejected'],
+    default: 'none',
+  })
   returnStatus!: string;
 
   @Prop({ type: String, default: null })
@@ -144,7 +152,11 @@ export class SellerOrder {
   @Prop({ type: String, required: true })
   storeId: string;
 
-  @Prop({ type: String, enum: ['physical', 'digital', 'mixed'], required: true })
+  @Prop({
+    type: String,
+    enum: ['physical', 'digital', 'mixed'],
+    required: true,
+  })
   fulfillmentType: string;
 
   @Prop({ type: [OrderItemSchema], required: true })
@@ -190,7 +202,18 @@ export class SellerOrder {
   @Prop({ type: String, default: null })
   cancelReason: string | null;
 
-  @Prop({ type: String, enum: ['none', 'partial_requested', 'requested', 'partial_approved', 'approved', 'rejected'], default: 'none' })
+  @Prop({
+    type: String,
+    enum: [
+      'none',
+      'partial_requested',
+      'requested',
+      'partial_approved',
+      'approved',
+      'rejected',
+    ],
+    default: 'none',
+  })
   returnStatus!: string;
 }
 
@@ -319,7 +342,13 @@ export class Order {
   // backfilled — analytics must treat missing/'other' as "unknown", not zero).
   @Prop({
     type: String,
-    enum: ['marketplace_search', 'direct_link', 'social_media', 'email', 'other'],
+    enum: [
+      'marketplace_search',
+      'direct_link',
+      'social_media',
+      'email',
+      'other',
+    ],
     default: 'other',
   })
   attributionSource: string;

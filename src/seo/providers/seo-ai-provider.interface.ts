@@ -1,4 +1,3 @@
-/* eslint-disable prettier/prettier */
 export interface SeoAiSuggestionInput {
   entityType: 'product' | 'category' | 'store';
   name: string;

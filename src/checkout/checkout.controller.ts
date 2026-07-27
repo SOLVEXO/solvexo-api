@@ -52,7 +52,6 @@
 //     return this.checkoutService.createCheckout(userId, body);
 //   }
 
-
 //   @UseGuards(JwtAuthGuard, RolesGuard)
 // @Post('addShippingInCheckout')
 //   async addShippingInCheckout(
@@ -63,7 +62,6 @@
 
 //     return this.checkoutService.addShippingInCheckout(userId, body);
 //   }
-
 
 //   @UseGuards(JwtAuthGuard, RolesGuard)
 // @Post('changeCheckoutAddress')
@@ -87,10 +85,18 @@
 //   return this.checkoutService.getCheckout(userId, checkoutId);
 // }
 
-
 // }
 
-import { Controller, Post, Delete, Param, Req, UseGuards, Get, Body } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Delete,
+  Param,
+  Req,
+  UseGuards,
+  Get,
+  Body,
+} from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -111,26 +117,24 @@ export class CheckoutController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('user')
   @Delete('delete-checkout/:checkoutId')
-  async deleteCheckout(@Req() req: any, @Param('checkoutId') checkoutId: string) {
+  async deleteCheckout(
+    @Req() req: any,
+    @Param('checkoutId') checkoutId: string,
+  ) {
     const { userId } = req.user;
     return this.checkoutService.deleteCheckout(userId, checkoutId);
   }
 
   @Get('getShippingZones')
-async getShippingZones() {
-
-  return this.checkoutService.getShippingZones();
-
-}
+  async getShippingZones() {
+    return this.checkoutService.getShippingZones();
+  }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('user')
   @Post('addShippingInCheckout')
-  async addShippingInCheckout(
-    @Req() req: any,
-    @Body() body: any
-  ) {
-  const { userId } = req.user;
+  async addShippingInCheckout(@Req() req: any, @Body() body: any) {
+    const { userId } = req.user;
 
     return this.checkoutService.addShippingInCheckout(userId, body);
   }
@@ -150,5 +154,4 @@ async getShippingZones() {
     const { userId } = req.user;
     return this.checkoutService.removeCoupon(userId, { checkoutId });
   }
-
 }

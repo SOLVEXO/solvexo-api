@@ -606,7 +606,7 @@ export class FinanceService {
       pending: { count: 0, amount: 0 }, processing: { count: 0, amount: 0 },
       completed: { count: 0, amount: 0 }, failed: { count: 0, amount: 0 },
     };
-    for (const row of statusRows as any[]) {
+    for (const row of statusRows) {
       if (statusCounts[row._id]) statusCounts[row._id] = { count: row.count, amount: this.round(row.amount) };
     }
 

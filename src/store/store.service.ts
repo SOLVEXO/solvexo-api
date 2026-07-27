@@ -251,8 +251,13 @@ export class StoreService {
   }
 
   // ✅ ab storeId se update hota hai (multiple stores ke liye zaroori)
+  // `status` is deliberately never read from `body` here — it's a lifecycle
+  // field (active/inactive/suspended) that only admin actions or future
+  // recovery flows should be able to change. Accepting it from the request
+  // body would let a seller un-suspend their own store (see
+  // usersService.deleteSellerAccount, which suspends stores on delete).
   async updateStore(sellerId: string, storeId: string, body: any) {
-    const { name, logo, description, sellerType, productTypes, status } = body;
+    const { name, logo, coverImage, description, sellerType, productTypes } = body;
 
     if (!storeId) throw new BadRequestException('storeId is required');
 
@@ -296,6 +301,7 @@ export class StoreService {
     }
 
     if (logo !== undefined) updateData.logo = logo;
+    if (coverImage !== undefined) updateData.coverImage = coverImage;
     if (description !== undefined) updateData.description = description;
     if (sellerType !== undefined) updateData.sellerType = sellerType;
 
@@ -305,7 +311,6 @@ export class StoreService {
       updateData.enabledTools = resolveTools(productTypes);
     }
 
-    if (status !== undefined) updateData.status = status;
     if (body.categoryId !== undefined) {
       if (body.categoryId) await this.assertValidRootCategory(body.categoryId);
       updateData.categoryId = body.categoryId;

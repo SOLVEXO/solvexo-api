@@ -800,7 +800,7 @@ export class PosService {
     let partialTotal = 0;
     const itemUpdates: Array<{ variantId: string; qtyToRestore: number; saleItemId: string }> = [];
 
-    for (const refundItem of dto!.items!) {
+    for (const refundItem of dto.items!) {
       const saleItem = (sale as any).items.find((i: any) => i._id.toString() === refundItem.saleItemId);
       if (!saleItem) throw new BadRequestException(`Sale item not found: ${refundItem.saleItemId}`);
 
@@ -836,7 +836,7 @@ export class PosService {
     const sessionUpdate: any = { $inc: { totalRefunds: partialTotal } };
     await this.r.registerSessionModel.findByIdAndUpdate((sale as any).sessionId, sessionUpdate);
 
-    this.writeAuditLog({ storeId: (sale as any).storeId, employeeId: dto?.actingEmployeeId ?? null, action: 'sale_refunded_partial', targetId: saleId, targetType: 'sale', metadata: { partialTotal, items: dto!.items } }).catch(() => {});
+    this.writeAuditLog({ storeId: (sale as any).storeId, employeeId: dto?.actingEmployeeId ?? null, action: 'sale_refunded_partial', targetId: saleId, targetType: 'sale', metadata: { partialTotal, items: dto.items } }).catch(() => {});
     return { success: true, message: `Partial refund of ${partialTotal.toFixed(2)} processed`, data: { refundedAmount: partialTotal, newStatus } };
   }
 

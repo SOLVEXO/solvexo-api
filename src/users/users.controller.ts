@@ -1,5 +1,18 @@
-import { Controller, Get, Put, Delete, Body, Req, UseGuards } from '@nestjs/common';
-import { ApiTags, ApiBearerAuth, ApiOperation, ApiResponse } from '@nestjs/swagger';
+import {
+  Controller,
+  Get,
+  Put,
+  Delete,
+  Body,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
+import {
+  ApiTags,
+  ApiBearerAuth,
+  ApiOperation,
+  ApiResponse,
+} from '@nestjs/swagger';
 import { UsersService } from './users.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { UpdateProfileDto } from './dto/update-profile.dto';
@@ -31,13 +44,17 @@ export class UsersController {
   @ApiOperation({ summary: 'Delete user account (soft delete)' })
   @ApiResponse({ status: 200, description: 'Account deactivated successfully' })
   deleteAccount(@Req() req: any) {
-    return this.usersService.deleteAccount(req.user.userId);
+    return this.usersService.deleteAccount(req.user.userId, req.user.role);
   }
 
   @Put('change-password')
   @ApiOperation({ summary: 'Change user password' })
   @ApiResponse({ status: 200, description: 'Password changed successfully' })
   changePassword(@Req() req: any, @Body() dto: ChangePasswordDto) {
-    return this.usersService.changePassword(req.user.userId, req.user.role, dto);
+    return this.usersService.changePassword(
+      req.user.userId,
+      req.user.role,
+      dto,
+    );
   }
 }

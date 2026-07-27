@@ -1,5 +1,3 @@
-/* eslint-disable prettier/prettier */
-
 /**
  * AI Studio provider abstraction layer.
  *

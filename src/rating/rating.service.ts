@@ -1,4 +1,9 @@
-import { Injectable, BadRequestException, NotFoundException, ForbiddenException } from '@nestjs/common';
+import {
+  Injectable,
+  BadRequestException,
+  NotFoundException,
+  ForbiddenException,
+} from '@nestjs/common';
 import { DatabaseService } from 'src/database/databaseservice';
 import { AddReviewDto } from './dto/add-review.dto';
 import { EditReviewDto } from './dto/edit-review.dto';
@@ -21,7 +26,11 @@ export class RatingService {
   // ── HELPERS ───────────────────────────────────────────────────────────────
 
   // Admins can moderate any store's reviews; sellers only their own.
-  private async verifyStoreAccess(storeId: string, userId: string, role: string) {
+  private async verifyStoreAccess(
+    storeId: string,
+    userId: string,
+    role: string,
+  ) {
     const { storeModel } = this.r;
     const filter: any = { _id: storeId, isDelete: false };
     if (role !== 'admin') filter.sellerId = userId;
@@ -33,7 +42,10 @@ export class RatingService {
 
   private async findReviewOrThrow(reviewId: string) {
     const { ratingModel } = this.r;
-    const review = await ratingModel.findOne({ _id: reviewId, isDelete: false });
+    const review = await ratingModel.findOne({
+      _id: reviewId,
+      isDelete: false,
+    });
     if (!review) throw new NotFoundException('Review not found');
     return review;
   }
@@ -52,7 +64,11 @@ export class RatingService {
     const count = agg[0]?.count ?? 0;
     const average = count > 0 ? parseFloat((sum / count).toFixed(2)) : 0;
 
-    await productModel.findByIdAndUpdate(productId, { ratingSum: sum, averageRating: average, totalRatings: count });
+    await productModel.findByIdAndUpdate(productId, {
+      ratingSum: sum,
+      averageRating: average,
+      totalRatings: count,
+    });
   }
 
   // Same recompute-from-scratch approach as recalcProductRating, but scoped
@@ -72,7 +88,10 @@ export class RatingService {
     const count = agg[0]?.count ?? 0;
     const average = count > 0 ? parseFloat((sum / count).toFixed(2)) : 0;
 
-    await storeModel.findByIdAndUpdate(storeId, { averageRating: average, reviewCount: count });
+    await storeModel.findByIdAndUpdate(storeId, {
+      averageRating: average,
+      reviewCount: count,
+    });
   }
 
   // A review is a "Verified Purchase" if the reviewer has a non-deleted order
@@ -81,7 +100,12 @@ export class RatingService {
   // Checked in application code rather than a single Mongo query — sellerOrders
   // and items are both arrays, so a flat multi-field filter could match
   // productId on one item and status on a different item of the same order.
-  private async checkVerifiedPurchase(userId: string, productId: string, productVariantId: string | null, orderId?: string | null) {
+  private async checkVerifiedPurchase(
+    userId: string,
+    productId: string,
+    productVariantId: string | null,
+    orderId?: string | null,
+  ) {
     const { orderModel } = this.r;
 
     const filter: any = { userId, isDelete: false };
@@ -108,29 +132,62 @@ export class RatingService {
   // ── BUYER: WRITE ──────────────────────────────────────────────────────────
 
   async addReview(userId: string, dto: AddReviewDto) {
-    const { productId, productVariantId, orderId, rating, comment, isAnonymous, media } = dto;
+    const {
+      productId,
+      productVariantId,
+      orderId,
+      rating,
+      comment,
+      isAnonymous,
+      media,
+    } = dto;
 
     const { productModel, ratingModel } = this.r;
 
-    const product = await productModel.findOne({ _id: productId, isDelete: false });
+    const product = await productModel.findOne({
+      _id: productId,
+      isDelete: false,
+    });
     if (!product) throw new BadRequestException('Product not found');
 
-    const existing = await ratingModel.findOne({ userId, productId, isDelete: false });
+    const existing = await ratingModel.findOne({
+      userId,
+      productId,
+      isDelete: false,
+    });
 
     if (existing) {
-      if (rating !== undefined || media !== undefined || isAnonymous !== undefined) {
-        throw new BadRequestException('Rating, media and isAnonymous can only be set once — use edit instead');
+      if (
+        rating !== undefined ||
+        media !== undefined ||
+        isAnonymous !== undefined
+      ) {
+        throw new BadRequestException(
+          'Rating, media and isAnonymous can only be set once — use edit instead',
+        );
       }
-      if (!comment) throw new BadRequestException('Only comment can be added to an existing review');
+      if (!comment)
+        throw new BadRequestException(
+          'Only comment can be added to an existing review',
+        );
 
       await ratingModel.findByIdAndUpdate(existing._id, {
         $push: { comments: { text: comment, createdAt: new Date() } },
       });
 
-      return { success: true, message: 'Comment added', data: await ratingModel.findById(existing._id).lean() };
+      return {
+        success: true,
+        message: 'Comment added',
+        data: await ratingModel.findById(existing._id).lean(),
+      };
     }
 
-    const isVerifiedPurchase = await this.checkVerifiedPurchase(userId, productId, productVariantId ?? null, orderId);
+    const isVerifiedPurchase = await this.checkVerifiedPurchase(
+      userId,
+      productId,
+      productVariantId ?? null,
+      orderId,
+    );
 
     const reviewData: any = {
       userId,
@@ -157,7 +214,9 @@ export class RatingService {
     }
 
     if (isVerifiedPurchase && rating && product.storeId) {
-      this.loyaltyService.awardReviewPoints(product.storeId, userId).catch(() => {});
+      this.loyaltyService
+        .awardReviewPoints(product.storeId, userId)
+        .catch(() => {});
     }
 
     return { success: true, message: 'Review added', data: review };
@@ -167,7 +226,8 @@ export class RatingService {
     const { ratingModel } = this.r;
 
     const review = await this.findReviewOrThrow(reviewId);
-    if (review.userId !== userId) throw new ForbiddenException('You can only edit your own review');
+    if (review.userId !== userId)
+      throw new ForbiddenException('You can only edit your own review');
 
     const update: any = {};
     if (dto.rating !== undefined) update.rating = dto.rating;
@@ -182,7 +242,8 @@ export class RatingService {
       }
     }
 
-    if (Object.keys(update).length === 0) throw new BadRequestException('Nothing to update');
+    if (Object.keys(update).length === 0)
+      throw new BadRequestException('Nothing to update');
 
     await ratingModel.findByIdAndUpdate(reviewId, { $set: update });
 
@@ -191,14 +252,19 @@ export class RatingService {
       await this.recalcStoreRating(review.storeId);
     }
 
-    return { success: true, message: 'Review updated', data: await ratingModel.findById(reviewId).lean() };
+    return {
+      success: true,
+      message: 'Review updated',
+      data: await ratingModel.findById(reviewId).lean(),
+    };
   }
 
   async deleteReview(userId: string, reviewId: string) {
     const { ratingModel } = this.r;
 
     const review = await this.findReviewOrThrow(reviewId);
-    if (review.userId !== userId) throw new ForbiddenException('You can only delete your own review');
+    if (review.userId !== userId)
+      throw new ForbiddenException('You can only delete your own review');
 
     await ratingModel.findByIdAndUpdate(reviewId, { isDelete: true });
 
@@ -219,14 +285,28 @@ export class RatingService {
 
     const filter = { userId, isDelete: false };
     const total = await ratingModel.countDocuments(filter);
-    const reviews = await ratingModel.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean();
+    const reviews = await ratingModel
+      .find(filter)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean();
 
     const list = await Promise.all(
       reviews.map(async (r: any) => {
-        const product = await productModel.findById(r.productId).select('name images').lean();
+        const product = await productModel
+          .findById(r.productId)
+          .select('name images')
+          .lean();
         return {
           reviewId: r._id,
-          product: product ? { productId: product._id, name: (product as any).name, image: (product as any).images?.[0] ?? null } : null,
+          product: product
+            ? {
+                productId: product._id,
+                name: (product as any).name,
+                image: (product as any).images?.[0] ?? null,
+              }
+            : null,
           rating: r.rating,
           comments: r.comments,
           media: r.media,
@@ -239,13 +319,25 @@ export class RatingService {
 
     return {
       success: true,
-      data: { pagination: { page, limit, total, totalPages: Math.ceil(total / limit) }, reviews: list },
+      data: {
+        pagination: {
+          page,
+          limit,
+          total,
+          totalPages: Math.ceil(total / limit),
+        },
+        reviews: list,
+      },
     };
   }
 
   // ── PUBLIC / BUYER-FACING: READ ───────────────────────────────────────────
 
-  async getProductReviews(productId: string, query: any, viewerId: string | null = null) {
+  async getProductReviews(
+    productId: string,
+    query: any,
+    viewerId: string | null = null,
+  ) {
     const { ratingModel, userModel } = this.r;
 
     const page = parseInt(query.page) || 1;
@@ -267,27 +359,55 @@ export class RatingService {
     const sort = sortMap[query.sort] ?? sortMap.newest;
 
     const total = await ratingModel.countDocuments(filter);
-    let reviews = await ratingModel.find(filter).sort(sort).skip(skip).limit(limit).lean();
+    let reviews = await ratingModel
+      .find(filter)
+      .sort(sort)
+      .skip(skip)
+      .limit(limit)
+      .lean();
     if (query.sort === 'most_helpful') {
-      reviews = reviews.sort((a: any, b: any) => (b.helpfulUserIds?.length ?? 0) - (a.helpfulUserIds?.length ?? 0));
+      reviews = reviews.sort(
+        (a: any, b: any) =>
+          (b.helpfulUserIds?.length ?? 0) - (a.helpfulUserIds?.length ?? 0),
+      );
     }
 
-    const allForStats = await ratingModel.find({ productId, isDelete: false, rating: { $ne: null } }).select('rating').lean();
-    const ratingBreakdown: Record<string, number> = { '5': 0, '4': 0, '3': 0, '2': 0, '1': 0 };
+    const allForStats = await ratingModel
+      .find({ productId, isDelete: false, rating: { $ne: null } })
+      .select('rating')
+      .lean();
+    const ratingBreakdown: Record<string, number> = {
+      '5': 0,
+      '4': 0,
+      '3': 0,
+      '2': 0,
+      '1': 0,
+    };
     let sum = 0;
     for (const r of allForStats) {
-      ratingBreakdown[String(r.rating)] = (ratingBreakdown[String(r.rating)] || 0) + 1;
+      ratingBreakdown[String(r.rating)] =
+        (ratingBreakdown[String(r.rating)] || 0) + 1;
       sum += r.rating as number;
     }
-    const averageRating = allForStats.length > 0 ? parseFloat((sum / allForStats.length).toFixed(2)) : 0;
+    const averageRating =
+      allForStats.length > 0
+        ? parseFloat((sum / allForStats.length).toFixed(2))
+        : 0;
 
     const list = await Promise.all(
       reviews.map(async (r: any) => {
         const isOwn = !!viewerId && r.userId === viewerId;
-        const user = (r.isAnonymous && !isOwn) ? null : await userModel.findById(r.userId).select('name').lean();
+        const user =
+          r.isAnonymous && !isOwn
+            ? null
+            : await userModel.findById(r.userId).select('name').lean();
         return {
           reviewId: r._id,
-          customerName: isOwn ? 'You' : (r.isAnonymous ? 'Anonymous' : (user as any)?.name || 'Unknown'),
+          customerName: isOwn
+            ? 'You'
+            : r.isAnonymous
+              ? 'Anonymous'
+              : (user as any)?.name || 'Unknown',
           isOwn,
           rating: r.rating,
           comments: r.comments,
@@ -295,7 +415,8 @@ export class RatingService {
           isVerifiedPurchase: r.isVerifiedPurchase,
           sellerReply: r.sellerReply || null,
           helpfulCount: r.helpfulUserIds?.length ?? 0,
-          helpfulByMe: !!viewerId && (r.helpfulUserIds ?? []).includes(viewerId),
+          helpfulByMe:
+            !!viewerId && (r.helpfulUserIds ?? []).includes(viewerId),
           createdAt: r.createdAt,
         };
       }),
@@ -304,8 +425,17 @@ export class RatingService {
     return {
       success: true,
       data: {
-        stats: { averageRating, totalReviews: allForStats.length, ratingBreakdown },
-        pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+        stats: {
+          averageRating,
+          totalReviews: allForStats.length,
+          ratingBreakdown,
+        },
+        pagination: {
+          page,
+          limit,
+          total,
+          totalPages: Math.ceil(total / limit),
+        },
         reviews: list,
       },
     };
@@ -317,22 +447,35 @@ export class RatingService {
     const review = await this.findReviewOrThrow(reviewId);
 
     const alreadyVoted = (review.helpfulUserIds ?? []).includes(userId);
-    await ratingModel.findByIdAndUpdate(reviewId, alreadyVoted
-      ? { $pull: { helpfulUserIds: userId } }
-      : { $addToSet: { helpfulUserIds: userId } },
+    await ratingModel.findByIdAndUpdate(
+      reviewId,
+      alreadyVoted
+        ? { $pull: { helpfulUserIds: userId } }
+        : { $addToSet: { helpfulUserIds: userId } },
     );
 
-    const updated = await ratingModel.findById(reviewId).select('helpfulUserIds').lean();
+    const updated = await ratingModel
+      .findById(reviewId)
+      .select('helpfulUserIds')
+      .lean();
     return {
       success: true,
       message: alreadyVoted ? 'Removed helpful vote' : 'Marked as helpful',
-      data: { helpfulCount: (updated as any)?.helpfulUserIds?.length ?? 0, helpfulByMe: !alreadyVoted },
+      data: {
+        helpfulCount: (updated as any)?.helpfulUserIds?.length ?? 0,
+        helpfulByMe: !alreadyVoted,
+      },
     };
   }
 
   // ── SELLER / ADMIN: MANAGE ────────────────────────────────────────────────
 
-  async getStoreReviews(sellerId: string, role: string, storeId: string, query: any) {
+  async getStoreReviews(
+    sellerId: string,
+    role: string,
+    storeId: string,
+    query: any,
+  ) {
     if (!storeId) throw new BadRequestException('storeId is required');
 
     const { ratingModel, userModel } = this.r;
@@ -343,18 +486,33 @@ export class RatingService {
     const skip = (page - 1) * limit;
 
     const filter: any = { storeId, isDelete: false };
-    if (query.rating && query.rating !== 'all') filter.rating = parseInt(query.rating);
-    if (query.productId && query.productId !== 'all') filter.productId = query.productId;
+    if (query.rating && query.rating !== 'all')
+      filter.rating = parseInt(query.rating);
+    if (query.productId && query.productId !== 'all')
+      filter.productId = query.productId;
 
     const totalReviews = await ratingModel.countDocuments(filter);
     const totalPages = Math.ceil(totalReviews / limit);
 
-    const reviews = await ratingModel.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean();
+    const reviews = await ratingModel
+      .find(filter)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean();
 
     // stats
-    const allReviews = await ratingModel.find({ storeId, isDelete: false }).lean();
+    const allReviews = await ratingModel
+      .find({ storeId, isDelete: false })
+      .lean();
 
-    const ratingBreakdown: Record<string, number> = { '5': 0, '4': 0, '3': 0, '2': 0, '1': 0 };
+    const ratingBreakdown: Record<string, number> = {
+      '5': 0,
+      '4': 0,
+      '3': 0,
+      '2': 0,
+      '1': 0,
+    };
     let ratingSum = 0;
     let ratingCount = 0;
     let flaggedCount = 0;
@@ -368,7 +526,8 @@ export class RatingService {
 
     for (const r of allReviews) {
       if (r.rating) {
-        ratingBreakdown[String(r.rating)] = (ratingBreakdown[String(r.rating)] || 0) + 1;
+        ratingBreakdown[String(r.rating)] =
+          (ratingBreakdown[String(r.rating)] || 0) + 1;
         ratingSum += r.rating;
         ratingCount++;
       }
@@ -386,25 +545,41 @@ export class RatingService {
       if (new Date(r.createdAt) >= monthStart) reviewsThisMonth++;
     }
 
-    const averageRating = ratingCount > 0 ? parseFloat((ratingSum / ratingCount).toFixed(1)) : 0;
-    const fiveStarRate = ratingCount > 0 ? parseFloat(((ratingBreakdown['5'] / ratingCount) * 100).toFixed(1)) : 0;
-    const responseRate = allReviews.length > 0 ? parseFloat(((repliedCount / allReviews.length) * 100).toFixed(1)) : 0;
-    const avgResponseHrs = responseTimeCount > 0 ? parseFloat((totalResponseMs / responseTimeCount / 3600000).toFixed(1)) : 0;
+    const averageRating =
+      ratingCount > 0 ? parseFloat((ratingSum / ratingCount).toFixed(1)) : 0;
+    const fiveStarRate =
+      ratingCount > 0
+        ? parseFloat(((ratingBreakdown['5'] / ratingCount) * 100).toFixed(1))
+        : 0;
+    const responseRate =
+      allReviews.length > 0
+        ? parseFloat(((repliedCount / allReviews.length) * 100).toFixed(1))
+        : 0;
+    const avgResponseHrs =
+      responseTimeCount > 0
+        ? parseFloat((totalResponseMs / responseTimeCount / 3600000).toFixed(1))
+        : 0;
 
     const breakdownPercent: Record<string, string> = {};
     for (const star of ['5', '4', '3', '2', '1']) {
-      breakdownPercent[star] = ratingCount > 0
-        ? `${parseFloat(((ratingBreakdown[star] / ratingCount) * 100).toFixed(1))}%`
-        : '0%';
+      breakdownPercent[star] =
+        ratingCount > 0
+          ? `${parseFloat(((ratingBreakdown[star] / ratingCount) * 100).toFixed(1))}%`
+          : '0%';
     }
 
     const list = await Promise.all(
       reviews.map(async (r: any) => {
-        const user = await userModel.findById(r.userId).select('name email').lean();
+        const user = await userModel
+          .findById(r.userId)
+          .select('name email')
+          .lean();
         return {
           reviewId: r._id,
           customer: {
-            name: r.isAnonymous ? 'Anonymous' : (user as any)?.name || 'Unknown',
+            name: r.isAnonymous
+              ? 'Anonymous'
+              : (user as any)?.name || 'Unknown',
             email: r.isAnonymous ? null : (user as any)?.email || null,
           },
           productId: r.productId,
@@ -439,28 +614,46 @@ export class RatingService {
     };
   }
 
-  async replyToReview(sellerId: string, role: string, reviewId: string, dto: SellerReplyDto) {
+  async replyToReview(
+    sellerId: string,
+    role: string,
+    reviewId: string,
+    dto: SellerReplyDto,
+  ) {
     const { ratingModel } = this.r;
 
     const review = await this.findReviewOrThrow(reviewId);
     await this.verifyStoreAccess(review.storeId as string, sellerId, role);
 
-    if (review.sellerReply) throw new BadRequestException('Already replied. Use edit-reply to update.');
+    if (review.sellerReply)
+      throw new BadRequestException(
+        'Already replied. Use edit-reply to update.',
+      );
 
     await ratingModel.findByIdAndUpdate(reviewId, {
-      sellerReply: { text: dto.text, createdAt: new Date(), updatedAt: new Date() },
+      sellerReply: {
+        text: dto.text,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
     });
 
     return { success: true, message: 'Reply added' };
   }
 
-  async editReply(sellerId: string, role: string, reviewId: string, dto: SellerReplyDto) {
+  async editReply(
+    sellerId: string,
+    role: string,
+    reviewId: string,
+    dto: SellerReplyDto,
+  ) {
     const { ratingModel } = this.r;
 
     const review = await this.findReviewOrThrow(reviewId);
     await this.verifyStoreAccess(review.storeId as string, sellerId, role);
 
-    if (!review.sellerReply) throw new BadRequestException('No reply exists. Use reply first.');
+    if (!review.sellerReply)
+      throw new BadRequestException('No reply exists. Use reply first.');
 
     await ratingModel.findByIdAndUpdate(reviewId, {
       'sellerReply.text': dto.text,
@@ -476,7 +669,8 @@ export class RatingService {
     const review = await this.findReviewOrThrow(reviewId);
     await this.verifyStoreAccess(review.storeId as string, sellerId, role);
 
-    if (review.isFlagged) throw new BadRequestException('Review is already flagged');
+    if (review.isFlagged)
+      throw new BadRequestException('Review is already flagged');
 
     await ratingModel.findByIdAndUpdate(reviewId, { isFlagged: true });
 
@@ -489,7 +683,8 @@ export class RatingService {
     const review = await this.findReviewOrThrow(reviewId);
     await this.verifyStoreAccess(review.storeId as string, sellerId, role);
 
-    if (!review.isFlagged) throw new BadRequestException('Review is not flagged');
+    if (!review.isFlagged)
+      throw new BadRequestException('Review is not flagged');
 
     await ratingModel.findByIdAndUpdate(reviewId, { isFlagged: false });
 

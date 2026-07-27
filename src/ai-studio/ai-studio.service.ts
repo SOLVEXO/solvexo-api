@@ -148,7 +148,7 @@ export class AiStudioService {
       inputPayload: { campaignGoal: dto.campaignGoal, tone: dto.tone, productIds: dto.productIds ?? [] },
       execute: async () => {
         const { system, prompt } = buildEmailCampaignPrompt({
-          campaignGoal: dto.campaignGoal, tone: dto.tone, storeName: (store as any).name, products,
+          campaignGoal: dto.campaignGoal, tone: dto.tone, storeName: (store).name, products,
         });
         const result = await this.textGeneration.generate({ system, prompt, tier: 'standard', schema: EMAIL_CAMPAIGN_SCHEMA });
         return {

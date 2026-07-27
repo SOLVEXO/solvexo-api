@@ -2,13 +2,16 @@ import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import * as crypto from 'crypto';
-import { NewsletterSubscriber, NewsletterSubscriberDocument } from './schemas/newsletter-subscriber.schema';
+import {
+  NewsletterSubscriber,
+  NewsletterSubscriberDocument,
+} from './schemas/newsletter-subscriber.schema';
 import { EmailService } from '../otp/services/email.service';
 
 const APP_NAME = process.env.APP_NAME || 'Solvexo';
 
 function confirmationEmailHtml(unsubscribeUrl: string): string {
-    return `
+  return `
 <!DOCTYPE html>
 <html>
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Subscribed to ${APP_NAME} deals</title>
@@ -36,7 +39,7 @@ function confirmationEmailHtml(unsubscribeUrl: string): string {
 }
 
 function unsubscribePageHtml(message: string): string {
-    return `
+  return `
 <!DOCTYPE html>
 <html>
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>${APP_NAME} newsletter</title>
@@ -52,54 +55,70 @@ function unsubscribePageHtml(message: string): string {
 
 @Injectable()
 export class NewsletterService {
-    constructor(
-        @InjectModel(NewsletterSubscriber.name) private readonly subscriberModel: Model<NewsletterSubscriberDocument>,
-        private readonly emailService: EmailService,
-    ) { }
+  constructor(
+    @InjectModel(NewsletterSubscriber.name)
+    private readonly subscriberModel: Model<NewsletterSubscriberDocument>,
+    private readonly emailService: EmailService,
+  ) {}
 
-    async subscribe(email: string, source = 'footer') {
-        const normalizedEmail = email.trim().toLowerCase();
-        let subscriber = await this.subscriberModel.findOne({ email: normalizedEmail });
+  async subscribe(email: string, source = 'footer') {
+    const normalizedEmail = email.trim().toLowerCase();
+    let subscriber = await this.subscriberModel.findOne({
+      email: normalizedEmail,
+    });
 
-        if (subscriber && subscriber.isActive) {
-            return { success: true, message: "You're already subscribed — welcome aboard!" };
-        }
-
-        const unsubscribeToken = crypto.randomBytes(24).toString('hex');
-
-        if (subscriber) {
-            subscriber.isActive = true;
-            subscriber.unsubscribeToken = unsubscribeToken;
-            subscriber.unsubscribedAt = undefined;
-            await subscriber.save();
-        } else {
-            subscriber = await this.subscriberModel.create({
-                email: normalizedEmail,
-                source,
-                unsubscribeToken,
-            });
-        }
-
-        const backendUrl = `${process.env.API_PUBLIC_URL || ''}/api/newsletter/unsubscribe/${unsubscribeToken}`;
-        this.emailService
-            .sendMail(normalizedEmail, `Welcome to ${APP_NAME} deals`, confirmationEmailHtml(backendUrl))
-            .catch(() => undefined);
-
-        console.log('✅ Newsletter subscription saved:', normalizedEmail);
-        return { success: true, message: "You're subscribed — welcome aboard!" };
+    if (subscriber && subscriber.isActive) {
+      return {
+        success: true,
+        message: "You're already subscribed — welcome aboard!",
+      };
     }
 
-    async unsubscribeByToken(token: string): Promise<string> {
-        const subscriber = await this.subscriberModel.findOne({ unsubscribeToken: token });
+    const unsubscribeToken = crypto.randomBytes(24).toString('hex');
 
-        if (!subscriber) {
-            return unsubscribePageHtml('This unsubscribe link is invalid or has already been used.');
-        }
-
-        subscriber.isActive = false;
-        subscriber.unsubscribedAt = new Date();
-        await subscriber.save();
-
-        return unsubscribePageHtml("You've been unsubscribed from deals and price-drop alerts. Sorry to see you go!");
+    if (subscriber) {
+      subscriber.isActive = true;
+      subscriber.unsubscribeToken = unsubscribeToken;
+      subscriber.unsubscribedAt = undefined;
+      await subscriber.save();
+    } else {
+      subscriber = await this.subscriberModel.create({
+        email: normalizedEmail,
+        source,
+        unsubscribeToken,
+      });
     }
+
+    const backendUrl = `${process.env.API_PUBLIC_URL || ''}/api/newsletter/unsubscribe/${unsubscribeToken}`;
+    this.emailService
+      .sendMail(
+        normalizedEmail,
+        `Welcome to ${APP_NAME} deals`,
+        confirmationEmailHtml(backendUrl),
+      )
+      .catch(() => undefined);
+
+    console.log('✅ Newsletter subscription saved:', normalizedEmail);
+    return { success: true, message: "You're subscribed — welcome aboard!" };
+  }
+
+  async unsubscribeByToken(token: string): Promise<string> {
+    const subscriber = await this.subscriberModel.findOne({
+      unsubscribeToken: token,
+    });
+
+    if (!subscriber) {
+      return unsubscribePageHtml(
+        'This unsubscribe link is invalid or has already been used.',
+      );
+    }
+
+    subscriber.isActive = false;
+    subscriber.unsubscribedAt = new Date();
+    await subscriber.save();
+
+    return unsubscribePageHtml(
+      "You've been unsubscribed from deals and price-drop alerts. Sorry to see you go!",
+    );
+  }
 }

@@ -73,7 +73,7 @@ export class AdminFinanceService {
       ]);
 
       const byType: Record<string, { total: number; count: number }> = {};
-      for (const row of byTypeRows as any[]) byType[row._id] = { total: round(row.total), count: row.count };
+      for (const row of byTypeRows) byType[row._id] = { total: round(row.total), count: row.count };
 
       const gmv = byType.sale?.total ?? 0;
       const refunds = byType.refund?.total ?? 0;
@@ -82,7 +82,7 @@ export class AdminFinanceService {
         pending: { count: 0, amount: 0 }, processing: { count: 0, amount: 0 },
         completed: { count: 0, amount: 0 }, failed: { count: 0, amount: 0 },
       };
-      for (const row of payoutStatusRows as any[]) {
+      for (const row of payoutStatusRows) {
         if (payoutQueue[row._id]) payoutQueue[row._id] = { count: row.count, amount: round(row.amount) };
       }
 
@@ -133,7 +133,7 @@ export class AdminFinanceService {
       ]);
 
       const byBucket = new Map<number, { gross: number; refunds: number }>();
-      for (const row of rows as any[]) {
+      for (const row of rows) {
         const t = row._id.bucket.getTime();
         const entry = byBucket.get(t) ?? { gross: 0, refunds: 0 };
         if (row._id.type === 'sale') entry.gross = row.total; else entry.refunds = row.total;
@@ -307,11 +307,11 @@ export class AdminFinanceService {
         { $group: { _id: '$storeId', totalRefunded: { $sum: { $abs: '$amount' } }, count: { $sum: 1 } } },
       ]);
 
-      const storeIds = (refundRows as any[]).map((r) => r._id);
+      const storeIds = (refundRows).map((r) => r._id);
       const stores = await this.r.storeModel.find({ _id: { $in: storeIds } }).select('name').lean();
       const storeMap = new Map(stores.map((s: any) => [s._id.toString(), s]));
 
-      const byStore = (refundRows as any[])
+      const byStore = (refundRows)
         .map((r) => ({ storeId: r._id, storeName: storeMap.get(r._id)?.name ?? 'Unknown store', totalRefunded: round(r.totalRefunded), count: r.count }))
         .sort((a, b) => b.totalRefunded - a.totalRefunded);
 
@@ -357,7 +357,7 @@ export class AdminFinanceService {
       ]);
 
       const stats: Record<string, number> = { sale: 0, fee: 0, refund: 0, payout: 0, adjustment: 0 };
-      for (const row of byTypeRows as any[]) stats[row._id] = round(row.total);
+      for (const row of byTypeRows) stats[row._id] = round(row.total);
       const balances = balanceTotalsRows[0] ?? { totalAvailable: 0, totalPending: 0 };
 
       return {
@@ -400,7 +400,7 @@ export class AdminFinanceService {
         ]);
 
         const stats: Record<string, number> = { sale: 0, fee: 0, refund: 0, payout: 0 };
-        for (const row of byTypeRows as any[]) stats[row._id] = round(row.total);
+        for (const row of byTypeRows) stats[row._id] = round(row.total);
 
         monthly.push({
           month: from.toLocaleDateString('en-US', { month: 'short', year: 'numeric' }),

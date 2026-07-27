@@ -39,7 +39,10 @@ export class PaymentController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('user')
   @Get('status')
-  async getPaymentStatus(@Req() req: any, @Query('checkoutId') checkoutId: string) {
+  async getPaymentStatus(
+    @Req() req: any,
+    @Query('checkoutId') checkoutId: string,
+  ) {
     const { userId } = req.user;
     return this.paymentService.getPaymentStatus(userId, checkoutId);
   }
@@ -52,7 +55,9 @@ export class PaymentController {
     @Headers('stripe-signature') signature: string,
   ) {
     if (!req.rawBody) {
-      throw new BadRequestException('Raw request body unavailable — check rawBody bootstrap config');
+      throw new BadRequestException(
+        'Raw request body unavailable — check rawBody bootstrap config',
+      );
     }
     return this.paymentService.stripeWebhook(req.rawBody, signature);
   }

@@ -1,4 +1,3 @@
-/* eslint-disable prettier/prettier */
 import { IsEnum, IsNotEmpty, IsString } from 'class-validator';
 
 export class RegisterDeviceTokenDto {

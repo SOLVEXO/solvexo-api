@@ -113,7 +113,7 @@ export class StripePaymentProvider implements IPaymentGateway {
     // `expand: ['latest_invoice.payment_intent']` above isn't reflected in the
     // SDK's static return type, so the nested PaymentIntent is read via `any`.
     const latestInvoice = subscription.latest_invoice as any;
-    const paymentIntent = latestInvoice?.payment_intent as any;
+    const paymentIntent = latestInvoice?.payment_intent;
 
     return {
       providerSubscriptionId: subscription.id,

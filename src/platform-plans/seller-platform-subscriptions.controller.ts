@@ -46,8 +46,10 @@ export class SellerPlatformSubscriptionsController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('seller')
   @Get(':storeId/entitlements')
-  getEntitlements(@Req() req: any, @Param('storeId') storeId: string) {
-    return this.entitlementsService.getEntitlementsSummary(storeId).then((data) => ({ success: true, data }));
+  async getEntitlements(@Req() req: any, @Param('storeId') storeId: string) {
+    await this.sellerPlatformSubscriptionsService.verifyStoreOwnership(storeId, req.user.userId);
+    const data = await this.entitlementsService.getEntitlementsSummary(storeId);
+    return { success: true, data };
   }
 
   @ApiBearerAuth()

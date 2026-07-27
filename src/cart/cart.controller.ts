@@ -1,4 +1,12 @@
-import { Body, Controller, Post, Req, UseGuards, Get , Query} from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Post,
+  Req,
+  UseGuards,
+  Get,
+  Query,
+} from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CartService } from './cart.service';
 import { AddToCartDto } from './dto/add-to-cart.dto';
@@ -8,7 +16,6 @@ import { AuthGuard } from '@nestjs/passport';
 export class CartController {
   constructor(private readonly cartService: CartService) {}
 
-
   @UseGuards(JwtAuthGuard)
   @Post('add-to-cart')
   async addToCart(@Req() req: any, @Body() dto: AddToCartDto) {
@@ -16,7 +23,7 @@ export class CartController {
 
     return this.cartService.addToCart(userId, dto);
   }
-    @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard)
   @Get('get-cart')
   async getCart(@Req() req: any) {
     const { userId } = req.user;
@@ -25,72 +32,65 @@ export class CartController {
   }
 
   @UseGuards(JwtAuthGuard)
-@Post('update-cart-quantity')
-async updateCartQuantity(@Req() req: any) {
-  const { userId } = req.user;
+  @Post('update-cart-quantity')
+  async updateCartQuantity(@Req() req: any) {
+    const { userId } = req.user;
 
-  return this.cartService.updateCartQuantity(userId, req.body);
-}
-
-@UseGuards(JwtAuthGuard)
-@Post('remove-cart-item')
-async removeCartItem(@Req() req: any) {
-  const { userId } = req.user;
-
-  return this.cartService.removeCartItem(userId, req.body);
-}
-
-@UseGuards(JwtAuthGuard)
-@Post('clear-cart')
-async clearCart(@Req() req: any) {
-  const { userId } = req.user;
-
-  return this.cartService.clearCart(userId);
-}
-
-
-
-
+    return this.cartService.updateCartQuantity(userId, req.body);
+  }
 
   @UseGuards(JwtAuthGuard)
-@Post('add-to-wishlist')
-async addToWishlist(@Req() req: any, @Body() body: any) {
-  const { userId } = req.user;
-  
+  @Post('remove-cart-item')
+  async removeCartItem(@Req() req: any) {
+    const { userId } = req.user;
 
-  return this.cartService.addToWishlist(userId, body);
-}
+    return this.cartService.removeCartItem(userId, req.body);
+  }
 
-@UseGuards(JwtAuthGuard)
-@Get('get-wishlist')
-async getWishlist(@Req() req: any) {
-  const { userId } = req.user;
-  return this.cartService.getWishlist(userId);
-}
+  @UseGuards(JwtAuthGuard)
+  @Post('clear-cart')
+  async clearCart(@Req() req: any) {
+    const { userId } = req.user;
 
-@UseGuards(JwtAuthGuard)
-@Get('get-wishlist-item')
-async getWishlistItem(@Req() req: any, @Query() query: any) {
-  const { userId } = req.user;
-  return this.cartService.getWishlistItem(userId, query);
-}
+    return this.cartService.clearCart(userId);
+  }
 
+  @UseGuards(JwtAuthGuard)
+  @Post('add-to-wishlist')
+  async addToWishlist(@Req() req: any, @Body() body: any) {
+    const { userId } = req.user;
+
+    return this.cartService.addToWishlist(userId, body);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('get-wishlist')
+  async getWishlist(@Req() req: any) {
+    const { userId } = req.user;
+    return this.cartService.getWishlist(userId);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('get-wishlist-item')
+  async getWishlistItem(@Req() req: any, @Query() query: any) {
+    const { userId } = req.user;
+    return this.cartService.getWishlistItem(userId, query);
+  }
 
   @UseGuards(JwtAuthGuard)
   @Post('remove-from-wishlist')
-  async removeFromWishlist(@Req() req: any, @Body('wishlistId') wishlistId: string) {
+  async removeFromWishlist(
+    @Req() req: any,
+    @Body('wishlistId') wishlistId: string,
+  ) {
     const { userId } = req.user;
     return await this.cartService.removeFromWishlist(userId, wishlistId);
   }
 
   @UseGuards(JwtAuthGuard)
-@Post('clear-wishlist')
-async clearWishlist(@Req() req: any) {
-  const { userId } = req.user;
-  return this.cartService.clearWishlist(userId);
+  @Post('clear-wishlist')
+  async clearWishlist(@Req() req: any) {
+    const { userId } = req.user;
+    return this.cartService.clearWishlist(userId);
+  }
 }
-
-}
-
-
-

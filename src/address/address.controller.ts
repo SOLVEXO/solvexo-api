@@ -1,10 +1,20 @@
-import { Controller, Post, Body, Req, UseGuards, Get, Param, Patch, Delete } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Body,
+  Req,
+  UseGuards,
+  Get,
+  Param,
+  Patch,
+  Delete,
+} from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { AddressService } from './address.service';
 
 @Controller('address')
 export class AddressController {
-  constructor(private readonly addressService: AddressService) { }
+  constructor(private readonly addressService: AddressService) {}
 
   @UseGuards(JwtAuthGuard)
   @Post('add-address')
@@ -16,9 +26,7 @@ export class AddressController {
 
   @UseGuards(JwtAuthGuard)
   @Post('update-address')
-  async updateAddress(
-    @Body() body: any,
-  ) {
+  async updateAddress(@Body() body: any) {
     const { addressId, ...updateData } = body;
 
     return this.addressService.updateAddress(addressId, updateData);
@@ -26,10 +34,7 @@ export class AddressController {
 
   @UseGuards(JwtAuthGuard)
   @Get('get-address-by-id/:addressId')
-  async getAddressById(
-    @Param('addressId') addressId: string,
-  ) {
-
+  async getAddressById(@Param('addressId') addressId: string) {
     return this.addressService.getAddressById(addressId);
   }
   @UseGuards(JwtAuthGuard)
@@ -50,7 +55,10 @@ export class AddressController {
 
   @UseGuards(JwtAuthGuard)
   @Patch('setDefaultAddress/:addressId')
-  async setDefaultAddress(@Req() req: any, @Param('addressId') addressId: string) {
+  async setDefaultAddress(
+    @Req() req: any,
+    @Param('addressId') addressId: string,
+  ) {
     const { userId } = req.user;
     return this.addressService.setDefaultAddress(userId, addressId);
   }
@@ -61,5 +69,4 @@ export class AddressController {
     const { userId } = req.user;
     return this.addressService.deleteAddress(userId, addressId);
   }
-
 }

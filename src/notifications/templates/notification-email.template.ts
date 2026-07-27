@@ -1,5 +1,3 @@
-/* eslint-disable prettier/prettier */
-
 const APP_NAME = process.env.APP_NAME || 'Solvexo';
 const BRAND_COLOR = '#d97757';
 

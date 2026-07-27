@@ -46,7 +46,7 @@ export class NotificationsGateway implements OnGatewayConnection, OnGatewayDisco
 
       const payload = this.jwtService.verify(token, { secret: process.env.JWT_SECRET });
       const userId = payload.sub;
-      (client.data as any).userId = userId;
+      (client.data).userId = userId;
       client.join(`user:${userId}`);
     } catch {
       client.disconnect();

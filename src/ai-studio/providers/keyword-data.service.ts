@@ -68,7 +68,7 @@ export class KeywordDataService implements KeywordDataAdapter {
         ].filter(Boolean).join('\n'),
       });
 
-      const raw = Array.isArray(result.json?.keywords) ? result.json!.keywords : [];
+      const raw = Array.isArray(result.json?.keywords) ? result.json.keywords : [];
       const keywords: KeywordSignal[] = raw
         .filter((k: any) => typeof k?.keyword === 'string' && k.keyword.trim())
         .slice(0, max)

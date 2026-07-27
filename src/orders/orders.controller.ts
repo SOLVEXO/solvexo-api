@@ -29,7 +29,18 @@
 //   }
 // }
 
-import { Controller, Get, Put, Post, Param, Query, Body, Req, Res, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Put,
+  Post,
+  Param,
+  Query,
+  Body,
+  Req,
+  Res,
+  UseGuards,
+} from '@nestjs/common';
 import { Response } from 'express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -73,7 +84,12 @@ export class OrdersController {
   @Put('update-status')
   async updateSellerOrderStatus(@Req() req: any, @Body() body: any) {
     const { userId } = req.user;
-    return this.ordersService.updateSellerOrderStatus(userId, body, req.ip, req.headers['user-agent']);
+    return this.ordersService.updateSellerOrderStatus(
+      userId,
+      body,
+      req.ip,
+      req.headers['user-agent'],
+    );
   }
 
   // Static path — must be declared before `seller-orders/:storeId` below, otherwise
@@ -139,7 +155,13 @@ export class OrdersController {
     @Body() body: any,
   ) {
     const { userId: sellerId } = req.user;
-    return this.ordersService.returnAction(sellerId, orderId, body, req.ip, req.headers['user-agent']);
+    return this.ordersService.returnAction(
+      sellerId,
+      orderId,
+      body,
+      req.ip,
+      req.headers['user-agent'],
+    );
   }
 
   // Step 1: JWT se download link lo (10 min valid)
@@ -154,16 +176,19 @@ export class OrdersController {
   ) {
     const { userId } = req.user;
     const index = parseInt(fileIndex) || 0;
-    return this.ordersService.getDownloadLink(userId, orderId, productId, index);
+    return this.ordersService.getDownloadLink(
+      userId,
+      orderId,
+      productId,
+      index,
+    );
   }
 
   // Step 2: yeh URL browser mein paste karo — seedha download (no auth header)
   @Get('download-file')
-  async downloadFile(
-    @Res() res: Response,
-    @Query('token') token: string,
-  ) {
-    const { buffer, fileName, mimeType } = await this.ordersService.downloadByToken(token);
+  async downloadFile(@Res() res: Response, @Query('token') token: string) {
+    const { buffer, fileName, mimeType } =
+      await this.ordersService.downloadByToken(token);
     res.set({
       'Content-Type': mimeType,
       'Content-Disposition': `attachment; filename="${fileName}"`,
@@ -174,11 +199,9 @@ export class OrdersController {
 
   // stamped PDF via token — browser direct download (no JWT header)
   @Get('stream-pdf-token')
-  async streamPdfByToken(
-    @Res() res: Response,
-    @Query('token') token: string,
-  ) {
-    const { buffer, fileName } = await this.ordersService.streamStampedPdfByToken(token);
+  async streamPdfByToken(@Res() res: Response, @Query('token') token: string) {
+    const { buffer, fileName } =
+      await this.ordersService.streamStampedPdfByToken(token);
     res.set({
       'Content-Type': 'application/pdf',
       'Content-Disposition': `attachment; filename="${fileName}"`,
@@ -202,7 +225,10 @@ export class OrdersController {
     const index = parseInt(fileIndex) || 0;
 
     const { buffer, fileName } = await this.ordersService.streamStampedPdf(
-      userId, orderId, productId, index,
+      userId,
+      orderId,
+      productId,
+      index,
     );
 
     res.set({

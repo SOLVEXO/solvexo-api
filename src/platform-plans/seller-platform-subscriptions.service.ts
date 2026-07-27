@@ -52,7 +52,10 @@ export class SellerPlatformSubscriptionsService {
     return `PINV-${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}-${String(counter.seq).padStart(6, '0')}`;
   }
 
-  private async verifyStoreOwnership(storeId: string, sellerId: string) {
+  // Not private: also called directly by SellerPlatformSubscriptionsController's
+  // getEntitlements route, which reads from EntitlementsService rather than this
+  // service and otherwise has no ownership check of its own.
+  async verifyStoreOwnership(storeId: string, sellerId: string) {
     return verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
   }
 
@@ -322,7 +325,7 @@ export class SellerPlatformSubscriptionsService {
     }
 
     const now = new Date();
-    const { newAmountUSD, totalCreditAvailable, netDue, isFreeMoveIn } = this.computeProration(sub, newPlan, newInterval as 'monthly' | 'yearly');
+    const { newAmountUSD, totalCreditAvailable, netDue, isFreeMoveIn } = this.computeProration(sub, newPlan, newInterval);
     void totalCreditAvailable; // surfaced via previewChangePlan; changePlan itself only needs netDue
 
     const historyEntry = {
@@ -487,7 +490,7 @@ export class SellerPlatformSubscriptionsService {
     if (!sub) throw new NotFoundException('This store has no platform-plan record yet');
 
     const newPlanId = 'newPlatformPlanId' in dto ? dto.newPlatformPlanId : dto.platformPlanId;
-    const newInterval = ('newBillingInterval' in dto ? dto.newBillingInterval : dto.billingInterval) as 'monthly' | 'yearly';
+    const newInterval = ('newBillingInterval' in dto ? dto.newBillingInterval : dto.billingInterval);
 
     const [currentPlan, newPlan] = await Promise.all([
       this.planModel.findById((sub as any).platformPlanId).lean(),

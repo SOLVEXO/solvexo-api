@@ -111,8 +111,8 @@ export class SeoContentService {
         : await this.db.repositories.storeModel.findById(entityId);
     if (!doc) throw new NotFoundException(`${entityType} not found.`);
 
-    const current = (doc as any).seo?.toObject?.() ?? (doc as any).seo ?? {};
-    (doc as any).seo = { ...current, ...fields, aiGenerated, updatedAt: new Date() };
+    const current = (doc).seo?.toObject?.() ?? (doc).seo ?? {};
+    (doc).seo = { ...current, ...fields, aiGenerated, updatedAt: new Date() };
     await doc.save();
 
     await this.resolution.invalidate(entityType, entityId);

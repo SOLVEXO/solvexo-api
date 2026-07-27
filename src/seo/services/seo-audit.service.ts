@@ -86,9 +86,9 @@ export class SeoAuditService {
     if (!store) throw new NotFoundException('Store not found.');
 
     const enabledRules = new Map(settings.rules?.map((r: any) => [r.code, r]) ?? []);
-    const isEnabled = (code: string) => (enabledRules.get(code) as any)?.enabled ?? true;
-    const threshold = (code: string, key: string, fallback: number) => (enabledRules.get(code) as any)?.thresholds?.[key] ?? fallback;
-    const severityOf = (code: string, fallback: 'info' | 'warning' | 'error') => (enabledRules.get(code) as any)?.severity ?? fallback;
+    const isEnabled = (code: string) => (enabledRules.get(code))?.enabled ?? true;
+    const threshold = (code: string, key: string, fallback: number) => (enabledRules.get(code))?.thresholds?.[key] ?? fallback;
+    const severityOf = (code: string, fallback: 'info' | 'warning' | 'error') => (enabledRules.get(code))?.severity ?? fallback;
 
     const issues: AuditIssue[] = [];
     const titleCounts = new Map<string, string[]>(); // for duplicate_meta

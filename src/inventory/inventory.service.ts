@@ -1,4 +1,8 @@
-import { Injectable, ForbiddenException, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  ForbiddenException,
+  BadRequestException,
+} from '@nestjs/common';
 import { DatabaseService } from 'src/database/databaseservice';
 
 const LOW_STOCK_THRESHOLD = 10;
@@ -10,10 +14,15 @@ export class InventoryService {
   async getStoreInventory(sellerId: string, storeId: string, query: any) {
     if (!storeId) throw new BadRequestException('storeId is required');
 
-    const { productModel, productVariantModel, storeModel } = this.databaseService.repositories;
+    const { productModel, productVariantModel, storeModel } =
+      this.databaseService.repositories;
 
     // seller ka store he ya nahi
-    const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
+    const store = await storeModel.findOne({
+      _id: storeId,
+      sellerId,
+      isDelete: false,
+    });
     if (!store) throw new ForbiddenException('Store not found or unauthorized');
 
     // filters
@@ -28,7 +37,12 @@ export class InventoryService {
     const totalProducts = await productModel.countDocuments(filter);
     const totalPages = Math.ceil(totalProducts / limit);
 
-    const products = await productModel.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean();
+    const products = await productModel
+      .find(filter)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean();
 
     // har product ke variants fetch karo
     const productIds = products.map((p: any) => p._id.toString());
@@ -58,7 +72,10 @@ export class InventoryService {
       let price = 0;
 
       if (!isDigital && !hasUnlimitedVariant) {
-        const totalStock = variants.reduce((sum: number, v: any) => sum + (v.stock || 0), 0);
+        const totalStock = variants.reduce(
+          (sum: number, v: any) => sum + (v.stock || 0),
+          0,
+        );
         stockDisplay = totalStock;
 
         if (totalStock === 0) {
@@ -77,7 +94,8 @@ export class InventoryService {
       }
 
       // default variant ki price, fallback to min price
-      const defaultVariant = variants.find((v: any) => v.isDefault) || variants[0];
+      const defaultVariant =
+        variants.find((v: any) => v.isDefault) || variants[0];
       price = defaultVariant?.price || 0;
 
       // default variant ka sku
@@ -138,13 +156,24 @@ export class InventoryService {
   async getLowStockSummary(sellerId: string, storeId: string) {
     if (!storeId) throw new BadRequestException('storeId is required');
 
-    const { productModel, productVariantModel, storeModel } = this.databaseService.repositories;
+    const { productModel, productVariantModel, storeModel } =
+      this.databaseService.repositories;
 
-    const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
+    const store = await storeModel.findOne({
+      _id: storeId,
+      sellerId,
+      isDelete: false,
+    });
     if (!store) throw new ForbiddenException('Store not found or unauthorized');
 
     const products = await productModel
-      .find({ storeId, sellerId, isDelete: false, status: 'active', type: { $ne: 'digital' } })
+      .find({
+        storeId,
+        sellerId,
+        isDelete: false,
+        status: 'active',
+        type: { $ne: 'digital' },
+      })
       .select('name')
       .lean();
 
@@ -163,7 +192,10 @@ export class InventoryService {
         unlimitedProducts.add(v.productId);
         continue;
       }
-      stockByProduct.set(v.productId, (stockByProduct.get(v.productId) ?? 0) + (v.stock || 0));
+      stockByProduct.set(
+        v.productId,
+        (stockByProduct.get(v.productId) ?? 0) + (v.stock || 0),
+      );
     }
 
     const items = products

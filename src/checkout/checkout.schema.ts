@@ -23,7 +23,11 @@ export class CheckoutItem {
   // Product's own category (educational collapses into `type: 'digital'` above
   // for fulfillment) — carried through to the placed Order so history/labels
   // can distinguish it later.
-  @Prop({ type: String, enum: ['physical', 'digital', 'educational'], default: null })
+  @Prop({
+    type: String,
+    enum: ['physical', 'digital', 'educational'],
+    default: null,
+  })
   productType: string | null;
 
   // snapshot fields
@@ -173,7 +177,13 @@ export class Checkout {
   // client doesn't send one; never inferred/fabricated server-side.
   @Prop({
     type: String,
-    enum: ['marketplace_search', 'direct_link', 'social_media', 'email', 'other'],
+    enum: [
+      'marketplace_search',
+      'direct_link',
+      'social_media',
+      'email',
+      'other',
+    ],
     default: 'other',
   })
   attributionSource: string;

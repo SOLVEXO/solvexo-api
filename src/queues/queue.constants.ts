@@ -1,5 +1,3 @@
-/* eslint-disable prettier/prettier */
-
 export const QUEUE_NAMES = {
   STRIPE_WEBHOOKS: 'stripe-webhooks',
   SUBSCRIPTION_EMAILS: 'subscription-emails',

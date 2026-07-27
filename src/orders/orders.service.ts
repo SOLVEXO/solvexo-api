@@ -1,6 +1,9 @@
-
-
-import { Injectable, BadRequestException, NotFoundException, ForbiddenException } from '@nestjs/common';
+import {
+  Injectable,
+  BadRequestException,
+  NotFoundException,
+  ForbiddenException,
+} from '@nestjs/common';
 import { DatabaseService } from 'src/database/databaseservice';
 import { UploadService } from 'src/upload/upload.service';
 import { JwtService } from '@nestjs/jwt';
@@ -22,7 +25,6 @@ function sellerPayoutBasis(so: any): number {
   return round(so.subtotal + (so.platformSponsoredDiscountUSD ?? 0));
 }
 
-
 @Injectable()
 export class OrdersService {
   constructor(
@@ -38,10 +40,26 @@ export class OrdersService {
   ) {}
 
   /** Subscribers earn points at their plan's configured multiplier (default 1x). */
-  private async awardLoyaltyPointsWithMultiplier(storeId: string, userId: string, orderId: string, subtotal: number) {
-    const benefitsEntry = await this.subscriptionBenefits.getActiveBenefits(userId, storeId);
-    const multiplier = benefitsEntry ? this.subscriptionBenefits.getLoyaltyMultiplier(benefitsEntry.benefits) : 1;
-    return this.loyaltyService.awardPurchasePoints(storeId, userId, orderId, subtotal, multiplier);
+  private async awardLoyaltyPointsWithMultiplier(
+    storeId: string,
+    userId: string,
+    orderId: string,
+    subtotal: number,
+  ) {
+    const benefitsEntry = await this.subscriptionBenefits.getActiveBenefits(
+      userId,
+      storeId,
+    );
+    const multiplier = benefitsEntry
+      ? this.subscriptionBenefits.getLoyaltyMultiplier(benefitsEntry.benefits)
+      : 1;
+    return this.loyaltyService.awardPurchasePoints(
+      storeId,
+      userId,
+      orderId,
+      subtotal,
+      multiplier,
+    );
   }
 
   async getOrdersByUserId(userId: string, query: any) {
@@ -122,9 +140,12 @@ export class OrdersService {
   async getOrderById(userId: string, orderId: string) {
     const { orderModel } = this.databaseService.repositories;
 
-    const order = await orderModel.findOne({ _id: orderId, isDelete: false }).lean();
+    const order = await orderModel
+      .findOne({ _id: orderId, isDelete: false })
+      .lean();
     if (!order) throw new NotFoundException('Order not found');
-    if ((order as any).userId !== userId) throw new ForbiddenException('Unauthorized');
+    if ((order as any).userId !== userId)
+      throw new ForbiddenException('Unauthorized');
 
     return {
       success: true,
@@ -135,15 +156,24 @@ export class OrdersService {
   /** `storeId` omitted (null) means "every store this seller owns" — used by the
    *  seller-wide dashboard, as opposed to a single store's own orders page. */
   async getSellerOrders(sellerId: string, storeId: string | null, query: any) {
-    const { orderModel, storeModel, userModel } = this.databaseService.repositories;
+    const { orderModel, storeModel, userModel } =
+      this.databaseService.repositories;
 
     let storeIds: string[];
     if (storeId) {
-      const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
-      if (!store) throw new ForbiddenException('Store not found or unauthorized');
+      const store = await storeModel.findOne({
+        _id: storeId,
+        sellerId,
+        isDelete: false,
+      });
+      if (!store)
+        throw new ForbiddenException('Store not found or unauthorized');
       storeIds = [storeId];
     } else {
-      const stores = await storeModel.find({ sellerId, isDelete: false }).select('_id').lean();
+      const stores = await storeModel
+        .find({ sellerId, isDelete: false })
+        .select('_id')
+        .lean();
       storeIds = stores.map((s: any) => s._id.toString());
     }
 
@@ -168,10 +198,12 @@ export class OrdersService {
       if (query.time === 'today') {
         matchFilter.createdAt = { $gte: new Date(now.setHours(0, 0, 0, 0)) };
       } else if (query.time === 'week') {
-        const week = new Date(); week.setDate(week.getDate() - 7);
+        const week = new Date();
+        week.setDate(week.getDate() - 7);
         matchFilter.createdAt = { $gte: week };
       } else if (query.time === 'month') {
-        const month = new Date(); month.setMonth(month.getMonth() - 1);
+        const month = new Date();
+        month.setMonth(month.getMonth() - 1);
         matchFilter.createdAt = { $gte: month };
       }
     }
@@ -187,13 +219,17 @@ export class OrdersService {
       .lean();
 
     // stats — all orders across the scoped store(s) (no pagination)
-    const allOrders = await orderModel.find({ 'sellerOrders.storeId': { $in: storeIds }, isDelete: false }).lean();
+    const allOrders = await orderModel
+      .find({ 'sellerOrders.storeId': { $in: storeIds }, isDelete: false })
+      .lean();
 
     let totalRevenue = 0;
     let pendingCount = 0;
 
     for (const order of allOrders) {
-      const so = (order.sellerOrders as any[]).find((s: any) => storeIds.includes(s.storeId));
+      const so = (order.sellerOrders as any[]).find((s: any) =>
+        storeIds.includes(s.storeId),
+      );
       if (!so) continue;
       if (['completed', 'delivered'].includes(so.status)) {
         totalRevenue += so.subtotal || 0;
@@ -208,10 +244,15 @@ export class OrdersService {
     // order rows format
     const rows = await Promise.all(
       orders.map(async (order: any) => {
-        const so = order.sellerOrders.find((s: any) => storeIds.includes(s.storeId));
+        const so = order.sellerOrders.find((s: any) =>
+          storeIds.includes(s.storeId),
+        );
         if (!so) return null;
 
-        const user = await userModel.findOne({ _id: order.userId }).select('name email').lean();
+        const user = await userModel
+          .findOne({ _id: order.userId })
+          .select('name email')
+          .lean();
         const firstItem = so.items?.[0];
 
         return {
@@ -279,22 +320,32 @@ export class OrdersService {
       }
     }
 
-    if (!targetItem) throw new BadRequestException('Product not found in this order');
-    if (targetItem.type !== 'digital') throw new BadRequestException('This is not a digital product');
+    if (!targetItem)
+      throw new BadRequestException('Product not found in this order');
+    if (targetItem.type !== 'digital')
+      throw new BadRequestException('This is not a digital product');
 
     // 4. product fetch
-    const product = await productModel.findOne({ _id: productId, isDelete: false });
+    const product = await productModel.findOne({
+      _id: productId,
+      isDelete: false,
+    });
     if (!product) throw new NotFoundException('Product not found');
-    if (!product.digital?.files?.length) throw new BadRequestException('No digital files found for this product');
+    if (!product.digital?.files?.length)
+      throw new BadRequestException('No digital files found for this product');
 
     // 5. link expiry check
     if (product.digital.linkExpiryDays) {
       const paidAt = order.paidAt;
       if (paidAt) {
         const expiryDate = new Date(paidAt);
-        expiryDate.setDate(expiryDate.getDate() + product.digital.linkExpiryDays);
+        expiryDate.setDate(
+          expiryDate.getDate() + product.digital.linkExpiryDays,
+        );
         if (new Date() > expiryDate) {
-          throw new BadRequestException(`Download link expired on ${expiryDate.toDateString()}`);
+          throw new BadRequestException(
+            `Download link expired on ${expiryDate.toDateString()}`,
+          );
         }
       }
     }
@@ -304,7 +355,9 @@ export class OrdersService {
     if (downloadLimit !== 'unlimited') {
       const limitNum = parseInt(downloadLimit);
       if (targetItem.downloadCount >= limitNum) {
-        throw new BadRequestException(`Download limit reached (${limitNum}/${limitNum})`);
+        throw new BadRequestException(
+          `Download limit reached (${limitNum}/${limitNum})`,
+        );
       }
     }
 
@@ -313,12 +366,18 @@ export class OrdersService {
     const isPdfStamping = product.digital.pdfStampingEnabled;
 
     const result = files.map((file: any, index: number) => {
-      const resolvedMimeType = this.uploadService.resolveMimeType(file.name, file.mimeType ?? 'application/octet-stream');
+      const resolvedMimeType = this.uploadService.resolveMimeType(
+        file.name,
+        file.mimeType ?? 'application/octet-stream',
+      );
       const isPdf = resolvedMimeType === 'application/pdf';
 
       const token = this.jwtService.sign(
         { userId, orderId, productId, fileIndex: index },
-        { secret: this.configService.get<string>('JWT_SECRET'), expiresIn: '10m' },
+        {
+          secret: this.configService.get<string>('JWT_SECRET'),
+          expiresIn: '10m',
+        },
       );
 
       return {
@@ -327,15 +386,19 @@ export class OrdersService {
         mimeType: resolvedMimeType,
         size: file.size,
         type: isPdf && isPdfStamping ? 'stamped' : 'download',
-        endpoint: isPdf && isPdfStamping ? '/api/orders/stream-pdf-token' : '/api/orders/download-file',
+        endpoint:
+          isPdf && isPdfStamping
+            ? '/api/orders/stream-pdf-token'
+            : '/api/orders/download-file',
         token,
         expiresIn: '10 minutes',
       };
     });
 
-    const remaining = product.digital.downloadLimit === 'unlimited'
-      ? 'unlimited'
-      : `${parseInt(product.digital.downloadLimit) - (targetItem.downloadCount + 1)} remaining`;
+    const remaining =
+      product.digital.downloadLimit === 'unlimited'
+        ? 'unlimited'
+        : `${parseInt(product.digital.downloadLimit) - (targetItem.downloadCount + 1)} remaining`;
 
     return {
       success: true,
@@ -349,7 +412,12 @@ export class OrdersService {
     };
   }
 
-  async updateSellerOrderStatus(sellerId: string, body: any, ip?: string, userAgent?: string) {
+  async updateSellerOrderStatus(
+    sellerId: string,
+    body: any,
+    ip?: string,
+    userAgent?: string,
+  ) {
     const { orderId, storeId, status, tracking } = body;
 
     if (!orderId) throw new BadRequestException('orderId is required');
@@ -358,13 +426,19 @@ export class OrdersService {
 
     const validStatuses = ['processing', 'shipped', 'delivered', 'completed'];
     if (!validStatuses.includes(status)) {
-      throw new BadRequestException(`Invalid status. Allowed: ${validStatuses.join(', ')}`);
+      throw new BadRequestException(
+        `Invalid status. Allowed: ${validStatuses.join(', ')}`,
+      );
     }
 
     const { orderModel, storeModel } = this.databaseService.repositories;
 
     // store ownership check
-    const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
+    const store = await storeModel.findOne({
+      _id: storeId,
+      sellerId,
+      isDelete: false,
+    });
     if (!store) throw new ForbiddenException('Store not found or unauthorized');
 
     const order = await orderModel.findOne({ _id: orderId, isDelete: false });
@@ -378,10 +452,13 @@ export class OrdersService {
     // Guards against double-crediting the finance ledger if this sellerOrder was already
     // completed before this call (duplicate/retried request, double-click, etc.) — mirrors
     // the `order.isPaid` guard already used in `markPaid` below for the same reason.
-    const wasAlreadyCompleted = order.sellerOrders[sellerOrderIndex].status === 'completed';
+    const wasAlreadyCompleted =
+      order.sellerOrders[sellerOrderIndex].status === 'completed';
 
     if (status === 'shipped' && !tracking) {
-      throw new BadRequestException('tracking info required when status is shipped');
+      throw new BadRequestException(
+        'tracking info required when status is shipped',
+      );
     }
 
     const updateData: any = {};
@@ -392,7 +469,8 @@ export class OrdersService {
     // saare items same status
     const soItems = order.sellerOrders[sellerOrderIndex].items;
     soItems.forEach((_: any, itemIndex: number) => {
-      updateData[`sellerOrders.${sellerOrderIndex}.items.${itemIndex}.status`] = status;
+      updateData[`sellerOrders.${sellerOrderIndex}.items.${itemIndex}.status`] =
+        status;
     });
 
     // status-specific fields
@@ -411,7 +489,9 @@ export class OrdersService {
 
     if (allStatuses.every((s: string) => s === 'completed')) {
       updateData.orderStatus = 'completed';
-    } else if (allStatuses.some((s: string) => ['shipped', 'delivered'].includes(s))) {
+    } else if (
+      allStatuses.some((s: string) => ['shipped', 'delivered'].includes(s))
+    ) {
       updateData.orderStatus = 'partially_shipped';
     } else if (allStatuses.every((s: string) => s === 'processing')) {
       updateData.orderStatus = 'processing';
@@ -424,10 +504,13 @@ export class OrdersService {
     if (status === 'completed' && !wasAlreadyCompleted) {
       const so = order.sellerOrders[sellerOrderIndex];
       const platformSponsoredUSD = so.platformSponsoredDiscountUSD ?? 0;
-      const sponsoredCampaignId = so.items.find((i: any) => i.campaignSponsorType === 'platform')?.campaignId ?? null;
+      const sponsoredCampaignId =
+        so.items.find((i: any) => i.campaignSponsorType === 'platform')
+          ?.campaignId ?? null;
       try {
         await this.financeService.recordSale(
-          so.storeId, so.sellerId,
+          so.storeId,
+          so.sellerId,
           orderId,
           sellerPayoutBasis(so),
           `Sale — Order #${orderId}`,
@@ -438,7 +521,12 @@ export class OrdersService {
         console.error('Finance recordSale failed:', e?.message);
       }
 
-      this.awardLoyaltyPointsWithMultiplier(so.storeId, order.userId, orderId, so.subtotal).catch(() => {});
+      this.awardLoyaltyPointsWithMultiplier(
+        so.storeId,
+        order.userId,
+        orderId,
+        so.subtotal,
+      ).catch(() => {});
     }
 
     const so = order.sellerOrders[sellerOrderIndex];
@@ -446,7 +534,9 @@ export class OrdersService {
       storeId: so.storeId,
       category: 'orders',
       action: status === 'shipped' ? 'order_fulfilled' : `order_${status}`,
-      description: tracking ? `Order #${orderId} — shipped via ${tracking.carrier ?? tracking}` : `Order #${orderId} — status changed to ${status}`,
+      description: tracking
+        ? `Order #${orderId} — shipped via ${tracking.carrier ?? tracking}`
+        : `Order #${orderId} — status changed to ${status}`,
       actorId: sellerId,
       actorRole: 'seller',
       targetId: orderId,
@@ -456,16 +546,25 @@ export class OrdersService {
     });
 
     if (status === 'shipped' || status === 'delivered') {
-      this.notificationsService.notify({
-        recipientId: order.userId,
-        recipientRole: 'user',
-        type: status === 'shipped' ? NOTIFICATION_TYPES.ORDER_SHIPPED : NOTIFICATION_TYPES.ORDER_DELIVERED,
-        title: status === 'shipped' ? 'Your order has shipped' : 'Your order was delivered',
-        body: status === 'shipped'
-          ? `Order #${orderId} is on its way${tracking?.carrier ? ` via ${tracking.carrier}` : ''}.`
-          : `Order #${orderId} has been delivered.`,
-        data: { orderId, status },
-      }).catch(() => {});
+      this.notificationsService
+        .notify({
+          recipientId: order.userId,
+          recipientRole: 'user',
+          type:
+            status === 'shipped'
+              ? NOTIFICATION_TYPES.ORDER_SHIPPED
+              : NOTIFICATION_TYPES.ORDER_DELIVERED,
+          title:
+            status === 'shipped'
+              ? 'Your order has shipped'
+              : 'Your order was delivered',
+          body:
+            status === 'shipped'
+              ? `Order #${orderId} is on its way${tracking?.carrier ? ` via ${tracking.carrier}` : ''}.`
+              : `Order #${orderId} has been delivered.`,
+          data: { orderId, status },
+        })
+        .catch(() => {});
     }
 
     return { success: true, message: `Order status updated to ${status}` };
@@ -490,7 +589,8 @@ export class OrdersService {
       updateData[`sellerOrders.${soIndex}.status`] = 'completed';
       updateData[`sellerOrders.${soIndex}.deliveredAt`] = now;
       so.items.forEach((_: any, itemIndex: number) => {
-        updateData[`sellerOrders.${soIndex}.items.${itemIndex}.status`] = 'completed';
+        updateData[`sellerOrders.${soIndex}.items.${itemIndex}.status`] =
+          'completed';
       });
     });
 
@@ -499,10 +599,13 @@ export class OrdersService {
     // Record sale in finance ledger for each store's sub-order
     for (const so of order.sellerOrders) {
       const platformSponsoredUSD = so.platformSponsoredDiscountUSD ?? 0;
-      const sponsoredCampaignId = so.items.find((i: any) => i.campaignSponsorType === 'platform')?.campaignId ?? null;
+      const sponsoredCampaignId =
+        so.items.find((i: any) => i.campaignSponsorType === 'platform')
+          ?.campaignId ?? null;
       try {
         await this.financeService.recordSale(
-          so.storeId, so.sellerId,
+          so.storeId,
+          so.sellerId,
           orderId,
           sellerPayoutBasis(so),
           `Sale — Order #${orderId}`,
@@ -513,22 +616,34 @@ export class OrdersService {
         console.error('Finance recordSale failed:', e?.message);
       }
 
-      this.awardLoyaltyPointsWithMultiplier(so.storeId, order.userId, orderId, so.subtotal).catch(() => {});
+      this.awardLoyaltyPointsWithMultiplier(
+        so.storeId,
+        order.userId,
+        orderId,
+        so.subtotal,
+      ).catch(() => {});
     }
 
-    this.notificationsService.notify({
-      recipientId: order.userId,
-      recipientRole: 'user',
-      type: NOTIFICATION_TYPES.PAYMENT_SUCCESS,
-      title: 'Payment received',
-      body: `We've received your payment for order #${orderId}.`,
-      data: { orderId },
-    }).catch(() => {});
+    this.notificationsService
+      .notify({
+        recipientId: order.userId,
+        recipientRole: 'user',
+        type: NOTIFICATION_TYPES.PAYMENT_SUCCESS,
+        title: 'Payment received',
+        body: `We've received your payment for order #${orderId}.`,
+        data: { orderId },
+      })
+      .catch(() => {});
 
     return { success: true, message: 'Order marked as paid' };
   }
 
-  async downloadFile(userId: string, orderId: string, productId: string, fileIndex: number) {
+  async downloadFile(
+    userId: string,
+    orderId: string,
+    productId: string,
+    fileIndex: number,
+  ) {
     const { orderModel, productModel } = this.databaseService.repositories;
 
     const order = await orderModel.findOne({ _id: orderId, isDelete: false });
@@ -536,18 +651,34 @@ export class OrdersService {
     if (order.userId !== userId) throw new ForbiddenException('Unauthorized');
     if (!order.isPaid) throw new BadRequestException('Order is not paid');
 
-    const product = await productModel.findOne({ _id: productId, isDelete: false });
-    if (!product?.digital?.files?.length) throw new NotFoundException('Product files not found');
+    const product = await productModel.findOne({
+      _id: productId,
+      isDelete: false,
+    });
+    if (!product?.digital?.files?.length)
+      throw new NotFoundException('Product files not found');
 
     const file = product.digital.files[fileIndex];
     if (!file) throw new NotFoundException('File not found');
 
-    const mimeType = this.uploadService.resolveMimeType(file.name, file.mimeType ?? 'application/octet-stream');
-    const resourceType = mimeType.startsWith('video/') ? 'video' : mimeType.startsWith('image/') ? 'image' : 'raw';
-    const signedUrl = this.uploadService.generateSignedUrl(file.url, resourceType, 300);
+    const mimeType = this.uploadService.resolveMimeType(
+      file.name,
+      file.mimeType ?? 'application/octet-stream',
+    );
+    const resourceType = mimeType.startsWith('video/')
+      ? 'video'
+      : mimeType.startsWith('image/')
+        ? 'image'
+        : 'raw';
+    const signedUrl = this.uploadService.generateSignedUrl(
+      file.url,
+      resourceType,
+      300,
+    );
 
     const response = await fetch(signedUrl);
-    if (!response.ok) throw new BadRequestException('Failed to fetch file from storage');
+    if (!response.ok)
+      throw new BadRequestException('Failed to fetch file from storage');
 
     const arrayBuffer = await response.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
@@ -564,27 +695,49 @@ export class OrdersService {
     } catch {
       throw new BadRequestException('Download link expired or invalid');
     }
-    return this.streamStampedPdf(payload.userId, payload.orderId, payload.productId, payload.fileIndex);
+    return this.streamStampedPdf(
+      payload.userId,
+      payload.orderId,
+      payload.productId,
+      payload.fileIndex,
+    );
   }
 
-  async streamStampedPdf(userId: string, orderId: string, productId: string, fileIndex: number) {
-    const { orderModel, productModel, userModel } = this.databaseService.repositories;
+  async streamStampedPdf(
+    userId: string,
+    orderId: string,
+    productId: string,
+    fileIndex: number,
+  ) {
+    const { orderModel, productModel, userModel } =
+      this.databaseService.repositories;
 
     const order = await orderModel.findOne({ _id: orderId, isDelete: false });
     if (!order) throw new NotFoundException('Order not found');
     if (order.userId !== userId) throw new ForbiddenException('Unauthorized');
     if (!order.isPaid) throw new BadRequestException('Order is not paid');
 
-    const product = await productModel.findOne({ _id: productId, isDelete: false });
-    if (!product?.digital?.files?.length) throw new NotFoundException('Product files not found');
+    const product = await productModel.findOne({
+      _id: productId,
+      isDelete: false,
+    });
+    if (!product?.digital?.files?.length)
+      throw new NotFoundException('Product files not found');
 
     const file = product.digital.files[fileIndex];
     if (!file) throw new NotFoundException('File not found');
 
-    const user = await userModel.findOne({ _id: userId }).select('email').lean();
+    const user = await userModel
+      .findOne({ _id: userId })
+      .select('email')
+      .lean();
     const userEmail = (user as any)?.email || userId;
 
-    const stampedBuffer = await this.uploadService.stampPdf(file.url, userEmail, order.orderNumber);
+    const stampedBuffer = await this.uploadService.stampPdf(
+      file.url,
+      userEmail,
+      order.orderNumber,
+    );
 
     return {
       buffer: stampedBuffer,
@@ -593,7 +746,12 @@ export class OrdersService {
     };
   }
 
-  async getDownloadLink(userId: string, orderId: string, productId: string, fileIndex: number) {
+  async getDownloadLink(
+    userId: string,
+    orderId: string,
+    productId: string,
+    fileIndex: number,
+  ) {
     const { orderModel, productModel } = this.databaseService.repositories;
 
     const order = await orderModel.findOne({ _id: orderId, isDelete: false });
@@ -601,8 +759,12 @@ export class OrdersService {
     if (order.userId !== userId) throw new ForbiddenException('Unauthorized');
     if (!order.isPaid) throw new BadRequestException('Order is not paid yet');
 
-    const product = await productModel.findOne({ _id: productId, isDelete: false });
-    if (!product?.digital?.files?.length) throw new NotFoundException('Product files not found');
+    const product = await productModel.findOne({
+      _id: productId,
+      isDelete: false,
+    });
+    if (!product?.digital?.files?.length)
+      throw new NotFoundException('Product files not found');
 
     const file = product.digital.files[fileIndex];
     if (!file) throw new NotFoundException('File not found at this index');
@@ -615,14 +777,21 @@ export class OrdersService {
       },
     );
 
-    const resolvedMimeType = this.uploadService.resolveMimeType(file.name, file.mimeType ?? 'application/octet-stream');
-    const isPdfStamped = resolvedMimeType === 'application/pdf' && product.digital?.pdfStampingEnabled;
+    const resolvedMimeType = this.uploadService.resolveMimeType(
+      file.name,
+      file.mimeType ?? 'application/octet-stream',
+    );
+    const isPdfStamped =
+      resolvedMimeType === 'application/pdf' &&
+      product.digital?.pdfStampingEnabled;
 
     return {
       success: true,
       data: {
         token,
-        endpoint: isPdfStamped ? '/api/orders/stream-pdf-token' : '/api/orders/download-file',
+        endpoint: isPdfStamped
+          ? '/api/orders/stream-pdf-token'
+          : '/api/orders/download-file',
         fileName: file.name,
         expiresIn: '10 minutes',
       },
@@ -633,13 +802,20 @@ export class OrdersService {
     const { reason, itemIds } = body;
     if (!reason) throw new BadRequestException('reason is required');
 
-    const { orderModel, productVariantModel } = this.databaseService.repositories;
+    const { orderModel, productVariantModel } =
+      this.databaseService.repositories;
 
-    const order = await orderModel.findOne({ _id: orderId, userId, isDelete: false });
+    const order = await orderModel.findOne({
+      _id: orderId,
+      userId,
+      isDelete: false,
+    });
     if (!order) throw new NotFoundException('Order not found');
 
-    if (order.orderStatus === 'completed') throw new BadRequestException('Completed orders cannot be cancelled');
-    if (order.orderStatus === 'cancelled') throw new BadRequestException('Order is already cancelled');
+    if (order.orderStatus === 'completed')
+      throw new BadRequestException('Completed orders cannot be cancelled');
+    if (order.orderStatus === 'cancelled')
+      throw new BadRequestException('Order is already cancelled');
 
     const now = new Date();
     const BLOCKED = ['shipped', 'delivered', 'completed', 'cancelled'];
@@ -658,29 +834,48 @@ export class OrdersService {
       // item-level cancel
       targetItems = [];
       for (const itemId of itemIds) {
-        const found = allItems.find(({ item }) => item._id.toString() === itemId);
+        const found = allItems.find(
+          ({ item }) => item._id.toString() === itemId,
+        );
         if (!found) throw new BadRequestException(`Item not found: ${itemId}`);
-        if (found.item.status === 'cancelled') throw new BadRequestException(`Item "${found.item.name}" is already cancelled`);
-        if (BLOCKED.includes(found.item.status)) throw new BadRequestException(`Item "${found.item.name}" cannot be cancelled — status: ${found.item.status}`);
+        if (found.item.status === 'cancelled')
+          throw new BadRequestException(
+            `Item "${found.item.name}" is already cancelled`,
+          );
+        if (BLOCKED.includes(found.item.status))
+          throw new BadRequestException(
+            `Item "${found.item.name}" cannot be cancelled — status: ${found.item.status}`,
+          );
         targetItems.push(found);
       }
     } else {
       // full order cancel — koi bhi item shipped nahi honi chahiye
-      const blockedItem = allItems.find(({ item }) => BLOCKED.slice(0, 3).includes(item.status));
-      if (blockedItem) throw new BadRequestException(`Cannot cancel order — "${blockedItem.item.name}" is already ${blockedItem.item.status}`);
+      const blockedItem = allItems.find(({ item }) =>
+        BLOCKED.slice(0, 3).includes(item.status),
+      );
+      if (blockedItem)
+        throw new BadRequestException(
+          `Cannot cancel order — "${blockedItem.item.name}" is already ${blockedItem.item.status}`,
+        );
       targetItems = allItems.filter(({ item }) => item.status !== 'cancelled');
     }
 
-    if (targetItems.length === 0) throw new BadRequestException('No items to cancel');
+    if (targetItems.length === 0)
+      throw new BadRequestException('No items to cancel');
 
     const updateData: any = {};
 
     for (const { soIndex, itemIndex, item } of targetItems) {
-      updateData[`sellerOrders.${soIndex}.items.${itemIndex}.status`] = 'cancelled';
-      updateData[`sellerOrders.${soIndex}.items.${itemIndex}.cancelledAt`] = now;
-      updateData[`sellerOrders.${soIndex}.items.${itemIndex}.cancelReason`] = reason;
+      updateData[`sellerOrders.${soIndex}.items.${itemIndex}.status`] =
+        'cancelled';
+      updateData[`sellerOrders.${soIndex}.items.${itemIndex}.cancelledAt`] =
+        now;
+      updateData[`sellerOrders.${soIndex}.items.${itemIndex}.cancelReason`] =
+        reason;
       if (order.isPaid) {
-        updateData[`sellerOrders.${soIndex}.items.${itemIndex}.refundedAmount`] = item.totalPrice;
+        updateData[
+          `sellerOrders.${soIndex}.items.${itemIndex}.refundedAmount`
+        ] = item.totalPrice;
       }
 
       // physical item — stock wapas restore (skip unlimited-stock variants)
@@ -695,7 +890,9 @@ export class OrdersService {
     // sellerOrder status recalculate
     order.sellerOrders.forEach((so: any, soIndex: number) => {
       const updatedStatuses = so.items.map((item: any, itemIndex: number) => {
-        const wasUpdated = targetItems.find((t) => t.soIndex === soIndex && t.itemIndex === itemIndex);
+        const wasUpdated = targetItems.find(
+          (t) => t.soIndex === soIndex && t.itemIndex === itemIndex,
+        );
         return wasUpdated ? 'cancelled' : item.status;
       });
       if (updatedStatuses.every((s: string) => s === 'cancelled')) {
@@ -706,8 +903,9 @@ export class OrdersService {
     });
 
     // overall orderStatus recalculate
-    const updatedSOStatuses = order.sellerOrders.map((so: any, soIndex: number) =>
-      updateData[`sellerOrders.${soIndex}.status`] ?? so.status,
+    const updatedSOStatuses = order.sellerOrders.map(
+      (so: any, soIndex: number) =>
+        updateData[`sellerOrders.${soIndex}.status`] ?? so.status,
     );
     if (updatedSOStatuses.every((s: string) => s === 'cancelled')) {
       updateData.orderStatus = 'cancelled';
@@ -720,21 +918,30 @@ export class OrdersService {
 
     await orderModel.findByIdAndUpdate(orderId, { $set: updateData });
 
-    const affectedSellerIds = [...new Set(targetItems.map(({ soIndex }) => order.sellerOrders[soIndex].sellerId))];
+    const affectedSellerIds = [
+      ...new Set(
+        targetItems.map(({ soIndex }) => order.sellerOrders[soIndex].sellerId),
+      ),
+    ];
     affectedSellerIds.forEach((sellerOrderSellerId) => {
-      this.notificationsService.notify({
-        recipientId: sellerOrderSellerId,
-        recipientRole: 'seller',
-        type: NOTIFICATION_TYPES.ORDER_CANCELLED,
-        title: 'Order cancelled by buyer',
-        body: `Order #${orderId} was cancelled by the buyer — ${reason}`,
-        data: { orderId },
-      }).catch(() => {});
+      this.notificationsService
+        .notify({
+          recipientId: sellerOrderSellerId,
+          recipientRole: 'seller',
+          type: NOTIFICATION_TYPES.ORDER_CANCELLED,
+          title: 'Order cancelled by buyer',
+          body: `Order #${orderId} was cancelled by the buyer — ${reason}`,
+          data: { orderId },
+        })
+        .catch(() => {});
     });
 
     return {
       success: true,
-      message: targetItems.length === allItems.length ? 'Order cancelled successfully' : `${targetItems.length} item(s) cancelled successfully`,
+      message:
+        targetItems.length === allItems.length
+          ? 'Order cancelled successfully'
+          : `${targetItems.length} item(s) cancelled successfully`,
       data: {
         orderId,
         cancelledItems: targetItems.length,
@@ -744,7 +951,8 @@ export class OrdersService {
   }
 
   async getSellerReturns(sellerId: string, query: any) {
-    const { orderModel, storeModel, userModel } = this.databaseService.repositories;
+    const { orderModel, storeModel, userModel } =
+      this.databaseService.repositories;
     const { storeId, status, page: pageStr } = query;
 
     const page = parseInt(pageStr) || 1;
@@ -754,13 +962,22 @@ export class OrdersService {
     let storeIds: string[];
 
     if (storeId) {
-      const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
-      if (!store) throw new ForbiddenException('Store not found or unauthorized');
+      const store = await storeModel.findOne({
+        _id: storeId,
+        sellerId,
+        isDelete: false,
+      });
+      if (!store)
+        throw new ForbiddenException('Store not found or unauthorized');
       storeIds = [storeId];
     } else {
-      const stores = await storeModel.find({ sellerId, isDelete: false }).select('_id').lean();
+      const stores = await storeModel
+        .find({ sellerId, isDelete: false })
+        .select('_id')
+        .lean();
       storeIds = (stores as any[]).map((s) => s._id.toString());
-      if (storeIds.length === 0) throw new BadRequestException('No stores found for this seller');
+      if (storeIds.length === 0)
+        throw new BadRequestException('No stores found for this seller');
     }
 
     const allOrders = await orderModel
@@ -777,21 +994,30 @@ export class OrdersService {
         totalOrderItems += so.items.length;
         for (const item of so.items) {
           if (!item.returnStatus || item.returnStatus === 'none') continue;
-          if (status && status !== 'all' && item.returnStatus !== status) continue;
+          if (status && status !== 'all' && item.returnStatus !== status)
+            continue;
           returnItems.push({ order, so, item });
         }
       }
     }
 
     // stats
-    const openRequests = returnItems.filter(({ item }) => item.returnStatus === 'requested').length;
-    const returnRate = totalOrderItems > 0
-      ? parseFloat(((returnItems.length / totalOrderItems) * 100).toFixed(1))
-      : 0;
+    const openRequests = returnItems.filter(
+      ({ item }) => item.returnStatus === 'requested',
+    ).length;
+    const returnRate =
+      totalOrderItems > 0
+        ? parseFloat(((returnItems.length / totalOrderItems) * 100).toFixed(1))
+        : 0;
 
     const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
     const totalRefunded = returnItems
-      .filter(({ item }) => item.returnStatus === 'approved' && item.returnRequestedAt && new Date(item.returnRequestedAt) >= thirtyDaysAgo)
+      .filter(
+        ({ item }) =>
+          item.returnStatus === 'approved' &&
+          item.returnRequestedAt &&
+          new Date(item.returnRequestedAt) >= thirtyDaysAgo,
+      )
       .reduce((sum, { item }) => sum + (item.refundedAmount || 0), 0);
 
     // paginate
@@ -801,7 +1027,10 @@ export class OrdersService {
 
     const list = await Promise.all(
       paginated.map(async ({ order, so, item }) => {
-        const user = await userModel.findById(order.userId).select('name email').lean();
+        const user = await userModel
+          .findById(order.userId)
+          .select('name email')
+          .lean();
         return {
           orderId: order._id,
           orderNumber: order.orderNumber,
@@ -843,16 +1072,26 @@ export class OrdersService {
 
     const { orderModel } = this.databaseService.repositories;
 
-    const order = await orderModel.findOne({ _id: orderId, userId, isDelete: false });
+    const order = await orderModel.findOne({
+      _id: orderId,
+      userId,
+      isDelete: false,
+    });
     if (!order) throw new NotFoundException('Order not found');
 
-    if (order.orderStatus === 'cancelled') throw new BadRequestException('Cancelled orders cannot be returned');
+    if (order.orderStatus === 'cancelled')
+      throw new BadRequestException('Cancelled orders cannot be returned');
     if (['pending', 'processing'].includes(order.orderStatus))
       throw new BadRequestException('Order not yet delivered');
 
     const now = new Date();
 
-    const allItems: { soIndex: number; itemIndex: number; item: any; so: any }[] = [];
+    const allItems: {
+      soIndex: number;
+      itemIndex: number;
+      item: any;
+      so: any;
+    }[] = [];
     order.sellerOrders.forEach((so: any, soIndex: number) => {
       so.items.forEach((item: any, itemIndex: number) => {
         allItems.push({ soIndex, itemIndex, item, so });
@@ -864,7 +1103,9 @@ export class OrdersService {
     if (itemIds && Array.isArray(itemIds) && itemIds.length > 0) {
       targetItems = [];
       for (const itemId of itemIds) {
-        const found = allItems.find(({ item }) => item._id.toString() === itemId);
+        const found = allItems.find(
+          ({ item }) => item._id.toString() === itemId,
+        );
         if (!found) throw new BadRequestException(`Item not found: ${itemId}`);
         targetItems.push(found);
       }
@@ -873,36 +1114,61 @@ export class OrdersService {
     }
 
     for (const { item, so } of targetItems) {
-      if (item.type === 'digital') throw new BadRequestException(`"${item.name}" is a digital product — cannot be returned`);
-      if (!['delivered', 'completed'].includes(so.status)) throw new BadRequestException(`"${item.name}" is not yet delivered`);
-      if (item.status === 'cancelled') throw new BadRequestException(`Cancelled item "${item.name}" cannot be returned`);
-      if (item.returnStatus && item.returnStatus !== 'none') throw new BadRequestException(`Return already requested for "${item.name}"`);
+      if (item.type === 'digital')
+        throw new BadRequestException(
+          `"${item.name}" is a digital product — cannot be returned`,
+        );
+      if (!['delivered', 'completed'].includes(so.status))
+        throw new BadRequestException(`"${item.name}" is not yet delivered`);
+      if (item.status === 'cancelled')
+        throw new BadRequestException(
+          `Cancelled item "${item.name}" cannot be returned`,
+        );
+      if (item.returnStatus && item.returnStatus !== 'none')
+        throw new BadRequestException(
+          `Return already requested for "${item.name}"`,
+        );
     }
 
     const updateData: any = {};
 
     for (const { soIndex, itemIndex } of targetItems) {
-      updateData[`sellerOrders.${soIndex}.items.${itemIndex}.returnStatus`] = 'requested';
-      updateData[`sellerOrders.${soIndex}.items.${itemIndex}.returnReason`] = reason;
-      updateData[`sellerOrders.${soIndex}.items.${itemIndex}.returnRequestedAt`] = now;
+      updateData[`sellerOrders.${soIndex}.items.${itemIndex}.returnStatus`] =
+        'requested';
+      updateData[`sellerOrders.${soIndex}.items.${itemIndex}.returnReason`] =
+        reason;
+      updateData[
+        `sellerOrders.${soIndex}.items.${itemIndex}.returnRequestedAt`
+      ] = now;
     }
 
     // sellerOrder returnStatus recalculate
     order.sellerOrders.forEach((so: any, soIndex: number) => {
-      const physicalActive = so.items.filter((i: any) => i.type === 'physical' && i.status !== 'cancelled');
+      const physicalActive = so.items.filter(
+        (i: any) => i.type === 'physical' && i.status !== 'cancelled',
+      );
       if (physicalActive.length === 0) return;
 
       const effectiveStatuses = physicalActive.map((item: any) => {
         const globalIdx = so.items.indexOf(item);
-        const wasUpdated = targetItems.find((t) => t.soIndex === soIndex && t.itemIndex === globalIdx);
-        return wasUpdated ? 'requested' : (item.returnStatus || 'none');
+        const wasUpdated = targetItems.find(
+          (t) => t.soIndex === soIndex && t.itemIndex === globalIdx,
+        );
+        return wasUpdated ? 'requested' : item.returnStatus || 'none';
       });
 
-      const allRequested = effectiveStatuses.every((s: string) => s === 'requested');
-      const anyRequested = effectiveStatuses.some((s: string) => s === 'requested');
+      const allRequested = effectiveStatuses.every(
+        (s: string) => s === 'requested',
+      );
+      const anyRequested = effectiveStatuses.some(
+        (s: string) => s === 'requested',
+      );
 
-      if (allRequested) updateData[`sellerOrders.${soIndex}.returnStatus`] = 'requested';
-      else if (anyRequested) updateData[`sellerOrders.${soIndex}.returnStatus`] = 'partial_requested';
+      if (allRequested)
+        updateData[`sellerOrders.${soIndex}.returnStatus`] = 'requested';
+      else if (anyRequested)
+        updateData[`sellerOrders.${soIndex}.returnStatus`] =
+          'partial_requested';
     });
 
     await orderModel.findByIdAndUpdate(orderId, { $set: updateData });
@@ -914,43 +1180,70 @@ export class OrdersService {
     };
   }
 
-  async returnAction(sellerId: string, orderId: string, body: any, ip?: string, userAgent?: string) {
+  async returnAction(
+    sellerId: string,
+    orderId: string,
+    body: any,
+    ip?: string,
+    userAgent?: string,
+  ) {
     const { storeId, itemIds, action, rejectReason } = body;
     if (!storeId) throw new BadRequestException('storeId is required');
-    if (!itemIds || !Array.isArray(itemIds) || itemIds.length === 0) throw new BadRequestException('itemIds are required');
-    if (!action || !['approve', 'reject'].includes(action)) throw new BadRequestException('action must be approve or reject');
+    if (!itemIds || !Array.isArray(itemIds) || itemIds.length === 0)
+      throw new BadRequestException('itemIds are required');
+    if (!action || !['approve', 'reject'].includes(action))
+      throw new BadRequestException('action must be approve or reject');
 
     const { orderModel, storeModel } = this.databaseService.repositories;
 
     const order = await orderModel.findOne({ _id: orderId, isDelete: false });
     if (!order) throw new NotFoundException('Order not found');
 
-    const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
+    const store = await storeModel.findOne({
+      _id: storeId,
+      sellerId,
+      isDelete: false,
+    });
     if (!store) throw new ForbiddenException('Store not found or unauthorized');
 
-    const soIndex = order.sellerOrders.findIndex((so: any) => so.storeId === storeId);
-    if (soIndex === -1) throw new BadRequestException('No orders found for this store');
+    const soIndex = order.sellerOrders.findIndex(
+      (so: any) => so.storeId === storeId,
+    );
+    if (soIndex === -1)
+      throw new BadRequestException('No orders found for this store');
 
     const sellerOrder = order.sellerOrders[soIndex];
     const updateData: any = {};
     const targetItems: { itemIndex: number; item: any }[] = [];
 
     for (const itemId of itemIds) {
-      const itemIndex = sellerOrder.items.findIndex((i: any) => i._id.toString() === itemId);
-      if (itemIndex === -1) throw new BadRequestException(`Item not found: ${itemId}`);
+      const itemIndex = sellerOrder.items.findIndex(
+        (i: any) => i._id.toString() === itemId,
+      );
+      if (itemIndex === -1)
+        throw new BadRequestException(`Item not found: ${itemId}`);
       const item = sellerOrder.items[itemIndex];
-      if (item.returnStatus !== 'requested') throw new BadRequestException(`"${item.name}" has no pending return request`);
+      if (item.returnStatus !== 'requested')
+        throw new BadRequestException(
+          `"${item.name}" has no pending return request`,
+        );
       targetItems.push({ itemIndex, item });
     }
 
     for (const { itemIndex, item } of targetItems) {
       if (action === 'approve') {
-        updateData[`sellerOrders.${soIndex}.items.${itemIndex}.returnStatus`] = 'approved';
-        updateData[`sellerOrders.${soIndex}.items.${itemIndex}.refundedAmount`] = item.totalPrice;
+        updateData[`sellerOrders.${soIndex}.items.${itemIndex}.returnStatus`] =
+          'approved';
+        updateData[
+          `sellerOrders.${soIndex}.items.${itemIndex}.refundedAmount`
+        ] = item.totalPrice;
       } else {
-        updateData[`sellerOrders.${soIndex}.items.${itemIndex}.returnStatus`] = 'rejected';
+        updateData[`sellerOrders.${soIndex}.items.${itemIndex}.returnStatus`] =
+          'rejected';
         if (rejectReason) {
-          updateData[`sellerOrders.${soIndex}.items.${itemIndex}.returnRejectReason`] = rejectReason;
+          updateData[
+            `sellerOrders.${soIndex}.items.${itemIndex}.returnRejectReason`
+          ] = rejectReason;
         }
       }
     }
@@ -967,19 +1260,28 @@ export class OrdersService {
       return action === 'approve' ? 'approved' : 'rejected';
     });
 
-    const allApproved  = effectiveStatuses.every((s: string) => s === 'approved');
-    const anyApproved  = effectiveStatuses.some((s: string) => s === 'approved');
-    const allRequested = effectiveStatuses.every((s: string) => s === 'requested');
-    const anyRequested = effectiveStatuses.some((s: string) => s === 'requested');
-    const allRejected  = effectiveStatuses.filter((s: string) => s !== 'none').every((s: string) => s === 'rejected');
+    const allApproved = effectiveStatuses.every(
+      (s: string) => s === 'approved',
+    );
+    const anyApproved = effectiveStatuses.some((s: string) => s === 'approved');
+    const allRequested = effectiveStatuses.every(
+      (s: string) => s === 'requested',
+    );
+    const anyRequested = effectiveStatuses.some(
+      (s: string) => s === 'requested',
+    );
+    const allRejected = effectiveStatuses
+      .filter((s: string) => s !== 'none')
+      .every((s: string) => s === 'rejected');
 
     let newSellerReturnStatus: string;
-    if (allApproved)       newSellerReturnStatus = 'approved';
-    else if (anyApproved)  newSellerReturnStatus = 'partial_approved'; // approved wins even if kuch rejected
+    if (allApproved) newSellerReturnStatus = 'approved';
+    else if (anyApproved)
+      newSellerReturnStatus = 'partial_approved'; // approved wins even if kuch rejected
     else if (allRequested) newSellerReturnStatus = 'requested';
     else if (anyRequested) newSellerReturnStatus = 'partial_requested';
-    else if (allRejected)  newSellerReturnStatus = 'rejected';
-    else                   newSellerReturnStatus = 'none';
+    else if (allRejected) newSellerReturnStatus = 'rejected';
+    else newSellerReturnStatus = 'none';
 
     updateData[`sellerOrders.${soIndex}.returnStatus`] = newSellerReturnStatus;
 
@@ -991,16 +1293,28 @@ export class OrdersService {
 
     let refundProcessed = false;
     if (action === 'approve' && order.isPaid) {
-      const refundAmount = targetItems.reduce((sum, t) => sum + (t.item.totalPrice || 0), 0);
+      const refundAmount = targetItems.reduce(
+        (sum, t) => sum + (t.item.totalPrice || 0),
+        0,
+      );
       if (refundAmount > 0) {
         try {
-          await this.financeService.recordRefund(storeId, sellerId, orderId, refundAmount, sellerId, 'seller');
+          await this.financeService.recordRefund(
+            storeId,
+            sellerId,
+            orderId,
+            refundAmount,
+            sellerId,
+            'seller',
+          );
           refundProcessed = true;
         } catch (e) {
           console.error('Finance recordRefund failed:', e?.message);
         }
 
-        this.loyaltyService.clawbackPurchasePoints(storeId, order.userId, orderId, refundAmount).catch(() => {});
+        this.loyaltyService
+          .clawbackPurchasePoints(storeId, order.userId, orderId, refundAmount)
+          .catch(() => {});
       }
     }
 
@@ -1019,7 +1333,10 @@ export class OrdersService {
 
     return {
       success: true,
-      message: action === 'approve' ? `Return approved for ${targetItems.length} item(s)` : `Return rejected for ${targetItems.length} item(s)`,
+      message:
+        action === 'approve'
+          ? `Return approved for ${targetItems.length} item(s)`
+          : `Return rejected for ${targetItems.length} item(s)`,
       data: {
         orderId,
         action,
@@ -1047,8 +1364,12 @@ export class OrdersService {
     if (order.userId !== userId) throw new ForbiddenException('Unauthorized');
     if (!order.isPaid) throw new BadRequestException('Order is not paid');
 
-    const product = await productModel.findOne({ _id: productId, isDelete: false });
-    if (!product?.digital?.files?.length) throw new NotFoundException('Product files not found');
+    const product = await productModel.findOne({
+      _id: productId,
+      isDelete: false,
+    });
+    if (!product?.digital?.files?.length)
+      throw new NotFoundException('Product files not found');
 
     const file = product.digital.files[fileIndex];
     if (!file) throw new NotFoundException('File not found');
@@ -1076,20 +1397,36 @@ export class OrdersService {
       }
 
       if (currentCount >= limitNum) {
-        throw new BadRequestException(`Download limit reached (${limitNum}/${limitNum})`);
+        throw new BadRequestException(
+          `Download limit reached (${limitNum}/${limitNum})`,
+        );
       }
 
       // count increment
       const updatePath = `sellerOrders.${sellerOrderIndex}.items.${itemIndex}.downloadCount`;
-      await orderModel.findByIdAndUpdate(orderId, { $inc: { [updatePath]: 1 } });
+      await orderModel.findByIdAndUpdate(orderId, {
+        $inc: { [updatePath]: 1 },
+      });
     }
 
-    const mimeType = this.uploadService.resolveMimeType(file.name, file.mimeType ?? 'application/octet-stream');
-    const resourceType = mimeType.startsWith('video/') ? 'video' : mimeType.startsWith('image/') ? 'image' : 'raw';
-    const signedUrl = this.uploadService.generateSignedUrl(file.url, resourceType, 300);
+    const mimeType = this.uploadService.resolveMimeType(
+      file.name,
+      file.mimeType ?? 'application/octet-stream',
+    );
+    const resourceType = mimeType.startsWith('video/')
+      ? 'video'
+      : mimeType.startsWith('image/')
+        ? 'image'
+        : 'raw';
+    const signedUrl = this.uploadService.generateSignedUrl(
+      file.url,
+      resourceType,
+      300,
+    );
 
     const response = await fetch(signedUrl);
-    if (!response.ok) throw new BadRequestException('Failed to fetch file from storage');
+    if (!response.ok)
+      throw new BadRequestException('Failed to fetch file from storage');
 
     const arrayBuffer = await response.arrayBuffer();
     return { buffer: Buffer.from(arrayBuffer), fileName: file.name, mimeType };

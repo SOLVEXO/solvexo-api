@@ -1,4 +1,3 @@
-/* eslint-disable prettier/prettier */
 import { PartialType } from '@nestjs/swagger';
 import { CreateRedirectDto } from './create-redirect.dto';
 

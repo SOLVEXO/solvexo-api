@@ -18,9 +18,13 @@ export class PaymentService {
     private readonly notificationsService: NotificationsService,
     private readonly configService: ConfigService,
   ) {
-    const secretKey = this.configService.get<string>('STRIPE_SECRET_KEY')?.trim();
+    const secretKey = this.configService
+      .get<string>('STRIPE_SECRET_KEY')
+      ?.trim();
     if (secretKey) {
-      this.stripe = new Stripe(secretKey, { apiVersion: '2025-04-30.basil' as any });
+      this.stripe = new Stripe(secretKey, {
+        apiVersion: '2025-04-30.basil' as any,
+      });
     } else {
       // Matches the pattern in subscriptions/payment-gateway — degrade
       // gracefully rather than crash the whole app when the key hasn't
@@ -31,7 +35,9 @@ export class PaymentService {
     }
   }
 
-  private round(n: number) { return Math.round(n * 100) / 100; }
+  private round(n: number) {
+    return Math.round(n * 100) / 100;
+  }
 
   private assertStripeConfigured(): InstanceType<typeof Stripe> {
     if (!this.stripe) {
@@ -53,20 +59,35 @@ export class PaymentService {
     const { checkoutModel, paymentTransactionModel, productVariantModel } =
       this.databaseService.repositories;
 
-    const checkout = await checkoutModel.findOne({ _id: checkoutId, userId, isDelete: false });
+    const checkout = await checkoutModel.findOne({
+      _id: checkoutId,
+      userId,
+      isDelete: false,
+    });
     if (!checkout) throw new NotFoundException('Checkout not found');
-    if (checkout.status === 'completed') throw new BadRequestException('Checkout already completed');
-    if (checkout.status === 'cancelled') throw new BadRequestException('Checkout is cancelled');
-    if (checkout.status === 'expired') throw new BadRequestException('Checkout has expired');
+    if (checkout.status === 'completed')
+      throw new BadRequestException('Checkout already completed');
+    if (checkout.status === 'cancelled')
+      throw new BadRequestException('Checkout is cancelled');
+    if (checkout.status === 'expired')
+      throw new BadRequestException('Checkout has expired');
     if (checkout.expiredAt && checkout.expiredAt < new Date()) {
-      await checkoutModel.findByIdAndUpdate(checkout._id, { status: 'expired' });
+      await checkoutModel.findByIdAndUpdate(checkout._id, {
+        status: 'expired',
+      });
       throw new BadRequestException('Checkout has expired');
     }
 
-    const physicalItems = checkout.items.filter((i: any) => i.type === 'physical');
+    const physicalItems = checkout.items.filter(
+      (i: any) => i.type === 'physical',
+    );
     for (const item of physicalItems) {
-      const variant = await productVariantModel.findOne({ _id: item.variantId, isDelete: false });
-      if (!variant) throw new BadRequestException(`Item not available: ${item.name}`);
+      const variant = await productVariantModel.findOne({
+        _id: item.variantId,
+        isDelete: false,
+      });
+      if (!variant)
+        throw new BadRequestException(`Item not available: ${item.name}`);
       if (!variant.unlimitedStock && variant.stock < item.quantity) {
         throw new BadRequestException(`Insufficient stock for ${item.name}`);
       }
@@ -90,8 +111,14 @@ export class PaymentService {
 
     if (existing?.stripePaymentIntentId) {
       try {
-        const pi = await stripe.paymentIntents.retrieve(existing.stripePaymentIntentId);
-        const reusable = ['requires_payment_method', 'requires_confirmation', 'requires_action'].includes(pi.status);
+        const pi = await stripe.paymentIntents.retrieve(
+          existing.stripePaymentIntentId,
+        );
+        const reusable = [
+          'requires_payment_method',
+          'requires_confirmation',
+          'requires_action',
+        ].includes(pi.status);
         const amountMatches = pi.amount === amountCents;
         if (reusable && amountMatches) {
           return {
@@ -105,10 +132,15 @@ export class PaymentService {
             },
           };
         }
-        if (reusable) await stripe.paymentIntents.cancel(pi.id).catch(() => null);
-        await paymentTransactionModel.findByIdAndUpdate(existing._id, { status: 'failed' });
+        if (reusable)
+          await stripe.paymentIntents.cancel(pi.id).catch(() => null);
+        await paymentTransactionModel.findByIdAndUpdate(existing._id, {
+          status: 'failed',
+        });
       } catch {
-        await paymentTransactionModel.findByIdAndUpdate(existing._id, { status: 'failed' });
+        await paymentTransactionModel.findByIdAndUpdate(existing._id, {
+          status: 'failed',
+        });
       }
     }
 
@@ -119,12 +151,17 @@ export class PaymentService {
           amount: amountCents,
           currency: checkout.currency?.toLowerCase() || 'usd',
           metadata: { checkoutId: checkout._id.toString(), userId },
-          automatic_payment_methods: { enabled: true, allow_redirects: 'never' },
+          automatic_payment_methods: {
+            enabled: true,
+            allow_redirects: 'never',
+          },
         },
         { idempotencyKey },
       );
     } catch (err: any) {
-      throw new BadRequestException(`Payment initiation failed: ${err?.message || 'Stripe error'}`);
+      throw new BadRequestException(
+        `Payment initiation failed: ${err?.message || 'Stripe error'}`,
+      );
     }
 
     await paymentTransactionModel.create({
@@ -137,7 +174,10 @@ export class PaymentService {
       stripeClientSecret: paymentIntent.client_secret,
     });
 
-    await checkoutModel.findByIdAndUpdate(checkoutId, { paymentType: 'stripe', status: 'payment_pending' });
+    await checkoutModel.findByIdAndUpdate(checkoutId, {
+      paymentType: 'stripe',
+      status: 'payment_pending',
+    });
 
     return {
       success: true,
@@ -159,7 +199,8 @@ export class PaymentService {
    *  never arrives at all. */
   async stripeWebhook(rawBody: Buffer, signature: string) {
     const stripe = this.assertStripeConfigured();
-    const webhookSecret = this.configService.get<string>('STRIPE_WEBHOOK_SECRET_TEST') || '';
+    const webhookSecret =
+      this.configService.get<string>('STRIPE_WEBHOOK_SECRET_TEST') || '';
 
     let event: any;
     try {
@@ -169,14 +210,20 @@ export class PaymentService {
     }
 
     if (event.type === 'payment_intent.succeeded') {
-      const paymentIntent = event.data.object as any;
+      const paymentIntent = event.data.object;
       await this.finalizePaymentIntent(paymentIntent.id).catch((err: any) => {
-        console.error('Webhook finalize failed:', err?.message, { paymentIntentId: paymentIntent.id });
+        console.error('Webhook finalize failed:', err?.message, {
+          paymentIntentId: paymentIntent.id,
+        });
       });
     } else if (event.type === 'payment_intent.payment_failed') {
-      const paymentIntent = event.data.object as any;
+      const paymentIntent = event.data.object;
       await this.databaseService.repositories.paymentTransactionModel.findOneAndUpdate(
-        { stripePaymentIntentId: paymentIntent.id, status: 'pending', isDelete: false },
+        {
+          stripePaymentIntentId: paymentIntent.id,
+          status: 'pending',
+          isDelete: false,
+        },
         { status: 'failed' },
       );
     }
@@ -195,47 +242,88 @@ export class PaymentService {
   private async formatOrdersByIds(orderIds: string[]) {
     if (!orderIds.length) return [];
     const { orderModel } = this.databaseService.repositories;
-    const orders = await orderModel.find({ _id: { $in: orderIds }, isDelete: false }).lean();
+    const orders = await orderModel
+      .find({ _id: { $in: orderIds }, isDelete: false })
+      .lean();
     return orders.map((o: any) => this.formatOrder(o));
   }
 
-  private async finalizePaymentIntent(paymentIntentId: string): Promise<{ orderIds: string[] } | null> {
-    const { checkoutModel, paymentTransactionModel, orderModel, addressModel, cartModel } =
-      this.databaseService.repositories;
+  private async finalizePaymentIntent(
+    paymentIntentId: string,
+  ): Promise<{ orderIds: string[] } | null> {
+    const {
+      checkoutModel,
+      paymentTransactionModel,
+      orderModel,
+      addressModel,
+      cartModel,
+    } = this.databaseService.repositories;
 
     const transaction = await paymentTransactionModel.findOneAndUpdate(
-      { stripePaymentIntentId: paymentIntentId, status: 'pending', isDelete: false },
+      {
+        stripePaymentIntentId: paymentIntentId,
+        status: 'pending',
+        isDelete: false,
+      },
       { status: 'completed', paidAt: new Date() },
       { new: true },
     );
 
     if (!transaction) {
-      const existing = await paymentTransactionModel.findOne({ stripePaymentIntentId: paymentIntentId, isDelete: false });
-      return existing?.status === 'completed' ? { orderIds: existing.orderIds } : null;
+      const existing = await paymentTransactionModel.findOne({
+        stripePaymentIntentId: paymentIntentId,
+        isDelete: false,
+      });
+      return existing?.status === 'completed'
+        ? { orderIds: existing.orderIds }
+        : null;
     }
 
-    const checkout = await checkoutModel.findOne({ _id: transaction.checkoutId, isDelete: false });
+    const checkout = await checkoutModel.findOne({
+      _id: transaction.checkoutId,
+      isDelete: false,
+    });
     if (!checkout || checkout.status === 'completed') {
       return { orderIds: transaction.orderIds };
     }
 
     let orders: any[];
     try {
-      orders = await this.createOrder(transaction.userId, checkout, orderModel, addressModel, 'stripe', true);
+      orders = await this.createOrder(
+        transaction.userId,
+        checkout,
+        orderModel,
+        addressModel,
+        'stripe',
+        true,
+      );
     } catch (err: any) {
-      await paymentTransactionModel.findByIdAndUpdate(transaction._id, { status: 'pending', paidAt: null });
-      console.error('createOrder failed while finalizing payment:', err?.message, {
-        checkoutId: checkout._id,
-        paymentIntentId,
+      await paymentTransactionModel.findByIdAndUpdate(transaction._id, {
+        status: 'pending',
+        paidAt: null,
       });
+      console.error(
+        'createOrder failed while finalizing payment:',
+        err?.message,
+        {
+          checkoutId: checkout._id,
+          paymentIntentId,
+        },
+      );
       throw new BadRequestException('Order creation failed, will retry');
     }
 
     await paymentTransactionModel.findByIdAndUpdate(transaction._id, {
       orderIds: orders.map((o: any) => o._id.toString()),
     });
-    await checkoutModel.findByIdAndUpdate(checkout._id, { status: 'completed' });
-    await this.removeCheckedOutItemsFromCart(transaction.userId, checkout, cartModel);
+    await checkoutModel.findByIdAndUpdate(checkout._id, {
+      status: 'completed',
+    });
+    await this.removeCheckedOutItemsFromCart(
+      transaction.userId,
+      checkout,
+      cartModel,
+    );
 
     // Seller notifications are already sent inside `createOrder()` above —
     // no need to duplicate that here.
@@ -251,26 +339,38 @@ export class PaymentService {
   async getPaymentStatus(userId: string, checkoutId: string) {
     if (!checkoutId) throw new BadRequestException('checkoutId is required');
 
-    const { checkoutModel, paymentTransactionModel } = this.databaseService.repositories;
+    const { checkoutModel, paymentTransactionModel } =
+      this.databaseService.repositories;
 
-    const checkout = await checkoutModel.findOne({ _id: checkoutId, userId, isDelete: false });
+    const checkout = await checkoutModel.findOne({
+      _id: checkoutId,
+      userId,
+      isDelete: false,
+    });
     if (!checkout) throw new NotFoundException('Checkout not found');
 
     if (checkout.status === 'completed') {
       const transaction = await paymentTransactionModel.findOne({
-        checkoutId, status: 'completed', isDelete: false,
+        checkoutId,
+        status: 'completed',
+        isDelete: false,
       });
       const orders = await this.formatOrdersByIds(transaction?.orderIds ?? []);
       return { success: true, data: { status: 'completed', orders } };
     }
 
     const pending = await paymentTransactionModel.findOne({
-      checkoutId, status: 'pending', paymentType: 'stripe', isDelete: false,
+      checkoutId,
+      status: 'pending',
+      paymentType: 'stripe',
+      isDelete: false,
     });
 
     if (this.stripe && pending?.stripePaymentIntentId) {
       try {
-        const pi = await this.stripe.paymentIntents.retrieve(pending.stripePaymentIntentId);
+        const pi = await this.stripe.paymentIntents.retrieve(
+          pending.stripePaymentIntentId,
+        );
         if (pi.status === 'succeeded') {
           const result = await this.finalizePaymentIntent(pi.id);
           const orders = await this.formatOrdersByIds(result?.orderIds ?? []);
@@ -289,7 +389,11 @@ export class PaymentService {
 
   // Remove ONLY the lines that were part of this checkout — a checkout created
   // from selected cart items must leave the unselected lines in the cart.
-  private async removeCheckedOutItemsFromCart(userId: string, checkout: any, cartModel: any) {
+  private async removeCheckedOutItemsFromCart(
+    userId: string,
+    checkout: any,
+    cartModel: any,
+  ) {
     const purchasedLines = (checkout.items as any[]).map((i: any) => ({
       productId: i.productId,
       productVariantId: i.variantId,
@@ -306,25 +410,47 @@ export class PaymentService {
     const { checkoutId } = body;
     if (!checkoutId) throw new BadRequestException('checkoutId is required');
 
-    const { checkoutModel, paymentTransactionModel, orderModel, addressModel, productVariantModel, cartModel } =
-      this.databaseService.repositories;
+    const {
+      checkoutModel,
+      paymentTransactionModel,
+      orderModel,
+      addressModel,
+      productVariantModel,
+      cartModel,
+    } = this.databaseService.repositories;
 
-    const checkout = await checkoutModel.findOne({ _id: checkoutId, userId, isDelete: false });
+    const checkout = await checkoutModel.findOne({
+      _id: checkoutId,
+      userId,
+      isDelete: false,
+    });
     if (!checkout) throw new NotFoundException('Checkout not found');
-    if (checkout.status === 'completed') throw new BadRequestException('Checkout already completed');
-    if (checkout.status === 'cancelled') throw new BadRequestException('Checkout is cancelled');
-    if (checkout.status === 'expired') throw new BadRequestException('Checkout has expired');
+    if (checkout.status === 'completed')
+      throw new BadRequestException('Checkout already completed');
+    if (checkout.status === 'cancelled')
+      throw new BadRequestException('Checkout is cancelled');
+    if (checkout.status === 'expired')
+      throw new BadRequestException('Checkout has expired');
     if (checkout.expiredAt && checkout.expiredAt < new Date()) {
-      await checkoutModel.findByIdAndUpdate(checkout._id, { status: 'expired' });
+      await checkoutModel.findByIdAndUpdate(checkout._id, {
+        status: 'expired',
+      });
       throw new BadRequestException('Checkout has expired');
     }
 
     const hasDigital = checkout.items.some((i: any) => i.type === 'digital');
-    if (hasDigital) throw new BadRequestException('Cash on Delivery is not available for digital products');
+    if (hasDigital)
+      throw new BadRequestException(
+        'Cash on Delivery is not available for digital products',
+      );
 
     for (const item of checkout.items) {
-      const variant = await productVariantModel.findOne({ _id: item.variantId, isDelete: false });
-      if (!variant) throw new BadRequestException(`Item not available: ${item.name}`);
+      const variant = await productVariantModel.findOne({
+        _id: item.variantId,
+        isDelete: false,
+      });
+      if (!variant)
+        throw new BadRequestException(`Item not available: ${item.name}`);
       if (!variant.unlimitedStock && variant.stock < item.quantity) {
         throw new BadRequestException(
           `Insufficient stock for ${item.name}. Available: ${variant.stock}, required: ${item.quantity}`,
@@ -337,7 +463,14 @@ export class PaymentService {
       status: 'payment_pending',
     });
 
-    const orders = await this.createOrder(userId, checkout, orderModel, addressModel, 'cash_on_delivery', false);
+    const orders = await this.createOrder(
+      userId,
+      checkout,
+      orderModel,
+      addressModel,
+      'cash_on_delivery',
+      false,
+    );
 
     await paymentTransactionModel.create({
       userId,
@@ -401,20 +534,32 @@ export class PaymentService {
     paymentType: string = 'stripe',
     isPaid: boolean = true,
   ) {
-    const { productVariantModel, productModel } = this.databaseService.repositories;
+    const { productVariantModel, productModel } =
+      this.databaseService.repositories;
 
-    const physicalItems = checkout.items.filter((i: any) => i.type === 'physical');
-    const digitalItems = checkout.items.filter((i: any) => i.type === 'digital');
+    const physicalItems = checkout.items.filter(
+      (i: any) => i.type === 'physical',
+    );
+    const digitalItems = checkout.items.filter(
+      (i: any) => i.type === 'digital',
+    );
 
     // --- STOCK MINUS (atomic, sirf physical, unlimited variants skip decrement) ---
     const decremented: { variantId: string; quantity: number }[] = [];
 
     for (const item of physicalItems) {
-      const variant = await productVariantModel.findOne({ _id: item.variantId, isDelete: false }).select('unlimitedStock').lean();
+      const variant = await productVariantModel
+        .findOne({ _id: item.variantId, isDelete: false })
+        .select('unlimitedStock')
+        .lean();
       if (!variant || (variant as any).unlimitedStock) continue;
 
       const res = await productVariantModel.updateOne(
-        { _id: item.variantId, stock: { $gte: item.quantity }, isDelete: false },
+        {
+          _id: item.variantId,
+          stock: { $gte: item.quantity },
+          isDelete: false,
+        },
         { $inc: { stock: -item.quantity } },
       );
 
@@ -425,7 +570,9 @@ export class PaymentService {
             { $inc: { stock: d.quantity } },
           );
         }
-        throw new BadRequestException(`Stock not available for item: ${item.name}`);
+        throw new BadRequestException(
+          `Stock not available for item: ${item.name}`,
+        );
       }
       decremented.push({ variantId: item.variantId, quantity: item.quantity });
     }
@@ -433,7 +580,10 @@ export class PaymentService {
     // --- shipping address (physical ke liye) ---
     let shippingAddress: any = null;
     if (checkout.addressId) {
-      const address = await addressModel.findOne({ _id: checkout.addressId, isDelete: false });
+      const address = await addressModel.findOne({
+        _id: checkout.addressId,
+        isDelete: false,
+      });
       if (address) {
         shippingAddress = {
           recipientName: address.recipientName,
@@ -461,7 +611,12 @@ export class PaymentService {
         // Only items whose campaign is platform-sponsored count toward this
         // restoring this seller's payout — see FinanceService.recordSale.
         const platformSponsoredDiscountUSD = storeItems.reduce(
-          (s, i) => s + (i.campaignSponsorType === 'platform' ? (i.campaignDiscountUSD ?? 0) : 0), 0,
+          (s, i) =>
+            s +
+            (i.campaignSponsorType === 'platform'
+              ? (i.campaignDiscountUSD ?? 0)
+              : 0),
+          0,
         );
         return {
           sellerId: storeItems[0].sellerId,
@@ -516,13 +671,30 @@ export class PaymentService {
     // === PHYSICAL ORDER ===
     if (physicalItems.length > 0) {
       const sellerOrders = buildSellerOrders(physicalItems);
-      const subtotal = physicalItems.reduce((s: number, i: any) => s + i.totalPrice, 0);
+      const subtotal = physicalItems.reduce(
+        (s: number, i: any) => s + i.totalPrice,
+        0,
+      );
       const shippingFee = checkout.shippingFee || 0;
-      const subscriberDiscountTotal = physicalItems.reduce((s: number, i: any) => s + (i.subscriberDiscountUSD ?? 0), 0);
-      const couponDiscountTotal = physicalItems.reduce((s: number, i: any) => s + (i.couponDiscountUSD ?? 0), 0);
-      const campaignDiscountTotal = physicalItems.reduce((s: number, i: any) => s + (i.campaignDiscountUSD ?? 0), 0);
+      const subscriberDiscountTotal = physicalItems.reduce(
+        (s: number, i: any) => s + (i.subscriberDiscountUSD ?? 0),
+        0,
+      );
+      const couponDiscountTotal = physicalItems.reduce(
+        (s: number, i: any) => s + (i.couponDiscountUSD ?? 0),
+        0,
+      );
+      const campaignDiscountTotal = physicalItems.reduce(
+        (s: number, i: any) => s + (i.campaignDiscountUSD ?? 0),
+        0,
+      );
       const platformSponsoredDiscountTotal = physicalItems.reduce(
-        (s: number, i: any) => s + (i.campaignSponsorType === 'platform' ? (i.campaignDiscountUSD ?? 0) : 0), 0,
+        (s: number, i: any) =>
+          s +
+          (i.campaignSponsorType === 'platform'
+            ? (i.campaignDiscountUSD ?? 0)
+            : 0),
+        0,
       );
 
       const physicalOrder = await orderModel.create({
@@ -555,12 +727,29 @@ export class PaymentService {
     // === DIGITAL ORDER ===
     if (digitalItems.length > 0) {
       const sellerOrders = buildSellerOrders(digitalItems);
-      const subtotal = digitalItems.reduce((s: number, i: any) => s + i.totalPrice, 0);
-      const subscriberDiscountTotal = digitalItems.reduce((s: number, i: any) => s + (i.subscriberDiscountUSD ?? 0), 0);
-      const couponDiscountTotal = digitalItems.reduce((s: number, i: any) => s + (i.couponDiscountUSD ?? 0), 0);
-      const campaignDiscountTotal = digitalItems.reduce((s: number, i: any) => s + (i.campaignDiscountUSD ?? 0), 0);
+      const subtotal = digitalItems.reduce(
+        (s: number, i: any) => s + i.totalPrice,
+        0,
+      );
+      const subscriberDiscountTotal = digitalItems.reduce(
+        (s: number, i: any) => s + (i.subscriberDiscountUSD ?? 0),
+        0,
+      );
+      const couponDiscountTotal = digitalItems.reduce(
+        (s: number, i: any) => s + (i.couponDiscountUSD ?? 0),
+        0,
+      );
+      const campaignDiscountTotal = digitalItems.reduce(
+        (s: number, i: any) => s + (i.campaignDiscountUSD ?? 0),
+        0,
+      );
       const platformSponsoredDiscountTotal = digitalItems.reduce(
-        (s: number, i: any) => s + (i.campaignSponsorType === 'platform' ? (i.campaignDiscountUSD ?? 0) : 0), 0,
+        (s: number, i: any) =>
+          s +
+          (i.campaignSponsorType === 'platform'
+            ? (i.campaignDiscountUSD ?? 0)
+            : 0),
+        0,
       );
 
       const digitalOrder = await orderModel.create({
@@ -612,14 +801,16 @@ export class PaymentService {
       for (const so of createdOrder.sellerOrders) {
         if (notifiedSellers.has(`${createdOrder._id}:${so.sellerId}`)) continue;
         notifiedSellers.add(`${createdOrder._id}:${so.sellerId}`);
-        this.notificationsService.notify({
-          recipientId: so.sellerId,
-          recipientRole: 'seller',
-          type: NOTIFICATION_TYPES.ORDER_PLACED,
-          title: 'New order received',
-          body: `You have a new order #${createdOrder.orderNumber} for ${so.items.length} item(s).`,
-          data: { orderId: createdOrder._id.toString() },
-        }).catch(() => {});
+        this.notificationsService
+          .notify({
+            recipientId: so.sellerId,
+            recipientRole: 'seller',
+            type: NOTIFICATION_TYPES.ORDER_PLACED,
+            title: 'New order received',
+            body: `You have a new order #${createdOrder.orderNumber} for ${so.items.length} item(s).`,
+            data: { orderId: createdOrder._id.toString() },
+          })
+          .catch(() => {});
       }
     }
 

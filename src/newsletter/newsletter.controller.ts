@@ -8,17 +8,17 @@ import { SubscribeNewsletterDto } from './dto/subscribe-newsletter.dto';
 @ApiTags('Newsletter (public)')
 @Controller('api/newsletter')
 export class NewsletterController {
-    constructor(private readonly newsletterService: NewsletterService) { }
+  constructor(private readonly newsletterService: NewsletterService) {}
 
-    @Throttle({ default: { limit: 5, ttl: 60_000 } })
-    @Post('subscribe')
-    subscribe(@Body() dto: SubscribeNewsletterDto) {
-        return this.newsletterService.subscribe(dto.email);
-    }
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @Post('subscribe')
+  subscribe(@Body() dto: SubscribeNewsletterDto) {
+    return this.newsletterService.subscribe(dto.email);
+  }
 
-    @Get('unsubscribe/:token')
-    @Header('Content-Type', 'text/html')
-    unsubscribe(@Param('token') token: string) {
-        return this.newsletterService.unsubscribeByToken(token);
-    }
+  @Get('unsubscribe/:token')
+  @Header('Content-Type', 'text/html')
+  unsubscribe(@Param('token') token: string) {
+    return this.newsletterService.unsubscribeByToken(token);
+  }
 }

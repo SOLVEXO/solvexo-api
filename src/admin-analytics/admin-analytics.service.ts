@@ -402,7 +402,7 @@ export class AdminAnalyticsService {
 
       const activeBuyerIds = new Set<string>();
       const bucketTotals = new Map<number, { newCustomers: number; returningCustomers: number }>();
-      for (const row of periodRows as any[]) {
+      for (const row of periodRows) {
         activeBuyerIds.add(row._id.userId);
         const bucketTime = row._id.bucket.getTime();
         const firstOrderAt = firstOrderMap.get(row._id.userId);
@@ -727,7 +727,7 @@ export class AdminAnalyticsService {
       ]);
 
       const statusCounts: Record<string, number> = {};
-      for (const r of statusRows as any[]) statusCounts[r._id] = r.count;
+      for (const r of statusRows) statusCounts[r._id] = r.count;
 
       const totalIncludingCancelled = totals.orderCount + totals.cancelledCount;
       const cancellationRatePercent = totalIncludingCancelled > 0 ? round((totals.cancelledCount / totalIncludingCancelled) * 100) : 0;
@@ -763,7 +763,7 @@ export class AdminAnalyticsService {
         { $group: { _id: '$paymentType', count: { $sum: 1 }, revenue: { $sum: '$sellerOrders.subtotal' } } },
       ]);
       const labels: Record<string, string> = { cash_on_delivery: 'Cash on Delivery', stripe: 'Card (Stripe)' };
-      const methodBreakdown = (methodRows as any[]).map((r) => ({
+      const methodBreakdown = (methodRows).map((r) => ({
         paymentType: r._id,
         label: labels[r._id] ?? r._id,
         orderCount: r.count,
@@ -782,7 +782,7 @@ export class AdminAnalyticsService {
         completed: { count: 0, amount: 0 },
         failed: { count: 0, amount: 0 },
       };
-      for (const r of statusRows as any[]) {
+      for (const r of statusRows) {
         if (byStatus[r._id]) byStatus[r._id] = { count: r.count, amount: round(r.amount) };
       }
 
@@ -826,9 +826,9 @@ export class AdminAnalyticsService {
         this.r.userModel.find({ isDelete: false, createdAt: { $gte: from, $lte: to } }).select('_id').lean(),
       ]);
 
-      const sellerBucket = new Map((newSellerRows as any[]).map((r) => [r._id.getTime(), r.count]));
-      const storeBucket = new Map((newStoreRows as any[]).map((r) => [r._id.getTime(), r.count]));
-      const productBucket = new Map((newProductRows as any[]).map((r) => [r._id.getTime(), r.count]));
+      const sellerBucket = new Map((newSellerRows).map((r) => [r._id.getTime(), r.count]));
+      const storeBucket = new Map((newStoreRows).map((r) => [r._id.getTime(), r.count]));
+      const productBucket = new Map((newProductRows).map((r) => [r._id.getTime(), r.count]));
 
       const marketplaceGrowth = enumerateBuckets(from, to, granularity).map((bucket) => ({
         date: bucket,
@@ -888,7 +888,7 @@ export class AdminAnalyticsService {
         ]);
         return toCsv(
           ['Order Number', 'Date', 'Status', 'Store ID', 'Subtotal', 'Payment Type'],
-          (rows as any[]).map((r) => [r.orderNumber, new Date(r.createdAt).toISOString().split('T')[0], r.status, r.storeId, r.subtotal.toFixed(2), r.paymentType ?? '']),
+          (rows).map((r) => [r.orderNumber, new Date(r.createdAt).toISOString().split('T')[0], r.status, r.storeId, r.subtotal.toFixed(2), r.paymentType ?? '']),
         );
       }
       case 'sellers': {

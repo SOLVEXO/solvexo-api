@@ -1,8 +1,6 @@
 import { IsOptional, IsString, IsNumber } from 'class-validator';
 
 export class CreateCategoryDto {
-  
-  
   @IsString()
   name: string;
 
@@ -13,12 +11,10 @@ export class CreateCategoryDto {
   @IsOptional()
   image?: string;
 
-    @IsOptional()
+  @IsOptional()
   @IsOptional()
   description?: string;
 
-    @IsOptional()
- 
+  @IsOptional()
   sortOrder?: number;
-
 }
