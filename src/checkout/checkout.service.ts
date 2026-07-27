@@ -256,15 +256,6 @@ export class CheckoutService {
     let defaultAddressId: string | null = null;
 
     if (hasPhysical) {
-      const defaultAddress = await addressModel.findOne({
-        userId,
-        isDefault: true,
-        isDelete: false,
-      });
-      if (!defaultAddress)
-        throw new BadRequestException(
-          'No default address found. Please set a default address first',
-        );
       let defaultAddress = await addressModel.findOne({ userId, isDefault: true, isDelete: false });
 
       // Buyers aren't required to flag an address as default when saving
@@ -384,8 +375,6 @@ export class CheckoutService {
       message: 'Checkout created successfully',
       data: {
         checkout,
-        allowedPaymentMethods: hasDigital
-          ? ['stripe']
         // A mixed cart can either pay everything online ('stripe') or split
         // it — digital online now, physical via COD on delivery ('split').
         // Digital-only carts never get COD; physical-only carts keep both

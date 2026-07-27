@@ -179,6 +179,8 @@ export class CategoriesService {
   async getCategoryTreeNested(categoryId?: string) {
     const categoryModel = this.databaseService.repositories.categoryModel;
 
+    const countMap = await this.getActiveProductCountsByCategory();
+
     // 🔹 CASE 1: agar id di hui hai
     if (categoryId) {
       // A non-ObjectId string (e.g. a category name leaking in from stale
@@ -199,14 +201,13 @@ export class CategoriesService {
       }
 
       const children = await this.getChildrenRecursive(categoryId);
+      const node = { ...category.toObject(), children };
+      this.attachProductCounts([node], countMap);
 
       return {
         success: true,
         message: 'Category tree fetched successfully',
-        data: {
-          ...category.toObject(),
-          children,
-        },
+        data: node,
       };
     }
 
@@ -230,11 +231,40 @@ export class CategoriesService {
       });
     }
 
+    this.attachProductCounts(result, countMap);
+
     return {
       success: true,
       message: 'All category trees fetched successfully',
       data: result,
     };
+  }
+
+  /** One aggregation over all buyer-visible products, grouped by category — the
+   *  building block `attachProductCounts` uses instead of a per-node query. */
+  private async getActiveProductCountsByCategory(): Promise<Map<string, number>> {
+    const productModel = this.databaseService.repositories.productModel;
+    const rows = await productModel.aggregate([
+      { $match: { status: 'active', isDelete: false } },
+      { $group: { _id: '$categoryId', count: { $sum: 1 } } },
+    ]);
+    return new Map(rows.map((r: { _id: string; count: number }) => [r._id, r.count]));
+  }
+
+  /** Mutates each node (and its nested `children`) in place, setting
+   *  `productCount` to that category's own direct products plus every
+   *  descendant's — so a parent category's chip reflects its whole subtree. */
+  private attachProductCounts(nodes: any[], countMap: Map<string, number>): number {
+    let total = 0;
+    for (const node of nodes) {
+      const ownCount = countMap.get(String(node._id)) ?? 0;
+      const childrenCount = node.children?.length
+        ? this.attachProductCounts(node.children, countMap)
+        : 0;
+      node.productCount = ownCount + childrenCount;
+      total += node.productCount;
+    }
+    return total;
   }
   private async getChildrenRecursive(parentId: string): Promise<any[]> {
     const categoryModel = this.databaseService.repositories.categoryModel;

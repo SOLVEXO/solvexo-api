@@ -316,14 +316,6 @@ export class PaymentService {
 
     let orders: any[];
     try {
-      orders = await this.createOrder(
-        transaction.userId,
-        checkout,
-        orderModel,
-        addressModel,
-        'stripe',
-        true,
-      );
       orders = await this.createOrder(transaction.userId, checkout, orderModel, addressModel, physicalPayment, digitalPayment);
     } catch (err: any) {
       await paymentTransactionModel.findByIdAndUpdate(transaction._id, {
@@ -491,14 +483,6 @@ export class PaymentService {
       status: 'payment_pending',
     });
 
-    const orders = await this.createOrder(
-      userId,
-      checkout,
-      orderModel,
-      addressModel,
-      'cash_on_delivery',
-      false,
-    );
     const codPaymentInfo = { paymentType: 'cash_on_delivery', isPaid: false };
     const orders = await this.createOrder(userId, checkout, orderModel, addressModel, codPaymentInfo, codPaymentInfo);
 
@@ -567,12 +551,6 @@ export class PaymentService {
     const { productVariantModel, productModel } =
       this.databaseService.repositories;
 
-    const physicalItems = checkout.items.filter(
-      (i: any) => i.type === 'physical',
-    );
-    const digitalItems = checkout.items.filter(
-      (i: any) => i.type === 'digital',
-    );
     // Guards a webhook/poll retry (e.g. after a crash between creating the
     // physical and digital order below) from creating duplicate orders —
     // `finalizePaymentIntent`'s own transaction-status flip already prevents
