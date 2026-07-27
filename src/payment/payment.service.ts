@@ -53,7 +53,11 @@ export class PaymentService {
   async initiatePayment(userId: string, body: any) {
     const stripe = this.assertStripeConfigured();
 
-    const { checkoutId } = body;
+    // For a mixed (digital + physical) cart the buyer can choose either
+    // 'full' (pay the whole checkout online, no COD) or 'split' (digital
+    // online now, physical COD on delivery) — defaults to 'full' so a
+    // non-mixed cart's single "Pay Online" button needs no changes.
+    const { checkoutId, paymentMode } = body;
     if (!checkoutId) throw new BadRequestException('checkoutId is required');
 
     const { checkoutModel, paymentTransactionModel, productVariantModel } =
@@ -93,7 +97,20 @@ export class PaymentService {
       }
     }
 
-    const amountCents = Math.round(checkout.totalAmount * 100);
+    // A mixed cart (physical + digital together) charges only the
+    // digital-items subtotal online when the buyer picked 'split' — the
+    // physical portion is then settled via COD once this payment succeeds
+    // (see `createOrder`/`finalizePaymentIntent`). Picking 'full' (or a
+    // non-mixed cart, where this flag is meaningless) charges everything.
+    const digitalItems = checkout.items.filter((i: any) => i.type === 'digital');
+    const isMixed = physicalItems.length > 0 && digitalItems.length > 0;
+    const useSplit = isMixed && paymentMode === 'split';
+    const chargeAmount = useSplit
+      ? this.round(digitalItems.reduce((s: number, i: any) => s + i.totalPrice, 0))
+      : checkout.totalAmount;
+    const paymentScope = useSplit ? 'digital_only' : 'full';
+
+    const amountCents = Math.round(chargeAmount * 100);
 
     // Idempotency key includes the amount so a retry with the SAME total
     // safely dedupes (no duplicate PaymentIntents on a double-tap/network
@@ -127,7 +144,7 @@ export class PaymentService {
             data: {
               clientSecret: pi.client_secret,
               paymentIntentId: pi.id,
-              amount: checkout.totalAmount,
+              amount: chargeAmount,
               currency: checkout.currency,
             },
           };
@@ -168,7 +185,8 @@ export class PaymentService {
       userId,
       checkoutId: checkout._id.toString(),
       paymentType: 'stripe',
-      amount: checkout.totalAmount,
+      amount: chargeAmount,
+      paymentScope,
       status: 'pending',
       stripePaymentIntentId: paymentIntent.id,
       stripeClientSecret: paymentIntent.client_secret,
@@ -185,7 +203,7 @@ export class PaymentService {
       data: {
         clientSecret: paymentIntent.client_secret,
         paymentIntentId: paymentIntent.id,
-        amount: checkout.totalAmount,
+        amount: chargeAmount,
         currency: checkout.currency,
       },
     };
@@ -287,6 +305,15 @@ export class PaymentService {
       return { orderIds: transaction.orderIds };
     }
 
+    // A 'digital_only' transaction means this Stripe charge only covered the
+    // digital items of a mixed cart — the physical items are unpaid/COD,
+    // collected by the courier on delivery. Everything else (full-checkout
+    // Stripe payments, digital-only carts) pays 'stripe'/paid on both sides.
+    const digitalPayment = { paymentType: 'stripe', isPaid: true };
+    const physicalPayment = transaction.paymentScope === 'digital_only'
+      ? { paymentType: 'cash_on_delivery', isPaid: false }
+      : { paymentType: 'stripe', isPaid: true };
+
     let orders: any[];
     try {
       orders = await this.createOrder(
@@ -297,6 +324,7 @@ export class PaymentService {
         'stripe',
         true,
       );
+      orders = await this.createOrder(transaction.userId, checkout, orderModel, addressModel, physicalPayment, digitalPayment);
     } catch (err: any) {
       await paymentTransactionModel.findByIdAndUpdate(transaction._id, {
         status: 'pending',
@@ -471,6 +499,8 @@ export class PaymentService {
       'cash_on_delivery',
       false,
     );
+    const codPaymentInfo = { paymentType: 'cash_on_delivery', isPaid: false };
+    const orders = await this.createOrder(userId, checkout, orderModel, addressModel, codPaymentInfo, codPaymentInfo);
 
     await paymentTransactionModel.create({
       userId,
@@ -531,8 +561,8 @@ export class PaymentService {
     checkout: any,
     orderModel: any,
     addressModel: any,
-    paymentType: string = 'stripe',
-    isPaid: boolean = true,
+    physicalPayment: { paymentType: string; isPaid: boolean } = { paymentType: 'stripe', isPaid: true },
+    digitalPayment: { paymentType: string; isPaid: boolean } = { paymentType: 'stripe', isPaid: true },
   ) {
     const { productVariantModel, productModel } =
       this.databaseService.repositories;
@@ -543,6 +573,16 @@ export class PaymentService {
     const digitalItems = checkout.items.filter(
       (i: any) => i.type === 'digital',
     );
+    // Guards a webhook/poll retry (e.g. after a crash between creating the
+    // physical and digital order below) from creating duplicate orders —
+    // `finalizePaymentIntent`'s own transaction-status flip already prevents
+    // most double-invocations, but this is a cheap second line of defense
+    // directly at the point where orders get created.
+    const alreadyCreated = await orderModel.find({ checkoutId: checkout._id.toString(), isDelete: false });
+    if (alreadyCreated.length > 0) return alreadyCreated;
+
+    const physicalItems = checkout.items.filter((i: any) => i.type === 'physical');
+    const digitalItems = checkout.items.filter((i: any) => i.type === 'digital');
 
     // --- STOCK MINUS (atomic, sirf physical, unlimited variants skip decrement) ---
     const decremented: { variantId: string; quantity: number }[] = [];
@@ -713,10 +753,10 @@ export class PaymentService {
         campaignDiscountTotal,
         platformSponsoredDiscountTotal,
         totalAmount: this.round(subtotal + shippingFee),
-        paymentType,
-        paymentStatus: isPaid ? 'paid' : 'unpaid',
-        isPaid,
-        paidAt: isPaid ? new Date() : null,
+        paymentType: physicalPayment.paymentType,
+        paymentStatus: physicalPayment.isPaid ? 'paid' : 'unpaid',
+        isPaid: physicalPayment.isPaid,
+        paidAt: physicalPayment.isPaid ? new Date() : null,
         orderStatus: 'pending',
         attributionSource: checkout.attributionSource ?? 'other',
         isDelete: false,
@@ -768,10 +808,10 @@ export class PaymentService {
         campaignDiscountTotal,
         platformSponsoredDiscountTotal,
         totalAmount: this.round(subtotal),
-        paymentType,
-        paymentStatus: isPaid ? 'paid' : 'unpaid',
-        isPaid,
-        paidAt: isPaid ? new Date() : null,
+        paymentType: digitalPayment.paymentType,
+        paymentStatus: digitalPayment.isPaid ? 'paid' : 'unpaid',
+        isPaid: digitalPayment.isPaid,
+        paidAt: digitalPayment.isPaid ? new Date() : null,
         orderStatus: 'pending',
         attributionSource: checkout.attributionSource ?? 'other',
         isDelete: false,

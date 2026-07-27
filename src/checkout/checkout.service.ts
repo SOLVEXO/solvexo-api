@@ -20,6 +20,21 @@ export class CheckoutService {
     return Math.round(n * 100) / 100;
   }
 
+  /** Digital/physical subtotal split — used so the app can show "pay this
+   *  much online now" vs "this much COD on delivery" for a mixed cart. Both
+   *  numbers are read straight off `item.totalPrice`, which already has
+   *  subscriber/campaign/coupon discounts baked in, so this stays correct
+   *  after `applyCoupon`/`removeCoupon` mutate `items` in place. */
+  private splitSubtotalsByType(items: any[]) {
+    const digitalSubtotal = this.round(
+      items.filter((i) => i.type === 'digital').reduce((s, i) => s + i.totalPrice, 0),
+    );
+    const physicalSubtotal = this.round(
+      items.filter((i) => i.type === 'physical').reduce((s, i) => s + i.totalPrice, 0),
+    );
+    return { digitalSubtotal, physicalSubtotal };
+  }
+
   async deleteCheckout(userId: string, checkoutId: string) {
     const { checkoutModel } = this.databaseService.repositories;
 
@@ -250,6 +265,22 @@ export class CheckoutService {
         throw new BadRequestException(
           'No default address found. Please set a default address first',
         );
+      let defaultAddress = await addressModel.findOne({ userId, isDefault: true, isDelete: false });
+
+      // Buyers aren't required to flag an address as default when saving
+      // one, so a buyer with addresses but no explicit default would
+      // otherwise be blocked from checking out entirely. Fall back to the
+      // oldest saved address and promote it, repairing the missing-default
+      // data so subsequent lookups (address list, getDefaultAddress) agree.
+      if (!defaultAddress) {
+        defaultAddress = await addressModel.findOne({ userId, isDelete: false }).sort({ createdAt: 1 });
+        if (defaultAddress) {
+          defaultAddress.isDefault = true;
+          await defaultAddress.save();
+        }
+      }
+
+      if (!defaultAddress) throw new BadRequestException('No default address found. Please set a default address first');
       defaultAddressId = defaultAddress._id.toString();
     }
 
@@ -355,6 +386,12 @@ export class CheckoutService {
         checkout,
         allowedPaymentMethods: hasDigital
           ? ['stripe']
+        // A mixed cart can either pay everything online ('stripe') or split
+        // it — digital online now, physical via COD on delivery ('split').
+        // Digital-only carts never get COD; physical-only carts keep both
+        // 'stripe' and 'cash_on_delivery' as before.
+        allowedPaymentMethods: hasDigital
+          ? (hasPhysical ? ['stripe', 'split'] : ['stripe'])
           : ['stripe', 'cash_on_delivery'],
         summary: {
           subtotal,
@@ -363,6 +400,7 @@ export class CheckoutService {
           totalAmount,
           subscriberSavingsUSD: this.round(subscriberSavingsUSD),
           campaignDiscountUSD: campaignSavingsUSD,
+          ...this.splitSubtotalsByType(checkoutItems),
         },
         subscriptionSavingsHints,
         appliedCampaigns,
@@ -451,6 +489,7 @@ export class CheckoutService {
         shippingFee,
         subtotal: checkout.subtotal,
         totalAmount,
+        ...this.splitSubtotalsByType(checkout.items as any[]),
       },
     };
   }
@@ -593,6 +632,7 @@ export class CheckoutService {
         subtotal: newSubtotal,
         shippingFee: checkout.shippingFee || 0,
         totalAmount: newTotal,
+        ...this.splitSubtotalsByType(items),
       },
     };
   }
@@ -635,6 +675,7 @@ export class CheckoutService {
         subtotal: newSubtotal,
         shippingFee: checkout.shippingFee || 0,
         totalAmount: newTotal,
+        ...this.splitSubtotalsByType(items),
       },
     };
   }
