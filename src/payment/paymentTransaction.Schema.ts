@@ -21,6 +21,12 @@ export class PaymentTransaction {
   @Prop({ required: true })
   amount: number;
 
+  // 'digital_only' = this Stripe charge covers only a mixed checkout's
+  // digital-items subtotal; the physical portion is settled via COD once
+  // this payment succeeds. 'full' = charge covers the whole checkout.
+  @Prop({ enum: ['full', 'digital_only'], default: 'full' })
+  paymentScope: string;
+
   @Prop({
     enum: ['pending', 'completed', 'failed'],
     default: 'pending',
