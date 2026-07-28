@@ -419,7 +419,11 @@ export class StoreService {
     };
   }
 
-  private shapeStoreListItem(store: any, productCount: number | null = null): any {
+  private shapeStoreListItem(
+    store: any,
+    productCount: number | null = null,
+    activeCampaign: ReturnType<typeof pickPrimaryCampaignForBadge> = null,
+  ): any {
     return {
       storeId: store._id,
       name: store.name,
@@ -434,6 +438,13 @@ export class StoreService {
       sellerType: store.sellerType ?? null,
       badges: store.badges ?? [],
       ...(productCount !== null ? { productCount } : {}),
+      activeCampaign: activeCampaign ? {
+        campaignId: activeCampaign.campaignId,
+        name: activeCampaign.name,
+        discountType: activeCampaign.discountType,
+        discountValue: activeCampaign.discountValue,
+        endDate: activeCampaign.endDate,
+      } : null,
     };
   }
 
@@ -474,13 +485,18 @@ export class StoreService {
         ])
       : [];
     const productCountByStore = new Map<string, number>(productCounts.map((r: any) => [r._id, r.count]));
+    const campaignsByStore = await this.marketingService.getActiveCampaignsForStores(storeIds);
 
     return {
       success: true,
       data: {
         pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
         stores: stores.map((s: any) =>
-          this.shapeStoreListItem(s, productCountByStore.get(s._id.toString()) ?? 0),
+          this.shapeStoreListItem(
+            s,
+            productCountByStore.get(s._id.toString()) ?? 0,
+            pickPrimaryCampaignForBadge(campaignsByStore.get(s._id.toString()) ?? []),
+          ),
         ),
       },
     };
@@ -488,7 +504,7 @@ export class StoreService {
 
   // ── 3c. Top stores — cached for the home-screen row ───────────────────────
   async getTopStores(limit: number) {
-    const cacheKey = `top-stores:${limit}`;
+    const cacheKey = `top-stores:v2:${limit}`;
     const cached = await this.redisService.get(cacheKey);
     if (cached) {
       return { success: true, data: { stores: JSON.parse(cached) } };
@@ -509,9 +525,14 @@ export class StoreService {
         ])
       : [];
     const productCountByStore = new Map<string, number>(productCounts.map((r: any) => [r._id, r.count]));
+    const campaignsByStore = await this.marketingService.getActiveCampaignsForStores(storeIds);
 
     const shaped = stores.map((s: any) =>
-      this.shapeStoreListItem(s, productCountByStore.get(s._id.toString()) ?? 0),
+      this.shapeStoreListItem(
+        s,
+        productCountByStore.get(s._id.toString()) ?? 0,
+        pickPrimaryCampaignForBadge(campaignsByStore.get(s._id.toString()) ?? []),
+      ),
     );
     await this.redisService.set(cacheKey, JSON.stringify(shaped), 600);
 
