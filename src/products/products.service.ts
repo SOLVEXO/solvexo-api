@@ -333,6 +333,7 @@ export class ProductsService {
     const productModel = this.databaseService.repositories.productModel;
     const productVariantModel =
       this.databaseService.repositories.productVariantModel;
+    const sellerModel = this.databaseService.repositories.sellerModel;
 
     const query: any = {
       status: 'active',
@@ -442,17 +443,34 @@ export class ProductsService {
       storeIds,
     );
 
+    // Batch-resolve seller name + verification badge across every distinct
+    // seller present in this page — same one-query-instead-of-N pattern as
+    // the subscriber-benefits batch above.
+    const sellerIds = [
+      ...new Set(products.map((p) => p.sellerId).filter(Boolean)),
+    ];
+    const sellers = await sellerModel
+      .find({ _id: { $in: sellerIds } })
+      .select('name isVerified')
+      .lean();
+    const sellerMap = new Map(
+      sellers.map((s) => [s._id.toString(), s]),
+    );
+
     const productsWithVariants = await this.attachCampaignBadges(
-      products.map((p) =>
-        this.sanitizeDigitalForPublicView({
+      products.map((p) => {
+        const seller = sellerMap.get(p.sellerId?.toString());
+        return this.sanitizeDigitalForPublicView({
           ...p,
+          sellerName: seller ? seller.name : null,
+          sellerVerified: seller ? !!seller.isVerified : false,
           variants: this.applySubscriberPricing(
             variantMap[p._id.toString()] || [],
             p,
             benefitsMap.get(p.storeId),
           ),
-        }),
-      ),
+        });
+      }),
     );
 
     return {
@@ -620,7 +638,7 @@ export class ProductsService {
       .findOne({
         _id: product.sellerId,
       })
-      .select('name')
+      .select('name isVerified')
       .lean();
 
     // 3️⃣ Get store slug
@@ -636,6 +654,7 @@ export class ProductsService {
       this.sanitizeDigitalForPublicView({
         ...product,
         sellerName: seller ? seller.name : null,
+        sellerVerified: seller ? !!seller.isVerified : false,
         storeSlug: store ? store.slug : null,
         storeName: store ? store.name : null,
         storeLogo: store ? store.logo : null,
