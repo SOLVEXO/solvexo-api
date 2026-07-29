@@ -150,7 +150,7 @@ export class MarketingService {
 
     const data = campaigns.map((c) => ({
       ...c,
-      isJoined: c.sponsorType === 'platform' ? true : c.participatingStoreIds.includes(storeId),
+      isJoined: c.sponsorType === 'platform' ? true : (c.participatingStoreIds ?? []).includes(storeId),
     }));
     return { success: true, data };
   }
@@ -258,7 +258,7 @@ export class MarketingService {
       };
       const applicableStoreIds = summary.sponsorType === 'platform'
         ? uniqueIds
-        : c.participatingStoreIds.filter((id) => uniqueIds.includes(id));
+        : (c.participatingStoreIds ?? []).filter((id) => uniqueIds.includes(id));
       for (const storeId of applicableStoreIds) {
         const existing = map.get(storeId);
         if (existing) existing.push(summary);
@@ -331,7 +331,7 @@ export class MarketingService {
       discountType: c.discountType,
       discountValue: c.discountValue,
       sponsorType: c.sponsorType ?? 'seller',
-      storeCount: c.sponsorType === 'platform' ? activeStoreCount : c.participatingStoreIds.length,
+      storeCount: c.sponsorType === 'platform' ? activeStoreCount : (c.participatingStoreIds ?? []).length,
     }));
     return { success: true, data };
   }

@@ -810,7 +810,7 @@ export class SubscriptionsService {
       const regularCustomers = new Set<string>();
 
       for (const order of orders as any[]) {
-        const orderValue = (order.sellerOrders as any[])
+        const orderValue = ((order.sellerOrders as any[]) ?? [])
           .filter(so => so.storeId === storeId)
           .reduce((s, so) => s + so.subtotal, 0);
         totalCustomerSavingsUSD += order.subscriberDiscountTotal ?? 0;

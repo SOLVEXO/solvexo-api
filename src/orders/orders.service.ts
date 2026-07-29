@@ -99,13 +99,13 @@ export class OrdersService {
       totalAmount: order.totalAmount,
       currency: order.currency,
       shippingAddress: order.shippingAddress,
-      stores: order.sellerOrders.map((so: any) => ({
+      stores: (order.sellerOrders ?? []).map((so: any) => ({
         storeId: so.storeId,
         fulfillmentType: so.fulfillmentType,
         status: so.status,
         subtotal: so.subtotal,
-        itemCount: so.items.length,
-        items: so.items.map((item: any) => ({
+        itemCount: (so.items ?? []).length,
+        items: (so.items ?? []).map((item: any) => ({
           itemId: item._id,
           productId: item.productId,
           name: item.name,

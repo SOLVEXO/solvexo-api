@@ -142,13 +142,15 @@ export class AdminAnalyticsService {
     const scope = this.buildScope(query);
 
     return this.cached(this.key('overview', this.scopeLabel(scope), { from, to, compare }), async () => {
-      const [current, previous, activeSellers, prevActiveSellers, platformEarnings, totalSellers, totalCustomers, newUsers] = await Promise.all([
+      const [current, previous, sellersActiveThisMonth, prevSellersActiveThisMonth, platformEarnings, totalSellers, totalStores, activeStores, totalCustomers, newUsers] = await Promise.all([
         periodTotals(this.r.orderModel, from, to, scope),
         periodTotals(this.r.orderModel, previousFrom, previousTo, scope),
         this.countActiveSellers(from, to, scope),
         this.countActiveSellers(previousFrom, previousTo, scope),
         this.getPlatformEarnings(from, to, scope),
         this.r.sellerModel.countDocuments({ isDelete: false }),
+        this.r.storeModel.countDocuments({ isDelete: false }),
+        this.r.storeModel.countDocuments({ isDelete: false, status: 'active' }),
         this.r.userModel.countDocuments({ isDelete: false }),
         this.r.userModel.countDocuments({ isDelete: false, createdAt: { $gte: from, $lte: to } }),
       ]);
@@ -166,8 +168,10 @@ export class AdminAnalyticsService {
         totalOrders: current.orderCount,
         totalOrdersChange: absoluteChange(current.orderCount, previous.orderCount),
         totalSellers,
-        activeSellers,
-        activeSellersChange: absoluteChange(activeSellers, prevActiveSellers),
+        sellersActiveThisMonth,
+        sellersActiveThisMonthChange: absoluteChange(sellersActiveThisMonth, prevSellersActiveThisMonth),
+        totalStores,
+        activeStores,
         totalCustomers,
         newUsers,
         totalRefunds: current.refundAmount,
@@ -182,7 +186,7 @@ export class AdminAnalyticsService {
           totalGMV: previous.grossRevenue,
           totalRevenue: previous.netRevenue,
           totalOrders: previous.orderCount,
-          activeSellers: prevActiveSellers,
+          sellersActiveThisMonth: prevSellersActiveThisMonth,
           totalRefunds: previous.refundAmount,
           cancelledOrders: previous.cancelledCount,
         };
@@ -951,8 +955,10 @@ export class AdminAnalyticsService {
       { label: 'Total Revenue (net)', value: `$${overview.data.totalRevenue.toFixed(2)}` },
       { label: 'Platform Earnings', value: `$${overview.data.platformEarnings.toFixed(2)}` },
       { label: 'Total Orders', value: `${overview.data.totalOrders}` },
-      { label: 'Total Sellers', value: `${overview.data.totalSellers}` },
-      { label: 'Active Sellers', value: `${overview.data.activeSellers}` },
+      { label: 'Seller Accounts', value: `${overview.data.totalSellers}` },
+      { label: 'Sellers Active This Month', value: `${overview.data.sellersActiveThisMonth}` },
+      { label: 'Total Stores', value: `${overview.data.totalStores}` },
+      { label: 'Active Stores', value: `${overview.data.activeStores}` },
       { label: 'Total Customers', value: `${overview.data.totalCustomers}` },
       { label: 'New Users', value: `${overview.data.newUsers}` },
       { label: 'Refund Rate', value: `${overview.data.refundRatePercent}%` },
