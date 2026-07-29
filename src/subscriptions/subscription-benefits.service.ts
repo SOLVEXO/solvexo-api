@@ -181,7 +181,7 @@ export class SubscriptionBenefitsService {
       let totalValue = 0, totalCount = 0;
 
       for (const order of orders as any[]) {
-        const relevant = (order.sellerOrders as any[]).filter(so => so.storeId === storeId);
+        const relevant = ((order.sellerOrders as any[]) ?? []).filter(so => so.storeId === storeId);
         const orderValue = relevant.reduce((s, so) => s + so.subtotal, 0);
         if (orderValue <= 0) continue;
 

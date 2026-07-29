@@ -39,7 +39,7 @@ export class AdminUsersService {
   }
 
   async getStats() {
-    const [totalUsers, activeSellers, suspendedUsers, suspendedSellers] = await Promise.all([
+    const [totalBuyers, activeSellerAccounts, suspendedUsers, suspendedSellers] = await Promise.all([
       this.r.userModel.countDocuments({ isDelete: false }),
       this.r.sellerModel.countDocuments({ isDelete: false, status: 'active' }),
       this.r.userModel.countDocuments({ isDelete: false, status: 'suspended' }),
@@ -49,8 +49,8 @@ export class AdminUsersService {
     return {
       success: true,
       data: {
-        totalUsers,
-        activeSellers,
+        totalBuyers,
+        activeSellerAccounts,
         suspended: suspendedUsers + suspendedSellers,
       },
     };
