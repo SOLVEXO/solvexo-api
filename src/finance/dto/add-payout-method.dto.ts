@@ -3,9 +3,12 @@ import { ApiProperty } from '@nestjs/swagger';
 import { IsString, IsNotEmpty, IsEnum, IsOptional, IsBoolean, Length } from 'class-validator';
 
 export class AddPayoutMethodDto {
-  @ApiProperty({ enum: ['bank_transfer', 'paypal', 'stripe'] })
-  @IsEnum(['bank_transfer', 'paypal', 'stripe'])
+  @ApiProperty({ enum: ['bank_transfer', 'jazzcash', 'easypaisa', 'paypal', 'stripe'] })
+  @IsEnum(['bank_transfer', 'jazzcash', 'easypaisa', 'paypal', 'stripe'])
   type: string;
+
+  @ApiProperty({ required: false, enum: ['USD', 'PKR'], description: 'Defaults to PKR for jazzcash/easypaisa, USD otherwise' })
+  @IsOptional() @IsEnum(['USD', 'PKR']) currency?: string;
 
   // Bank transfer fields
   @ApiProperty({ required: false, example: 'Chase Bank' })

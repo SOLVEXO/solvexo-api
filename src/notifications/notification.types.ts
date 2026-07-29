@@ -18,12 +18,19 @@ export const NOTIFICATION_TYPES = {
   SUBSCRIPTION_CANCELLED: 'subscription_cancelled',
   PLATFORM_PLAN_RENEWAL_REMINDER: 'platform_plan_renewal_reminder',
   PLATFORM_PLAN_PAYMENT_FAILED: 'platform_plan_payment_failed',
+  MANUAL_PAYMENT_SUBMITTED: 'manual_payment_submitted',
+  MANUAL_PAYMENT_APPROVED: 'manual_payment_approved',
+  MANUAL_PAYMENT_REJECTED: 'manual_payment_rejected',
+  PAYOUT_AUTO_INITIATED: 'payout_auto_initiated',
+  PAYOUT_COMPLETED: 'payout_completed',
+  PAYOUT_REJECTED: 'payout_rejected',
+  PAYOUT_RETRIED: 'payout_retried',
 } as const;
 
 export type NotificationType = (typeof NOTIFICATION_TYPES)[keyof typeof NOTIFICATION_TYPES];
 
 /** Maps a notification type to the NotificationPreference bucket that gates it. */
-export const NOTIFICATION_CATEGORY: Record<string, 'orders' | 'messages' | 'promotions' | 'loyalty' | 'subscriptions'> = {
+export const NOTIFICATION_CATEGORY: Record<string, 'orders' | 'messages' | 'promotions' | 'loyalty' | 'subscriptions' | 'finance'> = {
   [NOTIFICATION_TYPES.ORDER_PLACED]: 'orders',
   [NOTIFICATION_TYPES.ORDER_SHIPPED]: 'orders',
   [NOTIFICATION_TYPES.ORDER_DELIVERED]: 'orders',
@@ -40,4 +47,11 @@ export const NOTIFICATION_CATEGORY: Record<string, 'orders' | 'messages' | 'prom
   [NOTIFICATION_TYPES.SUBSCRIPTION_CANCELLED]: 'subscriptions',
   [NOTIFICATION_TYPES.PLATFORM_PLAN_RENEWAL_REMINDER]: 'subscriptions',
   [NOTIFICATION_TYPES.PLATFORM_PLAN_PAYMENT_FAILED]: 'subscriptions',
+  [NOTIFICATION_TYPES.MANUAL_PAYMENT_SUBMITTED]: 'orders',
+  [NOTIFICATION_TYPES.MANUAL_PAYMENT_APPROVED]: 'orders',
+  [NOTIFICATION_TYPES.MANUAL_PAYMENT_REJECTED]: 'orders',
+  [NOTIFICATION_TYPES.PAYOUT_AUTO_INITIATED]: 'finance',
+  [NOTIFICATION_TYPES.PAYOUT_COMPLETED]: 'finance',
+  [NOTIFICATION_TYPES.PAYOUT_REJECTED]: 'finance',
+  [NOTIFICATION_TYPES.PAYOUT_RETRIED]: 'finance',
 };

@@ -36,4 +36,9 @@ export class SellerBalancesQueryDto {
   @Min(1)
   @Max(100)
   limit?: number;
+
+  @ApiProperty({ required: false, description: "Only sellers whose balance is flagged for review (negative balance after a refund exceeded held funds) — pass 'true'" })
+  @IsOptional()
+  @IsString()
+  flaggedOnly?: string;
 }

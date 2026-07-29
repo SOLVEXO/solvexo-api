@@ -20,6 +20,9 @@ class PrefFlags {
 
   @Prop({ default: true })
   subscriptions: boolean;
+
+  @Prop({ default: true })
+  finance: boolean;
 }
 
 const PrefFlagsSchema = SchemaFactory.createForClass(PrefFlags);

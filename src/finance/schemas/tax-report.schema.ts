@@ -11,6 +11,7 @@ export class TaxReport {
 
   @Prop({ type: String, enum: ['q1', 'q2', 'q3', 'q4', 'annual'], required: true }) period: string;
   @Prop({ type: Number, required: true }) year: number;
+  @Prop({ type: String, default: 'USD' }) currency: string;
 
   // Date range this report covers
   @Prop({ type: Date, required: true }) fromDate: Date;
@@ -32,4 +33,4 @@ export class TaxReport {
 
 export const TaxReportSchema = SchemaFactory.createForClass(TaxReport);
 TaxReportSchema.index({ storeId: 1, year: -1 });
-TaxReportSchema.index({ storeId: 1, year: 1, period: 1 }, { unique: true });
+TaxReportSchema.index({ storeId: 1, year: 1, period: 1, currency: 1 }, { unique: true });

@@ -1,14 +1,16 @@
 /* eslint-disable prettier/prettier */
 import {
   Controller, Get, Post, Patch, Delete,
-  Param, Body, Query, Req, Res, UseGuards,
+  Param, Body, Query, Req, Res, UseGuards, UseInterceptors,
 } from '@nestjs/common';
 import { Response } from 'express';
+import { Throttle } from '@nestjs/throttler';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { FinanceService } from './finance.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { IdempotencyInterceptor } from '../common/idempotency.interceptor';
 import { RequestPayoutDto } from './dto/request-payout.dto';
 import { AddPayoutMethodDto } from './dto/add-payout-method.dto';
 import { UpdatePayoutScheduleDto } from './dto/update-payout-schedule.dto';
@@ -66,6 +68,8 @@ export class FinanceController {
   // ═══════════════════════════════════════════════════════════════════════════
 
   @Post(':storeId/payouts/request')
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @UseInterceptors(IdempotencyInterceptor)
   requestPayout(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: RequestPayoutDto) {
     return this.financeService.requestPayout(req.user.userId, storeId, dto);
   }
@@ -120,8 +124,8 @@ export class FinanceController {
   // ═══════════════════════════════════════════════════════════════════════════
 
   @Get(':storeId/payout-schedule')
-  getPayoutSchedule(@Req() req: any, @Param('storeId') storeId: string) {
-    return this.financeService.getPayoutSchedule(req.user.userId, storeId);
+  getPayoutSchedule(@Req() req: any, @Param('storeId') storeId: string, @Query('currency') currency?: string) {
+    return this.financeService.getPayoutSchedule(req.user.userId, storeId, currency || 'USD');
   }
 
   @Patch(':storeId/payout-schedule')
@@ -139,11 +143,13 @@ export class FinanceController {
     @Param('storeId') storeId: string,
     @Query('year') year: string,
     @Query('period') period: string,
+    @Query('currency') currency?: string,
   ) {
     return this.financeService.generateTaxReport(
       req.user.userId, storeId,
       parseInt(year) || new Date().getFullYear(),
       period || 'q1',
+      currency || 'USD',
     );
   }
 

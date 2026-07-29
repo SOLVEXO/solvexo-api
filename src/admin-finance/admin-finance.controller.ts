@@ -13,6 +13,7 @@ import { PayoutQueueQueryDto } from './dto/payout-queue-query.dto';
 import { RejectPayoutDto } from './dto/reject-payout.dto';
 import { ManualPayoutDto } from './dto/manual-payout.dto';
 import { AdminFinanceExportQueryDto } from './dto/admin-finance-export-query.dto';
+import { VerifyPayoutMethodDto } from './dto/verify-payout-method.dto';
 
 @ApiTags('Admin Finance')
 @ApiBearerAuth()
@@ -94,6 +95,28 @@ export class AdminFinanceController {
   @Post('process-clearing')
   triggerClearingBalances() {
     return this.adminFinanceService.triggerClearingBalances();
+  }
+
+  @Post('process-scheduled-payouts')
+  triggerScheduledPayouts() {
+    return this.adminFinanceService.triggerScheduledPayouts();
+  }
+
+  // ─── Payout method verification ──────────────────────────────────────────
+
+  @Get('payout-methods/pending-verification')
+  getPendingVerificationMethods() {
+    return this.adminFinanceService.getPendingVerificationMethods();
+  }
+
+  @Patch('sellers/:storeId/payout-methods/:methodId/verify')
+  verifyPayoutMethod(
+    @Req() req: any,
+    @Param('storeId') storeId: string,
+    @Param('methodId') methodId: string,
+    @Body() dto: VerifyPayoutMethodDto,
+  ) {
+    return this.adminFinanceService.verifyPayoutMethod(storeId, methodId, req.user.userId, dto.approve, dto.note);
   }
 
   // ─── Reports ─────────────────────────────────────────────────────────────

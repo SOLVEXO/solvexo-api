@@ -2,6 +2,7 @@ import { Global, Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ActivityLogController } from './activity-log.controller';
+import { AdminActivityLogController } from './admin-activity-log.controller';
 import { ActivityLogService } from './activity-log.service';
 import { ActivityLogGateway } from './activity-log.gateway';
 import { RedisModule } from '../redis/redis.module';
@@ -24,7 +25,7 @@ import { RedisModule } from '../redis/redis.module';
       }),
     }),
   ],
-  controllers: [ActivityLogController],
+  controllers: [ActivityLogController, AdminActivityLogController],
   providers: [ActivityLogService, ActivityLogGateway],
   exports: [ActivityLogService],
 })

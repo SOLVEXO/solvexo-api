@@ -50,6 +50,8 @@ import { AdminMarketplaceModule } from './admin-marketplace/admin-marketplace.mo
 import { AdminModerationModule } from './admin-moderation/admin-moderation.module';
 import { AdminUsersModule } from './admin-users/admin-users.module';
 import { AdminMarketingModule } from './admin-marketing/admin-marketing.module';
+import { CommissionRulesModule } from './commission-rules/commission-rules.module';
+import { ManualPaymentsModule } from './manual-payments/manual-payments.module';
 
 @Module({
   imports: [
@@ -90,6 +92,8 @@ import { AdminMarketingModule } from './admin-marketing/admin-marketing.module';
     SearchModule,
     PosModule,
     MessagingModule,
+    CommissionRulesModule,
+    ManualPaymentsModule,
     FinanceModule,
     SubscriptionsModule,
     PlatformPlansModule,

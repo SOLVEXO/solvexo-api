@@ -179,6 +179,8 @@ import { DatabaseService } from './databaseservice';
       { name: schema.PlatformConfig.name, schema: schema.PlatformConfigSchema },
       { name: schema.Announcement.name, schema: schema.AnnouncementSchema },
       { name: schema.Campaign.name, schema: schema.CampaignSchema },
+      { name: schema.CommissionRule.name, schema: schema.CommissionRuleSchema },
+      { name: schema.ManualPaymentProof.name, schema: schema.ManualPaymentProofSchema },
     ]),
   ],
   exports: [MongooseModule, DatabaseService],

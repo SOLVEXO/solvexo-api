@@ -9,6 +9,8 @@ import { UpdateFeatureFlagsDto } from './dto/update-feature-flags.dto';
 import { UpdateAiConfigDto } from './dto/update-ai-config.dto';
 import { UpdateEmailConfigDto } from './dto/update-email-config.dto';
 import { UpdateMaintenanceDto } from './dto/update-maintenance.dto';
+import { UpdatePayoutConfigDto } from './dto/update-payout-config.dto';
+import { UpdateManualPaymentConfigDto } from './dto/update-manual-payment-config.dto';
 
 @ApiTags('Admin Platform Config')
 @ApiBearerAuth()
@@ -45,6 +47,24 @@ export class AdminConfigController {
   @Put('email')
   updateEmailConfig(@Req() req: any, @Body() dto: UpdateEmailConfigDto) {
     return this.adminConfigService.updateEmailConfig(dto, {
+      adminId: req.user.userId,
+      ip: req.ip,
+      userAgent: req.headers['user-agent'],
+    });
+  }
+
+  @Put('payout')
+  updatePayoutConfig(@Req() req: any, @Body() dto: UpdatePayoutConfigDto) {
+    return this.adminConfigService.updatePayoutConfig(dto, {
+      adminId: req.user.userId,
+      ip: req.ip,
+      userAgent: req.headers['user-agent'],
+    });
+  }
+
+  @Put('manual-payment')
+  updateManualPaymentConfig(@Req() req: any, @Body() dto: UpdateManualPaymentConfigDto) {
+    return this.adminConfigService.updateManualPaymentConfig(dto, {
       adminId: req.user.userId,
       ip: req.ip,
       userAgent: req.headers['user-agent'],

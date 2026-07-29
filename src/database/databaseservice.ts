@@ -245,6 +245,12 @@ export class DatabaseService {
     @InjectModel(schema.Campaign.name)
     private campaignModel: Model<schema.CampaignDocument>,
 
+    @InjectModel(schema.CommissionRule.name)
+    private commissionRuleModel: Model<schema.CommissionRuleDocument>,
+
+    @InjectModel(schema.ManualPaymentProof.name)
+    private manualPaymentProofModel: Model<schema.ManualPaymentProofDocument>,
+
   ) { }
 
   get repositories() {
@@ -331,6 +337,8 @@ export class DatabaseService {
       platformConfigModel: this.platformConfigModel,
       announcementModel: this.announcementModel,
       campaignModel: this.campaignModel,
+      commissionRuleModel: this.commissionRuleModel,
+      manualPaymentProofModel: this.manualPaymentProofModel,
     };
   }
 }

@@ -49,7 +49,7 @@ export class AdminFinanceService {
     const { from, to } = resolveDateRange(query);
 
     return this.cached(this.key('overview', { from, to }), async () => {
-      const [byTypeRows, balanceTotalsRows, payoutStatusRows, sellersWithBalance, earnings] = await Promise.all([
+      const [byTypeRows, balanceTotalsRows, payoutStatusRows, sellersWithBalance, earnings, flaggedSellersCount, pendingVerificationMethodsCount, pendingManualPaymentsCount] = await Promise.all([
         this.r.transactionModel.aggregate([
           { $match: { status: { $ne: 'failed' }, createdAt: { $gte: from, $lte: to } } },
           { $group: { _id: '$type', total: { $sum: { $abs: '$amount' } }, count: { $sum: 1 } } },
@@ -70,6 +70,9 @@ export class AdminFinanceService {
         this.r.payoutModel.aggregate([{ $group: { _id: '$status', count: { $sum: 1 }, amount: { $sum: '$amount' } } }]),
         this.r.sellerBalanceModel.countDocuments({}),
         getPlatformEarnings(this.r.transactionModel, this.r.subscriptionInvoiceModel, from, to),
+        this.r.sellerBalanceModel.countDocuments({ isFlaggedForReview: true }),
+        this.r.payoutMethodModel.countDocuments({ status: 'pending_verification' }),
+        this.r.manualPaymentProofModel.countDocuments({ status: 'pending' }),
       ]);
 
       const byType: Record<string, { total: number; count: number }> = {};
@@ -105,6 +108,9 @@ export class AdminFinanceService {
             totalPending: round(balances.totalPending),
             sellersWithBalance,
           },
+          flaggedSellersCount,
+          pendingVerificationMethodsCount,
+          pendingManualPaymentsCount,
           lifetimeTotals: {
             totalRevenue: round(balances.totalRevenue),
             totalFees: round(balances.totalFees),
@@ -179,7 +185,7 @@ export class AdminFinanceService {
     const sort = ['availableBalance', 'pendingBalance', 'totalRevenue', 'totalPayouts'].includes(query.sort) ? query.sort : 'availableBalance';
     const order = query.order === 'asc' ? 1 : -1;
 
-    return this.cached(this.key('seller-balances', { page, limit, sort, order, search: query.search ?? '' }), async () => {
+    return this.cached(this.key('seller-balances', { page, limit, sort, order, search: query.search ?? '', flaggedOnly: query.flaggedOnly ?? '' }), async () => {
       const balances = await this.r.sellerBalanceModel.find({}).lean();
       const sellerIds = [...new Set(balances.map((b: any) => b.sellerId))];
       const storeIds = balances.map((b: any) => b.storeId);
@@ -204,11 +210,17 @@ export class AdminFinanceService {
         totalRefunds: b.totalRefunds,
         totalPayouts: b.totalPayouts,
         currency: b.currency,
+        isFlaggedForReview: b.isFlaggedForReview ?? false,
+        flaggedReason: b.flaggedReason ?? null,
       }));
 
       if (query.search) {
         const q = String(query.search).toLowerCase();
         rows = rows.filter((r) => r.sellerName.toLowerCase().includes(q) || r.sellerEmail.toLowerCase().includes(q) || r.storeName.toLowerCase().includes(q));
+      }
+
+      if (query.flaggedOnly === 'true' || query.flaggedOnly === true) {
+        rows = rows.filter((r) => r.isFlaggedForReview);
       }
 
       rows.sort((a: any, b: any) => order * (a[sort] - b[sort]));
@@ -291,6 +303,29 @@ export class AdminFinanceService {
 
   async triggerClearingBalances() {
     const data = await this.financeService.processClearingBalances();
+    return { success: true, data };
+  }
+
+  async triggerScheduledPayouts() {
+    const data = await this.financeService.processScheduledPayouts();
+    return { success: true, data };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // PAYOUT METHOD VERIFICATION — every new method starts 'pending_verification'
+  // (see PayoutMethod schema) since no automated bank/wallet verification
+  // exists yet; an admin must review and activate it before a seller can
+  // withdraw to it.
+  // ═══════════════════════════════════════════════════════════════════════
+
+  async getPendingVerificationMethods() {
+    const methods = await this.r.payoutMethodModel.find({ status: 'pending_verification' }).sort({ createdAt: 1 }).lean();
+    const enriched = await this.attachStoreNames(methods as any[]);
+    return { success: true, data: enriched };
+  }
+
+  async verifyPayoutMethod(storeId: string, methodId: string, adminId: string, approve: boolean, note?: string) {
+    const data = await this.financeService.adminVerifyPayoutMethod(storeId, methodId, adminId, approve, note);
     return { success: true, data };
   }
 

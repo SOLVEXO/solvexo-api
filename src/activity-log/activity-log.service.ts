@@ -145,6 +145,87 @@ export class ActivityLogService {
     };
   }
 
+  // ═══════════════════════════════════════════════════════════════════════
+  // ADMIN — platform-wide (unscoped by storeId) equivalents. Every
+  // financially-sensitive admin action across this codebase (commission-rate
+  // changes, payout approve/reject/retry, manual-payment approve/reject,
+  // payout-method verification) already writes here via `log()` — this is
+  // simply the first read-side surface an admin can use to actually see
+  // that audit trail platform-wide, rather than only per-store as a seller.
+  // ═══════════════════════════════════════════════════════════════════════
+
+  private buildAdminFilter(query: any): Record<string, any> {
+    const filter: Record<string, any> = {};
+    if (query.storeId) filter.storeId = query.storeId;
+    if (query.category) filter.category = query.category;
+    if (query.actorId) filter.actorId = query.actorId;
+    if (query.actorRole) filter.actorRole = query.actorRole;
+    if (query.action) filter.action = query.action;
+    if (query.targetType) filter.targetType = query.targetType;
+    if (query.isSecurityAlert !== undefined) filter.isSecurityAlert = query.isSecurityAlert === 'true' || query.isSecurityAlert === true;
+    if (query.search) {
+      filter.$or = [
+        { action: { $regex: query.search, $options: 'i' } },
+        { description: { $regex: query.search, $options: 'i' } },
+        { actorName: { $regex: query.search, $options: 'i' } },
+      ];
+    }
+    if (query.from || query.to) {
+      filter.createdAt = {};
+      if (query.from) filter.createdAt.$gte = new Date(query.from);
+      if (query.to) {
+        const t = new Date(query.to);
+        t.setHours(23, 59, 59, 999);
+        filter.createdAt.$lte = t;
+      }
+    }
+    return filter;
+  }
+
+  async adminFindAll(query: any) {
+    const page = parseInt(query.page) || 1;
+    const limit = Math.min(200, parseInt(query.limit) || 50);
+    const skip = (page - 1) * limit;
+
+    const { activityLogModel } = this.databaseService.repositories;
+    const filter = this.buildAdminFilter(query);
+
+    const [total, logs] = await Promise.all([
+      activityLogModel.countDocuments(filter),
+      activityLogModel.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+    ]);
+
+    return {
+      success: true,
+      data: {
+        pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+        logs,
+      },
+    };
+  }
+
+  async adminExportCsv(query: any): Promise<string> {
+    const { activityLogModel } = this.databaseService.repositories;
+    const filter = this.buildAdminFilter(query);
+    const logs = await activityLogModel.find(filter).sort({ createdAt: -1 }).limit(5000).lean();
+
+    const header = ['Date', 'Store', 'Category', 'Action', 'Actor', 'Role', 'Description', 'Security Alert', 'IP'];
+    const rows = logs.map((l: any) => [
+      new Date(l.createdAt).toISOString(),
+      l.storeId,
+      l.category,
+      l.action,
+      l.actorName ?? l.actorId ?? '',
+      l.actorRole ?? '',
+      (l.description ?? '').replace(/"/g, "'"),
+      l.isSecurityAlert ? 'yes' : 'no',
+      l.ip ?? '',
+    ]);
+
+    const escape = (v: string) => `"${String(v).replace(/"/g, '""')}"`;
+    return [header, ...rows].map((r) => r.map(escape).join(',')).join('\n');
+  }
+
   async exportCsv(sellerId: string, storeId: string, query: any): Promise<string> {
     await this.verifyStoreOwnership(storeId, sellerId);
 
