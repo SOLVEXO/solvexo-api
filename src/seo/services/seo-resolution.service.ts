@@ -201,7 +201,7 @@ export class SeoResolutionService {
     const description = seo.metaDescription
       ?? renderTemplate(template?.descriptionTemplate, { storeName: store.name })
       ?? truncate(store.description ?? `Shop ${store.name} on Solvexo.`, 160);
-    const canonicalUrl = seo.canonicalUrlOverride ?? `${PLATFORM_ORIGIN}/store/${store.slug}`;
+    const canonicalUrl = seo.canonicalUrlOverride ?? `${PLATFORM_ORIGIN}/${store.slug}`;
 
     return {
       entityType: 'store',

@@ -19,6 +19,16 @@ import { MarketingService } from 'src/marketing/marketing.service';
 import { pickPrimaryCampaignForBadge } from 'src/marketing/campaign-pricing.util';
 import { AdminConfigService } from 'src/admin-config/admin-config.service';
 
+// Store slugs render at the site root (`solvexo.store/:slug`) — these are the
+// frontend's top-level static route segments (router/index.tsx), reserved so
+// a store can never claim a URL that collides with a real app page.
+const RESERVED_STORE_SLUGS = new Set([
+  'pricing', 'sellers', 'faq', 'privacy-policy', 'terms-of-service', 'cookie-policy',
+  'contact-us', 'account', 'marketplace', 'cart', 'checkout', 'order-success',
+  'educationmarketplace', 'maintenance', 'login', 'register', 'onboard',
+  'forgot-password', 'verify-otp', 'new-password', 'seller', 'admin', 'store',
+]);
+
 @Injectable()
 export class StoreService {
   constructor(
@@ -80,7 +90,10 @@ export class StoreService {
     let slug = baseSlug;
     let count = 1;
 
-    while (await this.databaseService.repositories.storeModel.findOne({ slug })) {
+    while (
+      RESERVED_STORE_SLUGS.has(slug) ||
+      (await this.databaseService.repositories.storeModel.findOne({ slug }))
+    ) {
       slug = `${baseSlug}-${count}`;
       count++;
     }
@@ -336,7 +349,8 @@ export class StoreService {
       let slug = baseSlug;
       let count = 1;
       while (
-        await this.databaseService.repositories.storeModel.findOne({ slug, _id: { $ne: store._id } })
+        RESERVED_STORE_SLUGS.has(slug) ||
+        (await this.databaseService.repositories.storeModel.findOne({ slug, _id: { $ne: store._id } }))
       ) {
         slug = `${baseSlug}-${count}`;
         count++;

@@ -205,7 +205,7 @@ export class SeoMonitoringService implements OnModuleInit, OnModuleDestroy {
     ]);
     return [
       ...(topProducts as any[]).map((p) => `https://solvexo.store/product/${p.slug}`),
-      ...(topStores as any[]).map((s) => `https://solvexo.store/store/${s.slug}`),
+      ...(topStores as any[]).map((s) => `https://solvexo.store/${s.slug}`),
     ];
   }
 

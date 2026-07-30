@@ -111,6 +111,23 @@ export class PaymentService {
     const digitalItems = checkout.items.filter((i: any) => i.type === 'digital');
     const isMixed = physicalItems.length > 0 && digitalItems.length > 0;
     const useSplit = isMixed && paymentMode === 'split';
+
+    // 'split' settles its physical portion via COD on delivery — same
+    // per-seller opt-out check as plain COD (codPayment, above). Checkout
+    // creation already hides 'split' as an option when this would fail, but
+    // this endpoint doesn't trust that client-side state alone.
+    if (useSplit) {
+      const physicalStoreIds = [...new Set(physicalItems.map((i: any) => i.storeId))];
+      const codDisabledStores = await this.databaseService.repositories.storeModel
+        .find({ _id: { $in: physicalStoreIds }, codEnabled: false })
+        .select('name')
+        .lean();
+      if (codDisabledStores.length > 0) {
+        throw new BadRequestException(
+          `Cash on Delivery isn't available for: ${codDisabledStores.map((s: any) => s.name).join(', ')} — please pay the full amount online instead.`,
+        );
+      }
+    }
     const chargeAmount = useSplit
       ? this.round(digitalItems.reduce((s: number, i: any) => s + i.totalPrice, 0))
       : checkout.totalAmount;

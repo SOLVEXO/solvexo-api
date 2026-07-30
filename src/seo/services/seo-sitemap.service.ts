@@ -71,7 +71,7 @@ export class SeoSitemapService {
   private async regenerateStores() {
     const { storeModel } = this.db.repositories;
     const stores = await storeModel.find({ status: 'active', isDelete: false }).select('slug updatedAt').lean();
-    const urls = stores.map((s: any) => ({ loc: `${PLATFORM_ORIGIN}/store/${s.slug}`, lastmod: s.updatedAt }));
+    const urls = stores.map((s: any) => ({ loc: `${PLATFORM_ORIGIN}/${s.slug}`, lastmod: s.updatedAt }));
     await this.writeChunks('stores', null, urls);
   }
 

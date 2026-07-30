@@ -391,6 +391,26 @@ export class CheckoutService {
 
     const hasDigital = checkoutItems.some((i) => i.type === 'digital');
 
+    // Per-seller COD opt-out (Store.codEnabled) — 'cash_on_delivery' and
+    // 'split' (which settles its physical portion via COD on delivery, see
+    // PaymentService.initiatePayment) are only offered here if EVERY store
+    // with a physical item in this cart still allows COD. This is the
+    // offer-time mirror of the enforcement already done at commit-time in
+    // PaymentService.codPayment/initiatePayment — without it, a buyer could
+    // pick COD/split for a cart containing a COD-disabled store's items and
+    // only find out it's rejected on the last checkout step.
+    const physicalStoreIds = [
+      ...new Set(checkoutItems.filter((i) => i.type === 'physical').map((i) => i.storeId)),
+    ];
+    const codEligible = hasPhysical
+      ? (
+          await this.databaseService.repositories.storeModel
+            .find({ _id: { $in: physicalStoreIds } })
+            .select('codEnabled')
+            .lean()
+        ).every((s: any) => s.codEnabled !== false)
+      : true;
+
     // Manual bank-transfer (Pakistan track — pay into the platform's own
     // account, upload proof) is a Stripe-equivalent alternative, not a COD
     // substitute — it's offered alongside 'stripe' whenever an admin has it
@@ -408,10 +428,12 @@ export class CheckoutService {
         // A mixed cart can either pay everything online ('stripe') or split
         // it — digital online now, physical via COD on delivery ('split').
         // Digital-only carts never get COD; physical-only carts keep both
-        // 'stripe' and 'cash_on_delivery' as before.
+        // 'stripe' and 'cash_on_delivery' as before — unless COD isn't
+        // eligible (see codEligible above), in which case 'stripe' (pay
+        // everything online) is always the safe fallback.
         allowedPaymentMethods: hasDigital
-          ? withManualTransfer(hasPhysical ? ['stripe', 'split'] : ['stripe'])
-          : withManualTransfer(['stripe', 'cash_on_delivery']),
+          ? withManualTransfer(hasPhysical && codEligible ? ['stripe', 'split'] : ['stripe'])
+          : withManualTransfer(codEligible ? ['stripe', 'cash_on_delivery'] : ['stripe']),
         summary: {
           subtotal,
           shippingFee: 0,
