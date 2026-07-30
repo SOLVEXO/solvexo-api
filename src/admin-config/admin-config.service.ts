@@ -79,6 +79,8 @@ export class AdminConfigService {
   async getPromotionPricing(placement: string): Promise<Record<string, any>> {
     const config = await this.getRawConfig();
     return config.promotionPricing?.[placement] ?? {};
+  }
+
   /** Used by FinanceService to gate on-demand withdrawals and the scheduled auto-payout batch per currency. */
   async getPayoutMinimum(currency: string): Promise<number> {
     const config = await this.getRawConfig();
@@ -161,6 +163,8 @@ export class AdminConfigService {
     this.invalidateCache();
     await this.logChange('promotion_pricing_updated', `Promotion pricing updated for: ${Object.keys(dto).join(', ')}`, meta);
     return { success: true, message: 'Promotion pricing updated', data: config };
+  }
+
   async updatePayoutConfig(dto: UpdatePayoutConfigDto, meta: AuditMeta) {
     const set: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(dto)) {
