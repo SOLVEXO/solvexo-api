@@ -33,12 +33,26 @@ export class productController {
     @Query('educationLevel') educationLevel?: string,
     @Query('normalizedCustomLevel') normalizedCustomLevel?: string,
     @Query('campaignId') campaignId?: string,
+    @Query('minPrice') minPriceQuery?: string,
+    @Query('maxPrice') maxPriceQuery?: string,
+    @Query('minRating') minRatingQuery?: string,
+    @Query('sortBy') sortByQuery?: string,
   ) {
     const page = Math.max(1, parseInt(pageQuery as string) || 1);
     const limit = Math.min(
       50,
       Math.max(1, parseInt(limitQuery as string) || 10),
     );
+    const parseNum = (v?: string): number | undefined => {
+      if (v === undefined) return undefined;
+      const n = parseFloat(v);
+      return Number.isFinite(n) ? n : undefined;
+    };
+    const allowedSorts = ['newest', 'price_asc', 'price_desc', 'rating'];
+    const sortBy = allowedSorts.includes(sortByQuery as string)
+      ? (sortByQuery as 'newest' | 'price_asc' | 'price_desc' | 'rating')
+      : undefined;
+
     return this.ProductsService.getProductsByCategoryId(
       id,
       page,
@@ -48,6 +62,10 @@ export class productController {
       educationLevel,
       normalizedCustomLevel,
       campaignId,
+      parseNum(minPriceQuery),
+      parseNum(maxPriceQuery),
+      parseNum(minRatingQuery),
+      sortBy,
     );
   }
 

@@ -35,11 +35,8 @@ export class OrderItem {
   @Prop({ type: String, default: null })
   sku: string | null;
 
-  @Prop({ type: String, default: null })
-  size: string | null;
-
-  @Prop({ type: String, default: null })
-  color: string | null;
+  @Prop({ type: [{ name: String, value: String }], default: [] })
+  options: { name: string; value: string }[];
 
   @Prop({ type: String, default: null })
   licenseType: string | null;

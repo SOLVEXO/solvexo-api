@@ -8,6 +8,7 @@ import {
 import * as bcrypt from 'bcrypt';
 import * as jwt from 'jsonwebtoken';
 import { DatabaseService } from 'src/database/databaseservice';
+import { formatOptionsSuffix } from 'src/products/variant-options.util';
 import { CreateEmployeeDto } from './dto/create-employee.dto';
 import { UpdateEmployeeDto } from './dto/update-employee.dto';
 import { PinLoginDto } from './dto/pin-login.dto';
@@ -311,8 +312,7 @@ export class PosService {
         price: v.price,
         compareAtPrice: v.compareAtPrice,
         stock: v.stock,
-        size: v.size,
-        color: v.color,
+        options: v.options,
         isDefault: v.isDefault,
         images: v.images,
       })),
@@ -363,8 +363,7 @@ export class PosService {
         price: v.price,
         compareAtPrice: v.compareAtPrice,
         stock: v.stock,
-        size: v.size,
-        color: v.color,
+        options: v.options,
         isDefault: v.isDefault,
         images: v.images,
       })),
@@ -591,7 +590,7 @@ export class PosService {
       saleItems.push({
         productId: item.productId,
         variantId: item.variantId,
-        name: `${product.name}${variant.size ? ` (${variant.size})` : ''}${variant.color ? ` - ${variant.color}` : ''}`,
+        name: `${product.name}${formatOptionsSuffix(variant.options)}`,
         sku: variant.sku,
         image: (product as any).gallery?.[0] ?? (product as any).coverImages?.[0] ?? null,
         price: variant.price,
@@ -1189,8 +1188,7 @@ export class PosService {
           price: (variant as any).price,
           compareAtPrice: (variant as any).compareAtPrice,
           stock: (variant as any).stock,
-          size: (variant as any).size,
-          color: (variant as any).color,
+          options: (variant as any).options,
           isDefault: (variant as any).isDefault,
         },
       },
@@ -1257,7 +1255,7 @@ export class PosService {
       saleItems.push({
         productId: item.productId,
         variantId: item.variantId,
-        name: `${(product as any).name}${variant.size ? ` (${variant.size})` : ''}${variant.color ? ` - ${variant.color}` : ''}`,
+        name: `${(product as any).name}${formatOptionsSuffix((variant as any).options)}`,
         sku: variant.sku,
         image: (product as any).gallery?.[0] ?? (product as any).coverImages?.[0] ?? null,
         price: variant.price,

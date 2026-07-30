@@ -63,7 +63,7 @@ export class OrdersService {
   }
 
   async getOrdersByUserId(userId: string, query: any) {
-    const { orderModel } = this.databaseService.repositories;
+    const { orderModel, sellerModel } = this.databaseService.repositories;
 
     const page = parseInt(query.page) || 1;
     const limit = parseInt(query.limit) || 10;
@@ -85,6 +85,24 @@ export class OrdersService {
       .limit(limit)
       .lean();
 
+    // Batch-resolve seller name + verification badge across every distinct
+    // seller in this page — same one-query-instead-of-N pattern used on the
+    // product listing endpoints.
+    const sellerIds = [
+      ...new Set(
+        orders.flatMap((order: any) =>
+          (order.sellerOrders ?? []).map((so: any) => so.sellerId),
+        ),
+      ),
+    ].filter(Boolean);
+    const sellers = sellerIds.length
+      ? await sellerModel
+          .find({ _id: { $in: sellerIds } })
+          .select('name isVerified')
+          .lean()
+      : [];
+    const sellerMap = new Map(sellers.map((s: any) => [s._id.toString(), s]));
+
     const list = orders.map((order: any) => ({
       orderId: order._id,
       orderNumber: order.orderNumber,
@@ -99,31 +117,37 @@ export class OrdersService {
       totalAmount: order.totalAmount,
       currency: order.currency,
       shippingAddress: order.shippingAddress,
-      stores: (order.sellerOrders ?? []).map((so: any) => ({
-        storeId: so.storeId,
-        fulfillmentType: so.fulfillmentType,
-        status: so.status,
-        subtotal: so.subtotal,
-        itemCount: (so.items ?? []).length,
-        items: (so.items ?? []).map((item: any) => ({
-          itemId: item._id,
-          productId: item.productId,
-          name: item.name,
-          image: item.image,
-          sku: item.sku,
-          type: item.type,
-          productType: item.productType ?? null,
-          quantity: item.quantity,
-          price: item.price,
-          totalPrice: item.totalPrice,
-          originalPrice: item.originalPrice ?? null,
-          subscriberDiscountUSD: item.subscriberDiscountUSD ?? 0,
-          status: item.status,
-        })),
-        tracking: so.tracking,
-        shippedAt: so.shippedAt,
-        deliveredAt: so.deliveredAt,
-      })),
+      stores: (order.sellerOrders ?? []).map((so: any) => {
+        const seller = sellerMap.get(so.sellerId?.toString());
+        return {
+          storeId: so.storeId,
+          sellerId: so.sellerId,
+          sellerName: seller ? seller.name : null,
+          sellerVerified: seller ? !!seller.isVerified : false,
+          fulfillmentType: so.fulfillmentType,
+          status: so.status,
+          subtotal: so.subtotal,
+          itemCount: (so.items ?? []).length,
+          items: (so.items ?? []).map((item: any) => ({
+            itemId: item._id,
+            productId: item.productId,
+            name: item.name,
+            image: item.image,
+            sku: item.sku,
+            type: item.type,
+            productType: item.productType ?? null,
+            quantity: item.quantity,
+            price: item.price,
+            totalPrice: item.totalPrice,
+            originalPrice: item.originalPrice ?? null,
+            subscriberDiscountUSD: item.subscriberDiscountUSD ?? 0,
+            status: item.status,
+          })),
+          tracking: so.tracking,
+          shippedAt: so.shippedAt,
+          deliveredAt: so.deliveredAt,
+        };
+      }),
       createdAt: order.createdAt,
       paidAt: order.paidAt,
     }));
@@ -138,7 +162,7 @@ export class OrdersService {
   }
 
   async getOrderById(userId: string, orderId: string) {
-    const { orderModel } = this.databaseService.repositories;
+    const { orderModel, sellerModel } = this.databaseService.repositories;
 
     const order = await orderModel
       .findOne({ _id: orderId, isDelete: false })
@@ -147,9 +171,33 @@ export class OrdersService {
     if ((order as any).userId !== userId)
       throw new ForbiddenException('Unauthorized');
 
+    const orderSellerOrders = ((order as any).sellerOrders ?? []) as any[];
+    const sellerIds: string[] = [
+      ...new Set(orderSellerOrders.map((so: any) => so.sellerId)),
+    ].filter(Boolean);
+    const sellers = sellerIds.length
+      ? await sellerModel
+          .find({ _id: { $in: sellerIds } })
+          .select('name isVerified')
+          .lean()
+      : [];
+    const sellerMap = new Map(sellers.map((s: any) => [s._id.toString(), s]));
+
+    const enrichedOrder = {
+      ...order,
+      sellerOrders: orderSellerOrders.map((so: any) => {
+        const seller = sellerMap.get(so.sellerId?.toString());
+        return {
+          ...so,
+          sellerName: seller ? seller.name : null,
+          sellerVerified: seller ? !!seller.isVerified : false,
+        };
+      }),
+    };
+
     return {
       success: true,
-      data: order,
+      data: enrichedOrder,
     };
   }
 

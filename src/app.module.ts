@@ -9,6 +9,7 @@ import { DatabaseModule } from './database/database.module';
 import { AuthModule } from './auth/auth.module';
 import { categoryModule } from './categories/categories.module';
 import { ProductsModule } from './products/product.module';
+import { ProductVariantsModule } from './product-variants/product-variants.module';
 import { CartModule } from './cart/cart.module';
 import { AddressModule } from './address/address.module';
 import { UsersModule } from './users/users.module';
@@ -70,6 +71,7 @@ import { ManualPaymentsModule } from './manual-payments/manual-payments.module';
     AuthModule,
     categoryModule,
     ProductsModule,
+    ProductVariantsModule,
     CartModule,
     AddressModule,
     UsersModule,

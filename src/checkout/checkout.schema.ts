@@ -14,6 +14,12 @@ export class CheckoutItem {
   @Prop({ type: String, required: true })
   sellerId: string;
 
+  @Prop({ type: String, default: null })
+  sellerName: string | null;
+
+  @Prop({ type: Boolean, default: false })
+  sellerVerified: boolean;
+
   @Prop({ type: String, required: true })
   storeId: string;
 
@@ -40,11 +46,8 @@ export class CheckoutItem {
   @Prop({ type: String, default: null })
   sku: string | null;
 
-  @Prop({ type: String, default: null })
-  size: string | null;
-
-  @Prop({ type: String, default: null })
-  color: string | null;
+  @Prop({ type: [{ name: String, value: String }], default: [] })
+  options: { name: string; value: string }[];
 
   @Prop({ type: String, default: null })
   licenseType: string | null;

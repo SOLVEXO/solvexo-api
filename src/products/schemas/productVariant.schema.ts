@@ -22,12 +22,12 @@ export class ProductVariant {
   @Prop({ type: Number, default: null })
   compareAtPrice!: number | null;
 
-  // physical only
-  @Prop({ type: String, default: null })
-  size!: string | null;
-
-  @Prop({ type: String, default: null })
-  color!: string | null;
+  // physical only — arbitrary seller-defined attributes (Color, Size,
+  // Material, etc). Every active (isDelete:false) variant on a given
+  // product must use the same set of attribute names — enforced in
+  // ProductVariantsService/ProductsService, not at the schema level.
+  @Prop({ type: [{ name: String, value: String }], default: [] })
+  options!: { name: string; value: string }[];
 
   @Prop({ default: 0 })
   stock: number;
