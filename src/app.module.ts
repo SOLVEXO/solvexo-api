@@ -50,6 +50,9 @@ import { AdminMarketplaceModule } from './admin-marketplace/admin-marketplace.mo
 import { AdminModerationModule } from './admin-moderation/admin-moderation.module';
 import { AdminUsersModule } from './admin-users/admin-users.module';
 import { AdminMarketingModule } from './admin-marketing/admin-marketing.module';
+import { MediaLibraryModule } from './media-library/media-library.module';
+import { StoreBannerModule } from './store-banner/store-banner.module';
+import { PromotionsModule } from './promotions/promotions.module';
 
 @Module({
   imports: [
@@ -108,6 +111,9 @@ import { AdminMarketingModule } from './admin-marketing/admin-marketing.module';
     AdminModerationModule,
     AdminUsersModule,
     AdminMarketingModule,
+    MediaLibraryModule,
+    StoreBannerModule,
+    PromotionsModule,
   ],
   controllers: [AppController],
   providers: [AppService, { provide: APP_GUARD, useClass: ThrottlerGuard }],

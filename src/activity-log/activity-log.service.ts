@@ -57,6 +57,15 @@ export class ActivityLogService {
     }
   }
 
+  /** Chronological audit trail for one entity (e.g. a StoreBanner or PromotionRequest) — no separate timeline schema, this just reads ActivityLog. */
+  async getTimeline(targetId: string) {
+    const logs = await this.databaseService.repositories.activityLogModel
+      .find({ targetId })
+      .sort({ createdAt: 1 })
+      .lean();
+    return { success: true, data: logs };
+  }
+
   private async verifyStoreOwnership(storeId: string, sellerId: string) {
     const store = await this.databaseService.repositories.storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
     if (!store) throw new ForbiddenException('Store not found or unauthorized');

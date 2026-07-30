@@ -158,6 +158,21 @@ export class Checkout {
   @Prop({ default: 0 })
   campaignDiscountTotalUSD: number;
 
+  // Set client-side from whichever promotional banner the buyer clicked
+  // through (localStorage attribution token, short TTL) — copied onto the
+  // resulting Order(s) at placeOrder so promotion analytics can attribute
+  // conversions/revenue, same convention as couponCode above. `attributedBannerId`
+  // covers the platform `Banner` collection (admin-authored AND
+  // PromotionRequest-derived banners are both stored there, same id space);
+  // `attributedStoreBannerId` covers a seller's own `StoreBanner`. Never a
+  // PromotionRequest id directly — buyers never see/click that document,
+  // only the Banner row it produces once approved+paid.
+  @Prop({ type: String, default: null })
+  attributedBannerId: string | null;
+
+  @Prop({ type: String, default: null })
+  attributedStoreBannerId: string | null;
+
   @Prop({ required: true })
   totalAmount: number;
 

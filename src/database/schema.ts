@@ -101,3 +101,8 @@ export { NotificationPreference, NotificationPreferenceDocument, NotificationPre
 export { PlatformConfig, PlatformConfigDocument, PlatformConfigSchema } from '../admin-config/schemas/platform-config.schema';
 export { Announcement, AnnouncementDocument, AnnouncementSchema } from '../admin-announcements/schemas/announcement.schema';
 export { Campaign, CampaignDocument, CampaignSchema } from '../marketing/schemas/campaign.schema';
+export { MediaAsset, MediaAssetDocument, MediaAssetSchema } from '../media-library/schemas/media-asset.schema';
+export { StoreBanner, StoreBannerDocument, StoreBannerSchema } from '../store-banner/schemas/store-banner.schema';
+export { PromotionRequest, PromotionRequestDocument, PromotionRequestSchema } from '../promotions/schemas/promotion-request.schema';
+export { PromotionDailyStats, PromotionDailyStatsDocument, PromotionDailyStatsSchema } from '../promotions/schemas/promotion-daily-stats.schema';
+export { PromotionClickEvent, PromotionClickEventDocument, PromotionClickEventSchema } from '../promotions/schemas/promotion-click-event.schema';

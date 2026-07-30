@@ -159,6 +159,24 @@ export class StoreSeo {
 }
 export const StoreSeoSchema = SchemaFactory.createForClass(StoreSeo);
 
+export const STORE_ANNOUNCEMENT_TYPES = ['info', 'sale', 'coupon', 'warning', 'shipping', 'holiday'] as const;
+export type StoreAnnouncementType = (typeof STORE_ANNOUNCEMENT_TYPES)[number];
+
+// Seller-controlled dismissible bar on their own storefront — distinct from the
+// admin-managed platform-wide `Announcement` (comman/ui `AnnouncementBanner`).
+@Schema({ _id: false })
+export class StoreAnnouncementBar {
+  @Prop({ type: String, default: null }) message: string | null;
+  @Prop({ type: String, enum: STORE_ANNOUNCEMENT_TYPES, default: 'info' })
+  type: StoreAnnouncementType;
+  @Prop({ type: String, default: null }) ctaLabel: string | null;
+  @Prop({ type: String, default: null }) ctaLink: string | null;
+  @Prop({ type: Boolean, default: false }) isActive: boolean;
+  @Prop({ type: Date, default: null }) startAt: Date | null;
+  @Prop({ type: Date, default: null }) endAt: Date | null;
+}
+export const StoreAnnouncementBarSchema = SchemaFactory.createForClass(StoreAnnouncementBar);
+
 @Schema({ timestamps: true })
 export class Store {
   @Prop({ required: true })
@@ -254,6 +272,15 @@ export class Store {
 
   @Prop({ type: StoreSeoSchema, default: () => ({}) })
   seo: StoreSeo;
+
+  // "Manual Pin"/"Seller Featured" collapsed into one mechanism — an ordered
+  // list of product ids a seller pins to the top of their storefront. Capped
+  // at read-time via PlatformConfig.placementLimits.storeFeaturedProducts.
+  @Prop({ type: [String], default: [] })
+  pinnedProductIds: string[];
+
+  @Prop({ type: StoreAnnouncementBarSchema, default: () => ({}) })
+  announcementBar: StoreAnnouncementBar;
 }
 
 export const StoreSchema = SchemaFactory.createForClass(Store);

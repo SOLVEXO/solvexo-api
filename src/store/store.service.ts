@@ -17,6 +17,7 @@ import { NOTIFICATION_TYPES } from 'src/notifications/notification.types';
 import { RedisService } from 'src/redis/redis.service';
 import { MarketingService } from 'src/marketing/marketing.service';
 import { pickPrimaryCampaignForBadge } from 'src/marketing/campaign-pricing.util';
+import { AdminConfigService } from 'src/admin-config/admin-config.service';
 
 @Injectable()
 export class StoreService {
@@ -29,6 +30,7 @@ export class StoreService {
     private readonly notificationsService: NotificationsService,
     private readonly redisService: RedisService,
     private readonly marketingService: MarketingService,
+    private readonly adminConfigService: AdminConfigService,
   ) {}
 
   private generateSlug(name: string): string {
@@ -149,6 +151,49 @@ export class StoreService {
     await store.save();
 
     return { success: true, message: 'White-label setting updated', data: { whiteLabelEnabled: store.whiteLabelEnabled } };
+  }
+
+  async updatePinnedProducts(sellerId: string, storeId: string, productIds: string[]) {
+    const store = await this.databaseService.repositories.storeModel.findOne({ _id: storeId, isDelete: false });
+    if (!store) throw new NotFoundException('Store not found');
+    if (store.sellerId !== sellerId) throw new UnauthorizedException('Unauthorized');
+
+    const limit = await this.adminConfigService.getPlacementLimit('storeFeaturedProducts');
+    store.pinnedProductIds = productIds.slice(0, limit);
+    await store.save();
+
+    this.activityLogService.log({
+      storeId, category: 'marketing', action: 'pinned_products_updated',
+      description: `Pinned products updated (${store.pinnedProductIds.length} product(s))`,
+      actorId: sellerId, actorRole: 'seller',
+    });
+
+    return { success: true, message: 'Pinned products updated', data: { pinnedProductIds: store.pinnedProductIds } };
+  }
+
+  async updateAnnouncementBar(sellerId: string, storeId: string, body: any) {
+    const store = await this.databaseService.repositories.storeModel.findOne({ _id: storeId, isDelete: false });
+    if (!store) throw new NotFoundException('Store not found');
+    if (store.sellerId !== sellerId) throw new UnauthorizedException('Unauthorized');
+
+    store.announcementBar = {
+      message: body.message ?? null,
+      type: body.type ?? 'info',
+      ctaLabel: body.ctaLabel ?? null,
+      ctaLink: body.ctaLink ?? null,
+      isActive: !!body.isActive,
+      startAt: body.startAt ? new Date(body.startAt) : null,
+      endAt: body.endAt ? new Date(body.endAt) : null,
+    };
+    await store.save();
+
+    this.activityLogService.log({
+      storeId, category: 'marketing', action: 'announcement_bar_updated',
+      description: store.announcementBar.isActive ? 'Store announcement bar activated' : 'Store announcement bar updated',
+      actorId: sellerId, actorRole: 'seller',
+    });
+
+    return { success: true, message: 'Announcement bar updated', data: store.announcementBar };
   }
 
   // seller ke saare stores
@@ -391,6 +436,12 @@ export class StoreService {
     const campaigns = await this.marketingService.getActiveCampaignsForStore(store._id.toString());
     const primaryCampaign = pickPrimaryCampaignForBadge(campaigns);
 
+    const bar = (store as any).announcementBar;
+    const now = Date.now();
+    const announcementActive = !!bar?.isActive
+      && (!bar.startAt || new Date(bar.startAt).getTime() <= now)
+      && (!bar.endAt || new Date(bar.endAt).getTime() >= now);
+
     return {
       success: true,
       data: {
@@ -408,6 +459,7 @@ export class StoreService {
         sellerType: (store as any).sellerType ?? null,
         badges: (store as any).badges ?? [],
         createdAt: (store as any).createdAt,
+        announcementBar: announcementActive ? { message: bar.message, type: bar.type, ctaLabel: bar.ctaLabel, ctaLink: bar.ctaLink } : null,
         activeCampaign: primaryCampaign ? {
           campaignId: primaryCampaign.campaignId,
           name: primaryCampaign.name,
@@ -688,7 +740,14 @@ export class StoreService {
 
     const enrichedProducts = products.map((p: any) => {
       const variant = cheapestByProduct.get(p._id.toString());
-      const base: any = { ...p, defaultVariantPrice: variant?.price ?? null, activeCampaign: activeCampaignBadge };
+      const base: any = {
+        ...p,
+        defaultVariantPrice: variant?.price ?? null,
+        variantId:           variant?._id ?? null,
+        stock:               variant?.stock ?? null,
+        compareAtPrice:      variant?.compareAtPrice ?? null,
+        activeCampaign:      activeCampaignBadge,
+      };
       if (variant && benefits) {
         const discount = this.subscriptionBenefits.resolveProductDiscount(benefits.benefits, p, variant.price);
         if (discount) {

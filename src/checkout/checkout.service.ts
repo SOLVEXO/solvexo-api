@@ -364,6 +364,8 @@ export class CheckoutService {
       totalAmount,
       status: 'pending',
       attributionSource,
+      attributedBannerId: body.attributedBannerId ?? null,
+      attributedStoreBannerId: body.attributedStoreBannerId ?? null,
       expiredAt: new Date(Date.now() + 30 * 60 * 1000),
       isDelete: false,
     });

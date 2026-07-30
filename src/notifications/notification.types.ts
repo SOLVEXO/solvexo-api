@@ -18,6 +18,14 @@ export const NOTIFICATION_TYPES = {
   SUBSCRIPTION_CANCELLED: 'subscription_cancelled',
   PLATFORM_PLAN_RENEWAL_REMINDER: 'platform_plan_renewal_reminder',
   PLATFORM_PLAN_PAYMENT_FAILED: 'platform_plan_payment_failed',
+  PROMOTION_REQUEST_SUBMITTED: 'promotion_request_submitted',
+  PROMOTION_APPROVED: 'promotion_approved',
+  PROMOTION_REJECTED: 'promotion_rejected',
+  PROMOTION_PAYMENT_SUCCEEDED: 'promotion_payment_succeeded',
+  PROMOTION_PAYMENT_FAILED: 'promotion_payment_failed',
+  PROMOTION_GOING_LIVE: 'promotion_going_live',
+  PROMOTION_EXPIRING_SOON: 'promotion_expiring_soon',
+  PROMOTION_EXPIRED: 'promotion_expired',
 } as const;
 
 export type NotificationType = (typeof NOTIFICATION_TYPES)[keyof typeof NOTIFICATION_TYPES];
@@ -40,4 +48,12 @@ export const NOTIFICATION_CATEGORY: Record<string, 'orders' | 'messages' | 'prom
   [NOTIFICATION_TYPES.SUBSCRIPTION_CANCELLED]: 'subscriptions',
   [NOTIFICATION_TYPES.PLATFORM_PLAN_RENEWAL_REMINDER]: 'subscriptions',
   [NOTIFICATION_TYPES.PLATFORM_PLAN_PAYMENT_FAILED]: 'subscriptions',
+  [NOTIFICATION_TYPES.PROMOTION_REQUEST_SUBMITTED]: 'promotions',
+  [NOTIFICATION_TYPES.PROMOTION_APPROVED]: 'promotions',
+  [NOTIFICATION_TYPES.PROMOTION_REJECTED]: 'promotions',
+  [NOTIFICATION_TYPES.PROMOTION_PAYMENT_SUCCEEDED]: 'promotions',
+  [NOTIFICATION_TYPES.PROMOTION_PAYMENT_FAILED]: 'promotions',
+  [NOTIFICATION_TYPES.PROMOTION_GOING_LIVE]: 'promotions',
+  [NOTIFICATION_TYPES.PROMOTION_EXPIRING_SOON]: 'promotions',
+  [NOTIFICATION_TYPES.PROMOTION_EXPIRED]: 'promotions',
 };

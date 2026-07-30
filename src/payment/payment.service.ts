@@ -7,6 +7,7 @@ import { ConfigService } from '@nestjs/config';
 import { DatabaseService } from 'src/database/databaseservice';
 import { NotificationsService } from 'src/notifications/notifications.service';
 import { NOTIFICATION_TYPES } from 'src/notifications/notification.types';
+import { PromotionsService } from 'src/promotions/promotions.service';
 import Stripe from 'stripe';
 
 @Injectable()
@@ -17,6 +18,7 @@ export class PaymentService {
     private readonly databaseService: DatabaseService,
     private readonly notificationsService: NotificationsService,
     private readonly configService: ConfigService,
+    private readonly promotionsService: PromotionsService,
   ) {
     const secretKey = this.configService
       .get<string>('STRIPE_SECRET_KEY')
@@ -737,6 +739,8 @@ export class PaymentService {
         paidAt: physicalPayment.isPaid ? new Date() : null,
         orderStatus: 'pending',
         attributionSource: checkout.attributionSource ?? 'other',
+        attributedBannerId: checkout.attributedBannerId ?? null,
+        attributedStoreBannerId: checkout.attributedStoreBannerId ?? null,
         isDelete: false,
       });
       createdOrders.push(physicalOrder);
@@ -792,9 +796,25 @@ export class PaymentService {
         paidAt: digitalPayment.isPaid ? new Date() : null,
         orderStatus: 'pending',
         attributionSource: checkout.attributionSource ?? 'other',
+        attributedBannerId: checkout.attributedBannerId ?? null,
+        attributedStoreBannerId: checkout.attributedStoreBannerId ?? null,
         isDelete: false,
       });
       createdOrders.push(digitalOrder);
+    }
+
+    if (checkout.attributedBannerId || checkout.attributedStoreBannerId) {
+      // A checkout could in principle carry both (unlikely, but not
+      // contradictory) — record a conversion row for whichever ids are set,
+      // each attributed to the Banner/StoreBanner the buyer actually clicked
+      // (never a PromotionRequest id directly; see the schema comment).
+      const conversions = createdOrders.flatMap((o: any) => {
+        const rows: { entityType: 'banner' | 'store_banner'; entityId: string; orderId: string; revenue: number }[] = [];
+        if (checkout.attributedBannerId) rows.push({ entityType: 'banner', entityId: checkout.attributedBannerId, orderId: o._id.toString(), revenue: o.totalAmount });
+        if (checkout.attributedStoreBannerId) rows.push({ entityType: 'store_banner', entityId: checkout.attributedStoreBannerId, orderId: o._id.toString(), revenue: o.totalAmount });
+        return rows;
+      });
+      this.promotionsService.recordConversions(conversions).catch(() => {});
     }
 
     // purchaseCount increment — har item ke product pe

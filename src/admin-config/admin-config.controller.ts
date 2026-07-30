@@ -9,6 +9,8 @@ import { UpdateFeatureFlagsDto } from './dto/update-feature-flags.dto';
 import { UpdateAiConfigDto } from './dto/update-ai-config.dto';
 import { UpdateEmailConfigDto } from './dto/update-email-config.dto';
 import { UpdateMaintenanceDto } from './dto/update-maintenance.dto';
+import { UpdatePlacementLimitsDto } from './dto/update-placement-limits.dto';
+import { UpdatePromotionPricingDto } from './dto/update-promotion-pricing.dto';
 
 @ApiTags('Admin Platform Config')
 @ApiBearerAuth()
@@ -45,6 +47,24 @@ export class AdminConfigController {
   @Put('email')
   updateEmailConfig(@Req() req: any, @Body() dto: UpdateEmailConfigDto) {
     return this.adminConfigService.updateEmailConfig(dto, {
+      adminId: req.user.userId,
+      ip: req.ip,
+      userAgent: req.headers['user-agent'],
+    });
+  }
+
+  @Put('placement-limits')
+  updatePlacementLimits(@Req() req: any, @Body() dto: UpdatePlacementLimitsDto) {
+    return this.adminConfigService.updatePlacementLimits(dto, {
+      adminId: req.user.userId,
+      ip: req.ip,
+      userAgent: req.headers['user-agent'],
+    });
+  }
+
+  @Put('promotion-pricing')
+  updatePromotionPricing(@Req() req: any, @Body() dto: UpdatePromotionPricingDto) {
+    return this.adminConfigService.updatePromotionPricing(dto, {
       adminId: req.user.userId,
       ip: req.ip,
       userAgent: req.headers['user-agent'],

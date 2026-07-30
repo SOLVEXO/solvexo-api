@@ -19,6 +19,7 @@ import { EducationLevel } from './schemas/product.schema';
 import { EducationLevelService } from './education-level.service';
 import { UploadService } from 'src/upload/upload.service';
 import { RedisService } from 'src/redis/redis.service';
+import { aggregateProductSales } from 'src/analytics/utils/order-aggregation.util';
 import {
   PREVIEW_RATE_LIMIT_MAX,
   PREVIEW_RATE_LIMIT_WINDOW_SECONDS,
@@ -603,6 +604,51 @@ export class ProductsService {
     const shaped = await this.attachVariantsAndPricing(products, customerId);
     const byId = new Map(shaped.map((p) => [p._id.toString(), p]));
     return productIds.map((id) => byId.get(id)).filter(Boolean);
+  }
+
+  // ── Storefront promotion sections (Best Seller / New Arrival / Trending / Pinned) ──
+  // Public, read-only. No new schema — Best Seller/Trending are derived from the
+  // same order-aggregation util analytics already uses; New Arrival is a plain
+  // sort; Pinned reuses `getShapedProductsByIds` (order-preserving by id list).
+
+  async getPinnedProducts(storeId: string, customerId?: string | null) {
+    const store = await this.databaseService.repositories.storeModel.findOne({ _id: storeId, isDelete: false }).lean();
+    if (!store) return { success: true, data: { products: [] } };
+    const products = await this.getShapedProductsByIds((store as any).pinnedProductIds ?? [], customerId);
+    return { success: true, data: { products } };
+  }
+
+  async getNewArrivals(storeId: string, limit: number = 12, customerId?: string | null) {
+    const productModel = this.databaseService.repositories.productModel;
+    const products = await productModel
+      .find({ storeId, status: 'active', isDelete: false })
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .lean();
+    return { success: true, data: { products: await this.attachVariantsAndPricing(products, customerId) } };
+  }
+
+  private async getTopSellingProducts(storeId: string, from: Date, limit: number, customerId?: string | null) {
+    const { orderModel, productModel } = this.databaseService.repositories;
+    const sales = await aggregateProductSales(orderModel, from, new Date(), { 'sellerOrders.storeId': storeId });
+    const topIds = [...sales].sort((a, b) => b.unitsSold - a.unitsSold).slice(0, limit).map((s) => s.productId);
+    if (!topIds.length) return { success: true, data: { products: [] } };
+
+    const products = await productModel.find({ _id: { $in: topIds }, storeId, status: 'active', isDelete: false }).lean();
+    const byId = new Map(products.map((p: any) => [p._id.toString(), p]));
+    const ordered = topIds.map((id) => byId.get(id)).filter(Boolean);
+    return { success: true, data: { products: await this.attachVariantsAndPricing(ordered, customerId) } };
+  }
+
+  /** All-time unit-sales leaderboard for a store. */
+  async getBestSellers(storeId: string, limit: number = 12, customerId?: string | null) {
+    return this.getTopSellingProducts(storeId, new Date(0), limit, customerId);
+  }
+
+  /** Same leaderboard, narrowed to the last 7 days — a different signal ("hot right now" vs. "sells well overall"). */
+  async getTrendingProducts(storeId: string, limit: number = 12, customerId?: string | null) {
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    return this.getTopSellingProducts(storeId, sevenDaysAgo, limit, customerId);
   }
 
   async getProductById(productId: string, customerId?: string | null) {

@@ -245,6 +245,21 @@ export class DatabaseService {
     @InjectModel(schema.Campaign.name)
     private campaignModel: Model<schema.CampaignDocument>,
 
+    @InjectModel(schema.MediaAsset.name)
+    private mediaAssetModel: Model<schema.MediaAssetDocument>,
+
+    @InjectModel(schema.StoreBanner.name)
+    private storeBannerModel: Model<schema.StoreBannerDocument>,
+
+    @InjectModel(schema.PromotionRequest.name)
+    private promotionRequestModel: Model<schema.PromotionRequestDocument>,
+
+    @InjectModel(schema.PromotionDailyStats.name)
+    private promotionDailyStatsModel: Model<schema.PromotionDailyStatsDocument>,
+
+    @InjectModel(schema.PromotionClickEvent.name)
+    private promotionClickEventModel: Model<schema.PromotionClickEventDocument>,
+
   ) { }
 
   get repositories() {
@@ -331,6 +346,11 @@ export class DatabaseService {
       platformConfigModel: this.platformConfigModel,
       announcementModel: this.announcementModel,
       campaignModel: this.campaignModel,
+      mediaAssetModel: this.mediaAssetModel,
+      storeBannerModel: this.storeBannerModel,
+      promotionRequestModel: this.promotionRequestModel,
+      promotionDailyStatsModel: this.promotionDailyStatsModel,
+      promotionClickEventModel: this.promotionClickEventModel,
     };
   }
 }

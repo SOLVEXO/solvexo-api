@@ -8,6 +8,7 @@ import {
   Param,
   Body,
   Query,
+  Req,
   UploadedFile,
   UseInterceptors,
   UseGuards,
@@ -16,24 +17,27 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { BannersService } from './banner.service';
 import { CreateBannerDto } from './dto/create-banner.dto';
 import { UpdateBannerDto } from './dto/update-banner.dto';
-import { createMulterOptions } from '../upload/multer.config';
-import { ConfigService } from '@nestjs/config';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { PromotionPlacement } from '../common/promotion-placements.const';
+
+const BANNER_UPLOAD_MIME = /\/(jpg|jpeg|png|webp)$/;
+const BANNER_UPLOAD_MAX_BYTES = 5 * 1024 * 1024;
 @ApiTags('Banners')
 @Controller('api/banners')
 export class BannersController {
   constructor(private readonly bannersService: BannersService) {}
 
-  // GET all banners — public
+  // GET all banners — public. Omit `placement` to preserve today's unscoped behavior.
   @Get()
-  findAll() {
-    return this.bannersService.findAll();
+  findAll(@Query('placement') placement?: PromotionPlacement) {
+    return this.bannersService.findAll(placement);
   }
 
   // GET banner count — admin only
@@ -41,8 +45,8 @@ export class BannersController {
   @Roles('admin')
   @ApiBearerAuth()
   @Get('count')
-  getCount() {
-    return this.bannersService.getCount();
+  getCount(@Query('placement') placement?: PromotionPlacement) {
+    return this.bannersService.getCount(placement);
   }
 
   // POST via JSON URL — admin only
@@ -61,13 +65,26 @@ export class BannersController {
   @ApiBearerAuth()
   @Post('upload')
   @HttpCode(HttpStatus.CREATED)
-  @UseInterceptors(FileInterceptor('file', createMulterOptions(new ConfigService())))
+  @UseInterceptors(
+    FileInterceptor('file', {
+      storage: memoryStorage(),
+      limits: { fileSize: BANNER_UPLOAD_MAX_BYTES },
+      fileFilter: (_req, file, callback) => {
+        if (!file.mimetype.match(BANNER_UPLOAD_MIME)) {
+          return callback(new BadRequestException(`Invalid file type "${file.mimetype}". Only jpg, jpeg, png, webp are allowed.`), false);
+        }
+        callback(null, true);
+      },
+    }),
+  )
   async uploadBanner(
+    @Req() req: any,
     @UploadedFile() file: Express.Multer.File,
     @Query('urlOnTap') urlOnTap?: string,
+    @Query('placement') placement?: string,
   ) {
     if (!file) throw new BadRequestException('Please provide a banner image file');
-    return this.bannersService.uploadBanner(file, urlOnTap);
+    return this.bannersService.uploadBanner(file, req.user.userId, urlOnTap, placement);
   }
 
   // PATCH edit banner — admin only
@@ -77,6 +94,24 @@ export class BannersController {
   @Patch(':id')
   updateBanner(@Param('id') id: string, @Body() dto: UpdateBannerDto) {
     return this.bannersService.updateBanner(id, dto);
+  }
+
+  // PATCH pause banner — admin only
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('admin')
+  @ApiBearerAuth()
+  @Patch(':id/pause')
+  pauseBanner(@Param('id') id: string) {
+    return this.bannersService.pauseBanner(id);
+  }
+
+  // PATCH resume banner — admin only
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('admin')
+  @ApiBearerAuth()
+  @Patch(':id/resume')
+  resumeBanner(@Param('id') id: string) {
+    return this.bannersService.resumeBanner(id);
   }
 
   // DELETE banner — admin only

@@ -51,6 +51,20 @@ export class StoreController {
 
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('seller')
+  @Patch(':storeId/pinned-products')
+  async updatePinnedProducts(@Req() req: any, @Param('storeId') storeId: string, @Body() body: { productIds: string[] }) {
+    return this.storeService.updatePinnedProducts(req.user.userId, storeId, body.productIds ?? []);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Patch(':storeId/announcement')
+  async updateAnnouncementBar(@Req() req: any, @Param('storeId') storeId: string, @Body() body: any) {
+    return this.storeService.updateAnnouncementBar(req.user.userId, storeId, body);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
   @Post('update-store')
   async updateStore(@Req() req: any, @Body() body: any) {
     const { userId } = req.user;

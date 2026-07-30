@@ -24,18 +24,38 @@ export class UploadService {
   }
 
   // ── PUBLIC upload ──
-  async uploadFile(file: Express.Multer.File): Promise<{ url: string; publicId: string; resourceType: string }> {
+  // `options` lets a caller that needs Cloudinary-side resize/optimization (e.g.
+  // promotional creatives, which used to go through a separate CloudinaryStorage
+  // multer path just for this) opt in without changing the default behavior for
+  // every other existing caller of this method.
+  async uploadFile(
+    file: Express.Multer.File,
+    options?: { folder?: string; maxDimension?: number },
+  ): Promise<{ url: string; publicId: string; resourceType: string; width?: number; height?: number }> {
     const resourceType = this.getResourceType(file.mimetype);
+    const folder = options?.folder ?? (resourceType === 'raw' ? 'uploads/documents' : `uploads/${resourceType}s`);
+    const transformation =
+      options?.maxDimension && resourceType === 'image'
+        ? [{ width: options.maxDimension, height: options.maxDimension, crop: 'limit' }, { quality: 'auto' }, { fetch_format: 'auto' }]
+        : undefined;
+
     return new Promise((resolve, reject) => {
       const uploadStream = cloudinary.uploader.upload_stream(
         {
-          folder: resourceType === 'raw' ? 'uploads/documents' : `uploads/${resourceType}s`,
+          folder,
           resource_type: resourceType as any,
           type: 'upload',
+          ...(transformation ? { transformation } : {}),
         },
         (error, result) => {
           if (error || !result) return reject(new BadRequestException(error?.message || 'Upload failed'));
-          resolve({ url: result.secure_url, publicId: result.public_id, resourceType });
+          resolve({
+            url: result.secure_url,
+            publicId: result.public_id,
+            resourceType,
+            width: result.width,
+            height: result.height,
+          });
         },
       );
       streamifier.createReadStream(file.buffer).pipe(uploadStream);

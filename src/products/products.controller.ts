@@ -114,6 +114,34 @@ export class productController {
     return this.ProductsService.getSellerProductById(sellerId, productId);
   }
 
+  // ── Storefront promotion sections — public, no auth required ──────────────
+  @UseGuards(OptionalJwtAuthGuard)
+  @Get('store/:storeId/pinned')
+  async getPinnedProducts(@Req() req: any, @Param('storeId') storeId: string) {
+    return this.ProductsService.getPinnedProducts(storeId, req.user?.userId ?? null);
+  }
+
+  @UseGuards(OptionalJwtAuthGuard)
+  @Get('store/:storeId/new-arrivals')
+  async getNewArrivals(@Req() req: any, @Param('storeId') storeId: string, @Query('limit') limitQuery?: string) {
+    const limit = Math.min(24, Math.max(1, parseInt(limitQuery as string) || 12));
+    return this.ProductsService.getNewArrivals(storeId, limit, req.user?.userId ?? null);
+  }
+
+  @UseGuards(OptionalJwtAuthGuard)
+  @Get('store/:storeId/best-sellers')
+  async getBestSellers(@Req() req: any, @Param('storeId') storeId: string, @Query('limit') limitQuery?: string) {
+    const limit = Math.min(24, Math.max(1, parseInt(limitQuery as string) || 12));
+    return this.ProductsService.getBestSellers(storeId, limit, req.user?.userId ?? null);
+  }
+
+  @UseGuards(OptionalJwtAuthGuard)
+  @Get('store/:storeId/trending')
+  async getTrendingProducts(@Req() req: any, @Param('storeId') storeId: string, @Query('limit') limitQuery?: string) {
+    const limit = Math.min(24, Math.max(1, parseInt(limitQuery as string) || 12));
+    return this.ProductsService.getTrendingProducts(storeId, limit, req.user?.userId ?? null);
+  }
+
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('seller')
   @Get('store-products/:storeId')

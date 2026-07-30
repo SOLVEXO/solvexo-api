@@ -14,6 +14,7 @@ import { SeoSitemapService } from 'src/seo/services/seo-sitemap.service';
 import { SeoMonitoringService } from 'src/seo/services/seo-monitoring.service';
 import { SeoAuditService } from 'src/seo/services/seo-audit.service';
 import { AdminMarketingService } from 'src/admin-marketing/admin-marketing.service';
+import { PromotionsService } from 'src/promotions/promotions.service';
 
 @Injectable()
 export class SchedulerService {
@@ -33,6 +34,7 @@ export class SchedulerService {
     private readonly seoMonitoringService: SeoMonitoringService,
     private readonly seoAuditService: SeoAuditService,
     private readonly adminMarketingService: AdminMarketingService,
+    private readonly promotionsService: PromotionsService,
   ) {}
 
   /**
@@ -174,6 +176,20 @@ export class SchedulerService {
       const result = await this.adminMarketingService.expireCampaigns();
       if (result.expired > 0) {
         this.logger.log(`Campaigns expired: ${result.expired} moved to 'ended', rotation order compacted`);
+      }
+    });
+  }
+
+  // Sibling to expireCampaigns() above — activates paid+approved PromotionRequests
+  // whose startAt has arrived, expires ones past endAt, fires the going-live/
+  // expiring-soon/expired notifications, and compacts the resulting Banner rows'
+  // rotation order for any placement it touched.
+  @Cron('* * * * *')
+  async expirePromotions() {
+    await this.runLocked('promotion-expiry', 50_000, async () => {
+      const result = await this.promotionsService.runExpiryAndActivation();
+      if (result.activated > 0 || result.expired > 0) {
+        this.logger.log(`Promotions: ${result.activated} activated, ${result.expired} expired, ${result.expiringSoonNotified} expiring-soon notices sent`);
       }
     });
   }

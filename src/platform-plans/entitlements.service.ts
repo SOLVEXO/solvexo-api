@@ -24,6 +24,8 @@ export interface PlatformPlanLimits {
   seoAiSuggestionsAllowed: boolean;
   searchConsoleIntegrationAllowed: boolean;
   customRedirectsAllowed: boolean;
+  maxActiveStoreBanners: number;
+  maxActivePromotions: number;
 }
 
 // Used only as a last-resort fallback for a store that somehow has no
@@ -38,6 +40,7 @@ const FALLBACK_LIMITS: PlatformPlanLimits = {
   abandonedCartRecoveryAllowed: false, emailCampaignsAllowed: false, apiWebhooksAllowed: false,
   dedicatedAccountManager: false, prioritySupport: false, marketplaceFeaturedBadge: false, slaUptimePercent: null,
   advancedSeoToolsAllowed: false, seoAiSuggestionsAllowed: false, searchConsoleIntegrationAllowed: false, customRedirectsAllowed: false,
+  maxActiveStoreBanners: 4, maxActivePromotions: 1,
 };
 
 const BOOLEAN_FEATURES: Array<{ key: keyof PlatformPlanLimits; label: string }> = [
@@ -143,6 +146,34 @@ export class EntitlementsService {
         limits.maxPosLocations <= 1
           ? 'Multi-location POS is not available on your current plan — upgrade your platform plan to add another branch.'
           : `POS location limit reached (${limits.maxPosLocations}) for your current plan — upgrade your platform plan to add more branches.`,
+      );
+    }
+  }
+
+  /** Throws if the store already has its plan's limit of StoreBanner rows. Call BEFORE creating a new one.
+   *  Deliberately counts ALL rows (not just `status:'active'`) — this is a plan-tier creation cap, distinct
+   *  from `PlatformConfig.placementLimits.storeHero` which only bounds how many rotate on the storefront at once. */
+  async assertCanCreateStoreBanner(storeId: string): Promise<void> {
+    const limits = await this.getLimits(storeId);
+    if (limits.maxActiveStoreBanners === -1) return;
+    const count = await this.db.repositories.storeBannerModel.countDocuments({ storeId });
+    if (count >= limits.maxActiveStoreBanners) {
+      throw new BadRequestException(
+        `Store banner limit reached (${limits.maxActiveStoreBanners}) for your current plan — upgrade your platform plan or delete an existing banner to add more.`,
+      );
+    }
+  }
+
+  /** Throws if the store already has its plan's limit of concurrently pending/approved/active PromotionRequests. */
+  async assertCanCreatePromotion(storeId: string): Promise<void> {
+    const limits = await this.getLimits(storeId);
+    if (limits.maxActivePromotions === -1) return;
+    const count = await this.db.repositories.promotionRequestModel.countDocuments({
+      storeId, status: { $in: ['pending', 'approved', 'active'] },
+    });
+    if (count >= limits.maxActivePromotions) {
+      throw new BadRequestException(
+        `You already have ${limits.maxActivePromotions} promotion request(s) in progress — your current plan allows ${limits.maxActivePromotions} at a time. Upgrade your platform plan or wait for one to finish.`,
       );
     }
   }

@@ -105,7 +105,7 @@ async function bootstrap() {
     },
     credentials: true, // << required if withCredentials on client
     methods: ['GET','HEAD','PUT','PATCH','POST','DELETE','OPTIONS'],
-    allowedHeaders: ['Content-Type','Authorization','X-Requested-With','Accept','Origin'],
+    allowedHeaders: ['Content-Type','Authorization','X-Requested-With','Accept','Origin','Idempotency-Key'],
     exposedHeaders: ['Content-Length','X-Request-Id'],
   });
 

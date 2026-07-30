@@ -1,9 +1,31 @@
 /* eslint-disable prettier/prettier */
 import { ApiProperty } from '@nestjs/swagger';
-import { IsOptional, IsUrl, IsBoolean, IsNumber, Min } from 'class-validator';
+import { IsOptional, IsUrl, IsBoolean, IsNumber, IsIn, IsArray, IsDateString, Min } from 'class-validator';
 import { Type } from 'class-transformer';
+import { PROMOTION_PLACEMENTS, PromotionPlacement } from '../../common/promotion-placements.const';
 
 export class UpdateBannerDto {
+  @ApiProperty({ required: false, enum: PROMOTION_PLACEMENTS, description: 'Deprecated — use `placements` (array) instead. Kept for older callers.' })
+  @IsOptional()
+  @IsIn(PROMOTION_PLACEMENTS)
+  placement?: PromotionPlacement;
+
+  @ApiProperty({ required: false, enum: PROMOTION_PLACEMENTS, isArray: true, description: 'One banner can run on more than one placement at once.' })
+  @IsOptional()
+  @IsArray()
+  @IsIn(PROMOTION_PLACEMENTS, { each: true })
+  placements?: PromotionPlacement[];
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsDateString()
+  startAt?: string;
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsDateString()
+  endAt?: string;
+
   @ApiProperty({ required: false, example: 'https://res.cloudinary.com/demo/image/upload/banner.jpg' })
   @IsOptional()
   @IsUrl({}, { message: 'bannerImage must be a valid URL' })

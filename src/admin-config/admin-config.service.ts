@@ -5,10 +5,13 @@ import { ActivityLogService } from '../activity-log/activity-log.service';
 import { UpdateFeatureFlagsDto } from './dto/update-feature-flags.dto';
 import { UpdateAiConfigDto } from './dto/update-ai-config.dto';
 import { UpdateEmailConfigDto } from './dto/update-email-config.dto';
+import { UpdatePlacementLimitsDto } from './dto/update-placement-limits.dto';
+import { UpdatePromotionPricingDto } from './dto/update-promotion-pricing.dto';
+import { PlacementLimitKey } from '../common/promotion-placements.const';
 
 export type FeatureFlagKey =
   | 'aiStudio' | 'marketplace' | 'digitalUploads' | 'affiliateProgram'
-  | 'giftCards' | 'posMode' | 'storeBuilder' | 'bulkProductImport';
+  | 'giftCards' | 'posMode' | 'storeBuilder' | 'bulkProductImport' | 'promotions';
 
 interface AuditMeta {
   adminId: string;
@@ -64,6 +67,18 @@ export class AdminConfigService {
     return config.maintenanceMode === true;
   }
 
+  /** How many banners may be simultaneously visible for a given placement — read-side cap only, never a create-time limit. */
+  async getPlacementLimit(key: PlacementLimitKey): Promise<number> {
+    const config = await this.getRawConfig();
+    return config.placementLimits?.[key] ?? 4;
+  }
+
+  /** The admin-configured rate card for a placement (hourly/daily/weekly/monthly + multipliers + festival overrides), or {} if unset. */
+  async getPromotionPricing(placement: string): Promise<Record<string, any>> {
+    const config = await this.getRawConfig();
+    return config.promotionPricing?.[placement] ?? {};
+  }
+
   private async logChange(action: string, description: string, meta: AuditMeta) {
     this.activityLogService.log({
       storeId: 'platform',
@@ -107,6 +122,28 @@ export class AdminConfigService {
     this.invalidateCache();
     await this.logChange('email_config_updated', `Email config updated: ${JSON.stringify(dto)}`, meta);
     return { success: true, message: 'Email config updated', data: config };
+  }
+
+  async updatePlacementLimits(dto: UpdatePlacementLimitsDto, meta: AuditMeta) {
+    const set: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(dto)) {
+      if (value !== undefined) set[`placementLimits.${key}`] = value;
+    }
+    const config = await this.model.findOneAndUpdate({}, { $set: set }, { upsert: true, new: true, setDefaultsOnInsert: true });
+    this.invalidateCache();
+    await this.logChange('placement_limits_updated', `Placement visible-count limits updated: ${JSON.stringify(dto)}`, meta);
+    return { success: true, message: 'Placement limits updated', data: config };
+  }
+
+  async updatePromotionPricing(dto: UpdatePromotionPricingDto, meta: AuditMeta) {
+    const set: Record<string, unknown> = {};
+    for (const [placement, rateCard] of Object.entries(dto)) {
+      if (rateCard !== undefined) set[`promotionPricing.${placement}`] = rateCard;
+    }
+    const config = await this.model.findOneAndUpdate({}, { $set: set }, { upsert: true, new: true, setDefaultsOnInsert: true });
+    this.invalidateCache();
+    await this.logChange('promotion_pricing_updated', `Promotion pricing updated for: ${Object.keys(dto).join(', ')}`, meta);
+    return { success: true, message: 'Promotion pricing updated', data: config };
   }
 
   async setMaintenanceMode(maintenanceMode: boolean, meta: AuditMeta) {

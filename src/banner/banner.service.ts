@@ -4,46 +4,86 @@ import { v2 as cloudinary } from 'cloudinary';
 import { CreateBannerDto } from './dto/create-banner.dto';
 import { UpdateBannerDto } from './dto/update-banner.dto';
 import { DatabaseService } from 'src/database/databaseservice';
+import { AdminConfigService } from '../admin-config/admin-config.service';
+import { MediaLibraryService } from '../media-library/media-library.service';
+import { validateCreativeDimensions } from '../common/validate-creative-dimensions.util';
+import { BannerStatus } from './schemas/banner.schema';
+import { PromotionPlacement } from '../common/promotion-placements.const';
 
-const MAX_BANNERS = 4;
+const DEFAULT_PLACEMENT: PromotionPlacement = 'marketplaceHero';
+
+// Master stored well above any real viewport (incl. retina/4K) — the frontend
+// never fetches this directly, it requests per-breakpoint Cloudinary
+// derivatives (see cloudinaryImage.ts), so a generous master costs nothing in
+// visitor bandwidth, only Cloudinary storage.
+const HERO_MAX_DIMENSION = 2560;
+// Below this, even the full-bleed desktop render (which needs up to
+// HERO_MAX_DIMENSION-wide sources on retina/4K) would visibly upscale —
+// reject rather than silently store a source that will always look soft.
+const HERO_MIN_SOURCE_WIDTH = 1280;
+
+/** A row is "visible" whether it was migrated to the new `status` field or is a
+ * pre-migration legacy row that only ever had `isActive`. */
+const VISIBLE_FILTER = { $or: [{ status: 'active' }, { status: { $exists: false }, isActive: true }] };
+
+/** Matches both the new multi-placement `placements` array and the legacy
+ * scalar `placement` field (pre-migration rows have an empty `placements`
+ * array and rely entirely on the scalar field). Wrapped in its own `$or` key
+ * so callers must combine it via `$and` — `VISIBLE_FILTER` already owns the
+ * top-level `$or` key, and a second `$or` at the same level would silently
+ * overwrite it instead of combining. */
+function placementMatch(placement: PromotionPlacement) {
+  return { $or: [{ placements: placement }, { placement }] };
+}
+
+function computeInitialStatus(startAt?: string, endAt?: string): BannerStatus {
+  if (endAt && new Date(endAt).getTime() < Date.now()) {
+    throw new BadRequestException('endAt is in the past');
+  }
+  if (startAt && new Date(startAt).getTime() > Date.now()) return 'scheduled';
+  return 'active';
+}
 
 @Injectable()
 export class BannersService {
-  constructor(private readonly databaseService: DatabaseService) {}
+  constructor(
+    private readonly databaseService: DatabaseService,
+    private readonly adminConfigService: AdminConfigService,
+    private readonly mediaLibraryService: MediaLibraryService,
+  ) {}
 
   private get bannerModel() {
     return this.databaseService.repositories.bannerModel;
   }
 
   // ── GET ALL (public) ───────────────────────────────────────────────────────
+  // No `placement` filter is applied unless the caller passes one — this keeps
+  // every existing consumer's behavior (unscoped, all active banners) identical
+  // post-migration. Placement-aware pages opt in explicitly.
 
-  async findAll() {
-    const banners = await this.bannerModel
-      .find({ isActive: true })
-      .sort({ order: 1, createdAt: 1 })
-      .lean();
+  async findAll(placement?: PromotionPlacement) {
+    const filter: Record<string, unknown> = { ...VISIBLE_FILTER };
+    if (placement) filter.$and = [placementMatch(placement)];
 
-    return {
-      success: true,
-      count: banners.length,
-      remaining: MAX_BANNERS - banners.length,
-      data: banners,
-    };
+    let query = this.bannerModel.find(filter).sort({ order: 1, createdAt: 1 });
+    if (placement) {
+      const limit = await this.adminConfigService.getPlacementLimit(placement);
+      query = query.limit(limit);
+    }
+    const banners = await query.lean();
+
+    return { success: true, count: banners.length, data: banners };
   }
 
   // ── GET COUNT (admin) ──────────────────────────────────────────────────────
 
-  async getCount() {
-    const count = await this.bannerModel.countDocuments({ isActive: true });
+  async getCount(placement: PromotionPlacement = DEFAULT_PLACEMENT) {
+    const count = await this.bannerModel.countDocuments({ ...VISIBLE_FILTER, $and: [placementMatch(placement)] });
+    const max = await this.adminConfigService.getPlacementLimit(placement);
 
     return {
       success: true,
-      data: {
-        current: count,
-        max: MAX_BANNERS,
-        remaining: MAX_BANNERS - count,
-        isFull: count >= MAX_BANNERS,
-      },
+      data: { placement, current: count, visibleLimit: max, isOversubscribed: count > max },
     };
   }
 
@@ -51,54 +91,88 @@ export class BannersService {
 
   async createFromUrl(dto: CreateBannerDto) {
     if (!dto.bannerImage) throw new BadRequestException('bannerImage URL is required');
-    await this.checkLimit();
 
-    const currentCount = await this.bannerModel.countDocuments({ isActive: true });
+    const placements = dto.placements?.length ? dto.placements : [dto.placement ?? DEFAULT_PLACEMENT];
+    const placement = placements[0];
+    const status = computeInitialStatus(dto.startAt, dto.endAt);
+
+    // Re-host through Cloudinary rather than trusting the pasted URL as-is —
+    // an admin can paste any external image (e.g. a search-result thumbnail),
+    // and without this there's no way to know its real pixel dimensions, no
+    // shared max-dimension cap, and the frontend's responsive srcset helper
+    // can't transform a non-Cloudinary URL at all (it no-ops for those).
+    let hosted: { secure_url: string; public_id: string; width?: number };
+    try {
+      hosted = await cloudinary.uploader.upload(dto.bannerImage, {
+        folder: 'uploads/banners',
+        resource_type: 'image',
+        transformation: [{ width: HERO_MAX_DIMENSION, height: HERO_MAX_DIMENSION, crop: 'limit' }],
+      });
+    } catch (err) {
+      throw new BadRequestException(`Could not fetch that image URL: ${err.message || 'unknown error'}`);
+    }
+
+    if (hosted.width && hosted.width < HERO_MIN_SOURCE_WIDTH) {
+      await cloudinary.uploader.destroy(hosted.public_id).catch(() => {});
+      throw new BadRequestException(
+        `That image is only ${hosted.width}px wide — this banner renders full-width on desktop, so please use an image at least ${HERO_MIN_SOURCE_WIDTH}px wide (recommended: 2560×720) to avoid blur.`,
+      );
+    }
+
+    const currentCount = await this.bannerModel.countDocuments({ $and: [placementMatch(placement)] });
 
     const banner = await this.bannerModel.create({
-      bannerImage: dto.bannerImage,
-      publicId: '',
+      bannerImage: hosted.secure_url,
+      publicId: hosted.public_id,
       urlOnTap: dto.urlOnTap || null,
       order: dto.order ?? currentCount,
-      isActive: true,
+      placement,
+      placements,
+      status,
+      isActive: status === 'active',
+      startAt: dto.startAt ?? null,
+      endAt: dto.endAt ?? null,
     });
 
-    return {
-      success: true,
-      message: 'Banner created successfully',
-      remaining: MAX_BANNERS - (currentCount + 1),
-      data: banner,
-    };
+    return { success: true, message: 'Banner created successfully', data: banner };
   }
 
-  // ── UPLOAD FILE (admin) ────────────────────────────────────────────────────
+  // ── UPLOAD FILE (admin) ─────────────────────────────────────────────────────
+  // Routed through MediaLibraryService (-> the shared UploadService) instead of
+  // the CloudinaryStorage-multer path this used to have — one upload code path,
+  // and the creative is now tracked for reuse via the media picker.
 
-  async uploadBanner(file: Express.Multer.File, urlOnTap?: string) {
-    await this.checkLimit();
-
+  async uploadBanner(file: Express.Multer.File, adminId: string, urlOnTap?: string, placementInput?: string) {
     if (!file) throw new BadRequestException('No image file provided');
 
-    const bannerImage = (file as any).path || '';
-    const publicId = (file as any).filename || '';
+    const placement = (placementInput as PromotionPlacement) ?? DEFAULT_PLACEMENT;
+    validateCreativeDimensions(file, placement);
 
-    if (!bannerImage) throw new BadRequestException('Image upload to Cloudinary failed');
+    const uploaded = await this.mediaLibraryService.uploadAndTrack(file, 'admin', adminId, {
+      folder: 'uploads/banners',
+      maxDimension: HERO_MAX_DIMENSION,
+    });
 
-    const currentCount = await this.bannerModel.countDocuments({ isActive: true });
+    if (uploaded.width && uploaded.width < HERO_MIN_SOURCE_WIDTH) {
+      await cloudinary.uploader.destroy(uploaded.publicId).catch(() => {});
+      throw new BadRequestException(
+        `Image is only ${uploaded.width}px wide — this banner renders full-width on desktop, so please upload at least ${HERO_MIN_SOURCE_WIDTH}px wide (recommended: 2560×720) to avoid blur.`,
+      );
+    }
+
+    const currentCount = await this.bannerModel.countDocuments({ placement });
 
     const banner = await this.bannerModel.create({
-      bannerImage,
-      publicId,
+      bannerImage: uploaded.url,
+      publicId: uploaded.publicId,
       urlOnTap: urlOnTap || null,
       order: currentCount,
+      placement,
+      status: 'active',
       isActive: true,
     });
 
-    return {
-      success: true,
-      message: 'Banner uploaded successfully',
-      remaining: MAX_BANNERS - (currentCount + 1),
-      data: banner,
-    };
+    return { success: true, message: 'Banner uploaded successfully', data: banner };
   }
 
   // ── EDIT BANNER (admin) ────────────────────────────────────────────────────
@@ -107,17 +181,51 @@ export class BannersService {
     const banner = await this.bannerModel.findById(bannerId);
     if (!banner) throw new NotFoundException('Banner not found');
 
+    const set: Record<string, unknown> = { ...dto };
+    // Keep the legacy scalar `placement` in sync as `placements[0]` whenever
+    // the multi-select array is what actually changed.
+    if (dto.placements?.length) {
+      set.placements = dto.placements;
+      set.placement = dto.placements[0];
+    }
+    // Keep `isActive` in sync for any code still reading it directly, whenever
+    // this write changes the schedule (status itself is set explicitly via
+    // pause/resume, not through this generic update).
+    if (dto.startAt !== undefined || dto.endAt !== undefined) {
+      const status = computeInitialStatus(dto.startAt as string | undefined, dto.endAt as string | undefined);
+      set.status = status;
+      set.isActive = status === 'active';
+    }
+
+    const updated = await this.bannerModel.findByIdAndUpdate(bannerId, { $set: set }, { new: true, runValidators: true });
+    return { success: true, message: 'Banner updated successfully', data: updated };
+  }
+
+  // ── PAUSE / RESUME (admin) — status toggle only, never shifts endAt ────────
+
+  async pauseBanner(bannerId: string) {
+    const banner = await this.bannerModel.findById(bannerId);
+    if (!banner) throw new NotFoundException('Banner not found');
     const updated = await this.bannerModel.findByIdAndUpdate(
       bannerId,
-      { $set: dto },
-      { new: true, runValidators: true },
+      { $set: { status: 'paused', isActive: false } },
+      { new: true },
     );
+    return { success: true, message: 'Banner paused', data: updated };
+  }
 
-    return {
-      success: true,
-      message: 'Banner updated successfully',
-      data: updated,
-    };
+  async resumeBanner(bannerId: string) {
+    const banner = await this.bannerModel.findById(bannerId);
+    if (!banner) throw new NotFoundException('Banner not found');
+    if (banner.endAt && banner.endAt.getTime() < Date.now()) {
+      throw new BadRequestException('This banner already passed its end date — update endAt before resuming');
+    }
+    const updated = await this.bannerModel.findByIdAndUpdate(
+      bannerId,
+      { $set: { status: 'active', isActive: true } },
+      { new: true },
+    );
+    return { success: true, message: 'Banner resumed', data: updated };
   }
 
   // ── DELETE BANNER (admin) ──────────────────────────────────────────────────
@@ -135,22 +243,6 @@ export class BannersService {
     }
 
     await this.bannerModel.deleteOne({ _id: bannerId });
-
-    const remaining = await this.bannerModel.countDocuments({ isActive: true });
-
-    return {
-      success: true,
-      message: 'Banner deleted successfully',
-      remaining: MAX_BANNERS - remaining,
-    };
-  }
-
-  // ── HELPER ─────────────────────────────────────────────────────────────────
-
-  private async checkLimit() {
-    const count = await this.bannerModel.countDocuments({ isActive: true });
-    if (count >= MAX_BANNERS) {
-      throw new BadRequestException(`Banner limit reached. Maximum ${MAX_BANNERS} banners allowed.`);
-    }
+    return { success: true, message: 'Banner deleted successfully' };
   }
 }

@@ -305,6 +305,17 @@ export class Order {
   @Prop({ default: 0 })
   platformSponsoredDiscountTotal: number;
 
+  // Copied from Checkout at placeOrder — which promotional banner (if any)
+  // the buyer clicked through before this order, for promotion analytics'
+  // conversions/revenue attribution. Same convention as couponCode above.
+  // See Checkout.attributedBannerId/attributedStoreBannerId for why these are
+  // never a PromotionRequest id directly.
+  @Prop({ type: String, default: null })
+  attributedBannerId: string | null;
+
+  @Prop({ type: String, default: null })
+  attributedStoreBannerId: string | null;
+
   @Prop({ required: true })
   totalAmount: number;
 
