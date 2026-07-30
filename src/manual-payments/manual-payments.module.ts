@@ -1,6 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
+import { RedisModule } from '../redis/redis.module';
 import { UploadModule } from '../upload/upload.module';
 import { PaymentModule } from '../payment/payment.module';
 import { FinanceModule } from '../finance/finance.module';
@@ -10,7 +11,7 @@ import { AdminManualPaymentsController } from './admin-manual-payments.controlle
 import { ManualPaymentsService } from './manual-payments.service';
 
 @Module({
-  imports: [AuthModule, UploadModule, PaymentModule, FinanceModule, AdminConfigModule],
+  imports: [AuthModule, RedisModule, UploadModule, PaymentModule, FinanceModule, AdminConfigModule],
   controllers: [ManualPaymentsController, AdminManualPaymentsController],
   providers: [ManualPaymentsService],
   exports: [ManualPaymentsService],

@@ -302,7 +302,7 @@ export class StoreService {
   // body would let a seller un-suspend their own store (see
   // usersService.deleteSellerAccount, which suspends stores on delete).
   async updateStore(sellerId: string, storeId: string, body: any) {
-    const { name, logo, coverImage, description, sellerType, productTypes } = body;
+    const { name, logo, coverImage, description, sellerType, productTypes, codEnabled } = body;
 
     if (!storeId) throw new BadRequestException('storeId is required');
 
@@ -349,6 +349,7 @@ export class StoreService {
     if (coverImage !== undefined) updateData.coverImage = coverImage;
     if (description !== undefined) updateData.description = description;
     if (sellerType !== undefined) updateData.sellerType = sellerType;
+    if (codEnabled !== undefined) updateData.codEnabled = !!codEnabled;
 
     // productTypes change ho to enabledTools bhi refresh
     if (productTypes !== undefined) {

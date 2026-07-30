@@ -1,6 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { Global, Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
+import { RedisModule } from '../redis/redis.module';
 import { CommissionRulesController } from './commission-rules.controller';
 import { CommissionRulesService } from './commission-rules.service';
 
@@ -10,7 +11,7 @@ import { CommissionRulesService } from './commission-rules.service';
 // PlatformPlansModule/ActivityLogModule are global.
 @Global()
 @Module({
-  imports: [AuthModule],
+  imports: [AuthModule, RedisModule],
   controllers: [CommissionRulesController],
   providers: [CommissionRulesService],
   exports: [CommissionRulesService],
