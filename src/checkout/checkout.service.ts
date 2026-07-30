@@ -162,6 +162,20 @@ export class CheckoutService {
       );
     }
 
+    // Batch-resolve seller name + verification badge across every distinct
+    // seller in this checkout — same one-query-instead-of-N pattern used on
+    // the product listing endpoints.
+    const sellerIds = [
+      ...new Set(rawItems.map((r) => r.product.sellerId).filter(Boolean)),
+    ];
+    const sellers = sellerIds.length
+      ? await this.databaseService.repositories.sellerModel
+          .find({ _id: { $in: sellerIds } })
+          .select('name isVerified')
+          .lean()
+      : [];
+    const sellerMap = new Map(sellers.map((s: any) => [s._id.toString(), s]));
+
     // Pass 2: resolve subscriber pricing now that each store's raw subtotal is known.
     for (const { product, variant, cartItem } of rawItems) {
       // Subscriber pricing is resolved server-side only — the client never
@@ -189,18 +203,21 @@ export class CheckoutService {
         : 0;
       subscriberSavingsUSD += lineDiscount;
 
+      const seller = sellerMap.get(product.sellerId?.toString());
+
       checkoutItems.push({
         productId: product._id.toString(),
         variantId: variant._id.toString(),
         sellerId: product.sellerId,
+        sellerName: seller ? seller.name : null,
+        sellerVerified: seller ? !!seller.isVerified : false,
         storeId: product.storeId,
         type: product.type,
         productType: product.productType ?? null,
         name: product.name,
         image: product.images?.[0] ?? null,
         sku: variant.sku ?? null,
-        size: variant.size ?? null,
-        color: variant.color ?? null,
+        options: variant.options ?? [],
         licenseType: product.digital?.licenseType ?? null,
         quantity: cartItem.quantity,
         price: unitPrice,

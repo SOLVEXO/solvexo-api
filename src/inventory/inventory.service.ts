@@ -101,6 +101,12 @@ export class InventoryService {
       // default variant ka sku
       const sku = defaultVariant?.sku || null;
 
+      const prices = variants
+        .map((v: any) => v.price)
+        .filter((p: any) => typeof p === 'number');
+      const minPrice = prices.length ? Math.min(...prices) : price;
+      const maxPrice = prices.length ? Math.max(...prices) : price;
+
       return {
         productId: product._id,
         sku,
@@ -119,9 +125,11 @@ export class InventoryService {
         allTimeSales: product.purchaseCount || 0,
         tags: product.tags ?? [],
         // physical-only (defaultVariant fields)
-        size: defaultVariant?.size ?? null,
-        color: defaultVariant?.color ?? null,
+        options: defaultVariant?.options ?? [],
         shippingWeight: defaultVariant?.shippingWeight ?? null,
+        variantCount: variants.length,
+        minPrice,
+        maxPrice,
         // digital-only — full config so re-opening Edit repopulates correctly
         digital: product.digital ?? null,
       };

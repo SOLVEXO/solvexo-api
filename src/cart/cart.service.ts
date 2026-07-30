@@ -49,6 +49,7 @@ export class CartService {
         quantity: dto.quantity || 1,
         price: variant.price,
         images: itemImages,
+        options: variant.options ?? [],
       };
 
       // 5️⃣ create cart if not exists
@@ -167,26 +168,36 @@ export class CartService {
       let totalItems = 0;
       let totalPrice = 0;
 
-      // Items stored before the add-to-cart image fallback existed (or whose
-      // variant had no images) carry `images: []` — backfill from the product
-      // documents in one batched query so old carts render images too.
-      const missingImageProductIds = [
+      // Cart items only snapshot name/price/images — sellerId isn't stored on
+      // the item, so every item's product doc is batch-fetched (also backfills
+      // `images` for items stored before the add-to-cart image fallback existed).
+      const productIds = [
+        ...new Set(cart.items.map((item: any) => item.productId)),
+      ];
+      const products = productIds.length
+        ? await this.databaseService.repositories.productModel
+            .find({ _id: { $in: productIds } })
+            .select('images sellerId')
+            .lean()
+        : [];
+      const productById = new Map(
+        (products as any[]).map((p) => [p._id.toString(), p]),
+      );
+
+      const sellerIds = [
         ...new Set(
-          cart.items
-            .filter((item: any) => !item.images || item.images.length === 0)
-            .map((item: any) => item.productId),
+          (products as any[]).map((p) => p.sellerId).filter(Boolean),
         ),
       ];
-      const productImagesById = new Map<string, string[]>();
-      if (missingImageProductIds.length > 0) {
-        const products = await this.databaseService.repositories.productModel
-          .find({ _id: { $in: missingImageProductIds } })
-          .select('images')
-          .lean();
-        for (const p of products as any[]) {
-          productImagesById.set(p._id.toString(), p.images || []);
-        }
-      }
+      const sellers = sellerIds.length
+        ? await this.databaseService.repositories.sellerModel
+            .find({ _id: { $in: sellerIds } })
+            .select('name isVerified')
+            .lean()
+        : [];
+      const sellerMap = new Map(
+        sellers.map((s: any) => [s._id.toString(), s]),
+      );
 
       // Cart items map karo
       const items = cart.items.map((item) => {
@@ -197,18 +208,26 @@ export class CartService {
         totalItems += item.quantity;
         totalPrice += itemTotal;
 
+        const product = productById.get(item.productId);
+        const seller = product
+          ? sellerMap.get(product.sellerId?.toString())
+          : undefined;
+
         const images =
           item.images && item.images.length > 0
             ? item.images
-            : productImagesById.get(item.productId) || [];
+            : product?.images || [];
 
         return {
           productId: item.productId,
           productVariantId: item.productVariantId,
 
           name: item.name,
+          sellerName: seller ? seller.name : null,
+          sellerVerified: seller ? !!seller.isVerified : false,
 
           image: images,
+          options: (item as any).options ?? [],
 
           unitPrice: item.price, // single product price
           quantity: item.quantity, // quantity

@@ -24,6 +24,7 @@ import {
   PREVIEW_RATE_LIMIT_MAX,
   PREVIEW_RATE_LIMIT_WINDOW_SECONDS,
 } from './constants/preview.constants';
+import { optionNameSet, optionsKey, validateOptions } from './variant-options.util';
 
 const EDUCATION_LEVEL_VALUES: string[] = Object.values(EducationLevel);
 
@@ -330,6 +331,10 @@ export class ProductsService {
     educationLevel?: string,
     normalizedCustomLevel?: string,
     campaignId?: string,
+    minPrice?: number,
+    maxPrice?: number,
+    minRating?: number,
+    sortBy?: 'newest' | 'price_asc' | 'price_desc' | 'rating',
   ): Promise<any> {
     const productModel = this.databaseService.repositories.productModel;
     const productVariantModel =
@@ -403,16 +408,103 @@ export class ProductsService {
       }
     }
 
+    // Rating lives directly on `Product`, so it's a plain query clause —
+    // unlike price (see below), it never needs the variants aggregation.
+    if (minRating !== undefined) {
+      query.averageRating = { $gte: minRating };
+    }
+
     const skip = (page - 1) * limit;
 
-    const total = await productModel.countDocuments(query);
+    // Price lives on `ProductVariant`, not `Product` (a product can have many
+    // variants at different prices), so filtering/sorting by "price" — the
+    // same cheapest-variant price shown to buyers as the "starting from"
+    // price — requires a `$lookup` into variants rather than a plain
+    // `find()`. Only pay for that join when price is actually in play;
+    // every other browse (the overwhelming majority) keeps the cheap path.
+    const needsPriceAggregation =
+      minPrice !== undefined ||
+      maxPrice !== undefined ||
+      sortBy === 'price_asc' ||
+      sortBy === 'price_desc';
 
-    const products = await productModel
-      .find(query)
-      .sort({ createdAt: -1, _id: -1 })
-      .skip(skip)
-      .limit(limit)
-      .lean();
+    let total: number;
+    let products: any[];
+
+    if (needsPriceAggregation) {
+      const priceRange: any = {};
+      if (minPrice !== undefined) priceRange.$gte = minPrice;
+      if (maxPrice !== undefined) priceRange.$lte = maxPrice;
+
+      const pipeline: any[] = [
+        { $match: query },
+        {
+          // `ProductVariant.productId` is stored as a plain string (not an
+          // ObjectId ref), so the join needs `$toString` on the product side.
+          $lookup: {
+            from: productVariantModel.collection.name,
+            let: { pid: { $toString: '$_id' } },
+            pipeline: [
+              {
+                $match: {
+                  $expr: { $eq: ['$productId', '$$pid'] },
+                  status: 'active',
+                  isDelete: false,
+                },
+              },
+              { $project: { price: 1 } },
+            ],
+            as: '_variantsForFilter',
+          },
+        },
+        { $addFields: { _minVariantPrice: { $min: '$_variantsForFilter.price' } } },
+      ];
+
+      if (Object.keys(priceRange).length) {
+        // A product with no active variants has no price at all — exclude
+        // it whenever a price filter is actually active rather than letting
+        // it slip through as a false match.
+        pipeline.push({ $match: { _minVariantPrice: { $ne: null, ...priceRange } } });
+      }
+
+      const sortStage =
+        sortBy === 'price_asc'
+          ? { _minVariantPrice: 1, _id: -1 }
+          : sortBy === 'price_desc'
+            ? { _minVariantPrice: -1, _id: -1 }
+            : sortBy === 'rating'
+              ? { averageRating: -1, _id: -1 }
+              : { createdAt: -1, _id: -1 };
+
+      pipeline.push({
+        $facet: {
+          metadata: [{ $count: 'total' }],
+          data: [
+            { $sort: sortStage },
+            { $skip: skip },
+            { $limit: limit },
+            { $project: { _variantsForFilter: 0, _minVariantPrice: 0 } },
+          ],
+        },
+      });
+
+      const [result] = await productModel.aggregate(pipeline);
+      total = result?.metadata?.[0]?.total ?? 0;
+      products = result?.data ?? [];
+    } else {
+      const sortStage =
+        sortBy === 'rating'
+          ? { averageRating: -1, _id: -1 }
+          : { createdAt: -1, _id: -1 };
+
+      total = await productModel.countDocuments(query);
+      products = await productModel
+        .find(query)
+        .sort(sortStage as any)
+        .skip(skip)
+        .limit(limit)
+        .lean();
+    }
 
     const productIds = products.map((p) => p._id.toString());
 
@@ -848,13 +940,7 @@ export class ProductsService {
       isListedOnSolvexo,
       status,
       scheduledAt,
-      price,
-      compareAtPrice,
-      size,
-      color,
-      stock,
-      unlimitedStock,
-      shippingWeight,
+      variants,
     } = body;
 
     if (!storeId) throw new BadRequestException('storeId is required');
@@ -879,8 +965,34 @@ export class ProductsService {
     await this.entitlementsService.assertCanCreateProduct(storeId);
 
     if (!name) throw new BadRequestException('Product name is required');
-    if (price === undefined || price === null)
-      throw new BadRequestException('Price is required');
+
+    if (!Array.isArray(variants) || variants.length === 0) {
+      throw new BadRequestException('At least one variant is required');
+    }
+    for (const v of variants) {
+      if (v?.price === undefined || v?.price === null) {
+        throw new BadRequestException('Every variant requires a price');
+      }
+      try {
+        validateOptions(v.options);
+      } catch (e: any) {
+        throw new BadRequestException(e.message);
+      }
+    }
+    const nameSets = new Set(variants.map((v: any) => optionNameSet(v.options ?? [])));
+    if (nameSets.size > 1) {
+      throw new BadRequestException('All variants must use the same attributes');
+    }
+    const keys = variants.map((v: any) => optionsKey(v.options ?? []));
+    if (new Set(keys).size !== keys.length) {
+      throw new BadRequestException(
+        'Duplicate variants — each must have a unique combination of attributes',
+      );
+    }
+    const defaultFlags = variants.filter((v: any) => v.isDefault === true);
+    if (defaultFlags.length > 1) {
+      throw new BadRequestException('Only one variant may be marked as default');
+    }
 
     if (status === 'scheduled' && !scheduledAt) {
       throw new BadRequestException(
@@ -922,26 +1034,31 @@ export class ProductsService {
       scheduledAt: status === 'scheduled' ? new Date(scheduledAt) : null,
     });
 
-    const sku = `SKU-${product._id.toString().slice(-6).toUpperCase()}-${Date.now().toString().slice(-4)}`;
-
-    const defaultVariant = await productVariantModel.create({
-      productId: product._id.toString(),
-      sku,
-      price,
-      compareAtPrice: compareAtPrice ?? null,
-      size: size ?? null,
-      color: color ?? null,
-      stock: stock ?? 0,
-      unlimitedStock: !!unlimitedStock,
-      shippingWeight: shippingWeight ?? null,
-      images: [],
-      isDefault: true,
-    });
+    const defaultIndex = variants.findIndex((v: any) => v.isDefault === true);
+    const createdVariants = await Promise.all(
+      variants.map((v: any, index: number) => {
+        const sku =
+          v.sku ||
+          `SKU-${product._id.toString().slice(-6).toUpperCase()}-${Date.now().toString().slice(-4)}-${index}`;
+        return productVariantModel.create({
+          productId: product._id.toString(),
+          sku,
+          price: v.price,
+          compareAtPrice: v.compareAtPrice ?? null,
+          options: v.options ?? [],
+          stock: v.stock ?? 0,
+          unlimitedStock: !!v.unlimitedStock,
+          shippingWeight: v.shippingWeight ?? null,
+          images: v.images ?? [],
+          isDefault: defaultIndex === -1 ? index === 0 : index === defaultIndex,
+        });
+      }),
+    );
 
     return {
       success: true,
       message: 'Physical product created successfully',
-      data: { product, defaultVariant },
+      data: { product, variants: createdVariants },
     };
   }
 
@@ -1085,8 +1202,7 @@ export class ProductsService {
       sku,
       price,
       compareAtPrice: compareAtPrice ?? null,
-      size: null,
-      color: null,
+      options: [],
       stock: 0,
       shippingWeight: null,
       images: [],
@@ -1194,7 +1310,6 @@ export class ProductsService {
 
     const {
       productId,
-      variantId,
       name,
       description,
       subCategoryId,
@@ -1208,11 +1323,6 @@ export class ProductsService {
       customLevel,
       price,
       compareAtPrice,
-      size,
-      color,
-      stock,
-      unlimitedStock,
-      shippingWeight,
     } = body;
 
     if (!productId) throw new BadRequestException('productId is required');
@@ -1318,48 +1428,20 @@ export class ProductsService {
           })
         : product;
 
-    let targetVariant: any;
-    if (variantId) {
-      targetVariant = await productVariantModel.findOne({
-        _id: variantId,
-        productId,
-        isDelete: false,
-      });
-      if (!targetVariant) throw new BadRequestException('Variant not found');
-    } else {
-      targetVariant = await productVariantModel.findOne({
-        productId,
-        isDefault: true,
-        isDelete: false,
-      });
-    }
-
-    let updatedVariant = targetVariant;
-
-    if (targetVariant) {
+    // Digital/educational products still have exactly one (default) variant
+    // and no dedicated variant-management endpoints — price/compareAtPrice
+    // edits for them stay routed through here. Physical products manage
+    // price per-variant exclusively via the product-variants module now.
+    let updatedVariant: any;
+    if (product.type !== 'physical' && (price !== undefined || compareAtPrice !== undefined)) {
       const variantUpdate: any = {};
-
       if (price !== undefined) variantUpdate.price = price;
-      if (compareAtPrice !== undefined)
-        variantUpdate.compareAtPrice = compareAtPrice;
-
-      if (product.type === 'physical') {
-        if (size !== undefined) variantUpdate.size = size;
-        if (color !== undefined) variantUpdate.color = color;
-        if (stock !== undefined) variantUpdate.stock = stock;
-        if (unlimitedStock !== undefined)
-          variantUpdate.unlimitedStock = !!unlimitedStock;
-        if (shippingWeight !== undefined)
-          variantUpdate.shippingWeight = shippingWeight;
-      }
-
-      if (Object.keys(variantUpdate).length > 0) {
-        updatedVariant = await productVariantModel.findByIdAndUpdate(
-          targetVariant._id,
-          variantUpdate,
-          { new: true },
-        );
-      }
+      if (compareAtPrice !== undefined) variantUpdate.compareAtPrice = compareAtPrice;
+      updatedVariant = await productVariantModel.findOneAndUpdate(
+        { productId, isDefault: true, isDelete: false },
+        variantUpdate,
+        { new: true },
+      );
     }
 
     return {

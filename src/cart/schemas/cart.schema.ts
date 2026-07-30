@@ -24,6 +24,11 @@ export class CartItem {
   // ✅ FIXED: images as array with safe default
   @Prop({ type: [String], default: [] })
   images: string[];
+
+  // Snapshot of the variant's attributes at add-to-cart time (e.g.
+  // [{name:'Color', value:'Red'}]) — drives the cart line item's display.
+  @Prop({ type: [{ name: String, value: String }], default: [] })
+  options: { name: string; value: string }[];
 }
 
 export const CartItemSchema = SchemaFactory.createForClass(CartItem);
