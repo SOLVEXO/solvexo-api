@@ -26,6 +26,13 @@ export class Payout {
   })
   status: string;
 
+  // Distinguishes a seller-tapped "Withdraw" from one the scheduled batch job
+  // created on the seller's behalf (see FinanceService.processScheduledPayouts)
+  // — both flow through the same admin approve/reject queue, but admins and
+  // sellers alike benefit from seeing which is which.
+  @Prop({ type: String, enum: ['seller_manual', 'scheduled_auto'], default: 'seller_manual' })
+  source: string;
+
   @Prop({ type: Date, default: null }) scheduledAt: Date | null;
   @Prop({ type: Date, default: null }) processedAt: Date | null;
   @Prop({ type: String, default: null }) failureReason: string | null;

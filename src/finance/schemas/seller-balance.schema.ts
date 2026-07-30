@@ -20,8 +20,23 @@ export class SellerBalance {
   @Prop({ type: Number, default: 0 }) totalPayouts: number;
 
   @Prop({ type: String, default: 'USD' }) currency: string;
+
+  // Set when a refund/chargeback reversal drove available or pending balance
+  // negative (typically because the seller already withdrew before the
+  // refund/dispute landed) — the negative balance itself IS the debt; this
+  // flag just makes it visible to admins without them having to notice a
+  // negative number buried in a balance list. Cleared automatically once a
+  // later credit (new sale, rejected-payout reversal, etc.) brings both
+  // balances back to >= 0.
+  @Prop({ type: Boolean, default: false }) isFlaggedForReview: boolean;
+  @Prop({ type: String, default: null }) flaggedReason: string | null;
+  @Prop({ type: Date, default: null }) flaggedAt: Date | null;
 }
 
 export const SellerBalanceSchema = SchemaFactory.createForClass(SellerBalance);
-SellerBalanceSchema.index({ storeId: 1 }, { unique: true });
+// Compound (not just storeId) — a store can hold a balance in more than one
+// currency (e.g. USD from Stripe sales, PKR from Pakistan manual-transfer
+// sales), each cleared/paid-out independently.
+SellerBalanceSchema.index({ storeId: 1, currency: 1 }, { unique: true });
 SellerBalanceSchema.index({ sellerId: 1 });
+SellerBalanceSchema.index({ isFlaggedForReview: 1 });

@@ -319,10 +319,13 @@ export class Order {
   @Prop({ required: true })
   totalAmount: number;
 
-  @Prop({ enum: ['cash_on_delivery', 'stripe'], required: true })
+  @Prop({ enum: ['cash_on_delivery', 'stripe', 'manual_bank_transfer'], required: true })
   paymentType: string;
 
-  @Prop({ enum: ['unpaid', 'paid', 'failed', 'refunded'], default: 'unpaid' })
+  // 'pending_verification' — manual bank-transfer order awaiting an admin to
+  // review the buyer's uploaded proof (see manual-payments module). Never
+  // set for stripe/COD orders.
+  @Prop({ enum: ['unpaid', 'pending_verification', 'paid', 'failed', 'refunded'], default: 'unpaid' })
   paymentStatus: string;
 
   @Prop({ default: false })

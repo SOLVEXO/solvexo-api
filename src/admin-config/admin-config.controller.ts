@@ -11,6 +11,8 @@ import { UpdateEmailConfigDto } from './dto/update-email-config.dto';
 import { UpdateMaintenanceDto } from './dto/update-maintenance.dto';
 import { UpdatePlacementLimitsDto } from './dto/update-placement-limits.dto';
 import { UpdatePromotionPricingDto } from './dto/update-promotion-pricing.dto';
+import { UpdatePayoutConfigDto } from './dto/update-payout-config.dto';
+import { UpdateManualPaymentConfigDto } from './dto/update-manual-payment-config.dto';
 
 @ApiTags('Admin Platform Config')
 @ApiBearerAuth()
@@ -56,6 +58,9 @@ export class AdminConfigController {
   @Put('placement-limits')
   updatePlacementLimits(@Req() req: any, @Body() dto: UpdatePlacementLimitsDto) {
     return this.adminConfigService.updatePlacementLimits(dto, {
+  @Put('payout')
+  updatePayoutConfig(@Req() req: any, @Body() dto: UpdatePayoutConfigDto) {
+    return this.adminConfigService.updatePayoutConfig(dto, {
       adminId: req.user.userId,
       ip: req.ip,
       userAgent: req.headers['user-agent'],
@@ -65,6 +70,9 @@ export class AdminConfigController {
   @Put('promotion-pricing')
   updatePromotionPricing(@Req() req: any, @Body() dto: UpdatePromotionPricingDto) {
     return this.adminConfigService.updatePromotionPricing(dto, {
+  @Put('manual-payment')
+  updateManualPaymentConfig(@Req() req: any, @Body() dto: UpdateManualPaymentConfigDto) {
+    return this.adminConfigService.updateManualPaymentConfig(dto, {
       adminId: req.user.userId,
       ip: req.ip,
       userAgent: req.headers['user-agent'],

@@ -3,6 +3,8 @@ import {
   Injectable, NotFoundException, ForbiddenException,
   BadRequestException, ConflictException,
 } from '@nestjs/common';
+import { InjectConnection } from '@nestjs/mongoose';
+import { Connection, ClientSession } from 'mongoose';
 import { DatabaseService } from 'src/database/databaseservice';
 import { RequestPayoutDto } from './dto/request-payout.dto';
 import { AddPayoutMethodDto } from './dto/add-payout-method.dto';
@@ -10,21 +12,32 @@ import { UpdatePayoutScheduleDto } from './dto/update-payout-schedule.dto';
 import { ActivityLogService } from 'src/activity-log/activity-log.service';
 import { round } from 'src/common/number.util';
 import { verifyStoreExists, verifyStoreOwnershipStrict } from 'src/common/store-ownership.util';
-import { EntitlementsService } from 'src/platform-plans/entitlements.service';
+import { CommissionRulesService } from 'src/commission-rules/commission-rules.service';
+import { AdminConfigService } from 'src/admin-config/admin-config.service';
+import { NotificationsService } from 'src/notifications/notifications.service';
+import { NOTIFICATION_TYPES } from 'src/notifications/notification.types';
 
 // ── Platform fee constants ───────────────────────────────────────────────────
-export const PLATFORM_FEE_RATE       = 0.08;   // 8% per sale
+export const PLATFORM_FEE_RATE       = 0.08;   // 8% per sale — last-resort fallback, see CommissionRulesService
 export const PAYMENT_PROCESSING_RATE = 0.029;  // 2.9%
 export const PAYMENT_PROCESSING_FIXED = 0.30;  // $0.30 per transaction
 export const CLEARING_DAYS           = 3;      // days before pending → available
 const ESTIMATED_TAX_RATE      = 0.15;   // 15% estimate shown in UI
+
+/** Currency-aware amount formatting for CSV export — every other currency-agnostic $-literal in this file was a latent multi-currency bug waiting to happen; this is the one shared spot so it can't drift per call site. */
+function amountFmt(n: number, currency: string): string {
+  return currency === 'PKR' ? `PKR ${n.toFixed(2)}` : `$${n.toFixed(2)}`;
+}
 
 @Injectable()
 export class FinanceService {
   constructor(
     private readonly db: DatabaseService,
     private readonly activityLogService: ActivityLogService,
-    private readonly entitlementsService: EntitlementsService,
+    private readonly commissionRulesService: CommissionRulesService,
+    private readonly adminConfigService: AdminConfigService,
+    private readonly notificationsService: NotificationsService,
+    @InjectConnection() private readonly connection: Connection,
   ) {}
 
   // ── Shorthand repo getters ───────────────────────────────────────────────
@@ -42,6 +55,18 @@ export class FinanceService {
 
   private round(n: number) { return round(n); }
 
+  /**
+   * Every multi-document ledger mutation (balance + transaction rows, or
+   * balance + payout + transaction rows) runs inside a real Mongo session
+   * transaction — a crash or error partway through rolls the whole write
+   * back instead of leaving a balance updated with no matching ledger entry
+   * (or vice versa). MongoDB Atlas is always a replica set, so transactions
+   * are available in every environment this API runs in.
+   */
+  private async withTransaction<T>(fn: (session: ClientSession) => Promise<T>): Promise<T> {
+    return this.connection.transaction(fn);
+  }
+
   private async verifyStoreOwnership(sellerId: string, storeId: string) {
     return verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
   }
@@ -51,30 +76,74 @@ export class FinanceService {
     return verifyStoreExists(this.storeModel, storeId);
   }
 
-  async getOrCreateBalance(storeId: string, sellerId: string) {
-    let balance = await this.balanceModel.findOne({ storeId });
+  /**
+   * A store can hold a balance in more than one currency — e.g. USD from
+   * Stripe sales and PKR from Pakistan manual-transfer sales — cleared and
+   * paid out independently (see SellerBalance.currency). Defaults to 'USD'
+   * so every pre-existing caller (all of which predate multi-currency
+   * support) keeps behaving exactly as before.
+   */
+  async getOrCreateBalance(storeId: string, sellerId: string, currency = 'USD', session?: ClientSession) {
+    let balance = await this.balanceModel.findOne({ storeId, currency }, null, { session });
     if (!balance) {
-      balance = await this.balanceModel.create({ storeId, sellerId });
+      balance = new this.balanceModel({ storeId, sellerId, currency });
+      await balance.save({ session });
     }
     return balance;
   }
 
-  private async getOrCreateSchedule(storeId: string, sellerId: string) {
-    let schedule = await this.scheduleModel.findOne({ storeId });
+  private async getOrCreateSchedule(storeId: string, sellerId: string, currency = 'USD') {
+    let schedule = await this.scheduleModel.findOne({ storeId, currency });
     if (!schedule) {
       // Compute next Monday as default nextPayoutAt
       const nextMonday = new Date();
       nextMonday.setDate(nextMonday.getDate() + ((1 + 7 - nextMonday.getDay()) % 7 || 7));
       nextMonday.setHours(9, 0, 0, 0);
-      schedule = await this.scheduleModel.create({ storeId, sellerId, nextPayoutAt: nextMonday });
+      schedule = await this.scheduleModel.create({ storeId, sellerId, currency, nextPayoutAt: nextMonday });
     }
     return schedule;
   }
 
-  /** Aggregate revenue and fee totals for a date range */
-  private async getPeriodStats(storeId: string, from: Date, to: Date) {
+  /**
+   * Flags (or clears the flag on) a seller balance that's gone negative —
+   * typically because a refund/chargeback reversal exceeded what was still
+   * held after the seller already withdrew it (see Module 5 of the payout
+   * spec: "do not silently fail or ignore this case"). The negative balance
+   * itself is the debt — future sales naturally pay it down as
+   * `pendingBalance`/`availableBalance` climb back toward zero; this just
+   * makes the situation visible to admins (`isFlaggedForReview`) instead of
+   * it being a number buried in a list. Mutates `balance` in place; caller
+   * is responsible for saving it.
+   */
+  private reevaluateDebtFlag(balance: any, reason?: string): { justFlagged: boolean; justCleared: boolean } {
+    const isNegative = balance.availableBalance < 0 || balance.pendingBalance < 0;
+    const wasFlagged = balance.isFlaggedForReview;
+
+    if (isNegative && !wasFlagged) {
+      balance.isFlaggedForReview = true;
+      balance.flaggedReason = reason ?? 'Available or pending balance went negative';
+      balance.flaggedAt = new Date();
+      return { justFlagged: true, justCleared: false };
+    }
+    if (!isNegative && wasFlagged) {
+      balance.isFlaggedForReview = false;
+      balance.flaggedReason = null;
+      balance.flaggedAt = null;
+      return { justFlagged: false, justCleared: true };
+    }
+    return { justFlagged: false, justCleared: false };
+  }
+
+  /**
+   * Aggregate revenue and fee totals for a date range, scoped to ONE
+   * currency — summing USD and PKR transaction amounts together would
+   * produce a meaningless number, so every caller must resolve which
+   * currency's stats it wants (see `getDashboard`, which now computes this
+   * once per currency the store actually holds).
+   */
+  private async getPeriodStats(storeId: string, from: Date, to: Date, currency: string) {
     const agg = await this.txModel.aggregate([
-      { $match: { storeId, status: 'completed', createdAt: { $gte: from, $lte: to } } },
+      { $match: { storeId, currency, status: 'completed', createdAt: { $gte: from, $lte: to } } },
       {
         $group: {
           _id: '$type',
@@ -133,6 +202,16 @@ export class FinanceService {
   // DASHBOARD
   // ═══════════════════════════════════════════════════════════════════════════
 
+  /**
+   * Multi-currency wallet dashboard — a store can hold entirely separate
+   * balances (USD from Stripe sales, PKR from Pakistan manual-transfer
+   * sales), each with its own schedule/default-method/pending-payout, so
+   * this returns one `wallets[]` entry per currency the store actually has
+   * a balance or schedule document in (defaulting to just `['USD']` for a
+   * brand-new store with neither yet) instead of a single flat balance —
+   * a PKR-earning seller must never see "$0 available" just because their
+   * balance happens to live in a different currency document.
+   */
   async getDashboard(sellerId: string, storeId: string) {
     await this.verifyStoreOwnership(sellerId, storeId);
 
@@ -141,47 +220,85 @@ export class FinanceService {
     const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
     const lastMonthEnd   = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59);
 
-    const [balance, schedule, defaultMethod, pendingPayout, thisMonth, lastMonth] = await Promise.all([
-      this.getOrCreateBalance(storeId, sellerId),
-      this.getOrCreateSchedule(storeId, sellerId),
-      this.methodModel.findOne({ storeId, isDefault: true }),
-      this.payoutModel.findOne({ storeId, status: { $in: ['pending', 'processing'] } }).sort({ createdAt: -1 }),
-      this.getPeriodStats(storeId, thisMonthStart, now),
-      this.getPeriodStats(storeId, lastMonthStart, lastMonthEnd),
+    const [rawBalances, rawSchedules, rawMethods, rawPendingPayouts, commissionRate] = await Promise.all([
+      this.balanceModel.find({ storeId }).lean(),
+      this.scheduleModel.find({ storeId }).lean(),
+      this.methodModel.find({ storeId }).lean(),
+      this.payoutModel.find({ storeId, status: { $in: ['pending', 'processing'] } }).sort({ createdAt: -1 }).lean(),
+      this.commissionRulesService.resolveRate(storeId),
     ]);
 
-    const revenueGrowth = lastMonth.sale > 0
-      ? this.round(((thisMonth.sale - lastMonth.sale) / lastMonth.sale) * 100)
-      : 0;
+    // `.lean()` bypasses Mongoose schema defaults, so a document saved before
+    // `currency` existed on these schemas comes back with the field entirely
+    // absent rather than defaulted to 'USD' — left alone that creates a
+    // phantom extra "currency" bucket below. Normalize once, here, so this
+    // can never happen again regardless of what's actually stored.
+    const balances = (rawBalances as any[]).map((b) => ({ ...b, currency: b.currency || 'USD' }));
+    const schedules = (rawSchedules as any[]).map((s) => ({ ...s, currency: s.currency || 'USD' }));
+    const methods = (rawMethods as any[]).map((m) => ({ ...m, currency: m.currency || 'USD' }));
+    const pendingPayouts = (rawPendingPayouts as any[]).map((p) => ({ ...p, currency: p.currency || 'USD' }));
+
+    const currencies = [...new Set([
+      ...(balances as any[]).map((b) => b.currency),
+      ...(schedules as any[]).map((s) => s.currency),
+    ])];
+    if (currencies.length === 0) currencies.push('USD');
+
+    const wallets = await Promise.all(currencies.map(async (currency) => {
+      const balance = (balances as any[]).find((b) => b.currency === currency) ?? {
+        availableBalance: 0, pendingBalance: 0, totalRevenue: 0, totalFees: 0, totalRefunds: 0, totalPayouts: 0,
+        isFlaggedForReview: false, flaggedReason: null,
+      };
+      const schedule = (schedules as any[]).find((s) => s.currency === currency) ?? {
+        frequency: 'weekly', isEnabled: true, minimumAmount: currency === 'PKR' ? 1500 : 5, nextPayoutAt: null,
+      };
+      const defaultMethod = (methods as any[]).find((m) => m.currency === currency && m.isDefault) ?? null;
+      const pendingPayout = (pendingPayouts as any[]).find((p) => p.currency === currency) ?? null;
+
+      const [thisMonth, lastMonth] = await Promise.all([
+        this.getPeriodStats(storeId, thisMonthStart, now, currency),
+        this.getPeriodStats(storeId, lastMonthStart, lastMonthEnd, currency),
+      ]);
+      const revenueGrowth = lastMonth.sale > 0
+        ? this.round(((thisMonth.sale - lastMonth.sale) / lastMonth.sale) * 100)
+        : 0;
+
+      return {
+        currency,
+        availableBalance: balance.availableBalance,
+        pendingBalance: balance.pendingBalance,
+        isFlaggedForReview: balance.isFlaggedForReview ?? false,
+        flaggedReason: balance.flaggedReason ?? null,
+        nextPayout: {
+          pendingAmount: pendingPayout?.amount ?? null,
+          scheduledAt: schedule.nextPayoutAt,
+          method: defaultMethod
+            ? { type: defaultMethod.type, bankName: defaultMethod.bankName, last4: defaultMethod.accountLast4 }
+            : null,
+        },
+        summary: {
+          thisMonthRevenue: thisMonth.sale,
+          revenueGrowthPercent: revenueGrowth,
+          platformFees: thisMonth.fee,
+          totalPaidOut: balance.totalPayouts,
+          pendingTax: this.round(thisMonth.sale * ESTIMATED_TAX_RATE),
+        },
+        payoutSchedule: {
+          frequency: schedule.frequency,
+          isEnabled: schedule.isEnabled,
+          minimumAmount: schedule.minimumAmount,
+          nextPayoutAt: schedule.nextPayoutAt,
+        },
+      };
+    }));
 
     return {
-      availableBalance: balance.availableBalance,
-      pendingBalance: balance.pendingBalance,
-      currency: balance.currency,
-      nextPayout: {
-        pendingAmount: pendingPayout?.amount ?? null,
-        scheduledAt: schedule.nextPayoutAt,
-        method: defaultMethod
-          ? { type: defaultMethod.type, bankName: defaultMethod.bankName, last4: defaultMethod.accountLast4 }
-          : null,
-      },
-      summary: {
-        thisMonthRevenue: thisMonth.sale,
-        revenueGrowthPercent: revenueGrowth,
-        platformFees: thisMonth.fee,
-        totalPaidOut: balance.totalPayouts,
-        pendingTax: this.round(thisMonth.sale * ESTIMATED_TAX_RATE),
-      },
-      payoutSchedule: {
-        frequency: schedule.frequency,
-        isEnabled: schedule.isEnabled,
-        minimumAmount: schedule.minimumAmount,
-        nextPayoutAt: schedule.nextPayoutAt,
-      },
+      wallets,
       feeBreakdown: {
         marketplaceListingFee: 'Free',
-        transactionFee: `${PLATFORM_FEE_RATE * 100}% per sale`,
-        paymentProcessing: `${PAYMENT_PROCESSING_RATE * 100}% + $${PAYMENT_PROCESSING_FIXED}`,
+        transactionFee: `${(commissionRate.rate * 100).toFixed(2)}% per sale`,
+        transactionFeeSource: commissionRate.source,
+        paymentProcessing: `${PAYMENT_PROCESSING_RATE * 100}% + $${PAYMENT_PROCESSING_FIXED} (card payments only — not charged for COD or bank transfer)`,
         digitalDelivery: 'Included',
         aiCredits: '750 / month',
       },
@@ -199,6 +316,7 @@ export class FinanceService {
     if (query.status)  filter.status = query.status;
     if (query.storeId) filter.storeId = query.storeId;
     if (query.sellerId) filter.sellerId = query.sellerId;
+    if (query.currency) filter.currency = query.currency;
     if (query.from || query.to) {
       filter.createdAt = {};
       if (query.from) filter.createdAt.$gte = new Date(query.from);
@@ -222,11 +340,12 @@ export class FinanceService {
   }
 
   private transactionsToCsv(txs: any[]): string {
-    const header = 'Date,Store,Description,Type,Amount,Balance After,Status\n';
+    const header = 'Date,Store,Description,Type,Currency,Amount,Balance After,Status\n';
     const rows = txs.map((t: any) => {
       const date = new Date(t.createdAt).toISOString().split('T')[0];
-      const amount = t.amount >= 0 ? `+$${t.amount.toFixed(2)}` : `-$${Math.abs(t.amount).toFixed(2)}`;
-      return `"${date}","${t.storeId}","${t.description}","${t.type}","${amount}","$${t.balanceAfter.toFixed(2)}","${t.status}"`;
+      const currency = t.currency || 'USD';
+      const amount = t.amount >= 0 ? `+${amountFmt(t.amount, currency)}` : `-${amountFmt(Math.abs(t.amount), currency)}`;
+      return `"${date}","${t.storeId}","${t.description}","${t.type}","${currency}","${amount}","${amountFmt(t.balanceAfter, currency)}","${t.status}"`;
     }).join('\n');
     return header + rows;
   }
@@ -248,48 +367,51 @@ export class FinanceService {
   // PAYOUTS
   // ═══════════════════════════════════════════════════════════════════════════
 
-  async requestPayout(sellerId: string, storeId: string, dto: RequestPayoutDto) {
-    await this.verifyStoreOwnership(sellerId, storeId);
-
-    const [balance, method] = await Promise.all([
-      this.getOrCreateBalance(storeId, sellerId),
-      this.methodModel.findById(dto.payoutMethodId),
-    ]);
-
-    if (!method || method.storeId !== storeId) throw new NotFoundException('Payout method not found');
-    if (method.status !== 'active') throw new BadRequestException('Payout method is not active');
-    if (dto.amount > balance.availableBalance) {
-      throw new BadRequestException(`Insufficient balance — available: $${balance.availableBalance.toFixed(2)}`);
+  /**
+   * Core debit + payout-record + ledger-entry write shared by the seller's
+   * on-demand "Withdraw" (`requestPayout`) and the scheduled auto-payout
+   * batch (`processScheduledPayouts`) — both are the same money movement,
+   * differing only in who/what triggered it (`source`) and where the amount
+   * came from. Caller must already be inside `withTransaction`.
+   */
+  private async debitAndCreatePayout(
+    session: ClientSession,
+    storeId: string, sellerId: string, currency: string, amount: number,
+    method: any, notes: string | null, source: 'seller_manual' | 'scheduled_auto',
+  ) {
+    const balance = await this.getOrCreateBalance(storeId, sellerId, currency, session);
+    if (amount > balance.availableBalance) {
+      throw new BadRequestException(`Insufficient balance — available: ${currency} ${balance.availableBalance.toFixed(2)}`);
     }
-    if (dto.amount < 1) throw new BadRequestException('Minimum payout amount is $1');
 
-    // Deduct from available balance immediately
     const balanceBefore = balance.availableBalance;
-    balance.availableBalance = this.round(balance.availableBalance - dto.amount);
-    balance.totalPayouts = this.round(balance.totalPayouts + dto.amount);
-    await balance.save();
+    balance.availableBalance = this.round(balance.availableBalance - amount);
+    balance.totalPayouts = this.round(balance.totalPayouts + amount);
+    await balance.save({ session });
 
-    // Create payout record
-    const payout = await this.payoutModel.create({
+    const payout = new this.payoutModel({
       storeId,
       sellerId,
-      amount: dto.amount,
-      payoutMethodId: dto.payoutMethodId,
+      amount,
+      currency,
+      payoutMethodId: method._id?.toString?.() ?? method.payoutMethodId,
       payoutMethodSnapshot: {
         type: method.type,
         bankName: method.bankName,
         accountLast4: method.accountLast4 ?? undefined,
       },
-      notes: dto.notes || null,
+      notes: notes || null,
       status: 'processing',
+      source,
     });
+    await payout.save({ session });
 
-    // Ledger entry
-    await this.txModel.create({
+    const tx = new this.txModel({
       storeId,
       sellerId,
+      currency,
       type: 'payout',
-      amount: -dto.amount,
+      amount: -amount,
       balanceBefore,
       balanceAfter: balance.availableBalance,
       description: `Payout — ${method.bankName || method.type} ••${method.accountLast4 || ''}`,
@@ -297,8 +419,105 @@ export class FinanceService {
       referenceType: 'payout',
       status: 'completed',
     });
+    await tx.save({ session });
 
     return payout;
+  }
+
+  async requestPayout(sellerId: string, storeId: string, dto: RequestPayoutDto) {
+    await this.verifyStoreOwnership(sellerId, storeId);
+
+    const method = await this.methodModel.findById(dto.payoutMethodId);
+    if (!method || method.storeId !== storeId) throw new NotFoundException('Payout method not found');
+    if (method.status !== 'active') {
+      throw new BadRequestException(
+        method.status === 'pending_verification'
+          ? 'This payout method is still awaiting admin verification'
+          : 'Payout method is not active',
+      );
+    }
+
+    const currency = method.currency || 'USD';
+    const minimum = await this.adminConfigService.getPayoutMinimum(currency);
+    if (dto.amount < minimum) {
+      throw new BadRequestException(`Minimum payout amount is ${currency} ${minimum.toFixed(2)}`);
+    }
+
+    return this.withTransaction((session) =>
+      this.debitAndCreatePayout(session, storeId, sellerId, currency, dto.amount, method, dto.notes ?? null, 'seller_manual'),
+    );
+  }
+
+  /**
+   * Weekly (configurable per-schedule via `frequency`/`dayOfWeek`/`dayOfMonth`)
+   * auto-payout batch — invoked daily by SchedulerService so each schedule's
+   * OWN `nextPayoutAt` (not the cron's cadence) decides when it's actually
+   * due. For every due, enabled schedule: sweeps the store's full available
+   * balance into a new payout request (same 'processing' status + admin
+   * queue as a seller-initiated withdrawal — see `source: 'scheduled_auto'`
+   * for how they're told apart) if it's at/above the greater of the
+   * schedule's own minimum and the platform-wide floor, the store has an
+   * active default payout method, and it doesn't already have one in flight.
+   * One schedule's failure never aborts the batch for the rest.
+   */
+  async processScheduledPayouts(): Promise<{ schedulesChecked: number; payoutsCreated: number; totalAmount: number; skipped: number }> {
+    const now = new Date();
+    const dueSchedules = await this.scheduleModel.find({
+      isEnabled: true,
+      frequency: { $ne: 'manual' },
+      nextPayoutAt: { $lte: now },
+    }).lean();
+
+    let payoutsCreated = 0;
+    let totalAmount = 0;
+    let skipped = 0;
+
+    for (const schedule of dueSchedules as any[]) {
+      try {
+        // Ticks the schedule forward regardless of outcome — a cycle with
+        // nothing (yet) to pay out still needs its next due date advanced.
+        const nextDate = this.computeNextPayoutDate(schedule);
+        await this.scheduleModel.updateOne({ _id: schedule._id }, { $set: { nextPayoutAt: nextDate } });
+
+        if (!schedule.defaultPayoutMethodId) { skipped++; continue; }
+
+        const currency = schedule.currency || 'USD';
+        const [method, balance, hasPendingPayout] = await Promise.all([
+          this.methodModel.findById(schedule.defaultPayoutMethodId),
+          this.getOrCreateBalance(schedule.storeId, schedule.sellerId, currency),
+          this.payoutModel.exists({ storeId: schedule.storeId, currency, status: { $in: ['pending', 'processing'] } }),
+        ]);
+
+        if (!method || method.status !== 'active') { skipped++; continue; }
+        if (hasPendingPayout) { skipped++; continue; }
+
+        const platformMinimum = await this.adminConfigService.getPayoutMinimum(currency);
+        const effectiveMinimum = Math.max(schedule.minimumAmount ?? 0, platformMinimum);
+        if (balance.availableBalance < effectiveMinimum) { skipped++; continue; }
+
+        const amount = balance.availableBalance;
+        const payout = await this.withTransaction((session) =>
+          this.debitAndCreatePayout(session, schedule.storeId, schedule.sellerId, currency, amount, method, 'Auto-generated by scheduled payout batch', 'scheduled_auto'),
+        );
+
+        payoutsCreated++;
+        totalAmount = this.round(totalAmount + amount);
+
+        this.notificationsService.notify({
+          recipientId: schedule.sellerId,
+          recipientRole: 'seller',
+          type: NOTIFICATION_TYPES.PAYOUT_AUTO_INITIATED,
+          title: 'Payout initiated',
+          body: `We've automatically initiated a ${currency} ${amount.toFixed(2)} payout to your ${method.bankName || method.type} account, per your payout schedule.`,
+          data: { payoutId: (payout as any)._id.toString(), storeId: schedule.storeId },
+        }).catch(() => {});
+      } catch (err: any) {
+        skipped++;
+        console.error(`Scheduled payout failed for store ${schedule.storeId}:`, err?.message);
+      }
+    }
+
+    return { schedulesChecked: dueSchedules.length, payoutsCreated, totalAmount, skipped };
   }
 
   async getPayouts(sellerId: string, storeId: string, query: any) {
@@ -310,6 +529,7 @@ export class FinanceService {
 
     const filter: any = { storeId };
     if (query.status) filter.status = query.status;
+    if (query.currency) filter.currency = query.currency;
 
     const [payouts, total] = await Promise.all([
       this.payoutModel.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
@@ -329,30 +549,88 @@ export class FinanceService {
   // PAYOUT METHODS
   // ═══════════════════════════════════════════════════════════════════════════
 
+  private readonly PKR_METHOD_TYPES = ['jazzcash', 'easypaisa'];
+
+  /**
+   * Soft ownership-sanity check — flags (never blocks) a payout method whose
+   * declared account holder doesn't reasonably match the seller's registered
+   * name, so an admin can review it before the first payout goes out.
+   */
+  private async checkAccountTitleMismatch(sellerId: string, accountHolder?: string | null) {
+    if (!accountHolder) return { flagged: false, note: null as string | null };
+    const seller = await this.sellerModel.findById(sellerId).select('name').lean();
+    const sellerName = (seller as any)?.name?.trim().toLowerCase();
+    const holderName = accountHolder.trim().toLowerCase();
+    if (!sellerName || !holderName) return { flagged: false, note: null };
+
+    const matches = sellerName === holderName || holderName.includes(sellerName) || sellerName.includes(holderName);
+    if (matches) return { flagged: false, note: null };
+
+    return {
+      flagged: true,
+      note: `Account holder "${accountHolder}" does not closely match the seller's registered name "${(seller as any).name}" — flagged for admin review, not blocked.`,
+    };
+  }
+
   async addPayoutMethod(sellerId: string, storeId: string, dto: AddPayoutMethodDto) {
     await this.verifyStoreOwnership(sellerId, storeId);
 
-    const isFirst = !(await this.methodModel.exists({ storeId }));
+    const currency = dto.currency ?? (this.PKR_METHOD_TYPES.includes(dto.type) ? 'PKR' : 'USD');
+    // "Default" is scoped per currency — a store can hold a USD wallet and a
+    // PKR wallet at once, each needing its own default payout method, so
+    // adding a store's first-ever PKR method (say) must not touch whichever
+    // method is already the USD default.
+    const isFirstForCurrency = !(await this.methodModel.exists({ storeId, currency }));
+    const { flagged, note } = await this.checkAccountTitleMismatch(sellerId, dto.accountHolder);
 
     const method = await this.methodModel.create({
       storeId,
       sellerId,
       type: dto.type,
+      currency,
       bankName: dto.bankName || null,
       accountHolder: dto.accountHolder || null,
       accountLast4: dto.accountNumber ? dto.accountNumber.slice(-4) : null,
       routingNumber: dto.routingNumber || null,
       externalAccountId: dto.externalAccountId || null,
-      isDefault: dto.setAsDefault || isFirst,
+      isDefault: dto.setAsDefault || isFirstForCurrency,
+      accountTitleMismatchFlagged: flagged,
+      accountTitleMismatchNote: note,
     });
 
-    // If this is set as default, unset others
+    // If this is set as default, unset only the other methods IN THE SAME CURRENCY.
     if (method.isDefault) {
       await this.methodModel.updateMany(
-        { storeId, _id: { $ne: method._id } },
+        { storeId, currency, _id: { $ne: method._id } },
         { $set: { isDefault: false } },
       );
     }
+
+    return method;
+  }
+
+  /** Admin-only — moves a payout method to 'active' (or back to 'inactive') after reviewing it. No live automated verification exists yet, so every new method starts 'pending_verification' and must pass through here before a seller can withdraw to it. */
+  async adminVerifyPayoutMethod(storeId: string, methodId: string, adminId: string, approve: boolean, note?: string) {
+    await this.verifyStoreExistsForAdmin(storeId);
+    const method = await this.methodModel.findOne({ _id: methodId, storeId });
+    if (!method) throw new NotFoundException('Payout method not found');
+
+    method.status = approve ? 'active' : 'inactive';
+    method.verifiedByAdminId = adminId;
+    method.verifiedAt = new Date();
+    if (note) method.accountTitleMismatchNote = note;
+    await method.save();
+
+    this.activityLogService.log({
+      storeId,
+      category: 'finance',
+      action: approve ? 'payout_method_verified' : 'payout_method_rejected',
+      description: `Payout method (${method.type}) ${approve ? 'verified and activated' : 'rejected'} by admin`,
+      actorId: adminId,
+      actorRole: 'admin',
+      targetId: methodId,
+      targetType: 'payout_method',
+    });
 
     return method;
   }
@@ -367,11 +645,33 @@ export class FinanceService {
     const method = await this.methodModel.findOne({ _id: methodId, storeId });
     if (!method) throw new NotFoundException('Payout method not found');
 
+    // Any change to the actual destination invalidates a prior admin
+    // verification — otherwise a seller could get a method verified once,
+    // then quietly swap in a different account/routing number afterwards.
+    const destinationChanged =
+      (dto.bankName !== undefined && dto.bankName !== method.bankName) ||
+      (!!dto.accountNumber && dto.accountNumber.slice(-4) !== method.accountLast4) ||
+      (dto.routingNumber !== undefined && dto.routingNumber !== method.routingNumber) ||
+      (dto.externalAccountId !== undefined && dto.externalAccountId !== method.externalAccountId);
+
     if (dto.bankName !== undefined)    method.bankName    = dto.bankName;
     if (dto.accountHolder !== undefined) method.accountHolder = dto.accountHolder;
     if (dto.accountNumber)             method.accountLast4 = dto.accountNumber.slice(-4);
     if (dto.routingNumber !== undefined) method.routingNumber = dto.routingNumber;
     if (dto.externalAccountId !== undefined) method.externalAccountId = dto.externalAccountId;
+    if (dto.currency !== undefined)    method.currency = dto.currency;
+
+    if (destinationChanged && method.status !== 'pending_verification') {
+      method.status = 'pending_verification';
+      method.verifiedByAdminId = null;
+      method.verifiedAt = null;
+    }
+
+    if (dto.accountHolder !== undefined) {
+      const { flagged, note } = await this.checkAccountTitleMismatch(sellerId, dto.accountHolder);
+      method.accountTitleMismatchFlagged = flagged;
+      method.accountTitleMismatchNote = note;
+    }
 
     await method.save();
     return method;
@@ -391,7 +691,9 @@ export class FinanceService {
     const method = await this.methodModel.findOne({ _id: methodId, storeId });
     if (!method) throw new NotFoundException('Payout method not found');
 
-    await this.methodModel.updateMany({ storeId }, { $set: { isDefault: false } });
+    // Scoped to this method's own currency — setting a PKR method as default
+    // must not clear the store's separate USD default.
+    await this.methodModel.updateMany({ storeId, currency: method.currency }, { $set: { isDefault: false } });
     method.isDefault = true;
     await method.save();
     return { isDefault: true };
@@ -401,14 +703,15 @@ export class FinanceService {
   // PAYOUT SCHEDULE
   // ═══════════════════════════════════════════════════════════════════════════
 
-  async getPayoutSchedule(sellerId: string, storeId: string) {
+  async getPayoutSchedule(sellerId: string, storeId: string, currency = 'USD') {
     await this.verifyStoreOwnership(sellerId, storeId);
-    return this.getOrCreateSchedule(storeId, sellerId);
+    return this.getOrCreateSchedule(storeId, sellerId, currency);
   }
 
   async updatePayoutSchedule(sellerId: string, storeId: string, dto: UpdatePayoutScheduleDto, ip?: string, userAgent?: string) {
     await this.verifyStoreOwnership(sellerId, storeId);
-    const schedule = await this.getOrCreateSchedule(storeId, sellerId);
+    const currency = dto.currency ?? 'USD';
+    const schedule = await this.getOrCreateSchedule(storeId, sellerId, currency);
     const oldFrequency = schedule.frequency;
 
     if (dto.frequency !== undefined) schedule.frequency = dto.frequency;
@@ -450,23 +753,23 @@ export class FinanceService {
     return this.taxModel.find({ storeId }).sort({ year: -1, period: 1 }).lean();
   }
 
-  async generateTaxReport(sellerId: string, storeId: string, year: number, period: string) {
+  async generateTaxReport(sellerId: string, storeId: string, year: number, period: string, currency = 'USD') {
     await this.verifyStoreOwnership(sellerId, storeId);
 
     const validPeriods = ['q1', 'q2', 'q3', 'q4', 'annual'];
     if (!validPeriods.includes(period)) throw new BadRequestException('Invalid period — use q1, q2, q3, q4, or annual');
 
     const { from, to } = this.getPeriodDateRange(year, period);
-    const stats = await this.getPeriodStats(storeId, from, to);
-    const txCount = await this.txModel.countDocuments({ storeId, status: 'completed', createdAt: { $gte: from, $lte: to } });
+    const stats = await this.getPeriodStats(storeId, from, to, currency);
+    const txCount = await this.txModel.countDocuments({ storeId, currency, status: 'completed', createdAt: { $gte: from, $lte: to } });
 
     const netRevenue = this.round(stats.sale - stats.fee - stats.refund);
     const estimatedTax = this.round(netRevenue * ESTIMATED_TAX_RATE);
 
     const report = await this.taxModel.findOneAndUpdate(
-      { storeId, year, period },
+      { storeId, year, period, currency },
       {
-        storeId, sellerId, year, period,
+        storeId, sellerId, year, period, currency,
         fromDate: from, toDate: to,
         totalRevenue: stats.sale,
         totalFees: stats.fee,
@@ -491,6 +794,7 @@ export class FinanceService {
     await this.verifyStoreOwnership(sellerId, storeId);
 
     const months = Math.min(12, parseInt(query.months) || 6);
+    const currency = (query.currency as string) || 'USD';
     const now = new Date();
 
     // Build monthly revenue for last N months
@@ -498,7 +802,7 @@ export class FinanceService {
     for (let i = months - 1; i >= 0; i--) {
       const from = new Date(now.getFullYear(), now.getMonth() - i, 1);
       const to   = new Date(now.getFullYear(), now.getMonth() - i + 1, 0, 23, 59, 59);
-      const stats = await this.getPeriodStats(storeId, from, to);
+      const stats = await this.getPeriodStats(storeId, from, to, currency);
       monthlyData.push({
         month: from.toLocaleDateString('en-US', { month: 'short', year: 'numeric' }),
         revenue: stats.sale,
@@ -509,13 +813,14 @@ export class FinanceService {
     }
 
     // Overall balance summary
-    const balance = await this.getOrCreateBalance(storeId, sellerId);
+    const balance = await this.getOrCreateBalance(storeId, sellerId, currency);
 
     // Payment type breakdown for current month
     const thisMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-    const thisMonthStats = await this.getPeriodStats(storeId, thisMonthStart, now);
+    const thisMonthStats = await this.getPeriodStats(storeId, thisMonthStart, now, currency);
 
     return {
+      currency,
       monthly: monthlyData,
       totals: {
         totalRevenue: balance.totalRevenue,
@@ -535,35 +840,53 @@ export class FinanceService {
   // queries where the admin explicitly wants a platform-wide view.
   // ═══════════════════════════════════════════════════════════════════════════
 
+  /**
+   * The seller "wallet inspector" for admins — a store can hold a balance
+   * and payout schedule in more than one currency (USD from Stripe sales,
+   * PKR from Pakistan manual-transfer sales — see SellerBalance.currency),
+   * so this fetches every currency's document rather than just the USD one,
+   * to avoid a PKR-only seller looking like they have zero balance.
+   */
   async adminGetSellerFinancialDetails(storeId: string) {
     const store = await this.verifyStoreExistsForAdmin(storeId);
 
-    const [balance, schedule, methods, recentPayouts, seller] = await Promise.all([
-      this.getOrCreateBalance(storeId, store.sellerId),
-      this.getOrCreateSchedule(storeId, store.sellerId),
+    const [balances, schedules, methods, recentPayouts, seller] = await Promise.all([
+      this.balanceModel.find({ storeId }).lean(),
+      this.scheduleModel.find({ storeId }).lean(),
       this.methodModel.find({ storeId }).sort({ isDefault: -1, createdAt: -1 }).lean(),
       this.payoutModel.find({ storeId }).sort({ createdAt: -1 }).limit(10).lean(),
       this.sellerModel.findById(store.sellerId).select('name email').lean(),
     ]);
 
+    // A brand-new store has no balance doc yet in any currency — show a
+    // zeroed USD placeholder rather than an empty array.
+    const balanceRows = balances.length > 0 ? balances : [{
+      currency: 'USD', availableBalance: 0, pendingBalance: 0,
+      totalRevenue: 0, totalFees: 0, totalRefunds: 0, totalPayouts: 0,
+      isFlaggedForReview: false, flaggedReason: null,
+    }];
+
     return {
       store: { storeId, name: store.name, sellerId: store.sellerId },
       seller: seller ? { name: (seller as any).name, email: (seller as any).email } : null,
-      balance: {
-        availableBalance: balance.availableBalance,
-        pendingBalance: balance.pendingBalance,
-        totalRevenue: balance.totalRevenue,
-        totalFees: balance.totalFees,
-        totalRefunds: balance.totalRefunds,
-        totalPayouts: balance.totalPayouts,
-        currency: balance.currency,
-      },
-      payoutSchedule: {
-        frequency: schedule.frequency,
-        isEnabled: schedule.isEnabled,
-        minimumAmount: schedule.minimumAmount,
-        nextPayoutAt: schedule.nextPayoutAt,
-      },
+      balances: (balanceRows as any[]).map((b) => ({
+        currency: b.currency,
+        availableBalance: b.availableBalance,
+        pendingBalance: b.pendingBalance,
+        totalRevenue: b.totalRevenue,
+        totalFees: b.totalFees,
+        totalRefunds: b.totalRefunds,
+        totalPayouts: b.totalPayouts,
+        isFlaggedForReview: b.isFlaggedForReview ?? false,
+        flaggedReason: b.flaggedReason ?? null,
+      })),
+      payoutSchedules: (schedules as any[]).map((s) => ({
+        currency: s.currency,
+        frequency: s.frequency,
+        isEnabled: s.isEnabled,
+        minimumAmount: s.minimumAmount,
+        nextPayoutAt: s.nextPayoutAt,
+      })),
       payoutMethods: methods,
       recentPayouts,
     };
@@ -575,13 +898,25 @@ export class FinanceService {
     return this.queryTransactions(filter, query);
   }
 
+  /**
+   * Admin-only refinement — `Transaction` doesn't carry a payment method
+   * (only `Order.paymentType` does), so a `paymentMethodType` filter
+   * (stripe / cash_on_delivery / manual_bank_transfer) resolves the matching
+   * order ids first and constrains the ledger query to those.
+   */
+  private async applyPaymentMethodTypeFilter(filter: Record<string, any>, paymentMethodType?: string): Promise<Record<string, any>> {
+    if (!paymentMethodType) return filter;
+    const orders = await this.db.repositories.orderModel.find({ paymentType: paymentMethodType }).select('_id').lean();
+    return { ...filter, referenceId: { $in: (orders as any[]).map((o) => o._id.toString()) }, referenceType: 'order' };
+  }
+
   async adminGetPlatformTransactions(query: any) {
-    const filter = this.buildTransactionFilter(query);
+    const filter = await this.applyPaymentMethodTypeFilter(this.buildTransactionFilter(query), query.paymentMethodType);
     return this.queryTransactions(filter, query);
   }
 
   async adminExportTransactionsCsv(query: any): Promise<string> {
-    const filter = this.buildTransactionFilter(query);
+    const filter = await this.applyPaymentMethodTypeFilter(this.buildTransactionFilter(query), query.paymentMethodType);
     const txs = await this.txModel.find(filter).sort({ createdAt: -1 }).limit(5000).lean();
     return this.transactionsToCsv(txs);
   }
@@ -642,6 +977,15 @@ export class FinanceService {
       ip, userAgent,
     });
 
+    this.notificationsService.notify({
+      recipientId: payout.sellerId,
+      recipientRole: 'seller',
+      type: NOTIFICATION_TYPES.PAYOUT_COMPLETED,
+      title: 'Payout completed',
+      body: `Your ${payout.currency || 'USD'} ${payout.amount.toFixed(2)} payout has been sent.`,
+      data: { payoutId },
+    }).catch(() => {});
+
     return payout;
   }
 
@@ -653,29 +997,36 @@ export class FinanceService {
       throw new BadRequestException(`Cannot reject a payout with status "${payout.status}"`);
     }
 
-    const balance = await this.getOrCreateBalance(payout.storeId, payout.sellerId);
-    const balanceBefore = balance.availableBalance;
-    balance.availableBalance = this.round(balance.availableBalance + payout.amount);
-    balance.totalPayouts = this.round(balance.totalPayouts - payout.amount);
-    await balance.save();
+    const currency = payout.currency || 'USD';
 
-    payout.status = 'failed';
-    payout.failureReason = reason;
-    payout.processedAt = new Date();
-    await payout.save();
+    await this.withTransaction(async (session) => {
+      const balance = await this.getOrCreateBalance(payout.storeId, payout.sellerId, currency, session);
+      const balanceBefore = balance.availableBalance;
+      balance.availableBalance = this.round(balance.availableBalance + payout.amount);
+      balance.totalPayouts = this.round(balance.totalPayouts - payout.amount);
+      this.reevaluateDebtFlag(balance);
+      await balance.save({ session });
 
-    await this.txModel.create({
-      storeId: payout.storeId,
-      sellerId: payout.sellerId,
-      type: 'adjustment',
-      amount: payout.amount,
-      balanceBefore,
-      balanceAfter: balance.availableBalance,
-      description: `Payout rejected — funds returned (${reason})`,
-      referenceId: payoutId,
-      referenceType: 'payout',
-      status: 'completed',
-      metadata: { rejectedBy: adminId, reason },
+      payout.status = 'failed';
+      payout.failureReason = reason;
+      payout.processedAt = new Date();
+      await payout.save({ session });
+
+      const tx = new this.txModel({
+        storeId: payout.storeId,
+        sellerId: payout.sellerId,
+        currency,
+        type: 'adjustment',
+        amount: payout.amount,
+        balanceBefore,
+        balanceAfter: balance.availableBalance,
+        description: `Payout rejected — funds returned (${reason})`,
+        referenceId: payoutId,
+        referenceType: 'payout',
+        status: 'completed',
+        metadata: { rejectedBy: adminId, reason },
+      });
+      await tx.save({ session });
     });
 
     this.activityLogService.log({
@@ -690,6 +1041,15 @@ export class FinanceService {
       ip, userAgent,
     });
 
+    this.notificationsService.notify({
+      recipientId: payout.sellerId,
+      recipientRole: 'seller',
+      type: NOTIFICATION_TYPES.PAYOUT_REJECTED,
+      title: 'Payout rejected',
+      body: `Your ${payout.currency || 'USD'} ${payout.amount.toFixed(2)} payout was rejected (${reason}) — the funds have been returned to your available balance.`,
+      data: { payoutId, reason },
+    }).catch(() => {});
+
     return payout;
   }
 
@@ -699,35 +1059,41 @@ export class FinanceService {
     if (!payout) throw new NotFoundException('Payout not found');
     if (payout.status !== 'failed') throw new BadRequestException('Only failed payouts can be retried');
 
-    const balance = await this.getOrCreateBalance(payout.storeId, payout.sellerId);
-    if (payout.amount > balance.availableBalance) {
-      throw new BadRequestException(
-        `Cannot retry — available balance ($${balance.availableBalance.toFixed(2)}) is less than the payout amount ($${payout.amount.toFixed(2)})`,
-      );
-    }
+    const currency = payout.currency || 'USD';
 
-    const balanceBefore = balance.availableBalance;
-    balance.availableBalance = this.round(balance.availableBalance - payout.amount);
-    balance.totalPayouts = this.round(balance.totalPayouts + payout.amount);
-    await balance.save();
+    await this.withTransaction(async (session) => {
+      const balance = await this.getOrCreateBalance(payout.storeId, payout.sellerId, currency, session);
+      if (payout.amount > balance.availableBalance) {
+        throw new BadRequestException(
+          `Cannot retry — available balance (${currency} ${balance.availableBalance.toFixed(2)}) is less than the payout amount (${currency} ${payout.amount.toFixed(2)})`,
+        );
+      }
 
-    payout.status = 'processing';
-    payout.failureReason = null;
-    payout.processedAt = null;
-    await payout.save();
+      const balanceBefore = balance.availableBalance;
+      balance.availableBalance = this.round(balance.availableBalance - payout.amount);
+      balance.totalPayouts = this.round(balance.totalPayouts + payout.amount);
+      await balance.save({ session });
 
-    await this.txModel.create({
-      storeId: payout.storeId,
-      sellerId: payout.sellerId,
-      type: 'payout',
-      amount: -payout.amount,
-      balanceBefore,
-      balanceAfter: balance.availableBalance,
-      description: `Payout retry — ${payout.payoutMethodSnapshot?.bankName || payout.payoutMethodSnapshot?.type || 'payout method'}`,
-      referenceId: payoutId,
-      referenceType: 'payout',
-      status: 'completed',
-      metadata: { retriedBy: adminId },
+      payout.status = 'processing';
+      payout.failureReason = null;
+      payout.processedAt = null;
+      await payout.save({ session });
+
+      const tx = new this.txModel({
+        storeId: payout.storeId,
+        sellerId: payout.sellerId,
+        currency,
+        type: 'payout',
+        amount: -payout.amount,
+        balanceBefore,
+        balanceAfter: balance.availableBalance,
+        description: `Payout retry — ${payout.payoutMethodSnapshot?.bankName || payout.payoutMethodSnapshot?.type || 'payout method'}`,
+        referenceId: payoutId,
+        referenceType: 'payout',
+        status: 'completed',
+        metadata: { retriedBy: adminId },
+      });
+      await tx.save({ session });
     });
 
     this.activityLogService.log({
@@ -742,6 +1108,15 @@ export class FinanceService {
       ip, userAgent,
     });
 
+    this.notificationsService.notify({
+      recipientId: payout.sellerId,
+      recipientRole: 'seller',
+      type: NOTIFICATION_TYPES.PAYOUT_RETRIED,
+      title: 'Payout re-queued',
+      body: `Your ${payout.currency || 'USD'} ${payout.amount.toFixed(2)} payout is being processed again.`,
+      data: { payoutId },
+    }).catch(() => {});
+
     return payout;
   }
 
@@ -754,47 +1129,55 @@ export class FinanceService {
     const store = await this.verifyStoreExistsForAdmin(storeId);
     if (amount <= 0) throw new BadRequestException('Amount must be greater than zero');
 
-    const balance = await this.getOrCreateBalance(storeId, store.sellerId);
-    if (amount > balance.availableBalance) {
-      throw new BadRequestException(`Insufficient balance — available: $${balance.availableBalance.toFixed(2)}`);
-    }
-
     let methodSnapshot: { type: string; bankName: string | null; accountLast4?: string } = {
       type: 'manual', bankName: null, accountLast4: 'ADMIN',
     };
     let resolvedMethodId = 'admin-manual';
+    let currency = 'USD';
     if (payoutMethodId) {
       const method = await this.methodModel.findOne({ _id: payoutMethodId, storeId });
       if (!method) throw new NotFoundException('Payout method not found');
       methodSnapshot = { type: method.type, bankName: method.bankName, accountLast4: method.accountLast4 ?? undefined };
       resolvedMethodId = payoutMethodId;
+      currency = method.currency || 'USD';
     }
 
-    const balanceBefore = balance.availableBalance;
-    balance.availableBalance = this.round(balance.availableBalance - amount);
-    balance.totalPayouts = this.round(balance.totalPayouts + amount);
-    await balance.save();
+    const payout = await this.withTransaction(async (session) => {
+      const balance = await this.getOrCreateBalance(storeId, store.sellerId, currency, session);
+      if (amount > balance.availableBalance) {
+        throw new BadRequestException(`Insufficient balance — available: ${currency} ${balance.availableBalance.toFixed(2)}`);
+      }
 
-    const payout = await this.payoutModel.create({
-      storeId, sellerId: store.sellerId, amount,
-      payoutMethodId: resolvedMethodId,
-      payoutMethodSnapshot: methodSnapshot,
-      notes: notes || 'Manual payout issued by admin',
-      status: 'completed',
-      processedAt: new Date(),
-    });
+      const balanceBefore = balance.availableBalance;
+      balance.availableBalance = this.round(balance.availableBalance - amount);
+      balance.totalPayouts = this.round(balance.totalPayouts + amount);
+      await balance.save({ session });
 
-    await this.txModel.create({
-      storeId, sellerId: store.sellerId,
-      type: 'payout',
-      amount: -amount,
-      balanceBefore,
-      balanceAfter: balance.availableBalance,
-      description: notes || 'Manual payout (admin-initiated)',
-      referenceId: (payout as any)._id.toString(),
-      referenceType: 'payout',
-      status: 'completed',
-      metadata: { manualByAdmin: adminId },
+      const createdPayout = new this.payoutModel({
+        storeId, sellerId: store.sellerId, amount, currency,
+        payoutMethodId: resolvedMethodId,
+        payoutMethodSnapshot: methodSnapshot,
+        notes: notes || 'Manual payout issued by admin',
+        status: 'completed',
+        processedAt: new Date(),
+      });
+      await createdPayout.save({ session });
+
+      const tx = new this.txModel({
+        storeId, sellerId: store.sellerId, currency,
+        type: 'payout',
+        amount: -amount,
+        balanceBefore,
+        balanceAfter: balance.availableBalance,
+        description: notes || 'Manual payout (admin-initiated)',
+        referenceId: (createdPayout as any)._id.toString(),
+        referenceType: 'payout',
+        status: 'completed',
+        metadata: { manualByAdmin: adminId },
+      });
+      await tx.save({ session });
+
+      return createdPayout;
     });
 
     this.activityLogService.log({
@@ -832,14 +1215,18 @@ export class FinanceService {
 
     for (const tx of pendingSales as any[]) {
       const netAmount = tx.metadata?.netAmount ?? 0;
-      if (netAmount > 0) {
-        const balance = await this.getOrCreateBalance(tx.storeId, tx.sellerId);
-        balance.pendingBalance = this.round(Math.max(0, balance.pendingBalance - netAmount));
-        balance.availableBalance = this.round(balance.availableBalance + netAmount);
-        await balance.save();
-        totalAmount = this.round(totalAmount + netAmount);
-      }
-      await this.txModel.updateOne({ _id: tx._id }, { $set: { status: 'completed' } });
+      const currency = tx.currency || 'USD';
+      await this.withTransaction(async (session) => {
+        if (netAmount > 0) {
+          const balance = await this.getOrCreateBalance(tx.storeId, tx.sellerId, currency, session);
+          balance.pendingBalance = this.round(Math.max(0, balance.pendingBalance - netAmount));
+          balance.availableBalance = this.round(balance.availableBalance + netAmount);
+          this.reevaluateDebtFlag(balance);
+          await balance.save({ session });
+          totalAmount = this.round(totalAmount + netAmount);
+        }
+        await this.txModel.updateOne({ _id: tx._id }, { $set: { status: 'completed' } }, { session });
+      });
       processed += 1;
     }
 
@@ -868,77 +1255,98 @@ export class FinanceService {
    * the extra audit-trail entry and the `campaignId`'s running subsidy
    * total below, it does not change the balance math itself.
    */
+  /**
+   * `paymentMethodType` ('stripe' | 'cash_on_delivery' | 'manual_bank_transfer')
+   * gates the card-processing-fee component: it models Stripe's real 2.9%+$0.30
+   * card-network fee, which is only ever actually incurred on a Stripe sale —
+   * charging it on a COD or manual-bank-transfer sale would deduct a cost the
+   * platform never paid. Defaults to 'stripe' only as a defensive fallback for
+   * a caller that doesn't pass it; every real call site always does.
+   */
   async recordSale(
     storeId: string, sellerId: string, orderId: string, saleAmount: number, description: string,
-    platformSponsoredUSD = 0, campaignId?: string | null,
+    platformSponsoredUSD = 0, campaignId?: string | null, currency = 'USD', paymentMethodType = 'stripe',
   ) {
-    const platformFeeRate = await this.entitlementsService.getTransactionFeeRate(storeId);
+    const chargesProcessingFee = paymentMethodType === 'stripe';
+    const { rate: platformFeeRate, source: feeRateSource } = await this.commissionRulesService.resolveRate(storeId);
     const platformFee   = this.round(saleAmount * platformFeeRate);
-    const processingFee = this.round(saleAmount * PAYMENT_PROCESSING_RATE + PAYMENT_PROCESSING_FIXED);
+    const processingFee = chargesProcessingFee ? this.round(saleAmount * PAYMENT_PROCESSING_RATE + PAYMENT_PROCESSING_FIXED) : 0;
     const netAmount     = this.round(saleAmount - platformFee - processingFee);
 
-    const balance = await this.getOrCreateBalance(storeId, sellerId);
-    const balanceBefore = balance.availableBalance;
+    await this.withTransaction(async (session) => {
+      const balance = await this.getOrCreateBalance(storeId, sellerId, currency, session);
+      const balanceBefore = balance.availableBalance;
 
-    // Sale credit goes to pending for CLEARING_DAYS days
-    balance.pendingBalance  = this.round(balance.pendingBalance + netAmount);
-    balance.totalRevenue    = this.round(balance.totalRevenue + saleAmount);
-    balance.totalFees       = this.round(balance.totalFees + platformFee + processingFee);
-    await balance.save();
+      // Sale credit goes to pending for CLEARING_DAYS days
+      balance.pendingBalance  = this.round(balance.pendingBalance + netAmount);
+      balance.totalRevenue    = this.round(balance.totalRevenue + saleAmount);
+      balance.totalFees       = this.round(balance.totalFees + platformFee + processingFee);
+      // A credit can pay down a prior debt (see recordRefund) — re-check
+      // whether the balance has climbed back to non-negative.
+      this.reevaluateDebtFlag(balance);
+      await balance.save({ session });
 
-    // Ledger: sale entry
-    await this.txModel.create({
-      storeId, sellerId,
-      type: 'sale',
-      amount: saleAmount,
-      balanceBefore,
-      balanceAfter: balance.availableBalance,
-      description: description || `Sale — Order #${orderId}`,
-      referenceId: orderId,
-      referenceType: 'order',
-      status: 'pending',
-      metadata: { platformFee, processingFee, netAmount, clearingDays: CLEARING_DAYS },
-    });
-
-    // Ledger: fee entry
-    await this.txModel.create({
-      storeId, sellerId,
-      type: 'fee',
-      amount: -(platformFee + processingFee),
-      balanceBefore,
-      balanceAfter: balance.availableBalance,
-      description: `Platform Fee (${(platformFeeRate * 100).toFixed(1)}%) + Processing — Order #${orderId}`,
-      referenceId: orderId,
-      referenceType: 'order',
-      status: 'completed',
-    });
-
-    // Ledger: platform-subsidy audit entry — informational only, doesn't move
-    // the balance again (already folded into `saleAmount`/netAmount above);
-    // it exists purely so the seller's transaction history and the admin
-    // finance dashboard can both explain why this sale paid out more than
-    // the buyer's checkout total for that store.
-    if (platformSponsoredUSD > 0) {
-      await this.txModel.create({
-        storeId, sellerId,
-        type: 'platform_subsidy',
-        amount: platformSponsoredUSD,
-        balanceBefore: balance.availableBalance,
+      // Ledger: sale entry
+      const saleTx = new this.txModel({
+        storeId, sellerId, currency,
+        type: 'sale',
+        amount: saleAmount,
+        balanceBefore,
         balanceAfter: balance.availableBalance,
-        description: `Platform-sponsored sale discount — Order #${orderId}`,
+        description: description || `Sale — Order #${orderId}`,
+        referenceId: orderId,
+        referenceType: 'order',
+        status: 'pending',
+        metadata: { platformFee, processingFee, netAmount, clearingDays: CLEARING_DAYS, feeRate: platformFeeRate, feeRateSource },
+      });
+      await saleTx.save({ session });
+
+      // Ledger: fee entry
+      const feeTx = new this.txModel({
+        storeId, sellerId, currency,
+        type: 'fee',
+        amount: -(platformFee + processingFee),
+        balanceBefore,
+        balanceAfter: balance.availableBalance,
+        description: chargesProcessingFee
+          ? `Platform Fee (${(platformFeeRate * 100).toFixed(1)}%) + Card Processing — Order #${orderId}`
+          : `Platform Fee (${(platformFeeRate * 100).toFixed(1)}%) — Order #${orderId}`,
         referenceId: orderId,
         referenceType: 'order',
         status: 'completed',
-        metadata: { campaignId: campaignId ?? null },
+        metadata: { platformFee, processingFee, paymentMethodType },
       });
+      await feeTx.save({ session });
 
-      if (campaignId) {
-        await this.db.repositories.campaignModel.findByIdAndUpdate(
-          campaignId,
-          { $inc: { totalPlatformSubsidyUSD: platformSponsoredUSD } },
-        );
+      // Ledger: platform-subsidy audit entry — informational only, doesn't move
+      // the balance again (already folded into `saleAmount`/netAmount above);
+      // it exists purely so the seller's transaction history and the admin
+      // finance dashboard can both explain why this sale paid out more than
+      // the buyer's checkout total for that store.
+      if (platformSponsoredUSD > 0) {
+        const subsidyTx = new this.txModel({
+          storeId, sellerId, currency,
+          type: 'platform_subsidy',
+          amount: platformSponsoredUSD,
+          balanceBefore: balance.availableBalance,
+          balanceAfter: balance.availableBalance,
+          description: `Platform-sponsored sale discount — Order #${orderId}`,
+          referenceId: orderId,
+          referenceType: 'order',
+          status: 'completed',
+          metadata: { campaignId: campaignId ?? null },
+        });
+        await subsidyTx.save({ session });
+
+        if (campaignId) {
+          await this.db.repositories.campaignModel.findByIdAndUpdate(
+            campaignId,
+            { $inc: { totalPlatformSubsidyUSD: platformSponsoredUSD } },
+            { session },
+          );
+        }
       }
-    }
+    });
   }
 
   /**
@@ -955,87 +1363,126 @@ export class FinanceService {
     storeId: string, sellerId: string, invoiceId: string,
     sellerPayoutUSD: number, platformCommissionUSD: number, description: string,
   ) {
-    const balance = await this.getOrCreateBalance(storeId, sellerId);
-    const balanceBefore = balance.availableBalance;
+    await this.withTransaction(async (session) => {
+      const balance = await this.getOrCreateBalance(storeId, sellerId, 'USD', session);
+      const balanceBefore = balance.availableBalance;
 
-    balance.pendingBalance = this.round(balance.pendingBalance + sellerPayoutUSD);
-    balance.totalRevenue   = this.round(balance.totalRevenue + sellerPayoutUSD + platformCommissionUSD);
-    balance.totalFees      = this.round(balance.totalFees + platformCommissionUSD);
-    await balance.save();
+      balance.pendingBalance = this.round(balance.pendingBalance + sellerPayoutUSD);
+      balance.totalRevenue   = this.round(balance.totalRevenue + sellerPayoutUSD + platformCommissionUSD);
+      balance.totalFees      = this.round(balance.totalFees + platformCommissionUSD);
+      this.reevaluateDebtFlag(balance);
+      await balance.save({ session });
 
-    await this.txModel.create({
-      storeId, sellerId,
-      type: 'sale',
-      amount: this.round(sellerPayoutUSD + platformCommissionUSD),
-      balanceBefore,
-      balanceAfter: balance.availableBalance,
-      description,
-      referenceId: invoiceId,
-      referenceType: 'subscription_invoice',
-      status: 'pending',
-      metadata: { platformCommissionUSD, sellerPayoutUSD, clearingDays: CLEARING_DAYS, revenueType: 'subscription' },
-    });
+      const saleTx = new this.txModel({
+        storeId, sellerId, currency: 'USD',
+        type: 'sale',
+        amount: this.round(sellerPayoutUSD + platformCommissionUSD),
+        balanceBefore,
+        balanceAfter: balance.availableBalance,
+        description,
+        referenceId: invoiceId,
+        referenceType: 'subscription_invoice',
+        status: 'pending',
+        metadata: { platformCommissionUSD, sellerPayoutUSD, clearingDays: CLEARING_DAYS, revenueType: 'subscription' },
+      });
+      await saleTx.save({ session });
 
-    await this.txModel.create({
-      storeId, sellerId,
-      type: 'fee',
-      amount: -platformCommissionUSD,
-      balanceBefore,
-      balanceAfter: balance.availableBalance,
-      description: `Platform subscription commission — invoice reference ${invoiceId}`,
-      referenceId: invoiceId,
-      referenceType: 'subscription_invoice',
-      status: 'completed',
+      const feeTx = new this.txModel({
+        storeId, sellerId, currency: 'USD',
+        type: 'fee',
+        amount: -platformCommissionUSD,
+        balanceBefore,
+        balanceAfter: balance.availableBalance,
+        description: `Platform subscription commission — invoice reference ${invoiceId}`,
+        referenceId: invoiceId,
+        referenceType: 'subscription_invoice',
+        status: 'completed',
+      });
+      await feeTx.save({ session });
     });
   }
 
   /**
-   * Record a refund — reverses the net sale amount from available or pending balance.
-   * Call this from OrdersService when a refund is issued.
+   * Record a refund — reverses the net sale amount from available or pending
+   * balance. Call this from OrdersService when a refund is issued, or from
+   * the Stripe webhook handler on `charge.refunded`/`charge.dispute.created`.
+   * Platform commission already taken at sale time is NOT refunded (the
+   * seller absorbs the full refund amount) — if the refund exceeds what's
+   * still held (seller already withdrew it), the excess drives the balance
+   * negative and flags the seller account for admin review rather than
+   * silently failing or being ignored (see `reevaluateDebtFlag`).
    */
   async recordRefund(
     storeId: string, sellerId: string, referenceId: string, refundAmount: number,
     actorId?: string, actorRole?: string,
-    opts?: { referenceType?: 'order' | 'subscription_invoice' | 'platform_plan_invoice'; description?: string; targetType?: string },
+    opts?: { referenceType?: 'order' | 'subscription_invoice' | 'platform_plan_invoice'; description?: string; targetType?: string; currency?: string },
   ) {
     const referenceType = opts?.referenceType ?? 'order';
-    const balance = await this.getOrCreateBalance(storeId, sellerId);
-    const balanceBefore = balance.availableBalance;
+    const currency = opts?.currency ?? 'USD';
 
-    // Deduct from available first, then pending if not enough. Platform
-    // commission already taken at sale/charge time is NOT refunded — the
-    // seller absorbs the full refund amount, same policy as order refunds.
-    if (balance.availableBalance >= refundAmount) {
-      balance.availableBalance = this.round(balance.availableBalance - refundAmount);
-    } else {
-      const fromAvailable = balance.availableBalance;
-      balance.availableBalance = 0;
-      balance.pendingBalance   = this.round(balance.pendingBalance - (refundAmount - fromAvailable));
-    }
-    balance.totalRefunds = this.round(balance.totalRefunds + refundAmount);
-    await balance.save();
+    const { balanceAfter, justFlagged } = await this.withTransaction(async (session) => {
+      const balance = await this.getOrCreateBalance(storeId, sellerId, currency, session);
+      const balanceBefore = balance.availableBalance;
 
-    await this.txModel.create({
-      storeId, sellerId,
-      type: 'refund',
-      amount: -refundAmount,
-      balanceBefore,
-      balanceAfter: balance.availableBalance,
-      description: opts?.description ?? `Refund — Order #${referenceId}`,
-      referenceId,
-      referenceType,
-      status: 'completed',
+      // Deduct from available first, then pending if not enough — allowed to
+      // go negative (that negative number IS the seller's debt against
+      // future earnings, see class doc comment above).
+      if (balance.availableBalance >= refundAmount) {
+        balance.availableBalance = this.round(balance.availableBalance - refundAmount);
+      } else {
+        const fromAvailable = balance.availableBalance;
+        balance.availableBalance = 0;
+        balance.pendingBalance   = this.round(balance.pendingBalance - (refundAmount - fromAvailable));
+      }
+      balance.totalRefunds = this.round(balance.totalRefunds + refundAmount);
+
+      const { justFlagged } = this.reevaluateDebtFlag(
+        balance,
+        `Refund of ${refundAmount.toFixed(2)} ${currency} on order #${referenceId} exceeded the seller's held balance — funds were likely already paid out`,
+      );
+      await balance.save({ session });
+
+      const tx = new this.txModel({
+        storeId, sellerId, currency,
+        type: 'refund',
+        amount: -refundAmount,
+        balanceBefore,
+        balanceAfter: balance.availableBalance,
+        description: opts?.description ?? `Refund — Order #${referenceId}`,
+        referenceId,
+        referenceType,
+        status: 'completed',
+      });
+      await tx.save({ session });
+
+      return { balanceAfter: balance.availableBalance, justFlagged };
     });
 
     this.activityLogService.log({
       storeId,
       category: 'finance',
       action: 'refund_issued',
-      description: opts?.description ?? `Order #${referenceId} — $${refundAmount.toFixed(2)} refunded`,
+      description: opts?.description ?? `Order #${referenceId} — ${refundAmount.toFixed(2)} ${currency} refunded`,
       actorId: actorId ?? sellerId,
       actorRole: actorRole ?? 'seller',
       targetId: referenceId,
       targetType: opts?.targetType ?? 'order',
     });
+
+    if (justFlagged) {
+      this.activityLogService.log({
+        storeId,
+        category: 'finance',
+        action: 'seller_balance_negative',
+        description: `Store ${storeId}'s balance went negative after refunding order #${referenceId} — the seller had likely already withdrawn these funds. Flagged for admin review.`,
+        actorId: actorId ?? sellerId,
+        actorRole: actorRole ?? 'seller',
+        targetId: storeId,
+        targetType: 'seller_balance',
+        isSecurityAlert: true,
+      });
+    }
+
+    return { balanceAfter };
   }
 }

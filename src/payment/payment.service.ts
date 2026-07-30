@@ -8,6 +8,8 @@ import { DatabaseService } from 'src/database/databaseservice';
 import { NotificationsService } from 'src/notifications/notifications.service';
 import { NOTIFICATION_TYPES } from 'src/notifications/notification.types';
 import { PromotionsService } from 'src/promotions/promotions.service';
+import { FinanceService } from 'src/finance/finance.service';
+import { AdminConfigService } from 'src/admin-config/admin-config.service';
 import Stripe from 'stripe';
 
 @Injectable()
@@ -19,6 +21,8 @@ export class PaymentService {
     private readonly notificationsService: NotificationsService,
     private readonly configService: ConfigService,
     private readonly promotionsService: PromotionsService,
+    private readonly financeService: FinanceService,
+    private readonly adminConfigService: AdminConfigService,
   ) {
     const secretKey = this.configService
       .get<string>('STRIPE_SECRET_KEY')
@@ -246,9 +250,100 @@ export class PaymentService {
         },
         { status: 'failed' },
       );
+    } else if (event.type === 'charge.refunded') {
+      const charge = event.data.object;
+      await this.handleChargeRefunded(charge).catch((err: any) => {
+        console.error('Refund webhook handling failed:', err?.message, { chargeId: charge.id });
+      });
+    } else if (event.type === 'charge.dispute.created') {
+      const dispute = event.data.object;
+      await this.handleChargeDispute(dispute).catch((err: any) => {
+        console.error('Dispute webhook handling failed:', err?.message, { disputeId: dispute.id });
+      });
     }
 
     return { received: true };
+  }
+
+  /**
+   * `charge.refunded` fires on every refund against a charge, with
+   * `amount_refunded` always being the CUMULATIVE total refunded so far —
+   * tracking `PaymentTransaction.amountRefunded` and only reversing the NEW
+   * delta makes this safe against both partial refunds and a redelivered
+   * webhook for the same event. Reverses each affected seller's ledger
+   * proportional to their sellerOrder's share of the whole charge — the
+   * platform's commission on that share is not clawed back (same policy as
+   * `FinanceService.recordRefund` everywhere else).
+   */
+  private async handleChargeRefunded(charge: any) {
+    const paymentIntentId = typeof charge.payment_intent === 'string' ? charge.payment_intent : charge.payment_intent?.id;
+    if (!paymentIntentId) return;
+
+    const { paymentTransactionModel } = this.databaseService.repositories;
+    const transaction = await paymentTransactionModel.findOne({
+      stripePaymentIntentId: paymentIntentId, status: 'completed', isDelete: false,
+    });
+    if (!transaction || transaction.orderIds.length === 0) return;
+
+    const totalRefundedSoFar = this.round((charge.amount_refunded ?? 0) / 100);
+    const previouslyRefunded = transaction.amountRefunded ?? 0;
+    const newRefundDelta = this.round(totalRefundedSoFar - previouslyRefunded);
+    if (newRefundDelta <= 0) return; // already processed — replayed webhook or no new refund since last event
+
+    await paymentTransactionModel.findByIdAndUpdate(transaction._id, { amountRefunded: totalRefundedSoFar });
+    await this.reverseSellerLedgerForOrders(transaction.orderIds, newRefundDelta, 'Stripe refund');
+  }
+
+  /**
+   * `charge.dispute.created` — a buyer-initiated chargeback. `dispute.amount`
+   * is the disputed amount (not cumulative); `disputedChargeIds` on the
+   * transaction guards against the same dispute event being redelivered.
+   * Same proportional-reversal logic as refunds — see `recordRefund`'s
+   * negative-balance/debt handling for what happens if the seller already
+   * withdrew the funds being clawed back.
+   */
+  private async handleChargeDispute(dispute: any) {
+    const paymentIntentId = typeof dispute.payment_intent === 'string' ? dispute.payment_intent : dispute.payment_intent?.id;
+    if (!paymentIntentId) return;
+
+    const { paymentTransactionModel } = this.databaseService.repositories;
+    const transaction = await paymentTransactionModel.findOne({
+      stripePaymentIntentId: paymentIntentId, status: 'completed', isDelete: false,
+    });
+    if (!transaction || transaction.orderIds.length === 0) return;
+    if ((transaction.disputedChargeIds ?? []).includes(dispute.id)) return;
+
+    const disputeAmount = this.round((dispute.amount ?? 0) / 100);
+    if (disputeAmount <= 0) return;
+
+    await paymentTransactionModel.findByIdAndUpdate(transaction._id, { $addToSet: { disputedChargeIds: dispute.id } });
+    await this.reverseSellerLedgerForOrders(transaction.orderIds, disputeAmount, 'Stripe dispute/chargeback');
+  }
+
+  /** Distributes a charge-level refund/dispute amount across every affected sellerOrder, proportional to its share of the orders' combined total. */
+  private async reverseSellerLedgerForOrders(orderIds: string[], refundAmountTotal: number, reason: string) {
+    const { orderModel } = this.databaseService.repositories;
+    const orders = await orderModel.find({ _id: { $in: orderIds }, isDelete: false }).lean();
+    if (orders.length === 0) return;
+
+    const grandTotal = (orders as any[]).reduce((s: number, o: any) => s + o.totalAmount, 0);
+    if (grandTotal <= 0) return;
+
+    for (const order of orders as any[]) {
+      for (const so of order.sellerOrders) {
+        const share = this.round((so.subtotal / grandTotal) * refundAmountTotal);
+        if (share <= 0) continue;
+        try {
+          await this.financeService.recordRefund(
+            so.storeId, so.sellerId, order._id.toString(), share,
+            'system', 'system',
+            { description: `${reason} — Order #${order._id}`, targetType: 'order' },
+          );
+        } catch (err: any) {
+          console.error(`${reason} ledger reversal failed:`, err?.message, { orderId: order._id, storeId: so.storeId });
+        }
+      }
+    }
   }
 
   /** Turns a succeeded PaymentIntent into real order(s), idempotently.
@@ -466,6 +561,19 @@ export class PaymentService {
         'Cash on Delivery is not available for digital products',
       );
 
+    // Per-seller opt-out — a store can disable COD on its own listings.
+    // No platform-wide order-value ceiling — COD is available for any amount.
+    const storeIds = [...new Set(checkout.items.map((i: any) => i.storeId))];
+    const codDisabledStores = await this.databaseService.repositories.storeModel
+      .find({ _id: { $in: storeIds }, codEnabled: false })
+      .select('name')
+      .lean();
+    if (codDisabledStores.length > 0) {
+      throw new BadRequestException(
+        `Cash on Delivery isn't available for: ${codDisabledStores.map((s: any) => s.name).join(', ')} — please pay online, or remove those items from your cart.`,
+      );
+    }
+
     for (const item of checkout.items) {
       const variant = await productVariantModel.findOne({
         _id: item.variantId,
@@ -510,6 +618,94 @@ export class PaymentService {
     };
   }
 
+  /**
+   * The Pakistan "pay into the platform's own bank account" track — same
+   * "place the order now, settle payment status later" shape as COD, except
+   * the buyer has already sent money (just not yet admin-confirmed) rather
+   * than paying on delivery. Called by ManualPaymentsService once it has a
+   * proof image ready to attach; order creation itself lives here so all
+   * three payment paths (Stripe, COD, manual-transfer) share one
+   * `createOrder` implementation. Digital items ARE allowed (unlike COD) —
+   * this is a Stripe-equivalent alternative, not a delivery-time settlement.
+   */
+  async manualBankTransferPayment(userId: string, checkoutId: string) {
+    if (!checkoutId) throw new BadRequestException('checkoutId is required');
+
+    const manualConfig = await this.adminConfigService.getManualPaymentConfig();
+    if (!manualConfig?.enabled) {
+      throw new BadRequestException('Bank transfer payment is not available right now — please use another payment method.');
+    }
+
+    const {
+      checkoutModel,
+      paymentTransactionModel,
+      orderModel,
+      addressModel,
+      productVariantModel,
+      cartModel,
+    } = this.databaseService.repositories;
+
+    const checkout = await checkoutModel.findOne({
+      _id: checkoutId,
+      userId,
+      isDelete: false,
+    });
+    if (!checkout) throw new NotFoundException('Checkout not found');
+    if (checkout.status === 'completed')
+      throw new BadRequestException('Checkout already completed');
+    if (checkout.status === 'cancelled')
+      throw new BadRequestException('Checkout is cancelled');
+    if (checkout.status === 'expired')
+      throw new BadRequestException('Checkout has expired');
+    if (checkout.expiredAt && checkout.expiredAt < new Date()) {
+      await checkoutModel.findByIdAndUpdate(checkout._id, { status: 'expired' });
+      throw new BadRequestException('Checkout has expired');
+    }
+
+    for (const item of checkout.items) {
+      if (item.type !== 'physical') continue;
+      const variant = await productVariantModel.findOne({ _id: item.variantId, isDelete: false });
+      if (!variant) throw new BadRequestException(`Item not available: ${item.name}`);
+      if (!variant.unlimitedStock && variant.stock < item.quantity) {
+        throw new BadRequestException(`Insufficient stock for ${item.name}. Available: ${variant.stock}, required: ${item.quantity}`);
+      }
+    }
+
+    const fxRate = manualConfig.usdToPkrRate;
+    const amountUSD = checkout.totalAmount;
+    const amountPKR = this.round(amountUSD * fxRate);
+
+    await checkoutModel.findByIdAndUpdate(checkoutId, {
+      paymentType: 'manual_bank_transfer',
+      status: 'payment_pending',
+    });
+
+    const pendingVerificationInfo = { paymentType: 'manual_bank_transfer', isPaid: false, paymentStatus: 'pending_verification' };
+    const orders = await this.createOrder(
+      userId, checkout, orderModel, addressModel,
+      pendingVerificationInfo, pendingVerificationInfo,
+      { code: 'PKR', rate: fxRate },
+    );
+
+    await paymentTransactionModel.create({
+      userId,
+      checkoutId: checkout._id.toString(),
+      orderIds: orders.map((o: any) => o._id.toString()),
+      paymentType: 'manual_bank_transfer',
+      amount: amountPKR,
+      currency: 'PKR',
+      status: 'pending', // flips to 'completed' only once an admin approves the proof
+      stripePaymentIntentId: null,
+      stripeClientSecret: null,
+      paidAt: null,
+    });
+
+    await checkoutModel.findByIdAndUpdate(checkoutId, { status: 'completed' });
+    await this.removeCheckedOutItemsFromCart(userId, checkout, cartModel);
+
+    return { orders, amountUSD, amountPKR, fxRate };
+  }
+
   private formatOrder(order: any) {
     const allItems = order.sellerOrders.flatMap((so: any) =>
       so.items.map((item: any) => ({
@@ -547,8 +743,16 @@ export class PaymentService {
     checkout: any,
     orderModel: any,
     addressModel: any,
-    physicalPayment: { paymentType: string; isPaid: boolean } = { paymentType: 'stripe', isPaid: true },
-    digitalPayment: { paymentType: string; isPaid: boolean } = { paymentType: 'stripe', isPaid: true },
+    physicalPayment: { paymentType: string; isPaid: boolean; paymentStatus?: string } = { paymentType: 'stripe', isPaid: true },
+    digitalPayment: { paymentType: string; isPaid: boolean; paymentStatus?: string } = { paymentType: 'stripe', isPaid: true },
+    // Set only for the Pakistan manual-bank-transfer track — every USD figure
+    // computed below (subtotal, fees, item prices, discounts) is converted to
+    // the buyer-facing currency at `rate` before being stored, so the placed
+    // Order (and everything downstream: seller ledger via FinanceService,
+    // buyer/seller-facing order screens) is genuinely denominated in that
+    // currency rather than just USD with a side-note. Omitted (rate 1, same
+    // `checkout.currency`) for Stripe/COD, which stay USD exactly as before.
+    currencyConversion?: { code: string; rate: number },
   ) {
     const { productVariantModel, productModel } =
       this.databaseService.repositories;
@@ -563,6 +767,10 @@ export class PaymentService {
 
     const physicalItems = checkout.items.filter((i: any) => i.type === 'physical');
     const digitalItems = checkout.items.filter((i: any) => i.type === 'digital');
+
+    const fxRate = currencyConversion?.rate ?? 1;
+    const orderCurrency = currencyConversion?.code ?? (checkout.currency || 'USD');
+    const conv = (n: number | null | undefined) => (n == null ? n : this.round(n * fxRate));
 
     // --- STOCK MINUS (atomic, sirf physical, unlimited variants skip decrement) ---
     const decremented: { variantId: string; quantity: number }[] = [];
@@ -654,18 +862,18 @@ export class PaymentService {
             color: i.color ?? null,
             licenseType: i.licenseType ?? null,
             quantity: i.quantity,
-            price: i.price,
-            totalPrice: i.totalPrice,
-            originalPrice: i.originalPrice ?? null,
-            subscriberDiscountUSD: i.subscriberDiscountUSD ?? 0,
-            couponDiscountUSD: i.couponDiscountUSD ?? 0,
+            price: conv(i.price),
+            totalPrice: conv(i.totalPrice),
+            originalPrice: conv(i.originalPrice ?? null),
+            subscriberDiscountUSD: conv(i.subscriberDiscountUSD ?? 0),
+            couponDiscountUSD: conv(i.couponDiscountUSD ?? 0),
             campaignId: i.campaignId ?? null,
-            campaignDiscountUSD: i.campaignDiscountUSD ?? 0,
+            campaignDiscountUSD: conv(i.campaignDiscountUSD ?? 0),
             campaignSponsorType: i.campaignSponsorType ?? null,
             status: 'pending',
           })),
-          subtotal,
-          platformSponsoredDiscountUSD,
+          subtotal: conv(subtotal),
+          platformSponsoredDiscountUSD: conv(platformSponsoredDiscountUSD),
           status: 'pending',
           tracking: null,
           shippedAt: null,
@@ -721,20 +929,20 @@ export class PaymentService {
         orderNumber: genOrderNumber(),
         userId,
         checkoutId: checkout._id.toString(),
-        currency: checkout.currency || 'USD',
+        currency: orderCurrency,
         sellerOrders,
         shippingAddress,
-        subtotal,
-        shippingFee,
+        subtotal: conv(subtotal),
+        shippingFee: conv(shippingFee),
         taxAmount: 0,
-        subscriberDiscountTotal,
+        subscriberDiscountTotal: conv(subscriberDiscountTotal),
         couponCode: couponDiscountTotal > 0 ? checkout.couponCode : null,
-        couponDiscountTotal,
-        campaignDiscountTotal,
-        platformSponsoredDiscountTotal,
-        totalAmount: this.round(subtotal + shippingFee),
+        couponDiscountTotal: conv(couponDiscountTotal),
+        campaignDiscountTotal: conv(campaignDiscountTotal),
+        platformSponsoredDiscountTotal: conv(platformSponsoredDiscountTotal),
+        totalAmount: this.round((subtotal + shippingFee) * fxRate),
         paymentType: physicalPayment.paymentType,
-        paymentStatus: physicalPayment.isPaid ? 'paid' : 'unpaid',
+        paymentStatus: physicalPayment.paymentStatus ?? (physicalPayment.isPaid ? 'paid' : 'unpaid'),
         isPaid: physicalPayment.isPaid,
         paidAt: physicalPayment.isPaid ? new Date() : null,
         orderStatus: 'pending',
@@ -778,20 +986,20 @@ export class PaymentService {
         orderNumber: genOrderNumber(),
         userId,
         checkoutId: checkout._id.toString(),
-        currency: checkout.currency || 'USD',
+        currency: orderCurrency,
         sellerOrders,
         shippingAddress: null,
-        subtotal,
+        subtotal: conv(subtotal),
         shippingFee: 0,
         taxAmount: 0,
-        subscriberDiscountTotal,
+        subscriberDiscountTotal: conv(subscriberDiscountTotal),
         couponCode: couponDiscountTotal > 0 ? checkout.couponCode : null,
-        couponDiscountTotal,
-        campaignDiscountTotal,
-        platformSponsoredDiscountTotal,
-        totalAmount: this.round(subtotal),
+        couponDiscountTotal: conv(couponDiscountTotal),
+        campaignDiscountTotal: conv(campaignDiscountTotal),
+        platformSponsoredDiscountTotal: conv(platformSponsoredDiscountTotal),
+        totalAmount: this.round(subtotal * fxRate),
         paymentType: digitalPayment.paymentType,
-        paymentStatus: digitalPayment.isPaid ? 'paid' : 'unpaid',
+        paymentStatus: digitalPayment.paymentStatus ?? (digitalPayment.isPaid ? 'paid' : 'unpaid'),
         isPaid: digitalPayment.isPaid,
         paidAt: digitalPayment.isPaid ? new Date() : null,
         orderStatus: 'pending',

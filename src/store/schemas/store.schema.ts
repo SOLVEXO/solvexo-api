@@ -270,6 +270,13 @@ export class Store {
   @Prop({ default: false })
   isDelete: boolean;
 
+  // Per-seller Cash-on-Delivery opt-out (see PaymentService.codPayment) —
+  // sellers uncomfortable with COD's non-payment/return risk can disable it
+  // for their own store. No platform-wide order-value ceiling — COD is
+  // available for any amount as long as the store allows it.
+  @Prop({ type: Boolean, default: true })
+  codEnabled: boolean;
+
   @Prop({ type: StoreSeoSchema, default: () => ({}) })
   seo: StoreSeo;
 

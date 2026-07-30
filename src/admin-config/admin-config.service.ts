@@ -8,6 +8,8 @@ import { UpdateEmailConfigDto } from './dto/update-email-config.dto';
 import { UpdatePlacementLimitsDto } from './dto/update-placement-limits.dto';
 import { UpdatePromotionPricingDto } from './dto/update-promotion-pricing.dto';
 import { PlacementLimitKey } from '../common/promotion-placements.const';
+import { UpdatePayoutConfigDto } from './dto/update-payout-config.dto';
+import { UpdateManualPaymentConfigDto } from './dto/update-manual-payment-config.dto';
 
 export type FeatureFlagKey =
   | 'aiStudio' | 'marketplace' | 'digitalUploads' | 'affiliateProgram'
@@ -77,6 +79,21 @@ export class AdminConfigService {
   async getPromotionPricing(placement: string): Promise<Record<string, any>> {
     const config = await this.getRawConfig();
     return config.promotionPricing?.[placement] ?? {};
+  /** Used by FinanceService to gate on-demand withdrawals and the scheduled auto-payout batch per currency. */
+  async getPayoutMinimum(currency: string): Promise<number> {
+    const config = await this.getRawConfig();
+    return currency === 'PKR' ? config.payoutConfig?.minPayoutPKR ?? 1500 : config.payoutConfig?.minPayoutUSD ?? 5;
+  }
+
+  /** Used by checkout (to decide whether to offer the option) and by the manual-payments module (bank details + FX rate shown to the buyer). */
+  async getManualPaymentConfig() {
+    const config = await this.getRawConfig();
+    return config.manualPaymentConfig;
+  }
+
+  async isManualPaymentEnabled(): Promise<boolean> {
+    const config = await this.getRawConfig();
+    return config.manualPaymentConfig?.enabled === true;
   }
 
   private async logChange(action: string, description: string, meta: AuditMeta) {
@@ -144,6 +161,27 @@ export class AdminConfigService {
     this.invalidateCache();
     await this.logChange('promotion_pricing_updated', `Promotion pricing updated for: ${Object.keys(dto).join(', ')}`, meta);
     return { success: true, message: 'Promotion pricing updated', data: config };
+  async updatePayoutConfig(dto: UpdatePayoutConfigDto, meta: AuditMeta) {
+    const set: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(dto)) {
+      if (value !== undefined) set[`payoutConfig.${key}`] = value;
+    }
+    const config = await this.model.findOneAndUpdate({}, { $set: set }, { upsert: true, new: true, setDefaultsOnInsert: true });
+    this.invalidateCache();
+    await this.logChange('payout_config_updated', `Payout config updated: ${JSON.stringify(dto)}`, meta);
+    return { success: true, message: 'Payout config updated', data: config };
+  }
+
+  async updateManualPaymentConfig(dto: UpdateManualPaymentConfigDto, meta: AuditMeta) {
+    const set: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(dto)) {
+      if (value !== undefined) set[`manualPaymentConfig.${key}`] = value;
+    }
+    const config = await this.model.findOneAndUpdate({}, { $set: set }, { upsert: true, new: true, setDefaultsOnInsert: true });
+    this.invalidateCache();
+    // Bank account numbers/IBAN intentionally omitted from the audit description — full values are in `dto`/DB, not duplicated into the activity log.
+    await this.logChange('manual_payment_config_updated', `Manual payment config updated (enabled=${config.manualPaymentConfig?.enabled}, rate=${config.manualPaymentConfig?.usdToPkrRate})`, meta);
+    return { success: true, message: 'Manual payment config updated', data: config };
   }
 
   async setMaintenanceMode(maintenanceMode: boolean, meta: AuditMeta) {

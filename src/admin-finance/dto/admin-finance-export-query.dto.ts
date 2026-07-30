@@ -2,6 +2,7 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { IsIn, IsOptional } from 'class-validator';
 import { AdminAnalyticsQueryDto } from '../../admin-analytics/dto/admin-analytics-query.dto';
+import { TRANSACTION_PAYMENT_METHOD_TYPES } from './admin-transactions-query.dto';
 
 export const ADMIN_FINANCE_EXPORT_FORMATS = ['pdf', 'csv'] as const;
 export const ADMIN_FINANCE_EXPORT_SECTIONS = ['transactions', 'payouts', 'sellers', 'refunds', 'tax', 'settlement'] as const;
@@ -15,4 +16,9 @@ export class AdminFinanceExportQueryDto extends AdminAnalyticsQueryDto {
   @IsOptional()
   @IsIn(ADMIN_FINANCE_EXPORT_SECTIONS)
   section?: string;
+
+  @ApiProperty({ required: false, enum: TRANSACTION_PAYMENT_METHOD_TYPES, description: 'Only applies when section=transactions' })
+  @IsOptional()
+  @IsIn(TRANSACTION_PAYMENT_METHOD_TYPES)
+  paymentMethodType?: string;
 }

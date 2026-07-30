@@ -259,6 +259,11 @@ export class DatabaseService {
 
     @InjectModel(schema.PromotionClickEvent.name)
     private promotionClickEventModel: Model<schema.PromotionClickEventDocument>,
+    @InjectModel(schema.CommissionRule.name)
+    private commissionRuleModel: Model<schema.CommissionRuleDocument>,
+
+    @InjectModel(schema.ManualPaymentProof.name)
+    private manualPaymentProofModel: Model<schema.ManualPaymentProofDocument>,
 
   ) { }
 
@@ -351,6 +356,8 @@ export class DatabaseService {
       promotionRequestModel: this.promotionRequestModel,
       promotionDailyStatsModel: this.promotionDailyStatsModel,
       promotionClickEventModel: this.promotionClickEventModel,
+      commissionRuleModel: this.commissionRuleModel,
+      manualPaymentProofModel: this.manualPaymentProofModel,
     };
   }
 }

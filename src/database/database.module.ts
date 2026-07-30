@@ -184,6 +184,8 @@ import { DatabaseService } from './databaseservice';
       { name: schema.PromotionRequest.name, schema: schema.PromotionRequestSchema },
       { name: schema.PromotionDailyStats.name, schema: schema.PromotionDailyStatsSchema },
       { name: schema.PromotionClickEvent.name, schema: schema.PromotionClickEventSchema },
+      { name: schema.CommissionRule.name, schema: schema.CommissionRuleSchema },
+      { name: schema.ManualPaymentProof.name, schema: schema.ManualPaymentProofSchema },
     ]),
   ],
   exports: [MongooseModule, DatabaseService],

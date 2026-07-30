@@ -4,6 +4,10 @@ import { IsEnum, IsOptional, IsNumber, IsBoolean, IsString, Min, Max } from 'cla
 import { Type } from 'class-transformer';
 
 export class UpdatePayoutScheduleDto {
+  @ApiProperty({ required: false, enum: ['USD', 'PKR'], description: 'Which of the store\'s per-currency schedules this update applies to — defaults to USD' })
+  @IsOptional() @IsEnum(['USD', 'PKR'])
+  currency?: string;
+
   @ApiProperty({ required: false, enum: ['daily', 'weekly', 'biweekly', 'monthly', 'manual'] })
   @IsOptional()
   @IsEnum(['daily', 'weekly', 'biweekly', 'monthly', 'manual'])

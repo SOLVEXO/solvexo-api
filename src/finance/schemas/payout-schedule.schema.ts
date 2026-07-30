@@ -9,6 +9,12 @@ export class PayoutSchedule {
   @Prop({ type: String, required: true }) storeId: string;
   @Prop({ type: String, required: true }) sellerId: string;
 
+  // A store can run a schedule per currency balance it holds (see
+  // SellerBalance.currency) — a seller who takes both Stripe (USD) and
+  // Pakistan manual-transfer (PKR) payments can set different cadences/
+  // minimums for each.
+  @Prop({ type: String, default: 'USD' }) currency: string;
+
   @Prop({
     type: String,
     enum: ['daily', 'weekly', 'biweekly', 'monthly', 'manual'],
@@ -32,4 +38,4 @@ export class PayoutSchedule {
 }
 
 export const PayoutScheduleSchema = SchemaFactory.createForClass(PayoutSchedule);
-PayoutScheduleSchema.index({ storeId: 1 }, { unique: true });
+PayoutScheduleSchema.index({ storeId: 1, currency: 1 }, { unique: true });

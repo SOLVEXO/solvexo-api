@@ -15,11 +15,14 @@ export class PaymentTransaction {
   @Prop({ type: [String], default: [] })
   orderIds: string[];
 
-  @Prop({ enum: ['cash_on_delivery', 'stripe'], required: true })
+  @Prop({ enum: ['cash_on_delivery', 'stripe', 'manual_bank_transfer'], required: true })
   paymentType: string;
 
   @Prop({ required: true })
   amount: number;
+
+  @Prop({ type: String, default: 'USD' })
+  currency: string;
 
   // 'digital_only' = this Stripe charge covers only a mixed checkout's
   // digital-items subtotal; the physical portion is settled via COD once
@@ -42,6 +45,19 @@ export class PaymentTransaction {
 
   @Prop({ type: Date, default: null })
   paidAt: Date | null;
+
+  // Cumulative amount refunded against this charge so far (Stripe's
+  // `charge.amount_refunded` is itself cumulative) — tracked so a repeated
+  // `charge.refunded` webhook delivery (or a second partial refund) only
+  // reverses the NEW delta against seller balances, never the whole amount
+  // again. See PaymentService.handleChargeRefunded.
+  @Prop({ type: Number, default: 0 })
+  amountRefunded: number;
+
+  // Stripe dispute ids already reversed against seller balances — replay
+  // protection for `charge.dispute.created` redeliveries.
+  @Prop({ type: [String], default: [] })
+  disputedChargeIds: string[];
 
   @Prop({ default: false })
   isDelete: boolean;

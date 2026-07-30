@@ -494,6 +494,7 @@ export class ProductsService {
   ) {
     const productVariantModel =
       this.databaseService.repositories.productVariantModel;
+    const sellerModel = this.databaseService.repositories.sellerModel;
 
     const productIds = products.map((p) => p._id.toString());
     const variants = await productVariantModel
@@ -518,17 +519,33 @@ export class ProductsService {
       storeIds as string[],
     );
 
+    // Batch-resolve seller name + verification badge across every distinct
+    // seller present in this batch — same one-query-instead-of-N pattern as
+    // getProductsByCategoryId, so search results and getShapedProductsByIds
+    // (recently-viewed, recent searches) carry the same badge.
+    const sellerIds = [
+      ...new Set(products.map((p) => p.sellerId).filter(Boolean)),
+    ];
+    const sellers = await sellerModel
+      .find({ _id: { $in: sellerIds } })
+      .select('name isVerified')
+      .lean();
+    const sellerMap = new Map(sellers.map((s) => [s._id.toString(), s]));
+
     return this.attachCampaignBadges(
-      products.map((p) =>
-        this.sanitizeDigitalForPublicView({
+      products.map((p) => {
+        const seller = sellerMap.get(p.sellerId?.toString());
+        return this.sanitizeDigitalForPublicView({
           ...p,
+          sellerName: seller ? seller.name : null,
+          sellerVerified: seller ? !!seller.isVerified : false,
           variants: this.applySubscriberPricing(
             variantMap[p._id.toString()] || [],
             p,
             benefitsMap.get(p.storeId),
           ),
-        }),
-      ),
+        });
+      }),
     );
   }
 

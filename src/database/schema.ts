@@ -99,6 +99,8 @@ export { DeviceToken, DeviceTokenDocument, DeviceTokenSchema } from '../notifica
 export { NotificationPreference, NotificationPreferenceDocument, NotificationPreferenceSchema } from '../notifications/schemas/notification-preference.schema';
 
 export { PlatformConfig, PlatformConfigDocument, PlatformConfigSchema } from '../admin-config/schemas/platform-config.schema';
+export { CommissionRule, CommissionRuleDocument, CommissionRuleSchema } from '../commission-rules/schemas/commission-rule.schema';
+export { ManualPaymentProof, ManualPaymentProofDocument, ManualPaymentProofSchema } from '../manual-payments/schemas/manual-payment-proof.schema';
 export { Announcement, AnnouncementDocument, AnnouncementSchema } from '../admin-announcements/schemas/announcement.schema';
 export { Campaign, CampaignDocument, CampaignSchema } from '../marketing/schemas/campaign.schema';
 export { MediaAsset, MediaAssetDocument, MediaAssetSchema } from '../media-library/schemas/media-asset.schema';

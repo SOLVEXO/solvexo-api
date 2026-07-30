@@ -7,6 +7,7 @@ import { DatabaseService } from 'src/database/databaseservice';
 import { SubscriptionBenefitsService } from 'src/subscriptions/subscription-benefits.service';
 import { MarketingService } from 'src/marketing/marketing.service';
 import { pickBestCampaign } from 'src/marketing/campaign-pricing.util';
+import { AdminConfigService } from 'src/admin-config/admin-config.service';
 
 @Injectable()
 export class CheckoutService {
@@ -14,6 +15,7 @@ export class CheckoutService {
     private readonly databaseService: DatabaseService,
     private readonly subscriptionBenefits: SubscriptionBenefitsService,
     private readonly marketingService: MarketingService,
+    private readonly adminConfigService: AdminConfigService,
   ) {}
 
   private round(n: number) {
@@ -372,6 +374,15 @@ export class CheckoutService {
 
     const hasDigital = checkoutItems.some((i) => i.type === 'digital');
 
+    // Manual bank-transfer (Pakistan track — pay into the platform's own
+    // account, upload proof) is a Stripe-equivalent alternative, not a COD
+    // substitute — it's offered alongside 'stripe' whenever an admin has it
+    // enabled, regardless of digital/physical mix. Admin-config-gated so it
+    // can be turned off platform-wide without a deploy.
+    const manualTransferEnabled = await this.adminConfigService.isManualPaymentEnabled();
+    const withManualTransfer = (methods: string[]) =>
+      manualTransferEnabled ? [...methods, 'manual_bank_transfer'] : methods;
+
     return {
       success: true,
       message: 'Checkout created successfully',
@@ -382,8 +393,8 @@ export class CheckoutService {
         // Digital-only carts never get COD; physical-only carts keep both
         // 'stripe' and 'cash_on_delivery' as before.
         allowedPaymentMethods: hasDigital
-          ? (hasPhysical ? ['stripe', 'split'] : ['stripe'])
-          : ['stripe', 'cash_on_delivery'],
+          ? withManualTransfer(hasPhysical ? ['stripe', 'split'] : ['stripe'])
+          : withManualTransfer(['stripe', 'cash_on_delivery']),
         summary: {
           subtotal,
           shippingFee: 0,

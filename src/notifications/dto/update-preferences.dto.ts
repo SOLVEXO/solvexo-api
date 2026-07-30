@@ -23,6 +23,10 @@ export class UpdatePreferencesDto {
 
   @IsOptional()
   @IsBoolean()
+  finance?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
   pushEnabled?: boolean;
 
   @IsOptional()

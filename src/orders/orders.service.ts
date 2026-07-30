@@ -516,6 +516,8 @@ export class OrdersService {
           `Sale — Order #${orderId}`,
           platformSponsoredUSD,
           sponsoredCampaignId,
+          order.currency || 'USD',
+          order.paymentType,
         );
       } catch (e) {
         console.error('Finance recordSale failed:', e?.message);
@@ -611,6 +613,8 @@ export class OrdersService {
           `Sale — Order #${orderId}`,
           platformSponsoredUSD,
           sponsoredCampaignId,
+          order.currency || 'USD',
+          order.paymentType,
         );
       } catch (e) {
         console.error('Finance recordSale failed:', e?.message);

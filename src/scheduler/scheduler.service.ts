@@ -207,6 +207,25 @@ export class SchedulerService {
     });
   }
 
+  // Runs daily — each seller's PayoutSchedule carries its OWN cadence
+  // (daily/weekly/biweekly/monthly) and `nextPayoutAt`; this tick just checks
+  // which schedules are due today and lets FinanceService decide per-store
+  // eligibility (balance above threshold, active default method, nothing
+  // already in flight). Auto-created payouts land in the same admin queue as
+  // a seller-initiated withdrawal — nothing here disburses money without an
+  // admin's approval (see FinanceService.processScheduledPayouts).
+  @Cron('0 10 * * *')
+  async runScheduledPayouts() {
+    await this.runLocked('scheduled-payouts', 30 * 60_000, async () => {
+      const result = await this.financeService.processScheduledPayouts();
+      if (result.payoutsCreated > 0 || result.schedulesChecked > 0) {
+        this.logger.log(
+          `Scheduled payouts: ${result.schedulesChecked} schedule(s) due, ${result.payoutsCreated} payout(s) auto-created ($${result.totalAmount.toFixed(2)} total), ${result.skipped} skipped`,
+        );
+      }
+    });
+  }
+
   // ═══════════════════════════════════════════════════════════════════════
   // PLATFORM PLANS (seller-to-Solvexo billing) — mirrors the buyer-billing
   // cron jobs above exactly, same locking, same manual-vs-Stripe split.

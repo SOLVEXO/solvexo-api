@@ -7,6 +7,11 @@ import { PromotionsModule } from 'src/promotions/promotions.module';
 
 @Module({
   imports: [AuthModule, RedisModule, PromotionsModule],
+import { FinanceModule } from 'src/finance/finance.module';
+import { AdminConfigModule } from 'src/admin-config/admin-config.module';
+
+@Module({
+  imports: [AuthModule, RedisModule, FinanceModule, AdminConfigModule],
   controllers: [PaymentController],
   providers: [PaymentService],
   exports: [PaymentService],

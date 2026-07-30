@@ -53,6 +53,8 @@ import { AdminMarketingModule } from './admin-marketing/admin-marketing.module';
 import { MediaLibraryModule } from './media-library/media-library.module';
 import { StoreBannerModule } from './store-banner/store-banner.module';
 import { PromotionsModule } from './promotions/promotions.module';
+import { CommissionRulesModule } from './commission-rules/commission-rules.module';
+import { ManualPaymentsModule } from './manual-payments/manual-payments.module';
 
 @Module({
   imports: [
@@ -93,6 +95,8 @@ import { PromotionsModule } from './promotions/promotions.module';
     SearchModule,
     PosModule,
     MessagingModule,
+    CommissionRulesModule,
+    ManualPaymentsModule,
     FinanceModule,
     SubscriptionsModule,
     PlatformPlansModule,

@@ -22,6 +22,12 @@ export class Transaction {
   @Prop({ type: Number, required: true }) balanceBefore: number;
   @Prop({ type: Number, required: true }) balanceAfter: number;
 
+  // Which of the seller's per-currency balances this entry moved — a seller
+  // can hold both a USD balance (Stripe sales) and a PKR balance (Pakistan
+  // manual-transfer sales) on the same store, so amounts across currencies
+  // must never be summed together.
+  @Prop({ type: String, default: 'USD' }) currency: string;
+
   // Human-readable description shown in transaction history
   @Prop({ type: String, required: true }) description: string;
 
