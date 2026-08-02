@@ -10,6 +10,7 @@ import { UpdatePromotionPricingDto } from './dto/update-promotion-pricing.dto';
 import { PlacementLimitKey } from '../common/promotion-placements.const';
 import { UpdatePayoutConfigDto } from './dto/update-payout-config.dto';
 import { UpdateManualPaymentConfigDto } from './dto/update-manual-payment-config.dto';
+import { UpdateFxConfigDto } from './dto/update-fx-config.dto';
 
 export type FeatureFlagKey =
   | 'aiStudio' | 'marketplace' | 'digitalUploads' | 'affiliateProgram'
@@ -96,6 +97,12 @@ export class AdminConfigService {
   async isManualPaymentEnabled(): Promise<boolean> {
     const config = await this.getRawConfig();
     return config.manualPaymentConfig?.enabled === true;
+  }
+
+  /** Used by ExchangeRateService's cron refresh + sanity/abnormal-jump checks. */
+  async getFxConfig() {
+    const config = await this.getRawConfig();
+    return config.fxConfig;
   }
 
   private async logChange(action: string, description: string, meta: AuditMeta) {
@@ -186,6 +193,17 @@ export class AdminConfigService {
     // Bank account numbers/IBAN intentionally omitted from the audit description — full values are in `dto`/DB, not duplicated into the activity log.
     await this.logChange('manual_payment_config_updated', `Manual payment config updated (enabled=${config.manualPaymentConfig?.enabled}, rate=${config.manualPaymentConfig?.usdToPkrRate})`, meta);
     return { success: true, message: 'Manual payment config updated', data: config };
+  }
+
+  async updateFxConfig(dto: UpdateFxConfigDto, meta: AuditMeta) {
+    const set: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(dto)) {
+      if (value !== undefined) set[`fxConfig.${key}`] = value;
+    }
+    const config = await this.model.findOneAndUpdate({}, { $set: set }, { upsert: true, new: true, setDefaultsOnInsert: true });
+    this.invalidateCache();
+    await this.logChange('fx_config_updated', `FX config updated: ${JSON.stringify(dto)}`, meta);
+    return { success: true, message: 'FX config updated', data: config };
   }
 
   async setMaintenanceMode(maintenanceMode: boolean, meta: AuditMeta) {

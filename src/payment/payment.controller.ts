@@ -7,6 +7,7 @@ import {
   Req,
   Headers,
   UseGuards,
+  UseInterceptors,
   RawBodyRequest,
   BadRequestException,
 } from '@nestjs/common';
@@ -14,14 +15,18 @@ import { Request } from 'express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { IdempotencyInterceptor } from '../common/idempotency.interceptor';
 import { PaymentService } from './payment.service';
 
 @Controller('api/payment')
 export class PaymentController {
   constructor(private readonly paymentService: PaymentService) {}
 
+  // Idempotency-Key protection (previously missing) — a double-tap/retry
+  // must never place two separate orders for the same buyer action.
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('user')
+  @UseInterceptors(IdempotencyInterceptor)
   @Post('cod-payment')
   async codPayment(@Req() req: any, @Body() body: any) {
     const { userId } = req.user;
@@ -30,6 +35,7 @@ export class PaymentController {
 
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('user')
+  @UseInterceptors(IdempotencyInterceptor)
   @Post('initiate-payment')
   async initiatePayment(@Req() req: any, @Body() body: any) {
     const { userId } = req.user;

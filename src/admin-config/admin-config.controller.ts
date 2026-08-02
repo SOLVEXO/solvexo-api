@@ -13,6 +13,7 @@ import { UpdatePlacementLimitsDto } from './dto/update-placement-limits.dto';
 import { UpdatePromotionPricingDto } from './dto/update-promotion-pricing.dto';
 import { UpdatePayoutConfigDto } from './dto/update-payout-config.dto';
 import { UpdateManualPaymentConfigDto } from './dto/update-manual-payment-config.dto';
+import { UpdateFxConfigDto } from './dto/update-fx-config.dto';
 
 @ApiTags('Admin Platform Config')
 @ApiBearerAuth()
@@ -85,6 +86,15 @@ export class AdminConfigController {
   @Put('manual-payment')
   updateManualPaymentConfig(@Req() req: any, @Body() dto: UpdateManualPaymentConfigDto) {
     return this.adminConfigService.updateManualPaymentConfig(dto, {
+      adminId: req.user.userId,
+      ip: req.ip,
+      userAgent: req.headers['user-agent'],
+    });
+  }
+
+  @Put('fx')
+  updateFxConfig(@Req() req: any, @Body() dto: UpdateFxConfigDto) {
+    return this.adminConfigService.updateFxConfig(dto, {
       adminId: req.user.userId,
       ip: req.ip,
       userAgent: req.headers['user-agent'],

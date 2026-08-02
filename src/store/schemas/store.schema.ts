@@ -191,6 +191,18 @@ export class Store {
   @Prop({ type: String, default: null })
   logo: string | null;
 
+  // The currency this seller prices their products in — chosen once at
+  // store creation (StoreService.createStore), suggested from the seller's
+  // detected country but never forced. Locked immutable the moment this
+  // store has its first product (enforced in service layer, not here) to
+  // prevent a price number silently being reinterpreted under a different
+  // currency later. Nullable at the schema level only so pre-existing
+  // stores (created before this field existed) remain readable/writable —
+  // the one-time backfill sets them all to 'PKR' (Solvexo was Pakistan-only
+  // until this field was introduced).
+  @Prop({ type: String, default: null })
+  baseCurrency: string | null;
+
   @Prop({ type: String, default: null })
   categoryId!: string | null;
 

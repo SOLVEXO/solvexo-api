@@ -1044,6 +1044,10 @@ export class ProductsService {
           productId: product._id.toString(),
           sku,
           price: v.price,
+          // Stamped from the owning store's own pricing currency — never
+          // client-supplied, never a per-product choice. See
+          // Store.baseCurrency's comment for why this is locked once set.
+          currency: store.baseCurrency,
           compareAtPrice: v.compareAtPrice ?? null,
           options: v.options ?? [],
           stock: v.stock ?? 0,
@@ -1201,6 +1205,9 @@ export class ProductsService {
       productId: product._id.toString(),
       sku,
       price,
+      // See the physical-product variant creation path (above in this same
+      // file) for why this is stamped from the store, not client-supplied.
+      currency: store.baseCurrency,
       compareAtPrice: compareAtPrice ?? null,
       options: [],
       stock: 0,

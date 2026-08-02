@@ -265,6 +265,18 @@ export class DatabaseService {
     @InjectModel(schema.ManualPaymentProof.name)
     private manualPaymentProofModel: Model<schema.ManualPaymentProofDocument>,
 
+    @InjectModel(schema.ExchangeRate.name)
+    private exchangeRateModel: Model<schema.ExchangeRateDocument>,
+
+    @InjectModel(schema.StripeWebhookEvent.name)
+    private stripeWebhookEventModel: Model<schema.StripeWebhookEventDocument>,
+
+    @InjectModel(schema.RefundRequest.name)
+    private refundRequestModel: Model<schema.RefundRequestDocument>,
+
+    @InjectModel(schema.ReconciliationRun.name)
+    private reconciliationRunModel: Model<schema.ReconciliationRunDocument>,
+
   ) { }
 
   get repositories() {
@@ -358,6 +370,10 @@ export class DatabaseService {
       promotionClickEventModel: this.promotionClickEventModel,
       commissionRuleModel: this.commissionRuleModel,
       manualPaymentProofModel: this.manualPaymentProofModel,
+      exchangeRateModel: this.exchangeRateModel,
+      stripeWebhookEventModel: this.stripeWebhookEventModel,
+      refundRequestModel: this.refundRequestModel,
+      reconciliationRunModel: this.reconciliationRunModel,
     };
   }
 }

@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { DatabaseService } from 'src/database/databaseservice';
 import { SellerType, ProductType, resolveTools } from './schemas/store.schema';
+import { SUPPORTED_CURRENCIES } from 'src/exchange-rate/schemas/exchange-rate.schema';
 import { ActivityLogService } from 'src/activity-log/activity-log.service';
 import { UpdateStoreCustomerDto } from './dto/update-store-customer.dto';
 import { SubscriptionBenefitsService } from 'src/subscriptions/subscription-benefits.service';
@@ -65,9 +66,25 @@ export class StoreService {
   }
 
   async createStore(sellerId: string, body: any) {
-    const { name, logo, categoryId, description, sellerType, productTypes } = body;
+    const { name, logo, categoryId, description, sellerType, productTypes, baseCurrency } = body;
 
     if (!name) throw new BadRequestException('Store name is required');
+
+    // Pricing currency is chosen once, here, and is locked forever the
+    // moment this store has its first product (see ProductVariantsService/
+    // ProductsService, which stamp every new variant's currency from this
+    // field rather than letting it be picked per-product) — this is what
+    // prevents a seller's price number from ever being silently
+    // reinterpreted under a different currency later. The frontend
+    // onboarding flow suggests a default from the seller's detected
+    // country, but never forces it — this validation only enforces that
+    // whatever was chosen is one of the currencies Solvexo actually
+    // supports today.
+    if (!baseCurrency || !SUPPORTED_CURRENCIES.includes(baseCurrency)) {
+      throw new BadRequestException(
+        `baseCurrency is required and must be one of: ${SUPPORTED_CURRENCIES.join(', ')}`,
+      );
+    }
 
     if (categoryId) await this.assertValidRootCategory(categoryId);
 
@@ -110,6 +127,7 @@ export class StoreService {
       sellerType: sellerType ?? null,
       productTypes: finalProductTypes,
       enabledTools: resolveTools(finalProductTypes),
+      baseCurrency,
     });
 
     // ✅ seller pe sirf onboarded mark — storeId nahi rakhte (source of truth = Store.sellerId)
@@ -471,6 +489,11 @@ export class StoreService {
         averageRating: store.averageRating ?? 0,
         reviewCount: store.reviewCount ?? 0,
         builderConfig: store.builderConfig ?? null,
+        // Every product in this storefront is priced in this same currency
+        // (locked per store, stamped onto every variant at creation) — the
+        // frontend uses this to convert every listed price into the
+        // buyer's own chosen display currency.
+        baseCurrency: store.baseCurrency ?? 'PKR',
         sellerType: (store as any).sellerType ?? null,
         badges: (store as any).badges ?? [],
         createdAt: (store as any).createdAt,

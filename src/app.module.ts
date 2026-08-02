@@ -19,7 +19,7 @@ import { BannersModule } from './banner/banner.module';
 import { FaqModule } from './faqs/faq.module';
 import { NewsletterModule } from './newsletter/newsletter.module';
 import { ContactModule } from './contact/contact.module';
-// import { RefundRequestModule } from './refund-request/refund-request.module';
+import { RefundRequestModule } from './refund-request/refund-request.module';
 import { CheckoutModule } from './checkout/checkout.modoule';
 import { OrdersModule } from './orders/orders.module';
 import { PaymentModule } from './payment/payment.module';
@@ -56,6 +56,7 @@ import { StoreBannerModule } from './store-banner/store-banner.module';
 import { PromotionsModule } from './promotions/promotions.module';
 import { CommissionRulesModule } from './commission-rules/commission-rules.module';
 import { ManualPaymentsModule } from './manual-payments/manual-payments.module';
+import { ExchangeRateModule } from './exchange-rate/exchange-rate.module';
 
 @Module({
   imports: [
@@ -84,7 +85,7 @@ import { ManualPaymentsModule } from './manual-payments/manual-payments.module';
     FaqModule,
     NewsletterModule,
     ContactModule,
-    // RefundRequestModule,
+    RefundRequestModule,
     CheckoutModule,
     // checkoutModule,
     OrdersModule,
@@ -120,6 +121,7 @@ import { ManualPaymentsModule } from './manual-payments/manual-payments.module';
     MediaLibraryModule,
     StoreBannerModule,
     PromotionsModule,
+    ExchangeRateModule,
   ],
   controllers: [AppController],
   providers: [AppService, { provide: APP_GUARD, useClass: ThrottlerGuard }],

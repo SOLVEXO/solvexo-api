@@ -8,6 +8,16 @@ import { SubscriptionBenefitsService } from 'src/subscriptions/subscription-bene
 import { MarketingService } from 'src/marketing/marketing.service';
 import { pickBestCampaign } from 'src/marketing/campaign-pricing.util';
 import { AdminConfigService } from 'src/admin-config/admin-config.service';
+import { ExchangeRateService } from 'src/exchange-rate/exchange-rate.service';
+import { SUPPORTED_CURRENCIES, FxSnapshot } from 'src/exchange-rate/schemas/exchange-rate.schema';
+
+// Shipping zones are a Pakistan-domestic geography feature (predates the
+// PKR/USD split entirely) — ShippingZone.shippingPrice has no currency
+// field of its own because every zone was always implicitly priced in PKR.
+// Rather than add a schema field for something that's effectively one fixed
+// currency by design, this constant documents that assumption at its one
+// point of use (addShippingInCheckout) instead.
+const SHIPPING_ZONE_CURRENCY = 'PKR';
 
 @Injectable()
 export class CheckoutService {
@@ -16,10 +26,32 @@ export class CheckoutService {
     private readonly subscriptionBenefits: SubscriptionBenefitsService,
     private readonly marketingService: MarketingService,
     private readonly adminConfigService: AdminConfigService,
+    private readonly exchangeRateService: ExchangeRateService,
   ) {}
 
   private round(n: number) {
     return Math.round(n * 100) / 100;
+  }
+
+  /** Sums `items[].totalPrice` (each still in its OWN native seller
+   *  currency) by converting every line into `checkoutCurrency`
+   *  individually first — never summing raw native-currency numbers across
+   *  items that can belong to different-currency sellers. Uses the
+   *  checkout's own already-frozen `fxSnapshots`, never a fresh live rate. */
+  private convertedSubtotal(items: any[], checkoutCurrency: string, fxSnapshots: FxSnapshot[]) {
+    return this.round(
+      items.reduce(
+        (sum, i) =>
+          sum +
+          this.exchangeRateService.convertWithSnapshots(
+            i.totalPrice,
+            i.currency ?? checkoutCurrency,
+            checkoutCurrency,
+            fxSnapshots ?? [],
+          ),
+        0,
+      ),
+    );
   }
 
   /** Digital/physical subtotal split — used so the app can show "pay this
@@ -57,6 +89,28 @@ export class CheckoutService {
     return { success: true, message: 'Checkout deleted successfully' };
   }
 
+  /**
+   * Resolves the buyer's checkout currency: an explicit request-time
+   * preference wins, then the buyer's saved account preference (see
+   * User.currencyPreference), then 'PKR' as the last resort (Solvexo is
+   * Pakistan-origin, so this matches historical behavior most closely for
+   * any caller that hasn't been updated to send a preference yet). Always
+   * validated against the supported-currency allow-list — never trusted
+   * blindly from the client.
+   */
+  private async resolveCheckoutCurrency(userId: string, requested?: string | null): Promise<string> {
+    if (requested) {
+      if (!SUPPORTED_CURRENCIES.includes(requested as any)) {
+        throw new BadRequestException(
+          `Unsupported currency "${requested}" — must be one of: ${SUPPORTED_CURRENCIES.join(', ')}`,
+        );
+      }
+      return requested;
+    }
+    const user = await this.databaseService.repositories.userModel.findById(userId).select('currencyPreference').lean();
+    return (user as any)?.currencyPreference ?? 'PKR';
+  }
+
   async createCheckout(userId: string, body: any = {}) {
     const {
       cartModel,
@@ -65,6 +119,8 @@ export class CheckoutService {
       addressModel,
       checkoutModel,
     } = this.databaseService.repositories;
+
+    const checkoutCurrency = await this.resolveCheckoutCurrency(userId, body.currencyPreference);
 
     const cart = await cartModel.findOne({
       userId,
@@ -220,6 +276,11 @@ export class CheckoutService {
         options: variant.options ?? [],
         licenseType: product.digital?.licenseType ?? null,
         quantity: cartItem.quantity,
+        // Native currency this line's price/totalPrice are denominated in —
+        // the SELLING store's own currency, independent of checkoutCurrency.
+        // Falls back to 'PKR' only for a legacy variant somehow still
+        // missing the field despite the Phase 1 backfill.
+        currency: variant.currency ?? 'PKR',
         price: unitPrice,
         totalPrice: this.round(unitPrice * cartItem.quantity),
         originalPrice: discount ? variant.price : null,
@@ -294,10 +355,34 @@ export class CheckoutService {
       defaultAddressId = defaultAddress._id.toString();
     }
 
-    const subtotal = this.round(
-      checkoutItems.reduce((sum, i) => sum + i.totalPrice, 0),
-    );
-    const taxAmount = 0;
+    // FX snapshot — one entry per distinct currency actually involved (every
+    // seller currency present among checkoutItems, plus the checkout
+    // currency itself). Built ONCE, here, and frozen onto the Checkout
+    // document below — every later calculation in THIS checkout's lifetime
+    // (shipping, coupon application) must convert using these exact
+    // snapshotted rates, never a fresh live lookup, so a rate change
+    // mid-checkout can never silently alter what the buyer is charged.
+    // Shipping (addShippingInCheckout, added in a later request) always
+    // needs a PKR rate available — see SHIPPING_ZONE_CURRENCY's comment —
+    // so a physical-item checkout always includes PKR here even if no cart
+    // line happens to be PKR-priced, rather than risk a missing-snapshot
+    // error when shipping is added afterward.
+    const involvedCurrencies = [
+      ...new Set([
+        checkoutCurrency,
+        ...checkoutItems.map((i) => i.currency),
+        ...(hasPhysical ? [SHIPPING_ZONE_CURRENCY] : []),
+      ]),
+    ];
+    const fxSnapshots = await this.exchangeRateService.buildSnapshots(involvedCurrencies);
+
+    // Each line is converted from ITS OWN seller currency into the checkout
+    // currency individually, THEN summed — never summed raw across
+    // different native currencies. This is the direct fix for the
+    // hazard confirmed in the Phase 0 audit (a PKR-priced line must never
+    // be treated as a same-scale USD figure).
+    const subtotal = this.convertedSubtotal(checkoutItems, checkoutCurrency, fxSnapshots);
+    const taxAmount = 0; // no tax system exists yet — explicitly out of scope, not invented here
     const totalAmount = this.round(subtotal + taxAmount);
 
     // Checkout-time upsell: for any store in this cart the buyer is NOT
@@ -370,7 +455,8 @@ export class CheckoutService {
     const checkout = await checkoutModel.create({
       userId,
       addressId: defaultAddressId,
-      currency: 'USD',
+      currency: checkoutCurrency,
+      fxSnapshots,
       items: checkoutItems,
       shippingZoneId: null,
       paymentType: null,
@@ -482,7 +568,15 @@ export class CheckoutService {
     });
     if (!shippingZone) throw new NotFoundException('Shipping zone not found');
 
-    let shippingFee = shippingZone.shippingPrice || 0;
+    // ShippingZone.shippingPrice is always PKR (see SHIPPING_ZONE_CURRENCY's
+    // comment) — converted into this checkout's own currency using its
+    // already-frozen fxSnapshots, never a fresh live rate.
+    let shippingFee = this.exchangeRateService.convertWithSnapshots(
+      shippingZone.shippingPrice || 0,
+      SHIPPING_ZONE_CURRENCY,
+      checkout.currency,
+      (checkout.fxSnapshots as any) ?? [],
+    );
 
     // Free/discounted shipping benefit — only applied when every item in the
     // checkout belongs to a single store (the shipping fee itself is a flat,
@@ -592,11 +686,15 @@ export class CheckoutService {
     const items = checkout.items as any[];
     const storeIdsInCheckout = [...new Set(items.map((i) => i.storeId))];
 
+    // A platform (admin-issued) coupon has storeId: null and isn't tied to
+    // any one seller — it must be matched by an explicit scope:'platform'
+    // branch, since `{$in: storeIdsInCheckout}` (real ids only) can never
+    // match a null storeId.
     const coupon = await couponModel.findOne({
       code: normalizedCode,
-      storeId: { $in: storeIdsInCheckout },
       isActive: true,
       isDelete: false,
+      $or: [{ scope: 'platform' }, { storeId: { $in: storeIdsInCheckout } }],
     });
     if (!coupon)
       throw new BadRequestException(
@@ -612,18 +710,39 @@ export class CheckoutService {
     // switching codes) always computes from a clean, undiscounted baseline.
     this.revertCouponFromItems(items);
 
-    const storeItems = items.filter((i) => i.storeId === coupon.storeId);
-    const storeSubtotal = this.round(
-      storeItems.reduce((s, i) => s + i.totalPrice, 0),
-    );
+    const isPlatformCoupon = coupon.scope === 'platform';
+    // A seller coupon only ever discounts its own store's items (still in
+    // that store's own native currency); a platform coupon spans every
+    // store/currency in the checkout, so its basis is the checkout's own
+    // display currency, computed via per-line conversion like every other
+    // checkout-level total.
+    const storeItems = isPlatformCoupon
+      ? items
+      : items.filter((i) => i.storeId === coupon.storeId);
+    const couponStoreCurrency = isPlatformCoupon
+      ? checkout.currency
+      : storeItems[0]?.currency ?? checkout.currency;
+    const storeSubtotal = isPlatformCoupon
+      ? this.convertedSubtotal(storeItems, couponStoreCurrency, checkout.fxSnapshots as any)
+      : this.round(storeItems.reduce((s, i) => s + i.totalPrice, 0));
 
-    if (
-      coupon.minOrderAmount != null &&
-      storeSubtotal < coupon.minOrderAmount
-    ) {
-      throw new BadRequestException(
-        `This coupon requires a minimum order of $${coupon.minOrderAmount} from this store`,
+    if (coupon.minOrderAmount != null) {
+      // minOrderAmount has no currency field of its own on the Coupon schema
+      // — it's implicitly denominated the same as discountValue
+      // (coupon.currency), same conversion treatment as the discount itself.
+      const minOrderInStoreCurrency = this.exchangeRateService.convertWithSnapshots(
+        coupon.minOrderAmount,
+        coupon.currency ?? 'USD',
+        couponStoreCurrency,
+        (checkout.fxSnapshots as any) ?? [],
       );
+      if (storeSubtotal < minOrderInStoreCurrency) {
+        throw new BadRequestException(
+          isPlatformCoupon
+            ? `This coupon requires a minimum order of ${minOrderInStoreCurrency} ${couponStoreCurrency}`
+            : `This coupon requires a minimum order of ${minOrderInStoreCurrency} ${couponStoreCurrency} from this store`,
+        );
+      }
     }
 
     // Items already discounted by an active platform campaign ("sale" items)
@@ -640,18 +759,47 @@ export class CheckoutService {
         "This coupon can't be combined with the active sale on these items.",
       );
     }
-    const eligibleSubtotal = this.round(
-      eligibleItems.reduce((s, i) => s + i.totalPrice, 0),
-    );
+    const eligibleSubtotal = isPlatformCoupon
+      ? this.convertedSubtotal(eligibleItems, couponStoreCurrency, checkout.fxSnapshots as any)
+      : this.round(eligibleItems.reduce((s, i) => s + i.totalPrice, 0));
 
+    // `storeItems[].totalPrice` above is still in the SELLING STORE'S own
+    // native currency (never converted — only the checkout-level subtotal
+    // is), so a fixed-amount coupon's discountValue (denominated in
+    // coupon.currency — that same store's currency for a seller coupon, or
+    // 'USD' for a platform coupon, per Coupon.currency's schema comment)
+    // must be converted into the STORE's currency here, not the buyer's
+    // checkout currency, before being subtracted from a store-native total.
     const totalDiscount =
       coupon.discountType === 'percentage'
         ? this.round(eligibleSubtotal * (coupon.discountValue / 100))
-        : Math.min(coupon.discountValue, eligibleSubtotal);
+        : Math.min(
+            this.exchangeRateService.convertWithSnapshots(
+              coupon.discountValue,
+              coupon.currency ?? 'USD',
+              couponStoreCurrency,
+              (checkout.fxSnapshots as any) ?? [],
+            ),
+            eligibleSubtotal,
+          );
 
-    this.distributeCouponDiscount(eligibleItems, totalDiscount);
+    if (isPlatformCoupon) {
+      // A platform coupon's basis/discount is in the checkout's own display
+      // currency, but each eligible item's totalPrice is still in that
+      // item's OWN native seller currency — proportional weighting AND the
+      // final per-item deduction both need a per-item currency conversion,
+      // unlike the single-currency seller-coupon path above.
+      this.distributePlatformCouponDiscount(
+        eligibleItems,
+        totalDiscount,
+        couponStoreCurrency,
+        checkout.fxSnapshots as any,
+      );
+    } else {
+      this.distributeCouponDiscount(eligibleItems, totalDiscount);
+    }
 
-    const newSubtotal = this.round(items.reduce((s, i) => s + i.totalPrice, 0));
+    const newSubtotal = this.convertedSubtotal(items, checkout.currency, checkout.fxSnapshots as any);
     const newTotal = this.round(newSubtotal + (checkout.shippingFee || 0));
 
     await checkoutModel.findByIdAndUpdate(checkoutId, {
@@ -692,11 +840,21 @@ export class CheckoutService {
     if (!checkout) throw new NotFoundException('Checkout not found');
     if (checkout.status === 'completed')
       throw new BadRequestException('Checkout already completed');
+    if (checkout.status === 'cancelled')
+      throw new BadRequestException('Checkout is cancelled');
+    if (checkout.status === 'expired')
+      throw new BadRequestException('Checkout has expired');
+    if (checkout.expiredAt && checkout.expiredAt < new Date()) {
+      await checkoutModel.findByIdAndUpdate(checkout._id, {
+        status: 'expired',
+      });
+      throw new BadRequestException('Checkout has expired');
+    }
 
     const items = checkout.items as any[];
     this.revertCouponFromItems(items);
 
-    const newSubtotal = this.round(items.reduce((s, i) => s + i.totalPrice, 0));
+    const newSubtotal = this.convertedSubtotal(items, checkout.currency, checkout.fxSnapshots as any);
     const newTotal = this.round(newSubtotal + (checkout.shippingFee || 0));
 
     await checkoutModel.findByIdAndUpdate(checkoutId, {
@@ -770,6 +928,57 @@ export class CheckoutService {
       item.totalPriceBeforeCoupon = item.totalPrice;
       item.couponDiscountUSD = share;
       item.totalPrice = this.round(item.totalPrice - share);
+      item.price =
+        item.quantity > 0
+          ? this.round(item.totalPrice / item.quantity)
+          : item.totalPrice;
+    });
+  }
+
+  /** Same as `distributeCouponDiscount`, but for a platform-wide coupon
+   *  whose eligible items can span multiple sellers/native currencies.
+   *  [totalDiscount] is denominated in [basisCurrency] (the checkout's own
+   *  display currency) — each item's proportional weight AND its final
+   *  deducted share are computed by converting through [basisCurrency] and
+   *  back into that item's own native currency, so a PKR line and a USD
+   *  line in the same eligible set are never summed/subtracted as raw
+   *  numbers of two different units. */
+  private distributePlatformCouponDiscount(
+    items: any[],
+    totalDiscount: number,
+    basisCurrency: string,
+    fxSnapshots: FxSnapshot[],
+  ) {
+    if (totalDiscount <= 0 || items.length === 0) return;
+    const weights = items.map((item) =>
+      this.exchangeRateService.convertWithSnapshots(
+        item.totalPrice,
+        item.currency ?? basisCurrency,
+        basisCurrency,
+        fxSnapshots ?? [],
+      ),
+    );
+    const combinedSubtotal = weights.reduce((s, w) => s + w, 0);
+    if (combinedSubtotal <= 0) return;
+
+    let allocatedInBasisCurrency = 0;
+    items.forEach((item, idx) => {
+      const isLast = idx === items.length - 1;
+      const shareInBasisCurrency = isLast
+        ? this.round(totalDiscount - allocatedInBasisCurrency)
+        : this.round(totalDiscount * (weights[idx] / combinedSubtotal));
+      allocatedInBasisCurrency = this.round(allocatedInBasisCurrency + shareInBasisCurrency);
+
+      const shareInItemCurrency = this.exchangeRateService.convertWithSnapshots(
+        shareInBasisCurrency,
+        basisCurrency,
+        item.currency ?? basisCurrency,
+        fxSnapshots ?? [],
+      );
+      item.priceBeforeCoupon = item.price;
+      item.totalPriceBeforeCoupon = item.totalPrice;
+      item.couponDiscountUSD = shareInItemCurrency;
+      item.totalPrice = this.round(item.totalPrice - shareInItemCurrency);
       item.price =
         item.quantity > 0
           ? this.round(item.totalPrice / item.quantity)

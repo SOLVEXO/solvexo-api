@@ -1,5 +1,6 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument } from 'mongoose';
+import { FxSnapshot, FxSnapshotSchema } from '../exchange-rate/schemas/exchange-rate.schema';
 
 export type PaymentTransactionDocument = HydratedDocument<PaymentTransaction>;
 
@@ -21,8 +22,19 @@ export class PaymentTransaction {
   @Prop({ required: true })
   amount: number;
 
-  @Prop({ type: String, default: 'USD' })
+  // Copied verbatim from Order.currency/Checkout.currency at the point this
+  // transaction is created — no schema-level default anymore. Existing
+  // historical transactions keep whatever value (including the old
+  // implicit 'USD' default, or none at all for rows predating this field)
+  // they already have, forever.
+  @Prop({ type: String })
   currency: string;
+
+  // Copied verbatim from the parent Checkout/Order's fxSnapshots — see
+  // Checkout.fxSnapshots' comment. Refund reversal reads this, never
+  // today's ExchangeRate table.
+  @Prop({ type: [FxSnapshotSchema], default: [] })
+  fxSnapshots: FxSnapshot[];
 
   // 'digital_only' = this Stripe charge covers only a mixed checkout's
   // digital-items subtotal; the physical portion is settled via COD once

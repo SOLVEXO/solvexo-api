@@ -29,6 +29,19 @@ export class Coupon {
   @Prop({ required: true })
   discountValue: number;
 
+  // Only meaningful when discountType === 'fixed' (a 'percentage' value is
+  // scale-free and needs no currency). For scope:'seller' coupons this is
+  // the issuing store's own Store.baseCurrency; for scope:'platform'
+  // coupons this is always 'USD' (the platform pivot — see
+  // ExchangeRateService). Nullable at the schema level so pre-existing
+  // fixed-value coupons (created before this field existed, back when
+  // Checkout.currency was implicitly always 'USD') remain valid — the
+  // one-time backfill sets any existing fixed-type coupon's currency to
+  // 'USD' to match that historical implicit assumption exactly, not a
+  // guess.
+  @Prop({ type: String, default: null })
+  currency: string | null;
+
   @Prop({ type: Number, default: null })
   minOrderAmount: number | null;
 

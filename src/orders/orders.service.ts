@@ -16,13 +16,22 @@ import { NotificationsService } from 'src/notifications/notifications.service';
 import { NOTIFICATION_TYPES } from 'src/notifications/notification.types';
 import { round } from 'src/common/number.util';
 
-/** A sellerOrder's true payout basis for FinanceService.recordSale — restores
- *  the platform-sponsored portion of any campaign discount on top of the
- *  (already net-of-discount) `subtotal`, so a platform-sponsored sale never
- *  reduces what the seller is credited. Seller-sponsored discounts and coupons
- *  still reduce the seller's payout exactly as they reduce `subtotal` today. */
+/** A sellerOrder's true payout basis for FinanceService.recordSale, in the
+ *  SELLER'S OWN currency (so.settlementCurrency) — independent of what
+ *  currency the buyer actually paid in (order.currency). Computed once at
+ *  order-creation time (PaymentService.createOrder) already restoring the
+ *  platform-sponsored portion of any campaign discount on top of the
+ *  (already net-of-discount) native subtotal, so a platform-sponsored sale
+ *  never reduces what the seller is credited. Falls back to the old
+ *  order-currency-denominated calculation only for orders placed before
+ *  settlementAmount/settlementCurrency existed. */
 function sellerPayoutBasis(so: any): number {
+  if (so.settlementAmount != null) return so.settlementAmount;
   return round(so.subtotal + (so.platformSponsoredDiscountUSD ?? 0));
+}
+
+function sellerPayoutCurrency(so: any, order: any): string {
+  return so.settlementCurrency ?? order.currency ?? 'USD';
 }
 
 @Injectable()
@@ -564,7 +573,7 @@ export class OrdersService {
           `Sale — Order #${orderId}`,
           platformSponsoredUSD,
           sponsoredCampaignId,
-          order.currency || 'USD',
+          sellerPayoutCurrency(so, order),
           order.paymentType,
         );
       } catch (e) {
@@ -661,7 +670,7 @@ export class OrdersService {
           `Sale — Order #${orderId}`,
           platformSponsoredUSD,
           sponsoredCampaignId,
-          order.currency || 'USD',
+          sellerPayoutCurrency(so, order),
           order.paymentType,
         );
       } catch (e) {

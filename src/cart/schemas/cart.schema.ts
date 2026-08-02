@@ -21,6 +21,15 @@ export class CartItem {
   @Prop({ required: true })
   price: number;
 
+  // Display-only snapshot of the owning store's currency at add-to-cart
+  // time — Cart itself needs no currency concept for CONVERSION math (that
+  // only happens once, at checkout creation, from the live ProductVariant),
+  // but the cart page still needs to show each line's correct native symbol
+  // before checkout exists. Nullable so pre-existing cart items (before
+  // this field existed) don't break; display code falls back to a default.
+  @Prop({ type: String, default: null })
+  currency: string | null;
+
   // ✅ FIXED: images as array with safe default
   @Prop({ type: [String], default: [] })
   images: string[];

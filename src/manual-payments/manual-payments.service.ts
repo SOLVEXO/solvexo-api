@@ -12,12 +12,21 @@ import { round } from 'src/common/number.util';
 import { SubmitManualPaymentDto } from './dto/submit-manual-payment.dto';
 import { ReuploadManualPaymentDto } from './dto/reupload-manual-payment.dto';
 
-/** Mirrors OrdersService's local `sellerPayoutBasis` — restores the
- *  platform-sponsored portion of any campaign discount on top of the
- *  (already net-of-discount) `subtotal` so a platform-sponsored sale never
- *  reduces what the seller is credited. */
+/** Mirrors OrdersService's local `sellerPayoutBasis`/`sellerPayoutCurrency` —
+ *  settlement must always be computed and labeled in the SELLER'S OWN
+ *  currency (so.settlementCurrency), independent of `order.currency` (the
+ *  buyer's paid currency, which for every manual-bank-transfer order is
+ *  forced to 'PKR' regardless of the seller's actual store currency — see
+ *  PaymentService.manualBankTransferPayment). Falls back to the old
+ *  order-currency-denominated calculation only for orders placed before
+ *  settlementAmount/settlementCurrency existed. */
 function sellerPayoutBasis(so: any): number {
+  if (so.settlementAmount != null) return so.settlementAmount;
   return round(so.subtotal + (so.platformSponsoredDiscountUSD ?? 0));
+}
+
+function sellerPayoutCurrency(so: any, order: any): string {
+  return so.settlementCurrency ?? order.currency ?? 'USD';
 }
 
 @Injectable()
@@ -198,7 +207,7 @@ export class ManualPaymentsService {
           await this.financeService.recordSale(
             so.storeId, so.sellerId, order._id.toString(), sellerPayoutBasis(so),
             `Sale — Order #${order._id} (manual bank transfer, verified)`,
-            platformSponsoredUSD, sponsoredCampaignId, order.currency || 'USD',
+            platformSponsoredUSD, sponsoredCampaignId, sellerPayoutCurrency(so, order),
             order.paymentType || 'manual_bank_transfer',
           );
         } catch (e: any) {
