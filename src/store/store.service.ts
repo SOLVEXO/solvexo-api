@@ -292,7 +292,13 @@ export class StoreService {
     };
   }
 
-  async getStoreById(storeId: string) {
+  // `requestingUserId` is only ever non-null via `OptionalJwtAuthGuard` — this
+  // endpoint itself has no mandatory auth (POS pin-login and other
+  // shared-device flows fetch a store before any seller session exists), so
+  // the seller-only contact/stat fields below must stay opt-in and
+  // ownership-checked rather than always included, or they'd leak a seller's
+  // email/phone to anyone who knows a storeId.
+  async getStoreById(storeId: string, requestingUserId?: string | null) {
     if (!storeId) throw new BadRequestException('storeId is required');
 
     const store = await this.databaseService.repositories.storeModel.findOne({
@@ -302,9 +308,55 @@ export class StoreService {
 
     if (!store) throw new NotFoundException('Store not found');
 
+    if (!requestingUserId || store.sellerId !== requestingUserId) {
+      return { success: true, data: store };
+    }
+
+    const { sellerModel, productModel, orderModel } = this.databaseService.repositories;
+
+    const [seller, productCount, orderAgg] = await Promise.all([
+      sellerModel.findById(store.sellerId).select('name email phone').lean(),
+      productModel.countDocuments({ storeId, isDelete: false }),
+      orderModel.aggregate([
+        { $match: { isDelete: false } },
+        { $unwind: '$sellerOrders' },
+        { $match: { 'sellerOrders.storeId': storeId, 'sellerOrders.status': { $ne: 'cancelled' } } },
+        // Two-stage project-then-group — same convention as `getMyStores`'
+        // `salesRows` aggregation: `$sum` on an array field (`items.totalPrice`)
+        // only flattens/sums correctly as a `$project` expression, not as a
+        // `$group` accumulator, so gross/refunds must be computed per-document
+        // first and then accumulated across documents in a second stage.
+        {
+          $project: {
+            gross: { $sum: '$sellerOrders.items.totalPrice' },
+            refunds: { $sum: '$sellerOrders.items.refundedAmount' },
+          },
+        },
+        {
+          $group: {
+            _id: null,
+            orderCount: { $sum: 1 },
+            gross: { $sum: '$gross' },
+            refunds: { $sum: '$refunds' },
+          },
+        },
+      ]),
+    ]);
+
+    const agg = orderAgg[0] as { orderCount?: number; gross?: number; refunds?: number } | undefined;
+    const round = (n: number) => Math.round(n * 100) / 100;
+
     return {
       success: true,
-      data: store,
+      data: {
+        ...store.toObject(),
+        sellerName: seller?.name ?? null,
+        sellerEmail: seller?.email ?? null,
+        sellerPhone: seller?.phone ?? null,
+        productCount,
+        orderCount: agg?.orderCount ?? 0,
+        totalSalesUSD: round((agg?.gross ?? 0) - (agg?.refunds ?? 0)),
+      },
     };
   }
 
