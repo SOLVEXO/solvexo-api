@@ -324,6 +324,11 @@ export class OrdersService {
           productType: firstItem?.productType ?? null,
           date: order.createdAt,
           amount: so.subtotal,
+          // `amount` above is so.subtotal, which is denominated in the order's
+          // own currency (fixed per store) — carried per-row so a cross-store
+          // "my orders" list can label each row correctly even when the
+          // seller's stores don't all share one currency.
+          currency: order.currency ?? 'USD',
           status: so.status,
           isPaid: order.isPaid,
           paymentType: order.paymentType,

@@ -272,8 +272,24 @@ export class Store {
   @Prop({ type: Number, default: 0 })
   reviewCount: number;
 
-  @Prop({ enum: ['active', 'inactive', 'suspended'], default: 'active' })
+  // New stores start 'pending' (a Lead) — an admin must approve them via
+  // AdminMarketplaceService.approveLead/rejectLead before they flip to
+  // 'active'. Every public/browse route already filters `status: 'active'`
+  // (see StoreService.getStoreBySlug/discoverStores/etc.), so a pending or
+  // rejected store is automatically excluded from the marketplace with no
+  // extra filtering needed. The seller's own dashboard (getMyStores/
+  // getStoreById) does NOT filter by status, so the seller can still see and
+  // prep their store while it's awaiting review.
+  @Prop({ enum: ['pending', 'active', 'inactive', 'suspended', 'rejected'], default: 'pending' })
   status: string;
+
+  // Set by AdminMarketplaceService.rejectLead — shown back to the seller so
+  // a rejection isn't a silent dead end.
+  @Prop({ type: String, default: null })
+  rejectionReason: string | null;
+
+  @Prop({ type: Date, default: null })
+  reviewedAt: Date | null;
 
   // admin-granted badges, e.g. ['top_seller', 'verified', 'featured', 'verified_educator']
   @Prop({ type: [String], default: [] })

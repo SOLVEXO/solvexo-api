@@ -74,7 +74,7 @@ export class AdminFinanceService {
             },
           },
         ]),
-        this.r.payoutModel.aggregate([{ $group: { _id: '$status', count: { $sum: 1 }, amount: { $sum: '$amount' } } }]),
+        this.r.payoutModel.aggregate([{ $group: { _id: { status: '$status', currency: '$currency' }, count: { $sum: 1 }, amount: { $sum: '$amount' } } }]),
         this.r.sellerBalanceModel.countDocuments({}),
         getPlatformEarnings(this.r.transactionModel, this.r.subscriptionInvoiceModel, from, to),
         this.r.sellerBalanceModel.countDocuments({ isFlaggedForReview: true }),
@@ -120,12 +120,17 @@ export class AdminFinanceService {
         };
       }).filter((c) => c.gmv !== 0 || c.sellerBalances.totalAvailable !== 0 || c.sellerBalances.totalPending !== 0 || c.lifetimeTotals.totalRevenue !== 0);
 
-      const payoutQueue: Record<string, { count: number; amount: number }> = {
-        pending: { count: 0, amount: 0 }, processing: { count: 0, amount: 0 },
-        completed: { count: 0, amount: 0 }, failed: { count: 0, amount: 0 },
-      };
-      for (const row of payoutStatusRows) {
-        if (payoutQueue[row._id]) payoutQueue[row._id] = { count: row.count, amount: round(row.amount) };
+      // Grouped by {status, currency} — a PKR payout and a USD payout in the
+      // same status must never be summed into one blended "amount".
+      const payoutStatuses = ['pending', 'processing', 'completed', 'failed'];
+      const payoutQueue: Record<string, { count: number; amount: number; byCurrency: { currency: string; count: number; amount: number }[] }> = {};
+      for (const status of payoutStatuses) {
+        const rowsForStatus = payoutStatusRows.filter((r: any) => r._id.status === status);
+        payoutQueue[status] = {
+          count: rowsForStatus.reduce((s: number, r: any) => s + r.count, 0),
+          amount: round(rowsForStatus.reduce((s: number, r: any) => s + r.amount, 0)),
+          byCurrency: rowsForStatus.map((r: any) => ({ currency: r._id.currency ?? 'USD', count: r.count, amount: round(r.amount) })),
+        };
       }
 
       return {

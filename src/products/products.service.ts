@@ -67,6 +67,7 @@ export class ProductsService {
               name: primary.name,
               discountType: primary.discountType,
               discountValue: primary.discountValue,
+              currency: primary.currency,
               endDate: primary.endDate,
             }
           : null,

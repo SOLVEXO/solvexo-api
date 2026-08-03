@@ -128,6 +128,9 @@ export class StoreService {
       productTypes: finalProductTypes,
       enabledTools: resolveTools(finalProductTypes),
       baseCurrency,
+      // Goes into the admin Leads queue — not live on the marketplace until
+      // an admin approves it (see AdminMarketplaceService.approveLead).
+      status: 'pending',
     });
 
     // ✅ seller pe sirf onboarded mark — storeId nahi rakhte (source of truth = Store.sellerId)
@@ -503,6 +506,7 @@ export class StoreService {
           name: primaryCampaign.name,
           discountType: primaryCampaign.discountType,
           discountValue: primaryCampaign.discountValue,
+          currency: primaryCampaign.currency,
           endDate: primaryCampaign.endDate,
         } : null,
       },
@@ -533,6 +537,7 @@ export class StoreService {
         name: activeCampaign.name,
         discountType: activeCampaign.discountType,
         discountValue: activeCampaign.discountValue,
+        currency: activeCampaign.currency,
         endDate: activeCampaign.endDate,
       } : null,
     };
@@ -773,6 +778,7 @@ export class StoreService {
       name: primaryCampaign.name,
       discountType: primaryCampaign.discountType,
       discountValue: primaryCampaign.discountValue,
+      currency: primaryCampaign.currency,
       endDate: primaryCampaign.endDate,
     } : null;
 

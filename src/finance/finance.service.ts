@@ -1211,7 +1211,7 @@ export class FinanceService {
    * once a transaction's status flips to `completed` it's excluded from the next run.
    * Invoked hourly by `SchedulerService` and exposed to admins as a manual trigger.
    */
-  async processClearingBalances(): Promise<{ processed: number; totalAmount: number }> {
+  async processClearingBalances(): Promise<{ processed: number; totalAmount: number; byCurrency: { currency: string; amount: number }[] }> {
     // No single global cutoff — each sale's own `metadata.clearingDays`
     // (set at recordSale time via clearingDaysForRail) decides when IT
     // becomes eligible, since a card-funded sale must clear later than a
@@ -1223,6 +1223,10 @@ export class FinanceService {
 
     let processed = 0;
     let totalAmount = 0;
+    // `totalAmount` blends every currency (kept for backward compatibility)
+    // — `byCurrency` is the correct figure to actually display, since PKR
+    // and USD amounts cleared in the same run must never be summed together.
+    const totalsByCurrency = new Map<string, number>();
 
     for (const tx of pendingSales as any[]) {
       const clearingDays = tx.metadata?.clearingDays ?? CLEARING_DAYS;
@@ -1239,13 +1243,15 @@ export class FinanceService {
           this.reevaluateDebtFlag(balance);
           await balance.save({ session });
           totalAmount = this.round(totalAmount + netAmount);
+          totalsByCurrency.set(currency, this.round((totalsByCurrency.get(currency) ?? 0) + netAmount));
         }
         await this.txModel.updateOne({ _id: tx._id }, { $set: { status: 'completed' } }, { session });
       });
       processed += 1;
     }
 
-    return { processed, totalAmount };
+    const byCurrency = [...totalsByCurrency.entries()].map(([currency, amount]) => ({ currency, amount }));
+    return { processed, totalAmount, byCurrency };
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
