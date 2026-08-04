@@ -177,6 +177,98 @@ export class StoreAnnouncementBar {
 }
 export const StoreAnnouncementBarSchema = SchemaFactory.createForClass(StoreAnnouncementBar);
 
+// ── Seller business verification (KYC-style Leads review) ──────────────────
+// Required documents vary by business type — an 'individual' seller isn't
+// asked for a business registration/tax certificate the way a 'company' or
+// 'partnership' is (see BUSINESS_VERIFICATION_REQUIREMENTS in
+// store.service.ts, the single source of truth both the onboarding wizard
+// and the admin Leads review screen read from).
+export const BUSINESS_TYPES = ['individual', 'company', 'partnership'] as const;
+export type BusinessType = (typeof BUSINESS_TYPES)[number];
+
+export const ID_DOCUMENT_TYPES = ['cnic', 'passport', 'national_id'] as const;
+export type IdDocumentType = (typeof ID_DOCUMENT_TYPES)[number];
+
+// One row per uploaded document. `publicId`/`resourceType` (never a bare
+// `url`) is deliberate — these are sensitive documents (ID, tax certs), so
+// they're stored via UploadService.uploadPrivateFile (Cloudinary `type:
+// 'private'`), which returns no directly-usable URL at all. Viewing one
+// always goes through UploadService.generateSignedUrl at request time
+// (short-lived, admin/owner-only) — never a permanent public URL.
+export const VERIFICATION_DOCUMENT_TYPES = [
+  'business_registration', // Business registration/license
+  'tax_registration',      // Tax/NTN registration certificate
+  'address_proof',         // Proof of business address
+  'owner_id',              // Government ID/passport/CNIC of the owner or authorized rep
+  'authorization_proof',   // Authorization/ownership proof (e.g. rep isn't the owner)
+] as const;
+export type VerificationDocumentType = (typeof VERIFICATION_DOCUMENT_TYPES)[number];
+
+@Schema({ _id: false })
+export class VerificationDocument {
+  @Prop({ type: String, enum: VERIFICATION_DOCUMENT_TYPES, required: true })
+  type: VerificationDocumentType;
+  @Prop({ required: true }) publicId: string;
+  @Prop({ type: String, default: 'raw' }) resourceType: string;
+  @Prop({ required: true }) fileName: string;
+  @Prop({ type: Date, default: () => new Date() }) uploadedAt: Date;
+}
+export const VerificationDocumentSchema = SchemaFactory.createForClass(VerificationDocument);
+
+// Audit trail — every submit/resubmit/under-review/approve/reject event,
+// surfaced to both the seller (their own timeline) and admin (review
+// history) rather than only existing in the general ActivityLog stream.
+@Schema({ _id: false })
+export class VerificationHistoryEntry {
+  @Prop({ required: true }) action: string; // 'submitted' | 'resubmitted' | 'under_review' | 'approved' | 'rejected'
+  @Prop({ type: String, default: null }) note: string | null;
+  @Prop({ type: String, default: null }) actorId: string | null;
+  @Prop({ type: String, enum: ['seller', 'admin'], default: 'seller' }) actorRole: string;
+  @Prop({ type: Date, default: () => new Date() }) at: Date;
+}
+export const VerificationHistoryEntrySchema = SchemaFactory.createForClass(VerificationHistoryEntry);
+
+@Schema({ _id: false })
+export class AuthorizedContact {
+  @Prop({ type: String, default: null }) name: string | null;
+  @Prop({ type: String, default: null }) designation: string | null;
+  @Prop({ type: String, default: null }) email: string | null;
+  @Prop({ type: String, default: null }) phone: string | null;
+}
+export const AuthorizedContactSchema = SchemaFactory.createForClass(AuthorizedContact);
+
+@Schema({ _id: false })
+export class SellerVerification {
+  @Prop({ type: String, enum: BUSINESS_TYPES, default: null }) businessType: BusinessType | null;
+  @Prop({ type: String, default: null }) legalBusinessName: string | null;
+  @Prop({ type: String, default: null }) registrationNumber: string | null;
+  @Prop({ type: String, default: null }) taxId: string | null;
+  @Prop({ type: String, default: null }) businessAddress: string | null;
+  @Prop({ type: String, enum: ID_DOCUMENT_TYPES, default: null }) idDocumentType: IdDocumentType | null;
+  @Prop({ type: AuthorizedContactSchema, default: () => ({}) }) authorizedContact: AuthorizedContact;
+  @Prop({ type: [VerificationDocumentSchema], default: [] }) documents: VerificationDocument[];
+  @Prop({ type: [VerificationHistoryEntrySchema], default: [] }) history: VerificationHistoryEntry[];
+  // Flips true the first time the seller submits (vs. still drafting during
+  // onboarding) — lets the admin Leads list distinguish "seller hasn't
+  // finished yet" from "ready to review" without inspecting every field.
+  @Prop({ type: Boolean, default: false }) submitted: boolean;
+}
+export const SellerVerificationSchema = SchemaFactory.createForClass(SellerVerification);
+
+// Single source of truth for which documents a submission needs before
+// StoreService.submitVerification will accept it — an 'individual' seller
+// only needs to prove who they are and where their business operates; a
+// 'company'/'partnership' additionally needs registration + tax proof.
+const ALWAYS_REQUIRED_DOCS: VerificationDocumentType[] = ['owner_id', 'address_proof'];
+const BUSINESS_TYPE_REQUIRED_DOCS: Record<BusinessType, VerificationDocumentType[]> = {
+  individual: [],
+  company: ['business_registration', 'tax_registration'],
+  partnership: ['business_registration', 'tax_registration'],
+};
+export function requiredVerificationDocuments(businessType: BusinessType | null): VerificationDocumentType[] {
+  return [...ALWAYS_REQUIRED_DOCS, ...(businessType ? BUSINESS_TYPE_REQUIRED_DOCS[businessType] : [])];
+}
+
 @Schema({ timestamps: true })
 export class Store {
   @Prop({ required: true })
@@ -274,13 +366,16 @@ export class Store {
 
   // New stores start 'pending' (a Lead) — an admin must approve them via
   // AdminMarketplaceService.approveLead/rejectLead before they flip to
-  // 'active'. Every public/browse route already filters `status: 'active'`
-  // (see StoreService.getStoreBySlug/discoverStores/etc.), so a pending or
-  // rejected store is automatically excluded from the marketplace with no
-  // extra filtering needed. The seller's own dashboard (getMyStores/
-  // getStoreById) does NOT filter by status, so the seller can still see and
-  // prep their store while it's awaiting review.
-  @Prop({ enum: ['pending', 'active', 'inactive', 'suspended', 'rejected'], default: 'pending' })
+  // 'active'. 'under_review' is an optional intermediate state an admin can
+  // set while actively working a lead (see markUnderReview) — purely a
+  // tracking/lock signal, not required before approve/reject. Every public/
+  // browse route already filters `status: 'active'` (see
+  // StoreService.getStoreBySlug/discoverStores/etc.), so anything else is
+  // automatically excluded from the marketplace with no extra filtering
+  // needed. The seller's own dashboard (getMyStores/getStoreById) does NOT
+  // filter by status, so the seller can still see and prep their store
+  // while it's awaiting review.
+  @Prop({ enum: ['pending', 'under_review', 'active', 'inactive', 'suspended', 'rejected'], default: 'pending' })
   status: string;
 
   // Set by AdminMarketplaceService.rejectLead — shown back to the seller so
@@ -290,6 +385,15 @@ export class Store {
 
   @Prop({ type: Date, default: null })
   reviewedAt: Date | null;
+
+  // Business verification (KYC-style) — deliberately `select: false` so it
+  // never rides along on any public/storefront/product query by accident;
+  // only the seller's own verification endpoints and the admin Leads detail
+  // endpoint opt in via `.select('+verification')`. Contains sensitive
+  // fields (tax id, ID document refs) that must never reach a public API
+  // response.
+  @Prop({ type: SellerVerificationSchema, default: () => ({}), select: false })
+  verification: SellerVerification;
 
   // admin-granted badges, e.g. ['top_seller', 'verified', 'featured', 'verified_educator']
   @Prop({ type: [String], default: [] })

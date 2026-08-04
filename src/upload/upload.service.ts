@@ -62,14 +62,19 @@ export class UploadService {
     });
   }
 
-  // ── PRIVATE upload (digital products) ──
-  async uploadPrivateFile(file: Express.Multer.File): Promise<{ publicId: string; resourceType: string; fileName: string; fileSize: number; mimeType: string }> {
+  // ── PRIVATE upload (digital products, and other sensitive files e.g. KYC
+  // documents — `folder` defaults to the original digital-products path so
+  // every existing caller is unaffected) ──
+  async uploadPrivateFile(
+    file: Express.Multer.File,
+    folder: string = 'private/digital-products',
+  ): Promise<{ publicId: string; resourceType: string; fileName: string; fileSize: number; mimeType: string }> {
     const mimeType = this.getMimeTypeFromExtension(file.originalname) || file.mimetype;
     const resourceType = this.getResourceType(mimeType);
     return new Promise((resolve, reject) => {
       const uploadStream = cloudinary.uploader.upload_stream(
         {
-          folder: 'private/digital-products',
+          folder,
           resource_type: resourceType as any,
           type: 'private',
         },

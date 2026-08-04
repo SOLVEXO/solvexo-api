@@ -63,6 +63,43 @@ export class StoreController {
     return this.storeService.updateAnnouncementBar(req.user.userId, storeId, body);
   }
 
+  // ── Seller business verification (Leads review) ────────────────────────
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Get(':storeId/verification')
+  async getVerification(@Req() req: any, @Param('storeId') storeId: string) {
+    return this.storeService.getVerification(req.user.userId, storeId);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Patch(':storeId/verification')
+  async updateVerification(@Req() req: any, @Param('storeId') storeId: string, @Body() body: any) {
+    return this.storeService.updateVerification(req.user.userId, storeId, body);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Post(':storeId/verification/documents')
+  async attachVerificationDocument(
+    @Req() req: any,
+    @Param('storeId') storeId: string,
+    @Body() body: { type: string; publicId: string; resourceType: string; fileName: string },
+  ) {
+    return this.storeService.attachVerificationDocument(req.user.userId, storeId, body.type, {
+      publicId: body.publicId,
+      resourceType: body.resourceType,
+      fileName: body.fileName,
+    });
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Post(':storeId/verification/submit')
+  async submitVerification(@Req() req: any, @Param('storeId') storeId: string) {
+    return this.storeService.submitVerification(req.user.userId, storeId);
+  }
+
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('seller')
   @Post('update-store')

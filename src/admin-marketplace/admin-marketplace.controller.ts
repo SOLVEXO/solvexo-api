@@ -54,6 +54,16 @@ export class AdminMarketplaceController {
     return this.adminMarketplaceService.getLeads(query);
   }
 
+  @Get('leads/:id')
+  getLeadDetail(@Param('id') id: string) {
+    return this.adminMarketplaceService.getLeadDetail(id);
+  }
+
+  @Patch('leads/:id/under-review')
+  markUnderReview(@Req() req: any, @Param('id') id: string) {
+    return this.adminMarketplaceService.markUnderReview(id, this.meta(req));
+  }
+
   @Patch('leads/:id/approve')
   approveLead(@Req() req: any, @Param('id') id: string) {
     return this.adminMarketplaceService.approveLead(id, this.meta(req));

@@ -6,7 +6,13 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { DatabaseService } from 'src/database/databaseservice';
-import { SellerType, ProductType, resolveTools } from './schemas/store.schema';
+import {
+  SellerType, ProductType, resolveTools,
+  BUSINESS_TYPES, ID_DOCUMENT_TYPES, VERIFICATION_DOCUMENT_TYPES,
+  requiredVerificationDocuments,
+  type BusinessType, type VerificationDocumentType, type VerificationDocument,
+} from './schemas/store.schema';
+import { UploadService } from 'src/upload/upload.service';
 import { SUPPORTED_CURRENCIES } from 'src/exchange-rate/schemas/exchange-rate.schema';
 import { ActivityLogService } from 'src/activity-log/activity-log.service';
 import { UpdateStoreCustomerDto } from './dto/update-store-customer.dto';
@@ -42,6 +48,7 @@ export class StoreService {
     private readonly redisService: RedisService,
     private readonly marketingService: MarketingService,
     private readonly adminConfigService: AdminConfigService,
+    private readonly uploadService: UploadService,
   ) {}
 
   private generateSlug(name: string): string {
@@ -147,6 +154,166 @@ export class StoreService {
       message: 'Store created successfully',
       data: store,
     };
+  }
+
+  // ── Seller business verification (Leads review) ──────────────────────────
+
+  private async findOwnedStoreOrThrow(sellerId: string, storeId: string, opts?: { withVerification?: boolean }) {
+    const query = this.databaseService.repositories.storeModel.findOne({ _id: storeId, isDelete: false });
+    if (opts?.withVerification) query.select('+verification');
+    const store = await query;
+    if (!store) throw new NotFoundException('Store not found');
+    if (store.sellerId !== sellerId) throw new UnauthorizedException('Unauthorized');
+    return store;
+  }
+
+  /** Documents are stored as Cloudinary private-type publicIds (never a bare
+   *  URL) — a signed, short-lived URL is generated fresh on every read so a
+   *  sensitive document (ID, tax cert) is never permanently link-shareable. */
+  private async withSignedDocumentUrls(documents: VerificationDocument[]) {
+    return documents.map((d) => ({
+      type: d.type,
+      fileName: d.fileName,
+      uploadedAt: d.uploadedAt,
+      viewUrl: this.uploadService.generateSignedUrl(d.publicId, d.resourceType, 600, d.fileName),
+    }));
+  }
+
+  async getVerification(sellerId: string, storeId: string) {
+    const store = await this.findOwnedStoreOrThrow(sellerId, storeId, { withVerification: true });
+    const v = store.verification ?? ({} as any);
+    return {
+      success: true,
+      data: {
+        businessType: v.businessType ?? null,
+        legalBusinessName: v.legalBusinessName ?? null,
+        registrationNumber: v.registrationNumber ?? null,
+        taxId: v.taxId ?? null,
+        businessAddress: v.businessAddress ?? null,
+        idDocumentType: v.idDocumentType ?? null,
+        authorizedContact: v.authorizedContact ?? null,
+        documents: await this.withSignedDocumentUrls(v.documents ?? []),
+        history: v.history ?? [],
+        submitted: v.submitted ?? false,
+        requiredDocumentTypes: requiredVerificationDocuments(v.businessType ?? null),
+        storeStatus: store.status,
+        rejectionReason: store.rejectionReason ?? null,
+      },
+    };
+  }
+
+  /** Draft-save — usable while the store is still `pending` (first pass) or
+   *  `rejected` (fixing up before resubmitting). Locked once an admin has
+   *  taken it into `under_review`/`active`/`suspended` so the submitted data
+   *  can't shift mid-review. */
+  async updateVerification(sellerId: string, storeId: string, body: {
+    businessType?: BusinessType;
+    legalBusinessName?: string;
+    registrationNumber?: string;
+    taxId?: string;
+    businessAddress?: string;
+    idDocumentType?: string;
+    authorizedContact?: { name?: string; designation?: string; email?: string; phone?: string };
+    documents?: { type: VerificationDocumentType; publicId: string; resourceType?: string; fileName: string }[];
+  }) {
+    const store = await this.findOwnedStoreOrThrow(sellerId, storeId, { withVerification: true });
+    if (!['pending', 'rejected'].includes(store.status)) {
+      throw new BadRequestException('Verification details can no longer be edited once submitted for review');
+    }
+
+    if (body.businessType && !BUSINESS_TYPES.includes(body.businessType)) {
+      throw new BadRequestException('Invalid businessType');
+    }
+    if (body.idDocumentType && !ID_DOCUMENT_TYPES.includes(body.idDocumentType as any)) {
+      throw new BadRequestException('Invalid idDocumentType');
+    }
+    if (body.documents) {
+      for (const d of body.documents) {
+        if (!VERIFICATION_DOCUMENT_TYPES.includes(d.type)) throw new BadRequestException(`Invalid document type: ${d.type}`);
+      }
+    }
+
+    const current = store.verification ?? ({} as any);
+    const next: Record<string, unknown> = { ...current };
+    if (body.businessType !== undefined) next.businessType = body.businessType;
+    if (body.legalBusinessName !== undefined) next.legalBusinessName = body.legalBusinessName;
+    if (body.registrationNumber !== undefined) next.registrationNumber = body.registrationNumber;
+    if (body.taxId !== undefined) next.taxId = body.taxId;
+    if (body.businessAddress !== undefined) next.businessAddress = body.businessAddress;
+    if (body.idDocumentType !== undefined) next.idDocumentType = body.idDocumentType;
+    if (body.authorizedContact !== undefined) {
+      next.authorizedContact = { ...(current.authorizedContact ?? {}), ...body.authorizedContact };
+    }
+    if (body.documents !== undefined) {
+      // Replace-by-type — re-uploading a document type overwrites the
+      // previous one instead of accumulating duplicates.
+      const byType = new Map<string, VerificationDocument>(
+        (current.documents ?? []).map((d: VerificationDocument) => [d.type, d]),
+      );
+      for (const d of body.documents) {
+        byType.set(d.type, { type: d.type, publicId: d.publicId, resourceType: d.resourceType ?? 'raw', fileName: d.fileName, uploadedAt: new Date() });
+      }
+      next.documents = [...byType.values()];
+    }
+
+    await this.databaseService.repositories.storeModel.findByIdAndUpdate(storeId, { $set: { verification: next } });
+    return { success: true, message: 'Verification details saved' };
+  }
+
+  /** Called once at the end of the onboarding Documents step (first-time
+   *  submission) — validates the required document set for the chosen
+   *  business type is actually present before locking the lead in for
+   *  admin review. */
+  async submitVerification(sellerId: string, storeId: string) {
+    const store = await this.findOwnedStoreOrThrow(sellerId, storeId, { withVerification: true });
+    if (!['pending', 'rejected'].includes(store.status)) {
+      throw new BadRequestException('This store has already been submitted for review');
+    }
+
+    const v = store.verification ?? ({} as any);
+    if (!v.legalBusinessName || !v.businessAddress || !v.authorizedContact?.name || !v.authorizedContact?.email || !v.authorizedContact?.phone) {
+      throw new BadRequestException('Please complete the business information section before submitting');
+    }
+    const required = requiredVerificationDocuments(v.businessType ?? null);
+    const haveTypes = new Set((v.documents ?? []).map((d: VerificationDocument) => d.type));
+    const missing = required.filter((t) => !haveTypes.has(t));
+    if (missing.length > 0) {
+      throw new BadRequestException(`Missing required document(s): ${missing.join(', ')}`);
+    }
+
+    const wasRejected = store.status === 'rejected';
+    const historyEntry = {
+      action: wasRejected ? 'resubmitted' : 'submitted',
+      note: null,
+      actorId: sellerId,
+      actorRole: 'seller',
+      at: new Date(),
+    };
+
+    await this.databaseService.repositories.storeModel.findByIdAndUpdate(storeId, {
+      $set: {
+        'verification.submitted': true,
+        status: 'pending',
+        rejectionReason: null,
+      },
+      $push: { 'verification.history': historyEntry },
+    });
+
+    return { success: true, message: wasRejected ? 'Resubmitted for review' : 'Submitted for review' };
+  }
+
+  /** KYC document upload — thin wrapper so the frontend can upload straight
+   *  to Cloudinary private storage via the existing upload pipeline, then
+   *  attach the returned publicId to this store's verification record in
+   *  the same call (instead of two separate requests the seller could
+   *  abandon halfway through). */
+  async attachVerificationDocument(sellerId: string, storeId: string, type: string, doc: { publicId: string; resourceType: string; fileName: string }) {
+    if (!VERIFICATION_DOCUMENT_TYPES.includes(type as VerificationDocumentType)) {
+      throw new BadRequestException(`Invalid document type: ${type}`);
+    }
+    return this.updateVerification(sellerId, storeId, {
+      documents: [{ type: type as VerificationDocumentType, ...doc }],
+    });
   }
 
   /** Platform-plan-gated: only stores on a plan with `customDomainAllowed` may set a custom domain. */
