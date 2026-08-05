@@ -44,9 +44,15 @@ export class StoreController {
     return this.storeService.getMyStores(userId);
   }
 
+  // Deliberately left without a mandatory auth guard — POS pin-login and other
+  // shared-device flows fetch a store before any seller session exists.
+  // `OptionalJwtAuthGuard` lets an authenticated *owning* seller additionally
+  // receive their own contact/stat fields (see StoreService.getStoreById)
+  // without exposing that PII to anonymous/other callers.
+  @UseGuards(OptionalJwtAuthGuard)
   @Get('getStoreById/:storeId')
-  async getStoreById(@Param('storeId') storeId: string) {
-    return this.storeService.getStoreById(storeId);
+  async getStoreById(@Req() req: any, @Param('storeId') storeId: string) {
+    return this.storeService.getStoreById(storeId, req.user?.userId ?? null);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
