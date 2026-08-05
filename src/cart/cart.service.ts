@@ -48,6 +48,7 @@ export class CartService {
         name: product.name,
         quantity: dto.quantity || 1,
         price: variant.price,
+        currency: variant.currency ?? null,
         images: itemImages,
         options: variant.options ?? [],
       };

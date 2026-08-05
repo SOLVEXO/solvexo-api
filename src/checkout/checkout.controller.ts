@@ -96,18 +96,24 @@ import {
   UseGuards,
   Get,
   Body,
+  UseInterceptors,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { IdempotencyInterceptor } from '../common/idempotency.interceptor';
 import { CheckoutService } from './checkout.service';
 
 @Controller('api/checkout')
 export class CheckoutController {
   constructor(private readonly checkoutService: CheckoutService) {}
 
+  // Idempotency-Key header (already-proven interceptor, used elsewhere in
+  // this codebase) prevents a double-tap/retry from creating two separate
+  // checkouts for the same buyer action — previously missing here entirely.
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('user')
+  @UseInterceptors(IdempotencyInterceptor)
   @Post('create-checkout')
   async createCheckout(@Req() req: any, @Body() body: any) {
     const { userId } = req.user;

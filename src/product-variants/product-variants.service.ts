@@ -61,8 +61,16 @@ export class ProductVariantsService {
   }
 
   async addVariant(sellerId: string, productId: string, dto: CreateVariantDto) {
-    const { productVariantModel } = this.databaseService.repositories;
+    const { productVariantModel, storeModel } = this.databaseService.repositories;
     const product = await this.loadOwnedPhysicalProduct(sellerId, productId);
+
+    // Stamped from the owning store's own pricing currency, not the
+    // product/a sibling variant — same rule as ProductsService's
+    // addPhysicalProduct/addDigitalProduct. Looked up fresh rather than
+    // copied from an existing sibling variant so this stays correct even
+    // if a legacy pre-migration variant's `currency` were ever null.
+    const store = await storeModel.findOne({ _id: product.storeId, isDelete: false });
+    if (!store) throw new NotFoundException('Store not found');
 
     const options = dto.options ?? [];
     const existing = await this.getActiveVariants(productId);
@@ -76,6 +84,7 @@ export class ProductVariantsService {
       productId,
       sku,
       price: dto.price,
+      currency: store.baseCurrency,
       compareAtPrice: dto.compareAtPrice ?? null,
       options,
       stock: dto.stock ?? 0,

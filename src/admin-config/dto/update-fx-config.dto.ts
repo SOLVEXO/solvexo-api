@@ -1,0 +1,26 @@
+import { ApiProperty } from '@nestjs/swagger';
+import { IsBoolean, IsNumber, IsOptional, Min } from 'class-validator';
+import { Type } from 'class-transformer';
+
+export class UpdateFxConfigDto {
+  @ApiProperty({ required: false })
+  @IsOptional() @IsBoolean() autoRefreshEnabled?: boolean;
+
+  @ApiProperty({ required: false, example: 24 })
+  @IsOptional() @Type(() => Number) @IsNumber() @Min(1) refreshIntervalHours?: number;
+
+  @ApiProperty({ required: false, example: 48 })
+  @IsOptional() @Type(() => Number) @IsNumber() @Min(1) staleRateAlertThresholdHours?: number;
+
+  @ApiProperty({ required: false, example: 150 })
+  @IsOptional() @Type(() => Number) @IsNumber() @Min(1) sanityBandMinPKR?: number;
+
+  @ApiProperty({ required: false, example: 450 })
+  @IsOptional() @Type(() => Number) @IsNumber() @Min(1) sanityBandMaxPKR?: number;
+
+  @ApiProperty({ required: false, example: 8 })
+  @IsOptional() @Type(() => Number) @IsNumber() @Min(0) abnormalJumpAlertPercent?: number;
+
+  @ApiProperty({ required: false, example: 50000 })
+  @IsOptional() @Type(() => Number) @IsNumber() @Min(0) exposureThresholdUSD?: number;
+}

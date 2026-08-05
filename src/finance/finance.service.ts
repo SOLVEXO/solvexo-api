@@ -21,7 +21,16 @@ import { NOTIFICATION_TYPES } from 'src/notifications/notification.types';
 export const PLATFORM_FEE_RATE       = 0.08;   // 8% per sale — last-resort fallback, see CommissionRulesService
 export const PAYMENT_PROCESSING_RATE = 0.029;  // 2.9%
 export const PAYMENT_PROCESSING_FIXED = 0.30;  // $0.30 per transaction
-export const CLEARING_DAYS           = 3;      // days before pending → available
+export const CLEARING_DAYS           = 3;      // default — non-card rails (manual bank transfer, COD)
+// Card-funded (Stripe) sales carry real chargeback exposure that can
+// surface weeks after the charge — a Pakistani bank-transfer payment has no
+// equivalent reversal mechanism once sent. Holding card-funded proceeds
+// longer before they become payout-eligible is the direct mitigation for
+// "chargeback arrives after the seller has already been paid out".
+export const CLEARING_DAYS_CARD      = 14;
+function clearingDaysForRail(paymentMethodType: string): number {
+  return paymentMethodType === 'stripe' ? CLEARING_DAYS_CARD : CLEARING_DAYS;
+}
 const ESTIMATED_TAX_RATE      = 0.15;   // 15% estimate shown in UI
 
 /** Currency-aware amount formatting for CSV export — every other currency-agnostic $-literal in this file was a latent multi-currency bug waiting to happen; this is the one shared spot so it can't drift per call site. */
@@ -1202,18 +1211,28 @@ export class FinanceService {
    * once a transaction's status flips to `completed` it's excluded from the next run.
    * Invoked hourly by `SchedulerService` and exposed to admins as a manual trigger.
    */
-  async processClearingBalances(): Promise<{ processed: number; totalAmount: number }> {
-    const cutoff = new Date();
-    cutoff.setDate(cutoff.getDate() - CLEARING_DAYS);
-
-    const pendingSales = await this.txModel.find({
-      type: 'sale', status: 'pending', createdAt: { $lte: cutoff },
-    }).lean();
+  async processClearingBalances(): Promise<{ processed: number; totalAmount: number; byCurrency: { currency: string; amount: number }[] }> {
+    // No single global cutoff — each sale's own `metadata.clearingDays`
+    // (set at recordSale time via clearingDaysForRail) decides when IT
+    // becomes eligible, since a card-funded sale must clear later than a
+    // bank-transfer one. Fetches every still-pending sale and filters in
+    // JS rather than in the query — clearingDays varies per row, so a
+    // single Mongo date-range filter can't express it directly.
+    const pendingSales = await this.txModel.find({ type: 'sale', status: 'pending' }).lean();
+    const now = Date.now();
 
     let processed = 0;
     let totalAmount = 0;
+    // `totalAmount` blends every currency (kept for backward compatibility)
+    // — `byCurrency` is the correct figure to actually display, since PKR
+    // and USD amounts cleared in the same run must never be summed together.
+    const totalsByCurrency = new Map<string, number>();
 
     for (const tx of pendingSales as any[]) {
+      const clearingDays = tx.metadata?.clearingDays ?? CLEARING_DAYS;
+      const eligibleAt = new Date(tx.createdAt).getTime() + clearingDays * 24 * 60 * 60 * 1000;
+      if (eligibleAt > now) continue; // not yet past its own clearing window
+
       const netAmount = tx.metadata?.netAmount ?? 0;
       const currency = tx.currency || 'USD';
       await this.withTransaction(async (session) => {
@@ -1224,13 +1243,15 @@ export class FinanceService {
           this.reevaluateDebtFlag(balance);
           await balance.save({ session });
           totalAmount = this.round(totalAmount + netAmount);
+          totalsByCurrency.set(currency, this.round((totalsByCurrency.get(currency) ?? 0) + netAmount));
         }
         await this.txModel.updateOne({ _id: tx._id }, { $set: { status: 'completed' } }, { session });
       });
       processed += 1;
     }
 
-    return { processed, totalAmount };
+    const byCurrency = [...totalsByCurrency.entries()].map(([currency, amount]) => ({ currency, amount }));
+    return { processed, totalAmount, byCurrency };
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -1297,7 +1318,7 @@ export class FinanceService {
         referenceId: orderId,
         referenceType: 'order',
         status: 'pending',
-        metadata: { platformFee, processingFee, netAmount, clearingDays: CLEARING_DAYS, feeRate: platformFeeRate, feeRateSource },
+        metadata: { platformFee, processingFee, netAmount, clearingDays: clearingDaysForRail(paymentMethodType), feeRate: platformFeeRate, feeRateSource },
       });
       await saleTx.save({ session });
 

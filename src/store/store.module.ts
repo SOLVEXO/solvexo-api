@@ -5,9 +5,10 @@ import { AuthModule } from 'src/auth/auth.module';
 import { RedisModule } from 'src/redis/redis.module';
 import { AdminConfigModule } from 'src/admin-config/admin-config.module';
 import { MarketingModule } from 'src/marketing/marketing.module';
+import { UploadModule } from 'src/upload/upload.module';
 
 @Module({
-  imports: [AuthModule, RedisModule, AdminConfigModule, MarketingModule],
+  imports: [AuthModule, RedisModule, AdminConfigModule, MarketingModule, UploadModule],
   controllers: [StoreController],
   providers: [StoreService],
   exports: [StoreService],

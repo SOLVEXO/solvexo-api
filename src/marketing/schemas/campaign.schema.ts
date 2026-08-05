@@ -33,6 +33,15 @@ export class Campaign {
   @Prop({ type: Number, default: null })
   discountValue: number | null;
 
+  // Only meaningful when discountType === 'fixed' (a 'percentage' value is
+  // scale-free and needs no currency). Campaigns are always admin-created
+  // platform-wide events, so this is always 'USD' (the platform pivot — see
+  // ExchangeRateService) — same convention as Coupon.currency for
+  // scope:'platform' coupons. Nullable so pre-existing fixed-value campaigns
+  // (created before this field existed) remain valid; treat null as 'USD'.
+  @Prop({ type: String, default: 'USD' })
+  currency: string | null;
+
   // Who actually bears the cost of the discount:
   // - 'seller' (default, existing behavior): the discount comes straight out of
   //   the participating seller's own payout — same as a seller's own Coupon.

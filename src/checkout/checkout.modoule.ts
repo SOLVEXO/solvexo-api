@@ -20,9 +20,10 @@ import { AuthModule } from 'src/auth/auth.module';
 import { RedisModule } from 'src/redis/redis.module';
 import { MarketingModule } from 'src/marketing/marketing.module';
 import { AdminConfigModule } from 'src/admin-config/admin-config.module';
+import { ExchangeRateModule } from 'src/exchange-rate/exchange-rate.module';
 
 @Module({
-  imports: [AuthModule, RedisModule, MarketingModule, AdminConfigModule],
+  imports: [AuthModule, RedisModule, MarketingModule, AdminConfigModule, ExchangeRateModule],
   controllers: [CheckoutController],
   providers: [CheckoutService],
   exports: [CheckoutService],

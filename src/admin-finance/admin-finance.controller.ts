@@ -41,6 +41,23 @@ export class AdminFinanceController {
     return this.adminFinanceService.getCommissionOverTime(query);
   }
 
+  // ─── Reconciliation & FX exposure ───────────────────────────────────────
+
+  @Get('reconciliation')
+  getReconciliation(@Query('days') days?: string) {
+    return this.adminFinanceService.getReconciliation(days ? Number(days) : 1);
+  }
+
+  @Get('reconciliation/history')
+  getReconciliationHistory(@Query('limit') limit?: string) {
+    return this.adminFinanceService.getReconciliationHistory(limit ? Number(limit) : 30);
+  }
+
+  @Get('fx-exposure')
+  getFxExposure() {
+    return this.adminFinanceService.getFxExposure();
+  }
+
   // ─── Seller balances & drill-down ────────────────────────────────────────
 
   @Get('sellers/balances')

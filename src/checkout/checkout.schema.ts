@@ -1,5 +1,6 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Document } from 'mongoose';
+import { FxSnapshot, FxSnapshotSchema } from '../exchange-rate/schemas/exchange-rate.schema';
 
 export type CheckoutDocument = Checkout & Document;
 
@@ -54,6 +55,17 @@ export class CheckoutItem {
 
   @Prop({ required: true })
   quantity: number;
+
+  // The currency `price`/`totalPrice` below are denominated in — this
+  // item's OWNING SELLER'S Store.baseCurrency at the moment it was added to
+  // this checkout, independent of the buyer's chosen checkout currency
+  // above. A mixed-seller cart can have items in different native
+  // currencies; each is converted into the checkout currency individually
+  // (see CheckoutService.createCheckout) rather than summed raw. Nullable
+  // only so checkouts created before this field existed remain readable —
+  // those predate any real seller-currency distinction (implicitly 'USD').
+  @Prop({ type: String, default: null })
+  currency: string | null;
 
   @Prop({ required: true })
   price: number;
@@ -111,8 +123,24 @@ export class Checkout {
   @Prop({ type: String, default: null })
   addressId: string | null;
 
-  @Prop({ type: String, default: 'USD' })
+  // The currency the buyer is actually being charged in — server-resolved
+  // and validated at checkout creation (CheckoutService.createCheckout)
+  // against the buyer's currencyPreference, never client-trusted beyond
+  // that validation. No schema-level default anymore: every NEW checkout
+  // must set this explicitly. Existing pre-migration checkouts (which relied
+  // on the old implicit 'USD' default) are transient/expired documents and
+  // are left exactly as they were written — never touched by this change.
+  @Prop({ type: String })
   currency: string;
+
+  // One entry per distinct currency actually involved in this checkout (the
+  // checkout currency itself, plus every seller/store currency present
+  // among `items`) — immutable the instant this document is created.
+  // Refunds and seller settlement replay these exact rates; they never
+  // re-read today's ExchangeRate table. Absent on any checkout created
+  // before this field existed.
+  @Prop({ type: [FxSnapshotSchema], default: [] })
+  fxSnapshots: FxSnapshot[];
 
   @Prop({ type: [CheckoutItemSchema], default: [] })
   items: CheckoutItem[];

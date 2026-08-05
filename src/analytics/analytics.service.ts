@@ -71,6 +71,20 @@ export class AnalyticsService {
     return { scope: { 'sellerOrders.storeId': { $in: storeIds } }, storeIds };
   }
 
+  /** Every revenue/order-value figure below is denominated in each order's own
+   *  `Order.currency`, which is fixed per store (Store.baseCurrency). A single-
+   *  store scope is always unambiguous. A cross-store ("all stores") scope is
+   *  too UNLESS the seller happens to run stores in more than one currency —
+   *  in that case a blended sum would silently mix PKR and USD into one
+   *  meaningless number, so this resolves to `null` instead and callers must
+   *  not label the aggregate with any one currency's symbol. */
+  private async resolveScopeCurrency(storeIds: string[]): Promise<string | null> {
+    if (storeIds.length === 0) return null;
+    const stores = await this.r.storeModel.find({ _id: { $in: storeIds } }).select('baseCurrency').lean();
+    const currencies = new Set(stores.map((s: any) => s.baseCurrency ?? 'PKR'));
+    return currencies.size === 1 ? [...currencies][0] : null;
+  }
+
   private async cached<T>(cacheKey: string, compute: () => Promise<T>): Promise<T> {
     return withAnalyticsCache(this.redis, cacheKey, CACHE_TTL_SECONDS, compute);
   }
@@ -173,11 +187,12 @@ export class AnalyticsService {
     const compare = query.compareToPreviousPeriod === true || query.compareToPreviousPeriod === 'true';
 
     return this.cached(this.key('overview', this.scopeLabel(sellerId, storeId), { from, to, compare }), async () => {
-      const [current, previous, repeatBuyerPct, prevRepeatBuyerPct] = await Promise.all([
+      const [current, previous, repeatBuyerPct, prevRepeatBuyerPct, currency] = await Promise.all([
         this.periodTotals(scope, from, to),
         this.periodTotals(scope, previousFrom, previousTo),
         this.repeatBuyerPercent(scope, from, to),
         this.repeatBuyerPercent(scope, previousFrom, previousTo),
+        this.resolveScopeCurrency(storeIds),
       ]);
 
       const returningSet = await this.returningBuyerSet(scope, current.buyerIds, from);
@@ -189,6 +204,7 @@ export class AnalyticsService {
       const data: Record<string, any> = {
         period: { from, to },
         storeCount: storeIds.length,
+        currency,
         grossRevenue: current.grossRevenue,
         totalRevenue: current.netRevenue, // "totalRevenue" = net of refunds, per spec
         totalRevenueChangePercent: percentChange(current.netRevenue, previous.netRevenue),
@@ -227,10 +243,11 @@ export class AnalyticsService {
   // ═══════════════════════════════════════════════════════════════════════
 
   async getRevenueOverTime(sellerId: string, storeId: string | null | undefined, query: any) {
-    const { scope } = await this.resolveScope(sellerId, storeId);
+    const { scope, storeIds } = await this.resolveScope(sellerId, storeId);
     const { from, to, granularity } = resolveDateRange(query);
 
     return this.cached(this.key('revenue-over-time', this.scopeLabel(sellerId, storeId), { from, to }), async () => {
+      const currency = await this.resolveScopeCurrency(storeIds);
       const rows = await this.r.orderModel.aggregate([
         ...this.matchStage(scope, from, to),
         {
@@ -256,7 +273,7 @@ export class AnalyticsService {
         return { date: bucket, grossRevenue: gross, netRevenue: this.round(gross - refund) };
       });
 
-      return { success: true, data: { granularity, series } };
+      return { success: true, data: { granularity, currency, series } };
     });
   }
 

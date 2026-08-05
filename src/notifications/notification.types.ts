@@ -33,6 +33,8 @@ export const NOTIFICATION_TYPES = {
   PAYOUT_COMPLETED: 'payout_completed',
   PAYOUT_REJECTED: 'payout_rejected',
   PAYOUT_RETRIED: 'payout_retried',
+  STORE_APPROVED: 'store_approved',
+  STORE_REJECTED: 'store_rejected',
 } as const;
 
 export type NotificationType = (typeof NOTIFICATION_TYPES)[keyof typeof NOTIFICATION_TYPES];
@@ -70,4 +72,6 @@ export const NOTIFICATION_CATEGORY: Record<string, 'orders' | 'messages' | 'prom
   [NOTIFICATION_TYPES.PAYOUT_COMPLETED]: 'finance',
   [NOTIFICATION_TYPES.PAYOUT_REJECTED]: 'finance',
   [NOTIFICATION_TYPES.PAYOUT_RETRIED]: 'finance',
+  [NOTIFICATION_TYPES.STORE_APPROVED]: 'promotions',
+  [NOTIFICATION_TYPES.STORE_REJECTED]: 'promotions',
 };

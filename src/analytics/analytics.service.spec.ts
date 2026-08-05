@@ -25,7 +25,10 @@ describe('AnalyticsService', () => {
 
   beforeEach(() => {
     orderModel = { aggregate: jest.fn().mockResolvedValue([]) };
-    storeModel = { findOne: jest.fn().mockResolvedValue({ _id: STORE_ID, sellerId: SELLER_ID, name: 'Test Store' }) };
+    storeModel = {
+      findOne: jest.fn().mockResolvedValue({ _id: STORE_ID, sellerId: SELLER_ID, name: 'Test Store' }),
+      find: jest.fn().mockReturnValue({ select: jest.fn().mockReturnValue({ lean: jest.fn().mockResolvedValue([{ _id: STORE_ID, baseCurrency: 'USD' }]) }) }),
+    };
     productModel = { find: jest.fn().mockReturnValue({ select: jest.fn().mockReturnValue({ lean: jest.fn().mockResolvedValue([]) }) }) };
     productVariantModel = { aggregate: jest.fn().mockResolvedValue([]), find: jest.fn().mockReturnValue({ select: jest.fn().mockReturnValue({ lean: jest.fn().mockResolvedValue([]) }) }) };
     userModel = { find: jest.fn().mockReturnValue({ select: jest.fn().mockReturnValue({ lean: jest.fn().mockResolvedValue([]) }) }) };

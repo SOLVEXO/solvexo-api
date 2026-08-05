@@ -76,6 +76,38 @@ export class ManualPaymentConfig {
 }
 export const ManualPaymentConfigSchema = SchemaFactory.createForClass(ManualPaymentConfig);
 
+// Operational settings for the single authoritative PKR/USD (and later
+// EUR/GBP/...) exchange rate source — see ExchangeRateService and the
+// `exchangerates` collection it owns. This config holds only *how* rates
+// get refreshed/flagged, never the rate value itself (that's the append-only
+// ExchangeRate history, not a singleton field, so a full audit trail and
+// "which orders used rate X" traceability are possible).
+@Schema({ _id: false })
+export class FxConfig {
+  @Prop({ type: Boolean, default: true }) autoRefreshEnabled: boolean;
+  @Prop({ type: Number, default: 24 }) refreshIntervalHours: number;
+  @Prop({ type: Number, default: 48 }) staleRateAlertThresholdHours: number;
+  // A newly-ingested rate outside [min,max] for its currency is rejected
+  // outright (not persisted as current) — guards against a malformed/zero/
+  // negative provider response.
+  @Prop({ type: Number, default: 150 }) sanityBandMinPKR: number;
+  @Prop({ type: Number, default: 450 }) sanityBandMaxPKR: number;
+  // A newly-ingested rate that's within the sane band but moved more than
+  // this percent from the current rate is held (isRejected: true, visible
+  // in history) rather than auto-promoted — an admin must confirm it
+  // explicitly. Deliberately more cautious than "auto-apply + alert": once
+  // an order is created against a rate it's immutable forever, so a bad
+  // automatic promotion can't be walked back the way a held one can.
+  @Prop({ type: Number, default: 8 }) abnormalJumpAlertPercent: number;
+  // Platform-wide open FX exposure ceiling (USD-equivalent, summed across
+  // every non-USD currency's pending-settlement balance — see
+  // AdminFinanceService#getFxExposure). A daily cron compares the current
+  // exposure against this and raises a security alert on breach; this does
+  // NOT trigger any automatic hedging/trading, just visibility.
+  @Prop({ type: Number, default: 50_000 }) exposureThresholdUSD: number;
+}
+export const FxConfigSchema = SchemaFactory.createForClass(FxConfig);
+
 @Schema({ _id: false })
 export class EmailConfig {
   @Prop({ type: String, default: 'Solvexo' }) fromName: string;
@@ -116,6 +148,9 @@ export class PlatformConfig {
 
   @Prop({ type: ManualPaymentConfigSchema, default: () => ({}) })
   manualPaymentConfig: ManualPaymentConfig;
+
+  @Prop({ type: FxConfigSchema, default: () => ({}) })
+  fxConfig: FxConfig;
 }
 
 export const PlatformConfigSchema = SchemaFactory.createForClass(PlatformConfig);

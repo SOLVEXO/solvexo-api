@@ -9,13 +9,15 @@ import { ManualPaymentProvider } from './manual-payment.provider';
 import { StripePaymentProvider } from './stripe-payment.provider';
 
 /**
- * PaymentGatewayService — delegates to the active provider selected via env.
+ * PaymentGatewayService — Stripe is the single production payment provider.
  *
- * PAYMENT_PROVIDER=manual  → ManualPaymentProvider (default, no real charges)
- * PAYMENT_PROVIDER=stripe  → StripePaymentProvider (production Stripe integration)
- *
- * Swap providers by setting the env variable — no call-site changes needed
- * anywhere else in the codebase.
+ * PAYMENT_PROVIDER=stripe  → StripePaymentProvider (default — real Stripe;
+ *   test vs. live mode is controlled entirely by which STRIPE_SECRET_KEY
+ *   value is configured, sk_test_... vs sk_live_..., never by code).
+ * PAYMENT_PROVIDER=manual  → ManualPaymentProvider, a no-op stub that moves
+ *   no real money — kept ONLY as an explicit local-dev/CI opt-in (refuses to
+ *   start under NODE_ENV=production) so tests never need live Stripe
+ *   credentials; it is not a second real payment provider.
  */
 @Injectable()
 export class PaymentGatewayService implements IPaymentGateway, OnModuleInit {
@@ -24,7 +26,11 @@ export class PaymentGatewayService implements IPaymentGateway, OnModuleInit {
   readonly providerName: 'manual' | 'stripe';
 
   constructor(private readonly config: ConfigService) {
-    this.providerName = (config.get<string>('PAYMENT_PROVIDER') as 'manual' | 'stripe') ?? 'manual';
+    this.providerName = (config.get<string>('PAYMENT_PROVIDER') as 'manual' | 'stripe') ?? 'stripe';
+
+    if (this.providerName === 'manual' && config.get<string>('NODE_ENV') === 'production') {
+      throw new Error('PAYMENT_PROVIDER=manual is not allowed in production — Stripe is the only supported production payment provider. Set PAYMENT_PROVIDER=stripe (or leave it unset) with a real STRIPE_SECRET_KEY.');
+    }
 
     if (this.providerName === 'stripe') {
       const secretKey = config.get<string>('STRIPE_SECRET_KEY');
@@ -40,7 +46,7 @@ export class PaymentGatewayService implements IPaymentGateway, OnModuleInit {
   onModuleInit() {
     this.logger.log(`Subscription billing running on payment provider: "${this.providerName}"`);
     if (this.providerName === 'manual') {
-      this.logger.warn('PAYMENT_PROVIDER=manual — no real money will move. Set PAYMENT_PROVIDER=stripe with real keys for production.');
+      this.logger.warn('PAYMENT_PROVIDER=manual — no real money will move. This is a dev/CI-only stub; production always requires PAYMENT_PROVIDER=stripe.');
     }
   }
 

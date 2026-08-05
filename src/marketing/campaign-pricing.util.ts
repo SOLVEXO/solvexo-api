@@ -9,6 +9,8 @@ export interface ActiveCampaignForStore {
   name:          string;
   discountType:  'percentage' | 'fixed' | null;
   discountValue: number | null;
+  /** Only meaningful when discountType === 'fixed' — see Campaign.currency. */
+  currency:      string | null;
   endDate:       Date;
   /** Who bears the cost of this campaign's discount — see Campaign.sponsorType. */
   sponsorType:   'seller' | 'platform';

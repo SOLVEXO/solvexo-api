@@ -29,10 +29,16 @@ describe('PaymentService — COD enforcement', () => {
     const db = { repositories: { checkoutModel, storeModel } } as unknown as DatabaseService;
     const notificationsService = { notify: jest.fn() } as unknown as NotificationsService;
     const configService = { get: jest.fn().mockReturnValue(undefined) } as unknown as ConfigService;
+    const promotionsService = {} as any;
     const financeService = {} as unknown as FinanceService;
     adminConfigService = {} as any;
+    const exchangeRateService = {} as any;
+    const activityLogService = { log: jest.fn() } as any;
 
-    service = new PaymentService(db, notificationsService, configService, financeService, adminConfigService);
+    service = new PaymentService(
+      db, notificationsService, configService, promotionsService,
+      financeService, adminConfigService, exchangeRateService, activityLogService,
+    );
   });
 
   it('rejects a COD order when any store in the cart has opted out of COD', async () => {

@@ -6,6 +6,7 @@ import {
   UseInterceptors,
   UseGuards,
   BadRequestException,
+  Body,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
@@ -39,9 +40,13 @@ export class UploadController {
     storage: memoryStorage(),
     limits: { fileSize: 500 * 1024 * 1024 }, // 500MB
   }))
-  async uploadPrivateFile(@UploadedFile() file: Express.Multer.File) {
+  async uploadPrivateFile(@UploadedFile() file: Express.Multer.File, @Body('purpose') purpose?: string) {
     if (!file) throw new BadRequestException('No file uploaded');
-    const result = await this.uploadService.uploadPrivateFile(file);
+    // Only a known purpose gets its own folder — anything else (including
+    // omitted) keeps the original digital-products default so that flow is
+    // never affected by this addition.
+    const folder = purpose === 'kyc_document' ? 'private/kyc-documents' : undefined;
+    const result = await this.uploadService.uploadPrivateFile(file, folder);
     return {
       success: true,
       message: 'Private file uploaded successfully',

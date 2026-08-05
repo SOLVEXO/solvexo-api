@@ -15,6 +15,9 @@ import { SeoMonitoringService } from 'src/seo/services/seo-monitoring.service';
 import { SeoAuditService } from 'src/seo/services/seo-audit.service';
 import { AdminMarketingService } from 'src/admin-marketing/admin-marketing.service';
 import { PromotionsService } from 'src/promotions/promotions.service';
+import { ExchangeRateService } from 'src/exchange-rate/exchange-rate.service';
+import { ActivityLogService } from 'src/activity-log/activity-log.service';
+import { AdminFinanceService } from 'src/admin-finance/admin-finance.service';
 
 @Injectable()
 export class SchedulerService {
@@ -35,6 +38,9 @@ export class SchedulerService {
     private readonly seoAuditService: SeoAuditService,
     private readonly adminMarketingService: AdminMarketingService,
     private readonly promotionsService: PromotionsService,
+    private readonly exchangeRateService: ExchangeRateService,
+    private readonly activityLogService: ActivityLogService,
+    private readonly adminFinanceService: AdminFinanceService,
   ) {}
 
   /**
@@ -341,6 +347,65 @@ export class SchedulerService {
     await this.runLocked('seo-scheduled-audits', 30 * 60_000, async () => {
       const result = await this.seoAuditService.enqueueScheduledRuns();
       this.logger.log(`Scheduled SEO audits: ${result.queued} store(s) queued`);
+    });
+  }
+
+  // Daily refresh of the authoritative PKR/USD (and later EUR/GBP/...) rate
+  // — see ExchangeRateService. Checkout/settlement never call the provider
+  // directly; they always read whatever this cron last persisted, so a slow
+  // or unreachable provider never blocks a live checkout.
+  @Cron('0 3 * * *')
+  async refreshExchangeRates() {
+    await this.runLocked('fx-refresh', 60_000, async () => {
+      await this.exchangeRateService.refreshFromProvider();
+    });
+  }
+
+  // Hourly check only — never mutates a rate, just surfaces an
+  // isSecurityAlert activity-log entry if a currency's current rate has
+  // gone stale beyond FxConfig.staleRateAlertThresholdHours (e.g. the daily
+  // refresh above has been silently failing for days).
+  @Cron('30 * * * *')
+  async checkFxRateStaleness() {
+    await this.runLocked('fx-staleness-check', 30_000, async () => {
+      const staleness = await this.exchangeRateService.getStaleness();
+      for (const [currency, info] of Object.entries(staleness)) {
+        if (info?.isStale) {
+          this.logger.warn(`FX rate for ${currency} is stale: ${info.hoursOld.toFixed(1)}h old`);
+          await this.activityLogService.log({
+            storeId: 'platform',
+            category: 'finance',
+            action: 'fx_rate_stale',
+            description: `${currency} exchange rate is ${info.hoursOld.toFixed(1)}h old — provider refresh may be failing`,
+            actorId: 'system',
+            actorRole: 'system',
+            isSecurityAlert: true,
+          });
+        }
+      }
+    });
+  }
+
+  // Daily reconciliation — persists a snapshot comparing buyer collections
+  // against the ledger (see AdminFinanceService#getReconciliation) and
+  // raises a security alert per currency with a real discrepancy. Previously
+  // this comparison only ran on-demand when someone happened to load the
+  // admin dashboard, so a drift occurring between two dashboard views could
+  // go unnoticed indefinitely.
+  @Cron('15 2 * * *')
+  async runReconciliation() {
+    await this.runLocked('finance-reconciliation', 60_000, async () => {
+      await this.adminFinanceService.runAndPersistReconciliation(1);
+    });
+  }
+
+  // Daily FX exposure check — alerts if the platform's open non-settlement-
+  // currency position exceeds FxConfig.exposureThresholdUSD. Visibility
+  // only, no automatic hedging/trading.
+  @Cron('30 2 * * *')
+  async checkFxExposure() {
+    await this.runLocked('fx-exposure-check', 30_000, async () => {
+      await this.adminFinanceService.runFxExposureCheck();
     });
   }
 }

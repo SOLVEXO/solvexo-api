@@ -10,6 +10,8 @@ import { NOTIFICATION_TYPES } from 'src/notifications/notification.types';
 import { PromotionsService } from 'src/promotions/promotions.service';
 import { FinanceService } from 'src/finance/finance.service';
 import { AdminConfigService } from 'src/admin-config/admin-config.service';
+import { ExchangeRateService } from 'src/exchange-rate/exchange-rate.service';
+import { ActivityLogService } from 'src/activity-log/activity-log.service';
 import Stripe from 'stripe';
 
 @Injectable()
@@ -23,6 +25,8 @@ export class PaymentService {
     private readonly promotionsService: PromotionsService,
     private readonly financeService: FinanceService,
     private readonly adminConfigService: AdminConfigService,
+    private readonly exchangeRateService: ExchangeRateService,
+    private readonly activityLogService: ActivityLogService,
   ) {
     const secretKey = this.configService
       .get<string>('STRIPE_SECRET_KEY')
@@ -43,6 +47,46 @@ export class PaymentService {
 
   private round(n: number) {
     return Math.round(n * 100) / 100;
+  }
+
+  /**
+   * Issues a real Stripe refund for a specific amount against an already-
+   * completed PaymentTransaction — used by the admin/seller-initiated
+   * refund-request flow (RefundRequestService), which needs a targeted,
+   * item-level refund rather than the whole charge. `amountInPaymentCurrency`
+   * must already be in the same currency Stripe actually charged
+   * (PaymentTransaction.currency — always USD, per the currency-rail
+   * guard in `initiatePayment`) — Stripe enforces it can never exceed the
+   * original charge or be issued in a different currency, which is exactly
+   * the "refund never uses today's FX rate" guarantee for this rail.
+   */
+  /** Issues a targeted Stripe refund for a caller (e.g. RefundRequestService)
+   *  that has ALREADY done its own correctly-attributed ledger reversal.
+   *  Stripe will still emit a `charge.refunded` webhook for this refund —
+   *  we immediately bump `PaymentTransaction.amountRefunded` here (rather
+   *  than waiting for that webhook) so `handleChargeRefunded`'s
+   *  `newRefundDelta` computes to ~0 and skips re-reversing the ledger a
+   *  second time via its own proportional-across-all-sellers math. Without
+   *  this, the caller's precise per-seller reversal gets silently redone
+   *  (and double-counted) by the generic webhook handler once it lands. */
+  async refundStripePaymentIntent(
+    stripePaymentIntentId: string,
+    amountInPaymentCurrency: number,
+    idempotencyKey: string,
+  ): Promise<{ id: string } | null> {
+    if (!this.stripe) return null;
+    const refund = await this.stripe.refunds.create(
+      {
+        payment_intent: stripePaymentIntentId,
+        amount: Math.round(amountInPaymentCurrency * 100),
+      },
+      { idempotencyKey },
+    );
+    await this.databaseService.repositories.paymentTransactionModel.findOneAndUpdate(
+      { stripePaymentIntentId, isDelete: false },
+      { $inc: { amountRefunded: this.round(amountInPaymentCurrency) } },
+    );
+    return { id: refund.id };
   }
 
   private assertStripeConfigured(): InstanceType<typeof Stripe> {
@@ -88,6 +132,17 @@ export class PaymentService {
       throw new BadRequestException('Checkout has expired');
     }
 
+    // Payment rail is derived from checkout currency, never chosen
+    // independently — Stripe only ever processes USD checkouts in this
+    // codebase; a PKR checkout must use the manual bank-transfer rail
+    // instead (manualBankTransferPayment). This is the direct guard against
+    // ever asking Stripe to charge a PKR-denominated amount.
+    if (checkout.currency !== 'USD') {
+      throw new BadRequestException(
+        `Card payment isn't available for a ${checkout.currency} checkout — please use the bank transfer option instead.`,
+      );
+    }
+
     const physicalItems = checkout.items.filter(
       (i: any) => i.type === 'physical',
     );
@@ -128,8 +183,25 @@ export class PaymentService {
         );
       }
     }
+    // digitalItems[].totalPrice is each item's OWN native seller currency
+    // (never converted at checkout-item level — only checkout.totalAmount
+    // is) — must be converted per line into checkout.currency before
+    // summing, same rule as CheckoutService.convertedSubtotal, using this
+    // checkout's own frozen fxSnapshots rather than a fresh rate.
     const chargeAmount = useSplit
-      ? this.round(digitalItems.reduce((s: number, i: any) => s + i.totalPrice, 0))
+      ? this.round(
+          digitalItems.reduce(
+            (s: number, i: any) =>
+              s +
+              this.exchangeRateService.convertWithSnapshots(
+                i.totalPrice,
+                i.currency ?? checkout.currency,
+                checkout.currency,
+                (checkout.fxSnapshots as any) ?? [],
+              ),
+            0,
+          ),
+        )
       : checkout.totalAmount;
     const paymentScope = useSplit ? 'digital_only' : 'full';
 
@@ -209,6 +281,8 @@ export class PaymentService {
       checkoutId: checkout._id.toString(),
       paymentType: 'stripe',
       amount: chargeAmount,
+      currency: checkout.currency,
+      fxSnapshots: checkout.fxSnapshots,
       paymentScope,
       status: 'pending',
       stripePaymentIntentId: paymentIntent.id,
@@ -240,8 +314,14 @@ export class PaymentService {
    *  never arrives at all. */
   async stripeWebhook(rawBody: Buffer, signature: string) {
     const stripe = this.assertStripeConfigured();
+    // Falls back to the live STRIPE_WEBHOOK_SECRET when the TEST one isn't
+    // set — a deployment running real (non-test-mode) Stripe keys had no
+    // way to verify its webhooks otherwise, since only the TEST secret was
+    // ever read here.
     const webhookSecret =
-      this.configService.get<string>('STRIPE_WEBHOOK_SECRET_TEST') || '';
+      this.configService.get<string>('STRIPE_WEBHOOK_SECRET_TEST') ||
+      this.configService.get<string>('STRIPE_WEBHOOK_SECRET') ||
+      '';
 
     let event: any;
     try {
@@ -250,33 +330,69 @@ export class PaymentService {
       throw new BadRequestException('Invalid Stripe webhook signature');
     }
 
-    if (event.type === 'payment_intent.succeeded') {
-      const paymentIntent = event.data.object;
-      await this.finalizePaymentIntent(paymentIntent.id).catch((err: any) => {
-        console.error('Webhook finalize failed:', err?.message, {
-          paymentIntentId: paymentIntent.id,
-        });
+    // Dedup on the Stripe event id — a redelivered event fails this unique
+    // insert and is treated as an already-processed no-op, independent of
+    // the incidental protection PaymentTransaction's own status-transition
+    // guard happens to provide. See StripeWebhookEvent's schema comment.
+    try {
+      await this.databaseService.repositories.stripeWebhookEventModel.create({
+        eventId: event.id,
+        eventType: event.type,
       });
-    } else if (event.type === 'payment_intent.payment_failed') {
-      const paymentIntent = event.data.object;
-      await this.databaseService.repositories.paymentTransactionModel.findOneAndUpdate(
-        {
-          stripePaymentIntentId: paymentIntent.id,
-          status: 'pending',
-          isDelete: false,
-        },
-        { status: 'failed' },
-      );
-    } else if (event.type === 'charge.refunded') {
-      const charge = event.data.object;
-      await this.handleChargeRefunded(charge).catch((err: any) => {
-        console.error('Refund webhook handling failed:', err?.message, { chargeId: charge.id });
+    } catch (err: any) {
+      if (err?.code === 11000) {
+        return { received: true }; // already processed this exact event
+      }
+      throw err;
+    }
+
+    // Everything below used to swallow its own errors (`.catch(console.error)`)
+    // and unconditionally `return { received: true }` regardless of outcome —
+    // meaning a transient failure here (a DB hiccup, an unhandled edge case)
+    // silently dropped the event forever: Stripe saw HTTP 200 so it never
+    // retried, and there was no queue behind this handler to retry it either.
+    // Now a failure here is rethrown (→ a non-2xx response), which puts the
+    // event back into Stripe's own retry schedule — and the dedup row we just
+    // inserted is deleted first so the retry isn't immediately swallowed as
+    // "already processed" by the dedup check above.
+    try {
+      if (event.type === 'payment_intent.succeeded') {
+        const paymentIntent = event.data.object;
+        await this.finalizePaymentIntent(paymentIntent);
+      } else if (event.type === 'payment_intent.payment_failed') {
+        const paymentIntent = event.data.object;
+        await this.databaseService.repositories.paymentTransactionModel.findOneAndUpdate(
+          {
+            stripePaymentIntentId: paymentIntent.id,
+            status: 'pending',
+            isDelete: false,
+          },
+          { status: 'failed' },
+        );
+      } else if (event.type === 'charge.refunded') {
+        const charge = event.data.object;
+        await this.handleChargeRefunded(charge);
+      } else if (event.type === 'charge.dispute.created') {
+        const dispute = event.data.object;
+        await this.handleChargeDispute(dispute);
+      }
+    } catch (err: any) {
+      console.error(`Stripe webhook handling failed (${event.type}):`, err?.message, { eventId: event.id });
+      await this.databaseService.repositories.stripeWebhookEventModel
+        .deleteOne({ eventId: event.id })
+        .catch(() => {});
+      await this.activityLogService.log({
+        storeId: 'platform',
+        category: 'finance',
+        action: 'stripe_webhook_processing_failed',
+        description: `Stripe webhook ${event.type} (event ${event.id}) failed to process: ${err?.message}`,
+        actorId: 'system',
+        actorRole: 'system',
+        isSecurityAlert: true,
+        targetId: event.id,
+        targetType: 'stripe_webhook_event',
       });
-    } else if (event.type === 'charge.dispute.created') {
-      const dispute = event.data.object;
-      await this.handleChargeDispute(dispute).catch((err: any) => {
-        console.error('Dispute webhook handling failed:', err?.message, { disputeId: dispute.id });
-      });
+      throw err;
     }
 
     return { received: true };
@@ -337,7 +453,17 @@ export class PaymentService {
     await this.reverseSellerLedgerForOrders(transaction.orderIds, disputeAmount, 'Stripe dispute/chargeback');
   }
 
-  /** Distributes a charge-level refund/dispute amount across every affected sellerOrder, proportional to its share of the orders' combined total. */
+  /**
+   * Distributes a charge-level refund/dispute amount across every affected
+   * sellerOrder, proportional to its share of the orders' combined total.
+   * `refundAmountTotal` is always in the ORDER's own currency (Stripe only
+   * ever processes USD checkouts in this codebase — see initiatePayment's
+   * currency-rail guard — so this is always USD). Each seller's share is
+   * then converted from that order currency into THEIR OWN settlement
+   * currency (so.settlementCurrency) using the order's own frozen
+   * fxSnapshots before being recorded against their wallet — a seller
+   * priced in PKR must never have their ledger debited in USD.
+   */
   private async reverseSellerLedgerForOrders(orderIds: string[], refundAmountTotal: number, reason: string) {
     const { orderModel } = this.databaseService.repositories;
     const orders = await orderModel.find({ _id: { $in: orderIds }, isDelete: false }).lean();
@@ -348,13 +474,20 @@ export class PaymentService {
 
     for (const order of orders as any[]) {
       for (const so of order.sellerOrders) {
-        const share = this.round((so.subtotal / grandTotal) * refundAmountTotal);
-        if (share <= 0) continue;
+        const shareInOrderCurrency = this.round((so.subtotal / grandTotal) * refundAmountTotal);
+        if (shareInOrderCurrency <= 0) continue;
+        const settlementCurrency = so.settlementCurrency ?? order.currency ?? 'USD';
+        const share = this.exchangeRateService.convertWithSnapshots(
+          shareInOrderCurrency,
+          order.currency || 'USD',
+          settlementCurrency,
+          (order.fxSnapshots as any) ?? [],
+        );
         try {
           await this.financeService.recordRefund(
             so.storeId, so.sellerId, order._id.toString(), share,
             'system', 'system',
-            { description: `${reason} — Order #${order._id}`, targetType: 'order' },
+            { description: `${reason} — Order #${order._id}`, targetType: 'order', currency: settlementCurrency },
           );
         } catch (err: any) {
           console.error(`${reason} ledger reversal failed:`, err?.message, { orderId: order._id, storeId: so.storeId });
@@ -380,9 +513,16 @@ export class PaymentService {
     return orders.map((o: any) => this.formatOrder(o));
   }
 
+  /** `paymentIntent` is the full Stripe object (from the webhook event or a
+   *  direct `retrieve()`), not just an id — its own `amount`/`currency` are
+   *  cross-checked against the stored Checkout below before any order is
+   *  created, so a bug elsewhere in the amount-computation path can never
+   *  silently produce an order whose value disagrees with what Stripe
+   *  actually confirmed it charged. */
   private async finalizePaymentIntent(
-    paymentIntentId: string,
+    paymentIntent: { id: string; amount?: number; currency?: string },
   ): Promise<{ orderIds: string[] } | null> {
+    const paymentIntentId = paymentIntent.id;
     const {
       checkoutModel,
       paymentTransactionModel,
@@ -417,6 +557,33 @@ export class PaymentService {
     });
     if (!checkout || checkout.status === 'completed') {
       return { orderIds: transaction.orderIds };
+    }
+
+    // Amount/currency safety net: what Stripe confirms it actually charged
+    // must match what this checkout's own record says it should have
+    // charged. A mismatch here means something upstream (a bug, a race, a
+    // corrupted request) diverged from what was authorized — refuse to
+    // create an order from it and surface it as a security alert rather
+    // than silently trusting either side.
+    if (typeof paymentIntent.amount === 'number' && typeof paymentIntent.currency === 'string') {
+      const expectedAmountCents = Math.round(transaction.amount * 100);
+      const expectedCurrency = (checkout.currency || 'USD').toUpperCase();
+      const actualCurrency = paymentIntent.currency.toUpperCase();
+      if (paymentIntent.amount !== expectedAmountCents || actualCurrency !== expectedCurrency) {
+        await paymentTransactionModel.findByIdAndUpdate(transaction._id, { status: 'pending', paidAt: null });
+        await this.activityLogService.log({
+          storeId: 'platform',
+          category: 'finance',
+          action: 'payment_amount_currency_mismatch',
+          description: `Stripe confirmed ${paymentIntent.amount} ${actualCurrency} but checkout ${checkout._id} expected ${expectedAmountCents} ${expectedCurrency} — order NOT created, needs manual review`,
+          actorId: 'system',
+          actorRole: 'system',
+          isSecurityAlert: true,
+          targetId: checkout._id.toString(),
+          targetType: 'checkout',
+        });
+        throw new BadRequestException('Payment amount/currency mismatch — this charge requires manual review');
+      }
     }
 
     // A 'digital_only' transaction means this Stripe charge only covered the
@@ -506,7 +673,7 @@ export class PaymentService {
           pending.stripePaymentIntentId,
         );
         if (pi.status === 'succeeded') {
-          const result = await this.finalizePaymentIntent(pi.id);
+          const result = await this.finalizePaymentIntent(pi);
           const orders = await this.formatOrdersByIds(result?.orderIds ?? []);
           return { success: true, data: { status: 'completed', orders } };
         }
@@ -619,6 +786,8 @@ export class PaymentService {
       orderIds: orders.map((o: any) => o._id.toString()),
       paymentType: 'cash_on_delivery',
       amount: checkout.totalAmount,
+      currency: checkout.currency,
+      fxSnapshots: checkout.fxSnapshots,
       status: 'completed',
       stripePaymentIntentId: null,
       stripeClientSecret: null,
@@ -688,20 +857,44 @@ export class PaymentService {
       }
     }
 
-    const fxRate = manualConfig.usdToPkrRate;
-    const amountUSD = checkout.totalAmount;
-    const amountPKR = this.round(amountUSD * fxRate);
+    // If this checkout is already PKR-denominated (the normal case for a
+    // Pakistani buyer post-multi-currency-checkout), no conversion is
+    // needed at all — checkout.totalAmount already IS the PKR amount to
+    // transfer. Only a USD-denominated checkout that still chose this rail
+    // needs converting, and that conversion now uses THIS checkout's own
+    // frozen fxSnapshots — never the separate, legacy
+    // ManualPaymentConfig.usdToPkrRate, which this replaces as the
+    // authoritative source (previously two disconnected PKR rates could
+    // silently disagree; now there is exactly one).
+    let currencyConversion: { code: string; rate: number } | undefined;
+    let amountPKR: number;
+    let effectiveSnapshots = (checkout.fxSnapshots as any) ?? [];
+    if (checkout.currency === 'PKR') {
+      amountPKR = checkout.totalAmount;
+    } else {
+      // PKR wasn't necessarily needed when this checkout's own fxSnapshots
+      // were first built (e.g. an all-USD cart with no physical items) —
+      // ensureCurrencyInSnapshots fetches+appends it now if missing, and the
+      // extended array is persisted back onto the checkout below so this
+      // addition becomes part of its permanent record too.
+      effectiveSnapshots = await this.exchangeRateService.ensureCurrencyInSnapshots(effectiveSnapshots, 'PKR');
+      const ratePerUSD = this.exchangeRateService.convertWithSnapshots(1, 'USD', 'PKR', effectiveSnapshots);
+      currencyConversion = { code: 'PKR', rate: ratePerUSD };
+      amountPKR = this.round(checkout.totalAmount * ratePerUSD);
+    }
 
     await checkoutModel.findByIdAndUpdate(checkoutId, {
       paymentType: 'manual_bank_transfer',
       status: 'payment_pending',
+      fxSnapshots: effectiveSnapshots,
     });
+    checkout.fxSnapshots = effectiveSnapshots as any;
 
     const pendingVerificationInfo = { paymentType: 'manual_bank_transfer', isPaid: false, paymentStatus: 'pending_verification' };
     const orders = await this.createOrder(
       userId, checkout, orderModel, addressModel,
       pendingVerificationInfo, pendingVerificationInfo,
-      { code: 'PKR', rate: fxRate },
+      currencyConversion,
     );
 
     await paymentTransactionModel.create({
@@ -711,6 +904,7 @@ export class PaymentService {
       paymentType: 'manual_bank_transfer',
       amount: amountPKR,
       currency: 'PKR',
+      fxSnapshots: checkout.fxSnapshots,
       status: 'pending', // flips to 'completed' only once an admin approves the proof
       stripePaymentIntentId: null,
       stripeClientSecret: null,
@@ -720,7 +914,21 @@ export class PaymentService {
     await checkoutModel.findByIdAndUpdate(checkoutId, { status: 'completed' });
     await this.removeCheckedOutItemsFromCart(userId, checkout, cartModel);
 
-    return { orders, amountUSD, amountPKR, fxRate };
+    return {
+      orders,
+      amountPKR,
+      fxRate: currencyConversion?.rate ?? 1,
+      // Kept as `amountUSD` for backward compatibility with existing
+      // consumers (ManualPaymentsService.submitPayment → ManualPaymentProof
+      // schema's `amountUSD` field) — now means "the checkout's original
+      // amount before PKR conversion," which is only ever literally USD
+      // when checkout.currency === 'USD'; equal to amountPKR (no
+      // conversion) when the checkout was already PKR. Renaming the
+      // ManualPaymentProof field itself is a separate, wider-blast-radius
+      // change intentionally left out of this phase.
+      amountUSD: checkout.totalAmount,
+      originalCurrency: checkout.currency,
+    };
   }
 
   private formatOrder(order: any) {
@@ -745,6 +953,12 @@ export class PaymentService {
       paymentMethod: order.paymentType,
       isPaid: order.isPaid,
       orderStatus: order.orderStatus,
+      // The currency this order was ACTUALLY placed/charged in — permanent,
+      // never re-derived from today's rate or the buyer's current display
+      // preference (which may have changed since). This was previously
+      // missing entirely, so the order-success screen had no choice but to
+      // hardcode "$" regardless of what currency the order was really in.
+      currency: order.currency,
       deliveryAddress: order.shippingAddress ?? null,
       items: allItems,
       summary: {
@@ -771,7 +985,7 @@ export class PaymentService {
     // `checkout.currency`) for Stripe/COD, which stay USD exactly as before.
     currencyConversion?: { code: string; rate: number },
   ) {
-    const { productVariantModel, productModel } =
+    const { productVariantModel, productModel, storeModel } =
       this.databaseService.repositories;
 
     // Guards a webhook/poll retry (e.g. after a crash between creating the
@@ -785,9 +999,27 @@ export class PaymentService {
     const physicalItems = checkout.items.filter((i: any) => i.type === 'physical');
     const digitalItems = checkout.items.filter((i: any) => i.type === 'digital');
 
-    const fxRate = currencyConversion?.rate ?? 1;
     const orderCurrency = currencyConversion?.code ?? (checkout.currency || 'USD');
-    const conv = (n: number | null | undefined) => (n == null ? n : this.round(n * fxRate));
+    const fxSnapshots = (checkout.fxSnapshots as any) ?? [];
+    // Converts `amount` from its OWN source currency into `orderCurrency`,
+    // using this checkout's frozen fxSnapshots — never a fresh live rate.
+    // Replaces the old single-blanket-multiplier conversion (correct only
+    // when every figure shared one currency); a mixed-seller-currency cart
+    // needs each figure converted from ITS OWN native currency, not a
+    // single global rate applied uniformly.
+    const convFrom = (n: number | null | undefined, fromCurrency: string) =>
+      n == null ? n : this.exchangeRateService.convertWithSnapshots(n, fromCurrency, orderCurrency, fxSnapshots);
+    // Sums `items[].totalPrice`/`[field]` by converting each line from its
+    // own native currency into orderCurrency first — never summing raw
+    // native-currency numbers across items that can belong to different-
+    // currency sellers (mirrors CheckoutService.convertedSubtotal).
+    const convertedSum = (items: any[], field: string, filter?: (i: any) => boolean) =>
+      this.round(
+        (filter ? items.filter(filter) : items).reduce(
+          (s: number, i: any) => s + (convFrom(i[field] ?? 0, i.currency ?? checkout.currency) ?? 0),
+          0,
+        ),
+      );
 
     // --- STOCK MINUS (atomic, sirf physical, unlimited variants skip decrement) ---
     const decremented: { variantId: string; quantity: number }[] = [];
@@ -842,6 +1074,18 @@ export class PaymentService {
       }
     }
 
+    // Every seller is always credited in THEIR OWN Store.baseCurrency,
+    // regardless of what currency the buyer paid in (see
+    // SellerOrder.settlementCurrency/settlementAmount's schema comment) —
+    // batch-fetched once per distinct store, same one-query-instead-of-N
+    // pattern used elsewhere in this codebase.
+    const allStoreIds = [...new Set(checkout.items.map((i: any) => i.storeId))] as string[];
+    const storesById = new Map(
+      (
+        await storeModel.find({ _id: { $in: allStoreIds } }).select('baseCurrency').lean()
+      ).map((s: any) => [s._id.toString(), s]),
+    );
+
     // --- helper: ek type ke items ko store-wise sellerOrders me ---
     const buildSellerOrders = (items: any[]) => {
       const storeMap: Record<string, any[]> = {};
@@ -852,10 +1096,16 @@ export class PaymentService {
       }
 
       return Object.values(storeMap).map((storeItems) => {
-        const subtotal = storeItems.reduce((s, i) => s + i.totalPrice, 0);
+        // Every item in one group belongs to the same store, hence the
+        // same native currency — safe to sum raw here (unlike the
+        // order-level rollups below, which span multiple stores/currencies).
+        const storeCurrency = storeItems[0].currency ?? checkout.currency;
+        const subtotalNative = storeItems.reduce((s, i) => s + i.totalPrice, 0);
+        const sellerStoreId = storeItems[0].storeId;
+        const settlementCurrency = storesById.get(sellerStoreId)?.baseCurrency ?? storeCurrency;
         // Only items whose campaign is platform-sponsored count toward this
         // restoring this seller's payout — see FinanceService.recordSale.
-        const platformSponsoredDiscountUSD = storeItems.reduce(
+        const platformSponsoredDiscountUSDNative = storeItems.reduce(
           (s, i) =>
             s +
             (i.campaignSponsorType === 'platform'
@@ -863,10 +1113,21 @@ export class PaymentService {
               : 0),
           0,
         );
+        // Settlement basis: `storeCurrency` IS this seller's own
+        // Store.baseCurrency (settlementCurrency) by construction — an
+        // item's `currency` was stamped from its owning store at
+        // checkout-item-build time (see CheckoutService.createCheckout).
+        // So the native (never-converted) figures ARE already exactly what
+        // the seller is credited — no conversion, and no risk of
+        // compounding rounding error from converting native→orderCurrency
+        // and back again just to arrive at the same number.
+        const settlementAmount = this.round(subtotalNative + platformSponsoredDiscountUSDNative);
         return {
           sellerId: storeItems[0].sellerId,
           storeId: storeItems[0].storeId,
           fulfillmentType: storeItems[0].type, // 'physical' ya 'digital'
+          settlementCurrency,
+          settlementAmount,
           items: storeItems.map((i) => ({
             productId: i.productId,
             variantId: i.variantId,
@@ -878,18 +1139,18 @@ export class PaymentService {
             options: i.options ?? [],
             licenseType: i.licenseType ?? null,
             quantity: i.quantity,
-            price: conv(i.price),
-            totalPrice: conv(i.totalPrice),
-            originalPrice: conv(i.originalPrice ?? null),
-            subscriberDiscountUSD: conv(i.subscriberDiscountUSD ?? 0),
-            couponDiscountUSD: conv(i.couponDiscountUSD ?? 0),
+            price: convFrom(i.price, storeCurrency),
+            totalPrice: convFrom(i.totalPrice, storeCurrency),
+            originalPrice: convFrom(i.originalPrice ?? null, storeCurrency),
+            subscriberDiscountUSD: convFrom(i.subscriberDiscountUSD ?? 0, storeCurrency),
+            couponDiscountUSD: convFrom(i.couponDiscountUSD ?? 0, storeCurrency),
             campaignId: i.campaignId ?? null,
-            campaignDiscountUSD: conv(i.campaignDiscountUSD ?? 0),
+            campaignDiscountUSD: convFrom(i.campaignDiscountUSD ?? 0, storeCurrency),
             campaignSponsorType: i.campaignSponsorType ?? null,
             status: 'pending',
           })),
-          subtotal: conv(subtotal),
-          platformSponsoredDiscountUSD: conv(platformSponsoredDiscountUSD),
+          subtotal: convFrom(subtotalNative, storeCurrency),
+          platformSponsoredDiscountUSD: convFrom(platformSponsoredDiscountUSDNative, storeCurrency),
           status: 'pending',
           tracking: null,
           shippedAt: null,
@@ -915,30 +1176,20 @@ export class PaymentService {
     // === PHYSICAL ORDER ===
     if (physicalItems.length > 0) {
       const sellerOrders = buildSellerOrders(physicalItems);
-      const subtotal = physicalItems.reduce(
-        (s: number, i: any) => s + i.totalPrice,
-        0,
-      );
-      const shippingFee = checkout.shippingFee || 0;
-      const subscriberDiscountTotal = physicalItems.reduce(
-        (s: number, i: any) => s + (i.subscriberDiscountUSD ?? 0),
-        0,
-      );
-      const couponDiscountTotal = physicalItems.reduce(
-        (s: number, i: any) => s + (i.couponDiscountUSD ?? 0),
-        0,
-      );
-      const campaignDiscountTotal = physicalItems.reduce(
-        (s: number, i: any) => s + (i.campaignDiscountUSD ?? 0),
-        0,
-      );
-      const platformSponsoredDiscountTotal = physicalItems.reduce(
-        (s: number, i: any) =>
-          s +
-          (i.campaignSponsorType === 'platform'
-            ? (i.campaignDiscountUSD ?? 0)
-            : 0),
-        0,
+      // Spans potentially multiple sellers/currencies — each item is
+      // converted from its OWN native currency into orderCurrency before
+      // summing (convertedSum), never summed raw across mixed currencies.
+      const subtotal = convertedSum(physicalItems, 'totalPrice');
+      // checkout.shippingFee is always already in checkout.currency (see
+      // CheckoutService.addShippingInCheckout) — convert it into
+      // orderCurrency the same way (a no-op when they're the same, as in
+      // every case except manual-bank-transfer).
+      const shippingFee = convFrom(checkout.shippingFee || 0, checkout.currency) ?? 0;
+      const subscriberDiscountTotal = convertedSum(physicalItems, 'subscriberDiscountUSD');
+      const couponDiscountTotal = convertedSum(physicalItems, 'couponDiscountUSD');
+      const campaignDiscountTotal = convertedSum(physicalItems, 'campaignDiscountUSD');
+      const platformSponsoredDiscountTotal = convertedSum(
+        physicalItems, 'campaignDiscountUSD', (i) => i.campaignSponsorType === 'platform',
       );
 
       const physicalOrder = await orderModel.create({
@@ -946,17 +1197,18 @@ export class PaymentService {
         userId,
         checkoutId: checkout._id.toString(),
         currency: orderCurrency,
+        fxSnapshots,
         sellerOrders,
         shippingAddress,
-        subtotal: conv(subtotal),
-        shippingFee: conv(shippingFee),
+        subtotal,
+        shippingFee,
         taxAmount: 0,
-        subscriberDiscountTotal: conv(subscriberDiscountTotal),
+        subscriberDiscountTotal,
         couponCode: couponDiscountTotal > 0 ? checkout.couponCode : null,
-        couponDiscountTotal: conv(couponDiscountTotal),
-        campaignDiscountTotal: conv(campaignDiscountTotal),
-        platformSponsoredDiscountTotal: conv(platformSponsoredDiscountTotal),
-        totalAmount: this.round((subtotal + shippingFee) * fxRate),
+        couponDiscountTotal,
+        campaignDiscountTotal,
+        platformSponsoredDiscountTotal,
+        totalAmount: this.round(subtotal + shippingFee),
         paymentType: physicalPayment.paymentType,
         paymentStatus: physicalPayment.paymentStatus ?? (physicalPayment.isPaid ? 'paid' : 'unpaid'),
         isPaid: physicalPayment.isPaid,
@@ -973,29 +1225,12 @@ export class PaymentService {
     // === DIGITAL ORDER ===
     if (digitalItems.length > 0) {
       const sellerOrders = buildSellerOrders(digitalItems);
-      const subtotal = digitalItems.reduce(
-        (s: number, i: any) => s + i.totalPrice,
-        0,
-      );
-      const subscriberDiscountTotal = digitalItems.reduce(
-        (s: number, i: any) => s + (i.subscriberDiscountUSD ?? 0),
-        0,
-      );
-      const couponDiscountTotal = digitalItems.reduce(
-        (s: number, i: any) => s + (i.couponDiscountUSD ?? 0),
-        0,
-      );
-      const campaignDiscountTotal = digitalItems.reduce(
-        (s: number, i: any) => s + (i.campaignDiscountUSD ?? 0),
-        0,
-      );
-      const platformSponsoredDiscountTotal = digitalItems.reduce(
-        (s: number, i: any) =>
-          s +
-          (i.campaignSponsorType === 'platform'
-            ? (i.campaignDiscountUSD ?? 0)
-            : 0),
-        0,
+      const subtotal = convertedSum(digitalItems, 'totalPrice');
+      const subscriberDiscountTotal = convertedSum(digitalItems, 'subscriberDiscountUSD');
+      const couponDiscountTotal = convertedSum(digitalItems, 'couponDiscountUSD');
+      const campaignDiscountTotal = convertedSum(digitalItems, 'campaignDiscountUSD');
+      const platformSponsoredDiscountTotal = convertedSum(
+        digitalItems, 'campaignDiscountUSD', (i) => i.campaignSponsorType === 'platform',
       );
 
       const digitalOrder = await orderModel.create({
@@ -1003,17 +1238,18 @@ export class PaymentService {
         userId,
         checkoutId: checkout._id.toString(),
         currency: orderCurrency,
+        fxSnapshots,
         sellerOrders,
         shippingAddress: null,
-        subtotal: conv(subtotal),
+        subtotal,
         shippingFee: 0,
         taxAmount: 0,
-        subscriberDiscountTotal: conv(subscriberDiscountTotal),
+        subscriberDiscountTotal,
         couponCode: couponDiscountTotal > 0 ? checkout.couponCode : null,
-        couponDiscountTotal: conv(couponDiscountTotal),
-        campaignDiscountTotal: conv(campaignDiscountTotal),
-        platformSponsoredDiscountTotal: conv(platformSponsoredDiscountTotal),
-        totalAmount: this.round(subtotal * fxRate),
+        couponDiscountTotal,
+        campaignDiscountTotal,
+        platformSponsoredDiscountTotal,
+        totalAmount: subtotal,
         paymentType: digitalPayment.paymentType,
         paymentStatus: digitalPayment.paymentStatus ?? (digitalPayment.isPaid ? 'paid' : 'unpaid'),
         isPaid: digitalPayment.isPaid,

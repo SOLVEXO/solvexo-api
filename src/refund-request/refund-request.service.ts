@@ -1,0 +1,269 @@
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { DatabaseService } from 'src/database/databaseservice';
+import { FinanceService } from 'src/finance/finance.service';
+import { PaymentService } from 'src/payment/payment.service';
+import { ExchangeRateService } from 'src/exchange-rate/exchange-rate.service';
+import { ActivityLogService } from 'src/activity-log/activity-log.service';
+import { CreateRefundRequestDto } from './dto/refund-request.dto';
+
+@Injectable()
+export class RefundRequestService {
+  constructor(
+    private readonly databaseService: DatabaseService,
+    private readonly financeService: FinanceService,
+    private readonly paymentService: PaymentService,
+    private readonly exchangeRateService: ExchangeRateService,
+    private readonly activityLogService: ActivityLogService,
+  ) {}
+
+  private round(n: number) {
+    return Math.round(n * 100) / 100;
+  }
+
+  private get model() {
+    return this.databaseService.repositories.refundRequestModel;
+  }
+
+  private async loadOrderAndSellerOrder(orderId: string, sellerOrderId: string) {
+    const order = await this.databaseService.repositories.orderModel.findOne({
+      _id: orderId,
+      isDelete: false,
+    });
+    if (!order) throw new NotFoundException('Order not found');
+    const sellerOrder = (order.sellerOrders as any[]).find(
+      (so) => so._id.toString() === sellerOrderId,
+    );
+    if (!sellerOrder) throw new NotFoundException('Seller order not found on this order');
+    return { order, sellerOrder };
+  }
+
+  /** Buyer or seller requests a refund for specific item(s) within ONE
+   *  sellerOrder of ONE order — never a proportional share of the whole
+   *  order, so a multi-seller cart's refund can never spill onto a
+   *  different seller's wallet. Ownership-checked against the caller. */
+  async createRequest(userId: string, role: 'user' | 'seller' | 'admin', dto: CreateRefundRequestDto) {
+    const { order, sellerOrder } = await this.loadOrderAndSellerOrder(dto.orderId, dto.sellerOrderId);
+
+    if (role === 'user' && order.userId !== userId) {
+      throw new ForbiddenException('This order does not belong to you');
+    }
+    if (role === 'seller' && sellerOrder.sellerId !== userId) {
+      throw new ForbiddenException('This seller order does not belong to you');
+    }
+
+    const items = (sellerOrder.items as any[]).filter((i) => dto.itemIds.includes(i._id.toString()));
+    if (items.length !== dto.itemIds.length) {
+      throw new BadRequestException('One or more itemIds were not found on this seller order');
+    }
+    const alreadyRefunded = items.filter((i) => i.status === 'refunded');
+    if (alreadyRefunded.length > 0) {
+      throw new BadRequestException('One or more of these items have already been refunded');
+    }
+
+    const existingPending = await this.model.findOne({
+      sellerOrderId: dto.sellerOrderId,
+      itemIds: { $in: dto.itemIds },
+      status: 'pending',
+      isDelete: false,
+    });
+    if (existingPending) {
+      throw new BadRequestException('A refund request for one of these items is already pending review');
+    }
+
+    const created = await this.model.create({
+      orderId: dto.orderId,
+      sellerOrderId: dto.sellerOrderId,
+      itemIds: dto.itemIds,
+      requestedBy: userId,
+      requestedByRole: role,
+      reason: dto.reason,
+      status: 'pending',
+    });
+
+    await this.activityLogService.log({
+      storeId: sellerOrder.storeId,
+      category: 'orders',
+      action: 'refund_requested',
+      description: `Refund requested for ${items.length} item(s) on order #${order.orderNumber} — ${dto.reason}`,
+      actorId: userId,
+      actorRole: role,
+      targetId: created._id.toString(),
+      targetType: 'refund_request',
+    });
+
+    return { success: true, message: 'Refund request submitted', data: created };
+  }
+
+  async listForOrder(orderId: string) {
+    const items = await this.model.find({ orderId, isDelete: false }).sort({ createdAt: -1 }).lean();
+    return { success: true, data: items };
+  }
+
+  async listPending(page = 1, limit = 20) {
+    const [items, total] = await Promise.all([
+      this.model.find({ status: 'pending', isDelete: false }).sort({ createdAt: 1 }).skip((page - 1) * limit).limit(limit).lean(),
+      this.model.countDocuments({ status: 'pending', isDelete: false }),
+    ]);
+    return { success: true, data: { items, total, page, limit } };
+  }
+
+  /**
+   * Approves a pending refund request — computes the buyer-facing amount
+   * from the order's own stored item totals (never today's live prices),
+   * converts it into the seller's own settlement currency using the
+   * order's own frozen fxSnapshots (never a fresh rate), debits ONLY that
+   * one seller's wallet via FinanceService.recordRefund, and — for a
+   * Stripe-paid order — issues a real, targeted Stripe refund for exactly
+   * that buyer-facing amount. Atomic pending→approved transition guards
+   * against a double-approval double-refunding everything.
+   */
+  async approve(adminId: string, requestId: string) {
+    const request = await this.model.findOneAndUpdate(
+      { _id: requestId, status: 'pending', isDelete: false },
+      { status: 'approved', reviewedBy: adminId, reviewedAt: new Date() },
+      { new: true },
+    );
+    if (!request) {
+      throw new BadRequestException('Refund request not found or already reviewed');
+    }
+
+    const order = await this.databaseService.repositories.orderModel.findOne({
+      _id: request.orderId, isDelete: false,
+    });
+    if (!order) throw new NotFoundException('Order not found');
+    const sellerOrder = (order.sellerOrders as any[]).find(
+      (so: any) => so._id.toString() === request.sellerOrderId,
+    );
+    if (!sellerOrder) throw new NotFoundException('Seller order not found on this order');
+
+    const items = (sellerOrder.items as any[]).filter((i: any) => request.itemIds.includes(i._id.toString()));
+
+    const buyerRefundAmount = this.round(items.reduce((s: number, i: any) => s + i.totalPrice, 0));
+    const buyerRefundCurrency = order.currency || 'USD';
+    const settlementCurrency = sellerOrder.settlementCurrency ?? buyerRefundCurrency;
+    const sellerDebitAmount = this.exchangeRateService.convertWithSnapshots(
+      buyerRefundAmount,
+      buyerRefundCurrency,
+      settlementCurrency,
+      (order.fxSnapshots as any) ?? [],
+    );
+
+    // Debit ONLY this seller's wallet — never the other sellerOrders on
+    // this same order, and never proportional across them.
+    await this.financeService.recordRefund(
+      sellerOrder.storeId, sellerOrder.sellerId, order._id.toString(), sellerDebitAmount,
+      adminId, 'admin',
+      {
+        description: `Approved refund — Order #${order.orderNumber}, ${items.length} item(s)`,
+        targetType: 'order',
+        currency: settlementCurrency,
+      },
+    );
+
+    let stripeRefundId: string | null = null;
+    if (order.paymentType === 'stripe') {
+      const transaction = await this.databaseService.repositories.paymentTransactionModel.findOne({
+        orderIds: order._id.toString(), status: 'completed', isDelete: false,
+      });
+      if (transaction?.stripePaymentIntentId) {
+        try {
+          const refund = await this.paymentService.refundStripePaymentIntent(
+            transaction.stripePaymentIntentId,
+            buyerRefundAmount,
+            `refund_request_${request._id}`,
+          );
+          stripeRefundId = refund?.id ?? null;
+        } catch (err: any) {
+          // Ledger already reversed above — a failed Stripe call here means
+          // the seller's wallet was correctly debited but the buyer's card
+          // hasn't been refunded yet; surfaced as a security alert for
+          // manual follow-up rather than silently swallowed.
+          await this.activityLogService.log({
+            storeId: sellerOrder.storeId,
+            category: 'finance',
+            action: 'stripe_refund_failed_after_ledger_reversal',
+            description: `Stripe refund failed for order #${order.orderNumber} after seller ledger was already reversed: ${err?.message}`,
+            actorId: adminId,
+            actorRole: 'admin',
+            isSecurityAlert: true,
+            targetId: order._id.toString(),
+            targetType: 'order',
+          });
+        }
+      }
+    }
+
+    // Mark only the specific refunded items on this one sellerOrder —
+    // fetch-mutate-save on the live document (same pattern used elsewhere
+    // in this codebase for nested subdocument-array updates, e.g.
+    // CheckoutService's coupon methods) rather than a fragile multi-item
+    // arrayFilters update.
+    const liveOrder: any = await this.databaseService.repositories.orderModel.findById(order._id);
+    if (liveOrder) {
+      const liveSellerOrder = (liveOrder.sellerOrders as any[]).find(
+        (so: any) => so._id.toString() === request.sellerOrderId,
+      );
+      if (liveSellerOrder) {
+        for (const item of liveSellerOrder.items as any[]) {
+          if (request.itemIds.includes(item._id.toString())) {
+            item.status = 'refunded';
+            item.refundedAmount = item.totalPrice;
+          }
+        }
+        await liveOrder.save();
+      }
+    }
+
+    await this.model.findByIdAndUpdate(request._id, {
+      buyerRefundAmount,
+      buyerRefundCurrency,
+      sellerDebitAmount,
+      sellerDebitCurrency: settlementCurrency,
+      stripeRefundId,
+    });
+
+    await this.activityLogService.log({
+      storeId: sellerOrder.storeId,
+      category: 'finance',
+      action: 'refund_approved',
+      description: `Refund approved for order #${order.orderNumber} — buyer refunded ${buyerRefundAmount} ${buyerRefundCurrency}, seller debited ${sellerDebitAmount} ${settlementCurrency}`,
+      actorId: adminId,
+      actorRole: 'admin',
+      targetId: request._id.toString(),
+      targetType: 'refund_request',
+    });
+
+    return {
+      success: true,
+      message: 'Refund approved',
+      data: { buyerRefundAmount, buyerRefundCurrency, sellerDebitAmount, settlementCurrency, stripeRefundId },
+    };
+  }
+
+  async reject(adminId: string, requestId: string, notes: string) {
+    const request = await this.model.findOneAndUpdate(
+      { _id: requestId, status: 'pending', isDelete: false },
+      { status: 'rejected', reviewedBy: adminId, reviewedAt: new Date(), resolutionNotes: notes },
+      { new: true },
+    );
+    if (!request) {
+      throw new BadRequestException('Refund request not found or already reviewed');
+    }
+    await this.activityLogService.log({
+      storeId: 'platform',
+      category: 'orders',
+      action: 'refund_rejected',
+      description: `Refund request rejected — ${notes}`,
+      actorId: adminId,
+      actorRole: 'admin',
+      targetId: request._id.toString(),
+      targetType: 'refund_request',
+    });
+    return { success: true, message: 'Refund request rejected', data: request };
+  }
+}

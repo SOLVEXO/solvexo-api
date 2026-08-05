@@ -1,5 +1,6 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument } from 'mongoose';
+import { FxSnapshot, FxSnapshotSchema } from '../../exchange-rate/schemas/exchange-rate.schema';
 
 export type OrderDocument = HydratedDocument<Order>;
 
@@ -169,6 +170,19 @@ export class SellerOrder {
   @Prop({ type: Number, default: 0 })
   platformSponsoredDiscountUSD: number;
 
+  // What this specific seller is actually credited, in THEIR OWN
+  // Store.baseCurrency — independent of the buyer's checkout currency
+  // (Order.currency above). Computed once at order-creation time
+  // (OrdersService) from the parent Order's fxSnapshots and never
+  // recomputed later; refunds/chargebacks reverse against this same
+  // snapshotted figure. Null on orders created before this field existed
+  // and on any sellerOrder whose settlement leg hasn't been computed yet.
+  @Prop({ type: String, default: null })
+  settlementCurrency: string | null;
+
+  @Prop({ type: Number, default: null })
+  settlementAmount: number | null;
+
   // derived from items
   @Prop({
     enum: [
@@ -254,8 +268,20 @@ export class Order {
   @Prop({ type: String, required: true })
   checkoutId: string;
 
-  @Prop({ type: String, default: 'USD' })
+  // The currency the buyer was actually charged, copied verbatim from
+  // Checkout.currency at order-creation time — permanent once set, never
+  // recomputed. No schema-level default anymore (see Checkout.currency's
+  // comment); existing historical orders keep whatever value they already
+  // have, including the old implicit 'USD' default, forever.
+  @Prop({ type: String })
   currency: string;
+
+  // Copied verbatim from Checkout.fxSnapshots at order-creation time —
+  // immutable. This is what lets a refund, a settlement recomputation, or
+  // an audit reproduce exactly what happened without depending on today's
+  // ExchangeRate table. Absent on orders created before this field existed.
+  @Prop({ type: [FxSnapshotSchema], default: [] })
+  fxSnapshots: FxSnapshot[];
 
   // har store ka hissa
   @Prop({ type: [SellerOrderSchema], required: true })

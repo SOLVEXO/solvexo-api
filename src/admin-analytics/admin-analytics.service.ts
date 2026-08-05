@@ -236,27 +236,42 @@ export class AdminAnalyticsService {
   }
 
   async getRevenueBreakdown(query: any) {
-    const { from, to } = resolveDateRange(query);
+    const { from, to, previousFrom, previousTo } = resolveDateRange(query);
+    const compare = query.compareToPreviousPeriod === true || query.compareToPreviousPeriod === 'true';
     const scope = this.buildScope(query);
 
-    return this.cached(this.key('revenue-breakdown', this.scopeLabel(scope), { from, to }), async () => {
-      const [orderTotals, platformEarnings] = await Promise.all([
+    return this.cached(this.key('revenue-breakdown', this.scopeLabel(scope), { from, to, compare }), async () => {
+      const [orderTotals, platformEarnings, previousOrderTotals, previousPlatformEarnings] = await Promise.all([
         periodTotals(this.r.orderModel, from, to, scope),
         this.getPlatformEarnings(from, to, scope),
+        compare ? periodTotals(this.r.orderModel, previousFrom, previousTo, scope) : null,
+        compare ? this.getPlatformEarnings(previousFrom, previousTo, scope) : null,
       ]);
 
-      return {
-        success: true,
-        data: {
-          oneTimeOrderRevenue: orderTotals.netRevenue,
-          recurringSubscriptionRevenue: platformEarnings.subscriptionRevenue,
-          platformCommissionRevenue: platformEarnings.commission,
-          paymentProcessingFees: platformEarnings.processingFees,
-          totalPlatformRevenue: round(platformEarnings.commission + platformEarnings.subscriptionRevenue),
-          totalMarketplaceRevenue: round(orderTotals.netRevenue + platformEarnings.subscriptionRevenue),
-          note: 'oneTimeOrderRevenue is net seller order revenue (does not belong to the platform); platformCommissionRevenue + recurringSubscriptionRevenue is what Solvexo itself earns. Commission is recognized at sale time regardless of payout-clearing status.',
-        },
+      const data: Record<string, any> = {
+        period: { from, to },
+        oneTimeOrderRevenue: orderTotals.netRevenue,
+        recurringSubscriptionRevenue: platformEarnings.subscriptionRevenue,
+        platformCommissionRevenue: platformEarnings.commission,
+        paymentProcessingFees: platformEarnings.processingFees,
+        totalPlatformRevenue: round(platformEarnings.commission + platformEarnings.subscriptionRevenue),
+        totalMarketplaceRevenue: round(orderTotals.netRevenue + platformEarnings.subscriptionRevenue),
+        note: 'oneTimeOrderRevenue is net seller order revenue (does not belong to the platform); platformCommissionRevenue + recurringSubscriptionRevenue is what Solvexo itself earns. Commission is recognized at sale time regardless of payout-clearing status.',
       };
+
+      if (compare && previousOrderTotals && previousPlatformEarnings) {
+        data.previousPeriod = {
+          period: { from: previousFrom, to: previousTo },
+          oneTimeOrderRevenue: previousOrderTotals.netRevenue,
+          recurringSubscriptionRevenue: previousPlatformEarnings.subscriptionRevenue,
+          platformCommissionRevenue: previousPlatformEarnings.commission,
+          paymentProcessingFees: previousPlatformEarnings.processingFees,
+          totalPlatformRevenue: round(previousPlatformEarnings.commission + previousPlatformEarnings.subscriptionRevenue),
+          totalMarketplaceRevenue: round(previousOrderTotals.netRevenue + previousPlatformEarnings.subscriptionRevenue),
+        };
+      }
+
+      return { success: true, data };
     });
   }
 
@@ -923,6 +938,20 @@ export class AdminAnalyticsService {
         return toCsv(
           ['Customer', 'Email', 'Total Orders', 'Lifetime Value'],
           top.map((c) => [userMap.get(c.userId)?.name ?? 'Unknown', userMap.get(c.userId)?.email ?? '', c.totalOrders, c.lifetimeValue.toFixed(2)]),
+        );
+      }
+      case 'payments': {
+        const breakdown = await this.getPaymentBreakdown(query);
+        return toCsv(
+          ['Payment Type', 'Order Count', 'Revenue'],
+          breakdown.data.methodBreakdown.map((r: any) => [r.label, r.orderCount, r.revenue.toFixed(2)]),
+        );
+      }
+      case 'platform': {
+        const metrics = await this.getPlatformMetrics(query);
+        return toCsv(
+          ['Date', 'New Sellers', 'New Stores', 'New Products'],
+          metrics.data.marketplaceGrowth.map((s: any) => [new Date(s.date).toISOString().split('T')[0], s.newSellers, s.newStores, s.newProducts]),
         );
       }
       case 'revenue':

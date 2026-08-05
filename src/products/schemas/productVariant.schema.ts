@@ -19,6 +19,19 @@ export class ProductVariant {
   @Prop({ required: true })
   price: number;
 
+  // Denominated in the owning Store's baseCurrency at the moment this
+  // variant was created — stamped server-side by
+  // ProductVariantsService/ProductsService, never client-supplied, and
+  // immutable afterwards (a store's currency itself is locked once its
+  // first product exists — see StoreService.createStore). Nullable at the
+  // schema level only so pre-existing variants created before this field
+  // existed remain readable/writable without a forced migration; the
+  // one-time backfill sets them all to 'PKR' (see migration script —
+  // Solvexo was Pakistan-only until this field was introduced, so this is a
+  // label, never a numeric reinterpretation of `price`).
+  @Prop({ type: String, default: null })
+  currency: string | null;
+
   @Prop({ type: Number, default: null })
   compareAtPrice!: number | null;
 

@@ -33,6 +33,7 @@ export class UsersService {
     user.phone = dto.phone ?? user.phone;
     user.profileImage = dto.profileImage ?? user.profileImage;
     user.address = dto.address ?? user.address;
+    user.currencyPreference = dto.currencyPreference ?? user.currencyPreference;
 
     if (dto.email && dto.email !== user.email) {
       const emailExists = await this.userModel.findOne({ email: dto.email });

@@ -244,7 +244,7 @@ export class MarketingService {
           { participatingStoreIds: { $in: uniqueIds } },
         ],
       })
-      .select('name endDate discountType discountValue participatingStoreIds sponsorType')
+      .select('name endDate discountType discountValue currency participatingStoreIds sponsorType')
       .lean();
 
     for (const c of campaigns) {
@@ -253,6 +253,7 @@ export class MarketingService {
         name: c.name,
         discountType: c.discountType ?? null,
         discountValue: c.discountValue ?? null,
+        currency: c.currency ?? 'USD',
         endDate: c.endDate,
         sponsorType: c.sponsorType ?? 'seller',
       };
@@ -330,6 +331,7 @@ export class MarketingService {
       endDate: c.endDate,
       discountType: c.discountType,
       discountValue: c.discountValue,
+      currency: c.currency ?? 'USD',
       sponsorType: c.sponsorType ?? 'seller',
       storeCount: c.sponsorType === 'platform' ? activeStoreCount : (c.participatingStoreIds ?? []).length,
     }));

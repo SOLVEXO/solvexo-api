@@ -10,11 +10,24 @@ import { round } from './number.util';
  * `AdminAnalyticsService` (platform-wide analytics) and `AdminFinanceService`
  * (platform revenue/commission reporting) so this aggregation exists exactly once.
  */
-export interface PlatformEarnings {
+export interface PlatformEarningsByCurrency {
+  currency: string;
   commission: number;
   processingFees: number;
   subscriptionRevenue: number;
   total: number;
+}
+
+export interface PlatformEarnings {
+  /** @deprecated blends every settlement currency into one meaningless
+   *  number — kept only so existing non-currency-aware callers (e.g.
+   *  AdminAnalyticsService) don't break. New callers should use
+   *  `byCurrency` instead, never these blended totals. */
+  commission: number;
+  processingFees: number;
+  subscriptionRevenue: number;
+  total: number;
+  byCurrency: PlatformEarningsByCurrency[];
 }
 
 export async function getPlatformEarnings(
@@ -34,10 +47,18 @@ export async function getPlatformEarnings(
   const subMatch: Record<string, any> = { status: 'paid', isDelete: false, paidAt: { $gte: from, $lte: to } };
   if (scope?.sellerId) subMatch.sellerId = scope.sellerId;
 
-  const [commissionRows, subRows] = await Promise.all([
+  const [commissionRows, commissionByCurrencyRows, subRows] = await Promise.all([
     transactionModel.aggregate([
       { $match: txMatch },
       { $group: { _id: null, commission: { $sum: '$metadata.platformFee' }, processingFees: { $sum: '$metadata.processingFee' } } },
+    ]),
+    // `Transaction.currency` is the seller's own settlement currency (see
+    // FinanceService.recordSale) — grouping by it too is what makes
+    // `byCurrency` below actually meaningful instead of blending a PKR
+    // seller's commission and a USD seller's commission into one number.
+    transactionModel.aggregate([
+      { $match: txMatch },
+      { $group: { _id: '$currency', commission: { $sum: '$metadata.platformFee' }, processingFees: { $sum: '$metadata.processingFee' } } },
     ]),
     subscriptionInvoiceModel.aggregate([
       { $match: subMatch },
@@ -47,6 +68,29 @@ export async function getPlatformEarnings(
 
   const commission = round(commissionRows[0]?.commission ?? 0);
   const processingFees = round(commissionRows[0]?.processingFees ?? 0);
+  // SubscriptionInvoice.amountUSD is always USD — this buyer-pays-seller VIP
+  // subscription system (distinct from platform billing) has no multi-currency
+  // support, so it's always attributed to the USD bucket below.
   const subscriptionRevenue = round(subRows[0]?.total ?? 0);
-  return { commission, processingFees, subscriptionRevenue, total: round(commission + subscriptionRevenue) };
+
+  const byCurrency: PlatformEarningsByCurrency[] = commissionByCurrencyRows.map((row: any) => ({
+    currency: row._id ?? 'USD',
+    commission: round(row.commission ?? 0),
+    processingFees: round(row.processingFees ?? 0),
+    subscriptionRevenue: 0,
+    total: round(row.commission ?? 0),
+  }));
+  const usdEntry = byCurrency.find((e) => e.currency === 'USD');
+  if (usdEntry) {
+    usdEntry.subscriptionRevenue = subscriptionRevenue;
+    usdEntry.total = round(usdEntry.total + subscriptionRevenue);
+  } else if (subscriptionRevenue > 0) {
+    byCurrency.push({ currency: 'USD', commission: 0, processingFees: 0, subscriptionRevenue, total: subscriptionRevenue });
+  }
+
+  return {
+    commission, processingFees, subscriptionRevenue,
+    total: round(commission + subscriptionRevenue),
+    byCurrency,
+  };
 }

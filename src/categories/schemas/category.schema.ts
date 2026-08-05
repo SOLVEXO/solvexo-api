@@ -1,7 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Document, Types } from 'mongoose';
-import { SeoMeta, SeoMetaSchema } from 'src/seo/schemas/seo-meta.schema';
+import { SeoMeta, SeoMetaSchema } from '../../seo/schemas/seo-meta.schema';
 
 export type CategoryDocument = Category & Document;
 

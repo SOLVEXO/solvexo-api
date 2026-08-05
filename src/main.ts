@@ -1,4 +1,14 @@
 /* eslint-disable prettier/prettier */
+// Must be the very first thing that runs, before any other import — this
+// codebase uses bare `from 'src/...'` imports everywhere (baseUrl-relative,
+// not actual relative paths). TypeScript only resolves those at type-check
+// time; it never rewrites them in the emitted JS, so plain Node's
+// require() sees a literal package name "src" and throws MODULE_NOT_FOUND
+// the moment ANY such file loads (e.g. category.schema.ts → seo-meta.schema).
+// This was already broken pre-existing; tsconfig-paths was installed as a
+// dependency but never actually registered for start/start:dev/start:prod,
+// only for test:debug.
+import 'tsconfig-paths/register';
 import dns from 'dns';
 
 // On this machine Windows advertises stale fec0::/IPv6 site-local addresses as DNS

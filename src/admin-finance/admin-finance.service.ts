@@ -9,6 +9,9 @@ import { buildAnalyticsCacheKey, withAnalyticsCache } from '../analytics/utils/a
 import { getPlatformEarnings } from '../common/platform-earnings.util';
 import { toCsv } from '../analytics/utils/csv.util';
 import { PdfReportBuilder } from '../analytics/utils/pdf-report.util';
+import { SUPPORTED_CURRENCIES } from '../exchange-rate/schemas/exchange-rate.schema';
+import { AdminConfigService } from '../admin-config/admin-config.service';
+import { ActivityLogService } from '../activity-log/activity-log.service';
 
 const CACHE_TTL_SECONDS = 600; // 10 minutes — same convention as admin/seller analytics
 
@@ -27,6 +30,8 @@ export class AdminFinanceService {
     private readonly db: DatabaseService,
     private readonly redis: RedisService,
     private readonly financeService: FinanceService,
+    private readonly adminConfigService: AdminConfigService,
+    private readonly activityLogService: ActivityLogService,
   ) {}
 
   private get r() {
@@ -50,14 +55,16 @@ export class AdminFinanceService {
 
     return this.cached(this.key('overview', { from, to }), async () => {
       const [byTypeRows, balanceTotalsRows, payoutStatusRows, sellersWithBalance, earnings, flaggedSellersCount, pendingVerificationMethodsCount, pendingManualPaymentsCount] = await Promise.all([
+        // `currency` is included in the group key — PKR and USD transactions
+        // must never be summed into one blended gmv/refunds/netRevenue figure.
         this.r.transactionModel.aggregate([
           { $match: { status: { $ne: 'failed' }, createdAt: { $gte: from, $lte: to } } },
-          { $group: { _id: '$type', total: { $sum: { $abs: '$amount' } }, count: { $sum: 1 } } },
+          { $group: { _id: { type: '$type', currency: '$currency' }, total: { $sum: { $abs: '$amount' } }, count: { $sum: 1 } } },
         ]),
         this.r.sellerBalanceModel.aggregate([
           {
             $group: {
-              _id: null,
+              _id: '$currency',
               totalAvailable: { $sum: '$availableBalance' },
               totalPending: { $sum: '$pendingBalance' },
               totalRevenue: { $sum: '$totalRevenue' },
@@ -67,7 +74,7 @@ export class AdminFinanceService {
             },
           },
         ]),
-        this.r.payoutModel.aggregate([{ $group: { _id: '$status', count: { $sum: 1 }, amount: { $sum: '$amount' } } }]),
+        this.r.payoutModel.aggregate([{ $group: { _id: { status: '$status', currency: '$currency' }, count: { $sum: 1 }, amount: { $sum: '$amount' } } }]),
         this.r.sellerBalanceModel.countDocuments({}),
         getPlatformEarnings(this.r.transactionModel, this.r.subscriptionInvoiceModel, from, to),
         this.r.sellerBalanceModel.countDocuments({ isFlaggedForReview: true }),
@@ -75,50 +82,68 @@ export class AdminFinanceService {
         this.r.manualPaymentProofModel.countDocuments({ status: 'pending' }),
       ]);
 
-      const byType: Record<string, { total: number; count: number }> = {};
-      for (const row of byTypeRows) byType[row._id] = { total: round(row.total), count: row.count };
+      const currencies = new Set<string>(SUPPORTED_CURRENCIES as readonly string[]);
+      for (const row of byTypeRows) currencies.add(row._id.currency ?? 'USD');
+      for (const row of balanceTotalsRows) currencies.add(row._id ?? 'USD');
 
-      const gmv = byType.sale?.total ?? 0;
-      const refunds = byType.refund?.total ?? 0;
+      const balancesByCurrency = new Map(balanceTotalsRows.map((r: any) => [r._id ?? 'USD', r]));
+      const earningsByCurrency = new Map(earnings.byCurrency.map((e) => [e.currency, e]));
 
-      const payoutQueue: Record<string, { count: number; amount: number }> = {
-        pending: { count: 0, amount: 0 }, processing: { count: 0, amount: 0 },
-        completed: { count: 0, amount: 0 }, failed: { count: 0, amount: 0 },
-      };
-      for (const row of payoutStatusRows) {
-        if (payoutQueue[row._id]) payoutQueue[row._id] = { count: row.count, amount: round(row.amount) };
+      const byCurrency = [...currencies].map((currency) => {
+        const saleRow = byTypeRows.find((r: any) => r._id.type === 'sale' && (r._id.currency ?? 'USD') === currency);
+        const refundRow = byTypeRows.find((r: any) => r._id.type === 'refund' && (r._id.currency ?? 'USD') === currency);
+        const gmv = round(saleRow?.total ?? 0);
+        const refunds = round(refundRow?.total ?? 0);
+        const balances: any = balancesByCurrency.get(currency) ?? { totalAvailable: 0, totalPending: 0, totalRevenue: 0, totalFees: 0, totalRefunds: 0, totalPayouts: 0 };
+        const currencyEarnings = earningsByCurrency.get(currency) ?? { commission: 0, processingFees: 0, subscriptionRevenue: 0, total: 0 };
+
+        return {
+          currency,
+          gmv,
+          netRevenue: round(gmv - refunds),
+          refunds,
+          totalOrders: saleRow?.count ?? 0,
+          platformEarnings: currencyEarnings.total,
+          platformCommission: currencyEarnings.commission,
+          subscriptionRevenue: currencyEarnings.subscriptionRevenue,
+          paymentProcessingFees: currencyEarnings.processingFees,
+          sellerBalances: {
+            totalAvailable: round(balances.totalAvailable ?? 0),
+            totalPending: round(balances.totalPending ?? 0),
+          },
+          lifetimeTotals: {
+            totalRevenue: round(balances.totalRevenue ?? 0),
+            totalFees: round(balances.totalFees ?? 0),
+            totalRefunds: round(balances.totalRefunds ?? 0),
+            totalPayouts: round(balances.totalPayouts ?? 0),
+          },
+        };
+      }).filter((c) => c.gmv !== 0 || c.sellerBalances.totalAvailable !== 0 || c.sellerBalances.totalPending !== 0 || c.lifetimeTotals.totalRevenue !== 0);
+
+      // Grouped by {status, currency} — a PKR payout and a USD payout in the
+      // same status must never be summed into one blended "amount".
+      const payoutStatuses = ['pending', 'processing', 'completed', 'failed'];
+      const payoutQueue: Record<string, { count: number; amount: number; byCurrency: { currency: string; count: number; amount: number }[] }> = {};
+      for (const status of payoutStatuses) {
+        const rowsForStatus = payoutStatusRows.filter((r: any) => r._id.status === status);
+        payoutQueue[status] = {
+          count: rowsForStatus.reduce((s: number, r: any) => s + r.count, 0),
+          amount: round(rowsForStatus.reduce((s: number, r: any) => s + r.amount, 0)),
+          byCurrency: rowsForStatus.map((r: any) => ({ currency: r._id.currency ?? 'USD', count: r.count, amount: round(r.amount) })),
+        };
       }
-
-      const balances = balanceTotalsRows[0] ?? { totalAvailable: 0, totalPending: 0, totalRevenue: 0, totalFees: 0, totalRefunds: 0, totalPayouts: 0 };
 
       return {
         success: true,
         data: {
           period: { from, to },
-          gmv,
-          netRevenue: round(gmv - refunds),
-          refunds,
-          totalOrders: byType.sale?.count ?? 0,
-          platformEarnings: earnings.total,
-          platformCommission: earnings.commission,
-          subscriptionRevenue: earnings.subscriptionRevenue,
-          paymentProcessingFees: earnings.processingFees,
-          sellerBalances: {
-            totalAvailable: round(balances.totalAvailable),
-            totalPending: round(balances.totalPending),
-            sellersWithBalance,
-          },
+          byCurrency,
+          sellersWithBalance,
           flaggedSellersCount,
           pendingVerificationMethodsCount,
           pendingManualPaymentsCount,
-          lifetimeTotals: {
-            totalRevenue: round(balances.totalRevenue),
-            totalFees: round(balances.totalFees),
-            totalRefunds: round(balances.totalRefunds),
-            totalPayouts: round(balances.totalPayouts),
-          },
           payoutQueue,
-          note: '"gmv"/"netRevenue"/"refunds" are scoped to the selected period. "sellerBalances" and "lifetimeTotals" are current, all-time snapshots regardless of the date filter — they answer "what does the platform currently hold/owe", not "in this period".',
+          note: '"byCurrency" breaks every figure down per settlement currency — PKR and USD are never summed into one blended number. Each entry\'s gmv/netRevenue/refunds/totalOrders are scoped to the selected period; sellerBalances/lifetimeTotals are current, all-time snapshots regardless of the date filter.',
         },
       };
     });
@@ -132,23 +157,35 @@ export class AdminFinanceService {
     const { from, to, granularity } = resolveDateRange(query);
 
     return this.cached(this.key('revenue-over-time', { from, to, granularity }), async () => {
+      // `currency` is part of the group key — a PKR seller's sale and a USD
+      // seller's sale must never be added together into one grossRevenue point.
       const rows = await this.r.transactionModel.aggregate([
         { $match: { type: { $in: ['sale', 'refund'] }, status: { $ne: 'failed' }, createdAt: { $gte: from, $lte: to } } },
         { $addFields: { bucket: { $dateTrunc: { date: '$createdAt', unit: granularity, timezone: 'UTC' } } } },
-        { $group: { _id: { bucket: '$bucket', type: '$type' }, total: { $sum: { $abs: '$amount' } } } },
+        { $group: { _id: { bucket: '$bucket', type: '$type', currency: '$currency' }, total: { $sum: { $abs: '$amount' } } } },
       ]);
 
-      const byBucket = new Map<number, { gross: number; refunds: number }>();
+      const currencies = new Set<string>(SUPPORTED_CURRENCIES as readonly string[]);
+      for (const row of rows) currencies.add(row._id.currency ?? 'USD');
+
+      const byBucket = new Map<number, Map<string, { gross: number; refunds: number }>>();
       for (const row of rows) {
         const t = row._id.bucket.getTime();
-        const entry = byBucket.get(t) ?? { gross: 0, refunds: 0 };
+        const currency = row._id.currency ?? 'USD';
+        const perCurrency = byBucket.get(t) ?? new Map<string, { gross: number; refunds: number }>();
+        const entry = perCurrency.get(currency) ?? { gross: 0, refunds: 0 };
         if (row._id.type === 'sale') entry.gross = row.total; else entry.refunds = row.total;
-        byBucket.set(t, entry);
+        perCurrency.set(currency, entry);
+        byBucket.set(t, perCurrency);
       }
 
       const series = enumerateBuckets(from, to, granularity).map((bucket) => {
-        const e = byBucket.get(bucket.getTime()) ?? { gross: 0, refunds: 0 };
-        return { date: bucket, grossRevenue: round(e.gross), netRevenue: round(e.gross - e.refunds) };
+        const perCurrency = byBucket.get(bucket.getTime());
+        const byCurrency = [...currencies].map((currency) => {
+          const e = perCurrency?.get(currency) ?? { gross: 0, refunds: 0 };
+          return { currency, grossRevenue: round(e.gross), netRevenue: round(e.gross - e.refunds) };
+        }).filter((c) => c.grossRevenue !== 0 || c.netRevenue !== 0);
+        return { date: bucket, byCurrency };
       });
 
       return { success: true, data: { granularity, series } };
@@ -162,13 +199,27 @@ export class AdminFinanceService {
       const rows = await this.r.transactionModel.aggregate([
         { $match: { type: 'sale', status: { $ne: 'failed' }, createdAt: { $gte: from, $lte: to } } },
         { $addFields: { bucket: { $dateTrunc: { date: '$createdAt', unit: granularity, timezone: 'UTC' } } } },
-        { $group: { _id: '$bucket', commission: { $sum: '$metadata.platformFee' }, processingFees: { $sum: '$metadata.processingFee' } } },
+        { $group: { _id: { bucket: '$bucket', currency: '$currency' }, commission: { $sum: '$metadata.platformFee' }, processingFees: { $sum: '$metadata.processingFee' } } },
       ]);
 
-      const byBucket = new Map(rows.map((r: any) => [r._id.getTime(), r]));
+      const currencies = new Set<string>(SUPPORTED_CURRENCIES as readonly string[]);
+      for (const row of rows) currencies.add(row._id.currency ?? 'USD');
+
+      const byBucket = new Map<number, Map<string, any>>();
+      for (const row of rows) {
+        const t = row._id.bucket.getTime();
+        const perCurrency = byBucket.get(t) ?? new Map<string, any>();
+        perCurrency.set(row._id.currency ?? 'USD', row);
+        byBucket.set(t, perCurrency);
+      }
+
       const series = enumerateBuckets(from, to, granularity).map((bucket) => {
-        const row = byBucket.get(bucket.getTime());
-        return { date: bucket, commission: round(row?.commission ?? 0), processingFees: round(row?.processingFees ?? 0) };
+        const perCurrency = byBucket.get(bucket.getTime());
+        const byCurrency = [...currencies].map((currency) => {
+          const row = perCurrency?.get(currency);
+          return { currency, commission: round(row?.commission ?? 0), processingFees: round(row?.processingFees ?? 0) };
+        }).filter((c) => c.commission !== 0 || c.processingFees !== 0);
+        return { date: bucket, byCurrency };
       });
 
       return { success: true, data: { granularity, series } };
@@ -337,27 +388,45 @@ export class AdminFinanceService {
     const { from, to } = resolveDateRange(query);
 
     return this.cached(this.key('refunds', { from, to }), async () => {
+      // Grouped by {storeId, currency} — a store's own settlement currency is
+      // stable in practice, but reading it off the ledger row itself (rather
+      // than assuming) is what lets the top-level total be broken down
+      // correctly instead of summing PKR and USD refunds into one number.
       const refundRows = await this.r.transactionModel.aggregate([
         { $match: { type: 'refund', createdAt: { $gte: from, $lte: to } } },
-        { $group: { _id: '$storeId', totalRefunded: { $sum: { $abs: '$amount' } }, count: { $sum: 1 } } },
+        { $group: { _id: { storeId: '$storeId', currency: '$currency' }, totalRefunded: { $sum: { $abs: '$amount' } }, count: { $sum: 1 } } },
       ]);
 
-      const storeIds = (refundRows).map((r) => r._id);
+      const storeIds = refundRows.map((r) => r._id.storeId);
       const stores = await this.r.storeModel.find({ _id: { $in: storeIds } }).select('name').lean();
       const storeMap = new Map(stores.map((s: any) => [s._id.toString(), s]));
 
-      const byStore = (refundRows)
-        .map((r) => ({ storeId: r._id, storeName: storeMap.get(r._id)?.name ?? 'Unknown store', totalRefunded: round(r.totalRefunded), count: r.count }))
+      const byStore = refundRows
+        .map((r) => ({
+          storeId: r._id.storeId,
+          storeName: storeMap.get(r._id.storeId)?.name ?? 'Unknown store',
+          currency: r._id.currency ?? 'USD',
+          totalRefunded: round(r.totalRefunded),
+          count: r.count,
+        }))
         .sort((a, b) => b.totalRefunded - a.totalRefunded);
+
+      const byCurrencyMap = new Map<string, { totalRefunded: number; count: number }>();
+      for (const row of byStore) {
+        const entry = byCurrencyMap.get(row.currency) ?? { totalRefunded: 0, count: 0 };
+        entry.totalRefunded = round(entry.totalRefunded + row.totalRefunded);
+        entry.count += row.count;
+        byCurrencyMap.set(row.currency, entry);
+      }
+      const byCurrency = [...byCurrencyMap.entries()].map(([currency, v]) => ({ currency, ...v }));
 
       return {
         success: true,
         data: {
           period: { from, to },
-          totalRefunded: round(byStore.reduce((s, r) => s + r.totalRefunded, 0)),
-          totalRefundCount: byStore.reduce((s, r) => s + r.count, 0),
+          byCurrency,
           byStore,
-          note: 'Platform commission is not clawed back when a refund is issued (see finance.service.ts#recordRefund — only the seller\'s balance is debited) — the platform keeps its original commission on refunded sales. This report shows refund volume only, not a commission adjustment.',
+          note: 'Platform commission is not clawed back when a refund is issued (see finance.service.ts#recordRefund — only the seller\'s balance is debited) — the platform keeps its original commission on refunded sales. This report shows refund volume only, not a commission adjustment. Totals are broken down per settlement currency — PKR and USD are never summed together.',
         },
       };
     });
@@ -386,30 +455,42 @@ export class AdminFinanceService {
       const [byTypeRows, balanceTotalsRows] = await Promise.all([
         this.r.transactionModel.aggregate([
           { $match: { status: { $ne: 'failed' }, createdAt: { $gte: from, $lte: to } } },
-          { $group: { _id: '$type', total: { $sum: { $abs: '$amount' } } } },
+          { $group: { _id: { type: '$type', currency: '$currency' }, total: { $sum: { $abs: '$amount' } } } },
         ]),
-        this.r.sellerBalanceModel.aggregate([{ $group: { _id: null, totalAvailable: { $sum: '$availableBalance' }, totalPending: { $sum: '$pendingBalance' } } }]),
+        this.r.sellerBalanceModel.aggregate([{ $group: { _id: '$currency', totalAvailable: { $sum: '$availableBalance' }, totalPending: { $sum: '$pendingBalance' } } }]),
       ]);
 
-      const stats: Record<string, number> = { sale: 0, fee: 0, refund: 0, payout: 0, adjustment: 0 };
-      for (const row of byTypeRows) stats[row._id] = round(row.total);
-      const balances = balanceTotalsRows[0] ?? { totalAvailable: 0, totalPending: 0 };
+      const currencies = new Set<string>(SUPPORTED_CURRENCIES as readonly string[]);
+      for (const row of byTypeRows) currencies.add(row._id.currency ?? 'USD');
+      for (const row of balanceTotalsRows) currencies.add(row._id ?? 'USD');
 
-      return {
-        success: true,
-        data: {
-          period: { from, to },
+      const balancesByCurrency = new Map(balanceTotalsRows.map((r: any) => [r._id ?? 'USD', r]));
+
+      const byCurrency = [...currencies].map((currency) => {
+        const stats: Record<string, number> = { sale: 0, fee: 0, refund: 0, payout: 0, adjustment: 0 };
+        for (const row of byTypeRows) if ((row._id.currency ?? 'USD') === currency) stats[row._id.type] = round(row.total);
+        const balances: any = balancesByCurrency.get(currency) ?? { totalAvailable: 0, totalPending: 0 };
+        return {
+          currency,
           grossSales: stats.sale,
           platformFeesCollected: stats.fee,
           refundsIssued: stats.refund,
           payoutsDisbursed: stats.payout,
           adjustments: stats.adjustment,
           outstandingObligation: {
-            availableBalance: round(balances.totalAvailable),
-            pendingBalance: round(balances.totalPending),
-            totalOwedToSellers: round(balances.totalAvailable + balances.totalPending),
+            availableBalance: round(balances.totalAvailable ?? 0),
+            pendingBalance: round(balances.totalPending ?? 0),
+            totalOwedToSellers: round((balances.totalAvailable ?? 0) + (balances.totalPending ?? 0)),
           },
-          note: '"outstandingObligation" is a current snapshot (not scoped to the selected period) — it answers "if every seller withdrew today, how much would leave the platform".',
+        };
+      }).filter((c) => c.grossSales !== 0 || c.outstandingObligation.totalOwedToSellers !== 0);
+
+      return {
+        success: true,
+        data: {
+          period: { from, to },
+          byCurrency,
+          note: '"outstandingObligation" is a current snapshot (not scoped to the selected period) — it answers "if every seller withdrew today, how much would leave the platform", per settlement currency. PKR and USD are never summed together.',
         },
       };
     });
@@ -429,22 +510,33 @@ export class AdminFinanceService {
         const [byTypeRows, earnings] = await Promise.all([
           this.r.transactionModel.aggregate([
             { $match: { status: { $ne: 'failed' }, createdAt: { $gte: from, $lte: to } } },
-            { $group: { _id: '$type', total: { $sum: { $abs: '$amount' } } } },
+            { $group: { _id: { type: '$type', currency: '$currency' }, total: { $sum: { $abs: '$amount' } } } },
           ]),
           getPlatformEarnings(this.r.transactionModel, this.r.subscriptionInvoiceModel, from, to),
         ]);
 
-        const stats: Record<string, number> = { sale: 0, fee: 0, refund: 0, payout: 0 };
-        for (const row of byTypeRows) stats[row._id] = round(row.total);
+        const currencies = new Set<string>(SUPPORTED_CURRENCIES as readonly string[]);
+        for (const row of byTypeRows) currencies.add(row._id.currency ?? 'USD');
+        const earningsByCurrency = new Map(earnings.byCurrency.map((e) => [e.currency, e]));
+
+        const byCurrency = [...currencies].map((currency) => {
+          const stats: Record<string, number> = { sale: 0, fee: 0, refund: 0, payout: 0 };
+          for (const row of byTypeRows) if ((row._id.currency ?? 'USD') === currency) stats[row._id.type] = round(row.total);
+          const currencyEarnings = earningsByCurrency.get(currency) ?? { commission: 0, subscriptionRevenue: 0, total: 0 };
+          return {
+            currency,
+            gmv: stats.sale,
+            refunds: stats.refund,
+            payouts: stats.payout,
+            platformCommission: currencyEarnings.commission,
+            subscriptionRevenue: currencyEarnings.subscriptionRevenue,
+            platformEarnings: currencyEarnings.total,
+          };
+        }).filter((c) => c.gmv !== 0 || c.refunds !== 0 || c.payouts !== 0 || c.platformEarnings !== 0);
 
         monthly.push({
           month: from.toLocaleDateString('en-US', { month: 'short', year: 'numeric' }),
-          gmv: stats.sale,
-          refunds: stats.refund,
-          payouts: stats.payout,
-          platformCommission: earnings.commission,
-          subscriptionRevenue: earnings.subscriptionRevenue,
-          platformEarnings: earnings.total,
+          byCurrency,
         });
       }
 
@@ -482,8 +574,8 @@ export class AdminFinanceService {
       case 'refunds': {
         const report = await this.getRefundReport(query);
         return toCsv(
-          ['Store', 'Total Refunded', 'Count'],
-          report.data.byStore.map((r: any) => [r.storeName, r.totalRefunded.toFixed(2), r.count]),
+          ['Store', 'Currency', 'Total Refunded', 'Count'],
+          report.data.byStore.map((r: any) => [r.storeName, r.currency, r.totalRefunded.toFixed(2), r.count]),
         );
       }
       case 'tax': {
@@ -495,14 +587,18 @@ export class AdminFinanceService {
       }
       case 'settlement': {
         const s = await this.getSettlementReport(query);
-        return toCsv(['Metric', 'Amount'], [
-          ['Gross Sales', s.data.grossSales.toFixed(2)],
-          ['Platform Fees Collected', s.data.platformFeesCollected.toFixed(2)],
-          ['Refunds Issued', s.data.refundsIssued.toFixed(2)],
-          ['Payouts Disbursed', s.data.payoutsDisbursed.toFixed(2)],
-          ['Available Balance (owed)', s.data.outstandingObligation.availableBalance.toFixed(2)],
-          ['Pending Balance (owed)', s.data.outstandingObligation.pendingBalance.toFixed(2)],
-        ]);
+        const rows: [string, string][] = [];
+        for (const c of s.data.byCurrency) {
+          rows.push(
+            [`Gross Sales (${c.currency})`, c.grossSales.toFixed(2)],
+            [`Platform Fees Collected (${c.currency})`, c.platformFeesCollected.toFixed(2)],
+            [`Refunds Issued (${c.currency})`, c.refundsIssued.toFixed(2)],
+            [`Payouts Disbursed (${c.currency})`, c.payoutsDisbursed.toFixed(2)],
+            [`Available Balance owed (${c.currency})`, c.outstandingObligation.availableBalance.toFixed(2)],
+            [`Pending Balance owed (${c.currency})`, c.outstandingObligation.pendingBalance.toFixed(2)],
+          );
+        }
+        return toCsv(['Metric', 'Amount'], rows);
       }
       case 'transactions':
       default:
@@ -523,33 +619,211 @@ export class AdminFinanceService {
     const pdf = await PdfReportBuilder.create('Solvexo — Platform Finance Report', `Period: ${rangeLabel}`);
 
     pdf.addSectionHeading('Overview');
-    pdf.addKeyValueGrid([
-      { label: 'GMV', value: `$${overview.data.gmv.toFixed(2)}` },
-      { label: 'Net Revenue', value: `$${overview.data.netRevenue.toFixed(2)}` },
-      { label: 'Platform Commission', value: `$${overview.data.platformCommission.toFixed(2)}` },
-      { label: 'Subscription Revenue', value: `$${overview.data.subscriptionRevenue.toFixed(2)}` },
-      { label: 'Total Available (owed to sellers)', value: `$${overview.data.sellerBalances.totalAvailable.toFixed(2)}` },
-      { label: 'Total Pending (owed to sellers)', value: `$${overview.data.sellerBalances.totalPending.toFixed(2)}` },
-    ]);
+    // One key-value grid per settlement currency — PKR and USD figures are
+    // never blended into a single "$" number (see AdminFinanceService's
+    // getOverview comment for why).
+    for (const c of overview.data.byCurrency) {
+      pdf.addKeyValueGrid([
+        { label: `GMV (${c.currency})`, value: c.gmv.toFixed(2) },
+        { label: `Net Revenue (${c.currency})`, value: c.netRevenue.toFixed(2) },
+        { label: `Platform Commission (${c.currency})`, value: c.platformCommission.toFixed(2) },
+        { label: `Subscription Revenue (${c.currency})`, value: c.subscriptionRevenue.toFixed(2) },
+        { label: `Total Available owed (${c.currency})`, value: c.sellerBalances.totalAvailable.toFixed(2) },
+        { label: `Total Pending owed (${c.currency})`, value: c.sellerBalances.totalPending.toFixed(2) },
+      ]);
+    }
 
     pdf.addSectionHeading('Settlement');
-    pdf.addTable(['Metric', 'Amount'], [
-      ['Gross Sales', `$${settlement.data.grossSales.toFixed(2)}`],
-      ['Platform Fees Collected', `$${settlement.data.platformFeesCollected.toFixed(2)}`],
-      ['Refunds Issued', `$${settlement.data.refundsIssued.toFixed(2)}`],
-      ['Payouts Disbursed', `$${settlement.data.payoutsDisbursed.toFixed(2)}`],
-    ]);
+    for (const c of settlement.data.byCurrency) {
+      pdf.addTable([`Metric (${c.currency})`, 'Amount'], [
+        ['Gross Sales', c.grossSales.toFixed(2)],
+        ['Platform Fees Collected', c.platformFeesCollected.toFixed(2)],
+        ['Refunds Issued', c.refundsIssued.toFixed(2)],
+        ['Payouts Disbursed', c.payoutsDisbursed.toFixed(2)],
+      ]);
+    }
 
     pdf.addSectionHeading('Refunds by Store');
     if (refunds.data.byStore.length > 0) {
       pdf.addTable(
-        ['Store', 'Total Refunded', 'Count'],
-        refunds.data.byStore.slice(0, 20).map((r: any) => [r.storeName, `$${r.totalRefunded.toFixed(2)}`, r.count]),
+        ['Store', 'Currency', 'Total Refunded', 'Count'],
+        refunds.data.byStore.slice(0, 20).map((r: any) => [r.storeName, r.currency, r.totalRefunded.toFixed(2), r.count]),
       );
     } else {
       pdf.addEmptyNote('No refunds recorded in this period.');
     }
 
     return pdf.build();
+  }
+
+  /**
+   * Reconciliation: compares, per currency and over the given window, what
+   * buyers were charged (Order.totalAmount) against what the ledger
+   * actually recorded (sale amounts − platform fees − processing fees +
+   * refunds) — the two should always agree; a real drift here means money
+   * moved somewhere the ledger doesn't account for and needs investigation,
+   * not a currency-conversion display quirk. Read-only; finds discrepancies,
+   * never corrects them automatically.
+   */
+  async getReconciliation(days = 1) {
+    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
+    const [orders, saleTx, feeTx, refundTx] = await Promise.all([
+      this.r.orderModel.aggregate([
+        { $match: { createdAt: { $gte: since }, isDelete: false } },
+        { $group: { _id: '$currency', totalCollected: { $sum: '$totalAmount' }, count: { $sum: 1 } } },
+      ]),
+      this.r.transactionModel.aggregate([
+        { $match: { type: 'sale', createdAt: { $gte: since } } },
+        { $group: { _id: '$currency', total: { $sum: '$amount' } } },
+      ]),
+      this.r.transactionModel.aggregate([
+        { $match: { type: 'fee', createdAt: { $gte: since } } },
+        { $group: { _id: '$currency', total: { $sum: '$amount' } } }, // stored negative
+      ]),
+      this.r.transactionModel.aggregate([
+        { $match: { type: 'refund', createdAt: { $gte: since } } },
+        { $group: { _id: '$currency', total: { $sum: '$amount' } } }, // stored negative
+      ]),
+    ]);
+
+    const byCurrency: Record<string, any> = {};
+    const ensure = (currency: string) => {
+      if (!byCurrency[currency]) {
+        byCurrency[currency] = { currency, buyerCollected: 0, orderCount: 0, ledgerNet: 0, fees: 0, refunds: 0 };
+      }
+      return byCurrency[currency];
+    };
+    for (const o of orders) { const b = ensure(o._id || 'USD'); b.buyerCollected = round(o.totalCollected); b.orderCount = o.count; }
+    for (const t of saleTx) { ensure(t._id || 'USD').ledgerNet += round(t.total); }
+    for (const t of feeTx) { ensure(t._id || 'USD').fees += round(t.total); }
+    for (const t of refundTx) { ensure(t._id || 'USD').refunds += round(t.total); }
+
+    const TOLERANCE = 0.01; // per-currency rounding tolerance, not a real discrepancy threshold
+    const results = Object.values(byCurrency).map((b: any) => {
+      // ledgerNet is what sellers were actually credited net-of-fee; fees/refunds are stored as negative deltas already.
+      const expectedFromLedger = round(b.ledgerNet + Math.abs(b.fees) + b.refunds);
+      const drift = round(b.buyerCollected - expectedFromLedger);
+      return { ...b, expectedFromLedger, drift, hasDiscrepancy: Math.abs(drift) > TOLERANCE };
+    });
+
+    return {
+      success: true,
+      data: {
+        windowDays: days,
+        byCurrency: results,
+        hasAnyDiscrepancy: results.some((r) => r.hasDiscrepancy),
+      },
+    };
+  }
+
+  /**
+   * Runs `getReconciliation`, PERSISTS the result (previously this was
+   * read-only/on-demand only — nothing was ever recorded, so a discrepancy
+   * that occurred between two people happening to check the dashboard would
+   * go completely unnoticed), and raises an admin security alert for any
+   * currency with a real discrepancy. Called by the daily scheduled job
+   * (`SchedulerService#runReconciliation`, `runLocked`-protected).
+   */
+  async runAndPersistReconciliation(days = 1) {
+    const { data } = await this.getReconciliation(days);
+    const run = await this.r.reconciliationRunModel.create({
+      runAt: new Date(),
+      results: data.byCurrency,
+      hasAnyDiscrepancy: data.hasAnyDiscrepancy,
+    });
+
+    if (data.hasAnyDiscrepancy) {
+      for (const c of data.byCurrency.filter((r: any) => r.hasDiscrepancy)) {
+        await this.activityLogService.log({
+          storeId: 'platform',
+          category: 'finance',
+          action: 'reconciliation_discrepancy_detected',
+          description: `Reconciliation drift of ${c.drift} ${c.currency} detected — buyer collected ${c.buyerCollected}, ledger expected ${c.expectedFromLedger}`,
+          actorId: 'system',
+          actorRole: 'system',
+          isSecurityAlert: true,
+          targetId: run._id.toString(),
+          targetType: 'reconciliation_run',
+        });
+      }
+    }
+
+    return run;
+  }
+
+  /** Latest N persisted reconciliation runs — the admin-visible history that
+   *  `getReconciliation` alone (on-demand, unpersisted) couldn't provide. */
+  async getReconciliationHistory(limit = 30) {
+    const runs = await this.r.reconciliationRunModel
+      .find({})
+      .sort({ runAt: -1 })
+      .limit(Math.min(100, limit))
+      .lean();
+    return { success: true, data: runs };
+  }
+
+  /**
+   * FX exposure: the platform's net open position per currency, over
+   * orders that have been collected but not yet fully settled/paid out
+   * (pending clearing window, see FinanceService.CLEARING_DAYS*). Simple
+   * by design — a daily snapshot, not a treasury/hedging system.
+   */
+  async getFxExposure() {
+    const pendingSales = await this.r.transactionModel.aggregate([
+      { $match: { type: 'sale', status: 'pending' } },
+      { $group: { _id: '$currency', pendingAmount: { $sum: '$amount' }, count: { $sum: 1 } } },
+    ]);
+
+    const rates = await this.r.exchangeRateModel.aggregate([
+      { $match: { isRejected: false } },
+      { $sort: { effectiveFrom: -1 } },
+      { $group: { _id: '$currency', ratePerUSD: { $first: '$ratePerUSD' } } },
+    ]);
+    const rateByCurrency = new Map(rates.map((r: any) => [r._id, r.ratePerUSD]));
+
+    const byCurrency = pendingSales.map((p: any) => {
+      const currency = p._id || 'USD';
+      const ratePerUSD = currency === 'USD' ? 1 : (rateByCurrency.get(currency) ?? null);
+      const pendingUSDEquivalent = ratePerUSD ? round(p.pendingAmount / ratePerUSD) : null;
+      return { currency, pendingAmount: round(p.pendingAmount), count: p.count, pendingUSDEquivalent };
+    });
+
+    const totalUSDEquivalent = round(byCurrency.reduce((s, b) => s + (b.pendingUSDEquivalent ?? 0), 0));
+    const fxConfig = await this.adminConfigService.getFxConfig();
+    const threshold = fxConfig?.exposureThresholdUSD ?? 50_000;
+
+    return {
+      success: true,
+      data: { byCurrency, totalUSDEquivalent, threshold, breached: totalUSDEquivalent > threshold, asOf: new Date() },
+    };
+  }
+
+  /**
+   * Calls `getFxExposure` and raises an admin security alert if it's over
+   * threshold. Called by the daily scheduled job
+   * (`SchedulerService#checkFxExposure`, `runLocked`-protected) — this was
+   * previously entirely absent, so a runaway open position could grow
+   * indefinitely with nothing ever flagging it. Kept separate from
+   * `getFxExposure` itself so the on-demand admin-dashboard read (which can
+   * be called repeatedly just by viewing the page) never spams duplicate
+   * alerts — only the once-a-day cron tick does. No automatic
+   * hedging/trading — visibility only, matching the rest of this FX
+   * system's design.
+   */
+  async runFxExposureCheck() {
+    const { data } = await this.getFxExposure();
+    if (data.breached) {
+      await this.activityLogService.log({
+        storeId: 'platform',
+        category: 'finance',
+        action: 'fx_exposure_threshold_breached',
+        description: `Platform open FX exposure is $${data.totalUSDEquivalent.toFixed(2)}, above the configured $${data.threshold.toFixed(2)} threshold`,
+        actorId: 'system',
+        actorRole: 'system',
+        isSecurityAlert: true,
+      });
+    }
+    return data;
   }
 }
