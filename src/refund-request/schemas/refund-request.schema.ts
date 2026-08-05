@@ -17,6 +17,12 @@ export class RefundRequest {
   @Prop({ type: String, required: true })
   sellerOrderId: string;
 
+  // Denormalized from sellerOrder.storeId at creation time, purely so the
+  // seller-scoped list endpoint can query directly by store without a join
+  // back through Order/SellerOrder for every request.
+  @Prop({ type: String, required: true, index: true })
+  storeId: string;
+
   @Prop({ type: [String], required: true })
   itemIds: string[];
 

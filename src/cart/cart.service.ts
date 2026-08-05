@@ -352,13 +352,38 @@ export class CartService {
         };
       }
 
-      // 2. create wishlist
-      const newItem =
-        await this.databaseService.repositories.wishListModel.create({
-          userId,
-          productId,
-          productVariantId,
-        });
+      // 2. create wishlist — guarded by a unique index on
+      // {userId, productId, productVariantId} for the race window between
+      // the findOne check above and this create() (e.g. a double-tap firing
+      // two near-simultaneous requests)
+      let newItem;
+      try {
+        newItem = await this.databaseService.repositories.wishListModel.create(
+          { userId, productId, productVariantId },
+        );
+      } catch (err: any) {
+        if (err?.code === 11000) {
+          const existing =
+            await this.databaseService.repositories.wishListModel.findOne({
+              userId,
+              productId,
+              productVariantId,
+            });
+          const product =
+            await this.databaseService.repositories.productModel.findById(
+              productId,
+            );
+          const variant =
+            await this.databaseService.repositories.productVariantModel.findById(
+              productVariantId,
+            );
+          return {
+            message: 'Product already in wishlist',
+            data: { wishlist: existing, product, variant },
+          };
+        }
+        throw err;
+      }
 
       await this.databaseService.repositories.productModel.findByIdAndUpdate(
         productId,

@@ -130,6 +130,7 @@ export class OrdersService {
         const seller = sellerMap.get(so.sellerId?.toString());
         return {
           storeId: so.storeId,
+          sellerOrderId: so._id,
           sellerId: so.sellerId,
           sellerName: seller ? seller.name : null,
           sellerVerified: seller ? !!seller.isVerified : false,

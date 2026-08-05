@@ -9,6 +9,7 @@ import { FinanceService } from 'src/finance/finance.service';
 import { PaymentService } from 'src/payment/payment.service';
 import { ExchangeRateService } from 'src/exchange-rate/exchange-rate.service';
 import { ActivityLogService } from 'src/activity-log/activity-log.service';
+import { verifyStoreOwnershipOrForbidden } from 'src/common/store-ownership.util';
 import { CreateRefundRequestDto } from './dto/refund-request.dto';
 
 @Injectable()
@@ -65,6 +66,21 @@ export class RefundRequestService {
       throw new BadRequestException('One or more of these items have already been refunded');
     }
 
+    // Parity with the older orders.service.ts#returnRequest guards — a
+    // refund can't be requested for an undelivered order, a digital item
+    // (non-returnable by nature), or an already-cancelled item.
+    for (const item of items) {
+      if (item.type === 'digital') {
+        throw new BadRequestException(`"${item.name}" is a digital product — cannot be returned`);
+      }
+      if (!['delivered', 'completed'].includes(sellerOrder.status)) {
+        throw new BadRequestException(`"${item.name}" is not yet delivered`);
+      }
+      if (item.status === 'cancelled') {
+        throw new BadRequestException(`Cancelled item "${item.name}" cannot be returned`);
+      }
+    }
+
     const existingPending = await this.model.findOne({
       sellerOrderId: dto.sellerOrderId,
       itemIds: { $in: dto.itemIds },
@@ -78,6 +94,7 @@ export class RefundRequestService {
     const created = await this.model.create({
       orderId: dto.orderId,
       sellerOrderId: dto.sellerOrderId,
+      storeId: sellerOrder.storeId,
       itemIds: dto.itemIds,
       requestedBy: userId,
       requestedByRole: role,
@@ -112,6 +129,29 @@ export class RefundRequestService {
     return { success: true, data: { items, total, page, limit } };
   }
 
+  /** Refund requests targeting one of the seller's own stores — ownership
+   *  verified the same way as the rest of the seller-facing API surface. */
+  async listForSeller(sellerId: string, storeId: string, page = 1, limit = 20) {
+    await verifyStoreOwnershipOrForbidden(
+      this.databaseService.repositories.storeModel, storeId, sellerId,
+    );
+    const [items, total] = await Promise.all([
+      this.model.find({ storeId, isDelete: false }).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit).lean(),
+      this.model.countDocuments({ storeId, isDelete: false }),
+    ]);
+    return { success: true, data: { items, total, page, limit } };
+  }
+
+  /** Sellers may only approve/reject a refund request against their own
+   *  store; admins may act on any. */
+  private async assertCanReview(actorRole: 'seller' | 'admin', actorId: string, request: { storeId: string }) {
+    if (actorRole === 'seller') {
+      await verifyStoreOwnershipOrForbidden(
+        this.databaseService.repositories.storeModel, request.storeId, actorId,
+      );
+    }
+  }
+
   /**
    * Approves a pending refund request — computes the buyer-facing amount
    * from the order's own stored item totals (never today's live prices),
@@ -122,10 +162,14 @@ export class RefundRequestService {
    * that buyer-facing amount. Atomic pending→approved transition guards
    * against a double-approval double-refunding everything.
    */
-  async approve(adminId: string, requestId: string) {
+  async approve(actorId: string, actorRole: 'seller' | 'admin', requestId: string) {
+    const existing = await this.model.findOne({ _id: requestId, isDelete: false }).lean();
+    if (!existing) throw new NotFoundException('Refund request not found');
+    await this.assertCanReview(actorRole, actorId, existing as any);
+
     const request = await this.model.findOneAndUpdate(
       { _id: requestId, status: 'pending', isDelete: false },
-      { status: 'approved', reviewedBy: adminId, reviewedAt: new Date() },
+      { status: 'approved', reviewedBy: actorId, reviewedAt: new Date() },
       { new: true },
     );
     if (!request) {
@@ -157,7 +201,7 @@ export class RefundRequestService {
     // this same order, and never proportional across them.
     await this.financeService.recordRefund(
       sellerOrder.storeId, sellerOrder.sellerId, order._id.toString(), sellerDebitAmount,
-      adminId, 'admin',
+      actorId, actorRole,
       {
         description: `Approved refund — Order #${order.orderNumber}, ${items.length} item(s)`,
         targetType: 'order',
@@ -188,8 +232,8 @@ export class RefundRequestService {
             category: 'finance',
             action: 'stripe_refund_failed_after_ledger_reversal',
             description: `Stripe refund failed for order #${order.orderNumber} after seller ledger was already reversed: ${err?.message}`,
-            actorId: adminId,
-            actorRole: 'admin',
+            actorId,
+            actorRole,
             isSecurityAlert: true,
             targetId: order._id.toString(),
             targetType: 'order',
@@ -232,8 +276,8 @@ export class RefundRequestService {
       category: 'finance',
       action: 'refund_approved',
       description: `Refund approved for order #${order.orderNumber} — buyer refunded ${buyerRefundAmount} ${buyerRefundCurrency}, seller debited ${sellerDebitAmount} ${settlementCurrency}`,
-      actorId: adminId,
-      actorRole: 'admin',
+      actorId,
+      actorRole,
       targetId: request._id.toString(),
       targetType: 'refund_request',
     });
@@ -245,22 +289,26 @@ export class RefundRequestService {
     };
   }
 
-  async reject(adminId: string, requestId: string, notes: string) {
+  async reject(actorId: string, actorRole: 'seller' | 'admin', requestId: string, notes: string) {
+    const existing = await this.model.findOne({ _id: requestId, isDelete: false }).lean();
+    if (!existing) throw new NotFoundException('Refund request not found');
+    await this.assertCanReview(actorRole, actorId, existing as any);
+
     const request = await this.model.findOneAndUpdate(
       { _id: requestId, status: 'pending', isDelete: false },
-      { status: 'rejected', reviewedBy: adminId, reviewedAt: new Date(), resolutionNotes: notes },
+      { status: 'rejected', reviewedBy: actorId, reviewedAt: new Date(), resolutionNotes: notes },
       { new: true },
     );
     if (!request) {
       throw new BadRequestException('Refund request not found or already reviewed');
     }
     await this.activityLogService.log({
-      storeId: 'platform',
+      storeId: request.storeId,
       category: 'orders',
       action: 'refund_rejected',
       description: `Refund request rejected — ${notes}`,
-      actorId: adminId,
-      actorRole: 'admin',
+      actorId,
+      actorRole,
       targetId: request._id.toString(),
       targetType: 'refund_request',
     });

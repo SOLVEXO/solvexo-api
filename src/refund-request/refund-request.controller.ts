@@ -48,18 +48,32 @@ export class RefundRequestController {
     return this.refundRequestService.listPending(Number(page) || 1, Number(limit) || 20);
   }
 
+  // Seller's own refund requests, across just their store — ownership
+  // verified inside the service.
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('admin')
-  @UseInterceptors(IdempotencyInterceptor)
-  @Patch(':id/approve')
-  async approve(@Req() req: any, @Param('id') id: string) {
-    return this.refundRequestService.approve(req.user.userId, id);
+  @Roles('seller')
+  @Get('seller/:storeId')
+  async listForSeller(
+    @Req() req: any,
+    @Param('storeId') storeId: string,
+    @Query('page') page = '1',
+    @Query('limit') limit = '20',
+  ) {
+    return this.refundRequestService.listForSeller(req.user.userId, storeId, Number(page) || 1, Number(limit) || 20);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('admin')
+  @Roles('seller', 'admin')
+  @UseInterceptors(IdempotencyInterceptor)
+  @Patch(':id/approve')
+  async approve(@Req() req: any, @Param('id') id: string) {
+    return this.refundRequestService.approve(req.user.userId, req.user.role, id);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller', 'admin')
   @Patch(':id/reject')
   async reject(@Req() req: any, @Param('id') id: string, @Body() dto: RejectRefundRequestDto) {
-    return this.refundRequestService.reject(req.user.userId, id, dto.notes);
+    return this.refundRequestService.reject(req.user.userId, req.user.role, id, dto.notes);
   }
 }
