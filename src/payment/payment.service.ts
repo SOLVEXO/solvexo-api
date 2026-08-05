@@ -132,17 +132,6 @@ export class PaymentService {
       throw new BadRequestException('Checkout has expired');
     }
 
-    // Payment rail is derived from checkout currency, never chosen
-    // independently — Stripe only ever processes USD checkouts in this
-    // codebase; a PKR checkout must use the manual bank-transfer rail
-    // instead (manualBankTransferPayment). This is the direct guard against
-    // ever asking Stripe to charge a PKR-denominated amount.
-    if (checkout.currency !== 'USD') {
-      throw new BadRequestException(
-        `Card payment isn't available for a ${checkout.currency} checkout — please use the bank transfer option instead.`,
-      );
-    }
-
     const physicalItems = checkout.items.filter(
       (i: any) => i.type === 'physical',
     );

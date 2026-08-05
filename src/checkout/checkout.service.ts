@@ -783,6 +783,19 @@ export class CheckoutService {
             eligibleSubtotal,
           );
 
+    // A coupon that computes to zero real savings (e.g. every eligible item
+    // is free, or a fixed-amount coupon on a $0 eligible subtotal) must be
+    // rejected outright, the same way "no eligible items at all" already is
+    // above — silently marking it "applied" for Rs0/$0 would look successful
+    // to the buyer while doing nothing, which no real checkout does.
+    if (totalDiscount <= 0) {
+      throw new BadRequestException(
+        eligibleItems.length < storeItems.length
+          ? "This coupon doesn't apply any discount here — the eligible items in your cart are already on sale or have no remaining value to discount."
+          : "This coupon doesn't apply any discount to your cart.",
+      );
+    }
+
     if (isPlatformCoupon) {
       // A platform coupon's basis/discount is in the checkout's own display
       // currency, but each eligible item's totalPrice is still in that

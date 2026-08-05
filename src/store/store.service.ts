@@ -9,9 +9,11 @@ import { DatabaseService } from 'src/database/databaseservice';
 import {
   SellerType, ProductType, resolveTools,
   BUSINESS_TYPES, ID_DOCUMENT_TYPES, VERIFICATION_DOCUMENT_TYPES,
-  requiredVerificationDocuments,
+  determineVerificationLevel, assertValidVerificationTransition,
   type BusinessType, type VerificationDocumentType, type VerificationDocument,
+  type VerificationStatus,
 } from './schemas/store.schema';
+import { getVerificationRequirements, isFieldSatisfied } from './verification-requirements.config';
 import { UploadService } from 'src/upload/upload.service';
 import { SUPPORTED_CURRENCIES } from 'src/exchange-rate/schemas/exchange-rate.schema';
 import { ActivityLogService } from 'src/activity-log/activity-log.service';
@@ -157,6 +159,11 @@ export class StoreService {
   }
 
   // ── Seller business verification (Leads review) ──────────────────────────
+  // Store.status (marketplace listing) and Store.verificationStatus (KYC
+  // review) are deliberately separate fields — see store.schema.ts. Every
+  // method below reads/writes `verificationStatus`, never `status`, except
+  // where a comment explicitly says otherwise (only admin approve/reject
+  // ever touches both, because Solvexo has one review action, not two).
 
   private async findOwnedStoreOrThrow(sellerId: string, storeId: string, opts?: { withVerification?: boolean }) {
     const query = this.databaseService.repositories.storeModel.findOne({ _id: storeId, isDelete: false });
@@ -170,43 +177,118 @@ export class StoreService {
   /** Documents are stored as Cloudinary private-type publicIds (never a bare
    *  URL) — a signed, short-lived URL is generated fresh on every read so a
    *  sensitive document (ID, tax cert) is never permanently link-shareable. */
-  private async withSignedDocumentUrls(documents: VerificationDocument[]) {
-    return documents.map((d) => ({
-      type: d.type,
-      fileName: d.fileName,
-      uploadedAt: d.uploadedAt,
-      viewUrl: this.uploadService.generateSignedUrl(d.publicId, d.resourceType, 600, d.fileName),
-    }));
+  private signedDocumentUrl(d: VerificationDocument) {
+    return this.uploadService.generateSignedUrl(d.publicId, d.resourceType, 600, d.fileName);
+  }
+
+  /** THE evaluation used by getVerification (seller view), getLeadDetail
+   *  (admin view — see AdminMarketplaceService), and submitVerification
+   *  (the actual security gate) — one calculation, three consumers. Renders
+   *  the FULL checklist (required + optional), each entry tagged with its
+   *  current state, instead of just the list of what's missing, so the UI
+   *  never has to re-derive "why is this shown" logic of its own. */
+  private evaluateVerification(store: any) {
+    const v = store.verification ?? {};
+    const level = store.verificationLevel ?? determineVerificationLevel(store.businessType ?? null);
+    const req = getVerificationRequirements(store.country ?? 'PK', store.businessType ?? null, level);
+
+    const missingFields = req.requiredFields.filter((path) => !isFieldSatisfied(v, path));
+
+    const uploadedByType = new Map<string, VerificationDocument>((v.documents ?? []).map((d: VerificationDocument) => [d.type, d]));
+    const allDocTypes = [...new Set([...req.requiredDocuments, ...req.optionalDocuments])];
+    const documents = allDocTypes.map((type) => {
+      const uploaded = uploadedByType.get(type);
+      const required = req.requiredDocuments.includes(type);
+      return {
+        type,
+        required,
+        state: uploaded ? 'uploaded' : (required ? 'missing' : 'not_required'),
+        fileName: uploaded?.fileName ?? null,
+        uploadedAt: uploaded?.uploadedAt ?? null,
+        viewUrl: uploaded ? this.signedDocumentUrl(uploaded) : null,
+      };
+    });
+    const missingDocuments = req.requiredDocuments.filter((t) => !uploadedByType.has(t));
+
+    return {
+      requirements: req,
+      missingFields,
+      missingDocuments,
+      documents,
+      canSubmit: missingFields.length === 0 && missingDocuments.length === 0,
+    };
   }
 
   async getVerification(sellerId: string, storeId: string) {
     const store = await this.findOwnedStoreOrThrow(sellerId, storeId, { withVerification: true });
-    const v = store.verification ?? ({} as any);
+    const v: any = store.verification ?? {};
+    const evaluation = this.evaluateVerification(store);
+
     return {
       success: true,
       data: {
-        businessType: v.businessType ?? null,
+        country: store.country ?? 'PK',
+        businessType: store.businessType ?? null,
+        verificationLevel: evaluation.requirements.verificationLevel,
+        verificationStatus: store.verificationStatus ?? 'not_started',
         legalBusinessName: v.legalBusinessName ?? null,
         registrationNumber: v.registrationNumber ?? null,
         taxId: v.taxId ?? null,
         businessAddress: v.businessAddress ?? null,
         idDocumentType: v.idDocumentType ?? null,
         authorizedContact: v.authorizedContact ?? null,
-        documents: await this.withSignedDocumentUrls(v.documents ?? []),
+        documents: evaluation.documents,
+        missingFields: evaluation.missingFields,
+        missingDocuments: evaluation.missingDocuments,
+        canSubmit: evaluation.canSubmit,
         history: v.history ?? [],
-        submitted: v.submitted ?? false,
-        requiredDocumentTypes: requiredVerificationDocuments(v.businessType ?? null),
         storeStatus: store.status,
         rejectionReason: store.rejectionReason ?? null,
       },
     };
   }
 
-  /** Draft-save — usable while the store is still `pending` (first pass) or
-   *  `rejected` (fixing up before resubmitting). Locked once an admin has
-   *  taken it into `under_review`/`active`/`suspended` so the submitted data
-   *  can't shift mid-review. */
+  /** Live preview — "what would I need to submit if I picked this country /
+   *  business type?" — called as the seller fills in Business Info, before
+   *  anything is saved. Falls back to the store's currently-persisted
+   *  values when a param is omitted, so it also works as "what applies to
+   *  me right now". Never trusts these query params for anything other
+   *  than this preview — the actual gate (submitVerification) always
+   *  recomputes from persisted data, never from a request param. */
+  async getVerificationRequirements(sellerId: string, storeId: string, query: { country?: string; businessType?: string }) {
+    const store = await this.findOwnedStoreOrThrow(sellerId, storeId);
+
+    const businessType = (query.businessType as BusinessType) ?? store.businessType ?? null;
+    if (businessType && !BUSINESS_TYPES.includes(businessType)) {
+      throw new BadRequestException('Invalid businessType');
+    }
+    const country = query.country ?? store.country ?? 'PK';
+    const level = determineVerificationLevel(businessType);
+
+    return { success: true, data: getVerificationRequirements(country, businessType, level) };
+  }
+
+  /** Same preview, but usable BEFORE a store exists — onboarding doesn't
+   *  create the store until the final submit step, so there's no storeId to
+   *  scope `getVerificationRequirements` (above) to yet. Pure function of
+   *  country+businessType, no DB read at all — no ownership check needed. */
+  previewVerificationRequirementsStandalone(query: { country?: string; businessType?: string }) {
+    const businessType = (query.businessType as BusinessType) ?? null;
+    if (businessType && !BUSINESS_TYPES.includes(businessType)) {
+      throw new BadRequestException('Invalid businessType');
+    }
+    const country = query.country ?? 'PK';
+    const level = determineVerificationLevel(businessType);
+    return { success: true, data: getVerificationRequirements(country, businessType, level) };
+  }
+
+  /** Draft-save — usable while verification is `not_started` (first pass)
+   *  or `rejected` (fixing up before resubmitting). Locked once it's
+   *  `pending`/`under_review`/`verified` so submitted data can't shift
+   *  mid-review — this is a `verificationStatus` check, not `status`, so
+   *  editing verification never depends on the store's marketplace state. */
   async updateVerification(sellerId: string, storeId: string, body: {
+    country?: string;
     businessType?: BusinessType;
     legalBusinessName?: string;
     registrationNumber?: string;
@@ -217,7 +299,8 @@ export class StoreService {
     documents?: { type: VerificationDocumentType; publicId: string; resourceType?: string; fileName: string }[];
   }) {
     const store = await this.findOwnedStoreOrThrow(sellerId, storeId, { withVerification: true });
-    if (!['pending', 'rejected'].includes(store.status)) {
+    const verificationStatus: VerificationStatus = store.verificationStatus ?? 'not_started';
+    if (!['not_started', 'rejected'].includes(verificationStatus)) {
       throw new BadRequestException('Verification details can no longer be edited once submitted for review');
     }
 
@@ -233,9 +316,16 @@ export class StoreService {
       }
     }
 
-    const current = store.verification ?? ({} as any);
+    // `store.verification` is a live Mongoose subdocument instance, not a
+    // plain object — spreading it directly also captures Mongoose's own
+    // internal bookkeeping properties (`_doc`, `$__`, `$__parent`) as
+    // enumerable own-properties, and casting that polluted shape back
+    // against the schema for `$set` silently falls back to the stale
+    // internal `_doc` snapshot, discarding every field set below even
+    // though the write reports success. `.toObject()` gives a genuinely
+    // clean plain-object snapshot of just the real field values.
+    const current: any = (store.verification as any)?.toObject?.() ?? store.verification ?? {};
     const next: Record<string, unknown> = { ...current };
-    if (body.businessType !== undefined) next.businessType = body.businessType;
     if (body.legalBusinessName !== undefined) next.legalBusinessName = body.legalBusinessName;
     if (body.registrationNumber !== undefined) next.registrationNumber = body.registrationNumber;
     if (body.taxId !== undefined) next.taxId = body.taxId;
@@ -246,7 +336,11 @@ export class StoreService {
     }
     if (body.documents !== undefined) {
       // Replace-by-type — re-uploading a document type overwrites the
-      // previous one instead of accumulating duplicates.
+      // previous one instead of accumulating duplicates. Nothing is ever
+      // deleted just because a country/business-type change made a
+      // previously-uploaded document no longer required (see section 12/13
+      // of the spec this implements) — it simply stops appearing as
+      // "required" in evaluateVerification's checklist.
       const byType = new Map<string, VerificationDocument>(
         (current.documents ?? []).map((d: VerificationDocument) => [d.type, d]),
       );
@@ -256,32 +350,46 @@ export class StoreService {
       next.documents = [...byType.values()];
     }
 
-    await this.databaseService.repositories.storeModel.findByIdAndUpdate(storeId, { $set: { verification: next } });
+    const update: Record<string, unknown> = { verification: next };
+    // Country/businessType changes recompute the applicable level
+    // server-side — never accepted as a client-supplied value.
+    if (body.country !== undefined) update.country = body.country;
+    if (body.businessType !== undefined) {
+      update.businessType = body.businessType;
+      update.verificationLevel = determineVerificationLevel(body.businessType);
+    }
+
+    await this.databaseService.repositories.storeModel.findByIdAndUpdate(storeId, { $set: update });
     return { success: true, message: 'Verification details saved' };
   }
 
   /** Called once at the end of the onboarding Documents step (first-time
-   *  submission) — validates the required document set for the chosen
-   *  business type is actually present before locking the lead in for
-   *  admin review. */
+   *  submission) or from the standalone verification page (resubmission
+   *  after rejection) — independently recomputes the requirement set from
+   *  the store's CURRENTLY PERSISTED country/businessType/level (never a
+   *  client-cached list) and rejects with a structured error naming exactly
+   *  what's missing if anything is absent. This is the real security
+   *  boundary — the frontend's own checklist is UX only. */
   async submitVerification(sellerId: string, storeId: string) {
     const store = await this.findOwnedStoreOrThrow(sellerId, storeId, { withVerification: true });
-    if (!['pending', 'rejected'].includes(store.status)) {
+    const verificationStatus: VerificationStatus = store.verificationStatus ?? 'not_started';
+    if (!['not_started', 'rejected'].includes(verificationStatus)) {
       throw new BadRequestException('This store has already been submitted for review');
     }
 
-    const v = store.verification ?? ({} as any);
-    if (!v.legalBusinessName || !v.businessAddress || !v.authorizedContact?.name || !v.authorizedContact?.email || !v.authorizedContact?.phone) {
-      throw new BadRequestException('Please complete the business information section before submitting');
-    }
-    const required = requiredVerificationDocuments(v.businessType ?? null);
-    const haveTypes = new Set((v.documents ?? []).map((d: VerificationDocument) => d.type));
-    const missing = required.filter((t) => !haveTypes.has(t));
-    if (missing.length > 0) {
-      throw new BadRequestException(`Missing required document(s): ${missing.join(', ')}`);
+    const evaluation = this.evaluateVerification(store);
+    if (!evaluation.canSubmit) {
+      throw new BadRequestException({
+        message: 'Please complete every required field and document before submitting',
+        missingFields: evaluation.missingFields,
+        missingDocuments: evaluation.missingDocuments,
+      });
     }
 
-    const wasRejected = store.status === 'rejected';
+    const nextStatus: VerificationStatus = 'pending';
+    assertValidVerificationTransition(verificationStatus, nextStatus);
+
+    const wasRejected = verificationStatus === 'rejected';
     const historyEntry = {
       action: wasRejected ? 'resubmitted' : 'submitted',
       note: null,
@@ -292,14 +400,24 @@ export class StoreService {
 
     await this.databaseService.repositories.storeModel.findByIdAndUpdate(storeId, {
       $set: {
-        'verification.submitted': true,
-        status: 'pending',
+        verificationStatus: nextStatus,
         rejectionReason: null,
       },
       $push: { 'verification.history': historyEntry },
     });
 
     return { success: true, message: wasRejected ? 'Resubmitted for review' : 'Submitted for review' };
+  }
+
+  /** Admin-only variant of evaluateVerification — no seller-ownership check
+   *  (the caller is AdminMarketplaceService, already gated to admins by its
+   *  own controller). Reused so the admin Leads detail view and the
+   *  seller's own verification page render the exact same checklist logic
+   *  instead of two independent implementations drifting apart. */
+  async getVerificationEvaluationForAdmin(storeId: string) {
+    const store = await this.databaseService.repositories.storeModel.findOne({ _id: storeId, isDelete: false }).select('+verification');
+    if (!store) throw new NotFoundException('Store not found');
+    return this.evaluateVerification(store);
   }
 
   /** KYC document upload — thin wrapper so the frontend can upload straight

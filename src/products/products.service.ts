@@ -323,6 +323,29 @@ export class ProductsService {
     );
   }
 
+  /** Constrains a product query to only stores with `status: 'active'` —
+   *  `Product.status` alone isn't enough: a store can be suspended/rejected
+   *  by an admin action *after* its products were created and left
+   *  `status: 'active'` on the product itself, so public browse/search must
+   *  independently re-check the owning store on every request rather than
+   *  relying on product-creation-time gating alone. Intersects with any
+   *  `storeId.$in` the query already has (e.g. a campaign's participating
+   *  stores) instead of overwriting it. */
+  private async restrictToActiveStores(query: any): Promise<void> {
+    const activeIds: string[] = (
+      await this.databaseService.repositories.storeModel
+        .find({ status: 'active', isDelete: false }, { _id: 1 })
+        .lean()
+    ).map((s: any) => s._id.toString());
+
+    if (query.storeId?.$in) {
+      const existing = new Set(query.storeId.$in as string[]);
+      query.storeId = { $in: activeIds.filter((id) => existing.has(id)) };
+    } else {
+      query.storeId = { $in: activeIds };
+    }
+  }
+
   async getProductsByCategoryId(
     parentCategoryId?: string,
     page: number = 1,
@@ -408,6 +431,8 @@ export class ProductsService {
         query.categoryId = parentCategoryId;
       }
     }
+
+    await this.restrictToActiveStores(query);
 
     // Rating lives directly on `Product`, so it's a plain query clause —
     // unlike price (see below), it never needs the variants aggregation.
@@ -672,6 +697,8 @@ export class ProductsService {
       isDelete: false,
       $or: [{ name: regex }, { description: regex }],
     };
+
+    await this.restrictToActiveStores(query);
 
     const skip = (page - 1) * limit;
     const total = await productModel.countDocuments(query);

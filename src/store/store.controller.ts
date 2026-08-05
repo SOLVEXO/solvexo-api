@@ -21,6 +21,20 @@ export class StoreController {
     return this.storeService.createStore(userId, body);
   }
 
+  // Store-independent requirements preview — used by onboarding BEFORE a
+  // store exists (the store isn't created until the final submit step, so
+  // there's no storeId yet to scope the existing `:storeId/verification/
+  // requirements` route to). Pure function of country+businessType, no
+  // ownership check needed. Declared as a literal segment ahead of the
+  // `:storeId/...` block below so `:storeId` never swallows "verification"
+  // as if it were a store id.
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Get('verification/requirements-preview')
+  async previewVerificationRequirementsStandalone(@Query() query: { country?: string; businessType?: string }) {
+    return this.storeService.previewVerificationRequirementsStandalone(query);
+  }
+
   // seller ke saare stores
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('seller')
@@ -69,6 +83,19 @@ export class StoreController {
   @Get(':storeId/verification')
   async getVerification(@Req() req: any, @Param('storeId') storeId: string) {
     return this.storeService.getVerification(req.user.userId, storeId);
+  }
+
+  // Live "what would I need" preview as the seller picks country/business
+  // type, before anything is saved — see StoreService.getVerificationRequirements.
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Get(':storeId/verification/requirements')
+  async getVerificationRequirements(
+    @Req() req: any,
+    @Param('storeId') storeId: string,
+    @Query() query: { country?: string; businessType?: string },
+  ) {
+    return this.storeService.getVerificationRequirements(req.user.userId, storeId, query);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)

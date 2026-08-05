@@ -178,16 +178,49 @@ export class StoreAnnouncementBar {
 export const StoreAnnouncementBarSchema = SchemaFactory.createForClass(StoreAnnouncementBar);
 
 // ── Seller business verification (KYC-style Leads review) ──────────────────
-// Required documents vary by business type — an 'individual' seller isn't
-// asked for a business registration/tax certificate the way a 'company' or
-// 'partnership' is (see BUSINESS_VERIFICATION_REQUIREMENTS in
-// store.service.ts, the single source of truth both the onboarding wizard
-// and the admin Leads review screen read from).
+// Three genuinely separate concepts, each its own field — never collapsed
+// into one status string (see verification-requirements.config.ts for why):
+//   Store.status          — marketplace listing lifecycle (is it live?)
+//   Store.verificationStatus — where the KYC review itself stands
+//   Store.verificationLevel  — which requirement set applies (server-derived
+//                              from businessType, never client-supplied)
 export const BUSINESS_TYPES = ['individual', 'company', 'partnership'] as const;
 export type BusinessType = (typeof BUSINESS_TYPES)[number];
 
 export const ID_DOCUMENT_TYPES = ['cnic', 'passport', 'national_id'] as const;
 export type IdDocumentType = (typeof ID_DOCUMENT_TYPES)[number];
+
+export const VERIFICATION_STATUSES = ['not_started', 'pending', 'under_review', 'verified', 'rejected'] as const;
+export type VerificationStatus = (typeof VERIFICATION_STATUSES)[number];
+
+export const VERIFICATION_LEVELS = ['basic', 'business', 'enhanced'] as const;
+export type VerificationLevel = (typeof VERIFICATION_LEVELS)[number];
+
+// Valid forward transitions — a rejected submission must go back through
+// `pending` (resubmit) rather than jumping straight to `verified`, and a
+// fresh store can't be marked `verified` without ever having submitted.
+const VERIFICATION_TRANSITIONS: Record<VerificationStatus, VerificationStatus[]> = {
+  not_started: ['pending'],
+  pending: ['under_review', 'verified', 'rejected'],
+  under_review: ['verified', 'rejected'],
+  verified: [],
+  rejected: ['pending'],
+};
+export function assertValidVerificationTransition(from: VerificationStatus, to: VerificationStatus) {
+  if (from === to) return; // idempotent no-ops (e.g. marking under_review twice) are fine
+  if (!VERIFICATION_TRANSITIONS[from]?.includes(to)) {
+    throw new Error(`Invalid verification transition: ${from} -> ${to}`);
+  }
+}
+
+// businessType determines the applicable level today — 'enhanced' is
+// architecturally supported (see verification-requirements.config.ts) but
+// nothing in Solvexo's real business rules assigns it yet, so it's never
+// auto-selected. This is a pure function of server-known data, never a
+// client-supplied value, per the "backend is the source of truth" rule.
+export function determineVerificationLevel(businessType: BusinessType | null): VerificationLevel {
+  return businessType === 'company' || businessType === 'partnership' ? 'business' : 'basic';
+}
 
 // One row per uploaded document. `publicId`/`resourceType` (never a bare
 // `url`) is deliberate — these are sensitive documents (ID, tax certs), so
@@ -239,7 +272,12 @@ export const AuthorizedContactSchema = SchemaFactory.createForClass(AuthorizedCo
 
 @Schema({ _id: false })
 export class SellerVerification {
-  @Prop({ type: String, enum: BUSINESS_TYPES, default: null }) businessType: BusinessType | null;
+  // NOT here — `businessType` lives on `Store` itself (top-level, see
+  // below), alongside `country`/`verificationLevel`/`verificationStatus`.
+  // Those four are the classification/state fields requirement-calculation
+  // and admin-list views need cheaply; everything below is the actual
+  // sensitive submission data, which is why this whole subdocument stays
+  // `select: false` on the parent Store schema.
   @Prop({ type: String, default: null }) legalBusinessName: string | null;
   @Prop({ type: String, default: null }) registrationNumber: string | null;
   @Prop({ type: String, default: null }) taxId: string | null;
@@ -254,20 +292,8 @@ export class SellerVerification {
   @Prop({ type: Boolean, default: false }) submitted: boolean;
 }
 export const SellerVerificationSchema = SchemaFactory.createForClass(SellerVerification);
-
-// Single source of truth for which documents a submission needs before
-// StoreService.submitVerification will accept it — an 'individual' seller
-// only needs to prove who they are and where their business operates; a
-// 'company'/'partnership' additionally needs registration + tax proof.
-const ALWAYS_REQUIRED_DOCS: VerificationDocumentType[] = ['owner_id', 'address_proof'];
-const BUSINESS_TYPE_REQUIRED_DOCS: Record<BusinessType, VerificationDocumentType[]> = {
-  individual: [],
-  company: ['business_registration', 'tax_registration'],
-  partnership: ['business_registration', 'tax_registration'],
-};
-export function requiredVerificationDocuments(businessType: BusinessType | null): VerificationDocumentType[] {
-  return [...ALWAYS_REQUIRED_DOCS, ...(businessType ? BUSINESS_TYPE_REQUIRED_DOCS[businessType] : [])];
-}
+// Required-document/field calculation lives in verification-requirements.config.ts
+// (centralized, country + businessType + level aware) — not here.
 
 @Schema({ timestamps: true })
 export class Store {
@@ -364,18 +390,20 @@ export class Store {
   @Prop({ type: Number, default: 0 })
   reviewCount: number;
 
-  // New stores start 'pending' (a Lead) — an admin must approve them via
-  // AdminMarketplaceService.approveLead/rejectLead before they flip to
-  // 'active'. 'under_review' is an optional intermediate state an admin can
-  // set while actively working a lead (see markUnderReview) — purely a
-  // tracking/lock signal, not required before approve/reject. Every public/
-  // browse route already filters `status: 'active'` (see
-  // StoreService.getStoreBySlug/discoverStores/etc.), so anything else is
-  // automatically excluded from the marketplace with no extra filtering
-  // needed. The seller's own dashboard (getMyStores/getStoreById) does NOT
-  // filter by status, so the seller can still see and prep their store
-  // while it's awaiting review.
-  @Prop({ enum: ['pending', 'under_review', 'active', 'inactive', 'suspended', 'rejected'], default: 'pending' })
+  // Marketplace LISTING lifecycle only — deliberately independent of
+  // verification (see VerificationStatus below). New stores start 'pending'
+  // (a Lead) and an admin must approve them via
+  // AdminMarketplaceService.approveLead before they flip to 'active'; today
+  // that admin action happens to move both this field and
+  // `verificationStatus` together (Solvexo has one review action, not two),
+  // but they remain separate fields so that's a business-process fact, not
+  // a schema constraint. Every public/browse route already filters
+  // `status: 'active'` (see StoreService.getStoreBySlug/discoverStores/
+  // etc.), so anything else is automatically excluded from the marketplace
+  // with no extra filtering needed. The seller's own dashboard
+  // (getMyStores/getStoreById) does NOT filter by status, so the seller can
+  // still see and prep their store while it's awaiting review.
+  @Prop({ enum: ['pending', 'active', 'rejected', 'suspended'], default: 'pending' })
   status: string;
 
   // Set by AdminMarketplaceService.rejectLead — shown back to the seller so
@@ -385,6 +413,33 @@ export class Store {
 
   @Prop({ type: Date, default: null })
   reviewedAt: Date | null;
+
+  // ── Verification classification/state — top-level (not `select: false`):
+  // none of these four are sensitive on their own (no tax IDs, no document
+  // refs), and `resolveSellerDestinationRemote`, the admin Leads list, and
+  // requirement calculation all need them cheaply without opting into the
+  // sensitive `verification` blob below. ──
+
+  // Where the seller says they operate — drives requirement calculation
+  // (see verification-requirements.config.ts). Defaults to Solvexo's home
+  // market; genuinely different per-country legal rules can be added to
+  // that config later without touching this field.
+  @Prop({ type: String, default: 'PK' })
+  country: string;
+
+  @Prop({ type: String, enum: BUSINESS_TYPES, default: null })
+  businessType: BusinessType | null;
+
+  // Server-derived from `businessType` via `determineVerificationLevel` —
+  // never accepted from the client. Recomputed every time businessType is
+  // saved (see StoreService.updateVerification).
+  @Prop({ type: String, enum: VERIFICATION_LEVELS, default: null })
+  verificationLevel: VerificationLevel | null;
+
+  // The KYC review's own state — independent of `status` above. See
+  // `assertValidVerificationTransition` for the allowed transitions.
+  @Prop({ type: String, enum: VERIFICATION_STATUSES, default: 'not_started' })
+  verificationStatus: VerificationStatus;
 
   // Business verification (KYC-style) — deliberately `select: false` so it
   // never rides along on any public/storefront/product query by accident;
