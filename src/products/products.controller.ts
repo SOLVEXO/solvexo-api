@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Post,
+  Delete,
   Body,
   Param,
   Req,
@@ -178,5 +179,13 @@ export class productController {
   async editProduct(@Req() req: any, @Body() body: any) {
     const { userId: sellerId } = req.user;
     return this.ProductsService.editProduct(sellerId, body);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Delete('delete-product/:productId')
+  async deleteProduct(@Req() req: any, @Param('productId') productId: string) {
+    const { userId: sellerId } = req.user;
+    return this.ProductsService.deleteProduct(sellerId, productId);
   }
 }

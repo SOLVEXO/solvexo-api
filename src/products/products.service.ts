@@ -1486,6 +1486,43 @@ export class ProductsService {
     };
   }
 
+  async deleteProduct(sellerId: string, productId: string) {
+    const { productModel, productVariantModel, sellerModel } =
+      this.databaseService.repositories;
+
+    const seller = await sellerModel.findOne({
+      _id: sellerId,
+      status: 'active',
+      isDelete: false,
+    });
+    if (!seller) throw new UnauthorizedException('Unauthorized seller');
+
+    const product = await productModel.findOne({
+      _id: productId,
+      isDelete: false,
+    });
+    if (!product) throw new BadRequestException('Product not found');
+    if (product.sellerId !== sellerId)
+      throw new UnauthorizedException(
+        'You are not authorized to delete this product',
+      );
+
+    await productModel.findByIdAndUpdate(productId, {
+      isDelete: true,
+      status: 'inactive',
+    });
+    await productVariantModel.updateMany(
+      { productId, isDelete: false },
+      { isDelete: true, isDefault: false },
+    );
+
+    return {
+      success: true,
+      message: 'Product deleted successfully',
+      data: null,
+    };
+  }
+
   /** GET /api/products/education/facets — public, backs the Education marketplace's dynamic filter chips. */
   async getEducationFacets() {
     const facets = await this.educationLevelService.getFacets();

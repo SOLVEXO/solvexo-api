@@ -204,9 +204,13 @@ export class EntitlementsService {
     const plan = await this.resolvePlan(storeId);
     const limits: PlatformPlanLimits = plan?.limits ?? FALLBACK_LIMITS;
 
-    const [productCount, staffCount, aiWallet, allActivePlans] = await Promise.all([
+    const [productCount, staffCount, posLocationCount, aiWallet, allActivePlans] = await Promise.all([
       this.db.repositories.productModel.countDocuments({ storeId, isDelete: false }),
       this.db.repositories.employeeModel.countDocuments({ storeId, isDelete: false }),
+      // Same count assertCanAddLocation() already uses to gate creation —
+      // reused here so the usage meter shows the real number instead of a
+      // hardcoded 0.
+      this.db.repositories.storeLocationModel.countDocuments({ storeId, status: 'active', isDelete: false }),
       this.db.repositories.aiCreditsWalletModel.findOne({ storeId }).lean(),
       this.planModel.find({ status: 'active', isDelete: false }).sort({ sortOrder: 1 }).lean(),
     ]);
@@ -231,7 +235,10 @@ export class EntitlementsService {
         limit: limits.maxStaffAccounts, used: staffCount,
         allowed: limits.maxStaffAccounts === -1 || staffCount < limits.maxStaffAccounts,
       },
-      maxPosLocations: { limit: limits.maxPosLocations },
+      maxPosLocations: {
+        limit: limits.maxPosLocations, used: posLocationCount,
+        allowed: limits.maxPosLocations === -1 || posLocationCount < limits.maxPosLocations,
+      },
       aiCredits: {
         monthlyAllowance: limits.aiCreditsPerMonth,
         balance: (aiWallet as any)?.balance ?? 0,
