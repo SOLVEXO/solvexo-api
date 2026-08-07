@@ -14,7 +14,8 @@ import { UpdateFxConfigDto } from './dto/update-fx-config.dto';
 
 export type FeatureFlagKey =
   | 'aiStudio' | 'marketplace' | 'digitalUploads' | 'affiliateProgram'
-  | 'giftCards' | 'posMode' | 'storeBuilder' | 'bulkProductImport' | 'promotions';
+  | 'giftCards' | 'posMode' | 'storeBuilder' | 'bulkProductImport' | 'promotions'
+  | 'storefrontBlog';
 
 interface AuditMeta {
   adminId: string;

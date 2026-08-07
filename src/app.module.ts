@@ -53,6 +53,9 @@ import { AdminUsersModule } from './admin-users/admin-users.module';
 import { AdminMarketingModule } from './admin-marketing/admin-marketing.module';
 import { MediaLibraryModule } from './media-library/media-library.module';
 import { StoreBannerModule } from './store-banner/store-banner.module';
+import { StoreThemeModule } from './store-theme/store-theme.module';
+import { StorePagesModule } from './store-pages/store-pages.module';
+import { StoreBlogModule } from './store-blog/store-blog.module';
 import { PromotionsModule } from './promotions/promotions.module';
 import { CommissionRulesModule } from './commission-rules/commission-rules.module';
 import { ManualPaymentsModule } from './manual-payments/manual-payments.module';
@@ -120,6 +123,9 @@ import { ExchangeRateModule } from './exchange-rate/exchange-rate.module';
     AdminMarketingModule,
     MediaLibraryModule,
     StoreBannerModule,
+    StoreThemeModule,
+    StorePagesModule,
+    StoreBlogModule,
     PromotionsModule,
     ExchangeRateModule,
   ],

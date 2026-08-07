@@ -27,6 +27,8 @@ import { RedisService } from 'src/redis/redis.service';
 import { MarketingService } from 'src/marketing/marketing.service';
 import { pickPrimaryCampaignForBadge } from 'src/marketing/campaign-pricing.util';
 import { AdminConfigService } from 'src/admin-config/admin-config.service';
+import { StoreThemeService } from '../store-theme/store-theme.service';
+import { StorePagesService } from '../store-pages/store-pages.service';
 
 // Store slugs render at the site root (`solvexo.store/:slug`) — these are the
 // frontend's top-level static route segments (router/index.tsx), reserved so
@@ -51,6 +53,8 @@ export class StoreService {
     private readonly marketingService: MarketingService,
     private readonly adminConfigService: AdminConfigService,
     private readonly uploadService: UploadService,
+    private readonly storeThemeService: StoreThemeService,
+    private readonly storePagesService: StorePagesService,
   ) {}
 
   private generateSlug(name: string): string {
@@ -150,6 +154,13 @@ export class StoreService {
     // Every store always has exactly one platform-plan subscription — auto
     // start on the free tier so onboarding has zero friction (see EntitlementsService).
     await this.sellerPlatformSubscriptionsService.ensureDefaultSubscription(store._id.toString(), sellerId);
+
+    // Every store gets its own storefront chrome (theme/header/footer) and a
+    // home page seeded at creation time, not lazily on first public visit —
+    // lazy-on-a-public-GET would let two simultaneous buyer visits race on
+    // creating the same home page. Both calls are idempotent upserts.
+    await this.storeThemeService.ensureDefaultTheme(store._id.toString());
+    await this.storePagesService.ensureHomePage(store._id.toString());
 
     return {
       success: true,

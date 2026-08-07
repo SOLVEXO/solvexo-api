@@ -100,16 +100,24 @@ async function bootstrap() {
     'https://api.edudeen.com',
   ];
 
-  // Vite auto-picks the next free port when 3000 is taken (3001, 3002, ...) — rather than
-  // chase that in the whitelist, allow any localhost/127.0.0.1 port outside production.
+  // Vite auto-picks the next free port when 3000 is taken (3001, 3002, ...) —
+  // rather than chase that in the whitelist, allow any localhost/127.0.0.1
+  // port outside production. Also covers a store subdomain in dev
+  // (`hello.localhost:3000`), since that's a real, separate origin too.
   const isLocalDevOrigin = (origin: string) =>
-    process.env.NODE_ENV !== 'production' && /^https?:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin);
+    process.env.NODE_ENV !== 'production' && /^https?:\/\/([a-z0-9-]+\.)?(localhost|127\.0\.0\.1):\d+$/.test(origin);
+
+  // A seller's storefront lives on its own subdomain (`hello.solvexo.store`)
+  // — every store needs this, so it's a pattern match rather than another
+  // static whitelist entry per store.
+  const isStoreSubdomainOrigin = (origin: string) =>
+    /^https:\/\/[a-z0-9-]+\.solvexo\.store$/.test(origin);
 
   app.enableCors({
     origin: (origin, cb) => {
 
       if (!origin) return cb(null, true);
-      if (whitelist.includes(origin) || isLocalDevOrigin(origin)) return cb(null, true);
+      if (whitelist.includes(origin) || isLocalDevOrigin(origin) || isStoreSubdomainOrigin(origin)) return cb(null, true);
       console.log('Blocked Origin:', origin);
       return cb(new Error('Not allowed by CORS'), false);
     },

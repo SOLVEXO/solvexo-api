@@ -12,4 +12,5 @@ export class UpdateFeatureFlagsDto {
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() storeBuilder?: boolean;
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() bulkProductImport?: boolean;
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() promotions?: boolean;
+  @ApiProperty({ required: false }) @IsOptional() @IsBoolean() storefrontBlog?: boolean;
 }

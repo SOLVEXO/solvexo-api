@@ -46,12 +46,13 @@ export class SeoSitemapService {
 
   /** Invoked by SeoSitemapProcessor — does the real work off the request path. */
   async regenerate(scope: { type?: SitemapType; storeId?: string } = {}): Promise<void> {
-    const types: SitemapType[] = scope.type ? [scope.type] : ['products', 'stores', 'categories', 'pages'];
+    const types: SitemapType[] = scope.type ? [scope.type] : ['products', 'stores', 'categories', 'pages', 'storefront_content'];
     for (const type of types) {
       if (type === 'products') await this.regenerateProducts(scope.storeId);
       else if (type === 'stores') await this.regenerateStores();
       else if (type === 'categories') await this.regenerateCategories();
       else if (type === 'pages') await this.regeneratePages();
+      else if (type === 'storefront_content') await this.regenerateStorefrontContent();
     }
   }
 
@@ -87,6 +88,30 @@ export class SeoSitemapService {
     const pages = await seoLandingPageModel.find({ status: 'published', isDelete: false }).select('slug updatedAt').lean();
     const urls = pages.map((p: any) => ({ loc: `${PLATFORM_ORIGIN}/pages/${p.slug}`, lastmod: p.updatedAt }));
     await this.writeChunks('pages', null, urls);
+  }
+
+  /** Seller-authored storefront content — custom `StorePage`s and `BlogPost`s, scoped to `status:'active'` stores only (a suspended/rejected store's pages/posts shouldn't be indexed even if individually marked published). */
+  private async regenerateStorefrontContent() {
+    const { storeModel, storePageModel, blogPostModel } = this.db.repositories;
+    const stores = await storeModel.find({ status: 'active', isDelete: false }).select('_id slug').lean();
+    const slugById = new Map(stores.map((s: any) => [s._id.toString(), s.slug]));
+    const storeIds = stores.map((s: any) => s._id.toString());
+    if (storeIds.length === 0) { await this.writeChunks('storefront_content', null, []); return; }
+
+    const [pages, posts] = await Promise.all([
+      storePageModel.find({ storeId: { $in: storeIds }, type: 'custom', status: 'published', isDelete: false }).select('storeId slug updatedAt').lean(),
+      blogPostModel.find({ storeId: { $in: storeIds }, status: 'published', isDelete: false }).select('storeId slug updatedAt').lean(),
+    ]);
+
+    const urls = [
+      ...pages
+        .filter((p: any) => slugById.has(p.storeId))
+        .map((p: any) => ({ loc: `${PLATFORM_ORIGIN}/${slugById.get(p.storeId)}/${p.slug}`, lastmod: p.updatedAt })),
+      ...posts
+        .filter((p: any) => slugById.has(p.storeId))
+        .map((p: any) => ({ loc: `${PLATFORM_ORIGIN}/${slugById.get(p.storeId)}/blog/${p.slug}`, lastmod: p.updatedAt })),
+    ];
+    await this.writeChunks('storefront_content', null, urls);
   }
 
   private async writeChunks(type: SitemapType, storeId: string | null, urls: Array<{ loc: string; lastmod?: Date }>) {
