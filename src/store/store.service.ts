@@ -1099,9 +1099,26 @@ export class StoreService {
       productId: { $in: productIds }, status: 'active', isDelete: false,
     }).sort({ price: 1 }).lean();
     const cheapestByProduct = new Map<string, any>();
+    // Every active variant per product — the shared `variants[]` shape every
+    // other listing endpoint returns (getProductsByCategoryId, search,
+    // getShapedProductsByIds). `ProductModel`/`ProductCard` on the app side
+    // derive price/currency/discount from THIS array, not from the flat
+    // `defaultVariantPrice`/`compareAtPrice` fields below — omitting it here
+    // silently rendered every storefront product card as "PKR 0".
+    const variantsByProduct = new Map<string, any[]>();
     for (const v of variants) {
       if (!cheapestByProduct.has(v.productId)) cheapestByProduct.set(v.productId, v);
+      if (!variantsByProduct.has(v.productId)) variantsByProduct.set(v.productId, []);
+      variantsByProduct.get(v.productId)!.push(v);
     }
+
+    // Every product on this page belongs to the same store/seller — one
+    // lookup, not per-product. Same `sellerName`/`sellerVerified` fields the
+    // generic `ProductCard` (app) reads on every other listing endpoint.
+    const seller = await this.databaseService.repositories.sellerModel
+      .findById(store.sellerId)
+      .select('name isVerified')
+      .lean();
 
     const benefits = await this.subscriptionBenefits.getActiveBenefits(customerId, storeId);
 
@@ -1123,6 +1140,9 @@ export class StoreService {
       const variant = cheapestByProduct.get(p._id.toString());
       const base: any = {
         ...p,
+        variants:            variantsByProduct.get(p._id.toString()) ?? [],
+        sellerName:          seller ? seller.name : null,
+        sellerVerified:      seller ? !!seller.isVerified : false,
         defaultVariantPrice: variant?.price ?? null,
         variantId:           variant?._id ?? null,
         stock:               variant?.stock ?? null,
