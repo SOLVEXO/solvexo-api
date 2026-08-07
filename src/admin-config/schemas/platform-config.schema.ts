@@ -15,6 +15,9 @@ export class FeatureFlags {
   @Prop({ type: Boolean, default: true }) storeBuilder: boolean;
   @Prop({ type: Boolean, default: false }) bulkProductImport: boolean;
   @Prop({ type: Boolean, default: true }) promotions: boolean;
+  // Unreleased — unlike the flags above (which default true/on for an
+  // already-shipped feature), a brand-new feature defaults off until QA'd.
+  @Prop({ type: Boolean, default: false }) storefrontBlog: boolean;
 }
 export const FeatureFlagsSchema = SchemaFactory.createForClass(FeatureFlags);
 

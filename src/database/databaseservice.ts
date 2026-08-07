@@ -251,6 +251,15 @@ export class DatabaseService {
     @InjectModel(schema.StoreBanner.name)
     private storeBannerModel: Model<schema.StoreBannerDocument>,
 
+    @InjectModel(schema.StoreTheme.name)
+    private storeThemeModel: Model<schema.StoreThemeDocument>,
+
+    @InjectModel(schema.StorePage.name)
+    private storePageModel: Model<schema.StorePageDocument>,
+
+    @InjectModel(schema.BlogPost.name)
+    private blogPostModel: Model<schema.BlogPostDocument>,
+
     @InjectModel(schema.PromotionRequest.name)
     private promotionRequestModel: Model<schema.PromotionRequestDocument>,
 
@@ -365,6 +374,9 @@ export class DatabaseService {
       campaignModel: this.campaignModel,
       mediaAssetModel: this.mediaAssetModel,
       storeBannerModel: this.storeBannerModel,
+      storeThemeModel: this.storeThemeModel,
+      storePageModel: this.storePageModel,
+      blogPostModel: this.blogPostModel,
       promotionRequestModel: this.promotionRequestModel,
       promotionDailyStatsModel: this.promotionDailyStatsModel,
       promotionClickEventModel: this.promotionClickEventModel,

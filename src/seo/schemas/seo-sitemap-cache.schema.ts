@@ -6,7 +6,10 @@ export type SeoSitemapCacheDocument = SeoSitemapCache & Document;
 
 export const SITEMAP_URL_LIMIT_PER_CHUNK = 45_000; // sitemap protocol caps at 50k/50MB — leaving headroom
 
-export const SITEMAP_TYPES = ['products', 'stores', 'categories', 'pages'] as const;
+// 'pages' means admin-authored `SeoLandingPage`s — seller storefront content
+// (custom `StorePage`s and `BlogPost`s) gets its own type deliberately, not
+// conflated with that admin-only meaning.
+export const SITEMAP_TYPES = ['products', 'stores', 'categories', 'pages', 'storefront_content'] as const;
 export type SitemapType = (typeof SITEMAP_TYPES)[number];
 
 /**

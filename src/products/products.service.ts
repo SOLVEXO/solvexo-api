@@ -358,7 +358,7 @@ export class ProductsService {
     minPrice?: number,
     maxPrice?: number,
     minRating?: number,
-    sortBy?: 'newest' | 'price_asc' | 'price_desc' | 'rating',
+    sortBy?: 'newest' | 'price_asc' | 'price_desc' | 'rating' | 'popularity',
   ): Promise<any> {
     const productModel = this.databaseService.repositories.productModel;
     const productVariantModel =
@@ -500,7 +500,9 @@ export class ProductsService {
             ? { _minVariantPrice: -1, _id: -1 }
             : sortBy === 'rating'
               ? { averageRating: -1, _id: -1 }
-              : { createdAt: -1, _id: -1 };
+              : sortBy === 'popularity'
+                ? { purchaseCount: -1, _id: -1 }
+                : { createdAt: -1, _id: -1 };
 
       pipeline.push({
         $facet: {
@@ -521,7 +523,9 @@ export class ProductsService {
       const sortStage =
         sortBy === 'rating'
           ? { averageRating: -1, _id: -1 }
-          : { createdAt: -1, _id: -1 };
+          : sortBy === 'popularity'
+            ? { purchaseCount: -1, _id: -1 }
+            : { createdAt: -1, _id: -1 };
 
       total = await productModel.countDocuments(query);
       products = await productModel
