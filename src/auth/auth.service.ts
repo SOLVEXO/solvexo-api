@@ -11,6 +11,7 @@ import { RegisterDto } from './dto/register.dto';
 import { SocialLoginDto } from './dto/social-login.dto';
 import { LoginDto } from './dto/login.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
+import { CreateAdminDto } from './dto/create-admin.dto';
 import { OtpService } from 'src/otp/otp.service';
 import { DatabaseService } from 'src/database/databaseservice';
 import { OAuth2Client } from 'google-auth-library';
@@ -79,14 +80,17 @@ export class AuthService {
       const { name, email, password, phone, address, role, profileImage } =
         RegisterDto;
 
+      // Public registration only ever creates a buyer or seller account —
+      // RegisterDto.role is already restricted to 'user'|'seller' at the
+      // validation layer, and there is deliberately no 'admin' branch here.
+      // Admin accounts are created only via the protected
+      // POST /api/auth/admin/create-admin endpoint (see createAdmin() below).
       let userModel;
 
       if (role === 'user') {
         userModel = this.databaseService.repositories.userModel;
       } else if (role === 'seller') {
         userModel = this.databaseService.repositories.sellerModel;
-      } else if (role === 'admin') {
-        userModel = this.databaseService.repositories.adminModel;
       } else {
         throw new UnauthorizedException('Invalid user type');
       }
@@ -204,10 +208,14 @@ export class AuthService {
         );
       }
 
+      // tokenVersion is embedded so a suspend/deactivate action elsewhere
+      // (which bumps the DB value) invalidates this token on its very next
+      // request — see JwtAuthGuard's comparison against the current DB value.
       const payload = {
         sub: existingUser._id,
         email: existingUser.email,
         role: existingUser.role,
+        tokenVersion: existingUser.tokenVersion ?? 0,
       };
 
       const token = this.jwtService.sign(payload);
@@ -341,7 +349,12 @@ export class AuthService {
         if (changed) await user.save();
       }
 
-      const payload = { sub: user._id, email: user.email, role: user.role };
+      const payload = {
+        sub: user._id,
+        email: user.email,
+        role: user.role,
+        tokenVersion: user.tokenVersion ?? 0,
+      };
       const accessToken = this.jwtService.sign(payload);
       await this.redisService.set(
         accessToken,
@@ -374,14 +387,15 @@ export class AuthService {
 
   async resendOtp(email: string, role: string) {
     try {
+      // OTP resend only ever applies to a not-yet-verified buyer/seller
+      // registration — admin accounts are always created pre-verified via
+      // createAdmin() below, so there is no legitimate 'admin' case here.
       let userModel;
 
       if (role === 'user') {
         userModel = this.databaseService.repositories.userModel;
       } else if (role === 'seller') {
         userModel = this.databaseService.repositories.sellerModel;
-      } else if (role === 'admin') {
-        userModel = this.databaseService.repositories.adminModel;
       } else {
         throw new UnauthorizedException('Invalid user type');
       }
@@ -419,14 +433,17 @@ export class AuthService {
 
   async verifyOtp(email: string, role: string, otp: string) {
     try {
+      // Registration-verification only — activates a not-yet-verified
+      // buyer/seller account. Admin accounts are always created
+      // pre-verified via createAdmin() below, so there is no legitimate
+      // 'admin' case here (closes the other half of the old public
+      // self-registration-as-admin path, alongside RegisterDto's fix).
       let userModel;
 
       if (role === 'user') {
         userModel = this.databaseService.repositories.userModel;
       } else if (role === 'seller') {
         userModel = this.databaseService.repositories.sellerModel;
-      } else if (role === 'admin') {
-        userModel = this.databaseService.repositories.adminModel;
       } else {
         throw new UnauthorizedException('Invalid user type');
       }
@@ -453,7 +470,12 @@ export class AuthService {
       user.otpExpiresAt = null as any;
       await user.save();
 
-      const payload = { sub: user._id, email: user.email, role: user.role };
+      const payload = {
+        sub: user._id,
+        email: user.email,
+        role: user.role,
+        tokenVersion: user.tokenVersion ?? 0,
+      };
       const token = this.jwtService.sign(payload, { expiresIn: '1h' });
 
       await this.redisService.set(token, user._id.toString(), 30 * 60);
@@ -488,6 +510,12 @@ export class AuthService {
     }
   }
 
+  // Deliberately still supports role:'admin' here (and in resetPassword
+  // below) — unlike signup/verifyOtp, this never creates an account. It
+  // only emails an OTP to the address already on file for an EXISTING
+  // record, so an attacker gains nothing by requesting it for someone
+  // else's admin email; removing it would just lock real admins out of
+  // self-service password recovery for no security benefit.
   async forgotPassword(email: string, role: string) {
     try {
       let userModel;
@@ -649,6 +677,68 @@ export class AuthService {
     } catch (error) {
       throw new UnauthorizedException(
         error.message || 'Failed to fetch profile',
+      );
+    }
+  }
+
+  /** The only way an admin account can be created now that public
+   *  registration is restricted to 'user'|'seller'. Only reachable via
+   *  POST /api/auth/admin/create-admin, which is guarded by
+   *  JwtAuthGuard + Roles('admin') — so only an already-logged-in admin
+   *  can call it. Created pre-verified (no OTP round-trip needed, since
+   *  the caller is already a trusted, authenticated admin). */
+  async createAdmin(dto: CreateAdminDto, actor: { adminId: string; ip?: string; userAgent?: string }) {
+    try {
+      const adminModel = this.databaseService.repositories.adminModel;
+
+      const existing = await adminModel.findOne({ email: dto.email });
+      if (existing) {
+        throw new UnauthorizedException('An admin with this email already exists');
+      }
+
+      const hashedPassword = await bcrypt.hash(dto.password, 10);
+
+      const admin = new adminModel({
+        name: dto.name,
+        email: dto.email,
+        password: hashedPassword,
+        phone: dto.phone,
+        address: dto.address,
+        role: 'admin',
+        isVerified: true,
+        status: 'active',
+      });
+      await admin.save();
+
+      try {
+        await this.activityLogService.log({
+          category: 'security',
+          action: 'admin_account_created',
+          description: `Admin account "${dto.name}" (${dto.email}) created`,
+          actorId: actor.adminId,
+          actorRole: 'admin',
+          targetId: String(admin._id),
+          targetType: 'admin',
+          ip: actor.ip,
+          userAgent: actor.userAgent,
+          isSecurityAlert: true,
+        });
+      } catch {
+        // logging must never break account creation
+      }
+
+      return {
+        message: 'Admin account created successfully',
+        success: true,
+        data: {
+          id: admin._id,
+          name: admin.name,
+          email: admin.email,
+        },
+      };
+    } catch (error) {
+      throw new UnauthorizedException(
+        error.message || 'Failed to create admin account',
       );
     }
   }

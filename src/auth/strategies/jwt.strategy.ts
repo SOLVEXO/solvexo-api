@@ -18,7 +18,10 @@ async validate(payload: any) {
   return {
     userId: payload.sub,
     email: payload.email,
-    role: payload.role || null,         
+    role: payload.role || null,
+    // Carried through so JwtAuthGuard can compare it against the account's
+    // current DB value and reject a token issued before a suspend/deactivate.
+    tokenVersion: payload.tokenVersion ?? 0,
   };
 }
 }

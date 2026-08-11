@@ -146,19 +146,80 @@ export class AdminUsersService {
     return { success: true, data: doc };
   }
 
-  private async setStatus(role: 'buyer' | 'seller', id: string, status: string, meta: AuditMeta, action: string) {
-    const doc = await this.findOrThrow(role, id);
-    const model: any = role === 'buyer' ? this.r.userModel : this.r.sellerModel;
-    await model.findByIdAndUpdate(id, { $set: { status } });
-    this.log(action, `${role} "${doc.name ?? doc.email}" set to ${status}`, meta, id);
-    return { success: true, message: `${role === 'buyer' ? 'Buyer' : 'Seller'} set to ${status}` };
-  }
-
   async suspend(role: 'buyer' | 'seller', id: string, meta: AuditMeta) {
-    return this.setStatus(role, id, 'suspended', meta, `${role}_suspended`);
+    const doc = await this.findOrThrow(role, id);
+
+    if (role === 'buyer') {
+      await this.r.userModel.findByIdAndUpdate(id, {
+        $set: { status: 'suspended' },
+        $inc: { tokenVersion: 1 }, // invalidates any already-issued session on its next request
+      });
+      this.log('buyer_suspended', `Buyer "${doc.name ?? doc.email}" set to suspended`, meta, id);
+      return { success: true, message: 'Buyer set to suspended' };
+    }
+
+    // Seller suspension cascades to every store they own — otherwise their
+    // listings/storefronts stay live and purchasable under a suspended
+    // seller. Only the stores that were actually active at this moment are
+    // recorded, so unsuspend later restores exactly those and never
+    // reactivates a store that was independently suspended beforehand.
+    const activeStores = await this.r.storeModel.find(
+      { sellerId: id, isDelete: false, status: 'active' },
+      { _id: 1 },
+    );
+    const storeIdsToSuspend = activeStores.map((s: any) => String(s._id));
+
+    if (storeIdsToSuspend.length) {
+      await this.r.storeModel.updateMany(
+        { _id: { $in: storeIdsToSuspend } },
+        { $set: { status: 'suspended' } },
+      );
+    }
+
+    await this.r.sellerModel.findByIdAndUpdate(id, {
+      $set: { status: 'suspended', cascadeSuspendedStoreIds: storeIdsToSuspend },
+      $inc: { tokenVersion: 1 },
+    });
+
+    this.log(
+      'seller_suspended',
+      `Seller "${doc.name ?? doc.email}" suspended (${storeIdsToSuspend.length} store(s) suspended with it)`,
+      meta,
+      id,
+    );
+    return { success: true, message: 'Seller set to suspended' };
   }
 
   async unsuspend(role: 'buyer' | 'seller', id: string, meta: AuditMeta) {
-    return this.setStatus(role, id, 'active', meta, `${role}_unsuspended`);
+    const doc = await this.findOrThrow(role, id);
+
+    if (role === 'buyer') {
+      await this.r.userModel.findByIdAndUpdate(id, { $set: { status: 'active' } });
+      this.log('buyer_unsuspended', `Buyer "${doc.name ?? doc.email}" set to active`, meta, id);
+      return { success: true, message: 'Buyer set to active' };
+    }
+
+    const storeIdsToRestore: string[] = (doc as any).cascadeSuspendedStoreIds ?? [];
+    if (storeIdsToRestore.length) {
+      // Extra `status: 'suspended'` filter guards against restoring a store
+      // that got independently suspended (e.g. by moderation) while the
+      // seller-level suspension was in effect.
+      await this.r.storeModel.updateMany(
+        { _id: { $in: storeIdsToRestore }, status: 'suspended' },
+        { $set: { status: 'active' } },
+      );
+    }
+
+    await this.r.sellerModel.findByIdAndUpdate(id, {
+      $set: { status: 'active', cascadeSuspendedStoreIds: [] },
+    });
+
+    this.log(
+      'seller_unsuspended',
+      `Seller "${doc.name ?? doc.email}" unsuspended (${storeIdsToRestore.length} store(s) restored)`,
+      meta,
+      id,
+    );
+    return { success: true, message: 'Seller set to active' };
   }
 }
