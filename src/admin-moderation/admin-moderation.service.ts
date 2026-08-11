@@ -151,7 +151,26 @@ export class AdminModerationService {
     if (report.targetType === 'listing') {
       await this.r.productModel.findByIdAndUpdate(report.targetId, { $set: { isDelete: true, status: 'inactive' } });
     } else if (report.targetType === 'seller') {
-      await this.r.sellerModel.findByIdAndUpdate(report.targetId, { $set: { status: 'suspended' } });
+      // Mirrors AdminUsersService.suspend's cascade: suspending a seller
+      // here must also suspend their stores and revoke their session,
+      // exactly like the Users-page suspend action does — a report-driven
+      // removal shouldn't leave the seller's listings live or their
+      // existing login working.
+      const activeStores = await this.r.storeModel.find(
+        { sellerId: report.targetId, isDelete: false, status: 'active' },
+        { _id: 1 },
+      );
+      const storeIdsToSuspend = activeStores.map((s: any) => String(s._id));
+      if (storeIdsToSuspend.length) {
+        await this.r.storeModel.updateMany(
+          { _id: { $in: storeIdsToSuspend } },
+          { $set: { status: 'suspended' } },
+        );
+      }
+      await this.r.sellerModel.findByIdAndUpdate(report.targetId, {
+        $set: { status: 'suspended', cascadeSuspendedStoreIds: storeIdsToSuspend },
+        $inc: { tokenVersion: 1 },
+      });
     }
 
     await this.r.reportModel.findByIdAndUpdate(id, {

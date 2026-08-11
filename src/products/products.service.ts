@@ -734,13 +734,17 @@ export class ProductsService {
     if (!productIds.length) return [];
     const productModel = this.databaseService.repositories.productModel;
 
-    const products = await productModel
-      .find({
-        _id: { $in: productIds },
-        status: 'active',
-        isDelete: false,
-      })
-      .lean();
+    // Same active-store gate as getProductsByCategoryId/searchProducts —
+    // without it, a product whose store was suspended after being pinned/
+    // recently-viewed/etc. would still be servable through this id-list path.
+    const query: any = {
+      _id: { $in: productIds },
+      status: 'active',
+      isDelete: false,
+    };
+    await this.restrictToActiveStores(query);
+
+    const products = await productModel.find(query).lean();
 
     const shaped = await this.attachVariantsAndPricing(products, customerId);
     const byId = new Map(shaped.map((p) => [p._id.toString(), p]));
@@ -834,8 +838,20 @@ export class ProductsService {
         _id: product.storeId,
         isDelete: false,
       })
-      .select('slug name logo followersCount')
+      .select('slug name logo followersCount status')
       .lean();
+
+    // A suspended/rejected store's product must not be directly viewable
+    // even by id — getProductsByCategoryId/searchProducts/getPublicStoreProducts
+    // already gate on this via restrictToActiveStores(); this was the one
+    // remaining gap where a direct product link stayed reachable.
+    if (!store || store.status !== 'active') {
+      return {
+        message: 'Product not found',
+        success: false,
+        data: null,
+      };
+    }
 
     const [productWithSeller] = await this.attachCampaignBadges([
       this.sanitizeDigitalForPublicView({

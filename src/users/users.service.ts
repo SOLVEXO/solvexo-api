@@ -110,6 +110,7 @@ export class UsersService {
 
     user.isDelete = true;
     user.status = 'deleted';
+    user.tokenVersion = (user.tokenVersion ?? 0) + 1;
     await user.save();
 
     return {
@@ -130,6 +131,7 @@ export class UsersService {
 
     seller.isDelete = true;
     seller.status = 'deleted';
+    seller.tokenVersion = (seller.tokenVersion ?? 0) + 1;
     await seller.save();
 
     await this.db.repositories.storeModel.updateMany(
