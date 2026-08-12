@@ -74,10 +74,10 @@ export class AddressService {
     }
   }
 
-    async updateAddress(addressId: string, body: any) {
+    async updateAddress(userId: string, addressId: string, body: any) {
     try {
-      const updated = await this.databaseService.repositories.addressModel.findByIdAndUpdate(
-        addressId,
+      const updated = await this.databaseService.repositories.addressModel.findOneAndUpdate(
+        { _id: addressId, userId },
         { $set: body },
         { new: true },
       );
@@ -97,10 +97,10 @@ export class AddressService {
     }
   }
 
-  async getAddressById(addressId: string) {
+  async getAddressById(userId: string, addressId: string) {
   try {
 
-    const address = await this.databaseService.repositories.addressModel.findById(addressId);
+    const address = await this.databaseService.repositories.addressModel.findOne({ _id: addressId, userId });
 
     return {
       message: 'Address fetched successfully',

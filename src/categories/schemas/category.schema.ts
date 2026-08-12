@@ -11,6 +11,11 @@ export class Category {
   @Prop({ required: true })
   name: string;
 
+  // URL-safe handle for the public marketplace path (/marketplace/:slug).
+  // Generated once at creation (see CategoriesService.addCategory) — there
+  // is no rename/update-category endpoint today, so this never changes.
+  @Prop({ type: String, unique: true, sparse: true })
+  slug: string;
 
 @Prop({ type: String, default: null })
 parentId: string | null;
@@ -56,3 +61,4 @@ export const CategorySchema = SchemaFactory.createForClass(Category);
 CategorySchema.index({ name: 1 });
 CategorySchema.index({ parentId: 1 });
 CategorySchema.index({ createdBy: 1 });
+CategorySchema.index({ slug: 1 });

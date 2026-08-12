@@ -36,7 +36,7 @@ import { StorePagesService } from '../store-pages/store-pages.service';
 const RESERVED_STORE_SLUGS = new Set([
   'pricing', 'sellers', 'faq', 'privacy-policy', 'terms-of-service', 'cookie-policy',
   'contact-us', 'account', 'marketplace', 'cart', 'checkout', 'order-success',
-  'educationmarketplace', 'maintenance', 'login', 'register', 'onboard',
+  'educationmarketplace', 'education', 'product', 'maintenance', 'login', 'register', 'onboard',
   'forgot-password', 'verify-otp', 'new-password', 'seller', 'admin', 'store',
 ]);
 

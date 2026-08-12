@@ -5,6 +5,7 @@ import { ActivityLogService } from 'src/activity-log/activity-log.service';
 import { CreateCouponDto } from './dto/create-coupon.dto';
 import { UpdateCouponDto } from './dto/update-coupon.dto';
 import { ActiveCampaignForStore } from './campaign-pricing.util';
+import { generateUniqueSlug } from 'src/common/slug.util';
 
 @Injectable()
 export class MarketingService {
@@ -323,18 +324,29 @@ export class MarketingService {
       ? await this.r.storeModel.countDocuments({ isDelete: false, status: 'active' })
       : 0;
 
-    const data = campaigns.map((c) => ({
-      _id: c._id,
-      name: c.name,
-      description: c.description,
-      bannerImage: c.bannerImage,
-      endDate: c.endDate,
-      discountType: c.discountType,
-      discountValue: c.discountValue,
-      currency: c.currency ?? 'USD',
-      sponsorType: c.sponsorType ?? 'seller',
-      storeCount: c.sponsorType === 'platform' ? activeStoreCount : (c.participatingStoreIds ?? []).length,
-    }));
+    const data: any[] = [];
+    for (const c of campaigns) {
+      // Pre-migration campaigns created before the slug field existed —
+      // backfill once, persisted, same self-healing approach as Category.
+      let slug = c.slug;
+      if (!slug) {
+        slug = await generateUniqueSlug(this.r.campaignModel, c.name, { excludeId: String(c._id) });
+        await this.r.campaignModel.findByIdAndUpdate(c._id, { slug });
+      }
+      data.push({
+        _id: c._id,
+        slug,
+        name: c.name,
+        description: c.description,
+        bannerImage: c.bannerImage,
+        endDate: c.endDate,
+        discountType: c.discountType,
+        discountValue: c.discountValue,
+        currency: c.currency ?? 'USD',
+        sponsorType: c.sponsorType ?? 'seller',
+        storeCount: c.sponsorType === 'platform' ? activeStoreCount : (c.participatingStoreIds ?? []).length,
+      });
+    }
     return { success: true, data };
   }
 }
