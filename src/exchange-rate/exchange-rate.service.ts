@@ -128,12 +128,27 @@ export class ExchangeRateService {
    * the cart, plus the buyer's checkout currency). Copied verbatim onto
    * Order/PaymentTransaction at creation time and replayed — never
    * re-derived from today's rate — by refunds and settlement.
+   *
+   * When `currencies` collapses to a single distinct value (e.g. a PKR
+   * buyer checking out PKR-priced items, physical-order shipping included —
+   * see SHIPPING_ZONE_CURRENCY), nothing in this checkout ever actually
+   * converts between two currencies: `convert`/`convertWithSnapshots` always
+   * short-circuit a same-currency pair, so that one entry's rate is
+   * mathematically never read back. Requiring it to be *fresh* in that case
+   * would block an entirely single-currency checkout over a staleness gate
+   * meant to guard real cross-currency conversions (see `ingestRate`'s
+   * abnormal-jump comment, which frames this as blocking "cross-currency
+   * checkouts") — so that one gate is skipped here, falling back to the
+   * last-known rate however old (still required to exist at least once).
    */
   async buildSnapshots(currencies: string[]): Promise<FxSnapshot[]> {
     const unique = Array.from(new Set(currencies));
+    const singleCurrency = unique.length === 1;
     const snapshots: FxSnapshot[] = [];
     for (const currency of unique) {
-      const rate = await this.requireCurrentRate(currency);
+      const rate = singleCurrency
+        ? await this.lastKnownRate(currency)
+        : await this.requireCurrentRate(currency);
       snapshots.push({
         currency,
         ratePerUSD: rate.ratePerUSD,
@@ -143,6 +158,23 @@ export class ExchangeRateService {
       });
     }
     return snapshots;
+  }
+
+  /** Like `requireCurrentRate`, but never rejects for staleness — only when
+   *  no rate has ever been ingested for `currency` at all. Only safe to use
+   *  where the rate is guaranteed to never back a real cross-currency
+   *  conversion (see `buildSnapshots`'s single-currency case above). */
+  private async lastKnownRate(currency: string) {
+    if (currency === 'USD') {
+      return { currency: 'USD', ratePerUSD: 1, effectiveFrom: new Date(), source: 'admin' as const, _id: null };
+    }
+    const rate = await this.getCurrentRate(currency);
+    if (!rate) {
+      throw new BadRequestException(
+        `No exchange rate available for ${currency} — cannot convert or checkout in this currency yet`,
+      );
+    }
+    return rate;
   }
 
   /**
