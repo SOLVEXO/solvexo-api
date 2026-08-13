@@ -57,6 +57,7 @@ import { PromotionsModule } from './promotions/promotions.module';
 import { CommissionRulesModule } from './commission-rules/commission-rules.module';
 import { ManualPaymentsModule } from './manual-payments/manual-payments.module';
 import { ExchangeRateModule } from './exchange-rate/exchange-rate.module';
+import { OnboardingSlidesModule } from './onboarding-slides/onboarding-slides.module';
 
 @Module({
   imports: [
@@ -82,6 +83,7 @@ import { ExchangeRateModule } from './exchange-rate/exchange-rate.module';
     OtpModule,
     UploadModule,
     BannersModule,
+    OnboardingSlidesModule,
     FaqModule,
     NewsletterModule,
     ContactModule,

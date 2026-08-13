@@ -40,6 +40,8 @@ export class AddressService {
   city: body.city,
   zipCode: body.zipCode,
   country: body.country || null,
+  latitude: body.latitude ?? null,
+  longitude: body.longitude ?? null,
   isDefault: body.isDefault || false,
 });
       return {
