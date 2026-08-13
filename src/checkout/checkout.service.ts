@@ -118,6 +118,7 @@ export class CheckoutService {
       productVariantModel,
       addressModel,
       checkoutModel,
+      storeModel,
     } = this.databaseService.repositories;
 
     const checkoutCurrency = await this.resolveCheckoutCurrency(userId, body.currencyPreference);
@@ -167,6 +168,20 @@ export class CheckoutService {
 
     let subscriberSavingsUSD = 0;
 
+    // Cache one lookup per store — a multi-item cart from the same store
+    // shouldn't re-query the store's status per item.
+    const storeStatusCache = new Map<string, boolean>();
+    const isStoreActive = async (storeId: string): Promise<boolean> => {
+      if (!storeStatusCache.has(storeId)) {
+        const store = await storeModel
+          .findOne({ _id: storeId, isDelete: false })
+          .select('status')
+          .lean();
+        storeStatusCache.set(storeId, !!store && (store as any).status === 'active');
+      }
+      return storeStatusCache.get(storeId)!;
+    };
+
     // Pass 1: resolve product/variant, validate stock, and compute each
     // store's RAW (pre-discount) subtotal. A discount benefit's
     // `minOrderValueUSD` must be checked against the order value, but the
@@ -188,6 +203,15 @@ export class CheckoutService {
         throw new BadRequestException(
           `Product not found: ${cartItem.productId}`,
         );
+
+      // A seller/store can be suspended after an item was already sitting
+      // in the buyer's cart — checkout must re-check store status at the
+      // moment of purchase, not just at add-to-cart time.
+      if (!(await isStoreActive(product.storeId))) {
+        throw new BadRequestException(
+          `"${product.name}" is no longer available for purchase because the seller's store is not active. Please remove it from your cart.`,
+        );
+      }
 
       const variant = await productVariantModel.findOne({
         _id: cartItem.productVariantId,

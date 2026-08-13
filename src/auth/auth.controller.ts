@@ -5,6 +5,7 @@ import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
 import { SocialLoginDto } from './dto/social-login.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
+import { CreateAdminDto } from './dto/create-admin.dto';
 import { AuthGuard } from '@nestjs/passport';
 import { UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -89,6 +90,21 @@ export class AuthController {
   async editProfile(@Req() req: any, @Body() updateProfileDto: UpdateProfileDto) {
     const { userId, role } = req.user;
     return this.authService.editProfile(userId, role, updateProfileDto);
+  }
+
+  // The only way a new admin account can be created — public registration
+  // no longer allows role:'admin' (see RegisterDto). Only an already
+  // logged-in admin can call this, so admin access can only ever be
+  // extended by an existing admin, never granted to oneself.
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('admin')
+  @Post('admin/create-admin')
+  async createAdmin(@Req() req: any, @Body() dto: CreateAdminDto) {
+    return this.authService.createAdmin(dto, {
+      adminId: req.user.userId,
+      ip: req.ip,
+      userAgent: req.headers['user-agent'],
+    });
   }
 
 }

@@ -1,0 +1,24 @@
+/* eslint-disable prettier/prettier */
+import { ApiProperty } from '@nestjs/swagger';
+import { Type } from 'class-transformer';
+import { IsBoolean, IsObject, IsOptional, IsString, Matches, MaxLength, ValidateNested } from 'class-validator';
+
+class StorePageSeoInputDto {
+  @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(70) metaTitle?: string;
+  @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(160) metaDesc?: string;
+}
+
+export class UpdatePageDto {
+  @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(80) title?: string;
+
+  @ApiProperty({ required: false, description: 'Custom pages only — the home page slug is fixed' })
+  @IsOptional() @IsString() @Matches(/^[a-z0-9]+(-[a-z0-9]+)*$/, { message: 'slug must be lowercase letters, numbers, and hyphens only' }) @MaxLength(80)
+  slug?: string;
+
+  @ApiProperty({ required: false, type: StorePageSeoInputDto })
+  @IsOptional() @IsObject() @ValidateNested() @Type(() => StorePageSeoInputDto)
+  seo?: StorePageSeoInputDto;
+
+  @ApiProperty({ required: false }) @IsOptional() @IsBoolean() showInNav?: boolean;
+  @ApiProperty({ required: false }) @IsOptional() @IsBoolean() showInFooter?: boolean;
+}

@@ -70,6 +70,13 @@ export class User {
     // is never silently overridden by IP/locale detection again.
     @Prop({ type: String, default: null })
     currencyPreference: string | null;
+
+    // Bumped whenever this account is suspended/deactivated so any
+    // already-issued JWT is invalidated on its next request — see
+    // JwtAuthGuard, which rejects a token whose tokenVersion claim doesn't
+    // match this current DB value.
+    @Prop({ default: 0 })
+    tokenVersion: number;
 }
 
 

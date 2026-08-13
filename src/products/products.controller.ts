@@ -49,9 +49,20 @@ export class productController {
       const n = parseFloat(v);
       return Number.isFinite(n) ? n : undefined;
     };
-    const allowedSorts = ['newest', 'price_asc', 'price_desc', 'rating'];
+    const allowedSorts = [
+      'newest',
+      'price_asc',
+      'price_desc',
+      'rating',
+      'popularity',
+    ];
     const sortBy = allowedSorts.includes(sortByQuery as string)
-      ? (sortByQuery as 'newest' | 'price_asc' | 'price_desc' | 'rating')
+      ? (sortByQuery as
+          | 'newest'
+          | 'price_asc'
+          | 'price_desc'
+          | 'rating'
+          | 'popularity')
       : undefined;
 
     return this.ProductsService.getProductsByCategoryId(
