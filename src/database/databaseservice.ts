@@ -29,6 +29,8 @@ export class DatabaseService {
     private otpModel: Model<schema.OtpDocument>,
     @InjectModel(schema.Banner.name)
     private bannerModel: Model<schema.BannerDocument>,
+    @InjectModel(schema.OnboardingSlide.name)
+    private onboardingSlideModel: Model<schema.OnboardingSlideDocument>,
     @InjectModel(schema.User.name)
     private faqModel: Model<schema.FaqDocument>,
 
@@ -299,6 +301,7 @@ export class DatabaseService {
       educationLevelAliasModel: this.educationLevelAliasModel,
       otpModel: this.otpModel,
       bannerModel: this.bannerModel,
+      onboardingSlideModel: this.onboardingSlideModel,
       faqModel: this.faqModel,
         
       cartModel: this.cartModel,

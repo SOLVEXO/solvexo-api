@@ -49,6 +49,14 @@ export class Address {
   @Prop({ type: String, default: null })
   country: string | null;
 
+  // 📍 coordinates captured when the address was picked from the map.
+  // Optional — manually-typed addresses have neither.
+  @Prop({ type: Number, default: null })
+  latitude: number | null;
+
+  @Prop({ type: Number, default: null })
+  longitude: number | null;
+
   // ⭐ default address
   @Prop({ type: Boolean, default: false })
   isDefault: boolean;
