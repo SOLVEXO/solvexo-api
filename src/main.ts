@@ -4,7 +4,6 @@ import { AppModule } from './app.module';
 import cookieParser from 'cookie-parser';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 
-
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
@@ -54,7 +53,9 @@ async function bootstrap() {
     },
   });
 
-  await app.listen(3002, '0.0.0.0');
-  console.log('Server running on http://localhost:3002');
+  // Railway injects PORT env var — use it, fall back to 3002 for local dev
+  const port = process.env.PORT || 3002;
+  await app.listen(port, '0.0.0.0');
+  console.log(`Server running on http://localhost:${port}`);
 }
 bootstrap();
