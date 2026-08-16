@@ -8,11 +8,10 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
   private client: RedisClientType;
 
   constructor() {
-
-    // const redisUrl = process.env.REDIS_URL ||  'redis://localhost:6379';
+    const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379';
 
     this.client = createClient({
-      // url: redisUrl,
+      url: redisUrl,
     });
 
     this.client.on('error', (err) => console.error('Redis Client Error', err));
@@ -20,12 +19,12 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
 
   async onModuleInit() {
     await this.client.connect();
-    console.log('Redis connected');
+    console.log('[RedisService] Redis connected');
   }
 
   async onModuleDestroy() {
     await this.client.quit();
-    console.log('Redis disconnected');
+    console.log('[RedisService] Redis disconnected');
   }
 
   async set(key: string, value: string, ttl: number) {
