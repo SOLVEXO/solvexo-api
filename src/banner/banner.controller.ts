@@ -29,8 +29,13 @@ import { PromotionPlacement } from '../common/promotion-placements.const';
 
 const BANNER_UPLOAD_MIME = /\/(jpg|jpeg|png|webp)$/;
 const BANNER_UPLOAD_MAX_BYTES = 5 * 1024 * 1024;
+// `api/spotlight` is an additive alias of `api/banners` — some browser ad-blockers
+// pattern-match and silently drop any request whose URL contains "banners" (the
+// GET here is public/unauthenticated, exactly the shape those filters target),
+// so the buyer-facing hero carousel fetches through the alias instead. `api/banners`
+// stays fully live for existing/admin callers — nothing here is renamed or removed.
 @ApiTags('Banners')
-@Controller('api/banners')
+@Controller(['api/banners', 'api/spotlight'])
 export class BannersController {
   constructor(private readonly bannersService: BannersService) {}
 
