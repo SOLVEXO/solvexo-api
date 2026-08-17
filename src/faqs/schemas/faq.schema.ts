@@ -1,29 +1,34 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument } from 'mongoose';
+import { SeoMeta, SeoMetaSchema } from 'src/seo/schemas/seo-meta.schema';
 
 export type FaqDocument = HydratedDocument<Faq>;
 
 @Schema({ timestamps: true })
 export class Faq {
-    _id: string;
+  _id: string;
 
-    @Prop({ required: true, trim: true })
-    question: string;
+  @Prop({ required: true, trim: true })
+  question: string;
 
-    @Prop({ required: true })
-    answer: string;
+  @Prop({ required: true })
+  answer: string;
 
-    @Prop({ default: 'general', lowercase: true, trim: true })
-    category: string;
+  @Prop({ default: 'general', lowercase: true, trim: true })
+  category: string;
 
-    @Prop({ default: 0, min: 0 })
-    order: number;
+  @Prop({ default: 0, min: 0 })
+  order: number;
 
-    @Prop({ default: true })
-    isActive: boolean;
+  @Prop({ default: true })
+  isActive: boolean;
 
-    createdAt?: Date;
-    updatedAt?: Date;
+  // Help Center SEO override — admin-only, edited via api/admin/seo/faqs/:id.
+  @Prop({ type: SeoMetaSchema, default: () => ({}) })
+  seo: SeoMeta;
+
+  createdAt?: Date;
+  updatedAt?: Date;
 }
 
 export const FaqSchema = SchemaFactory.createForClass(Faq);
@@ -36,7 +41,7 @@ FaqSchema.index({ question: 'text', answer: 'text' }); // for search
 
 // ─── Remove __v from JSON ────────────────────
 FaqSchema.methods.toJSON = function () {
-    const obj = this.toObject();
-    delete obj.__v;
-    return obj;
+  const obj = this.toObject();
+  delete obj.__v;
+  return obj;
 };

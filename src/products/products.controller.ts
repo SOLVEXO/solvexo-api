@@ -1,125 +1,202 @@
 import {
-    Controller,
-    Get,
-    Post,
-    Body,
-    Param,
-    Req,
-    Query,
-    UseGuards,
+  Controller,
+  Get,
+  Post,
+  Delete,
+  Body,
+  Param,
+  Req,
+  Query,
+  UseGuards,
 } from '@nestjs/common';
 
 import { ProductsService } from './products.service';
-import { CreateProductDto } from './dto/create-product.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
-import { Roles } from '../auth/decorators/roles.decorator'
-import { RolesGuard } from '../auth/guards/roles.guard'; 
-import { CreateProductVariantDto} from './dto/productVariant.dto'
+import { OptionalJwtAuthGuard } from '../auth/guards/optional-jwt-auth.guard';
+import { Roles } from '../auth/decorators/roles.decorator';
+import { RolesGuard } from '../auth/guards/roles.guard';
+import { FeatureFlagGuard } from '../admin-config/guards/feature-flag.guard';
+import { RequireFeature } from '../admin-config/decorators/require-feature.decorator';
 
 @Controller('api/products')
 export class productController {
-    constructor(private readonly ProductsService: ProductsService) { }
+  constructor(private readonly ProductsService: ProductsService) {}
 
-   @UseGuards(JwtAuthGuard, RolesGuard)
- @Roles( 'seller', 'admin')
-    @Post('add-product')
-async addCategory( @Req() req: any , @Body() CreateProductDto : CreateProductDto ) {
-   const { userId: sellerId, role } = req.user; 
-    console.log(sellerId, role)
-  return this.ProductsService.addProduct( sellerId, role, CreateProductDto);
+  @UseGuards(OptionalJwtAuthGuard, FeatureFlagGuard)
+  @RequireFeature('marketplace')
+  @Get('products-by-category')
+  async getProductsByCategoryId(
+    @Req() req: any,
+    @Query('id') id?: string,
+    @Query('page') pageQuery?: string,
+    @Query('limit') limitQuery?: string,
+    @Query('productType') productType?: string,
+    @Query('educationLevel') educationLevel?: string,
+    @Query('normalizedCustomLevel') normalizedCustomLevel?: string,
+    @Query('campaignId') campaignId?: string,
+    @Query('minPrice') minPriceQuery?: string,
+    @Query('maxPrice') maxPriceQuery?: string,
+    @Query('minRating') minRatingQuery?: string,
+    @Query('sortBy') sortByQuery?: string,
+  ) {
+    const page = Math.max(1, parseInt(pageQuery as string) || 1);
+    const limit = Math.min(
+      50,
+      Math.max(1, parseInt(limitQuery as string) || 10),
+    );
+    const parseNum = (v?: string): number | undefined => {
+      if (v === undefined) return undefined;
+      const n = parseFloat(v);
+      return Number.isFinite(n) ? n : undefined;
+    };
+    const allowedSorts = [
+      'newest',
+      'price_asc',
+      'price_desc',
+      'rating',
+      'popularity',
+    ];
+    const sortBy = allowedSorts.includes(sortByQuery as string)
+      ? (sortByQuery as
+          | 'newest'
+          | 'price_asc'
+          | 'price_desc'
+          | 'rating'
+          | 'popularity')
+      : undefined;
+
+    return this.ProductsService.getProductsByCategoryId(
+      id,
+      page,
+      limit,
+      req.user?.userId ?? null,
+      productType,
+      educationLevel,
+      normalizedCustomLevel,
+      campaignId,
+      parseNum(minPriceQuery),
+      parseNum(maxPriceQuery),
+      parseNum(minRatingQuery),
+      sortBy,
+    );
+  }
+
+  @UseGuards(FeatureFlagGuard)
+  @RequireFeature('marketplace')
+  @Get('education/facets')
+  async getEducationFacets() {
+    return this.ProductsService.getEducationFacets();
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Get('education/custom-level-suggestions')
+  async getCustomLevelSuggestions(@Query('q') q: string = '') {
+    return this.ProductsService.getCustomLevelSuggestions(q);
+  }
+
+  @UseGuards(OptionalJwtAuthGuard, FeatureFlagGuard)
+  @RequireFeature('marketplace')
+  @Get('getProductById/:id')
+  async getProductById(@Req() req: any, @Param('id') id: string) {
+    return this.ProductsService.getProductById(id, req.user?.userId ?? null);
+  }
+
+  @Get('getVariantById/:variantId')
+  async getVariantById(@Param('variantId') variantId: string) {
+    return this.ProductsService.getVariantById(variantId);
+  }
+
+  // Public, pre-purchase preview of a digital product — watermarked/trimmed
+  // derivative only, never the original file. Same guard as getProductById.
+  @UseGuards(OptionalJwtAuthGuard, FeatureFlagGuard)
+  @RequireFeature('digitalUploads')
+  @Get('preview/:id')
+  async getProductPreview(@Req() req: any, @Param('id') id: string) {
+    return this.ProductsService.getProductPreview(id, req.ip);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Post('add-physical-product')
+  async addPhysicalProduct(@Req() req: any, @Body() body: any) {
+    const { userId: sellerId } = req.user;
+    return this.ProductsService.addPhysicalProduct(sellerId, body);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard, FeatureFlagGuard)
+  @Roles('seller')
+  @RequireFeature('digitalUploads')
+  @Post('add-digital-product')
+  async addDigitalProduct(@Req() req: any, @Body() body: any) {
+    const { userId: sellerId } = req.user;
+    return this.ProductsService.addDigitalProduct(sellerId, body);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Get('get-my-product/:productId')
+  async getSellerProductById(
+    @Req() req: any,
+    @Param('productId') productId: string,
+  ) {
+    const { userId: sellerId } = req.user;
+    return this.ProductsService.getSellerProductById(sellerId, productId);
+  }
+
+  // ── Storefront promotion sections — public, no auth required ──────────────
+  @UseGuards(OptionalJwtAuthGuard)
+  @Get('store/:storeId/pinned')
+  async getPinnedProducts(@Req() req: any, @Param('storeId') storeId: string) {
+    return this.ProductsService.getPinnedProducts(storeId, req.user?.userId ?? null);
+  }
+
+  @UseGuards(OptionalJwtAuthGuard)
+  @Get('store/:storeId/new-arrivals')
+  async getNewArrivals(@Req() req: any, @Param('storeId') storeId: string, @Query('limit') limitQuery?: string) {
+    const limit = Math.min(24, Math.max(1, parseInt(limitQuery as string) || 12));
+    return this.ProductsService.getNewArrivals(storeId, limit, req.user?.userId ?? null);
+  }
+
+  @UseGuards(OptionalJwtAuthGuard)
+  @Get('store/:storeId/best-sellers')
+  async getBestSellers(@Req() req: any, @Param('storeId') storeId: string, @Query('limit') limitQuery?: string) {
+    const limit = Math.min(24, Math.max(1, parseInt(limitQuery as string) || 12));
+    return this.ProductsService.getBestSellers(storeId, limit, req.user?.userId ?? null);
+  }
+
+  @UseGuards(OptionalJwtAuthGuard)
+  @Get('store/:storeId/trending')
+  async getTrendingProducts(@Req() req: any, @Param('storeId') storeId: string, @Query('limit') limitQuery?: string) {
+    const limit = Math.min(24, Math.max(1, parseInt(limitQuery as string) || 12));
+    return this.ProductsService.getTrendingProducts(storeId, limit, req.user?.userId ?? null);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Get('store-products/:storeId')
+  async getStoreProducts(
+    @Req() req: any,
+    @Param('storeId') storeId: string,
+    @Query() query: any,
+  ) {
+    const { userId: sellerId } = req.user;
+    return this.ProductsService.getStoreProducts(sellerId, storeId, query);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Post('edit-product')
+  async editProduct(@Req() req: any, @Body() body: any) {
+    const { userId: sellerId } = req.user;
+    return this.ProductsService.editProduct(sellerId, body);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Delete('delete-product/:productId')
+  async deleteProduct(@Req() req: any, @Param('productId') productId: string) {
+    const { userId: sellerId } = req.user;
+    return this.ProductsService.deleteProduct(sellerId, productId);
+  }
 }
-@UseGuards(JwtAuthGuard, RolesGuard)
-@Roles('seller', 'admin')
-@Post('add-product-variant')
-async addProductVariant(
-  @Req() req: any,
-  @Body() createProductVariantDto: CreateProductVariantDto
-) {
-
-  const { userId: sellerId, role } = req.user;
-
-  return this.ProductsService.addProductVariant(
-    sellerId,
-    role,
-    createProductVariantDto
-  );
-
-}
-
-@UseGuards(JwtAuthGuard, RolesGuard)
-@Roles('seller')
-@Post('create-product')
-async createProduct(@Req() req: any, @Body() body: any) {
-  const { userId: sellerId } = req.user;
-  return this.ProductsService.createProduct(sellerId, body);
-}
-
-@UseGuards(JwtAuthGuard, RolesGuard)
-@Roles('seller')
-@Post('create-variant')
-async createVariant(@Req() req: any, @Body() body: any) {
-  const { userId: sellerId } = req.user;
-  return this.ProductsService.createVariant(sellerId, body);
-}
-
-@UseGuards(JwtAuthGuard, RolesGuard)
-@Roles('seller')
-@Post('update-product-and-variant')
-async updateProduct(@Req() req: any, @Body() body: any) {
-  const { userId: sellerId } = req.user;
-  return this.ProductsService.updateProduct(sellerId, body);
-}
-
-@Get('products-by-category')
-async getProductsByCategoryId(
-  @Query('id') id?: string,
-  @Query('page') page: number = 1,
-  @Query('limit') limit: number = 10
-) {
-  return this.ProductsService.getProductsByCategoryId(id, page, limit);
-}
-
-@Get('getProductById/:id')
-async getProductById(@Param('id') id: string) {
-  return this.ProductsService.getProductById(id);
-}
-
-@Get('getVariantById/:variantId')
-async getVariantById(@Param('variantId') variantId: string) {
-  return this.ProductsService.getVariantById(variantId);
-}
-
-@UseGuards(JwtAuthGuard, RolesGuard)
-@Roles('seller')
-@Post('add-physical-product')
-async addPhysicalProduct(@Req() req: any, @Body() body: any) {
-  const { userId: sellerId } = req.user;
-  return this.ProductsService.addPhysicalProduct(sellerId, body);
-}
-
-@UseGuards(JwtAuthGuard, RolesGuard)
-@Roles('seller')
-@Post('add-digital-product')
-async addDigitalProduct(@Req() req: any, @Body() body: any) {
-  const { userId: sellerId } = req.user;
-  return this.ProductsService.addDigitalProduct(sellerId, body);
-}
-
-@UseGuards(JwtAuthGuard, RolesGuard)
-@Roles('seller')
-@Get('get-my-product/:productId')
-async getSellerProductById(@Req() req: any, @Param('productId') productId: string) {
-  const { userId: sellerId } = req.user;
-  return this.ProductsService.getSellerProductById(sellerId, productId);
-}
-
-@UseGuards(JwtAuthGuard, RolesGuard)
-@Roles('seller')
-@Post('edit-product')
-async editProduct(@Req() req: any, @Body() body: any) {
-  const { userId: sellerId } = req.user;
-  return this.ProductsService.editProduct(sellerId, body);
-}
-
-}
-

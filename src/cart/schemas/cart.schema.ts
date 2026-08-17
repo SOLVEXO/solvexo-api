@@ -6,7 +6,6 @@ export type CartDocument = Cart & Document;
 // Embedded subdocument for cart items
 @Schema({ _id: false })
 export class CartItem {
-
   @Prop({ type: String, required: true })
   productId: string;
 
@@ -22,9 +21,23 @@ export class CartItem {
   @Prop({ required: true })
   price: number;
 
+  // Display-only snapshot of the owning store's currency at add-to-cart
+  // time — Cart itself needs no currency concept for CONVERSION math (that
+  // only happens once, at checkout creation, from the live ProductVariant),
+  // but the cart page still needs to show each line's correct native symbol
+  // before checkout exists. Nullable so pre-existing cart items (before
+  // this field existed) don't break; display code falls back to a default.
+  @Prop({ type: String, default: null })
+  currency: string | null;
+
   // ✅ FIXED: images as array with safe default
   @Prop({ type: [String], default: [] })
   images: string[];
+
+  // Snapshot of the variant's attributes at add-to-cart time (e.g.
+  // [{name:'Color', value:'Red'}]) — drives the cart line item's display.
+  @Prop({ type: [{ name: String, value: String }], default: [] })
+  options: { name: string; value: string }[];
 }
 
 export const CartItemSchema = SchemaFactory.createForClass(CartItem);
@@ -32,7 +45,6 @@ export const CartItemSchema = SchemaFactory.createForClass(CartItem);
 // Main Cart schema
 @Schema({ timestamps: true })
 export class Cart {
-
   @Prop({ type: String, required: true })
   userId: string;
 
@@ -45,7 +57,7 @@ export class Cart {
   @Prop({ default: 0 })
   totalPrice: number;
 
-  @Prop({ default: "active" })
+  @Prop({ default: 'active' })
   status: string;
 
   @Prop({ default: false })

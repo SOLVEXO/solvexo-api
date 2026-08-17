@@ -1,5 +1,3 @@
-
-
 /* eslint-disable prettier/prettier */
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Document, Types } from 'mongoose';
@@ -58,6 +56,27 @@ export class User {
 
     @Prop({default: false })
     isDelete: boolean ;
+
+    // One Stripe Customer object per platform user, shared across every seller's
+    // subscription plan they subscribe to (a buyer should never get a second
+    // Stripe Customer just because they joined a second store's plan).
+    @Prop({ type: String, default: null, index: true })
+    stripeCustomerId: string | null;
+
+    // Explicit buyer currency choice (see UpdateProfileDto.currencyPreference)
+    // — null means "not yet chosen", in which case CheckoutService falls
+    // back to a guest-style cookie/location-based default rather than
+    // forcing one. Once set here, it's the cross-device source of truth and
+    // is never silently overridden by IP/locale detection again.
+    @Prop({ type: String, default: null })
+    currencyPreference: string | null;
+
+    // Bumped whenever this account is suspended/deactivated so any
+    // already-issued JWT is invalidated on its next request — see
+    // JwtAuthGuard, which rejects a token whose tokenVersion claim doesn't
+    // match this current DB value.
+    @Prop({ default: 0 })
+    tokenVersion: number;
 }
 
 

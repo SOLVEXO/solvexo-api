@@ -1,4 +1,3 @@
-
 import { IsOptional, IsString, IsNumber } from 'class-validator';
 
 export class AddToCartDto {
@@ -10,8 +9,7 @@ export class AddToCartDto {
   @IsString()
   productVariantId?: string;
 
-    @IsOptional()
+  @IsOptional()
   @IsNumber()
   quantity?: number;
-
 }

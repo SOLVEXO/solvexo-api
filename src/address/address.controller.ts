@@ -1,5 +1,15 @@
-import { Controller, Post, Body, Req, UseGuards, Get, Param } from '@nestjs/common';
-import { JwtAuthGuard } from  '../auth/guards/jwt-auth.guard';
+import {
+  Controller,
+  Post,
+  Body,
+  Req,
+  UseGuards,
+  Get,
+  Param,
+  Patch,
+  Delete,
+} from '@nestjs/common';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { AddressService } from './address.service';
 
 @Controller('address')
@@ -15,24 +25,21 @@ export class AddressController {
   }
 
   @UseGuards(JwtAuthGuard)
-@Post('update-address')
-async updateAddress(
-  @Body() body: any,
-) {
-  const { addressId, ...updateData } = body;
+  @Post('update-address')
+  async updateAddress(@Req() req: any, @Body() body: any) {
+    const { userId } = req.user;
+    const { addressId, ...updateData } = body;
 
-  return this.addressService.updateAddress(addressId, updateData);
-}
+    return this.addressService.updateAddress(userId, addressId, updateData);
+  }
 
-@UseGuards(JwtAuthGuard)
-@Get('get-address-by-id/:addressId')
-async getAddressById(
-  @Param('addressId') addressId: string,
-) {
-
-  return this.addressService.getAddressById(addressId);
-}
-    @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard)
+  @Get('get-address-by-id/:addressId')
+  async getAddressById(@Req() req: any, @Param('addressId') addressId: string) {
+    const { userId } = req.user;
+    return this.addressService.getAddressById(userId, addressId);
+  }
+  @UseGuards(JwtAuthGuard)
   @Get('getMyAddresses')
   async getMyAddresses(@Req() req: any) {
     const { userId } = req.user;
@@ -41,11 +48,27 @@ async getAddressById(
 
   // controller
 
-@UseGuards(JwtAuthGuard)
-@Get('getDefaultAddress')
-async getDefaultAddress(@Req() req: any) {
-  const { userId } = req.user;
-  return this.addressService.getDefaultAddress(userId);
-}
+  @UseGuards(JwtAuthGuard)
+  @Get('getDefaultAddress')
+  async getDefaultAddress(@Req() req: any) {
+    const { userId } = req.user;
+    return this.addressService.getDefaultAddress(userId);
+  }
 
+  @UseGuards(JwtAuthGuard)
+  @Patch('setDefaultAddress/:addressId')
+  async setDefaultAddress(
+    @Req() req: any,
+    @Param('addressId') addressId: string,
+  ) {
+    const { userId } = req.user;
+    return this.addressService.setDefaultAddress(userId, addressId);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Delete('delete-address/:addressId')
+  async deleteAddress(@Req() req: any, @Param('addressId') addressId: string) {
+    const { userId } = req.user;
+    return this.addressService.deleteAddress(userId, addressId);
+  }
 }

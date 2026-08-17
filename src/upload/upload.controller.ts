@@ -6,82 +6,52 @@ import {
   UseInterceptors,
   UseGuards,
   BadRequestException,
-  HttpCode,
-  HttpStatus,
+  Body,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-import {
-  ApiTags,
-  ApiOperation,
-  ApiResponse,
-  ApiBearerAuth,
-  ApiConsumes,
-  ApiBody,
-} from '@nestjs/swagger';
+import { memoryStorage } from 'multer';
 import { UploadService } from './upload.service';
-import { ConfigService } from '@nestjs/config';
-import { createMulterOptions } from './multer.config';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RolesGuard } from '../auth/guards/roles.guard';
+import { Roles } from '../auth/decorators/roles.decorator';
 
-@ApiTags('Upload')
 @Controller('api/upload')
-@UseGuards(JwtAuthGuard)    // ✅ Fix 1: Protect all upload routes
-@ApiBearerAuth()
+@UseGuards(JwtAuthGuard)
 export class UploadController {
-  constructor(
-    private readonly uploadService: UploadService,
-    private readonly configService: ConfigService,  // ✅ Properly injected
-  ) { }
+  constructor(private readonly uploadService: UploadService) {}
 
-  @Post('image')
-  @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Upload image to Cloudinary' })
-  @ApiConsumes('multipart/form-data')
-  @ApiBody({
-    schema: {
-      type: 'object',
-      required: ['file'],
-      properties: {
-        file: {
-          type: 'string',
-          format: 'binary',
-          description: 'Image file (jpg, jpeg, png, webp — max 5MB)',
-        },
-      },
-    },
-  })
-  @ApiResponse({
-    status: 200,
-    description: 'Image uploaded successfully',
-    schema: {
-      example: {
-        success: true,
-        message: 'Image uploaded successfully',
-        data: {
-          url: 'https://res.cloudinary.com/yourcloud/image/upload/v123/uploads/photo-123456.jpg',
-          publicId: 'uploads/photo-123456',
-        },
-      },
-    },
-  })
-  @ApiResponse({ status: 400, description: 'No file / Invalid type / File too large' })
-  @ApiResponse({ status: 401, description: 'Unauthorized - JWT token required' })
-  @UseInterceptors(
-    FileInterceptor('file', createMulterOptions(new ConfigService())),
-    // ⚠️ NOTE: new ConfigService() reads directly from process.env which is
-    // loaded by ConfigModule.forRoot() in app.module.ts — this works correctly
-  )
-  async uploadImage(@UploadedFile() file: Express.Multer.File) {
-    if (!file) {
-      throw new BadRequestException('No file uploaded. Please select an image.');
-    }
-
+  // ── PUBLIC file (images, videos) — koi bhi logged-in user ──
+  @Post('file')
+  @UseInterceptors(FileInterceptor('file', {
+    storage: memoryStorage(),
+    limits: { fileSize: 100 * 1024 * 1024 }, // 100MB
+  }))
+  async uploadFile(@UploadedFile() file: Express.Multer.File) {
+    if (!file) throw new BadRequestException('No file uploaded');
     const result = await this.uploadService.uploadFile(file);
+    return { success: true, message: 'File uploaded successfully', data: result };
+  }
 
+  // ── PRIVATE file (digital products for sale) — sirf seller ──
+  @Post('private-file')
+  @UseGuards(RolesGuard)
+  @Roles('seller')
+  @UseInterceptors(FileInterceptor('file', {
+    storage: memoryStorage(),
+    limits: { fileSize: 500 * 1024 * 1024 }, // 500MB
+  }))
+  async uploadPrivateFile(@UploadedFile() file: Express.Multer.File, @Body('purpose') purpose?: string) {
+    if (!file) throw new BadRequestException('No file uploaded');
+    // Only a known purpose gets its own folder — anything else (including
+    // omitted) keeps the original digital-products default so that flow is
+    // never affected by this addition.
+    const folder = purpose === 'kyc_document' ? 'private/kyc-documents' : undefined;
+    const result = await this.uploadService.uploadPrivateFile(file, folder);
     return {
       success: true,
-      message: 'Image uploaded successfully',
+      message: 'Private file uploaded successfully',
       data: result,
+      note: 'Save publicId in your product — URL is not accessible directly',
     };
   }
 }

@@ -1,7 +1,9 @@
 name: Deploy solvexo-api
+
 on:
   push:
     branches: [main]
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -17,6 +19,7 @@ jobs:
             cd /home/deploy/apps/solvexo-api
             git pull origin main
             npm ci
-            pm2 restart solvexo-api || pm2 start npm --name "solvexo-api" -- start
+            npm run build
+            pm2 restart solvexo-api-staging || pm2 start dist/main.js --name "solvexo-api-staging"
             pm2 save
             echo "solvexo-api deployed"

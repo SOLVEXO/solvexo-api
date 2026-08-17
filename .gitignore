@@ -57,3 +57,6 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 
 # .gitignore
 config/firebase-service-account.json
+
+/stripe
+/stripe.exe

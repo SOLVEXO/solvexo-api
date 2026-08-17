@@ -32,6 +32,11 @@ export class Employee {
   @Prop({ type: [String], default: [] })
   shiftIds: string[];           // store.shifts ke _id (kis shift pe assign)
 
+  // Which physical branch (StoreLocation) this employee works at — null
+  // means unrestricted (can work any register), the pre-multi-location default.
+  @Prop({ type: String, default: null })
+  locationId: string | null;
+
   @Prop({ enum: ['active', 'inactive'], default: 'active' })
   status: string;
 

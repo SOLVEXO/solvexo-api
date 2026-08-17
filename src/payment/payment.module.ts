@@ -1,9 +1,17 @@
 import { Module } from '@nestjs/common';
-import { PaymentProcessingController } from './payment.controller';
-import { PaymentProcessingService } from  './payment.service';
+import { PaymentController } from './payment.controller';
+import { PaymentService } from './payment.service';
+import { AuthModule } from 'src/auth/auth.module';
+import { RedisModule } from 'src/redis/redis.module';
+import { PromotionsModule } from 'src/promotions/promotions.module';
+import { FinanceModule } from 'src/finance/finance.module';
+import { AdminConfigModule } from 'src/admin-config/admin-config.module';
+import { ExchangeRateModule } from 'src/exchange-rate/exchange-rate.module';
 
 @Module({
-  controllers: [PaymentProcessingController],
-  providers: [PaymentProcessingService],
+  imports: [AuthModule, RedisModule, PromotionsModule, FinanceModule, AdminConfigModule, ExchangeRateModule],
+  controllers: [PaymentController],
+  providers: [PaymentService],
+  exports: [PaymentService],
 })
-export class PaymentProcessingModule {}
+export class PaymentModule {}

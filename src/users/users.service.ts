@@ -1,111 +1,147 @@
-// import {
-//     Injectable,
-//     NotFoundException,
-//     BadRequestException,
-//     UnauthorizedException,
-// } from '@nestjs/common';
-// import { InjectModel } from '@nestjs/mongoose';
-// import { Model } from 'mongoose';
-// import { User, UserDocument } from './schemas/user.schema';
-// import { UpdateProfileDto } from './dto/update-profile.dto';
-// import { ChangePasswordDto } from './dto/change-password.dto';
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+  UnauthorizedException,
+} from '@nestjs/common';
+import * as bcrypt from 'bcrypt';
+import { DatabaseService } from 'src/database/databaseservice';
+import { UpdateProfileDto } from './dto/update-profile.dto';
+import { ChangePasswordDto } from './dto/change-password.dto';
 
-// @Injectable()
-// export class UsersService {
-//     constructor(
-//         @InjectModel(User.name)
-//         private userModel: Model<UserDocument>,
-//     ) { }
+@Injectable()
+export class UsersService {
+  constructor(private readonly db: DatabaseService) {}
 
-//     async getProfile(userId: string) {
-//         const user = await this.userModel.findById(userId);
+  private get userModel() {
+    return this.db.repositories.userModel;
+  }
 
-//         if (!user) {
-//             throw new NotFoundException('User not found');
-//         }
+  async getProfile(userId: string) {
+    const user = await this.userModel
+      .findById(userId)
+      .select('-password -otp -otpExpiresAt');
+    if (!user) throw new NotFoundException('User not found');
+    return user;
+  }
 
-//         return user;
-//     }
+  async updateProfile(userId: string, dto: UpdateProfileDto) {
+    const user = await this.userModel.findById(userId);
+    if (!user) throw new NotFoundException('User not found');
 
-//     async updateProfile(userId: string, dto: UpdateProfileDto) {
-//         const user = await this.userModel.findById(userId);
+    user.name = dto.name ?? user.name;
+    user.phone = dto.phone ?? user.phone;
+    user.profileImage = dto.profileImage ?? user.profileImage;
+    user.address = dto.address ?? user.address;
+    user.currencyPreference = dto.currencyPreference ?? user.currencyPreference;
 
-//         if (!user) {
-//             throw new NotFoundException('User not found');
-//         }
+    if (dto.email && dto.email !== user.email) {
+      const emailExists = await this.userModel.findOne({ email: dto.email });
+      if (emailExists) throw new BadRequestException('Email already in use');
+      user.email = dto.email;
+      user.isVerified = false;
+    }
 
-//         user.name = dto.name ?? user.name;
-//         user.phone = dto.phone ?? user.phone;
-//         user.profileImage = dto.profileImage ?? user.profileImage;
-//         user.address = dto.address ?? user.address;
+    await user.save();
+    const updatedUser = await this.userModel
+      .findById(userId)
+      .select('-password -otp -otpExpiresAt');
 
-//         if (dto.email && dto.email !== user.email) {
-//             const emailExists = await this.userModel.findOne({ email: dto.email });
-//             if (emailExists) {
-//                 throw new BadRequestException('Email already in use');
-//             }
-//             user.email = dto.email;
-//             user.isEmailVerified = false;
-//         }
+    return {
+      success: true,
+      message: 'Profile updated successfully',
+      data: updatedUser,
+    };
+  }
 
-//         const updatedUser = await user.save();
+  // Buyers and sellers are separate Mongoose collections (see
+  // auth.service.ts's login/editProfile/etc.) — change-password must branch
+  // on role the same way, or it 404s for every seller/admin caller.
+  async changePassword(userId: string, role: string, dto: ChangePasswordDto) {
+    const { currentPassword, newPassword } = dto;
 
-//         return {
-//             success: true,
-//             message: 'Profile updated successfully',
-//             data: updatedUser,
-//         };
-//     }
+    let model;
+    if (role === 'user') {
+      model = this.db.repositories.userModel;
+    } else if (role === 'seller') {
+      model = this.db.repositories.sellerModel;
+    } else if (role === 'admin') {
+      model = this.db.repositories.adminModel;
+    } else {
+      throw new UnauthorizedException('Invalid user type');
+    }
 
-//     async changePassword(userId: string, dto: ChangePasswordDto) {
-//         const { currentPassword, newPassword } = dto;
+    const user = await model.findById(userId);
+    if (!user) throw new NotFoundException('User not found');
 
-//         if (!currentPassword || !newPassword) {
-//             throw new BadRequestException(
-//                 'Please provide current and new password',
-//             );
-//         }
+    if (!user.password) {
+      throw new BadRequestException(
+        'Cannot change password for social-login accounts',
+      );
+    }
 
-//         if (newPassword.length < 6) {
-//             throw new BadRequestException(
-//                 'New password must be at least 6 characters',
-//             );
-//         }
+    const isMatch = await bcrypt.compare(currentPassword, user.password);
+    if (!isMatch)
+      throw new UnauthorizedException('Current password is incorrect');
 
-//         const user = await this.userModel
-//             .findById(userId)
-//             .select('+password');
+    user.password = await bcrypt.hash(newPassword, 10);
+    await user.save();
 
-//         if (!user?.password) {
-//             throw new BadRequestException(
-//                 'Cannot change password for OAuth accounts',
-//             );
-//         }
+    return {
+      success: true,
+      message: 'Password changed successfully',
+    };
+  }
 
+  // Buyers and sellers are separate collections (see changePassword's comment
+  // above) — this must branch on role too, or a seller's delete request 404s
+  // against the buyer collection while their seller account stays fully live.
+  async deleteAccount(userId: string, role: string) {
+    if (role === 'seller') {
+      return this.deleteSellerAccount(userId);
+    }
 
+    if (role !== 'user') {
+      throw new UnauthorizedException('Invalid user type');
+    }
 
-//         user.password = newPassword;
-//         await user.save();
+    const user = await this.userModel.findById(userId);
+    if (!user) throw new NotFoundException('User not found');
 
-//         return {
-//             success: true,
-//             message: 'Password changed successfully',
-//         };
-//     }
+    user.isDelete = true;
+    user.status = 'deleted';
+    user.tokenVersion = (user.tokenVersion ?? 0) + 1;
+    await user.save();
 
-//     async deleteAccount(userId: string) {
-//         const user = await this.userModel.findById(userId);
+    return {
+      success: true,
+      message: 'Account deactivated successfully',
+    };
+  }
 
-//         if (!user) {
-//             throw new NotFoundException('User not found');
-//         }
+  // Deactivates the seller account AND suspends every store they own, so
+  // deleting an account doesn't leave live listings/storefronts behind under
+  // a "deleted" seller — every public-facing store/product query in this
+  // codebase (marketplace, search, follows, top stores, etc.) already filters
+  // on `status: 'active'`, so this alone removes them everywhere without
+  // needing a separate pass over each store's products.
+  private async deleteSellerAccount(sellerId: string) {
+    const seller = await this.db.repositories.sellerModel.findById(sellerId);
+    if (!seller) throw new NotFoundException('Seller not found');
 
-//         user.isActive = false;
-//         await user.save();
+    seller.isDelete = true;
+    seller.status = 'deleted';
+    seller.tokenVersion = (seller.tokenVersion ?? 0) + 1;
+    await seller.save();
 
-//         return {
-//             success: true,
-//             message: 'Account deactivated successfully',
-//         };
-//     }
-// }
+    await this.db.repositories.storeModel.updateMany(
+      { sellerId, isDelete: false },
+      { $set: { status: 'suspended' } },
+    );
+
+    return {
+      success: true,
+      message: 'Account deactivated successfully',
+    };
+  }
+}

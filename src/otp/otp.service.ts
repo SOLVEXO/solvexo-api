@@ -20,7 +20,7 @@ export class OtpService {
   async sendOtp(toEmail: string, otp: string): Promise<void> {
     try {
       const mailOptions = {
-        from: 'jamiraza359@gmail.com',  // 🟢 same Gmail as above
+        from: 'jamiraza359@gmail.com', // 🟢 same Gmail as above
         to: toEmail,
         subject: 'Your OTP Code',
         text: `Your OTP code is: ${otp}`,
@@ -29,10 +29,8 @@ export class OtpService {
 
       const result = await this.transporter.sendMail(mailOptions);
 
-
       this.logger.log(`OTP email sent to ${toEmail}: ${result.response}`);
     } catch (error) {
-
       this.logger.error(`Failed to send OTP to ${toEmail}`, error);
       throw new Error('Failed to send OTP email');
     }

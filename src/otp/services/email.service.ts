@@ -3,77 +3,82 @@ import * as nodemailer from 'nodemailer';
 
 @Injectable()
 export class EmailService {
-    private transporter: nodemailer.Transporter;
+  private transporter: nodemailer.Transporter;
 
-    constructor() {
-        // Configure email transporter
-        this.transporter = nodemailer.createTransport({
-            host: process.env.SMTP_HOST || 'smtp.gmail.com',
-            port: parseInt(process.env.SMTP_PORT as string) || 587,
-            secure: false, // true for 465, false for other ports
-            auth: {
-                user: process.env.SMTP_USER,
-                pass: process.env.SMTP_PASSWORD,
-            },
-        });
+  constructor() {
+    // Configure email transporter
+    this.transporter = nodemailer.createTransport({
+      host: process.env.SMTP_HOST || 'smtp.gmail.com',
+      port: parseInt(process.env.SMTP_PORT as string) || 587,
+      secure: false, // true for 465, false for other ports
+      auth: {
+        user: process.env.SMTP_USER,
+        pass: process.env.SMTP_PASSWORD,
+      },
+    });
+  }
+
+  async sendOtpEmail(
+    email: string,
+    otp: string,
+    type: string = 'email_verification',
+  ): Promise<boolean> {
+    const subject = this.getEmailSubject(type);
+    const html = this.getEmailTemplate(otp, type);
+    return this.sendMail(email, subject, html);
+  }
+
+  /** Generic transactional email — used by any module (e.g. subscription notifications). */
+  async sendMail(to: string, subject: string, html: string): Promise<boolean> {
+    try {
+      const info = await this.transporter.sendMail({
+        from: `"${process.env.APP_NAME || 'Your App'}" <${process.env.SMTP_FROM || process.env.SMTP_USER}>`,
+        to,
+        subject,
+        html,
+      });
+
+      console.log('✅ Email sent:', info.messageId);
+      return true;
+    } catch (error) {
+      console.error('❌ Error sending email:', error);
+      return false;
+    }
+  }
+
+  private getEmailSubject(type: string): string {
+    switch (type) {
+      case 'email_verification':
+        return 'Verify Your Email Address';
+      case 'password_reset':
+        return 'Reset Your Password';
+      case 'login':
+        return 'Your Login OTP';
+      default:
+        return 'Your Verification Code';
+    }
+  }
+
+  private getEmailTemplate(otp: string, type: string): string {
+    const appName = process.env.APP_NAME || 'Your App';
+    const expiryMinutes =
+      parseInt(process.env.OTP_EXPIRY_MINUTES as string) || 10;
+
+    let title = 'Verify Your Email';
+    let message = 'Please use the following code to verify your email address:';
+
+    switch (type) {
+      case 'password_reset':
+        title = 'Reset Your Password';
+        message = 'Please use the following code to reset your password:';
+        break;
+      case 'login':
+        title = 'Login Verification';
+        message = 'Please use the following code to complete your login:';
+        break;
     }
 
-    async sendOtpEmail(
-        email: string,
-        otp: string,
-        type: string = 'email_verification',
-    ): Promise<boolean> {
-        try {
-            const subject = this.getEmailSubject(type);
-            const html = this.getEmailTemplate(otp, type);
-
-            const info = await this.transporter.sendMail({
-                from: `"${process.env.APP_NAME || 'Your App'}" <${process.env.SMTP_FROM || process.env.SMTP_USER}>`,
-                to: email,
-                subject,
-                html,
-            });
-
-            console.log('✅ OTP Email sent:', info.messageId);
-            return true;
-        } catch (error) {
-            console.error('❌ Error sending OTP email:', error);
-            return false;
-        }
-    }
-
-    private getEmailSubject(type: string): string {
-        switch (type) {
-            case 'email_verification':
-                return 'Verify Your Email Address';
-            case 'password_reset':
-                return 'Reset Your Password';
-            case 'login':
-                return 'Your Login OTP';
-            default:
-                return 'Your Verification Code';
-        }
-    }
-
-    private getEmailTemplate(otp: string, type: string): string {
-        const appName = process.env.APP_NAME || 'Your App';
-        const expiryMinutes = parseInt(process.env.OTP_EXPIRY_MINUTES as string) || 10;
-
-        let title = 'Verify Your Email';
-        let message = 'Please use the following code to verify your email address:';
-
-        switch (type) {
-            case 'password_reset':
-                title = 'Reset Your Password';
-                message = 'Please use the following code to reset your password:';
-                break;
-            case 'login':
-                title = 'Login Verification';
-                message = 'Please use the following code to complete your login:';
-                break;
-        }
-
-        return `
+    return `
 <!DOCTYPE html>
 <html>
 <head>
@@ -190,17 +195,17 @@ export class EmailService {
 </body>
 </html>
         `;
-    }
+  }
 
-    // Test email connection
-    async testConnection(): Promise<boolean> {
-        try {
-            await this.transporter.verify();
-            console.log('✅ Email server connection verified');
-            return true;
-        } catch (error) {
-            console.error('❌ Email server connection failed:', error);
-            return false;
-        }
+  // Test email connection
+  async testConnection(): Promise<boolean> {
+    try {
+      await this.transporter.verify();
+      console.log('✅ Email server connection verified');
+      return true;
+    } catch (error) {
+      console.error('❌ Email server connection failed:', error);
+      return false;
     }
+  }
 }

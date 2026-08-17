@@ -5,7 +5,6 @@ export type UserPaymentMethodDocument = UserPaymentMethod & Document;
 
 @Schema({ timestamps: true })
 export class UserPaymentMethod {
-
   @Prop({ type: String, required: true, index: true })
   userId: string;
 

@@ -39,6 +39,9 @@ export class AddressService {
   state: body.state,
   city: body.city,
   zipCode: body.zipCode,
+  country: body.country || null,
+  latitude: body.latitude ?? null,
+  longitude: body.longitude ?? null,
   isDefault: body.isDefault || false,
 });
       return {
@@ -73,10 +76,10 @@ export class AddressService {
     }
   }
 
-    async updateAddress(addressId: string, body: any) {
+    async updateAddress(userId: string, addressId: string, body: any) {
     try {
-      const updated = await this.databaseService.repositories.addressModel.findByIdAndUpdate(
-        addressId,
+      const updated = await this.databaseService.repositories.addressModel.findOneAndUpdate(
+        { _id: addressId, userId },
         { $set: body },
         { new: true },
       );
@@ -96,10 +99,10 @@ export class AddressService {
     }
   }
 
-  async getAddressById(addressId: string) {
+  async getAddressById(userId: string, addressId: string) {
   try {
 
-    const address = await this.databaseService.repositories.addressModel.findById(addressId);
+    const address = await this.databaseService.repositories.addressModel.findOne({ _id: addressId, userId });
 
     return {
       message: 'Address fetched successfully',
@@ -151,6 +154,43 @@ async getDefaultAddress(userId: string) {
   }
 }
 
+  async deleteAddress(userId: string, addressId: string) {
+    try {
+      const deleted = await this.databaseService.repositories.addressModel.findOneAndUpdate(
+        { _id: addressId, userId },
+        { $set: { isDelete: true } },
+        { new: true },
+      );
+
+      if (!deleted) {
+        return {
+          success: false,
+          message: 'Address not found',
+        };
+      }
+
+      // If the deleted address was the default, promote another one so the
+      // user isn't left without a default (matches setDefaultAddress's
+      // "only one default at a time" invariant).
+      if (deleted.isDefault) {
+        await this.databaseService.repositories.addressModel.findOneAndUpdate(
+          { userId, isDelete: false },
+          { $set: { isDefault: true } },
+        );
+      }
+
+      return {
+        success: true,
+        message: 'Address deleted successfully',
+      };
+    } catch (error) {
+      return {
+        success: false,
+        message: error.message,
+      };
+    }
+  }
+
   async setDefaultAddress(userId: string, addressId: string) {
     try {
       // remove old default
@@ -167,11 +207,13 @@ async getDefaultAddress(userId: string) {
       );
 
       return {
+        success: true,
         message: 'Default address updated',
         data: updated,
       };
     } catch (error) {
       return {
+        success: false,
         message: error.message,
       };
     }

@@ -1,9 +1,11 @@
 /* eslint-disable prettier/prettier */
-import { Body, Controller, Post, Req, Get } from '@nestjs/common';
+import { Body, Controller, Post, Req, Get, Patch } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
 import { SocialLoginDto } from './dto/social-login.dto';
+import { UpdateProfileDto } from './dto/update-profile.dto';
+import { CreateAdminDto } from './dto/create-admin.dto';
 import { AuthGuard } from '@nestjs/passport';
 import { UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -27,8 +29,14 @@ export class AuthController {
 
   // ✅ Login
   @Post('login')
-  async login(@Body() loginDto: LoginDto) {
-    return this.authService.login(loginDto);
+  async login(@Req() req: any, @Body() loginDto: LoginDto) {
+    return this.authService.login(loginDto, req.ip, req.headers['user-agent']);
+  }
+
+  // ✅ Social login (Google / Facebook / Apple) — always buyer (role: 'user')
+  @Post('social-login')
+  async socialLogin(@Body() socialLoginDto: SocialLoginDto) {
+    return this.authService.socialLogin(socialLoginDto);
   }
 
   
@@ -64,13 +72,39 @@ export class AuthController {
 }
 
   @UseGuards(JwtAuthGuard)
-@Get('getprofile')
-async getProfile( @Req() req: any  ) {
-    const {userId , role} = req.user
-    console.log(userId, role)
-  return this.authService.getProfile(userId, role);
-}
+  @Post('logout')
+  async logout(@Req() req: any) {
+    const token = req.headers.authorization?.split(' ')[1];
+    return this.authService.logout(token);
+  }
 
+  @UseGuards(JwtAuthGuard)
+  @Get('getprofile')
+  async getProfile(@Req() req: any) {
+    const { userId, role } = req.user;
+    return this.authService.getProfile(userId, role);
+  }
 
+  @UseGuards(JwtAuthGuard)
+  @Patch('edit-profile')
+  async editProfile(@Req() req: any, @Body() updateProfileDto: UpdateProfileDto) {
+    const { userId, role } = req.user;
+    return this.authService.editProfile(userId, role, updateProfileDto);
+  }
+
+  // The only way a new admin account can be created — public registration
+  // no longer allows role:'admin' (see RegisterDto). Only an already
+  // logged-in admin can call this, so admin access can only ever be
+  // extended by an existing admin, never granted to oneself.
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('admin')
+  @Post('admin/create-admin')
+  async createAdmin(@Req() req: any, @Body() dto: CreateAdminDto) {
+    return this.authService.createAdmin(dto, {
+      adminId: req.user.userId,
+      ip: req.ip,
+      userAgent: req.headers['user-agent'],
+    });
+  }
 
 }
