@@ -31,6 +31,7 @@ async function bootstrap() {
     'https://solvexo.store',
     'https://www.solvexo.store',
     'https://solvexo-web.vercel.app',
+    'https://api.edudeen.com',
   ];
 
   app.enableCors({
