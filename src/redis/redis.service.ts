@@ -1,41 +1,82 @@
 import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { createClient, RedisClientType } from 'redis';
-import { ConfigModule } from '@nestjs/config';
-
 
 @Injectable()
 export class RedisService implements OnModuleInit, OnModuleDestroy {
   private client: RedisClientType;
+  private _isConnected = false;
 
   constructor() {
     const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379';
-
-    this.client = createClient({
-      url: redisUrl,
+    this.client = createClient({ url: redisUrl });
+    this.client.on('error', (err) => {
+      console.error('Redis Client Error', err);
+      this._isConnected = false;
     });
-
-    this.client.on('error', (err) => console.error('Redis Client Error', err));
   }
 
   async onModuleInit() {
-    await this.client.connect();
-    console.log('[RedisService] Redis connected');
+    try {
+      await this.client.connect();
+      this._isConnected = true;
+      console.log('[RedisService] Redis connected');
+    } catch (err) {
+      this._isConnected = false;
+      console.error('[RedisService] Redis connection failed:', err);
+    }
   }
 
   async onModuleDestroy() {
     await this.client.quit();
+    this._isConnected = false;
     console.log('[RedisService] Redis disconnected');
   }
 
-  async set(key: string, value: string, ttl: number) {
+  get isConnected(): boolean {
+    return this._isConnected;
+  }
+
+  async set(key: string, value: string, ttl: number): Promise<void> {
+    if (!this._isConnected) return;
     await this.client.set(key, value, { EX: ttl });
   }
 
-  async get(key: string) {
+  async get(key: string): Promise<string | null> {
+    if (!this._isConnected) return null;
     return await this.client.get(key);
   }
 
-  async del(key: string) {
-    return await this.client.del(key);
+  async del(key: string): Promise<void> {
+    if (!this._isConnected) return;
+    await this.client.del(key);
+  }
+
+  async incrWithTtl(key: string, ttl: number): Promise<number> {
+    if (!this._isConnected) return 0;
+    const count = await this.client.incr(key);
+    if (count === 1) {
+      await this.client.expire(key, ttl);
+    }
+    return count;
+  }
+
+  async withLock(
+    lockKey: string,
+    ttlMs: number,
+    fn: () => Promise<void>,
+  ): Promise<boolean> {
+    if (!this._isConnected) return false;
+    const ttlSeconds = Math.ceil(ttlMs / 1000);
+    const acquired = await this.client.set(lockKey, '1', {
+      NX: true,
+      EX: ttlSeconds,
+    });
+    if (!acquired) return false;
+    try {
+      await fn();
+      return true;
+    } finally {
+      await this.client.del(lockKey);
+    }
   }
 }
