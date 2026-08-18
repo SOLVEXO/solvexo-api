@@ -130,6 +130,16 @@ export class StoreService {
 
     const finalProductTypes = productTypes ?? [];
 
+    // Self-serve activation: a seller who completed the onboarding wizard's
+    // Payment step already has a verified card on file (see
+    // SellerPlatformSubscriptionsService.confirmOnboardingPaymentMethod) —
+    // there's nothing left for an admin to gate, so the store goes straight
+    // to `active` instead of the pending/admin-review Leads queue. A store
+    // created any other way (e.g. a future non-onboarding path with no
+    // payment method on file) still starts `pending`, same as before.
+    const seller = await this.databaseService.repositories.sellerModel.findById(sellerId).lean();
+    const selfServeActivation = !!(seller as any)?.hasPlatformPaymentMethod;
+
     const store = await this.databaseService.repositories.storeModel.create({
       sellerId,
       name,
@@ -141,9 +151,8 @@ export class StoreService {
       productTypes: finalProductTypes,
       enabledTools: resolveTools(finalProductTypes),
       baseCurrency,
-      // Goes into the admin Leads queue — not live on the marketplace until
-      // an admin approves it (see AdminMarketplaceService.approveLead).
-      status: 'pending',
+      status: selfServeActivation ? 'active' : 'pending',
+      ...(selfServeActivation ? { reviewedAt: new Date() } : {}),
     });
 
     // ✅ seller pe sirf onboarded mark — storeId nahi rakhte (source of truth = Store.sellerId)

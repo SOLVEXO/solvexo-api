@@ -69,6 +69,15 @@ export class Seller {
     @Prop({ type: String, default: null })
     stripeCustomerId: string | null;
 
+    // Flips true once SellerPlatformSubscriptionsService.confirmOnboardingPaymentMethod
+    // has verified (server-side, against Stripe) that this seller completed the
+    // onboarding wizard's Payment step with a real card on file — StoreService.createStore
+    // uses this to skip the pending/admin-review Leads queue entirely and activate a
+    // self-serve seller's store immediately, Shopify-style (they've already paid/put a
+    // card down, so there's nothing left for an admin to gate).
+    @Prop({ type: Boolean, default: false })
+    hasPlatformPaymentMethod: boolean;
+
     // Bumped whenever this account is suspended/deactivated so any
     // already-issued JWT is invalidated on its next request — see
     // JwtAuthGuard, which rejects a token whose tokenVersion claim doesn't
