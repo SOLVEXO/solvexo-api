@@ -61,6 +61,7 @@ import { CommissionRulesModule } from './commission-rules/commission-rules.modul
 import { ManualPaymentsModule } from './manual-payments/manual-payments.module';
 import { ExchangeRateModule } from './exchange-rate/exchange-rate.module';
 import { OnboardingSlidesModule } from './onboarding-slides/onboarding-slides.module';
+import { BookingsModule } from './bookings/bookings.module';
 
 @Module({
   imports: [
@@ -107,6 +108,7 @@ import { OnboardingSlidesModule } from './onboarding-slides/onboarding-slides.mo
     ManualPaymentsModule,
     FinanceModule,
     SubscriptionsModule,
+    BookingsModule,
     PlatformPlansModule,
     AiStudioModule,
     SchedulerModule,

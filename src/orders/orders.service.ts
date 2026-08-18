@@ -72,7 +72,8 @@ export class OrdersService {
   }
 
   async getOrdersByUserId(userId: string, query: any) {
-    const { orderModel, sellerModel } = this.databaseService.repositories;
+    const { orderModel, sellerModel, ratingModel } =
+      this.databaseService.repositories;
 
     const page = parseInt(query.page) || 1;
     const limit = parseInt(query.limit) || 10;
@@ -111,6 +112,29 @@ export class OrdersService {
           .lean()
       : [];
     const sellerMap = new Map(sellers.map((s: any) => [s._id.toString(), s]));
+
+    // Batch-resolve which products this buyer already reviewed, across every
+    // product in this page, so each item can be flagged `isReviewed` without
+    // a query per item.
+    const productIds = [
+      ...new Set(
+        orders.flatMap((order: any) =>
+          (order.sellerOrders ?? []).flatMap((so: any) =>
+            (so.items ?? []).map((item: any) => item.productId),
+          ),
+        ),
+      ),
+    ].filter(Boolean);
+    const reviewedProductIds = productIds.length
+      ? new Set(
+          (
+            await ratingModel
+              .find({ userId, productId: { $in: productIds }, isDelete: false })
+              .select('productId')
+              .lean()
+          ).map((r: any) => r.productId),
+        )
+      : new Set();
 
     const list = orders.map((order: any) => ({
       orderId: order._id,
@@ -152,6 +176,7 @@ export class OrdersService {
             originalPrice: item.originalPrice ?? null,
             subscriberDiscountUSD: item.subscriberDiscountUSD ?? 0,
             status: item.status,
+            isReviewed: reviewedProductIds.has(item.productId),
           })),
           tracking: so.tracking,
           shippedAt: so.shippedAt,
@@ -325,6 +350,7 @@ export class OrdersService {
           productType: firstItem?.productType ?? null,
           date: order.createdAt,
           amount: so.subtotal,
+          shippingAddress: order.shippingAddress ?? null,
           // `amount` above is so.subtotal, which is denominated in the order's
           // own currency (fixed per store) — carried per-row so a cross-store
           // "my orders" list can label each row correctly even when the
@@ -1239,6 +1265,22 @@ export class OrdersService {
     });
 
     await orderModel.findByIdAndUpdate(orderId, { $set: updateData });
+
+    const notifiedSellers = new Set<string>();
+    for (const { so } of targetItems) {
+      if (!so.sellerId || notifiedSellers.has(so.sellerId)) continue;
+      notifiedSellers.add(so.sellerId);
+      this.notificationsService
+        .notify({
+          recipientId: so.sellerId,
+          recipientRole: 'seller',
+          type: NOTIFICATION_TYPES.REFUND_REQUESTED,
+          title: 'Refund requested',
+          body: `A refund has been requested for order #${order.orderNumber}.`,
+          data: { orderId, storeId: so.storeId },
+        })
+        .catch(() => {});
+    }
 
     return {
       success: true,

@@ -173,6 +173,63 @@ export class StripePaymentProvider implements IPaymentGateway {
     }
   }
 
+  /**
+   * One-off off-session charge — same shape as `chargeSubscription` (retrieve
+   * the customer's default payment method, confirm a PaymentIntent
+   * off-session) but with no subscription/price object involved. Used by
+   * BookingsService for appointment payments and package purchases.
+   */
+  async chargeOneTime(referenceId: string, amountUSD: number, context?: ChargeContext): Promise<ChargeResult> {
+    if (!context?.providerCustomerId) {
+      return { success: false, providerChargeId: '', failureReason: 'Missing Stripe customer id for this charge' };
+    }
+
+    try {
+      const customer = await this.stripe.customers.retrieve(context.providerCustomerId) as any;
+      const defaultPaymentMethod = customer?.invoice_settings?.default_payment_method as string | null | undefined;
+      if (!defaultPaymentMethod) {
+        return { success: false, providerChargeId: '', failureReason: 'No default payment method on file', failureCode: 'no_payment_method' };
+      }
+
+      const paymentIntent = await this.stripe.paymentIntents.create(
+        {
+          amount: Math.round(amountUSD * 100),
+          currency: 'usd',
+          customer: context.providerCustomerId,
+          payment_method: defaultPaymentMethod,
+          off_session: true,
+          confirm: true,
+          metadata: { internalReferenceId: referenceId, ...(context.metadata ?? {}) },
+        },
+        { idempotencyKey: context.idempotencyKey ?? `onetime_charge_${referenceId}_${Date.now()}` },
+      );
+
+      if (paymentIntent.status === 'succeeded') {
+        return {
+          success: true,
+          providerChargeId: paymentIntent.id,
+          paymentMethodType: paymentIntent.payment_method_types?.[0] ?? 'card',
+          currency: paymentIntent.currency,
+        };
+      }
+      if (paymentIntent.status === 'requires_action' || paymentIntent.status === 'requires_confirmation') {
+        return {
+          success: false, providerChargeId: paymentIntent.id, requiresAction: true,
+          clientSecret: paymentIntent.client_secret ?? undefined,
+          failureReason: 'Customer authentication (3DS) required',
+        };
+      }
+      return { success: false, providerChargeId: paymentIntent.id, failureReason: `Payment intent ended in status "${paymentIntent.status}"` };
+    } catch (err: any) {
+      this.logger.warn(`Stripe one-time charge failed for ref=${referenceId}: ${err?.message}`);
+      return {
+        success: false, providerChargeId: '',
+        failureReason: err?.message ?? 'Card declined',
+        failureCode: err?.code ?? err?.decline_code ?? undefined,
+      };
+    }
+  }
+
   async cancelProviderSubscription(providerSubscriptionId: string): Promise<void> {
     try {
       await this.stripe.subscriptions.cancel(providerSubscriptionId);

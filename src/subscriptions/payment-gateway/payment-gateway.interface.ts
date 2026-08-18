@@ -75,6 +75,17 @@ export interface IPaymentGateway {
     context?: ChargeContext,
   ): Promise<ChargeResult>;
 
+  /**
+   * A single, non-recurring off-session charge — no subscription/price object
+   * involved. Used by the Bookings module (appointment payments, package
+   * purchases) and any future one-off-charge flow.
+   */
+  chargeOneTime(
+    referenceId: string,
+    amountUSD: number,
+    context?: ChargeContext,
+  ): Promise<ChargeResult>;
+
   createProviderSubscription(
     subscriptionId: string,
     planName: string,

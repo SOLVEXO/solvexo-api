@@ -161,6 +161,21 @@ export class DatabaseService {
     @InjectModel(schema.StoreLocation.name)
     private storeLocationModel: Model<schema.StoreLocationDocument>,
 
+    @InjectModel(schema.BookableService.name)
+    private bookableServiceModel: Model<schema.BookableServiceDocument>,
+
+    @InjectModel(schema.ServiceAvailability.name)
+    private serviceAvailabilityModel: Model<schema.ServiceAvailabilityDocument>,
+
+    @InjectModel(schema.ServicePackage.name)
+    private servicePackageModel: Model<schema.ServicePackageDocument>,
+
+    @InjectModel(schema.PackagePurchase.name)
+    private packagePurchaseModel: Model<schema.PackagePurchaseDocument>,
+
+    @InjectModel(schema.Booking.name)
+    private bookingModel: Model<schema.BookingDocument>,
+
     @InjectModel(schema.ActivityLog.name)
     private activityLogModel: Model<schema.ActivityLogDocument>,
 
@@ -346,6 +361,11 @@ export class DatabaseService {
       aiCreditsWalletModel: this.aiCreditsWalletModel,
       platformAddonPurchaseModel: this.platformAddonPurchaseModel,
       storeLocationModel: this.storeLocationModel,
+      bookableServiceModel: this.bookableServiceModel,
+      serviceAvailabilityModel: this.serviceAvailabilityModel,
+      servicePackageModel: this.servicePackageModel,
+      packagePurchaseModel: this.packagePurchaseModel,
+      bookingModel: this.bookingModel,
       activityLogModel: this.activityLogModel,
       couponModel: this.couponModel,
       loyaltyProgramModel: this.loyaltyProgramModel,
