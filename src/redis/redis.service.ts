@@ -64,17 +64,17 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     lockKey: string,
     ttlMs: number,
     fn: () => Promise<void>,
-  ): Promise<boolean> {
-    if (!this._isConnected) return false;
+  ): Promise<'ran' | 'lock_not_acquired'> {
+    if (!this._isConnected) return 'lock_not_acquired';
     const ttlSeconds = Math.ceil(ttlMs / 1000);
     const acquired = await this.client.set(lockKey, '1', {
       NX: true,
       EX: ttlSeconds,
     });
-    if (!acquired) return false;
+    if (!acquired) return 'lock_not_acquired';
     try {
       await fn();
-      return true;
+      return 'ran';
     } finally {
       await this.client.del(lockKey);
     }

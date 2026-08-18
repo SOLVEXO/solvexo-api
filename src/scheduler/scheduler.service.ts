@@ -60,7 +60,6 @@ export class SchedulerService {
   private async runLocked(jobName: string, ttlMs: number, fn: () => Promise<void>) {
     const result = await this.redis.withLock(`cron-lock:${jobName}`, ttlMs, async () => {
       await fn();
-      return 'ran' as const;
     });
     if (result === 'lock_not_acquired') {
       this.logger.debug(`Skipped "${jobName}" — another instance already holds the lock (or Redis is unavailable)`);
