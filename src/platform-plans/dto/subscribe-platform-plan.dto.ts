@@ -33,3 +33,9 @@ export class BillingPortalDto {
   @IsString() @IsNotEmpty()
   returnUrl: string;
 }
+
+export class ConfirmOnboardingPaymentMethodDto {
+  @ApiProperty({ description: 'The SetupIntent id Stripe.js confirmed client-side during the onboarding Payment step' })
+  @IsString() @IsNotEmpty()
+  setupIntentId: string;
+}

@@ -221,13 +221,74 @@ export class SellerPlatformSubscriptionsService {
       return null;
     }
 
+    // A seller who already put a card on file during onboarding (see
+    // createOnboardingSetupIntent/confirmOnboardingPaymentMethod below) has a
+    // Stripe customer waiting — seed it onto the free-plan record now so a
+    // later upgrade never has to create a second customer for the same seller.
+    const seller = await this.db.repositories.sellerModel.findById(sellerId).lean();
+    const stripeCustomerId = (seller as any)?.stripeCustomerId ?? null;
+
     const now = new Date();
     return this.subModel.create({
       storeId, sellerId, platformPlanId: (freePlan as any)._id.toString(),
       billingInterval: 'monthly', amountUSD: 0, status: 'active',
       startedAt: now, currentPeriodStart: now, currentPeriodEnd: this.addPeriod(now, 'monthly'),
       nextBillingDate: this.addPeriod(now, 'monthly'),
+      stripeCustomerId,
+      paymentProvider: stripeCustomerId ? 'stripe' : 'manual',
     });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // Onboarding wizard — Payment step (before any store exists yet)
+  // ═══════════════════════════════════════════════════════════════════════
+
+  /** Creates (or reuses) this seller's Stripe customer and a SetupIntent so
+   *  the onboarding wizard's Payment step can collect a card via Stripe
+   *  Elements — called before the store itself has been created. */
+  async createOnboardingSetupIntent(sellerId: string) {
+    const seller = await this.db.repositories.sellerModel.findById(sellerId);
+    if (!seller) throw new NotFoundException('Seller account not found');
+
+    if (!seller.stripeCustomerId) {
+      const { providerCustomerId } = await this.gateway.getOrCreateCustomer(sellerId, seller.email, seller.name ?? '');
+      seller.stripeCustomerId = providerCustomerId;
+      await seller.save();
+    }
+
+    const setupIntent = await this.gateway.createSetupIntent(seller.stripeCustomerId);
+    return { success: true, data: { clientSecret: setupIntent.clientSecret, customerId: seller.stripeCustomerId } };
+  }
+
+  /** Verifies (server-side, against Stripe — never trusting the client's word
+   *  that a card was saved) that the SetupIntent Stripe.js just confirmed
+   *  really succeeded for THIS seller's customer, sets it as the customer's
+   *  default payment method (so a later off-session platform-plan charge can
+   *  find it — see chargeSubscription), and flips
+   *  `Seller.hasPlatformPaymentMethod`, which is what lets StoreService.createStore
+   *  activate the new store immediately instead of queuing it for admin review. */
+  async confirmOnboardingPaymentMethod(sellerId: string, setupIntentId: string) {
+    const seller = await this.db.repositories.sellerModel.findById(sellerId);
+    if (!seller?.stripeCustomerId) throw new BadRequestException('No Stripe customer on file for this seller — start the Payment step again');
+
+    const stripe = this.gateway.stripeClient;
+    if (stripe) {
+      const setupIntent = await stripe.setupIntents.retrieve(setupIntentId);
+      if (setupIntent.customer !== seller.stripeCustomerId || setupIntent.status !== 'succeeded' || !setupIntent.payment_method) {
+        throw new BadRequestException('Card setup was not completed successfully');
+      }
+      await stripe.customers.update(seller.stripeCustomerId, {
+        invoice_settings: { default_payment_method: setupIntent.payment_method as string },
+      });
+    }
+    // Manual provider (local dev/CI, no real Stripe client) — same
+    // always-succeeds stub philosophy as every other ManualPaymentProvider
+    // method, nothing real to verify against.
+
+    seller.hasPlatformPaymentMethod = true;
+    await seller.save();
+
+    return { success: true };
   }
 
   async getStorePlan(sellerId: string, storeId: string) {
