@@ -96,6 +96,19 @@ export class CheckoutItem {
   @Prop({ type: Number, default: null })
   totalPriceBeforeCoupon: number | null;
 
+  // Same "before" pattern as the coupon fields above, but for a GiftCard's
+  // balance applied at checkout (see CheckoutService.applyGiftCard) — kept
+  // fully independent since a gift card and a coupon can be applied to the
+  // same checkout together (see Checkout.giftCardCode).
+  @Prop({ type: Number, default: 0 })
+  giftCardDiscountUSD: number;
+
+  @Prop({ type: Number, default: null })
+  priceBeforeGiftCard: number | null;
+
+  @Prop({ type: Number, default: null })
+  totalPriceBeforeGiftCard: number | null;
+
   // Automatic platform-campaign discount (see MarketingService's active-campaign
   // lookup) — resolved once at checkout-creation time from the item's store's
   // active campaign, same "computed server-side, never client-supplied" rule as
@@ -105,6 +118,17 @@ export class CheckoutItem {
 
   @Prop({ type: Number, default: 0 })
   campaignDiscountUSD: number;
+
+  // A seller's own no-code automatic discount (see DiscountsService) —
+  // resolved the same pass as campaignId/campaignDiscountUSD above, right
+  // after it, on top of the (already campaign-discounted) totalPrice. Never
+  // set on an item that already got a campaignDiscountUSD (same "not
+  // combinable with an active sale" rule a manually-typed Coupon follows).
+  @Prop({ type: String, default: null })
+  autoDiscountId: string | null;
+
+  @Prop({ type: Number, default: 0 })
+  autoDiscountUSD: number;
 
   // Who bears campaignDiscountUSD's cost — see Campaign.sponsorType. Carried
   // onto the placed Order so PaymentService/OrdersService know, without a
@@ -180,14 +204,43 @@ export class Checkout {
   @Prop({ type: String, default: null })
   couponStoreId: string | null;
 
+  // Distinguishes a real Coupon from a LoyaltyReward redemption voucher
+  // sharing this same couponCode/couponStoreId slot — see
+  // CheckoutService.applyCoupon's reward-voucher fallback and
+  // PaymentService.createOrder's usage-marking branch.
+  @Prop({ type: String, enum: ['coupon', 'reward_voucher'], default: 'coupon' })
+  couponSourceType: 'coupon' | 'reward_voucher';
+
   @Prop({ default: 0 })
   couponDiscountTotalUSD: number;
+
+  // A GiftCard is balance-based (partial spend across multiple orders), a
+  // fundamentally different mechanic from a single-use Coupon/RewardVoucher
+  // — it gets its own checkout slot so a buyer can stack a gift card AND a
+  // coupon/reward on the same order (real stores commonly allow this),
+  // unlike coupon vs. reward-voucher which share one slot (see
+  // couponSourceType above) since only one "promo code" is ever typed in at
+  // a time. See CheckoutService.applyGiftCard/removeGiftCard.
+  @Prop({ type: String, default: null })
+  giftCardCode: string | null;
+
+  @Prop({ type: String, default: null })
+  giftCardStoreId: string | null;
+
+  @Prop({ default: 0 })
+  giftCardDiscountTotalUSD: number;
 
   // Sum of every item's campaignDiscountUSD — a multi-store cart can have a
   // different active campaign per store, so (unlike couponCode/couponStoreId)
   // there's no single "the" campaign at the checkout level, only this total.
   @Prop({ default: 0 })
   campaignDiscountTotalUSD: number;
+
+  // Sum of every item's autoDiscountUSD — same "no single id at checkout
+  // level" reasoning as campaignDiscountTotalUSD above (a multi-store cart
+  // can have a different seller automatic discount per store).
+  @Prop({ default: 0 })
+  autoDiscountTotalUSD: number;
 
   // Set client-side from whichever promotional banner the buyer clicked
   // through (localStorage attribution token, short TTL) — copied onto the

@@ -7,9 +7,13 @@ import { PromotionsModule } from 'src/promotions/promotions.module';
 import { FinanceModule } from 'src/finance/finance.module';
 import { AdminConfigModule } from 'src/admin-config/admin-config.module';
 import { ExchangeRateModule } from 'src/exchange-rate/exchange-rate.module';
+import { GiftCardsModule } from 'src/gift-cards/gift-cards.module';
+import { StripeConnectModule } from 'src/stripe-connect/stripe-connect.module';
 
 @Module({
-  imports: [AuthModule, RedisModule, PromotionsModule, FinanceModule, AdminConfigModule, ExchangeRateModule],
+  // CommissionRulesModule is @Global() (see its own module file) so it
+  // doesn't need to be imported here to inject CommissionRulesService.
+  imports: [AuthModule, RedisModule, PromotionsModule, FinanceModule, AdminConfigModule, ExchangeRateModule, GiftCardsModule, StripeConnectModule],
   controllers: [PaymentController],
   providers: [PaymentService],
   exports: [PaymentService],

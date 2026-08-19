@@ -376,6 +376,15 @@ export class Store {
   @Prop({ type: String, default: null })
   customDomain: string | null;
 
+  // 'unverified' whenever `customDomain` is first set or changed — flips to
+  // 'verified' only once `StoreService.verifyCustomDomain` confirms the
+  // domain's own DNS actually CNAMEs to our platform target (see
+  // `CUSTOM_DOMAIN_CNAME_TARGET`). Public storefront resolution by domain
+  // (`getPublicStoreByDomain`) only ever matches a 'verified' domain, so an
+  // unverified/unproven claim can never serve as a live storefront.
+  @Prop({ type: String, enum: ['unverified', 'verified'], default: 'unverified' })
+  customDomainStatus: 'unverified' | 'verified';
+
   @Prop({ type: Boolean, default: false })
   whiteLabelEnabled: boolean;
 

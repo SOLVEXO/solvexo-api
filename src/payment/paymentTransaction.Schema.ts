@@ -52,6 +52,21 @@ export class PaymentTransaction {
   @Prop({ type: String, default: null })
   stripePaymentIntentId: string | null;
 
+  // Set only when this charge was routed directly to a seller's own
+  // connected Stripe account (StripeConnectService) instead of the
+  // platform's shared account — see PaymentService.initiatePayment's
+  // single-store-checkout gate. Refunds against this transaction must pass
+  // `reverse_transfer`/`refund_application_fee` (see refundStripePaymentIntent),
+  // and the ledger reversal in reverseSellerLedgerForOrders is skipped for
+  // this order's sellerOrders — nothing was ever credited to the internal
+  // ledger for a Connect-settled sale in the first place (see
+  // OrdersService's recordSale gate on SellerOrder.settledViaConnect).
+  @Prop({ type: Boolean, default: false })
+  settledViaConnect: boolean;
+
+  @Prop({ type: String, default: null })
+  stripeConnectedAccountId: string | null;
+
   @Prop({ type: String, default: null })
   stripeClientSecret: string | null;
 

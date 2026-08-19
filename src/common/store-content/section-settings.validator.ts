@@ -113,6 +113,9 @@ export function validateBlockSettings(blockType: string, settings: Record<string
       oneOf(settings.linkType, LINK_TYPES, 'linkType');
       if (settings.linkType === 'page') required(settings.pageSlug, 'pageSlug');
       if (settings.linkType === 'external') assertHttpsUrl(settings.url, 'url');
+      if (settings.highlight !== undefined && typeof settings.highlight !== 'boolean') {
+        throw new BadRequestException('highlight must be a boolean');
+      }
       break;
     case 'footer_column':
       required(settings.heading, 'heading');

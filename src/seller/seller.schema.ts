@@ -78,6 +78,28 @@ export class Seller {
     @Prop({ type: Boolean, default: false })
     hasPlatformPaymentMethod: boolean;
 
+    // Stripe Connect (Express) account for RECEIVING buyer payments directly
+    // — a seller's "own payment gateway", completely separate from
+    // `stripeCustomerId` above (that one is the seller PAYING Solvexo for
+    // their platform plan; this one is Solvexo routing a BUYER's payment
+    // straight to the seller). See StripeConnectService.
+    @Prop({ type: String, default: null })
+    stripeConnectedAccountId: string | null;
+
+    // 'not_connected' until the seller starts onboarding; 'pending' while
+    // Stripe still needs more info/verification; 'active' once both
+    // chargesEnabled and payoutsEnabled are true on the Stripe account.
+    // Synced from Stripe (StripeConnectService.syncAccountStatus), never
+    // set directly from client input.
+    @Prop({ type: String, enum: ['not_connected', 'pending', 'active', 'restricted'], default: 'not_connected' })
+    stripeConnectStatus: 'not_connected' | 'pending' | 'active' | 'restricted';
+
+    @Prop({ type: Boolean, default: false })
+    stripeConnectChargesEnabled: boolean;
+
+    @Prop({ type: Boolean, default: false })
+    stripeConnectPayoutsEnabled: boolean;
+
     // Bumped whenever this account is suspended/deactivated so any
     // already-issued JWT is invalidated on its next request — see
     // JwtAuthGuard, which rejects a token whose tokenVersion claim doesn't

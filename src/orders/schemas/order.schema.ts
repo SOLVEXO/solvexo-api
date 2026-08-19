@@ -64,6 +64,11 @@ export class OrderItem {
   @Prop({ type: Number, default: 0 })
   couponDiscountUSD: number;
 
+  // Gift card discount allocated to this line at checkout — see
+  // CheckoutItem.giftCardDiscountUSD, copied through at order creation.
+  @Prop({ type: Number, default: 0 })
+  giftCardDiscountUSD: number;
+
   // Automatic platform-campaign discount allocated to this line at checkout —
   // see CheckoutItem.campaignId/campaignDiscountUSD, copied through as-is.
   @Prop({ type: String, default: null })
@@ -71,6 +76,14 @@ export class OrderItem {
 
   @Prop({ type: Number, default: 0 })
   campaignDiscountUSD: number;
+
+  // A seller's own no-code automatic discount (DiscountsService) allocated
+  // to this line at checkout — see CheckoutItem.autoDiscountId/autoDiscountUSD.
+  @Prop({ type: String, default: null })
+  autoDiscountId: string | null;
+
+  @Prop({ type: Number, default: 0 })
+  autoDiscountUSD: number;
 
   // Who bears campaignDiscountUSD — see Campaign.sponsorType /
   // CheckoutItem.campaignSponsorType. 'platform' means this line's discount
@@ -182,6 +195,20 @@ export class SellerOrder {
 
   @Prop({ type: Number, default: null })
   settlementAmount: number | null;
+
+  // True when this seller's charge was routed directly to their own
+  // connected Stripe account (StripeConnectService) at payment time — see
+  // PaymentTransaction.settledViaConnect. When true, OrdersService's
+  // recordSale (fulfillment-triggered internal-ledger credit) is skipped
+  // entirely for this sellerOrder: the money already reached the seller's
+  // own bank account via Stripe's own payout schedule, so crediting the
+  // internal ledger too would let them draw a SECOND, duplicate payout
+  // through the platform's own payout-request flow.
+  @Prop({ type: Boolean, default: false })
+  settledViaConnect: boolean;
+
+  @Prop({ type: String, default: null })
+  stripeConnectedAccountId: string | null;
 
   // derived from items
   @Prop({
@@ -315,11 +342,25 @@ export class Order {
   @Prop({ default: 0 })
   couponDiscountTotal: number;
 
+  // Same convention as couponCode/couponDiscountTotal above, but for a
+  // GiftCard's balance applied at checkout — see Checkout.giftCardCode.
+  @Prop({ type: String, default: null })
+  giftCardCode: string | null;
+
+  @Prop({ default: 0 })
+  giftCardDiscountTotal: number;
+
   // Sum of every sellerOrder item's campaignDiscountUSD — see
   // Checkout.campaignDiscountTotalUSD for why there's no single order-level
   // campaignId (a multi-store order can carry a different campaign per store).
   @Prop({ default: 0 })
   campaignDiscountTotal: number;
+
+  // Sum of every item's autoDiscountUSD — see Checkout.autoDiscountTotalUSD
+  // for why there's no single order-level discount id (same multi-store
+  // reasoning as campaignDiscountTotal above).
+  @Prop({ default: 0 })
+  autoDiscountTotal: number;
 
   // Sum of every sellerOrder's platformSponsoredDiscountUSD — how much of
   // campaignDiscountTotal above the platform is covering (vs. sellers

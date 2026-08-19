@@ -12,11 +12,18 @@ import { FinanceService } from 'src/finance/finance.service';
 import { AdminConfigService } from 'src/admin-config/admin-config.service';
 import { ExchangeRateService } from 'src/exchange-rate/exchange-rate.service';
 import { ActivityLogService } from 'src/activity-log/activity-log.service';
+import { GiftCardsService } from 'src/gift-cards/gift-cards.service';
+import { StripeConnectService } from 'src/stripe-connect/stripe-connect.service';
+import { CommissionRulesService } from 'src/commission-rules/commission-rules.service';
 import Stripe from 'stripe';
 
 @Injectable()
 export class PaymentService {
   private stripe: InstanceType<typeof Stripe> | undefined;
+  // Derived once from the actual configured secret key, not a second env
+  // var someone has to remember to keep in sync — see stripeWebhook() below
+  // for why this matters.
+  private isLiveMode = false;
 
   constructor(
     private readonly databaseService: DatabaseService,
@@ -27,11 +34,15 @@ export class PaymentService {
     private readonly adminConfigService: AdminConfigService,
     private readonly exchangeRateService: ExchangeRateService,
     private readonly activityLogService: ActivityLogService,
+    private readonly giftCardsService: GiftCardsService,
+    private readonly stripeConnectService: StripeConnectService,
+    private readonly commissionRulesService: CommissionRulesService,
   ) {
     const secretKey = this.configService
       .get<string>('STRIPE_SECRET_KEY')
       ?.trim();
     if (secretKey) {
+      this.isLiveMode = secretKey.startsWith('sk_live_');
       this.stripe = new Stripe(secretKey, {
         apiVersion: '2025-04-30.basil' as any,
       });
@@ -75,10 +86,25 @@ export class PaymentService {
     idempotencyKey: string,
   ): Promise<{ id: string } | null> {
     if (!this.stripe) return null;
+
+    // A Connect-settled charge already transferred the buyer's money to the
+    // seller's own account — a plain refund would try to pull it back out of
+    // the PLATFORM's balance instead (which never received it), so it must
+    // explicitly reverse the original transfer. `refund_application_fee`
+    // likewise gives back Solvexo's own commission cut on the refunded
+    // portion, matching real-world refund expectations.
+    const transaction = await this.databaseService.repositories.paymentTransactionModel
+      .findOne({ stripePaymentIntentId, isDelete: false })
+      .select('settledViaConnect');
+    const connectFlags = transaction?.settledViaConnect
+      ? { reverse_transfer: true, refund_application_fee: true }
+      : {};
+
     const refund = await this.stripe.refunds.create(
       {
         payment_intent: stripePaymentIntentId,
         amount: Math.round(amountInPaymentCurrency * 100),
+        ...connectFlags,
       },
       { idempotencyKey },
     );
@@ -245,6 +271,29 @@ export class PaymentService {
       }
     }
 
+    // Seller's own payment gateway (Stripe Connect) — route the charge
+    // directly to a connected seller's own account instead of the
+    // platform's shared one, IF this checkout is single-store (a
+    // PaymentIntent's `transfer_data.destination` only supports ONE
+    // destination account, so a legacy/edge-case multi-store cart is never
+    // routed this way — it falls back to today's shared-account + internal
+    // ledger/payout flow, unchanged) AND the whole checkout is being paid
+    // online in one go (not 'split' — a partial digital-only charge routed
+    // to one seller while the rest settles via COD to nobody-in-particular
+    // would be a confusing mix, so Connect only ever applies to a 'full'
+    // charge). See StripeConnectService/OrdersService.recordSale's gate on
+    // SellerOrder.settledViaConnect for the other half of this feature.
+    const checkoutStoreIds = [...new Set(checkout.items.map((i: any) => i.storeId))];
+    let connectAccountId: string | null = null;
+    let applicationFeeAmountCents = 0;
+    if (!useSplit && checkoutStoreIds.length === 1) {
+      connectAccountId = await this.stripeConnectService.getEligibleConnectAccountForStore(checkoutStoreIds[0]);
+      if (connectAccountId) {
+        const { rate } = await this.commissionRulesService.resolveRate(checkoutStoreIds[0]);
+        applicationFeeAmountCents = Math.round(amountCents * rate);
+      }
+    }
+
     let paymentIntent: any;
     try {
       paymentIntent = await stripe.paymentIntents.create(
@@ -256,6 +305,12 @@ export class PaymentService {
             enabled: true,
             allow_redirects: 'never',
           },
+          ...(connectAccountId
+            ? {
+                transfer_data: { destination: connectAccountId },
+                application_fee_amount: applicationFeeAmountCents,
+              }
+            : {}),
         },
         { idempotencyKey },
       );
@@ -276,6 +331,8 @@ export class PaymentService {
       status: 'pending',
       stripePaymentIntentId: paymentIntent.id,
       stripeClientSecret: paymentIntent.client_secret,
+      settledViaConnect: !!connectAccountId,
+      stripeConnectedAccountId: connectAccountId,
     });
 
     await checkoutModel.findByIdAndUpdate(checkoutId, {
@@ -303,14 +360,18 @@ export class PaymentService {
    *  never arrives at all. */
   async stripeWebhook(rawBody: Buffer, signature: string) {
     const stripe = this.assertStripeConfigured();
-    // Falls back to the live STRIPE_WEBHOOK_SECRET when the TEST one isn't
-    // set — a deployment running real (non-test-mode) Stripe keys had no
-    // way to verify its webhooks otherwise, since only the TEST secret was
-    // ever read here.
-    const webhookSecret =
-      this.configService.get<string>('STRIPE_WEBHOOK_SECRET_TEST') ||
-      this.configService.get<string>('STRIPE_WEBHOOK_SECRET') ||
-      '';
+    // A live STRIPE_SECRET_KEY always verifies against STRIPE_WEBHOOK_SECRET
+    // only — never STRIPE_WEBHOOK_SECRET_TEST, even if that var is still
+    // sitting in the environment from an earlier test-mode setup. Stripe
+    // signs a live endpoint's events with that endpoint's own secret, so a
+    // stale test secret taking priority here would fail every real webhook's
+    // signature check in production. Test mode keeps preferring the TEST
+    // secret (falling back to the general one) exactly as before.
+    const webhookSecret = this.isLiveMode
+      ? this.configService.get<string>('STRIPE_WEBHOOK_SECRET') || ''
+      : this.configService.get<string>('STRIPE_WEBHOOK_SECRET_TEST') ||
+        this.configService.get<string>('STRIPE_WEBHOOK_SECRET') ||
+        '';
 
     let event: any;
     try {
@@ -347,7 +408,15 @@ export class PaymentService {
     try {
       if (event.type === 'payment_intent.succeeded') {
         const paymentIntent = event.data.object;
-        await this.finalizePaymentIntent(paymentIntent);
+        // A gift-card purchase (GiftCardsService.createPurchaseIntent) is a
+        // standalone PaymentIntent with no PaymentTransaction/Checkout
+        // behind it — route it to its own finalizer instead of
+        // finalizePaymentIntent, which only knows about checkout orders.
+        if (paymentIntent.metadata?.purpose === 'gift_card_purchase') {
+          await this.giftCardsService.finalizeGiftCardPurchase(paymentIntent);
+        } else {
+          await this.finalizePaymentIntent(paymentIntent);
+        }
       } else if (event.type === 'payment_intent.payment_failed') {
         const paymentIntent = event.data.object;
         await this.databaseService.repositories.paymentTransactionModel.findOneAndUpdate(
@@ -364,6 +433,11 @@ export class PaymentService {
       } else if (event.type === 'charge.dispute.created') {
         const dispute = event.data.object;
         await this.handleChargeDispute(dispute);
+      } else if (event.type === 'account.updated') {
+        // Stripe Connect account status change (KYC completed, a capability
+        // revoked, etc.) — arrives on the platform's own webhook endpoint
+        // for every connected account, not a per-account one.
+        await this.stripeConnectService.handleAccountUpdated(event.data.object);
       }
     } catch (err: any) {
       console.error(`Stripe webhook handling failed (${event.type}):`, err?.message, { eventId: event.id });
@@ -463,6 +537,14 @@ export class PaymentService {
 
     for (const order of orders as any[]) {
       for (const so of order.sellerOrders) {
+        // A Connect-settled sellerOrder was never credited to the internal
+        // ledger in the first place (OrdersService.recordSale skips it) —
+        // the real Stripe-side reversal already happened via
+        // refundStripePaymentIntent's reverse_transfer flag, so there is
+        // nothing here to reverse. Ledger-reversing it anyway would either
+        // no-op against a balance that was never incremented, or worse,
+        // push it negative.
+        if (so.settledViaConnect) continue;
         const shareInOrderCurrency = this.round((so.subtotal / grandTotal) * refundAmountTotal);
         if (shareInOrderCurrency <= 0) continue;
         const settlementCurrency = so.settlementCurrency ?? order.currency ?? 'USD';
@@ -584,9 +666,17 @@ export class PaymentService {
       ? { paymentType: 'cash_on_delivery', isPaid: false }
       : { paymentType: 'stripe', isPaid: true };
 
+    // Only ever set when initiatePayment gated this charge to a single-store
+    // checkout and routed it via Stripe Connect — that gate guarantees every
+    // item in `checkout.items` shares the same storeId, so the first item's
+    // is safe to use here.
+    const connectInfo = transaction.settledViaConnect && transaction.stripeConnectedAccountId
+      ? { storeId: checkout.items[0]?.storeId, accountId: transaction.stripeConnectedAccountId }
+      : null;
+
     let orders: any[];
     try {
-      orders = await this.createOrder(transaction.userId, checkout, orderModel, addressModel, physicalPayment, digitalPayment);
+      orders = await this.createOrder(transaction.userId, checkout, orderModel, addressModel, physicalPayment, digitalPayment, undefined, connectInfo);
     } catch (err: any) {
       await paymentTransactionModel.findByIdAndUpdate(transaction._id, {
         status: 'pending',
@@ -690,8 +780,13 @@ export class PaymentService {
     }));
     if (purchasedLines.length === 0) return;
 
+    // Cart is store-scoped — pull the storeId off the checkout's own items
+    // (already carried per-item on CheckoutItem) rather than needing a new
+    // field, since every item in a checkout now belongs to one store.
+    const storeId = (checkout.items as any[])[0]?.storeId;
+
     await cartModel.findOneAndUpdate(
-      { userId, status: 'active', isDelete: false },
+      { userId, storeId, status: 'active', isDelete: false },
       { $pull: { items: { $or: purchasedLines } } },
     );
   }
@@ -973,6 +1068,11 @@ export class PaymentService {
     // currency rather than just USD with a side-note. Omitted (rate 1, same
     // `checkout.currency`) for Stripe/COD, which stay USD exactly as before.
     currencyConversion?: { code: string; rate: number },
+    // Set only when this checkout's Stripe charge was routed directly to a
+    // seller's own connected account (see initiatePayment's single-store
+    // gate) — COD/manual-bank-transfer callers never pass this, since
+    // Connect only ever applies to the online-Stripe-'full' rail.
+    connectInfo?: { storeId: string; accountId: string } | null,
   ) {
     const { productVariantModel, productModel, storeModel } =
       this.databaseService.repositories;
@@ -1111,12 +1211,15 @@ export class PaymentService {
         // compounding rounding error from converting native→orderCurrency
         // and back again just to arrive at the same number.
         const settlementAmount = this.round(subtotalNative + platformSponsoredDiscountUSDNative);
+        const isConnectSettled = connectInfo?.storeId === sellerStoreId;
         return {
           sellerId: storeItems[0].sellerId,
           storeId: storeItems[0].storeId,
           fulfillmentType: storeItems[0].type, // 'physical' ya 'digital'
           settlementCurrency,
           settlementAmount,
+          settledViaConnect: isConnectSettled,
+          stripeConnectedAccountId: isConnectSettled ? connectInfo!.accountId : null,
           items: storeItems.map((i) => ({
             productId: i.productId,
             variantId: i.variantId,
@@ -1133,9 +1236,12 @@ export class PaymentService {
             originalPrice: convFrom(i.originalPrice ?? null, storeCurrency),
             subscriberDiscountUSD: convFrom(i.subscriberDiscountUSD ?? 0, storeCurrency),
             couponDiscountUSD: convFrom(i.couponDiscountUSD ?? 0, storeCurrency),
+            giftCardDiscountUSD: convFrom(i.giftCardDiscountUSD ?? 0, storeCurrency),
             campaignId: i.campaignId ?? null,
             campaignDiscountUSD: convFrom(i.campaignDiscountUSD ?? 0, storeCurrency),
             campaignSponsorType: i.campaignSponsorType ?? null,
+            autoDiscountId: i.autoDiscountId ?? null,
+            autoDiscountUSD: convFrom(i.autoDiscountUSD ?? 0, storeCurrency),
             status: 'pending',
           })),
           subtotal: convFrom(subtotalNative, storeCurrency),
@@ -1176,6 +1282,8 @@ export class PaymentService {
       const shippingFee = convFrom(checkout.shippingFee || 0, checkout.currency) ?? 0;
       const subscriberDiscountTotal = convertedSum(physicalItems, 'subscriberDiscountUSD');
       const couponDiscountTotal = convertedSum(physicalItems, 'couponDiscountUSD');
+      const giftCardDiscountTotal = convertedSum(physicalItems, 'giftCardDiscountUSD');
+      const autoDiscountTotal = convertedSum(physicalItems, 'autoDiscountUSD');
       const campaignDiscountTotal = convertedSum(physicalItems, 'campaignDiscountUSD');
       const platformSponsoredDiscountTotal = convertedSum(
         physicalItems, 'campaignDiscountUSD', (i) => i.campaignSponsorType === 'platform',
@@ -1195,7 +1303,10 @@ export class PaymentService {
         subscriberDiscountTotal,
         couponCode: couponDiscountTotal > 0 ? checkout.couponCode : null,
         couponDiscountTotal,
+        giftCardCode: giftCardDiscountTotal > 0 ? checkout.giftCardCode : null,
+        giftCardDiscountTotal,
         campaignDiscountTotal,
+        autoDiscountTotal,
         platformSponsoredDiscountTotal,
         totalAmount: this.round(subtotal + shippingFee),
         paymentType: physicalPayment.paymentType,
@@ -1217,6 +1328,8 @@ export class PaymentService {
       const subtotal = convertedSum(digitalItems, 'totalPrice');
       const subscriberDiscountTotal = convertedSum(digitalItems, 'subscriberDiscountUSD');
       const couponDiscountTotal = convertedSum(digitalItems, 'couponDiscountUSD');
+      const giftCardDiscountTotal = convertedSum(digitalItems, 'giftCardDiscountUSD');
+      const autoDiscountTotal = convertedSum(digitalItems, 'autoDiscountUSD');
       const campaignDiscountTotal = convertedSum(digitalItems, 'campaignDiscountUSD');
       const platformSponsoredDiscountTotal = convertedSum(
         digitalItems, 'campaignDiscountUSD', (i) => i.campaignSponsorType === 'platform',
@@ -1236,7 +1349,10 @@ export class PaymentService {
         subscriberDiscountTotal,
         couponCode: couponDiscountTotal > 0 ? checkout.couponCode : null,
         couponDiscountTotal,
+        giftCardCode: giftCardDiscountTotal > 0 ? checkout.giftCardCode : null,
+        giftCardDiscountTotal,
         campaignDiscountTotal,
+        autoDiscountTotal,
         platformSponsoredDiscountTotal,
         totalAmount: subtotal,
         paymentType: digitalPayment.paymentType,
@@ -1273,13 +1389,40 @@ export class PaymentService {
       });
     }
 
-    // Coupon usage is only counted once the order is actually placed (not
-    // at apply-coupon time) — an abandoned/expired checkout must not
-    // consume a limited-use coupon.
-    if (checkout.couponCode && checkout.couponStoreId) {
-      await this.databaseService.repositories.couponModel.updateOne(
-        { storeId: checkout.couponStoreId, code: checkout.couponCode },
-        { $inc: { usageCount: 1 } },
+    // Coupon/reward-voucher usage is only counted once the order is
+    // actually placed (not at apply time) — an abandoned/expired checkout
+    // must not consume a limited-use coupon or a redeemed reward voucher.
+    // `couponStoreId` is legitimately null for a scope:'platform' coupon
+    // (see Coupon schema) — the old `&& checkout.couponStoreId` guard
+    // treated that as "no coupon applied" and silently skipped the
+    // increment, so a platform-wide coupon's `usageLimit` was never
+    // enforced. Match on scope explicitly instead.
+    if (checkout.couponCode) {
+      if (checkout.couponSourceType === 'reward_voucher') {
+        await this.databaseService.repositories.rewardVoucherModel.updateOne(
+          { storeId: checkout.couponStoreId, code: checkout.couponCode, status: 'active' },
+          { status: 'used', usedAt: new Date(), checkoutId: String(checkout._id), orderId: String(createdOrders[0]?._id ?? '') },
+        );
+      } else {
+        await this.databaseService.repositories.couponModel.updateOne(
+          checkout.couponStoreId
+            ? { storeId: checkout.couponStoreId, code: checkout.couponCode, scope: 'seller' }
+            : { code: checkout.couponCode, scope: 'platform' },
+          { $inc: { usageCount: 1 } },
+        );
+      }
+    }
+
+    // Gift card balance is likewise only decremented once the order is
+    // actually placed, not at apply-coupon-style time — an abandoned
+    // checkout must not spend real gift-card value.
+    if (checkout.giftCardCode && checkout.giftCardStoreId && checkout.giftCardDiscountTotalUSD > 0) {
+      await this.giftCardsService.redeemAtOrderPlacement(
+        checkout.giftCardStoreId,
+        checkout.giftCardCode,
+        checkout.giftCardDiscountTotalUSD,
+        String(checkout._id),
+        String(createdOrders[0]?._id ?? ''),
       );
     }
 

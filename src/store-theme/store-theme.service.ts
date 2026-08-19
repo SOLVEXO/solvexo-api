@@ -56,7 +56,11 @@ export class StoreThemeService {
     await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
     const set: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(dto)) {
-      if (value !== undefined) set[`theme.${key}`] = value;
+      if (value === undefined) continue;
+      // `baseThemeId` lives at the StoreTheme document root (sibling of
+      // `theme`), not nested under it — everything else on this DTO is a
+      // `theme.*` color/design field.
+      set[key === 'baseThemeId' ? 'baseThemeId' : `theme.${key}`] = value;
     }
     const updated = await this.storeThemeModel.findOneAndUpdate(
       { storeId },
@@ -74,6 +78,10 @@ export class StoreThemeService {
     if (dto.logoSource !== undefined) set['header.logoSource'] = dto.logoSource;
     if (dto.customLogoUrl !== undefined) set['header.customLogoUrl'] = dto.customLogoUrl;
     if (dto.blocks !== undefined) set['header.blocks'] = dto.blocks;
+    // `navAlignment` was previously accepted by the DTO but never actually
+    // persisted here — fixed alongside adding `headerStyle`.
+    if (dto.navAlignment !== undefined) set['header.navAlignment'] = dto.navAlignment;
+    if (dto.headerStyle !== undefined) set['header.headerStyle'] = dto.headerStyle;
 
     const updated = await this.storeThemeModel.findOneAndUpdate(
       { storeId },
@@ -87,9 +95,12 @@ export class StoreThemeService {
     await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
     validateBlocks(dto.blocks, FOOTER_ALLOWED_BLOCK_TYPES, MAX_FOOTER_BLOCKS);
 
+    const set: Record<string, unknown> = { 'footer.blocks': dto.blocks };
+    if (dto.footerStyle !== undefined) set['footer.footerStyle'] = dto.footerStyle;
+
     const updated = await this.storeThemeModel.findOneAndUpdate(
       { storeId },
-      { $set: { 'footer.blocks': dto.blocks } },
+      { $set: set },
       { upsert: true, new: true, setDefaultsOnInsert: true },
     );
     return { success: true, message: 'Footer updated', data: updated };

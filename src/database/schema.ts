@@ -76,6 +76,11 @@ export { LoyaltyProgram, LoyaltyProgramDocument, LoyaltyProgramSchema } from '..
 export { LoyaltyMember, LoyaltyMemberDocument, LoyaltyMemberSchema } from '../loyalty/schemas/loyalty-member.schema';
 export { LoyaltyTransaction, LoyaltyTransactionDocument, LoyaltyTransactionSchema } from '../loyalty/schemas/loyalty-transaction.schema';
 export { Reward, RewardDocument, RewardSchema } from '../loyalty/schemas/reward.schema';
+export { RewardVoucher, RewardVoucherDocument, RewardVoucherSchema } from '../loyalty/schemas/reward-voucher.schema';
+export { GiftCard, GiftCardDocument, GiftCardSchema } from '../gift-cards/schemas/gift-card.schema';
+export { GiftCardTransaction, GiftCardTransactionDocument, GiftCardTransactionSchema } from '../gift-cards/schemas/gift-card-transaction.schema';
+export { GiftCardSettings, GiftCardSettingsDocument, GiftCardSettingsSchema } from '../gift-cards/schemas/gift-card-settings.schema';
+export { AutomaticDiscount, AutomaticDiscountDocument, AutomaticDiscountSchema } from '../discounts/schemas/automatic-discount.schema';
 export { PlatformSubscription, PlatformSubscriptionDocument, PlatformSubscriptionSchema } from '../platform-subscriptions/schemas/platform-subscription.schema';
 export { PlatformSeoSettings, PlatformSeoSettingsDocument, PlatformSeoSettingsSchema } from '../seo/schemas/platform-seo-settings.schema';
 export { SeoRedirect, SeoRedirectDocument, SeoRedirectSchema } from '../seo/schemas/seo-redirect.schema';

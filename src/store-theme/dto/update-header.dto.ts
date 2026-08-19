@@ -16,4 +16,12 @@ export class UpdateHeaderDto {
   @ApiProperty({ required: false, type: [BlockInputDto], description: 'nav_link blocks only' })
   @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => BlockInputDto)
   blocks?: BlockInputDto[];
+
+  @ApiProperty({ required: false, enum: ['left', 'center', 'right'] })
+  @IsOptional() @IsIn(['left', 'center', 'right'])
+  navAlignment?: string;
+
+  @ApiProperty({ required: false, enum: ['standard', 'centered'] })
+  @IsOptional() @IsIn(['standard', 'centered'])
+  headerStyle?: string;
 }
