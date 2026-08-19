@@ -14,7 +14,7 @@ export class PlatformTestimonial {
   @Prop({ required: true, trim: true })
   sellerName: string;
 
-  @Prop({ trim: true, default: null })
+  @Prop({ type: String, trim: true, default: null })
   storeName: string | null;
 
   @Prop({ required: true, min: 1, max: 5 })

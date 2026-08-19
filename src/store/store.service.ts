@@ -5,6 +5,7 @@ import {
   NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
+import { promises as dns } from 'dns';
 import { DatabaseService } from 'src/database/databaseservice';
 import {
   SellerType, ProductType, resolveTools,
@@ -39,6 +40,15 @@ const RESERVED_STORE_SLUGS = new Set([
   'educationmarketplace', 'education', 'product', 'maintenance', 'login', 'register', 'onboard',
   'forgot-password', 'verify-otp', 'new-password', 'seller', 'admin', 'store',
 ]);
+
+// The CNAME target every seller's custom domain must point at — the ONE
+// source of truth for this string, shown verbatim in the seller-facing DNS
+// instructions (`DomainWhiteLabelCard`, kept in sync by hand since the
+// frontend can't import a backend constant) and checked against in
+// `verifyCustomDomain`. Changing this value requires actually re-pointing
+// the platform's real infrastructure at it too (see that method's docblock
+// for the ops step this does NOT automate).
+export const CUSTOM_DOMAIN_CNAME_TARGET = 'stores.solvexo.store';
 
 @Injectable()
 export class StoreService {
@@ -460,20 +470,85 @@ export class StoreService {
     if (!store) throw new NotFoundException('Store not found');
     if (store.sellerId !== sellerId) throw new UnauthorizedException('Unauthorized');
 
-    if (domain) {
+    const normalized = domain ? domain.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/$/, '') : null;
+    if (normalized) {
       await this.entitlementsService.assertFeatureAllowed(storeId, 'customDomainAllowed', 'Custom domain');
+      if (!/^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/.test(normalized)) {
+        throw new BadRequestException('Enter a valid domain, e.g. shop.yourbrand.com');
+      }
+      const clash = await this.databaseService.repositories.storeModel.findOne({
+        customDomain: normalized, _id: { $ne: storeId }, isDelete: false,
+      }).lean();
+      if (clash) throw new BadRequestException('This domain is already connected to another store');
     }
 
-    store.customDomain = domain;
+    // Any change to the domain string invalidates whatever verification
+    // already existed — a seller changing the value must re-prove control
+    // of the NEW domain before it can serve as a live storefront.
+    if (normalized !== store.customDomain) store.customDomainStatus = 'unverified';
+    store.customDomain = normalized;
     await store.save();
 
     this.activityLogService.log({
       storeId, category: 'settings', action: 'custom_domain_updated',
-      description: domain ? `Custom domain set to ${domain}` : 'Custom domain removed',
+      description: normalized ? `Custom domain set to ${normalized}` : 'Custom domain removed',
       actorId: sellerId, actorRole: 'seller',
     });
 
-    return { success: true, message: 'Custom domain updated', data: { customDomain: store.customDomain } };
+    return {
+      success: true, message: 'Custom domain updated',
+      data: { customDomain: store.customDomain, customDomainStatus: store.customDomainStatus, cnameTarget: CUSTOM_DOMAIN_CNAME_TARGET },
+    };
+  }
+
+  /**
+   * Confirms the seller actually controls the domain they entered by
+   * checking its real DNS — the domain's CNAME chain must resolve to
+   * `CUSTOM_DOMAIN_CNAME_TARGET`. Only a 'verified' domain is ever matched
+   * by the public `getPublicStoreByDomain` lookup, so an unproven domain
+   * claim can never serve as a live storefront.
+   *
+   * **Deliberately out of scope here (real infra/ops work, not application
+   * logic):** this method only checks DNS — it does NOT provision anything.
+   * For a verified custom domain to actually SERVE the storefront over
+   * HTTPS, the platform's edge/reverse-proxy (whatever that is in
+   * production — a CDN's custom-hostname feature, an nginx/Caddy config
+   * with on-demand TLS, etc.) must separately be configured to (a) accept
+   * traffic for arbitrary incoming Host headers pointed at
+   * `CUSTOM_DOMAIN_CNAME_TARGET`, and (b) obtain a TLS certificate for each
+   * one (e.g. via ACME DNS-01/HTTP-01 automation). That step depends on
+   * whichever hosting provider is actually used and isn't something this
+   * application code can wire up blindly.
+   */
+  async verifyCustomDomain(sellerId: string, storeId: string) {
+    const store = await this.databaseService.repositories.storeModel.findOne({ _id: storeId, isDelete: false });
+    if (!store) throw new NotFoundException('Store not found');
+    if (store.sellerId !== sellerId) throw new UnauthorizedException('Unauthorized');
+    if (!store.customDomain) throw new BadRequestException('No custom domain is set for this store yet');
+
+    let verified = false;
+    let reason = '';
+    try {
+      const cnames = await dns.resolveCname(store.customDomain);
+      verified = cnames.some(c => c.toLowerCase().replace(/\.$/, '') === CUSTOM_DOMAIN_CNAME_TARGET);
+      if (!verified) reason = `Found a CNAME, but it doesn't point to ${CUSTOM_DOMAIN_CNAME_TARGET} yet.`;
+    } catch {
+      reason = `No CNAME record found for ${store.customDomain} yet — DNS changes can take a few minutes to a few hours to propagate.`;
+    }
+
+    store.customDomainStatus = verified ? 'verified' : 'unverified';
+    await store.save();
+
+    this.activityLogService.log({
+      storeId, category: 'settings', action: 'custom_domain_verify_attempted',
+      description: verified ? `Custom domain ${store.customDomain} verified` : `Custom domain verification failed: ${reason}`,
+      actorId: sellerId, actorRole: 'seller',
+    });
+
+    return {
+      success: true,
+      data: { customDomainStatus: store.customDomainStatus, verified, reason: verified ? null : reason, cnameTarget: CUSTOM_DOMAIN_CNAME_TARGET },
+    };
   }
 
   /** Platform-plan-gated: only stores on a plan with `whiteLabelAllowed` may hide Solvexo branding. */
@@ -826,10 +901,35 @@ export class StoreService {
     }).lean();
     if (!store) throw new NotFoundException('Store not found');
 
+    return this.shapePublicStoreResponse(store);
+  }
+
+  /** Same public shape as `getPublicStore`, resolved by a seller's VERIFIED
+   *  custom domain instead of their `solvexo.store` subdomain slug — this is
+   *  what lets a request arriving on an arbitrary hostname (once the
+   *  platform's edge is actually routing it here — see `verifyCustomDomain`'s
+   *  docblock) still load the right store. An unverified domain never
+   *  matches, so merely claiming a domain string is never enough to serve
+   *  as a live storefront. */
+  async getPublicStoreByDomain(host: string) {
+    if (!host) throw new BadRequestException('host is required');
+
+    const store = await this.databaseService.repositories.storeModel.findOne({
+      customDomain: host.trim().toLowerCase(),
+      customDomainStatus: 'verified',
+      isDelete: false,
+      status: 'active',
+    }).lean();
+    if (!store) throw new NotFoundException('No store is connected to this domain');
+
+    return this.shapePublicStoreResponse(store);
+  }
+
+  private async shapePublicStoreResponse(store: any) {
     const campaigns = await this.marketingService.getActiveCampaignsForStore(store._id.toString());
     const primaryCampaign = pickPrimaryCampaignForBadge(campaigns);
 
-    const bar = (store as any).announcementBar;
+    const bar = store.announcementBar;
     const now = Date.now();
     const announcementActive = !!bar?.isActive
       && (!bar.startAt || new Date(bar.startAt).getTime() <= now)
@@ -854,9 +954,9 @@ export class StoreService {
         // frontend uses this to convert every listed price into the
         // buyer's own chosen display currency.
         baseCurrency: store.baseCurrency ?? 'PKR',
-        sellerType: (store as any).sellerType ?? null,
-        badges: (store as any).badges ?? [],
-        createdAt: (store as any).createdAt,
+        sellerType: store.sellerType ?? null,
+        badges: store.badges ?? [],
+        createdAt: store.createdAt,
         announcementBar: announcementActive ? { message: bar.message, type: bar.type, ctaLabel: bar.ctaLabel, ctaLink: bar.ctaLink } : null,
         activeCampaign: primaryCampaign ? {
           campaignId: primaryCampaign.campaignId,

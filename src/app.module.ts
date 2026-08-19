@@ -36,6 +36,9 @@ import { SchedulerModule } from './scheduler/scheduler.module';
 import { ActivityLogModule } from './activity-log/activity-log.module';
 import { MarketingModule } from './marketing/marketing.module';
 import { LoyaltyModule } from './loyalty/loyalty.module';
+import { GiftCardsModule } from './gift-cards/gift-cards.module';
+import { DiscountsModule } from './discounts/discounts.module';
+import { StripeConnectModule } from './stripe-connect/stripe-connect.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { PlatformSubscriptionsModule } from './platform-subscriptions/platform-subscriptions.module';
 import { AdminAnalyticsModule } from './admin-analytics/admin-analytics.module';
@@ -114,6 +117,9 @@ import { OnboardingSlidesModule } from './onboarding-slides/onboarding-slides.mo
     SchedulerModule,
     MarketingModule,
     LoyaltyModule,
+    GiftCardsModule,
+    DiscountsModule,
+    StripeConnectModule,
     AnalyticsModule,
     PlatformSubscriptionsModule,
     AdminAnalyticsModule,

@@ -21,9 +21,11 @@ import { RedisModule } from 'src/redis/redis.module';
 import { MarketingModule } from 'src/marketing/marketing.module';
 import { AdminConfigModule } from 'src/admin-config/admin-config.module';
 import { ExchangeRateModule } from 'src/exchange-rate/exchange-rate.module';
+import { GiftCardsModule } from 'src/gift-cards/gift-cards.module';
+import { DiscountsModule } from 'src/discounts/discounts.module';
 
 @Module({
-  imports: [AuthModule, RedisModule, MarketingModule, AdminConfigModule, ExchangeRateModule],
+  imports: [AuthModule, RedisModule, MarketingModule, AdminConfigModule, ExchangeRateModule, GiftCardsModule, DiscountsModule],
   controllers: [CheckoutController],
   providers: [CheckoutService],
   exports: [CheckoutService],

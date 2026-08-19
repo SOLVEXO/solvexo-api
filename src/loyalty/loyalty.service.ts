@@ -12,8 +12,17 @@ import type { LoyaltyTransactionType } from './schemas/loyalty-transaction.schem
 import { EntitlementsService } from 'src/platform-plans/entitlements.service';
 import { NotificationsService } from 'src/notifications/notifications.service';
 import { NOTIFICATION_TYPES } from 'src/notifications/notification.types';
+import { randomBytes } from 'crypto';
 
 const EARN_TYPES: LoyaltyTransactionType[] = ['purchase', 'review', 'referral', 'birthday'];
+// How long a redeemed reward's voucher code stays claimable at checkout —
+// generous enough that "redeem now, check out later" is never punished, but
+// bounded so an abandoned redemption doesn't sit as a forever-valid code.
+const REWARD_VOUCHER_VALIDITY_DAYS = 60;
+
+function generateVoucherCode(): string {
+  return `RWD${randomBytes(4).toString('hex').toUpperCase()}`;
+}
 
 @Injectable()
 export class LoyaltyService {
@@ -397,13 +406,37 @@ export class LoyaltyService {
       balanceAfter: member.pointsBalance, description: `Redeemed: ${reward.name}`,
     });
 
+    // Points were spent and the catalog decremented above, but neither of
+    // those actually lets the buyer claim the reward's real-world benefit —
+    // that's this voucher. Redeemable exactly once, at this store's
+    // checkout, by this same buyer (see CheckoutService.applyCoupon's
+    // reward-voucher fallback).
+    const expiresAt = new Date();
+    expiresAt.setDate(expiresAt.getDate() + REWARD_VOUCHER_VALIDITY_DAYS);
+    let voucher: any = null;
+    for (let attempt = 0; attempt < 3 && !voucher; attempt++) {
+      try {
+        voucher = await this.r.rewardVoucherModel.create({
+          storeId, userId, rewardId, code: generateVoucherCode(), type: reward.type,
+          discountValue: reward.discountValue, productId: reward.productId, expiresAt,
+        });
+      } catch (e: any) {
+        if (e?.code !== 11000) throw e; // duplicate code — regenerate and retry
+      }
+    }
+    if (!voucher) throw new BadRequestException('Could not generate a redemption code, please try again');
+
     this.activityLogService.log({
       storeId, category: 'loyalty', action: 'reward_redeemed',
       description: `${reward.name} — ${reward.pointsCost} points`, actorId: userId, actorRole: 'user',
       targetId: rewardId, targetType: 'reward',
     });
 
-    return { success: true, message: 'Reward redeemed', data: { transaction: tx, remainingBalance: member.pointsBalance } };
+    return {
+      success: true,
+      message: 'Reward redeemed',
+      data: { transaction: tx, remainingBalance: member.pointsBalance, voucherCode: voucher.code, voucherExpiresAt: voucher.expiresAt },
+    };
   }
 
   // ── EXPIRY (scheduled) ────────────────────────────────────────────────────

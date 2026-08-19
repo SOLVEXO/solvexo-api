@@ -6,8 +6,6 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { StoreService } from './store.service';
 import { UpdateStoreCustomerDto } from './dto/update-store-customer.dto';
-import { FeatureFlagGuard } from '../admin-config/guards/feature-flag.guard';
-import { RequireFeature } from '../admin-config/decorators/require-feature.decorator';
 
 @Controller('api/store')
 export class StoreController {
@@ -60,6 +58,13 @@ export class StoreController {
   @Patch(':storeId/custom-domain')
   async setCustomDomain(@Req() req: any, @Param('storeId') storeId: string, @Body() body: { domain: string | null }) {
     return this.storeService.setCustomDomain(req.user.userId, storeId, body.domain ?? null);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Post(':storeId/custom-domain/verify')
+  async verifyCustomDomain(@Req() req: any, @Param('storeId') storeId: string) {
+    return this.storeService.verifyCustomDomain(req.user.userId, storeId);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -144,9 +149,8 @@ export class StoreController {
 
   // ── Builder APIs ──────────────────────────────────────────────────────────
 
-  @UseGuards(JwtAuthGuard, RolesGuard, FeatureFlagGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('seller')
-  @RequireFeature('storeBuilder')
   @Post('save-builder-config')
   async saveBuilderConfig(@Req() req: any, @Body() body: any) {
     const { userId } = req.user;
@@ -180,7 +184,14 @@ export class StoreController {
     return this.storeService.getPlatformStats();
   }
 
-@Get('public/:slug')
+// Registered BEFORE 'public/:slug' — a static path segment must be matched
+  // first, or Nest would swallow 'resolve-domain' as `:slug`.
+  @Get('public/resolve-domain')
+  async resolveStoreByDomain(@Query('host') host: string) {
+    return this.storeService.getPublicStoreByDomain(host);
+  }
+
+  @Get('public/:slug')
   async getPublicStore(@Param('slug') slug: string) {
     return this.storeService.getPublicStore(slug);
   }
