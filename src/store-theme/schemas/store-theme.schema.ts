@@ -12,6 +12,74 @@ export class StorefrontColors {
   @Prop({ type: String, default: '#2C2A28' }) textColor: string;
   @Prop({ type: String, default: '#B95A3A' }) accentColor: string;
   @Prop({ type: String, default: 'Poppins' }) font: string;
+  // How `ThemedButton` renders a primary CTA — filled / bordered / tinted.
+  @Prop({ type: String, enum: ['solid', 'outline', 'soft'], default: 'solid' })
+  buttonStyle: 'solid' | 'outline' | 'soft';
+
+  // ── Real design-system dimensions (not just color) — see `themes.ts` on
+  // the frontend for the curated bundles that set all of these together.
+  // Every default below reproduces today's actual rendered look exactly, so
+  // a pre-existing store is pixel-identical until a seller changes anything.
+  @Prop({ type: String, enum: ['compact', 'comfortable', 'spacious'], default: 'comfortable' })
+  typeScale: 'compact' | 'comfortable' | 'spacious';
+
+  @Prop({ type: String, enum: ['narrow', 'standard', 'wide'], default: 'standard' })
+  containerWidth: 'narrow' | 'standard' | 'wide';
+
+  @Prop({ type: String, enum: ['compact', 'comfortable', 'spacious'], default: 'comfortable' })
+  sectionSpacing: 'compact' | 'comfortable' | 'spacious';
+
+  @Prop({ type: String, enum: ['sm', 'md', 'lg'], default: 'md' })
+  buttonSize: 'sm' | 'md' | 'lg';
+
+  // ── Buttons scope — independent from product/testimonial cards and from
+  // standalone images. Only `ThemedButton` reads these. ──
+  @Prop({ type: String, enum: ['none', 'small', 'medium', 'large', 'full'], default: 'medium' })
+  buttonRadius: 'none' | 'small' | 'medium' | 'large' | 'full';
+  @Prop({ type: String, enum: ['auto', 'full'], default: 'auto' })
+  buttonWidth: 'auto' | 'full';
+
+  // ── Images scope — corner radius for a standalone content image
+  // (`ImageWithTextSection`). Independent of buttons/cards. Default 'medium'
+  // reproduces that section's previously-hardcoded `rounded-xl` look exactly.
+  @Prop({ type: String, enum: ['none', 'small', 'medium', 'large', 'full'], default: 'medium' })
+  imageRadius: 'none' | 'small' | 'medium' | 'large' | 'full';
+
+  @Prop({ type: String, enum: ['overlay', 'split'], default: 'overlay' })
+  heroStyle: 'overlay' | 'split';
+
+  @Prop({ type: String, enum: ['left', 'center'], default: 'left' })
+  heroAlignment: 'left' | 'center';
+
+  // ── Product Cards scope — independent from testimonial cards. Default
+  // values reproduce the old shared `cardStyle`/`borderRadius` defaults
+  // exactly (both were 'outlined'/'medium'), so a pre-existing store's
+  // product grid renders pixel-identical.
+  @Prop({ type: String, enum: ['flat', 'outlined', 'elevated'], default: 'outlined' })
+  productCardStyle: 'flat' | 'outlined' | 'elevated';
+  @Prop({ type: String, enum: ['none', 'small', 'medium', 'large', 'full'], default: 'medium' })
+  productCardRadius: 'none' | 'small' | 'medium' | 'large' | 'full';
+
+  @Prop({ type: String, enum: ['square', 'portrait'], default: 'square' })
+  productImageRatio: 'square' | 'portrait';
+
+  @Prop({ type: String, enum: ['none', 'zoom'], default: 'none' })
+  productImageHover: 'none' | 'zoom';
+
+  @Prop({ type: String, enum: ['cozy', 'relaxed'], default: 'cozy' })
+  productGridDensity: 'cozy' | 'relaxed';
+
+  @Prop({ type: String, enum: ['cards', 'minimal'], default: 'cards' })
+  testimonialStyle: 'cards' | 'minimal';
+  // ── Testimonials scope — independent from product cards, same
+  // backward-compatible defaults as the old shared token. ──
+  @Prop({ type: String, enum: ['flat', 'outlined', 'elevated'], default: 'outlined' })
+  testimonialCardStyle: 'flat' | 'outlined' | 'elevated';
+  @Prop({ type: String, enum: ['none', 'small', 'medium', 'large', 'full'], default: 'medium' })
+  testimonialCardRadius: 'none' | 'small' | 'medium' | 'large' | 'full';
+
+  @Prop({ type: String, enum: ['accordion', 'list'], default: 'accordion' })
+  faqStyle: 'accordion' | 'list';
 }
 export const StorefrontColorsSchema = SchemaFactory.createForClass(StorefrontColors);
 
@@ -26,12 +94,24 @@ export class StorefrontHeader {
   @Prop({ type: String, enum: ['store', 'custom'], default: 'store' }) logoSource: 'store' | 'custom';
   @Prop({ type: String, default: null }) customLogoUrl: string | null;
   @Prop({ type: [BlockSchema], default: [] }) blocks: Block[]; // nav_link blocks only
+  // Where the nav-link group sits relative to the logo — the icons (cart/
+  // account) always stay pinned to the far right regardless of this.
+  @Prop({ type: String, enum: ['left', 'center', 'right'], default: 'left' })
+  navAlignment: 'left' | 'center' | 'right';
+  // Overall header composition — 'standard' is today's logo-left/inline-nav
+  // layout; 'centered' stacks a centered logo with nav below it.
+  @Prop({ type: String, enum: ['standard', 'centered'], default: 'standard' })
+  headerStyle: 'standard' | 'centered';
 }
 export const StorefrontHeaderSchema = SchemaFactory.createForClass(StorefrontHeader);
 
 @Schema({ _id: false })
 export class StorefrontFooter {
   @Prop({ type: [BlockSchema], default: [] }) blocks: Block[]; // footer_column / social_link / copyright_text blocks
+  // 'columns' is today's multi-column layout; 'minimal' is a single centered
+  // row (store name + copyright + socials, no columns).
+  @Prop({ type: String, enum: ['columns', 'minimal'], default: 'columns' })
+  footerStyle: 'columns' | 'minimal';
 }
 export const StorefrontFooterSchema = SchemaFactory.createForClass(StorefrontFooter);
 
@@ -73,6 +153,16 @@ export class StoreTheme {
 
   @Prop({ type: IdentityBannerSchema, default: () => ({}) })
   identityBanner: IdentityBanner;
+
+  // Which curated theme (a frontend-only `themes.ts` definition, not a
+  // backend ref/FK) the fields above were last bulk-set FROM — powers the
+  // Theme tab's "Currently using X" / "Custom — based on X, N customized"
+  // status line. Left untouched by manual field edits, so it keeps meaning
+  // "based on X" even after the seller tweaks something. Null for a store
+  // that's never applied a gallery theme (pre-existing stores, or a seller
+  // who's only ever used the manual controls).
+  @Prop({ type: String, default: null })
+  baseThemeId: string | null;
 
   createdAt?: Date;
   updatedAt?: Date;

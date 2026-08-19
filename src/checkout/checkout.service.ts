@@ -123,8 +123,15 @@ export class CheckoutService {
 
     const checkoutCurrency = await this.resolveCheckoutCurrency(userId, body.currencyPreference);
 
+    // Cart is now store-scoped (a buyer can have a separate cart per store's
+    // subdomain) — without storeId this lookup would be ambiguous the moment
+    // a buyer has shopped at more than one store.
+    const { storeId } = body;
+    if (!storeId) throw new BadRequestException('storeId is required');
+
     const cart = await cartModel.findOne({
       userId,
+      storeId,
       status: 'active',
       isDelete: false,
     });

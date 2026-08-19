@@ -19,6 +19,7 @@ import { BannersModule } from './banner/banner.module';
 import { FaqModule } from './faqs/faq.module';
 import { NewsletterModule } from './newsletter/newsletter.module';
 import { ContactModule } from './contact/contact.module';
+import { TestimonialsModule } from './testimonials/testimonials.module';
 import { RefundRequestModule } from './refund-request/refund-request.module';
 import { CheckoutModule } from './checkout/checkout.modoule';
 import { OrdersModule } from './orders/orders.module';
@@ -90,6 +91,7 @@ import { OnboardingSlidesModule } from './onboarding-slides/onboarding-slides.mo
     FaqModule,
     NewsletterModule,
     ContactModule,
+    TestimonialsModule,
     RefundRequestModule,
     CheckoutModule,
     // checkoutModule,

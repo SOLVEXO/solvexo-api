@@ -17,6 +17,10 @@ import Stripe from 'stripe';
 @Injectable()
 export class PaymentService {
   private stripe: InstanceType<typeof Stripe> | undefined;
+  // Derived once from the actual configured secret key, not a second env
+  // var someone has to remember to keep in sync — see stripeWebhook() below
+  // for why this matters.
+  private isLiveMode = false;
 
   constructor(
     private readonly databaseService: DatabaseService,
@@ -32,6 +36,7 @@ export class PaymentService {
       .get<string>('STRIPE_SECRET_KEY')
       ?.trim();
     if (secretKey) {
+      this.isLiveMode = secretKey.startsWith('sk_live_');
       this.stripe = new Stripe(secretKey, {
         apiVersion: '2025-04-30.basil' as any,
       });
@@ -303,14 +308,18 @@ export class PaymentService {
    *  never arrives at all. */
   async stripeWebhook(rawBody: Buffer, signature: string) {
     const stripe = this.assertStripeConfigured();
-    // Falls back to the live STRIPE_WEBHOOK_SECRET when the TEST one isn't
-    // set — a deployment running real (non-test-mode) Stripe keys had no
-    // way to verify its webhooks otherwise, since only the TEST secret was
-    // ever read here.
-    const webhookSecret =
-      this.configService.get<string>('STRIPE_WEBHOOK_SECRET_TEST') ||
-      this.configService.get<string>('STRIPE_WEBHOOK_SECRET') ||
-      '';
+    // A live STRIPE_SECRET_KEY always verifies against STRIPE_WEBHOOK_SECRET
+    // only — never STRIPE_WEBHOOK_SECRET_TEST, even if that var is still
+    // sitting in the environment from an earlier test-mode setup. Stripe
+    // signs a live endpoint's events with that endpoint's own secret, so a
+    // stale test secret taking priority here would fail every real webhook's
+    // signature check in production. Test mode keeps preferring the TEST
+    // secret (falling back to the general one) exactly as before.
+    const webhookSecret = this.isLiveMode
+      ? this.configService.get<string>('STRIPE_WEBHOOK_SECRET') || ''
+      : this.configService.get<string>('STRIPE_WEBHOOK_SECRET_TEST') ||
+        this.configService.get<string>('STRIPE_WEBHOOK_SECRET') ||
+        '';
 
     let event: any;
     try {
@@ -690,8 +699,13 @@ export class PaymentService {
     }));
     if (purchasedLines.length === 0) return;
 
+    // Cart is store-scoped — pull the storeId off the checkout's own items
+    // (already carried per-item on CheckoutItem) rather than needing a new
+    // field, since every item in a checkout now belongs to one store.
+    const storeId = (checkout.items as any[])[0]?.storeId;
+
     await cartModel.findOneAndUpdate(
-      { userId, status: 'active', isDelete: false },
+      { userId, storeId, status: 'active', isDelete: false },
       { $pull: { items: { $or: purchasedLines } } },
     );
   }
