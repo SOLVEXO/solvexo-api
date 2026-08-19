@@ -160,4 +160,20 @@ export class CheckoutController {
     const { userId } = req.user;
     return this.checkoutService.removeCoupon(userId, { checkoutId });
   }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('user')
+  @Post('apply-gift-card')
+  async applyGiftCard(@Req() req: any, @Body() body: any) {
+    const { userId } = req.user;
+    return this.checkoutService.applyGiftCard(userId, body);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('user')
+  @Delete('remove-gift-card/:checkoutId')
+  async removeGiftCard(@Req() req: any, @Param('checkoutId') checkoutId: string) {
+    const { userId } = req.user;
+    return this.checkoutService.removeGiftCard(userId, { checkoutId });
+  }
 }

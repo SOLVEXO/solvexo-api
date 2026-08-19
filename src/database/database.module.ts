@@ -127,6 +127,11 @@ import { DatabaseService } from './databaseservice';
         schema: schema.LoyaltyTransactionSchema,
       },
       { name: schema.Reward.name, schema: schema.RewardSchema },
+      { name: schema.RewardVoucher.name, schema: schema.RewardVoucherSchema },
+      { name: schema.GiftCard.name, schema: schema.GiftCardSchema },
+      { name: schema.GiftCardTransaction.name, schema: schema.GiftCardTransactionSchema },
+      { name: schema.GiftCardSettings.name, schema: schema.GiftCardSettingsSchema },
+      { name: schema.AutomaticDiscount.name, schema: schema.AutomaticDiscountSchema },
       {
         name: schema.PlatformSubscription.name,
         schema: schema.PlatformSubscriptionSchema,

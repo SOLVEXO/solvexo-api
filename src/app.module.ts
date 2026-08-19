@@ -19,6 +19,7 @@ import { BannersModule } from './banner/banner.module';
 import { FaqModule } from './faqs/faq.module';
 import { NewsletterModule } from './newsletter/newsletter.module';
 import { ContactModule } from './contact/contact.module';
+import { TestimonialsModule } from './testimonials/testimonials.module';
 import { RefundRequestModule } from './refund-request/refund-request.module';
 import { CheckoutModule } from './checkout/checkout.modoule';
 import { OrdersModule } from './orders/orders.module';
@@ -35,6 +36,9 @@ import { SchedulerModule } from './scheduler/scheduler.module';
 import { ActivityLogModule } from './activity-log/activity-log.module';
 import { MarketingModule } from './marketing/marketing.module';
 import { LoyaltyModule } from './loyalty/loyalty.module';
+import { GiftCardsModule } from './gift-cards/gift-cards.module';
+import { DiscountsModule } from './discounts/discounts.module';
+import { StripeConnectModule } from './stripe-connect/stripe-connect.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { PlatformSubscriptionsModule } from './platform-subscriptions/platform-subscriptions.module';
 import { AdminAnalyticsModule } from './admin-analytics/admin-analytics.module';
@@ -90,6 +94,7 @@ import { OnboardingSlidesModule } from './onboarding-slides/onboarding-slides.mo
     FaqModule,
     NewsletterModule,
     ContactModule,
+    TestimonialsModule,
     RefundRequestModule,
     CheckoutModule,
     // checkoutModule,
@@ -112,6 +117,9 @@ import { OnboardingSlidesModule } from './onboarding-slides/onboarding-slides.mo
     SchedulerModule,
     MarketingModule,
     LoyaltyModule,
+    GiftCardsModule,
+    DiscountsModule,
+    StripeConnectModule,
     AnalyticsModule,
     PlatformSubscriptionsModule,
     AdminAnalyticsModule,

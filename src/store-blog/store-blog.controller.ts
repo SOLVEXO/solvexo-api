@@ -4,8 +4,6 @@ import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
-import { FeatureFlagGuard } from '../admin-config/guards/feature-flag.guard';
-import { RequireFeature } from '../admin-config/decorators/require-feature.decorator';
 import { StoreBlogService } from './store-blog.service';
 import { CreateBlogPostDto } from './dto/create-blog-post.dto';
 import { UpdateBlogPostDto } from './dto/update-blog-post.dto';
@@ -29,43 +27,31 @@ export class StoreBlogController {
     return this.storeBlogService.getForSeller(storeId, req.user.userId, postId);
   }
 
-  @UseGuards(FeatureFlagGuard)
-  @RequireFeature('storefrontBlog')
   @Post(':storeId')
   create(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: CreateBlogPostDto) {
     return this.storeBlogService.createPost(storeId, req.user.userId, dto);
   }
 
-  @UseGuards(FeatureFlagGuard)
-  @RequireFeature('storefrontBlog')
   @Patch(':storeId/:postId')
   update(@Req() req: any, @Param('storeId') storeId: string, @Param('postId') postId: string, @Body() dto: UpdateBlogPostDto) {
     return this.storeBlogService.updatePost(storeId, req.user.userId, postId, dto);
   }
 
-  @UseGuards(FeatureFlagGuard)
-  @RequireFeature('storefrontBlog')
   @Patch(':storeId/:postId/content')
   updateContent(@Req() req: any, @Param('storeId') storeId: string, @Param('postId') postId: string, @Body() dto: UpdateBlogContentDto) {
     return this.storeBlogService.updateContent(storeId, req.user.userId, postId, dto);
   }
 
-  @UseGuards(FeatureFlagGuard)
-  @RequireFeature('storefrontBlog')
   @Patch(':storeId/:postId/publish')
   publish(@Req() req: any, @Param('storeId') storeId: string, @Param('postId') postId: string) {
     return this.storeBlogService.publish(storeId, req.user.userId, postId);
   }
 
-  @UseGuards(FeatureFlagGuard)
-  @RequireFeature('storefrontBlog')
   @Patch(':storeId/:postId/unpublish')
   unpublish(@Req() req: any, @Param('storeId') storeId: string, @Param('postId') postId: string) {
     return this.storeBlogService.unpublish(storeId, req.user.userId, postId);
   }
 
-  @UseGuards(FeatureFlagGuard)
-  @RequireFeature('storefrontBlog')
   @Delete(':storeId/:postId')
   remove(@Req() req: any, @Param('storeId') storeId: string, @Param('postId') postId: string) {
     return this.storeBlogService.deletePost(storeId, req.user.userId, postId);

@@ -566,24 +566,31 @@ export class OrdersService {
     // transition into `completed`, never again if it was already completed (see guard above).
     if (status === 'completed' && !wasAlreadyCompleted) {
       const so = order.sellerOrders[sellerOrderIndex];
-      const platformSponsoredUSD = so.platformSponsoredDiscountUSD ?? 0;
-      const sponsoredCampaignId =
-        so.items.find((i: any) => i.campaignSponsorType === 'platform')
-          ?.campaignId ?? null;
-      try {
-        await this.financeService.recordSale(
-          so.storeId,
-          so.sellerId,
-          orderId,
-          sellerPayoutBasis(so),
-          `Sale — Order #${orderId}`,
-          platformSponsoredUSD,
-          sponsoredCampaignId,
-          sellerPayoutCurrency(so, order),
-          order.paymentType,
-        );
-      } catch (e) {
-        console.error('Finance recordSale failed:', e?.message);
+      // A Connect-settled sellerOrder's money already went straight to the
+      // seller's own Stripe-connected account at payment time — crediting
+      // the internal ledger here too would let them draw a second, duplicate
+      // payout through the platform's own payout-request flow. See
+      // PaymentService.initiatePayment/SellerOrder.settledViaConnect.
+      if (!so.settledViaConnect) {
+        const platformSponsoredUSD = so.platformSponsoredDiscountUSD ?? 0;
+        const sponsoredCampaignId =
+          so.items.find((i: any) => i.campaignSponsorType === 'platform')
+            ?.campaignId ?? null;
+        try {
+          await this.financeService.recordSale(
+            so.storeId,
+            so.sellerId,
+            orderId,
+            sellerPayoutBasis(so),
+            `Sale — Order #${orderId}`,
+            platformSponsoredUSD,
+            sponsoredCampaignId,
+            sellerPayoutCurrency(so, order),
+            order.paymentType,
+          );
+        } catch (e) {
+          console.error('Finance recordSale failed:', e?.message);
+        }
       }
 
       this.awardLoyaltyPointsWithMultiplier(
@@ -661,8 +668,11 @@ export class OrdersService {
 
     await orderModel.findByIdAndUpdate(orderId, { $set: updateData });
 
-    // Record sale in finance ledger for each store's sub-order
+    // Record sale in finance ledger for each store's sub-order — skipping
+    // any that settled directly via Stripe Connect (see the same guard/
+    // comment in the status-transition branch above).
     for (const so of order.sellerOrders) {
+      if (so.settledViaConnect) continue;
       const platformSponsoredUSD = so.platformSponsoredDiscountUSD ?? 0;
       const sponsoredCampaignId =
         so.items.find((i: any) => i.campaignSponsorType === 'platform')

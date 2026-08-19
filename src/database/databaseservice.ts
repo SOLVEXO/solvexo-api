@@ -179,6 +179,21 @@ export class DatabaseService {
     @InjectModel(schema.Reward.name)
     private rewardModel: Model<schema.RewardDocument>,
 
+    @InjectModel(schema.RewardVoucher.name)
+    private rewardVoucherModel: Model<schema.RewardVoucherDocument>,
+
+    @InjectModel(schema.GiftCard.name)
+    private giftCardModel: Model<schema.GiftCardDocument>,
+
+    @InjectModel(schema.GiftCardTransaction.name)
+    private giftCardTransactionModel: Model<schema.GiftCardTransactionDocument>,
+
+    @InjectModel(schema.GiftCardSettings.name)
+    private giftCardSettingsModel: Model<schema.GiftCardSettingsDocument>,
+
+    @InjectModel(schema.AutomaticDiscount.name)
+    private automaticDiscountModel: Model<schema.AutomaticDiscountDocument>,
+
     @InjectModel(schema.PlatformSubscription.name)
     private platformSubscriptionModel: Model<schema.PlatformSubscriptionDocument>,
 
@@ -352,6 +367,11 @@ export class DatabaseService {
       loyaltyMemberModel: this.loyaltyMemberModel,
       loyaltyTransactionModel: this.loyaltyTransactionModel,
       rewardModel: this.rewardModel,
+      rewardVoucherModel: this.rewardVoucherModel,
+      giftCardModel: this.giftCardModel,
+      giftCardTransactionModel: this.giftCardTransactionModel,
+      giftCardSettingsModel: this.giftCardSettingsModel,
+      automaticDiscountModel: this.automaticDiscountModel,
       platformSubscriptionModel: this.platformSubscriptionModel,
       platformSeoSettingsModel: this.platformSeoSettingsModel,
       seoRedirectModel: this.seoRedirectModel,

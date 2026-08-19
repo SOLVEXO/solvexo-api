@@ -34,10 +34,14 @@ describe('PaymentService — COD enforcement', () => {
     adminConfigService = {} as any;
     const exchangeRateService = {} as any;
     const activityLogService = { log: jest.fn() } as any;
+    const giftCardsService = {} as any;
+    const stripeConnectService = {} as any;
+    const commissionRulesService = {} as any;
 
     service = new PaymentService(
       db, notificationsService, configService, promotionsService,
       financeService, adminConfigService, exchangeRateService, activityLogService,
+      giftCardsService, stripeConnectService, commissionRulesService,
     );
   });
 
