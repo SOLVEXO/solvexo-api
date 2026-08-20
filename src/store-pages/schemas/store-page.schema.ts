@@ -11,10 +11,25 @@ export type StorePageType = (typeof STORE_PAGE_TYPES)[number];
 export const STORE_PAGE_STATUSES = ['draft', 'published'] as const;
 export type StorePageStatus = (typeof STORE_PAGE_STATUSES)[number];
 
+// Brought to parity with the shared `SeoMeta` shape (`Product.seo`/
+// `Category.seo`) — previously just `{metaTitle, metaDesc}`, the only
+// non-symmetric SEO shape in the app. `metaDesc` is kept, additive, as a
+// deprecated read-fallback for one release (see `store-pages.service.ts`'s
+// resolution helper) — new writes should target `metaDescription`.
 @Schema({ _id: false })
 export class StorePageSeo {
   @Prop({ type: String, default: null }) metaTitle: string | null;
+  /** @deprecated superseded by `metaDescription` — kept as a read-fallback only. */
   @Prop({ type: String, default: null }) metaDesc: string | null;
+  @Prop({ type: String, default: null }) metaDescription: string | null;
+  @Prop({ type: String, default: null }) ogImage: string | null;
+  @Prop({ type: String, default: null }) ogTitle: string | null;
+  @Prop({ type: String, default: null }) ogDescription: string | null;
+  @Prop({ type: String, enum: ['summary', 'summary_large_image'], default: 'summary_large_image' })
+  twitterCard: string;
+  @Prop({ type: String, default: null }) canonicalUrlOverride: string | null;
+  @Prop({ type: Boolean, default: false }) noindex: boolean;
+  @Prop({ type: [String], default: [] }) keywords: string[];
 }
 export const StorePageSeoSchema = SchemaFactory.createForClass(StorePageSeo);
 

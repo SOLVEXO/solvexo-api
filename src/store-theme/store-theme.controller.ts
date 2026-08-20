@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Body, Controller, Get, Param, Patch, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -21,6 +21,21 @@ export class StoreThemeController {
   @Get(':storeId')
   get(@Req() req: any, @Param('storeId') storeId: string) {
     return this.storeThemeService.getForSeller(storeId, req.user.userId);
+  }
+
+  @Get(':storeId/draft')
+  getDraft(@Req() req: any, @Param('storeId') storeId: string) {
+    return this.storeThemeService.getDraft(storeId, req.user.userId);
+  }
+
+  @Post(':storeId/publish')
+  publish(@Req() req: any, @Param('storeId') storeId: string) {
+    return this.storeThemeService.publishTheme(storeId, req.user.userId);
+  }
+
+  @Post(':storeId/revert-draft')
+  revertDraft(@Req() req: any, @Param('storeId') storeId: string) {
+    return this.storeThemeService.revertDraftToPublished(storeId, req.user.userId);
   }
 
   @Patch(':storeId/theme')

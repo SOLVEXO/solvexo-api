@@ -30,6 +30,7 @@ import { pickPrimaryCampaignForBadge } from 'src/marketing/campaign-pricing.util
 import { AdminConfigService } from 'src/admin-config/admin-config.service';
 import { StoreThemeService } from '../store-theme/store-theme.service';
 import { StorePagesService } from '../store-pages/store-pages.service';
+import { CollectionsService } from '../collections/collections.service';
 
 // Store slugs render at the site root (`solvexo.store/:slug`) — these are the
 // frontend's top-level static route segments (router/index.tsx), reserved so
@@ -65,6 +66,7 @@ export class StoreService {
     private readonly uploadService: UploadService,
     private readonly storeThemeService: StoreThemeService,
     private readonly storePagesService: StorePagesService,
+    private readonly collectionsService: CollectionsService,
   ) {}
 
   private generateSlug(name: string): string {
@@ -768,7 +770,7 @@ export class StoreService {
   // body would let a seller un-suspend their own store (see
   // usersService.deleteSellerAccount, which suspends stores on delete).
   async updateStore(sellerId: string, storeId: string, body: any) {
-    const { name, logo, coverImage, description, sellerType, productTypes, codEnabled } = body;
+    const { name, logo, coverImage, description, tagline, contactEmail, contactPhone, sellerType, productTypes, codEnabled } = body;
 
     if (!storeId) throw new BadRequestException('storeId is required');
 
@@ -797,24 +799,23 @@ export class StoreService {
 
     const updateData: any = {};
 
+    // Store.slug is the seller's live subdomain/custom-domain identity
+    // (hello.solvexo.store) — unlike a Product's slug, breaking it takes
+    // down the seller's entire storefront, not just one shared link.
+    // Deliberately NOT regenerated when the display name changes any more;
+    // it's only ever assigned once, at store creation (see createStore
+    // above). A silent regeneration here previously broke a seller's DNS
+    // subdomain/custom domain the moment they edited their store name.
     if (name && name !== store.name) {
-      const baseSlug = this.generateSlug(name);
-      let slug = baseSlug;
-      let count = 1;
-      while (
-        RESERVED_STORE_SLUGS.has(slug) ||
-        (await this.databaseService.repositories.storeModel.findOne({ slug, _id: { $ne: store._id } }))
-      ) {
-        slug = `${baseSlug}-${count}`;
-        count++;
-      }
       updateData.name = name;
-      updateData.slug = slug;
     }
 
     if (logo !== undefined) updateData.logo = logo;
     if (coverImage !== undefined) updateData.coverImage = coverImage;
     if (description !== undefined) updateData.description = description;
+    if (tagline !== undefined) updateData.tagline = tagline;
+    if (contactEmail !== undefined) updateData.contactEmail = contactEmail;
+    if (contactPhone !== undefined) updateData.contactPhone = contactPhone;
     if (sellerType !== undefined) updateData.sellerType = sellerType;
     if (codEnabled !== undefined) updateData.codEnabled = !!codEnabled;
 
@@ -945,6 +946,10 @@ export class StoreService {
         logo: store.logo,
         coverImage: store.coverImage ?? null,
         description: store.description,
+        tagline: store.tagline ?? null,
+        contactEmail: store.contactEmail ?? null,
+        contactPhone: store.contactPhone ?? null,
+        categoryId: store.categoryId ?? null,
         followersCount: store.followersCount ?? 0,
         averageRating: store.averageRating ?? 0,
         reviewCount: store.reviewCount ?? 0,
@@ -1143,8 +1148,47 @@ export class StoreService {
 
     const filter: any = { storeId, isDelete: false, status: 'active' };
     if (query.type && query.type !== 'all') filter.type = query.type;
-    if (query.categoryId && query.categoryId !== 'all') filter.categoryId = query.categoryId;
+    // `Product.categoryId` is the store's single fixed root category — every
+    // product in a store shares the exact same value there, so filtering on
+    // it within one store's own listing is meaningless (matches either
+    // everything or nothing). The only real per-product distinction inside
+    // one store is `subCategoryId` — this param is still named `categoryId`
+    // everywhere it's set (section settings, nav links, this query string)
+    // since a seller only ever picks from their store's subcategories, but
+    // it must be matched against `subCategoryId` here to actually filter
+    // anything (a real, previously-silent no-op bug, not a new behavior).
+    if (query.categoryId && query.categoryId !== 'all') filter.subCategoryId = query.categoryId;
     if (query.tag && query.tag !== 'all') filter.tags = query.tag;
+    if (query.search && String(query.search).trim()) {
+      filter.name = { $regex: String(query.search).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' };
+    }
+    // Collection membership — resolved via CollectionsService (manual: the
+    // seller's own ordered pick; automatic: category/tag rule, evaluated
+    // fresh) so this endpoint's existing variant/seller/campaign-pricing
+    // shaping pipeline is reused as-is rather than duplicated inside the
+    // collections module.
+    if (query.collectionId && query.collectionId !== 'all') {
+      const ids = await this.collectionsService.resolveProductIds(storeId, query.collectionId);
+      filter._id = { $in: ids.length ? ids : ['__none__'] };
+    }
+    // Same real "on sale" definition the product card's own discount badge
+    // already uses (compareAtPrice > price). compareAtPrice/price live on
+    // ProductVariant, not Product, so this resolves the matching product ids
+    // up front (before pagination) rather than post-filtering the page —
+    // otherwise `total`/skip/limit would silently disagree with what's
+    // actually returned.
+    if (query.onSale === true || query.onSale === 'true') {
+      const storeProductIds = (
+        await this.databaseService.repositories.productModel.find({ storeId, isDelete: false, status: 'active' }).select('_id').lean()
+      ).map((p: any) => p._id.toString());
+      const onSaleVariants = await this.databaseService.repositories.productVariantModel
+        .find({ productId: { $in: storeProductIds }, status: 'active', isDelete: false, $expr: { $gt: ['$compareAtPrice', '$price'] } })
+        .select('productId')
+        .lean();
+      const onSaleIds = [...new Set(onSaleVariants.map((v: any) => v.productId))];
+      const already: string[] | undefined = filter._id?.$in;
+      filter._id = { $in: already ? already.filter((id: string) => onSaleIds.includes(id)) : (onSaleIds.length ? onSaleIds : ['__none__']) };
+    }
 
     const sortMap: Record<string, any> = {
       newest:     { createdAt: -1 },
@@ -1243,16 +1287,42 @@ export class StoreService {
 
   // ── 5. Public store filters (tags) ───────────────────────────────────────
   async getPublicStoreFilters(storeId: string) {
-    const productModel = this.databaseService.repositories.productModel;
+    // Same 600s Redis TTL convention as getTopStores/getPlatformStats — a
+    // store's tag/category facets change only as often as products are
+    // added/edited, so a request-per-page-view cost here is pure waste.
+    const cacheKey = `store-filters:v1:${storeId}`;
+    const cached = await this.redisService.get(cacheKey);
+    if (cached) return { success: true, data: JSON.parse(cached) };
+
+    const { productModel, categoryModel } = this.databaseService.repositories;
     const tags: string[] = await productModel.distinct('tags', {
       storeId,
       isDelete: false,
       status: 'active',
     });
-    return {
-      success: true,
-      data: { tags: tags.filter(Boolean).sort() },
-    };
+
+    // Which subcategories this store's own active catalog actually uses —
+    // powers both `featured_category_grid` and a "shop by category" facet
+    // on the new /category browse route (Store Builder plan, Phase 11).
+    // Deliberately NOT admin-root categories (a store only ever belongs to
+    // one root — see assertValidRootCategory — so faceting by root would
+    // always return exactly one, useless, entry).
+    const categoryAgg = await productModel.aggregate([
+      { $match: { storeId, isDelete: false, status: 'active', subCategoryId: { $ne: null } } },
+      { $group: { _id: '$subCategoryId', count: { $sum: 1 } } },
+    ]);
+    const categoryIds = categoryAgg.map((c) => c._id).filter(Boolean);
+    const categories = categoryIds.length
+      ? await categoryModel.find({ _id: { $in: categoryIds }, isDelete: false }).select('name slug').lean()
+      : [];
+    const countById = new Map(categoryAgg.map((c) => [c._id, c.count]));
+    const categoryFacets = categories
+      .map((c: any) => ({ id: String(c._id), name: c.name, slug: c.slug, count: countById.get(String(c._id)) ?? 0 }))
+      .sort((a, b) => b.count - a.count);
+
+    const data = { tags: tags.filter(Boolean).sort(), categories: categoryFacets };
+    await this.redisService.set(cacheKey, JSON.stringify(data), 600);
+    return { success: true, data };
   }
 
   // ── 6. Follow / Unfollow store ────────────────────────────────────────────

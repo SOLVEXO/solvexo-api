@@ -132,6 +132,7 @@ import { DatabaseService } from './databaseservice';
       { name: schema.GiftCardTransaction.name, schema: schema.GiftCardTransactionSchema },
       { name: schema.GiftCardSettings.name, schema: schema.GiftCardSettingsSchema },
       { name: schema.AutomaticDiscount.name, schema: schema.AutomaticDiscountSchema },
+      { name: schema.Collection.name, schema: schema.CollectionSchema },
       {
         name: schema.PlatformSubscription.name,
         schema: schema.PlatformSubscriptionSchema,
