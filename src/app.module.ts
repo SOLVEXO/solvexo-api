@@ -38,6 +38,7 @@ import { MarketingModule } from './marketing/marketing.module';
 import { LoyaltyModule } from './loyalty/loyalty.module';
 import { GiftCardsModule } from './gift-cards/gift-cards.module';
 import { DiscountsModule } from './discounts/discounts.module';
+import { CollectionsModule } from './collections/collections.module';
 import { StripeConnectModule } from './stripe-connect/stripe-connect.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { PlatformSubscriptionsModule } from './platform-subscriptions/platform-subscriptions.module';
@@ -119,6 +120,7 @@ import { OnboardingSlidesModule } from './onboarding-slides/onboarding-slides.mo
     LoyaltyModule,
     GiftCardsModule,
     DiscountsModule,
+    CollectionsModule,
     StripeConnectModule,
     AnalyticsModule,
     PlatformSubscriptionsModule,

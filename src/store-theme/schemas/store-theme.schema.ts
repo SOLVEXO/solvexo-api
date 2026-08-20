@@ -127,14 +127,61 @@ export class IdentityBanner {
   @Prop({ type: Boolean, default: true }) showMessageButton: boolean;
   @Prop({ type: Boolean, default: true }) showLoyaltyButton: boolean;
   @Prop({ type: Boolean, default: true }) showMembershipButton: boolean;
+
+  // ── Layout/visibility around those 4 fixed buttons (Phase 11) — genuinely
+  // configurable presentation, not new transactional surface: the buttons
+  // above stay individually toggle-able exactly as before; these control
+  // everything AROUND them (cover height/composition, which stats show).
+  // 'standard' + all-true + null reproduces today's exact rendered look, so
+  // an existing store is pixel-identical until a seller changes something.
+  @Prop({ type: String, enum: ['standard', 'compact', 'immersive'], default: 'standard' })
+  layout: 'standard' | 'compact' | 'immersive';
+  @Prop({ type: Boolean, default: true }) showBadges: boolean;
+  @Prop({ type: Boolean, default: true }) showFollowerCount: boolean;
+  @Prop({ type: Boolean, default: true }) showProductCount: boolean;
+  @Prop({ type: Boolean, default: true }) showRating: boolean;
+  @Prop({ type: Number, default: null }) descriptionMaxLines: number | null;
 }
 export const IdentityBannerSchema = SchemaFactory.createForClass(IdentityBanner);
+
+// The draft/live split (Phase 2 of the Store Builder plan) — mirrors the
+// `StoreTheme` root shape exactly (theme/header/footer/identityBanner +
+// baseThemeId) so every seller edit lands here first and only reaches the
+// public storefront once explicitly published. `_id: false` since this is
+// always a singleton sub-object, never an array element.
+@Schema({ _id: false })
+export class StoreThemeDraft {
+  @Prop({ type: StorefrontColorsSchema, default: () => ({}) })
+  theme: StorefrontColors;
+
+  @Prop({ type: StorefrontHeaderSchema, default: () => ({}) })
+  header: StorefrontHeader;
+
+  @Prop({ type: StorefrontFooterSchema, default: () => ({}) })
+  footer: StorefrontFooter;
+
+  @Prop({ type: IdentityBannerSchema, default: () => ({}) })
+  identityBanner: IdentityBanner;
+
+  @Prop({ type: String, default: null })
+  baseThemeId: string | null;
+}
+export const StoreThemeDraftSchema = SchemaFactory.createForClass(StoreThemeDraft);
 
 // One doc per store — site-wide chrome (theme colors + header + footer),
 // separate from `StorePage` (per-page section content). Replaces
 // `Store.builderConfig` as the source of truth for this content; the old
 // field is left as an inert orphan on already-existing stores rather than
 // migrated in a big-bang way (see `store-theme.service.ts#ensureDefaultTheme`).
+//
+// `theme`/`header`/`footer`/`identityBanner`/`baseThemeId` at the document
+// root are the LIVE/PUBLISHED state — read by the public storefront exactly
+// as before this field was introduced (`getPublic()`/`PublicStoreThemeController`
+// are untouched). `draft` is the seller's working copy: every
+// `updateTheme`/`updateHeader`/`updateFooter`/`updateIdentityBanner` call now
+// writes here, and only `publishTheme()` copies draft → root. This gives
+// Theme the same safe edit-then-publish behavior `StorePage.status` already
+// has, instead of every keystroke going instantly live.
 @Schema({ timestamps: true })
 export class StoreTheme {
   _id: string;
@@ -163,6 +210,17 @@ export class StoreTheme {
   // who's only ever used the manual controls).
   @Prop({ type: String, default: null })
   baseThemeId: string | null;
+
+  // Defaults to a copy of the live root fields at read time for any store
+  // that predates this field (`ensureDefaultTheme`), never left empty — see
+  // that method for why a lazy per-read backfill is safe here (idempotent,
+  // no concurrent-writer risk since it's the same $setOnInsert-style upsert
+  // pattern already used for the rest of this document).
+  @Prop({ type: StoreThemeDraftSchema, default: () => ({}) })
+  draft: StoreThemeDraft;
+
+  @Prop({ type: Date, default: null })
+  lastPublishedAt: Date | null;
 
   createdAt?: Date;
   updatedAt?: Date;

@@ -44,7 +44,15 @@ function assertHttpsUrl(value: unknown, field: string): void {
   }
 }
 
-const LINK_TYPES = ['home', 'page', 'blog', 'external'] as const;
+// 'category'/'collection' let a nav link, footer link, or hero/image-with-text
+// CTA point at the store's own category-browse or collection-detail page —
+// see the Store Builder plan's Phase 4. Shape-only validation here (is a real
+// id string present); the SERVICE layer (store-theme.service.ts,
+// store-pages.service.ts) is responsible for confirming the referenced
+// category/collection actually belongs to this store before saving — this
+// validator has no DB access and never invents ownership guarantees it can't
+// actually check.
+export const LINK_TYPES = ['home', 'page', 'blog', 'external', 'category', 'collection'] as const;
 
 function assertLinkTarget(link: unknown, field: string): void {
   if (link === undefined || link === null) return;
@@ -53,6 +61,8 @@ function assertLinkTarget(link: unknown, field: string): void {
   oneOf(l.linkType, LINK_TYPES, `${field}.linkType`);
   if (l.linkType === 'page') required(l.pageSlug, `${field}.pageSlug`);
   if (l.linkType === 'external') assertHttpsUrl(l.url, `${field}.url`);
+  if (l.linkType === 'category') required(l.categoryId, `${field}.categoryId`);
+  if (l.linkType === 'collection') required(l.collectionId, `${field}.collectionId`);
 }
 
 // ── Section-level settings ──────────────────────────────────────────────────
@@ -69,8 +79,9 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
       break;
     case 'featured_products':
       required(settings.source, 'settings.source');
-      oneOf(settings.source, ['manual', 'category', 'bestsellers', 'newArrivals', 'trending', 'pinned'] as const, 'settings.source');
+      oneOf(settings.source, ['manual', 'category', 'collection', 'bestsellers', 'newArrivals', 'trending', 'pinned', 'onSale'] as const, 'settings.source');
       if (settings.source === 'category') required(settings.categoryId, 'settings.categoryId');
+      if (settings.source === 'collection') required(settings.collectionId, 'settings.collectionId');
       if (settings.source === 'manual') {
         if (!Array.isArray(settings.productIds) || settings.productIds.length === 0) {
           throw new BadRequestException('settings.productIds is required when source is "manual"');
@@ -86,6 +97,30 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
       if (settings.columns !== undefined && ![2, 3, 4].includes(settings.columns)) {
         throw new BadRequestException('settings.columns must be 2, 3, or 4');
       }
+      // Optional merchandising filter — at most one of the two (a catalog
+      // scoped to both a category AND a collection at once isn't a
+      // meaningful combination in this builder, and would silently mean
+      // "intersection" to the reader when nothing computes that).
+      if (settings.categoryId !== undefined && typeof settings.categoryId !== 'string') {
+        throw new BadRequestException('settings.categoryId must be a string');
+      }
+      if (settings.collectionId !== undefined && typeof settings.collectionId !== 'string') {
+        throw new BadRequestException('settings.collectionId must be a string');
+      }
+      if (settings.categoryId && settings.collectionId) {
+        throw new BadRequestException('settings.categoryId and settings.collectionId cannot both be set');
+      }
+      break;
+    case 'featured_category_grid':
+      if (!Array.isArray(settings.categoryIds) || settings.categoryIds.length === 0) {
+        throw new BadRequestException('settings.categoryIds is required');
+      }
+      if (settings.categoryIds.length > 12) throw new BadRequestException('settings.categoryIds cannot exceed 12 categories');
+      break;
+    case 'trust_badges':
+      break; // content lives entirely in trust_badge_item blocks
+    case 'newsletter':
+      maxLen(settings.subtext, 200, 'settings.subtext');
       break;
     case 'video':
       required(settings.videoUrl, 'settings.videoUrl');
@@ -113,6 +148,8 @@ export function validateBlockSettings(blockType: string, settings: Record<string
       oneOf(settings.linkType, LINK_TYPES, 'linkType');
       if (settings.linkType === 'page') required(settings.pageSlug, 'pageSlug');
       if (settings.linkType === 'external') assertHttpsUrl(settings.url, 'url');
+      if (settings.linkType === 'category') required(settings.categoryId, 'categoryId');
+      if (settings.linkType === 'collection') required(settings.collectionId, 'collectionId');
       if (settings.highlight !== undefined && typeof settings.highlight !== 'boolean') {
         throw new BadRequestException('highlight must be a boolean');
       }
@@ -205,6 +242,14 @@ export function validateBlockSettings(blockType: string, settings: Record<string
       maxLen(settings.answer, 2000, 'answer');
       break;
 
+    // trust_badges section blocks
+    case 'trust_badge_item':
+      required(settings.icon, 'icon');
+      oneOf(settings.icon, ['truck', 'shield', 'refresh', 'headset', 'lock'] as const, 'icon');
+      required(settings.text, 'text');
+      maxLen(settings.text, 80, 'text');
+      break;
+
     default:
       throw new BadRequestException(`Unknown block type: ${blockType}`);
   }
@@ -233,4 +278,7 @@ export const SECTION_ALLOWED_BLOCK_TYPES: Record<SectionType, readonly string[]>
   testimonials: ['testimonial'],
   faq: ['faq_item'],
   video: [],
+  featured_category_grid: [],
+  trust_badges: ['trust_badge_item'],
+  newsletter: [],
 };

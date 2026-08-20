@@ -13,8 +13,12 @@ const MAX_SECTIONS_PER_PAGE = 40;
 // prefix), so a page slug now shares its namespace directly with sibling
 // storefront routes — 'blog' must be reserved to avoid shadowing
 // `/:slug/blog`. 'home' stays reserved since the home page's own slug is
-// always the fixed empty string, never seller-assignable.
-const RESERVED_CUSTOM_PAGE_SLUGS = ['home', 'blog'];
+// always the fixed empty string, never seller-assignable. 'category'/
+// 'collections' reserved alongside the new store-scoped category-browse
+// (`/category/:slugOrId`) and collection-detail (`/collections/:slugOrId`)
+// storefront routes (Store Builder plan, Phase 11) for the same reason.
+// 'search' reserved for the navbar search box's results route.
+const RESERVED_CUSTOM_PAGE_SLUGS = ['home', 'blog', 'category', 'collections', 'search', 'cart', 'checkout', 'login', 'account'];
 
 function validateSections(sections: { type: SectionType; settings: Record<string, any>; blocks: { type: string; settings: Record<string, any> }[] }[]) {
   if (sections.length > MAX_SECTIONS_PER_PAGE) {
@@ -121,7 +125,20 @@ export class StorePagesService {
     if (dto.showInNav !== undefined) set.showInNav = dto.showInNav;
     if (dto.showInFooter !== undefined) set.showInFooter = dto.showInFooter;
     if (dto.seo?.metaTitle !== undefined) set['seo.metaTitle'] = dto.seo.metaTitle;
+    // `metaDesc` is a deprecated write-compat alias — a caller still only
+    // sending it (not yet updated to `metaDescription`) still lands in the
+    // real, full-parity field, not just the legacy one, so read paths never
+    // need to check both once anything has been saved through here again.
+    if (dto.seo?.metaDescription !== undefined) set['seo.metaDescription'] = dto.seo.metaDescription;
+    else if (dto.seo?.metaDesc !== undefined) set['seo.metaDescription'] = dto.seo.metaDesc;
     if (dto.seo?.metaDesc !== undefined) set['seo.metaDesc'] = dto.seo.metaDesc;
+    if (dto.seo?.ogImage !== undefined) set['seo.ogImage'] = dto.seo.ogImage;
+    if (dto.seo?.ogTitle !== undefined) set['seo.ogTitle'] = dto.seo.ogTitle;
+    if (dto.seo?.ogDescription !== undefined) set['seo.ogDescription'] = dto.seo.ogDescription;
+    if (dto.seo?.twitterCard !== undefined) set['seo.twitterCard'] = dto.seo.twitterCard;
+    if (dto.seo?.canonicalUrlOverride !== undefined) set['seo.canonicalUrlOverride'] = dto.seo.canonicalUrlOverride;
+    if (dto.seo?.noindex !== undefined) set['seo.noindex'] = dto.seo.noindex;
+    if (dto.seo?.keywords !== undefined) set['seo.keywords'] = dto.seo.keywords;
 
     const updated = await this.storePageModel.findByIdAndUpdate(pageId, { $set: set }, { new: true });
     return { success: true, message: 'Page updated', data: updated };

@@ -1,11 +1,21 @@
 /* eslint-disable prettier/prettier */
 import { ApiProperty } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsBoolean, IsObject, IsOptional, IsString, Matches, MaxLength, ValidateNested } from 'class-validator';
+import { IsArray, IsBoolean, IsIn, IsObject, IsOptional, IsString, Matches, MaxLength, ValidateNested } from 'class-validator';
 
 class StorePageSeoInputDto {
   @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(70) metaTitle?: string;
-  @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(160) metaDesc?: string;
+  @ApiProperty({ required: false, deprecated: true, description: 'Superseded by metaDescription — kept as a one-release write-compat alias.' })
+  @IsOptional() @IsString() @MaxLength(160) metaDesc?: string;
+  @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(160) metaDescription?: string;
+  @ApiProperty({ required: false }) @IsOptional() @IsString() ogImage?: string;
+  @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(70) ogTitle?: string;
+  @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(200) ogDescription?: string;
+  @ApiProperty({ required: false, enum: ['summary', 'summary_large_image'] })
+  @IsOptional() @IsIn(['summary', 'summary_large_image']) twitterCard?: string;
+  @ApiProperty({ required: false }) @IsOptional() @IsString() canonicalUrlOverride?: string;
+  @ApiProperty({ required: false }) @IsOptional() @IsBoolean() noindex?: boolean;
+  @ApiProperty({ required: false, type: [String] }) @IsOptional() @IsArray() @IsString({ each: true }) keywords?: string[];
 }
 
 export class UpdatePageDto {

@@ -194,6 +194,9 @@ export class DatabaseService {
     @InjectModel(schema.AutomaticDiscount.name)
     private automaticDiscountModel: Model<schema.AutomaticDiscountDocument>,
 
+    @InjectModel(schema.Collection.name)
+    private collectionModel: Model<schema.CollectionDocument>,
+
     @InjectModel(schema.PlatformSubscription.name)
     private platformSubscriptionModel: Model<schema.PlatformSubscriptionDocument>,
 
@@ -372,6 +375,7 @@ export class DatabaseService {
       giftCardTransactionModel: this.giftCardTransactionModel,
       giftCardSettingsModel: this.giftCardSettingsModel,
       automaticDiscountModel: this.automaticDiscountModel,
+      collectionModel: this.collectionModel,
       platformSubscriptionModel: this.platformSubscriptionModel,
       platformSeoSettingsModel: this.platformSeoSettingsModel,
       seoRedirectModel: this.seoRedirectModel,

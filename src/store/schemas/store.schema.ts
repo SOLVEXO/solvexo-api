@@ -327,6 +327,15 @@ export class Store {
   @Prop({ type: String, default: null })
   description!: string | null;
 
+  // ── Store Settings identity fields (Phase 7) — short marketing line,
+  // buyer-facing contact info. Additive, optional, no migration needed.
+  @Prop({ type: String, default: null })
+  tagline!: string | null;
+  @Prop({ type: String, default: null })
+  contactEmail!: string | null;
+  @Prop({ type: String, default: null })
+  contactPhone!: string | null;
+
   @Prop({
     type: String,
     enum: Object.values(SellerType),
