@@ -66,8 +66,6 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     fn: () => Promise<void>,
   ): Promise<'ran' | 'lock_not_acquired'> {
     if (!this._isConnected) return 'lock_not_acquired';
-  ): Promise<boolean> {
-    if (!this._isConnected) return false;
     const ttlSeconds = Math.ceil(ttlMs / 1000);
     const acquired = await this.client.set(lockKey, '1', {
       NX: true,
@@ -77,10 +75,6 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     try {
       await fn();
       return 'ran';
-    if (!acquired) return false;
-    try {
-      await fn();
-      return true;
     } finally {
       await this.client.del(lockKey);
     }
