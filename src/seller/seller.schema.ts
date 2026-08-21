@@ -115,6 +115,14 @@ export class Seller {
     // suspended is never in this list, so it's correctly left untouched.
     @Prop({ type: [String], default: [] })
     cascadeSuspendedStoreIds: string[];
+
+    // In-progress /onboard wizard state (step + form fields), so a page
+    // reload/lost connection/different device resumes exactly where the
+    // seller left off instead of losing everything back to step 1. Cleared
+    // (set back to null) once StoreService.createStore actually creates the
+    // store — there's nothing left to resume once onboarding is done.
+    @Prop({ type: Object, default: null })
+    onboardingDraft: { step: number; maxReached: number; form: Record<string, unknown> } | null;
 }
 
 

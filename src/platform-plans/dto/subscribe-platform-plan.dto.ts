@@ -39,3 +39,14 @@ export class ConfirmOnboardingPaymentMethodDto {
   @IsString() @IsNotEmpty()
   setupIntentId: string;
 }
+
+export class SaveOnboardingDraftDto {
+  @ApiProperty({ description: 'Which wizard step the seller is currently on (1-5)' })
+  step: number;
+
+  @ApiProperty({ description: 'Furthest step reached so far — drives which steps are clickable in the header' })
+  maxReached: number;
+
+  @ApiProperty({ description: 'The wizard form fields entered so far (storeName, categoryId, description, sellerType, productTypes, etc.)' })
+  form: Record<string, unknown>;
+}

@@ -291,6 +291,35 @@ export class SellerPlatformSubscriptionsService {
     return { success: true };
   }
 
+  /** What the onboarding wizard needs on load to resume exactly where the
+   *  seller left off — their saved draft (if any) and whether the Payment
+   *  step can be shown as already-done instead of asking for a card again. */
+  async getOnboardingProgress(sellerId: string) {
+    const seller = await this.db.repositories.sellerModel
+      .findById(sellerId)
+      .select('onboardingDraft hasPlatformPaymentMethod')
+      .lean();
+    if (!seller) throw new NotFoundException('Seller account not found');
+
+    return {
+      success: true,
+      data: {
+        draft: (seller as any).onboardingDraft ?? null,
+        hasPlatformPaymentMethod: !!(seller as any).hasPlatformPaymentMethod,
+      },
+    };
+  }
+
+  /** Saved on every wizard step transition (not on every keystroke) — enough
+   *  to survive a reload/lost connection without saving on every keystroke. */
+  async saveOnboardingDraft(sellerId: string, step: number, maxReached: number, form: Record<string, unknown>) {
+    await this.db.repositories.sellerModel.updateOne(
+      { _id: sellerId },
+      { $set: { onboardingDraft: { step, maxReached, form } } },
+    );
+    return { success: true };
+  }
+
   async getStorePlan(sellerId: string, storeId: string) {
     await this.verifyStoreOwnership(storeId, sellerId);
     const sub = await this.subModel.findOne({ storeId, isDelete: false }).lean();
