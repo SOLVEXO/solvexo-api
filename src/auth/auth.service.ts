@@ -121,14 +121,12 @@ export class AuthService {
       await user.save();
 
       await this.otpService.sendOtp(email, otp);
-      console.log(otp);
 
       return {
         message: 'OTP sent successfully',
         success: true,
         data: {
           userId: user._id,
-          otp: user.otp,
         },
       };
     } catch (error) {
@@ -155,6 +153,20 @@ export class AuthService {
       const existingUser = await userModel.findOne({ email });
       if (!existingUser) {
         throw new UnauthorizedException('Invalid email or password');
+      }
+
+      // Checked BEFORE the password compare — otherwise whether a wrong
+      // password gets 'Invalid email or password' vs an unverified account
+      // getting 'Account not verified' becomes a password oracle: an
+      // attacker who's guessed the right password for an unverified account
+      // would see the message change, confirming the guess without ever
+      // completing a real login. Checking this first means an unverified
+      // account always gets the same response regardless of the password
+      // tried.
+      if (!existingUser.isVerified) {
+        throw new UnauthorizedException(
+          'Account not verified. Please verify OTP first',
+        );
       }
 
       const isPasswordMatch = await bcrypt.compare(
@@ -187,12 +199,6 @@ export class AuthService {
       if (existingUser.status === 'suspended') {
         throw new UnauthorizedException(
           'This account has been suspended. Please contact support.',
-        );
-      }
-
-      if (!existingUser.isVerified) {
-        throw new UnauthorizedException(
-          'Account not verified. Please verify OTP first',
         );
       }
 
@@ -453,7 +459,6 @@ export class AuthService {
         success: true,
         data: {
           userId: user._id,
-          otp: user.otp,
         },
       };
     } catch (error) {
@@ -561,26 +566,28 @@ export class AuthService {
       }
 
       const user = await userModel.findOne({ email });
-      if (!user) {
-        throw new UnauthorizedException('User not found with this email');
+
+      // Same response whether or not the account exists — an "email not
+      // found" error here would let anyone enumerate which emails are
+      // actually registered on Solvexo. Only genuinely sends an OTP when
+      // there's a real account to send it to; a non-existent email silently
+      // no-ops but still reports success, exactly as a real user's request
+      // would look from the outside.
+      if (user) {
+        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        const otpExpiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
+
+        user.otp = otp;
+        user.otpExpiresAt = otpExpiresAt;
+        await user.save();
+
+        await this.otpService.sendOtp(user.email, otp);
       }
 
-      const otp = Math.floor(100000 + Math.random() * 900000).toString();
-      const otpExpiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
-
-      user.otp = otp;
-      user.otpExpiresAt = otpExpiresAt;
-      await user.save();
-
-      await this.otpService.sendOtp(user.email, otp);
-
       return {
-        message: 'OTP sent successfully to your email for password reset',
+        message: 'If an account exists for this email, a password reset code has been sent.',
         success: true,
-        data: {
-          userId: user._id,
-          otp: user.otp,
-        },
+        data: null,
       };
     } catch (error) {
       throw new UnauthorizedException(
