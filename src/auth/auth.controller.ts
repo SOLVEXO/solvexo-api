@@ -33,7 +33,7 @@ export class AuthController {
     return this.authService.login(loginDto, req.ip, req.headers['user-agent']);
   }
 
-  // ✅ Social login (Google / Facebook / Apple) — always buyer (role: 'user')
+  // ✅ Social login (Google / Facebook / Apple) — resolves to buyer or seller per dto.role (default 'user')
   @Post('social-login')
   async socialLogin(@Body() socialLoginDto: SocialLoginDto) {
     return this.authService.socialLogin(socialLoginDto);

@@ -5,6 +5,7 @@ import {
   IsEmail,
   IsOptional,
   IsEnum,
+  IsIn,
 } from 'class-validator';
 
 export class SocialLoginDto {
@@ -25,15 +26,30 @@ export class SocialLoginDto {
   @IsNotEmpty()
   socialId: string;
 
-  @ApiProperty({ example: 'John Doe' })
+  // Legacy field name — kept for backward compatibility with any caller
+  // still sending `userName`. The frontend actually sends `name` (below).
+  @ApiProperty({ required: false, example: 'John Doe' })
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  userName: string;
+  userName?: string;
+
+  @ApiProperty({ required: false, example: 'John Doe' })
+  @IsOptional()
+  @IsString()
+  name?: string;
 
   @ApiProperty({ example: 'john@example.com' })
   @IsEmail()
   @IsNotEmpty()
   email: string;
+
+  // Which account this social login should resolve against — 'user' (buyer,
+  // default) or 'seller'. Buyer and seller are separate collections, so this
+  // has to be explicit the same way LoginDto/RegisterDto already are.
+  @ApiProperty({ required: false, enum: ['user', 'seller'], example: 'seller' })
+  @IsOptional()
+  @IsIn(['user', 'seller'])
+  role?: 'user' | 'seller';
 
   @ApiProperty({
     required: false,
