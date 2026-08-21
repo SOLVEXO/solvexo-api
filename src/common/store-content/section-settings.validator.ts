@@ -132,7 +132,32 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
     case 'image_with_text':
     case 'testimonials':
     case 'faq':
+    case 'feature_list':
+    case 'team_grid':
+    case 'stats_counter':
+    case 'gallery_grid':
       break; // content lives entirely in blocks, no section-level settings beyond heading
+    case 'spec_table':
+      maxLen(settings.subheading, 200, 'settings.subheading');
+      break;
+    case 'menu_list':
+      maxLen(settings.subheading, 200, 'settings.subheading');
+      break;
+    case 'location_info':
+      required(settings.address, 'settings.address');
+      maxLen(settings.address, 300, 'settings.address');
+      maxLen(settings.phone, 40, 'settings.phone');
+      maxLen(settings.email, 120, 'settings.email');
+      maxLen(settings.hours, 500, 'settings.hours');
+      if (settings.latitude !== undefined && typeof settings.latitude !== 'number') {
+        throw new BadRequestException('settings.latitude must be a number');
+      }
+      if (settings.longitude !== undefined && typeof settings.longitude !== 'number') {
+        throw new BadRequestException('settings.longitude must be a number');
+      }
+      maxLen(settings.ctaText, 40, 'settings.ctaText');
+      assertLinkTarget(settings.ctaLink, 'settings.ctaLink');
+      break;
   }
 }
 
@@ -250,8 +275,77 @@ export function validateBlockSettings(blockType: string, settings: Record<string
       maxLen(settings.text, 80, 'text');
       break;
 
+    // feature_list section blocks — generic enough to cover ingredients/
+    // benefits/craftsmanship/materials/license highlights across categories
+    case 'feature_item':
+      required(settings.icon, 'icon');
+      oneOf(settings.icon, ['leaf', 'shield', 'heart', 'star', 'check', 'sparkles', 'award', 'droplet'] as const, 'icon');
+      required(settings.title, 'title');
+      maxLen(settings.title, 80, 'title');
+      maxLen(settings.description, 300, 'description');
+      break;
+
+    // spec_table section blocks — technical specs, room/product dimensions, materials
+    case 'spec_row':
+      required(settings.label, 'label');
+      maxLen(settings.label, 60, 'label');
+      required(settings.value, 'value');
+      maxLen(settings.value, 200, 'value');
+      break;
+
+    // menu_list section blocks — restaurant menu items, course modules, digital-product bundle line items
+    case 'menu_item':
+      required(settings.name, 'name');
+      maxLen(settings.name, 100, 'name');
+      maxLen(settings.description, 300, 'description');
+      maxLen(settings.category, 60, 'category');
+      if (settings.imageUrl !== undefined) assertHttpsUrl(settings.imageUrl, 'imageUrl');
+      if (settings.price !== undefined && (typeof settings.price !== 'number' || settings.price < 0)) {
+        throw new BadRequestException('price must be a non-negative number');
+      }
+      break;
+
+    // team_grid section blocks — team members, chefs, instructors
+    case 'team_member':
+      required(settings.name, 'name');
+      maxLen(settings.name, 100, 'name');
+      maxLen(settings.role, 100, 'role');
+      maxLen(settings.bio, 400, 'bio');
+      if (settings.photoUrl !== undefined) assertHttpsUrl(settings.photoUrl, 'photoUrl');
+      break;
+
+    // stats_counter section blocks — trust/scale statistics
+    case 'stat_item':
+      required(settings.value, 'value');
+      maxLen(settings.value, 20, 'value');
+      required(settings.label, 'label');
+      maxLen(settings.label, 60, 'label');
+      break;
+
+    // gallery_grid section blocks — lookbook, room/lifestyle imagery, portfolio
+    case 'gallery_image':
+      assertHttpsUrl(settings.imageUrl, 'imageUrl');
+      maxLen(settings.caption, 150, 'caption');
+      break;
+
     default:
       throw new BadRequestException(`Unknown block type: ${blockType}`);
+  }
+}
+
+// ── Header/footer block-array validation (StoreTheme header/footer, and the
+// ThemeDefinition catalog's own header/footer, which must satisfy the exact
+// same rule) — shared here rather than duplicated/cross-imported between
+// `store-theme` and `theme-catalog`. ─────────────────────────────────────
+
+export const HEADER_ALLOWED_BLOCK_TYPES = ['nav_link'];
+export const FOOTER_ALLOWED_BLOCK_TYPES = ['footer_column', 'social_link', 'copyright_text'];
+
+export function validateBlocks(blocks: { type: string; settings: Record<string, any> }[], allowed: readonly string[], max: number): void {
+  if (blocks.length > max) throw new BadRequestException(`Cannot have more than ${max} items`);
+  for (const block of blocks) {
+    if (!allowed.includes(block.type)) throw new BadRequestException(`Block type "${block.type}" is not allowed here`);
+    validateBlockSettings(block.type, block.settings ?? {});
   }
 }
 
@@ -281,4 +375,11 @@ export const SECTION_ALLOWED_BLOCK_TYPES: Record<SectionType, readonly string[]>
   featured_category_grid: [],
   trust_badges: ['trust_badge_item'],
   newsletter: [],
+  feature_list: ['feature_item'],
+  spec_table: ['spec_row'],
+  menu_list: ['menu_item'],
+  team_grid: ['team_member'],
+  location_info: [],
+  stats_counter: ['stat_item'],
+  gallery_grid: ['gallery_image'],
 };

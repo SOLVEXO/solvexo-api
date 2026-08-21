@@ -1,36 +1,34 @@
 /* eslint-disable prettier/prettier */
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { DatabaseService } from '../database/databaseservice';
 import { verifyStoreOwnershipStrict } from '../common/store-ownership.util';
-import { validateBlockSettings } from '../common/store-content/section-settings.validator';
-import { StoreThemeDraft } from './schemas/store-theme.schema';
+import { validateBlocks, HEADER_ALLOWED_BLOCK_TYPES, FOOTER_ALLOWED_BLOCK_TYPES } from '../common/store-content/section-settings.validator';
+import { sanitizeCustomCss } from '../common/css-sanitizer';
+import { ThemeCatalogService } from '../theme-catalog/theme-catalog.service';
 import { UpdateThemeDto } from './dto/update-theme.dto';
 import { UpdateHeaderDto } from './dto/update-header.dto';
 import { UpdateFooterDto } from './dto/update-footer.dto';
 import { UpdateIdentityBannerDto } from './dto/update-identity-banner.dto';
+import { UpdateCustomCssDto } from './dto/update-custom-css.dto';
 
-const HEADER_ALLOWED_BLOCK_TYPES = ['nav_link'];
-const FOOTER_ALLOWED_BLOCK_TYPES = ['footer_column', 'social_link', 'copyright_text'];
 const MAX_HEADER_LINKS = 10;
 const MAX_FOOTER_BLOCKS = 20;
 
-function validateBlocks(blocks: { type: string; settings: Record<string, any> }[], allowed: string[], max: number) {
-  if (blocks.length > max) throw new BadRequestException(`Cannot have more than ${max} items`);
-  for (const block of blocks) {
-    if (!allowed.includes(block.type)) throw new BadRequestException(`Block type "${block.type}" is not allowed here`);
-    validateBlockSettings(block.type, block.settings ?? {});
-  }
-}
-
 @Injectable()
 export class StoreThemeService {
-  constructor(private readonly databaseService: DatabaseService) {}
+  constructor(
+    private readonly databaseService: DatabaseService,
+    private readonly themeCatalogService: ThemeCatalogService,
+  ) {}
 
   private get storeThemeModel() {
     return this.databaseService.repositories.storeThemeModel;
   }
   private get storeModel() {
     return this.databaseService.repositories.storeModel;
+  }
+  private get storePageModel() {
+    return this.databaseService.repositories.storePageModel;
   }
 
   /** Idempotent — called once from `StoreService.createStore()` right after a store is created, and safe to call again (upsert) for the one-off backfill of pre-existing stores. Never called from an unauthenticated read path (see plan: eager creation avoids a public-GET-does-a-write race). */
@@ -64,6 +62,13 @@ export class StoreThemeService {
           },
         },
       ],
+      // Mongoose 9 requires this explicit opt-in for an aggregation-pipeline
+      // (array) update — without it, `updateOne`/`findOneAndUpdate` throws
+      // "Cannot pass an array to query updates unless the `updatePipeline`
+      // option is set" for every single call, which is what was breaking
+      // `ensureDefaultTheme` (and therefore every theme endpoint AND new
+      // store creation, which calls this on every new store) before this fix.
+      { updatePipeline: true },
     );
     return this.storeThemeModel.findOne({ storeId });
   }
@@ -78,7 +83,7 @@ export class StoreThemeService {
   async getDraft(storeId: string, sellerId: string) {
     await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
     const doc = await this.ensureDefaultTheme(storeId);
-    const draft = doc!.draft as StoreThemeDraft;
+    const draft = doc!.draft;
     return {
       success: true,
       data: {
@@ -87,6 +92,12 @@ export class StoreThemeService {
         footer: draft.footer,
         identityBanner: draft.identityBanner,
         baseThemeId: draft.baseThemeId,
+        // Exposed so Live Preview (`LivePreviewPage.tsx`) can render a
+        // pending "Use Theme" home-page composition before it's published —
+        // without this, applying a theme would be invisible in preview
+        // until the seller committed to Publish.
+        pendingHomeSections: draft.pendingHomeSections,
+        customCss: draft.customCss,
         lastPublishedAt: doc!.lastPublishedAt,
       },
     };
@@ -97,10 +108,21 @@ export class StoreThemeService {
     return { success: true, data: theme };
   }
 
-  /** Copies draft → the live root fields in one atomic $set, using the same document-referencing aggregation-pipeline update as the draft backfill above (so it can't drift into a two-step read-then-write race). */
+  /**
+   * Copies draft → the live root fields in one atomic $set, using the same document-referencing aggregation-pipeline update as the draft backfill above (so it can't drift into a two-step read-then-write race).
+   *
+   * If a Theme Marketplace "Use Theme" is pending (`draft.pendingHomeSections`
+   * set by `applyThemeDefinition`, never touched until now), this also writes
+   * it into the home `StorePage.sections` and clears the pending field — the
+   * one moment a theme's section composition actually reaches the live
+   * storefront. Read before the $set so the value isn't lost the instant
+   * publishing would otherwise leave it stranded on an already-live draft.
+   */
   async publishTheme(storeId: string, sellerId: string) {
     await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
-    await this.ensureDefaultTheme(storeId);
+    const before = await this.ensureDefaultTheme(storeId);
+    const pendingHomeSections = before!.draft?.pendingHomeSections ?? null;
+
     const updated = await this.storeThemeModel.findOneAndUpdate(
       { storeId },
       [
@@ -111,16 +133,23 @@ export class StoreThemeService {
             footer: '$draft.footer',
             identityBanner: '$draft.identityBanner',
             baseThemeId: '$draft.baseThemeId',
+            customCss: '$draft.customCss',
             lastPublishedAt: '$$NOW',
           },
         },
       ],
-      { new: true },
+      { new: true, updatePipeline: true },
     );
+
+    if (pendingHomeSections) {
+      await this.storePageModel.updateOne({ storeId, type: 'home' }, { $set: { sections: pendingHomeSections } });
+      await this.storeThemeModel.updateOne({ storeId }, { $set: { 'draft.pendingHomeSections': null } });
+    }
+
     return { success: true, message: 'Theme published', data: updated };
   }
 
-  /** Safety-net "discard unsaved changes" — copies the live root fields back over draft, the mirror image of publishTheme's copy direction. */
+  /** Safety-net "discard unsaved changes" — copies the live root fields back over draft, the mirror image of publishTheme's copy direction. Also clears any not-yet-published `pendingHomeSections` — the live home page was never touched, so there's nothing to revert there, just a pending apply to cancel. */
   async revertDraftToPublished(storeId: string, sellerId: string) {
     await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
     await this.ensureDefaultTheme(storeId);
@@ -135,13 +164,70 @@ export class StoreThemeService {
               footer: '$footer',
               identityBanner: '$identityBanner',
               baseThemeId: '$baseThemeId',
+              customCss: '$customCss',
+              pendingHomeSections: null,
             },
           },
         },
       ],
-      { new: true },
+      { new: true, updatePipeline: true },
     );
     return { success: true, message: 'Draft reverted to the published theme', data: updated };
+  }
+
+  /**
+   * Theme Marketplace "Use Theme" — stages a published `ThemeDefinition`'s
+   * colors/header/footer/identity-banner and home-page section composition
+   * into this store's draft only. Nothing on the live storefront changes
+   * until the seller reviews it in Store Builder and hits Publish (see
+   * `publishTheme`) — same safety property every other draft edit already
+   * has. The `ThemeDefinition` document itself is never mutated, so applying
+   * it to any number of stores can never leak between sellers.
+   */
+  async applyThemeDefinition(storeId: string, sellerId: string, themeDefinitionId: string) {
+    await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
+    const current = await this.ensureDefaultTheme(storeId);
+    const themeDef = await this.themeCatalogService.getPublishedForApply(themeDefinitionId);
+
+    // Preserve the seller's own nav-link/footer-column content by default —
+    // only take the theme's STYLE (`headerStyle`/`footerStyle`/`navAlignment`)
+    // unless the theme itself supplies real block content, same
+    // seller-respecting behavior the old frontend-only apply flow had
+    // (it only ever sent `{headerStyle}`/`{blocks: existingBlocks, footerStyle}`).
+    const currentDraft = current!.draft;
+    const nextHeader = {
+      ...currentDraft.header,
+      headerStyle: themeDef.header.headerStyle,
+      navAlignment: themeDef.header.navAlignment ?? currentDraft.header.navAlignment,
+      blocks: themeDef.header.blocks?.length ? themeDef.header.blocks : currentDraft.header.blocks,
+    };
+    const nextFooter = {
+      ...currentDraft.footer,
+      footerStyle: themeDef.footer.footerStyle,
+      blocks: themeDef.footer.blocks?.length ? themeDef.footer.blocks : currentDraft.footer.blocks,
+    };
+
+    const updated = await this.storeThemeModel.findOneAndUpdate(
+      { storeId },
+      {
+        $set: {
+          'draft.theme': themeDef.theme,
+          'draft.header': nextHeader,
+          'draft.footer': nextFooter,
+          'draft.identityBanner': themeDef.identityBanner,
+          'draft.baseThemeId': themeDef._id.toString(),
+          'draft.pendingHomeSections': themeDef.homePageSections,
+        },
+      },
+      { new: true },
+    );
+
+    await this.themeCatalogService.incrementApplyCount(themeDefinitionId);
+    return {
+      success: true,
+      message: `${themeDef.name} applied to your draft — review it in Store Builder, then Publish to go live`,
+      data: updated,
+    };
   }
 
   async updateTheme(storeId: string, sellerId: string, dto: UpdateThemeDto) {
@@ -187,6 +273,19 @@ export class StoreThemeService {
 
     const updated = await this.storeThemeModel.findOneAndUpdate({ storeId }, { $set: set }, { new: true });
     return { success: true, message: 'Footer updated', data: updated };
+  }
+
+  /** Code editor (Phase 5) — sanitized server-side (independent of whatever the client already sanitized) before ever being persisted or rendered. */
+  async updateCustomCss(storeId: string, sellerId: string, dto: UpdateCustomCssDto) {
+    await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
+    await this.ensureDefaultTheme(storeId);
+    const clean = sanitizeCustomCss(dto.customCss);
+    const updated = await this.storeThemeModel.findOneAndUpdate(
+      { storeId },
+      { $set: { 'draft.customCss': clean } },
+      { new: true },
+    );
+    return { success: true, message: 'Custom CSS updated', data: updated };
   }
 
   async updateIdentityBanner(storeId: string, sellerId: string, dto: UpdateIdentityBannerDto) {
