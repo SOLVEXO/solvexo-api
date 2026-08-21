@@ -296,69 +296,99 @@ export class AuthService {
     }
   }
 
-  /** Social login always creates/looks up a buyer (role: 'user') account — sellers keep using email/password + onboarding. */
+  /** Social login resolves against the buyer (User) or seller (Seller) collection based on dto.role (default 'user') — same role-picks-the-model pattern as login()/signup(). */
   async socialLogin(dto: SocialLoginDto) {
     try {
       const {
         authProvider,
         socialId,
         userName,
+        name,
         email,
         image,
         fcmToken,
         token,
+        role,
       } = dto;
 
       await this.verifySocialToken(authProvider, socialId, token);
 
-      const userModel = this.databaseService.repositories.userModel;
-      let user = await userModel.findOne({
+      const targetRole: 'user' | 'seller' = role === 'seller' ? 'seller' : 'user';
+      let accountModel;
+      if (targetRole === 'seller') {
+        accountModel = this.databaseService.repositories.sellerModel;
+      } else {
+        accountModel = this.databaseService.repositories.userModel;
+      }
+
+      let account = await accountModel.findOne({
         $or: [{ email }, { providerId: socialId, authProvider }],
       });
 
-      if (!user) {
-        user = new userModel({
-          name: userName,
+      if (!account) {
+        account = new accountModel({
+          name: name || userName,
           email,
-          role: 'user',
+          role: targetRole,
           isVerified: true,
           authProvider,
           providerId: socialId,
           profileImage: image || null,
           fcmToken: fcmToken || undefined,
         });
-        await user.save();
+        await account.save();
       } else {
+        if (account.isDelete || account.status === 'deleted') {
+          throw new UnauthorizedException('This account has been deleted');
+        }
+        if (account.status === 'suspended') {
+          throw new UnauthorizedException(
+            'This account has been suspended. Please contact support.',
+          );
+        }
+
         let changed = false;
-        if (!user.providerId) {
-          user.providerId = socialId;
+        if (!account.providerId) {
+          account.providerId = socialId;
           changed = true;
         }
-        if (!user.authProvider) {
-          user.authProvider = authProvider;
+        if (!account.authProvider) {
+          account.authProvider = authProvider;
           changed = true;
         }
-        if (fcmToken && user.fcmToken !== fcmToken) {
-          user.fcmToken = fcmToken;
+        if (fcmToken && account.fcmToken !== fcmToken) {
+          account.fcmToken = fcmToken;
           changed = true;
         }
-        if (!user.isVerified) {
-          user.isVerified = true;
+        if (!account.isVerified) {
+          account.isVerified = true;
           changed = true;
         }
-        if (changed) await user.save();
+        if (changed) await account.save();
+      }
+
+      if (targetRole === 'seller') {
+        this.logSellerSecurityEvent(
+          account._id.toString(),
+          'security',
+          'login_success',
+          `Login via ${authProvider}`,
+          undefined,
+          undefined,
+          false,
+        );
       }
 
       const payload = {
-        sub: user._id,
-        email: user.email,
-        role: user.role,
-        tokenVersion: user.tokenVersion ?? 0,
+        sub: account._id,
+        email: account.email,
+        role: account.role,
+        tokenVersion: account.tokenVersion ?? 0,
       };
       const accessToken = this.jwtService.sign(payload);
       await this.redisService.set(
         accessToken,
-        user._id.toString(),
+        account._id.toString(),
         24 * 60 * 60,
       );
       const refreshToken = this.jwtService.sign(payload, { expiresIn: '7d' });
@@ -368,11 +398,11 @@ export class AuthService {
         success: true,
         data: {
           user: {
-            id: user._id,
-            name: user.name,
-            email: user.email,
-            role: user.role,
-            image: user.profileImage || null,
+            id: account._id,
+            name: account.name,
+            email: account.email,
+            role: account.role,
+            image: account.profileImage || null,
           },
           token: {
             accessToken,
