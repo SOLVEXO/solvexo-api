@@ -62,6 +62,7 @@ import { StoreThemeModule } from './store-theme/store-theme.module';
 import { StorePagesModule } from './store-pages/store-pages.module';
 import { StoreBlogModule } from './store-blog/store-blog.module';
 import { PromotionsModule } from './promotions/promotions.module';
+import { ThemeCatalogModule } from './theme-catalog/theme-catalog.module';
 import { CommissionRulesModule } from './commission-rules/commission-rules.module';
 import { ManualPaymentsModule } from './manual-payments/manual-payments.module';
 import { ExchangeRateModule } from './exchange-rate/exchange-rate.module';
@@ -139,6 +140,7 @@ import { OnboardingSlidesModule } from './onboarding-slides/onboarding-slides.mo
     StorePagesModule,
     StoreBlogModule,
     PromotionsModule,
+    ThemeCatalogModule,
     ExchangeRateModule,
   ],
   controllers: [AppController],

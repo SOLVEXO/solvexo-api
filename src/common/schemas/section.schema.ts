@@ -18,6 +18,17 @@ export const SECTION_TYPES = [
   'featured_category_grid',
   'trust_badges',
   'newsletter',
+  // Generic, reusable additions (Theme Ecosystem Phase 3) — cover the
+  // category-specific asks (lookbook/ingredients/menu/team/location/stats)
+  // without a bespoke section per category. See section-settings.validator.ts
+  // for each one's settings/block shape.
+  'feature_list',
+  'spec_table',
+  'menu_list',
+  'team_grid',
+  'location_info',
+  'stats_counter',
+  'gallery_grid',
 ] as const;
 export type SectionType = (typeof SECTION_TYPES)[number];
 

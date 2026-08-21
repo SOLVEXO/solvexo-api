@@ -2,6 +2,7 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument } from 'mongoose';
 import { Block, BlockSchema } from '../../common/schemas/block.schema';
+import { Section, SectionSchema } from '../../common/schemas/section.schema';
 
 export type StoreThemeDocument = HydratedDocument<StoreTheme>;
 
@@ -165,6 +166,24 @@ export class StoreThemeDraft {
 
   @Prop({ type: String, default: null })
   baseThemeId: string | null;
+
+  // Set only by `StoreThemeService.applyThemeDefinition` (Theme Marketplace
+  // "Use Theme") — the candidate theme's home-page section composition,
+  // staged here (not written straight to `StorePage.sections`) so nothing
+  // about the live storefront changes until the seller actually Publishes.
+  // `publishTheme()` writes this into the home `StorePage` and clears it;
+  // `revertDraftToPublished()`/"Discard Draft" clears it without ever
+  // having touched the live page — the one-level undo the plan calls for,
+  // at zero cost to `StorePage`'s own schema.
+  @Prop({ type: [SectionSchema], default: null })
+  pendingHomeSections: Section[] | null;
+
+  // Scoped custom CSS (Phase 5 code editor) — sanitized server-side before
+  // persisting (see `StoreThemeService`), rendered wrapped in a
+  // `[data-store-theme="{storeId}"]` attribute selector on the storefront so
+  // it can never bleed outside this store's own rendered subtree. No JS.
+  @Prop({ type: String, default: null })
+  customCss: string | null;
 }
 export const StoreThemeDraftSchema = SchemaFactory.createForClass(StoreThemeDraft);
 
@@ -221,6 +240,12 @@ export class StoreTheme {
 
   @Prop({ type: Date, default: null })
   lastPublishedAt: Date | null;
+
+  // Live/published custom CSS — mirrors `draft.customCss`, copied over only
+  // by `publishTheme()`. Pre-existing `StoreTheme` docs simply get `null`
+  // (schema default), so no migration is required.
+  @Prop({ type: String, default: null })
+  customCss: string | null;
 
   createdAt?: Date;
   updatedAt?: Date;
