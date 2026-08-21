@@ -168,8 +168,10 @@ export class StoreService {
     });
 
     // ✅ seller pe sirf onboarded mark — storeId nahi rakhte (source of truth = Store.sellerId)
+    // onboardingDraft cleared too — nothing left to resume once the store is real.
     await this.databaseService.repositories.sellerModel.findByIdAndUpdate(sellerId, {
       isOnboarded: true,
+      onboardingDraft: null,
     });
 
     // Every store always has exactly one platform-plan subscription — auto
