@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Body, Controller, Get, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Req, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -9,11 +9,13 @@ import { UpdateThemeDto } from './dto/update-theme.dto';
 import { UpdateHeaderDto } from './dto/update-header.dto';
 import { UpdateFooterDto } from './dto/update-footer.dto';
 import { UpdateIdentityBannerDto } from './dto/update-identity-banner.dto';
+import { UpdateCustomCssDto } from './dto/update-custom-css.dto';
 
 @ApiTags('Store Theme')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles('seller')
+@UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
 @Controller('api/store-theme')
 export class StoreThemeController {
   constructor(private readonly storeThemeService: StoreThemeService) {}
@@ -38,6 +40,16 @@ export class StoreThemeController {
     return this.storeThemeService.revertDraftToPublished(storeId, req.user.userId);
   }
 
+  @Get(':storeId/versions')
+  listVersions(@Req() req: any, @Param('storeId') storeId: string) {
+    return this.storeThemeService.listVersions(storeId, req.user.userId);
+  }
+
+  @Post(':storeId/versions/:versionId/restore')
+  restoreVersion(@Req() req: any, @Param('storeId') storeId: string, @Param('versionId') versionId: string) {
+    return this.storeThemeService.restoreVersion(storeId, req.user.userId, versionId);
+  }
+
   @Patch(':storeId/theme')
   updateTheme(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: UpdateThemeDto) {
     return this.storeThemeService.updateTheme(storeId, req.user.userId, dto);
@@ -56,5 +68,10 @@ export class StoreThemeController {
   @Patch(':storeId/identity-banner')
   updateIdentityBanner(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: UpdateIdentityBannerDto) {
     return this.storeThemeService.updateIdentityBanner(storeId, req.user.userId, dto);
+  }
+
+  @Patch(':storeId/custom-css')
+  updateCustomCss(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: UpdateCustomCssDto) {
+    return this.storeThemeService.updateCustomCss(storeId, req.user.userId, dto.customCss ?? null);
   }
 }

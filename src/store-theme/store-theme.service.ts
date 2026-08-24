@@ -3,6 +3,7 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { DatabaseService } from '../database/databaseservice';
 import { verifyStoreOwnershipStrict } from '../common/store-ownership.util';
 import { validateBlockSettings } from '../common/store-content/section-settings.validator';
+import { ContentVersioningService } from '../common/content-versioning/content-versioning.service';
 import { StoreThemeDraft } from './schemas/store-theme.schema';
 import { UpdateThemeDto } from './dto/update-theme.dto';
 import { UpdateHeaderDto } from './dto/update-header.dto';
@@ -22,9 +23,42 @@ function validateBlocks(blocks: { type: string; settings: Record<string, any> }[
   }
 }
 
+const MAX_CUSTOM_CSS_LENGTH = 20_000;
+// CSS itself can't execute code or read cookies/make network requests the
+// way JS can — the real, structural reason this feature is safe to expose
+// to an ordinary merchant without a sandboxing layer. These are the actual
+// injection vectors that DO exist at the CSS level (a `javascript:`-scheme
+// URL inside `url(...)`, and the long-deprecated IE-only `expression()`
+// dynamic-property mechanism) — blocked outright rather than left as a
+// theoretical gap.
+const CSS_INJECTION_PATTERNS = [/javascript\s*:/i, /expression\s*\(/i];
+
+/** Real validation, not just a free-text field: length-capped, scanned for
+ *  the known CSS-level injection vectors above. Returns the trimmed value
+ *  (or null for an empty/omitted one) — never throws for merely "unusual"
+ *  CSS, since a merchant/developer must be able to write genuinely
+ *  arbitrary (if layout-risky) styling; only the two concrete vectors above
+ *  are rejected. */
+function validateCustomCss(customCss: string | null | undefined): string | null {
+  if (!customCss || !customCss.trim()) return null;
+  const trimmed = customCss.trim();
+  if (trimmed.length > MAX_CUSTOM_CSS_LENGTH) {
+    throw new BadRequestException(`Custom CSS cannot exceed ${MAX_CUSTOM_CSS_LENGTH.toLocaleString()} characters`);
+  }
+  for (const pattern of CSS_INJECTION_PATTERNS) {
+    if (pattern.test(trimmed)) {
+      throw new BadRequestException('Custom CSS contains a disallowed pattern (javascript: URLs and expression() are not permitted)');
+    }
+  }
+  return trimmed;
+}
+
 @Injectable()
 export class StoreThemeService {
-  constructor(private readonly databaseService: DatabaseService) {}
+  constructor(
+    private readonly databaseService: DatabaseService,
+    private readonly contentVersioningService: ContentVersioningService,
+  ) {}
 
   private get storeThemeModel() {
     return this.databaseService.repositories.storeThemeModel;
@@ -41,30 +75,19 @@ export class StoreThemeService {
       { upsert: true, new: true, setDefaultsOnInsert: true },
     );
     // Backfill `draft` = a copy of the live root fields, for any store that
-    // predates the draft/publish split. A raw `$exists` filter (not an
-    // app-level check on `theme.draft`) is required here — a hydrated
-    // Mongoose Document always reports schema defaults for a path missing
-    // from the stored document, so there's no way to tell "draft was never
-    // set" from "draft was set to all-defaults" once it's been read into JS.
-    // No-ops harmlessly (0 matched) for every store that already has a real
-    // `draft`, including a brand-new store — `setDefaultsOnInsert` already
-    // populated `draft` at insert time above.
-    await this.storeThemeModel.updateOne(
-      { storeId, draft: { $exists: false } },
-      [
-        {
-          $set: {
-            draft: {
-              theme: '$theme',
-              header: '$header',
-              footer: '$footer',
-              identityBanner: '$identityBanner',
-              baseThemeId: '$baseThemeId',
-            },
-          },
-        },
-      ],
-    );
+    // predates the draft/publish split — see ContentVersioningService for
+    // why the raw `$exists` filter is required. No-ops harmlessly (0
+    // matched) for every store that already has a real `draft`, including a
+    // brand-new store — `setDefaultsOnInsert` already populated `draft` at
+    // insert time above.
+    await this.contentVersioningService.backfillDraft(this.storeThemeModel, { storeId }, 'draft', {
+      theme: '$theme',
+      header: '$header',
+      footer: '$footer',
+      identityBanner: '$identityBanner',
+      baseThemeId: '$baseThemeId',
+      customCss: '$customCss',
+    });
     return this.storeThemeModel.findOne({ storeId });
   }
 
@@ -87,6 +110,7 @@ export class StoreThemeService {
         footer: draft.footer,
         identityBanner: draft.identityBanner,
         baseThemeId: draft.baseThemeId,
+        customCss: draft.customCss,
         lastPublishedAt: doc!.lastPublishedAt,
       },
     };
@@ -97,50 +121,86 @@ export class StoreThemeService {
     return { success: true, data: theme };
   }
 
-  /** Copies draft → the live root fields in one atomic $set, using the same document-referencing aggregation-pipeline update as the draft backfill above (so it can't drift into a two-step read-then-write race). */
+  /** Copies draft → the live root fields in one atomic $set via the shared ContentVersioningService (so it can't drift into a two-step read-then-write race), then appends a real version snapshot of what just went live. */
   async publishTheme(storeId: string, sellerId: string) {
     await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
     await this.ensureDefaultTheme(storeId);
-    const updated = await this.storeThemeModel.findOneAndUpdate(
+    const updated = await this.contentVersioningService.publishDraft(
+      this.storeThemeModel,
       { storeId },
-      [
-        {
-          $set: {
-            theme: '$draft.theme',
-            header: '$draft.header',
-            footer: '$draft.footer',
-            identityBanner: '$draft.identityBanner',
-            baseThemeId: '$draft.baseThemeId',
-            lastPublishedAt: '$$NOW',
-          },
-        },
-      ],
-      { new: true },
+      {
+        theme: '$draft.theme',
+        header: '$draft.header',
+        footer: '$draft.footer',
+        identityBanner: '$draft.identityBanner',
+        baseThemeId: '$draft.baseThemeId',
+        customCss: '$draft.customCss',
+      },
+      { lastPublishedAt: '$$NOW' },
     );
-    return { success: true, message: 'Theme published', data: updated };
+
+    // Real version snapshot via the shared ContentVersioningService — a
+    // separate write from the $set above (a tiny, accepted race window on a
+    // low-frequency admin action) rather than forking the publish pipeline
+    // just for this one caller.
+    const publishedAt = (updated as any)?.lastPublishedAt ?? new Date();
+    const withVersion = await this.contentVersioningService.appendVersion(
+      this.storeThemeModel,
+      { storeId },
+      {
+        theme: (updated as any).theme,
+        header: (updated as any).header,
+        footer: (updated as any).footer,
+        identityBanner: (updated as any).identityBanner,
+        baseThemeId: (updated as any).baseThemeId,
+        customCss: (updated as any).customCss,
+        publishedAt,
+      },
+    );
+
+    return { success: true, message: 'Theme published', data: withVersion ?? updated };
+  }
+
+  async listVersions(storeId: string, sellerId: string) {
+    await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
+    const versions = await this.contentVersioningService.listVersions(this.storeThemeModel, { storeId });
+    return { success: true, data: versions };
+  }
+
+  /** Restores a past version into the DRAFT slot for review — mirrors this
+   *  file's other draft-mutating flows (never writes straight to live). The
+   *  seller still has to explicitly hit Publish afterward, same as any
+   *  other draft edit — a restore is not a silent instant rollback. */
+  async restoreVersion(storeId: string, sellerId: string, versionId: string) {
+    await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
+    const version = await this.contentVersioningService.findVersion(this.storeThemeModel, { storeId }, versionId);
+    if (!version) throw new BadRequestException('Version not found');
+
+    const updated = await this.contentVersioningService.restoreVersionToDraft(this.storeThemeModel, { storeId }, {
+      'draft.theme': version.theme,
+      'draft.header': version.header,
+      'draft.footer': version.footer,
+      'draft.identityBanner': version.identityBanner,
+      'draft.baseThemeId': version.baseThemeId,
+      'draft.customCss': version.customCss,
+    });
+    return { success: true, message: 'Version restored to draft — review and publish to make it live.', data: updated };
   }
 
   /** Safety-net "discard unsaved changes" — copies the live root fields back over draft, the mirror image of publishTheme's copy direction. */
   async revertDraftToPublished(storeId: string, sellerId: string) {
     await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
     await this.ensureDefaultTheme(storeId);
-    const updated = await this.storeThemeModel.findOneAndUpdate(
-      { storeId },
-      [
-        {
-          $set: {
-            draft: {
-              theme: '$theme',
-              header: '$header',
-              footer: '$footer',
-              identityBanner: '$identityBanner',
-              baseThemeId: '$baseThemeId',
-            },
-          },
-        },
-      ],
-      { new: true },
-    );
+    const updated = await this.contentVersioningService.revertDraft(this.storeThemeModel, { storeId }, {
+      draft: {
+        theme: '$theme',
+        header: '$header',
+        footer: '$footer',
+        identityBanner: '$identityBanner',
+        baseThemeId: '$baseThemeId',
+        customCss: '$customCss',
+      },
+    });
     return { success: true, message: 'Draft reverted to the published theme', data: updated };
   }
 
@@ -198,5 +258,22 @@ export class StoreThemeService {
     }
     const updated = await this.storeThemeModel.findOneAndUpdate({ storeId }, { $set: set }, { new: true });
     return { success: true, message: 'Store info updated', data: updated };
+  }
+
+  // ── Advanced theme authoring — real, bounded developer capability ────────
+  // (see the class comment on `StoreTheme.customCss` for the full safety
+  // rationale: CSS-only, no custom JS, no arbitrary section-type/template
+  // authoring — the boundary this codebase can actually make safe today).
+
+  async updateCustomCss(storeId: string, sellerId: string, customCss: string | null) {
+    await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
+    await this.ensureDefaultTheme(storeId);
+    const validated = validateCustomCss(customCss);
+    const updated = await this.storeThemeModel.findOneAndUpdate(
+      { storeId },
+      { $set: { 'draft.customCss': validated } },
+      { new: true },
+    );
+    return { success: true, message: 'Custom CSS updated', data: updated };
   }
 }

@@ -165,8 +165,42 @@ export class StoreThemeDraft {
 
   @Prop({ type: String, default: null })
   baseThemeId: string | null;
+
+  // Real "developer/advanced authoring" capability #1 — see the class
+  // comment on `StoreTheme.customCss` below for the full safety rationale.
+  @Prop({ type: String, default: null })
+  customCss: string | null;
 }
 export const StoreThemeDraftSchema = SchemaFactory.createForClass(StoreThemeDraft);
+
+// A real, immutable snapshot of the live theme taken at the moment of every
+// `publishTheme()` call — not just a single `lastPublishedAt` timestamp
+// pretending to be version history. `_id: true` (Mongoose auto-generates
+// one) so the frontend can address a specific version to restore.
+@Schema({ _id: true, timestamps: false })
+export class ThemeVersion {
+  @Prop({ type: StorefrontColorsSchema, default: () => ({}) })
+  theme: StorefrontColors;
+
+  @Prop({ type: StorefrontHeaderSchema, default: () => ({}) })
+  header: StorefrontHeader;
+
+  @Prop({ type: StorefrontFooterSchema, default: () => ({}) })
+  footer: StorefrontFooter;
+
+  @Prop({ type: IdentityBannerSchema, default: () => ({}) })
+  identityBanner: IdentityBanner;
+
+  @Prop({ type: String, default: null })
+  baseThemeId: string | null;
+
+  @Prop({ type: String, default: null })
+  customCss: string | null;
+
+  @Prop({ type: Date, required: true })
+  publishedAt: Date;
+}
+export const ThemeVersionSchema = SchemaFactory.createForClass(ThemeVersion);
 
 // One doc per store — site-wide chrome (theme colors + header + footer),
 // separate from `StorePage` (per-page section content). Replaces
@@ -211,6 +245,28 @@ export class StoreTheme {
   @Prop({ type: String, default: null })
   baseThemeId: string | null;
 
+  // Real "developer/advanced authoring" capability — a bounded, genuinely
+  // safe capability (CSS cannot execute code, read cookies, or make
+  // network requests, unlike JS) rather than a fake "Advanced" button that
+  // just opens the same merchant editor. Deliberately scoped to CSS only —
+  // no custom JS, no custom section-type registration via the UI, no raw
+  // theme-source/template editing — because this app has no sandboxing
+  // mechanism (no iframe/shadow-DOM isolation for storefront content) that
+  // would make arbitrary script execution or new render logic safe to
+  // expose to an ordinary merchant. Length-capped and scanned for CSS-level
+  // injection vectors (`javascript:` URLs, deprecated IE `expression()`) in
+  // `StoreThemeService.validateCustomCss` — real validation, not just a
+  // free-text field. There's no separate "theme developer" role in this
+  // app's auth model — advanced authoring is an opt-in mode the store's own
+  // seller uses on their own store (see `StoreSettings`), not a new RBAC
+  // tier; the security boundary is what CSS itself can't do, not a
+  // permission check on top of it. Rendered as a raw `<style>` tag in
+  // `StorefrontLayout`/Live Preview — unscoped, so a careless rule (e.g.
+  // `img { display: none }`) can genuinely break the seller's own storefront
+  // layout; that's flagged in the editor UI as a real risk, not hidden.
+  @Prop({ type: String, default: null })
+  customCss: string | null;
+
   // Defaults to a copy of the live root fields at read time for any store
   // that predates this field (`ensureDefaultTheme`), never left empty — see
   // that method for why a lazy per-read backfill is safe here (idempotent,
@@ -221,6 +277,12 @@ export class StoreTheme {
 
   @Prop({ type: Date, default: null })
   lastPublishedAt: Date | null;
+
+  // Real version history — capped at the most recent 20 publishes (oldest
+  // dropped) so this array can't grow unbounded on a store that publishes
+  // constantly. Newest last (append-only via $push), reversed for display.
+  @Prop({ type: [ThemeVersionSchema], default: [] })
+  versions: ThemeVersion[];
 
   createdAt?: Date;
   updatedAt?: Date;

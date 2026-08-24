@@ -277,8 +277,23 @@ export class DatabaseService {
     @InjectModel(schema.StorePage.name)
     private storePageModel: Model<schema.StorePageDocument>,
 
+    @InjectModel(schema.CollectionTemplate.name)
+    private collectionTemplateModel: Model<schema.CollectionTemplateDocument>,
+
+    @InjectModel(schema.DraftOrder.name)
+    private draftOrderModel: Model<schema.DraftOrderDocument>,
+
+    @InjectModel(schema.StoreCustomerMeta.name)
+    private storeCustomerMetaModel: Model<schema.StoreCustomerMetaDocument>,
+
     @InjectModel(schema.BlogPost.name)
     private blogPostModel: Model<schema.BlogPostDocument>,
+
+    @InjectModel(schema.Blog.name)
+    private blogModel: Model<schema.BlogDocument>,
+
+    @InjectModel(schema.BlogComment.name)
+    private blogCommentModel: Model<schema.BlogCommentDocument>,
 
     @InjectModel(schema.PromotionRequest.name)
     private promotionRequestModel: Model<schema.PromotionRequestDocument>,
@@ -403,7 +418,12 @@ export class DatabaseService {
       storeBannerModel: this.storeBannerModel,
       storeThemeModel: this.storeThemeModel,
       storePageModel: this.storePageModel,
+      collectionTemplateModel: this.collectionTemplateModel,
+      draftOrderModel: this.draftOrderModel,
+      storeCustomerMetaModel: this.storeCustomerMetaModel,
       blogPostModel: this.blogPostModel,
+      blogModel: this.blogModel,
+      blogCommentModel: this.blogCommentModel,
       promotionRequestModel: this.promotionRequestModel,
       promotionDailyStatsModel: this.promotionDailyStatsModel,
       promotionClickEventModel: this.promotionClickEventModel,

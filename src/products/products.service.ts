@@ -1111,6 +1111,7 @@ export class ProductsService {
         return productVariantModel.create({
           productId: product._id.toString(),
           sku,
+          barcode: v.barcode ?? null,
           price: v.price,
           // Stamped from the owning store's own pricing currency — never
           // client-supplied, never a per-product choice. See

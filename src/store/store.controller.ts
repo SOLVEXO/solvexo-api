@@ -263,4 +263,17 @@ export class StoreController {
     const { userId } = req.user;
     return this.storeService.updateStoreCustomer(userId, storeId, customerId, dto, req.ip, req.headers['user-agent']);
   }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Patch(':storeId/customers/:customerId/meta')
+  async updateStoreCustomerMeta(
+    @Req() req: any,
+    @Param('storeId') storeId: string,
+    @Param('customerId') customerId: string,
+    @Body() dto: { tags?: string[]; notes?: string },
+  ) {
+    const { userId } = req.user;
+    return this.storeService.updateStoreCustomerMeta(userId, storeId, customerId, dto, req.ip, req.headers['user-agent']);
+  }
 }

@@ -33,6 +33,34 @@ export class StorePageSeo {
 }
 export const StorePageSeoSchema = SchemaFactory.createForClass(StorePageSeo);
 
+// The draft/live split (same pattern as `StoreThemeDraft` in
+// store-theme/schemas/store-theme.schema.ts) — every `updateSections` call
+// now lands here first; only `publish()` copies `draft.sections` into the
+// live `sections` field below. Before this, `updateSections` wrote directly
+// into live `sections` regardless of `status`, so editing an
+// already-published page changed what buyers saw immediately — this closes
+// that gap. `_id: false` since this is always a singleton sub-object.
+@Schema({ _id: false })
+export class StorePageDraft {
+  @Prop({ type: [SectionSchema], default: [] })
+  sections: Section[];
+}
+export const StorePageDraftSchema = SchemaFactory.createForClass(StorePageDraft);
+
+// A real, immutable snapshot of the live `sections` taken at the moment of
+// every publish — same ContentVersioningService mechanism StoreTheme uses,
+// not a second hand-rolled copy. `_id: true` so a specific version can be
+// addressed for preview/restore.
+@Schema({ _id: true, timestamps: false })
+export class StorePageVersion {
+  @Prop({ type: [SectionSchema], default: [] })
+  sections: Section[];
+
+  @Prop({ type: Date, required: true })
+  publishedAt: Date;
+}
+export const StorePageVersionSchema = SchemaFactory.createForClass(StorePageVersion);
+
 // A seller-composed page (the storefront home page, or an arbitrary custom
 // page like "About Us"). Exactly one `type:'home'` doc exists per store, with
 // a fixed empty-string slug, served at the bare `/:slug` route. Custom pages
@@ -58,8 +86,23 @@ export class StorePage {
   // Embedded, array index = display order — the whole page is authored and
   // saved as one atomic unit from the builder, so a reorder is a single
   // `$set` of the whole array, not a per-document `order` field to reindex.
+  // This is the LIVE/PUBLISHED copy — read by the public storefront exactly
+  // as before `draft` existed. Sellers now edit `draft.sections`; only
+  // `publish()` copies it here.
   @Prop({ type: [SectionSchema], default: [] })
   sections: Section[];
+
+  // Defaults to a copy of the live `sections` at read time for any page that
+  // predates this field (see `StorePagesService`'s backfill), never left
+  // empty.
+  @Prop({ type: StorePageDraftSchema, default: () => ({}) })
+  draft: StorePageDraft;
+
+  @Prop({ type: Date, default: null })
+  lastPublishedAt: Date | null;
+
+  @Prop({ type: [StorePageVersionSchema], default: [] })
+  versions: StorePageVersion[];
 
   @Prop({ type: StorePageSeoSchema, default: () => ({}) })
   seo: StorePageSeo;

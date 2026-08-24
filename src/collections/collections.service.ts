@@ -110,7 +110,7 @@ export class CollectionsService {
     }
     if (dto.status !== undefined) set.status = dto.status;
 
-    const updated = await this.r.collectionModel.findByIdAndUpdate(collectionId, { $set: set }, { new: true });
+    const updated = await this.r.collectionModel.findOneAndUpdate({ _id: collectionId, storeId }, { $set: set }, { new: true });
     return { success: true, message: 'Collection updated', data: updated };
   }
 
@@ -119,8 +119,8 @@ export class CollectionsService {
     if (collection.type !== 'manual') {
       throw new BadRequestException('Only a manual collection has a directly-editable product list — an automatic collection resolves its products from its rules.');
     }
-    const updated = await this.r.collectionModel.findByIdAndUpdate(
-      collectionId,
+    const updated = await this.r.collectionModel.findOneAndUpdate(
+      { _id: collectionId, storeId },
       { $set: { productIds: dto.productIds } },
       { new: true },
     );
@@ -129,7 +129,7 @@ export class CollectionsService {
 
   async delete(storeId: string, sellerId: string, collectionId: string) {
     const collection = await this.findOwned(storeId, sellerId, collectionId);
-    await this.r.collectionModel.findByIdAndUpdate(collectionId, { $set: { isDelete: true } });
+    await this.r.collectionModel.findOneAndUpdate({ _id: collectionId, storeId }, { $set: { isDelete: true } });
     this.activityLogService.log({
       storeId, category: 'marketing', action: 'collection_deleted',
       description: collection.name, actorId: sellerId, actorRole: 'seller',

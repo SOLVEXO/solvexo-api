@@ -24,6 +24,10 @@ export class Block {
   @Prop({ type: String, required: true }) type: string;
   @Prop({ type: Object, default: () => ({}) }) settings: Record<string, any>;
 
+  // Same purpose as `Section.schemaVersion` (see section.schema.ts) — bumped
+  // whenever this block `type`'s settings shape changes incompatibly.
+  @Prop({ type: Number, default: 1 }) schemaVersion: number;
+
   // Lets a seller hide a block without losing its content (distinct from
   // actually removing it from the array, which is the real "delete") — see
   // SectionRenderer.tsx, which treats a missing/undefined value the same as

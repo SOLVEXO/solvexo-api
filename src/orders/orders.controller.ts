@@ -114,6 +114,42 @@ export class OrdersController {
     return this.ordersService.getSellerOrders(userId, storeId, query);
   }
 
+  // Static segment — must be declared before `seller-orders/:storeId/:orderId`
+  // below, same reasoning as `seller-orders/my` above.
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller', 'admin')
+  @Get('seller-orders/:storeId/export')
+  async exportOrdersCsv(
+    @Req() req: any,
+    @Res() res: Response,
+    @Param('storeId') storeId: string,
+    @Query() query: any,
+  ) {
+    const { userId } = req.user;
+    const csv = await this.ordersService.exportOrdersCsv(
+      userId,
+      storeId,
+      query,
+    );
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="orders.csv"');
+    res.send(csv);
+  }
+
+  // A 3-segment path — never collides with the 2-segment `seller-orders/:storeId`
+  // above or the 1-segment catch-all `:orderId` below.
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller', 'admin')
+  @Get('seller-orders/:storeId/:orderId')
+  async getSellerOrderDetail(
+    @Req() req: any,
+    @Param('storeId') storeId: string,
+    @Param('orderId') orderId: string,
+  ) {
+    const { userId } = req.user;
+    return this.ordersService.getSellerOrderDetail(userId, storeId, orderId);
+  }
+
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('user')
   @Post('cancel/:orderId')
@@ -124,6 +160,26 @@ export class OrdersController {
   ) {
     const { userId } = req.user;
     return this.ordersService.cancelOrder(userId, orderId, body);
+  }
+
+  // Seller-initiated cancellation (e.g. out-of-stock) — scoped to only the
+  // seller's own sellerOrder within a (possibly multi-seller) order.
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller', 'admin')
+  @Post('seller-cancel/:storeId/:orderId')
+  async cancelOrderAsSeller(
+    @Req() req: any,
+    @Param('storeId') storeId: string,
+    @Param('orderId') orderId: string,
+    @Body() body: any,
+  ) {
+    const { userId } = req.user;
+    return this.ordersService.cancelOrderAsSeller(
+      userId,
+      storeId,
+      orderId,
+      body,
+    );
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)

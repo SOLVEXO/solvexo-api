@@ -77,6 +77,21 @@ export class SchedulerService {
     });
   }
 
+  // Sibling to activateScheduledProducts above — StoreBlogService#publish
+  // previously had no way to go live at a future date at all (always
+  // published immediately); a scheduled post now flips to 'published' here
+  // once due, `publishedAt` set to the moment it was actually scheduled for.
+  @Cron('* * * * *')
+  async publishScheduledBlogPosts() {
+    await this.runLocked('publish-scheduled-blog-posts', 50_000, async () => {
+      const { blogPostModel } = this.databaseService.repositories;
+      await blogPostModel.updateMany(
+        { status: 'scheduled', scheduledAt: { $lte: new Date() }, isDelete: false },
+        [{ $set: { status: 'published', publishedAt: '$scheduledAt', scheduledAt: null } }],
+      );
+    });
+  }
+
   // Runs daily — cheap no-op for members who haven't crossed their program's expiry window yet.
   @Cron('0 2 * * *')
   async expireLoyaltyPoints() {
