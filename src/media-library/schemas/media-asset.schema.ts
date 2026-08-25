@@ -4,9 +4,13 @@ import { HydratedDocument } from 'mongoose';
 
 export type MediaAssetDocument = HydratedDocument<MediaAsset>;
 
-// Scoped to promotional-creative uploads only (StoreBanner / PromotionRequest /
-// platform Banner) — deliberately not wired to every upload site in the app
-// (product images, chat attachments, etc.), to avoid scope creep.
+// The Files Library — a real, browsable, per-store asset library (Shopify
+// "Files"-equivalent), not just the promotional-creative tracker this schema
+// started as. `storeId` is the new scoping key for the seller-facing library
+// (null for a platform/admin-owned asset, e.g. a platform Banner — same
+// ownerType/ownerId split as before, kept for that surface). Every image
+// picked through `ImageUpload`'s "Browse Library" option, or uploaded
+// through it while a `storeId` is in scope, lands here.
 @Schema({ timestamps: true })
 export class MediaAsset {
   @Prop({ type: String, enum: ['admin', 'seller'], required: true })
@@ -15,6 +19,13 @@ export class MediaAsset {
   // sellerId for ownerType 'seller', admin userId for ownerType 'admin'.
   @Prop({ required: true })
   ownerId: string;
+
+  // Per-store scoping for the seller Files Library — null for a
+  // pre-Files-Library row (promotional creative, no store context) or a
+  // platform-owned asset. Every new upload made through the library always
+  // sets this for a seller.
+  @Prop({ type: String, default: null, index: true })
+  storeId: string | null;
 
   @Prop({ required: true })
   url: string;
@@ -31,6 +42,21 @@ export class MediaAsset {
   @Prop({ type: Number, default: null })
   height: number | null;
 
+  @Prop({ type: Number, default: null })
+  sizeBytes: number | null;
+
+  @Prop({ type: String, default: null })
+  mimeType: string | null;
+
+  @Prop({ type: String, default: '' })
+  filename: string;
+
+  @Prop({ type: String, default: '' })
+  altText: string;
+
+  @Prop({ type: [String], default: [] })
+  tags: string[];
+
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -38,3 +64,5 @@ export class MediaAsset {
 export const MediaAssetSchema = SchemaFactory.createForClass(MediaAsset);
 
 MediaAssetSchema.index({ ownerType: 1, ownerId: 1, createdAt: -1 });
+MediaAssetSchema.index({ storeId: 1, createdAt: -1 });
+MediaAssetSchema.index({ storeId: 1, filename: 'text', altText: 'text', tags: 'text' });

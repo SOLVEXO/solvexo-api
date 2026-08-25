@@ -321,6 +321,20 @@ export class Store {
   @Prop({ type: String, default: null })
   baseCurrency: string | null;
 
+  // "Markets" — which of the platform's `SUPPORTED_CURRENCIES` a buyer may
+  // actually check out in on THIS store (real, seller-configurable, distinct
+  // from `baseCurrency` which is what the seller is paid/priced in and
+  // never changes). Defaults to every supported currency so a pre-existing
+  // store's checkout behavior is byte-identical to before this field
+  // existed. Deliberately NOT a list of countries/regions/shipping-tax
+  // rules — that would need a much larger, disconnected subsystem (per-
+  // region shipping/tax) that doesn't exist in this codebase; this is
+  // honestly scoped to the one thing the existing FX/checkout-currency
+  // pipeline can actually support today: which currencies this store's
+  // buyers can pay in.
+  @Prop({ type: [String], default: null })
+  enabledCurrencies: string[] | null;
+
   @Prop({ type: String, default: null })
   categoryId!: string | null;
 
@@ -335,6 +349,21 @@ export class Store {
   contactEmail!: string | null;
   @Prop({ type: String, default: null })
   contactPhone!: string | null;
+
+  // Was a hardcoded module constant (10) in InventoryService — every store
+  // saw the exact same low-stock cutoff regardless of what "low" actually
+  // means for their catalog (a seller selling single handmade pieces vs. one
+  // selling bulk commodity stock have very different real thresholds).
+  @Prop({ type: Number, default: 10, min: 1 })
+  lowStockThreshold!: number;
+
+  // A deliberately simple flat-rate tax — NOT a real multi-jurisdiction
+  // compliance engine (see CheckoutService.createCheckout's tax-computation
+  // comment). 0 = no tax charged, matching every store's behavior before
+  // this field existed (a real, disclosed simplification, not a hidden
+  // compliance claim).
+  @Prop({ type: Number, default: 0, min: 0, max: 100 })
+  taxRate!: number;
 
   @Prop({
     type: String,

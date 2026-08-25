@@ -5,8 +5,6 @@ import {
 } from '@nestjs/common';
 import { DatabaseService } from 'src/database/databaseservice';
 
-const LOW_STOCK_THRESHOLD = 10;
-
 @Injectable()
 export class InventoryService {
   constructor(private readonly databaseService: DatabaseService) {}
@@ -24,6 +22,7 @@ export class InventoryService {
       isDelete: false,
     });
     if (!store) throw new ForbiddenException('Store not found or unauthorized');
+    const lowStockThreshold = store.lowStockThreshold ?? 10;
 
     // filters
     const filter: any = { storeId, sellerId, isDelete: false };
@@ -81,7 +80,7 @@ export class InventoryService {
         if (totalStock === 0) {
           stockStatus = 'out_of_stock';
           outOfStock++;
-        } else if (totalStock <= LOW_STOCK_THRESHOLD) {
+        } else if (totalStock <= lowStockThreshold) {
           stockStatus = 'low_stock';
           lowStock++;
           inStock++;
@@ -173,6 +172,7 @@ export class InventoryService {
       isDelete: false,
     });
     if (!store) throw new ForbiddenException('Store not found or unauthorized');
+    const lowStockThreshold = store.lowStockThreshold ?? 10;
 
     const products = await productModel
       .find({
@@ -213,14 +213,14 @@ export class InventoryService {
         name: p.name,
         stock: stockByProduct.get(p._id.toString()) ?? 0,
       }))
-      .filter((p) => p.stock > 0 && p.stock <= LOW_STOCK_THRESHOLD)
+      .filter((p) => p.stock > 0 && p.stock <= lowStockThreshold)
       .sort((a, b) => a.stock - b.stock);
 
     return {
       success: true,
       data: {
         count: items.length,
-        threshold: LOW_STOCK_THRESHOLD,
+        threshold: lowStockThreshold,
         items,
       },
     };

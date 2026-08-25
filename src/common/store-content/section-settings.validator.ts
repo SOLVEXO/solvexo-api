@@ -1,6 +1,19 @@
 /* eslint-disable prettier/prettier */
 import { BadRequestException } from '@nestjs/common';
 import type { SectionType } from '../schemas/section.schema';
+import type {
+  AllowedBlockTypesMap,
+  FeaturedProductsSectionSettings,
+  ProductCatalogSectionSettings,
+  FeaturedCategoryGridSectionSettings,
+  VideoSectionSettings,
+  NewsletterSectionSettings,
+  HeroSectionSettings,
+  RichTextSectionSettings,
+  CollectionProductGridSectionSettings,
+  FarmStorySectionSettings,
+  DropCountdownSectionSettings,
+} from './section-settings.types';
 
 /**
  * Imperative per-type validation for seller-authored storefront content
@@ -71,68 +84,119 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
   maxLen(settings.heading, 120, 'settings.heading');
 
   switch (type) {
-    case 'hero':
-      oneOf(settings.heightPreset, ['small', 'medium', 'large'] as const, 'settings.heightPreset');
+    case 'hero': {
+      const s = settings as HeroSectionSettings;
+      oneOf(s.heightPreset, ['small', 'medium', 'large'] as const, 'settings.heightPreset');
       break;
-    case 'rich_text':
-      oneOf(settings.alignment, ['left', 'center', 'right'] as const, 'settings.alignment');
+    }
+    case 'rich_text': {
+      const s = settings as RichTextSectionSettings;
+      oneOf(s.alignment, ['left', 'center', 'right'] as const, 'settings.alignment');
       break;
-    case 'featured_products':
-      required(settings.source, 'settings.source');
-      oneOf(settings.source, ['manual', 'category', 'collection', 'bestsellers', 'newArrivals', 'trending', 'pinned', 'onSale'] as const, 'settings.source');
-      if (settings.source === 'category') required(settings.categoryId, 'settings.categoryId');
-      if (settings.source === 'collection') required(settings.collectionId, 'settings.collectionId');
-      if (settings.source === 'manual') {
-        if (!Array.isArray(settings.productIds) || settings.productIds.length === 0) {
+    }
+    case 'featured_products': {
+      const s = settings as FeaturedProductsSectionSettings;
+      required(s.source, 'settings.source');
+      oneOf(s.source, ['manual', 'category', 'collection', 'bestsellers', 'newArrivals', 'trending', 'pinned', 'onSale'] as const, 'settings.source');
+      if (s.source === 'category') required(s.categoryId, 'settings.categoryId');
+      if (s.source === 'collection') required(s.collectionId, 'settings.collectionId');
+      if (s.source === 'manual') {
+        if (!Array.isArray(s.productIds) || s.productIds.length === 0) {
           throw new BadRequestException('settings.productIds is required when source is "manual"');
         }
-        if (settings.productIds.length > 24) throw new BadRequestException('settings.productIds cannot exceed 24 products');
+        if (s.productIds.length > 24) throw new BadRequestException('settings.productIds cannot exceed 24 products');
       }
-      if (settings.limit !== undefined && (typeof settings.limit !== 'number' || settings.limit < 1 || settings.limit > 24)) {
+      if (s.limit !== undefined && (typeof s.limit !== 'number' || s.limit < 1 || s.limit > 24)) {
         throw new BadRequestException('settings.limit must be between 1 and 24');
       }
       break;
-    case 'product_catalog':
-      oneOf(settings.defaultSort, ['newest', 'price_asc', 'price_desc', 'best_rated'] as const, 'settings.defaultSort');
-      if (settings.columns !== undefined && ![2, 3, 4].includes(settings.columns)) {
+    }
+    case 'product_catalog': {
+      const s = settings as ProductCatalogSectionSettings;
+      oneOf(s.defaultSort, ['newest', 'price_asc', 'price_desc', 'best_rated'] as const, 'settings.defaultSort');
+      if (s.columns !== undefined && ![2, 3, 4].includes(s.columns)) {
         throw new BadRequestException('settings.columns must be 2, 3, or 4');
       }
       // Optional merchandising filter — at most one of the two (a catalog
       // scoped to both a category AND a collection at once isn't a
       // meaningful combination in this builder, and would silently mean
       // "intersection" to the reader when nothing computes that).
-      if (settings.categoryId !== undefined && typeof settings.categoryId !== 'string') {
+      if (s.categoryId !== undefined && typeof s.categoryId !== 'string') {
         throw new BadRequestException('settings.categoryId must be a string');
       }
-      if (settings.collectionId !== undefined && typeof settings.collectionId !== 'string') {
+      if (s.collectionId !== undefined && typeof s.collectionId !== 'string') {
         throw new BadRequestException('settings.collectionId must be a string');
       }
-      if (settings.categoryId && settings.collectionId) {
+      if (s.categoryId && s.collectionId) {
         throw new BadRequestException('settings.categoryId and settings.collectionId cannot both be set');
       }
       break;
-    case 'featured_category_grid':
-      if (!Array.isArray(settings.categoryIds) || settings.categoryIds.length === 0) {
+    }
+    case 'featured_category_grid': {
+      const s = settings as FeaturedCategoryGridSectionSettings;
+      if (!Array.isArray(s.categoryIds) || s.categoryIds.length === 0) {
         throw new BadRequestException('settings.categoryIds is required');
       }
-      if (settings.categoryIds.length > 12) throw new BadRequestException('settings.categoryIds cannot exceed 12 categories');
+      if (s.categoryIds.length > 12) throw new BadRequestException('settings.categoryIds cannot exceed 12 categories');
       break;
+    }
     case 'trust_badges':
       break; // content lives entirely in trust_badge_item blocks
-    case 'newsletter':
-      maxLen(settings.subtext, 200, 'settings.subtext');
+    case 'newsletter': {
+      const s = settings as NewsletterSectionSettings;
+      maxLen(s.subtext, 200, 'settings.subtext');
       break;
-    case 'video':
-      required(settings.videoUrl, 'settings.videoUrl');
-      if (typeof settings.videoUrl !== 'string' || !/^https:\/\/(www\.)?(youtube\.com|youtu\.be|vimeo\.com)\//i.test(settings.videoUrl)) {
+    }
+    case 'video': {
+      const s = settings as VideoSectionSettings;
+      required(s.videoUrl, 'settings.videoUrl');
+      if (typeof s.videoUrl !== 'string' || !/^https:\/\/(www\.)?(youtube\.com|youtu\.be|vimeo\.com)\//i.test(s.videoUrl)) {
         throw new BadRequestException('settings.videoUrl must be a YouTube or Vimeo link');
       }
-      oneOf(settings.aspectRatio, ['16:9', '4:3', '1:1'] as const, 'settings.aspectRatio');
+      oneOf(s.aspectRatio, ['16:9', '4:3', '1:1'] as const, 'settings.aspectRatio');
       break;
+    }
     case 'image_with_text':
     case 'testimonials':
     case 'faq':
       break; // content lives entirely in blocks, no section-level settings beyond heading
+    case 'collection_product_grid': {
+      const s = settings as CollectionProductGridSectionSettings;
+      oneOf(s.defaultSort, ['newest', 'price_asc', 'price_desc', 'best_rated'] as const, 'settings.defaultSort');
+      if (s.columns !== undefined && ![2, 3, 4].includes(s.columns)) {
+        throw new BadRequestException('settings.columns must be 2, 3, or 4');
+      }
+      if (s.showFilters !== undefined && typeof s.showFilters !== 'boolean') {
+        throw new BadRequestException('settings.showFilters must be a boolean');
+      }
+      break;
+    }
+    case 'editorial_lookbook':
+    case 'craft_process':
+    case 'tech_specs_compare':
+    case 'soft_gallery':
+      break; // content lives entirely in blocks, no section-level settings beyond heading
+    case 'farm_story': {
+      const s = settings as FarmStorySectionSettings;
+      maxLen(s.subheading, 200, 'settings.subheading');
+      if (s.imageUrl !== undefined) assertHttpsUrl(s.imageUrl, 'settings.imageUrl');
+      break;
+    }
+    case 'drop_countdown': {
+      const s = settings as DropCountdownSectionSettings;
+      maxLen(s.subheading, 200, 'settings.subheading');
+      maxLen(s.ctaText, 40, 'settings.ctaText');
+      assertLinkTarget(s.ctaLink, 'settings.ctaLink');
+      break;
+    }
+    default: {
+      // Exhaustiveness guard: if a new SectionType is ever added to
+      // SECTION_TYPES without a case above, `type` here is no longer `never`
+      // and this line fails to compile — the old hand-maintained switch had
+      // no such safety net, so a new type could silently skip validation.
+      const _exhaustive: never = type;
+      throw new BadRequestException(`Unhandled section type: ${_exhaustive as string}`);
+    }
   }
 }
 
@@ -152,6 +216,29 @@ export function validateBlockSettings(blockType: string, settings: Record<string
       if (settings.linkType === 'collection') required(settings.collectionId, 'collectionId');
       if (settings.highlight !== undefined && typeof settings.highlight !== 'boolean') {
         throw new BadRequestException('highlight must be a boolean');
+      }
+      // Real dropdown support (was previously 100% flat). One level only —
+      // a child is validated with the exact same rules as a top-level
+      // nav_link, but is explicitly forbidden from carrying a `children` key
+      // of its own, enforcing the single-level limit at runtime too (not
+      // just at the TypeScript layer, since `settings` arrives as untrusted
+      // network JSON that never goes through that type).
+      if (settings.children !== undefined) {
+        if (!Array.isArray(settings.children)) throw new BadRequestException('children must be an array');
+        if (settings.children.length > 8) throw new BadRequestException('A dropdown cannot have more than 8 items');
+        for (const child of settings.children) {
+          if (child && typeof child === 'object' && 'children' in child) {
+            throw new BadRequestException('Dropdown items cannot themselves have a submenu');
+          }
+          required(child?.label, 'children[].label');
+          maxLen(child?.label, 40, 'children[].label');
+          required(child?.linkType, 'children[].linkType');
+          oneOf(child?.linkType, LINK_TYPES, 'children[].linkType');
+          if (child?.linkType === 'page') required(child?.pageSlug, 'children[].pageSlug');
+          if (child?.linkType === 'external') assertHttpsUrl(child?.url, 'children[].url');
+          if (child?.linkType === 'category') required(child?.categoryId, 'children[].categoryId');
+          if (child?.linkType === 'collection') required(child?.collectionId, 'children[].collectionId');
+        }
       }
       break;
     case 'footer_column':
@@ -250,6 +337,39 @@ export function validateBlockSettings(blockType: string, settings: Record<string
       maxLen(settings.text, 80, 'text');
       break;
 
+    // editorial_lookbook / soft_gallery section blocks
+    case 'lookbook_item':
+    case 'gallery_item':
+      assertHttpsUrl(settings.imageUrl, 'imageUrl');
+      maxLen(settings.caption, 150, 'caption');
+      break;
+
+    // farm_story section blocks
+    case 'farm_story_step':
+      required(settings.icon, 'icon');
+      oneOf(settings.icon, ['sprout', 'leaf', 'truck', 'heart', 'sun'] as const, 'icon');
+      required(settings.title, 'title');
+      maxLen(settings.title, 60, 'title');
+      required(settings.body, 'body');
+      maxLen(settings.body, 300, 'body');
+      break;
+
+    // craft_process section blocks
+    case 'craft_process_step':
+      required(settings.title, 'title');
+      maxLen(settings.title, 60, 'title');
+      required(settings.body, 'body');
+      maxLen(settings.body, 300, 'body');
+      break;
+
+    // tech_specs_compare section blocks
+    case 'spec_row':
+      required(settings.label, 'label');
+      maxLen(settings.label, 60, 'label');
+      required(settings.value, 'value');
+      maxLen(settings.value, 120, 'value');
+      break;
+
     default:
       throw new BadRequestException(`Unknown block type: ${blockType}`);
   }
@@ -268,8 +388,8 @@ export function validateBlocksOfType(blocks: { type: string; settings: Record<st
   }
 }
 
-/** Maps a section type to the block type(s) its `blocks` array is allowed to contain — empty array means the section takes no blocks. */
-export const SECTION_ALLOWED_BLOCK_TYPES: Record<SectionType, readonly string[]> = {
+/** Maps a section type to the block type(s) its `blocks` array is allowed to contain — empty array means the section takes no blocks. Typed against `BlockType` (not `string`) so a typo'd or retired block-type name here is a compile error, not a silent runtime gap. */
+export const SECTION_ALLOWED_BLOCK_TYPES: AllowedBlockTypesMap = {
   hero: ['hero_slide'],
   rich_text: ['paragraph', 'heading', 'image', 'quote', 'list', 'divider'],
   featured_products: [],
@@ -281,4 +401,11 @@ export const SECTION_ALLOWED_BLOCK_TYPES: Record<SectionType, readonly string[]>
   featured_category_grid: [],
   trust_badges: ['trust_badge_item'],
   newsletter: [],
+  collection_product_grid: [],
+  editorial_lookbook: ['lookbook_item'],
+  farm_story: ['farm_story_step'],
+  drop_countdown: [],
+  craft_process: ['craft_process_step'],
+  tech_specs_compare: ['spec_row'],
+  soft_gallery: ['gallery_item'],
 };

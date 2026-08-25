@@ -115,6 +115,20 @@ export class CheckoutService {
     return (user as any)?.currencyPreference ?? 'PKR';
   }
 
+  /** "Markets" enforcement — a store may restrict which of the platform's
+   *  supported currencies its buyers can actually check out in
+   *  (Store.enabledCurrencies, null/absent = every supported currency,
+   *  preserving pre-existing behavior for every store that never touched
+   *  this setting). Falls back to the store's own baseCurrency rather than
+   *  rejecting the checkout outright — a buyer whose preference isn't
+   *  accepted here still completes checkout, just priced in the store's
+   *  currency instead of silently erroring. */
+  private resolveStoreCurrency(preferred: string, store: { baseCurrency?: string | null; enabledCurrencies?: string[] | null }): string {
+    const allowed: string[] = store.enabledCurrencies && store.enabledCurrencies.length > 0 ? store.enabledCurrencies : [...SUPPORTED_CURRENCIES];
+    if (allowed.includes(preferred)) return preferred;
+    return store.baseCurrency && allowed.includes(store.baseCurrency) ? store.baseCurrency : allowed[0];
+  }
+
   async createCheckout(userId: string, body: any = {}) {
     const {
       cartModel,
@@ -125,13 +139,22 @@ export class CheckoutService {
       storeModel,
     } = this.databaseService.repositories;
 
-    const checkoutCurrency = await this.resolveCheckoutCurrency(userId, body.currencyPreference);
+    const preferredCurrency = await this.resolveCheckoutCurrency(userId, body.currencyPreference);
 
     // Cart is now store-scoped (a buyer can have a separate cart per store's
     // subdomain) — without storeId this lookup would be ambiguous the moment
     // a buyer has shopped at more than one store.
     const { storeId } = body;
     if (!storeId) throw new BadRequestException('storeId is required');
+
+    // "Markets" enforcement — see resolveStoreCurrency's comment. A cart is
+    // always single-store today (the marketplace-to-standalone-store
+    // pivot), so this one store's enabledCurrencies is authoritative for
+    // the whole checkout.
+    const targetStore = await storeModel.findById(storeId).select('baseCurrency enabledCurrencies').lean();
+    const checkoutCurrency = targetStore
+      ? this.resolveStoreCurrency(preferredCurrency, targetStore as any)
+      : preferredCurrency;
 
     const cart = await cartModel.findOne({
       userId,
@@ -401,6 +424,10 @@ export class CheckoutService {
 
       let best: { discount: any; items: any[]; amount: number } | null = null;
       for (const discount of candidates) {
+        // free_shipping never discounts items — it's applied later, against
+        // the whole checkout's shipping fee, in addShippingInCheckout below
+        // (shipping is a flat whole-checkout amount, never a per-item one).
+        if (discount.discountType === 'free_shipping') continue;
         if (discount.minOrderAmount != null && wholeStoreSubtotal < discount.minOrderAmount) continue;
 
         const eligible = discount.target === 'store'
@@ -416,9 +443,28 @@ export class CheckoutService {
         const eligibleSubtotal = this.round(eligible.reduce((s: number, i: any) => s + i.totalPrice, 0));
         if (eligibleSubtotal <= 0) continue;
 
-        const amount = discount.discountType === 'percentage'
-          ? this.round(eligibleSubtotal * (discount.discountValue / 100))
-          : Math.min(discount.discountValue, eligibleSubtotal);
+        let amount: number;
+        if (discount.discountType === 'percentage') {
+          amount = this.round(eligibleSubtotal * (discount.discountValue / 100));
+        } else if (discount.discountType === 'fixed') {
+          amount = Math.min(discount.discountValue, eligibleSubtotal);
+        } else {
+          // bogo — "buy X get Y [% off]": across every eligible unit
+          // (aggregated, not per-product — a mixed cart of eligible products
+          // still counts toward the same buy/get sets), the cheapest
+          // eligible units are the ones discounted, same real-world
+          // interpretation as a physical store's "cheapest item free" BOGO.
+          const setSize = (discount.buyQuantity ?? 0) + (discount.getQuantity ?? 0);
+          const totalQty = eligible.reduce((s: number, i: any) => s + i.quantity, 0);
+          const freeUnits = setSize > 0 ? Math.floor(totalQty / setSize) * (discount.getQuantity ?? 0) : 0;
+          if (freeUnits <= 0) continue;
+          const unitPrices: number[] = [];
+          for (const i of eligible) for (let k = 0; k < i.quantity; k++) unitPrices.push(i.price);
+          unitPrices.sort((a, b) => a - b);
+          amount = this.round(
+            unitPrices.slice(0, freeUnits).reduce((s, p) => s + p * ((discount.getDiscountPercent ?? 100) / 100), 0),
+          );
+        }
         if (amount <= 0) continue;
 
         if (!best || amount > best.amount) best = { discount, items: eligible, amount };
@@ -479,7 +525,33 @@ export class CheckoutService {
     // hazard confirmed in the Phase 0 audit (a PKR-priced line must never
     // be treated as a same-scale USD figure).
     const subtotal = this.convertedSubtotal(checkoutItems, checkoutCurrency, fxSnapshots);
-    const taxAmount = 0; // no tax system exists yet — explicitly out of scope, not invented here
+
+    // A deliberately simple, disclosed flat-rate tax — NOT a real
+    // multi-jurisdiction compliance engine (no nexus rules, no per-category
+    // exemptions, no VAT handling). Each seller sets one flat percentage on
+    // their own store (Store.taxRate); applied per-item against that item's
+    // own store, converted the same per-item way `convertedSubtotal` does,
+    // then summed — never against the checkout-wide subtotal directly, since
+    // a multi-seller cart can have stores with different tax rates.
+    const taxRateStoreIds = [...new Set(checkoutItems.map((i) => i.storeId))];
+    const taxRateStores = await this.databaseService.repositories.storeModel
+      .find({ _id: { $in: taxRateStoreIds } })
+      .select('taxRate')
+      .lean();
+    const taxRateByStore = new Map(taxRateStores.map((s: any) => [String(s._id), s.taxRate ?? 0]));
+    const taxAmount = this.round(
+      checkoutItems.reduce((sum, item: any) => {
+        const rate = taxRateByStore.get(item.storeId) ?? 0;
+        if (rate <= 0) return sum;
+        const convertedItemTotal = this.exchangeRateService.convertWithSnapshots(
+          item.totalPrice,
+          item.currency ?? checkoutCurrency,
+          checkoutCurrency,
+          fxSnapshots ?? [],
+        );
+        return sum + convertedItemTotal * (rate / 100);
+      }, 0),
+    );
     const totalAmount = this.round(subtotal + taxAmount);
 
     // Checkout-time upsell: for any store in this cart the buyer is NOT
@@ -684,7 +756,25 @@ export class CheckoutService {
     const storeIdsInCheckout = [
       ...new Set((checkout.items as any[]).map((i) => i.storeId)),
     ];
+    // A seller's own 'free_shipping' automatic discount (DiscountsService) —
+    // always target:'store' (enforced at creation), so eligibility only
+    // ever needs minOrderAmount checked against the whole checkout's
+    // subtotal, unlike the item-level percentage/fixed/bogo discounts
+    // resolved earlier in createCheckout's Pass 3.5. Checked before the
+    // subscriber shipping-benefit reduction below since 0 can't be reduced
+    // any further.
+    let freeShippingApplied = false;
     if (storeIdsInCheckout.length === 1) {
+      const discountsByStore = await this.discountsService.getActiveDiscountsForStores(storeIdsInCheckout);
+      const freeShippingDiscount = discountsByStore.get(storeIdsInCheckout[0])?.find(
+        (d: any) => d.discountType === 'free_shipping' && (d.minOrderAmount == null || checkout.subtotal >= d.minOrderAmount),
+      );
+      if (freeShippingDiscount) {
+        shippingFee = 0;
+        freeShippingApplied = true;
+      }
+    }
+    if (!freeShippingApplied && storeIdsInCheckout.length === 1) {
       const benefitsEntry = await this.subscriptionBenefits.getActiveBenefits(
         userId,
         storeIdsInCheckout[0],
@@ -801,6 +891,8 @@ export class CheckoutService {
       // .redeemReward), so try that before failing outright.
       return this.applyRewardVoucher(checkout, items, storeIdsInCheckout, normalizedCode, userId);
     }
+    if (coupon.startsAt && coupon.startsAt > new Date())
+      throw new BadRequestException('This coupon is not active yet');
     if (coupon.expiresAt && coupon.expiresAt < new Date())
       throw new BadRequestException('This coupon has expired');
     if (coupon.usageLimit != null && coupon.usageCount >= coupon.usageLimit) {

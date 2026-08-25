@@ -165,29 +165,124 @@ export class StoreThemeDraft {
 
   @Prop({ type: String, default: null })
   baseThemeId: string | null;
+
+  // Which theme package (a code-shipped `ThemeDefinition`, see
+  // `builder/themes/` on the frontend — never a Mongo-stored definition,
+  // per the Theme Definition vs. Installed Theme Instance split) this
+  // installed row is running. Switching definitions is itself a normal
+  // draft→publish action like any other theme edit, so it lives here too
+  // (not just at the document root) — see `ThemeVersion.themeDefinitionId`
+  // for why a version snapshot also needs to remember it.
+  @Prop({ type: String, default: null })
+  themeDefinitionId: string | null;
+
+  // Real "developer/advanced authoring" capability #1 — see the class
+  // comment on `StoreTheme.customCss` below for the full safety rationale.
+  @Prop({ type: String, default: null })
+  customCss: string | null;
 }
 export const StoreThemeDraftSchema = SchemaFactory.createForClass(StoreThemeDraft);
 
-// One doc per store — site-wide chrome (theme colors + header + footer),
-// separate from `StorePage` (per-page section content). Replaces
-// `Store.builderConfig` as the source of truth for this content; the old
-// field is left as an inert orphan on already-existing stores rather than
-// migrated in a big-bang way (see `store-theme.service.ts#ensureDefaultTheme`).
+// A real, immutable snapshot of the live theme taken at the moment of every
+// `publishTheme()` call — not just a single `lastPublishedAt` timestamp
+// pretending to be version history. `_id: true` (Mongoose auto-generates
+// one) so the frontend can address a specific version to restore.
+@Schema({ _id: true, timestamps: false })
+export class ThemeVersion {
+  @Prop({ type: StorefrontColorsSchema, default: () => ({}) })
+  theme: StorefrontColors;
+
+  @Prop({ type: StorefrontHeaderSchema, default: () => ({}) })
+  header: StorefrontHeader;
+
+  @Prop({ type: StorefrontFooterSchema, default: () => ({}) })
+  footer: StorefrontFooter;
+
+  @Prop({ type: IdentityBannerSchema, default: () => ({}) })
+  identityBanner: IdentityBanner;
+
+  @Prop({ type: String, default: null })
+  baseThemeId: string | null;
+
+  @Prop({ type: String, default: null })
+  themeDefinitionId: string | null;
+
+  @Prop({ type: String, default: null })
+  customCss: string | null;
+
+  @Prop({ type: Date, required: true })
+  publishedAt: Date;
+}
+export const ThemeVersionSchema = SchemaFactory.createForClass(ThemeVersion);
+
+export const INSTALLED_THEME_STATUSES = ['installed', 'active'] as const;
+export type InstalledThemeStatus = (typeof INSTALLED_THEME_STATUSES)[number];
+
+// One doc per INSTALLED THEME INSTANCE on a store — site-wide chrome (theme
+// colors + header + footer), separate from `StorePage` (per-page section
+// content). A store can have several installed rows (Theme Library
+// "Install") but exactly one `status: 'active'` at a time (Theme Library
+// "Activate") — the public storefront/`getPublic()` always resolves the
+// active row. This is the Theme Definition ↔ Installed Theme Instance split:
+// `themeDefinitionId` names a code-shipped theme package (frontend
+// `builder/themes/<id>/`, never stored in Mongo — theme source is code, not
+// merchant data); everything else on this document is the merchant's own
+// configuration for that installation, seeded from the definition's defaults
+// at install time (`StoreThemeService.installTheme`) and free to diverge
+// after that. Replaces `Store.builderConfig` as the source of truth for this
+// content; that old field is left as an inert orphan on already-existing
+// stores rather than migrated in a big-bang way.
 //
-// `theme`/`header`/`footer`/`identityBanner`/`baseThemeId` at the document
-// root are the LIVE/PUBLISHED state — read by the public storefront exactly
-// as before this field was introduced (`getPublic()`/`PublicStoreThemeController`
-// are untouched). `draft` is the seller's working copy: every
-// `updateTheme`/`updateHeader`/`updateFooter`/`updateIdentityBanner` call now
-// writes here, and only `publishTheme()` copies draft → root. This gives
-// Theme the same safe edit-then-publish behavior `StorePage.status` already
-// has, instead of every keystroke going instantly live.
+// `theme`/`header`/`footer`/`identityBanner`/`baseThemeId`/`themeDefinitionId`
+// at the document root are the LIVE/PUBLISHED state for THIS installed row.
+// `draft` is the seller's working copy: every
+// `updateTheme`/`updateHeader`/`updateFooter`/`updateIdentityBanner` call
+// writes here, and only `publishTheme()` copies draft → root — the same
+// safe edit-then-publish behavior `StorePage.status` already has, instead of
+// every keystroke going instantly live.
+//
+// Pre-existing stores (from before multi-install) have exactly one row,
+// `status: 'active'`, `themeDefinitionId: 'warm-craft'` — see
+// `ensureDefaultTheme`'s backfill and `scripts/migrate-installed-themes.ts`
+// for the one-time index migration this required (the old schema had a
+// single-field unique index on `storeId` alone; a real Mongo deployment
+// needs that dropped once so the new compound index below can be created —
+// flagged there, not silently assumed).
 @Schema({ timestamps: true })
 export class StoreTheme {
   _id: string;
 
-  @Prop({ required: true, unique: true, index: true })
+  // No standalone index here — the compound `{storeId, themeDefinitionId}`
+  // unique index below already serves any storeId-only lookup (Mongo can
+  // use a compound index's leading-field prefix), and a redundant same-key
+  // single-field index is exactly what caused a real, confirmed incident:
+  // an index literally named `storeId_1` was silently recreated with
+  // `unique: true` after being dropped, once from a stale process reconnecting
+  // with pre-migration schema code — found via live install-theme testing
+  // (`E11000 duplicate key error ... storeId_1`). Do not re-add `index: true`
+  // here without also confirming it can never collide by name with a
+  // legacy/incoming migration.
+  @Prop({ required: true })
   storeId: string;
+
+  // Which code-shipped theme package this row is an installation of. Null
+  // only for a document written by code that predates this field and hasn't
+  // been backfilled yet — `ensureDefaultTheme`/the migration script close
+  // that gap; every read path should treat null defensively as
+  // `'warm-craft'` rather than crashing.
+  @Prop({ type: String, default: null, index: true })
+  themeDefinitionId: string | null;
+
+  // Exactly one row per store is `'active'` (enforced in
+  // `StoreThemeService.activateTheme`, not by a schema constraint — Mongo
+  // has no native "at most one true" index). Every other installed row is
+  // `'installed'`: configured and ready, but not what the public storefront
+  // renders.
+  @Prop({ type: String, enum: INSTALLED_THEME_STATUSES, default: 'active', index: true })
+  status: InstalledThemeStatus;
+
+  @Prop({ type: Date, default: () => new Date() })
+  installedAt: Date;
 
   @Prop({ type: StorefrontColorsSchema, default: () => ({}) })
   theme: StorefrontColors;
@@ -211,6 +306,28 @@ export class StoreTheme {
   @Prop({ type: String, default: null })
   baseThemeId: string | null;
 
+  // Real "developer/advanced authoring" capability — a bounded, genuinely
+  // safe capability (CSS cannot execute code, read cookies, or make
+  // network requests, unlike JS) rather than a fake "Advanced" button that
+  // just opens the same merchant editor. Deliberately scoped to CSS only —
+  // no custom JS, no custom section-type registration via the UI, no raw
+  // theme-source/template editing — because this app has no sandboxing
+  // mechanism (no iframe/shadow-DOM isolation for storefront content) that
+  // would make arbitrary script execution or new render logic safe to
+  // expose to an ordinary merchant. Length-capped and scanned for CSS-level
+  // injection vectors (`javascript:` URLs, deprecated IE `expression()`) in
+  // `StoreThemeService.validateCustomCss` — real validation, not just a
+  // free-text field. There's no separate "theme developer" role in this
+  // app's auth model — advanced authoring is an opt-in mode the store's own
+  // seller uses on their own store (see `StoreSettings`), not a new RBAC
+  // tier; the security boundary is what CSS itself can't do, not a
+  // permission check on top of it. Rendered as a raw `<style>` tag in
+  // `StorefrontLayout`/Live Preview — unscoped, so a careless rule (e.g.
+  // `img { display: none }`) can genuinely break the seller's own storefront
+  // layout; that's flagged in the editor UI as a real risk, not hidden.
+  @Prop({ type: String, default: null })
+  customCss: string | null;
+
   // Defaults to a copy of the live root fields at read time for any store
   // that predates this field (`ensureDefaultTheme`), never left empty — see
   // that method for why a lazy per-read backfill is safe here (idempotent,
@@ -222,8 +339,20 @@ export class StoreTheme {
   @Prop({ type: Date, default: null })
   lastPublishedAt: Date | null;
 
+  // Real version history — capped at the most recent 20 publishes (oldest
+  // dropped) so this array can't grow unbounded on a store that publishes
+  // constantly. Newest last (append-only via $push), reversed for display.
+  @Prop({ type: [ThemeVersionSchema], default: [] })
+  versions: ThemeVersion[];
+
   createdAt?: Date;
   updatedAt?: Date;
 }
 
 export const StoreThemeSchema = SchemaFactory.createForClass(StoreTheme);
+
+// One installed row per (store, theme package) — replaces the old
+// single-field unique index on `storeId` alone (a real deployment needs that
+// old index dropped once; see `scripts/migrate-installed-themes.ts`).
+StoreThemeSchema.index({ storeId: 1, themeDefinitionId: 1 }, { unique: true, partialFilterExpression: { themeDefinitionId: { $type: 'string' } } });
+StoreThemeSchema.index({ storeId: 1, status: 1 });

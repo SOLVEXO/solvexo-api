@@ -1,19 +1,37 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { DatabaseService } from 'src/database/databaseservice';
+import { ActivityLogService } from 'src/activity-log/activity-log.service';
 import { CreateVariantDto } from './dto/create-variant.dto';
 import { UpdateVariantDto } from './dto/update-variant.dto';
-import { optionNameSet, optionsKey, VariantOptionInput } from '../products/variant-options.util';
+import {
+  optionNameSet,
+  optionsKey,
+  VariantOptionInput,
+} from '../products/variant-options.util';
 
 @Injectable()
 export class ProductVariantsService {
-  constructor(private readonly databaseService: DatabaseService) {}
+  constructor(
+    private readonly databaseService: DatabaseService,
+    private readonly activityLogService: ActivityLogService,
+  ) {}
 
   private async loadOwnedPhysicalProduct(sellerId: string, productId: string) {
     const { productModel } = this.databaseService.repositories;
-    const product = await productModel.findOne({ _id: productId, isDelete: false });
+    const product = await productModel.findOne({
+      _id: productId,
+      isDelete: false,
+    });
     if (!product) throw new NotFoundException('Product not found');
     if (product.sellerId !== sellerId) {
-      throw new ForbiddenException('You are not authorized to manage this product');
+      throw new ForbiddenException(
+        'You are not authorized to manage this product',
+      );
     }
     if (product.type !== 'physical') {
       throw new BadRequestException('Only physical products support variants');
@@ -21,7 +39,10 @@ export class ProductVariantsService {
     return product;
   }
 
-  private async getActiveVariants(productId: string, excludeVariantId?: string) {
+  private async getActiveVariants(
+    productId: string,
+    excludeVariantId?: string,
+  ) {
     const { productVariantModel } = this.databaseService.repositories;
     const filter: any = { productId, isDelete: false };
     if (excludeVariantId) filter._id = { $ne: excludeVariantId };
@@ -42,7 +63,9 @@ export class ProductVariantsService {
           "This product's variants must all use the same attributes",
         );
       }
-      const duplicate = existing.some((v) => optionsKey(v.options ?? []) === incomingKey);
+      const duplicate = existing.some(
+        (v) => optionsKey(v.options ?? []) === incomingKey,
+      );
       if (duplicate) {
         throw new BadRequestException(
           'A variant with this exact combination of attributes already exists',
@@ -51,17 +74,23 @@ export class ProductVariantsService {
     }
   }
 
-  private async reassignDefault(productId: string, newDefaultVariantId: string) {
+  private async reassignDefault(
+    productId: string,
+    newDefaultVariantId: string,
+  ) {
     const { productVariantModel } = this.databaseService.repositories;
     await productVariantModel.updateMany(
       { productId, _id: { $ne: newDefaultVariantId } },
       { isDefault: false },
     );
-    await productVariantModel.findByIdAndUpdate(newDefaultVariantId, { isDefault: true });
+    await productVariantModel.findByIdAndUpdate(newDefaultVariantId, {
+      isDefault: true,
+    });
   }
 
   async addVariant(sellerId: string, productId: string, dto: CreateVariantDto) {
-    const { productVariantModel, storeModel } = this.databaseService.repositories;
+    const { productVariantModel, storeModel } =
+      this.databaseService.repositories;
     const product = await this.loadOwnedPhysicalProduct(sellerId, productId);
 
     // Stamped from the owning store's own pricing currency, not the
@@ -69,7 +98,10 @@ export class ProductVariantsService {
     // addPhysicalProduct/addDigitalProduct. Looked up fresh rather than
     // copied from an existing sibling variant so this stays correct even
     // if a legacy pre-migration variant's `currency` were ever null.
-    const store = await storeModel.findOne({ _id: product.storeId, isDelete: false });
+    const store = await storeModel.findOne({
+      _id: product.storeId,
+      isDelete: false,
+    });
     if (!store) throw new NotFoundException('Store not found');
 
     const options = dto.options ?? [];
@@ -83,6 +115,7 @@ export class ProductVariantsService {
     const variant = await productVariantModel.create({
       productId,
       sku,
+      barcode: dto.barcode ?? null,
       price: dto.price,
       currency: store.baseCurrency,
       compareAtPrice: dto.compareAtPrice ?? null,
@@ -110,9 +143,11 @@ export class ProductVariantsService {
     productId: string,
     variantId: string,
     dto: UpdateVariantDto,
+    ip?: string,
+    userAgent?: string,
   ) {
     const { productVariantModel } = this.databaseService.repositories;
-    await this.loadOwnedPhysicalProduct(sellerId, productId);
+    const product = await this.loadOwnedPhysicalProduct(sellerId, productId);
 
     const variant = await productVariantModel.findOne({
       _id: variantId,
@@ -134,16 +169,41 @@ export class ProductVariantsService {
 
     const update: any = {};
     if (dto.price !== undefined) update.price = dto.price;
-    if (dto.compareAtPrice !== undefined) update.compareAtPrice = dto.compareAtPrice;
+    if (dto.compareAtPrice !== undefined)
+      update.compareAtPrice = dto.compareAtPrice;
     if (dto.options !== undefined) update.options = dto.options;
     if (dto.stock !== undefined) update.stock = dto.stock;
-    if (dto.unlimitedStock !== undefined) update.unlimitedStock = !!dto.unlimitedStock;
-    if (dto.shippingWeight !== undefined) update.shippingWeight = dto.shippingWeight;
+    if (dto.unlimitedStock !== undefined)
+      update.unlimitedStock = !!dto.unlimitedStock;
+    if (dto.shippingWeight !== undefined)
+      update.shippingWeight = dto.shippingWeight;
     if (dto.images !== undefined) update.images = dto.images;
+    if (dto.sku !== undefined) update.sku = dto.sku;
+    if (dto.barcode !== undefined) update.barcode = dto.barcode;
+
+    // A real audit trail for manual stock adjustments — previously a stock
+    // edit through this endpoint left zero record of who changed it, when,
+    // or from/to what value.
+    if (dto.stock !== undefined && dto.stock !== variant.stock) {
+      await this.activityLogService.log({
+        storeId: product.storeId,
+        category: 'products',
+        action: 'inventory_adjusted',
+        description: `Stock for "${product.name}"${variant.sku ? ` (${variant.sku})` : ''} adjusted: ${variant.stock} → ${dto.stock}`,
+        actorId: sellerId,
+        actorRole: 'seller',
+        targetId: variantId,
+        targetType: 'product_variant',
+        ip,
+        userAgent,
+      });
+    }
 
     const updated =
       Object.keys(update).length > 0
-        ? await productVariantModel.findByIdAndUpdate(variantId, update, { new: true })
+        ? await productVariantModel.findByIdAndUpdate(variantId, update, {
+            new: true,
+          })
         : variant;
 
     if (dto.isDefault === true && !variant.isDefault) {
@@ -155,7 +215,11 @@ export class ProductVariantsService {
       };
     }
 
-    return { success: true, message: 'Variant updated successfully', data: updated };
+    return {
+      success: true,
+      message: 'Variant updated successfully',
+      data: updated,
+    };
   }
 
   async deleteVariant(sellerId: string, productId: string, variantId: string) {
@@ -182,7 +246,9 @@ export class ProductVariantsService {
     });
 
     if (variant.isDefault) {
-      const cheapest = (remaining as any[]).reduce((a, b) => (a.price < b.price ? a : b));
+      const cheapest = (remaining as any[]).reduce((a, b) =>
+        a.price < b.price ? a : b,
+      );
       await this.reassignDefault(productId, cheapest._id.toString());
     }
 

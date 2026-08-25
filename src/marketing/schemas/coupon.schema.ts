@@ -51,6 +51,14 @@ export class Coupon {
   @Prop({ type: Number, default: 0 })
   usageCount: number;
 
+  // Was previously 100%-missing — a coupon was either active from the
+  // moment it was created or not at all, with no way to schedule a future
+  // sale's code ahead of time (e.g. creating a Black Friday code in
+  // October). null = active immediately, same "open-ended" convention
+  // `AutomaticDiscount.startsAt` already uses.
+  @Prop({ type: Date, default: null })
+  startsAt: Date | null;
+
   @Prop({ type: Date, default: null })
   expiresAt: Date | null;
 

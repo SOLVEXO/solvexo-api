@@ -1111,6 +1111,7 @@ export class ProductsService {
         return productVariantModel.create({
           productId: product._id.toString(),
           sku,
+          barcode: v.barcode ?? null,
           price: v.price,
           // Stamped from the owning store's own pricing currency — never
           // client-supplied, never a per-product choice. See
@@ -1388,6 +1389,7 @@ export class ProductsService {
       customLevel,
       price,
       compareAtPrice,
+      templateKey,
     } = body;
 
     if (!productId) throw new BadRequestException('productId is required');
@@ -1424,6 +1426,7 @@ export class ProductsService {
     if (tags !== undefined) productUpdate.tags = tags;
     if (isListedOnSolvexo !== undefined)
       productUpdate.isListedOnSolvexo = isListedOnSolvexo;
+    if (templateKey !== undefined) productUpdate.templateKey = templateKey;
     if (status !== undefined) {
       if (status === 'scheduled' && !scheduledAt) {
         throw new BadRequestException(
