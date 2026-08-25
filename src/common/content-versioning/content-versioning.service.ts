@@ -52,7 +52,15 @@ export class ContentVersioningService {
     return model.findOneAndUpdate(
       filter,
       [{ $set: { ...fieldMap, ...extraSet } }],
-      { new: true },
+      // Mongoose 9 requires this explicit opt-in before it will accept an
+      // array as an aggregation-pipeline update (previously auto-detected) —
+      // without it every call here throws `MongooseError: Cannot pass an
+      // array to query updates unless the \`updatePipeline\` option is set.`,
+      // silently breaking every draft→publish action (found via real runtime
+      // testing, not just type-checking — createStore's theme backfill was
+      // the first live call site to actually exercise this after a Mongoose
+      // version bump).
+      { new: true, updatePipeline: true },
     );
   }
 
@@ -62,7 +70,7 @@ export class ContentVersioningService {
     filter: Record<string, unknown>,
     fieldMap: FieldExpressionMap,
   ): Promise<T | null> {
-    return model.findOneAndUpdate(filter, [{ $set: fieldMap }], { new: true });
+    return model.findOneAndUpdate(filter, [{ $set: fieldMap }], { new: true, updatePipeline: true });
   }
 
   /**
@@ -84,6 +92,7 @@ export class ContentVersioningService {
     await model.updateMany(
       { ...filter, [draftPath]: { $exists: false } },
       [{ $set: { [draftPath]: fieldMap } }],
+      { updatePipeline: true },
     );
   }
 

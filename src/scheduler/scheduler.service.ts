@@ -88,6 +88,10 @@ export class SchedulerService {
       await blogPostModel.updateMany(
         { status: 'scheduled', scheduledAt: { $lte: new Date() }, isDelete: false },
         [{ $set: { status: 'published', publishedAt: '$scheduledAt', scheduledAt: null } }],
+        // See ContentVersioningService for why this option is required on
+        // Mongoose 9 for any array (aggregation-pipeline) update — without
+        // it this cron silently threw every single run.
+        { updatePipeline: true },
       );
     });
   }

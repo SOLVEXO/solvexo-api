@@ -30,21 +30,53 @@ export class CollectionTemplateVersion {
 }
 export const CollectionTemplateVersionSchema = SchemaFactory.createForClass(CollectionTemplateVersion);
 
+export const RESOURCE_TEMPLATE_TYPES = ['collection', 'product', 'page'] as const;
+export type ResourceTemplateType = (typeof RESOURCE_TEMPLATE_TYPES)[number];
+
 /**
- * Exactly one document per store — the section-editable layout every
- * `/collections/:slugOrId` browse page on that store's storefront renders
- * through, generalizing the same Section/Block system Home/Pages already
- * use to Collection pages (previously a hardcoded static grid, see
- * `CollectionDetailPage.tsx`). Unlike `StorePage`, there is no `slug`/`type`
- * discriminator — `storeId` alone is the unique key, since a store only ever
- * has one Collection template (every named collection shares it).
+ * A section-editable ALTERNATE TEMPLATE for a resource type (Collection or
+ * Product — Page already has its own per-page `StorePage.sections`, so
+ * `'page'` here only ever holds re-usable *starter* templates a seller can
+ * assign a new custom page from, see `store-pages` for the assignment side).
+ * One store can have several named templates per `resourceType` — e.g.
+ * `collection.default` + `collection.sale`, `product.default` +
+ * `product.minimal` — the exact Shopify-class "alternate templates"
+ * capability. `{storeId, resourceType, templateKey}` is the unique key
+ * (was `storeId` alone, back when a store could only ever have one shared
+ * Collection layout) — every pre-existing document is backfilled to
+ * `resourceType: 'collection', templateKey: 'default'`, so nothing about
+ * today's single-collection-layout behavior changes for a store that never
+ * creates a second template.
+ *
+ * `Product.templateKey`/`Collection.templateKey` (new fields on those
+ * schemas) name which of a store's own templates a given resource renders
+ * through; `StorefrontProductPage`/`CategoryBrowsePage`/`CollectionDetailPage`
+ * resolve surrounding sections here, with commerce-critical UI (gallery,
+ * variant/qty/add-to-cart, the grid's own product data) staying fixed —
+ * never section/block-configurable, per the architectural boundary the rest
+ * of this storefront-content system already follows.
  */
 @Schema({ timestamps: true })
 export class CollectionTemplate {
   _id: string;
 
-  @Prop({ required: true, unique: true, index: true })
+  @Prop({ required: true, index: true })
   storeId: string;
+
+  @Prop({ type: String, enum: RESOURCE_TEMPLATE_TYPES, default: 'collection', index: true })
+  resourceType: ResourceTemplateType;
+
+  @Prop({ type: String, default: 'default' })
+  templateKey: string;
+
+  // Merchant-facing label ("Default", "Sale Collection", "Minimal Product")
+  // shown in the template picker — distinct from `templateKey`, which is the
+  // stable identifier resources reference and never changes once assigned.
+  @Prop({ type: String, default: 'Default' })
+  name: string;
+
+  @Prop({ type: Boolean, default: false })
+  isDefault: boolean;
 
   // LIVE/PUBLISHED copy — read by the public storefront. Sellers edit
   // `draft.sections`; only `publish()` copies it here.
@@ -70,3 +102,10 @@ export class CollectionTemplate {
 }
 
 export const CollectionTemplateSchema = SchemaFactory.createForClass(CollectionTemplate);
+
+// Replaces the old single-field unique index on `storeId` — see the class
+// comment above and `scripts/migrate-installed-themes.ts`'s sibling
+// migration note (a real deployment needs the old index dropped once; run
+// the equivalent one-off backfill for this collection before relying on
+// multiple templates per store).
+CollectionTemplateSchema.index({ storeId: 1, resourceType: 1, templateKey: 1 }, { unique: true });

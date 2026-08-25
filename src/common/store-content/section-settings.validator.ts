@@ -11,6 +11,8 @@ import type {
   HeroSectionSettings,
   RichTextSectionSettings,
   CollectionProductGridSectionSettings,
+  FarmStorySectionSettings,
+  DropCountdownSectionSettings,
 } from './section-settings.types';
 
 /**
@@ -169,6 +171,24 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
       }
       break;
     }
+    case 'editorial_lookbook':
+    case 'craft_process':
+    case 'tech_specs_compare':
+    case 'soft_gallery':
+      break; // content lives entirely in blocks, no section-level settings beyond heading
+    case 'farm_story': {
+      const s = settings as FarmStorySectionSettings;
+      maxLen(s.subheading, 200, 'settings.subheading');
+      if (s.imageUrl !== undefined) assertHttpsUrl(s.imageUrl, 'settings.imageUrl');
+      break;
+    }
+    case 'drop_countdown': {
+      const s = settings as DropCountdownSectionSettings;
+      maxLen(s.subheading, 200, 'settings.subheading');
+      maxLen(s.ctaText, 40, 'settings.ctaText');
+      assertLinkTarget(s.ctaLink, 'settings.ctaLink');
+      break;
+    }
     default: {
       // Exhaustiveness guard: if a new SectionType is ever added to
       // SECTION_TYPES without a case above, `type` here is no longer `never`
@@ -317,6 +337,39 @@ export function validateBlockSettings(blockType: string, settings: Record<string
       maxLen(settings.text, 80, 'text');
       break;
 
+    // editorial_lookbook / soft_gallery section blocks
+    case 'lookbook_item':
+    case 'gallery_item':
+      assertHttpsUrl(settings.imageUrl, 'imageUrl');
+      maxLen(settings.caption, 150, 'caption');
+      break;
+
+    // farm_story section blocks
+    case 'farm_story_step':
+      required(settings.icon, 'icon');
+      oneOf(settings.icon, ['sprout', 'leaf', 'truck', 'heart', 'sun'] as const, 'icon');
+      required(settings.title, 'title');
+      maxLen(settings.title, 60, 'title');
+      required(settings.body, 'body');
+      maxLen(settings.body, 300, 'body');
+      break;
+
+    // craft_process section blocks
+    case 'craft_process_step':
+      required(settings.title, 'title');
+      maxLen(settings.title, 60, 'title');
+      required(settings.body, 'body');
+      maxLen(settings.body, 300, 'body');
+      break;
+
+    // tech_specs_compare section blocks
+    case 'spec_row':
+      required(settings.label, 'label');
+      maxLen(settings.label, 60, 'label');
+      required(settings.value, 'value');
+      maxLen(settings.value, 120, 'value');
+      break;
+
     default:
       throw new BadRequestException(`Unknown block type: ${blockType}`);
   }
@@ -349,4 +402,10 @@ export const SECTION_ALLOWED_BLOCK_TYPES: AllowedBlockTypesMap = {
   trust_badges: ['trust_badge_item'],
   newsletter: [],
   collection_product_grid: [],
+  editorial_lookbook: ['lookbook_item'],
+  farm_story: ['farm_story_step'],
+  drop_countdown: [],
+  craft_process: ['craft_process_step'],
+  tech_specs_compare: ['spec_row'],
+  soft_gallery: ['gallery_item'],
 };

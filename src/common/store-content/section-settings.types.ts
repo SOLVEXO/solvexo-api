@@ -87,6 +87,27 @@ export interface CollectionProductGridSectionSettings {
   showFilters?: boolean;
 }
 
+// ── Theme-exclusive sections ─────────────────────────────────────────────
+// eslint-disable-next-line @typescript-eslint/no-empty-interface
+export interface EditorialLookbookSectionSettings extends BaseSectionSettings {}
+export interface FarmStorySectionSettings extends BaseSectionSettings {
+  subheading?: string;
+  imageUrl?: string;
+}
+export interface DropCountdownSectionSettings extends BaseSectionSettings {
+  subheading?: string;
+  /** ISO date/time string — a countdown target, not validated against any particular format beyond being a string (an unparseable value just renders as "Dropped!" client-side). */
+  targetDate?: string;
+  ctaText?: string;
+  ctaLink?: LinkTarget;
+}
+// eslint-disable-next-line @typescript-eslint/no-empty-interface
+export interface CraftProcessSectionSettings extends BaseSectionSettings {}
+// eslint-disable-next-line @typescript-eslint/no-empty-interface
+export interface TechSpecsCompareSectionSettings extends BaseSectionSettings {}
+// eslint-disable-next-line @typescript-eslint/no-empty-interface
+export interface SoftGallerySectionSettings extends BaseSectionSettings {}
+
 // Compile-time-only helper — `T`'s keys must cover every member of `K` (extra
 // keys on `T` are still allowed; TS's structural typing can't cheaply forbid
 // those without losing the specific per-key value types, and the real risk
@@ -109,6 +130,12 @@ export type SectionSettingsMap = RequireAllKeys<SectionType, {
   trust_badges: TrustBadgesSectionSettings;
   newsletter: NewsletterSectionSettings;
   collection_product_grid: CollectionProductGridSectionSettings;
+  editorial_lookbook: EditorialLookbookSectionSettings;
+  farm_story: FarmStorySectionSettings;
+  drop_countdown: DropCountdownSectionSettings;
+  craft_process: CraftProcessSectionSettings;
+  tech_specs_compare: TechSpecsCompareSectionSettings;
+  soft_gallery: SoftGallerySectionSettings;
 }>;
 
 // ── Block settings, one per block `type` string ─────────────────────────────
@@ -200,6 +227,29 @@ export interface TrustBadgeItemBlockSettings {
   text: string;
 }
 
+// ── Theme-exclusive section blocks ───────────────────────────────────────
+export interface LookbookItemBlockSettings {
+  imageUrl: string;
+  caption?: string;
+}
+export interface FarmStoryStepBlockSettings {
+  icon: 'sprout' | 'leaf' | 'truck' | 'heart' | 'sun';
+  title: string;
+  body: string;
+}
+export interface CraftProcessStepBlockSettings {
+  title: string;
+  body: string;
+}
+export interface SpecRowBlockSettings {
+  label: string;
+  value: string;
+}
+export interface GalleryItemBlockSettings {
+  imageUrl: string;
+  caption?: string;
+}
+
 export const BLOCK_TYPES = [
   'nav_link',
   'footer_column',
@@ -216,6 +266,11 @@ export const BLOCK_TYPES = [
   'testimonial',
   'faq_item',
   'trust_badge_item',
+  'lookbook_item',
+  'farm_story_step',
+  'craft_process_step',
+  'spec_row',
+  'gallery_item',
 ] as const;
 export type BlockType = (typeof BLOCK_TYPES)[number];
 
@@ -236,6 +291,11 @@ export type BlockSettingsMap = RequireAllKeys<BlockType, {
   testimonial: TestimonialBlockSettings;
   faq_item: FaqItemBlockSettings;
   trust_badge_item: TrustBadgeItemBlockSettings;
+  lookbook_item: LookbookItemBlockSettings;
+  farm_story_step: FarmStoryStepBlockSettings;
+  craft_process_step: CraftProcessStepBlockSettings;
+  spec_row: SpecRowBlockSettings;
+  gallery_item: GalleryItemBlockSettings;
 }>;
 
 /** `SECTION_ALLOWED_BLOCK_TYPES`'s values are typed against this so a typo'd or retired block-type string in that map is a compile error, not a silent runtime gap. */

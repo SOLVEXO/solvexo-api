@@ -109,6 +109,7 @@ export class CollectionsService {
       set.rules = { categoryId: dto.rules.categoryId ?? null, tags: dto.rules.tags ?? [], matchType: dto.rules.matchType ?? 'any' };
     }
     if (dto.status !== undefined) set.status = dto.status;
+    if (dto.templateKey !== undefined) set.templateKey = dto.templateKey;
 
     const updated = await this.r.collectionModel.findOneAndUpdate({ _id: collectionId, storeId }, { $set: set }, { new: true });
     return { success: true, message: 'Collection updated', data: updated };
@@ -206,7 +207,7 @@ export class CollectionsService {
   async listPublic(storeId: string) {
     const collections = await this.r.collectionModel
       .find({ storeId, isDelete: false, status: 'active' })
-      .select('name slug description image type sortOrder seo')
+      .select('name slug description image type sortOrder templateKey seo')
       .sort({ sortOrder: 1, createdAt: -1 })
       .lean();
     return { success: true, data: collections };
@@ -224,7 +225,7 @@ export class CollectionsService {
         status: 'active',
         $or: isValidObjectId(slugOrId) ? [{ slug: slugOrId }, { _id: slugOrId }] : [{ slug: slugOrId }],
       })
-      .select('name slug description image type seo')
+      .select('name slug description image type templateKey seo')
       .lean();
     if (!collection) throw new NotFoundException('Collection not found');
     return { success: true, data: collection };

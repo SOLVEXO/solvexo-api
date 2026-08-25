@@ -24,6 +24,17 @@ export const SECTION_TYPES = [
   // is currently browsing. Exists only inside a store's singleton Collection
   // Template (see `collection-template/`), pre-seeded there and nowhere else.
   'collection_product_grid',
+  // Theme-exclusive sections (frontend `sectionSchemaRegistry`'s
+  // `exclusiveToTheme`) — only ever offered in their owning theme's Section
+  // Library, but validated identically to every other section type here
+  // since `settings`/`blocks` still arrive as untrusted network JSON
+  // regardless of which theme's UI offered them.
+  'editorial_lookbook',
+  'farm_story',
+  'drop_countdown',
+  'craft_process',
+  'tech_specs_compare',
+  'soft_gallery',
 ] as const;
 export type SectionType = (typeof SECTION_TYPES)[number];
 
