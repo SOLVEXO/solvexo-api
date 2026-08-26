@@ -322,8 +322,19 @@ export class SellerPlatformSubscriptionsService {
 
   async getStorePlan(sellerId: string, storeId: string) {
     await this.verifyStoreOwnership(storeId, sellerId);
-    const sub = await this.subModel.findOne({ storeId, isDelete: false }).lean();
-    if (!sub) throw new NotFoundException('This store has no platform-plan record yet');
+    let sub = await this.subModel.findOne({ storeId, isDelete: false }).lean();
+    // Self-healing read, same lazy-backfill convention this codebase already
+    // uses for StoreTheme/StorePage/CollectionTemplate — a store created
+    // before this subscription system existed (or whose original
+    // `ensureDefaultSubscription` call raced a not-yet-seeded free plan)
+    // should never be permanently stuck with no plan record; found via a
+    // live QA pass where a real pre-existing store's Billing Center/Finance
+    // page surfaced this as a raw 404 with no recovery path in the UI.
+    if (!sub) {
+      const created = await this.ensureDefaultSubscription(storeId, sellerId);
+      if (created) sub = (created as any).toObject ? (created as any).toObject() : created;
+    }
+    if (!sub) throw new NotFoundException('This store has no platform-plan record yet — no free plan is configured. Contact support.');
     const plan = await this.planModel.findById((sub as any).platformPlanId).lean();
     return { success: true, data: { ...sub, plan } };
   }

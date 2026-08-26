@@ -33,6 +33,17 @@ export class AuthService {
     private readonly jwtService: JwtService,
   ) {}
 
+  /** Only the buyer (`User`) collection has a `storeId` dimension — Seller/
+   *  Admin accounts are never store-scoped. Building the same `{email}` (or
+   *  `{email, storeId}`) filter in one place instead of repeating this
+   *  ternary in every method below is what actually makes the same email
+   *  resolve to a genuinely separate account per store (see
+   *  `User.storeId`'s schema comment) — every buyer lookup in this service
+   *  must go through this, not a bare `{email}`. */
+  private emailScope(email: string, role: string, storeId?: string | null): Record<string, unknown> {
+    return role === 'user' ? { email, storeId: storeId ?? null } : { email };
+  }
+
   /** Deletes the Redis session key for this access token so `JwtAuthGuard` rejects it immediately, instead of waiting out its TTL. */
   async logout(token: string) {
     await this.redisService.del(token);
@@ -77,7 +88,7 @@ export class AuthService {
 
   async signup(RegisterDto: RegisterDto) {
     try {
-      const { name, email, password, phone, address, role, profileImage } =
+      const { name, email, password, phone, address, role, profileImage, storeId } =
         RegisterDto;
 
       // Public registration only ever creates a buyer or seller account —
@@ -95,7 +106,7 @@ export class AuthService {
         throw new UnauthorizedException('Invalid user type');
       }
 
-      const existingUser = await userModel.findOne({ email });
+      const existingUser = await userModel.findOne(this.emailScope(email, role, storeId));
       if (existingUser) {
         throw new UnauthorizedException('User already exists');
       }
@@ -116,6 +127,10 @@ export class AuthService {
         otp,
         otpExpiresAt,
         isVerified: false,
+        // Only the buyer collection has this field — Seller has none, so
+        // this is simply dropped for a seller signup (Mongoose ignores
+        // fields not declared on the schema).
+        ...(role === 'user' ? { storeId: storeId ?? null } : {}),
       });
 
       await user.save();
@@ -136,7 +151,7 @@ export class AuthService {
 
   async login(loginDto: LoginDto, ip?: string, userAgent?: string) {
     try {
-      const { email, password, role } = loginDto;
+      const { email, password, role, storeId } = loginDto;
 
       let userModel;
 
@@ -150,7 +165,7 @@ export class AuthService {
         throw new UnauthorizedException('Invalid user type');
       }
 
-      const existingUser = await userModel.findOne({ email });
+      const existingUser = await userModel.findOne(this.emailScope(email, role, storeId));
       if (!existingUser) {
         throw new UnauthorizedException('Invalid email or password');
       }
@@ -222,6 +237,9 @@ export class AuthService {
         email: existingUser.email,
         role: existingUser.role,
         tokenVersion: existingUser.tokenVersion ?? 0,
+        // Informational only — read from the resolved account, never from
+        // client input. Buyer-only; undefined for seller/admin.
+        storeId: role === 'user' ? ((existingUser as any).storeId ?? null) : undefined,
       };
 
       const token = this.jwtService.sign(payload);
@@ -315,6 +333,7 @@ export class AuthService {
         fcmToken,
         token,
         role,
+        storeId,
       } = dto;
 
       await this.verifySocialToken(authProvider, socialId, token);
@@ -327,8 +346,16 @@ export class AuthService {
         accountModel = this.databaseService.repositories.userModel;
       }
 
+      // Both branches of this $or must stay scoped by storeId for a buyer —
+      // otherwise a Google sign-in at Store A could resolve into an account
+      // created by password signup at Store B (or the legacy global one)
+      // for the same email, defeating per-store identity separation.
+      const storeScope = targetRole === 'user' ? { storeId: storeId ?? null } : {};
       let account = await accountModel.findOne({
-        $or: [{ email }, { providerId: socialId, authProvider }],
+        $or: [
+          { email, ...storeScope },
+          { providerId: socialId, authProvider, ...storeScope },
+        ],
       });
 
       if (!account) {
@@ -341,6 +368,7 @@ export class AuthService {
           providerId: socialId,
           profileImage: image || null,
           fcmToken: fcmToken || undefined,
+          ...(targetRole === 'user' ? { storeId: storeId ?? null } : {}),
         });
         await account.save();
       } else {
@@ -390,6 +418,7 @@ export class AuthService {
         email: account.email,
         role: account.role,
         tokenVersion: account.tokenVersion ?? 0,
+        storeId: targetRole === 'user' ? ((account as any).storeId ?? null) : undefined,
       };
       const accessToken = this.jwtService.sign(payload);
       await this.redisService.set(
@@ -421,7 +450,7 @@ export class AuthService {
     }
   }
 
-  async resendOtp(email: string, role: string) {
+  async resendOtp(email: string, role: string, storeId?: string) {
     try {
       // OTP resend only ever applies to a not-yet-verified buyer/seller
       // registration — admin accounts are always created pre-verified via
@@ -436,7 +465,7 @@ export class AuthService {
         throw new UnauthorizedException('Invalid user type');
       }
 
-      const user = await userModel.findOne({ email });
+      const user = await userModel.findOne(this.emailScope(email, role, storeId));
       if (!user) {
         throw new UnauthorizedException('User not found');
       }
@@ -466,7 +495,7 @@ export class AuthService {
     }
   }
 
-  async verifyOtp(email: string, role: string, otp: string) {
+  async verifyOtp(email: string, role: string, otp: string, storeId?: string) {
     try {
       // Registration-verification only — activates a not-yet-verified
       // buyer/seller account. Admin accounts are always created
@@ -483,7 +512,7 @@ export class AuthService {
         throw new UnauthorizedException('Invalid user type');
       }
 
-      const user = await userModel.findOne({ email });
+      const user = await userModel.findOne(this.emailScope(email, role, storeId));
       if (!user) {
         throw new UnauthorizedException('User not found');
       }
@@ -510,6 +539,7 @@ export class AuthService {
         email: user.email,
         role: user.role,
         tokenVersion: user.tokenVersion ?? 0,
+        storeId: role === 'user' ? ((user as any).storeId ?? null) : undefined,
       };
       const token = this.jwtService.sign(payload, { expiresIn: '1h' });
 
@@ -551,7 +581,7 @@ export class AuthService {
   // record, so an attacker gains nothing by requesting it for someone
   // else's admin email; removing it would just lock real admins out of
   // self-service password recovery for no security benefit.
-  async forgotPassword(email: string, role: string) {
+  async forgotPassword(email: string, role: string, storeId?: string) {
     try {
       let userModel;
 
@@ -565,7 +595,7 @@ export class AuthService {
         throw new UnauthorizedException('Invalid user type');
       }
 
-      const user = await userModel.findOne({ email });
+      const user = await userModel.findOne(this.emailScope(email, role, storeId));
 
       // Same response whether or not the account exists — an "email not
       // found" error here would let anyone enumerate which emails are
@@ -601,6 +631,7 @@ export class AuthService {
     role: string,
     otp: string,
     newPassword: string,
+    storeId?: string,
   ) {
     try {
       let userModel;
@@ -615,7 +646,7 @@ export class AuthService {
         throw new UnauthorizedException('Invalid user type');
       }
 
-      const user = await userModel.findOne({ email });
+      const user = await userModel.findOne(this.emailScope(email, role, storeId));
       if (!user) {
         throw new UnauthorizedException('User not found');
       }

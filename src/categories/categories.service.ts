@@ -69,6 +69,15 @@ export class CategoriesService {
           );
         }
       } else {
+        // A malformed `parentId` (found via a live QA pass: a corrupted
+        // `Store.categoryId` value was a category NAME string, not a real
+        // ObjectId) must be rejected cleanly here — without this guard,
+        // Mongoose throws a raw CastError whose message names the exact
+        // model/field/driver internals, which the catch block below would
+        // otherwise forward verbatim to the client.
+        if (!isValidObjectId(parentId)) {
+          throw new BadRequestException('Parent category not found');
+        }
         parent = await categoryModel.findOne({
           _id: parentId,
           status: 'active',
@@ -125,9 +134,12 @@ export class CategoriesService {
       ) {
         throw error;
       }
-      throw new BadRequestException(
-        error.message || 'Failed to create category',
-      );
+      // Never forward a raw driver/ORM exception message (model name, field
+      // name, cast-error internals) to the client — found leaking verbatim
+      // in a live QA pass via this exact fallback. Log the real error
+      // server-side for debugging; the client gets a safe, generic message.
+      console.error('CategoriesService.addCategory failed:', error);
+      throw new BadRequestException('Failed to create category');
     }
   }
 

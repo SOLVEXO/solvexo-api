@@ -118,6 +118,30 @@ export class AdminUsersService {
     const stores = await this.r.storeModel.find({ _id: { $in: storeIds } }, { plan: 1 });
     const planByStoreId = new Map(stores.map((s) => [String(s._id), s.plan]));
 
+    // A buyer (User) account has no storeId of its own — it's one global
+    // identity, not owned by any store — so "which store(s) is this person a
+    // customer of" has to be derived from their real Orders (Order.sellerOrders[].
+    // storeId), not read off a schema field. Only computed for the buyer rows
+    // actually on this page, not the whole collection.
+    const buyerRows = rows.filter((row) => row.roleLabel === 'buyer');
+    const buyerIds = buyerRows.map((row) => String(row._id));
+    const storeNamesByBuyerId = new Map<string, string[]>();
+    if (buyerIds.length) {
+      const grouped = await this.r.orderModel.aggregate([
+        { $match: { userId: { $in: buyerIds } } },
+        { $unwind: '$sellerOrders' },
+        { $group: { _id: { userId: '$userId', storeId: '$sellerOrders.storeId' } } },
+        { $group: { _id: '$_id.userId', storeIds: { $addToSet: '$_id.storeId' } } },
+      ]);
+      const allStoreIds = [...new Set(grouped.flatMap((g: any) => g.storeIds as string[]))];
+      const buyerStores = await this.r.storeModel.find({ _id: { $in: allStoreIds } }, { name: 1 });
+      const nameByStoreId = new Map(buyerStores.map((s: any) => [String(s._id), s.name as string]));
+      for (const g of grouped) {
+        const names = (g.storeIds as string[]).map((id) => nameByStoreId.get(String(id))).filter((n): n is string => !!n);
+        storeNamesByBuyerId.set(String(g._id), names);
+      }
+    }
+
     const items = rows.map((row) => ({
       id: row._id,
       name: row.name,
@@ -126,6 +150,7 @@ export class AdminUsersService {
       plan: row.roleLabel === 'seller' ? planByStoreId.get(row.storeId) ?? 'starter' : 'free',
       status: row.status,
       createdAt: row.createdAt,
+      stores: row.roleLabel === 'buyer' ? storeNamesByBuyerId.get(String(row._id)) ?? [] : undefined,
     }));
 
     return { success: true, data: { items, total, page, limit } };

@@ -6,6 +6,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { promises as dns } from 'dns';
+import { isValidObjectId } from 'mongoose';
 import { DatabaseService } from 'src/database/databaseservice';
 import {
   SellerType, ProductType, resolveTools,
@@ -81,6 +82,16 @@ export class StoreService {
   // A store's category must be one of the admin-curated main categories —
   // not a subcategory, and not an arbitrary/made-up id.
   private async assertValidRootCategory(categoryId: string) {
+    // A malformed `categoryId` (found via a live QA pass: this exact
+    // unguarded lookup let a corrupted, non-ObjectId `Store.categoryId`
+    // value crash `updateStore` with a raw, unhandled 500 on EVERY save
+    // attempt — the form always resubmits the store's current categoryId
+    // even when only unrelated fields like Tagline/Contact Email changed)
+    // must be rejected cleanly here, not passed through to a raw Mongoose
+    // CastError.
+    if (!isValidObjectId(categoryId)) {
+      throw new BadRequestException('Selected category not found');
+    }
     const category = await this.databaseService.repositories.categoryModel.findOne({
       _id: categoryId,
       status: 'active',
