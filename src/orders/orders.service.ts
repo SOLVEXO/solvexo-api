@@ -251,6 +251,12 @@ export class OrdersService {
       isDelete: false,
     };
 
+    // Scope to one buyer's own order history within this store — reuses the
+    // exact same aggregation/pagination/stats logic below rather than a
+    // separate customer-order-history endpoint.
+    if (query.userId) {
+      matchFilter.userId = query.userId;
+    }
     if (query.type && query.type !== 'all') {
       matchFilter['sellerOrders.fulfillmentType'] = query.type;
     }

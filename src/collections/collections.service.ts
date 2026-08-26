@@ -72,6 +72,7 @@ export class CollectionsService {
       type: dto.type,
       productIds: dto.type === 'manual' ? (dto.productIds ?? []) : [],
       rules: dto.type === 'automatic' ? { categoryId: dto.rules?.categoryId ?? null, tags: dto.rules?.tags ?? [], matchType: dto.rules?.matchType ?? 'any' } : undefined,
+      status: dto.status ?? 'draft',
     });
 
     this.activityLogService.log({

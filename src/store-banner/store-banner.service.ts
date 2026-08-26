@@ -63,8 +63,20 @@ export class StoreBannerService {
 
   async findActiveForStore(storeId: string) {
     const limit = await this.adminConfigService.getPlacementLimit('storeHero');
+    const now = new Date();
     const banners = await this.storeBannerModel
-      .find({ storeId, status: 'active' })
+      .find({
+        storeId,
+        status: 'active',
+        // `status: 'active'` alone is only ever set once, at create/update
+        // time (see computeInitialStatus) — nothing later flips it when a
+        // banner's own `endAt` passes, so without this date check an expired
+        // banner keeps showing on the live storefront indefinitely.
+        $and: [
+          { $or: [{ startAt: null }, { startAt: { $lte: now } }] },
+          { $or: [{ endAt: null }, { endAt: { $gte: now } }] },
+        ],
+      })
       .sort({ priority: -1, order: 1 })
       .limit(limit)
       .lean();

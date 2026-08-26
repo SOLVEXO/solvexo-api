@@ -48,18 +48,18 @@ export class AuthController {
 
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @Post('resend-otp')
-  async resendOtp(@Body() body: { email: string; role: string }) {
-    const { email, role } = body;
-    return this.authService.resendOtp(email, role);
+  async resendOtp(@Body() body: { email: string; role: string; storeId?: string }) {
+    const { email, role, storeId } = body;
+    return this.authService.resendOtp(email, role, storeId);
   }
 
   // A 6-digit OTP is only 1,000,000 combinations — without a tight per-IP
   // limit here, that's brute-forceable well within the OTP's expiry window.
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Post('verifyOtp')
-  async verifyOtp(@Body() body: { email: string; role: string, otp: string }) {
-    const { email, role, otp } = body;
-    return this.authService.verifyOtp(email, role, otp);
+  async verifyOtp(@Body() body: { email: string; role: string, otp: string; storeId?: string }) {
+    const { email, role, otp, storeId } = body;
+    return this.authService.verifyOtp(email, role, otp, storeId);
   }
 
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
@@ -67,8 +67,9 @@ export class AuthController {
   async forgotPassword(
     @Body('email') email: string,
     @Body('role') role: string,
+    @Body('storeId') storeId?: string,
   ) {
-    return this.authService.forgotPassword(email, role);
+    return this.authService.forgotPassword(email, role, storeId);
   }
 
   // Same OTP-brute-force reasoning as verifyOtp above — reset-password also
@@ -80,8 +81,9 @@ export class AuthController {
   @Body('role') role: string,
   @Body('otp') otp: string,
   @Body('newPassword') newPassword: string,
+  @Body('storeId') storeId?: string,
 ) {
-  return this.authService.resetPassword(email, role, otp, newPassword);
+  return this.authService.resetPassword(email, role, otp, newPassword, storeId);
 }
 
   @UseGuards(JwtAuthGuard)

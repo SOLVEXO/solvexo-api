@@ -19,7 +19,7 @@ const MAX_SECTIONS_PER_PAGE = 40;
 // (`/category/:slugOrId`) and collection-detail (`/collections/:slugOrId`)
 // storefront routes (Store Builder plan, Phase 11) for the same reason.
 // 'search' reserved for the navbar search box's results route.
-const RESERVED_CUSTOM_PAGE_SLUGS = ['home', 'blog', 'category', 'collections', 'product', 'search', 'cart', 'checkout', 'login', 'account'];
+const RESERVED_CUSTOM_PAGE_SLUGS = ['home', 'blog', 'category', 'collections', 'product', 'search', 'cart', 'checkout', 'login', 'register', 'verify-otp', 'account'];
 
 function validateSections(sections: { type: SectionType; settings: Record<string, any>; blocks: { type: string; settings: Record<string, any> }[] }[]) {
   if (sections.length > MAX_SECTIONS_PER_PAGE) {

@@ -77,4 +77,11 @@ export class SocialLoginDto {
   @IsOptional()
   @IsString()
   token?: string;
+
+  // Same store-scoping as RegisterDto/LoginDto.storeId — see User.storeId.
+  // Backend-contract-complete; no storefront social-login UI sends this yet.
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsString()
+  storeId?: string;
 }

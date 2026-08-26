@@ -41,4 +41,13 @@ export class RegisterDto {
   @IsOptional()
   @IsString()
   profileImage?: string;
+
+  // Set only when registering through a specific store's own storefront
+  // subdomain — makes this a genuinely separate account scoped to that
+  // store (real per-store identity, like Shopify), not the shared global
+  // buyer account. Omitted (undefined/null) = the legacy apex-wide account
+  // behavior, unchanged from before this field existed.
+  @IsOptional()
+  @IsString()
+  storeId?: string;
 }

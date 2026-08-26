@@ -1051,6 +1051,19 @@ export class ProductsService {
       if (v?.price === undefined || v?.price === null) {
         throw new BadRequestException('Every variant requires a price');
       }
+      // Real server-side range validation — found via a live QA pass that
+      // a negative price/stock reached the database layer unvalidated
+      // (the schema itself has no `min` constraint), surfacing as a raw,
+      // unhelpful 500 instead of a clean field-specific error.
+      if (typeof v.price !== 'number' || Number.isNaN(v.price) || v.price < 0) {
+        throw new BadRequestException('Price cannot be negative');
+      }
+      if (v.compareAtPrice !== undefined && v.compareAtPrice !== null && (typeof v.compareAtPrice !== 'number' || v.compareAtPrice < 0)) {
+        throw new BadRequestException('Compare-at price cannot be negative');
+      }
+      if (!v.unlimitedStock && v.stock !== undefined && (typeof v.stock !== 'number' || Number.isNaN(v.stock) || v.stock < 0)) {
+        throw new BadRequestException('Stock quantity cannot be negative');
+      }
       try {
         validateOptions(v.options);
       } catch (e: any) {
