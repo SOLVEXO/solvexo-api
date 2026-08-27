@@ -12,6 +12,7 @@ import { ExchangeRateService } from 'src/exchange-rate/exchange-rate.service';
 import { SUPPORTED_CURRENCIES, FxSnapshot } from 'src/exchange-rate/schemas/exchange-rate.schema';
 import { GiftCardsService } from 'src/gift-cards/gift-cards.service';
 import { DiscountsService } from 'src/discounts/discounts.service';
+import { resolveBuyerStoreScope } from 'src/common/store-scope.util';
 
 // Shipping zones are a Pakistan-domestic geography feature (predates the
 // PKR/USD split entirely) — ShippingZone.shippingPrice has no currency
@@ -129,7 +130,7 @@ export class CheckoutService {
     return store.baseCurrency && allowed.includes(store.baseCurrency) ? store.baseCurrency : allowed[0];
   }
 
-  async createCheckout(userId: string, body: any = {}) {
+  async createCheckout(userId: string, body: any = {}, userStoreId?: string | null) {
     const {
       cartModel,
       productModel,
@@ -143,9 +144,11 @@ export class CheckoutService {
 
     // Cart is now store-scoped (a buyer can have a separate cart per store's
     // subdomain) — without storeId this lookup would be ambiguous the moment
-    // a buyer has shopped at more than one store.
-    const { storeId } = body;
-    if (!storeId) throw new BadRequestException('storeId is required');
+    // a buyer has shopped at more than one store. Resolved through
+    // resolveBuyerStoreScope rather than trusting body.storeId outright — a
+    // store-scoped buyer account can only ever check out their own store's
+    // cart (see cart.controller.ts's use of the same helper).
+    const storeId = resolveBuyerStoreScope(userStoreId, body.storeId);
 
     // "Markets" enforcement — see resolveStoreCurrency's comment. A cart is
     // always single-store today (the marketplace-to-standalone-store

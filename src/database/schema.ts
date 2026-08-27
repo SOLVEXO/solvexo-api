@@ -61,6 +61,11 @@ export { PlatformPlanPaymentAttempt, PlatformPlanPaymentAttemptDocument, Platfor
 export { AiCreditsWallet, AiCreditsWalletDocument, AiCreditsWalletSchema } from '../platform-plans/schemas/ai-credits-wallet.schema';
 export { PlatformAddonPurchase, PlatformAddonPurchaseDocument, PlatformAddonPurchaseSchema } from '../platform-plans/schemas/platform-addon-purchase.schema';
 export { StoreLocation, StoreLocationDocument, StoreLocationSchema } from '../pos/schemas/store-location.schema';
+export { BookableService, BookableServiceDocument, BookableServiceSchema } from '../bookings/schemas/bookable-service.schema';
+export { ServiceAvailability, ServiceAvailabilityDocument, ServiceAvailabilitySchema } from '../bookings/schemas/service-availability.schema';
+export { ServicePackage, ServicePackageDocument, ServicePackageSchema } from '../bookings/schemas/service-package.schema';
+export { PackagePurchase, PackagePurchaseDocument, PackagePurchaseSchema } from '../bookings/schemas/package-purchase.schema';
+export { Booking, BookingDocument, BookingSchema } from '../bookings/schemas/booking.schema';
 
 export type { Otp, OtpSchema } from '../otp/schemas/otp.schema';
 export type { OtpDocument } from '../otp/schemas/otp.schema';
@@ -118,6 +123,7 @@ export { MediaAsset, MediaAssetDocument, MediaAssetSchema } from '../media-libra
 export { StoreBanner, StoreBannerDocument, StoreBannerSchema } from '../store-banner/schemas/store-banner.schema';
 export { StoreTheme, StoreThemeDocument, StoreThemeSchema } from '../store-theme/schemas/store-theme.schema';
 export { StorePage, StorePageDocument, StorePageSchema } from '../store-pages/schemas/store-page.schema';
+export { StoreFaq, StoreFaqDocument, StoreFaqSchema } from '../store-faq/schemas/store-faq.schema';
 export { CollectionTemplate, CollectionTemplateDocument, CollectionTemplateSchema } from '../collection-template/schemas/collection-template.schema';
 export { DraftOrder, DraftOrderDocument, DraftOrderSchema } from '../draft-orders/schemas/draft-order.schema';
 export { StoreCustomerMeta, StoreCustomerMetaDocument, StoreCustomerMetaSchema } from '../store/schemas/store-customer-meta.schema';

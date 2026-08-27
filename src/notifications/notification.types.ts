@@ -6,6 +6,7 @@ export const NOTIFICATION_TYPES = {
   ORDER_SHIPPED: 'order_shipped',
   ORDER_DELIVERED: 'order_delivered',
   ORDER_CANCELLED: 'order_cancelled',
+  REFUND_REQUESTED: 'refund_requested',
   PAYMENT_SUCCESS: 'payment_success',
   PAYMENT_FAILED: 'payment_failed',
   NEW_MESSAGE: 'new_message',
@@ -36,6 +37,11 @@ export const NOTIFICATION_TYPES = {
   STORE_APPROVED: 'store_approved',
   STORE_REJECTED: 'store_rejected',
   VERIFICATION_UNDER_REVIEW: 'verification_under_review',
+  BOOKING_CONFIRMED: 'booking_confirmed',
+  BOOKING_CANCELLED: 'booking_cancelled',
+  BOOKING_RESCHEDULED: 'booking_rescheduled',
+  BOOKING_REMINDER: 'booking_reminder',
+  PACKAGE_PURCHASED: 'package_purchased',
 } as const;
 
 export type NotificationType = (typeof NOTIFICATION_TYPES)[keyof typeof NOTIFICATION_TYPES];
@@ -46,6 +52,7 @@ export const NOTIFICATION_CATEGORY: Record<string, 'orders' | 'messages' | 'prom
   [NOTIFICATION_TYPES.ORDER_SHIPPED]: 'orders',
   [NOTIFICATION_TYPES.ORDER_DELIVERED]: 'orders',
   [NOTIFICATION_TYPES.ORDER_CANCELLED]: 'orders',
+  [NOTIFICATION_TYPES.REFUND_REQUESTED]: 'orders',
   [NOTIFICATION_TYPES.PAYMENT_SUCCESS]: 'orders',
   [NOTIFICATION_TYPES.PAYMENT_FAILED]: 'orders',
   [NOTIFICATION_TYPES.NEW_MESSAGE]: 'messages',
@@ -76,4 +83,9 @@ export const NOTIFICATION_CATEGORY: Record<string, 'orders' | 'messages' | 'prom
   [NOTIFICATION_TYPES.STORE_APPROVED]: 'promotions',
   [NOTIFICATION_TYPES.STORE_REJECTED]: 'promotions',
   [NOTIFICATION_TYPES.VERIFICATION_UNDER_REVIEW]: 'promotions',
+  [NOTIFICATION_TYPES.BOOKING_CONFIRMED]: 'orders',
+  [NOTIFICATION_TYPES.BOOKING_CANCELLED]: 'orders',
+  [NOTIFICATION_TYPES.BOOKING_RESCHEDULED]: 'orders',
+  [NOTIFICATION_TYPES.BOOKING_REMINDER]: 'orders',
+  [NOTIFICATION_TYPES.PACKAGE_PURCHASED]: 'orders',
 };

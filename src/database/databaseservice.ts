@@ -161,6 +161,21 @@ export class DatabaseService {
     @InjectModel(schema.StoreLocation.name)
     private storeLocationModel: Model<schema.StoreLocationDocument>,
 
+    @InjectModel(schema.BookableService.name)
+    private bookableServiceModel: Model<schema.BookableServiceDocument>,
+
+    @InjectModel(schema.ServiceAvailability.name)
+    private serviceAvailabilityModel: Model<schema.ServiceAvailabilityDocument>,
+
+    @InjectModel(schema.ServicePackage.name)
+    private servicePackageModel: Model<schema.ServicePackageDocument>,
+
+    @InjectModel(schema.PackagePurchase.name)
+    private packagePurchaseModel: Model<schema.PackagePurchaseDocument>,
+
+    @InjectModel(schema.Booking.name)
+    private bookingModel: Model<schema.BookingDocument>,
+
     @InjectModel(schema.ActivityLog.name)
     private activityLogModel: Model<schema.ActivityLogDocument>,
 
@@ -277,6 +292,9 @@ export class DatabaseService {
     @InjectModel(schema.StorePage.name)
     private storePageModel: Model<schema.StorePageDocument>,
 
+    @InjectModel(schema.StoreFaq.name)
+    private storeFaqModel: Model<schema.StoreFaqDocument>,
+
     @InjectModel(schema.CollectionTemplate.name)
     private collectionTemplateModel: Model<schema.CollectionTemplateDocument>,
 
@@ -379,6 +397,11 @@ export class DatabaseService {
       aiCreditsWalletModel: this.aiCreditsWalletModel,
       platformAddonPurchaseModel: this.platformAddonPurchaseModel,
       storeLocationModel: this.storeLocationModel,
+      bookableServiceModel: this.bookableServiceModel,
+      serviceAvailabilityModel: this.serviceAvailabilityModel,
+      servicePackageModel: this.servicePackageModel,
+      packagePurchaseModel: this.packagePurchaseModel,
+      bookingModel: this.bookingModel,
       activityLogModel: this.activityLogModel,
       couponModel: this.couponModel,
       loyaltyProgramModel: this.loyaltyProgramModel,
@@ -418,6 +441,7 @@ export class DatabaseService {
       storeBannerModel: this.storeBannerModel,
       storeThemeModel: this.storeThemeModel,
       storePageModel: this.storePageModel,
+      storeFaqModel: this.storeFaqModel,
       collectionTemplateModel: this.collectionTemplateModel,
       draftOrderModel: this.draftOrderModel,
       storeCustomerMetaModel: this.storeCustomerMetaModel,
