@@ -116,8 +116,8 @@ export class CheckoutController {
   @UseInterceptors(IdempotencyInterceptor)
   @Post('create-checkout')
   async createCheckout(@Req() req: any, @Body() body: any) {
-    const { userId } = req.user;
-    return this.checkoutService.createCheckout(userId, body);
+    const { userId, storeId } = req.user;
+    return this.checkoutService.createCheckout(userId, body, storeId);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)

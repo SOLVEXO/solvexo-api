@@ -123,6 +123,7 @@ export { MediaAsset, MediaAssetDocument, MediaAssetSchema } from '../media-libra
 export { StoreBanner, StoreBannerDocument, StoreBannerSchema } from '../store-banner/schemas/store-banner.schema';
 export { StoreTheme, StoreThemeDocument, StoreThemeSchema } from '../store-theme/schemas/store-theme.schema';
 export { StorePage, StorePageDocument, StorePageSchema } from '../store-pages/schemas/store-page.schema';
+export { StoreFaq, StoreFaqDocument, StoreFaqSchema } from '../store-faq/schemas/store-faq.schema';
 export { CollectionTemplate, CollectionTemplateDocument, CollectionTemplateSchema } from '../collection-template/schemas/collection-template.schema';
 export { DraftOrder, DraftOrderDocument, DraftOrderSchema } from '../draft-orders/schemas/draft-order.schema';
 export { StoreCustomerMeta, StoreCustomerMetaDocument, StoreCustomerMetaSchema } from '../store/schemas/store-customer-meta.schema';

@@ -61,6 +61,7 @@ import { MediaLibraryModule } from './media-library/media-library.module';
 import { StoreBannerModule } from './store-banner/store-banner.module';
 import { StoreThemeModule } from './store-theme/store-theme.module';
 import { StorePagesModule } from './store-pages/store-pages.module';
+import { StoreFaqModule } from './store-faq/store-faq.module';
 import { CollectionTemplateModule } from './collection-template/collection-template.module';
 import { DraftOrdersModule } from './draft-orders/draft-orders.module';
 import { StoreBlogModule } from './store-blog/store-blog.module';
@@ -143,6 +144,7 @@ import { BookingsModule } from './bookings/bookings.module';
     StoreBannerModule,
     StoreThemeModule,
     StorePagesModule,
+    StoreFaqModule,
     CollectionTemplateModule,
     DraftOrdersModule,
     StoreBlogModule,

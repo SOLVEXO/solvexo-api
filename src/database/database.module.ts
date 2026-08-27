@@ -195,6 +195,7 @@ import { DatabaseService } from './databaseservice';
       { name: schema.StoreBanner.name, schema: schema.StoreBannerSchema },
       { name: schema.StoreTheme.name, schema: schema.StoreThemeSchema },
       { name: schema.StorePage.name, schema: schema.StorePageSchema },
+      { name: schema.StoreFaq.name, schema: schema.StoreFaqSchema },
       { name: schema.CollectionTemplate.name, schema: schema.CollectionTemplateSchema },
       { name: schema.DraftOrder.name, schema: schema.DraftOrderSchema },
       { name: schema.StoreCustomerMeta.name, schema: schema.StoreCustomerMetaSchema },

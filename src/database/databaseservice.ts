@@ -292,6 +292,9 @@ export class DatabaseService {
     @InjectModel(schema.StorePage.name)
     private storePageModel: Model<schema.StorePageDocument>,
 
+    @InjectModel(schema.StoreFaq.name)
+    private storeFaqModel: Model<schema.StoreFaqDocument>,
+
     @InjectModel(schema.CollectionTemplate.name)
     private collectionTemplateModel: Model<schema.CollectionTemplateDocument>,
 
@@ -438,6 +441,7 @@ export class DatabaseService {
       storeBannerModel: this.storeBannerModel,
       storeThemeModel: this.storeThemeModel,
       storePageModel: this.storePageModel,
+      storeFaqModel: this.storeFaqModel,
       collectionTemplateModel: this.collectionTemplateModel,
       draftOrderModel: this.draftOrderModel,
       storeCustomerMetaModel: this.storeCustomerMetaModel,
