@@ -10,7 +10,10 @@ export class wishList {
  @Prop({ type: String, required: true })
    userId: string;
 
-
+  // Same per-store scoping as Cart — a buyer's wishlist on one store's
+  // subdomain is separate from their wishlist on another store's.
+  @Prop({ type: String, required: true })
+   storeId: string;
 
   @Prop({ type: String, required: true })
    productId: string;
@@ -32,4 +35,4 @@ wishListSchema.index({ productVariantId: 1 });
 // near-simultaneous add-to-wishlist requests both passing the
 // findOne-based duplicate check in CartService.addToWishlist before
 // either write commits).
-wishListSchema.index({ userId: 1, productId: 1, productVariantId: 1 }, { unique: true });
+wishListSchema.index({ userId: 1, storeId: 1, productId: 1, productVariantId: 1 }, { unique: true });

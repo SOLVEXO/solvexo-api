@@ -69,6 +69,37 @@ export class Seller {
     @Prop({ type: String, default: null })
     stripeCustomerId: string | null;
 
+    // Flips true once SellerPlatformSubscriptionsService.confirmOnboardingPaymentMethod
+    // has verified (server-side, against Stripe) that this seller completed the
+    // onboarding wizard's Payment step with a real card on file — StoreService.createStore
+    // uses this to skip the pending/admin-review Leads queue entirely and activate a
+    // self-serve seller's store immediately, Shopify-style (they've already paid/put a
+    // card down, so there's nothing left for an admin to gate).
+    @Prop({ type: Boolean, default: false })
+    hasPlatformPaymentMethod: boolean;
+
+    // Stripe Connect (Express) account for RECEIVING buyer payments directly
+    // — a seller's "own payment gateway", completely separate from
+    // `stripeCustomerId` above (that one is the seller PAYING Solvexo for
+    // their platform plan; this one is Solvexo routing a BUYER's payment
+    // straight to the seller). See StripeConnectService.
+    @Prop({ type: String, default: null })
+    stripeConnectedAccountId: string | null;
+
+    // 'not_connected' until the seller starts onboarding; 'pending' while
+    // Stripe still needs more info/verification; 'active' once both
+    // chargesEnabled and payoutsEnabled are true on the Stripe account.
+    // Synced from Stripe (StripeConnectService.syncAccountStatus), never
+    // set directly from client input.
+    @Prop({ type: String, enum: ['not_connected', 'pending', 'active', 'restricted'], default: 'not_connected' })
+    stripeConnectStatus: 'not_connected' | 'pending' | 'active' | 'restricted';
+
+    @Prop({ type: Boolean, default: false })
+    stripeConnectChargesEnabled: boolean;
+
+    @Prop({ type: Boolean, default: false })
+    stripeConnectPayoutsEnabled: boolean;
+
     // Bumped whenever this account is suspended/deactivated so any
     // already-issued JWT is invalidated on its next request — see
     // JwtAuthGuard, which rejects a token whose tokenVersion claim doesn't
@@ -84,6 +115,14 @@ export class Seller {
     // suspended is never in this list, so it's correctly left untouched.
     @Prop({ type: [String], default: [] })
     cascadeSuspendedStoreIds: string[];
+
+    // In-progress /onboard wizard state (step + form fields), so a page
+    // reload/lost connection/different device resumes exactly where the
+    // seller left off instead of losing everything back to step 1. Cleared
+    // (set back to null) once StoreService.createStore actually creates the
+    // store — there's nothing left to resume once onboarding is done.
+    @Prop({ type: Object, default: null })
+    onboardingDraft: { step: number; maxReached: number; form: Record<string, unknown> } | null;
 }
 
 

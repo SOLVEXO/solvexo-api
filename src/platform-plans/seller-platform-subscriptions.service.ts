@@ -221,19 +221,120 @@ export class SellerPlatformSubscriptionsService {
       return null;
     }
 
+    // A seller who already put a card on file during onboarding (see
+    // createOnboardingSetupIntent/confirmOnboardingPaymentMethod below) has a
+    // Stripe customer waiting — seed it onto the free-plan record now so a
+    // later upgrade never has to create a second customer for the same seller.
+    const seller = await this.db.repositories.sellerModel.findById(sellerId).lean();
+    const stripeCustomerId = (seller as any)?.stripeCustomerId ?? null;
+
     const now = new Date();
     return this.subModel.create({
       storeId, sellerId, platformPlanId: (freePlan as any)._id.toString(),
       billingInterval: 'monthly', amountUSD: 0, status: 'active',
       startedAt: now, currentPeriodStart: now, currentPeriodEnd: this.addPeriod(now, 'monthly'),
       nextBillingDate: this.addPeriod(now, 'monthly'),
+      stripeCustomerId,
+      paymentProvider: stripeCustomerId ? 'stripe' : 'manual',
     });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // Onboarding wizard — Payment step (before any store exists yet)
+  // ═══════════════════════════════════════════════════════════════════════
+
+  /** Creates (or reuses) this seller's Stripe customer and a SetupIntent so
+   *  the onboarding wizard's Payment step can collect a card via Stripe
+   *  Elements — called before the store itself has been created. */
+  async createOnboardingSetupIntent(sellerId: string) {
+    const seller = await this.db.repositories.sellerModel.findById(sellerId);
+    if (!seller) throw new NotFoundException('Seller account not found');
+
+    if (!seller.stripeCustomerId) {
+      const { providerCustomerId } = await this.gateway.getOrCreateCustomer(sellerId, seller.email, seller.name ?? '');
+      seller.stripeCustomerId = providerCustomerId;
+      await seller.save();
+    }
+
+    const setupIntent = await this.gateway.createSetupIntent(seller.stripeCustomerId);
+    return { success: true, data: { clientSecret: setupIntent.clientSecret, customerId: seller.stripeCustomerId } };
+  }
+
+  /** Verifies (server-side, against Stripe — never trusting the client's word
+   *  that a card was saved) that the SetupIntent Stripe.js just confirmed
+   *  really succeeded for THIS seller's customer, sets it as the customer's
+   *  default payment method (so a later off-session platform-plan charge can
+   *  find it — see chargeSubscription), and flips
+   *  `Seller.hasPlatformPaymentMethod`, which is what lets StoreService.createStore
+   *  activate the new store immediately instead of queuing it for admin review. */
+  async confirmOnboardingPaymentMethod(sellerId: string, setupIntentId: string) {
+    const seller = await this.db.repositories.sellerModel.findById(sellerId);
+    if (!seller?.stripeCustomerId) throw new BadRequestException('No Stripe customer on file for this seller — start the Payment step again');
+
+    const stripe = this.gateway.stripeClient;
+    if (stripe) {
+      const setupIntent = await stripe.setupIntents.retrieve(setupIntentId);
+      if (setupIntent.customer !== seller.stripeCustomerId || setupIntent.status !== 'succeeded' || !setupIntent.payment_method) {
+        throw new BadRequestException('Card setup was not completed successfully');
+      }
+      await stripe.customers.update(seller.stripeCustomerId, {
+        invoice_settings: { default_payment_method: setupIntent.payment_method as string },
+      });
+    }
+    // Manual provider (local dev/CI, no real Stripe client) — same
+    // always-succeeds stub philosophy as every other ManualPaymentProvider
+    // method, nothing real to verify against.
+
+    seller.hasPlatformPaymentMethod = true;
+    await seller.save();
+
+    return { success: true };
+  }
+
+  /** What the onboarding wizard needs on load to resume exactly where the
+   *  seller left off — their saved draft (if any) and whether the Payment
+   *  step can be shown as already-done instead of asking for a card again. */
+  async getOnboardingProgress(sellerId: string) {
+    const seller = await this.db.repositories.sellerModel
+      .findById(sellerId)
+      .select('onboardingDraft hasPlatformPaymentMethod')
+      .lean();
+    if (!seller) throw new NotFoundException('Seller account not found');
+
+    return {
+      success: true,
+      data: {
+        draft: (seller as any).onboardingDraft ?? null,
+        hasPlatformPaymentMethod: !!(seller as any).hasPlatformPaymentMethod,
+      },
+    };
+  }
+
+  /** Saved on every wizard step transition (not on every keystroke) — enough
+   *  to survive a reload/lost connection without saving on every keystroke. */
+  async saveOnboardingDraft(sellerId: string, step: number, maxReached: number, form: Record<string, unknown>) {
+    await this.db.repositories.sellerModel.updateOne(
+      { _id: sellerId },
+      { $set: { onboardingDraft: { step, maxReached, form } } },
+    );
+    return { success: true };
   }
 
   async getStorePlan(sellerId: string, storeId: string) {
     await this.verifyStoreOwnership(storeId, sellerId);
-    const sub = await this.subModel.findOne({ storeId, isDelete: false }).lean();
-    if (!sub) throw new NotFoundException('This store has no platform-plan record yet');
+    let sub = await this.subModel.findOne({ storeId, isDelete: false }).lean();
+    // Self-healing read, same lazy-backfill convention this codebase already
+    // uses for StoreTheme/StorePage/CollectionTemplate — a store created
+    // before this subscription system existed (or whose original
+    // `ensureDefaultSubscription` call raced a not-yet-seeded free plan)
+    // should never be permanently stuck with no plan record; found via a
+    // live QA pass where a real pre-existing store's Billing Center/Finance
+    // page surfaced this as a raw 404 with no recovery path in the UI.
+    if (!sub) {
+      const created = await this.ensureDefaultSubscription(storeId, sellerId);
+      if (created) sub = (created as any).toObject ? (created as any).toObject() : created;
+    }
+    if (!sub) throw new NotFoundException('This store has no platform-plan record yet — no free plan is configured. Contact support.');
     const plan = await this.planModel.findById((sub as any).platformPlanId).lean();
     return { success: true, data: { ...sub, plan } };
   }

@@ -11,6 +11,12 @@ export class Campaign {
   @Prop({ required: true })
   name: string;
 
+  // URL-safe handle for the ?campaign= query param on the marketplace
+  // listing page — generated once at creation (see
+  // AdminMarketingService.createCampaign).
+  @Prop({ type: String, unique: true, sparse: true })
+  slug: string;
+
   @Prop({ type: String, default: null })
   description: string | null;
 
@@ -79,3 +85,4 @@ export class Campaign {
 export const CampaignSchema = SchemaFactory.createForClass(Campaign);
 
 CampaignSchema.index({ status: 1, startDate: 1, endDate: 1 });
+CampaignSchema.index({ slug: 1 });

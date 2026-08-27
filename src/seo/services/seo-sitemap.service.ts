@@ -78,8 +78,14 @@ export class SeoSitemapService {
 
   private async regenerateCategories() {
     const { categoryModel } = this.db.repositories;
-    const categories = await categoryModel.find({ status: 'active', isDelete: false }).select('_id updatedAt').lean();
-    const urls = categories.map((c: any) => ({ loc: `${PLATFORM_ORIGIN}/marketplace?category=${c._id}`, lastmod: c.updatedAt }));
+    // Pre-migration categories without a slug yet (backfilled lazily on next
+    // read via CategoriesService.ensureSlug) are skipped here rather than
+    // emitting a broken `/marketplace/undefined` sitemap entry.
+    const categories = await categoryModel
+      .find({ status: 'active', isDelete: false, slug: { $exists: true, $ne: null } })
+      .select('slug updatedAt')
+      .lean();
+    const urls = categories.map((c: any) => ({ loc: `${PLATFORM_ORIGIN}/marketplace/${c.slug}`, lastmod: c.updatedAt }));
     await this.writeChunks('categories', null, urls);
   }
 

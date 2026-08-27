@@ -62,7 +62,6 @@ export class SchedulerService {
   private async runLocked(jobName: string, ttlMs: number, fn: () => Promise<void>) {
     const result = await this.redis.withLock(`cron-lock:${jobName}`, ttlMs, async () => {
       await fn();
-      return 'ran' as const;
     });
     if (result === 'lock_not_acquired') {
       this.logger.debug(`Skipped "${jobName}" — another instance already holds the lock (or Redis is unavailable)`);
@@ -76,6 +75,25 @@ export class SchedulerService {
       await productModel.updateMany(
         { status: 'scheduled', scheduledAt: { $lte: new Date() }, isDelete: false },
         { $set: { status: 'active', scheduledAt: null } },
+      );
+    });
+  }
+
+  // Sibling to activateScheduledProducts above — StoreBlogService#publish
+  // previously had no way to go live at a future date at all (always
+  // published immediately); a scheduled post now flips to 'published' here
+  // once due, `publishedAt` set to the moment it was actually scheduled for.
+  @Cron('* * * * *')
+  async publishScheduledBlogPosts() {
+    await this.runLocked('publish-scheduled-blog-posts', 50_000, async () => {
+      const { blogPostModel } = this.databaseService.repositories;
+      await blogPostModel.updateMany(
+        { status: 'scheduled', scheduledAt: { $lte: new Date() }, isDelete: false },
+        [{ $set: { status: 'published', publishedAt: '$scheduledAt', scheduledAt: null } }],
+        // See ContentVersioningService for why this option is required on
+        // Mongoose 9 for any array (aggregation-pipeline) update — without
+        // it this cron silently threw every single run.
+        { updatePipeline: true },
       );
     });
   }

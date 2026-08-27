@@ -1,13 +1,11 @@
 /* eslint-disable prettier/prettier */
-import { Body, Controller, Delete, Get, Param, Patch, Post, Req, UploadedFiles, UseGuards, UseInterceptors } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Req, UploadedFiles, UseGuards, UseInterceptors, UsePipes, ValidationPipe } from '@nestjs/common';
 import { FileFieldsInterceptor } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
-import { FeatureFlagGuard } from '../admin-config/guards/feature-flag.guard';
-import { RequireFeature } from '../admin-config/decorators/require-feature.decorator';
 import { StoreBannerService } from './store-banner.service';
 import { CreateStoreBannerDto } from './dto/create-store-banner.dto';
 import { UpdateStoreBannerDto } from './dto/update-store-banner.dto';
@@ -22,9 +20,9 @@ const CREATIVE_UPLOAD = FileFieldsInterceptor(
 
 @ApiTags('Store Banners')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, RolesGuard, FeatureFlagGuard)
+@UseGuards(JwtAuthGuard, RolesGuard)
 @Roles('seller')
-@RequireFeature('promotions')
+@UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
 @Controller('api/store-banner')
 export class StoreBannerController {
   constructor(private readonly storeBannerService: StoreBannerService) {}

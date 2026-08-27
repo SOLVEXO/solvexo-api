@@ -15,15 +15,12 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { OptionalJwtAuthGuard } from '../auth/guards/optional-jwt-auth.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { RolesGuard } from '../auth/guards/roles.guard';
-import { FeatureFlagGuard } from '../admin-config/guards/feature-flag.guard';
-import { RequireFeature } from '../admin-config/decorators/require-feature.decorator';
 
 @Controller('api/products')
 export class productController {
   constructor(private readonly ProductsService: ProductsService) {}
 
-  @UseGuards(OptionalJwtAuthGuard, FeatureFlagGuard)
-  @RequireFeature('marketplace')
+  @UseGuards(OptionalJwtAuthGuard)
   @Get('products-by-category')
   async getProductsByCategoryId(
     @Req() req: any,
@@ -81,8 +78,6 @@ export class productController {
     );
   }
 
-  @UseGuards(FeatureFlagGuard)
-  @RequireFeature('marketplace')
   @Get('education/facets')
   async getEducationFacets() {
     return this.ProductsService.getEducationFacets();
@@ -95,8 +90,7 @@ export class productController {
     return this.ProductsService.getCustomLevelSuggestions(q);
   }
 
-  @UseGuards(OptionalJwtAuthGuard, FeatureFlagGuard)
-  @RequireFeature('marketplace')
+  @UseGuards(OptionalJwtAuthGuard)
   @Get('getProductById/:id')
   async getProductById(@Req() req: any, @Param('id') id: string) {
     return this.ProductsService.getProductById(id, req.user?.userId ?? null);
@@ -109,8 +103,7 @@ export class productController {
 
   // Public, pre-purchase preview of a digital product — watermarked/trimmed
   // derivative only, never the original file. Same guard as getProductById.
-  @UseGuards(OptionalJwtAuthGuard, FeatureFlagGuard)
-  @RequireFeature('digitalUploads')
+  @UseGuards(OptionalJwtAuthGuard)
   @Get('preview/:id')
   async getProductPreview(@Req() req: any, @Param('id') id: string) {
     return this.ProductsService.getProductPreview(id, req.ip);
@@ -124,9 +117,8 @@ export class productController {
     return this.ProductsService.addPhysicalProduct(sellerId, body);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard, FeatureFlagGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('seller')
-  @RequireFeature('digitalUploads')
   @Post('add-digital-product')
   async addDigitalProduct(@Req() req: any, @Body() body: any) {
     const { userId: sellerId } = req.user;

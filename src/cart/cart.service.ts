@@ -12,7 +12,7 @@ import { AddToCartDto } from './dto/add-to-cart.dto';
 export class CartService {
   constructor(private readonly databaseService: DatabaseService) {}
 
-  async addToCart(userId: string, dto: AddToCartDto) {
+  async addToCart(userId: string, storeId: string, dto: AddToCartDto) {
     try {
       const cartModel = this.databaseService.repositories.cartModel;
       const productModel = this.databaseService.repositories.productModel;
@@ -31,8 +31,9 @@ export class CartService {
         throw new BadRequestException('Product variant not found');
       }
 
-      // 3️⃣ find cart
-      let cart = await cartModel.findOne({ userId, isDelete: false });
+      // 3️⃣ find cart — scoped to this store, so the same buyer's cart on a
+      // different store's subdomain is a separate document
+      let cart = await cartModel.findOne({ userId, storeId, isDelete: false });
 
       // 4️⃣ prepare cart item
       // Variant images are optional overrides — most variants have none, so
@@ -57,6 +58,7 @@ export class CartService {
       if (!cart) {
         cart = await cartModel.create({
           userId,
+          storeId,
           items: [newItem],
         });
 
@@ -93,7 +95,7 @@ export class CartService {
     }
   }
 
-  async updateCartQuantity(userId: string, requestBody: any) {
+  async updateCartQuantity(userId: string, storeId: string, requestBody: any) {
     try {
       const cartModel = this.databaseService.repositories.cartModel;
 
@@ -101,6 +103,7 @@ export class CartService {
 
       const cart = await cartModel.findOne({
         userId,
+        storeId,
         isDelete: false,
       });
 
@@ -145,11 +148,12 @@ export class CartService {
       );
     }
   }
-  async getCart(userId: string) {
+  async getCart(userId: string, storeId: string) {
     try {
-      // User ka cart find karo
+      // User ka cart find karo (is store ke liye)
       const cart = await this.databaseService.repositories.cartModel.findOne({
         userId,
+        storeId,
         isDelete: false,
       });
 
@@ -159,6 +163,7 @@ export class CartService {
           message: 'Cart is empty',
           data: {
             userId,
+            storeId,
             items: [],
             totalItems: 0,
             totalPrice: 0,
@@ -241,6 +246,7 @@ export class CartService {
         message: 'Cart fetched successfully',
         data: {
           userId,
+          storeId,
           items,
           totalItems,
           totalPrice,
@@ -251,7 +257,7 @@ export class CartService {
     }
   }
 
-  async removeCartItem(userId: string, requestBody: any) {
+  async removeCartItem(userId: string, storeId: string, requestBody: any) {
     try {
       const cartModel = this.databaseService.repositories.cartModel;
 
@@ -259,6 +265,7 @@ export class CartService {
 
       const cart = await cartModel.findOne({
         userId,
+        storeId,
         isDelete: false,
       });
 
@@ -292,12 +299,13 @@ export class CartService {
     }
   }
 
-  async clearCart(userId: string) {
+  async clearCart(userId: string, storeId: string) {
     try {
       const cartModel = this.databaseService.repositories.cartModel;
 
       const cart = await cartModel.findOne({
         userId,
+        storeId,
         isDelete: false,
       });
 
@@ -319,7 +327,7 @@ export class CartService {
     }
   }
 
-  async addToWishlist(userId: string, body: any) {
+  async addToWishlist(userId: string, storeId: string, body: any) {
     try {
       const { productId, productVariantId } = body;
 
@@ -327,6 +335,7 @@ export class CartService {
       const wishlistItem =
         await this.databaseService.repositories.wishListModel.findOne({
           userId,
+          storeId,
           productId,
           productVariantId,
         });
@@ -353,19 +362,20 @@ export class CartService {
       }
 
       // 2. create wishlist — guarded by a unique index on
-      // {userId, productId, productVariantId} for the race window between
-      // the findOne check above and this create() (e.g. a double-tap firing
-      // two near-simultaneous requests)
+      // {userId, storeId, productId, productVariantId} for the race window
+      // between the findOne check above and this create() (e.g. a
+      // double-tap firing two near-simultaneous requests)
       let newItem;
       try {
         newItem = await this.databaseService.repositories.wishListModel.create(
-          { userId, productId, productVariantId },
+          { userId, storeId, productId, productVariantId },
         );
       } catch (err: any) {
         if (err?.code === 11000) {
           const existing =
             await this.databaseService.repositories.wishListModel.findOne({
               userId,
+              storeId,
               productId,
               productVariantId,
             });
@@ -419,12 +429,13 @@ export class CartService {
     }
   }
 
-  async getWishlist(userId: string) {
+  async getWishlist(userId: string, storeId: string) {
     try {
-      // 1️⃣ User wishlist lao
+      // 1️⃣ User wishlist lao (is store ke liye)
       const wishlist = await this.databaseService.repositories.wishListModel
         .find({
           userId: userId,
+          storeId,
         })
         .sort({ createdAt: -1 });
 
@@ -481,7 +492,7 @@ export class CartService {
     }
   }
 
-  async getWishlistItem(userId: string, query: any) {
+  async getWishlistItem(userId: string, storeId: string, query: any) {
     try {
       const { productId, productVariantId } = query;
 
@@ -489,6 +500,7 @@ export class CartService {
       const wishlistItem =
         await this.databaseService.repositories.wishListModel.findOne({
           userId,
+          storeId,
           productId,
           productVariantId,
         });
@@ -527,7 +539,7 @@ export class CartService {
     }
   }
 
-  async removeFromWishlist(userId: string, wishlistId: string) {
+  async removeFromWishlist(userId: string, storeId: string, wishlistId: string) {
     try {
       // 1. find wishlist item
       const wishlistItem =
@@ -538,7 +550,7 @@ export class CartService {
       if (!wishlistItem) {
         throw new BadRequestException('Wishlist item not found');
       }
-      if (wishlistItem.userId !== userId) {
+      if (wishlistItem.userId !== userId || wishlistItem.storeId !== storeId) {
         throw new ForbiddenException('Access denied');
       }
 
@@ -569,19 +581,19 @@ export class CartService {
     }
   }
 
-  async clearWishlist(userId: string) {
+  async clearWishlist(userId: string, storeId: string) {
     try {
       const wishlistModel = this.databaseService.repositories.wishListModel;
 
-      // 🔍 check if user has any wishlist items
-      const wishlistItems = await wishlistModel.find({ userId });
+      // 🔍 check if user has any wishlist items (in this store)
+      const wishlistItems = await wishlistModel.find({ userId, storeId });
 
       if (!wishlistItems.length) {
         throw new BadRequestException('Wishlist is already empty');
       }
 
-      // 🗑️ delete all wishlist items of this user
-      await wishlistModel.deleteMany({ userId });
+      // 🗑️ delete all wishlist items of this user (in this store)
+      await wishlistModel.deleteMany({ userId, storeId });
 
       // 📉 update wishlist count in all related products
       const productModel = this.databaseService.repositories.productModel;

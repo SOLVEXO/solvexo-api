@@ -26,16 +26,18 @@ export class AddressController {
 
   @UseGuards(JwtAuthGuard)
   @Post('update-address')
-  async updateAddress(@Body() body: any) {
+  async updateAddress(@Req() req: any, @Body() body: any) {
+    const { userId } = req.user;
     const { addressId, ...updateData } = body;
 
-    return this.addressService.updateAddress(addressId, updateData);
+    return this.addressService.updateAddress(userId, addressId, updateData);
   }
 
   @UseGuards(JwtAuthGuard)
   @Get('get-address-by-id/:addressId')
-  async getAddressById(@Param('addressId') addressId: string) {
-    return this.addressService.getAddressById(addressId);
+  async getAddressById(@Req() req: any, @Param('addressId') addressId: string) {
+    const { userId } = req.user;
+    return this.addressService.getAddressById(userId, addressId);
   }
   @UseGuards(JwtAuthGuard)
   @Get('getMyAddresses')

@@ -27,16 +27,9 @@ import { UpdateSaleItemsDto } from './dto/update-sale-items.dto';
 import { UpdatePosSettingsDto } from './dto/update-pos-settings.dto';
 import { CreateStoreLocationDto } from './dto/create-store-location.dto';
 import { UpdateStoreLocationDto } from './dto/update-store-location.dto';
-import { FeatureFlagGuard } from '../admin-config/guards/feature-flag.guard';
-import { RequireFeature } from '../admin-config/decorators/require-feature.decorator';
 
-// Class-level FeatureFlagGuard only (not JwtAuthGuard) — pin-login runs before
-// a POS employee has a JWT, so the platform-wide posMode kill switch has to
-// apply independently of the per-route auth guards below.
 @ApiTags('POS')
 @ApiBearerAuth()
-@UseGuards(FeatureFlagGuard)
-@RequireFeature('posMode')
 @Controller('api/pos')
 export class PosController {
   constructor(

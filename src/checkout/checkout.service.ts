@@ -10,6 +10,8 @@ import { pickBestCampaign } from 'src/marketing/campaign-pricing.util';
 import { AdminConfigService } from 'src/admin-config/admin-config.service';
 import { ExchangeRateService } from 'src/exchange-rate/exchange-rate.service';
 import { SUPPORTED_CURRENCIES, FxSnapshot } from 'src/exchange-rate/schemas/exchange-rate.schema';
+import { GiftCardsService } from 'src/gift-cards/gift-cards.service';
+import { DiscountsService } from 'src/discounts/discounts.service';
 
 // Shipping zones are a Pakistan-domestic geography feature (predates the
 // PKR/USD split entirely) — ShippingZone.shippingPrice has no currency
@@ -27,6 +29,8 @@ export class CheckoutService {
     private readonly marketingService: MarketingService,
     private readonly adminConfigService: AdminConfigService,
     private readonly exchangeRateService: ExchangeRateService,
+    private readonly giftCardsService: GiftCardsService,
+    private readonly discountsService: DiscountsService,
   ) {}
 
   private round(n: number) {
@@ -111,6 +115,20 @@ export class CheckoutService {
     return (user as any)?.currencyPreference ?? 'PKR';
   }
 
+  /** "Markets" enforcement — a store may restrict which of the platform's
+   *  supported currencies its buyers can actually check out in
+   *  (Store.enabledCurrencies, null/absent = every supported currency,
+   *  preserving pre-existing behavior for every store that never touched
+   *  this setting). Falls back to the store's own baseCurrency rather than
+   *  rejecting the checkout outright — a buyer whose preference isn't
+   *  accepted here still completes checkout, just priced in the store's
+   *  currency instead of silently erroring. */
+  private resolveStoreCurrency(preferred: string, store: { baseCurrency?: string | null; enabledCurrencies?: string[] | null }): string {
+    const allowed: string[] = store.enabledCurrencies && store.enabledCurrencies.length > 0 ? store.enabledCurrencies : [...SUPPORTED_CURRENCIES];
+    if (allowed.includes(preferred)) return preferred;
+    return store.baseCurrency && allowed.includes(store.baseCurrency) ? store.baseCurrency : allowed[0];
+  }
+
   async createCheckout(userId: string, body: any = {}) {
     const {
       cartModel,
@@ -121,10 +139,26 @@ export class CheckoutService {
       storeModel,
     } = this.databaseService.repositories;
 
-    const checkoutCurrency = await this.resolveCheckoutCurrency(userId, body.currencyPreference);
+    const preferredCurrency = await this.resolveCheckoutCurrency(userId, body.currencyPreference);
+
+    // Cart is now store-scoped (a buyer can have a separate cart per store's
+    // subdomain) — without storeId this lookup would be ambiguous the moment
+    // a buyer has shopped at more than one store.
+    const { storeId } = body;
+    if (!storeId) throw new BadRequestException('storeId is required');
+
+    // "Markets" enforcement — see resolveStoreCurrency's comment. A cart is
+    // always single-store today (the marketplace-to-standalone-store
+    // pivot), so this one store's enabledCurrencies is authoritative for
+    // the whole checkout.
+    const targetStore = await storeModel.findById(storeId).select('baseCurrency enabledCurrencies').lean();
+    const checkoutCurrency = targetStore
+      ? this.resolveStoreCurrency(preferredCurrency, targetStore as any)
+      : preferredCurrency;
 
     const cart = await cartModel.findOne({
       userId,
+      storeId,
       status: 'active',
       isDelete: false,
     });
@@ -357,6 +391,91 @@ export class CheckoutService {
       });
     }
 
+    // Pass 3.5: seller's own automatic (no-code) discount (DiscountsService)
+    // — same "computed server-side, never client-supplied" rule as campaign
+    // discount above, resolved on top of it. An item that already got a
+    // campaign discount is excluded, same "not combinable with an active
+    // sale" rule CheckoutService.applyCoupon's eligibility filter uses.
+    // Only the single best-value discount per store is applied — same
+    // one-per-store selection as pickBestCampaign, just evaluated against
+    // each discount's own targeted subset of items (whole store / a set of
+    // categories / a set of products).
+    let autoDiscountSavingsUSD = 0;
+    const activeDiscountsByStore = await this.discountsService.getActiveDiscountsForStores(cartStoreIds);
+
+    for (const sId of cartStoreIds) {
+      const candidates = activeDiscountsByStore.get(sId);
+      if (!candidates || candidates.length === 0) continue;
+
+      const storeItemsAll = checkoutItems.filter((i) => i.storeId === sId);
+      const nonSaleItems = storeItemsAll.filter((i) => !(i.campaignDiscountUSD > 0));
+      if (nonSaleItems.length === 0) continue;
+      const wholeStoreSubtotal = this.round(storeItemsAll.reduce((s, i) => s + i.totalPrice, 0));
+
+      // categoryId isn't carried on a CheckoutItem — only fetched when a
+      // candidate discount actually needs it, and scoped to this store's
+      // own non-sale items only.
+      let categoryByProductId: Map<string, string> | null = null;
+      if (candidates.some((d: any) => d.target === 'category')) {
+        const productIds = [...new Set(nonSaleItems.map((i: any) => i.productId))];
+        const products = await productModel.find({ _id: { $in: productIds } }).select('categoryId').lean();
+        categoryByProductId = new Map(products.map((p: any) => [String(p._id), p.categoryId]));
+      }
+
+      let best: { discount: any; items: any[]; amount: number } | null = null;
+      for (const discount of candidates) {
+        // free_shipping never discounts items — it's applied later, against
+        // the whole checkout's shipping fee, in addShippingInCheckout below
+        // (shipping is a flat whole-checkout amount, never a per-item one).
+        if (discount.discountType === 'free_shipping') continue;
+        if (discount.minOrderAmount != null && wholeStoreSubtotal < discount.minOrderAmount) continue;
+
+        const eligible = discount.target === 'store'
+          ? nonSaleItems
+          : discount.target === 'category'
+            ? nonSaleItems.filter((i: any) => {
+                const catId = categoryByProductId?.get(i.productId);
+                return catId && discount.categoryIds.includes(catId);
+              })
+            : nonSaleItems.filter((i: any) => discount.productIds.includes(i.productId));
+        if (eligible.length === 0) continue;
+
+        const eligibleSubtotal = this.round(eligible.reduce((s: number, i: any) => s + i.totalPrice, 0));
+        if (eligibleSubtotal <= 0) continue;
+
+        let amount: number;
+        if (discount.discountType === 'percentage') {
+          amount = this.round(eligibleSubtotal * (discount.discountValue / 100));
+        } else if (discount.discountType === 'fixed') {
+          amount = Math.min(discount.discountValue, eligibleSubtotal);
+        } else {
+          // bogo — "buy X get Y [% off]": across every eligible unit
+          // (aggregated, not per-product — a mixed cart of eligible products
+          // still counts toward the same buy/get sets), the cheapest
+          // eligible units are the ones discounted, same real-world
+          // interpretation as a physical store's "cheapest item free" BOGO.
+          const setSize = (discount.buyQuantity ?? 0) + (discount.getQuantity ?? 0);
+          const totalQty = eligible.reduce((s: number, i: any) => s + i.quantity, 0);
+          const freeUnits = setSize > 0 ? Math.floor(totalQty / setSize) * (discount.getQuantity ?? 0) : 0;
+          if (freeUnits <= 0) continue;
+          const unitPrices: number[] = [];
+          for (const i of eligible) for (let k = 0; k < i.quantity; k++) unitPrices.push(i.price);
+          unitPrices.sort((a, b) => a - b);
+          amount = this.round(
+            unitPrices.slice(0, freeUnits).reduce((s, p) => s + p * ((discount.getDiscountPercent ?? 100) / 100), 0),
+          );
+        }
+        if (amount <= 0) continue;
+
+        if (!best || amount > best.amount) best = { discount, items: eligible, amount };
+      }
+
+      if (best) {
+        this.distributeAutoDiscount(best.items, best.amount, String(best.discount._id));
+        autoDiscountSavingsUSD = this.round(autoDiscountSavingsUSD + best.amount);
+      }
+    }
+
     let defaultAddressId: string | null = null;
 
     if (hasPhysical) {
@@ -406,7 +525,33 @@ export class CheckoutService {
     // hazard confirmed in the Phase 0 audit (a PKR-priced line must never
     // be treated as a same-scale USD figure).
     const subtotal = this.convertedSubtotal(checkoutItems, checkoutCurrency, fxSnapshots);
-    const taxAmount = 0; // no tax system exists yet — explicitly out of scope, not invented here
+
+    // A deliberately simple, disclosed flat-rate tax — NOT a real
+    // multi-jurisdiction compliance engine (no nexus rules, no per-category
+    // exemptions, no VAT handling). Each seller sets one flat percentage on
+    // their own store (Store.taxRate); applied per-item against that item's
+    // own store, converted the same per-item way `convertedSubtotal` does,
+    // then summed — never against the checkout-wide subtotal directly, since
+    // a multi-seller cart can have stores with different tax rates.
+    const taxRateStoreIds = [...new Set(checkoutItems.map((i) => i.storeId))];
+    const taxRateStores = await this.databaseService.repositories.storeModel
+      .find({ _id: { $in: taxRateStoreIds } })
+      .select('taxRate')
+      .lean();
+    const taxRateByStore = new Map(taxRateStores.map((s: any) => [String(s._id), s.taxRate ?? 0]));
+    const taxAmount = this.round(
+      checkoutItems.reduce((sum, item: any) => {
+        const rate = taxRateByStore.get(item.storeId) ?? 0;
+        if (rate <= 0) return sum;
+        const convertedItemTotal = this.exchangeRateService.convertWithSnapshots(
+          item.totalPrice,
+          item.currency ?? checkoutCurrency,
+          checkoutCurrency,
+          fxSnapshots ?? [],
+        );
+        return sum + convertedItemTotal * (rate / 100);
+      }, 0),
+    );
     const totalAmount = this.round(subtotal + taxAmount);
 
     // Checkout-time upsell: for any store in this cart the buyer is NOT
@@ -490,6 +635,7 @@ export class CheckoutService {
       taxAmount,
       subscriberSavingsUSD: this.round(subscriberSavingsUSD),
       campaignDiscountTotalUSD: campaignSavingsUSD,
+      autoDiscountTotalUSD: autoDiscountSavingsUSD,
       totalAmount,
       status: 'pending',
       attributionSource,
@@ -551,6 +697,7 @@ export class CheckoutService {
           totalAmount,
           subscriberSavingsUSD: this.round(subscriberSavingsUSD),
           campaignDiscountUSD: campaignSavingsUSD,
+          autoDiscountUSD: autoDiscountSavingsUSD,
           ...this.splitSubtotalsByType(checkoutItems),
         },
         subscriptionSavingsHints,
@@ -609,7 +756,25 @@ export class CheckoutService {
     const storeIdsInCheckout = [
       ...new Set((checkout.items as any[]).map((i) => i.storeId)),
     ];
+    // A seller's own 'free_shipping' automatic discount (DiscountsService) —
+    // always target:'store' (enforced at creation), so eligibility only
+    // ever needs minOrderAmount checked against the whole checkout's
+    // subtotal, unlike the item-level percentage/fixed/bogo discounts
+    // resolved earlier in createCheckout's Pass 3.5. Checked before the
+    // subscriber shipping-benefit reduction below since 0 can't be reduced
+    // any further.
+    let freeShippingApplied = false;
     if (storeIdsInCheckout.length === 1) {
+      const discountsByStore = await this.discountsService.getActiveDiscountsForStores(storeIdsInCheckout);
+      const freeShippingDiscount = discountsByStore.get(storeIdsInCheckout[0])?.find(
+        (d: any) => d.discountType === 'free_shipping' && (d.minOrderAmount == null || checkout.subtotal >= d.minOrderAmount),
+      );
+      if (freeShippingDiscount) {
+        shippingFee = 0;
+        freeShippingApplied = true;
+      }
+    }
+    if (!freeShippingApplied && storeIdsInCheckout.length === 1) {
       const benefitsEntry = await this.subscriptionBenefits.getActiveBenefits(
         userId,
         storeIdsInCheckout[0],
@@ -720,10 +885,14 @@ export class CheckoutService {
       isDelete: false,
       $or: [{ scope: 'platform' }, { storeId: { $in: storeIdsInCheckout } }],
     });
-    if (!coupon)
-      throw new BadRequestException(
-        'This coupon code is invalid or not applicable to items in your cart',
-      );
+    if (!coupon) {
+      // Not a seller/platform coupon — the buyer's single "promo code" input
+      // also accepts a LoyaltyReward redemption voucher (LoyaltyService
+      // .redeemReward), so try that before failing outright.
+      return this.applyRewardVoucher(checkout, items, storeIdsInCheckout, normalizedCode, userId);
+    }
+    if (coupon.startsAt && coupon.startsAt > new Date())
+      throw new BadRequestException('This coupon is not active yet');
     if (coupon.expiresAt && coupon.expiresAt < new Date())
       throw new BadRequestException('This coupon has expired');
     if (coupon.usageLimit != null && coupon.usageCount >= coupon.usageLimit) {
@@ -845,6 +1014,7 @@ export class CheckoutService {
       totalAmount: newTotal,
       couponCode: normalizedCode,
       couponStoreId: coupon.storeId,
+      couponSourceType: 'coupon',
       couponDiscountTotalUSD: totalDiscount,
     });
 
@@ -890,6 +1060,15 @@ export class CheckoutService {
 
     const items = checkout.items as any[];
     this.revertCouponFromItems(items);
+    // A gift card's "before" snapshot may have been captured on top of this
+    // coupon's discount (if it was applied afterward) — reverting only the
+    // coupon would leave that snapshot pointing at a price that no longer
+    // exists once the coupon is gone. Reverting both and requiring a
+    // re-apply of the gift card is the safe, always-correct behavior; a
+    // silent partial-revert here would risk double-crediting or
+    // under-crediting the buyer.
+    const hadGiftCard = !!checkout.giftCardCode;
+    this.revertGiftCardFromItems(items);
 
     const newSubtotal = this.convertedSubtotal(items, checkout.currency, checkout.fxSnapshots as any);
     const newTotal = this.round(newSubtotal + (checkout.shippingFee || 0));
@@ -900,14 +1079,292 @@ export class CheckoutService {
       totalAmount: newTotal,
       couponCode: null,
       couponStoreId: null,
+      couponSourceType: 'coupon',
       couponDiscountTotalUSD: 0,
+      ...(hadGiftCard ? { giftCardCode: null, giftCardStoreId: null, giftCardDiscountTotalUSD: 0 } : {}),
     });
 
     return {
       success: true,
-      message: 'Coupon removed',
+      message: hadGiftCard ? 'Coupon removed — please re-apply your gift card' : 'Coupon removed',
       data: {
         checkoutId,
+        subtotal: newSubtotal,
+        shippingFee: checkout.shippingFee || 0,
+        totalAmount: newTotal,
+        ...this.splitSubtotalsByType(items),
+      },
+    };
+  }
+
+  /** Applies a GiftCard's remaining balance to its own store's items in this
+   *  checkout — kept in a completely separate checkout slot from
+   *  couponCode/couponStoreId (see Checkout.giftCardCode) so a buyer can
+   *  stack a gift card with a coupon/reward voucher, unlike coupon vs.
+   *  reward-voucher which share one slot. Applies across ALL of that
+   *  store's items (no "not combinable with sale items" exclusion — a gift
+   *  card spends the buyer's own money/credit, it isn't a promotional
+   *  stacking concern the way a coupon code is). Only ever partially
+   *  consumes the card's balance here — the actual deduction happens at
+   *  order placement (see GiftCardsService.redeemAtOrderPlacement), so an
+   *  abandoned checkout never burns real gift-card value. */
+  async applyGiftCard(userId: string, body: any) {
+    const { checkoutId, code } = body;
+    if (!checkoutId) throw new BadRequestException('checkoutId is required');
+    if (!code || !String(code).trim()) throw new BadRequestException('Gift card code is required');
+
+    const { checkoutModel } = this.databaseService.repositories;
+    const checkout = await checkoutModel.findOne({ _id: checkoutId, userId, isDelete: false });
+    if (!checkout) throw new NotFoundException('Checkout not found');
+    if (checkout.status === 'completed') throw new BadRequestException('Checkout already completed');
+    if (checkout.status === 'cancelled') throw new BadRequestException('Checkout is cancelled');
+    if (checkout.status === 'expired') throw new BadRequestException('Checkout has expired');
+    if (checkout.expiredAt && checkout.expiredAt < new Date()) {
+      await checkoutModel.findByIdAndUpdate(checkout._id, { status: 'expired' });
+      throw new BadRequestException('Checkout has expired');
+    }
+
+    const normalizedCode = String(code).trim().toUpperCase();
+    const items = checkout.items as any[];
+    const storeIdsInCheckout = [...new Set(items.map((i) => i.storeId))];
+
+    let giftCard: any = null;
+    for (const sId of storeIdsInCheckout) {
+      giftCard = await this.giftCardsService.findRedeemable(sId, normalizedCode);
+      if (giftCard) break;
+    }
+    if (!giftCard) {
+      throw new BadRequestException('This gift card code is invalid, inactive, or not applicable to items in your cart');
+    }
+
+    this.revertGiftCardFromItems(items);
+    const storeItems = items.filter((i) => i.storeId === giftCard.storeId);
+    const storeSubtotal = this.round(storeItems.reduce((s, i) => s + i.totalPrice, 0));
+    if (storeSubtotal <= 0) {
+      throw new BadRequestException("There's nothing left to apply this gift card to.");
+    }
+
+    const appliedAmount = this.round(Math.min(giftCard.balance, storeSubtotal));
+    this.distributeGiftCardDiscount(storeItems, appliedAmount);
+
+    const newSubtotal = this.convertedSubtotal(items, checkout.currency, checkout.fxSnapshots as any);
+    const newTotal = this.round(newSubtotal + (checkout.shippingFee || 0));
+
+    await checkoutModel.findByIdAndUpdate(checkoutId, {
+      items: items.map((i: any) => (i.toObject ? i.toObject() : i)),
+      subtotal: newSubtotal,
+      totalAmount: newTotal,
+      giftCardCode: normalizedCode,
+      giftCardStoreId: giftCard.storeId,
+      giftCardDiscountTotalUSD: appliedAmount,
+    });
+
+    return {
+      success: true,
+      message: 'Gift card applied',
+      data: {
+        checkoutId,
+        giftCardCode: normalizedCode,
+        giftCardDiscountUSD: appliedAmount,
+        remainingBalance: this.round(giftCard.balance - appliedAmount),
+        subtotal: newSubtotal,
+        shippingFee: checkout.shippingFee || 0,
+        totalAmount: newTotal,
+        ...this.splitSubtotalsByType(items),
+      },
+    };
+  }
+
+  async removeGiftCard(userId: string, body: any) {
+    const { checkoutId } = body;
+    if (!checkoutId) throw new BadRequestException('checkoutId is required');
+
+    const { checkoutModel } = this.databaseService.repositories;
+    const checkout = await checkoutModel.findOne({ _id: checkoutId, userId, isDelete: false });
+    if (!checkout) throw new NotFoundException('Checkout not found');
+    if (checkout.status === 'completed') throw new BadRequestException('Checkout already completed');
+    if (checkout.status === 'cancelled') throw new BadRequestException('Checkout is cancelled');
+    if (checkout.status === 'expired') throw new BadRequestException('Checkout has expired');
+
+    const items = checkout.items as any[];
+    this.revertGiftCardFromItems(items);
+    // Same safety reasoning as removeCoupon's symmetric revert — see there.
+    const hadCoupon = !!checkout.couponCode;
+    this.revertCouponFromItems(items);
+
+    const newSubtotal = this.convertedSubtotal(items, checkout.currency, checkout.fxSnapshots as any);
+    const newTotal = this.round(newSubtotal + (checkout.shippingFee || 0));
+
+    await checkoutModel.findByIdAndUpdate(checkoutId, {
+      items: items.map((i: any) => (i.toObject ? i.toObject() : i)),
+      subtotal: newSubtotal,
+      totalAmount: newTotal,
+      giftCardCode: null,
+      giftCardStoreId: null,
+      giftCardDiscountTotalUSD: 0,
+      ...(hadCoupon ? { couponCode: null, couponStoreId: null, couponSourceType: 'coupon', couponDiscountTotalUSD: 0 } : {}),
+    });
+
+    return {
+      success: true,
+      message: hadCoupon ? 'Gift card removed — please re-apply your coupon' : 'Gift card removed',
+      data: {
+        checkoutId,
+        subtotal: newSubtotal,
+        shippingFee: checkout.shippingFee || 0,
+        totalAmount: newTotal,
+        ...this.splitSubtotalsByType(items),
+      },
+    };
+  }
+
+  /** Restores each item's pre-gift-card price/totalPrice in place — a no-op
+   *  for items that never had a gift card applied. Mirrors
+   *  revertCouponFromItems below. */
+  private revertGiftCardFromItems(items: any[]) {
+    for (const item of items) {
+      if (item.totalPriceBeforeGiftCard != null) {
+        item.price = item.priceBeforeGiftCard;
+        item.totalPrice = item.totalPriceBeforeGiftCard;
+        item.priceBeforeGiftCard = null;
+        item.totalPriceBeforeGiftCard = null;
+        item.giftCardDiscountUSD = 0;
+      }
+    }
+  }
+
+  /** Same distribution math as distributeCouponDiscount, writing to the
+   *  gift-card-specific item fields instead so the two discounts never
+   *  clobber each other's "before" bookkeeping when both are applied. */
+  private distributeGiftCardDiscount(storeItems: any[], totalDiscount: number) {
+    this.proportionallyDistribute(storeItems, totalDiscount, (item, share) => {
+      item.priceBeforeGiftCard = item.price;
+      item.totalPriceBeforeGiftCard = item.totalPrice;
+      item.giftCardDiscountUSD = share;
+      item.totalPrice = this.round(item.totalPrice - share);
+      item.price = item.quantity > 0 ? this.round(item.totalPrice / item.quantity) : item.totalPrice;
+    });
+  }
+
+  /** Fallback path for applyCoupon when the typed code isn't a Coupon —
+   *  checks whether it's an active RewardVoucher issued to this buyer by
+   *  LoyaltyService.redeemReward instead. Always store-scoped (loyalty
+   *  programs are per-store) and shares the same couponCode/couponStoreId
+   *  checkout slot as a real coupon (see Checkout.couponSourceType) — only
+   *  one of the two can be applied at a time, same as switching coupon codes. */
+  private async applyRewardVoucher(
+    checkout: any,
+    items: any[],
+    storeIdsInCheckout: string[],
+    normalizedCode: string,
+    userId: string,
+  ) {
+    const { checkoutModel, rewardVoucherModel } = this.databaseService.repositories;
+
+    const voucher = await rewardVoucherModel.findOne({
+      code: normalizedCode,
+      userId,
+      status: 'active',
+      isDelete: false,
+      storeId: { $in: storeIdsInCheckout },
+    });
+    if (!voucher)
+      throw new BadRequestException(
+        'This coupon code is invalid or not applicable to items in your cart',
+      );
+    if (voucher.expiresAt < new Date()) {
+      await rewardVoucherModel.updateOne({ _id: voucher._id }, { status: 'expired' });
+      throw new BadRequestException('This reward code has expired');
+    }
+
+    this.revertCouponFromItems(items);
+    const storeItems = items.filter((i) => i.storeId === voucher.storeId);
+
+    if (voucher.type === 'fixed_discount') {
+      const eligibleItems = storeItems.filter((i) => !(i.campaignDiscountUSD > 0));
+      if (eligibleItems.length === 0) {
+        throw new BadRequestException(
+          "This reward can't be combined with the active sale on these items.",
+        );
+      }
+      const eligibleSubtotal = this.round(eligibleItems.reduce((s, i) => s + i.totalPrice, 0));
+      const totalDiscount = Math.min(voucher.discountValue ?? 0, eligibleSubtotal);
+      if (totalDiscount <= 0) {
+        throw new BadRequestException("This reward doesn't apply any discount to your cart.");
+      }
+      // discountValue is captured (at redemption time) in the issuing
+      // store's own baseCurrency, and eligibleItems' totalPrice is that same
+      // store's native currency — no FX conversion needed, unlike a
+      // platform-scope Coupon.
+      this.distributeCouponDiscount(eligibleItems, totalDiscount);
+
+      const newSubtotal = this.convertedSubtotal(items, checkout.currency, checkout.fxSnapshots as any);
+      const newTotal = this.round(newSubtotal + (checkout.shippingFee || 0));
+
+      await checkoutModel.findByIdAndUpdate(checkout._id, {
+        items: items.map((i: any) => (i.toObject ? i.toObject() : i)),
+        subtotal: newSubtotal,
+        totalAmount: newTotal,
+        couponCode: normalizedCode,
+        couponStoreId: voucher.storeId,
+        couponSourceType: 'reward_voucher',
+        couponDiscountTotalUSD: totalDiscount,
+      });
+
+      return {
+        success: true,
+        message: 'Reward applied',
+        data: {
+          checkoutId: checkout._id,
+          couponCode: normalizedCode,
+          couponDiscountUSD: totalDiscount,
+          subtotal: newSubtotal,
+          shippingFee: checkout.shippingFee || 0,
+          totalAmount: newTotal,
+          ...this.splitSubtotalsByType(items),
+        },
+      };
+    }
+
+    // free_product — the buyer must already have that exact product in
+    // their cart at this store; this voucher then zeroes out exactly one
+    // unit of it. Auto-adding an unrelated product to the cart would need
+    // full variant/price/stock resolution this flow doesn't otherwise do —
+    // a disclosed, deliberate scope boundary.
+    const targetItem = storeItems.find((i) => i.productId === voucher.productId);
+    if (!targetItem) {
+      throw new BadRequestException(
+        'Add the free reward product to your cart first, then apply this code.',
+      );
+    }
+    const unitPrice = targetItem.quantity > 0 ? targetItem.totalPrice / targetItem.quantity : targetItem.totalPrice;
+    const freeAmount = this.round(Math.min(unitPrice, targetItem.totalPrice));
+    targetItem.priceBeforeCoupon = targetItem.price;
+    targetItem.totalPriceBeforeCoupon = targetItem.totalPrice;
+    targetItem.couponDiscountUSD = freeAmount;
+    targetItem.totalPrice = this.round(targetItem.totalPrice - freeAmount);
+    targetItem.price = targetItem.quantity > 0 ? this.round(targetItem.totalPrice / targetItem.quantity) : targetItem.totalPrice;
+
+    const newSubtotal = this.convertedSubtotal(items, checkout.currency, checkout.fxSnapshots as any);
+    const newTotal = this.round(newSubtotal + (checkout.shippingFee || 0));
+
+    await checkoutModel.findByIdAndUpdate(checkout._id, {
+      items: items.map((i: any) => (i.toObject ? i.toObject() : i)),
+      subtotal: newSubtotal,
+      totalAmount: newTotal,
+      couponCode: normalizedCode,
+      couponStoreId: voucher.storeId,
+      couponSourceType: 'reward_voucher',
+      couponDiscountTotalUSD: freeAmount,
+    });
+
+    return {
+      success: true,
+      message: 'Reward applied — one free item added',
+      data: {
+        checkoutId: checkout._id,
+        couponCode: normalizedCode,
+        couponDiscountUSD: freeAmount,
         subtotal: newSubtotal,
         shippingFee: checkout.shippingFee || 0,
         totalAmount: newTotal,
@@ -1041,6 +1498,22 @@ export class CheckoutService {
       item.campaignId = campaignId;
       item.campaignDiscountUSD = share;
       item.campaignSponsorType = sponsorType;
+      item.totalPrice = this.round(item.totalPrice - share);
+      item.price =
+        item.quantity > 0
+          ? this.round(item.totalPrice / item.quantity)
+          : item.totalPrice;
+    });
+  }
+
+  /** Distributes a seller's own AutomaticDiscount (DiscountsService) across
+   *  the subset of items it targets — same math as distributeCampaignDiscount,
+   *  writing to the discount-specific fields instead. */
+  private distributeAutoDiscount(items: any[], totalDiscount: number, discountId: string) {
+    this.proportionallyDistribute(items, totalDiscount, (item, share) => {
+      if (item.originalPrice == null) item.originalPrice = item.price;
+      item.autoDiscountId = discountId;
+      item.autoDiscountUSD = share;
       item.totalPrice = this.round(item.totalPrice - share);
       item.price =
         item.quantity > 0

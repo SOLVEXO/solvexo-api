@@ -194,6 +194,24 @@ export class DatabaseService {
     @InjectModel(schema.Reward.name)
     private rewardModel: Model<schema.RewardDocument>,
 
+    @InjectModel(schema.RewardVoucher.name)
+    private rewardVoucherModel: Model<schema.RewardVoucherDocument>,
+
+    @InjectModel(schema.GiftCard.name)
+    private giftCardModel: Model<schema.GiftCardDocument>,
+
+    @InjectModel(schema.GiftCardTransaction.name)
+    private giftCardTransactionModel: Model<schema.GiftCardTransactionDocument>,
+
+    @InjectModel(schema.GiftCardSettings.name)
+    private giftCardSettingsModel: Model<schema.GiftCardSettingsDocument>,
+
+    @InjectModel(schema.AutomaticDiscount.name)
+    private automaticDiscountModel: Model<schema.AutomaticDiscountDocument>,
+
+    @InjectModel(schema.Collection.name)
+    private collectionModel: Model<schema.CollectionDocument>,
+
     @InjectModel(schema.PlatformSubscription.name)
     private platformSubscriptionModel: Model<schema.PlatformSubscriptionDocument>,
 
@@ -274,8 +292,23 @@ export class DatabaseService {
     @InjectModel(schema.StorePage.name)
     private storePageModel: Model<schema.StorePageDocument>,
 
+    @InjectModel(schema.CollectionTemplate.name)
+    private collectionTemplateModel: Model<schema.CollectionTemplateDocument>,
+
+    @InjectModel(schema.DraftOrder.name)
+    private draftOrderModel: Model<schema.DraftOrderDocument>,
+
+    @InjectModel(schema.StoreCustomerMeta.name)
+    private storeCustomerMetaModel: Model<schema.StoreCustomerMetaDocument>,
+
     @InjectModel(schema.BlogPost.name)
     private blogPostModel: Model<schema.BlogPostDocument>,
+
+    @InjectModel(schema.Blog.name)
+    private blogModel: Model<schema.BlogDocument>,
+
+    @InjectModel(schema.BlogComment.name)
+    private blogCommentModel: Model<schema.BlogCommentDocument>,
 
     @InjectModel(schema.PromotionRequest.name)
     private promotionRequestModel: Model<schema.PromotionRequestDocument>,
@@ -372,6 +405,12 @@ export class DatabaseService {
       loyaltyMemberModel: this.loyaltyMemberModel,
       loyaltyTransactionModel: this.loyaltyTransactionModel,
       rewardModel: this.rewardModel,
+      rewardVoucherModel: this.rewardVoucherModel,
+      giftCardModel: this.giftCardModel,
+      giftCardTransactionModel: this.giftCardTransactionModel,
+      giftCardSettingsModel: this.giftCardSettingsModel,
+      automaticDiscountModel: this.automaticDiscountModel,
+      collectionModel: this.collectionModel,
       platformSubscriptionModel: this.platformSubscriptionModel,
       platformSeoSettingsModel: this.platformSeoSettingsModel,
       seoRedirectModel: this.seoRedirectModel,
@@ -399,7 +438,12 @@ export class DatabaseService {
       storeBannerModel: this.storeBannerModel,
       storeThemeModel: this.storeThemeModel,
       storePageModel: this.storePageModel,
+      collectionTemplateModel: this.collectionTemplateModel,
+      draftOrderModel: this.draftOrderModel,
+      storeCustomerMetaModel: this.storeCustomerMetaModel,
       blogPostModel: this.blogPostModel,
+      blogModel: this.blogModel,
+      blogCommentModel: this.blogCommentModel,
       promotionRequestModel: this.promotionRequestModel,
       promotionDailyStatsModel: this.promotionDailyStatsModel,
       promotionClickEventModel: this.promotionClickEventModel,

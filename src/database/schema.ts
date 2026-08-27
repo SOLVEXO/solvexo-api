@@ -81,6 +81,12 @@ export { LoyaltyProgram, LoyaltyProgramDocument, LoyaltyProgramSchema } from '..
 export { LoyaltyMember, LoyaltyMemberDocument, LoyaltyMemberSchema } from '../loyalty/schemas/loyalty-member.schema';
 export { LoyaltyTransaction, LoyaltyTransactionDocument, LoyaltyTransactionSchema } from '../loyalty/schemas/loyalty-transaction.schema';
 export { Reward, RewardDocument, RewardSchema } from '../loyalty/schemas/reward.schema';
+export { RewardVoucher, RewardVoucherDocument, RewardVoucherSchema } from '../loyalty/schemas/reward-voucher.schema';
+export { GiftCard, GiftCardDocument, GiftCardSchema } from '../gift-cards/schemas/gift-card.schema';
+export { GiftCardTransaction, GiftCardTransactionDocument, GiftCardTransactionSchema } from '../gift-cards/schemas/gift-card-transaction.schema';
+export { GiftCardSettings, GiftCardSettingsDocument, GiftCardSettingsSchema } from '../gift-cards/schemas/gift-card-settings.schema';
+export { AutomaticDiscount, AutomaticDiscountDocument, AutomaticDiscountSchema } from '../discounts/schemas/automatic-discount.schema';
+export { Collection, CollectionDocument, CollectionSchema } from '../collections/schemas/collection.schema';
 export { PlatformSubscription, PlatformSubscriptionDocument, PlatformSubscriptionSchema } from '../platform-subscriptions/schemas/platform-subscription.schema';
 export { PlatformSeoSettings, PlatformSeoSettingsDocument, PlatformSeoSettingsSchema } from '../seo/schemas/platform-seo-settings.schema';
 export { SeoRedirect, SeoRedirectDocument, SeoRedirectSchema } from '../seo/schemas/seo-redirect.schema';
@@ -117,7 +123,12 @@ export { MediaAsset, MediaAssetDocument, MediaAssetSchema } from '../media-libra
 export { StoreBanner, StoreBannerDocument, StoreBannerSchema } from '../store-banner/schemas/store-banner.schema';
 export { StoreTheme, StoreThemeDocument, StoreThemeSchema } from '../store-theme/schemas/store-theme.schema';
 export { StorePage, StorePageDocument, StorePageSchema } from '../store-pages/schemas/store-page.schema';
+export { CollectionTemplate, CollectionTemplateDocument, CollectionTemplateSchema } from '../collection-template/schemas/collection-template.schema';
+export { DraftOrder, DraftOrderDocument, DraftOrderSchema } from '../draft-orders/schemas/draft-order.schema';
+export { StoreCustomerMeta, StoreCustomerMetaDocument, StoreCustomerMetaSchema } from '../store/schemas/store-customer-meta.schema';
 export { BlogPost, BlogPostDocument, BlogPostSchema } from '../store-blog/schemas/blog-post.schema';
+export { Blog, BlogDocument, BlogSchema } from '../store-blog/schemas/blog.schema';
+export { BlogComment, BlogCommentDocument, BlogCommentSchema } from '../store-blog/schemas/blog-comment.schema';
 export { PromotionRequest, PromotionRequestDocument, PromotionRequestSchema } from '../promotions/schemas/promotion-request.schema';
 export { PromotionDailyStats, PromotionDailyStatsDocument, PromotionDailyStatsSchema } from '../promotions/schemas/promotion-daily-stats.schema';
 export { PromotionClickEvent, PromotionClickEventDocument, PromotionClickEventSchema } from '../promotions/schemas/promotion-click-event.schema';

@@ -12,6 +12,7 @@ import { Model, isValidObjectId } from 'mongoose';
 import { DatabaseService } from 'src/database/databaseservice';
 import { CreateCategoryDto } from './dto/create-category.dto';
 import { UpdateCategoryDto } from './dto/update-category.dto';
+import { generateUniqueSlug } from 'src/common/slug.util';
 
 @Injectable()
 export class CategoriesService {
@@ -68,6 +69,15 @@ export class CategoriesService {
           );
         }
       } else {
+        // A malformed `parentId` (found via a live QA pass: a corrupted
+        // `Store.categoryId` value was a category NAME string, not a real
+        // ObjectId) must be rejected cleanly here — without this guard,
+        // Mongoose throws a raw CastError whose message names the exact
+        // model/field/driver internals, which the catch block below would
+        // otherwise forward verbatim to the client.
+        if (!isValidObjectId(parentId)) {
+          throw new BadRequestException('Parent category not found');
+        }
         parent = await categoryModel.findOne({
           _id: parentId,
           status: 'active',
@@ -98,8 +108,11 @@ export class CategoriesService {
         );
       }
 
+      const slug = await generateUniqueSlug(categoryModel, name);
+
       const category = await categoryModel.create({
         name,
+        slug,
         parentId: parentId ?? null,
         image: image,
         description: description,
@@ -121,9 +134,12 @@ export class CategoriesService {
       ) {
         throw error;
       }
-      throw new BadRequestException(
-        error.message || 'Failed to create category',
-      );
+      // Never forward a raw driver/ORM exception message (model name, field
+      // name, cast-error internals) to the client — found leaking verbatim
+      // in a live QA pass via this exact fallback. Log the real error
+      // server-side for debugging; the client gets a safe, generic message.
+      console.error('CategoriesService.addCategory failed:', error);
+      throw new BadRequestException('Failed to create category');
     }
   }
 
@@ -202,6 +218,7 @@ export class CategoriesService {
 
       const children = await this.getChildrenRecursive(categoryId);
       const node = { ...category.toObject(), children };
+      await this.ensureSlug(node);
       this.attachProductCounts([node], countMap);
 
       return {
@@ -223,6 +240,7 @@ export class CategoriesService {
     const result: any[] = [];
 
     for (const cat of rootCategories) {
+      await this.ensureSlug(cat);
       const children = await this.getChildrenRecursive(cat._id.toString());
 
       result.push({
@@ -278,15 +296,30 @@ export class CategoriesService {
     const result: any[] = [];
 
     for (const child of children) {
-      const subChildren = await this.getChildrenRecursive(child._id.toString());
+      const childObj = child.toObject();
+      await this.ensureSlug(childObj);
+      const subChildren = await this.getChildrenRecursive(childObj._id.toString());
 
       result.push({
-        ...child.toObject(),
+        ...childObj,
         children: subChildren, // nested inside each child
       });
     }
 
     return result;
+  }
+
+  /** Lazily backfills a permanent, persisted slug for any pre-migration
+   *  category found without one — mutates the plain object in place and
+   *  writes it to the DB so it's stable from then on (never recomputed). */
+  private async ensureSlug(cat: any): Promise<void> {
+    if (cat.slug) return;
+    const categoryModel = this.databaseService.repositories.categoryModel;
+    const slug = await generateUniqueSlug(categoryModel, cat.name, {
+      excludeId: String(cat._id),
+    });
+    await categoryModel.findByIdAndUpdate(cat._id, { slug });
+    cat.slug = slug;
   }
 
   async getCategoryWithChildren(categoryId: string): Promise<any> {

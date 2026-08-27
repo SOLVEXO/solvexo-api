@@ -12,6 +12,74 @@ export class StorefrontColors {
   @Prop({ type: String, default: '#2C2A28' }) textColor: string;
   @Prop({ type: String, default: '#B95A3A' }) accentColor: string;
   @Prop({ type: String, default: 'Poppins' }) font: string;
+  // How `ThemedButton` renders a primary CTA — filled / bordered / tinted.
+  @Prop({ type: String, enum: ['solid', 'outline', 'soft'], default: 'solid' })
+  buttonStyle: 'solid' | 'outline' | 'soft';
+
+  // ── Real design-system dimensions (not just color) — see `themes.ts` on
+  // the frontend for the curated bundles that set all of these together.
+  // Every default below reproduces today's actual rendered look exactly, so
+  // a pre-existing store is pixel-identical until a seller changes anything.
+  @Prop({ type: String, enum: ['compact', 'comfortable', 'spacious'], default: 'comfortable' })
+  typeScale: 'compact' | 'comfortable' | 'spacious';
+
+  @Prop({ type: String, enum: ['narrow', 'standard', 'wide'], default: 'standard' })
+  containerWidth: 'narrow' | 'standard' | 'wide';
+
+  @Prop({ type: String, enum: ['compact', 'comfortable', 'spacious'], default: 'comfortable' })
+  sectionSpacing: 'compact' | 'comfortable' | 'spacious';
+
+  @Prop({ type: String, enum: ['sm', 'md', 'lg'], default: 'md' })
+  buttonSize: 'sm' | 'md' | 'lg';
+
+  // ── Buttons scope — independent from product/testimonial cards and from
+  // standalone images. Only `ThemedButton` reads these. ──
+  @Prop({ type: String, enum: ['none', 'small', 'medium', 'large', 'full'], default: 'medium' })
+  buttonRadius: 'none' | 'small' | 'medium' | 'large' | 'full';
+  @Prop({ type: String, enum: ['auto', 'full'], default: 'auto' })
+  buttonWidth: 'auto' | 'full';
+
+  // ── Images scope — corner radius for a standalone content image
+  // (`ImageWithTextSection`). Independent of buttons/cards. Default 'medium'
+  // reproduces that section's previously-hardcoded `rounded-xl` look exactly.
+  @Prop({ type: String, enum: ['none', 'small', 'medium', 'large', 'full'], default: 'medium' })
+  imageRadius: 'none' | 'small' | 'medium' | 'large' | 'full';
+
+  @Prop({ type: String, enum: ['overlay', 'split'], default: 'overlay' })
+  heroStyle: 'overlay' | 'split';
+
+  @Prop({ type: String, enum: ['left', 'center'], default: 'left' })
+  heroAlignment: 'left' | 'center';
+
+  // ── Product Cards scope — independent from testimonial cards. Default
+  // values reproduce the old shared `cardStyle`/`borderRadius` defaults
+  // exactly (both were 'outlined'/'medium'), so a pre-existing store's
+  // product grid renders pixel-identical.
+  @Prop({ type: String, enum: ['flat', 'outlined', 'elevated'], default: 'outlined' })
+  productCardStyle: 'flat' | 'outlined' | 'elevated';
+  @Prop({ type: String, enum: ['none', 'small', 'medium', 'large', 'full'], default: 'medium' })
+  productCardRadius: 'none' | 'small' | 'medium' | 'large' | 'full';
+
+  @Prop({ type: String, enum: ['square', 'portrait'], default: 'square' })
+  productImageRatio: 'square' | 'portrait';
+
+  @Prop({ type: String, enum: ['none', 'zoom'], default: 'none' })
+  productImageHover: 'none' | 'zoom';
+
+  @Prop({ type: String, enum: ['cozy', 'relaxed'], default: 'cozy' })
+  productGridDensity: 'cozy' | 'relaxed';
+
+  @Prop({ type: String, enum: ['cards', 'minimal'], default: 'cards' })
+  testimonialStyle: 'cards' | 'minimal';
+  // ── Testimonials scope — independent from product cards, same
+  // backward-compatible defaults as the old shared token. ──
+  @Prop({ type: String, enum: ['flat', 'outlined', 'elevated'], default: 'outlined' })
+  testimonialCardStyle: 'flat' | 'outlined' | 'elevated';
+  @Prop({ type: String, enum: ['none', 'small', 'medium', 'large', 'full'], default: 'medium' })
+  testimonialCardRadius: 'none' | 'small' | 'medium' | 'large' | 'full';
+
+  @Prop({ type: String, enum: ['accordion', 'list'], default: 'accordion' })
+  faqStyle: 'accordion' | 'list';
 }
 export const StorefrontColorsSchema = SchemaFactory.createForClass(StorefrontColors);
 
@@ -26,12 +94,24 @@ export class StorefrontHeader {
   @Prop({ type: String, enum: ['store', 'custom'], default: 'store' }) logoSource: 'store' | 'custom';
   @Prop({ type: String, default: null }) customLogoUrl: string | null;
   @Prop({ type: [BlockSchema], default: [] }) blocks: Block[]; // nav_link blocks only
+  // Where the nav-link group sits relative to the logo — the icons (cart/
+  // account) always stay pinned to the far right regardless of this.
+  @Prop({ type: String, enum: ['left', 'center', 'right'], default: 'left' })
+  navAlignment: 'left' | 'center' | 'right';
+  // Overall header composition — 'standard' is today's logo-left/inline-nav
+  // layout; 'centered' stacks a centered logo with nav below it.
+  @Prop({ type: String, enum: ['standard', 'centered'], default: 'standard' })
+  headerStyle: 'standard' | 'centered';
 }
 export const StorefrontHeaderSchema = SchemaFactory.createForClass(StorefrontHeader);
 
 @Schema({ _id: false })
 export class StorefrontFooter {
   @Prop({ type: [BlockSchema], default: [] }) blocks: Block[]; // footer_column / social_link / copyright_text blocks
+  // 'columns' is today's multi-column layout; 'minimal' is a single centered
+  // row (store name + copyright + socials, no columns).
+  @Prop({ type: String, enum: ['columns', 'minimal'], default: 'columns' })
+  footerStyle: 'columns' | 'minimal';
 }
 export const StorefrontFooterSchema = SchemaFactory.createForClass(StorefrontFooter);
 
@@ -47,20 +127,162 @@ export class IdentityBanner {
   @Prop({ type: Boolean, default: true }) showMessageButton: boolean;
   @Prop({ type: Boolean, default: true }) showLoyaltyButton: boolean;
   @Prop({ type: Boolean, default: true }) showMembershipButton: boolean;
+
+  // ── Layout/visibility around those 4 fixed buttons (Phase 11) — genuinely
+  // configurable presentation, not new transactional surface: the buttons
+  // above stay individually toggle-able exactly as before; these control
+  // everything AROUND them (cover height/composition, which stats show).
+  // 'standard' + all-true + null reproduces today's exact rendered look, so
+  // an existing store is pixel-identical until a seller changes something.
+  @Prop({ type: String, enum: ['standard', 'compact', 'immersive'], default: 'standard' })
+  layout: 'standard' | 'compact' | 'immersive';
+  @Prop({ type: Boolean, default: true }) showBadges: boolean;
+  @Prop({ type: Boolean, default: true }) showFollowerCount: boolean;
+  @Prop({ type: Boolean, default: true }) showProductCount: boolean;
+  @Prop({ type: Boolean, default: true }) showRating: boolean;
+  @Prop({ type: Number, default: null }) descriptionMaxLines: number | null;
 }
 export const IdentityBannerSchema = SchemaFactory.createForClass(IdentityBanner);
 
-// One doc per store — site-wide chrome (theme colors + header + footer),
-// separate from `StorePage` (per-page section content). Replaces
-// `Store.builderConfig` as the source of truth for this content; the old
-// field is left as an inert orphan on already-existing stores rather than
-// migrated in a big-bang way (see `store-theme.service.ts#ensureDefaultTheme`).
+// The draft/live split (Phase 2 of the Store Builder plan) — mirrors the
+// `StoreTheme` root shape exactly (theme/header/footer/identityBanner +
+// baseThemeId) so every seller edit lands here first and only reaches the
+// public storefront once explicitly published. `_id: false` since this is
+// always a singleton sub-object, never an array element.
+@Schema({ _id: false })
+export class StoreThemeDraft {
+  @Prop({ type: StorefrontColorsSchema, default: () => ({}) })
+  theme: StorefrontColors;
+
+  @Prop({ type: StorefrontHeaderSchema, default: () => ({}) })
+  header: StorefrontHeader;
+
+  @Prop({ type: StorefrontFooterSchema, default: () => ({}) })
+  footer: StorefrontFooter;
+
+  @Prop({ type: IdentityBannerSchema, default: () => ({}) })
+  identityBanner: IdentityBanner;
+
+  @Prop({ type: String, default: null })
+  baseThemeId: string | null;
+
+  // Which theme package (a code-shipped `ThemeDefinition`, see
+  // `builder/themes/` on the frontend — never a Mongo-stored definition,
+  // per the Theme Definition vs. Installed Theme Instance split) this
+  // installed row is running. Switching definitions is itself a normal
+  // draft→publish action like any other theme edit, so it lives here too
+  // (not just at the document root) — see `ThemeVersion.themeDefinitionId`
+  // for why a version snapshot also needs to remember it.
+  @Prop({ type: String, default: null })
+  themeDefinitionId: string | null;
+
+  // Real "developer/advanced authoring" capability #1 — see the class
+  // comment on `StoreTheme.customCss` below for the full safety rationale.
+  @Prop({ type: String, default: null })
+  customCss: string | null;
+}
+export const StoreThemeDraftSchema = SchemaFactory.createForClass(StoreThemeDraft);
+
+// A real, immutable snapshot of the live theme taken at the moment of every
+// `publishTheme()` call — not just a single `lastPublishedAt` timestamp
+// pretending to be version history. `_id: true` (Mongoose auto-generates
+// one) so the frontend can address a specific version to restore.
+@Schema({ _id: true, timestamps: false })
+export class ThemeVersion {
+  @Prop({ type: StorefrontColorsSchema, default: () => ({}) })
+  theme: StorefrontColors;
+
+  @Prop({ type: StorefrontHeaderSchema, default: () => ({}) })
+  header: StorefrontHeader;
+
+  @Prop({ type: StorefrontFooterSchema, default: () => ({}) })
+  footer: StorefrontFooter;
+
+  @Prop({ type: IdentityBannerSchema, default: () => ({}) })
+  identityBanner: IdentityBanner;
+
+  @Prop({ type: String, default: null })
+  baseThemeId: string | null;
+
+  @Prop({ type: String, default: null })
+  themeDefinitionId: string | null;
+
+  @Prop({ type: String, default: null })
+  customCss: string | null;
+
+  @Prop({ type: Date, required: true })
+  publishedAt: Date;
+}
+export const ThemeVersionSchema = SchemaFactory.createForClass(ThemeVersion);
+
+export const INSTALLED_THEME_STATUSES = ['installed', 'active'] as const;
+export type InstalledThemeStatus = (typeof INSTALLED_THEME_STATUSES)[number];
+
+// One doc per INSTALLED THEME INSTANCE on a store — site-wide chrome (theme
+// colors + header + footer), separate from `StorePage` (per-page section
+// content). A store can have several installed rows (Theme Library
+// "Install") but exactly one `status: 'active'` at a time (Theme Library
+// "Activate") — the public storefront/`getPublic()` always resolves the
+// active row. This is the Theme Definition ↔ Installed Theme Instance split:
+// `themeDefinitionId` names a code-shipped theme package (frontend
+// `builder/themes/<id>/`, never stored in Mongo — theme source is code, not
+// merchant data); everything else on this document is the merchant's own
+// configuration for that installation, seeded from the definition's defaults
+// at install time (`StoreThemeService.installTheme`) and free to diverge
+// after that. Replaces `Store.builderConfig` as the source of truth for this
+// content; that old field is left as an inert orphan on already-existing
+// stores rather than migrated in a big-bang way.
+//
+// `theme`/`header`/`footer`/`identityBanner`/`baseThemeId`/`themeDefinitionId`
+// at the document root are the LIVE/PUBLISHED state for THIS installed row.
+// `draft` is the seller's working copy: every
+// `updateTheme`/`updateHeader`/`updateFooter`/`updateIdentityBanner` call
+// writes here, and only `publishTheme()` copies draft → root — the same
+// safe edit-then-publish behavior `StorePage.status` already has, instead of
+// every keystroke going instantly live.
+//
+// Pre-existing stores (from before multi-install) have exactly one row,
+// `status: 'active'`, `themeDefinitionId: 'warm-craft'` — see
+// `ensureDefaultTheme`'s backfill and `scripts/migrate-installed-themes.ts`
+// for the one-time index migration this required (the old schema had a
+// single-field unique index on `storeId` alone; a real Mongo deployment
+// needs that dropped once so the new compound index below can be created —
+// flagged there, not silently assumed).
 @Schema({ timestamps: true })
 export class StoreTheme {
   _id: string;
 
-  @Prop({ required: true, unique: true, index: true })
+  // No standalone index here — the compound `{storeId, themeDefinitionId}`
+  // unique index below already serves any storeId-only lookup (Mongo can
+  // use a compound index's leading-field prefix), and a redundant same-key
+  // single-field index is exactly what caused a real, confirmed incident:
+  // an index literally named `storeId_1` was silently recreated with
+  // `unique: true` after being dropped, once from a stale process reconnecting
+  // with pre-migration schema code — found via live install-theme testing
+  // (`E11000 duplicate key error ... storeId_1`). Do not re-add `index: true`
+  // here without also confirming it can never collide by name with a
+  // legacy/incoming migration.
+  @Prop({ required: true })
   storeId: string;
+
+  // Which code-shipped theme package this row is an installation of. Null
+  // only for a document written by code that predates this field and hasn't
+  // been backfilled yet — `ensureDefaultTheme`/the migration script close
+  // that gap; every read path should treat null defensively as
+  // `'warm-craft'` rather than crashing.
+  @Prop({ type: String, default: null, index: true })
+  themeDefinitionId: string | null;
+
+  // Exactly one row per store is `'active'` (enforced in
+  // `StoreThemeService.activateTheme`, not by a schema constraint — Mongo
+  // has no native "at most one true" index). Every other installed row is
+  // `'installed'`: configured and ready, but not what the public storefront
+  // renders.
+  @Prop({ type: String, enum: INSTALLED_THEME_STATUSES, default: 'active', index: true })
+  status: InstalledThemeStatus;
+
+  @Prop({ type: Date, default: () => new Date() })
+  installedAt: Date;
 
   @Prop({ type: StorefrontColorsSchema, default: () => ({}) })
   theme: StorefrontColors;
@@ -74,8 +296,63 @@ export class StoreTheme {
   @Prop({ type: IdentityBannerSchema, default: () => ({}) })
   identityBanner: IdentityBanner;
 
+  // Which curated theme (a frontend-only `themes.ts` definition, not a
+  // backend ref/FK) the fields above were last bulk-set FROM — powers the
+  // Theme tab's "Currently using X" / "Custom — based on X, N customized"
+  // status line. Left untouched by manual field edits, so it keeps meaning
+  // "based on X" even after the seller tweaks something. Null for a store
+  // that's never applied a gallery theme (pre-existing stores, or a seller
+  // who's only ever used the manual controls).
+  @Prop({ type: String, default: null })
+  baseThemeId: string | null;
+
+  // Real "developer/advanced authoring" capability — a bounded, genuinely
+  // safe capability (CSS cannot execute code, read cookies, or make
+  // network requests, unlike JS) rather than a fake "Advanced" button that
+  // just opens the same merchant editor. Deliberately scoped to CSS only —
+  // no custom JS, no custom section-type registration via the UI, no raw
+  // theme-source/template editing — because this app has no sandboxing
+  // mechanism (no iframe/shadow-DOM isolation for storefront content) that
+  // would make arbitrary script execution or new render logic safe to
+  // expose to an ordinary merchant. Length-capped and scanned for CSS-level
+  // injection vectors (`javascript:` URLs, deprecated IE `expression()`) in
+  // `StoreThemeService.validateCustomCss` — real validation, not just a
+  // free-text field. There's no separate "theme developer" role in this
+  // app's auth model — advanced authoring is an opt-in mode the store's own
+  // seller uses on their own store (see `StoreSettings`), not a new RBAC
+  // tier; the security boundary is what CSS itself can't do, not a
+  // permission check on top of it. Rendered as a raw `<style>` tag in
+  // `StorefrontLayout`/Live Preview — unscoped, so a careless rule (e.g.
+  // `img { display: none }`) can genuinely break the seller's own storefront
+  // layout; that's flagged in the editor UI as a real risk, not hidden.
+  @Prop({ type: String, default: null })
+  customCss: string | null;
+
+  // Defaults to a copy of the live root fields at read time for any store
+  // that predates this field (`ensureDefaultTheme`), never left empty — see
+  // that method for why a lazy per-read backfill is safe here (idempotent,
+  // no concurrent-writer risk since it's the same $setOnInsert-style upsert
+  // pattern already used for the rest of this document).
+  @Prop({ type: StoreThemeDraftSchema, default: () => ({}) })
+  draft: StoreThemeDraft;
+
+  @Prop({ type: Date, default: null })
+  lastPublishedAt: Date | null;
+
+  // Real version history — capped at the most recent 20 publishes (oldest
+  // dropped) so this array can't grow unbounded on a store that publishes
+  // constantly. Newest last (append-only via $push), reversed for display.
+  @Prop({ type: [ThemeVersionSchema], default: [] })
+  versions: ThemeVersion[];
+
   createdAt?: Date;
   updatedAt?: Date;
 }
 
 export const StoreThemeSchema = SchemaFactory.createForClass(StoreTheme);
+
+// One installed row per (store, theme package) — replaces the old
+// single-field unique index on `storeId` alone (a real deployment needs that
+// old index dropped once; see `scripts/migrate-installed-themes.ts`).
+StoreThemeSchema.index({ storeId: 1, themeDefinitionId: 1 }, { unique: true, partialFilterExpression: { themeDefinitionId: { $type: 'string' } } });
+StoreThemeSchema.index({ storeId: 1, status: 1 });

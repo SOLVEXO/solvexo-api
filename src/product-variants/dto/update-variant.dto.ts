@@ -48,6 +48,14 @@ export class UpdateVariantDto {
   images?: string[];
 
   @IsOptional()
+  @IsString()
+  sku?: string;
+
+  @IsOptional()
+  @IsString()
+  barcode?: string;
+
+  @IsOptional()
   @IsBoolean()
   isDefault?: boolean;
 }

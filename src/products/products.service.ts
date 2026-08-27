@@ -18,6 +18,7 @@ import { pickPrimaryCampaignForBadge } from 'src/marketing/campaign-pricing.util
 import { EducationLevel } from './schemas/product.schema';
 import { EducationLevelService } from './education-level.service';
 import { UploadService } from 'src/upload/upload.service';
+import { generateUniqueSlug } from 'src/common/slug.util';
 import { RedisService } from 'src/redis/redis.service';
 import { aggregateProductSales } from 'src/analytics/utils/order-aggregation.util';
 import {
@@ -237,8 +238,8 @@ export class ProductsService {
   }
 
   /** Public, pre-purchase preview of a digital product — always a watermarked/trimmed derivative, never the original file. */
-  async getProductPreview(productId: string, clientIp: string) {
-    const rateLimitKey = `preview:rl:${clientIp}:${productId}`;
+  async getProductPreview(idOrSlug: string, clientIp: string) {
+    const rateLimitKey = `preview:rl:${clientIp}:${idOrSlug}`;
     const count = await this.redisService.incrWithTtl(
       rateLimitKey,
       PREVIEW_RATE_LIMIT_WINDOW_SECONDS,
@@ -254,9 +255,16 @@ export class ProductsService {
     }
 
     const { productModel } = this.databaseService.repositories;
-    const product = await productModel
-      .findOne({ _id: productId, status: 'active', isDelete: false })
+    // Same slug-first, id-fallback resolution as getProductById — the
+    // product-detail page passes whatever :slug route param it has.
+    let product = await productModel
+      .findOne({ slug: idOrSlug, status: 'active', isDelete: false })
       .lean();
+    if (!product && isValidObjectId(idOrSlug)) {
+      product = await productModel
+        .findOne({ _id: idOrSlug, status: 'active', isDelete: false })
+        .lean();
+    }
     if (!product) throw new NotFoundException('Product not found');
     if (product.type !== 'digital' || !product.digital?.preview?.enabled) {
       throw new BadRequestException(
@@ -384,18 +392,26 @@ export class ProductsService {
     // empty result, not an error: it should read as "nothing left on sale",
     // not a 404/500.
     if (campaignId) {
-      const campaign = isValidObjectId(campaignId)
-        ? await this.databaseService.repositories.campaignModel
-            .findOne({
-              _id: campaignId,
-              isDelete: false,
-              status: 'active',
-              startDate: { $lte: new Date() },
-              endDate: { $gte: new Date() },
-            })
-            .select('participatingStoreIds sponsorType')
-            .lean()
-        : null;
+      const campaignModel = this.databaseService.repositories.campaignModel;
+      const campaignBaseFilter = {
+        isDelete: false,
+        status: 'active',
+        startDate: { $lte: new Date() },
+        endDate: { $gte: new Date() },
+      };
+      // campaignId may be the new slug-based handle (?campaign=summer-sale)
+      // or an old bookmarked raw id — try slug first, then id, same
+      // resolution order as ProductsService.getProductById.
+      let campaign = await campaignModel
+        .findOne({ slug: campaignId, ...campaignBaseFilter })
+        .select('participatingStoreIds sponsorType')
+        .lean();
+      if (!campaign && isValidObjectId(campaignId)) {
+        campaign = await campaignModel
+          .findOne({ _id: campaignId, ...campaignBaseFilter })
+          .select('participatingStoreIds sponsorType')
+          .lean();
+      }
       // A platform-sponsored campaign applies to every store — no storeId
       // restriction at all, same universal rule as getActiveCampaignsForStores.
       if (campaign && campaign.sponsorType !== 'platform') {
@@ -796,21 +812,34 @@ export class ProductsService {
     return this.getTopSellingProducts(storeId, sevenDaysAgo, limit, customerId);
   }
 
-  async getProductById(productId: string, customerId?: string | null) {
+  async getProductById(idOrSlug: string, customerId?: string | null) {
     const productModel = this.databaseService.repositories.productModel;
     const productVariantModel =
       this.databaseService.repositories.productVariantModel;
     const sellerModel = this.databaseService.repositories.sellerModel;
     const storeModel = this.databaseService.repositories.storeModel;
 
-    // 1️⃣ Get product
-    const product = await productModel
+    // 1️⃣ Get product — resolve by slug (the canonical public URL) first,
+    // falling back to the raw Mongo id so old bookmarked/shared
+    // /marketplace/:id links keep working forever (ids never change, even
+    // if the product is later renamed and its slug regenerates).
+    let product = await productModel
       .findOne({
-        _id: productId,
+        slug: idOrSlug,
         status: 'active',
         isDelete: false,
       })
       .lean();
+
+    if (!product && isValidObjectId(idOrSlug)) {
+      product = await productModel
+        .findOne({
+          _id: idOrSlug,
+          status: 'active',
+          isDelete: false,
+        })
+        .lean();
+    }
 
     if (product && (await this.isHiddenByEarlyAccess(product, customerId))) {
       return { message: 'Product not found', success: false, data: null };
@@ -865,10 +894,11 @@ export class ProductsService {
       }),
     ]);
 
-    // 4️⃣ Get variants
+    // 4️⃣ Get variants — must key off the resolved document's real _id, not
+    // the route param (which may be a slug string, not the product's id).
     const rawVariants = await productVariantModel
       .find({
-        productId: productId,
+        productId: product._id.toString(),
         status: 'active',
         isDelete: false,
       })
@@ -1021,6 +1051,19 @@ export class ProductsService {
       if (v?.price === undefined || v?.price === null) {
         throw new BadRequestException('Every variant requires a price');
       }
+      // Real server-side range validation — found via a live QA pass that
+      // a negative price/stock reached the database layer unvalidated
+      // (the schema itself has no `min` constraint), surfacing as a raw,
+      // unhelpful 500 instead of a clean field-specific error.
+      if (typeof v.price !== 'number' || Number.isNaN(v.price) || v.price < 0) {
+        throw new BadRequestException('Price cannot be negative');
+      }
+      if (v.compareAtPrice !== undefined && v.compareAtPrice !== null && (typeof v.compareAtPrice !== 'number' || v.compareAtPrice < 0)) {
+        throw new BadRequestException('Compare-at price cannot be negative');
+      }
+      if (!v.unlimitedStock && v.stock !== undefined && (typeof v.stock !== 'number' || Number.isNaN(v.stock) || v.stock < 0)) {
+        throw new BadRequestException('Stock quantity cannot be negative');
+      }
       try {
         validateOptions(v.options);
       } catch (e: any) {
@@ -1052,17 +1095,7 @@ export class ProductsService {
     if (!categoryId)
       throw new BadRequestException('Your store has no category selected');
 
-    const baseSlug = name
-      .toLowerCase()
-      .trim()
-      .replace(/[^a-z0-9\s-]/g, '')
-      .replace(/\s+/g, '-')
-      .replace(/-+/g, '-');
-    let slug = baseSlug;
-    let count = 1;
-    while (await productModel.findOne({ slug })) {
-      slug = `${baseSlug}-${count++}`;
-    }
+    const slug = await generateUniqueSlug(productModel, name);
 
     const product = await productModel.create({
       sellerId,
@@ -1091,6 +1124,7 @@ export class ProductsService {
         return productVariantModel.create({
           productId: product._id.toString(),
           sku,
+          barcode: v.barcode ?? null,
           price: v.price,
           // Stamped from the owning store's own pricing currency — never
           // client-supplied, never a per-product choice. See
@@ -1214,17 +1248,7 @@ export class ProductsService {
     if (!categoryId)
       throw new BadRequestException('Your store has no category selected');
 
-    const baseSlug = name
-      .toLowerCase()
-      .trim()
-      .replace(/[^a-z0-9\s-]/g, '')
-      .replace(/\s+/g, '-')
-      .replace(/-+/g, '-');
-    let slug = baseSlug;
-    let count = 1;
-    while (await productModel.findOne({ slug })) {
-      slug = `${baseSlug}-${count++}`;
-    }
+    const slug = await generateUniqueSlug(productModel, name);
 
     const product = await productModel.create({
       sellerId,
@@ -1378,6 +1402,7 @@ export class ProductsService {
       customLevel,
       price,
       compareAtPrice,
+      templateKey,
     } = body;
 
     if (!productId) throw new BadRequestException('productId is required');
@@ -1402,17 +1427,7 @@ export class ProductsService {
     const productUpdate: any = {};
 
     if (name && name !== product.name) {
-      const baseSlug = name
-        .toLowerCase()
-        .trim()
-        .replace(/[^a-z0-9\s-]/g, '')
-        .replace(/\s+/g, '-')
-        .replace(/-+/g, '-');
-      let slug = baseSlug;
-      let count = 1;
-      while (await productModel.findOne({ slug, _id: { $ne: productId } })) {
-        slug = `${baseSlug}-${count++}`;
-      }
+      const slug = await generateUniqueSlug(productModel, name, { excludeId: productId });
       productUpdate.name = name;
       productUpdate.slug = slug;
     }
@@ -1424,6 +1439,7 @@ export class ProductsService {
     if (tags !== undefined) productUpdate.tags = tags;
     if (isListedOnSolvexo !== undefined)
       productUpdate.isListedOnSolvexo = isListedOnSolvexo;
+    if (templateKey !== undefined) productUpdate.templateKey = templateKey;
     if (status !== undefined) {
       if (status === 'scheduled' && !scheduledAt) {
         throw new BadRequestException(

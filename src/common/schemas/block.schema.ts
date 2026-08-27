@@ -10,11 +10,29 @@ import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
  * enum-locked) since the set of valid types differs by parent context; each
  * write path validates it against the right allow-list via
  * `common/store-content/section-settings.validator.ts` instead.
+ *
+ * Stable per-item identity for drag-reorder/duplicate/hide-without-delete
+ * comes from Mongoose's own auto-generated subdocument `_id` (every element
+ * of a `[BlockSchema]` array already gets a real ObjectId `_id` by default —
+ * confirmed already relied on as the React key in `SectionRenderer.tsx` and
+ * typed as `Block._id?: string` on the frontend) — no separate custom `id`
+ * field needed, and every existing block already has one, so there is
+ * nothing to backfill for identity.
  */
 @Schema({ timestamps: false })
 export class Block {
   @Prop({ type: String, required: true }) type: string;
   @Prop({ type: Object, default: () => ({}) }) settings: Record<string, any>;
+
+  // Same purpose as `Section.schemaVersion` (see section.schema.ts) — bumped
+  // whenever this block `type`'s settings shape changes incompatibly.
+  @Prop({ type: Number, default: 1 }) schemaVersion: number;
+
+  // Lets a seller hide a block without losing its content (distinct from
+  // actually removing it from the array, which is the real "delete") — see
+  // SectionRenderer.tsx, which treats a missing/undefined value the same as
+  // `true` so no migration is needed for pre-existing blocks.
+  @Prop({ type: Boolean, default: true }) enabled: boolean;
 }
 
 export const BlockSchema = SchemaFactory.createForClass(Block);
