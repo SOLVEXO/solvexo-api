@@ -2,6 +2,7 @@ import {
   Injectable,
   UnauthorizedException,
   BadRequestException,
+  ForbiddenException,
   NotFoundException,
   HttpException,
   HttpStatus,
@@ -997,6 +998,46 @@ export class ProductsService {
 
   // ─── NEW APIS ───────────────────────────────────────────────────────────────
 
+  /** Resolves and validates the `categoryId` a product is saved under.
+   *  Categories are now store-scoped (a seller builds their own tree,
+   *  entirely at their own discretion — see CategoriesService) instead of
+   *  every product being forced onto the store's single fixed legacy root.
+   *  Accepts either: a category the seller created for THIS store
+   *  (`category.storeId === storeId`), or a legacy global/admin category
+   *  (`category.storeId` null) — the latter kept only so a pre-existing
+   *  store that still has an old `store.categoryId` root, or a product
+   *  request that hasn't been updated to the new picker yet, keeps working
+   *  unchanged. Falls back to the store's legacy `categoryId` only when the
+   *  request sends none at all. */
+  private async resolveProductCategoryId(
+    storeId: string,
+    legacyStoreCategoryId: string | null,
+    requestedCategoryId?: string,
+  ): Promise<string> {
+    const categoryId = requestedCategoryId || legacyStoreCategoryId;
+    if (!categoryId) {
+      throw new BadRequestException(
+        'Select a category for this product — create one from your store\'s Categories page first.',
+      );
+    }
+    if (!isValidObjectId(categoryId)) {
+      throw new BadRequestException('Invalid category selected');
+    }
+    const category = await this.databaseService.repositories.categoryModel.findOne({
+      _id: categoryId,
+      status: 'active',
+      isDelete: false,
+    });
+    if (!category) {
+      throw new BadRequestException('Selected category not found');
+    }
+    const belongsToStore = !category.storeId || String(category.storeId) === String(storeId);
+    if (!belongsToStore) {
+      throw new ForbiddenException('That category does not belong to your store');
+    }
+    return categoryId;
+  }
+
   async addPhysicalProduct(sellerId: string, body: any) {
     const { storeModel, sellerModel, productModel, productVariantModel } =
       this.databaseService.repositories;
@@ -1012,6 +1053,7 @@ export class ProductsService {
       storeId,
       name,
       description,
+      categoryId: requestedCategoryId,
       subCategoryId,
       images,
       tags,
@@ -1091,9 +1133,7 @@ export class ProductsService {
       );
     }
 
-    const categoryId = store.categoryId;
-    if (!categoryId)
-      throw new BadRequestException('Your store has no category selected');
+    const categoryId = await this.resolveProductCategoryId(storeId, store.categoryId, requestedCategoryId);
 
     const slug = await generateUniqueSlug(productModel, name);
 
@@ -1164,6 +1204,7 @@ export class ProductsService {
       name,
       description,
       productType,
+      categoryId: requestedCategoryId,
       subCategoryId,
       images,
       tags,
@@ -1244,9 +1285,7 @@ export class ProductsService {
       }
     }
 
-    const categoryId = store.categoryId;
-    if (!categoryId)
-      throw new BadRequestException('Your store has no category selected');
+    const categoryId = await this.resolveProductCategoryId(storeId, store.categoryId, requestedCategoryId);
 
     const slug = await generateUniqueSlug(productModel, name);
 
@@ -1391,6 +1430,7 @@ export class ProductsService {
       productId,
       name,
       description,
+      categoryId: requestedCategoryId,
       subCategoryId,
       images,
       tags,
@@ -1433,6 +1473,13 @@ export class ProductsService {
     }
 
     if (description !== undefined) productUpdate.description = description;
+    if (requestedCategoryId !== undefined) {
+      productUpdate.categoryId = await this.resolveProductCategoryId(
+        String(product.storeId),
+        null,
+        requestedCategoryId,
+      );
+    }
     if (subCategoryId !== undefined)
       productUpdate.subCategoryId = subCategoryId;
     if (images !== undefined) productUpdate.images = images;

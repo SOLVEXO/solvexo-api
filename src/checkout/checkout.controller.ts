@@ -103,6 +103,8 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { IdempotencyInterceptor } from '../common/idempotency.interceptor';
 import { CheckoutService } from './checkout.service';
+import { BillingAccessGuard } from '../platform-plans/guards/billing-access.guard';
+import { RequireActiveBilling } from '../platform-plans/decorators/require-active-billing.decorator';
 
 @Controller('api/checkout')
 export class CheckoutController {
@@ -111,8 +113,9 @@ export class CheckoutController {
   // Idempotency-Key header (already-proven interceptor, used elsewhere in
   // this codebase) prevents a double-tap/retry from creating two separate
   // checkouts for the same buyer action — previously missing here entirely.
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, BillingAccessGuard)
   @Roles('user')
+  @RequireActiveBilling()
   @UseInterceptors(IdempotencyInterceptor)
   @Post('create-checkout')
   async createCheckout(@Req() req: any, @Body() body: any) {

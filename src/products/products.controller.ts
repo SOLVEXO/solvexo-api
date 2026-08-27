@@ -15,6 +15,8 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { OptionalJwtAuthGuard } from '../auth/guards/optional-jwt-auth.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { RolesGuard } from '../auth/guards/roles.guard';
+import { BillingAccessGuard } from '../platform-plans/guards/billing-access.guard';
+import { RequireActiveBilling } from '../platform-plans/decorators/require-active-billing.decorator';
 
 @Controller('api/products')
 export class productController {
@@ -109,16 +111,18 @@ export class productController {
     return this.ProductsService.getProductPreview(id, req.ip);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, BillingAccessGuard)
   @Roles('seller')
+  @RequireActiveBilling()
   @Post('add-physical-product')
   async addPhysicalProduct(@Req() req: any, @Body() body: any) {
     const { userId: sellerId } = req.user;
     return this.ProductsService.addPhysicalProduct(sellerId, body);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, BillingAccessGuard)
   @Roles('seller')
+  @RequireActiveBilling()
   @Post('add-digital-product')
   async addDigitalProduct(@Req() req: any, @Body() body: any) {
     const { userId: sellerId } = req.user;

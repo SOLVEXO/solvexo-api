@@ -9,6 +9,7 @@ import { EntitlementsService } from './entitlements.service';
 import { AiCreditsService } from './ai-credits.service';
 import { PlatformAddonsService } from './platform-addons.service';
 import { PlatformPlanNotificationsService } from './platform-plan-notifications.service';
+import { BillingAccessGuard } from './guards/billing-access.guard';
 import { AuthModule } from '../auth/auth.module';
 import { RedisModule } from '../redis/redis.module';
 import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
@@ -38,7 +39,8 @@ import { EmailService } from '../otp/services/email.service';
     PlatformAddonsService,
     PlatformPlanNotificationsService,
     EmailService,
+    BillingAccessGuard,
   ],
-  exports: [PlatformPlansService, SellerPlatformSubscriptionsService, EntitlementsService, AiCreditsService, PlatformAddonsService],
+  exports: [PlatformPlansService, SellerPlatformSubscriptionsService, EntitlementsService, AiCreditsService, PlatformAddonsService, BillingAccessGuard],
 })
 export class PlatformPlansModule {}

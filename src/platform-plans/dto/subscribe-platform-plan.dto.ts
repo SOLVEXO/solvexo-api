@@ -1,6 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsString, IsNotEmpty, IsEnum, IsOptional, MaxLength } from 'class-validator';
+import { IsString, IsNotEmpty, IsEnum, IsOptional, IsBoolean, MaxLength } from 'class-validator';
 
 export class SubscribePlatformPlanDto {
   @ApiProperty({ description: 'PlatformPlan _id to subscribe this store to' })
@@ -10,6 +10,15 @@ export class SubscribePlatformPlanDto {
   @ApiProperty({ enum: ['monthly', 'yearly'], default: 'monthly' })
   @IsEnum(['monthly', 'yearly'])
   billingInterval: 'monthly' | 'yearly';
+
+  // Only meaningful while the store is still `trialing` with time left. Omitted
+  // (default) — commit to this plan but keep the remaining trial: Stripe gets a
+  // real subscription now with `trial_end` set to the trial's own end date, so
+  // nothing is charged until then. `true` — seller explicitly asked to skip the
+  // rest of the trial and be billed right now ("Subscribe Now").
+  @ApiPropertyOptional({ description: 'Skip any remaining trial and bill immediately' })
+  @IsOptional() @IsBoolean()
+  billImmediately?: boolean;
 }
 
 export class ChangePlatformPlanDto {
@@ -20,6 +29,10 @@ export class ChangePlatformPlanDto {
   @ApiProperty({ enum: ['monthly', 'yearly'], default: 'monthly' })
   @IsEnum(['monthly', 'yearly'])
   newBillingInterval: 'monthly' | 'yearly';
+
+  @ApiPropertyOptional({ description: 'Skip any remaining trial and bill immediately' })
+  @IsOptional() @IsBoolean()
+  billImmediately?: boolean;
 }
 
 export class CancelPlatformPlanDto {

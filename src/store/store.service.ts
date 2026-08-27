@@ -102,7 +102,7 @@ export class StoreService {
   }
 
   async createStore(sellerId: string, body: any) {
-    const { name, logo, categoryId, description, sellerType, productTypes, baseCurrency } = body;
+    const { name, logo, categoryId, description, sellerType, productTypes, baseCurrency, platformPlanId } = body;
 
     if (!name) throw new BadRequestException('Store name is required');
 
@@ -153,15 +153,16 @@ export class StoreService {
 
     const finalProductTypes = productTypes ?? [];
 
-    // Self-serve activation: a seller who completed the onboarding wizard's
-    // Payment step already has a verified card on file (see
-    // SellerPlatformSubscriptionsService.confirmOnboardingPaymentMethod) —
-    // there's nothing left for an admin to gate, so the store goes straight
-    // to `active` instead of the pending/admin-review Leads queue. A store
-    // created any other way (e.g. a future non-onboarding path with no
-    // payment method on file) still starts `pending`, same as before.
-    const seller = await this.databaseService.repositories.sellerModel.findById(sellerId).lean();
-    const selfServeActivation = !!(seller as any)?.hasPlatformPaymentMethod;
+    // Self-serve activation, unconditional. Used to require a card on file
+    // (Seller.hasPlatformPaymentMethod) as a proxy for "nothing left for an
+    // admin to gate" — but the trial-based billing model (see
+    // SellerPlatformSubscriptionsService.ensureDefaultSubscription) needs NO
+    // card to start a store's trial at all, matching Shopify's own signup
+    // (a store exists and is usable immediately, entirely independent of
+    // billing state). Flip this back to the hasPlatformPaymentMethod check
+    // to reinstate the old gate — the admin Leads/pending-review queue and
+    // its whole pipeline are untouched, just unreferenced by default now.
+    const selfServeActivation = true;
 
     const store = await this.databaseService.repositories.storeModel.create({
       sellerId,
@@ -185,9 +186,10 @@ export class StoreService {
       onboardingDraft: null,
     });
 
-    // Every store always has exactly one platform-plan subscription — auto
-    // start on the free tier so onboarding has zero friction (see EntitlementsService).
-    await this.sellerPlatformSubscriptionsService.ensureDefaultSubscription(store._id.toString(), sellerId);
+    // Every store always has exactly one platform-plan subscription — new
+    // stores start a no-card-required trial on the seller's OWN plan choice
+    // (see ensureDefaultSubscription), never a permanent free plan.
+    await this.sellerPlatformSubscriptionsService.ensureDefaultSubscription(store._id.toString(), sellerId, platformPlanId);
 
     // Every store gets its own storefront chrome (theme/header/footer) and a
     // home page seeded at creation time, not lazily on first public visit —

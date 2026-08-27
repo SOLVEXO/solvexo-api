@@ -56,6 +56,8 @@ export interface ChargeContext {
   idempotencyKey?: string;
   /** Free-form metadata attached to the provider-side object for support/reconciliation. */
   metadata?: Record<string, string>;
+  /** Only meaningful for `createProviderSubscription` — a Stripe-native `trial_end` (Unix seconds). When set, the provider must NOT charge anything until this timestamp; the manual provider ignores it (it has no real trial concept). */
+  trialEndUnixSeconds?: number;
 }
 
 /**

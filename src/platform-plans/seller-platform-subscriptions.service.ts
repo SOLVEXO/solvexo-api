@@ -126,6 +126,28 @@ export class SellerPlatformSubscriptionsService {
     return freePlan;
   }
 
+  /**
+   * The trial-based-model equivalent of `downgradeToFree()` — used instead
+   * of it for any `legacyFreeEligible: false` store (i.e. every store that
+   * entered the platform after the trial-based billing model shipped; see
+   * that field's schema comment). There is no permanent free fallback for
+   * these stores: trial expiry with no conversion, dunning exhaustion, and
+   * cancellation reaching period end all land here. Selling/checkout access
+   * is restricted (BillingAccessGuard reads `status`), but NOTHING about the
+   * seller/store/product/order/customer data is touched — this only ever
+   * changes the subscription record's own billing-state fields.
+   */
+  private async lockStore(sub: any): Promise<void> {
+    sub.status = 'locked';
+    sub.failedPaymentAttempts = 0;
+    sub.cancelAtPeriodEnd = false;
+    sub.canceledAt = null;
+    sub.cancelReason = null;
+    // platformPlanId/amountUSD deliberately left as-is — "you were on
+    // Professional" is what the billing/recovery UI shows while locked, and
+    // it's also what a simple "reactivate" (successful payment) resumes.
+  }
+
   private async getSellerAndStoreNames(sellerId: string, storeId: string) {
     const [seller, store] = await Promise.all([
       this.db.repositories.sellerModel.findById(sellerId).select('name email').lean(),
@@ -156,27 +178,49 @@ export class SellerPlatformSubscriptionsService {
     const { sellerName, sellerEmail, storeName } = await this.getSellerAndStoreNames(sub.sellerId, sub.storeId);
 
     if (sub.failedPaymentAttempts >= MAX_RENEWAL_ATTEMPTS) {
-      // Unlike the buyer system, we never fully "cancel" a store's platform
-      // access — every store must always be on SOME tier. Exhausting
-      // dunning demotes the store back to the free plan instead.
-      const freePlan = await this.downgradeToFree(sub);
-      if (freePlan) {
-        if (sellerEmail) {
-          await this.notifications.sendDowngradedDueToFailedPayments(sellerEmail, {
-            sellerName, storeName, planName: freePlan.name, maxAttempts: MAX_RENEWAL_ATTEMPTS,
+      // Legacy (pre-trial-model) grandfathered stores keep landing on the
+      // free plan exactly as before — every other store has no permanent
+      // free fallback and gets locked instead (see legacyFreeEligible's
+      // schema comment).
+      if (sub.legacyFreeEligible) {
+        const freePlan = await this.downgradeToFree(sub);
+        if (freePlan) {
+          if (sellerEmail) {
+            await this.notifications.sendDowngradedDueToFailedPayments(sellerEmail, {
+              sellerName, storeName, planName: freePlan.name, maxAttempts: MAX_RENEWAL_ATTEMPTS,
+            });
+          }
+          this.notificationsService.notify({
+            recipientId: sub.sellerId,
+            recipientRole: 'seller',
+            type: NOTIFICATION_TYPES.PLATFORM_PLAN_PAYMENT_FAILED,
+            title: 'Plan downgraded',
+            body: `${storeName} was moved to the ${freePlan.name} plan after ${MAX_RENEWAL_ATTEMPTS} failed payment attempts.`,
+            data: { subscriptionId: String(sub._id) },
+          }).catch(() => {});
+          this.activityLogService.log({
+            storeId: sub.storeId, category: 'platform_plans', action: 'plan_downgraded_payment_failure',
+            description: `Store auto-downgraded to free plan after ${MAX_RENEWAL_ATTEMPTS} failed payment attempts`,
+            actorRole: 'system', targetId: sub._id.toString(), targetType: 'seller_platform_subscription',
           });
+          return;
+        }
+      } else {
+        await this.lockStore(sub);
+        if (sellerEmail) {
+          await this.notifications.sendStoreLocked(sellerEmail, { sellerName, storeName, reason: 'payment_failed' }).catch(() => {});
         }
         this.notificationsService.notify({
           recipientId: sub.sellerId,
           recipientRole: 'seller',
           type: NOTIFICATION_TYPES.PLATFORM_PLAN_PAYMENT_FAILED,
-          title: 'Plan downgraded',
-          body: `${storeName} was moved to the ${freePlan.name} plan after ${MAX_RENEWAL_ATTEMPTS} failed payment attempts.`,
+          title: 'Store locked',
+          body: `${storeName} was locked after ${MAX_RENEWAL_ATTEMPTS} failed payment attempts — update your payment method to unlock it. Your data is safe.`,
           data: { subscriptionId: String(sub._id) },
         }).catch(() => {});
         this.activityLogService.log({
-          storeId: sub.storeId, category: 'platform_plans', action: 'plan_downgraded_payment_failure',
-          description: `Store auto-downgraded to free plan after ${MAX_RENEWAL_ATTEMPTS} failed payment attempts`,
+          storeId: sub.storeId, category: 'platform_plans', action: 'plan_locked_payment_failure',
+          description: `Store locked (selling restricted) after ${MAX_RENEWAL_ATTEMPTS} failed payment attempts`,
           actorRole: 'system', targetId: sub._id.toString(), targetType: 'seller_platform_subscription',
         });
         return;
@@ -210,32 +254,80 @@ export class SellerPlatformSubscriptionsService {
   // Lifecycle
   // ═══════════════════════════════════════════════════════════════════════
 
-  /** Called by StoreService right after a new store is created — every store always has exactly one of these. */
-  async ensureDefaultSubscription(storeId: string, sellerId: string) {
+  static readonly TRIAL_DAYS = 3;
+
+  /**
+   * Called by StoreService right after a new store is created — every store
+   * always has exactly one of these. New sellers get NO permanent free
+   * plan: a `'trialing'` record on a real paid plan, `trialEndsAt = now +
+   * TRIAL_DAYS`, no card required, no Stripe subscription created yet (that
+   * only happens if/when the seller commits — see `changePlan`'s
+   * `trial_end` path). `legacyFreeEligible: false` by the schema default —
+   * only pre-existing subscriptions (backfilled by
+   * migrate-legacy-free-eligible.ts) are ever `true`.
+   *
+   * `desiredPlanId` — the seller's own choice, made during onboarding
+   * (`OnboardingPage.tsx`'s Payment/Plan step); required in practice (the
+   * frontend always sends it), but falls back to the cheapest real
+   * (non-free, non-custom-pricing) active plan if genuinely omitted, so
+   * this never hard-fails a store creation over a missing plan choice.
+   *
+   * One introductory trial per SELLER, not per store — `Seller.
+   * platformTrialUsedAt` is checked first; a seller who already had a trial
+   * (on any of their stores) gets this new store's subscription created
+   * directly as `'locked'` instead of `'trialing'` — full dashboard/data
+   * access, no selling until they pick a plan and pay. Prevents "create
+   * another store" from ever producing a second free trial.
+   */
+  async ensureDefaultSubscription(storeId: string, sellerId: string, desiredPlanId?: string) {
     const existing = await this.subModel.findOne({ storeId });
     if (existing) return existing;
 
-    const freePlan = await this.planModel.findOne({ isFree: true, status: 'active', isDelete: false });
-    if (!freePlan) {
-      this.logger.warn(`No free PlatformPlan exists yet — store ${storeId} created without a platform-plan record (admin must create one)`);
+    const trialPlan = desiredPlanId
+      ? await this.planModel.findOne({ _id: desiredPlanId, isFree: { $ne: true }, isCustomPricing: { $ne: true }, status: 'active', isDelete: false })
+      : await this.planModel.findOne({ isFree: { $ne: true }, isCustomPricing: { $ne: true }, status: 'active', isDelete: false }).sort({ monthlyPriceUSD: 1 });
+    if (!trialPlan) {
+      this.logger.warn(`No paid PlatformPlan exists yet — store ${storeId} created without a platform-plan record (admin must create one)`);
       return null;
     }
 
+    // Real document (not .lean()) — may need to write platformTrialUsedAt below.
+    const seller = await this.db.repositories.sellerModel.findById(sellerId);
     // A seller who already put a card on file during onboarding (see
     // createOnboardingSetupIntent/confirmOnboardingPaymentMethod below) has a
-    // Stripe customer waiting — seed it onto the free-plan record now so a
-    // later upgrade never has to create a second customer for the same seller.
-    const seller = await this.db.repositories.sellerModel.findById(sellerId).lean();
-    const stripeCustomerId = (seller as any)?.stripeCustomerId ?? null;
+    // Stripe customer waiting — seed it onto the record now so a later
+    // upgrade never has to create a second customer for the same seller.
+    // Purely informational at this point — no Stripe subscription is created
+    // here, so nothing is charged just because a card happens to be on file.
+    const stripeCustomerId = seller?.stripeCustomerId ?? null;
 
     const now = new Date();
+    const alreadyUsedTrial = !!seller?.platformTrialUsedAt;
+    const trialEndsAt = new Date(now.getTime() + SellerPlatformSubscriptionsService.TRIAL_DAYS * 24 * 60 * 60 * 1000);
+
+    if (!alreadyUsedTrial && seller) {
+      seller.platformTrialUsedAt = now;
+      await seller.save();
+    }
+
+    if (alreadyUsedTrial) {
+      return this.subModel.create({
+        storeId, sellerId, platformPlanId: (trialPlan as any)._id.toString(),
+        billingInterval: 'monthly', amountUSD: trialPlan.monthlyPriceUSD ?? 0, status: 'locked',
+        startedAt: now, trialEndsAt: null, currentPeriodStart: now, currentPeriodEnd: trialEndsAt,
+        nextBillingDate: trialEndsAt,
+        stripeCustomerId, paymentProvider: stripeCustomerId ? 'stripe' : 'manual', legacyFreeEligible: false,
+      });
+    }
+
     return this.subModel.create({
-      storeId, sellerId, platformPlanId: (freePlan as any)._id.toString(),
-      billingInterval: 'monthly', amountUSD: 0, status: 'active',
-      startedAt: now, currentPeriodStart: now, currentPeriodEnd: this.addPeriod(now, 'monthly'),
-      nextBillingDate: this.addPeriod(now, 'monthly'),
+      storeId, sellerId, platformPlanId: (trialPlan as any)._id.toString(),
+      billingInterval: 'monthly', amountUSD: trialPlan.monthlyPriceUSD ?? 0, status: 'trialing',
+      startedAt: now, trialEndsAt, currentPeriodStart: now, currentPeriodEnd: trialEndsAt,
+      nextBillingDate: trialEndsAt,
       stripeCustomerId,
       paymentProvider: stripeCustomerId ? 'stripe' : 'manual',
+      legacyFreeEligible: false,
     });
   }
 
@@ -446,6 +538,37 @@ export class SellerPlatformSubscriptionsService {
       }
     } else if (netDue > 0) {
       const isFirstPaidPurchase = !sub.stripeCustomerId && this.gateway.isProviderDrivenBilling;
+      // Still trialing (real time left) and not explicitly skipping the rest
+      // of it — no charge is allowed yet, whether this is the seller's first
+      // plan commitment or a second plan change made before the trial ends.
+      const isMidTrial = sub.status === 'trialing' && sub.trialEndsAt && new Date(sub.trialEndsAt).getTime() > now.getTime();
+      const billImmediately = !!(dto as any).billImmediately;
+
+      if (isMidTrial && !billImmediately && sub.providerSubscriptionId) {
+        // Already trial-converted once (has a Stripe subscription with
+        // trial_end pending) and now switching to a DIFFERENT plan before
+        // that trial ends — just re-point the pending subscription at the
+        // new price, no charge now (mirrors the "existing subscription,
+        // price sync only" tail below, entered early to skip the
+        // immediate-top-up-charge path that's only correct outside a trial).
+        if (this.gateway.isProviderDrivenBilling) {
+          const newProviderPriceId = newInterval === 'yearly' ? newPlan.stripeYearlyPriceId : newPlan.stripeMonthlyPriceId;
+          if (newProviderPriceId) {
+            await this.gateway.updateProviderSubscriptionPrice(sub.providerSubscriptionId, newProviderPriceId, 'none');
+          }
+        }
+        sub.platformPlanId = newPlanId;
+        sub.billingInterval = newInterval;
+        sub.amountUSD = this.round(newAmountUSD);
+        sub.planHistory = [...(sub.planHistory ?? []), historyEntry];
+        await sub.save();
+        this.activityLogService.log({
+          storeId, category: 'platform_plans', action: 'plan_changed',
+          description: `Store switched its trial commitment to "${newPlan.name}" — still no charge until the trial ends`,
+          actorId: sellerId, actorRole: 'seller', targetId: sub._id.toString(), targetType: 'seller_platform_subscription',
+        });
+        return { success: true, message: `Switched to "${newPlan.name}" — billing still starts when your trial ends`, data: { subscription: sub } };
+      }
 
       if (this.gateway.isProviderDrivenBilling && !sub.providerSubscriptionId) {
         // First time this store goes onto a paid Stripe-billed plan.
@@ -468,32 +591,50 @@ export class SellerPlatformSubscriptionsService {
         }
         const providerPriceId = newInterval === 'yearly' ? newPlan.stripeYearlyPriceId : newPlan.stripeMonthlyPriceId;
 
+        // Trial-conversion: a still-trialing store that commits to a plan
+        // without asking to skip the rest of its trial gets a REAL Stripe
+        // subscription now, with Stripe's own `trial_end` set to the
+        // existing trialEndsAt — Stripe charges nothing until then, and the
+        // local status stays 'trialing' (not flipped to 'active') until the
+        // invoice.payment_succeeded webhook actually confirms a charge.
+        const trialEndUnixSeconds = isMidTrial && !billImmediately ? Math.floor(new Date(sub.trialEndsAt!).getTime() / 1000) : undefined;
+
         const created = await this.gateway.createProviderSubscription(
           sub._id.toString(), `Platform: ${newPlan.name}`, newAmountUSD, newInterval,
-          { providerCustomerId: seller.stripeCustomerId, providerPriceId, idempotencyKey, metadata: { kind: PLATFORM_PLAN_STRIPE_METADATA_KIND, storeId } },
+          { providerCustomerId: seller.stripeCustomerId, providerPriceId, idempotencyKey, trialEndUnixSeconds, metadata: { kind: PLATFORM_PLAN_STRIPE_METADATA_KIND, storeId } },
         );
         sub.providerSubscriptionId = created.providerSubscriptionId;
         sub.stripeCustomerId = seller.stripeCustomerId;
-        sub.status = created.status === 'active' ? 'active' : 'past_due';
+        sub.status = created.status === 'trialing' ? 'trialing' : (created.status === 'active' ? 'active' : 'past_due');
 
         sub.platformPlanId = newPlanId;
         sub.billingInterval = newInterval;
         sub.amountUSD = this.round(newAmountUSD);
-        sub.currentPeriodStart = now;
-        sub.currentPeriodEnd = this.addPeriod(now, newInterval);
-        sub.nextBillingDate = sub.currentPeriodEnd;
+        // A trial-conversion commit does NOT reset the billing period — the
+        // store keeps its existing trialEndsAt/currentPeriodEnd until Stripe
+        // actually bills at that date; only a real, non-trial subscription
+        // creation starts a fresh period right now.
+        if (!trialEndUnixSeconds) {
+          sub.currentPeriodStart = now;
+          sub.currentPeriodEnd = this.addPeriod(now, newInterval);
+          sub.nextBillingDate = sub.currentPeriodEnd;
+        }
         sub.planHistory = [...(sub.planHistory ?? []), historyEntry];
         await sub.save();
 
         this.activityLogService.log({
           storeId, category: 'platform_plans', action: 'plan_changed',
-          description: `Store moved to "${newPlan.name}" (awaiting Stripe payment confirmation)`,
+          description: trialEndUnixSeconds
+            ? `Store committed to "${newPlan.name}" — billing starts when the trial ends`
+            : `Store moved to "${newPlan.name}" (awaiting Stripe payment confirmation)`,
           actorId: sellerId, actorRole: 'seller', targetId: sub._id.toString(), targetType: 'seller_platform_subscription',
         });
 
         return {
           success: true,
-          message: `Subscribing to "${newPlan.name}" — confirm payment to activate`,
+          message: trialEndUnixSeconds
+            ? `You're set for "${newPlan.name}" — billing starts automatically when your trial ends`
+            : `Subscribing to "${newPlan.name}" — confirm payment to activate`,
           data: { subscription: sub, requiresAction: !!created.clientSecret, clientSecret: created.clientSecret ?? null },
         };
       }
@@ -773,11 +914,22 @@ export class SellerPlatformSubscriptionsService {
     return { processed: due.length, succeeded, failed };
   }
 
-  /** Trials that have run out and were never converted to a paid card get moved to the free plan (not deleted/blocked). */
+  /**
+   * Trials that have run out. A trial that was already converted to a real
+   * Stripe subscription (see `changePlan`'s `trial_end` path) needs no
+   * action here — Stripe itself invoices at `trial_end` and the result
+   * arrives via the `invoice.payment_succeeded`/`invoice.payment_failed`
+   * webhooks, which drive `status` from there. A trial that was NEVER
+   * converted (no `providerSubscriptionId`) has nothing for Stripe to bill —
+   * this is the only case this job actually acts on: `legacyFreeEligible`
+   * stores (shouldn't structurally occur here, but handled for safety) fall
+   * back to the free plan exactly as before; every other store — the normal
+   * case for the trial-based model — gets locked. No permanent free
+   * fallback, no data touched beyond the subscription's own billing fields.
+   */
   async expireTrials(): Promise<{ expired: number }> {
     const now = new Date();
     const due = await this.subModel.find({ status: 'trialing', trialEndsAt: { $lte: now }, isDelete: false });
-    const freePlan = await this.planModel.findOne({ isFree: true, status: 'active', isDelete: false });
 
     let expired = 0;
     for (const sub of due) {
@@ -785,10 +937,33 @@ export class SellerPlatformSubscriptionsService {
         // A real Stripe subscription exists — Stripe itself will invoice at
         // trial end and we react via webhook; just clear our local flag.
         sub.status = 'active';
-      } else if (freePlan) {
-        sub.platformPlanId = (freePlan as any)._id.toString();
-        sub.amountUSD = 0;
-        sub.status = 'active';
+        sub.trialEndsAt = null;
+        await sub.save();
+        expired++;
+        continue;
+      }
+
+      if (sub.legacyFreeEligible) {
+        const freePlan = await this.downgradeToFree(sub);
+        if (!freePlan) continue;
+      } else {
+        await this.lockStore(sub);
+        const { sellerName, sellerEmail, storeName } = await this.getSellerAndStoreNames(sub.sellerId, sub.storeId);
+        if (sellerEmail) {
+          await this.notifications.sendStoreLocked(sellerEmail, { sellerName, storeName, reason: 'trial_ended' }).catch(() => {});
+        }
+        this.notificationsService.notify({
+          recipientId: sub.sellerId, recipientRole: 'seller',
+          type: NOTIFICATION_TYPES.PLATFORM_PLAN_PAYMENT_FAILED,
+          title: 'Trial ended — store locked',
+          body: `${storeName}'s trial ended without a paid plan — choose one to unlock selling again. Your data is safe.`,
+          data: { subscriptionId: String(sub._id) },
+        }).catch(() => {});
+        this.activityLogService.log({
+          storeId: sub.storeId, category: 'platform_plans', action: 'plan_locked_trial_expired',
+          description: 'Store locked (selling restricted) — trial ended with no paid conversion',
+          actorRole: 'system', targetId: sub._id.toString(), targetType: 'seller_platform_subscription',
+        });
       }
       sub.trialEndsAt = null;
       await sub.save();
@@ -814,15 +989,30 @@ export class SellerPlatformSubscriptionsService {
 
     let downgraded = 0;
     for (const sub of due) {
-      const freePlan = await this.downgradeToFree(sub);
-      if (!freePlan) continue;
-      await sub.save();
-      downgraded++;
-      this.activityLogService.log({
-        storeId: sub.storeId, category: 'platform_plans', action: 'plan_downgraded_cancellation',
-        description: `Scheduled cancellation reached period end — store moved to the ${freePlan.name} plan`,
-        actorRole: 'system', targetId: sub._id.toString(), targetType: 'seller_platform_subscription',
-      });
+      if (sub.legacyFreeEligible) {
+        const freePlan = await this.downgradeToFree(sub);
+        if (!freePlan) continue;
+        await sub.save();
+        downgraded++;
+        this.activityLogService.log({
+          storeId: sub.storeId, category: 'platform_plans', action: 'plan_downgraded_cancellation',
+          description: `Scheduled cancellation reached period end — store moved to the ${freePlan.name} plan`,
+          actorRole: 'system', targetId: sub._id.toString(), targetType: 'seller_platform_subscription',
+        });
+      } else {
+        await this.lockStore(sub);
+        await sub.save();
+        downgraded++;
+        const { sellerName, sellerEmail, storeName } = await this.getSellerAndStoreNames(sub.sellerId, sub.storeId);
+        if (sellerEmail) {
+          await this.notifications.sendStoreLocked(sellerEmail, { sellerName, storeName, reason: 'subscription_ended' }).catch(() => {});
+        }
+        this.activityLogService.log({
+          storeId: sub.storeId, category: 'platform_plans', action: 'plan_locked_cancellation',
+          description: 'Scheduled cancellation reached period end — store locked (selling restricted)',
+          actorRole: 'system', targetId: sub._id.toString(), targetType: 'seller_platform_subscription',
+        });
+      }
     }
     return { downgraded };
   }
@@ -924,12 +1114,33 @@ export class SellerPlatformSubscriptionsService {
 
   @OnEvent('stripe.customer.subscription.deleted')
   async handleSubscriptionDeleted(subscription: any): Promise<void> {
+    // Scoped to the exact deleted Stripe subscription id — if the seller
+    // already resubscribed (a replacement subscription B), the local
+    // record's providerSubscriptionId already points at B, so a
+    // late-arriving `deleted` event for the OLD subscription A finds no
+    // match here and safely no-ops. This is what prevents a superseded
+    // webhook from overriding a valid newer subscription.
     const sub = await this.subModel.findOne({ providerSubscriptionId: subscription.id, isDelete: false });
     if (!sub) return;
-    // Covers both a scheduled cancelSubscription() reaching its period end on
-    // Stripe's side and any other way a Stripe subscription ends — either way
-    // the store lands on the free plan, never with no plan at all.
-    await this.downgradeToFree(sub);
+    // Covers both a scheduled cancelSubscription() reaching its period end
+    // on Stripe's side and any other way a Stripe subscription permanently
+    // ends. Legacy grandfathered stores land on the free plan exactly as
+    // before; every other store has no permanent free fallback and gets
+    // locked instead (see legacyFreeEligible's schema comment).
+    if (sub.legacyFreeEligible) {
+      await this.downgradeToFree(sub);
+    } else {
+      await this.lockStore(sub);
+      const { sellerName, sellerEmail, storeName } = await this.getSellerAndStoreNames(sub.sellerId, sub.storeId);
+      if (sellerEmail) {
+        await this.notifications.sendStoreLocked(sellerEmail, { sellerName, storeName, reason: 'subscription_ended' }).catch(() => {});
+      }
+      this.activityLogService.log({
+        storeId: sub.storeId, category: 'platform_plans', action: 'plan_locked_subscription_deleted',
+        description: 'Stripe subscription ended with no replacement — store locked (selling restricted)',
+        actorRole: 'system', targetId: sub._id.toString(), targetType: 'seller_platform_subscription',
+      });
+    }
     sub.providerSubscriptionId = null;
     await sub.save();
   }

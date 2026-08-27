@@ -175,7 +175,17 @@ export class CollectionsService {
     // automatic
     const filter: any = { storeId, isDelete: false, status: 'active' };
     const clauses: any[] = [];
-    if (collection.rules?.categoryId) clauses.push({ categoryId: collection.rules.categoryId });
+    // The picker (EntityPickerModal, categories mode) lets a seller choose
+    // EITHER one of their own top-level categories OR a subcategory under
+    // one — a product could be tagged either way (`categoryId` or
+    // `subCategoryId`), so a rule must match whichever field the chosen id
+    // actually landed in. Previously this only ever checked `categoryId`,
+    // which the picker never even offered as a choice at the time (a real,
+    // pre-existing bug — an automatic category-rule collection silently
+    // matched zero products).
+    if (collection.rules?.categoryId) {
+      clauses.push({ $or: [{ categoryId: collection.rules.categoryId }, { subCategoryId: collection.rules.categoryId }] });
+    }
     if (collection.rules?.tags?.length) clauses.push({ tags: { $in: collection.rules.tags } });
     if (clauses.length > 0) {
       filter[collection.rules.matchType === 'all' ? '$and' : '$or'] = clauses;

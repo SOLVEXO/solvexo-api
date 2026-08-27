@@ -106,6 +106,12 @@ export class StripePaymentProvider implements IPaymentGateway {
         payment_settings: { save_default_payment_method: 'on_subscription' },
         expand: ['latest_invoice.payment_intent'],
         metadata: { internalSubscriptionId: subscriptionId, ...(context.metadata ?? {}) },
+        // Trial-conversion path (see SellerPlatformSubscriptionsService.changePlan):
+        // Stripe itself withholds any invoice/charge until this timestamp, then
+        // auto-bills the saved payment method and fires the same
+        // invoice.payment_succeeded/failed webhooks this module already
+        // handles — no separate "convert the trial" job needed.
+        ...(context.trialEndUnixSeconds ? { trial_end: context.trialEndUnixSeconds } : {}),
       },
       { idempotencyKey: context.idempotencyKey ?? `sub_create_${subscriptionId}` },
     );

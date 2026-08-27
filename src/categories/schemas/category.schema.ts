@@ -20,6 +20,14 @@ export class Category {
 @Prop({ type: String, default: null })
 parentId: string | null;
 
+// null = legacy/global/admin-curated taxonomy (unchanged — still what
+// Marketplace browse, admin curation, and SEO/sitemap read). A real value
+// makes this category privately owned by that one store — created freely
+// by the seller from their own store's Categories page, never visible to
+// or reusable by any other store. See CategoriesService for the scoping.
+@Prop({ type: String, default: null })
+storeId: string | null;
+
 @Prop({ type: String, default: null })
 image: string;
 
@@ -62,3 +70,4 @@ CategorySchema.index({ name: 1 });
 CategorySchema.index({ parentId: 1 });
 CategorySchema.index({ createdBy: 1 });
 CategorySchema.index({ slug: 1 });
+CategorySchema.index({ storeId: 1 });

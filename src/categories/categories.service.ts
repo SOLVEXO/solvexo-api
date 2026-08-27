@@ -13,6 +13,7 @@ import { DatabaseService } from 'src/database/databaseservice';
 import { CreateCategoryDto } from './dto/create-category.dto';
 import { UpdateCategoryDto } from './dto/update-category.dto';
 import { generateUniqueSlug } from 'src/common/slug.util';
+import { verifyStoreOwnershipStrict } from 'src/common/store-ownership.util';
 
 @Injectable()
 export class CategoriesService {
@@ -51,17 +52,81 @@ export class CategoriesService {
     }
 
     try {
-      const { name, parentId, image, description, sortOrder } =
+      const { name, parentId, image, description, sortOrder, storeId } =
         createCategoryDto;
       const categoryModel = this.databaseService.repositories.categoryModel;
 
-      // 🔒 Permission model:
+      let parent: any = null;
+
+      if (storeId) {
+        // 🔒 Store-scoped category — a seller building their OWN store's
+        // category tree, entirely at their own discretion: unlike the
+        // legacy global taxonomy below, both main categories AND
+        // subcategories are allowed freely here, no admin gate. Still
+        // capped at 2 levels (main → sub), and a subcategory's parent must
+        // belong to this same store.
+        if (role !== 'seller') {
+          throw new ForbiddenException('Only a seller can create a category for their own store');
+        }
+        await verifyStoreOwnershipStrict(this.databaseService.repositories.storeModel, storeId, userId);
+
+        if (parentId) {
+          if (!isValidObjectId(parentId)) {
+            throw new BadRequestException('Parent category not found');
+          }
+          parent = await categoryModel.findOne({
+            _id: parentId,
+            storeId,
+            status: 'active',
+            isDelete: false,
+          });
+          if (!parent) {
+            throw new BadRequestException('Parent category not found');
+          }
+          if (parent.parentId) {
+            throw new BadRequestException(
+              'Categories can only be nested one level deep — pick a main category as the parent',
+            );
+          }
+        }
+
+        const existingCategory = await categoryModel.findOne({
+          name,
+          storeId,
+          parentId: parentId ?? null,
+          status: 'active',
+          isDelete: false,
+        });
+        if (existingCategory) {
+          throw new ConflictException('You already have a category with this name here');
+        }
+
+        const slug = await generateUniqueSlug(categoryModel, name);
+        const category = await categoryModel.create({
+          name,
+          slug,
+          parentId: parentId ?? null,
+          storeId,
+          image: image,
+          description: description,
+          sortOrder: sortOrder || 0,
+          createdBy: userId,
+          createdByRole: role,
+        });
+
+        return {
+          success: true,
+          message: 'Category created successfully',
+          data: category,
+        };
+      }
+
+      // 🔒 Legacy global/admin taxonomy — unchanged behavior:
       // - Main categories (no parentId) → admin only. This is the curated
-      //   top-level taxonomy sellers pick from when creating a store.
+      //   top-level taxonomy the public Marketplace still browses by.
       // - Subcategories (parentId set) → admin OR seller, optionally, and
       //   only nested one level under an existing main category (no
       //   sub-of-a-sub — keeps the tree exactly 2 levels deep).
-      let parent: any = null;
       if (!parentId) {
         if (role !== 'admin') {
           throw new ForbiddenException(
@@ -130,7 +195,8 @@ export class CategoriesService {
       if (
         error instanceof ForbiddenException ||
         error instanceof BadRequestException ||
-        error instanceof ConflictException
+        error instanceof ConflictException ||
+        error instanceof NotFoundException
       ) {
         throw error;
       }
@@ -192,7 +258,13 @@ export class CategoriesService {
   //   };
   // }
 
-  async getCategoryTreeNested(categoryId?: string) {
+  /** `storeId` scopes the tree to one store's own privately-created
+   *  categories only (used by that store's product forms, Categories page,
+   *  and every builder category-picker) — omitted, this is the legacy
+   *  global/admin tree (Marketplace, admin curation, SEO/sitemap). The two
+   *  never mix: a store-scoped call only ever sees rows with that exact
+   *  `storeId`, never legacy/global rows or another store's rows. */
+  async getCategoryTreeNested(categoryId?: string, storeId?: string) {
     const categoryModel = this.databaseService.repositories.categoryModel;
 
     const countMap = await this.getActiveProductCountsByCategory();
@@ -228,10 +300,12 @@ export class CategoriesService {
       };
     }
 
-    // 🔹 CASE 2: agar id NA ho → sab root categories lao
+    // 🔹 CASE 2: agar id NA ho → root categories lao (this store's own, if
+    // `storeId` was given — else the legacy global/admin roots, unchanged).
     const rootCategories = await categoryModel
       .find({
         parentId: null,
+        storeId: storeId ?? null,
         status: 'active',
         isDelete: false,
       })
