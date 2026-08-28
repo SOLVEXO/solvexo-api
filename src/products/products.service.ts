@@ -347,12 +347,29 @@ export class ProductsService {
         .lean()
     ).map((s: any) => s._id.toString());
 
-    if (query.storeId?.$in) {
-      const existing = new Set(query.storeId.$in as string[]);
-      query.storeId = { $in: activeIds.filter((id) => existing.has(id)) };
-    } else {
-      query.storeId = { $in: activeIds };
+    query.storeId = this.narrowStoreIdConstraint(query.storeId, activeIds);
+  }
+
+  /** Narrows an existing `storeId` query constraint (none | a single exact id |
+   *  `{ $in: [...] }`) down to only the ids also present in `candidateIds`,
+   *  without ever widening it. Used to layer independent storeId restrictions
+   *  (a single-store app's own storeId, a campaign's participating stores,
+   *  the active-stores gate) on top of each other safely — e.g. a caller that
+   *  already scoped `query.storeId` to its own store keeps exactly that store
+   *  (or nothing, if that store isn't itself in `candidateIds`), rather than
+   *  having a later gate silently widen it back out to every candidate. */
+  private narrowStoreIdConstraint(current: any, candidateIds: string[]): any {
+    const candidates = new Set(candidateIds.map(String));
+    if (current == null) {
+      return { $in: Array.from(candidates) };
     }
+    if (typeof current === 'string') {
+      return candidates.has(current) ? current : { $in: [] };
+    }
+    if (current.$in) {
+      return { $in: (current.$in as string[]).filter((id) => candidates.has(String(id))) };
+    }
+    return { $in: [] };
   }
 
   async getProductsByCategoryId(
@@ -368,6 +385,7 @@ export class ProductsService {
     maxPrice?: number,
     minRating?: number,
     sortBy?: 'newest' | 'price_asc' | 'price_desc' | 'rating' | 'popularity',
+    storeId?: string,
   ): Promise<any> {
     const productModel = this.databaseService.repositories.productModel;
     const productVariantModel =
@@ -378,6 +396,11 @@ export class ProductsService {
       status: 'active',
       isDelete: false,
     };
+
+    // A single-store app build passes its own storeId so category browsing
+    // never surfaces another store's products — narrowed further below by
+    // any campaign restriction and the active-stores gate, never widened.
+    if (storeId) query.storeId = storeId;
 
     // 0️⃣ Optional productType/educationLevel filters — used by verticals like the
     // Education marketplace to show only `productType: 'educational'` listings
@@ -416,7 +439,7 @@ export class ProductsService {
       // A platform-sponsored campaign applies to every store — no storeId
       // restriction at all, same universal rule as getActiveCampaignsForStores.
       if (campaign && campaign.sponsorType !== 'platform') {
-        query.storeId = { $in: campaign.participatingStoreIds ?? [] };
+        query.storeId = this.narrowStoreIdConstraint(query.storeId, campaign.participatingStoreIds ?? []);
       } else if (!campaign) {
         query.storeId = { $in: [] };
       }
@@ -696,6 +719,7 @@ export class ProductsService {
     page: number = 1,
     limit: number = 20,
     customerId?: string | null,
+    storeId?: string,
   ) {
     const productModel = this.databaseService.repositories.productModel;
 
@@ -718,6 +742,11 @@ export class ProductsService {
       isDelete: false,
       $or: [{ name: regex }, { description: regex }],
     };
+
+    // A single-store app build passes its own storeId so search never
+    // surfaces another store's products — narrowed further below by the
+    // active-stores gate, never widened.
+    if (storeId) query.storeId = storeId;
 
     await this.restrictToActiveStores(query);
 

@@ -44,6 +44,23 @@ export class AuthService {
     return role === 'user' ? { email, storeId: storeId ?? null } : { email };
   }
 
+  /** A buyer's storeId is a partition key baked into the account (and later
+   *  the JWT) for its whole lifetime — validate it against a real, active
+   *  Store up front so a typo'd/forged storeId can't silently create (or be
+   *  matched against) an account scoped to a store that doesn't exist. Only
+   *  called where a *new* account would be created; an existing account's
+   *  storeId was already validated when it was created. */
+  private async assertValidStoreId(storeId?: string | null): Promise<void> {
+    if (!storeId) return;
+    const store = await this.databaseService.repositories.storeModel
+      .findOne({ _id: storeId, isDelete: false })
+      .select('_id')
+      .lean();
+    if (!store) {
+      throw new UnauthorizedException('Invalid storeId');
+    }
+  }
+
   /** Deletes the Redis session key for this access token so `JwtAuthGuard` rejects it immediately, instead of waiting out its TTL. */
   async logout(token: string) {
     await this.redisService.del(token);
@@ -109,6 +126,10 @@ export class AuthService {
       const existingUser = await userModel.findOne(this.emailScope(email, role, storeId));
       if (existingUser) {
         throw new UnauthorizedException('User already exists');
+      }
+
+      if (role === 'user') {
+        await this.assertValidStoreId(storeId);
       }
 
       const otp = Math.floor(100000 + Math.random() * 900000).toString();
@@ -359,6 +380,9 @@ export class AuthService {
       });
 
       if (!account) {
+        if (targetRole === 'user') {
+          await this.assertValidStoreId(storeId);
+        }
         account = new accountModel({
           name: name || userName,
           email,

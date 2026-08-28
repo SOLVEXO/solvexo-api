@@ -37,6 +37,7 @@ export class productController {
     @Query('maxPrice') maxPriceQuery?: string,
     @Query('minRating') minRatingQuery?: string,
     @Query('sortBy') sortByQuery?: string,
+    @Query('storeId') storeId?: string,
   ) {
     const page = Math.max(1, parseInt(pageQuery as string) || 1);
     const limit = Math.min(
@@ -77,6 +78,7 @@ export class productController {
       parseNum(maxPriceQuery),
       parseNum(minRatingQuery),
       sortBy,
+      storeId,
     );
   }
 

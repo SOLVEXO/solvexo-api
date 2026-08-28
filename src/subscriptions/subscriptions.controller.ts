@@ -19,6 +19,7 @@ import { CancelSubscriptionDto } from './dto/cancel-subscription.dto';
 import { EstimatePlanHealthDto } from './dto/estimate-plan-health.dto';
 import { UpdateNotificationPreferencesDto } from './dto/update-notification-preferences.dto';
 import { RefundInvoiceDto } from './dto/refund-invoice.dto';
+import { resolveBuyerStoreScope } from '../common/store-scope.util';
 
 @ApiTags('Subscriptions')
 @Controller('api/subscriptions')
@@ -72,7 +73,8 @@ export class SubscriptionsController {
   @UseGuards(JwtAuthGuard)
   @Get('my/benefits/:storeId')
   getBenefitsSummary(@Req() req: any, @Param('storeId') storeId: string) {
-    return this.subscriptionsService.getBenefitsSummary(req.user.userId, storeId);
+    const scopedStoreId = resolveBuyerStoreScope(req.user.storeId, storeId);
+    return this.subscriptionsService.getBenefitsSummary(req.user.userId, scopedStoreId);
   }
 
   @ApiBearerAuth()
@@ -90,7 +92,8 @@ export class SubscriptionsController {
     @Param('storeId') storeId: string,
     @Body() body: { creditType: 'download' | 'service'; amount: number; reason: string },
   ) {
-    return this.subscriptionsService.spendCredit(req.user.userId, storeId, body.creditType, body.amount, body.reason);
+    const scopedStoreId = resolveBuyerStoreScope(req.user.storeId, storeId);
+    return this.subscriptionsService.spendCredit(req.user.userId, scopedStoreId, body.creditType, body.amount, body.reason);
   }
 
   @ApiBearerAuth()

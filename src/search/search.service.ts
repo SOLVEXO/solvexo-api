@@ -27,8 +27,8 @@ export class SearchService {
 
   /** Runs the search and, for logged-in callers, records the term (fire-and-
    *  forget — a history write must never fail the search itself). */
-  async searchProducts(q: string, page: number, limit: number, userId: string | null) {
-    const result = await this.productsService.searchProducts(q, page, limit, userId);
+  async searchProducts(q: string, page: number, limit: number, userId: string | null, storeId?: string) {
+    const result = await this.productsService.searchProducts(q, page, limit, userId, storeId);
 
     if (userId && (q || '').trim()) {
       this.recordSearch(userId, q).catch(() => undefined);

@@ -6,6 +6,7 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { StoreService } from './store.service';
 import { UpdateStoreCustomerDto } from './dto/update-store-customer.dto';
+import { resolveBuyerStoreScope } from '../common/store-scope.util';
 
 @Controller('api/store')
 export class StoreController {
@@ -218,7 +219,8 @@ export class StoreController {
   @Post(':storeId/follow')
   async followStore(@Req() req: any, @Param('storeId') storeId: string) {
     const { userId } = req.user;
-    return this.storeService.followStore(userId, storeId);
+    const scopedStoreId = resolveBuyerStoreScope(req.user.storeId, storeId);
+    return this.storeService.followStore(userId, scopedStoreId);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -226,7 +228,8 @@ export class StoreController {
   @Get(':storeId/follow-status')
   async getFollowStatus(@Req() req: any, @Param('storeId') storeId: string) {
     const { userId } = req.user;
-    return this.storeService.getFollowStatus(userId, storeId);
+    const scopedStoreId = resolveBuyerStoreScope(req.user.storeId, storeId);
+    return this.storeService.getFollowStatus(userId, scopedStoreId);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
