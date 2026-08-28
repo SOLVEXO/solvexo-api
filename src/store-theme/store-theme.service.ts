@@ -17,11 +17,19 @@ const MAX_HEADER_LINKS = 10;
 const MAX_FOOTER_BLOCKS = 20;
 
 // The one theme package every store gets automatically the moment it's
-// created — must exist as a real `builder/themes/warm-craft/` package on the
-// frontend (it does: every theme's default config already reproduces the
-// pre-theme-system look exactly). Backend only ever needs the *id*, never
-// the definition's content — see the class comment on `StoreTheme` for why.
-const DEFAULT_THEME_DEFINITION_ID = 'warm-craft';
+// created — must exist as a real theme package on the frontend. Was
+// 'warm-craft' (a theme object from the old, now-superseded 12-theme
+// gallery, which the current Theme Library UI doesn't even list any more) —
+// every brand-new store was silently launching with a theme invisible in
+// its own Theme Library, never the real Atelier theme. Fixed to the one
+// real, complete theme that actually exists today
+// (`src/features/storefront-themes/theme-01-atelier/`). This schema's own
+// field-level defaults below (primaryColor/bgColor/textColor/accentColor/
+// font, etc.) already exactly match Atelier's real default palette — they
+// were never changed, so this is a one-line, zero-risk correction, not a
+// new seed. Backend only ever needs the *id*, never the definition's
+// content — see the class comment on `StoreTheme` for why.
+const DEFAULT_THEME_DEFINITION_ID = 'theme-01-atelier';
 
 function validateBlocks(blocks: { type: string; settings: Record<string, any> }[], allowed: string[], max: number) {
   if (blocks.length > max) throw new BadRequestException(`Cannot have more than ${max} items`);
