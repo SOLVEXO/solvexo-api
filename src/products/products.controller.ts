@@ -182,8 +182,13 @@ export class productController {
     return this.ProductsService.getStoreProducts(sellerId, storeId, query);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  // Gated the same as add-physical-product/add-digital-product — the
+  // BillingAccessGuard's own decorator doc names "creating/editing products"
+  // as its intended scope, but this route was missed when the guard was
+  // first wired up (found while re-verifying the 'locked' enforcement).
+  @UseGuards(JwtAuthGuard, RolesGuard, BillingAccessGuard)
   @Roles('seller')
+  @RequireActiveBilling()
   @Post('edit-product')
   async editProduct(@Req() req: any, @Body() body: any) {
     const { userId: sellerId } = req.user;
