@@ -133,3 +133,4 @@ export { BlogComment, BlogCommentDocument, BlogCommentSchema } from '../store-bl
 export { PromotionRequest, PromotionRequestDocument, PromotionRequestSchema } from '../promotions/schemas/promotion-request.schema';
 export { PromotionDailyStats, PromotionDailyStatsDocument, PromotionDailyStatsSchema } from '../promotions/schemas/promotion-daily-stats.schema';
 export { PromotionClickEvent, PromotionClickEventDocument, PromotionClickEventSchema } from '../promotions/schemas/promotion-click-event.schema';
+export { StoreAppRequest, StoreAppRequestDocument, StoreAppRequestSchema } from '../store-app-requests/schemas/store-app-request.schema';

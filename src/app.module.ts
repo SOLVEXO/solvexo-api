@@ -71,6 +71,7 @@ import { ManualPaymentsModule } from './manual-payments/manual-payments.module';
 import { ExchangeRateModule } from './exchange-rate/exchange-rate.module';
 import { OnboardingSlidesModule } from './onboarding-slides/onboarding-slides.module';
 import { BookingsModule } from './bookings/bookings.module';
+import { StoreAppRequestsModule } from './store-app-requests/store-app-requests.module';
 
 @Module({
   imports: [
@@ -150,6 +151,7 @@ import { BookingsModule } from './bookings/bookings.module';
     StoreBlogModule,
     PromotionsModule,
     ExchangeRateModule,
+    StoreAppRequestsModule,
   ],
   controllers: [AppController],
   providers: [AppService, { provide: APP_GUARD, useClass: ThrottlerGuard }],

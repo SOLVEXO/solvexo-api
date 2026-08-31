@@ -75,6 +75,19 @@ export class StoreController {
     return this.storeService.setWhiteLabel(req.user.userId, storeId, !!body.enabled);
   }
 
+  // Solvexo POS is a single, already-published, PAID Google Play listing —
+  // Google Play collects payment directly from the merchant on install, so
+  // there is nothing to sell or gate on our side. This just hands back the
+  // listing URL (Android only for now) so the dashboard can render a QR/link
+  // to it. No Stripe, no per-store state — store-independent, so it's a
+  // literal segment rather than nested under `:storeId/...`.
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Get('pos-app-info')
+  getPosAppInfo() {
+    return this.storeService.getPosAppInfo();
+  }
+
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('seller')
   @Patch(':storeId/pinned-products')

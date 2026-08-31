@@ -211,6 +211,7 @@ import { DatabaseService } from './databaseservice';
       { name: schema.StripeWebhookEvent.name, schema: schema.StripeWebhookEventSchema },
       { name: schema.RefundRequest.name, schema: schema.RefundRequestSchema },
       { name: schema.ReconciliationRun.name, schema: schema.ReconciliationRunSchema },
+      { name: schema.StoreAppRequest.name, schema: schema.StoreAppRequestSchema },
     ]),
   ],
   exports: [MongooseModule, DatabaseService],

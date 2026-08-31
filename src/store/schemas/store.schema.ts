@@ -177,6 +177,14 @@ export class StoreAnnouncementBar {
 }
 export const StoreAnnouncementBarSchema = SchemaFactory.createForClass(StoreAnnouncementBar);
 
+// Solvexo's own single POS app (Android, for now — already built and
+// published). Unlike the white-label StoreAppRequest below, there's nothing
+// to build per seller and nothing for our backend to gate: POS is a paid
+// Google Play listing, so Google Play collects payment directly when a
+// merchant installs it. The dashboard only ever shows a QR/link to that
+// listing (see StoreService.getPosAppInfo) — no PaymentIntent, no per-store
+// "enabled" flag, nothing tracked here.
+
 // ── Seller business verification (KYC-style Leads review) ──────────────────
 // Three genuinely separate concepts, each its own field — never collapsed
 // into one status string (see verification-requirements.config.ts for why):

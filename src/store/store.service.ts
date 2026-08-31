@@ -5,6 +5,7 @@ import {
   NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { promises as dns } from 'dns';
 import { isValidObjectId } from 'mongoose';
 import { DatabaseService } from 'src/database/databaseservice';
@@ -68,6 +69,7 @@ export class StoreService {
     private readonly storeThemeService: StoreThemeService,
     private readonly storePagesService: StorePagesService,
     private readonly collectionsService: CollectionsService,
+    private readonly configService: ConfigService,
   ) {}
 
   private generateSlug(name: string): string {
@@ -582,6 +584,22 @@ export class StoreService {
     await store.save();
 
     return { success: true, message: 'White-label setting updated', data: { whiteLabelEnabled: store.whiteLabelEnabled } };
+  }
+
+  /**
+   * Solvexo POS is a single, already-built-and-published Google Play listing
+   * — a *paid* listing, so Google Play collects payment directly from the
+   * merchant when they install it. There is nothing for our backend to sell,
+   * gate, or track here: this just hands back the Play Store URL (Android
+   * only for now) so the dashboard can render it as a QR code/link. Configured
+   * via POS_APP_ANDROID_URL so the listing URL can change without a frontend
+   * deploy. iOS is intentionally omitted until an App Store listing exists.
+   */
+  getPosAppInfo() {
+    return {
+      success: true,
+      data: { android: this.configService.get<string>('POS_APP_ANDROID_URL') ?? null },
+    };
   }
 
   async updatePinnedProducts(sellerId: string, storeId: string, productIds: string[]) {
