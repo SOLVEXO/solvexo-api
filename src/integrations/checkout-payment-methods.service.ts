@@ -98,6 +98,25 @@ export class CheckoutPaymentMethodsService {
       config,
     );
 
+    // The linkage record `PaymentService.finalizeGatewayPayment`/
+    // `failGatewayPayment` looks up by `providerSessionId` once this
+    // gateway's webhook reports an outcome — without this row, a
+    // successful Safepay payment would have nowhere to attach a real Order
+    // to (see PaymentWebhooksController's own doc comment on why this was
+    // previously a no-op). Mirrors `PaymentService.initiatePayment`'s own
+    // Stripe transaction-row shape.
+    await this.repos.paymentTransactionModel.create({
+      userId,
+      checkoutId: checkout._id.toString(),
+      paymentType: integration.provider,
+      amount,
+      currency,
+      fxSnapshots: (checkout as any).fxSnapshots ?? [],
+      paymentScope: 'full',
+      status: 'pending',
+      providerSessionId: session.sessionId,
+    });
+
     return { success: true, data: session };
   }
 }

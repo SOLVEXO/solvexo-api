@@ -710,6 +710,78 @@ export class PaymentService {
     return { orderIds: orders.map((o: any) => o._id.toString()) };
   }
 
+  /** Generic-gateway equivalent of `finalizePaymentIntent` — for the new
+   *  per-store payment module (`src/integrations`), whose webhook only ever
+   *  reports a `providerSessionId` + success/failure, never a Stripe-shaped
+   *  PaymentIntent object. Idempotent the same way: the `findOneAndUpdate({
+   *  status:'pending'})` guard means a redelivered webhook event (already
+   *  deduped upstream by `IntegrationWebhookEventService`, but defense in
+   *  depth costs nothing) just returns the already-finalized order ids
+   *  instead of creating a second order.
+   *
+   *  Known, disclosed trade-off vs. the Stripe path: there is no
+   *  amount/currency cross-check here, because `SafepayPaymentProvider.
+   *  handleWebhook` doesn't surface a confirmed charged amount in its event
+   *  payload today (only `currency`, not `amount`) — nothing to compare
+   *  against. Revisit if a future provider's webhook does carry one. */
+  async finalizeGatewayPayment(providerSessionId: string, paymentType: string): Promise<{ orderIds: string[] } | null> {
+    const { checkoutModel, paymentTransactionModel, orderModel, addressModel, cartModel } =
+      this.databaseService.repositories;
+
+    const transaction = await paymentTransactionModel.findOneAndUpdate(
+      { providerSessionId, paymentType, status: 'pending', isDelete: false },
+      { status: 'completed', paidAt: new Date() },
+      { new: true },
+    );
+
+    if (!transaction) {
+      const existing = await paymentTransactionModel.findOne({ providerSessionId, paymentType, isDelete: false });
+      return existing?.status === 'completed' ? { orderIds: existing.orderIds } : null;
+    }
+
+    const checkout = await checkoutModel.findOne({ _id: transaction.checkoutId, isDelete: false });
+    if (!checkout || checkout.status === 'completed') {
+      return { orderIds: transaction.orderIds };
+    }
+
+    const paymentInfo = { paymentType, isPaid: true };
+
+    let orders: any[];
+    try {
+      orders = await this.createOrder(transaction.userId, checkout, orderModel, addressModel, paymentInfo, paymentInfo);
+    } catch (err: any) {
+      await paymentTransactionModel.findByIdAndUpdate(transaction._id, { status: 'pending', paidAt: null });
+      console.error('createOrder failed while finalizing gateway payment:', err?.message, {
+        checkoutId: checkout._id, providerSessionId, paymentType,
+      });
+      throw new BadRequestException('Order creation failed, will retry');
+    }
+
+    await paymentTransactionModel.findByIdAndUpdate(transaction._id, {
+      orderIds: orders.map((o: any) => o._id.toString()),
+    });
+    await checkoutModel.findByIdAndUpdate(checkout._id, { status: 'completed' });
+    await this.removeCheckedOutItemsFromCart(transaction.userId, checkout, cartModel);
+
+    // Seller notifications are already sent inside `createOrder()` above —
+    // no need to duplicate that here (same as `finalizePaymentIntent`).
+    return { orderIds: orders.map((o: any) => o._id.toString()) };
+  }
+
+  /** Marks a pending gateway transaction as failed — no order is ever
+   *  created, and the checkout is left exactly as it was so the buyer can
+   *  retry (same checkout, same or a different payment method). */
+  async failGatewayPayment(providerSessionId: string, paymentType: string, reason?: string): Promise<void> {
+    const { paymentTransactionModel } = this.databaseService.repositories;
+    await paymentTransactionModel.findOneAndUpdate(
+      { providerSessionId, paymentType, status: 'pending', isDelete: false },
+      { status: 'failed' },
+    );
+    if (reason) {
+      console.error(`Gateway payment failed: ${paymentType} / ${providerSessionId} — ${reason}`);
+    }
+  }
+
   /** Lets the app poll after `stripe.confirmPayment()` resolves client-side,
    *  since webhook delivery timing can't be relied on (and won't reach
    *  `localhost` in local dev without a tunnel/Stripe CLI at all). Actively

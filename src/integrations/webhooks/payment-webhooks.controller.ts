@@ -7,6 +7,7 @@ import { DatabaseService } from '../../database/databaseservice';
 import { PaymentProviderRegistry } from '../payment-provider.registry';
 import { IntegrationWebhookEventService } from '../integration-webhook-event.service';
 import { toDecryptedPaymentConfig } from '../integration-credentials.helper';
+import { PaymentService } from '../../payment/payment.service';
 
 /**
  * Inbound gateway webhooks for the Pakistani payment providers (Safepay,
@@ -28,6 +29,7 @@ export class PaymentWebhooksController {
     private readonly databaseService: DatabaseService,
     private readonly registry: PaymentProviderRegistry,
     private readonly webhookEvents: IntegrationWebhookEventService,
+    private readonly paymentService: PaymentService,
   ) {}
 
   @Throttle({ default: { limit: 60, ttl: 60_000 } })
@@ -74,10 +76,18 @@ export class PaymentWebhooksController {
       return { received: true, duplicate: true };
     }
 
-    // Applying event.status to the matching Order/PaymentTransaction is
-    // wired in the checkout/orders integration phase, once the
-    // order<->sessionId linkage this event.sessionId resolves against
-    // exists on the order record.
+    // Turns this event into a real Order (payment_succeeded) or leaves the
+    // checkout open for a retry (payment_failed) — see
+    // `PaymentService.finalizeGatewayPayment`/`failGatewayPayment`'s own doc
+    // comments. Refund events aren't wired to anything yet (no seller-ledger
+    // reversal path exists for a Connect-less generic gateway today) —
+    // deliberately left as dedup-only, same as before, rather than silently
+    // pretending to handle a case nothing downstream can act on.
+    if (event.type === 'payment_succeeded') {
+      await this.paymentService.finalizeGatewayPayment(event.sessionId, integration.provider);
+    } else if (event.type === 'payment_failed') {
+      await this.paymentService.failGatewayPayment(event.sessionId, integration.provider, JSON.stringify(event.status?.raw ?? {}).slice(0, 300));
+    }
 
     return { received: true };
   }
