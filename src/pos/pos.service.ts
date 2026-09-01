@@ -61,6 +61,34 @@ export class PosService {
     if (!location) throw new BadRequestException('Location not found in this store');
   }
 
+  // Verifies the signed employee JWT minted by pinLogin (see that method) —
+  // NOT the client-supplied `actingEmployeeId` string the refund/void checks
+  // used to trust (spoofable: any seller-JWT holder can list every
+  // employee's _id/role via GET /pos/employees/:storeId and just pass one
+  // through). This is the actual employee currently PIN-logged-in on the
+  // device, proven by a signature only the server could have issued.
+  private verifyEmployeeToken(token: string | undefined, storeId: string): { employeeId: string; role: string } | null {
+    if (!token) return null;
+    try {
+      const payload = jwt.verify(token, requireJwtSecret()) as any;
+      if (payload?.type !== 'pos_employee' || payload?.storeId !== storeId) return null;
+      return { employeeId: payload.employeeId, role: payload.role };
+    } catch {
+      return null;
+    }
+  }
+
+  // Throws if there's no valid, verified, manager-role employee token — used
+  // by every privileged action (refund, void, cash in/out, discounts).
+  // Mandatory, unlike the old actingEmployeeId check it replaces: there is
+  // no "skip the check if the field is omitted" path anymore.
+  private requireManagerEmployee(token: string | undefined, storeId: string, actionLabel: string): { employeeId: string; role: string } {
+    const actor = this.verifyEmployeeToken(token, storeId);
+    if (!actor) throw new ForbiddenException(`A valid employee PIN session is required to ${actionLabel}`);
+    if (actor.role !== 'manager') throw new ForbiddenException(`Only managers can ${actionLabel}`);
+    return actor;
+  }
+
   // Atomic per-store counter — countDocuments() would race under concurrent
   // checkouts (two terminals could read the same count and mint the same
   // saleNumber); $inc via findOneAndUpdate is race-free.
@@ -188,11 +216,26 @@ export class PosService {
       { expiresIn: '12h' },
     );
 
+    this.writeAuditLog({ storeId: dto.storeId, employeeId: String(employee._id), action: 'pin_login', targetId: String(employee._id), targetType: 'employee' }).catch(() => {});
+
     return {
       success: true,
       message: 'PIN login successful',
       data: { employee: safe, activeSession: activeSession ?? null, employeeToken },
     };
+  }
+
+  // Best-effort — logs the event, doesn't hard-fail on a missing/expired
+  // token (the client is ending the session either way). Real token
+  // revocation (a blocklist) would be needed to actually invalidate the JWT
+  // early; not built here — the 12h expiry is the bound until then.
+  async pinLogout(sellerId: string, storeId: string, employeeToken: string | undefined) {
+    await this.verifyStoreOwnership(storeId, sellerId);
+    const actor = this.verifyEmployeeToken(employeeToken, storeId);
+    if (actor) {
+      this.writeAuditLog({ storeId, employeeId: actor.employeeId, action: 'pin_logout', targetId: actor.employeeId, targetType: 'employee' }).catch(() => {});
+    }
+    return { success: true, message: 'Logged out' };
   }
 
   // ── REGISTER & SHIFT MANAGEMENT ───────────────────────────────────────────
@@ -407,6 +450,8 @@ export class PosService {
       status: 'open',
     });
 
+    this.writeAuditLog({ storeId: dto.storeId, employeeId: dto.employeeId, action: 'session_opened', targetId: String(session._id), targetType: 'session', metadata: { registerId: dto.registerId, openingCash: dto.openingCash } }).catch(() => {});
+
     return { success: true, message: 'Register session opened', data: session };
   }
 
@@ -429,6 +474,8 @@ export class PosService {
       { $set: { closingCash: dto.closingCash, expectedCash, cashDifference, closedAt: new Date(), status: 'closed' } },
       { new: true },
     );
+
+    this.writeAuditLog({ storeId: (session as any).storeId, employeeId: (session as any).employeeId, action: 'session_closed', targetId: dto.sessionId, targetType: 'session', metadata: { closingCash: dto.closingCash, expectedCash, cashDifference } }).catch(() => {});
 
     return { success: true, message: 'Register session closed', data: updated };
   }
@@ -532,18 +579,22 @@ export class PosService {
 
   // ── CASH DRAWER ADJUSTMENT ────────────────────────────────────────────────
 
-  async cashInOut(sellerId: string, sessionId: string, dto: CashAdjustmentDto) {
+  async cashInOut(sellerId: string, sessionId: string, dto: CashAdjustmentDto, employeeToken: string | undefined) {
     const session = await this.r.registerSessionModel.findOne({ _id: sessionId, status: 'open' });
     if (!session) throw new NotFoundException('Open session not found');
 
     await this.verifyStoreOwnership((session as any).storeId, sellerId);
 
-    const adjustment = { type: dto.type, amount: dto.amount, reason: dto.reason, employeeId: dto.employeeId, createdAt: new Date() };
+    const actor = this.requireManagerEmployee(employeeToken, (session as any).storeId, 'record cash movements');
+
+    const adjustment = { type: dto.type, amount: dto.amount, reason: dto.reason, employeeId: actor.employeeId, createdAt: new Date() };
 
     await this.r.registerSessionModel.findByIdAndUpdate(
       sessionId,
       { $push: { cashAdjustments: adjustment } },
     );
+
+    this.writeAuditLog({ storeId: (session as any).storeId, employeeId: actor.employeeId, action: dto.type, targetId: sessionId, targetType: 'session', metadata: { amount: dto.amount, reason: dto.reason } }).catch(() => {});
 
     return {
       success: true,
@@ -554,7 +605,7 @@ export class PosService {
 
   // ── SALES ─────────────────────────────────────────────────────────────────
 
-  async createSale(sellerId: string, dto: CreateSaleDto) {
+  async createSale(sellerId: string, dto: CreateSaleDto, employeeToken: string | undefined) {
     await this.verifyStoreOwnership(dto.storeId, sellerId);
 
     if (dto.idempotencyKey) {
@@ -567,6 +618,13 @@ export class PosService {
 
     const employee = await this.r.employeeModel.findOne({ _id: dto.employeeId, storeId: dto.storeId, isDelete: false });
     if (!employee) throw new BadRequestException('Employee not found');
+
+    // A discount requires a verified manager — the mobile UI already keeps
+    // cashiers from entering one; this is the server-side backstop for
+    // direct API calls. See requireManagerEmployee's doc comment.
+    if ((dto.discount ?? 0) > 0) {
+      this.requireManagerEmployee(employeeToken, dto.storeId, 'apply a discount');
+    }
 
     // resolve items — fetch variant snapshots + check stock
     const saleItems: any[] = [];
@@ -610,6 +668,10 @@ export class PosService {
     // saleNumber is only unique per-store, and two terminals in the same store
     // can check out at nearly the same instant — retry with a fresh number on
     // a rare duplicate-key collision instead of failing the sale outright.
+    // idempotencyKey is now a *unique* sparse index (sales.schema.ts) — a
+    // concurrent retry of the same logical checkout that loses the race
+    // hits that instead of creating a second sale; re-fetch and return the
+    // winner rather than erroring, same contract as the pre-check above.
     let sale: any;
     for (let attempt = 0; attempt < 5; attempt++) {
       const saleNumber = await this.generateSaleNumber(dto.storeId);
@@ -632,36 +694,71 @@ export class PosService {
           notes: dto.notes ?? null,
           heldAt: isHeld ? new Date() : null,
           status: isHeld ? 'held' : 'completed',
-          idempotencyKey: dto.idempotencyKey ?? null,
+          // Omit entirely (not `null`) when absent — a `sparse` index only
+          // excludes documents where the field doesn't exist at all, not
+          // ones where it's explicitly set to `null`; setting it to `null`
+          // here made every key-less sale after the first collide on the
+          // unique index (E11000 on `idempotencyKey: null`), caught live
+          // while E2E-testing this change against a real running backend.
+          ...(dto.idempotencyKey ? { idempotencyKey: dto.idempotencyKey } : {}),
         });
         break;
       } catch (err: any) {
         if (err?.code === 11000 && err?.keyPattern?.saleNumber && attempt < 4) continue;
+        if (err?.code === 11000 && err?.keyPattern?.idempotencyKey && dto.idempotencyKey) {
+          const existing = await this.r.saleModel.findOne({ idempotencyKey: dto.idempotencyKey, storeId: dto.storeId }).lean();
+          if (existing) return { success: true, message: 'Duplicate request — returning existing sale', data: existing };
+        }
         throw err;
       }
     }
 
     if (!isHeld) {
-      // decrement stock and update session totals only when completing
-      // (unlimited-stock variants are skipped so they never go negative)
+      // Decrement stock and update session totals only when completing.
+      // Floor-guarded ($gte qty) so a duplicate/concurrent decrement can't
+      // drive stock negative — unlimited-stock variants are still skipped.
       for (const item of dto.items) {
-        await this.r.productVariantModel.updateOne(
-          { _id: item.variantId, unlimitedStock: { $ne: true } },
+        const result = await this.r.productVariantModel.updateOne(
+          { _id: item.variantId, unlimitedStock: { $ne: true }, stock: { $gte: item.qty } },
           { $inc: { stock: -item.qty } },
         );
+        if (result.matchedCount === 0) {
+          // Either unlimitedStock (expected, not an error) or a genuine
+          // race lost the stock check — log for investigation, don't fail
+          // an already-created sale over it.
+          const stillExists = await this.r.productVariantModel.exists({ _id: item.variantId, unlimitedStock: { $ne: true } });
+          if (stillExists) {
+            // eslint-disable-next-line no-console
+            console.error(`[createSale] stock floor guard blocked decrement for variant ${item.variantId} on sale ${sale?._id}`);
+          }
+        }
       }
       await this._incrementSessionTotals(dto.sessionId, total, dto.paymentMethod);
     }
 
+    this.writeAuditLog({
+      storeId: dto.storeId,
+      employeeId: dto.employeeId,
+      action: isHeld ? 'sale_held' : 'sale_created',
+      targetId: String(sale._id),
+      targetType: 'sale',
+      metadata: { total, discount, itemCount: dto.items.length },
+    }).catch(() => {});
+
     return { success: true, message: isHeld ? 'Sale put on hold' : 'Sale completed', data: sale };
   }
 
-  async completeSale(sellerId: string, saleId: string, dto: CompleteSaleDto) {
+  async completeSale(sellerId: string, saleId: string, dto: CompleteSaleDto, employeeToken: string | undefined) {
     const sale = await this.r.saleModel.findById(saleId);
     if (!sale) throw new NotFoundException('Sale not found');
     if ((sale as any).status !== 'held') throw new BadRequestException('Only held sales can be completed');
 
     await this.verifyStoreOwnership((sale as any).storeId, sellerId);
+
+    const discount = dto.discount ?? (sale as any).discount;
+    if (discount > 0) {
+      this.requireManagerEmployee(employeeToken, (sale as any).storeId, 'apply a discount');
+    }
 
     // re-check stock before completing
     for (const item of (sale as any).items) {
@@ -672,7 +769,6 @@ export class PosService {
       }
     }
 
-    const discount = dto.discount ?? (sale as any).discount;
     const tax = dto.tax ?? (sale as any).tax;
     const total = (sale as any).subtotal - discount + tax;
 
@@ -692,14 +788,16 @@ export class PosService {
       { new: true },
     );
 
-    // now decrement stock and update session (unlimited-stock variants skipped)
+    // now decrement stock and update session (floor-guarded — see createSale)
     for (const item of (sale as any).items) {
       await this.r.productVariantModel.updateOne(
-        { _id: item.variantId, unlimitedStock: { $ne: true } },
+        { _id: item.variantId, unlimitedStock: { $ne: true }, stock: { $gte: item.qty } },
         { $inc: { stock: -item.qty } },
       );
     }
     await this._incrementSessionTotals((sale as any).sessionId, total, dto.paymentMethod);
+
+    this.writeAuditLog({ storeId: (sale as any).storeId, employeeId: (sale as any).employeeId, action: 'sale_completed', targetId: saleId, targetType: 'sale', metadata: { total, discount } }).catch(() => {});
 
     return { success: true, message: 'Sale completed', data: updated };
   }
@@ -756,7 +854,7 @@ export class PosService {
     };
   }
 
-  async refundSale(sellerId: string, saleId: string, dto?: RefundSaleDto) {
+  async refundSale(sellerId: string, saleId: string, dto: RefundSaleDto | undefined, employeeToken: string | undefined) {
     const sale = await this.r.saleModel.findById(saleId);
     if (!sale) throw new NotFoundException('Sale not found');
     if ((sale as any).status === 'voided') throw new BadRequestException('Sale is voided — cannot refund');
@@ -765,10 +863,7 @@ export class PosService {
 
     await this.verifyStoreOwnership((sale as any).storeId, sellerId);
 
-    if (dto?.actingEmployeeId) {
-      const actor = await this.r.employeeModel.findOne({ _id: dto.actingEmployeeId, storeId: (sale as any).storeId, isDelete: false });
-      if (actor && actor.role !== 'manager') throw new ForbiddenException('Only managers can issue refunds');
-    }
+    const actor = this.requireManagerEmployee(employeeToken, (sale as any).storeId, 'issue refunds');
 
     const isPartial = dto?.items && dto.items.length > 0;
 
@@ -791,7 +886,7 @@ export class PosService {
       sessionUpdate.$inc.totalSales = -refundAmount;
       await this.r.registerSessionModel.findByIdAndUpdate((sale as any).sessionId, sessionUpdate);
 
-      this.writeAuditLog({ storeId: (sale as any).storeId, employeeId: dto?.actingEmployeeId ?? null, action: 'sale_refunded_full', targetId: saleId, targetType: 'sale' }).catch(() => {});
+      this.writeAuditLog({ storeId: (sale as any).storeId, employeeId: actor.employeeId, action: 'sale_refunded_full', targetId: saleId, targetType: 'sale' }).catch(() => {});
       return { success: true, message: 'Sale fully refunded and stock restored' };
     }
 
@@ -835,7 +930,7 @@ export class PosService {
     const sessionUpdate: any = { $inc: { totalRefunds: partialTotal } };
     await this.r.registerSessionModel.findByIdAndUpdate((sale as any).sessionId, sessionUpdate);
 
-    this.writeAuditLog({ storeId: (sale as any).storeId, employeeId: dto?.actingEmployeeId ?? null, action: 'sale_refunded_partial', targetId: saleId, targetType: 'sale', metadata: { partialTotal, items: dto.items } }).catch(() => {});
+    this.writeAuditLog({ storeId: (sale as any).storeId, employeeId: actor.employeeId, action: 'sale_refunded_partial', targetId: saleId, targetType: 'sale', metadata: { partialTotal, items: dto.items } }).catch(() => {});
     return { success: true, message: `Partial refund of ${partialTotal.toFixed(2)} processed`, data: { refundedAmount: partialTotal, newStatus } };
   }
 
@@ -1093,6 +1188,8 @@ export class PosService {
       .findByIdAndUpdate(employeeId, { $set: updateData }, { new: true })
       .select('-pin');
 
+    this.writeAuditLog({ storeId, employeeId: null, action: 'employee_updated', targetId: employeeId, targetType: 'employee', metadata: { fields: Object.keys(dto) } }).catch(() => {});
+
     return { success: true, message: 'Employee updated', data: updated };
   }
 
@@ -1197,7 +1294,7 @@ export class PosService {
 
   // ── SALES EXTENSIONS ──────────────────────────────────────────────────────
 
-  async voidSale(sellerId: string, saleId: string, dto: { reason?: string; actingEmployeeId?: string }) {
+  async voidSale(sellerId: string, saleId: string, dto: { reason?: string }, employeeToken: string | undefined) {
     const sale = await this.r.saleModel.findById(saleId);
     if (!sale) throw new NotFoundException('Sale not found');
     if ((sale as any).status !== 'completed') {
@@ -1206,10 +1303,7 @@ export class PosService {
 
     await this.verifyStoreOwnership((sale as any).storeId, sellerId);
 
-    if (dto.actingEmployeeId) {
-      const actor = await this.r.employeeModel.findOne({ _id: dto.actingEmployeeId, storeId: (sale as any).storeId, isDelete: false });
-      if (actor && actor.role !== 'manager') throw new ForbiddenException('Only managers can void sales');
-    }
+    const actor = this.requireManagerEmployee(employeeToken, (sale as any).storeId, 'void sales');
 
     for (const item of (sale as any).items) {
       await this.r.productVariantModel.findByIdAndUpdate(item.variantId, { $inc: { stock: item.qty } });
@@ -1218,7 +1312,7 @@ export class PosService {
     await this.r.saleModel.findByIdAndUpdate(saleId, {
       status: 'voided',
       voidedAt: new Date(),
-      voidedBy: dto.actingEmployeeId ?? sellerId,
+      voidedBy: actor.employeeId,
     });
 
     const sessionUpdate: any = { $inc: { totalSales: -(sale as any).total, totalTransactions: -1 } };
@@ -1228,16 +1322,20 @@ export class PosService {
     else sessionUpdate.$inc.otherSales = -(sale as any).total;
     await this.r.registerSessionModel.findByIdAndUpdate((sale as any).sessionId, sessionUpdate);
 
-    this.writeAuditLog({ storeId: (sale as any).storeId, employeeId: dto.actingEmployeeId ?? null, action: 'sale_voided', targetId: saleId, targetType: 'sale', metadata: { reason: dto.reason } }).catch(() => {});
+    this.writeAuditLog({ storeId: (sale as any).storeId, employeeId: actor.employeeId, action: 'sale_voided', targetId: saleId, targetType: 'sale', metadata: { reason: dto.reason } }).catch(() => {});
     return { success: true, message: 'Sale voided and stock restored' };
   }
 
-  async editHeldSaleItems(sellerId: string, saleId: string, dto: UpdateSaleItemsDto) {
+  async editHeldSaleItems(sellerId: string, saleId: string, dto: UpdateSaleItemsDto, employeeToken: string | undefined) {
     const sale = await this.r.saleModel.findById(saleId);
     if (!sale) throw new NotFoundException('Sale not found');
     if ((sale as any).status !== 'held') throw new BadRequestException('Only held sales can be edited');
 
     await this.verifyStoreOwnership((sale as any).storeId, sellerId);
+
+    if ((dto.discount ?? 0) > 0) {
+      this.requireManagerEmployee(employeeToken, (sale as any).storeId, 'apply a discount');
+    }
 
     const saleItems: any[] = [];
     let subtotal = 0;
@@ -1496,6 +1594,8 @@ export class PosService {
       { $set: dto },
       { new: true, upsert: true },
     );
+
+    this.writeAuditLog({ storeId, employeeId: null, action: 'settings_updated', targetId: storeId, targetType: 'settings', metadata: { fields: Object.keys(dto) } }).catch(() => {});
 
     return { success: true, message: 'POS settings updated', data: settings };
   }

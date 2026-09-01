@@ -20,6 +20,7 @@ import { BookAppointmentDto } from './dto/book-appointment.dto';
 import { PurchasePackageDto } from './dto/purchase-package.dto';
 import { RescheduleBookingDto } from './dto/reschedule-booking.dto';
 import { CancelBookingDto } from './dto/cancel-booking.dto';
+import { resolveBuyerStoreScope } from '../common/store-scope.util';
 
 @ApiTags('Bookings')
 @Controller('api/bookings')
@@ -61,7 +62,8 @@ export class BookingsController {
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Post('book')
   book(@Req() req: any, @Body() dto: BookAppointmentDto) {
-    return this.bookingsService.book(req.user.userId, dto, req.headers['idempotency-key']);
+    const storeId = resolveBuyerStoreScope(req.user.storeId, (dto as any).storeId);
+    return this.bookingsService.book(req.user.userId, dto, req.headers['idempotency-key'], storeId);
   }
 
   @ApiBearerAuth()
@@ -70,42 +72,48 @@ export class BookingsController {
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Post('packages/:packageId/purchase')
   purchasePackage(@Req() req: any, @Param('packageId') packageId: string, @Body() _dto: PurchasePackageDto) {
-    return this.bookingsService.purchasePackage(req.user.userId, packageId, req.headers['idempotency-key']);
+    const storeId = resolveBuyerStoreScope(req.user.storeId, (_dto as any)?.storeId);
+    return this.bookingsService.purchasePackage(req.user.userId, packageId, req.headers['idempotency-key'], storeId);
   }
 
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard)
   @Get('my')
   listMyBookings(@Req() req: any, @Query() query: any) {
-    return this.bookingsService.listMyBookings(req.user.userId, query);
+    const storeId = resolveBuyerStoreScope(req.user.storeId, query.storeId);
+    return this.bookingsService.listMyBookings(req.user.userId, query, storeId);
   }
 
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard)
   @Get('my/packages')
-  listMyPackages(@Req() req: any) {
-    return this.bookingsService.listMyPackages(req.user.userId);
+  listMyPackages(@Req() req: any, @Query('storeId') storeIdQuery: string) {
+    const storeId = resolveBuyerStoreScope(req.user.storeId, storeIdQuery);
+    return this.bookingsService.listMyPackages(req.user.userId, storeId);
   }
 
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard)
   @Get('my/:id')
-  getMyBookingById(@Req() req: any, @Param('id') id: string) {
-    return this.bookingsService.getMyBookingById(req.user.userId, id);
+  getMyBookingById(@Req() req: any, @Param('id') id: string, @Query('storeId') storeIdQuery: string) {
+    const storeId = resolveBuyerStoreScope(req.user.storeId, storeIdQuery);
+    return this.bookingsService.getMyBookingById(req.user.userId, id, storeId);
   }
 
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard)
   @Patch('my/:id/cancel')
   cancelMyBooking(@Req() req: any, @Param('id') id: string, @Body() body: CancelBookingDto) {
-    return this.bookingsService.cancelMyBooking(req.user.userId, id, body.reason);
+    const storeId = resolveBuyerStoreScope(req.user.storeId, (body as any)?.storeId);
+    return this.bookingsService.cancelMyBooking(req.user.userId, id, body.reason, storeId);
   }
 
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard)
   @Patch('my/:id/reschedule')
   rescheduleMyBooking(@Req() req: any, @Param('id') id: string, @Body() dto: RescheduleBookingDto) {
-    return this.bookingsService.rescheduleMyBooking(req.user.userId, id, dto);
+    const storeId = resolveBuyerStoreScope(req.user.storeId, (dto as any)?.storeId);
+    return this.bookingsService.rescheduleMyBooking(req.user.userId, id, dto, storeId);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

@@ -11,6 +11,11 @@ export class RecentlyViewed {
   @Prop({ type: String, required: true })
   userId!: string;
 
+  // Same reasoning as RecentSearch.storeId — scopes this history entry to
+  // the store it was recorded in.
+  @Prop({ type: String, default: null })
+  storeId!: string | null;
+
   @Prop({ type: String, required: true })
   productId!: string;
 
@@ -19,5 +24,5 @@ export class RecentlyViewed {
 }
 
 export const RecentlyViewedSchema = SchemaFactory.createForClass(RecentlyViewed);
-RecentlyViewedSchema.index({ userId: 1, productId: 1 }, { unique: true });
-RecentlyViewedSchema.index({ userId: 1, updatedAt: -1 });
+RecentlyViewedSchema.index({ userId: 1, storeId: 1, productId: 1 }, { unique: true });
+RecentlyViewedSchema.index({ userId: 1, storeId: 1, updatedAt: -1 });

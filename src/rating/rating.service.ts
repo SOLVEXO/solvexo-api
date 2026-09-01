@@ -131,7 +131,7 @@ export class RatingService {
 
   // ── BUYER: WRITE ──────────────────────────────────────────────────────────
 
-  async addReview(userId: string, dto: AddReviewDto) {
+  async addReview(userId: string, dto: AddReviewDto, storeId: string) {
     const {
       productId,
       productVariantId,
@@ -149,6 +149,9 @@ export class RatingService {
       isDelete: false,
     });
     if (!product) throw new BadRequestException('Product not found');
+    if (product.storeId && product.storeId !== storeId) {
+      throw new BadRequestException('Product not found');
+    }
 
     const existing = await ratingModel.findOne({
       userId,
@@ -222,12 +225,15 @@ export class RatingService {
     return { success: true, message: 'Review added', data: review };
   }
 
-  async editReview(userId: string, reviewId: string, dto: EditReviewDto) {
+  async editReview(userId: string, reviewId: string, dto: EditReviewDto, storeId: string) {
     const { ratingModel } = this.r;
 
     const review = await this.findReviewOrThrow(reviewId);
     if (review.userId !== userId)
       throw new ForbiddenException('You can only edit your own review');
+    if (review.storeId && review.storeId !== storeId) {
+      throw new ForbiddenException('You can only edit your own review');
+    }
 
     const update: any = {};
     if (dto.rating !== undefined) update.rating = dto.rating;
@@ -259,12 +265,15 @@ export class RatingService {
     };
   }
 
-  async deleteReview(userId: string, reviewId: string) {
+  async deleteReview(userId: string, reviewId: string, storeId: string) {
     const { ratingModel } = this.r;
 
     const review = await this.findReviewOrThrow(reviewId);
     if (review.userId !== userId)
       throw new ForbiddenException('You can only delete your own review');
+    if (review.storeId && review.storeId !== storeId) {
+      throw new ForbiddenException('You can only delete your own review');
+    }
 
     await ratingModel.findByIdAndUpdate(reviewId, { isDelete: true });
 
@@ -276,14 +285,14 @@ export class RatingService {
     return { success: true, message: 'Review deleted' };
   }
 
-  async getMyReviews(userId: string, query: any) {
+  async getMyReviews(userId: string, query: any, storeId: string) {
     const { ratingModel, productModel } = this.r;
 
     const page = parseInt(query.page) || 1;
     const limit = 10;
     const skip = (page - 1) * limit;
 
-    const filter = { userId, isDelete: false };
+    const filter = { userId, storeId, isDelete: false };
     const total = await ratingModel.countDocuments(filter);
     const reviews = await ratingModel
       .find(filter)

@@ -396,16 +396,18 @@ export class CategoriesService {
     cat.slug = slug;
   }
 
-  async getCategoryWithChildren(categoryId: string): Promise<any> {
+  async getCategoryWithChildren(categoryId: string, storeId?: string): Promise<any> {
     const categoryModel = this.databaseService.repositories.categoryModel;
 
     if (!isValidObjectId(categoryId)) {
       throw new BadRequestException('Invalid category id');
     }
 
-    // Parent category (only active & not deleted)
+    // Parent category (only active & not deleted) — scoped to this store
+    // when one is given, same as the category-tree endpoint.
     const category = await categoryModel.findOne({
       _id: categoryId,
+      ...(storeId ? { storeId } : {}),
       status: 'active',
       isDelete: false,
     });

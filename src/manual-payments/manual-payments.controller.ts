@@ -1,7 +1,8 @@
 /* eslint-disable prettier/prettier */
 import {
-  Controller, Get, Post, Param, Body, Req, UseGuards, UseInterceptors, UploadedFile,
+  Controller, Get, Post, Param, Body, Query, Req, UseGuards, UseInterceptors, UploadedFile,
 } from '@nestjs/common';
+import { resolveBuyerStoreScope } from '../common/store-scope.util';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
 import { Throttle } from '@nestjs/throttler';
@@ -47,14 +48,16 @@ export class ManualPaymentsController {
   }
 
   @Get()
-  async getMyProofs(@Req() req: any) {
-    const data = await this.manualPaymentsService.getMyProofs(req.user.userId);
+  async getMyProofs(@Req() req: any, @Query('storeId') storeIdQuery: string) {
+    const storeId = resolveBuyerStoreScope(req.user.storeId, storeIdQuery);
+    const data = await this.manualPaymentsService.getMyProofs(req.user.userId, storeId);
     return { success: true, data };
   }
 
   @Get(':proofId')
-  async getProofStatus(@Req() req: any, @Param('proofId') proofId: string) {
-    const data = await this.manualPaymentsService.getProofStatus(req.user.userId, proofId);
+  async getProofStatus(@Req() req: any, @Param('proofId') proofId: string, @Query('storeId') storeIdQuery: string) {
+    const storeId = resolveBuyerStoreScope(req.user.storeId, storeIdQuery);
+    const data = await this.manualPaymentsService.getProofStatus(req.user.userId, proofId, storeId);
     return { success: true, data };
   }
 

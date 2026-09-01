@@ -45,7 +45,8 @@ export class SubscriptionsController {
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Post('subscribe')
   subscribe(@Req() req: any, @Body() dto: SubscribeDto) {
-    return this.subscriptionsService.subscribe(req.user.userId, dto, req.headers['idempotency-key']);
+    const storeId = resolveBuyerStoreScope(req.user.storeId, (dto as any).storeId);
+    return this.subscriptionsService.subscribe(req.user.userId, dto, req.headers['idempotency-key'], storeId);
   }
 
   @ApiBearerAuth()

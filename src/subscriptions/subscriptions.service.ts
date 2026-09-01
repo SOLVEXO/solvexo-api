@@ -947,9 +947,12 @@ export class SubscriptionsService {
   }
 
   /** Buyer subscribes to a store's plan. This is the (formerly-dead) internal createSubscription, now reachable. */
-  async subscribe(customerId: string, dto: SubscribeDto, idempotencyKey?: string) {
+  async subscribe(customerId: string, dto: SubscribeDto, idempotencyKey?: string, storeId?: string) {
     const plan = await this.planModel.findOne({ _id: dto.planId, isDelete: false, status: 'active' });
     if (!plan) throw new NotFoundException('Subscription plan not found or inactive');
+    if (storeId && String(plan.storeId) !== storeId) {
+      throw new ForbiddenException("This plan does not belong to this app's store");
+    }
 
     const store = await this.storeModel.findById(plan.storeId);
     if (!store || store.isDelete || store.status !== 'active') {

@@ -40,7 +40,7 @@ export class CategoriesController {
   }
 
   @Get('category/:id')
-  async getCategoryById(@Param('id') id: string) {
-    return this.categoriesService.getCategoryWithChildren(id);
+  async getCategoryById(@Param('id') id: string, @Query('storeId') storeId?: string) {
+    return this.categoriesService.getCategoryWithChildren(id, storeId);
   }
 }

@@ -233,6 +233,12 @@ export class DatabaseService {
     @InjectModel(schema.SeoIntegration.name)
     private seoIntegrationModel: Model<schema.SeoIntegrationDocument>,
 
+    @InjectModel(schema.StoreIntegration.name)
+    private storeIntegrationModel: Model<schema.StoreIntegrationDocument>,
+
+    @InjectModel(schema.IntegrationWebhookEvent.name)
+    private integrationWebhookEventModel: Model<schema.IntegrationWebhookEventDocument>,
+
     @InjectModel(schema.SeoCrawlLog.name)
     private seoCrawlLogModel: Model<schema.SeoCrawlLogDocument>,
 
@@ -424,6 +430,8 @@ export class DatabaseService {
       seoLandingPageModel: this.seoLandingPageModel,
       seoSitemapCacheModel: this.seoSitemapCacheModel,
       seoIntegrationModel: this.seoIntegrationModel,
+      storeIntegrationModel: this.storeIntegrationModel,
+      integrationWebhookEventModel: this.integrationWebhookEventModel,
       seoCrawlLogModel: this.seoCrawlLogModel,
       seoIndexSnapshotModel: this.seoIndexSnapshotModel,
       seoAnalyticsSnapshotModel: this.seoAnalyticsSnapshotModel,

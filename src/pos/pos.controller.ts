@@ -1,7 +1,7 @@
 /* eslint-disable prettier/prettier */
 import {
   Controller, Get, Post, Patch, Delete,
-  Body, Param, Query, Req, Res, UseGuards,
+  Body, Param, Query, Req, Res, UseGuards, Headers,
 } from '@nestjs/common';
 import { Response } from 'express';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
@@ -126,6 +126,13 @@ export class PosController {
     return this.posService.pinLogin(dto);
   }
 
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Post('pin-logout')
+  pinLogout(@Req() req: any, @Body('storeId') storeId: string, @Headers('x-pos-employee-token') employeeToken?: string) {
+    return this.posService.pinLogout(req.user.userId, storeId, employeeToken);
+  }
+
   // ═══════════════════════════════════════════════════════════════════════════
   // REGISTER MANAGEMENT  (seller only)
   // ═══════════════════════════════════════════════════════════════════════════
@@ -212,8 +219,8 @@ export class PosController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('seller')
   @Post('sessions/:sessionId/cash-adjustment')
-  cashInOut(@Req() req: any, @Param('sessionId') sessionId: string, @Body() dto: CashAdjustmentDto) {
-    return this.posService.cashInOut(req.user.userId, sessionId, dto);
+  cashInOut(@Req() req: any, @Param('sessionId') sessionId: string, @Body() dto: CashAdjustmentDto, @Headers('x-pos-employee-token') employeeToken?: string) {
+    return this.posService.cashInOut(req.user.userId, sessionId, dto, employeeToken);
   }
 
   // must be after static /sessions/* routes
@@ -231,8 +238,8 @@ export class PosController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('seller')
   @Post('sales')
-  createSale(@Req() req: any, @Body() dto: CreateSaleDto) {
-    return this.posService.createSale(req.user.userId, dto);
+  createSale(@Req() req: any, @Body() dto: CreateSaleDto, @Headers('x-pos-employee-token') employeeToken?: string) {
+    return this.posService.createSale(req.user.userId, dto, employeeToken);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -260,15 +267,15 @@ export class PosController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('seller')
   @Post('sales/:saleId/complete')
-  completeSale(@Req() req: any, @Param('saleId') saleId: string, @Body() dto: CompleteSaleDto) {
-    return this.posService.completeSale(req.user.userId, saleId, dto);
+  completeSale(@Req() req: any, @Param('saleId') saleId: string, @Body() dto: CompleteSaleDto, @Headers('x-pos-employee-token') employeeToken?: string) {
+    return this.posService.completeSale(req.user.userId, saleId, dto, employeeToken);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('seller')
   @Post('sales/:saleId/refund')
-  refundSale(@Req() req: any, @Param('saleId') saleId: string, @Body() dto: RefundSaleDto) {
-    return this.posService.refundSale(req.user.userId, saleId, dto);
+  refundSale(@Req() req: any, @Param('saleId') saleId: string, @Body() dto: RefundSaleDto, @Headers('x-pos-employee-token') employeeToken?: string) {
+    return this.posService.refundSale(req.user.userId, saleId, dto, employeeToken);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -396,15 +403,15 @@ export class PosController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('seller')
   @Post('sales/:saleId/void')
-  voidSale(@Req() req: any, @Param('saleId') saleId: string, @Body() dto: { reason?: string; actingEmployeeId?: string }) {
-    return this.posService.voidSale(req.user.userId, saleId, dto);
+  voidSale(@Req() req: any, @Param('saleId') saleId: string, @Body() dto: { reason?: string }, @Headers('x-pos-employee-token') employeeToken?: string) {
+    return this.posService.voidSale(req.user.userId, saleId, dto, employeeToken);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('seller')
   @Patch('sales/:saleId/items')
-  editHeldSaleItems(@Req() req: any, @Param('saleId') saleId: string, @Body() dto: UpdateSaleItemsDto) {
-    return this.posService.editHeldSaleItems(req.user.userId, saleId, dto);
+  editHeldSaleItems(@Req() req: any, @Param('saleId') saleId: string, @Body() dto: UpdateSaleItemsDto, @Headers('x-pos-employee-token') employeeToken?: string) {
+    return this.posService.editHeldSaleItems(req.user.userId, saleId, dto, employeeToken);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
