@@ -303,7 +303,15 @@ export class SellerPlatformSubscriptionsService {
 
     const now = new Date();
     const alreadyUsedTrial = !!seller?.platformTrialUsedAt;
-    const trialEndsAt = new Date(now.getTime() + SellerPlatformSubscriptionsService.TRIAL_DAYS * 24 * 60 * 60 * 1000);
+    // Admin-configured trial length (PlatformPlan.trialDays, set from
+    // AdminPlatformPlans.tsx) is the real source of truth when the admin has
+    // actually set it (> 0). Plans that still have the schema default (0 —
+    // i.e. an admin who never touched this field) fall back to the original
+    // hardcoded TRIAL_DAYS constant so no existing plan's behavior changes.
+    const effectiveTrialDays = trialPlan.trialDays > 0
+      ? trialPlan.trialDays
+      : SellerPlatformSubscriptionsService.TRIAL_DAYS;
+    const trialEndsAt = new Date(now.getTime() + effectiveTrialDays * 24 * 60 * 60 * 1000);
 
     if (!alreadyUsedTrial && seller) {
       seller.platformTrialUsedAt = now;

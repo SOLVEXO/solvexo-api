@@ -228,7 +228,13 @@ export class PlatformAddonsService {
       success: true,
       data: {
         pagination: { page, limit, total, pages: Math.ceil(total / limit) },
-        addons: addons.map((a: any) => ({ ...a, store: storeMap[a.storeId] ?? null })),
+        // amountUSD is a response-shape alias for the schema's priceUSD field —
+        // the admin frontend's AddonsPanel (AdminPlatformPlans.tsx) reads
+        // `amountUSD`, but PlatformAddonPurchase only ever stored `priceUSD`,
+        // so every row came back with amountUSD undefined and crashed the
+        // panel on `.toFixed(2)`. Adding the alias here (rather than renaming
+        // the schema field) avoids any DB migration.
+        addons: addons.map((a: any) => ({ ...a, amountUSD: a.priceUSD, store: storeMap[a.storeId] ?? null })),
         activeRecurringMonthlyRevenueUSD: activeRecurringRevenueUSD,
       },
     };
