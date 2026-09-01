@@ -96,21 +96,21 @@ export class productController {
 
   @UseGuards(OptionalJwtAuthGuard)
   @Get('getProductById/:id')
-  async getProductById(@Req() req: any, @Param('id') id: string) {
-    return this.ProductsService.getProductById(id, req.user?.userId ?? null);
+  async getProductById(@Req() req: any, @Param('id') id: string, @Query('storeId') storeId?: string) {
+    return this.ProductsService.getProductById(id, req.user?.userId ?? null, storeId);
   }
 
   @Get('getVariantById/:variantId')
-  async getVariantById(@Param('variantId') variantId: string) {
-    return this.ProductsService.getVariantById(variantId);
+  async getVariantById(@Param('variantId') variantId: string, @Query('storeId') storeId?: string) {
+    return this.ProductsService.getVariantById(variantId, storeId);
   }
 
   // Public, pre-purchase preview of a digital product — watermarked/trimmed
   // derivative only, never the original file. Same guard as getProductById.
   @UseGuards(OptionalJwtAuthGuard)
   @Get('preview/:id')
-  async getProductPreview(@Req() req: any, @Param('id') id: string) {
-    return this.ProductsService.getProductPreview(id, req.ip);
+  async getProductPreview(@Req() req: any, @Param('id') id: string, @Query('storeId') storeId?: string) {
+    return this.ProductsService.getProductPreview(id, req.ip, storeId);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard, BillingAccessGuard)

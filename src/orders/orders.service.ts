@@ -77,7 +77,7 @@ export class OrdersService {
     );
   }
 
-  async getOrdersByUserId(userId: string, query: any) {
+  async getOrdersByUserId(userId: string, query: any, storeId: string) {
     const { orderModel, sellerModel, ratingModel } =
       this.databaseService.repositories;
 
@@ -85,7 +85,12 @@ export class OrdersService {
     const limit = parseInt(query.limit) || 10;
     const skip = (page - 1) * limit;
 
-    const filter: any = { userId, isDelete: false };
+    // Scoped to this one store's app build — an order predating the
+    // single-store conversion (or one placed by a legacy cross-store
+    // account) may touch more than one store, but this build must never
+    // surface another store's segment of it. `sellerOrders.storeId` matches
+    // the same filter shape `getSellerOrders` already uses.
+    const filter: any = { userId, isDelete: false, 'sellerOrders.storeId': storeId };
 
     if (query.status && query.status !== 'all') {
       filter.orderStatus = query.status;
@@ -156,7 +161,9 @@ export class OrdersService {
       totalAmount: order.totalAmount,
       currency: order.currency,
       shippingAddress: order.shippingAddress,
-      stores: (order.sellerOrders ?? []).map((so: any) => {
+      stores: (order.sellerOrders ?? [])
+        .filter((so: any) => so.storeId === storeId)
+        .map((so: any) => {
         const seller = sellerMap.get(so.sellerId?.toString());
         return {
           storeId: so.storeId,
@@ -202,7 +209,7 @@ export class OrdersService {
     };
   }
 
-  async getOrderById(userId: string, orderId: string) {
+  async getOrderById(userId: string, orderId: string, storeId: string) {
     const { orderModel, sellerModel } = this.databaseService.repositories;
 
     const order = await orderModel
@@ -212,7 +219,16 @@ export class OrdersService {
     if ((order as any).userId !== userId)
       throw new ForbiddenException('Unauthorized');
 
-    const orderSellerOrders = ((order as any).sellerOrders ?? []) as any[];
+    // Same reasoning as getOrdersByUserId — never surface another store's
+    // segment of an order that happens to touch more than one store. If
+    // this order doesn't touch this build's store at all, treat it as not
+    // found rather than exposing that it exists elsewhere.
+    const orderSellerOrders = (
+      ((order as any).sellerOrders ?? []) as any[]
+    ).filter((so: any) => so.storeId === storeId);
+    if (orderSellerOrders.length === 0) {
+      throw new NotFoundException('Order not found');
+    }
     const sellerIds: string[] = [
       ...new Set(orderSellerOrders.map((so: any) => so.sellerId)),
     ].filter(Boolean);
@@ -563,7 +579,7 @@ export class OrdersService {
     );
   }
 
-  async getDownloadUrls(userId: string, orderId: string, productId: string) {
+  async getDownloadUrls(userId: string, orderId: string, productId: string, storeId: string) {
     if (!orderId) throw new BadRequestException('orderId is required');
     if (!productId) throw new BadRequestException('productId is required');
 
@@ -577,10 +593,12 @@ export class OrdersService {
     // 2. payment check
     if (!order.isPaid) throw new BadRequestException('Order is not paid yet');
 
-    // 3. product is in this order
+    // 3. product is in THIS store's sellerOrder(s) within this order — never
+    // let this app's download link resolve to another store's digital item.
     let targetItem: any = null;
 
     for (const so of order.sellerOrders) {
+      if (so.storeId !== storeId) continue;
       for (const item of so.items) {
         if (item.productId === productId) {
           targetItem = item;
@@ -835,6 +853,24 @@ export class OrdersService {
               ? `Order #${orderId} is on its way${tracking?.carrier ? ` via ${tracking.carrier}` : ''}.`
               : `Order #${orderId} has been delivered.`,
           data: { orderId, status },
+          // Silently no-ops if `so.storeId` hasn't connected WhatsApp — see
+          // NotifyParams.whatsapp. Template names below must already be
+          // approved in that store's Meta Business Manager; if they aren't,
+          // WhatsAppCloudProvider.sendTemplateMessage just logs and returns,
+          // same as any other failed send.
+          whatsapp: order.shippingAddress?.phoneNumber
+            ? {
+                storeId: so.storeId,
+                to: order.shippingAddress.phoneNumber,
+                templateName:
+                  status === 'shipped' ? 'order_shipped' : 'order_delivered',
+                languageCode: 'en_US',
+                bodyParams:
+                  status === 'shipped'
+                    ? [orderId, tracking?.carrier ?? '']
+                    : [orderId],
+              }
+            : undefined,
         })
         .catch(() => {});
     }
@@ -977,7 +1013,22 @@ export class OrdersService {
       payload.orderId,
       payload.productId,
       payload.fileIndex,
+      payload.storeId,
     );
+  }
+
+  /** Confirms `productId` is one of the items in one of THIS store's
+   *  sellerOrder(s) on this order — closes both the cross-store leak and an
+   *  otherwise-unchecked path where any paid order + any digital productId
+   *  would resolve a download, whether or not that product was actually
+   *  purchased. */
+  private assertDigitalItemInStoreOrder(order: any, productId: string, storeId: string) {
+    const inThisStore = (order.sellerOrders as any[]).some(
+      (so: any) =>
+        so.storeId === storeId &&
+        (so.items as any[]).some((item: any) => item.productId === productId),
+    );
+    if (!inThisStore) throw new BadRequestException('Product not found in this order');
   }
 
   async streamStampedPdf(
@@ -985,6 +1036,7 @@ export class OrdersService {
     orderId: string,
     productId: string,
     fileIndex: number,
+    storeId: string,
   ) {
     const { orderModel, productModel, userModel } =
       this.databaseService.repositories;
@@ -993,6 +1045,7 @@ export class OrdersService {
     if (!order) throw new NotFoundException('Order not found');
     if (order.userId !== userId) throw new ForbiddenException('Unauthorized');
     if (!order.isPaid) throw new BadRequestException('Order is not paid');
+    this.assertDigitalItemInStoreOrder(order, productId, storeId);
 
     const product = await productModel.findOne({
       _id: productId,
@@ -1028,6 +1081,7 @@ export class OrdersService {
     orderId: string,
     productId: string,
     fileIndex: number,
+    storeId: string,
   ) {
     const { orderModel, productModel } = this.databaseService.repositories;
 
@@ -1035,6 +1089,7 @@ export class OrdersService {
     if (!order) throw new NotFoundException('Order not found');
     if (order.userId !== userId) throw new ForbiddenException('Unauthorized');
     if (!order.isPaid) throw new BadRequestException('Order is not paid yet');
+    this.assertDigitalItemInStoreOrder(order, productId, storeId);
 
     const product = await productModel.findOne({
       _id: productId,
@@ -1047,7 +1102,7 @@ export class OrdersService {
     if (!file) throw new NotFoundException('File not found at this index');
 
     const token = this.jwtService.sign(
-      { userId, orderId, productId, fileIndex },
+      { userId, orderId, productId, fileIndex, storeId },
       {
         secret: this.configService.get<string>('JWT_SECRET'),
         expiresIn: '10m',
@@ -1075,7 +1130,7 @@ export class OrdersService {
     };
   }
 
-  async cancelOrder(userId: string, orderId: string, body: any) {
+  async cancelOrder(userId: string, orderId: string, body: any, storeId: string) {
     const { reason, itemIds } = body;
     if (!reason) throw new BadRequestException('reason is required');
 
@@ -1088,7 +1143,25 @@ export class OrdersService {
     });
     if (!order) throw new NotFoundException('Order not found');
 
-    return this.executeCancellation(order, itemIds, reason, {
+    // A buyer's cancel must never touch another store's items within the
+    // same (possibly multi-store legacy) order. Default to every item on
+    // THIS store's sellerOrder(s) when no explicit itemIds were given
+    // (matches the old "cancel everything" behavior for the common
+    // single-store-order case), and reject any explicitly-given id that
+    // doesn't belong to this store.
+    const storeItemIds: string[] = (order.sellerOrders as any[])
+      .filter((so: any) => so.storeId === storeId)
+      .flatMap((so: any) => (so.items as any[]).map((item: any) => item._id.toString()));
+    if (storeItemIds.length === 0) throw new NotFoundException('Order not found');
+
+    const scopedItemIds =
+      itemIds && Array.isArray(itemIds) && itemIds.length > 0 ? itemIds : storeItemIds;
+    const foreignItemId = scopedItemIds.find((id: string) => !storeItemIds.includes(id));
+    if (foreignItemId) {
+      throw new ForbiddenException('One or more items do not belong to this store');
+    }
+
+    return this.executeCancellation(order, scopedItemIds, reason, {
       actorId: userId,
       actorRole: 'user',
       notifyRecipientRole: 'seller',
@@ -1554,7 +1627,7 @@ export class OrdersService {
     };
   }
 
-  async returnRequest(userId: string, orderId: string, body: any) {
+  async returnRequest(userId: string, orderId: string, body: any, storeId: string) {
     const { reason, itemIds } = body;
     if (!reason) throw new BadRequestException('reason is required');
 
@@ -1574,6 +1647,9 @@ export class OrdersService {
 
     const now = new Date();
 
+    // Scoped to THIS store's sellerOrder(s) only — a return request must
+    // never be raised against another store's items within the same
+    // (possibly multi-store legacy) order.
     const allItems: {
       soIndex: number;
       itemIndex: number;
@@ -1581,10 +1657,12 @@ export class OrdersService {
       so: any;
     }[] = [];
     order.sellerOrders.forEach((so: any, soIndex: number) => {
+      if (so.storeId !== storeId) return;
       so.items.forEach((item: any, itemIndex: number) => {
         allItems.push({ soIndex, itemIndex, item, so });
       });
     });
+    if (allItems.length === 0) throw new NotFoundException('Order not found');
 
     let targetItems: typeof allItems;
 

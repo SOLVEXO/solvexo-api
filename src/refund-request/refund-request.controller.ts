@@ -37,8 +37,8 @@ export class RefundRequestController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('user', 'seller', 'admin')
   @Get('order/:orderId')
-  async listForOrder(@Param('orderId') orderId: string) {
-    return this.refundRequestService.listForOrder(orderId);
+  async listForOrder(@Req() req: any, @Param('orderId') orderId: string) {
+    return this.refundRequestService.listForOrder(orderId, req.user.userId, req.user.role);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)

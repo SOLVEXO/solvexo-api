@@ -490,12 +490,43 @@ export class PromotionsService {
     );
   }
 
-  async trackImpression(entityType: PromotionEntityType, entityId: string, device?: 'desktop' | 'mobile' | 'tablet') {
+  /** Confirms `entityId` is a real, existing entity of `entityType` before any
+   *  stat gets incremented — previously any caller could inflate/pollute
+   *  ANY store's impression/click counters (which plausibly drive seller
+   *  billing/ROI reporting) just by POSTing a guessed or copied id, with no
+   *  existence check at all. When a `storeId` is given (this app always has
+   *  one), also confirms the entity actually belongs to that store, closing
+   *  the same cross-store gap this pass fixed everywhere else. `banner`
+   *  (the platform-wide admin banner) has no store dimension, so only
+   *  existence is checked for that type. */
+  private async assertTrackableEntity(entityType: PromotionEntityType, entityId: string, storeId?: string) {
+    const { storeBannerModel, bannerModel, promotionRequestModel } = this.databaseService.repositories;
+    if (entityType === 'store_banner') {
+      const banner = await storeBannerModel.findById(entityId).select('storeId').lean();
+      if (!banner) throw new NotFoundException('Unknown promotion entity');
+      if (storeId && String((banner as any).storeId) !== storeId) {
+        throw new NotFoundException('Unknown promotion entity');
+      }
+    } else if (entityType === 'promotion_request') {
+      const promo = await promotionRequestModel.findById(entityId).select('storeId').lean();
+      if (!promo) throw new NotFoundException('Unknown promotion entity');
+      if (storeId && String((promo as any).storeId) !== storeId) {
+        throw new NotFoundException('Unknown promotion entity');
+      }
+    } else if (entityType === 'banner') {
+      const exists = await bannerModel.exists({ _id: entityId });
+      if (!exists) throw new NotFoundException('Unknown promotion entity');
+    }
+  }
+
+  async trackImpression(entityType: PromotionEntityType, entityId: string, device?: 'desktop' | 'mobile' | 'tablet', storeId?: string) {
+    await this.assertTrackableEntity(entityType, entityId, storeId);
     await this.bumpDailyStats(entityType, entityId, { impressions: 1 }, device);
     return { success: true };
   }
 
-  async trackClick(entityType: PromotionEntityType, entityId: string, device: 'desktop' | 'mobile' | 'tablet' = 'desktop', country?: string, city?: string, buyerId?: string | null) {
+  async trackClick(entityType: PromotionEntityType, entityId: string, device: 'desktop' | 'mobile' | 'tablet' = 'desktop', country?: string, city?: string, buyerId?: string | null, storeId?: string) {
+    await this.assertTrackableEntity(entityType, entityId, storeId);
     await this.bumpDailyStats(entityType, entityId, { clicks: 1 }, device);
     if (country) {
       await this.statsModel.updateOne(

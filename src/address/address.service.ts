@@ -199,9 +199,10 @@ async getDefaultAddress(userId: string) {
         { $set: { isDefault: false } },
       );
 
-      // set new default
-      const updated = await this.databaseService.repositories.addressModel.findByIdAndUpdate(
-        addressId,
+      // set new default — scoped to this user, or any authenticated caller
+      // could flip another user's address to "default" by guessing an id
+      const updated = await this.databaseService.repositories.addressModel.findOneAndUpdate(
+        { _id: addressId, userId, isDelete: false },
         { isDefault: true },
         { new: true },
       );

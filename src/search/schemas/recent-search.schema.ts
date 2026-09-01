@@ -10,6 +10,13 @@ export class RecentSearch {
   @Prop({ type: String, required: true })
   userId!: string;
 
+  // Which store this search happened in — a per-store buyer account only
+  // ever has one value here, but the legacy cross-store "apex" account can
+  // rack up history from several stores, and one single-store app build
+  // must only ever show/clear its own.
+  @Prop({ type: String, default: null })
+  storeId!: string | null;
+
   /** Normalized (trimmed, lowercased) — what dedup keys on. */
   @Prop({ type: String, required: true })
   query!: string;
@@ -23,5 +30,5 @@ export class RecentSearch {
 }
 
 export const RecentSearchSchema = SchemaFactory.createForClass(RecentSearch);
-RecentSearchSchema.index({ userId: 1, query: 1 }, { unique: true });
-RecentSearchSchema.index({ userId: 1, updatedAt: -1 });
+RecentSearchSchema.index({ userId: 1, storeId: 1, query: 1 }, { unique: true });
+RecentSearchSchema.index({ userId: 1, storeId: 1, updatedAt: -1 });

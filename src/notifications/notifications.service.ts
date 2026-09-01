@@ -5,8 +5,9 @@ import { Queue } from 'bullmq';
 import { DatabaseService } from 'src/database/databaseservice';
 import { FirebaseAdminService } from 'src/firebase/firebase.config';
 import { EmailService } from 'src/otp/services/email.service';
+import { WhatsAppSenderService } from 'src/integrations/whatsapp-sender.service';
 import { NotificationsGateway } from './notifications.gateway';
-import { QUEUE_NAMES, NOTIFICATION_PUSH_JOB, NOTIFICATION_EMAIL_JOB } from 'src/queues/queue.constants';
+import { QUEUE_NAMES, NOTIFICATION_PUSH_JOB, NOTIFICATION_EMAIL_JOB, NOTIFICATION_WHATSAPP_JOB } from 'src/queues/queue.constants';
 import { NOTIFICATION_CATEGORY } from './notification.types';
 
 export interface NotifyParams {
@@ -18,6 +19,15 @@ export interface NotifyParams {
   data?: Record<string, any>;
   /** Only set this when the event should also send an email — not every in-app notification warrants one. */
   email?: { subject: string; html: string };
+  /**
+   * Only set this for order-lifecycle events a store might want on
+   * WhatsApp too. `storeId` picks which store's connected WhatsApp
+   * integration to send from — silently skipped (not an error) if that
+   * store hasn't connected one, exactly like push/email being gated by the
+   * recipient's own preferences. `templateName` must already be approved in
+   * that store's Meta Business Manager.
+   */
+  whatsapp?: { storeId: string; to: string; templateName: string; languageCode: string; bodyParams?: string[] };
 }
 
 @Injectable()
@@ -29,6 +39,7 @@ export class NotificationsService {
     private readonly gateway: NotificationsGateway,
     private readonly firebaseAdminService: FirebaseAdminService,
     private readonly emailService: EmailService,
+    private readonly whatsAppSenderService: WhatsAppSenderService,
     @InjectQueue(QUEUE_NAMES.NOTIFICATIONS) private readonly queue: Queue,
   ) {}
 
@@ -40,7 +51,7 @@ export class NotificationsService {
    */
   async notify(params: NotifyParams): Promise<void> {
     try {
-      const { recipientId, recipientRole, type, title, body, data, email } = params;
+      const { recipientId, recipientRole, type, title, body, data, email, whatsapp } = params;
       const prefs = await this.databaseService.repositories.notificationPreferenceModel
         .findOne({ userId: recipientId })
         .lean();
@@ -79,6 +90,16 @@ export class NotificationsService {
           await this.enqueue(NOTIFICATION_EMAIL_JOB, { to: user.email, subject: email.subject, html: email.html });
         }
       }
+
+      if (whatsapp) {
+        await this.enqueue(NOTIFICATION_WHATSAPP_JOB, {
+          storeId: whatsapp.storeId,
+          to: whatsapp.to,
+          templateName: whatsapp.templateName,
+          languageCode: whatsapp.languageCode,
+          bodyParams: whatsapp.bodyParams,
+        });
+      }
     } catch (err: any) {
       this.logger.error(`notify() failed: ${err?.message}`);
     }
@@ -101,6 +122,8 @@ export class NotificationsService {
         await this.firebaseAdminService.sendToUser(data.userId, { title: data.title, body: data.body, data: data.data });
       } else if (jobName === NOTIFICATION_EMAIL_JOB) {
         await this.emailService.sendMail(data.to, data.subject, data.html);
+      } else if (jobName === NOTIFICATION_WHATSAPP_JOB) {
+        await this.whatsAppSenderService.sendOrderTemplate(data.storeId, data.to, data.templateName, data.languageCode, data.bodyParams);
       }
     }
   }

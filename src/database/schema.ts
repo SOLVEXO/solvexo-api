@@ -97,6 +97,8 @@ export { SeoIntegration, SeoIntegrationDocument, SeoIntegrationSchema } from '..
 export { SeoCrawlLog, SeoCrawlLogDocument, SeoCrawlLogSchema } from '../seo/schemas/seo-crawl-log.schema';
 export { SeoIndexSnapshot, SeoIndexSnapshotDocument, SeoIndexSnapshotSchema } from '../seo/schemas/seo-index-snapshot.schema';
 export { SeoAnalyticsSnapshot, SeoAnalyticsSnapshotDocument, SeoAnalyticsSnapshotSchema } from '../seo/schemas/seo-analytics-snapshot.schema';
+export { StoreIntegration, StoreIntegrationDocument, StoreIntegrationSchema } from '../integrations/schemas/store-integration.schema';
+export { IntegrationWebhookEvent, IntegrationWebhookEventDocument, IntegrationWebhookEventSchema } from '../integrations/schemas/integration-webhook-event.schema';
 export { SeoCoreWebVitalsSnapshot, SeoCoreWebVitalsSnapshotDocument, SeoCoreWebVitalsSnapshotSchema } from '../seo/schemas/seo-cwv-snapshot.schema';
 export { SeoAiSuggestionLog, SeoAiSuggestionLogDocument, SeoAiSuggestionLogSchema } from '../seo/schemas/seo-ai-suggestion-log.schema';
 export { SeoAuditResult, SeoAuditResultDocument, SeoAuditResultSchema } from '../seo/schemas/seo-audit-result.schema';

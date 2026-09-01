@@ -167,6 +167,14 @@ import { DatabaseService } from './databaseservice';
         schema: schema.SeoAnalyticsSnapshotSchema,
       },
       {
+        name: schema.StoreIntegration.name,
+        schema: schema.StoreIntegrationSchema,
+      },
+      {
+        name: schema.IntegrationWebhookEvent.name,
+        schema: schema.IntegrationWebhookEventSchema,
+      },
+      {
         name: schema.SeoCoreWebVitalsSnapshot.name,
         schema: schema.SeoCoreWebVitalsSnapshotSchema,
       },

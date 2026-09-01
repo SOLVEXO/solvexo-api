@@ -239,7 +239,7 @@ export class ProductsService {
   }
 
   /** Public, pre-purchase preview of a digital product — always a watermarked/trimmed derivative, never the original file. */
-  async getProductPreview(idOrSlug: string, clientIp: string) {
+  async getProductPreview(idOrSlug: string, clientIp: string, storeId?: string) {
     const rateLimitKey = `preview:rl:${clientIp}:${idOrSlug}`;
     const count = await this.redisService.incrWithTtl(
       rateLimitKey,
@@ -267,6 +267,9 @@ export class ProductsService {
         .lean();
     }
     if (!product) throw new NotFoundException('Product not found');
+    if (storeId && product.storeId && product.storeId !== storeId) {
+      throw new NotFoundException('Product not found');
+    }
     if (product.type !== 'digital' || !product.digital?.preview?.enabled) {
       throw new BadRequestException(
         'Preview is not available for this product',
@@ -842,7 +845,7 @@ export class ProductsService {
     return this.getTopSellingProducts(storeId, sevenDaysAgo, limit, customerId);
   }
 
-  async getProductById(idOrSlug: string, customerId?: string | null) {
+  async getProductById(idOrSlug: string, customerId?: string | null, storeId?: string) {
     const productModel = this.databaseService.repositories.productModel;
     const productVariantModel =
       this.databaseService.repositories.productVariantModel;
@@ -876,6 +879,18 @@ export class ProductsService {
     }
 
     if (!product) {
+      return {
+        message: 'Product not found',
+        success: false,
+        data: null,
+      };
+    }
+
+    // A single-store app build passes its own storeId — a product belonging
+    // to a different store must 404 here exactly like a genuinely-missing
+    // one, the same way category/search/products-by-category were already
+    // scoped, so a raw id/slug lookup can't be used to bypass those.
+    if (storeId && product.storeId && product.storeId !== storeId) {
       return {
         message: 'Product not found',
         success: false,
@@ -962,7 +977,7 @@ export class ProductsService {
       },
     };
   }
-  async getVariantById(variantId: string) {
+  async getVariantById(variantId: string, storeId?: string) {
     const productModel = this.databaseService.repositories.productModel;
     const productVariantModel =
       this.databaseService.repositories.productVariantModel;
@@ -997,6 +1012,15 @@ export class ProductsService {
     if (!product) {
       return {
         message: 'Product not found',
+        success: false,
+        data: null,
+      };
+    }
+
+    // Same cross-store guard as getProductById.
+    if (storeId && product.storeId && product.storeId !== storeId) {
+      return {
+        message: 'Variant not found',
         success: false,
         data: null,
       };

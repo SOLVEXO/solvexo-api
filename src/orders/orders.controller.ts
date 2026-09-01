@@ -46,6 +46,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { OrdersService } from './orders.service';
+import { resolveBuyerStoreScope } from '../common/store-scope.util';
 
 @Controller('api/orders')
 export class OrdersController {
@@ -56,7 +57,8 @@ export class OrdersController {
   @Get('my-orders')
   async getOrdersByUserId(@Req() req: any, @Query() query: any) {
     const { userId } = req.user;
-    return this.ordersService.getOrdersByUserId(userId, query);
+    const storeId = resolveBuyerStoreScope(req.user.storeId, query.storeId);
+    return this.ordersService.getOrdersByUserId(userId, query, storeId);
   }
 
   // signed URLs (non-stamped) + stamped stream URLs list
@@ -67,9 +69,11 @@ export class OrdersController {
     @Req() req: any,
     @Query('orderId') orderId: string,
     @Query('productId') productId: string,
+    @Query('storeId') storeIdQuery: string,
   ) {
     const { userId } = req.user;
-    return this.ordersService.getDownloadUrls(userId, orderId, productId);
+    const storeId = resolveBuyerStoreScope(req.user.storeId, storeIdQuery);
+    return this.ordersService.getDownloadUrls(userId, orderId, productId, storeId);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -159,7 +163,8 @@ export class OrdersController {
     @Body() body: any,
   ) {
     const { userId } = req.user;
-    return this.ordersService.cancelOrder(userId, orderId, body);
+    const storeId = resolveBuyerStoreScope(req.user.storeId, body?.storeId);
+    return this.ordersService.cancelOrder(userId, orderId, body, storeId);
   }
 
   // Seller-initiated cancellation (e.g. out-of-stock) — scoped to only the
@@ -199,7 +204,8 @@ export class OrdersController {
     @Body() body: any,
   ) {
     const { userId } = req.user;
-    return this.ordersService.returnRequest(userId, orderId, body);
+    const storeId = resolveBuyerStoreScope(req.user.storeId, body?.storeId);
+    return this.ordersService.returnRequest(userId, orderId, body, storeId);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -229,14 +235,17 @@ export class OrdersController {
     @Query('orderId') orderId: string,
     @Query('productId') productId: string,
     @Query('fileIndex') fileIndex: string,
+    @Query('storeId') storeIdQuery: string,
   ) {
     const { userId } = req.user;
     const index = parseInt(fileIndex) || 0;
+    const storeId = resolveBuyerStoreScope(req.user.storeId, storeIdQuery);
     return this.ordersService.getDownloadLink(
       userId,
       orderId,
       productId,
       index,
+      storeId,
     );
   }
 
@@ -276,15 +285,18 @@ export class OrdersController {
     @Query('orderId') orderId: string,
     @Query('productId') productId: string,
     @Query('fileIndex') fileIndex: string,
+    @Query('storeId') storeIdQuery: string,
   ) {
     const { userId } = req.user;
     const index = parseInt(fileIndex) || 0;
+    const storeId = resolveBuyerStoreScope(req.user.storeId, storeIdQuery);
 
     const { buffer, fileName } = await this.ordersService.streamStampedPdf(
       userId,
       orderId,
       productId,
       index,
+      storeId,
     );
 
     res.set({
@@ -300,8 +312,13 @@ export class OrdersController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('user')
   @Get(':orderId')
-  async getOrderById(@Req() req: any, @Param('orderId') orderId: string) {
+  async getOrderById(
+    @Req() req: any,
+    @Param('orderId') orderId: string,
+    @Query('storeId') storeIdQuery: string,
+  ) {
     const { userId } = req.user;
-    return this.ordersService.getOrderById(userId, orderId);
+    const storeId = resolveBuyerStoreScope(req.user.storeId, storeIdQuery);
+    return this.ordersService.getOrderById(userId, orderId, storeId);
   }
 }

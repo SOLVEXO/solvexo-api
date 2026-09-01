@@ -71,10 +71,19 @@ export class ManualPaymentsService {
     const { orders, amountUSD, amountPKR, fxRate } = await this.paymentService.manualBankTransferPayment(userId, dto.checkoutId);
     const upload = await this.uploadService.uploadFile(file);
 
+    const storeIdSet = new Set<string>();
+    for (const o of orders as any[]) {
+      for (const so of (o.sellerOrders ?? []) as any[]) {
+        storeIdSet.add(String(so.storeId));
+      }
+    }
+    const storeIds: string[] = Array.from(storeIdSet);
+
     const proof = await this.proofModel.create({
       userId,
       checkoutId: dto.checkoutId,
-      orderIds: orders.map((o: any) => o._id.toString()),
+      orderIds: (orders as any[]).map((o: any) => o._id.toString()),
+      storeIds,
       amountUSD,
       amountPKR,
       fxRateUsed: fxRate,
@@ -126,14 +135,19 @@ export class ManualPaymentsService {
     return proof;
   }
 
-  async getProofStatus(userId: string, proofId: string) {
-    const proof = await this.proofModel.findOne({ _id: proofId, userId }).lean();
+  async getProofStatus(userId: string, proofId: string, storeId?: string) {
+    const proof = await this.proofModel
+      .findOne({ _id: proofId, userId, ...(storeId ? { storeIds: storeId } : {}) })
+      .lean();
     if (!proof) throw new NotFoundException('Payment proof not found');
     return proof;
   }
 
-  async getMyProofs(userId: string) {
-    return this.proofModel.find({ userId }).sort({ createdAt: -1 }).lean();
+  async getMyProofs(userId: string, storeId?: string) {
+    return this.proofModel
+      .find({ userId, ...(storeId ? { storeIds: storeId } : {}) })
+      .sort({ createdAt: -1 })
+      .lean();
   }
 
   // ═══════════════════════════════════════════════════════════════════════

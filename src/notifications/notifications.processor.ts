@@ -4,12 +4,14 @@ import { Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
 import { FirebaseAdminService } from 'src/firebase/firebase.config';
 import { EmailService } from 'src/otp/services/email.service';
-import { QUEUE_NAMES, NOTIFICATION_PUSH_JOB, NOTIFICATION_EMAIL_JOB } from 'src/queues/queue.constants';
+import { WhatsAppSenderService } from 'src/integrations/whatsapp-sender.service';
+import { QUEUE_NAMES, NOTIFICATION_PUSH_JOB, NOTIFICATION_EMAIL_JOB, NOTIFICATION_WHATSAPP_JOB } from 'src/queues/queue.constants';
 
 /**
- * Dispatches queued push/email jobs raised by NotificationsService.notify().
- * Kept off the request path — a slow FCM/SMTP call never blocks the order,
- * payment, or message flow that triggered the notification.
+ * Dispatches queued push/email/WhatsApp jobs raised by
+ * NotificationsService.notify(). Kept off the request path — a slow
+ * FCM/SMTP/Graph API call never blocks the order, payment, or message flow
+ * that triggered the notification.
  */
 @Processor(QUEUE_NAMES.NOTIFICATIONS)
 export class NotificationsProcessor extends WorkerHost {
@@ -18,6 +20,7 @@ export class NotificationsProcessor extends WorkerHost {
   constructor(
     private readonly firebaseAdminService: FirebaseAdminService,
     private readonly emailService: EmailService,
+    private readonly whatsAppSenderService: WhatsAppSenderService,
   ) {
     super();
   }
@@ -33,6 +36,15 @@ export class NotificationsProcessor extends WorkerHost {
         return;
       case NOTIFICATION_EMAIL_JOB:
         await this.emailService.sendMail(job.data.to, job.data.subject, job.data.html);
+        return;
+      case NOTIFICATION_WHATSAPP_JOB:
+        await this.whatsAppSenderService.sendOrderTemplate(
+          job.data.storeId,
+          job.data.to,
+          job.data.templateName,
+          job.data.languageCode,
+          job.data.bodyParams,
+        );
         return;
       default:
         this.logger.error(`Unknown notification job "${job.name}" — dropping job ${job.id}`);

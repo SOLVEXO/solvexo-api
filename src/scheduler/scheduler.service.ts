@@ -19,6 +19,8 @@ import { ExchangeRateService } from 'src/exchange-rate/exchange-rate.service';
 import { ActivityLogService } from 'src/activity-log/activity-log.service';
 import { AdminFinanceService } from 'src/admin-finance/admin-finance.service';
 import { BookingsService } from 'src/bookings/bookings.service';
+import { WhatsAppCloudProvider } from 'src/integrations/providers/whatsapp-cloud.provider';
+import { decryptCredential } from 'src/common/credential-encryption.util';
 
 @Injectable()
 export class SchedulerService {
@@ -43,6 +45,7 @@ export class SchedulerService {
     private readonly activityLogService: ActivityLogService,
     private readonly adminFinanceService: AdminFinanceService,
     private readonly bookingsService: BookingsService,
+    private readonly whatsAppProvider: WhatsAppCloudProvider,
   ) {}
 
   /**
@@ -465,6 +468,54 @@ export class SchedulerService {
       const result = await this.bookingsService.sendBookingReminders();
       if (result.sent > 0) {
         this.logger.log(`Bookings: ${result.sent} reminder notification(s) sent`);
+      }
+    });
+  }
+
+  // Runs daily — catches a WhatsApp connection that broke outside our own
+  // disconnect flow (seller revoked access in Meta Business Manager, token
+  // expired) so it surfaces as `needs_reauth` on the seller's integrations
+  // page instead of silently failing the next time an order notification
+  // tries to send. See WhatsAppCloudProvider.checkTokenValidity.
+  @Cron('0 3 * * *')
+  async checkWhatsAppTokenHealth() {
+    await this.runLocked('whatsapp-token-health', 20 * 60_000, async () => {
+      const { storeIntegrationModel } = this.databaseService.repositories;
+      const connected = await storeIntegrationModel.find({ type: 'whatsapp', status: 'connected' });
+
+      let flagged = 0;
+      for (const integration of connected) {
+        if (!integration.credentialsEncrypted) continue;
+        let accessToken: string;
+        try {
+          accessToken = JSON.parse(decryptCredential(integration.credentialsEncrypted, 'INTEGRATIONS')).accessToken;
+        } catch {
+          continue;
+        }
+
+        const { isValid, expiresAt } = await this.whatsAppProvider.checkTokenValidity(accessToken);
+        const expiringSoon = expiresAt ? expiresAt.getTime() - Date.now() < 7 * 24 * 60 * 60 * 1000 : false;
+        if (isValid && !expiringSoon) continue;
+
+        await storeIntegrationModel.updateOne(
+          { _id: integration._id },
+          { $set: { status: 'needs_reauth', lastError: isValid ? 'Access token expiring soon' : 'Access token is no longer valid' } },
+        );
+        await this.activityLogService.log({
+          storeId: integration.storeId,
+          category: 'integrations',
+          action: 'integration.needs_reauth',
+          description: 'WhatsApp connection needs to be reconnected — access token invalid or expiring soon',
+          actorId: 'system',
+          actorRole: 'system',
+          targetId: String(integration._id),
+          targetType: 'StoreIntegration',
+          isSecurityAlert: true,
+        });
+        flagged++;
+      }
+      if (flagged > 0) {
+        this.logger.log(`WhatsApp token health: ${flagged} integration(s) flagged needs_reauth`);
       }
     });
   }

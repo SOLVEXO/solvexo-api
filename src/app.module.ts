@@ -48,6 +48,7 @@ import { QueueModule } from './queues/queue.module';
 import { HealthModule } from './health/health.module';
 import { PlatformPlansModule } from './platform-plans/platform-plans.module';
 import { SeoModule } from './seo/seo.module';
+import { IntegrationsModule } from './integrations/integrations.module';
 import { AiStudioModule } from './ai-studio/ai-studio.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { AdminConfigModule } from './admin-config/admin-config.module';
@@ -134,6 +135,7 @@ import { StoreAppRequestsModule } from './store-app-requests/store-app-requests.
     AdminAnalyticsModule,
     AdminFinanceModule,
     SeoModule,
+    IntegrationsModule,
     AdminConfigModule,
     AdminAnnouncementsModule,
     AdminMarketplaceModule,

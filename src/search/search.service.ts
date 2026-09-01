@@ -31,7 +31,7 @@ export class SearchService {
     const result = await this.productsService.searchProducts(q, page, limit, userId, storeId);
 
     if (userId && (q || '').trim()) {
-      this.recordSearch(userId, q).catch(() => undefined);
+      this.recordSearch(userId, q, storeId ?? null).catch(() => undefined);
     }
     return result;
   }
@@ -46,21 +46,21 @@ export class SearchService {
 
   // ── Recent searches ────────────────────────────────────────────────────────
 
-  async recordSearch(userId: string, rawQuery: string) {
+  async recordSearch(userId: string, rawQuery: string, storeId: string | null = null) {
     const displayQuery = (rawQuery || '').trim().slice(0, MAX_QUERY_LENGTH);
     const query = displayQuery.toLowerCase();
     if (!query) return;
 
     const { recentSearchModel } = this.r;
     await recentSearchModel.findOneAndUpdate(
-      { userId, query },
+      { userId, storeId, query },
       { $set: { displayQuery }, $inc: { count: 1 } },
       { upsert: true, new: true },
     );
 
     // Prune beyond the cap so the collection can't grow unbounded per user.
     const extras = await recentSearchModel
-      .find({ userId })
+      .find({ userId, storeId })
       .sort({ updatedAt: -1 })
       .skip(MAX_RECENT_SEARCHES)
       .select('_id')
@@ -70,9 +70,9 @@ export class SearchService {
     }
   }
 
-  async getRecentSearches(userId: string, limit: number = 10) {
+  async getRecentSearches(userId: string, limit: number = 10, storeId: string | null = null) {
     const searches = await this.r.recentSearchModel
-      .find({ userId })
+      .find({ userId, storeId })
       .sort({ updatedAt: -1 })
       .limit(Math.min(limit, MAX_RECENT_SEARCHES))
       .lean();
@@ -86,33 +86,33 @@ export class SearchService {
     };
   }
 
-  async deleteRecentSearch(userId: string, searchId: string) {
-    const deleted = await this.r.recentSearchModel.findOneAndDelete({ _id: searchId, userId });
+  async deleteRecentSearch(userId: string, searchId: string, storeId: string | null = null) {
+    const deleted = await this.r.recentSearchModel.findOneAndDelete({ _id: searchId, userId, storeId });
     if (!deleted) throw new BadRequestException('Search entry not found');
     return { success: true, message: 'Search removed' };
   }
 
-  async clearRecentSearches(userId: string) {
-    await this.r.recentSearchModel.deleteMany({ userId });
+  async clearRecentSearches(userId: string, storeId: string | null = null) {
+    await this.r.recentSearchModel.deleteMany({ userId, storeId });
     return { success: true, message: 'Search history cleared' };
   }
 
   // ── Recently viewed products ───────────────────────────────────────────────
 
-  async recordProductView(userId: string, productId: string) {
+  async recordProductView(userId: string, productId: string, storeId: string | null = null) {
     if (!productId || typeof productId !== 'string') {
       throw new BadRequestException('productId is required');
     }
 
     const { recentlyViewedModel } = this.r;
     await recentlyViewedModel.findOneAndUpdate(
-      { userId, productId },
+      { userId, storeId, productId },
       { $inc: { viewCount: 1 } },
       { upsert: true, new: true },
     );
 
     const extras = await recentlyViewedModel
-      .find({ userId })
+      .find({ userId, storeId })
       .sort({ updatedAt: -1 })
       .skip(MAX_RECENTLY_VIEWED)
       .select('_id')
@@ -126,9 +126,9 @@ export class SearchService {
 
   /** Products the user opened, newest first — deleted/inactive products drop
    *  out automatically because the shaping only returns active ones. */
-  async getRecentlyViewed(userId: string, limit: number = 10) {
+  async getRecentlyViewed(userId: string, limit: number = 10, storeId: string | null = null) {
     const entries = await this.r.recentlyViewedModel
-      .find({ userId })
+      .find({ userId, storeId })
       .sort({ updatedAt: -1 })
       .limit(Math.min(limit, MAX_RECENTLY_VIEWED))
       .lean();
@@ -141,8 +141,8 @@ export class SearchService {
     return { success: true, data: { products } };
   }
 
-  async clearRecentlyViewed(userId: string) {
-    await this.r.recentlyViewedModel.deleteMany({ userId });
+  async clearRecentlyViewed(userId: string, storeId: string | null = null) {
+    await this.r.recentlyViewedModel.deleteMany({ userId, storeId });
     return { success: true, message: 'Recently viewed cleared' };
   }
 }
