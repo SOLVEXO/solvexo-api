@@ -1234,10 +1234,13 @@ export class ProductsService {
       }),
     );
 
+    const defaultVariant =
+      createdVariants.find((v: any) => v.isDefault) || createdVariants[0] || null;
+
     return {
       success: true,
       message: 'Physical product created successfully',
-      data: { product, variants: createdVariants },
+      data: { product, variants: createdVariants, defaultVariant },
     };
   }
 

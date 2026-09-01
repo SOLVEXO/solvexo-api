@@ -433,6 +433,111 @@ export class CategoriesService {
     };
   }
 
+  /** Rename/re-describe/re-image/toggle-active a seller's OWN store-owned
+   *  category. The legacy/global admin taxonomy has no rename path — this
+   *  never touches a category with `storeId: null`. Slug is deliberately
+   *  left untouched on rename (unlike Product, which does regenerate its
+   *  slug on rename and — per that code's own comment — breaks previously
+   *  shared links as a result): a category's slug backs the real public
+   *  `/category/:slugOrId` storefront route, so keeping it stable avoids
+   *  reintroducing that same class of broken-link bug here. */
+  async updateCategory(
+    userId: string,
+    storeId: string,
+    categoryId: string,
+    dto: UpdateCategoryDto,
+  ): Promise<any> {
+    if (!storeId) {
+      throw new BadRequestException('storeId is required');
+    }
+    if (!isValidObjectId(categoryId)) {
+      throw new BadRequestException('Invalid category id');
+    }
+    await verifyStoreOwnershipStrict(this.databaseService.repositories.storeModel, storeId, userId);
+
+    const categoryModel = this.databaseService.repositories.categoryModel;
+    const category = await categoryModel.findOne({ _id: categoryId, storeId, isDelete: false });
+    if (!category) {
+      throw new NotFoundException('Category not found');
+    }
+
+    if (dto.name !== undefined && dto.name !== category.name) {
+      const duplicate = await categoryModel.findOne({
+        _id: { $ne: categoryId },
+        name: dto.name,
+        storeId,
+        parentId: category.parentId,
+        status: 'active',
+        isDelete: false,
+      });
+      if (duplicate) {
+        throw new ConflictException('You already have a category with this name here');
+      }
+      category.name = dto.name;
+    }
+    if (dto.description !== undefined) category.description = dto.description;
+    if (dto.image !== undefined) category.image = dto.image;
+    if (dto.isActive !== undefined) category.status = dto.isActive ? 'active' : 'inactive';
+
+    await category.save();
+
+    return {
+      success: true,
+      message: 'Category updated successfully',
+      data: category,
+    };
+  }
+
+  /** Soft-deletes a seller's own store-owned category — blocked (with a
+   *  clear reason) if any active product still references it, or if it's a
+   *  main category with active subcategories still under it, so a delete
+   *  can never silently orphan real catalog data. */
+  async deleteCategory(userId: string, storeId: string, categoryId: string): Promise<any> {
+    if (!storeId) {
+      throw new BadRequestException('storeId is required');
+    }
+    if (!isValidObjectId(categoryId)) {
+      throw new BadRequestException('Invalid category id');
+    }
+    await verifyStoreOwnershipStrict(this.databaseService.repositories.storeModel, storeId, userId);
+
+    const categoryModel = this.databaseService.repositories.categoryModel;
+    const category = await categoryModel.findOne({ _id: categoryId, storeId, isDelete: false });
+    if (!category) {
+      throw new NotFoundException('Category not found');
+    }
+
+    const childCount = await categoryModel.countDocuments({
+      parentId: categoryId,
+      status: 'active',
+      isDelete: false,
+    });
+    if (childCount > 0) {
+      throw new ConflictException('Remove or move this category\'s subcategories before deleting it');
+    }
+
+    const productModel = this.databaseService.repositories.productModel;
+    const productCount = await productModel.countDocuments({
+      storeId,
+      isDelete: false,
+      $or: [{ categoryId }, { subCategoryId: categoryId }],
+    });
+    if (productCount > 0) {
+      throw new ConflictException(
+        `${productCount} product${productCount === 1 ? '' : 's'} still use this category — reassign them first`,
+      );
+    }
+
+    category.isDelete = true;
+    category.status = 'inactive';
+    await category.save();
+
+    return {
+      success: true,
+      message: 'Category deleted successfully',
+    };
+  }
+
   async getAllCategories(): Promise<any> {
     const categoryModel = this.databaseService.repositories.categoryModel;
 

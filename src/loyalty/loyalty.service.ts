@@ -439,6 +439,57 @@ export class LoyaltyService {
     };
   }
 
+  // ── SELLER: ISSUED VOUCHERS ────────────────────────────────────────────────
+
+  /** Seller-facing visibility into every RewardVoucher issued for their
+   *  store's rewards — closes a real gap where a redemption silently
+   *  vanished from view once `redeemReward` issued the code: the seller had
+   *  no way to see which vouchers are still outstanding vs. already
+   *  used/expired. Read-only — a voucher's own lifecycle transition
+   *  (used/expired) is still driven entirely by CheckoutService/
+   *  PaymentService at redemption time, never by the seller directly. */
+  async listVouchers(sellerId: string, storeId: string, query: any) {
+    await this.verifyStoreOwnership(storeId, sellerId);
+
+    const page = parseInt(query.page) || 1;
+    const limit = parseInt(query.limit) || 20;
+    const skip = (page - 1) * limit;
+
+    const filter: Record<string, unknown> = { storeId };
+    if (query.status && ['active', 'used', 'expired'].includes(query.status)) {
+      filter.status = query.status;
+    }
+
+    const total = await this.r.rewardVoucherModel.countDocuments(filter);
+    const vouchers = await this.r.rewardVoucherModel.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean();
+
+    const rewardIds = [...new Set(vouchers.map(v => v.rewardId))];
+    const userIds = [...new Set(vouchers.map(v => v.userId))];
+    const [rewards, users] = await Promise.all([
+      this.r.rewardModel.find({ _id: { $in: rewardIds } }).select('name').lean(),
+      this.r.userModel.find({ _id: { $in: userIds } }).select('name email').lean(),
+    ]);
+    const rewardMap = new Map(rewards.map((r: any) => [String(r._id), r]));
+    const userMap = new Map(users.map((u: any) => [String(u._id), u]));
+
+    // A voucher past its `expiresAt` still shows `status: 'active'` in the DB
+    // until something actually redeems/rejects it at checkout — surface that
+    // honestly here instead of making the seller cross-reference the date
+    // themselves against "today."
+    const now = new Date();
+    const enriched = vouchers.map((v: any) => ({
+      ...v,
+      isExpired: v.status === 'active' && new Date(v.expiresAt) < now,
+      reward: rewardMap.get(v.rewardId) ?? null,
+      user: userMap.get(v.userId) ?? null,
+    }));
+
+    return {
+      success: true,
+      data: { pagination: { page, limit, total, totalPages: Math.ceil(total / limit) }, vouchers: enriched },
+    };
+  }
+
   // ── EXPIRY (scheduled) ────────────────────────────────────────────────────
 
   /** Expires balances for members inactive longer than the program's pointsExpiryMonths. Run monthly. */

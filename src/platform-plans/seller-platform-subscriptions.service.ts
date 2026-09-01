@@ -266,11 +266,13 @@ export class SellerPlatformSubscriptionsService {
    * only pre-existing subscriptions (backfilled by
    * migrate-legacy-free-eligible.ts) are ever `true`.
    *
-   * `desiredPlanId` — the seller's own choice, made during onboarding
-   * (`OnboardingPage.tsx`'s Payment/Plan step); required in practice (the
-   * frontend always sends it), but falls back to the cheapest real
-   * (non-free, non-custom-pricing) active plan if genuinely omitted, so
-   * this never hard-fails a store creation over a missing plan choice.
+   * `desiredPlanId` — optional; onboarding's 3-step wizard (Store Info →
+   * Seller Type → What You Sell) never collects a plan choice any more, so
+   * `StoreService.createStore` always calls this with it omitted in
+   * practice. Falls back to the cheapest real (non-free, non-custom-pricing)
+   * active plan whenever it's omitted, so this never hard-fails a store
+   * creation over a missing plan choice — a seller picks a specific plan
+   * later from the store's own Billing page.
    *
    * One introductory trial per SELLER, not per store — `Seller.
    * platformTrialUsedAt` is checked first; a seller who already had a trial

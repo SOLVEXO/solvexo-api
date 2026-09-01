@@ -103,6 +103,14 @@ export class LoyaltyController {
     return this.loyaltyService.getRewardsForSeller(req.user.userId, storeId);
   }
 
+  // ── SELLER: ISSUED VOUCHERS ────────────────────────────────────────────────
+
+  @Roles('seller')
+  @Get(':storeId/vouchers')
+  listVouchers(@Req() req: any, @Param('storeId') storeId: string, @Query() query: any) {
+    return this.loyaltyService.listVouchers(req.user.userId, storeId, query);
+  }
+
   // ── PUBLIC/BUYER: REWARDS CATALOG + BALANCE + REDEEM ──────────────────────
 
   @Get(':storeId/rewards')

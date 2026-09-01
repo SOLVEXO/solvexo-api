@@ -43,4 +43,32 @@ export class CategoriesController {
   async getCategoryById(@Param('id') id: string, @Query('storeId') storeId?: string) {
     return this.categoriesService.getCategoryWithChildren(id, storeId);
   }
+
+  // Store-owned categories only (a seller's own privately-created tree, see
+  // CategoriesService.addCategory) — the legacy/global admin taxonomy has no
+  // rename/delete path here, unchanged.
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Put('category/:id')
+  async updateCategory(
+    @Req() req: any,
+    @Param('id') id: string,
+    @Query('storeId') storeId: string,
+    @Body() updateCategoryDto: UpdateCategoryDto,
+  ) {
+    const { userId } = req.user;
+    return this.categoriesService.updateCategory(userId, storeId, id, updateCategoryDto);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Delete('category/:id')
+  async deleteCategory(
+    @Req() req: any,
+    @Param('id') id: string,
+    @Query('storeId') storeId: string,
+  ) {
+    const { userId } = req.user;
+    return this.categoriesService.deleteCategory(userId, storeId, id);
+  }
 }
