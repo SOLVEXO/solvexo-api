@@ -86,9 +86,15 @@ Base path: `api/checkout/:checkoutId/payment-methods`. Requires buyer JWT (`role
 ### `GET /api/checkout/:checkoutId/payment-methods`
 
 ```json
-{ "success": true, "data": [ { "provider": "safepay", "displayName": "Safepay", "currency": "PKR" } ] }
+{
+  "success": true,
+  "data": {
+    "currency": "PKR",
+    "methods": [ { "provider": "safepay", "displayName": "Safepay", "currency": "PKR" } ]
+  }
+}
 ```
-Returns `[]` for a checkout whose items span more than one store — those keep using the existing COD/manual-transfer/platform-Stripe checkout path, unaffected by this module.
+`data.currency` is the checkout's single store's own bound currency (`'PKR'` or `'USD'`) — resolved and returned even when `methods` is empty (nothing connected yet). Use it to region-gate any *other* payment options your own UI shows (e.g. an older/platform-wide Stripe button should only appear for a non-`'PKR'` store). For a checkout whose items span more than one store, both fields come back empty/null (`{"currency": null, "methods": []}`) — those checkouts keep using the existing COD/manual-transfer/platform-Stripe path, unaffected by this module.
 
 ### `POST /api/checkout/:checkoutId/payment-methods/:provider/initiate`
 
