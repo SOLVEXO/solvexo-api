@@ -28,12 +28,33 @@ export const STORE_APP_PLATFORM_PAYMENT_STATUSES = ['unpaid', 'pending', 'paid']
 export type StoreAppPlatformPaymentStatus = (typeof STORE_APP_PLATFORM_PAYMENT_STATUSES)[number];
 
 @Schema({ _id: false })
+export class StoreAppStatusHistoryEntry {
+  @Prop({ type: String, enum: STORE_APP_PLATFORM_STATUSES, required: true })
+  status: StoreAppPlatformStatus;
+
+  @Prop({ type: Date, required: true })
+  changedAt: Date;
+}
+export const StoreAppStatusHistoryEntrySchema = SchemaFactory.createForClass(StoreAppStatusHistoryEntry);
+
+@Schema({ _id: false })
 export class StoreAppPlatformState {
   @Prop({ type: Boolean, default: false })
   requested: boolean;
 
   @Prop({ type: String, enum: STORE_APP_PLATFORM_STATUSES, default: 'not_requested' })
   status: StoreAppPlatformStatus;
+
+  // Real, recorded timestamp for every status this platform has actually
+  // passed through — one entry per transition (see
+  // StoreAppRequestsService.confirmPlatformPayment/updatePlatformStatus,
+  // the only two places `status` is ever set). Reset to just the 'pending'
+  // entry each time a platform is re-requested after a rejection, so a
+  // second cycle's timeline doesn't get mixed in with the first's. Powers
+  // the seller-facing "reached on <date>" timestamp per stage — never
+  // estimated/fabricated client-side.
+  @Prop({ type: [StoreAppStatusHistoryEntrySchema], default: [] })
+  statusHistory: StoreAppStatusHistoryEntry[];
 
   // The live Play Store / App Store listing link, set by admin once published.
   @Prop({ type: String, default: null })

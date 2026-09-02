@@ -587,18 +587,24 @@ export class StoreService {
   }
 
   /**
-   * Solvexo POS is a single, already-built-and-published Google Play listing
-   * — a *paid* listing, so Google Play collects payment directly from the
-   * merchant when they install it. There is nothing for our backend to sell,
-   * gate, or track here: this just hands back the Play Store URL (Android
-   * only for now) so the dashboard can render it as a QR code/link. Configured
-   * via POS_APP_ANDROID_URL so the listing URL can change without a frontend
-   * deploy. iOS is intentionally omitted until an App Store listing exists.
+   * Solvexo POS is a single, already-built Google Play listing (Android) —
+   * a *paid* listing, so Google Play collects payment directly from the
+   * merchant when they install it. There is nothing for our backend to
+   * sell, gate, or track here: this just hands back each platform's real
+   * store-listing URL so the dashboard can render it as a QR code/link.
+   * Each is independently configured via its own env var so either can
+   * change (or a real one appear for the first time) without a frontend
+   * deploy — `ios: null` today because no real App Store listing exists
+   * yet; set POS_APP_IOS_URL once one does and this starts returning it
+   * with zero other code changes, same as Android already works.
    */
   getPosAppInfo() {
     return {
       success: true,
-      data: { android: this.configService.get<string>('POS_APP_ANDROID_URL') ?? null },
+      data: {
+        android: this.configService.get<string>('POS_APP_ANDROID_URL') ?? null,
+        ios: this.configService.get<string>('POS_APP_IOS_URL') ?? null,
+      },
     };
   }
 

@@ -193,6 +193,10 @@ export class StoreAppRequestsService {
     state.storeUrl = null;
     state.rejectionReason = null;
     state.publishedAt = null;
+    // Fresh timeline for this request cycle — a platform re-requested after
+    // a rejection starts a brand-new history, not a continuation of the old
+    // (rejected) one.
+    state.statusHistory = [{ status: 'pending', changedAt: new Date() }] as any;
     await request.save();
 
     this.notifyAdminsPlatformAdded(store.name, request._id.toString(), request.appName, platform).catch(() => {});
@@ -248,6 +252,7 @@ export class StoreAppRequestsService {
     }
 
     state.status = dto.status;
+    state.statusHistory = [...(state.statusHistory ?? []), { status: dto.status, changedAt: new Date() }] as any;
     if (dto.status === 'published') {
       state.storeUrl = dto.storeUrl!;
       state.publishedAt = new Date();
