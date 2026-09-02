@@ -217,8 +217,13 @@ export class StoreThemeService {
     };
   }
 
+  /** Unauthenticated — must never leak `draft` (unpublished edits) or
+   *  `versions` (full publish history) to a public visitor. Projected to
+   *  exactly the live/root fields the storefront actually reads. */
   async getPublic(storeId: string) {
-    const theme = await this.storeThemeModel.findOne({ storeId, status: 'active' }).lean();
+    const theme = await this.storeThemeModel
+      .findOne({ storeId, status: 'active' }, { draft: 0, versions: 0 })
+      .lean();
     return { success: true, data: theme };
   }
 

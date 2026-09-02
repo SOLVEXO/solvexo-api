@@ -82,9 +82,22 @@ export class StoreIntegrationsService {
   async list(storeId: string, sellerId: string) {
     const store = await this.assertOwnedStore(storeId, sellerId);
     const currency: 'PKR' | 'USD' = store.baseCurrency === 'USD' ? 'USD' : 'PKR';
-    // Only providers with a real implementation registered show up — jazzcash/easypaisa/payfast
-    // stay hidden from the seller dashboard until their provider classes exist.
-    const availableProviders = PROVIDERS_BY_CURRENCY[currency].filter((p) => this.registry.isSupported(p));
+    // Local (PKR-only) gateways stay currency-gated — a USD store has no use
+    // for a PKR-settling provider. Stripe Connect is deliberately NOT gated
+    // the same way: it's a per-SELLER capability (one Stripe account, same
+    // level `Seller.stripeCustomerId` already lives at), not tied to any one
+    // store's currency — a PKR-store seller can and should still be able to
+    // connect it here too, the same as they always could from the old
+    // standalone "Payment Gateway" Settings card this replaced (see the
+    // seller-integrations frontend's `StripeConnectSection`). Only providers
+    // with a real implementation registered show up — jazzcash/easypaisa/
+    // payfast stay hidden from the seller dashboard until their provider
+    // classes exist.
+    const localProviders = currency === 'PKR' ? PROVIDERS_BY_CURRENCY.PKR : [];
+    const availableProviders: StoreIntegrationProvider[] = [
+      ...localProviders.filter((p) => this.registry.isSupported(p)),
+      'stripe',
+    ];
 
     const stored = await this.repos.storeIntegrationModel.find({ storeId, type: 'payment' });
     const byProvider = new Map(stored.map((doc) => [doc.provider, doc]));
