@@ -392,7 +392,21 @@ export class Order {
   @Prop({ required: true })
   totalAmount: number;
 
-  @Prop({ enum: ['cash_on_delivery', 'stripe', 'manual_bank_transfer'], required: true })
+  // 'safepay'/'jazzcash'/'easypaisa'/'payfast' added for the per-store
+  // integrations module (src/integrations) — purely additive, every
+  // existing order's value is untouched.
+  @Prop({
+    enum: [
+      'cash_on_delivery',
+      'stripe',
+      'manual_bank_transfer',
+      'safepay',
+      'jazzcash',
+      'easypaisa',
+      'payfast',
+    ],
+    required: true,
+  })
   paymentType: string;
 
   // 'pending_verification' — manual bank-transfer order awaiting an admin to

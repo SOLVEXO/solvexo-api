@@ -54,7 +54,7 @@ export class SellerIntegrationsController {
   update(
     @Param('storeId') storeId: string,
     @Param('id') id: string,
-    @Body() body: { isEnabledForCheckout?: boolean; displayName?: string },
+    @Body() body: { isEnabledForCheckout?: boolean; displayName?: string; webhookSecret?: string },
     @Req() req: any,
   ) {
     return this.service.update(storeId, req.user.userId, id, body ?? {});

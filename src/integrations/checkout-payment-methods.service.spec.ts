@@ -2,6 +2,8 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { CheckoutPaymentMethodsService } from './checkout-payment-methods.service';
 import { DatabaseService } from '../database/databaseservice';
+import { PaymentService } from '../payment/payment.service';
+import { ActivityLogService } from '../activity-log/activity-log.service';
 import { PaymentProviderRegistry } from './payment-provider.registry';
 
 const USER_ID = 'user-1';
@@ -14,19 +16,32 @@ describe('CheckoutPaymentMethodsService', () => {
   let service: CheckoutPaymentMethodsService;
   let checkoutModel: any;
   let storeIntegrationModel: any;
+  let orderModel: any;
+  let paymentTransactionModel: any;
   let registry: PaymentProviderRegistry;
+  let paymentService: PaymentService;
+  let activityLogService: ActivityLogService;
 
   beforeEach(() => {
     checkoutModel = { findOne: jest.fn() };
     storeIntegrationModel = { find: jest.fn(), findOne: jest.fn() };
-    const db = { repositories: { checkoutModel, storeIntegrationModel } } as unknown as DatabaseService;
+    orderModel = { find: jest.fn().mockResolvedValue([]) };
+    paymentTransactionModel = { create: jest.fn().mockResolvedValue({}) };
+    const db = {
+      repositories: { checkoutModel, storeIntegrationModel, orderModel, paymentTransactionModel },
+    } as unknown as DatabaseService;
 
     registry = {
       isSupported: jest.fn().mockReturnValue(true),
       resolve: jest.fn().mockReturnValue({ getPublicConfig: () => ({ displayName: 'Safepay', currency: 'PKR' }) }),
     } as any;
+    paymentService = {
+      finalizeGatewayPayment: jest.fn().mockResolvedValue({ orderIds: ['order-1'] }),
+      failGatewayPayment: jest.fn().mockResolvedValue(undefined),
+    } as any;
+    activityLogService = { log: jest.fn() } as any;
 
-    service = new CheckoutPaymentMethodsService(db, registry);
+    service = new CheckoutPaymentMethodsService(db, registry, paymentService, activityLogService);
   });
 
   describe('listPaymentMethods', () => {
@@ -115,6 +130,20 @@ describe('CheckoutPaymentMethodsService', () => {
         expect.objectContaining({ amount: 150, currency: 'PKR', storeId: 'store-A' }),
         expect.anything(),
       );
+      // The linkage row PaymentWebhooksController -> PaymentService.finalizeGatewayPayment
+      // looks up by providerSessionId once the gateway reports an outcome —
+      // without this, a successful payment has nothing to attach an Order to.
+      expect(paymentTransactionModel.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          userId: USER_ID,
+          checkoutId: 'checkout-1',
+          paymentType: 'safepay',
+          amount: 150,
+          currency: 'PKR',
+          status: 'pending',
+          providerSessionId: 'track_1',
+        }),
+      );
     });
 
     it('rejects a provider with no connected, checkout-enabled integration for this store', async () => {
@@ -124,6 +153,81 @@ describe('CheckoutPaymentMethodsService', () => {
       await expect(
         service.initiatePayment('checkout-1', USER_ID, 'safepay', 'https://x.com/r', 'https://x.com/c'),
       ).rejects.toThrow('not an available payment method for this store');
+    });
+  });
+
+  describe('confirmPayment', () => {
+    function integrationDoc() {
+      return { provider: 'safepay', credentialsEncrypted: null, config: {}, mode: 'sandbox', webhookToken: null };
+    }
+
+    it('requires a sessionId', async () => {
+      await expect(service.confirmPayment('checkout-1', USER_ID, 'safepay', '')).rejects.toThrow(BadRequestException);
+    });
+
+    it('short-circuits to completed without re-verifying if the checkout was already finalized (idempotent for repeated WebView callbacks)', async () => {
+      checkoutModel.findOne.mockResolvedValue({ ...checkout([{ storeId: 'store-A', totalPrice: 100 }]), status: 'completed' });
+      storeIntegrationModel.findOne.mockResolvedValue(integrationDoc());
+      orderModel.find.mockResolvedValue([{ _id: 'order-1' }]);
+
+      const result = await service.confirmPayment('checkout-1', USER_ID, 'safepay', 'track_1');
+
+      expect(result).toEqual({ success: true, data: { status: 'completed', orderIds: ['order-1'] } });
+      expect(paymentService.finalizeGatewayPayment).not.toHaveBeenCalled();
+    });
+
+    it('reports pending status without creating an order when the gateway has not confirmed payment yet', async () => {
+      checkoutModel.findOne.mockResolvedValue(checkout([{ storeId: 'store-A', totalPrice: 100 }]));
+      storeIntegrationModel.findOne.mockResolvedValue(integrationDoc());
+      const verifyPayment = jest.fn().mockResolvedValue({ status: 'pending', providerReference: 'track_1' });
+      (registry.resolve as jest.Mock).mockReturnValue({ verifyPayment });
+
+      const result = await service.confirmPayment('checkout-1', USER_ID, 'safepay', 'track_1');
+
+      expect(result).toEqual({ success: true, data: { status: 'pending', orderIds: [] } });
+      expect(paymentService.finalizeGatewayPayment).not.toHaveBeenCalled();
+      expect(paymentService.failGatewayPayment).not.toHaveBeenCalled();
+    });
+
+    it('marks the PaymentTransaction failed (not left stuck pending) when the gateway reports a failed/refunded status via the buyer-app confirm path', async () => {
+      checkoutModel.findOne.mockResolvedValue(checkout([{ storeId: 'store-A', totalPrice: 100 }]));
+      storeIntegrationModel.findOne.mockResolvedValue(integrationDoc());
+      const verifyPayment = jest.fn().mockResolvedValue({ status: 'failed', providerReference: 'track_1' });
+      (registry.resolve as jest.Mock).mockReturnValue({ verifyPayment });
+
+      const result = await service.confirmPayment('checkout-1', USER_ID, 'safepay', 'track_1');
+
+      expect(result).toEqual({ success: true, data: { status: 'failed', orderIds: [] } });
+      expect(paymentService.failGatewayPayment).toHaveBeenCalledWith('track_1', 'safepay', expect.any(String));
+      expect(paymentService.finalizeGatewayPayment).not.toHaveBeenCalled();
+    });
+
+    it('refuses to create an order when the gateway-confirmed amount does not match the checkout\'s own expected total (the amount/currency safety net)', async () => {
+      checkoutModel.findOne.mockResolvedValue(checkout([{ storeId: 'store-A', totalPrice: 100 }]));
+      storeIntegrationModel.findOne.mockResolvedValue(integrationDoc());
+      const verifyPayment = jest.fn().mockResolvedValue({ status: 'paid', providerReference: 'track_1', amount: 999, currency: 'PKR' });
+      (registry.resolve as jest.Mock).mockReturnValue({ verifyPayment });
+
+      await expect(service.confirmPayment('checkout-1', USER_ID, 'safepay', 'track_1')).rejects.toThrow('amount mismatch');
+      expect(paymentService.finalizeGatewayPayment).not.toHaveBeenCalled();
+      expect(activityLogService.log).toHaveBeenCalledWith(expect.objectContaining({ isSecurityAlert: true, storeId: 'store-A' }));
+    });
+
+    it('finalizes via the SAME session-keyed method the webhook uses once the gateway confirms a paid status matching the expected amount', async () => {
+      checkoutModel.findOne.mockResolvedValue(checkout([{ storeId: 'store-A', totalPrice: 100 }]));
+      storeIntegrationModel.findOne.mockResolvedValue(integrationDoc());
+      const verifyPayment = jest.fn().mockResolvedValue({ status: 'paid', providerReference: 'track_1', amount: 100, currency: 'PKR' });
+      (registry.resolve as jest.Mock).mockReturnValue({ verifyPayment });
+
+      const result = await service.confirmPayment('checkout-1', USER_ID, 'safepay', 'track_1');
+
+      // Must be the sessionId-keyed method (same one PaymentWebhooksController
+      // calls) — not a separate checkoutId-keyed path, or the PaymentTransaction
+      // row created in initiatePayment never gets marked completed whenever
+      // this (buyer-app) path wins the race against the webhook, which it
+      // usually does.
+      expect(paymentService.finalizeGatewayPayment).toHaveBeenCalledWith('track_1', 'safepay');
+      expect(result).toEqual({ success: true, data: { status: 'completed', orderIds: ['order-1'] } });
     });
   });
 });

@@ -60,6 +60,12 @@ export class StoreIntegrationsService {
       lastError: integration.lastError,
       config: { ...integration.config, maskedHints: undefined },
       maskedHints: integration.config?.maskedHints ?? {},
+      // Not a secret — it's a routing token embedded in a public webhook
+      // URL, not credentials. The seller needs this back to actually
+      // register `{yourBackendBaseUrl}/webhooks/payments/{provider}/{webhookToken}`
+      // with the gateway. Null for types (e.g. whatsapp) that don't use
+      // per-store webhook URLs at all.
+      webhookToken: integration.webhookToken ?? null,
       createdAt: (integration as any).createdAt,
       updatedAt: (integration as any).updatedAt,
     };
@@ -170,10 +176,19 @@ export class StoreIntegrationsService {
   private async connectPayment(storeId: string, sellerId: string, provider: StoreIntegrationProvider, body: Record<string, any>) {
     if (provider === 'safepay') {
       const { secretKey, clientId, webhookSecret, displayName } = body;
-      if (!secretKey || !clientId || !webhookSecret) {
-        throw new BadRequestException('secretKey, clientId, and webhookSecret are all required');
+      if (!secretKey || !clientId) {
+        throw new BadRequestException('secretKey and clientId are required');
       }
-      const credentials = { secretKey, clientId, webhookSecret };
+      // `webhookSecret` is deliberately optional here — Safepay only issues
+      // it once a webhook URL is registered in their dashboard, and that URL
+      // is only knowable after this call generates `webhookToken` below.
+      // Real sequence: connect with just secretKey+clientId -> we hand back
+      // the webhookToken-bearing URL -> seller registers it with Safepay,
+      // gets a webhookSecret -> PATCH .../:id with { webhookSecret } to add
+      // it (see `update()`). Inbound webhooks fail safely (rejected, not a
+      // security hole) until it's added — `SafepayPaymentProvider.handleWebhook`
+      // simply can't compute a valid HMAC against a null secret.
+      const credentials = { secretKey, clientId, webhookSecret: webhookSecret ?? null };
       const credentialsEncrypted = encryptCredential(JSON.stringify(credentials), 'INTEGRATIONS');
       const mode = String(secretKey).includes('_live_') ? 'live' : 'sandbox';
 
@@ -303,7 +318,12 @@ export class StoreIntegrationsService {
     return { success: true, data: { ok, message } };
   }
 
-  async update(storeId: string, sellerId: string, id: string, patch: { isEnabledForCheckout?: boolean; displayName?: string }) {
+  async update(
+    storeId: string,
+    sellerId: string,
+    id: string,
+    patch: { isEnabledForCheckout?: boolean; displayName?: string; webhookSecret?: string },
+  ) {
     await this.assertOwnedStore(storeId, sellerId);
     const integration = await this.repos.storeIntegrationModel.findOne({ _id: id, storeId });
     if (!integration) throw new NotFoundException('Integration not found');
@@ -316,8 +336,26 @@ export class StoreIntegrationsService {
     if (typeof patch.isEnabledForCheckout === 'boolean') $set.isEnabledForCheckout = patch.isEnabledForCheckout;
     if (patch.displayName) $set['config.displayName'] = patch.displayName;
 
+    // Step 2 of the connect flow's own doc comment: the seller only gets a
+    // real webhookSecret from the gateway's dashboard AFTER registering the
+    // webhookToken-bearing URL there, which is only knowable after connect()
+    // already ran — so it arrives here, later, merged into the existing
+    // encrypted credential blob rather than requiring a second connect() call.
+    if (patch.webhookSecret) {
+      if (!integration.credentialsEncrypted) {
+        throw new BadRequestException('Connect this integration with its API credentials first');
+      }
+      const existing = JSON.parse(decryptCredential(integration.credentialsEncrypted, 'INTEGRATIONS'));
+      const merged = { ...existing, webhookSecret: patch.webhookSecret };
+      $set.credentialsEncrypted = encryptCredential(JSON.stringify(merged), 'INTEGRATIONS');
+      $set['config.maskedHints'] = maskCredentials(merged);
+      $set.lastError = null;
+    }
+
     const doc = await this.repos.storeIntegrationModel.findOneAndUpdate({ _id: id, storeId }, { $set }, { new: true });
-    await this.logChange(storeId, sellerId, 'integration.update', doc!, { changedFields: Object.keys($set) });
+    await this.logChange(storeId, sellerId, 'integration.update', doc!, {
+      changedFields: Object.keys($set).map((f) => (f === 'credentialsEncrypted' ? 'credentials.webhookSecret' : f)),
+    });
     return { success: true, data: this.toPublicView(doc!) };
   }
 
