@@ -18,6 +18,7 @@ describe('CheckoutPaymentMethodsService', () => {
   let storeIntegrationModel: any;
   let orderModel: any;
   let paymentTransactionModel: any;
+  let storeModel: any;
   let registry: PaymentProviderRegistry;
   let paymentService: PaymentService;
   let activityLogService: ActivityLogService;
@@ -27,8 +28,9 @@ describe('CheckoutPaymentMethodsService', () => {
     storeIntegrationModel = { find: jest.fn(), findOne: jest.fn() };
     orderModel = { find: jest.fn().mockResolvedValue([]) };
     paymentTransactionModel = { create: jest.fn().mockResolvedValue({}) };
+    storeModel = { findById: jest.fn().mockReturnValue({ select: jest.fn().mockResolvedValue({ baseCurrency: 'PKR' }) }) };
     const db = {
-      repositories: { checkoutModel, storeIntegrationModel, orderModel, paymentTransactionModel },
+      repositories: { checkoutModel, storeIntegrationModel, orderModel, paymentTransactionModel, storeModel },
     } as unknown as DatabaseService;
 
     registry = {
@@ -59,7 +61,7 @@ describe('CheckoutPaymentMethodsService', () => {
         ]),
       );
       const result = await service.listPaymentMethods('checkout-1', USER_ID);
-      expect(result).toEqual({ success: true, data: [] });
+      expect(result).toEqual({ success: true, data: { currency: null, methods: [] } });
       expect(storeIntegrationModel.find).not.toHaveBeenCalled();
     });
 
@@ -75,7 +77,10 @@ describe('CheckoutPaymentMethodsService', () => {
         status: 'connected',
         isEnabledForCheckout: true,
       });
-      expect(result.data).toEqual([{ provider: 'safepay', displayName: 'Safepay', currency: 'PKR' }]);
+      expect(result.data).toEqual({
+        currency: 'PKR',
+        methods: [{ provider: 'safepay', displayName: 'Safepay', currency: 'PKR' }],
+      });
     });
 
     it('filters out a provider the registry does not actually implement', async () => {
@@ -84,7 +89,16 @@ describe('CheckoutPaymentMethodsService', () => {
       (registry.isSupported as jest.Mock).mockReturnValue(false);
 
       const result = await service.listPaymentMethods('checkout-1', USER_ID);
-      expect(result.data).toEqual([]);
+      expect(result.data.methods).toEqual([]);
+    });
+
+    it("resolves the store's own currency even when nothing is connected yet — the client needs this to gate its OTHER payment options by region too", async () => {
+      checkoutModel.findOne.mockResolvedValue(checkout([{ storeId: 'store-A', totalPrice: 100 }]));
+      storeIntegrationModel.find.mockResolvedValue([]);
+      storeModel.findById.mockReturnValue({ select: jest.fn().mockResolvedValue({ baseCurrency: 'USD' }) });
+
+      const result = await service.listPaymentMethods('checkout-1', USER_ID);
+      expect(result.data).toEqual({ currency: 'USD', methods: [] });
     });
   });
 

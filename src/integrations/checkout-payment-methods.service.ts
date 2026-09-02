@@ -53,7 +53,14 @@ export class CheckoutPaymentMethodsService {
 
   async listPaymentMethods(checkoutId: string, userId: string) {
     const { storeId } = await this.resolveSingleStoreCheckout(checkoutId, userId);
-    if (!storeId) return { success: true, data: [] };
+    if (!storeId) return { success: true, data: { currency: null, methods: [] } };
+
+    // Resolved and returned even when zero gateways are connected yet — the
+    // client needs this to gate its OWN existing payment options (e.g. an
+    // older platform-wide Stripe button) by store region, not just to know
+    // what's connected here. Never guess this from something client-supplied.
+    const store = await this.repos.storeModel.findById(storeId).select('baseCurrency');
+    const currency: 'PKR' | 'USD' = store?.baseCurrency === 'USD' ? 'USD' : 'PKR';
 
     const integrations = await this.repos.storeIntegrationModel.find({
       storeId,
@@ -69,7 +76,7 @@ export class CheckoutPaymentMethodsService {
         return { provider: integration.provider, ...provider.getPublicConfig(integration.config ?? {}) };
       });
 
-    return { success: true, data: methods };
+    return { success: true, data: { currency, methods } };
   }
 
   async initiatePayment(checkoutId: string, userId: string, providerKey: string, returnUrl: string, cancelUrl: string) {
