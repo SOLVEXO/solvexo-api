@@ -34,4 +34,18 @@ export class BuyerCheckoutPaymentsController {
   ) {
     return this.service.initiatePayment(checkoutId, req.user.userId, provider, body?.returnUrl, body?.cancelUrl);
   }
+
+  // Idempotent by construction (see CheckoutPaymentMethodsService.confirmPayment's
+  // checkout.status === 'completed' short-circuit + createOrder's own dedup guard) —
+  // no interceptor needed even though the app may call this more than once
+  // (e.g. WebView navigation firing twice) for the same session.
+  @Post(':provider/confirm')
+  confirm(
+    @Param('checkoutId') checkoutId: string,
+    @Param('provider') provider: string,
+    @Body() body: { sessionId: string },
+    @Req() req: any,
+  ) {
+    return this.service.confirmPayment(checkoutId, req.user.userId, provider, body?.sessionId);
+  }
 }

@@ -1,9 +1,9 @@
 /* eslint-disable prettier/prettier */
 import { Module } from '@nestjs/common';
 import { StripeConnectModule } from '../stripe-connect/stripe-connect.module';
+import { PaymentModule } from '../payment/payment.module';
 import { AuthModule } from '../auth/auth.module';
 import { RedisModule } from '../redis/redis.module';
-import { PaymentModule } from '../payment/payment.module';
 import { SafepayPaymentProvider } from './providers/safepay.provider';
 import { StripePaymentProvider } from './providers/stripe-integration.provider';
 import { WhatsAppCloudProvider } from './providers/whatsapp-cloud.provider';
@@ -21,7 +21,7 @@ import { BuyerCheckoutPaymentsController } from './buyer-checkout-payments.contr
 // uses JwtAuthGuard — see NotificationsModule's doc comment for why both are
 // needed even though nothing here calls AuthService directly.
 @Module({
-  imports: [StripeConnectModule, AuthModule, RedisModule, PaymentModule],
+  imports: [StripeConnectModule, PaymentModule, AuthModule, RedisModule],
   controllers: [
     PaymentWebhooksController,
     WhatsAppWebhookController,
