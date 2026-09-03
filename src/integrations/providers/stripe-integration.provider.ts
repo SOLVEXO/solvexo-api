@@ -2,8 +2,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Stripe from 'stripe';
-import { StripeConnectService } from 'src/stripe-connect/stripe-connect.service';
-import { CommissionRulesService } from 'src/commission-rules/commission-rules.service';
+import { StripeConnectService } from '@/stripe-connect/stripe-connect.service';
+import { CommissionRulesService } from '@/commission-rules/commission-rules.service';
 import {
   DecryptedPaymentConfig,
   PaymentEvent,

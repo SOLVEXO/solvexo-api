@@ -5,7 +5,7 @@ import {
 } from '@nestjs/common';
 import { Observable, from, of } from 'rxjs';
 import { switchMap, tap, catchError } from 'rxjs/operators';
-import { DatabaseService } from 'src/database/databaseservice';
+import { DatabaseService } from '@/database/databaseservice';
 
 const IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000; // 24h — comfortably covers any realistic client retry window
 

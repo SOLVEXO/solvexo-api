@@ -1,8 +1,8 @@
 /* eslint-disable prettier/prettier */
 import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
-import { DatabaseService } from 'src/database/databaseservice';
-import { ActivityLogService } from 'src/activity-log/activity-log.service';
-import { encryptSeoCredential, decryptSeoCredential } from 'src/common/seo-token-encryption.util';
+import { DatabaseService } from '@/database/databaseservice';
+import { ActivityLogService } from '@/activity-log/activity-log.service';
+import { encryptSeoCredential, decryptSeoCredential } from '@/common/seo-token-encryption.util';
 import { GoogleSearchConsoleProvider } from '../providers/google-search-console.provider';
 import { GoogleAnalyticsProvider } from '../providers/google-analytics.provider';
 import { GoogleMerchantCenterProvider } from '../providers/google-merchant-center.provider';

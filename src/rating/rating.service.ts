@@ -4,11 +4,11 @@ import {
   NotFoundException,
   ForbiddenException,
 } from '@nestjs/common';
-import { DatabaseService } from 'src/database/databaseservice';
+import { DatabaseService } from '@/database/databaseservice';
 import { AddReviewDto } from './dto/add-review.dto';
 import { EditReviewDto } from './dto/edit-review.dto';
 import { SellerReplyDto } from './dto/seller-reply.dto';
-import { LoyaltyService } from 'src/loyalty/loyalty.service';
+import { LoyaltyService } from '@/loyalty/loyalty.service';
 
 const DELIVERED_ITEM_STATUSES = ['delivered', 'completed'];
 

@@ -3,7 +3,7 @@ import { MongooseModule } from '@nestjs/mongoose';
 import { Faq, FaqSchema } from './schemas/faq.schema';
 import { FaqService } from './faq.service';
 import { FaqController } from './faq.controller';
-import { RedisModule } from 'src/redis/redis.module';
+import { RedisModule } from '@/redis/redis.module';
 
 @Module({
   imports: [

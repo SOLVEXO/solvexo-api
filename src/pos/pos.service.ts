@@ -7,8 +7,8 @@ import {
 } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
 import * as jwt from 'jsonwebtoken';
-import { DatabaseService } from 'src/database/databaseservice';
-import { formatOptionsSuffix } from 'src/products/variant-options.util';
+import { DatabaseService } from '@/database/databaseservice';
+import { formatOptionsSuffix } from '@/products/variant-options.util';
 import { CreateEmployeeDto } from './dto/create-employee.dto';
 import { UpdateEmployeeDto } from './dto/update-employee.dto';
 import { PinLoginDto } from './dto/pin-login.dto';
@@ -32,8 +32,8 @@ import { UpdateShiftDto } from './dto/update-shift.dto';
 import { ResetPinDto } from './dto/reset-pin.dto';
 import { UpdateSaleItemsDto } from './dto/update-sale-items.dto';
 import { UpdatePosSettingsDto } from './dto/update-pos-settings.dto';
-import { ActivityLogService } from 'src/activity-log/activity-log.service';
-import { EntitlementsService } from 'src/platform-plans/entitlements.service';
+import { ActivityLogService } from '@/activity-log/activity-log.service';
+import { EntitlementsService } from '@/platform-plans/entitlements.service';
 
 @Injectable()
 export class PosService {

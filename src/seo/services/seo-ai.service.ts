@@ -2,11 +2,11 @@
 import { Injectable, BadRequestException, ForbiddenException } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
-import { DatabaseService } from 'src/database/databaseservice';
-import { ActivityLogService } from 'src/activity-log/activity-log.service';
-import { EntitlementsService } from 'src/platform-plans/entitlements.service';
-import { AiCreditsService } from 'src/platform-plans/ai-credits.service';
-import { QUEUE_NAMES, SEO_AI_GENERATE_BULK_JOB } from 'src/queues/queue.constants';
+import { DatabaseService } from '@/database/databaseservice';
+import { ActivityLogService } from '@/activity-log/activity-log.service';
+import { EntitlementsService } from '@/platform-plans/entitlements.service';
+import { AiCreditsService } from '@/platform-plans/ai-credits.service';
+import { QUEUE_NAMES, SEO_AI_GENERATE_BULK_JOB } from '@/queues/queue.constants';
 import { SeoContentService } from './seo-content.service';
 import { AnthropicSeoAiProvider } from '../providers/anthropic-seo-ai.provider';
 import { PlatformSeoService } from './platform-seo-settings.service';

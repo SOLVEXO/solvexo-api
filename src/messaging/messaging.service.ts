@@ -7,17 +7,17 @@ import {
   ConflictException,
 } from '@nestjs/common';
 import { Types } from 'mongoose';
-import { DatabaseService } from 'src/database/databaseservice';
-import { UploadService } from 'src/upload/upload.service';
+import { DatabaseService } from '@/database/databaseservice';
+import { UploadService } from '@/upload/upload.service';
 import { StartConversationDto } from './dto/start-conversation.dto';
 import { SendMessageDto } from './dto/send-message.dto';
 import { EditMessageDto } from './dto/edit-message.dto';
 import { BlockDto } from './dto/block.dto';
 import { ReportDto } from './dto/report.dto';
-import { SubscriptionBenefitsService } from 'src/subscriptions/subscription-benefits.service';
+import { SubscriptionBenefitsService } from '@/subscriptions/subscription-benefits.service';
 import { MessagingGateway } from './messaging.gateway';
-import { NotificationsService } from 'src/notifications/notifications.service';
-import { NOTIFICATION_TYPES } from 'src/notifications/notification.types';
+import { NotificationsService } from '@/notifications/notifications.service';
+import { NOTIFICATION_TYPES } from '@/notifications/notification.types';
 
 @Injectable()
 export class MessagingService {

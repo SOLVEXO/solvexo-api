@@ -4,17 +4,17 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { DatabaseService } from 'src/database/databaseservice';
-import { NotificationsService } from 'src/notifications/notifications.service';
-import { NOTIFICATION_TYPES } from 'src/notifications/notification.types';
-import { PromotionsService } from 'src/promotions/promotions.service';
-import { FinanceService } from 'src/finance/finance.service';
-import { AdminConfigService } from 'src/admin-config/admin-config.service';
-import { ExchangeRateService } from 'src/exchange-rate/exchange-rate.service';
-import { ActivityLogService } from 'src/activity-log/activity-log.service';
-import { GiftCardsService } from 'src/gift-cards/gift-cards.service';
-import { StripeConnectService } from 'src/stripe-connect/stripe-connect.service';
-import { CommissionRulesService } from 'src/commission-rules/commission-rules.service';
+import { DatabaseService } from '@/database/databaseservice';
+import { NotificationsService } from '@/notifications/notifications.service';
+import { NOTIFICATION_TYPES } from '@/notifications/notification.types';
+import { PromotionsService } from '@/promotions/promotions.service';
+import { FinanceService } from '@/finance/finance.service';
+import { AdminConfigService } from '@/admin-config/admin-config.service';
+import { ExchangeRateService } from '@/exchange-rate/exchange-rate.service';
+import { ActivityLogService } from '@/activity-log/activity-log.service';
+import { GiftCardsService } from '@/gift-cards/gift-cards.service';
+import { StripeConnectService } from '@/stripe-connect/stripe-connect.service';
+import { CommissionRulesService } from '@/commission-rules/commission-rules.service';
 import Stripe from 'stripe';
 
 @Injectable()

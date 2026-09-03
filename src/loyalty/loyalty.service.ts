@@ -1,7 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { Injectable, BadRequestException, NotFoundException, ForbiddenException } from '@nestjs/common';
-import { DatabaseService } from 'src/database/databaseservice';
-import { ActivityLogService } from 'src/activity-log/activity-log.service';
+import { DatabaseService } from '@/database/databaseservice';
+import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { UpdateProgramDto } from './dto/update-program.dto';
 import { UpdateEarningRulesDto } from './dto/update-earning-rules.dto';
 import { UpdateTiersDto } from './dto/update-tiers.dto';
@@ -9,9 +9,9 @@ import { CreateRewardDto } from './dto/create-reward.dto';
 import { UpdateRewardDto } from './dto/update-reward.dto';
 import { AwardPointsDto } from './dto/award-points.dto';
 import type { LoyaltyTransactionType } from './schemas/loyalty-transaction.schema';
-import { EntitlementsService } from 'src/platform-plans/entitlements.service';
-import { NotificationsService } from 'src/notifications/notifications.service';
-import { NOTIFICATION_TYPES } from 'src/notifications/notification.types';
+import { EntitlementsService } from '@/platform-plans/entitlements.service';
+import { NotificationsService } from '@/notifications/notifications.service';
+import { NOTIFICATION_TYPES } from '@/notifications/notification.types';
 import { randomBytes } from 'crypto';
 
 const EARN_TYPES: LoyaltyTransactionType[] = ['purchase', 'review', 'referral', 'birthday'];

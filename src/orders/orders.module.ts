@@ -11,12 +11,12 @@
 import { Module } from '@nestjs/common';
 import { OrdersController } from './orders.controller';
 import { OrdersService } from './orders.service';
-import { AuthModule } from 'src/auth/auth.module';
-import { UploadModule } from 'src/upload/upload.module';
-import { RedisModule } from 'src/redis/redis.module';
-import { FinanceModule } from 'src/finance/finance.module';
-import { PaymentModule } from 'src/payment/payment.module';
-import { ExchangeRateModule } from 'src/exchange-rate/exchange-rate.module';
+import { AuthModule } from '@/auth/auth.module';
+import { UploadModule } from '@/upload/upload.module';
+import { RedisModule } from '@/redis/redis.module';
+import { FinanceModule } from '@/finance/finance.module';
+import { PaymentModule } from '@/payment/payment.module';
+import { ExchangeRateModule } from '@/exchange-rate/exchange-rate.module';
 import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 

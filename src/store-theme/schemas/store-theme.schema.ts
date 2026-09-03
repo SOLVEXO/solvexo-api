@@ -6,6 +6,33 @@ import { Block, BlockSchema } from '../../common/schemas/block.schema';
 export type StoreThemeDocument = HydratedDocument<StoreTheme>;
 
 @Schema({ _id: false })
+export class PreviewToken {
+  @Prop({ required: true }) token: string;
+  @Prop({ type: Date, required: true }) expiresAt: Date;
+}
+export const PreviewTokenSchema = SchemaFactory.createForClass(PreviewToken);
+
+// A named, reusable saved palette — "Apply"-ing one copies its 3 values onto
+// the theme's own live bgColor/textColor/primaryColor fields (draft), the
+// same fields the Theme Settings color pickers already edit directly. This
+// is deliberately a "saved presets" layer on top of the existing flat-color
+// system, not per-section scheme assignment (Shopify's `color_scheme_group`,
+// where each SECTION can independently pick a scheme) — that would require
+// a `colorScheme` setting on every section/block across both themes' render
+// files, a much larger follow-up. A seller can still save/reuse/switch
+// between named palettes for the whole storefront with this; there's just
+// one active palette at a time, not one per section.
+@Schema({ _id: false })
+export class ColorScheme {
+  @Prop({ required: true }) id: string;
+  @Prop({ required: true }) name: string;
+  @Prop({ required: true }) bgColor: string;
+  @Prop({ required: true }) textColor: string;
+  @Prop({ required: true }) primaryColor: string;
+}
+export const ColorSchemeSchema = SchemaFactory.createForClass(ColorScheme);
+
+@Schema({ _id: false })
 export class StorefrontColors {
   @Prop({ type: String, default: '#D97757' }) primaryColor: string;
   @Prop({ type: String, default: '#FAF9F5' }) bgColor: string;
@@ -80,6 +107,9 @@ export class StorefrontColors {
 
   @Prop({ type: String, enum: ['accordion', 'list'], default: 'accordion' })
   faqStyle: 'accordion' | 'list';
+
+  @Prop({ type: [ColorSchemeSchema], default: [] })
+  colorSchemes: ColorScheme[];
 }
 export const StorefrontColorsSchema = SchemaFactory.createForClass(StorefrontColors);
 
@@ -102,6 +132,17 @@ export class StorefrontHeader {
   // layout; 'centered' stacks a centered logo with nav below it.
   @Prop({ type: String, enum: ['standard', 'centered'], default: 'standard' })
   headerStyle: 'standard' | 'centered';
+  // When set, the storefront renders THIS menu's items instead of `blocks`
+  // above — resolved into the identical `Block` shape at read time
+  // (`StoreThemeService`'s `resolveHeaderMenu`), so neither theme's Navbar
+  // component needed any changes to support it. `blocks` is left untouched
+  // as the fallback content, not cleared — detaching the menu (`null`)
+  // instantly reverts to whatever links were there before, with nothing
+  // lost. Real standalone `Menu` documents live in their own collection —
+  // see `menus/schemas/menu.schema.ts`'s own class comment for the full
+  // rationale and the (disclosed) footer-attachment boundary.
+  @Prop({ type: String, default: null })
+  menuId: string | null;
 }
 export const StorefrontHeaderSchema = SchemaFactory.createForClass(StorefrontHeader);
 
@@ -112,6 +153,19 @@ export class StorefrontFooter {
   // row (store name + copyright + socials, no columns).
   @Prop({ type: String, enum: ['columns', 'minimal'], default: 'columns' })
   footerStyle: 'columns' | 'minimal';
+  // The disclosed footer-attachment follow-up `StorefrontHeader.menuId`'s own
+  // doc comment flagged: footer `blocks` mix `footer_column`/`social_link`/
+  // `copyright_text`, not just links, so a menu can't wholesale replace
+  // `blocks` the way it does for Header. Instead, when set, the resolved
+  // menu becomes ONE synthetic `footer_column` block (heading = the menu's
+  // own name, links = its items) that REPLACES only the footer's own
+  // `footer_column` block(s) — any `social_link`/`copyright_text` blocks are
+  // left untouched and keep rendering alongside it. See
+  // `StoreThemeService.resolveFooterMenu`. `blocks`' own footer_column
+  // content is left untouched (not cleared) so detaching (`null`) instantly
+  // reverts to it, same "nothing lost" guarantee `StorefrontHeader.menuId` gives.
+  @Prop({ type: String, default: null })
+  menuId: string | null;
 }
 export const StorefrontFooterSchema = SchemaFactory.createForClass(StorefrontFooter);
 
@@ -284,6 +338,33 @@ export class StoreTheme {
   @Prop({ type: Date, default: () => new Date() })
   installedAt: Date;
 
+  // Merchant-facing override for this INSTALLED ROW's display name — null
+  // means "just show the theme package's own name" (today's behavior,
+  // unchanged for every pre-existing row). Set automatically to "Copy of X"
+  // by `duplicateTheme`, and editable via `renameTheme` — this is what
+  // makes two installed rows of the same `themeDefinitionId` (e.g. two
+  // Atelier instances, one being experimented on) distinguishable in the
+  // Theme Library at all.
+  @Prop({ type: String, default: null })
+  name: string | null;
+
+  // A real, shareable "see this before it's live" link — Shopify's own
+  // preview-link concept, scoped down: the token grants read-only access to
+  // this row's DRAFT theme (colors/fonts/buttons/header/footer/customCss)
+  // via `GET api/public/store-theme/:storeId/preview/:token`, with NO auth
+  // required — matching Shopify's real "visitor preview" (no login needed).
+  // Deliberately theme-tokens-only, not real store/product data — building
+  // a second parallel token-gated draft-fetch path for every other public
+  // endpoint (products, pages, collections) was judged disproportionate for
+  // this pass; the disclosed trade-off is a client sees the real branding/
+  // colors/navigation, rendered over the theme's own demo content, not the
+  // seller's actual live product catalog. One active token at a time —
+  // minting a new one invalidates the previous link, matching this
+  // codebase's existing "regenerate" convention elsewhere (e.g. webhook
+  // secrets) rather than tracking a whole revocable-link history.
+  @Prop({ type: PreviewTokenSchema, default: null })
+  previewToken: PreviewToken | null;
+
   @Prop({ type: StorefrontColorsSchema, default: () => ({}) })
   theme: StorefrontColors;
 
@@ -351,8 +432,17 @@ export class StoreTheme {
 
 export const StoreThemeSchema = SchemaFactory.createForClass(StoreTheme);
 
-// One installed row per (store, theme package) — replaces the old
-// single-field unique index on `storeId` alone (a real deployment needs that
-// old index dropped once; see `scripts/migrate-installed-themes.ts`).
-StoreThemeSchema.index({ storeId: 1, themeDefinitionId: 1 }, { unique: true, partialFilterExpression: { themeDefinitionId: { $type: 'string' } } });
+// NOT unique — `duplicateTheme` deliberately creates a second row with the
+// SAME `themeDefinitionId` (a real, independently-configurable copy, same
+// concept as Shopify's own "Duplicate theme"). The single-install-per-
+// definition guarantee the old unique index gave is still real, just
+// enforced at the application layer instead: `installTheme`'s own
+// `findOne({storeId, themeDefinitionId})` idempotency check (unchanged)
+// already prevents the *install* flow from ever creating an accidental
+// duplicate — a DB-level unique constraint was only ever redundant with
+// that check, and became an active blocker once real duplication was a
+// real, wanted feature. Still indexed (non-unique) since `{storeId,
+// themeDefinitionId}` remains the hot lookup path everywhere in this
+// service.
+StoreThemeSchema.index({ storeId: 1, themeDefinitionId: 1 });
 StoreThemeSchema.index({ storeId: 1, status: 1 });

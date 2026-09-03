@@ -2,9 +2,9 @@
 import { Controller, Get, Post, Query, Body, UseGuards, UseInterceptors } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { IsArray, IsString } from 'class-validator';
-import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
-import { RolesGuard } from 'src/auth/guards/roles.guard';
-import { Roles } from 'src/auth/decorators/roles.decorator';
+import { JwtAuthGuard } from '@/auth/guards/jwt-auth.guard';
+import { RolesGuard } from '@/auth/guards/roles.guard';
+import { Roles } from '@/auth/decorators/roles.decorator';
 import { SeoMonitoringService } from '../services/seo-monitoring.service';
 import { SeoResponseInterceptor } from '../seo-response.interceptor';
 

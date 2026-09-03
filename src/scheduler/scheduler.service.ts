@@ -1,26 +1,26 @@
 /* eslint-disable prettier/prettier */
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
-import { DatabaseService } from 'src/database/databaseservice';
-import { LoyaltyService } from 'src/loyalty/loyalty.service';
-import { SubscriptionsService } from 'src/subscriptions/subscriptions.service';
-import { PlatformSubscriptionsService } from 'src/platform-subscriptions/platform-subscriptions.service';
-import { FinanceService } from 'src/finance/finance.service';
-import { RedisService } from 'src/redis/redis.service';
-import { SellerPlatformSubscriptionsService } from 'src/platform-plans/seller-platform-subscriptions.service';
-import { AiCreditsService } from 'src/platform-plans/ai-credits.service';
-import { PlatformAddonsService } from 'src/platform-plans/platform-addons.service';
-import { SeoSitemapService } from 'src/seo/services/seo-sitemap.service';
-import { SeoMonitoringService } from 'src/seo/services/seo-monitoring.service';
-import { SeoAuditService } from 'src/seo/services/seo-audit.service';
-import { AdminMarketingService } from 'src/admin-marketing/admin-marketing.service';
-import { PromotionsService } from 'src/promotions/promotions.service';
-import { ExchangeRateService } from 'src/exchange-rate/exchange-rate.service';
-import { ActivityLogService } from 'src/activity-log/activity-log.service';
-import { AdminFinanceService } from 'src/admin-finance/admin-finance.service';
-import { BookingsService } from 'src/bookings/bookings.service';
-import { WhatsAppCloudProvider } from 'src/integrations/providers/whatsapp-cloud.provider';
-import { decryptCredential } from 'src/common/credential-encryption.util';
+import { DatabaseService } from '@/database/databaseservice';
+import { LoyaltyService } from '@/loyalty/loyalty.service';
+import { SubscriptionsService } from '@/subscriptions/subscriptions.service';
+import { PlatformSubscriptionsService } from '@/platform-subscriptions/platform-subscriptions.service';
+import { FinanceService } from '@/finance/finance.service';
+import { RedisService } from '@/redis/redis.service';
+import { SellerPlatformSubscriptionsService } from '@/platform-plans/seller-platform-subscriptions.service';
+import { AiCreditsService } from '@/platform-plans/ai-credits.service';
+import { PlatformAddonsService } from '@/platform-plans/platform-addons.service';
+import { SeoSitemapService } from '@/seo/services/seo-sitemap.service';
+import { SeoMonitoringService } from '@/seo/services/seo-monitoring.service';
+import { SeoAuditService } from '@/seo/services/seo-audit.service';
+import { AdminMarketingService } from '@/admin-marketing/admin-marketing.service';
+import { PromotionsService } from '@/promotions/promotions.service';
+import { ExchangeRateService } from '@/exchange-rate/exchange-rate.service';
+import { ActivityLogService } from '@/activity-log/activity-log.service';
+import { AdminFinanceService } from '@/admin-finance/admin-finance.service';
+import { BookingsService } from '@/bookings/bookings.service';
+import { WhatsAppCloudProvider } from '@/integrations/providers/whatsapp-cloud.provider';
+import { decryptCredential } from '@/common/credential-encryption.util';
 
 @Injectable()
 export class SchedulerService {

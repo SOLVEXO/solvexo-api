@@ -11,6 +11,7 @@ import { UpdateFooterDto } from './dto/update-footer.dto';
 import { UpdateIdentityBannerDto } from './dto/update-identity-banner.dto';
 import { UpdateCustomCssDto } from './dto/update-custom-css.dto';
 import { InstallThemeDto } from './dto/install-theme.dto';
+import { CreateColorSchemeDto } from './dto/color-scheme.dto';
 
 @ApiTags('Store Theme')
 @ApiBearerAuth()
@@ -35,6 +36,36 @@ export class StoreThemeController {
   @Post(':storeId/install')
   install(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: InstallThemeDto) {
     return this.storeThemeService.installTheme(storeId, req.user.userId, dto);
+  }
+
+  @Post(':storeId/preview-link')
+  createPreviewLink(@Req() req: any, @Param('storeId') storeId: string, @Query('instance') instance?: string) {
+    return this.storeThemeService.createPreviewLink(storeId, req.user.userId, instance);
+  }
+
+  @Delete(':storeId/preview-link')
+  revokePreviewLink(@Req() req: any, @Param('storeId') storeId: string, @Query('instance') instance?: string) {
+    return this.storeThemeService.revokePreviewLink(storeId, req.user.userId, instance);
+  }
+
+  @Post(':storeId/installed/:installedThemeId/duplicate')
+  duplicate(
+    @Req() req: any,
+    @Param('storeId') storeId: string,
+    @Param('installedThemeId') installedThemeId: string,
+    @Body('name') name?: string,
+  ) {
+    return this.storeThemeService.duplicateTheme(storeId, req.user.userId, installedThemeId, name);
+  }
+
+  @Patch(':storeId/installed/:installedThemeId/name')
+  rename(
+    @Req() req: any,
+    @Param('storeId') storeId: string,
+    @Param('installedThemeId') installedThemeId: string,
+    @Body('name') name: string,
+  ) {
+    return this.storeThemeService.renameTheme(storeId, req.user.userId, installedThemeId, name);
   }
 
   @Post(':storeId/installed/:installedThemeId/activate')
@@ -110,6 +141,21 @@ export class StoreThemeController {
     @Query('instance') instance?: string,
   ) {
     return this.storeThemeService.updateIdentityBanner(storeId, req.user.userId, dto, instance);
+  }
+
+  @Post(':storeId/color-schemes')
+  createColorScheme(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: CreateColorSchemeDto, @Query('instance') instance?: string) {
+    return this.storeThemeService.createColorScheme(storeId, req.user.userId, dto, instance);
+  }
+
+  @Delete(':storeId/color-schemes/:schemeId')
+  deleteColorScheme(@Req() req: any, @Param('storeId') storeId: string, @Param('schemeId') schemeId: string, @Query('instance') instance?: string) {
+    return this.storeThemeService.deleteColorScheme(storeId, req.user.userId, schemeId, instance);
+  }
+
+  @Post(':storeId/color-schemes/:schemeId/apply')
+  applyColorScheme(@Req() req: any, @Param('storeId') storeId: string, @Param('schemeId') schemeId: string, @Query('instance') instance?: string) {
+    return this.storeThemeService.applyColorScheme(storeId, req.user.userId, schemeId, instance);
   }
 
   @Patch(':storeId/custom-css')

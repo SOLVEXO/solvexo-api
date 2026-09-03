@@ -1,8 +1,8 @@
 /* eslint-disable prettier/prettier */
 import { BadRequestException, Injectable } from '@nestjs/common';
-import { DatabaseService } from 'src/database/databaseservice';
-import { ProductsService } from 'src/products/products.service';
-import { StoreService } from 'src/store/store.service';
+import { DatabaseService } from '@/database/databaseservice';
+import { ProductsService } from '@/products/products.service';
+import { StoreService } from '@/store/store.service';
 
 const MAX_RECENT_SEARCHES = 15;
 const MAX_RECENTLY_VIEWED = 30;

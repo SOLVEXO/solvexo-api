@@ -2,12 +2,12 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
-import { DatabaseService } from 'src/database/databaseservice';
-import { FirebaseAdminService } from 'src/firebase/firebase.config';
-import { EmailService } from 'src/otp/services/email.service';
-import { WhatsAppSenderService } from 'src/integrations/whatsapp-sender.service';
+import { DatabaseService } from '@/database/databaseservice';
+import { FirebaseAdminService } from '@/firebase/firebase.config';
+import { EmailService } from '@/otp/services/email.service';
+import { WhatsAppSenderService } from '@/integrations/whatsapp-sender.service';
 import { NotificationsGateway } from './notifications.gateway';
-import { QUEUE_NAMES, NOTIFICATION_PUSH_JOB, NOTIFICATION_EMAIL_JOB, NOTIFICATION_WHATSAPP_JOB } from 'src/queues/queue.constants';
+import { QUEUE_NAMES, NOTIFICATION_PUSH_JOB, NOTIFICATION_EMAIL_JOB, NOTIFICATION_WHATSAPP_JOB } from '@/queues/queue.constants';
 import { NOTIFICATION_CATEGORY } from './notification.types';
 
 export interface NotifyParams {

@@ -1,12 +1,12 @@
 /* eslint-disable prettier/prettier */
 import { Controller, Get, Post, Delete, Param, Body, Query, Req, UseGuards, UseInterceptors } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
-import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
-import { RolesGuard } from 'src/auth/guards/roles.guard';
-import { Roles } from 'src/auth/decorators/roles.decorator';
-import { DatabaseService } from 'src/database/databaseservice';
-import { EntitlementsService } from 'src/platform-plans/entitlements.service';
-import { verifyStoreOwnershipStrict } from 'src/common/store-ownership.util';
+import { JwtAuthGuard } from '@/auth/guards/jwt-auth.guard';
+import { RolesGuard } from '@/auth/guards/roles.guard';
+import { Roles } from '@/auth/decorators/roles.decorator';
+import { DatabaseService } from '@/database/databaseservice';
+import { EntitlementsService } from '@/platform-plans/entitlements.service';
+import { verifyStoreOwnershipStrict } from '@/common/store-ownership.util';
 import { SeoIntegrationsService } from '../services/seo-integrations.service';
 import { ConnectIntegrationDto, GetAuthUrlDto, assertValidProvider } from '../dto/connect-integration.dto';
 import { SeoResponseInterceptor } from '../seo-response.interceptor';

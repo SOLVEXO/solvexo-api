@@ -1,14 +1,14 @@
 /* eslint-disable prettier/prettier */
 import { Injectable, NotFoundException, BadRequestException, ForbiddenException, Logger } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
-import { DatabaseService } from 'src/database/databaseservice';
-import { ActivityLogService } from 'src/activity-log/activity-log.service';
+import { DatabaseService } from '@/database/databaseservice';
+import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { PlatformPlanNotificationsService } from './platform-plan-notifications.service';
-import { PaymentGatewayService } from 'src/subscriptions/payment-gateway/payment-gateway.service';
-import { verifyStoreOwnershipStrict } from 'src/common/store-ownership.util';
+import { PaymentGatewayService } from '@/subscriptions/payment-gateway/payment-gateway.service';
+import { verifyStoreOwnershipStrict } from '@/common/store-ownership.util';
 import { SubscribePlatformPlanDto, ChangePlatformPlanDto } from './dto/subscribe-platform-plan.dto';
-import { NotificationsService } from 'src/notifications/notifications.service';
-import { NOTIFICATION_TYPES } from 'src/notifications/notification.types';
+import { NotificationsService } from '@/notifications/notifications.service';
+import { NOTIFICATION_TYPES } from '@/notifications/notification.types';
 
 const MAX_RENEWAL_ATTEMPTS = 3;
 const RETRY_INTERVAL_DAYS = 1;

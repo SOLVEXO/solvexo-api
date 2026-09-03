@@ -1,6 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { Injectable } from '@nestjs/common';
-import { DatabaseService } from 'src/database/databaseservice';
+import { DatabaseService } from '@/database/databaseservice';
 
 /**
  * Reads `SeoAnalyticsSnapshot` (populated by `SeoIntegrationsService.sync` +

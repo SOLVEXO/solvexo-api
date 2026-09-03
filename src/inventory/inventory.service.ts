@@ -3,7 +3,7 @@ import {
   ForbiddenException,
   BadRequestException,
 } from '@nestjs/common';
-import { DatabaseService } from 'src/database/databaseservice';
+import { DatabaseService } from '@/database/databaseservice';
 
 @Injectable()
 export class InventoryService {

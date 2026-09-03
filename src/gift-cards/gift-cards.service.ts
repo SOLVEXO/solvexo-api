@@ -1,10 +1,10 @@
 /* eslint-disable prettier/prettier */
 import { Injectable, BadRequestException, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { DatabaseService } from 'src/database/databaseservice';
-import { ActivityLogService } from 'src/activity-log/activity-log.service';
-import { ExchangeRateService } from 'src/exchange-rate/exchange-rate.service';
-import { EmailService } from 'src/otp/services/email.service';
+import { DatabaseService } from '@/database/databaseservice';
+import { ActivityLogService } from '@/activity-log/activity-log.service';
+import { ExchangeRateService } from '@/exchange-rate/exchange-rate.service';
+import { EmailService } from '@/otp/services/email.service';
 import { UpdateGiftCardSettingsDto } from './dto/update-gift-card-settings.dto';
 import { IssueManualGiftCardDto } from './dto/issue-manual-gift-card.dto';
 import { CreatePurchaseIntentDto } from './dto/create-purchase-intent.dto';

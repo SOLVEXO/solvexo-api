@@ -1,6 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { Injectable, OnModuleInit } from '@nestjs/common';
-import { DatabaseService } from 'src/database/databaseservice';
+import { DatabaseService } from '@/database/databaseservice';
 
 // ── Step 1: regex-based normalization for numeric/roman grade patterns ──────
 // "Class 5", "Grade 5", "5th Class", "Grade-5" -> "grade-5"; "Grade V" -> "grade-5"

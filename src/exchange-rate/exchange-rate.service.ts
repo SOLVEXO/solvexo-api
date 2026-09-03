@@ -1,7 +1,7 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
-import { DatabaseService } from 'src/database/databaseservice';
-import { AdminConfigService } from 'src/admin-config/admin-config.service';
-import { ActivityLogService } from 'src/activity-log/activity-log.service';
+import { DatabaseService } from '@/database/databaseservice';
+import { AdminConfigService } from '@/admin-config/admin-config.service';
+import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { FxSnapshot, SUPPORTED_CURRENCIES, SupportedCurrency } from './schemas/exchange-rate.schema';
 
 interface AuditMeta {

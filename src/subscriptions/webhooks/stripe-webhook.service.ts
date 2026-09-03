@@ -3,9 +3,9 @@ import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
-import { DatabaseService } from 'src/database/databaseservice';
+import { DatabaseService } from '@/database/databaseservice';
 import { PaymentGatewayService } from '../payment-gateway/payment-gateway.service';
-import { QUEUE_NAMES, STRIPE_WEBHOOK_JOB } from 'src/queues/queue.constants';
+import { QUEUE_NAMES, STRIPE_WEBHOOK_JOB } from '@/queues/queue.constants';
 
 @Injectable()
 export class StripeWebhookService {

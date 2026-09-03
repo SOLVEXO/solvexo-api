@@ -304,6 +304,15 @@ export class DatabaseService {
     @InjectModel(schema.CollectionTemplate.name)
     private collectionTemplateModel: Model<schema.CollectionTemplateDocument>,
 
+    @InjectModel(schema.MetafieldDefinition.name)
+    private metafieldDefinitionModel: Model<schema.MetafieldDefinitionDocument>,
+
+    @InjectModel(schema.MetafieldValue.name)
+    private metafieldValueModel: Model<schema.MetafieldValueDocument>,
+
+    @InjectModel(schema.Menu.name)
+    private menuModel: Model<schema.MenuDocument>,
+
     @InjectModel(schema.DraftOrder.name)
     private draftOrderModel: Model<schema.DraftOrderDocument>,
 
@@ -454,6 +463,9 @@ export class DatabaseService {
       storePageModel: this.storePageModel,
       storeFaqModel: this.storeFaqModel,
       collectionTemplateModel: this.collectionTemplateModel,
+      metafieldDefinitionModel: this.metafieldDefinitionModel,
+      metafieldValueModel: this.metafieldValueModel,
+      menuModel: this.menuModel,
       draftOrderModel: this.draftOrderModel,
       storeCustomerMetaModel: this.storeCustomerMetaModel,
       blogPostModel: this.blogPostModel,

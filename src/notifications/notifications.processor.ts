@@ -2,10 +2,10 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
-import { FirebaseAdminService } from 'src/firebase/firebase.config';
-import { EmailService } from 'src/otp/services/email.service';
-import { WhatsAppSenderService } from 'src/integrations/whatsapp-sender.service';
-import { QUEUE_NAMES, NOTIFICATION_PUSH_JOB, NOTIFICATION_EMAIL_JOB, NOTIFICATION_WHATSAPP_JOB } from 'src/queues/queue.constants';
+import { FirebaseAdminService } from '@/firebase/firebase.config';
+import { EmailService } from '@/otp/services/email.service';
+import { WhatsAppSenderService } from '@/integrations/whatsapp-sender.service';
+import { QUEUE_NAMES, NOTIFICATION_PUSH_JOB, NOTIFICATION_EMAIL_JOB, NOTIFICATION_WHATSAPP_JOB } from '@/queues/queue.constants';
 
 /**
  * Dispatches queued push/email/WhatsApp jobs raised by

@@ -1,10 +1,10 @@
 /* eslint-disable prettier/prettier */
 import { Injectable, BadRequestException, NotFoundException, Logger } from '@nestjs/common';
-import { DatabaseService } from 'src/database/databaseservice';
-import { ActivityLogService } from 'src/activity-log/activity-log.service';
-import { PaymentGatewayService } from 'src/subscriptions/payment-gateway/payment-gateway.service';
+import { DatabaseService } from '@/database/databaseservice';
+import { ActivityLogService } from '@/activity-log/activity-log.service';
+import { PaymentGatewayService } from '@/subscriptions/payment-gateway/payment-gateway.service';
 import { AiCreditsService } from './ai-credits.service';
-import { verifyStoreOwnershipStrict } from 'src/common/store-ownership.util';
+import { verifyStoreOwnershipStrict } from '@/common/store-ownership.util';
 import { PurchaseAddonDto } from './dto/purchase-addon.dto';
 
 /**

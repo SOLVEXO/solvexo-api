@@ -9,19 +9,19 @@ import {
 } from '@nestjs/common';
 import { isValidObjectId } from 'mongoose';
 
-import { DatabaseService } from 'src/database/databaseservice';
-import { ProductType as StoreProductType } from 'src/store/schemas/store.schema';
-import { ActivityLogService } from 'src/activity-log/activity-log.service';
-import { SubscriptionBenefitsService } from 'src/subscriptions/subscription-benefits.service';
-import { EntitlementsService } from 'src/platform-plans/entitlements.service';
-import { MarketingService } from 'src/marketing/marketing.service';
-import { pickPrimaryCampaignForBadge } from 'src/marketing/campaign-pricing.util';
+import { DatabaseService } from '@/database/databaseservice';
+import { ProductType as StoreProductType } from '@/store/schemas/store.schema';
+import { ActivityLogService } from '@/activity-log/activity-log.service';
+import { SubscriptionBenefitsService } from '@/subscriptions/subscription-benefits.service';
+import { EntitlementsService } from '@/platform-plans/entitlements.service';
+import { MarketingService } from '@/marketing/marketing.service';
+import { pickPrimaryCampaignForBadge } from '@/marketing/campaign-pricing.util';
 import { EducationLevel } from './schemas/product.schema';
 import { EducationLevelService } from './education-level.service';
-import { UploadService } from 'src/upload/upload.service';
-import { generateUniqueSlug } from 'src/common/slug.util';
-import { RedisService } from 'src/redis/redis.service';
-import { aggregateProductSales } from 'src/analytics/utils/order-aggregation.util';
+import { UploadService } from '@/upload/upload.service';
+import { generateUniqueSlug } from '@/common/slug.util';
+import { RedisService } from '@/redis/redis.service';
+import { aggregateProductSales } from '@/analytics/utils/order-aggregation.util';
 import {
   PREVIEW_RATE_LIMIT_MAX,
   PREVIEW_RATE_LIMIT_WINDOW_SECONDS,

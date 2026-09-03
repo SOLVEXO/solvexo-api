@@ -1,5 +1,7 @@
 /* eslint-disable prettier/prettier */
-import { Controller, Post, Get, Patch, Body, Req, Param, Query, UseGuards } from '@nestjs/common';
+import { Controller, Post, Get, Patch, Body, Req, Res, Param, Query, UseGuards } from '@nestjs/common';
+import { Throttle, SkipThrottle } from '@nestjs/throttler';
+import type { Response } from 'express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { OptionalJwtAuthGuard } from '../auth/guards/optional-jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -66,6 +68,20 @@ export class StoreController {
   @Post(':storeId/custom-domain/verify')
   async verifyCustomDomain(@Req() req: any, @Param('storeId') storeId: string) {
     return this.storeService.verifyCustomDomain(req.user.userId, storeId);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Patch(':storeId/privacy')
+  async updateStorePrivacy(@Req() req: any, @Param('storeId') storeId: string, @Body() body: { privacyMode: 'public' | 'password' | 'coming_soon'; password?: string }) {
+    return this.storeService.updateStorePrivacy(req.user.userId, storeId, body);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Patch(':storeId/robots-txt')
+  async updateStoreRobotsTxt(@Req() req: any, @Param('storeId') storeId: string, @Body() body: { robotsTxtOverride: string | null }) {
+    return this.storeService.updateStoreRobotsTxt(req.user.userId, storeId, body?.robotsTxtOverride ?? null);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -208,6 +224,31 @@ export class StoreController {
   @Get('public/:slug')
   async getPublicStore(@Param('slug') slug: string) {
     return this.storeService.getPublicStore(slug);
+  }
+
+  // Storefront password-gate submission — a visibility convenience, not an
+  // account-security boundary (see `Store.storePasswordHash`'s schema doc
+  // comment), so this only needs the same lightweight rate limiting every
+  // other unauthenticated write in this codebase uses, not a full lockout
+  // mechanism.
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Post('public/:storeId/verify-password')
+  async verifyStorePassword(@Param('storeId') storeId: string, @Body() body: { password: string }) {
+    return this.storeService.verifyStorePassword(storeId, body?.password ?? '');
+  }
+
+  // Plain text, not the standard `{success, data}` JSON envelope — a
+  // crawler expects a literal robots.txt body. See
+  // `StoreService.getPublicStoreRobotsTxt`'s own doc comment for the
+  // disclosed gap on actually routing `<slug>.solvexo.store/robots.txt`
+  // here (same category as the Custom Domain TLS caveat elsewhere in this
+  // codebase) — this endpoint itself is the complete application-layer half.
+  @SkipThrottle()
+  @Get('public/:storeId/robots.txt')
+  async getPublicStoreRobotsTxt(@Param('storeId') storeId: string, @Res() res: Response) {
+    const body = await this.storeService.getPublicStoreRobotsTxt(storeId);
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.send(body);
   }
 
   @UseGuards(OptionalJwtAuthGuard)

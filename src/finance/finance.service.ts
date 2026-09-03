@@ -5,17 +5,17 @@ import {
 } from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
 import { Connection, ClientSession } from 'mongoose';
-import { DatabaseService } from 'src/database/databaseservice';
+import { DatabaseService } from '@/database/databaseservice';
 import { RequestPayoutDto } from './dto/request-payout.dto';
 import { AddPayoutMethodDto } from './dto/add-payout-method.dto';
 import { UpdatePayoutScheduleDto } from './dto/update-payout-schedule.dto';
-import { ActivityLogService } from 'src/activity-log/activity-log.service';
-import { round } from 'src/common/number.util';
-import { verifyStoreExists, verifyStoreOwnershipStrict } from 'src/common/store-ownership.util';
-import { CommissionRulesService } from 'src/commission-rules/commission-rules.service';
-import { AdminConfigService } from 'src/admin-config/admin-config.service';
-import { NotificationsService } from 'src/notifications/notifications.service';
-import { NOTIFICATION_TYPES } from 'src/notifications/notification.types';
+import { ActivityLogService } from '@/activity-log/activity-log.service';
+import { round } from '@/common/number.util';
+import { verifyStoreExists, verifyStoreOwnershipStrict } from '@/common/store-ownership.util';
+import { CommissionRulesService } from '@/commission-rules/commission-rules.service';
+import { AdminConfigService } from '@/admin-config/admin-config.service';
+import { NotificationsService } from '@/notifications/notifications.service';
+import { NOTIFICATION_TYPES } from '@/notifications/notification.types';
 
 // ── Platform fee constants ───────────────────────────────────────────────────
 export const PLATFORM_FEE_RATE       = 0.08;   // 8% per sale — last-resort fallback, see CommissionRulesService

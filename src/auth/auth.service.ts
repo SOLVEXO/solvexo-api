@@ -12,14 +12,14 @@ import { SocialLoginDto } from './dto/social-login.dto';
 import { LoginDto } from './dto/login.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { CreateAdminDto } from './dto/create-admin.dto';
-import { OtpService } from 'src/otp/otp.service';
-import { DatabaseService } from 'src/database/databaseservice';
+import { OtpService } from '@/otp/otp.service';
+import { DatabaseService } from '@/database/databaseservice';
 import { OAuth2Client } from 'google-auth-library';
 import * as appleSignin from 'apple-signin-auth';
 // import axios from 'axios';
 import { stat } from 'fs';
 import { RedisService } from '../redis/redis.service';
-import { ActivityLogService } from 'src/activity-log/activity-log.service';
+import { ActivityLogService } from '@/activity-log/activity-log.service';
 
 @Injectable()
 export class AuthService {

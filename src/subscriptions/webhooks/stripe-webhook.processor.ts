@@ -3,9 +3,9 @@ import { Processor, WorkerHost, OnWorkerEvent } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Job } from 'bullmq';
-import { DatabaseService } from 'src/database/databaseservice';
+import { DatabaseService } from '@/database/databaseservice';
 import { PaymentGatewayService } from '../payment-gateway/payment-gateway.service';
-import { QUEUE_NAMES } from 'src/queues/queue.constants';
+import { QUEUE_NAMES } from '@/queues/queue.constants';
 
 /**
  * Consumes verified Stripe webhook events (enqueued by StripeWebhookService)

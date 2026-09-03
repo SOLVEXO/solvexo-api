@@ -9,11 +9,11 @@ import {
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, isValidObjectId } from 'mongoose';
 
-import { DatabaseService } from 'src/database/databaseservice';
+import { DatabaseService } from '@/database/databaseservice';
 import { CreateCategoryDto } from './dto/create-category.dto';
 import { UpdateCategoryDto } from './dto/update-category.dto';
-import { generateUniqueSlug } from 'src/common/slug.util';
-import { verifyStoreOwnershipStrict } from 'src/common/store-ownership.util';
+import { generateUniqueSlug } from '@/common/slug.util';
+import { verifyStoreOwnershipStrict } from '@/common/store-ownership.util';
 
 @Injectable()
 export class CategoriesService {

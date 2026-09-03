@@ -156,6 +156,14 @@ export class StoreSeo {
     ogImage?: string | null;
     noindex?: boolean;
   }>;
+
+  // A seller's own custom `robots.txt` body for their storefront (e.g.
+  // blocking `/search` from being indexed, adding a crawl-delay). Null/empty
+  // means "use the generated default" — see `StoreService.getPublicStoreRobotsTxt`.
+  // Free text, not machine-validated beyond a length cap — a malformed line
+  // only affects that seller's own store's crawling, never another store's.
+  @Prop({ type: String, default: null, maxlength: 5000 })
+  robotsTxtOverride: string | null;
 }
 export const StoreSeoSchema = SchemaFactory.createForClass(StoreSeo);
 
@@ -416,6 +424,17 @@ export class Store {
   @Prop({ type: String, default: null })
   coverImage: string | null;
 
+  // Real, dedicated brand-asset override — a store's `logo` is often a wide
+  // rectangular wordmark, which renders poorly shrunk into a 16-32px browser
+  // tab icon. Null (the pre-existing-store-safe default) falls back to
+  // `logo`, then to the platform default, exactly matching the storefront's
+  // behavior before this field existed — see `StorefrontLayout.tsx`'s
+  // `useStorefrontFavicon`. Not the same concept as `logo`/`coverImage`
+  // (storefront-visible brand imagery) — this is chrome-only, never rendered
+  // inside the page itself.
+  @Prop({ type: String, default: null })
+  faviconUrl: string | null;
+
   // Platform-plan-gated features (see EntitlementsService) — dedicated fields
   // rather than buried inside the opaque `builderConfig` blob, so backend
   // enforcement doesn't depend on parsing arbitrary frontend-owned JSON.
@@ -433,6 +452,28 @@ export class Store {
 
   @Prop({ type: Boolean, default: false })
   whiteLabelEnabled: boolean;
+
+  // Real Shopify-style storefront access gate — deliberately independent of
+  // `status` above (a marketplace-listing/admin-review concept): a seller
+  // can gate their own already-active store's subdomain while building it
+  // out, or announce an upcoming relaunch, without touching admin review at
+  // all. `'public'` (default) is byte-identical to every store's behavior
+  // before this field existed. Enforced by `StorefrontLayout.tsx` gating the
+  // storefront's OWN chrome/routes client-side — a disclosed scope boundary
+  // (same category as this file's own Custom Domain comment above): the
+  // underlying public product/category APIs are not separately locked down,
+  // since this is a "hide the storefront from ordinary visitors" gate, not
+  // a security boundary for the data itself.
+  @Prop({ type: String, enum: ['public', 'password', 'coming_soon'], default: 'public' })
+  privacyMode: 'public' | 'password' | 'coming_soon';
+
+  // bcrypt hash only — the plaintext password is never persisted. `select:
+  // false` so it never rides along on a public store fetch; only
+  // `StoreService.verifyStorePassword` opts in via `.select('+storePasswordHash')`.
+  // Kept around even after switching back to 'public' so re-enabling
+  // password mode later doesn't force the seller to re-type it.
+  @Prop({ type: String, default: null, select: false })
+  storePasswordHash: string | null;
 
   @Prop({ type: Number, default: 0 })
   followersCount: number;

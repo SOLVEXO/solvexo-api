@@ -12,21 +12,21 @@ import { Queue } from 'bullmq';
 import { DatabaseService } from '../database/databaseservice';
 import { PaymentGatewayService } from './payment-gateway/payment-gateway.service';
 import { CurrencyDisplayService } from './currency-display.service';
-import { ActivityLogService } from 'src/activity-log/activity-log.service';
+import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { SubscriptionNotificationsService } from './subscription-notifications.service';
 import { SubscriptionBenefitsService } from './subscription-benefits.service';
-import { FinanceService } from 'src/finance/finance.service';
-import { EntitlementsService } from 'src/platform-plans/entitlements.service';
-import { verifyStoreOwnershipStrict } from 'src/common/store-ownership.util';
+import { FinanceService } from '@/finance/finance.service';
+import { EntitlementsService } from '@/platform-plans/entitlements.service';
+import { verifyStoreOwnershipStrict } from '@/common/store-ownership.util';
 import { CreatePlanDto } from './dto/create-plan.dto';
 import { UpdatePlanDto } from './dto/update-plan.dto';
 import { SubscribeDto } from './dto/subscribe.dto';
 import { ChangePlanDto } from './dto/change-plan.dto';
 import { PlanBenefitDto } from './dto/plan-benefit.dto';
-import { QUEUE_NAMES, SUBSCRIPTION_EMAIL_JOB } from 'src/queues/queue.constants';
+import { QUEUE_NAMES, SUBSCRIPTION_EMAIL_JOB } from '@/queues/queue.constants';
 import type { SubscriptionNotificationPreference } from './schemas/subscription-notification-preference.schema';
-import { NotificationsService } from 'src/notifications/notifications.service';
-import { NOTIFICATION_TYPES } from 'src/notifications/notification.types';
+import { NotificationsService } from '@/notifications/notifications.service';
+import { NOTIFICATION_TYPES } from '@/notifications/notification.types';
 
 // Dunning: how many consecutive renewal-charge failures before we give up
 // and cancel the subscription, and how long to wait before each retry.

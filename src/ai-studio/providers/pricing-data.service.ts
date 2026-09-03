@@ -1,7 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { DatabaseService } from 'src/database/databaseservice';
+import { DatabaseService } from '@/database/databaseservice';
 import { ComparablePricingStats, PricingDataAdapter } from './ai-provider.interfaces';
 import { TextGenerationService } from './text-generation.service';
 

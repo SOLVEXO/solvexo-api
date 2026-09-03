@@ -1,6 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import type Stripe from 'stripe';
 import {
   IPaymentGateway, ChargeResult, CreateProviderSubResult, ChargeContext,
   CreateCustomerResult, SetupIntentResult, BillingPortalResult, CheckoutSessionResult, RefundResult,
@@ -56,7 +57,7 @@ export class PaymentGatewayService implements IPaymentGateway, OnModuleInit {
   }
 
   /** Exposes the raw Stripe client for webhook signature verification — undefined for the manual provider. */
-  get stripeClient() {
+  get stripeClient(): InstanceType<typeof Stripe> | undefined {
     return this.provider instanceof StripePaymentProvider ? this.provider.client : undefined;
   }
 

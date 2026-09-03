@@ -1,7 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { IsString, IsOptional, IsIn } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
-import { SUPPORTED_CURRENCIES } from 'src/exchange-rate/schemas/exchange-rate.schema';
+import { SUPPORTED_CURRENCIES } from '@/exchange-rate/schemas/exchange-rate.schema';
 
 export class UpdateProfileDto {
 

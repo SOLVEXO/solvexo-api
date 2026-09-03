@@ -127,6 +127,9 @@ export { StoreTheme, StoreThemeDocument, StoreThemeSchema } from '../store-theme
 export { StorePage, StorePageDocument, StorePageSchema } from '../store-pages/schemas/store-page.schema';
 export { StoreFaq, StoreFaqDocument, StoreFaqSchema } from '../store-faq/schemas/store-faq.schema';
 export { CollectionTemplate, CollectionTemplateDocument, CollectionTemplateSchema } from '../collection-template/schemas/collection-template.schema';
+export { MetafieldDefinition, MetafieldDefinitionDocument, MetafieldDefinitionSchema } from '../metafields/schemas/metafield-definition.schema';
+export { MetafieldValue, MetafieldValueDocument, MetafieldValueSchema } from '../metafields/schemas/metafield-value.schema';
+export { Menu, MenuDocument, MenuSchema } from '../menus/schemas/menu.schema';
 export { DraftOrder, DraftOrderDocument, DraftOrderSchema } from '../draft-orders/schemas/draft-order.schema';
 export { StoreCustomerMeta, StoreCustomerMetaDocument, StoreCustomerMetaSchema } from '../store/schemas/store-customer-meta.schema';
 export { BlogPost, BlogPostDocument, BlogPostSchema } from '../store-blog/schemas/blog-post.schema';

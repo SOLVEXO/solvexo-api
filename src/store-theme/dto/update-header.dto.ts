@@ -24,4 +24,8 @@ export class UpdateHeaderDto {
   @ApiProperty({ required: false, enum: ['standard', 'centered'] })
   @IsOptional() @IsIn(['standard', 'centered'])
   headerStyle?: string;
+
+  @ApiProperty({ required: false, nullable: true, description: 'A Menu id to render instead of `blocks` — pass null to detach and fall back to `blocks` again.' })
+  @IsOptional() @IsString()
+  menuId?: string | null;
 }

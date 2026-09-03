@@ -2,8 +2,8 @@
 import { Injectable } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
-import { DatabaseService } from 'src/database/databaseservice';
-import { QUEUE_NAMES, SEO_SITEMAP_REGENERATE_JOB } from 'src/queues/queue.constants';
+import { DatabaseService } from '@/database/databaseservice';
+import { QUEUE_NAMES, SEO_SITEMAP_REGENERATE_JOB } from '@/queues/queue.constants';
 import { SITEMAP_URL_LIMIT_PER_CHUNK, SitemapType } from '../schemas/seo-sitemap-cache.schema';
 
 const PLATFORM_ORIGIN = 'https://solvexo.store';

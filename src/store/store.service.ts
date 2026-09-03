@@ -7,8 +7,9 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { promises as dns } from 'dns';
+import * as bcrypt from 'bcrypt';
 import { isValidObjectId } from 'mongoose';
-import { DatabaseService } from 'src/database/databaseservice';
+import { DatabaseService } from '@/database/databaseservice';
 import {
   SellerType, ProductType, resolveTools,
   BUSINESS_TYPES, ID_DOCUMENT_TYPES, VERIFICATION_DOCUMENT_TYPES,
@@ -17,19 +18,19 @@ import {
   type VerificationStatus,
 } from './schemas/store.schema';
 import { getVerificationRequirements, isFieldSatisfied } from './verification-requirements.config';
-import { UploadService } from 'src/upload/upload.service';
-import { SUPPORTED_CURRENCIES } from 'src/exchange-rate/schemas/exchange-rate.schema';
-import { ActivityLogService } from 'src/activity-log/activity-log.service';
+import { UploadService } from '@/upload/upload.service';
+import { SUPPORTED_CURRENCIES } from '@/exchange-rate/schemas/exchange-rate.schema';
+import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { UpdateStoreCustomerDto } from './dto/update-store-customer.dto';
-import { SubscriptionBenefitsService } from 'src/subscriptions/subscription-benefits.service';
-import { EntitlementsService } from 'src/platform-plans/entitlements.service';
-import { SellerPlatformSubscriptionsService } from 'src/platform-plans/seller-platform-subscriptions.service';
-import { NotificationsService } from 'src/notifications/notifications.service';
-import { NOTIFICATION_TYPES } from 'src/notifications/notification.types';
-import { RedisService } from 'src/redis/redis.service';
-import { MarketingService } from 'src/marketing/marketing.service';
-import { pickPrimaryCampaignForBadge } from 'src/marketing/campaign-pricing.util';
-import { AdminConfigService } from 'src/admin-config/admin-config.service';
+import { SubscriptionBenefitsService } from '@/subscriptions/subscription-benefits.service';
+import { EntitlementsService } from '@/platform-plans/entitlements.service';
+import { SellerPlatformSubscriptionsService } from '@/platform-plans/seller-platform-subscriptions.service';
+import { NotificationsService } from '@/notifications/notifications.service';
+import { NOTIFICATION_TYPES } from '@/notifications/notification.types';
+import { RedisService } from '@/redis/redis.service';
+import { MarketingService } from '@/marketing/marketing.service';
+import { pickPrimaryCampaignForBadge } from '@/marketing/campaign-pricing.util';
+import { AdminConfigService } from '@/admin-config/admin-config.service';
 import { StoreThemeService } from '../store-theme/store-theme.service';
 import { StorePagesService } from '../store-pages/store-pages.service';
 import { CollectionsService } from '../collections/collections.service';
@@ -570,6 +571,113 @@ export class StoreService {
     };
   }
 
+  /** Seller-facing: switch the storefront gate mode and (only when moving
+   *  into 'password' mode with a new password typed) set a fresh bcrypt
+   *  hash. An empty/omitted `password` while already in 'password' mode
+   *  keeps the existing hash — the seller isn't forced to retype it just to
+   *  flip other settings. Switching away from 'password' leaves the hash in
+   *  place (see the schema field's own doc comment) so re-enabling it later
+   *  doesn't need a fresh password either, unless the seller explicitly
+   *  types a new one. */
+  async updateStorePrivacy(sellerId: string, storeId: string, body: { privacyMode: 'public' | 'password' | 'coming_soon'; password?: string }) {
+    const store = await this.databaseService.repositories.storeModel.findOne({ _id: storeId, isDelete: false });
+    if (!store) throw new NotFoundException('Store not found');
+    if (store.sellerId !== sellerId) throw new UnauthorizedException('Unauthorized');
+
+    const { privacyMode, password } = body;
+    if (!['public', 'password', 'coming_soon'].includes(privacyMode)) {
+      throw new BadRequestException('Invalid privacy mode');
+    }
+    if (privacyMode === 'password') {
+      if (password && password.trim()) {
+        if (password.trim().length < 4) throw new BadRequestException('Password must be at least 4 characters');
+        store.storePasswordHash = await bcrypt.hash(password.trim(), 10);
+      } else {
+        const existing = await this.databaseService.repositories.storeModel
+          .findOne({ _id: storeId }).select('+storePasswordHash').lean();
+        if (!existing?.storePasswordHash) throw new BadRequestException('Set a password to enable password protection');
+      }
+    }
+
+    store.privacyMode = privacyMode;
+    await store.save();
+
+    this.activityLogService.log({
+      storeId, category: 'settings', action: 'store_privacy_updated',
+      description: `Storefront visibility set to "${privacyMode}"`,
+      actorId: sellerId, actorRole: 'seller',
+    });
+
+    return { success: true, message: 'Storefront visibility updated', data: { privacyMode: store.privacyMode } };
+  }
+
+  /** Public — a storefront visitor submitting the password gate. Deliberately
+   *  minimal (no lockout/attempt-counter): the storefront password gate is a
+   *  visibility convenience, not an account-security boundary (see the
+   *  schema field's own doc comment on why the underlying product APIs
+   *  aren't separately locked down), so the same lighter posture applies
+   *  here — `@Throttle` on the route is the real anti-bruteforce measure. */
+  async verifyStorePassword(storeId: string, password: string) {
+    const store = await this.databaseService.repositories.storeModel
+      .findOne({ _id: storeId, isDelete: false }).select('+storePasswordHash').lean();
+    if (!store) throw new NotFoundException('Store not found');
+    if (store.privacyMode !== 'password' || !store.storePasswordHash) {
+      return { success: true, data: { valid: true } };
+    }
+    const valid = await bcrypt.compare(password || '', store.storePasswordHash);
+    return { success: true, data: { valid } };
+  }
+
+  /** Seller-facing: set/clear this store's custom `robots.txt` body. An
+   *  empty/whitespace-only value clears the override (falls back to the
+   *  generated default — see `getPublicStoreRobotsTxt`). */
+  async updateStoreRobotsTxt(sellerId: string, storeId: string, robotsTxtOverride: string | null) {
+    const store = await this.databaseService.repositories.storeModel.findOne({ _id: storeId, isDelete: false });
+    if (!store) throw new NotFoundException('Store not found');
+    if (store.sellerId !== sellerId) throw new UnauthorizedException('Unauthorized');
+
+    const trimmed = robotsTxtOverride?.trim() || null;
+    if (trimmed && trimmed.length > 5000) throw new BadRequestException('robots.txt must be 5000 characters or fewer');
+
+    const seo = (store as any).seo?.toObject?.() ?? (store as any).seo ?? {};
+    (store as any).seo = { ...seo, robotsTxtOverride: trimmed };
+    await store.save();
+
+    this.activityLogService.log({
+      storeId, category: 'seo', action: 'store_robots_txt_updated',
+      description: trimmed ? 'Custom robots.txt saved' : 'robots.txt reset to the generated default',
+      actorId: sellerId, actorRole: 'seller',
+    });
+
+    return { success: true, message: 'robots.txt updated', data: { robotsTxtOverride: trimmed } };
+  }
+
+  /** Public — the resolved `robots.txt` body for one store's storefront.
+   *  Real, seller-editable per-store output (see `updateStoreRobotsTxt`), but
+   *  see this method's own doc comment on the one disclosed gap: getting a
+   *  crawler request for `<slug>.solvexo.store/robots.txt` (or a connected
+   *  custom domain's) actually ROUTED to this endpoint depends on the
+   *  platform's edge/reverse-proxy rewriting that bare path to here — the
+   *  same category of real infra step already disclosed for Custom Domain
+   *  TLS termination (see `verifyCustomDomain`'s doc comment) — this method
+   *  itself is the complete, correct application-layer half of that. No
+   *  per-store `sitemap.xml` exists yet either (the platform's sitemap
+   *  system is still apex-domain-only — a separate, larger gap), so the
+   *  generated default deliberately omits a `Sitemap:` directive rather than
+   *  pointing at a URL that would 404. */
+  async getPublicStoreRobotsTxt(storeId: string) {
+    const store = await this.databaseService.repositories.storeModel
+      .findOne({ _id: storeId, isDelete: false }).select('seo').lean();
+    if (!store) throw new NotFoundException('Store not found');
+
+    const override = (store as any).seo?.robotsTxtOverride?.trim();
+    if (override) return override;
+
+    // Sensible default: fully crawlable except the buyer's own account/cart/
+    // checkout surfaces, which have no SEO value and shouldn't be indexed.
+    return ['User-agent: *', 'Allow: /', 'Disallow: /account', 'Disallow: /cart', 'Disallow: /checkout'].join('\n') + '\n';
+  }
+
   /** Platform-plan-gated: only stores on a plan with `whiteLabelAllowed` may hide Solvexo branding. */
   async setWhiteLabel(sellerId: string, storeId: string, enabled: boolean) {
     const store = await this.databaseService.repositories.storeModel.findOne({ _id: storeId, isDelete: false });
@@ -809,7 +917,7 @@ export class StoreService {
   // body would let a seller un-suspend their own store (see
   // usersService.deleteSellerAccount, which suspends stores on delete).
   async updateStore(sellerId: string, storeId: string, body: any) {
-    const { name, logo, coverImage, description, tagline, contactEmail, contactPhone, sellerType, productTypes, codEnabled, lowStockThreshold, taxRate, enabledCurrencies } = body;
+    const { name, logo, coverImage, faviconUrl, description, tagline, contactEmail, contactPhone, sellerType, productTypes, codEnabled, lowStockThreshold, taxRate, enabledCurrencies } = body;
 
     if (!storeId) throw new BadRequestException('storeId is required');
 
@@ -851,6 +959,7 @@ export class StoreService {
 
     if (logo !== undefined) updateData.logo = logo;
     if (coverImage !== undefined) updateData.coverImage = coverImage;
+    if (faviconUrl !== undefined) updateData.faviconUrl = faviconUrl;
     if (description !== undefined) updateData.description = description;
     if (tagline !== undefined) updateData.tagline = tagline;
     if (contactEmail !== undefined) updateData.contactEmail = contactEmail;
@@ -1017,6 +1126,7 @@ export class StoreService {
         slug: store.slug,
         logo: store.logo,
         coverImage: store.coverImage ?? null,
+        faviconUrl: store.faviconUrl ?? null,
         description: store.description,
         tagline: store.tagline ?? null,
         contactEmail: store.contactEmail ?? null,
@@ -1040,6 +1150,9 @@ export class StoreService {
         sellerType: store.sellerType ?? null,
         badges: store.badges ?? [],
         createdAt: store.createdAt,
+        // Not sensitive (never the hash) — the storefront needs it up front
+        // to decide whether to render the real site or the gate page.
+        privacyMode: store.privacyMode ?? 'public',
         announcementBar: announcementActive ? { message: bar.message, type: bar.type, ctaLabel: bar.ctaLabel, ctaLink: bar.ctaLink } : null,
         activeCampaign: primaryCampaign ? {
           campaignId: primaryCampaign.campaignId,

@@ -3,16 +3,16 @@ import {
   BadRequestException,
   NotFoundException,
 } from '@nestjs/common';
-import { DatabaseService } from 'src/database/databaseservice';
-import { SubscriptionBenefitsService } from 'src/subscriptions/subscription-benefits.service';
-import { MarketingService } from 'src/marketing/marketing.service';
-import { pickBestCampaign } from 'src/marketing/campaign-pricing.util';
-import { AdminConfigService } from 'src/admin-config/admin-config.service';
-import { ExchangeRateService } from 'src/exchange-rate/exchange-rate.service';
-import { SUPPORTED_CURRENCIES, FxSnapshot } from 'src/exchange-rate/schemas/exchange-rate.schema';
-import { GiftCardsService } from 'src/gift-cards/gift-cards.service';
-import { DiscountsService } from 'src/discounts/discounts.service';
-import { resolveBuyerStoreScope } from 'src/common/store-scope.util';
+import { DatabaseService } from '@/database/databaseservice';
+import { SubscriptionBenefitsService } from '@/subscriptions/subscription-benefits.service';
+import { MarketingService } from '@/marketing/marketing.service';
+import { pickBestCampaign } from '@/marketing/campaign-pricing.util';
+import { AdminConfigService } from '@/admin-config/admin-config.service';
+import { ExchangeRateService } from '@/exchange-rate/exchange-rate.service';
+import { SUPPORTED_CURRENCIES, FxSnapshot } from '@/exchange-rate/schemas/exchange-rate.schema';
+import { GiftCardsService } from '@/gift-cards/gift-cards.service';
+import { DiscountsService } from '@/discounts/discounts.service';
+import { resolveBuyerStoreScope } from '@/common/store-scope.util';
 
 // Shipping zones are a Pakistan-domestic geography feature (predates the
 // PKR/USD split entirely) — ShippingZone.shippingPrice has no currency

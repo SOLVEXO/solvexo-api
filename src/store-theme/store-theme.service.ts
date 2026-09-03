@@ -1,5 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { Types } from 'mongoose';
+import { randomBytes } from 'crypto';
 import { DatabaseService } from '../database/databaseservice';
 import { verifyStoreOwnershipStrict } from '../common/store-ownership.util';
 import { validateBlockSettings } from '../common/store-content/section-settings.validator';
@@ -10,6 +12,8 @@ import { UpdateHeaderDto } from './dto/update-header.dto';
 import { UpdateFooterDto } from './dto/update-footer.dto';
 import { UpdateIdentityBannerDto } from './dto/update-identity-banner.dto';
 import { InstallThemeDto } from './dto/install-theme.dto';
+import { CreateColorSchemeDto } from './dto/color-scheme.dto';
+import { MenusService } from '../menus/menus.service';
 
 const HEADER_ALLOWED_BLOCK_TYPES = ['nav_link'];
 const FOOTER_ALLOWED_BLOCK_TYPES = ['footer_column', 'social_link', 'copyright_text'];
@@ -74,7 +78,50 @@ export class StoreThemeService {
   constructor(
     private readonly databaseService: DatabaseService,
     private readonly contentVersioningService: ContentVersioningService,
+    private readonly menusService: MenusService,
   ) {}
+
+  /** If `header.menuId` is set, replaces `header.blocks` with that Menu's
+   *  items — resolved into the identical `{type:'nav_link', settings}`
+   *  shape a real nav_link block already has, so every existing consumer
+   *  (both themes' Navbar components, the seller-facing preview) needed
+   *  zero changes to render an attached menu. A dangling/deleted menuId
+   *  falls back to the header's own `blocks` untouched, never a crash or an
+   *  empty nav — the header is simply as if no menu were attached. */
+  private async resolveHeaderMenu(storeId: string, header: any) {
+    if (!header?.menuId) return header;
+    const menu = await this.menusService.getRaw(storeId, header.menuId);
+    if (!menu) return header;
+    return {
+      ...header,
+      blocks: menu.items.map(item => ({
+        _id: item.id,
+        type: 'nav_link',
+        settings: item,
+        enabled: true,
+      })),
+    };
+  }
+
+  /** Footer's own version of `resolveHeaderMenu` — see `StorefrontFooter.menuId`'s
+   *  schema doc comment for why this can't just swap out `blocks` wholesale
+   *  the way the header does. The resolved menu becomes ONE synthetic
+   *  `footer_column` block (heading = the menu's own name) that REPLACES only
+   *  the footer's existing `footer_column` block(s); any `social_link`/
+   *  `copyright_text` blocks pass through untouched. */
+  private async resolveFooterMenu(storeId: string, footer: any) {
+    if (!footer?.menuId) return footer;
+    const menu = await this.menusService.getRaw(storeId, footer.menuId);
+    if (!menu) return footer;
+    const menuColumn = {
+      _id: `menu-${menu._id}`,
+      type: 'footer_column',
+      settings: { heading: menu.name, links: menu.items },
+      enabled: true,
+    };
+    const nonColumnBlocks = (footer.blocks ?? []).filter((b: any) => b.type !== 'footer_column');
+    return { ...footer, blocks: [menuColumn, ...nonColumnBlocks] };
+  }
 
   private get storeThemeModel() {
     return this.databaseService.repositories.storeThemeModel;
@@ -166,6 +213,45 @@ export class StoreThemeService {
     return { success: true, message: 'Theme installed', data: created };
   }
 
+  /** Theme Library "Duplicate" — a second, independently-configurable
+   *  installed row for the SAME theme package, seeded from `source`'s
+   *  current live+draft content so the copy starts out identical (real
+   *  Shopify convention — you edit a duplicate, not the original, while
+   *  experimenting). Always lands as `status: 'installed'`, never active —
+   *  duplicating never changes what's currently live. `versions`/
+   *  `lastPublishedAt` are deliberately NOT copied: this is a new row with
+   *  its own fresh history, not a fork of the source's publish history. */
+  async duplicateTheme(storeId: string, sellerId: string, installedThemeId: string, name?: string) {
+    await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
+    const source = await this.storeThemeModel.findOne({ _id: installedThemeId, storeId }).lean();
+    if (!source) throw new NotFoundException('Installed theme not found');
+    const duplicate = await this.storeThemeModel.create({
+      storeId,
+      themeDefinitionId: source.themeDefinitionId,
+      status: 'installed',
+      name: name?.trim() || `Copy of ${source.name || 'this theme'}`,
+      baseThemeId: source.baseThemeId,
+      theme: source.theme,
+      header: source.header,
+      footer: source.footer,
+      identityBanner: source.identityBanner,
+      customCss: source.customCss,
+      draft: source.draft,
+    });
+    return { success: true, message: 'Theme duplicated', data: duplicate };
+  }
+
+  async renameTheme(storeId: string, sellerId: string, installedThemeId: string, name: string) {
+    await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
+    const updated = await this.storeThemeModel.findOneAndUpdate(
+      { _id: installedThemeId, storeId },
+      { $set: { name: name.trim() || null } },
+      { new: true },
+    );
+    if (!updated) throw new NotFoundException('Installed theme not found');
+    return { success: true, message: 'Theme renamed', data: updated };
+  }
+
   /** Theme Library "Activate" — makes exactly one installed row the store's live theme. Not atomic across the two updates (this codebase doesn't use Mongo transactions elsewhere either — see `store.service.ts`), an acceptable risk for a low-frequency, single-actor-per-store admin action. */
   async activateTheme(storeId: string, sellerId: string, installedThemeId: string) {
     await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
@@ -217,13 +303,82 @@ export class StoreThemeService {
     };
   }
 
+  // ── Preview link — a real, shareable "see this before it's live" URL.
+  // See the `PreviewToken` schema's own comment for the full scope
+  // boundary (theme tokens only, demo content underneath — not the
+  // seller's real product catalog). ──────────────────────────────────────
+
+  private static readonly PREVIEW_TOKEN_TTL_MS = 2 * 24 * 60 * 60 * 1000; // 2 days — matches Shopify's own unauthenticated "visitor preview" link lifetime.
+
+  /** Mints a fresh token, replacing any previous one for this row — a
+   *  seller re-sharing always gets one live link, not an ever-growing set
+   *  of forgotten ones to manage. */
+  async createPreviewLink(storeId: string, sellerId: string, installedThemeId?: string) {
+    await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
+    const instance = await this.resolveInstance(storeId, installedThemeId);
+    const token = randomBytes(24).toString('base64url');
+    const expiresAt = new Date(Date.now() + StoreThemeService.PREVIEW_TOKEN_TTL_MS);
+    const updated = await this.storeThemeModel.findOneAndUpdate(
+      { _id: instance._id },
+      { $set: { previewToken: { token, expiresAt } } },
+      { new: true },
+    );
+    return { success: true, message: 'Preview link created', data: { token, expiresAt, themeDefinitionId: updated?.themeDefinitionId ?? null } };
+  }
+
+  async revokePreviewLink(storeId: string, sellerId: string, installedThemeId?: string) {
+    await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
+    const instance = await this.resolveInstance(storeId, installedThemeId);
+    await this.storeThemeModel.findOneAndUpdate({ _id: instance._id }, { $set: { previewToken: null } });
+    return { success: true, message: 'Preview link revoked' };
+  }
+
+  /** Unauthenticated — the whole point of a preview link. Validates the
+   *  token belongs to `storeId` and hasn't expired, then returns the exact
+   *  same shape `getDraft` does (this row's DRAFT theme tokens) — never the
+   *  full document (no `versions`, no other rows' data, no way to enumerate
+   *  anything about the store beyond what this one token was minted for). */
+  async getPreviewByToken(storeId: string, token: string) {
+    const doc = await this.storeThemeModel.findOne({ storeId, 'previewToken.token': token }).lean();
+    if (!doc || !doc.previewToken) throw new NotFoundException('Preview link not found or has expired');
+    if (new Date(doc.previewToken.expiresAt).getTime() < Date.now()) {
+      throw new NotFoundException('Preview link not found or has expired');
+    }
+    const draft = doc.draft as StoreThemeDraft;
+    return {
+      success: true,
+      data: {
+        theme: draft.theme,
+        header: draft.header,
+        footer: draft.footer,
+        identityBanner: draft.identityBanner,
+        themeDefinitionId: draft.themeDefinitionId ?? doc.themeDefinitionId,
+        customCss: draft.customCss,
+      },
+    };
+  }
+
   /** Unauthenticated — must never leak `draft` (unpublished edits) or
    *  `versions` (full publish history) to a public visitor. Projected to
-   *  exactly the live/root fields the storefront actually reads. */
+   *  exactly the live/root fields the storefront actually reads. Resolves
+   *  an attached Menu (Header's `menuId`, and now Footer's) into real
+   *  blocks here (not in `getForSeller`/`getDraft`) deliberately — those two
+   *  feed the seller's own Header/Footer editors, which must keep showing
+   *  the RAW fallback `blocks` they actually edit/save, not a
+   *  menu-substituted copy a save would otherwise silently overwrite them
+   *  with. The disclosed cost: the editor's own live preview doesn't yet
+   *  reflect an attached menu's real items, only the true published
+   *  storefront does — a follow-up, not a correctness risk. */
   async getPublic(storeId: string) {
     const theme = await this.storeThemeModel
       .findOne({ storeId, status: 'active' }, { draft: 0, versions: 0 })
       .lean();
+    if (theme?.header) {
+      theme.header = await this.resolveHeaderMenu(storeId, theme.header) as any;
+    }
+    if (theme?.footer) {
+      theme.footer = await this.resolveFooterMenu(storeId, theme.footer) as any;
+    }
     return { success: true, data: theme };
   }
 
@@ -335,6 +490,62 @@ export class StoreThemeService {
     return { success: true, message: 'Theme updated', data: updated };
   }
 
+  // ── Color Schemes — named, reusable saved palettes (see the class comment
+  // on `ColorScheme` for the scope boundary: applying one overwrites the
+  // theme's own live bgColor/textColor/primaryColor, it isn't a per-section
+  // assignment). ──────────────────────────────────────────────────────────
+
+  private static readonly MAX_COLOR_SCHEMES = 20;
+
+  async createColorScheme(storeId: string, sellerId: string, dto: CreateColorSchemeDto, installedThemeId?: string) {
+    await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
+    const instance = await this.resolveInstance(storeId, installedThemeId);
+    const existing = (instance.draft?.theme?.colorSchemes ?? []) as { id: string }[];
+    if (existing.length >= StoreThemeService.MAX_COLOR_SCHEMES) {
+      throw new BadRequestException(`Cannot save more than ${StoreThemeService.MAX_COLOR_SCHEMES} color schemes`);
+    }
+    const scheme = { id: new Types.ObjectId().toString(), name: dto.name, bgColor: dto.bgColor, textColor: dto.textColor, primaryColor: dto.primaryColor };
+    const updated = await this.storeThemeModel.findOneAndUpdate(
+      { _id: instance._id },
+      { $push: { 'draft.theme.colorSchemes': scheme } },
+      { new: true },
+    );
+    return { success: true, message: 'Color scheme saved', data: updated };
+  }
+
+  async deleteColorScheme(storeId: string, sellerId: string, schemeId: string, installedThemeId?: string) {
+    await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
+    const instance = await this.resolveInstance(storeId, installedThemeId);
+    const updated = await this.storeThemeModel.findOneAndUpdate(
+      { _id: instance._id },
+      { $pull: { 'draft.theme.colorSchemes': { id: schemeId } } },
+      { new: true },
+    );
+    return { success: true, message: 'Color scheme deleted', data: updated };
+  }
+
+  /** Copies a saved scheme's 3 colors onto the theme's own live draft
+   *  fields — the exact same fields the Theme Settings color pickers write
+   *  to directly, so this needs no new rendering logic anywhere: publishing
+   *  afterward makes it live exactly like any other Theme Settings edit. */
+  async applyColorScheme(storeId: string, sellerId: string, schemeId: string, installedThemeId?: string) {
+    await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
+    const instance = await this.resolveInstance(storeId, installedThemeId);
+    const scheme = ((instance.draft?.theme?.colorSchemes ?? []) as { id: string; bgColor: string; textColor: string; primaryColor: string }[])
+      .find(s => s.id === schemeId);
+    if (!scheme) throw new NotFoundException('Color scheme not found');
+    const updated = await this.storeThemeModel.findOneAndUpdate(
+      { _id: instance._id },
+      { $set: {
+        'draft.theme.bgColor': scheme.bgColor,
+        'draft.theme.textColor': scheme.textColor,
+        'draft.theme.primaryColor': scheme.primaryColor,
+      } },
+      { new: true },
+    );
+    return { success: true, message: 'Color scheme applied to draft', data: updated };
+  }
+
   async updateHeader(storeId: string, sellerId: string, dto: UpdateHeaderDto, installedThemeId?: string) {
     await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
     const instance = await this.resolveInstance(storeId, installedThemeId);
@@ -346,6 +557,7 @@ export class StoreThemeService {
     if (dto.blocks !== undefined) set['draft.header.blocks'] = dto.blocks;
     if (dto.navAlignment !== undefined) set['draft.header.navAlignment'] = dto.navAlignment;
     if (dto.headerStyle !== undefined) set['draft.header.headerStyle'] = dto.headerStyle;
+    if (dto.menuId !== undefined) set['draft.header.menuId'] = dto.menuId;
 
     const updated = await this.storeThemeModel.findOneAndUpdate({ _id: instance._id }, { $set: set }, { new: true });
     return { success: true, message: 'Header updated', data: updated };

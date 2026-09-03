@@ -1,11 +1,11 @@
 /* eslint-disable prettier/prettier */
 import { Injectable, BadRequestException, NotFoundException, ForbiddenException, ConflictException } from '@nestjs/common';
-import { DatabaseService } from 'src/database/databaseservice';
-import { ActivityLogService } from 'src/activity-log/activity-log.service';
+import { DatabaseService } from '@/database/databaseservice';
+import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { CreateCouponDto } from './dto/create-coupon.dto';
 import { UpdateCouponDto } from './dto/update-coupon.dto';
 import { ActiveCampaignForStore } from './campaign-pricing.util';
-import { generateUniqueSlug } from 'src/common/slug.util';
+import { generateUniqueSlug } from '@/common/slug.util';
 
 @Injectable()
 export class MarketingService {

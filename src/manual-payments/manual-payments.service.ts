@@ -1,14 +1,14 @@
 /* eslint-disable prettier/prettier */
 import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
-import { DatabaseService } from 'src/database/databaseservice';
-import { UploadService } from 'src/upload/upload.service';
-import { PaymentService } from 'src/payment/payment.service';
-import { FinanceService } from 'src/finance/finance.service';
-import { AdminConfigService } from 'src/admin-config/admin-config.service';
-import { ActivityLogService } from 'src/activity-log/activity-log.service';
-import { NotificationsService } from 'src/notifications/notifications.service';
-import { NOTIFICATION_TYPES } from 'src/notifications/notification.types';
-import { round } from 'src/common/number.util';
+import { DatabaseService } from '@/database/databaseservice';
+import { UploadService } from '@/upload/upload.service';
+import { PaymentService } from '@/payment/payment.service';
+import { FinanceService } from '@/finance/finance.service';
+import { AdminConfigService } from '@/admin-config/admin-config.service';
+import { ActivityLogService } from '@/activity-log/activity-log.service';
+import { NotificationsService } from '@/notifications/notifications.service';
+import { NOTIFICATION_TYPES } from '@/notifications/notification.types';
+import { round } from '@/common/number.util';
 import { SubmitManualPaymentDto } from './dto/submit-manual-payment.dto';
 import { ReuploadManualPaymentDto } from './dto/reupload-manual-payment.dto';
 
