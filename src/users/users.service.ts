@@ -36,7 +36,10 @@ export class UsersService {
     user.currencyPreference = dto.currencyPreference ?? user.currencyPreference;
 
     if (dto.email && dto.email !== user.email) {
-      const emailExists = await this.userModel.findOne({ email: dto.email });
+      const emailExists = await this.userModel.findOne({
+        email: dto.email,
+        storeId: user.storeId,
+      });
       if (emailExists) throw new BadRequestException('Email already in use');
       user.email = dto.email;
       user.isVerified = false;
