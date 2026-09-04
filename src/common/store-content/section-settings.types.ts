@@ -80,6 +80,13 @@ export interface TrustBadgesSectionSettings extends BaseSectionSettings {}
 export interface NewsletterSectionSettings extends BaseSectionSettings {
   subtext?: string;
 }
+/** Lists every real entry of one seller-defined Metaobject type (see
+ *  `metaobjects/`) — `metaobjectType` is the definition's stable `type`
+ *  slug, not its Mongo `_id` (matches how the public entries-by-type route
+ *  is keyed). */
+export interface MetaobjectListSectionSettings extends BaseSectionSettings {
+  metaobjectType: string;
+}
 /** No `collectionId`/`heading` here (unlike `ProductCatalogSectionSettings`) — this section is contextual, always the collection the visitor is currently on. See `SECTION_TYPES`'s comment for why it's excluded from the general "Add Section" picker. */
 export interface CollectionProductGridSectionSettings {
   defaultSort?: 'newest' | 'price_asc' | 'price_desc' | 'best_rated';
@@ -129,6 +136,7 @@ export type SectionSettingsMap = RequireAllKeys<SectionType, {
   featured_category_grid: FeaturedCategoryGridSectionSettings;
   trust_badges: TrustBadgesSectionSettings;
   newsletter: NewsletterSectionSettings;
+  metaobject_list: MetaobjectListSectionSettings;
   collection_product_grid: CollectionProductGridSectionSettings;
   editorial_lookbook: EditorialLookbookSectionSettings;
   farm_story: FarmStorySectionSettings;
@@ -180,8 +188,18 @@ export interface HeroSlideBlockSettings {
   ctaText?: string;
   ctaLink?: LinkTarget;
 }
+/** Dynamic Sources — when both `dynamicSourceNamespace`/`dynamicSourceKey`
+ *  are set, `text` is optional (the real value is resolved at render time
+ *  from the viewed resource's own metafield instead) and, if present, only
+ *  used as an editor-preview fallback. Two flat scalar fields (not one
+ *  nested object) to match the schema-driven settings editor's flat
+ *  `Record<string, any>` field model — see `sectionRegistry.ts`'s
+ *  `BLOCK_SCHEMAS.paragraph`. See `assertDynamicSource` in
+ *  `section-settings.validator.ts`. */
 export interface ParagraphBlockSettings {
-  text: string;
+  text?: string;
+  dynamicSourceNamespace?: string;
+  dynamicSourceKey?: string;
 }
 export interface HeadingBlockSettings {
   text: string;

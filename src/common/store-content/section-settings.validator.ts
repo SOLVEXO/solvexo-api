@@ -13,6 +13,7 @@ import type {
   CollectionProductGridSectionSettings,
   FarmStorySectionSettings,
   DropCountdownSectionSettings,
+  MetaobjectListSectionSettings,
 } from './section-settings.types';
 
 /**
@@ -66,6 +67,26 @@ function assertHttpsUrl(value: unknown, field: string): void {
 // validator has no DB access and never invents ownership guarantees it can't
 // actually check.
 export const LINK_TYPES = ['home', 'page', 'blog', 'external', 'category', 'collection'] as const;
+
+/** Dynamic Sources — a `paragraph` block can bind to a real metafield
+ *  (resolved at render time against whichever product a Product Template's
+ *  sections are currently rendering for) instead of a static `text` value,
+ *  via two flat scalar fields (`dynamicSourceNamespace`/`dynamicSourceKey`)
+ *  rather than one nested object — matches the schema-driven settings
+ *  editor's flat field model. See `PublicMetafieldsController`'s own doc
+ *  comment — the read side has existed since the metafields system was
+ *  built; this is the first real consumer. Only checks "both set or both
+ *  absent" — whether they actually match a real `MetafieldDefinition` is a
+ *  render-time concern (a stale/renamed reference just resolves to nothing,
+ *  same "never throws, never a broken section" convention as
+ *  `Section.colorSchemeId`). */
+function assertDynamicSource(namespace: unknown, key: unknown, field: string): void {
+  const hasNamespace = namespace !== undefined && namespace !== null && namespace !== '';
+  const hasKey = key !== undefined && key !== null && key !== '';
+  if (hasNamespace !== hasKey) {
+    throw new BadRequestException(`${field}Namespace and ${field}Key must both be set together, or both left blank`);
+  }
+}
 
 function assertLinkTarget(link: unknown, field: string): void {
   if (link === undefined || link === null) return;
@@ -145,6 +166,11 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
     case 'newsletter': {
       const s = settings as NewsletterSectionSettings;
       maxLen(s.subtext, 200, 'settings.subtext');
+      break;
+    }
+    case 'metaobject_list': {
+      const s = settings as MetaobjectListSectionSettings;
+      required(s.metaobjectType, 'settings.metaobjectType');
       break;
     }
     case 'video': {
@@ -269,10 +295,15 @@ export function validateBlockSettings(blockType: string, settings: Record<string
       break;
 
     // rich_text / blog content blocks
-    case 'paragraph':
-      required(settings.text, 'text');
+    case 'paragraph': {
+      // Dynamic Sources: a paragraph bound to a metafield doesn't need its
+      // own static text — the real value is resolved at render time instead.
+      const boundToMetafield = !!settings.dynamicSourceNamespace && !!settings.dynamicSourceKey;
+      if (!boundToMetafield) required(settings.text, 'text');
       maxLen(settings.text, 2000, 'text');
+      assertDynamicSource(settings.dynamicSourceNamespace, settings.dynamicSourceKey, 'dynamicSource');
       break;
+    }
     case 'heading':
       required(settings.text, 'text');
       maxLen(settings.text, 150, 'text');
@@ -401,6 +432,7 @@ export const SECTION_ALLOWED_BLOCK_TYPES: AllowedBlockTypesMap = {
   featured_category_grid: [],
   trust_badges: ['trust_badge_item'],
   newsletter: [],
+  metaobject_list: [],
   collection_product_grid: [],
   editorial_lookbook: ['lookbook_item'],
   farm_story: ['farm_story_step'],

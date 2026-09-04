@@ -129,6 +129,8 @@ export { StoreFaq, StoreFaqDocument, StoreFaqSchema } from '../store-faq/schemas
 export { CollectionTemplate, CollectionTemplateDocument, CollectionTemplateSchema } from '../collection-template/schemas/collection-template.schema';
 export { MetafieldDefinition, MetafieldDefinitionDocument, MetafieldDefinitionSchema } from '../metafields/schemas/metafield-definition.schema';
 export { MetafieldValue, MetafieldValueDocument, MetafieldValueSchema } from '../metafields/schemas/metafield-value.schema';
+export { MetaobjectDefinition, MetaobjectDefinitionDocument, MetaobjectDefinitionSchema } from '../metaobjects/schemas/metaobject-definition.schema';
+export { MetaobjectEntry, MetaobjectEntryDocument, MetaobjectEntrySchema } from '../metaobjects/schemas/metaobject-entry.schema';
 export { Menu, MenuDocument, MenuSchema } from '../menus/schemas/menu.schema';
 export { DraftOrder, DraftOrderDocument, DraftOrderSchema } from '../draft-orders/schemas/draft-order.schema';
 export { StoreCustomerMeta, StoreCustomerMetaDocument, StoreCustomerMetaSchema } from '../store/schemas/store-customer-meta.schema';

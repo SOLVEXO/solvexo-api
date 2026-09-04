@@ -207,6 +207,8 @@ import { DatabaseService } from './databaseservice';
       { name: schema.CollectionTemplate.name, schema: schema.CollectionTemplateSchema },
       { name: schema.MetafieldDefinition.name, schema: schema.MetafieldDefinitionSchema },
       { name: schema.MetafieldValue.name, schema: schema.MetafieldValueSchema },
+      { name: schema.MetaobjectDefinition.name, schema: schema.MetaobjectDefinitionSchema },
+      { name: schema.MetaobjectEntry.name, schema: schema.MetaobjectEntrySchema },
       { name: schema.Menu.name, schema: schema.MenuSchema },
       { name: schema.DraftOrder.name, schema: schema.DraftOrderSchema },
       { name: schema.StoreCustomerMeta.name, schema: schema.StoreCustomerMetaSchema },

@@ -10,7 +10,7 @@ import { MetafieldOwnerResource, MetafieldType } from './schemas/metafield-defin
 /** Real per-type validation for a metafield's string value — same
  *  "everything is a string, `type` says how to read it" model the schema
  *  comment describes. Empty string is always allowed (means "cleared"). */
-function assertValueMatchesType(type: MetafieldType, value: string, fieldPath: string): void {
+export function assertValueMatchesType(type: MetafieldType, value: string, fieldPath: string): void {
   if (value === '') return;
   switch (type) {
     case 'number_integer':

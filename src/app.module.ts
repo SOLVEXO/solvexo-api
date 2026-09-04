@@ -65,6 +65,7 @@ import { StorePagesModule } from './store-pages/store-pages.module';
 import { StoreFaqModule } from './store-faq/store-faq.module';
 import { CollectionTemplateModule } from './collection-template/collection-template.module';
 import { MetafieldsModule } from './metafields/metafields.module';
+import { MetaobjectsModule } from './metaobjects/metaobjects.module';
 import { MenusModule } from './menus/menus.module';
 import { DraftOrdersModule } from './draft-orders/draft-orders.module';
 import { StoreBlogModule } from './store-blog/store-blog.module';
@@ -152,6 +153,7 @@ import { StoreAppRequestsModule } from './store-app-requests/store-app-requests.
     StoreFaqModule,
     CollectionTemplateModule,
     MetafieldsModule,
+    MetaobjectsModule,
     MenusModule,
     DraftOrdersModule,
     StoreBlogModule,

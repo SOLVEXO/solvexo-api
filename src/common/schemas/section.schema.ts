@@ -18,6 +18,11 @@ export const SECTION_TYPES = [
   'featured_category_grid',
   'trust_badges',
   'newsletter',
+  // Metaobjects — lists real entries of a seller-defined custom content type
+  // (see `metaobjects/`), e.g. every "Team Member" entry. Genuinely dynamic:
+  // `settings.metaobjectType` is the only thing stored, resolved against the
+  // store's own live entries at render time, never baked-in content.
+  'metaobject_list',
   // Contextual — never placed via the general Pages/Home "Add Section"
   // picker (no `collectionId`/`heading` in its settings, unlike
   // `product_catalog`): it always renders whichever collection the visitor
@@ -67,6 +72,20 @@ export class Section {
   // (greyed, with a re-enable control) so a seller never loses content by
   // hiding it.
   @Prop({ type: Boolean, default: true }) enabled: boolean;
+
+  // Real per-section color override — references one of the store's own
+  // saved `ColorScheme`s (store-theme.schema.ts) by `id`. Null (the
+  // pre-existing-section-safe default) means "use the theme's own colors,
+  // unchanged" — byte-identical rendering to before this field existed.
+  // When set, the theme's `SectionRenderer` resolves the scheme and passes
+  // its {bg, text, primary} colors into that one section's render function
+  // instead of the theme-wide defaults — e.g. a seller can make one Hero
+  // section dark while the rest of the page stays light. Deliberately
+  // stored as a plain string reference (not embedded/denormalized) so
+  // renaming or deleting the scheme is a single source of truth; a section
+  // whose referenced scheme no longer exists silently falls back to the
+  // theme's own colors (see the frontend resolver), never a crash.
+  @Prop({ type: String, default: null }) colorSchemeId: string | null;
 }
 
 export const SectionSchema = SchemaFactory.createForClass(Section);

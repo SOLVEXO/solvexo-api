@@ -310,6 +310,12 @@ export class DatabaseService {
     @InjectModel(schema.MetafieldValue.name)
     private metafieldValueModel: Model<schema.MetafieldValueDocument>,
 
+    @InjectModel(schema.MetaobjectDefinition.name)
+    private metaobjectDefinitionModel: Model<schema.MetaobjectDefinitionDocument>,
+
+    @InjectModel(schema.MetaobjectEntry.name)
+    private metaobjectEntryModel: Model<schema.MetaobjectEntryDocument>,
+
     @InjectModel(schema.Menu.name)
     private menuModel: Model<schema.MenuDocument>,
 
@@ -465,6 +471,8 @@ export class DatabaseService {
       collectionTemplateModel: this.collectionTemplateModel,
       metafieldDefinitionModel: this.metafieldDefinitionModel,
       metafieldValueModel: this.metafieldValueModel,
+      metaobjectDefinitionModel: this.metaobjectDefinitionModel,
+      metaobjectEntryModel: this.metaobjectEntryModel,
       menuModel: this.menuModel,
       draftOrderModel: this.draftOrderModel,
       storeCustomerMetaModel: this.storeCustomerMetaModel,
