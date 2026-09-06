@@ -81,19 +81,22 @@ export class StoreIntegrationsService {
    */
   async list(storeId: string, sellerId: string) {
     const store = await this.assertOwnedStore(storeId, sellerId);
-    const currency: 'PKR' | 'USD' = store.baseCurrency === 'USD' ? 'USD' : 'PKR';
-    // Local (PKR-only) gateways stay currency-gated — a USD store has no use
-    // for a PKR-settling provider. Stripe Connect is deliberately NOT gated
-    // the same way: it's a per-SELLER capability (one Stripe account, same
-    // level `Seller.stripeCustomerId` already lives at), not tied to any one
-    // store's currency — a PKR-store seller can and should still be able to
-    // connect it here too, the same as they always could from the old
-    // standalone "Payment Gateway" Settings card this replaced (see the
-    // seller-integrations frontend's `StripeConnectSection`). Only providers
-    // with a real implementation registered show up — jazzcash/easypaisa/
-    // payfast stay hidden from the seller dashboard until their provider
-    // classes exist.
-    const localProviders = currency === 'PKR' ? PROVIDERS_BY_CURRENCY.PKR : [];
+    // Checked directly against the store's REAL currency — not collapsed
+    // into a PKR/USD binary, which used to silently treat every non-USD
+    // store (GBP, EUR, AED, ...) as if it were PKR (a real bug for the
+    // Markets/multi-currency expansion — see the currency-architecture
+    // plan's "Real gap #1"). Local (PKR-only) gateways stay currency-gated —
+    // a non-PKR store has no use for a PKR-settling provider. Stripe Connect
+    // is deliberately NOT gated the same way: it's a per-SELLER capability
+    // (one Stripe account, same level `Seller.stripeCustomerId` already
+    // lives at), not tied to any one store's currency — a PKR-store seller
+    // can and should still be able to connect it here too, the same as they
+    // always could from the old standalone "Payment Gateway" Settings card
+    // this replaced (see the seller-integrations frontend's
+    // `StripeConnectSection`). Only providers with a real implementation
+    // registered show up — jazzcash/easypaisa/payfast stay hidden from the
+    // seller dashboard until their provider classes exist.
+    const localProviders = store.baseCurrency === 'PKR' ? PROVIDERS_BY_CURRENCY.PKR : [];
     const availableProviders: StoreIntegrationProvider[] = [
       ...localProviders.filter((p) => this.registry.isSupported(p)),
       'stripe',
@@ -115,7 +118,11 @@ export class StoreIntegrationsService {
             isEnabledForCheckout: data.connected && data.chargesEnabled && data.payoutsEnabled,
             lastVerifiedAt: null,
             lastError: data.connected && !(data.chargesEnabled && data.payoutsEnabled) ? 'Stripe onboarding incomplete' : null,
-            config: { displayName: 'Card payment (Stripe)', currency: 'USD' },
+            // Stripe Connect settles into the seller's own account in
+            // whatever real currency their store is priced in — never
+            // hardcoded to USD (that was the same binary-collapse bug as
+            // the local-provider gating above).
+            config: { displayName: 'Card payment (Stripe)', currency: store.baseCurrency ?? 'USD' },
             maskedHints: {},
             manageVia: { statusUrl: '/api/stripe-connect/status', connectUrl: '/api/stripe-connect/onboarding-link' },
           };
@@ -131,7 +138,9 @@ export class StoreIntegrationsService {
           isEnabledForCheckout: false,
           lastVerifiedAt: null,
           lastError: null,
-          config: { currency },
+          // Reached only for a local (PKR-only) gateway — `localProviders`
+          // above is only ever populated when store.baseCurrency === 'PKR'.
+          config: { currency: 'PKR' },
           maskedHints: {},
         };
       }),
@@ -174,9 +183,14 @@ export class StoreIntegrationsService {
     }
 
     if (type === 'payment') {
-      const currency = store.baseCurrency === 'USD' ? 'USD' : 'PKR';
-      if (!PROVIDERS_BY_CURRENCY[currency].includes(provider)) {
-        throw new BadRequestException(`"${provider}" is not available for a ${currency} store`);
+      // Every local gateway in PROVIDERS_BY_CURRENCY is PKR-only today, and
+      // 'stripe' (the only USD-bucket entry) is already rejected above — so
+      // this is really just "is this a PKR store," checked directly against
+      // the store's real currency instead of a collapsed PKR/USD binary
+      // (which used to name the wrong currency in the error message for any
+      // non-PKR, non-USD store like GBP/EUR).
+      if (store.baseCurrency !== 'PKR' || !PROVIDERS_BY_CURRENCY.PKR.includes(provider)) {
+        throw new BadRequestException(`"${provider}" is not available for a ${store.baseCurrency ?? 'USD'} store`);
       }
       return this.connectPayment(storeId, sellerId, provider, body);
     }

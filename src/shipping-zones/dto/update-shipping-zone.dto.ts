@@ -32,4 +32,9 @@ export class UpdateShippingZoneDto {
   @IsOptional()
   @IsEnum(['active', 'inactive'])
   status?: 'active' | 'inactive';
+
+  @ApiProperty({ required: false, enum: ['shipping', 'local_delivery'] })
+  @IsOptional()
+  @IsEnum(['shipping', 'local_delivery'])
+  zoneType?: 'shipping' | 'local_delivery';
 }

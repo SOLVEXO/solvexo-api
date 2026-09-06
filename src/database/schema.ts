@@ -29,7 +29,6 @@ export { ReconciliationRun, ReconciliationRunDocument, ReconciliationRunSchema }
 
 
 export { Store, StoreDocument, StoreSchema } from '../store/schemas/store.schema';
-export { StoreFollower, StoreFollowerDocument, StoreFollowerSchema } from '../store/schemas/store-follower.schema';
 export { Employee, EmployeeDocument, EmployeeSchema } from '../pos/schemas/employee.schema';
 export { RegisterSession, RegisterSessionDocument, RegisterSessionSchema } from '../pos/schemas/register-session.schema';
 export { Sale, SaleDocument, SaleSchema } from '../pos/schemas/sales.schema';

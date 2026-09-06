@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Body, Controller, Get, Put, Patch, Req, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Put, Patch, Post, Req, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -14,6 +14,7 @@ import { UpdatePromotionPricingDto } from './dto/update-promotion-pricing.dto';
 import { UpdatePayoutConfigDto } from './dto/update-payout-config.dto';
 import { UpdateManualPaymentConfigDto } from './dto/update-manual-payment-config.dto';
 import { UpdateFxConfigDto } from './dto/update-fx-config.dto';
+import { AddCurrencyDto, UpdateCurrencyBandDto } from './dto/currency-band.dto';
 
 @ApiTags('Admin Platform Config')
 @ApiBearerAuth()
@@ -95,6 +96,41 @@ export class AdminConfigController {
   @Put('fx')
   updateFxConfig(@Req() req: any, @Body() dto: UpdateFxConfigDto) {
     return this.adminConfigService.updateFxConfig(dto, {
+      adminId: req.user.userId,
+      ip: req.ip,
+      userAgent: req.headers['user-agent'],
+    });
+  }
+
+  // ── Dynamic, admin-managed currency list (Markets) — see AdminConfigService's
+  // own doc comments on getEnabledCurrencies/addCurrency/updateCurrencyBand/
+  // removeCurrency for why this replaced the old fixed 8-entry array. ──
+  @Get('currencies')
+  listCurrencies() {
+    return this.adminConfigService.getEnabledCurrencies();
+  }
+
+  @Post('currencies')
+  addCurrency(@Req() req: any, @Body() dto: AddCurrencyDto) {
+    return this.adminConfigService.addCurrency(dto.code, dto.sanityBandMin, dto.sanityBandMax, {
+      adminId: req.user.userId,
+      ip: req.ip,
+      userAgent: req.headers['user-agent'],
+    });
+  }
+
+  @Patch('currencies/:code')
+  updateCurrencyBand(@Req() req: any, @Param('code') code: string, @Body() dto: UpdateCurrencyBandDto) {
+    return this.adminConfigService.updateCurrencyBand(code, dto.sanityBandMin, dto.sanityBandMax, {
+      adminId: req.user.userId,
+      ip: req.ip,
+      userAgent: req.headers['user-agent'],
+    });
+  }
+
+  @Delete('currencies/:code')
+  removeCurrency(@Req() req: any, @Param('code') code: string) {
+    return this.adminConfigService.removeCurrency(code, {
       adminId: req.user.userId,
       ip: req.ip,
       userAgent: req.headers['user-agent'],

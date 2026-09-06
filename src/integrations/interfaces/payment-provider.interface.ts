@@ -41,7 +41,9 @@ export interface RefundResult {
 export interface PublicPaymentMethodView {
   provider: StoreIntegrationProvider;
   displayName: string;
-  currency: 'PKR' | 'USD';
+  /** Real, dynamic currency code — not a fixed literal union (see the
+   *  Markets architecture); a store's real `baseCurrency`. */
+  currency: string;
   logo?: string;
 }
 
@@ -57,7 +59,11 @@ export interface PaymentOrderContext {
   orderId: string;
   /** Store's bound currency amount, in that currency's major unit (rupees / dollars) — each provider converts to whatever minor/major unit its own API expects. */
   amount: number;
-  currency: 'PKR' | 'USD';
+  /** Real, dynamic currency code — not a fixed literal union any more (see
+   *  the Markets architecture). Safepay/JazzCash/Easypaisa/PayFast are still
+   *  genuinely PKR-only local rails by design (their call sites only ever
+   *  run for a PKR store), Stripe accepts any store currency. */
+  currency: string;
   storeId: string;
   buyerEmail?: string;
   buyerPhone?: string;

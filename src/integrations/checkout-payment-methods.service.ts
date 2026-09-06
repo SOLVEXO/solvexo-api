@@ -60,7 +60,10 @@ export class CheckoutPaymentMethodsService {
     // older platform-wide Stripe button) by store region, not just to know
     // what's connected here. Never guess this from something client-supplied.
     const store = await this.repos.storeModel.findById(storeId).select('baseCurrency');
-    const currency: 'PKR' | 'USD' = store?.baseCurrency === 'USD' ? 'USD' : 'PKR';
+    // The store's real currency, never collapsed into a PKR/USD binary — a
+    // GBP/EUR/etc. store used to be silently reported as PKR here (a real
+    // bug for the Markets/multi-currency expansion).
+    const currency = store?.baseCurrency ?? 'PKR';
 
     const integrations = await this.repos.storeIntegrationModel.find({
       storeId,
@@ -88,13 +91,16 @@ export class CheckoutPaymentMethodsService {
       throw new BadRequestException('This checkout spans multiple stores — use the existing checkout payment flow instead.');
     }
 
-    const integration = await this.repos.storeIntegrationModel.findOne({
-      storeId,
-      type: 'payment',
-      provider: providerKey as StoreIntegrationProvider,
-      status: 'connected',
-      isEnabledForCheckout: true,
-    });
+    const [integration, store] = await Promise.all([
+      this.repos.storeIntegrationModel.findOne({
+        storeId,
+        type: 'payment',
+        provider: providerKey as StoreIntegrationProvider,
+        status: 'connected',
+        isEnabledForCheckout: true,
+      }),
+      this.repos.storeModel.findById(storeId).select('baseCurrency'),
+    ]);
     if (!integration || !this.registry.isSupported(integration.provider)) {
       throw new BadRequestException(`"${providerKey}" is not an available payment method for this store`);
     }
@@ -102,7 +108,11 @@ export class CheckoutPaymentMethodsService {
     const provider = this.registry.resolve(integration.provider);
     const config = toDecryptedPaymentConfig(integration);
     const amount = this.storeAmount(checkout, storeId);
-    const currency = integration.provider === 'stripe' ? 'USD' : 'PKR';
+    // Local gateways (safepay/jazzcash/easypaisa/payfast) are genuinely
+    // PKR-only by design — 'PKR' there is correct, not a collapse. Stripe
+    // settles in the seller's own real store currency, never hardcoded USD
+    // (same bug class as listPaymentMethods above).
+    const currency = integration.provider === 'stripe' ? (store?.baseCurrency ?? 'USD') : 'PKR';
 
     const session = await provider.initiatePayment(
       { orderId: checkoutId, amount, currency, storeId, returnUrl, cancelUrl },

@@ -95,6 +95,7 @@ import {
   Req,
   UseGuards,
   Get,
+  Query,
   Body,
   UseInterceptors,
 } from '@nestjs/common';
@@ -135,8 +136,8 @@ export class CheckoutController {
   }
 
   @Get('getShippingZones')
-  async getShippingZones() {
-    return this.checkoutService.getShippingZones();
+  async getShippingZones(@Query('storeId') storeId?: string, @Query('currency') currency?: string) {
+    return this.checkoutService.getShippingZones(storeId, currency);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)

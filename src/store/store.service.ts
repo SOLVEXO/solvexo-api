@@ -18,8 +18,9 @@ import {
   type VerificationStatus,
 } from './schemas/store.schema';
 import { getVerificationRequirements, isFieldSatisfied } from './verification-requirements.config';
+import { resolveCountryFromIp } from '@/common/geo-locate.util';
+import { currencyForCountry } from '@/common/country-currency.const';
 import { UploadService } from '@/upload/upload.service';
-import { SUPPORTED_CURRENCIES } from '@/exchange-rate/schemas/exchange-rate.schema';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { UpdateStoreCustomerDto } from './dto/update-store-customer.dto';
 import { SubscriptionBenefitsService } from '@/subscriptions/subscription-benefits.service';
@@ -73,6 +74,33 @@ export class StoreService {
     private readonly configService: ConfigService,
   ) {}
 
+  /** Thin passthrough — AdminConfigService is already injected here for
+   *  `createStore`/`updateStore`'s own currency validation; the public
+   *  controller route reuses this rather than adding a second cross-module
+   *  injection just for a read. */
+  async getEnabledCurrencies() {
+    return this.adminConfigService.getEnabledCurrencies();
+  }
+
+  /**
+   * IP-detected country + a suggested currency for Onboarding's currency
+   * step — a suggestion only, never enforced (the seller can always pick
+   * differently; `createStore`'s own validation is the only real gate).
+   * `suggestedCurrency` is null (not a fabricated fallback) whenever the
+   * country's natural currency either isn't known (see COUNTRY_TO_CURRENCY)
+   * or isn't currently admin-enabled on this platform — never suggests a
+   * currency the seller couldn't actually pick.
+   */
+  async getSuggestedLocation(ip: string | undefined) {
+    const country = resolveCountryFromIp(ip);
+    if (!country) return { success: true, data: { country: null, suggestedCurrency: null } };
+    const natural = currencyForCountry(country);
+    if (!natural) return { success: true, data: { country, suggestedCurrency: null } };
+    const enabled = await this.adminConfigService.getEnabledCurrencies();
+    const suggestedCurrency = enabled.some((c) => c.code === natural) ? natural : null;
+    return { success: true, data: { country, suggestedCurrency } };
+  }
+
   private generateSlug(name: string): string {
     return name
       .toLowerCase()
@@ -117,11 +145,14 @@ export class StoreService {
     // reinterpreted under a different currency later. The frontend
     // onboarding flow suggests a default from the seller's detected
     // country, but never forces it — this validation only enforces that
-    // whatever was chosen is one of the currencies Solvexo actually
-    // supports today.
-    if (!baseCurrency || !SUPPORTED_CURRENCIES.includes(baseCurrency)) {
+    // whatever was chosen has a real, admin-vetted exchange rate today
+    // (AdminConfigService.getEnabledCurrencies — the dynamic Markets list,
+    // not the old fixed `SUPPORTED_CURRENCIES` array, which is retired as
+    // an enforcement mechanism).
+    const enabledCurrencies = await this.adminConfigService.getEnabledCurrencies();
+    if (!baseCurrency || !enabledCurrencies.some((c) => c.code === baseCurrency)) {
       throw new BadRequestException(
-        `baseCurrency is required and must be one of: ${SUPPORTED_CURRENCIES.join(', ')}`,
+        `baseCurrency is required and must be one of: ${enabledCurrencies.map((c) => c.code).join(', ')}`,
       );
     }
 
@@ -178,6 +209,15 @@ export class StoreService {
       productTypes: finalProductTypes,
       enabledTools: resolveTools(finalProductTypes),
       baseCurrency,
+      // Shopify-style "Markets" default: a NEW store only accepts its own
+      // currency until the seller explicitly opts into more via Store
+      // Settings — previously this was left `null` (every supported
+      // currency silently accepted), which let a buyer complete a USD
+      // store's checkout in PKR (or vice versa) without the seller ever
+      // choosing that. Existing pre-existing stores are untouched (their
+      // `enabledCurrencies` stays whatever it already was) — this only
+      // changes the default for a store created from today onward.
+      enabledCurrencies: [baseCurrency],
       status: selfServeActivation ? 'active' : 'pending',
       ...(selfServeActivation ? { reviewedAt: new Date() } : {}),
     });
@@ -982,16 +1022,20 @@ export class StoreService {
     }
 
     // "Markets" — which supported currencies this store's buyers can check
-    // out in. Must be a real, non-empty subset of SUPPORTED_CURRENCIES, and
-    // must always include the store's own baseCurrency (a seller can't
-    // disable checkout in the currency they're actually priced/paid in).
+    // out in. Must be a real, non-empty subset of the platform's dynamic
+    // admin-enabled currency list (not the old fixed `SUPPORTED_CURRENCIES`
+    // array — see AdminConfigService.getEnabledCurrencies), and must always
+    // include the store's own baseCurrency (a seller can't disable checkout
+    // in the currency they're actually priced/paid in).
     if (enabledCurrencies !== undefined) {
       if (!Array.isArray(enabledCurrencies) || enabledCurrencies.length === 0) {
         throw new BadRequestException('enabledCurrencies must be a non-empty array');
       }
+      const platformCurrencies = await this.adminConfigService.getEnabledCurrencies();
+      const platformCodes = platformCurrencies.map((c) => c.code);
       for (const c of enabledCurrencies) {
-        if (!SUPPORTED_CURRENCIES.includes(c)) {
-          throw new BadRequestException(`Unsupported currency "${c}" — must be one of: ${SUPPORTED_CURRENCIES.join(', ')}`);
+        if (!platformCodes.includes(c)) {
+          throw new BadRequestException(`Unsupported currency "${c}" — must be one of: ${platformCodes.join(', ')}`);
         }
       }
       if (store.baseCurrency && !enabledCurrencies.includes(store.baseCurrency)) {
@@ -1143,7 +1187,7 @@ export class StoreService {
         // frontend uses this to convert every listed price into the
         // buyer's own chosen display currency.
         baseCurrency: store.baseCurrency ?? 'PKR',
-        // "Markets" — null/empty means every SUPPORTED_CURRENCIES value is
+        // "Markets" — null/empty means every platform-enabled currency is
         // accepted (a store that never touched this setting) — the
         // frontend must treat null the same as "all", never as "none".
         enabledCurrencies: store.enabledCurrencies && store.enabledCurrencies.length > 0 ? store.enabledCurrencies : null,
@@ -1521,109 +1565,6 @@ export class StoreService {
     return { success: true, data };
   }
 
-  // ── 6. Follow / Unfollow store ────────────────────────────────────────────
-  async followStore(userId: string, storeId: string) {
-    if (!storeId) throw new BadRequestException('storeId is required');
-
-    const store = await this.databaseService.repositories.storeModel.findOne({
-      _id: storeId,
-      isDelete: false,
-    });
-    if (!store) throw new NotFoundException('Store not found');
-
-    const existing = await this.databaseService.repositories.storeFollowerModel.findOne({
-      userId,
-      storeId,
-    });
-
-    if (existing) {
-      await this.databaseService.repositories.storeFollowerModel.deleteOne({ userId, storeId });
-      await this.databaseService.repositories.storeModel.findByIdAndUpdate(storeId, {
-        $inc: { followersCount: -1 },
-      });
-      return { success: true, message: 'Unfollowed', data: { following: false } };
-    }
-
-    await this.databaseService.repositories.storeFollowerModel.create({ userId, storeId });
-    await this.databaseService.repositories.storeModel.findByIdAndUpdate(storeId, {
-      $inc: { followersCount: 1 },
-    });
-
-    this.notificationsService.notify({
-      recipientId: store.sellerId,
-      recipientRole: 'seller',
-      type: NOTIFICATION_TYPES.NEW_FOLLOWER,
-      title: 'New follower',
-      body: `Someone just started following ${store.name}.`,
-      data: { storeId },
-    }).catch(() => {});
-
-    return { success: true, message: 'Following', data: { following: true } };
-  }
-
-  // ── 7. Get store followers (seller only) ─────────────────────────────────
-  async getStoreFollowers(sellerId: string, storeId: string, query: any) {
-    if (!storeId) throw new BadRequestException('storeId is required');
-
-    const store = await this.databaseService.repositories.storeModel.findOne({
-      _id: storeId,
-      isDelete: false,
-    }).lean();
-    if (!store) throw new NotFoundException('Store not found');
-    if (store.sellerId !== sellerId) throw new UnauthorizedException('Unauthorized');
-
-    const page  = parseInt(query.page)  || 1;
-    const limit = parseInt(query.limit) || 20;
-    const skip  = (page - 1) * limit;
-
-    const total = await this.databaseService.repositories.storeFollowerModel
-      .countDocuments({ storeId });
-
-    const followers = await this.databaseService.repositories.storeFollowerModel
-      .find({ storeId })
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit)
-      .lean();
-
-    const userIds = followers.map((f) => f.userId);
-    const users = await this.databaseService.repositories.userModel
-      .find({ _id: { $in: userIds } })
-      .select('name email profileImage')
-      .lean();
-
-    const userMap: Record<string, any> = {};
-    users.forEach((u: any) => { userMap[u._id.toString()] = u; });
-
-    const data = followers.map((f) => ({
-      followedAt: (f as any).createdAt,
-      user: userMap[f.userId] ?? { _id: f.userId, name: 'Unknown' },
-    }));
-
-    return {
-      success: true,
-      data: {
-        total,
-        pagination: { page, limit, totalPages: Math.ceil(total / limit) },
-        followers: data,
-      },
-    };
-  }
-
-  // ── 6. Get follow status ──────────────────────────────────────────────────
-  async getFollowStatus(userId: string, storeId: string) {
-    if (!storeId) throw new BadRequestException('storeId is required');
-
-    const existing = await this.databaseService.repositories.storeFollowerModel.findOne({
-      userId,
-      storeId,
-    }).lean();
-
-    return {
-      success: true,
-      data: { following: !!existing },
-    };
-  }
 
   // ── 7. Store customers (staff-facing: only people who have ordered from this store) ────
 

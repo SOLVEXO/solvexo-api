@@ -36,6 +36,16 @@ export class StoreController {
     return this.storeService.previewVerificationRequirementsStandalone(query);
   }
 
+  // Same "before a store exists" precedent as the route above — used by
+  // Onboarding's currency step to pre-fill (never force) a suggested
+  // currency from the seller's IP-detected country.
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Get('suggest-location')
+  async suggestLocation(@Req() req: any) {
+    return this.storeService.getSuggestedLocation(req.ip);
+  }
+
   // seller ke saare stores
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('seller')
@@ -214,6 +224,15 @@ export class StoreController {
     return this.storeService.getPlatformStats();
   }
 
+  // Real, dynamic Markets currency list (AdminConfigService.getEnabledCurrencies)
+  // — public/no-auth since Onboarding's currency step, a buyer's currency
+  // switcher, and a seller's own "Markets" card all need this before/without
+  // necessarily having a seller session.
+  @Get('public/enabled-currencies')
+  async getEnabledCurrencies() {
+    return { success: true, data: await this.storeService.getEnabledCurrencies() };
+  }
+
 // Registered BEFORE 'public/:slug' — a static path segment must be matched
   // first, or Nest would swallow 'resolve-domain' as `:slug`.
   @Get('public/resolve-domain')
@@ -266,37 +285,6 @@ export class StoreController {
     return this.storeService.getPublicStoreFilters(storeId);
   }
 
-  // ── Follow APIs ───────────────────────────────────────────────────────────
-
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('user')
-  @Post(':storeId/follow')
-  async followStore(@Req() req: any, @Param('storeId') storeId: string) {
-    const { userId } = req.user;
-    const scopedStoreId = resolveBuyerStoreScope(req.user.storeId, storeId);
-    return this.storeService.followStore(userId, scopedStoreId);
-  }
-
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('user')
-  @Get(':storeId/follow-status')
-  async getFollowStatus(@Req() req: any, @Param('storeId') storeId: string) {
-    const { userId } = req.user;
-    const scopedStoreId = resolveBuyerStoreScope(req.user.storeId, storeId);
-    return this.storeService.getFollowStatus(userId, scopedStoreId);
-  }
-
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
-  @Get(':storeId/followers')
-  async getStoreFollowers(
-    @Req() req: any,
-    @Param('storeId') storeId: string,
-    @Query() query: any,
-  ) {
-    const { userId } = req.user;
-    return this.storeService.getStoreFollowers(userId, storeId, query);
-  }
 
   // ── Customers (staff-facing) ─────────────────────────────────────────────
 

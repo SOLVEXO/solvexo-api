@@ -58,6 +58,7 @@ import { AdminModerationModule } from './admin-moderation/admin-moderation.modul
 import { AdminUsersModule } from './admin-users/admin-users.module';
 import { AdminMarketingModule } from './admin-marketing/admin-marketing.module';
 import { ShippingZonesModule } from './shipping-zones/shipping-zones.module';
+import { ShippingCarriersModule } from './shipping-carriers/shipping-carriers.module';
 import { MediaLibraryModule } from './media-library/media-library.module';
 import { StoreBannerModule } from './store-banner/store-banner.module';
 import { StoreThemeModule } from './store-theme/store-theme.module';
@@ -146,6 +147,7 @@ import { StoreAppRequestsModule } from './store-app-requests/store-app-requests.
     AdminUsersModule,
     AdminMarketingModule,
     ShippingZonesModule,
+    ShippingCarriersModule,
     MediaLibraryModule,
     StoreBannerModule,
     StoreThemeModule,
