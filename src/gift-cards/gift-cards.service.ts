@@ -175,19 +175,20 @@ export class GiftCardsService {
     if (!settings.purchaseEnabled) throw new BadRequestException('Gift cards aren\'t available for purchase at this store');
 
     const currency = store.baseCurrency ?? 'USD';
+    await this.exchangeRateService.assertSupportedCurrency(currency);
     const stripe = this.assertStripeConfigured();
 
-    // Stripe only ever processes USD in this codebase (see PaymentService) —
-    // the gift card's own face value/currency stays in the store's native
-    // currency (matching Coupon's convention), converted only for the
-    // actual charge.
-    const amountUSD = currency === 'USD' ? dto.amount : await this.exchangeRateService.convert(dto.amount, currency, 'USD');
-    const amountCents = Math.round(this.round(amountUSD) * 100);
+    // Charged directly in the store's own real currency — matches
+    // PaymentService.initiatePayment's own checkout Stripe charge (see its
+    // `currency: checkout.currency.toLowerCase()`), not a separate USD-only
+    // rule for gift cards. The gift card's face value is the same amount the
+    // buyer is actually charged, no FX conversion involved.
+    const amountCents = Math.round(this.round(dto.amount) * 100);
     if (amountCents < 50) throw new BadRequestException('Amount is too small to process');
 
     const paymentIntent = await stripe.paymentIntents.create({
       amount: amountCents,
-      currency: 'usd',
+      currency: currency.toLowerCase(),
       metadata: {
         purpose: 'gift_card_purchase',
         storeId,

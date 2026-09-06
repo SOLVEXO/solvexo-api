@@ -4,6 +4,8 @@ import { randomBytes } from 'crypto';
 import { DatabaseService } from '../database/databaseservice';
 import { ActivityLogService } from '../activity-log/activity-log.service';
 import { StripeConnectService } from '../stripe-connect/stripe-connect.service';
+import { TaxService } from '../tax/tax.service';
+import { ShippingRatesService } from '../shipping-rates/shipping-rates.service';
 import { verifyStoreOwnershipStrict } from '../common/store-ownership.util';
 import { encryptCredential, decryptCredential, maskSecret } from '../common/credential-encryption.util';
 import { PaymentProviderRegistry } from './payment-provider.registry';
@@ -38,6 +40,8 @@ export class StoreIntegrationsService {
     private readonly registry: PaymentProviderRegistry,
     private readonly whatsAppProvider: WhatsAppCloudProvider,
     private readonly stripeConnectService: StripeConnectService,
+    private readonly taxService: TaxService,
+    private readonly shippingRatesService: ShippingRatesService,
   ) {}
 
   private get repos() {
@@ -147,25 +151,27 @@ export class StoreIntegrationsService {
     );
 
     const whatsapp = await this.repos.storeIntegrationModel.findOne({ storeId, type: 'whatsapp', provider: 'whatsapp_cloud' });
+    const tax = await this.repos.storeIntegrationModel.findOne({ storeId, type: 'tax', provider: 'taxjar' });
+    const shipping = await this.repos.storeIntegrationModel.findOne({ storeId, type: 'shipping', provider: 'shippo' });
+
+    const notConnected = (type: StoreIntegrationType, provider: StoreIntegrationProvider) => ({
+      id: null, type, provider, mode: 'live' as const, status: 'not_connected' as const,
+      isEnabledForCheckout: false, lastVerifiedAt: null, lastError: null, config: {}, maskedHints: {},
+      webhookToken: null,
+    });
 
     return {
       success: true,
       data: {
         payment,
-        whatsapp: whatsapp
-          ? this.toPublicView(whatsapp)
-          : {
-              id: null,
-              type: 'whatsapp' as const,
-              provider: 'whatsapp_cloud' as const,
-              mode: 'live' as const,
-              status: 'not_connected' as const,
-              isEnabledForCheckout: false,
-              lastVerifiedAt: null,
-              lastError: null,
-              config: {},
-              maskedHints: {},
-            },
+        whatsapp: whatsapp ? this.toPublicView(whatsapp) : notConnected('whatsapp', 'whatsapp_cloud'),
+        // Real live tax (TaxJar) and shipping-rate (Shippo) connections — see
+        // TaxService/ShippingRatesService for what "connected" actually
+        // unlocks at checkout. Both are additive/opt-in, so `not_connected`
+        // is a completely normal, unbroken state (the existing flat
+        // Store.taxRate / per-zone shipping price keeps working).
+        tax: tax ? this.toPublicView(tax) : notConnected('tax', 'taxjar'),
+        shipping: shipping ? this.toPublicView(shipping) : notConnected('shipping', 'shippo'),
       },
     };
   }
@@ -196,6 +202,12 @@ export class StoreIntegrationsService {
     }
     if (type === 'whatsapp' && provider === 'whatsapp_cloud') {
       return this.connectWhatsApp(storeId, sellerId, body);
+    }
+    if (type === 'tax' && provider === 'taxjar') {
+      return this.taxService.connect(storeId, sellerId, body.apiToken);
+    }
+    if (type === 'shipping' && provider === 'shippo') {
+      return this.shippingRatesService.connect(storeId, sellerId, body.apiToken, body.originAddress);
     }
     throw new BadRequestException(`"${provider}" does not support type "${type}"`);
   }

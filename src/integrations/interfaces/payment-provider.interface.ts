@@ -19,7 +19,9 @@ export interface PaymentStatus {
   status: 'pending' | 'paid' | 'failed' | 'refunded';
   providerReference: string;
   amount?: number;
-  currency?: 'PKR' | 'USD';
+  /** Real, dynamic currency code (see the Markets architecture), not a fixed
+   *  literal union. */
+  currency?: string;
   raw?: Record<string, any>;
 }
 

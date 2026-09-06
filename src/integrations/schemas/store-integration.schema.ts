@@ -4,7 +4,7 @@ import { Document } from 'mongoose';
 
 export type StoreIntegrationDocument = StoreIntegration & Document;
 
-export const STORE_INTEGRATION_TYPES = ['payment', 'whatsapp'] as const;
+export const STORE_INTEGRATION_TYPES = ['payment', 'whatsapp', 'tax', 'shipping'] as const;
 export type StoreIntegrationType = (typeof STORE_INTEGRATION_TYPES)[number];
 
 export const STORE_INTEGRATION_PROVIDERS = [
@@ -14,6 +14,16 @@ export const STORE_INTEGRATION_PROVIDERS = [
   'safepay',
   'stripe',
   'whatsapp_cloud',
+  // Real, live per-order tax calculation (TaxService) — a seller's own
+  // TaxJar API token, same encrypted-credential shape as every other
+  // integration here. No provider abstraction layer yet since only one real
+  // provider is wired (see TaxService's own doc comment on adding Avalara).
+  'taxjar',
+  // Real, live multi-carrier rate/label/tracking (ShippingRatesService) — a
+  // seller's own Shippo API token. Shippo itself already aggregates the real
+  // carriers (DHL/FedEx/UPS/USPS/etc.) behind one API, which is why this is
+  // one provider entry, not one per carrier.
+  'shippo',
 ] as const;
 export type StoreIntegrationProvider = (typeof STORE_INTEGRATION_PROVIDERS)[number];
 

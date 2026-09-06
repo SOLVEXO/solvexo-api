@@ -7,6 +7,8 @@ import { PaymentProviderRegistry } from './payment-provider.registry';
 import { WhatsAppCloudProvider } from './providers/whatsapp-cloud.provider';
 import { StripeConnectService } from '../stripe-connect/stripe-connect.service';
 import { decryptCredential, encryptCredential } from '../common/credential-encryption.util';
+import { TaxService } from '../tax/tax.service';
+import { ShippingRatesService } from '../shipping-rates/shipping-rates.service';
 
 const STORE_ID = 'store-1';
 const SELLER_ID = 'seller-1';
@@ -35,8 +37,10 @@ describe('StoreIntegrationsService', () => {
     registry = { isSupported: jest.fn().mockReturnValue(true) } as any;
     const whatsAppProvider = {} as WhatsAppCloudProvider;
     const stripeConnectService = {} as StripeConnectService;
+    const taxService = {} as TaxService;
+    const shippingRatesService = {} as ShippingRatesService;
 
-    service = new StoreIntegrationsService(db, activityLogService, registry, whatsAppProvider, stripeConnectService);
+    service = new StoreIntegrationsService(db, activityLogService, registry, whatsAppProvider, stripeConnectService, taxService, shippingRatesService);
   });
 
   afterAll(() => {
@@ -81,7 +85,11 @@ describe('StoreIntegrationsService', () => {
 
       const storedCredentials = JSON.parse(decryptCredential(savedUpdate.$set.credentialsEncrypted, 'INTEGRATIONS'));
       expect(storedCredentials).toEqual({ secretKey: 'sk_test_x', clientId: 'c1', webhookSecret: null });
-      expect(result.data.webhookToken).toBe('generated-token-abc');
+      // `connect()`'s return type is now a union across payment/whatsapp/tax/
+      // shipping branches (the last two have a different, simpler shape —
+      // see TaxService/ShippingRatesService.connect) — this test only ever
+      // exercises the Safepay/payment branch, which always has webhookToken.
+      expect((result.data as any).webhookToken).toBe('generated-token-abc');
     });
   });
 

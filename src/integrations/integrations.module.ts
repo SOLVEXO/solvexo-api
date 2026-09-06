@@ -16,6 +16,8 @@ import { PaymentWebhooksController } from './webhooks/payment-webhooks.controlle
 import { WhatsAppWebhookController } from './webhooks/whatsapp-webhook.controller';
 import { SellerIntegrationsController } from './seller-integrations.controller';
 import { BuyerCheckoutPaymentsController } from './buyer-checkout-payments.controller';
+import { TaxService } from '../tax/tax.service';
+import { ShippingRatesService } from '../shipping-rates/shipping-rates.service';
 
 // AuthModule + RedisModule are required here because SellerIntegrationsController
 // uses JwtAuthGuard — see NotificationsModule's doc comment for why both are
@@ -37,7 +39,9 @@ import { BuyerCheckoutPaymentsController } from './buyer-checkout-payments.contr
     WhatsAppSenderService,
     StoreIntegrationsService,
     CheckoutPaymentMethodsService,
+    TaxService,
+    ShippingRatesService,
   ],
-  exports: [PaymentProviderRegistry, IntegrationWebhookEventService, WhatsAppCloudProvider, WhatsAppSenderService],
+  exports: [PaymentProviderRegistry, IntegrationWebhookEventService, WhatsAppCloudProvider, WhatsAppSenderService, TaxService, ShippingRatesService],
 })
 export class IntegrationsModule {}

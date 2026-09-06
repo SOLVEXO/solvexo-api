@@ -23,9 +23,10 @@ import { AdminConfigModule } from '@/admin-config/admin-config.module';
 import { ExchangeRateModule } from '@/exchange-rate/exchange-rate.module';
 import { GiftCardsModule } from '@/gift-cards/gift-cards.module';
 import { DiscountsModule } from '@/discounts/discounts.module';
+import { IntegrationsModule } from '@/integrations/integrations.module';
 
 @Module({
-  imports: [AuthModule, RedisModule, MarketingModule, AdminConfigModule, ExchangeRateModule, GiftCardsModule, DiscountsModule],
+  imports: [AuthModule, RedisModule, MarketingModule, AdminConfigModule, ExchangeRateModule, GiftCardsModule, DiscountsModule, IntegrationsModule],
   controllers: [CheckoutController],
   providers: [CheckoutService],
   exports: [CheckoutService],

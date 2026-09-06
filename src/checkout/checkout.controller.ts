@@ -98,6 +98,7 @@ import {
   Query,
   Body,
   UseInterceptors,
+  BadRequestException,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -138,6 +139,17 @@ export class CheckoutController {
   @Get('getShippingZones')
   async getShippingZones(@Query('storeId') storeId?: string, @Query('currency') currency?: string) {
     return this.checkoutService.getShippingZones(storeId, currency);
+  }
+
+  /** Real live carrier rates (see CheckoutService.getLiveShippingRates's own
+   *  doc comment) — an additional option next to the flat zone list above,
+   *  `data: null` whenever a live quote isn't available for any reason. */
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('user')
+  @Get('live-shipping-rates')
+  async getLiveShippingRates(@Req() req: any, @Query('storeId') storeId: string) {
+    if (!storeId) throw new BadRequestException('storeId is required');
+    return this.checkoutService.getLiveShippingRates(req.user.userId, storeId);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
