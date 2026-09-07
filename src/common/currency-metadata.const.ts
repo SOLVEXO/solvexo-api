@@ -116,3 +116,10 @@ const FRANKFURTER_SUPPORTED = new Set([
 export function isFrankfurterSupported(code: string): boolean {
   return FRANKFURTER_SUPPORTED.has(code.toUpperCase());
 }
+
+// Exported as a real array (not just the membership-check function above) so
+// AdminConfigService.getEnabledCurrencies can auto-enable every one of these
+// on first read, Shopify-style ("every real-time-priceable currency is on
+// from day one," not an admin action per currency) — USD is excluded here
+// since it's already unconditionally prepended as the platform pivot.
+export const FRANKFURTER_SUPPORTED_LIST = [...FRANKFURTER_SUPPORTED].filter((c) => c !== 'USD');

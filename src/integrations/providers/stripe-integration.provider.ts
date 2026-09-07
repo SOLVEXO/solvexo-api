@@ -74,7 +74,14 @@ export class StripePaymentProvider implements PaymentProvider {
 
     const paymentIntent = await this.stripe.paymentIntents.create({
       amount: amountCents,
-      currency: 'usd',
+      // Real, dynamic store currency (order.amount is already denominated in
+      // it) — was hardcoded 'usd' regardless of the store's actual currency,
+      // meaning a GBP/EUR/PKR store's Stripe Connect charge would silently
+      // charge the same NUMBER of units but in the wrong currency (e.g. a
+      // real £50 order billed as $50). Found while re-verifying every real
+      // Stripe call site for hardcoded currency during this session's
+      // currency-architecture work.
+      currency: order.currency.toLowerCase(),
       metadata: { orderId: order.orderId, storeId: order.storeId },
       automatic_payment_methods: { enabled: true, allow_redirects: 'never' },
       transfer_data: { destination: connectAccountId },
@@ -92,7 +99,7 @@ export class StripePaymentProvider implements PaymentProvider {
       status: paymentIntent.status === 'succeeded' ? 'paid' : paymentIntent.status === 'canceled' ? 'failed' : 'pending',
       providerReference: paymentIntent.id,
       amount: paymentIntent.amount / 100,
-      currency: 'USD',
+      currency: paymentIntent.currency?.toUpperCase() ?? 'USD',
       raw: paymentIntent as any,
     };
   }

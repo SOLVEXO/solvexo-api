@@ -101,6 +101,34 @@ export class StoreService {
     return { success: true, data: { country, suggestedCurrency } };
   }
 
+  /** Same IP→country→currency suggestion as `getSuggestedLocation`, but for
+   *  a real buyer landing on ONE store's own subdomain — the suggestion must
+   *  also respect that store's own "Markets" restriction (Store.enabledCurrencies,
+   *  null/empty = every platform-enabled currency), never just the platform-
+   *  wide list alone, or a buyer could get suggested a currency this specific
+   *  store never agreed to accept. Public (no auth) — a storefront visitor is
+   *  usually not logged in yet when this fires. */
+  async getSuggestedLocationForStore(storeId: string, ip: string | undefined) {
+    const country = resolveCountryFromIp(ip);
+    if (!country) return { success: true, data: { country: null, suggestedCurrency: null } };
+    const natural = currencyForCountry(country);
+    if (!natural) return { success: true, data: { country, suggestedCurrency: null } };
+
+    const store = await this.databaseService.repositories.storeModel
+      .findById(storeId)
+      .select('enabledCurrencies')
+      .lean();
+    if (!store) return { success: true, data: { country, suggestedCurrency: null } };
+
+    const platformEnabled = await this.adminConfigService.getEnabledCurrencies();
+    const platformAllows = platformEnabled.some((c) => c.code === natural);
+    const storeAllows = !store.enabledCurrencies || store.enabledCurrencies.length === 0
+      || store.enabledCurrencies.includes(natural as any);
+
+    const suggestedCurrency = platformAllows && storeAllows ? natural : null;
+    return { success: true, data: { country, suggestedCurrency } };
+  }
+
   private generateSlug(name: string): string {
     return name
       .toLowerCase()

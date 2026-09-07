@@ -233,6 +233,14 @@ export class StoreController {
     return { success: true, data: await this.storeService.getEnabledCurrencies() };
   }
 
+  // Registered BEFORE 'public/:slug' — same reasoning as 'resolve-domain'
+  // below. Public/no-auth — a storefront visitor triggering this (on first
+  // landing on a store's subdomain) is usually not logged in yet.
+  @Get('public/:storeId/suggest-location')
+  async suggestLocationForStore(@Req() req: any, @Param('storeId') storeId: string) {
+    return this.storeService.getSuggestedLocationForStore(storeId, req.ip);
+  }
+
 // Registered BEFORE 'public/:slug' — a static path segment must be matched
   // first, or Nest would swallow 'resolve-domain' as `:slug`.
   @Get('public/resolve-domain')

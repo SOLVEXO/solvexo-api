@@ -6,9 +6,16 @@ import {
   Body,
   Param,
   Req,
+  Res,
   Query,
   UseGuards,
+  UseInterceptors,
+  UploadedFile,
+  BadRequestException,
 } from '@nestjs/common';
+import type { Response } from 'express';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
 
 import { ProductsService } from './products.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -182,6 +189,34 @@ export class productController {
     return this.ProductsService.getStoreProducts(sellerId, storeId, query);
   }
 
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Get('store-products/:storeId/export')
+  async exportProductsCsv(@Req() req: any, @Res() res: Response, @Param('storeId') storeId: string) {
+    const { userId: sellerId } = req.user;
+    const csv = await this.ProductsService.exportProductsCsv(sellerId, storeId);
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="products.csv"');
+    res.send(csv);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard, BillingAccessGuard)
+  @Roles('seller')
+  @RequireActiveBilling()
+  @Post('store-products/:storeId/import')
+  @UseInterceptors(
+    FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }),
+  )
+  async importProductsCsv(
+    @Req() req: any,
+    @Param('storeId') storeId: string,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    const { userId: sellerId } = req.user;
+    if (!file) throw new BadRequestException('No CSV file uploaded');
+    return this.ProductsService.importProductsCsv(sellerId, storeId, file.buffer.toString('utf-8'));
+  }
+
   // Gated the same as add-physical-product/add-digital-product — the
   // BillingAccessGuard's own decorator doc names "creating/editing products"
   // as its intended scope, but this route was missed when the guard was
@@ -201,5 +236,13 @@ export class productController {
   async deleteProduct(@Req() req: any, @Param('productId') productId: string) {
     const { userId: sellerId } = req.user;
     return this.ProductsService.deleteProduct(sellerId, productId);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Post('duplicate-product/:productId')
+  async duplicateProduct(@Req() req: any, @Param('productId') productId: string) {
+    const { userId: sellerId } = req.user;
+    return this.ProductsService.duplicateProduct(sellerId, productId);
   }
 }

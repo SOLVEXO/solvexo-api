@@ -83,6 +83,14 @@ export class CategoriesService {
           if (!parent) {
             throw new BadRequestException('Parent category not found');
           }
+          // Real, load-bearing constraint, not just a UI limit — Product
+          // only ever carries `categoryId` (root) + `subCategoryId` (one
+          // level down), with no field for anything deeper. A 3rd-level
+          // category would exist in the tree but no product could ever
+          // actually be assigned to it, so this stays enforced until that
+          // schema genuinely supports arbitrary depth (a real, separate,
+          // larger migration — confirmed while investigating the Catalog
+          // audit's "unlimited nesting" ask).
           if (parent.parentId) {
             throw new BadRequestException(
               'Categories can only be nested one level deep — pick a main category as the parent',
@@ -101,7 +109,7 @@ export class CategoriesService {
           throw new ConflictException('You already have a category with this name here');
         }
 
-        const slug = await generateUniqueSlug(categoryModel, name);
+        const slug = await generateUniqueSlug(categoryModel, name, { scope: { storeId } });
         const category = await categoryModel.create({
           name,
           slug,
@@ -173,7 +181,7 @@ export class CategoriesService {
         );
       }
 
-      const slug = await generateUniqueSlug(categoryModel, name);
+      const slug = await generateUniqueSlug(categoryModel, name, { scope: { storeId: null } });
 
       const category = await categoryModel.create({
         name,
@@ -309,6 +317,7 @@ export class CategoriesService {
         status: 'active',
         isDelete: false,
       })
+      .sort({ sortOrder: 1 })
       .lean();
 
     const result: any[] = [];
@@ -365,7 +374,7 @@ export class CategoriesService {
       parentId,
       status: 'active',
       isDelete: false,
-    });
+    }).sort({ sortOrder: 1 });
 
     const result: any[] = [];
 
@@ -391,6 +400,7 @@ export class CategoriesService {
     const categoryModel = this.databaseService.repositories.categoryModel;
     const slug = await generateUniqueSlug(categoryModel, cat.name, {
       excludeId: String(cat._id),
+      scope: { storeId: cat.storeId ?? null },
     });
     await categoryModel.findByIdAndUpdate(cat._id, { slug });
     cat.slug = slug;
@@ -478,6 +488,7 @@ export class CategoriesService {
     if (dto.description !== undefined) category.description = dto.description;
     if (dto.image !== undefined) category.image = dto.image;
     if (dto.isActive !== undefined) category.status = dto.isActive ? 'active' : 'inactive';
+    if (dto.sortOrder !== undefined) category.sortOrder = dto.sortOrder;
 
     await category.save();
 

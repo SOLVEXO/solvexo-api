@@ -118,7 +118,14 @@ export class Product {
   @Prop({ required: true })
   name: string;
 
-  @Prop({ type: String, unique: true })
+  // Uniqueness is enforced per-store (see the compound index below), not
+  // globally — a bare `unique: true` here used to mean two unrelated
+  // sellers naming a product the same common thing ("T-Shirt") collided
+  // with EACH OTHER, and a soft-deleted product's slug stayed permanently
+  // squatted platform-wide forever. Found as a real bug during the Catalog
+  // audit; every other per-store slug in this codebase (Collection, Blog,
+  // StorePage) already scopes this way.
+  @Prop({ type: String })
   slug: string;
 
   @Prop({ type: String, required: true })
@@ -232,6 +239,10 @@ export const ProductSchema = SchemaFactory.createForClass(Product);
 
 ProductSchema.index({ sellerId: 1 });
 ProductSchema.index({ storeId: 1 });
+// Real per-store uniqueness — replaces the old bare `slug: { unique: true }`
+// field-level index (see that field's own doc comment). Partial-filtered on
+// isDelete so a deleted product never permanently squats its slug.
+ProductSchema.index({ storeId: 1, slug: 1 }, { unique: true, partialFilterExpression: { isDelete: false } });
 ProductSchema.index({ name: 1 });
 ProductSchema.index({ categoryId: 1 });
 ProductSchema.index({ productType: 1 });

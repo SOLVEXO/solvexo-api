@@ -17,6 +17,7 @@ import { RedisModule } from '@/redis/redis.module';
 import { FinanceModule } from '@/finance/finance.module';
 import { PaymentModule } from '@/payment/payment.module';
 import { ExchangeRateModule } from '@/exchange-rate/exchange-rate.module';
+import { IntegrationsModule } from '@/integrations/integrations.module';
 import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 
@@ -28,6 +29,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
     FinanceModule,
     PaymentModule,
     ExchangeRateModule,
+    IntegrationsModule,
     ConfigModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],

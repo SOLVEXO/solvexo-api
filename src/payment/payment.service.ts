@@ -1231,6 +1231,7 @@ export class PaymentService {
           city: address.city,
           state: address.state,
           zipCode: address.zipCode,
+          country: address.country ?? null,
         };
       }
     }

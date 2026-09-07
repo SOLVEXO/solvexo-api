@@ -73,7 +73,30 @@ export class ExchangeRateService {
     if (currency === 'USD') {
       return { currency: 'USD', ratePerUSD: 1, effectiveFrom: new Date(), source: 'admin' as const, _id: null };
     }
-    const rate = await this.getCurrentRate(currency);
+    let rate = await this.getCurrentRate(currency);
+    // Self-heals a currency that's enabled but hasn't had its first real
+    // rate fetched yet (auto-enabled currencies start this way — see
+    // AdminConfigService.getEnabledCurrencies's doc comment — and the daily
+    // refresh cron could still be up to 24h away) with ONE live fetch, right
+    // now, instead of making the buyer wait for tomorrow's cron. Only for a
+    // currency Frankfurter actually covers; anything else still needs a real
+    // admin-set rate first, same as always.
+    if (!rate && isFrankfurterSupported(currency)) {
+      try {
+        const res = await fetch(`https://api.frankfurter.app/latest?from=USD&to=${currency}`);
+        if (res.ok) {
+          const data = (await res.json()) as { rates?: Record<string, number> };
+          const live = data?.rates?.[currency];
+          if (typeof live === 'number' && Number.isFinite(live) && live > 0) {
+            await this.ingestRate(currency, live, 'provider');
+            rate = await this.getCurrentRate(currency);
+          }
+        }
+      } catch {
+        // fall through to the "no rate available" error below — a bootstrap
+        // fetch failing here is no worse than the pre-existing behavior.
+      }
+    }
     if (!rate) {
       throw new BadRequestException(
         `No exchange rate available for ${currency} — cannot convert or checkout in this currency yet`,

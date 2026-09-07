@@ -288,6 +288,14 @@ export class OrderShippingAddress {
 
   @Prop({ type: String, required: true })
   zipCode: string;
+
+  // Nullable — mirrors Address.country (optional/added later; a pre-existing
+  // address saved before that field existed has none). Required for a real
+  // live carrier label purchase (ShippingRatesService.purchaseLabel) but not
+  // for anything else this schema is used for, so it stays optional here
+  // too rather than breaking every historical order without it.
+  @Prop({ type: String, default: null })
+  country: string | null;
 }
 
 export const OrderShippingAddressSchema =

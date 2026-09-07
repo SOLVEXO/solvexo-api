@@ -7,6 +7,11 @@ import { CreateMetaobjectDefinitionDto } from './dto/create-metaobject-definitio
 import { UpdateMetaobjectDefinitionDto } from './dto/update-metaobject-definition.dto';
 import { SetEntryFieldsDto } from './dto/set-entry-fields.dto';
 
+// See createDefinition's own doc comment on why these two exact segments
+// (matching public-metaobjects.controller.ts's literal routes) can never be
+// used as a real type name.
+const RESERVED_METAOBJECT_TYPES = new Set(['definitions', 'entry']);
+
 @Injectable()
 export class MetaobjectsService {
   constructor(private readonly databaseService: DatabaseService) {}
@@ -40,6 +45,15 @@ export class MetaobjectsService {
 
   async createDefinition(storeId: string, sellerId: string, dto: CreateMetaobjectDefinitionDto) {
     await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
+    // These two literal segments are real static routes on the PUBLIC
+    // controller (GET :storeId/definitions, GET :storeId/entry/:entryId),
+    // registered ahead of the dynamic GET :storeId/:type route — a type
+    // named either would be silently unreachable at that route (NestJS
+    // matches the literal route first) and would crash any storefront
+    // section trying to list its entries (found during the Catalog audit).
+    if (RESERVED_METAOBJECT_TYPES.has(dto.type)) {
+      throw new BadRequestException(`"${dto.type}" is a reserved type name — please pick a different one.`);
+    }
     const existing = await this.definitionModel.findOne({ storeId, type: dto.type });
     if (existing) throw new ConflictException(`A "${dto.type}" metaobject type already exists`);
     this.assertUniqueFieldKeys(dto.fieldDefinitions);
@@ -62,11 +76,23 @@ export class MetaobjectsService {
       // not just "any entry of this type exists").
       const entryCount = await this.entryModel.countDocuments({ storeId, definitionId });
       if (entryCount > 0) {
+        const existingByKey = new Map(definition.fieldDefinitions.map((f) => [f.key, f]));
         const nextByKey = new Map(dto.fieldDefinitions.map(f => [f.key, f]));
         for (const existingField of definition.fieldDefinitions) {
           const next = nextByKey.get(existingField.key);
           if (!next) throw new BadRequestException(`Cannot remove field "${existingField.name}" — ${entryCount} existing ${entryCount === 1 ? 'entry' : 'entries'} still use it. Delete those entries first.`);
           if (next.type !== existingField.type) throw new BadRequestException(`Cannot change the type of field "${existingField.name}" — ${entryCount} existing ${entryCount === 1 ? 'entry' : 'entries'} already store a value for it.`);
+        }
+        // A brand-new field marked required would silently orphan every
+        // existing entry — none of them have a value for it yet, so they'd
+        // all fail this exact "is required" check the moment anyone opens
+        // and saves one, with no warning anywhere before that (found during
+        // the Catalog audit). Blocked the same way removing/retyping already
+        // is, rather than letting it through unannounced.
+        for (const field of dto.fieldDefinitions) {
+          if (field.required && !existingByKey.has(field.key)) {
+            throw new BadRequestException(`Cannot add "${field.name}" as required — ${entryCount} existing ${entryCount === 1 ? 'entry' : 'entries'} would have no value for it. Add it as optional first, fill it in on every entry, then make it required.`);
+          }
         }
       }
     }

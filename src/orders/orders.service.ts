@@ -15,6 +15,7 @@ import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { LoyaltyService } from '@/loyalty/loyalty.service';
 import { SubscriptionBenefitsService } from '@/subscriptions/subscription-benefits.service';
 import { NotificationsService } from '@/notifications/notifications.service';
+import { ShippingRatesService } from '@/shipping-rates/shipping-rates.service';
 import { NOTIFICATION_TYPES } from '@/notifications/notification.types';
 import { round } from '@/common/number.util';
 import { deriveRollupStatus } from './order-status.util';
@@ -52,6 +53,7 @@ export class OrdersService {
     private readonly loyaltyService: LoyaltyService,
     private readonly subscriptionBenefits: SubscriptionBenefitsService,
     private readonly notificationsService: NotificationsService,
+    private readonly shippingRatesService: ShippingRatesService,
   ) {}
 
   /** Subscribers earn points at their plan's configured multiplier (default 1x). */
@@ -697,6 +699,90 @@ export class OrdersService {
         remaining,
       },
     };
+  }
+
+  /**
+   * Real, one-click "mark as shipped" — for a store that's connected Shippo
+   * (see ShippingRatesService/the Integrations page), fetches a fresh live
+   * rate quote for this exact order's destination + real item weight, buys
+   * the CHEAPEST option's label immediately, and marks the sellerOrder
+   * shipped with the real carrier/tracking number/label Shippo just issued —
+   * no manual tracking-number typing. Falls back with a clear error (not a
+   * silent no-op) whenever a live label genuinely can't be purchased: store
+   * hasn't connected Shippo, this order predates the `country` field on its
+   * address snapshot (see OrderShippingAddress), or Shippo itself is
+   * unreachable — the seller still has the existing manual
+   * `updateSellerOrderStatus({status:'shipped', tracking})` path for those
+   * cases, this is strictly an additional convenience.
+   */
+  async purchaseShippingLabel(sellerId: string, orderId: string, storeId: string, ip?: string, userAgent?: string) {
+    const { orderModel, storeModel, productVariantModel } = this.databaseService.repositories;
+
+    const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
+    if (!store) throw new ForbiddenException('Store not found or unauthorized');
+
+    const order = await orderModel.findOne({ _id: orderId, isDelete: false });
+    if (!order) throw new NotFoundException('Order not found');
+
+    const sellerOrderIndex = order.sellerOrders.findIndex(
+      (so: any) => so.storeId === storeId && so.sellerId === sellerId,
+    );
+    if (sellerOrderIndex === -1) throw new ForbiddenException('Unauthorized');
+
+    const addr = order.shippingAddress as any;
+    if (!addr) throw new BadRequestException('This order has no shipping address on file — it may be digital-only.');
+    if (!addr.country) {
+      throw new BadRequestException(
+        'This order\'s saved address has no country on file (it predates that field) — use the manual tracking-number entry instead.',
+      );
+    }
+
+    const sellerOrder = order.sellerOrders[sellerOrderIndex] as any;
+    const variantIds = [...new Set(sellerOrder.items.map((i: any) => i.variantId).filter(Boolean) as string[])];
+    const variants = await productVariantModel.find({ _id: { $in: variantIds } }).select('shippingWeight').lean();
+    const weightByVariant = new Map(variants.map((v: any) => [String(v._id), v.shippingWeight]));
+    const totalWeightKg = this.shippingRatesService.computeTotalWeightKg(
+      sellerOrder.items.map((item: any) => ({
+        shippingWeight: item.variantId ? weightByVariant.get(item.variantId) ?? null : null,
+        quantity: item.quantity ?? 1,
+      })),
+    );
+
+    const rates = await this.shippingRatesService.getLiveRates(
+      storeId,
+      {
+        name: addr.recipientName,
+        street1: addr.addressLine1,
+        street2: addr.addressLine2 ?? undefined,
+        city: addr.city,
+        state: addr.state,
+        zip: addr.zipCode,
+        country: addr.country,
+        phone: addr.phoneNumber ?? undefined,
+      },
+      totalWeightKg,
+    );
+    if (!rates || rates.length === 0) {
+      throw new BadRequestException('No live carrier rate is available for this order — connect Shippo in Integrations, or use the manual tracking-number entry instead.');
+    }
+    const cheapest = rates.reduce((best, r) => (r.amount < best.amount ? r : best), rates[0]);
+
+    const label = await this.shippingRatesService.purchaseLabel(storeId, cheapest.rateId);
+    if (!label) {
+      throw new BadRequestException('The label purchase failed — try again, or use the manual tracking-number entry instead.');
+    }
+
+    return this.updateSellerOrderStatus(
+      sellerId,
+      {
+        orderId,
+        storeId,
+        status: 'shipped',
+        tracking: { carrier: cheapest.carrier, trackingNumber: label.trackingNumber, trackingUrl: label.trackingUrlProvider },
+      },
+      ip,
+      userAgent,
+    );
   }
 
   async updateSellerOrderStatus(

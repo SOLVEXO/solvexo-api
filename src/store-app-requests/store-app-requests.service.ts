@@ -11,6 +11,7 @@ import { verifyStoreOwnershipStrict } from '../common/store-ownership.util';
 import { CreateStoreAppRequestDto } from './dto/create-store-app-request.dto';
 import { UpdatePlatformStatusDto } from './dto/update-platform-status.dto';
 import { StoreAppPlatformStatus } from './schemas/store-app-request.schema';
+import { ExchangeRateService } from '../exchange-rate/exchange-rate.service';
 
 const ICON_MAX_BYTES = 1 * 1024 * 1024;
 const ICON_REQUIRED_SIZE = 512;
@@ -29,6 +30,7 @@ export class StoreAppRequestsService {
     private readonly notificationsService: NotificationsService,
     private readonly emailService: EmailService,
     private readonly configService: ConfigService,
+    private readonly exchangeRateService: ExchangeRateService,
   ) {
     const secretKey = this.configService.get<string>('STRIPE_SECRET_KEY')?.trim();
     if (secretKey) this.stripe = new Stripe(secretKey, { apiVersion: '2025-04-30.basil' as any });
@@ -128,7 +130,7 @@ export class StoreAppRequestsService {
       throw new BadRequestException('Platform must be "android" or "ios"');
     }
     if (!this.stripe) throw new BadRequestException('Online payments are not configured yet.');
-    await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
+    const store = await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
 
     const request = await this.model.findOne({ storeId }).sort({ createdAt: -1 });
     if (!request) {
@@ -139,14 +141,20 @@ export class StoreAppRequestsService {
       throw new BadRequestException(`${platform === 'android' ? 'Android' : 'iOS'} has already been requested for this app.`);
     }
 
+    // Charged in the seller's own store currency (Store.baseCurrency, set
+    // once at store creation and immutable) rather than a hardcoded USD —
+    // same real, per-store "billing currency" concept Shopify's own signup
+    // flow uses. `platformFeeUSD()` stays the admin-facing reference price.
     const priceUSD = this.platformFeeUSD();
-    const amountCents = Math.round(priceUSD * 100);
+    const currency = (store as any)?.baseCurrency ?? 'USD';
+    const chargeAmount = currency === 'USD' ? priceUSD : await this.exchangeRateService.convert(priceUSD, 'USD', currency);
+    const amountCents = Math.round(chargeAmount * 100);
     const idempotencyKey = `store_app_platform_${request._id.toString()}_${platform}_${amountCents}`;
 
     const paymentIntent = await this.stripe.paymentIntents.create(
       {
         amount: amountCents,
-        currency: 'usd',
+        currency: currency.toLowerCase(),
         metadata: { storeId, sellerId, requestId: request._id.toString(), platform, purpose: 'store_app_platform' },
         automatic_payment_methods: { enabled: true, allow_redirects: 'never' },
       },
@@ -157,7 +165,9 @@ export class StoreAppRequestsService {
     state.stripePaymentIntentId = paymentIntent.id;
     await request.save();
 
-    return { success: true, data: { clientSecret: paymentIntent.client_secret, amount: priceUSD } };
+    // Real, actually-charged amount/currency — see promotions.service.ts's
+    // identical fix for why this must never stay the raw USD reference price.
+    return { success: true, data: { clientSecret: paymentIntent.client_secret, amount: chargeAmount, currency } };
   }
 
   /** Called right after Stripe Elements confirms the card payment

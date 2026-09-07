@@ -12,6 +12,8 @@ import { UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { Roles } from '../auth/decorators/roles.decorator'
 import { RolesGuard } from '../auth/guards/roles.guard'; ;
+import { resolveCountryFromIp } from '../common/geo-locate.util';
+import { resolveAuthVisualRegion, AUTH_REGION_IMAGE_URL } from '../common/auth-visual-region.const';
 
 
 
@@ -20,6 +22,25 @@ import { RolesGuard } from '../auth/guards/roles.guard'; ;
 @Controller('api/auth')
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
+
+  // Real IP-based country detection — powers two independent frontend
+  // features off one lookup: (1) the Register form's phone input auto-
+  // selects the right dial code/flag instead of defaulting everyone to the
+  // same country; (2) `region`/`imageUrl` let AuthSplitLayout (shared by
+  // every auth screen — Register/Login/Onboarding/etc.) show a real,
+  // region-appropriate background photo instead of one fixed generic
+  // illustration for every visitor worldwide. `region`/`imageUrl` are
+  // resolved from a small curated map (`auth-visual-region.const.ts`) —
+  // never per-country, real platforms only build out their actual top
+  // markets — with `'default'` covering everything unmapped. Fail-open:
+  // a null country still returns a valid 'default' region + photo, never
+  // an error.
+  @Get('detect-country')
+  detectCountry(@Req() req: any) {
+    const country = resolveCountryFromIp(req.ip);
+    const region = resolveAuthVisualRegion(country);
+    return { success: true, data: { country, region, imageUrl: AUTH_REGION_IMAGE_URL[region] } };
+  }
 
   // ✅ Signup
   // Rate-limited (per IP) same as every other public account-creation-shaped

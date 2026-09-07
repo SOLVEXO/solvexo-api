@@ -96,6 +96,16 @@ export class OrdersController {
     );
   }
 
+  /** Real one-click "mark as shipped" via a live-purchased carrier label —
+   *  see OrdersService.purchaseShippingLabel's own doc comment. */
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Put('purchase-shipping-label')
+  async purchaseShippingLabel(@Req() req: any, @Body() body: { orderId: string; storeId: string }) {
+    const { userId } = req.user;
+    return this.ordersService.purchaseShippingLabel(userId, body.orderId, body.storeId, req.ip, req.headers['user-agent']);
+  }
+
   // Static path — must be declared before `seller-orders/:storeId` below, otherwise
   // that param route would swallow this literal segment as `storeId: 'my'`.
   @UseGuards(JwtAuthGuard, RolesGuard)

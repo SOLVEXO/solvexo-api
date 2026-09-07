@@ -3,6 +3,7 @@ import { AuthModule } from '../auth/auth.module';
 import { RedisModule } from '../redis/redis.module';
 import { AdminConfigModule } from '../admin-config/admin-config.module';
 import { MediaLibraryModule } from '../media-library/media-library.module';
+import { ExchangeRateModule } from '../exchange-rate/exchange-rate.module';
 import { EmailService } from '../otp/services/email.service';
 import { PromotionsController } from './promotions.controller';
 import { AdminPromotionsController } from './admin-promotions.controller';
@@ -11,7 +12,7 @@ import { PromotionsService } from './promotions.service';
 import { PromotionPricingService } from './promotion-pricing.service';
 
 @Module({
-  imports: [AuthModule, RedisModule, AdminConfigModule, MediaLibraryModule],
+  imports: [AuthModule, RedisModule, AdminConfigModule, MediaLibraryModule, ExchangeRateModule],
   controllers: [PromotionsController, AdminPromotionsController, PublicPromotionsController],
   providers: [PromotionsService, PromotionPricingService, EmailService],
   exports: [PromotionsService],
