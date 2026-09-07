@@ -28,9 +28,9 @@ export type AuthVisualRegion =
   | 'latin_america'
   | 'default';
 
-export type AuthPageContext = 'register' | 'login' | 'onboarding';
+export type AuthPageContext = 'register' | 'login' | 'onboarding' | 'forgot_password' | 'otp' | 'new_password';
 
-export const AUTH_PAGE_CONTEXTS: AuthPageContext[] = ['register', 'login', 'onboarding'];
+export const AUTH_PAGE_CONTEXTS: AuthPageContext[] = ['register', 'login', 'onboarding', 'forgot_password', 'otp', 'new_password'];
 
 /** ISO-3166 alpha-2 → region. Anything not listed here (or a null/undetected
  *  country) falls through to `'default'` — never a hard error. */
@@ -88,41 +88,65 @@ export const AUTH_REGION_IMAGE_URL: Record<AuthVisualRegion, Record<AuthPageCont
     register:   'https://images.unsplash.com/photo-1674502754814-de8b0acb7e22?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
     login:      'https://images.unsplash.com/photo-1706043197156-eb4b075b3108?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
     onboarding: 'https://images.unsplash.com/photo-1658073404255-5c1da0f13f75?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    forgot_password: 'https://images.unsplash.com/photo-1634628899975-2e681060c681?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    otp:             'https://images.unsplash.com/photo-1690015695305-a5e0218125a8?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    new_password:    'https://images.unsplash.com/photo-1767126624081-f692ed0db144?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
   },
   middle_east: {
     register:   'https://images.unsplash.com/photo-1634007626524-f47fa37810a7?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
     login:      'https://images.unsplash.com/photo-1543579596-2c11997c7706?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
     onboarding: 'https://images.unsplash.com/photo-1526495124232-a04e1849168c?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    forgot_password: 'https://images.unsplash.com/photo-1636924271402-d639875aa2bb?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    otp:             'https://images.unsplash.com/photo-1786877030136-bfd84dcb8e0d?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    new_password:    'https://images.unsplash.com/photo-1759334928681-dc7ad674138e?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
   },
   europe: {
     register:   'https://images.unsplash.com/photo-1609971757431-439cf7b4141b?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
     login:      'https://images.unsplash.com/photo-1539424675410-513ddd709ebd?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
     onboarding: 'https://images.unsplash.com/photo-1547254002-e65e0179fe9f?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    forgot_password: 'https://images.unsplash.com/photo-1786033086765-57332fef3583?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    otp:             'https://images.unsplash.com/photo-1778479959964-c2dffdd00749?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    new_password:    'https://images.unsplash.com/photo-1758296265626-b6530f338817?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
   },
   north_america: {
     register:   'https://images.unsplash.com/photo-1511881830150-850572962174?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
     login:      'https://images.unsplash.com/photo-1541336032412-2048a678540d?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
     onboarding: 'https://images.unsplash.com/photo-1719858403455-9a2582eca805?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    forgot_password: 'https://images.unsplash.com/photo-1696699651613-b81a429a0fec?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    otp:             'https://images.unsplash.com/photo-1767024213062-ec1b72afc7f0?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    new_password:    'https://images.unsplash.com/photo-1775747259088-11edc25eee58?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
   },
   east_asia: {
     register:   'https://images.unsplash.com/photo-1602646993760-7b885ba225af?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
     login:      'https://images.unsplash.com/photo-1573455494057-12684d151bf4?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
     onboarding: 'https://images.unsplash.com/photo-1596713109885-c94bdfd7f19d?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    forgot_password: 'https://images.unsplash.com/photo-1786707237548-d065054f5219?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    otp:             'https://images.unsplash.com/photo-1766933233626-8f784567dfed?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    new_password:    'https://images.unsplash.com/photo-1771804358832-b71b7e4039ef?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
   },
   southeast_asia: {
     register:   'https://images.unsplash.com/photo-1628221680019-f28a2716e727?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
     login:      'https://images.unsplash.com/photo-1631670796270-72ca29fe0c9b?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
     onboarding: 'https://images.unsplash.com/photo-1692533823876-e659c090a4ce?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    forgot_password: 'https://images.unsplash.com/photo-1786299599858-b94752c1ce38?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    otp:             'https://images.unsplash.com/photo-1786299600982-6261333a8b7b?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    new_password:    'https://images.unsplash.com/photo-1785011070032-a15b0fbfbb26?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
   },
   africa: {
     register:   'https://images.unsplash.com/photo-1570133435536-7ececf000ef6?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
     login:      'https://images.unsplash.com/photo-1529528070131-eda9f3e90919?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
     onboarding: 'https://images.unsplash.com/photo-1559738933-d69ac3ff674b?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    forgot_password: 'https://images.unsplash.com/photo-1761370980657-22586ea44093?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    otp:             'https://images.unsplash.com/photo-1760727466148-fd5049623510?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    new_password:    'https://images.unsplash.com/photo-1779088469713-e81a78846b4c?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
   },
   latin_america: {
     register:   'https://images.unsplash.com/photo-1654086441559-f2e71be7f050?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
     login:      'https://images.unsplash.com/photo-1651463378028-60bc2b22ba7b?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
     onboarding: 'https://images.unsplash.com/photo-1701397165417-f1db85c8b85f?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    forgot_password: 'https://images.unsplash.com/photo-1783513113196-626ac50b7560?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    otp:             'https://images.unsplash.com/photo-1759375242319-b0a3ad1398ed?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    new_password:    'https://images.unsplash.com/photo-1763821530010-89534ec80d19?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
   },
   default: {
     // Was a container-ship/crane photo — genuinely read as "industrial
@@ -133,6 +157,9 @@ export const AUTH_REGION_IMAGE_URL: Record<AuthVisualRegion, Record<AuthPageCont
     register:   'https://images.unsplash.com/photo-1759542288517-1160b5adfcf9?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
     login:      'https://images.unsplash.com/photo-1631897362327-4842446b5c51?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
     onboarding: 'https://images.unsplash.com/photo-1775883374751-d8157965021b?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    forgot_password: 'https://images.unsplash.com/photo-1776941516229-8a922adf0782?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    otp:             'https://images.unsplash.com/photo-1772460759097-ad68b3232a4f?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    new_password:    'https://images.unsplash.com/photo-1775493765876-ffcd2e4e1e87?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
   },
 };
 
