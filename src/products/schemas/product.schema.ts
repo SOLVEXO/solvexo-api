@@ -192,6 +192,17 @@ export class Product {
   @Prop({ enum: ['active', 'inactive', 'draft', 'scheduled'], default: 'draft' })
   status: string;
 
+  // Which of this store's own Product alternate templates
+  // (`collection-template` module, `resourceType:'product'`) this product's
+  // detail page renders its SURROUNDING sections through — e.g. `'default'`
+  // vs a seller-created `'minimal'` or `'featured'` template. The
+  // commerce-critical core (gallery, variant/qty/add-to-cart) is fixed
+  // chrome outside this system regardless of `templateKey` — see
+  // `StorefrontProductPage`. Falls back to `'default'` if the referenced
+  // template was since deleted.
+  @Prop({ type: String, default: 'default' })
+  templateKey: string;
+
   @Prop({ type: Date, default: null })
   scheduledAt: Date | null;
 

@@ -15,6 +15,8 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { OptionalJwtAuthGuard } from '../auth/guards/optional-jwt-auth.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { RolesGuard } from '../auth/guards/roles.guard';
+import { BillingAccessGuard } from '../platform-plans/guards/billing-access.guard';
+import { RequireActiveBilling } from '../platform-plans/decorators/require-active-billing.decorator';
 
 @Controller('api/products')
 export class productController {
@@ -35,6 +37,7 @@ export class productController {
     @Query('maxPrice') maxPriceQuery?: string,
     @Query('minRating') minRatingQuery?: string,
     @Query('sortBy') sortByQuery?: string,
+    @Query('storeId') storeId?: string,
   ) {
     const page = Math.max(1, parseInt(pageQuery as string) || 1);
     const limit = Math.min(
@@ -75,6 +78,7 @@ export class productController {
       parseNum(maxPriceQuery),
       parseNum(minRatingQuery),
       sortBy,
+      storeId,
     );
   }
 
@@ -109,16 +113,18 @@ export class productController {
     return this.ProductsService.getProductPreview(id, req.ip);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, BillingAccessGuard)
   @Roles('seller')
+  @RequireActiveBilling()
   @Post('add-physical-product')
   async addPhysicalProduct(@Req() req: any, @Body() body: any) {
     const { userId: sellerId } = req.user;
     return this.ProductsService.addPhysicalProduct(sellerId, body);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, BillingAccessGuard)
   @Roles('seller')
+  @RequireActiveBilling()
   @Post('add-digital-product')
   async addDigitalProduct(@Req() req: any, @Body() body: any) {
     const { userId: sellerId } = req.user;
@@ -176,8 +182,13 @@ export class productController {
     return this.ProductsService.getStoreProducts(sellerId, storeId, query);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  // Gated the same as add-physical-product/add-digital-product — the
+  // BillingAccessGuard's own decorator doc names "creating/editing products"
+  // as its intended scope, but this route was missed when the guard was
+  // first wired up (found while re-verifying the 'locked' enforcement).
+  @UseGuards(JwtAuthGuard, RolesGuard, BillingAccessGuard)
   @Roles('seller')
+  @RequireActiveBilling()
   @Post('edit-product')
   async editProduct(@Req() req: any, @Body() body: any) {
     const { userId: sellerId } = req.user;

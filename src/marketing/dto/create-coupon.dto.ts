@@ -29,6 +29,11 @@ export class CreateCouponDto {
   @Min(1)
   usageLimit?: number;
 
+  @ApiProperty({ required: false, example: '2026-05-01', description: 'Coupon is inactive until this date — omit to activate immediately.' })
+  @IsOptional()
+  @IsDateString()
+  startsAt?: string;
+
   @ApiProperty({ required: false, example: '2026-06-30' })
   @IsOptional()
   @IsDateString()

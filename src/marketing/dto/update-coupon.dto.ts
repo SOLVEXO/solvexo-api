@@ -34,6 +34,11 @@ export class UpdateCouponDto {
   @ApiProperty({ required: false })
   @IsOptional()
   @IsDateString()
+  startsAt?: string;
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsDateString()
   expiresAt?: string;
 
   @ApiProperty({ required: false })

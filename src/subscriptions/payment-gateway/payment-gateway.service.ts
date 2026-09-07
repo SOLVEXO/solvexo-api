@@ -64,6 +64,10 @@ export class PaymentGatewayService implements IPaymentGateway, OnModuleInit {
     return this.provider.chargeSubscription(subscriptionId, amountUSD, context);
   }
 
+  chargeOneTime(referenceId: string, amountUSD: number, context?: ChargeContext): Promise<ChargeResult> {
+    return this.provider.chargeOneTime(referenceId, amountUSD, context);
+  }
+
   createProviderSubscription(
     subscriptionId: string,
     planName: string,

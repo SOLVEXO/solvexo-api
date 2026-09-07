@@ -2,6 +2,7 @@ import {
   Injectable,
   UnauthorizedException,
   BadRequestException,
+  ForbiddenException,
   NotFoundException,
   HttpException,
   HttpStatus,
@@ -346,12 +347,29 @@ export class ProductsService {
         .lean()
     ).map((s: any) => s._id.toString());
 
-    if (query.storeId?.$in) {
-      const existing = new Set(query.storeId.$in as string[]);
-      query.storeId = { $in: activeIds.filter((id) => existing.has(id)) };
-    } else {
-      query.storeId = { $in: activeIds };
+    query.storeId = this.narrowStoreIdConstraint(query.storeId, activeIds);
+  }
+
+  /** Narrows an existing `storeId` query constraint (none | a single exact id |
+   *  `{ $in: [...] }`) down to only the ids also present in `candidateIds`,
+   *  without ever widening it. Used to layer independent storeId restrictions
+   *  (a single-store app's own storeId, a campaign's participating stores,
+   *  the active-stores gate) on top of each other safely — e.g. a caller that
+   *  already scoped `query.storeId` to its own store keeps exactly that store
+   *  (or nothing, if that store isn't itself in `candidateIds`), rather than
+   *  having a later gate silently widen it back out to every candidate. */
+  private narrowStoreIdConstraint(current: any, candidateIds: string[]): any {
+    const candidates = new Set(candidateIds.map(String));
+    if (current == null) {
+      return { $in: Array.from(candidates) };
     }
+    if (typeof current === 'string') {
+      return candidates.has(current) ? current : { $in: [] };
+    }
+    if (current.$in) {
+      return { $in: (current.$in as string[]).filter((id) => candidates.has(String(id))) };
+    }
+    return { $in: [] };
   }
 
   async getProductsByCategoryId(
@@ -367,6 +385,7 @@ export class ProductsService {
     maxPrice?: number,
     minRating?: number,
     sortBy?: 'newest' | 'price_asc' | 'price_desc' | 'rating' | 'popularity',
+    storeId?: string,
   ): Promise<any> {
     const productModel = this.databaseService.repositories.productModel;
     const productVariantModel =
@@ -377,6 +396,11 @@ export class ProductsService {
       status: 'active',
       isDelete: false,
     };
+
+    // A single-store app build passes its own storeId so category browsing
+    // never surfaces another store's products — narrowed further below by
+    // any campaign restriction and the active-stores gate, never widened.
+    if (storeId) query.storeId = storeId;
 
     // 0️⃣ Optional productType/educationLevel filters — used by verticals like the
     // Education marketplace to show only `productType: 'educational'` listings
@@ -415,7 +439,7 @@ export class ProductsService {
       // A platform-sponsored campaign applies to every store — no storeId
       // restriction at all, same universal rule as getActiveCampaignsForStores.
       if (campaign && campaign.sponsorType !== 'platform') {
-        query.storeId = { $in: campaign.participatingStoreIds ?? [] };
+        query.storeId = this.narrowStoreIdConstraint(query.storeId, campaign.participatingStoreIds ?? []);
       } else if (!campaign) {
         query.storeId = { $in: [] };
       }
@@ -695,6 +719,7 @@ export class ProductsService {
     page: number = 1,
     limit: number = 20,
     customerId?: string | null,
+    storeId?: string,
   ) {
     const productModel = this.databaseService.repositories.productModel;
 
@@ -717,6 +742,11 @@ export class ProductsService {
       isDelete: false,
       $or: [{ name: regex }, { description: regex }],
     };
+
+    // A single-store app build passes its own storeId so search never
+    // surfaces another store's products — narrowed further below by the
+    // active-stores gate, never widened.
+    if (storeId) query.storeId = storeId;
 
     await this.restrictToActiveStores(query);
 
@@ -997,6 +1027,46 @@ export class ProductsService {
 
   // ─── NEW APIS ───────────────────────────────────────────────────────────────
 
+  /** Resolves and validates the `categoryId` a product is saved under.
+   *  Categories are now store-scoped (a seller builds their own tree,
+   *  entirely at their own discretion — see CategoriesService) instead of
+   *  every product being forced onto the store's single fixed legacy root.
+   *  Accepts either: a category the seller created for THIS store
+   *  (`category.storeId === storeId`), or a legacy global/admin category
+   *  (`category.storeId` null) — the latter kept only so a pre-existing
+   *  store that still has an old `store.categoryId` root, or a product
+   *  request that hasn't been updated to the new picker yet, keeps working
+   *  unchanged. Falls back to the store's legacy `categoryId` only when the
+   *  request sends none at all. */
+  private async resolveProductCategoryId(
+    storeId: string,
+    legacyStoreCategoryId: string | null,
+    requestedCategoryId?: string,
+  ): Promise<string> {
+    const categoryId = requestedCategoryId || legacyStoreCategoryId;
+    if (!categoryId) {
+      throw new BadRequestException(
+        'Select a category for this product — create one from your store\'s Categories page first.',
+      );
+    }
+    if (!isValidObjectId(categoryId)) {
+      throw new BadRequestException('Invalid category selected');
+    }
+    const category = await this.databaseService.repositories.categoryModel.findOne({
+      _id: categoryId,
+      status: 'active',
+      isDelete: false,
+    });
+    if (!category) {
+      throw new BadRequestException('Selected category not found');
+    }
+    const belongsToStore = !category.storeId || String(category.storeId) === String(storeId);
+    if (!belongsToStore) {
+      throw new ForbiddenException('That category does not belong to your store');
+    }
+    return categoryId;
+  }
+
   async addPhysicalProduct(sellerId: string, body: any) {
     const { storeModel, sellerModel, productModel, productVariantModel } =
       this.databaseService.repositories;
@@ -1012,6 +1082,7 @@ export class ProductsService {
       storeId,
       name,
       description,
+      categoryId: requestedCategoryId,
       subCategoryId,
       images,
       tags,
@@ -1051,6 +1122,19 @@ export class ProductsService {
       if (v?.price === undefined || v?.price === null) {
         throw new BadRequestException('Every variant requires a price');
       }
+      // Real server-side range validation — found via a live QA pass that
+      // a negative price/stock reached the database layer unvalidated
+      // (the schema itself has no `min` constraint), surfacing as a raw,
+      // unhelpful 500 instead of a clean field-specific error.
+      if (typeof v.price !== 'number' || Number.isNaN(v.price) || v.price < 0) {
+        throw new BadRequestException('Price cannot be negative');
+      }
+      if (v.compareAtPrice !== undefined && v.compareAtPrice !== null && (typeof v.compareAtPrice !== 'number' || v.compareAtPrice < 0)) {
+        throw new BadRequestException('Compare-at price cannot be negative');
+      }
+      if (!v.unlimitedStock && v.stock !== undefined && (typeof v.stock !== 'number' || Number.isNaN(v.stock) || v.stock < 0)) {
+        throw new BadRequestException('Stock quantity cannot be negative');
+      }
       try {
         validateOptions(v.options);
       } catch (e: any) {
@@ -1078,9 +1162,7 @@ export class ProductsService {
       );
     }
 
-    const categoryId = store.categoryId;
-    if (!categoryId)
-      throw new BadRequestException('Your store has no category selected');
+    const categoryId = await this.resolveProductCategoryId(storeId, store.categoryId, requestedCategoryId);
 
     const slug = await generateUniqueSlug(productModel, name);
 
@@ -1111,6 +1193,7 @@ export class ProductsService {
         return productVariantModel.create({
           productId: product._id.toString(),
           sku,
+          barcode: v.barcode ?? null,
           price: v.price,
           // Stamped from the owning store's own pricing currency — never
           // client-supplied, never a per-product choice. See
@@ -1150,6 +1233,7 @@ export class ProductsService {
       name,
       description,
       productType,
+      categoryId: requestedCategoryId,
       subCategoryId,
       images,
       tags,
@@ -1230,9 +1314,7 @@ export class ProductsService {
       }
     }
 
-    const categoryId = store.categoryId;
-    if (!categoryId)
-      throw new BadRequestException('Your store has no category selected');
+    const categoryId = await this.resolveProductCategoryId(storeId, store.categoryId, requestedCategoryId);
 
     const slug = await generateUniqueSlug(productModel, name);
 
@@ -1377,6 +1459,7 @@ export class ProductsService {
       productId,
       name,
       description,
+      categoryId: requestedCategoryId,
       subCategoryId,
       images,
       tags,
@@ -1388,6 +1471,7 @@ export class ProductsService {
       customLevel,
       price,
       compareAtPrice,
+      templateKey,
     } = body;
 
     if (!productId) throw new BadRequestException('productId is required');
@@ -1418,12 +1502,20 @@ export class ProductsService {
     }
 
     if (description !== undefined) productUpdate.description = description;
+    if (requestedCategoryId !== undefined) {
+      productUpdate.categoryId = await this.resolveProductCategoryId(
+        String(product.storeId),
+        null,
+        requestedCategoryId,
+      );
+    }
     if (subCategoryId !== undefined)
       productUpdate.subCategoryId = subCategoryId;
     if (images !== undefined) productUpdate.images = images;
     if (tags !== undefined) productUpdate.tags = tags;
     if (isListedOnSolvexo !== undefined)
       productUpdate.isListedOnSolvexo = isListedOnSolvexo;
+    if (templateKey !== undefined) productUpdate.templateKey = templateKey;
     if (status !== undefined) {
       if (status === 'scheduled' && !scheduledAt) {
         throw new BadRequestException(

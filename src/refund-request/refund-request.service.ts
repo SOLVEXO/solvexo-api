@@ -10,6 +10,7 @@ import { PaymentService } from 'src/payment/payment.service';
 import { ExchangeRateService } from 'src/exchange-rate/exchange-rate.service';
 import { ActivityLogService } from 'src/activity-log/activity-log.service';
 import { verifyStoreOwnershipOrForbidden } from 'src/common/store-ownership.util';
+import { deriveRollupStatus } from 'src/orders/order-status.util';
 import { CreateRefundRequestDto } from './dto/refund-request.dto';
 
 @Injectable()
@@ -259,6 +260,18 @@ export class RefundRequestService {
             item.refundedAmount = item.totalPrice;
           }
         }
+        // Previously this refund never touched `SellerOrder.status`/
+        // `Order.orderStatus` at all — an order could sit at
+        // orderStatus:'completed' forever after a real refund, permanently
+        // out of sync with its own items. See order-status.util.ts — the
+        // same single derivation function every other status-changing path
+        // in orders.service.ts now goes through.
+        liveSellerOrder.status = deriveRollupStatus(
+          (liveSellerOrder.items as any[]).map((i: any) => i.status),
+        );
+        liveOrder.orderStatus = deriveRollupStatus(
+          (liveOrder.sellerOrders as any[]).map((so: any) => so.status),
+        );
         await liveOrder.save();
       }
     }

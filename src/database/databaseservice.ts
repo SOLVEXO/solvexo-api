@@ -161,6 +161,21 @@ export class DatabaseService {
     @InjectModel(schema.StoreLocation.name)
     private storeLocationModel: Model<schema.StoreLocationDocument>,
 
+    @InjectModel(schema.BookableService.name)
+    private bookableServiceModel: Model<schema.BookableServiceDocument>,
+
+    @InjectModel(schema.ServiceAvailability.name)
+    private serviceAvailabilityModel: Model<schema.ServiceAvailabilityDocument>,
+
+    @InjectModel(schema.ServicePackage.name)
+    private servicePackageModel: Model<schema.ServicePackageDocument>,
+
+    @InjectModel(schema.PackagePurchase.name)
+    private packagePurchaseModel: Model<schema.PackagePurchaseDocument>,
+
+    @InjectModel(schema.Booking.name)
+    private bookingModel: Model<schema.BookingDocument>,
+
     @InjectModel(schema.ActivityLog.name)
     private activityLogModel: Model<schema.ActivityLogDocument>,
 
@@ -277,8 +292,26 @@ export class DatabaseService {
     @InjectModel(schema.StorePage.name)
     private storePageModel: Model<schema.StorePageDocument>,
 
+    @InjectModel(schema.StoreFaq.name)
+    private storeFaqModel: Model<schema.StoreFaqDocument>,
+
+    @InjectModel(schema.CollectionTemplate.name)
+    private collectionTemplateModel: Model<schema.CollectionTemplateDocument>,
+
+    @InjectModel(schema.DraftOrder.name)
+    private draftOrderModel: Model<schema.DraftOrderDocument>,
+
+    @InjectModel(schema.StoreCustomerMeta.name)
+    private storeCustomerMetaModel: Model<schema.StoreCustomerMetaDocument>,
+
     @InjectModel(schema.BlogPost.name)
     private blogPostModel: Model<schema.BlogPostDocument>,
+
+    @InjectModel(schema.Blog.name)
+    private blogModel: Model<schema.BlogDocument>,
+
+    @InjectModel(schema.BlogComment.name)
+    private blogCommentModel: Model<schema.BlogCommentDocument>,
 
     @InjectModel(schema.PromotionRequest.name)
     private promotionRequestModel: Model<schema.PromotionRequestDocument>,
@@ -367,6 +400,11 @@ export class DatabaseService {
       aiCreditsWalletModel: this.aiCreditsWalletModel,
       platformAddonPurchaseModel: this.platformAddonPurchaseModel,
       storeLocationModel: this.storeLocationModel,
+      bookableServiceModel: this.bookableServiceModel,
+      serviceAvailabilityModel: this.serviceAvailabilityModel,
+      servicePackageModel: this.servicePackageModel,
+      packagePurchaseModel: this.packagePurchaseModel,
+      bookingModel: this.bookingModel,
       activityLogModel: this.activityLogModel,
       couponModel: this.couponModel,
       loyaltyProgramModel: this.loyaltyProgramModel,
@@ -406,7 +444,13 @@ export class DatabaseService {
       storeBannerModel: this.storeBannerModel,
       storeThemeModel: this.storeThemeModel,
       storePageModel: this.storePageModel,
+      storeFaqModel: this.storeFaqModel,
+      collectionTemplateModel: this.collectionTemplateModel,
+      draftOrderModel: this.draftOrderModel,
+      storeCustomerMetaModel: this.storeCustomerMetaModel,
       blogPostModel: this.blogPostModel,
+      blogModel: this.blogModel,
+      blogCommentModel: this.blogCommentModel,
       promotionRequestModel: this.promotionRequestModel,
       promotionDailyStatsModel: this.promotionDailyStatsModel,
       promotionClickEventModel: this.promotionClickEventModel,

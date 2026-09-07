@@ -8,6 +8,7 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { UpdateGiftCardSettingsDto } from './dto/update-gift-card-settings.dto';
 import { IssueManualGiftCardDto } from './dto/issue-manual-gift-card.dto';
 import { CreatePurchaseIntentDto } from './dto/create-purchase-intent.dto';
+import { resolveBuyerStoreScope } from '../common/store-scope.util';
 
 @ApiTags('Gift Cards')
 @Controller('api/gift-cards')
@@ -67,6 +68,7 @@ export class GiftCardsController {
   @UseGuards(JwtAuthGuard)
   @Post(':storeId/purchase-intent')
   createPurchaseIntent(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: CreatePurchaseIntentDto) {
-    return this.giftCardsService.createPurchaseIntent(req.user.userId, storeId, dto);
+    const scopedStoreId = resolveBuyerStoreScope(req.user.storeId, storeId);
+    return this.giftCardsService.createPurchaseIntent(req.user.userId, scopedStoreId, dto);
   }
 }

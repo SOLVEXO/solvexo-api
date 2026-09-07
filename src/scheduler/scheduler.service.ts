@@ -18,6 +18,7 @@ import { PromotionsService } from 'src/promotions/promotions.service';
 import { ExchangeRateService } from 'src/exchange-rate/exchange-rate.service';
 import { ActivityLogService } from 'src/activity-log/activity-log.service';
 import { AdminFinanceService } from 'src/admin-finance/admin-finance.service';
+import { BookingsService } from 'src/bookings/bookings.service';
 
 @Injectable()
 export class SchedulerService {
@@ -41,6 +42,7 @@ export class SchedulerService {
     private readonly exchangeRateService: ExchangeRateService,
     private readonly activityLogService: ActivityLogService,
     private readonly adminFinanceService: AdminFinanceService,
+    private readonly bookingsService: BookingsService,
   ) {}
 
   /**
@@ -73,6 +75,25 @@ export class SchedulerService {
       await productModel.updateMany(
         { status: 'scheduled', scheduledAt: { $lte: new Date() }, isDelete: false },
         { $set: { status: 'active', scheduledAt: null } },
+      );
+    });
+  }
+
+  // Sibling to activateScheduledProducts above — StoreBlogService#publish
+  // previously had no way to go live at a future date at all (always
+  // published immediately); a scheduled post now flips to 'published' here
+  // once due, `publishedAt` set to the moment it was actually scheduled for.
+  @Cron('* * * * *')
+  async publishScheduledBlogPosts() {
+    await this.runLocked('publish-scheduled-blog-posts', 50_000, async () => {
+      const { blogPostModel } = this.databaseService.repositories;
+      await blogPostModel.updateMany(
+        { status: 'scheduled', scheduledAt: { $lte: new Date() }, isDelete: false },
+        [{ $set: { status: 'published', publishedAt: '$scheduledAt', scheduledAt: null } }],
+        // See ContentVersioningService for why this option is required on
+        // Mongoose 9 for any array (aggregation-pipeline) update — without
+        // it this cron silently threw every single run.
+        { updatePipeline: true },
       );
     });
   }
@@ -405,6 +426,46 @@ export class SchedulerService {
   async checkFxExposure() {
     await this.runLocked('fx-exposure-check', 30_000, async () => {
       await this.adminFinanceService.runFxExposureCheck();
+    });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // BOOKINGS — parallel to the Subscriptions cron jobs above, same locking.
+  // ═══════════════════════════════════════════════════════════════════════
+
+  // Runs every 15 minutes — flips 'confirmed' bookings whose date+endTime
+  // has already passed to 'completed'.
+  @Cron('*/15 * * * *')
+  async completePastBookings() {
+    await this.runLocked('bookings-complete-past', 10 * 60_000, async () => {
+      const result = await this.bookingsService.completePastBookings();
+      if (result.completed > 0) {
+        this.logger.log(`Bookings: ${result.completed} past booking(s) marked completed`);
+      }
+    });
+  }
+
+  // Runs daily — mirrors expireLoyaltyPoints' daily style: marks
+  // PackagePurchase docs past their expiresAt (still 'active') as 'expired'.
+  @Cron('0 2 * * *')
+  async expirePackagePurchases() {
+    await this.runLocked('bookings-expire-packages', 10 * 60_000, async () => {
+      const result = await this.bookingsService.expirePackagePurchases();
+      if (result.expired > 0) {
+        this.logger.log(`Bookings: ${result.expired} package purchase(s) expired`);
+      }
+    });
+  }
+
+  // Runs every 6 hours — mirrors sendSubscriptionReminders: notifies buyers
+  // with a confirmed booking in the next ~24h (deduped via reminderSentAt).
+  @Cron('0 */6 * * *')
+  async sendBookingReminders() {
+    await this.runLocked('bookings-send-reminders', 20 * 60_000, async () => {
+      const result = await this.bookingsService.sendBookingReminders();
+      if (result.sent > 0) {
+        this.logger.log(`Bookings: ${result.sent} reminder notification(s) sent`);
+      }
     });
   }
 }

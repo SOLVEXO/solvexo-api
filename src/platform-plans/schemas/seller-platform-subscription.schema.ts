@@ -21,7 +21,13 @@ export class SellerPlatformSubscription {
 
   @Prop({
     type: String,
-    enum: ['trialing', 'active', 'past_due', 'canceled'],
+    // 'locked' — trial expired, or paid billing terminally failed/ended,
+    // with no successful conversion. Selling/checkout access is restricted
+    // (see BillingAccessGuard) but all seller/store data is untouched and
+    // billing/account routes stay reachable so the seller can pay and
+    // unlock. Only ever reached for `legacyFreeEligible: false` stores —
+    // see that field's comment.
+    enum: ['trialing', 'active', 'past_due', 'locked', 'canceled'],
     default: 'trialing',
   })
   status: string;
@@ -29,6 +35,17 @@ export class SellerPlatformSubscription {
   @Prop({ type: Date, required: true }) startedAt: Date;
   @Prop({ type: Date, default: null }) trialEndsAt: Date | null;
   @Prop({ type: Boolean, default: false }) trialReminderSent: boolean;
+
+  // true only for a subscription that already existed before the trial-based
+  // billing model shipped (backfilled once by migrate-legacy-free-eligible.ts).
+  // Every subscription created after that point is `false`. This is the one
+  // explicit signal `applyDunningFailure`/`finalizeScheduledCancellations`/the
+  // `customer.subscription.deleted` webhook use to decide `downgradeToFree()`
+  // (legacy — grandfathered, unaffected by this migration) vs `lockStore()`
+  // (new-model — no permanent free fallback). Deliberately NOT inferred from
+  // current plan/state, since a legacy free seller who later upgrades to a
+  // paid plan must still land on the free plan on failure, not get locked.
+  @Prop({ type: Boolean, default: false }) legacyFreeEligible: boolean;
   @Prop({ type: Date, required: true }) currentPeriodStart: Date;
   @Prop({ type: Date, required: true }) currentPeriodEnd: Date;
   @Prop({ type: Date, required: true }) nextBillingDate: Date;

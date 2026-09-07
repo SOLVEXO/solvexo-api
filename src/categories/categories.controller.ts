@@ -35,8 +35,8 @@ export class CategoriesController {
   }
 
   @Get('category-tree')
-  async getCategoryTree(@Query('id') id?: string) {
-    return this.categoriesService.getCategoryTreeNested(id);
+  async getCategoryTree(@Query('id') id?: string, @Query('storeId') storeId?: string) {
+    return this.categoriesService.getCategoryTreeNested(id, storeId);
   }
 
   @Get('category/:id')

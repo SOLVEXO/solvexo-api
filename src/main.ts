@@ -34,10 +34,33 @@ async function bootstrap() {
     'https://api.edudeen.com',
   ];
 
+  // Every seller store is served from its OWN subdomain
+  // (`<slug>.solvexo.store`) or, in dev, `<slug>.localhost:<port>` — there's
+  // no way to enumerate those individually in a static whitelist, so any
+  // origin under either base domain is allowed regardless of subdomain.
+  // (A seller's own connected Custom Domain is a separate, still-open gap —
+  // an arbitrary domain can't be pattern-matched here; it would need an
+  // async DB lookup against verified custom domains, not implemented yet.)
+  const isAllowedOrigin = (origin: string): boolean => {
+    if (whitelist.includes(origin)) return true;
+    let hostname: string;
+    try {
+      hostname = new URL(origin).hostname;
+    } catch {
+      return false;
+    }
+    return (
+      hostname === 'solvexo.store' ||
+      hostname.endsWith('.solvexo.store') ||
+      hostname === 'localhost' ||
+      hostname.endsWith('.localhost')
+    );
+  };
+
   app.enableCors({
     origin: (origin, cb) => {
       if (!origin) return cb(null, true);
-      if (whitelist.includes(origin)) return cb(null, true);
+      if (isAllowedOrigin(origin)) return cb(null, true);
       console.log('Blocked Origin:', origin);
       return cb(new Error('Not allowed by CORS'), false);
     },

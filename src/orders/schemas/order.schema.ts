@@ -210,7 +210,13 @@ export class SellerOrder {
   @Prop({ type: String, default: null })
   stripeConnectedAccountId: string | null;
 
-  // derived from items
+  // Derived — see `order-status.util.ts#deriveSellerOrderStatus`, the ONE
+  // function that computes this value; never hand-set independently.
+  // `partially_cancelled`/`partially_refunded`/`partially_shipped` added
+  // alongside that util (previously this enum had no way to represent a
+  // seller order whose items were only partly cancelled/refunded, which is
+  // exactly the state a partial buyer cancellation used to leave silently
+  // stale at 'processing' or whatever it was before).
   @Prop({
     enum: [
       'pending',
@@ -220,6 +226,9 @@ export class SellerOrder {
       'completed',
       'cancelled',
       'refunded',
+      'partially_cancelled',
+      'partially_refunded',
+      'partially_shipped',
     ],
     default: 'pending',
   })
@@ -398,14 +407,28 @@ export class Order {
   @Prop({ type: Date, default: null })
   paidAt: Date | null;
 
-  // overall derived status
+  // Overall derived status — see `order-status.util.ts#deriveOrderStatus`,
+  // the ONE function that computes this value from `sellerOrders[].status`;
+  // never hand-set independently. Shares its exact enum with
+  // `SellerOrder.status` above (both are rolled up by the same function, at
+  // different levels) — `shipped`/`delivered`/`refunded`/
+  // `partially_cancelled`/`partially_refunded` are new here: this enum
+  // previously had no way to represent those real states at all (a
+  // structural gap the buyer-facing order timeline already silently
+  // depended on `orderStatus` being able to reach `'shipped'`/`'delivered'`,
+  // which it never actually could before this change).
   @Prop({
     enum: [
       'pending',
       'processing',
-      'partially_shipped',
+      'shipped',
+      'delivered',
       'completed',
       'cancelled',
+      'refunded',
+      'partially_cancelled',
+      'partially_refunded',
+      'partially_shipped',
     ],
     default: 'pending',
   })

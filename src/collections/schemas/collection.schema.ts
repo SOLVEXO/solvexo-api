@@ -58,6 +58,15 @@ export class Collection {
   @Prop({ type: String, enum: ['active', 'draft'], default: 'draft' })
   status: 'active' | 'draft';
 
+  // Which of this store's own Collection alternate templates
+  // (`collection-template` module, `resourceType:'collection'`) this named
+  // collection renders through — e.g. `'default'` vs a seller-created
+  // `'sale'` template with different merchandising sections. Always a real,
+  // existing `templateKey` for the store; `CollectionDetailPage` falls back
+  // to `'default'` if the referenced template was since deleted.
+  @Prop({ type: String, default: 'default' })
+  templateKey: string;
+
   @Prop({ type: Number, default: 0 })
   sortOrder: number;
 

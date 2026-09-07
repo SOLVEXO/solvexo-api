@@ -31,9 +31,22 @@ export class DiscountsService {
     }
   }
 
+  /** bogo needs buyQuantity/getQuantity; free_shipping only makes sense
+   *  store-wide (shipping is a whole-checkout amount, not a per-item one —
+   *  see the schema's doc comment). */
+  private validateTypeSpecifics(dto: { discountType: string; target?: string; buyQuantity?: number; getQuantity?: number }) {
+    if (dto.discountType === 'bogo' && (!dto.buyQuantity || !dto.getQuantity)) {
+      throw new BadRequestException('buyQuantity and getQuantity are required for a Buy X Get Y discount');
+    }
+    if (dto.discountType === 'free_shipping' && dto.target && dto.target !== 'store') {
+      throw new BadRequestException('Free shipping discounts must target the whole store');
+    }
+  }
+
   async createDiscount(sellerId: string, storeId: string, dto: CreateAutomaticDiscountDto) {
     const store = await this.verifyStoreOwnership(storeId, sellerId);
     this.validateTargeting(dto);
+    this.validateTypeSpecifics(dto);
     if (dto.discountType === 'percentage' && dto.discountValue > 100) {
       throw new BadRequestException('Percentage discount cannot exceed 100');
     }
@@ -43,6 +56,9 @@ export class DiscountsService {
       name: dto.name,
       discountType: dto.discountType,
       discountValue: dto.discountValue,
+      buyQuantity: dto.discountType === 'bogo' ? dto.buyQuantity : null,
+      getQuantity: dto.discountType === 'bogo' ? dto.getQuantity : null,
+      getDiscountPercent: dto.discountType === 'bogo' ? (dto.getDiscountPercent ?? 100) : 100,
       currency: dto.discountType === 'fixed' ? (store.baseCurrency ?? 'USD') : null,
       target: dto.target,
       categoryIds: dto.target === 'category' ? dto.categoryIds : [],
@@ -70,6 +86,7 @@ export class DiscountsService {
   async updateDiscount(sellerId: string, storeId: string, discountId: string, dto: UpdateAutomaticDiscountDto) {
     await this.verifyStoreOwnership(storeId, sellerId);
     if (dto.target) this.validateTargeting(dto as any);
+    if (dto.discountType) this.validateTypeSpecifics(dto as any);
     if (dto.discountType === 'percentage' && dto.discountValue != null && dto.discountValue > 100) {
       throw new BadRequestException('Percentage discount cannot exceed 100');
     }

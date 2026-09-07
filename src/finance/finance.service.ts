@@ -1424,6 +1424,47 @@ export class FinanceService {
   }
 
   /**
+   * Records revenue from the Bookings module — a paid appointment or a
+   * package purchase. Mirrors `recordSubscriptionRevenue`'s ledger shape
+   * (pending → available after CLEARING_DAYS via the same clearing cron) so
+   * booking revenue behaves identically to sale/subscription revenue from
+   * the seller's point of view. Unlike `recordSubscriptionRevenue`, there is
+   * no separate platform-commission split parameter here — the Bookings spec
+   * doesn't define a platform cut for this revenue stream yet, so the full
+   * `amountUSD` is credited to the seller (no `fee` ledger row is written).
+   * If/when a booking-specific commission is introduced, split it the same
+   * way `recordSubscriptionRevenue` does before crediting the balance.
+   */
+  async recordBookingRevenue(
+    storeId: string, sellerId: string, amountUSD: number, referenceId: string,
+    referenceType: 'booking' | 'package_purchase', description: string,
+  ) {
+    await this.withTransaction(async (session) => {
+      const balance = await this.getOrCreateBalance(storeId, sellerId, 'USD', session);
+      const balanceBefore = balance.availableBalance;
+
+      balance.pendingBalance = this.round(balance.pendingBalance + amountUSD);
+      balance.totalRevenue   = this.round(balance.totalRevenue + amountUSD);
+      this.reevaluateDebtFlag(balance);
+      await balance.save({ session });
+
+      const saleTx = new this.txModel({
+        storeId, sellerId, currency: 'USD',
+        type: 'sale',
+        amount: this.round(amountUSD),
+        balanceBefore,
+        balanceAfter: balance.availableBalance,
+        description,
+        referenceId,
+        referenceType,
+        status: 'pending',
+        metadata: { clearingDays: CLEARING_DAYS, revenueType: referenceType },
+      });
+      await saleTx.save({ session });
+    });
+  }
+
+  /**
    * Record a refund — reverses the net sale amount from available or pending
    * balance. Call this from OrdersService when a refund is issued, or from
    * the Stripe webhook handler on `charge.refunded`/`charge.dispute.created`.

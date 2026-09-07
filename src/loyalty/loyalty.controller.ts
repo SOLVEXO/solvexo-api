@@ -12,6 +12,7 @@ import { CreateRewardDto } from './dto/create-reward.dto';
 import { UpdateRewardDto } from './dto/update-reward.dto';
 import { AwardPointsDto } from './dto/award-points.dto';
 import { RedeemRewardDto } from './dto/redeem-reward.dto';
+import { resolveBuyerStoreScope } from '../common/store-scope.util';
 
 @ApiTags('Loyalty & Rewards')
 @ApiBearerAuth()
@@ -105,17 +106,20 @@ export class LoyaltyController {
   // ── PUBLIC/BUYER: REWARDS CATALOG + BALANCE + REDEEM ──────────────────────
 
   @Get(':storeId/rewards')
-  getRewards(@Param('storeId') storeId: string) {
-    return this.loyaltyService.getRewards(storeId, true);
+  getRewards(@Req() req: any, @Param('storeId') storeId: string) {
+    const scopedStoreId = resolveBuyerStoreScope(req.user.storeId, storeId);
+    return this.loyaltyService.getRewards(scopedStoreId, true);
   }
 
   @Get(':storeId/my-balance')
   getMyBalance(@Req() req: any, @Param('storeId') storeId: string) {
-    return this.loyaltyService.getMyBalance(storeId, req.user.userId);
+    const scopedStoreId = resolveBuyerStoreScope(req.user.storeId, storeId);
+    return this.loyaltyService.getMyBalance(scopedStoreId, req.user.userId);
   }
 
   @Post(':storeId/redeem')
   redeem(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: RedeemRewardDto) {
-    return this.loyaltyService.redeemReward(storeId, req.user.userId, dto.rewardId);
+    const scopedStoreId = resolveBuyerStoreScope(req.user.storeId, storeId);
+    return this.loyaltyService.redeemReward(scopedStoreId, req.user.userId, dto.rewardId);
   }
 }

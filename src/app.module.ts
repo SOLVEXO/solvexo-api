@@ -56,10 +56,14 @@ import { AdminMarketplaceModule } from './admin-marketplace/admin-marketplace.mo
 import { AdminModerationModule } from './admin-moderation/admin-moderation.module';
 import { AdminUsersModule } from './admin-users/admin-users.module';
 import { AdminMarketingModule } from './admin-marketing/admin-marketing.module';
+import { ShippingZonesModule } from './shipping-zones/shipping-zones.module';
 import { MediaLibraryModule } from './media-library/media-library.module';
 import { StoreBannerModule } from './store-banner/store-banner.module';
 import { StoreThemeModule } from './store-theme/store-theme.module';
 import { StorePagesModule } from './store-pages/store-pages.module';
+import { StoreFaqModule } from './store-faq/store-faq.module';
+import { CollectionTemplateModule } from './collection-template/collection-template.module';
+import { DraftOrdersModule } from './draft-orders/draft-orders.module';
 import { StoreBlogModule } from './store-blog/store-blog.module';
 import { PromotionsModule } from './promotions/promotions.module';
 import { ThemeCatalogModule } from './theme-catalog/theme-catalog.module';
@@ -67,6 +71,7 @@ import { CommissionRulesModule } from './commission-rules/commission-rules.modul
 import { ManualPaymentsModule } from './manual-payments/manual-payments.module';
 import { ExchangeRateModule } from './exchange-rate/exchange-rate.module';
 import { OnboardingSlidesModule } from './onboarding-slides/onboarding-slides.module';
+import { BookingsModule } from './bookings/bookings.module';
 
 @Module({
   imports: [
@@ -114,6 +119,7 @@ import { OnboardingSlidesModule } from './onboarding-slides/onboarding-slides.mo
     ManualPaymentsModule,
     FinanceModule,
     SubscriptionsModule,
+    BookingsModule,
     PlatformPlansModule,
     AiStudioModule,
     SchedulerModule,
@@ -134,10 +140,14 @@ import { OnboardingSlidesModule } from './onboarding-slides/onboarding-slides.mo
     AdminModerationModule,
     AdminUsersModule,
     AdminMarketingModule,
+    ShippingZonesModule,
     MediaLibraryModule,
     StoreBannerModule,
     StoreThemeModule,
     StorePagesModule,
+    StoreFaqModule,
+    CollectionTemplateModule,
+    DraftOrdersModule,
     StoreBlogModule,
     PromotionsModule,
     ThemeCatalogModule,

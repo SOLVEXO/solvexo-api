@@ -6,6 +6,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { promises as dns } from 'dns';
+import { isValidObjectId } from 'mongoose';
 import { DatabaseService } from 'src/database/databaseservice';
 import {
   SellerType, ProductType, resolveTools,
@@ -81,6 +82,16 @@ export class StoreService {
   // A store's category must be one of the admin-curated main categories —
   // not a subcategory, and not an arbitrary/made-up id.
   private async assertValidRootCategory(categoryId: string) {
+    // A malformed `categoryId` (found via a live QA pass: this exact
+    // unguarded lookup let a corrupted, non-ObjectId `Store.categoryId`
+    // value crash `updateStore` with a raw, unhandled 500 on EVERY save
+    // attempt — the form always resubmits the store's current categoryId
+    // even when only unrelated fields like Tagline/Contact Email changed)
+    // must be rejected cleanly here, not passed through to a raw Mongoose
+    // CastError.
+    if (!isValidObjectId(categoryId)) {
+      throw new BadRequestException('Selected category not found');
+    }
     const category = await this.databaseService.repositories.categoryModel.findOne({
       _id: categoryId,
       status: 'active',
@@ -91,7 +102,7 @@ export class StoreService {
   }
 
   async createStore(sellerId: string, body: any) {
-    const { name, logo, categoryId, description, sellerType, productTypes, baseCurrency } = body;
+    const { name, logo, categoryId, description, sellerType, productTypes, baseCurrency, platformPlanId } = body;
 
     if (!name) throw new BadRequestException('Store name is required');
 
@@ -142,15 +153,16 @@ export class StoreService {
 
     const finalProductTypes = productTypes ?? [];
 
-    // Self-serve activation: a seller who completed the onboarding wizard's
-    // Payment step already has a verified card on file (see
-    // SellerPlatformSubscriptionsService.confirmOnboardingPaymentMethod) —
-    // there's nothing left for an admin to gate, so the store goes straight
-    // to `active` instead of the pending/admin-review Leads queue. A store
-    // created any other way (e.g. a future non-onboarding path with no
-    // payment method on file) still starts `pending`, same as before.
-    const seller = await this.databaseService.repositories.sellerModel.findById(sellerId).lean();
-    const selfServeActivation = !!(seller as any)?.hasPlatformPaymentMethod;
+    // Self-serve activation, unconditional. Used to require a card on file
+    // (Seller.hasPlatformPaymentMethod) as a proxy for "nothing left for an
+    // admin to gate" — but the trial-based billing model (see
+    // SellerPlatformSubscriptionsService.ensureDefaultSubscription) needs NO
+    // card to start a store's trial at all, matching Shopify's own signup
+    // (a store exists and is usable immediately, entirely independent of
+    // billing state). Flip this back to the hasPlatformPaymentMethod check
+    // to reinstate the old gate — the admin Leads/pending-review queue and
+    // its whole pipeline are untouched, just unreferenced by default now.
+    const selfServeActivation = true;
 
     const store = await this.databaseService.repositories.storeModel.create({
       sellerId,
@@ -168,13 +180,16 @@ export class StoreService {
     });
 
     // ✅ seller pe sirf onboarded mark — storeId nahi rakhte (source of truth = Store.sellerId)
+    // onboardingDraft cleared too — nothing left to resume once the store is real.
     await this.databaseService.repositories.sellerModel.findByIdAndUpdate(sellerId, {
       isOnboarded: true,
+      onboardingDraft: null,
     });
 
-    // Every store always has exactly one platform-plan subscription — auto
-    // start on the free tier so onboarding has zero friction (see EntitlementsService).
-    await this.sellerPlatformSubscriptionsService.ensureDefaultSubscription(store._id.toString(), sellerId);
+    // Every store always has exactly one platform-plan subscription — new
+    // stores start a no-card-required trial on the seller's OWN plan choice
+    // (see ensureDefaultSubscription), never a permanent free plan.
+    await this.sellerPlatformSubscriptionsService.ensureDefaultSubscription(store._id.toString(), sellerId, platformPlanId);
 
     // Every store gets its own storefront chrome (theme/header/footer) and a
     // home page seeded at creation time, not lazily on first public visit —
@@ -770,7 +785,7 @@ export class StoreService {
   // body would let a seller un-suspend their own store (see
   // usersService.deleteSellerAccount, which suspends stores on delete).
   async updateStore(sellerId: string, storeId: string, body: any) {
-    const { name, logo, coverImage, description, tagline, contactEmail, contactPhone, sellerType, productTypes, codEnabled } = body;
+    const { name, logo, coverImage, description, tagline, contactEmail, contactPhone, sellerType, productTypes, codEnabled, lowStockThreshold, taxRate, enabledCurrencies } = body;
 
     if (!storeId) throw new BadRequestException('storeId is required');
 
@@ -818,6 +833,39 @@ export class StoreService {
     if (contactPhone !== undefined) updateData.contactPhone = contactPhone;
     if (sellerType !== undefined) updateData.sellerType = sellerType;
     if (codEnabled !== undefined) updateData.codEnabled = !!codEnabled;
+    if (lowStockThreshold !== undefined) {
+      const parsed = Number(lowStockThreshold);
+      if (!Number.isFinite(parsed) || parsed < 1) {
+        throw new BadRequestException('lowStockThreshold must be a positive number');
+      }
+      updateData.lowStockThreshold = Math.floor(parsed);
+    }
+    if (taxRate !== undefined) {
+      const parsed = Number(taxRate);
+      if (!Number.isFinite(parsed) || parsed < 0 || parsed > 100) {
+        throw new BadRequestException('taxRate must be between 0 and 100');
+      }
+      updateData.taxRate = parsed;
+    }
+
+    // "Markets" — which supported currencies this store's buyers can check
+    // out in. Must be a real, non-empty subset of SUPPORTED_CURRENCIES, and
+    // must always include the store's own baseCurrency (a seller can't
+    // disable checkout in the currency they're actually priced/paid in).
+    if (enabledCurrencies !== undefined) {
+      if (!Array.isArray(enabledCurrencies) || enabledCurrencies.length === 0) {
+        throw new BadRequestException('enabledCurrencies must be a non-empty array');
+      }
+      for (const c of enabledCurrencies) {
+        if (!SUPPORTED_CURRENCIES.includes(c)) {
+          throw new BadRequestException(`Unsupported currency "${c}" — must be one of: ${SUPPORTED_CURRENCIES.join(', ')}`);
+        }
+      }
+      if (store.baseCurrency && !enabledCurrencies.includes(store.baseCurrency)) {
+        throw new BadRequestException(`enabledCurrencies must include this store's own currency (${store.baseCurrency})`);
+      }
+      updateData.enabledCurrencies = enabledCurrencies;
+    }
 
     // productTypes change ho to enabledTools bhi refresh
     if (productTypes !== undefined) {
@@ -949,6 +997,8 @@ export class StoreService {
         tagline: store.tagline ?? null,
         contactEmail: store.contactEmail ?? null,
         contactPhone: store.contactPhone ?? null,
+        lowStockThreshold: store.lowStockThreshold ?? 10,
+        taxRate: store.taxRate ?? 0,
         categoryId: store.categoryId ?? null,
         followersCount: store.followersCount ?? 0,
         averageRating: store.averageRating ?? 0,
@@ -959,6 +1009,10 @@ export class StoreService {
         // frontend uses this to convert every listed price into the
         // buyer's own chosen display currency.
         baseCurrency: store.baseCurrency ?? 'PKR',
+        // "Markets" — null/empty means every SUPPORTED_CURRENCIES value is
+        // accepted (a store that never touched this setting) — the
+        // frontend must treat null the same as "all", never as "none".
+        enabledCurrencies: store.enabledCurrencies && store.enabledCurrencies.length > 0 ? store.enabledCurrencies : null,
         sellerType: store.sellerType ?? null,
         badges: store.badges ?? [],
         createdAt: store.createdAt,
@@ -1142,8 +1196,13 @@ export class StoreService {
     }).lean();
     if (!store) throw new NotFoundException('Store not found');
 
-    const page  = parseInt(query.page)  || 1;
-    const limit = parseInt(query.limit) || 12;
+    // `limit` was previously unbounded — a caller passing `?limit=999999`
+    // (a Collection page's product grid, `?category=`, `?search=`, etc. all
+    // flow through this one method) could force an arbitrarily large,
+    // unpaginated query. Clamped to the same 50 ceiling `OrdersService`'s
+    // own seller-orders pagination already uses.
+    const page  = Math.max(1, parseInt(query.page) || 1);
+    const limit = Math.min(50, parseInt(query.limit) || 12);
     const skip  = (page - 1) * limit;
 
     const filter: any = { storeId, isDelete: false, status: 'active' };
@@ -1478,8 +1537,33 @@ export class StoreService {
       { _id: unknown; name: string; email: string; phone: string; createdAt: Date }[];
     const userMap = new Map(users.map((u) => [String(u._id), u]));
 
+    // Seller-authored tags/notes — private to this store (see
+    // StoreCustomerMeta's doc comment for why this isn't a platform-wide
+    // customer profile field).
+    const metaRows = pageIds.length
+      ? await this.databaseService.repositories.storeCustomerMetaModel
+          .find({ storeId, userId: { $in: pageIds.map(String) } })
+          .select('userId tags notes')
+          .lean()
+      : [];
+    const metaMap = new Map(metaRows.map((m: any) => [m.userId, m]));
+
+    const AT_RISK_DAYS = 90;
+    const now = Date.now();
+
     const customers = stats.map((s) => {
       const u = userMap.get(String(s._id));
+      const meta = metaMap.get(String(s._id));
+      const daysSinceLastOrder = s.lastOrderAt ? (now - new Date(s.lastOrderAt).getTime()) / 86_400_000 : Infinity;
+      // A real, computed segment (not a stored label that would go stale the
+      // moment the buyer's next order changes which bucket they belong in)
+      // — mirrors the New/Returning/VIP/At-Risk buckets a real commerce
+      // platform's customer list shows.
+      const segment: 'new' | 'returning' | 'vip' | 'at_risk' =
+        s.orderCount >= 5 ? 'vip'
+        : daysSinceLastOrder > AT_RISK_DAYS ? 'at_risk'
+        : s.orderCount === 1 ? 'new'
+        : 'returning';
       return {
         _id: s._id,
         name: u?.name ?? 'Unknown',
@@ -1489,6 +1573,9 @@ export class StoreService {
         orderCount: s.orderCount,
         totalSpent: s.totalSpent,
         lastOrderAt: s.lastOrderAt,
+        segment,
+        tags: meta?.tags ?? [],
+        notes: meta?.notes ?? '',
       };
     });
 
@@ -1549,5 +1636,49 @@ export class StoreService {
     });
 
     return { success: true, message: 'Customer updated', data: customer };
+  }
+
+  /** Seller-private tags/notes about a buyer, scoped to this one store — see StoreCustomerMeta's doc comment. Upserts since most customers won't have a meta row yet. */
+  async updateStoreCustomerMeta(
+    sellerId: string,
+    storeId: string,
+    customerId: string,
+    dto: { tags?: string[]; notes?: string },
+    ip?: string,
+    userAgent?: string,
+  ) {
+    const store = await this.databaseService.repositories.storeModel.findOne({ _id: storeId, isDelete: false });
+    if (!store) throw new NotFoundException('Store not found');
+    if (store.sellerId !== sellerId) throw new UnauthorizedException('You are not authorized to edit this store\'s customers');
+
+    const { orderModel, storeCustomerMetaModel } = this.databaseService.repositories;
+    const hasOrderedHere = await orderModel.exists({ userId: customerId, 'sellerOrders.storeId': storeId, isDelete: false });
+    if (!hasOrderedHere) throw new BadRequestException('This customer has no orders with your store');
+
+    const set: Record<string, unknown> = {};
+    if (dto.tags !== undefined) set.tags = dto.tags.slice(0, 20).map((t) => t.trim()).filter(Boolean);
+    if (dto.notes !== undefined) set.notes = dto.notes.slice(0, 2000);
+    if (Object.keys(set).length === 0) throw new BadRequestException('Nothing to update');
+
+    const meta = await storeCustomerMetaModel.findOneAndUpdate(
+      { storeId, userId: customerId },
+      { $set: set, $setOnInsert: { storeId, userId: customerId } },
+      { upsert: true, new: true, setDefaultsOnInsert: true },
+    );
+
+    this.activityLogService.log({
+      storeId,
+      category: 'customers',
+      action: 'customer_meta_updated',
+      description: `Updated ${Object.keys(set).join(', ')} for customer ${customerId}`,
+      actorId: sellerId,
+      actorRole: 'seller',
+      targetId: customerId,
+      targetType: 'customer',
+      ip,
+      userAgent,
+    });
+
+    return { success: true, message: 'Customer notes updated', data: { tags: meta.tags, notes: meta.notes } };
   }
 }

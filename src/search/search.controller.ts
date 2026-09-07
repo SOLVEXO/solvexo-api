@@ -17,7 +17,7 @@ export class SearchController {
   searchProducts(@Req() req: any, @Query() query: any) {
     const page = Math.max(1, parseInt(query.page) || 1);
     const limit = Math.min(50, parseInt(query.limit) || 20);
-    return this.searchService.searchProducts(query.q ?? '', page, limit, req.user?.userId ?? null);
+    return this.searchService.searchProducts(query.q ?? '', page, limit, req.user?.userId ?? null, query.storeId);
   }
 
   @Get('stores')
