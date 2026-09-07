@@ -23,7 +23,7 @@
 import 'dotenv/config';
 import mongoose from 'mongoose';
 
-const DEFAULT_THEME_DEFINITION_ID = 'warm-craft';
+const DEFAULT_THEME_DEFINITION_ID = 'theme-01-atelier';
 
 async function run() {
   const uri = process.env.MONGO_URI;

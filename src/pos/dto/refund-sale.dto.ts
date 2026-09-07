@@ -24,9 +24,4 @@ export class RefundSaleDto {
   @ValidateNested({ each: true })
   @Type(() => RefundItemDto)
   items?: RefundItemDto[];
-
-  @ApiProperty({ required: false, example: '664employee1', description: 'Acting employee — must be manager role' })
-  @IsOptional()
-  @IsString()
-  actingEmployeeId?: string;
 }

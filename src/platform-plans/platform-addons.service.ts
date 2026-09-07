@@ -1,10 +1,10 @@
 /* eslint-disable prettier/prettier */
 import { Injectable, BadRequestException, NotFoundException, Logger } from '@nestjs/common';
-import { DatabaseService } from 'src/database/databaseservice';
-import { ActivityLogService } from 'src/activity-log/activity-log.service';
-import { PaymentGatewayService } from 'src/subscriptions/payment-gateway/payment-gateway.service';
+import { DatabaseService } from '@/database/databaseservice';
+import { ActivityLogService } from '@/activity-log/activity-log.service';
+import { PaymentGatewayService } from '@/subscriptions/payment-gateway/payment-gateway.service';
 import { AiCreditsService } from './ai-credits.service';
-import { verifyStoreOwnershipStrict } from 'src/common/store-ownership.util';
+import { verifyStoreOwnershipStrict } from '@/common/store-ownership.util';
 import { PurchaseAddonDto } from './dto/purchase-addon.dto';
 
 /**
@@ -228,7 +228,13 @@ export class PlatformAddonsService {
       success: true,
       data: {
         pagination: { page, limit, total, pages: Math.ceil(total / limit) },
-        addons: addons.map((a: any) => ({ ...a, store: storeMap[a.storeId] ?? null })),
+        // amountUSD is a response-shape alias for the schema's priceUSD field —
+        // the admin frontend's AddonsPanel (AdminPlatformPlans.tsx) reads
+        // `amountUSD`, but PlatformAddonPurchase only ever stored `priceUSD`,
+        // so every row came back with amountUSD undefined and crashed the
+        // panel on `.toFixed(2)`. Adding the alias here (rather than renaming
+        // the schema field) avoids any DB migration.
+        addons: addons.map((a: any) => ({ ...a, amountUSD: a.priceUSD, store: storeMap[a.storeId] ?? null })),
         activeRecurringMonthlyRevenueUSD: activeRecurringRevenueUSD,
       },
     };

@@ -3,7 +3,8 @@ import {
   ForbiddenException,
   BadRequestException,
 } from '@nestjs/common';
-import { DatabaseService } from 'src/database/databaseservice';
+import { DatabaseService } from '@/database/databaseservice';
+import { toCsv } from '@/analytics/utils/csv.util';
 
 @Injectable()
 export class InventoryService {
@@ -152,6 +153,59 @@ export class InventoryService {
         products: productList,
       },
     };
+  }
+
+  /** Real CSV export for the whole store's inventory (unpaginated — the
+   *  "Export" button on the Inventory page previously had no handler at all
+   *  and did nothing when clicked, found during the Catalog audit). Same
+   *  product/variant aggregation as getStoreInventory above, just without
+   *  the page/limit — a seller exporting genuinely wants every product, not
+   *  whatever page they happened to be viewing. */
+  async exportInventoryCsv(sellerId: string, storeId: string): Promise<string> {
+    if (!storeId) throw new BadRequestException('storeId is required');
+    const { productModel, productVariantModel, storeModel } = this.databaseService.repositories;
+
+    const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
+    if (!store) throw new ForbiddenException('Store not found or unauthorized');
+
+    const products = await productModel
+      .find({ storeId, sellerId, isDelete: false })
+      .sort({ createdAt: -1 })
+      .lean();
+    const productIds = products.map((p: any) => p._id.toString());
+    const allVariants = await productVariantModel
+      .find({ productId: { $in: productIds }, isDelete: false })
+      .lean();
+    const variantMap: Record<string, any[]> = {};
+    for (const v of allVariants) {
+      if (!variantMap[v.productId]) variantMap[v.productId] = [];
+      variantMap[v.productId].push(v);
+    }
+
+    const rows: (string | number)[][] = [];
+    for (const product of products as any[]) {
+      const variants = variantMap[product._id.toString()] || [];
+      const isDigital = product.type === 'digital';
+      const hasUnlimitedVariant = variants.some((v: any) => v.unlimitedStock);
+      const defaultVariant = variants.find((v: any) => v.isDefault) || variants[0];
+      const stock = isDigital || hasUnlimitedVariant
+        ? 'Unlimited'
+        : variants.reduce((sum: number, v: any) => sum + (v.stock || 0), 0);
+      rows.push([
+        product.name,
+        defaultVariant?.sku ?? '',
+        product.type,
+        product.status,
+        defaultVariant?.price ?? 0,
+        stock,
+        product.purchaseCount || 0,
+      ]);
+    }
+
+    return toCsv(
+      ['Name', 'SKU', 'Type', 'Status', 'Price', 'Stock', 'All-Time Sales'],
+      rows,
+    );
   }
 
   // Store-wide low-stock summary for the seller dashboard's alert card —

@@ -7,17 +7,17 @@ import {
   ConflictException,
 } from '@nestjs/common';
 import { Types } from 'mongoose';
-import { DatabaseService } from 'src/database/databaseservice';
-import { UploadService } from 'src/upload/upload.service';
+import { DatabaseService } from '@/database/databaseservice';
+import { UploadService } from '@/upload/upload.service';
 import { StartConversationDto } from './dto/start-conversation.dto';
 import { SendMessageDto } from './dto/send-message.dto';
 import { EditMessageDto } from './dto/edit-message.dto';
 import { BlockDto } from './dto/block.dto';
 import { ReportDto } from './dto/report.dto';
-import { SubscriptionBenefitsService } from 'src/subscriptions/subscription-benefits.service';
+import { SubscriptionBenefitsService } from '@/subscriptions/subscription-benefits.service';
 import { MessagingGateway } from './messaging.gateway';
-import { NotificationsService } from 'src/notifications/notifications.service';
-import { NOTIFICATION_TYPES } from 'src/notifications/notification.types';
+import { NotificationsService } from '@/notifications/notifications.service';
+import { NOTIFICATION_TYPES } from '@/notifications/notification.types';
 
 @Injectable()
 export class MessagingService {
@@ -74,8 +74,7 @@ export class MessagingService {
   // CONVERSATIONS
   // ═══════════════════════════════════════════════════════════════════════════
 
-  async startOrGetConversation(buyerId: string, dto: StartConversationDto) {
-    const { storeId } = dto;
+  async startOrGetConversation(buyerId: string, dto: StartConversationDto, storeId: string) {
     const store = await this.db.repositories.storeModel.findById(storeId);
     if (!store || store.isDelete) throw new NotFoundException('Store not found');
     if (store.sellerId.toString() === buyerId) throw new BadRequestException('You cannot message your own store');
@@ -123,7 +122,7 @@ export class MessagingService {
     return conv;
   }
 
-  async getConversations(userId: string, role: string, query: any) {
+  async getConversations(userId: string, role: string, query: any, userStoreId?: string | null) {
     const page = Math.max(1, parseInt(query.page) || 1);
     const limit = Math.min(50, parseInt(query.limit) || 20);
     const skip = (page - 1) * limit;
@@ -146,6 +145,12 @@ export class MessagingService {
       if (query.isPinned !== undefined) filter.isPinned = query.isPinned === 'true';
     } else {
       filter = { buyerId: userId, deletedByBuyer: false };
+      // A per-store-account buyer can only ever have started conversations
+      // with their own bound store (startOrGetConversation enforces this
+      // too) — narrow explicitly anyway so a conversation from before that
+      // enforcement existed, or one made under a different app build,
+      // never shows up in this app's inbox/badge count.
+      if (userStoreId) filter.storeId = userStoreId;
     }
 
     if (query.q) {

@@ -1,14 +1,14 @@
 import { Module } from '@nestjs/common';
 import { PaymentController } from './payment.controller';
 import { PaymentService } from './payment.service';
-import { AuthModule } from 'src/auth/auth.module';
-import { RedisModule } from 'src/redis/redis.module';
-import { PromotionsModule } from 'src/promotions/promotions.module';
-import { FinanceModule } from 'src/finance/finance.module';
-import { AdminConfigModule } from 'src/admin-config/admin-config.module';
-import { ExchangeRateModule } from 'src/exchange-rate/exchange-rate.module';
-import { GiftCardsModule } from 'src/gift-cards/gift-cards.module';
-import { StripeConnectModule } from 'src/stripe-connect/stripe-connect.module';
+import { AuthModule } from '@/auth/auth.module';
+import { RedisModule } from '@/redis/redis.module';
+import { PromotionsModule } from '@/promotions/promotions.module';
+import { FinanceModule } from '@/finance/finance.module';
+import { AdminConfigModule } from '@/admin-config/admin-config.module';
+import { ExchangeRateModule } from '@/exchange-rate/exchange-rate.module';
+import { GiftCardsModule } from '@/gift-cards/gift-cards.module';
+import { StripeConnectModule } from '@/stripe-connect/stripe-connect.module';
 
 @Module({
   // CommissionRulesModule is @Global() (see its own module file) so it

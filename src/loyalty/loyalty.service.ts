@@ -1,7 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { Injectable, BadRequestException, NotFoundException, ForbiddenException } from '@nestjs/common';
-import { DatabaseService } from 'src/database/databaseservice';
-import { ActivityLogService } from 'src/activity-log/activity-log.service';
+import { DatabaseService } from '@/database/databaseservice';
+import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { UpdateProgramDto } from './dto/update-program.dto';
 import { UpdateEarningRulesDto } from './dto/update-earning-rules.dto';
 import { UpdateTiersDto } from './dto/update-tiers.dto';
@@ -9,9 +9,9 @@ import { CreateRewardDto } from './dto/create-reward.dto';
 import { UpdateRewardDto } from './dto/update-reward.dto';
 import { AwardPointsDto } from './dto/award-points.dto';
 import type { LoyaltyTransactionType } from './schemas/loyalty-transaction.schema';
-import { EntitlementsService } from 'src/platform-plans/entitlements.service';
-import { NotificationsService } from 'src/notifications/notifications.service';
-import { NOTIFICATION_TYPES } from 'src/notifications/notification.types';
+import { EntitlementsService } from '@/platform-plans/entitlements.service';
+import { NotificationsService } from '@/notifications/notifications.service';
+import { NOTIFICATION_TYPES } from '@/notifications/notification.types';
 import { randomBytes } from 'crypto';
 
 const EARN_TYPES: LoyaltyTransactionType[] = ['purchase', 'review', 'referral', 'birthday'];
@@ -436,6 +436,57 @@ export class LoyaltyService {
       success: true,
       message: 'Reward redeemed',
       data: { transaction: tx, remainingBalance: member.pointsBalance, voucherCode: voucher.code, voucherExpiresAt: voucher.expiresAt },
+    };
+  }
+
+  // ── SELLER: ISSUED VOUCHERS ────────────────────────────────────────────────
+
+  /** Seller-facing visibility into every RewardVoucher issued for their
+   *  store's rewards — closes a real gap where a redemption silently
+   *  vanished from view once `redeemReward` issued the code: the seller had
+   *  no way to see which vouchers are still outstanding vs. already
+   *  used/expired. Read-only — a voucher's own lifecycle transition
+   *  (used/expired) is still driven entirely by CheckoutService/
+   *  PaymentService at redemption time, never by the seller directly. */
+  async listVouchers(sellerId: string, storeId: string, query: any) {
+    await this.verifyStoreOwnership(storeId, sellerId);
+
+    const page = parseInt(query.page) || 1;
+    const limit = parseInt(query.limit) || 20;
+    const skip = (page - 1) * limit;
+
+    const filter: Record<string, unknown> = { storeId };
+    if (query.status && ['active', 'used', 'expired'].includes(query.status)) {
+      filter.status = query.status;
+    }
+
+    const total = await this.r.rewardVoucherModel.countDocuments(filter);
+    const vouchers = await this.r.rewardVoucherModel.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean();
+
+    const rewardIds = [...new Set(vouchers.map(v => v.rewardId))];
+    const userIds = [...new Set(vouchers.map(v => v.userId))];
+    const [rewards, users] = await Promise.all([
+      this.r.rewardModel.find({ _id: { $in: rewardIds } }).select('name').lean(),
+      this.r.userModel.find({ _id: { $in: userIds } }).select('name email').lean(),
+    ]);
+    const rewardMap = new Map(rewards.map((r: any) => [String(r._id), r]));
+    const userMap = new Map(users.map((u: any) => [String(u._id), u]));
+
+    // A voucher past its `expiresAt` still shows `status: 'active'` in the DB
+    // until something actually redeems/rejects it at checkout — surface that
+    // honestly here instead of making the seller cross-reference the date
+    // themselves against "today."
+    const now = new Date();
+    const enriched = vouchers.map((v: any) => ({
+      ...v,
+      isExpired: v.status === 'active' && new Date(v.expiresAt) < now,
+      reward: rewardMap.get(v.rewardId) ?? null,
+      user: userMap.get(v.userId) ?? null,
+    }));
+
+    return {
+      success: true,
+      data: { pagination: { page, limit, total, totalPages: Math.ceil(total / limit) }, vouchers: enriched },
     };
   }
 

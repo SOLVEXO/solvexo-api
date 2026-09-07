@@ -2,11 +2,11 @@
 import { Controller, Get, Patch, Post, Param, Body, Query, Req, Res, UseGuards, UseInterceptors } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import type { Response } from 'express';
-import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
-import { RolesGuard } from 'src/auth/guards/roles.guard';
-import { Roles } from 'src/auth/decorators/roles.decorator';
-import { DatabaseService } from 'src/database/databaseservice';
-import { verifyStoreOwnershipStrict } from 'src/common/store-ownership.util';
+import { JwtAuthGuard } from '@/auth/guards/jwt-auth.guard';
+import { RolesGuard } from '@/auth/guards/roles.guard';
+import { Roles } from '@/auth/decorators/roles.decorator';
+import { DatabaseService } from '@/database/databaseservice';
+import { verifyStoreOwnershipStrict } from '@/common/store-ownership.util';
 import { SeoContentService } from '../services/seo-content.service';
 import { UpdateSeoMetaDto } from '../dto/update-seo-meta.dto';
 import { BulkApplyProductTemplateDto } from '../dto/bulk-apply-template.dto';

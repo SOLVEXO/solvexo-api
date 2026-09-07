@@ -1,8 +1,8 @@
 import { Module } from '@nestjs/common';
 import { AddressController } from './address.controller';
 import { AddressService } from './address.service';
-import { AuthModule } from 'src/auth/auth.module';
-import { RedisModule } from 'src/redis/redis.module';
+import { AuthModule } from '@/auth/auth.module';
+import { RedisModule } from '@/redis/redis.module';
 
 @Module({
   imports: [AuthModule, RedisModule],

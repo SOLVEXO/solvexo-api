@@ -1,9 +1,9 @@
 /* eslint-disable prettier/prettier */
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Types } from 'mongoose';
-import { DatabaseService } from 'src/database/databaseservice';
-import { AiCreditsService } from 'src/platform-plans/ai-credits.service';
-import { ActivityLogService } from 'src/activity-log/activity-log.service';
+import { DatabaseService } from '@/database/databaseservice';
+import { AiCreditsService } from '@/platform-plans/ai-credits.service';
+import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { AiProviderError } from './providers/ai-provider.interfaces';
 import { TextGenerationService } from './providers/text-generation.service';
 import { KeywordDataService } from './providers/keyword-data.service';

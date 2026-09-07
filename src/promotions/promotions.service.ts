@@ -14,6 +14,7 @@ import { PromotionPricingService } from './promotion-pricing.service';
 import { validateCreativeDimensions } from '../common/validate-creative-dimensions.util';
 import { verifyStoreOwnershipOrForbidden } from '../common/store-ownership.util';
 import { EntitlementsService } from '../platform-plans/entitlements.service';
+import { ExchangeRateService } from '../exchange-rate/exchange-rate.service';
 import { CreatePromotionRequestDto } from './dto/create-promotion-request.dto';
 import { PromotionPlacement } from '../common/promotion-placements.const';
 import type { PromotionEntityType } from './schemas/promotion-daily-stats.schema';
@@ -35,6 +36,7 @@ export class PromotionsService {
     private readonly pricingService: PromotionPricingService,
     private readonly configService: ConfigService,
     private readonly entitlementsService: EntitlementsService,
+    private readonly exchangeRateService: ExchangeRateService,
   ) {
     const secretKey = this.configService.get<string>('STRIPE_SECRET_KEY')?.trim();
     if (secretKey) this.stripe = new Stripe(secretKey, { apiVersion: '2025-04-30.basil' as any });
@@ -245,13 +247,22 @@ export class PromotionsService {
     if (request.status !== 'approved') throw new BadRequestException('This request has not been approved yet');
     if (request.paymentStatus === 'paid') throw new BadRequestException('This request is already paid');
 
-    const amountCents = Math.round(request.priceUSD * 100);
+    // Charged in the seller's own store currency — Store.baseCurrency, set
+    // once at store creation and immutable afterward (the same real,
+    // per-store "billing currency" concept Shopify's own signup flow uses),
+    // not a hardcoded USD regardless of which store this is. `priceUSD`
+    // itself stays the admin-facing reference price (rate-card, reporting,
+    // display) — only the actual Stripe charge is converted.
+    const store = await this.storeModel.findById(request.storeId).select('baseCurrency').lean();
+    const currency = (store as any)?.baseCurrency ?? 'USD';
+    const chargeAmount = currency === 'USD' ? request.priceUSD : await this.exchangeRateService.convert(request.priceUSD, 'USD', currency);
+    const amountCents = Math.round(chargeAmount * 100);
     const idempotencyKey = `promotion_${id}_${amountCents}`;
 
     const paymentIntent = await this.stripe.paymentIntents.create(
       {
         amount: amountCents,
-        currency: 'usd',
+        currency: currency.toLowerCase(),
         metadata: { promotionRequestId: id, sellerId },
         automatic_payment_methods: { enabled: true, allow_redirects: 'never' },
       },
@@ -261,7 +272,12 @@ export class PromotionsService {
     request.stripePaymentIntentId = paymentIntent.id;
     await request.save();
 
-    return { success: true, data: { clientSecret: paymentIntent.client_secret, amount: request.priceUSD } };
+    // The real, actually-charged amount/currency (converted above) — never
+    // the raw USD reference price, so the frontend's Stripe Elements form
+    // and its displayed total both match what this PaymentIntent really
+    // charges (a mismatch here would be a real, visible bug for any
+    // non-USD store, not just a cosmetic one).
+    return { success: true, data: { clientSecret: paymentIntent.client_secret, amount: chargeAmount, currency } };
   }
 
   private async activatePaidRequest(request: any) {
@@ -490,12 +506,43 @@ export class PromotionsService {
     );
   }
 
-  async trackImpression(entityType: PromotionEntityType, entityId: string, device?: 'desktop' | 'mobile' | 'tablet') {
+  /** Confirms `entityId` is a real, existing entity of `entityType` before any
+   *  stat gets incremented — previously any caller could inflate/pollute
+   *  ANY store's impression/click counters (which plausibly drive seller
+   *  billing/ROI reporting) just by POSTing a guessed or copied id, with no
+   *  existence check at all. When a `storeId` is given (this app always has
+   *  one), also confirms the entity actually belongs to that store, closing
+   *  the same cross-store gap this pass fixed everywhere else. `banner`
+   *  (the platform-wide admin banner) has no store dimension, so only
+   *  existence is checked for that type. */
+  private async assertTrackableEntity(entityType: PromotionEntityType, entityId: string, storeId?: string) {
+    const { storeBannerModel, bannerModel, promotionRequestModel } = this.databaseService.repositories;
+    if (entityType === 'store_banner') {
+      const banner = await storeBannerModel.findById(entityId).select('storeId').lean();
+      if (!banner) throw new NotFoundException('Unknown promotion entity');
+      if (storeId && String((banner as any).storeId) !== storeId) {
+        throw new NotFoundException('Unknown promotion entity');
+      }
+    } else if (entityType === 'promotion_request') {
+      const promo = await promotionRequestModel.findById(entityId).select('storeId').lean();
+      if (!promo) throw new NotFoundException('Unknown promotion entity');
+      if (storeId && String((promo as any).storeId) !== storeId) {
+        throw new NotFoundException('Unknown promotion entity');
+      }
+    } else if (entityType === 'banner') {
+      const exists = await bannerModel.exists({ _id: entityId });
+      if (!exists) throw new NotFoundException('Unknown promotion entity');
+    }
+  }
+
+  async trackImpression(entityType: PromotionEntityType, entityId: string, device?: 'desktop' | 'mobile' | 'tablet', storeId?: string) {
+    await this.assertTrackableEntity(entityType, entityId, storeId);
     await this.bumpDailyStats(entityType, entityId, { impressions: 1 }, device);
     return { success: true };
   }
 
-  async trackClick(entityType: PromotionEntityType, entityId: string, device: 'desktop' | 'mobile' | 'tablet' = 'desktop', country?: string, city?: string, buyerId?: string | null) {
+  async trackClick(entityType: PromotionEntityType, entityId: string, device: 'desktop' | 'mobile' | 'tablet' = 'desktop', country?: string, city?: string, buyerId?: string | null, storeId?: string) {
+    await this.assertTrackableEntity(entityType, entityId, storeId);
     await this.bumpDailyStats(entityType, entityId, { clicks: 1 }, device);
     if (country) {
       await this.statsModel.updateOne(

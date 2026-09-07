@@ -16,6 +16,7 @@ export const ACTIVITY_LOG_CATEGORIES = [
   'platform_billing',
   'platform_plans',
   'seo',
+  'integrations',
   'ai_studio',
   'announcements',
   'moderation',

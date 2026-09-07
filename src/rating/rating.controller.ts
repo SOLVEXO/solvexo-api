@@ -21,6 +21,7 @@ import { RatingService } from './rating.service';
 import { AddReviewDto } from './dto/add-review.dto';
 import { EditReviewDto } from './dto/edit-review.dto';
 import { SellerReplyDto } from './dto/seller-reply.dto';
+import { resolveBuyerStoreScope } from '../common/store-scope.util';
 
 @Controller('api/rating')
 @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
@@ -36,7 +37,8 @@ export class RatingController {
   @Post('add-review')
   async addReview(@Req() req: any, @Body() body: AddReviewDto) {
     const { userId } = req.user;
-    return this.ratingService.addReview(userId, body);
+    const storeId = resolveBuyerStoreScope(req.user.storeId, (body as any).storeId);
+    return this.ratingService.addReview(userId, body, storeId);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -44,7 +46,8 @@ export class RatingController {
   @Get('my-reviews')
   async getMyReviews(@Req() req: any, @Query() query: any) {
     const { userId } = req.user;
-    return this.ratingService.getMyReviews(userId, query);
+    const storeId = resolveBuyerStoreScope(req.user.storeId, query.storeId);
+    return this.ratingService.getMyReviews(userId, query, storeId);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -56,15 +59,17 @@ export class RatingController {
     @Body() body: EditReviewDto,
   ) {
     const { userId } = req.user;
-    return this.ratingService.editReview(userId, reviewId, body);
+    const storeId = resolveBuyerStoreScope(req.user.storeId, (body as any).storeId);
+    return this.ratingService.editReview(userId, reviewId, body, storeId);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('user')
   @Delete(':reviewId')
-  async deleteReview(@Req() req: any, @Param('reviewId') reviewId: string) {
+  async deleteReview(@Req() req: any, @Param('reviewId') reviewId: string, @Query('storeId') storeIdQuery: string) {
     const { userId } = req.user;
-    return this.ratingService.deleteReview(userId, reviewId);
+    const storeId = resolveBuyerStoreScope(req.user.storeId, storeIdQuery);
+    return this.ratingService.deleteReview(userId, reviewId, storeId);
   }
 
   // Any logged-in buyer can vote — toggles on/off, not role-restricted to 'user'

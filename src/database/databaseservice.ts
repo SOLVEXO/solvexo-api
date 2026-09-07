@@ -65,9 +65,6 @@ export class DatabaseService {
     @InjectModel(schema.Store.name)
     private storeModel: Model<schema.StoreDocument>,
 
-    @InjectModel(schema.StoreFollower.name)
-    private storeFollowerModel: Model<schema.StoreFollowerDocument>,
-
     @InjectModel(schema.Employee.name)
     private employeeModel: Model<schema.EmployeeDocument>,
 
@@ -233,6 +230,12 @@ export class DatabaseService {
     @InjectModel(schema.SeoIntegration.name)
     private seoIntegrationModel: Model<schema.SeoIntegrationDocument>,
 
+    @InjectModel(schema.StoreIntegration.name)
+    private storeIntegrationModel: Model<schema.StoreIntegrationDocument>,
+
+    @InjectModel(schema.IntegrationWebhookEvent.name)
+    private integrationWebhookEventModel: Model<schema.IntegrationWebhookEventDocument>,
+
     @InjectModel(schema.SeoCrawlLog.name)
     private seoCrawlLogModel: Model<schema.SeoCrawlLogDocument>,
 
@@ -298,6 +301,21 @@ export class DatabaseService {
     @InjectModel(schema.CollectionTemplate.name)
     private collectionTemplateModel: Model<schema.CollectionTemplateDocument>,
 
+    @InjectModel(schema.MetafieldDefinition.name)
+    private metafieldDefinitionModel: Model<schema.MetafieldDefinitionDocument>,
+
+    @InjectModel(schema.MetafieldValue.name)
+    private metafieldValueModel: Model<schema.MetafieldValueDocument>,
+
+    @InjectModel(schema.MetaobjectDefinition.name)
+    private metaobjectDefinitionModel: Model<schema.MetaobjectDefinitionDocument>,
+
+    @InjectModel(schema.MetaobjectEntry.name)
+    private metaobjectEntryModel: Model<schema.MetaobjectEntryDocument>,
+
+    @InjectModel(schema.Menu.name)
+    private menuModel: Model<schema.MenuDocument>,
+
     @InjectModel(schema.DraftOrder.name)
     private draftOrderModel: Model<schema.DraftOrderDocument>,
 
@@ -339,8 +357,8 @@ export class DatabaseService {
     @InjectModel(schema.ReconciliationRun.name)
     private reconciliationRunModel: Model<schema.ReconciliationRunDocument>,
 
-    @InjectModel(schema.ThemeDefinition.name)
-    private themeDefinitionModel: Model<schema.ThemeDefinitionDocument>,
+    @InjectModel(schema.StoreAppRequest.name)
+    private storeAppRequestModel: Model<schema.StoreAppRequestDocument>,
 
   ) { }
 
@@ -368,7 +386,6 @@ export class DatabaseService {
       orderModel: this.orderModel,
       paymentTransactionModel: this.paymentTransactionModel,
       storeModel: this.storeModel,
-      storeFollowerModel: this.storeFollowerModel,
       employeeModel: this.employeeModel,
       registerSessionModel: this.registerSessionModel,
       saleModel: this.saleModel,
@@ -424,6 +441,8 @@ export class DatabaseService {
       seoLandingPageModel: this.seoLandingPageModel,
       seoSitemapCacheModel: this.seoSitemapCacheModel,
       seoIntegrationModel: this.seoIntegrationModel,
+      storeIntegrationModel: this.storeIntegrationModel,
+      integrationWebhookEventModel: this.integrationWebhookEventModel,
       seoCrawlLogModel: this.seoCrawlLogModel,
       seoIndexSnapshotModel: this.seoIndexSnapshotModel,
       seoAnalyticsSnapshotModel: this.seoAnalyticsSnapshotModel,
@@ -446,6 +465,11 @@ export class DatabaseService {
       storePageModel: this.storePageModel,
       storeFaqModel: this.storeFaqModel,
       collectionTemplateModel: this.collectionTemplateModel,
+      metafieldDefinitionModel: this.metafieldDefinitionModel,
+      metafieldValueModel: this.metafieldValueModel,
+      metaobjectDefinitionModel: this.metaobjectDefinitionModel,
+      metaobjectEntryModel: this.metaobjectEntryModel,
+      menuModel: this.menuModel,
       draftOrderModel: this.draftOrderModel,
       storeCustomerMetaModel: this.storeCustomerMetaModel,
       blogPostModel: this.blogPostModel,
@@ -460,7 +484,7 @@ export class DatabaseService {
       stripeWebhookEventModel: this.stripeWebhookEventModel,
       refundRequestModel: this.refundRequestModel,
       reconciliationRunModel: this.reconciliationRunModel,
-      themeDefinitionModel: this.themeDefinitionModel,
+      storeAppRequestModel: this.storeAppRequestModel,
     };
   }
 }

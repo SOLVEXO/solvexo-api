@@ -1,7 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { Injectable, CanActivate, ExecutionContext, ForbiddenException } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
-import { DatabaseService } from 'src/database/databaseservice';
+import { DatabaseService } from '@/database/databaseservice';
 import { REQUIRE_ACTIVE_BILLING_KEY } from '../decorators/require-active-billing.decorator';
 
 /**

@@ -4,21 +4,22 @@ import {
   NotFoundException,
   ForbiddenException,
 } from '@nestjs/common';
-import { DatabaseService } from 'src/database/databaseservice';
-import { UploadService } from 'src/upload/upload.service';
+import { DatabaseService } from '@/database/databaseservice';
+import { UploadService } from '@/upload/upload.service';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
-import { FinanceService } from 'src/finance/finance.service';
-import { PaymentService } from 'src/payment/payment.service';
-import { ExchangeRateService } from 'src/exchange-rate/exchange-rate.service';
-import { ActivityLogService } from 'src/activity-log/activity-log.service';
-import { LoyaltyService } from 'src/loyalty/loyalty.service';
-import { SubscriptionBenefitsService } from 'src/subscriptions/subscription-benefits.service';
-import { NotificationsService } from 'src/notifications/notifications.service';
-import { NOTIFICATION_TYPES } from 'src/notifications/notification.types';
-import { round } from 'src/common/number.util';
+import { FinanceService } from '@/finance/finance.service';
+import { PaymentService } from '@/payment/payment.service';
+import { ExchangeRateService } from '@/exchange-rate/exchange-rate.service';
+import { ActivityLogService } from '@/activity-log/activity-log.service';
+import { LoyaltyService } from '@/loyalty/loyalty.service';
+import { SubscriptionBenefitsService } from '@/subscriptions/subscription-benefits.service';
+import { NotificationsService } from '@/notifications/notifications.service';
+import { ShippingRatesService } from '@/shipping-rates/shipping-rates.service';
+import { NOTIFICATION_TYPES } from '@/notifications/notification.types';
+import { round } from '@/common/number.util';
 import { deriveRollupStatus } from './order-status.util';
-import { toCsv } from 'src/analytics/utils/csv.util';
+import { toCsv } from '@/analytics/utils/csv.util';
 
 /** A sellerOrder's true payout basis for FinanceService.recordSale, in the
  *  SELLER'S OWN currency (so.settlementCurrency) — independent of what
@@ -52,6 +53,7 @@ export class OrdersService {
     private readonly loyaltyService: LoyaltyService,
     private readonly subscriptionBenefits: SubscriptionBenefitsService,
     private readonly notificationsService: NotificationsService,
+    private readonly shippingRatesService: ShippingRatesService,
   ) {}
 
   /** Subscribers earn points at their plan's configured multiplier (default 1x). */
@@ -77,7 +79,7 @@ export class OrdersService {
     );
   }
 
-  async getOrdersByUserId(userId: string, query: any) {
+  async getOrdersByUserId(userId: string, query: any, storeId: string) {
     const { orderModel, sellerModel, ratingModel } =
       this.databaseService.repositories;
 
@@ -85,7 +87,12 @@ export class OrdersService {
     const limit = parseInt(query.limit) || 10;
     const skip = (page - 1) * limit;
 
-    const filter: any = { userId, isDelete: false };
+    // Scoped to this one store's app build — an order predating the
+    // single-store conversion (or one placed by a legacy cross-store
+    // account) may touch more than one store, but this build must never
+    // surface another store's segment of it. `sellerOrders.storeId` matches
+    // the same filter shape `getSellerOrders` already uses.
+    const filter: any = { userId, isDelete: false, 'sellerOrders.storeId': storeId };
 
     if (query.status && query.status !== 'all') {
       filter.orderStatus = query.status;
@@ -156,7 +163,9 @@ export class OrdersService {
       totalAmount: order.totalAmount,
       currency: order.currency,
       shippingAddress: order.shippingAddress,
-      stores: (order.sellerOrders ?? []).map((so: any) => {
+      stores: (order.sellerOrders ?? [])
+        .filter((so: any) => so.storeId === storeId)
+        .map((so: any) => {
         const seller = sellerMap.get(so.sellerId?.toString());
         return {
           storeId: so.storeId,
@@ -202,7 +211,7 @@ export class OrdersService {
     };
   }
 
-  async getOrderById(userId: string, orderId: string) {
+  async getOrderById(userId: string, orderId: string, storeId: string) {
     const { orderModel, sellerModel } = this.databaseService.repositories;
 
     const order = await orderModel
@@ -212,7 +221,16 @@ export class OrdersService {
     if ((order as any).userId !== userId)
       throw new ForbiddenException('Unauthorized');
 
-    const orderSellerOrders = ((order as any).sellerOrders ?? []) as any[];
+    // Same reasoning as getOrdersByUserId — never surface another store's
+    // segment of an order that happens to touch more than one store. If
+    // this order doesn't touch this build's store at all, treat it as not
+    // found rather than exposing that it exists elsewhere.
+    const orderSellerOrders = (
+      ((order as any).sellerOrders ?? []) as any[]
+    ).filter((so: any) => so.storeId === storeId);
+    if (orderSellerOrders.length === 0) {
+      throw new NotFoundException('Order not found');
+    }
     const sellerIds: string[] = [
       ...new Set(orderSellerOrders.map((so: any) => so.sellerId)),
     ].filter(Boolean);
@@ -563,7 +581,7 @@ export class OrdersService {
     );
   }
 
-  async getDownloadUrls(userId: string, orderId: string, productId: string) {
+  async getDownloadUrls(userId: string, orderId: string, productId: string, storeId: string) {
     if (!orderId) throw new BadRequestException('orderId is required');
     if (!productId) throw new BadRequestException('productId is required');
 
@@ -577,10 +595,12 @@ export class OrdersService {
     // 2. payment check
     if (!order.isPaid) throw new BadRequestException('Order is not paid yet');
 
-    // 3. product is in this order
+    // 3. product is in THIS store's sellerOrder(s) within this order — never
+    // let this app's download link resolve to another store's digital item.
     let targetItem: any = null;
 
     for (const so of order.sellerOrders) {
+      if (so.storeId !== storeId) continue;
       for (const item of so.items) {
         if (item.productId === productId) {
           targetItem = item;
@@ -679,6 +699,90 @@ export class OrdersService {
         remaining,
       },
     };
+  }
+
+  /**
+   * Real, one-click "mark as shipped" — for a store that's connected Shippo
+   * (see ShippingRatesService/the Integrations page), fetches a fresh live
+   * rate quote for this exact order's destination + real item weight, buys
+   * the CHEAPEST option's label immediately, and marks the sellerOrder
+   * shipped with the real carrier/tracking number/label Shippo just issued —
+   * no manual tracking-number typing. Falls back with a clear error (not a
+   * silent no-op) whenever a live label genuinely can't be purchased: store
+   * hasn't connected Shippo, this order predates the `country` field on its
+   * address snapshot (see OrderShippingAddress), or Shippo itself is
+   * unreachable — the seller still has the existing manual
+   * `updateSellerOrderStatus({status:'shipped', tracking})` path for those
+   * cases, this is strictly an additional convenience.
+   */
+  async purchaseShippingLabel(sellerId: string, orderId: string, storeId: string, ip?: string, userAgent?: string) {
+    const { orderModel, storeModel, productVariantModel } = this.databaseService.repositories;
+
+    const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
+    if (!store) throw new ForbiddenException('Store not found or unauthorized');
+
+    const order = await orderModel.findOne({ _id: orderId, isDelete: false });
+    if (!order) throw new NotFoundException('Order not found');
+
+    const sellerOrderIndex = order.sellerOrders.findIndex(
+      (so: any) => so.storeId === storeId && so.sellerId === sellerId,
+    );
+    if (sellerOrderIndex === -1) throw new ForbiddenException('Unauthorized');
+
+    const addr = order.shippingAddress as any;
+    if (!addr) throw new BadRequestException('This order has no shipping address on file — it may be digital-only.');
+    if (!addr.country) {
+      throw new BadRequestException(
+        'This order\'s saved address has no country on file (it predates that field) — use the manual tracking-number entry instead.',
+      );
+    }
+
+    const sellerOrder = order.sellerOrders[sellerOrderIndex] as any;
+    const variantIds = [...new Set(sellerOrder.items.map((i: any) => i.variantId).filter(Boolean) as string[])];
+    const variants = await productVariantModel.find({ _id: { $in: variantIds } }).select('shippingWeight').lean();
+    const weightByVariant = new Map(variants.map((v: any) => [String(v._id), v.shippingWeight]));
+    const totalWeightKg = this.shippingRatesService.computeTotalWeightKg(
+      sellerOrder.items.map((item: any) => ({
+        shippingWeight: item.variantId ? weightByVariant.get(item.variantId) ?? null : null,
+        quantity: item.quantity ?? 1,
+      })),
+    );
+
+    const rates = await this.shippingRatesService.getLiveRates(
+      storeId,
+      {
+        name: addr.recipientName,
+        street1: addr.addressLine1,
+        street2: addr.addressLine2 ?? undefined,
+        city: addr.city,
+        state: addr.state,
+        zip: addr.zipCode,
+        country: addr.country,
+        phone: addr.phoneNumber ?? undefined,
+      },
+      totalWeightKg,
+    );
+    if (!rates || rates.length === 0) {
+      throw new BadRequestException('No live carrier rate is available for this order — connect Shippo in Integrations, or use the manual tracking-number entry instead.');
+    }
+    const cheapest = rates.reduce((best, r) => (r.amount < best.amount ? r : best), rates[0]);
+
+    const label = await this.shippingRatesService.purchaseLabel(storeId, cheapest.rateId);
+    if (!label) {
+      throw new BadRequestException('The label purchase failed — try again, or use the manual tracking-number entry instead.');
+    }
+
+    return this.updateSellerOrderStatus(
+      sellerId,
+      {
+        orderId,
+        storeId,
+        status: 'shipped',
+        tracking: { carrier: cheapest.carrier, trackingNumber: label.trackingNumber, trackingUrl: label.trackingUrlProvider },
+      },
+      ip,
+      userAgent,
+    );
   }
 
   async updateSellerOrderStatus(
@@ -835,6 +939,24 @@ export class OrdersService {
               ? `Order #${orderId} is on its way${tracking?.carrier ? ` via ${tracking.carrier}` : ''}.`
               : `Order #${orderId} has been delivered.`,
           data: { orderId, status },
+          // Silently no-ops if `so.storeId` hasn't connected WhatsApp — see
+          // NotifyParams.whatsapp. Template names below must already be
+          // approved in that store's Meta Business Manager; if they aren't,
+          // WhatsAppCloudProvider.sendTemplateMessage just logs and returns,
+          // same as any other failed send.
+          whatsapp: order.shippingAddress?.phoneNumber
+            ? {
+                storeId: so.storeId,
+                to: order.shippingAddress.phoneNumber,
+                templateName:
+                  status === 'shipped' ? 'order_shipped' : 'order_delivered',
+                languageCode: 'en_US',
+                bodyParams:
+                  status === 'shipped'
+                    ? [orderId, tracking?.carrier ?? '']
+                    : [orderId],
+              }
+            : undefined,
         })
         .catch(() => {});
     }
@@ -977,7 +1099,22 @@ export class OrdersService {
       payload.orderId,
       payload.productId,
       payload.fileIndex,
+      payload.storeId,
     );
+  }
+
+  /** Confirms `productId` is one of the items in one of THIS store's
+   *  sellerOrder(s) on this order — closes both the cross-store leak and an
+   *  otherwise-unchecked path where any paid order + any digital productId
+   *  would resolve a download, whether or not that product was actually
+   *  purchased. */
+  private assertDigitalItemInStoreOrder(order: any, productId: string, storeId: string) {
+    const inThisStore = (order.sellerOrders as any[]).some(
+      (so: any) =>
+        so.storeId === storeId &&
+        (so.items as any[]).some((item: any) => item.productId === productId),
+    );
+    if (!inThisStore) throw new BadRequestException('Product not found in this order');
   }
 
   async streamStampedPdf(
@@ -985,6 +1122,7 @@ export class OrdersService {
     orderId: string,
     productId: string,
     fileIndex: number,
+    storeId: string,
   ) {
     const { orderModel, productModel, userModel } =
       this.databaseService.repositories;
@@ -993,6 +1131,7 @@ export class OrdersService {
     if (!order) throw new NotFoundException('Order not found');
     if (order.userId !== userId) throw new ForbiddenException('Unauthorized');
     if (!order.isPaid) throw new BadRequestException('Order is not paid');
+    this.assertDigitalItemInStoreOrder(order, productId, storeId);
 
     const product = await productModel.findOne({
       _id: productId,
@@ -1028,6 +1167,7 @@ export class OrdersService {
     orderId: string,
     productId: string,
     fileIndex: number,
+    storeId: string,
   ) {
     const { orderModel, productModel } = this.databaseService.repositories;
 
@@ -1035,6 +1175,7 @@ export class OrdersService {
     if (!order) throw new NotFoundException('Order not found');
     if (order.userId !== userId) throw new ForbiddenException('Unauthorized');
     if (!order.isPaid) throw new BadRequestException('Order is not paid yet');
+    this.assertDigitalItemInStoreOrder(order, productId, storeId);
 
     const product = await productModel.findOne({
       _id: productId,
@@ -1047,7 +1188,7 @@ export class OrdersService {
     if (!file) throw new NotFoundException('File not found at this index');
 
     const token = this.jwtService.sign(
-      { userId, orderId, productId, fileIndex },
+      { userId, orderId, productId, fileIndex, storeId },
       {
         secret: this.configService.get<string>('JWT_SECRET'),
         expiresIn: '10m',
@@ -1075,7 +1216,7 @@ export class OrdersService {
     };
   }
 
-  async cancelOrder(userId: string, orderId: string, body: any) {
+  async cancelOrder(userId: string, orderId: string, body: any, storeId: string) {
     const { reason, itemIds } = body;
     if (!reason) throw new BadRequestException('reason is required');
 
@@ -1088,7 +1229,25 @@ export class OrdersService {
     });
     if (!order) throw new NotFoundException('Order not found');
 
-    return this.executeCancellation(order, itemIds, reason, {
+    // A buyer's cancel must never touch another store's items within the
+    // same (possibly multi-store legacy) order. Default to every item on
+    // THIS store's sellerOrder(s) when no explicit itemIds were given
+    // (matches the old "cancel everything" behavior for the common
+    // single-store-order case), and reject any explicitly-given id that
+    // doesn't belong to this store.
+    const storeItemIds: string[] = (order.sellerOrders as any[])
+      .filter((so: any) => so.storeId === storeId)
+      .flatMap((so: any) => (so.items as any[]).map((item: any) => item._id.toString()));
+    if (storeItemIds.length === 0) throw new NotFoundException('Order not found');
+
+    const scopedItemIds =
+      itemIds && Array.isArray(itemIds) && itemIds.length > 0 ? itemIds : storeItemIds;
+    const foreignItemId = scopedItemIds.find((id: string) => !storeItemIds.includes(id));
+    if (foreignItemId) {
+      throw new ForbiddenException('One or more items do not belong to this store');
+    }
+
+    return this.executeCancellation(order, scopedItemIds, reason, {
       actorId: userId,
       actorRole: 'user',
       notifyRecipientRole: 'seller',
@@ -1554,7 +1713,7 @@ export class OrdersService {
     };
   }
 
-  async returnRequest(userId: string, orderId: string, body: any) {
+  async returnRequest(userId: string, orderId: string, body: any, storeId: string) {
     const { reason, itemIds } = body;
     if (!reason) throw new BadRequestException('reason is required');
 
@@ -1574,6 +1733,9 @@ export class OrdersService {
 
     const now = new Date();
 
+    // Scoped to THIS store's sellerOrder(s) only — a return request must
+    // never be raised against another store's items within the same
+    // (possibly multi-store legacy) order.
     const allItems: {
       soIndex: number;
       itemIndex: number;
@@ -1581,10 +1743,12 @@ export class OrdersService {
       so: any;
     }[] = [];
     order.sellerOrders.forEach((so: any, soIndex: number) => {
+      if (so.storeId !== storeId) return;
       so.items.forEach((item: any, itemIndex: number) => {
         allItems.push({ soIndex, itemIndex, item, so });
       });
     });
+    if (allItems.length === 0) throw new NotFoundException('Order not found');
 
     let targetItems: typeof allItems;
 

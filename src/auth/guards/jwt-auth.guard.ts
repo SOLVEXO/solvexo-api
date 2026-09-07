@@ -5,8 +5,8 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
-import { RedisService } from 'src/redis/redis.service';
-import { DatabaseService } from 'src/database/databaseservice';
+import { RedisService } from '@/redis/redis.service';
+import { DatabaseService } from '@/database/databaseservice';
 
 @Injectable()
 export class JwtAuthGuard extends AuthGuard('jwt') {

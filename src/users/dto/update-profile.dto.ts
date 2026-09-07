@@ -7,7 +7,7 @@ import {
   IsUrl,
   IsIn,
 } from 'class-validator';
-import { SUPPORTED_CURRENCIES } from 'src/exchange-rate/schemas/exchange-rate.schema';
+import { SUPPORTED_CURRENCIES } from '@/exchange-rate/schemas/exchange-rate.schema';
 
 export class UpdateProfileDto {
   @ApiProperty({ required: false, example: 'Jami Raza' })

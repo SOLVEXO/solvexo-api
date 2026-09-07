@@ -1,14 +1,14 @@
 /* eslint-disable prettier/prettier */
 import { Injectable, NotFoundException, BadRequestException, ForbiddenException, Logger } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
-import { DatabaseService } from 'src/database/databaseservice';
-import { ActivityLogService } from 'src/activity-log/activity-log.service';
+import { DatabaseService } from '@/database/databaseservice';
+import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { PlatformPlanNotificationsService } from './platform-plan-notifications.service';
-import { PaymentGatewayService } from 'src/subscriptions/payment-gateway/payment-gateway.service';
-import { verifyStoreOwnershipStrict } from 'src/common/store-ownership.util';
+import { PaymentGatewayService } from '@/subscriptions/payment-gateway/payment-gateway.service';
+import { verifyStoreOwnershipStrict } from '@/common/store-ownership.util';
 import { SubscribePlatformPlanDto, ChangePlatformPlanDto } from './dto/subscribe-platform-plan.dto';
-import { NotificationsService } from 'src/notifications/notifications.service';
-import { NOTIFICATION_TYPES } from 'src/notifications/notification.types';
+import { NotificationsService } from '@/notifications/notifications.service';
+import { NOTIFICATION_TYPES } from '@/notifications/notification.types';
 
 const MAX_RENEWAL_ATTEMPTS = 3;
 const RETRY_INTERVAL_DAYS = 1;
@@ -266,11 +266,13 @@ export class SellerPlatformSubscriptionsService {
    * only pre-existing subscriptions (backfilled by
    * migrate-legacy-free-eligible.ts) are ever `true`.
    *
-   * `desiredPlanId` — the seller's own choice, made during onboarding
-   * (`OnboardingPage.tsx`'s Payment/Plan step); required in practice (the
-   * frontend always sends it), but falls back to the cheapest real
-   * (non-free, non-custom-pricing) active plan if genuinely omitted, so
-   * this never hard-fails a store creation over a missing plan choice.
+   * `desiredPlanId` — optional; onboarding's 3-step wizard (Store Info →
+   * Seller Type → What You Sell) never collects a plan choice any more, so
+   * `StoreService.createStore` always calls this with it omitted in
+   * practice. Falls back to the cheapest real (non-free, non-custom-pricing)
+   * active plan whenever it's omitted, so this never hard-fails a store
+   * creation over a missing plan choice — a seller picks a specific plan
+   * later from the store's own Billing page.
    *
    * One introductory trial per SELLER, not per store — `Seller.
    * platformTrialUsedAt` is checked first; a seller who already had a trial
@@ -303,7 +305,15 @@ export class SellerPlatformSubscriptionsService {
 
     const now = new Date();
     const alreadyUsedTrial = !!seller?.platformTrialUsedAt;
-    const trialEndsAt = new Date(now.getTime() + SellerPlatformSubscriptionsService.TRIAL_DAYS * 24 * 60 * 60 * 1000);
+    // Admin-configured trial length (PlatformPlan.trialDays, set from
+    // AdminPlatformPlans.tsx) is the real source of truth when the admin has
+    // actually set it (> 0). Plans that still have the schema default (0 —
+    // i.e. an admin who never touched this field) fall back to the original
+    // hardcoded TRIAL_DAYS constant so no existing plan's behavior changes.
+    const effectiveTrialDays = trialPlan.trialDays > 0
+      ? trialPlan.trialDays
+      : SellerPlatformSubscriptionsService.TRIAL_DAYS;
+    const trialEndsAt = new Date(now.getTime() + effectiveTrialDays * 24 * 60 * 60 * 1000);
 
     if (!alreadyUsedTrial && seller) {
       seller.platformTrialUsedAt = now;

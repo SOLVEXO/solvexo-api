@@ -20,8 +20,12 @@ function starterSections(resourceType: ResourceTemplateType) {
   // variant/add-to-cart) is fixed chrome outside this section system
   // entirely (see StorefrontProductPage) — a product template's sections are
   // purely the SURROUNDING content (recommendations, rich text, etc.), so it
-  // starts empty rather than pre-seeded with a placeholder.
-  if (resourceType === 'product') return [];
+  // starts empty rather than pre-seeded with a placeholder. Same for 'page'
+  // templates (Blog Index, Search, and any other non-collection page bucket)
+  // — these already have their own real, non-section-driven listing content
+  // (blog posts, search results), so pre-seeding a commerce product grid on
+  // top of that would render a second, unrelated product grid on the page.
+  if (resourceType === 'product' || resourceType === 'page') return [];
   return [{ type: 'collection_product_grid' as SectionType, settings: { columns: 3, showFilters: true }, blocks: [] }];
 }
 
@@ -208,8 +212,13 @@ export class CollectionTemplateService {
   // ── Public ───────────────────────────────────────────────────────────────
 
   /** Falls back to a fresh (unsaved) starter template when a store hasn't been touched via `ensureTemplate` yet, rather than 404ing a store's very first browse/detail visit. */
+  /** Unauthenticated — must never leak `draft` (unpublished edits) or
+   *  `versions` (full publish history) to a public visitor, same reasoning
+   *  as `StoreThemeService.getPublic`. */
   async getPublic(storeId: string, resourceType: ResourceTemplateType = 'collection', templateKey = DEFAULT_TEMPLATE_KEY) {
-    const template = await this.collectionTemplateModel.findOne({ storeId, resourceType, templateKey, status: 'published' }).lean();
+    const template = await this.collectionTemplateModel
+      .findOne({ storeId, resourceType, templateKey, status: 'published' }, { draft: 0, versions: 0 })
+      .lean();
     if (template) return { success: true, data: template };
     return { success: true, data: { sections: starterSections(resourceType) } };
   }

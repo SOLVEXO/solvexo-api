@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Injectable, Logger, NotFoundException, BadRequestException, ConflictException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException, ConflictException, ForbiddenException } from '@nestjs/common';
 import { DatabaseService } from '../database/databaseservice';
 import { PaymentGatewayService } from '../subscriptions/payment-gateway/payment-gateway.service';
 import { FinanceService } from '../finance/finance.service';
@@ -107,9 +107,12 @@ export class BookingsService {
   // BUYER — BOOK / PURCHASE PACKAGE
   // ═══════════════════════════════════════════════════════════════════════════
 
-  async book(buyerId: string, dto: BookAppointmentDto, idempotencyKey?: string) {
+  async book(buyerId: string, dto: BookAppointmentDto, idempotencyKey?: string, storeId?: string) {
     const service = await this.serviceModel.findOne({ _id: dto.serviceId, status: 'active', isDelete: false });
     if (!service) throw new NotFoundException('Service not found or inactive');
+    if (storeId && String(service.storeId) !== storeId) {
+      throw new ForbiddenException("This service does not belong to this app's store");
+    }
 
     const store = await this.storeModel.findById(service.storeId);
     if (!store || store.isDelete || store.status !== 'active') {
@@ -212,9 +215,12 @@ export class BookingsService {
     return { success: true, data: { booking } };
   }
 
-  async purchasePackage(buyerId: string, packageId: string, idempotencyKey?: string) {
+  async purchasePackage(buyerId: string, packageId: string, idempotencyKey?: string, storeId?: string) {
     const pkg = await this.packageModel.findOne({ _id: packageId, status: 'active' });
     if (!pkg) throw new NotFoundException('Package not found or inactive');
+    if (storeId && String(pkg.storeId) !== storeId) {
+      throw new ForbiddenException("This package does not belong to this app's store");
+    }
 
     const service = await this.serviceModel.findById(pkg.serviceId);
     if (!service || service.isDelete) throw new NotFoundException('Service not found');
@@ -273,18 +279,22 @@ export class BookingsService {
   // BUYER — MY BOOKINGS / MY PACKAGES
   // ═══════════════════════════════════════════════════════════════════════════
 
-  private async verifyMyBooking(buyerId: string, id: string) {
-    const booking = await this.bookingModel.findOne({ _id: id, buyerId });
+  private async verifyMyBooking(buyerId: string, id: string, storeId?: string) {
+    const booking = await this.bookingModel.findOne({
+      _id: id,
+      buyerId,
+      ...(storeId ? { storeId } : {}),
+    });
     if (!booking) throw new NotFoundException('Booking not found');
     return booking;
   }
 
-  async listMyBookings(buyerId: string, query: any) {
+  async listMyBookings(buyerId: string, query: any, storeId?: string) {
     const page  = Math.max(1, parseInt(query.page) || 1);
     const limit = Math.min(100, parseInt(query.limit) || 20);
     const skip  = (page - 1) * limit;
 
-    const filter: any = { buyerId };
+    const filter: any = { buyerId, ...(storeId ? { storeId } : {}) };
     if (query.status) filter.status = query.status;
 
     const [bookings, total] = await Promise.all([
@@ -300,14 +310,14 @@ export class BookingsService {
     return { success: true, data: { pagination: { page, limit, total, pages: Math.ceil(total / limit) }, bookings: rows } };
   }
 
-  async getMyBookingById(buyerId: string, id: string) {
-    const booking = await this.verifyMyBooking(buyerId, id);
+  async getMyBookingById(buyerId: string, id: string, storeId?: string) {
+    const booking = await this.verifyMyBooking(buyerId, id, storeId);
     const service = await this.serviceModel.findById(booking.serviceId).lean();
     return { success: true, data: { ...booking.toObject(), service: service ?? null } };
   }
 
-  async cancelMyBooking(buyerId: string, id: string, reason?: string) {
-    const booking = await this.verifyMyBooking(buyerId, id);
+  async cancelMyBooking(buyerId: string, id: string, reason?: string, storeId?: string) {
+    const booking = await this.verifyMyBooking(buyerId, id, storeId);
     if (!['pending_payment', 'confirmed'].includes(booking.status)) {
       throw new BadRequestException(`Cannot cancel a booking with status "${booking.status}"`);
     }
@@ -319,8 +329,8 @@ export class BookingsService {
     return { success: true, message: 'Booking cancelled', data: booking };
   }
 
-  async rescheduleMyBooking(buyerId: string, id: string, dto: RescheduleBookingDto) {
-    const booking = await this.verifyMyBooking(buyerId, id);
+  async rescheduleMyBooking(buyerId: string, id: string, dto: RescheduleBookingDto, storeId?: string) {
+    const booking = await this.verifyMyBooking(buyerId, id, storeId);
     if (booking.status !== 'confirmed') {
       throw new BadRequestException(`Cannot reschedule a booking with status "${booking.status}"`);
     }
@@ -359,8 +369,11 @@ export class BookingsService {
     return { success: true, message: 'Booking rescheduled', data: booking };
   }
 
-  async listMyPackages(buyerId: string) {
-    const purchases = await this.purchaseModel.find({ buyerId }).sort({ createdAt: -1 }).lean();
+  async listMyPackages(buyerId: string, storeId?: string) {
+    const purchases = await this.purchaseModel
+      .find({ buyerId, ...(storeId ? { storeId } : {}) })
+      .sort({ createdAt: -1 })
+      .lean();
     const serviceIds = [...new Set(purchases.map((p: any) => p.serviceId))];
     const services = await this.serviceModel.find({ _id: { $in: serviceIds } }).select('name images').lean();
     const serviceMap = Object.fromEntries(services.map((s: any) => [s._id.toString(), s]));

@@ -5,7 +5,7 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 
-import { DatabaseService } from 'src/database/databaseservice';
+import { DatabaseService } from '@/database/databaseservice';
 import { AddToCartDto } from './dto/add-to-cart.dto';
 
 @Injectable()

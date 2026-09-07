@@ -29,7 +29,6 @@ export { ReconciliationRun, ReconciliationRunDocument, ReconciliationRunSchema }
 
 
 export { Store, StoreDocument, StoreSchema } from '../store/schemas/store.schema';
-export { StoreFollower, StoreFollowerDocument, StoreFollowerSchema } from '../store/schemas/store-follower.schema';
 export { Employee, EmployeeDocument, EmployeeSchema } from '../pos/schemas/employee.schema';
 export { RegisterSession, RegisterSessionDocument, RegisterSessionSchema } from '../pos/schemas/register-session.schema';
 export { Sale, SaleDocument, SaleSchema } from '../pos/schemas/sales.schema';
@@ -97,6 +96,8 @@ export { SeoIntegration, SeoIntegrationDocument, SeoIntegrationSchema } from '..
 export { SeoCrawlLog, SeoCrawlLogDocument, SeoCrawlLogSchema } from '../seo/schemas/seo-crawl-log.schema';
 export { SeoIndexSnapshot, SeoIndexSnapshotDocument, SeoIndexSnapshotSchema } from '../seo/schemas/seo-index-snapshot.schema';
 export { SeoAnalyticsSnapshot, SeoAnalyticsSnapshotDocument, SeoAnalyticsSnapshotSchema } from '../seo/schemas/seo-analytics-snapshot.schema';
+export { StoreIntegration, StoreIntegrationDocument, StoreIntegrationSchema } from '../integrations/schemas/store-integration.schema';
+export { IntegrationWebhookEvent, IntegrationWebhookEventDocument, IntegrationWebhookEventSchema } from '../integrations/schemas/integration-webhook-event.schema';
 export { SeoCoreWebVitalsSnapshot, SeoCoreWebVitalsSnapshotDocument, SeoCoreWebVitalsSnapshotSchema } from '../seo/schemas/seo-cwv-snapshot.schema';
 export { SeoAiSuggestionLog, SeoAiSuggestionLogDocument, SeoAiSuggestionLogSchema } from '../seo/schemas/seo-ai-suggestion-log.schema';
 export { SeoAuditResult, SeoAuditResultDocument, SeoAuditResultSchema } from '../seo/schemas/seo-audit-result.schema';
@@ -125,6 +126,11 @@ export { StoreTheme, StoreThemeDocument, StoreThemeSchema } from '../store-theme
 export { StorePage, StorePageDocument, StorePageSchema } from '../store-pages/schemas/store-page.schema';
 export { StoreFaq, StoreFaqDocument, StoreFaqSchema } from '../store-faq/schemas/store-faq.schema';
 export { CollectionTemplate, CollectionTemplateDocument, CollectionTemplateSchema } from '../collection-template/schemas/collection-template.schema';
+export { MetafieldDefinition, MetafieldDefinitionDocument, MetafieldDefinitionSchema } from '../metafields/schemas/metafield-definition.schema';
+export { MetafieldValue, MetafieldValueDocument, MetafieldValueSchema } from '../metafields/schemas/metafield-value.schema';
+export { MetaobjectDefinition, MetaobjectDefinitionDocument, MetaobjectDefinitionSchema } from '../metaobjects/schemas/metaobject-definition.schema';
+export { MetaobjectEntry, MetaobjectEntryDocument, MetaobjectEntrySchema } from '../metaobjects/schemas/metaobject-entry.schema';
+export { Menu, MenuDocument, MenuSchema } from '../menus/schemas/menu.schema';
 export { DraftOrder, DraftOrderDocument, DraftOrderSchema } from '../draft-orders/schemas/draft-order.schema';
 export { StoreCustomerMeta, StoreCustomerMetaDocument, StoreCustomerMetaSchema } from '../store/schemas/store-customer-meta.schema';
 export { BlogPost, BlogPostDocument, BlogPostSchema } from '../store-blog/schemas/blog-post.schema';
@@ -133,4 +139,4 @@ export { BlogComment, BlogCommentDocument, BlogCommentSchema } from '../store-bl
 export { PromotionRequest, PromotionRequestDocument, PromotionRequestSchema } from '../promotions/schemas/promotion-request.schema';
 export { PromotionDailyStats, PromotionDailyStatsDocument, PromotionDailyStatsSchema } from '../promotions/schemas/promotion-daily-stats.schema';
 export { PromotionClickEvent, PromotionClickEventDocument, PromotionClickEventSchema } from '../promotions/schemas/promotion-click-event.schema';
-export { ThemeDefinition, ThemeDefinitionDocument, ThemeDefinitionSchema } from '../theme-catalog/schemas/theme-definition.schema';
+export { StoreAppRequest, StoreAppRequestDocument, StoreAppRequestSchema } from '../store-app-requests/schemas/store-app-request.schema';

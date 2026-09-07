@@ -2,7 +2,7 @@
 import { Processor, WorkerHost, OnWorkerEvent } from '@nestjs/bullmq';
 import { Logger, BadRequestException } from '@nestjs/common';
 import { Job } from 'bullmq';
-import { QUEUE_NAMES } from 'src/queues/queue.constants';
+import { QUEUE_NAMES } from '@/queues/queue.constants';
 import { SeoAiService } from './services/seo-ai.service';
 
 interface BulkGenerateJobData {

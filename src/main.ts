@@ -5,7 +5,12 @@ import cookieParser from 'cookie-parser';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  // rawBody: true is required for every webhook route that verifies a
+  // provider signature over the exact raw bytes (Stripe checkout, Stripe
+  // subscriptions, and the new integrations-module gateway webhooks) — each
+  // reads `req.rawBody`, which Nest only populates when this flag is set.
+  // Without it those routes always throw "Raw request body unavailable".
+  const app = await NestFactory.create(AppModule, { rawBody: true });
 
   app.use(cookieParser());
 

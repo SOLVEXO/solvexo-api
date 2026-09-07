@@ -20,4 +20,6 @@ export class SectionInputDto {
   @ApiProperty({ type: [BlockInputDto] }) @IsArray() @ValidateNested({ each: true }) @Type(() => BlockInputDto) blocks: BlockInputDto[];
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() enabled?: boolean;
   @ApiProperty({ required: false }) @IsOptional() @IsNumber() schemaVersion?: number;
+  @ApiProperty({ required: false, nullable: true, description: "References a saved ColorScheme's id — null means use the theme's own colors." })
+  @IsOptional() @IsString() colorSchemeId?: string | null;
 }

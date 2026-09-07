@@ -49,3 +49,21 @@ export class CreateTestimonialDto {
 }
 
 export class UpdateTestimonialDto extends PartialType(CreateTestimonialDto) {}
+
+// Seller self-submission — deliberately just rating + text. sellerName/
+// storeName/sellerId/storeId are never accepted here; the service derives
+// them from the authenticated seller's own account (req.user.userId), the
+// same "don't trust client-claimed identity" rule this codebase's address
+// module was fixed to follow.
+export class SubmitTestimonialDto {
+  @ApiProperty({ example: 5, description: 'Rating out of 5' })
+  @IsNumber()
+  @Min(1)
+  @Max(5)
+  rating: number;
+
+  @ApiProperty({ example: 'Solvexo made it so easy to launch my store...', description: 'The testimonial quote' })
+  @IsString()
+  @IsNotEmpty({ message: 'Testimonial text is required' })
+  text: string;
+}

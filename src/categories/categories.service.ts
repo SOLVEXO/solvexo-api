@@ -9,11 +9,11 @@ import {
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, isValidObjectId } from 'mongoose';
 
-import { DatabaseService } from 'src/database/databaseservice';
+import { DatabaseService } from '@/database/databaseservice';
 import { CreateCategoryDto } from './dto/create-category.dto';
 import { UpdateCategoryDto } from './dto/update-category.dto';
-import { generateUniqueSlug } from 'src/common/slug.util';
-import { verifyStoreOwnershipStrict } from 'src/common/store-ownership.util';
+import { generateUniqueSlug } from '@/common/slug.util';
+import { verifyStoreOwnershipStrict } from '@/common/store-ownership.util';
 
 @Injectable()
 export class CategoriesService {
@@ -83,6 +83,14 @@ export class CategoriesService {
           if (!parent) {
             throw new BadRequestException('Parent category not found');
           }
+          // Real, load-bearing constraint, not just a UI limit — Product
+          // only ever carries `categoryId` (root) + `subCategoryId` (one
+          // level down), with no field for anything deeper. A 3rd-level
+          // category would exist in the tree but no product could ever
+          // actually be assigned to it, so this stays enforced until that
+          // schema genuinely supports arbitrary depth (a real, separate,
+          // larger migration — confirmed while investigating the Catalog
+          // audit's "unlimited nesting" ask).
           if (parent.parentId) {
             throw new BadRequestException(
               'Categories can only be nested one level deep — pick a main category as the parent',
@@ -101,7 +109,7 @@ export class CategoriesService {
           throw new ConflictException('You already have a category with this name here');
         }
 
-        const slug = await generateUniqueSlug(categoryModel, name);
+        const slug = await generateUniqueSlug(categoryModel, name, { scope: { storeId } });
         const category = await categoryModel.create({
           name,
           slug,
@@ -173,7 +181,7 @@ export class CategoriesService {
         );
       }
 
-      const slug = await generateUniqueSlug(categoryModel, name);
+      const slug = await generateUniqueSlug(categoryModel, name, { scope: { storeId: null } });
 
       const category = await categoryModel.create({
         name,
@@ -309,6 +317,7 @@ export class CategoriesService {
         status: 'active',
         isDelete: false,
       })
+      .sort({ sortOrder: 1 })
       .lean();
 
     const result: any[] = [];
@@ -365,7 +374,7 @@ export class CategoriesService {
       parentId,
       status: 'active',
       isDelete: false,
-    });
+    }).sort({ sortOrder: 1 });
 
     const result: any[] = [];
 
@@ -391,21 +400,24 @@ export class CategoriesService {
     const categoryModel = this.databaseService.repositories.categoryModel;
     const slug = await generateUniqueSlug(categoryModel, cat.name, {
       excludeId: String(cat._id),
+      scope: { storeId: cat.storeId ?? null },
     });
     await categoryModel.findByIdAndUpdate(cat._id, { slug });
     cat.slug = slug;
   }
 
-  async getCategoryWithChildren(categoryId: string): Promise<any> {
+  async getCategoryWithChildren(categoryId: string, storeId?: string): Promise<any> {
     const categoryModel = this.databaseService.repositories.categoryModel;
 
     if (!isValidObjectId(categoryId)) {
       throw new BadRequestException('Invalid category id');
     }
 
-    // Parent category (only active & not deleted)
+    // Parent category (only active & not deleted) — scoped to this store
+    // when one is given, same as the category-tree endpoint.
     const category = await categoryModel.findOne({
       _id: categoryId,
+      ...(storeId ? { storeId } : {}),
       status: 'active',
       isDelete: false,
     });
@@ -428,6 +440,112 @@ export class CategoriesService {
         category, // parent category
         children, // flat array of direct children
       },
+    };
+  }
+
+  /** Rename/re-describe/re-image/toggle-active a seller's OWN store-owned
+   *  category. The legacy/global admin taxonomy has no rename path — this
+   *  never touches a category with `storeId: null`. Slug is deliberately
+   *  left untouched on rename (unlike Product, which does regenerate its
+   *  slug on rename and — per that code's own comment — breaks previously
+   *  shared links as a result): a category's slug backs the real public
+   *  `/category/:slugOrId` storefront route, so keeping it stable avoids
+   *  reintroducing that same class of broken-link bug here. */
+  async updateCategory(
+    userId: string,
+    storeId: string,
+    categoryId: string,
+    dto: UpdateCategoryDto,
+  ): Promise<any> {
+    if (!storeId) {
+      throw new BadRequestException('storeId is required');
+    }
+    if (!isValidObjectId(categoryId)) {
+      throw new BadRequestException('Invalid category id');
+    }
+    await verifyStoreOwnershipStrict(this.databaseService.repositories.storeModel, storeId, userId);
+
+    const categoryModel = this.databaseService.repositories.categoryModel;
+    const category = await categoryModel.findOne({ _id: categoryId, storeId, isDelete: false });
+    if (!category) {
+      throw new NotFoundException('Category not found');
+    }
+
+    if (dto.name !== undefined && dto.name !== category.name) {
+      const duplicate = await categoryModel.findOne({
+        _id: { $ne: categoryId },
+        name: dto.name,
+        storeId,
+        parentId: category.parentId,
+        status: 'active',
+        isDelete: false,
+      });
+      if (duplicate) {
+        throw new ConflictException('You already have a category with this name here');
+      }
+      category.name = dto.name;
+    }
+    if (dto.description !== undefined) category.description = dto.description;
+    if (dto.image !== undefined) category.image = dto.image;
+    if (dto.isActive !== undefined) category.status = dto.isActive ? 'active' : 'inactive';
+    if (dto.sortOrder !== undefined) category.sortOrder = dto.sortOrder;
+
+    await category.save();
+
+    return {
+      success: true,
+      message: 'Category updated successfully',
+      data: category,
+    };
+  }
+
+  /** Soft-deletes a seller's own store-owned category — blocked (with a
+   *  clear reason) if any active product still references it, or if it's a
+   *  main category with active subcategories still under it, so a delete
+   *  can never silently orphan real catalog data. */
+  async deleteCategory(userId: string, storeId: string, categoryId: string): Promise<any> {
+    if (!storeId) {
+      throw new BadRequestException('storeId is required');
+    }
+    if (!isValidObjectId(categoryId)) {
+      throw new BadRequestException('Invalid category id');
+    }
+    await verifyStoreOwnershipStrict(this.databaseService.repositories.storeModel, storeId, userId);
+
+    const categoryModel = this.databaseService.repositories.categoryModel;
+    const category = await categoryModel.findOne({ _id: categoryId, storeId, isDelete: false });
+    if (!category) {
+      throw new NotFoundException('Category not found');
+    }
+
+    const childCount = await categoryModel.countDocuments({
+      parentId: categoryId,
+      status: 'active',
+      isDelete: false,
+    });
+    if (childCount > 0) {
+      throw new ConflictException('Remove or move this category\'s subcategories before deleting it');
+    }
+
+    const productModel = this.databaseService.repositories.productModel;
+    const productCount = await productModel.countDocuments({
+      storeId,
+      isDelete: false,
+      $or: [{ categoryId }, { subCategoryId: categoryId }],
+    });
+    if (productCount > 0) {
+      throw new ConflictException(
+        `${productCount} product${productCount === 1 ? '' : 's'} still use this category — reassign them first`,
+      );
+    }
+
+    category.isDelete = true;
+    category.status = 'inactive';
+    await category.save();
+
+    return {
+      success: true,
+      message: 'Category deleted successfully',
     };
   }
 
