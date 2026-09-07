@@ -985,7 +985,7 @@ export class StoreService {
   // body would let a seller un-suspend their own store (see
   // usersService.deleteSellerAccount, which suspends stores on delete).
   async updateStore(sellerId: string, storeId: string, body: any) {
-    const { name, logo, coverImage, faviconUrl, description, tagline, contactEmail, contactPhone, sellerType, productTypes, codEnabled, lowStockThreshold, taxRate, enabledCurrencies } = body;
+    const { name, logo, coverImage, faviconUrl, description, tagline, contactEmail, contactPhone, sellerType, productTypes, codEnabled, reviewModerationEnabled, lowStockThreshold, taxRate, enabledCurrencies } = body;
 
     if (!storeId) throw new BadRequestException('storeId is required');
 
@@ -1034,6 +1034,7 @@ export class StoreService {
     if (contactPhone !== undefined) updateData.contactPhone = contactPhone;
     if (sellerType !== undefined) updateData.sellerType = sellerType;
     if (codEnabled !== undefined) updateData.codEnabled = !!codEnabled;
+    if (reviewModerationEnabled !== undefined) updateData.reviewModerationEnabled = !!reviewModerationEnabled;
     if (lowStockThreshold !== undefined) {
       const parsed = Number(lowStockThreshold);
       if (!Number.isFinite(parsed) || parsed < 1) {
@@ -1596,94 +1597,159 @@ export class StoreService {
 
   // ── 7. Store customers (staff-facing: only people who have ordered from this store) ────
 
+  // Segment thresholds — shared between the aggregation's $switch below and
+  // anything server-side that needs to reason about a segment label without
+  // re-running the pipeline.
+  private static readonly CUSTOMER_AT_RISK_DAYS = 90;
+  private static readonly CUSTOMER_VIP_ORDER_COUNT = 5;
+  private static readonly CUSTOMER_SEGMENTS = ['new', 'returning', 'vip', 'at_risk'] as const;
+
+  /**
+   * One aggregation pipeline (through the segment/tags/notes $addFields
+   * stage) reused for the paginated list, the filtered count/summary, and
+   * CSV export — so "how many customers match these filters" and "which
+   * customers are on this page" can never disagree with each other.
+   */
+  private buildStoreCustomersPipeline(storeId: string, customerIds: string[], query: any) {
+    const { userModel, storeCustomerMetaModel } = this.databaseService.repositories;
+
+    const pipeline: any[] = [
+      { $match: { userId: { $in: customerIds }, isDelete: false, 'sellerOrders.storeId': storeId } },
+      { $unwind: '$sellerOrders' },
+      { $match: { 'sellerOrders.storeId': storeId } },
+      {
+        $group: {
+          _id: '$userId',
+          orderCount: { $sum: 1 },
+          totalSpent: { $sum: '$sellerOrders.subtotal' },
+          lastOrderAt: { $max: '$createdAt' },
+        },
+      },
+      {
+        $addFields: {
+          daysSinceLastOrder: { $divide: [{ $subtract: ['$$NOW', '$lastOrderAt'] }, 86_400_000] },
+        },
+      },
+      {
+        // A real, computed segment (not a stored label that would go stale
+        // the moment the buyer's next order changes which bucket they
+        // belong in) — mirrors the New/Returning/VIP/At-Risk buckets a real
+        // commerce platform's customer list shows.
+        $addFields: {
+          segment: {
+            $switch: {
+              branches: [
+                { case: { $gte: ['$orderCount', StoreService.CUSTOMER_VIP_ORDER_COUNT] }, then: 'vip' },
+                { case: { $gt: ['$daysSinceLastOrder', StoreService.CUSTOMER_AT_RISK_DAYS] }, then: 'at_risk' },
+                { case: { $eq: ['$orderCount', 1] }, then: 'new' },
+              ],
+              default: 'returning',
+            },
+          },
+        },
+      },
+      {
+        $lookup: {
+          from: userModel.collection.name,
+          let: { uid: '$_id' },
+          pipeline: [{ $match: { $expr: { $eq: [{ $toString: '$_id' }, '$$uid'] } } }],
+          as: 'user',
+        },
+      },
+      { $unwind: '$user' },
+      {
+        $lookup: {
+          from: storeCustomerMetaModel.collection.name,
+          let: { uid: '$_id' },
+          pipeline: [{ $match: { $expr: { $and: [{ $eq: ['$storeId', storeId] }, { $eq: ['$userId', '$$uid'] }] } } }],
+          as: 'meta',
+        },
+      },
+      { $unwind: { path: '$meta', preserveNullAndEmptyArrays: true } },
+      {
+        $addFields: {
+          name: '$user.name',
+          email: '$user.email',
+          phone: '$user.phone',
+          createdAt: '$user.createdAt',
+          tags: { $ifNull: ['$meta.tags', []] },
+          notes: { $ifNull: ['$meta.notes', ''] },
+          isArchived: { $ifNull: ['$meta.isArchived', false] },
+          marketingOptIn: { $ifNull: ['$meta.marketingOptIn', false] },
+        },
+      },
+    ];
+
+    const filter: Record<string, unknown> = {};
+    if (query.search) {
+      const re = new RegExp(String(query.search).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+      filter.$or = [{ name: re }, { email: re }];
+    }
+    if (query.segment && (StoreService.CUSTOMER_SEGMENTS as readonly string[]).includes(query.segment)) {
+      filter.segment = query.segment;
+    }
+    if (query.dateFrom || query.dateTo) {
+      const range: Record<string, Date> = {};
+      if (query.dateFrom) range.$gte = new Date(query.dateFrom);
+      if (query.dateTo) range.$lte = new Date(query.dateTo);
+      filter.lastOrderAt = range;
+    }
+    // Scopes the list/export down to an explicit id set — e.g. "export just
+    // the rows I selected" from the Customers table's bulk-action bar.
+    if (query.ids) {
+      const idList = String(query.ids).split(',').map((s: string) => s.trim()).filter(Boolean);
+      if (idList.length) filter._id = { $in: idList };
+    }
+    // Views: 'active' (default, excludes archived) | 'archived' | 'all'.
+    if (query.view === 'archived') filter.isArchived = true;
+    else if (query.view !== 'all') filter.isArchived = false;
+
+    pipeline.push({ $match: filter });
+    return pipeline;
+  }
+
   async getStoreCustomers(sellerId: string, storeId: string, query: any) {
     const store = await this.databaseService.repositories.storeModel.findOne({ _id: storeId, isDelete: false });
     if (!store) throw new NotFoundException('Store not found');
     if (store.sellerId !== sellerId) throw new UnauthorizedException('You are not authorized to view this store\'s customers');
 
-    const { orderModel, userModel } = this.databaseService.repositories;
+    const { orderModel } = this.databaseService.repositories;
 
     const page = parseInt(query.page) || 1;
     const limit = parseInt(query.limit) || 20;
     const skip = (page - 1) * limit;
 
+    const sortableFields: Record<string, string> = {
+      name: 'name', totalSpent: 'totalSpent', orderCount: 'orderCount',
+      lastOrderAt: 'lastOrderAt', createdAt: 'createdAt',
+    };
+    const sortField = sortableFields[query.sortBy] || 'lastOrderAt';
+    const sortDir = query.sortDir === 'asc' ? 1 : -1;
+
     const customerIds = await orderModel.distinct('userId', { 'sellerOrders.storeId': storeId, isDelete: false });
-    const total = customerIds.length;
+    const pipeline = this.buildStoreCustomersPipeline(storeId, customerIds, query);
 
-    const matchStage = { $match: { userId: { $in: customerIds }, isDelete: false, 'sellerOrders.storeId': storeId } };
-    const unwindStages = [
-      matchStage,
-      { $unwind: '$sellerOrders' },
-      { $match: { 'sellerOrders.storeId': storeId } },
-    ];
-
-    const [stats, [totals]] = await Promise.all([
+    const [customers, [totals]] = await Promise.all([
       orderModel.aggregate([
-        ...unwindStages,
-        {
-          $group: {
-            _id: '$userId',
-            orderCount: { $sum: 1 },
-            totalSpent: { $sum: '$sellerOrders.subtotal' },
-            lastOrderAt: { $max: '$createdAt' },
-          },
-        },
-        { $sort: { lastOrderAt: -1 } },
+        ...pipeline,
+        { $sort: { [sortField]: sortDir } },
         { $skip: skip },
         { $limit: limit },
+        {
+          $project: {
+            _id: 1, name: 1, email: 1, phone: 1, createdAt: 1,
+            orderCount: 1, totalSpent: 1, lastOrderAt: 1, segment: 1,
+            tags: 1, notes: 1, isArchived: 1, marketingOptIn: 1,
+          },
+        },
       ]),
       orderModel.aggregate([
-        ...unwindStages,
-        { $group: { _id: null, totalOrders: { $sum: 1 }, totalRevenue: { $sum: '$sellerOrders.subtotal' } } },
+        ...pipeline,
+        { $group: { _id: null, total: { $sum: 1 }, totalOrders: { $sum: '$orderCount' }, totalRevenue: { $sum: '$totalSpent' } } },
       ]),
     ]);
 
-    const pageIds = stats.map((s) => s._id);
-    const users = await userModel.find({ _id: { $in: pageIds } }).select('name email phone createdAt').lean() as unknown as
-      { _id: unknown; name: string; email: string; phone: string; createdAt: Date }[];
-    const userMap = new Map(users.map((u) => [String(u._id), u]));
-
-    // Seller-authored tags/notes — private to this store (see
-    // StoreCustomerMeta's doc comment for why this isn't a platform-wide
-    // customer profile field).
-    const metaRows = pageIds.length
-      ? await this.databaseService.repositories.storeCustomerMetaModel
-          .find({ storeId, userId: { $in: pageIds.map(String) } })
-          .select('userId tags notes')
-          .lean()
-      : [];
-    const metaMap = new Map(metaRows.map((m: any) => [m.userId, m]));
-
-    const AT_RISK_DAYS = 90;
-    const now = Date.now();
-
-    const customers = stats.map((s) => {
-      const u = userMap.get(String(s._id));
-      const meta = metaMap.get(String(s._id));
-      const daysSinceLastOrder = s.lastOrderAt ? (now - new Date(s.lastOrderAt).getTime()) / 86_400_000 : Infinity;
-      // A real, computed segment (not a stored label that would go stale the
-      // moment the buyer's next order changes which bucket they belong in)
-      // — mirrors the New/Returning/VIP/At-Risk buckets a real commerce
-      // platform's customer list shows.
-      const segment: 'new' | 'returning' | 'vip' | 'at_risk' =
-        s.orderCount >= 5 ? 'vip'
-        : daysSinceLastOrder > AT_RISK_DAYS ? 'at_risk'
-        : s.orderCount === 1 ? 'new'
-        : 'returning';
-      return {
-        _id: s._id,
-        name: u?.name ?? 'Unknown',
-        email: u?.email ?? '',
-        phone: u?.phone ?? '',
-        createdAt: u?.createdAt ?? null,
-        orderCount: s.orderCount,
-        totalSpent: s.totalSpent,
-        lastOrderAt: s.lastOrderAt,
-        segment,
-        tags: meta?.tags ?? [],
-        notes: meta?.notes ?? '',
-      };
-    });
+    const total = totals?.total ?? 0;
 
     return {
       success: true,
@@ -1693,6 +1759,114 @@ export class StoreService {
         customers,
       },
     };
+  }
+
+  /** CSV export of the same filtered set `getStoreCustomers` would return — capped so a huge store can't blow up memory on one request. */
+  async exportStoreCustomers(sellerId: string, storeId: string, query: any): Promise<string> {
+    const EXPORT_CAP = 5000;
+    const result = await this.getStoreCustomers(sellerId, storeId, { ...query, page: 1, limit: EXPORT_CAP });
+    const rows = result.data.customers as any[];
+
+    const escape = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const header = ['Name', 'Email', 'Phone', 'Segment', 'Orders', 'Total Spent', 'Last Order', 'Member Since', 'Tags'];
+    const lines = [header.map(escape).join(',')];
+    for (const c of rows) {
+      lines.push([
+        c.name, c.email, c.phone, c.segment, c.orderCount, c.totalSpent,
+        c.lastOrderAt ? new Date(c.lastOrderAt).toISOString() : '',
+        c.createdAt ? new Date(c.createdAt).toISOString() : '',
+        (c.tags ?? []).join('; '),
+      ].map(escape).join(','));
+    }
+    return lines.join('\n');
+  }
+
+  /** Resolves the subset of a seller's requested customer ids that have actually ordered from this store — the same ownership guard every other customer mutation applies, generalized for bulk endpoints. */
+  private async resolveStoreCustomerIds(storeId: string, customerIds: string[]) {
+    const ids = [...new Set((customerIds ?? []).filter(Boolean))];
+    if (!ids.length) throw new BadRequestException('customerIds is required');
+    const { orderModel } = this.databaseService.repositories;
+    const validIds: string[] = await orderModel.distinct('userId', {
+      userId: { $in: ids }, 'sellerOrders.storeId': storeId, isDelete: false,
+    });
+    if (!validIds.length) throw new BadRequestException('None of the selected customers belong to this store');
+    return validIds;
+  }
+
+  async bulkTagCustomers(
+    sellerId: string, storeId: string,
+    dto: { customerIds: string[]; addTags?: string[]; removeTags?: string[] },
+    ip?: string, userAgent?: string,
+  ) {
+    const store = await this.databaseService.repositories.storeModel.findOne({ _id: storeId, isDelete: false });
+    if (!store) throw new NotFoundException('Store not found');
+    if (store.sellerId !== sellerId) throw new UnauthorizedException('You are not authorized to edit this store\'s customers');
+
+    const addTags = (dto.addTags ?? []).map((t) => t.trim()).filter(Boolean);
+    const removeTags = (dto.removeTags ?? []).map((t) => t.trim()).filter(Boolean);
+    if (!addTags.length && !removeTags.length) throw new BadRequestException('addTags or removeTags is required');
+
+    const validIds = await this.resolveStoreCustomerIds(storeId, dto.customerIds);
+    const { storeCustomerMetaModel } = this.databaseService.repositories;
+
+    await storeCustomerMetaModel.bulkWrite(validIds.map((userId) => ({
+      updateOne: {
+        filter: { storeId, userId },
+        update: {
+          ...(addTags.length ? { $addToSet: { tags: { $each: addTags } } } : {}),
+          ...(removeTags.length ? { $pullAll: { tags: removeTags } } : {}),
+          $setOnInsert: { storeId, userId },
+        },
+        upsert: true,
+      },
+    })));
+
+    // $addToSet can push past the 20-tag cap the single-customer endpoint
+    // enforces up front — trim any row that exceeded it in one follow-up pass.
+    await storeCustomerMetaModel.updateMany(
+      { storeId, userId: { $in: validIds }, $expr: { $gt: [{ $size: '$tags' }, 20] } },
+      [{ $set: { tags: { $slice: ['$tags', 20] } } }],
+    );
+
+    this.activityLogService.log({
+      storeId, category: 'customers', action: 'customers_bulk_tagged',
+      description: `Bulk-updated tags for ${validIds.length} customer(s)`
+        + (addTags.length ? ` (+${addTags.join(', ')})` : '')
+        + (removeTags.length ? ` (-${removeTags.join(', ')})` : ''),
+      actorId: sellerId, actorRole: 'seller', ip, userAgent,
+    });
+
+    return { success: true, message: `Updated tags for ${validIds.length} customer(s)`, data: { updated: validIds.length } };
+  }
+
+  async bulkArchiveCustomers(
+    sellerId: string, storeId: string,
+    dto: { customerIds: string[]; archived: boolean },
+    ip?: string, userAgent?: string,
+  ) {
+    const store = await this.databaseService.repositories.storeModel.findOne({ _id: storeId, isDelete: false });
+    if (!store) throw new NotFoundException('Store not found');
+    if (store.sellerId !== sellerId) throw new UnauthorizedException('You are not authorized to edit this store\'s customers');
+
+    const validIds = await this.resolveStoreCustomerIds(storeId, dto.customerIds);
+    const { storeCustomerMetaModel } = this.databaseService.repositories;
+    const archived = !!dto.archived;
+
+    await storeCustomerMetaModel.bulkWrite(validIds.map((userId) => ({
+      updateOne: {
+        filter: { storeId, userId },
+        update: { $set: { isArchived: archived }, $setOnInsert: { storeId, userId } },
+        upsert: true,
+      },
+    })));
+
+    this.activityLogService.log({
+      storeId, category: 'customers', action: archived ? 'customers_bulk_archived' : 'customers_bulk_restored',
+      description: `${archived ? 'Archived' : 'Restored'} ${validIds.length} customer(s)`,
+      actorId: sellerId, actorRole: 'seller', ip, userAgent,
+    });
+
+    return { success: true, message: `${archived ? 'Archived' : 'Restored'} ${validIds.length} customer(s)`, data: { updated: validIds.length } };
   }
 
   async updateStoreCustomer(
@@ -1749,7 +1923,7 @@ export class StoreService {
     sellerId: string,
     storeId: string,
     customerId: string,
-    dto: { tags?: string[]; notes?: string },
+    dto: { tags?: string[]; notes?: string; marketingOptIn?: boolean },
     ip?: string,
     userAgent?: string,
   ) {
@@ -1764,6 +1938,7 @@ export class StoreService {
     const set: Record<string, unknown> = {};
     if (dto.tags !== undefined) set.tags = dto.tags.slice(0, 20).map((t) => t.trim()).filter(Boolean);
     if (dto.notes !== undefined) set.notes = dto.notes.slice(0, 2000);
+    if (dto.marketingOptIn !== undefined) set.marketingOptIn = !!dto.marketingOptIn;
     if (Object.keys(set).length === 0) throw new BadRequestException('Nothing to update');
 
     const meta = await storeCustomerMetaModel.findOneAndUpdate(
@@ -1785,6 +1960,6 @@ export class StoreService {
       userAgent,
     });
 
-    return { success: true, message: 'Customer notes updated', data: { tags: meta.tags, notes: meta.notes } };
+    return { success: true, message: 'Customer notes updated', data: { tags: meta.tags, notes: meta.notes, marketingOptIn: meta.marketingOptIn } };
   }
 }

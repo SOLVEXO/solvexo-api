@@ -4,7 +4,7 @@ import { Types } from 'mongoose';
 import { randomBytes } from 'crypto';
 import { DatabaseService } from '../database/databaseservice';
 import { verifyStoreOwnershipStrict } from '../common/store-ownership.util';
-import { validateBlockSettings } from '../common/store-content/section-settings.validator';
+import { validateBlockSettings, HEADER_ALLOWED_BLOCK_TYPES, FOOTER_ALLOWED_BLOCK_TYPES } from '../common/store-content/section-settings.validator';
 import { ContentVersioningService } from '../common/content-versioning/content-versioning.service';
 import { StoreThemeDraft } from './schemas/store-theme.schema';
 import { UpdateThemeDto } from './dto/update-theme.dto';
@@ -14,6 +14,7 @@ import { UpdateIdentityBannerDto } from './dto/update-identity-banner.dto';
 import { InstallThemeDto } from './dto/install-theme.dto';
 import { CreateColorSchemeDto } from './dto/color-scheme.dto';
 import { MenusService } from '../menus/menus.service';
+import { ThemeCatalogService } from '../theme-catalog/theme-catalog.service';
 
 const MAX_HEADER_LINKS = 10;
 const MAX_FOOTER_BLOCKS = 20;
@@ -77,6 +78,7 @@ export class StoreThemeService {
     private readonly databaseService: DatabaseService,
     private readonly contentVersioningService: ContentVersioningService,
     private readonly menusService: MenusService,
+    private readonly themeCatalogService: ThemeCatalogService,
   ) {}
 
   /** If `header.menuId` is set, replaces `header.blocks` with that Menu's
@@ -274,6 +276,45 @@ export class StoreThemeService {
     return { success: true, message: 'Theme removed' };
   }
 
+  /** Theme Marketplace "Use Theme" — copies a catalog `ThemeDefinition`'s colors/header/footer/identityBanner into this store's active installed row's DRAFT (never live), and stages its home-page composition in `draft.pendingHomeSections` for `publishTheme` to commit into the home `StorePage` on the seller's next explicit publish. Never mutates the catalog document beyond its own apply counter. */
+  async applyThemeDefinition(storeId: string, sellerId: string, themeDefinitionId: string) {
+    await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
+    const instance = await this.resolveInstance(storeId);
+    const themeDef = await this.themeCatalogService.getPublishedForApply(themeDefinitionId);
+
+    // A theme definition's header/footer often only sets style/alignment and
+    // ships with NO nav-link/footer blocks of its own — falling back to the
+    // seller's own existing draft blocks in that case, so applying a theme
+    // never silently wipes real navigation content the seller already built.
+    const existingHeader = (instance.draft as any)?.header ?? {};
+    const existingFooter = (instance.draft as any)?.footer ?? {};
+    const header = {
+      ...themeDef.header,
+      blocks: themeDef.header?.blocks?.length ? themeDef.header.blocks : (existingHeader.blocks ?? []),
+    };
+    const footer = {
+      ...themeDef.footer,
+      blocks: themeDef.footer?.blocks?.length ? themeDef.footer.blocks : (existingFooter.blocks ?? []),
+    };
+
+    const updated = await this.storeThemeModel.findOneAndUpdate(
+      { _id: instance._id },
+      { $set: {
+        'draft.theme': themeDef.theme,
+        'draft.header': header,
+        'draft.footer': footer,
+        'draft.identityBanner': themeDef.identityBanner,
+        'draft.baseThemeId': themeDefinitionId,
+        'draft.themeDefinitionId': themeDefinitionId,
+        'draft.pendingHomeSections': themeDef.homePageSections ?? [],
+      } },
+      { new: true },
+    );
+
+    await this.themeCatalogService.incrementApplyCount(themeDefinitionId);
+    return { success: true, message: 'Theme applied to your draft — review and publish to make it live.', data: updated };
+  }
+
   // ── Existing surface — all operate on the resolved instance (active row
   // unless `installedThemeId` is given), unchanged behavior for every caller
   // that predates multi-install. ─────────────────────────────────────────
@@ -422,6 +463,17 @@ export class StoreThemeService {
         publishedAt,
       },
     );
+
+    // If a theme-definition apply is pending, this is the moment it actually
+    // takes effect — commit its home-page sections into the store's home
+    // StorePage (a separate collection from StoreTheme, so draft/publish
+    // alone can't carry it there) and clear the pending marker so a later
+    // publish never silently reapplies stale sections.
+    const pendingHomeSections = (instance.draft as any)?.pendingHomeSections;
+    if (pendingHomeSections) {
+      await this.storePageModel.updateOne({ storeId, type: 'home' }, { $set: { sections: pendingHomeSections } });
+      await this.storeThemeModel.updateOne({ _id: instance._id }, { $set: { 'draft.pendingHomeSections': null } });
+    }
 
     return { success: true, message: 'Theme published', data: withVersion ?? updated };
   }

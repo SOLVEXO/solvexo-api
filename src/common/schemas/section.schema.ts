@@ -40,6 +40,10 @@ export const SECTION_TYPES = [
   'craft_process',
   'tech_specs_compare',
   'soft_gallery',
+  'feature_list',
+  'team_grid',
+  'stats_counter',
+  'gallery_grid',
 ] as const;
 export type SectionType = (typeof SECTION_TYPES)[number];
 

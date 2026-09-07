@@ -235,6 +235,17 @@ export class StoreThemeDraft {
   // comment on `StoreTheme.customCss` below for the full safety rationale.
   @Prop({ type: String, default: null })
   customCss: string | null;
+
+  // Staged by `StoreThemeService.applyThemeDefinition` — a theme's home-page
+  // composition can't be committed straight to the live `StorePage` the
+  // moment a seller picks a theme (that would bypass the draft/publish
+  // review step every other theme edit goes through), so it waits here
+  // until the seller's next `publishTheme()` call, which writes it into the
+  // home `StorePage.sections` and clears this field. `null` (not `[]`) is
+  // the "nothing pending" state, distinct from a theme that legitimately
+  // ships zero home sections.
+  @Prop({ type: [SectionSchema], default: null })
+  pendingHomeSections: Section[] | null;
 }
 export const StoreThemeDraftSchema = SchemaFactory.createForClass(StoreThemeDraft);
 

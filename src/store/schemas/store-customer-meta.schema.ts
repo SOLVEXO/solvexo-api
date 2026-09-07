@@ -31,6 +31,18 @@ export class StoreCustomerMeta {
   @Prop({ type: String, default: '' })
   notes: string;
 
+  // Seller-side archive of a customer from their default Customers view —
+  // purely a per-store visibility flag, never affects the buyer's account.
+  @Prop({ type: Boolean, default: false })
+  isArchived: boolean;
+
+  // Per-store marketing-email consent, set by the seller on the customer's
+  // behalf (e.g. after a phone/in-person opt-in) — intentionally NOT the
+  // buyer's own global preference, since a buyer may want emails from one
+  // store's seller but not another's.
+  @Prop({ type: Boolean, default: false })
+  marketingOptIn: boolean;
+
   createdAt?: Date;
   updatedAt?: Date;
 }

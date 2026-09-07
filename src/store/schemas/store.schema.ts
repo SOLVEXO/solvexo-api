@@ -560,6 +560,13 @@ export class Store {
   @Prop({ type: Boolean, default: true })
   codEnabled: boolean;
 
+  // Opt-in per-store review moderation gate — off by default so every
+  // existing store keeps today's behavior (a review publishes the instant
+  // it's submitted). A seller who turns this on gets a real approve/reject
+  // queue instead (see `RatingService.addReview`/`getStoreReviews`).
+  @Prop({ type: Boolean, default: false })
+  reviewModerationEnabled: boolean;
+
   @Prop({ type: StoreSeoSchema, default: () => ({}) })
   seo: StoreSeo;
 

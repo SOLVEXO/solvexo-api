@@ -4,6 +4,7 @@ import { RedisModule } from '../redis/redis.module';
 import { AdminConfigModule } from '../admin-config/admin-config.module';
 import { ContentVersioningModule } from '../common/content-versioning/content-versioning.module';
 import { MenusModule } from '../menus/menus.module';
+import { ThemeCatalogModule } from '../theme-catalog/theme-catalog.module';
 import { StoreThemeController } from './store-theme.controller';
 import { PublicStoreThemeController } from './public-store-theme.controller';
 import { StoreThemeService } from './store-theme.service';
@@ -15,6 +16,7 @@ import { StoreThemeService } from './store-theme.service';
     AdminConfigModule,
     ContentVersioningModule,
     MenusModule,
+    ThemeCatalogModule,
   ],
   controllers: [StoreThemeController, PublicStoreThemeController],
   providers: [StoreThemeService],

@@ -261,7 +261,7 @@ export class MessagingService {
     // Which side of THIS conversation the sender is on — not their JWT role,
     // since the same account can be a buyer here and a seller elsewhere.
     const iAmBuyer = conv.buyerId.toString() === userId;
-    const senderRole = role === 'admin' ? 'admin' : iAmBuyer ? 'user' : 'seller';
+    const senderRole = iAmBuyer ? 'user' : 'seller';
 
     // Block check
     if (conv.blockedByBuyer || conv.blockedBySeller) {
@@ -334,10 +334,9 @@ export class MessagingService {
     const updatedConv = await this.convModel.findByIdAndUpdate(conversationId, {
       lastMessage: lastMessageSnapshot,
       $inc: unreadIncrement,
-      // Restore soft-delete if sender had deleted
-      ...(iAmBuyer ? { deletedByBuyer: false } : { deletedBySeller: false }),
-      // Restore for the other side too (message reactivates conversation)
-      ...(iAmBuyer ? { deletedBySeller: false } : { deletedByBuyer: false }),
+      // A new message reactivates the conversation for both sides, whoever sent it.
+      deletedByBuyer: false,
+      deletedBySeller: false,
     }, { new: true }).lean();
 
     this.gateway.emitNewMessage(conversationId, message);
@@ -630,6 +629,25 @@ export class MessagingService {
       this.msgModel.find({ conversationId }).sort({ createdAt: -1 }).limit(50).lean(),
     ]);
     return { ...conv.toObject(), buyer, store, recentMessages: messages.reverse() };
+  }
+
+  /** Resolves a messaging-abuse report (user/message/conversation) — the counterpart to admin-moderation's approve/remove for the marketplace-wide queue, scoped to this module's own report types. */
+  async adminResolveReport(adminId: string, reportId: string, dto: { resolution?: 'approved' | 'removed'; adminNotes?: string }) {
+    const report = await this.rptModel.findByIdAndUpdate(
+      reportId,
+      {
+        $set: {
+          status: 'resolved',
+          resolution: dto.resolution ?? 'approved',
+          adminNotes: dto.adminNotes ?? null,
+          reviewedBy: adminId,
+          resolvedAt: new Date(),
+        },
+      },
+      { new: true },
+    );
+    if (!report) throw new NotFoundException('Report not found');
+    return report;
   }
 
   async adminGetReports(query: any) {

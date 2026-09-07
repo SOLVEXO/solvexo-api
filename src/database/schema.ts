@@ -123,6 +123,7 @@ export { Campaign, CampaignDocument, CampaignSchema } from '../marketing/schemas
 export { MediaAsset, MediaAssetDocument, MediaAssetSchema } from '../media-library/schemas/media-asset.schema';
 export { StoreBanner, StoreBannerDocument, StoreBannerSchema } from '../store-banner/schemas/store-banner.schema';
 export { StoreTheme, StoreThemeDocument, StoreThemeSchema } from '../store-theme/schemas/store-theme.schema';
+export { ThemeDefinition, ThemeDefinitionDocument, ThemeDefinitionSchema } from '../theme-catalog/schemas/theme-definition.schema';
 export { StorePage, StorePageDocument, StorePageSchema } from '../store-pages/schemas/store-page.schema';
 export { StoreFaq, StoreFaqDocument, StoreFaqSchema } from '../store-faq/schemas/store-faq.schema';
 export { CollectionTemplate, CollectionTemplateDocument, CollectionTemplateSchema } from '../collection-template/schemas/collection-template.schema';

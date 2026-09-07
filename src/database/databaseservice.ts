@@ -292,6 +292,9 @@ export class DatabaseService {
     @InjectModel(schema.StoreTheme.name)
     private storeThemeModel: Model<schema.StoreThemeDocument>,
 
+    @InjectModel(schema.ThemeDefinition.name)
+    private themeDefinitionModel: Model<schema.ThemeDefinitionDocument>,
+
     @InjectModel(schema.StorePage.name)
     private storePageModel: Model<schema.StorePageDocument>,
 
@@ -462,6 +465,7 @@ export class DatabaseService {
       mediaAssetModel: this.mediaAssetModel,
       storeBannerModel: this.storeBannerModel,
       storeThemeModel: this.storeThemeModel,
+      themeDefinitionModel: this.themeDefinitionModel,
       storePageModel: this.storePageModel,
       storeFaqModel: this.storeFaqModel,
       collectionTemplateModel: this.collectionTemplateModel,

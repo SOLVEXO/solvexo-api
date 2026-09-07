@@ -52,11 +52,13 @@ export class RatingService {
 
   // Recomputes from scratch instead of incrementing — avoids drift after
   // edits/deletes and keeps Product.averageRating/ratingSum always correct.
+  // Only 'published' reviews count — a pending review (moderation-enabled
+  // stores) hasn't earned public trust yet, and a rejected one never should.
   private async recalcProductRating(productId: string) {
     const { productModel, ratingModel } = this.r;
 
     const agg = await ratingModel.aggregate([
-      { $match: { productId, isDelete: false, rating: { $ne: null } } },
+      { $match: { productId, isDelete: false, rating: { $ne: null }, status: 'published' } },
       { $group: { _id: null, sum: { $sum: '$rating' }, count: { $sum: 1 } } },
     ]);
 
@@ -80,7 +82,7 @@ export class RatingService {
     const { storeModel, ratingModel } = this.r;
 
     const agg = await ratingModel.aggregate([
-      { $match: { storeId, isDelete: false, rating: { $ne: null } } },
+      { $match: { storeId, isDelete: false, rating: { $ne: null }, status: 'published' } },
       { $group: { _id: null, sum: { $sum: '$rating' }, count: { $sum: 1 } } },
     ]);
 
@@ -192,6 +194,15 @@ export class RatingService {
       orderId,
     );
 
+    // Opt-in per store (Store.reviewModerationEnabled, default false) — every
+    // store that hasn't turned this on keeps today's exact behavior (publish
+    // instantly, recalc immediately below).
+    let requiresModeration = false;
+    if (product.storeId) {
+      const store = await this.r.storeModel.findOne({ _id: product.storeId }).select('reviewModerationEnabled').lean();
+      requiresModeration = !!(store as any)?.reviewModerationEnabled;
+    }
+
     const reviewData: any = {
       userId,
       productId,
@@ -202,6 +213,7 @@ export class RatingService {
       media: media || [],
       isAnonymous: isAnonymous ?? false,
       isVerifiedPurchase,
+      status: requiresModeration ? 'pending' : 'published',
       comments: [],
     };
 
@@ -211,18 +223,24 @@ export class RatingService {
 
     const review = await ratingModel.create(reviewData);
 
-    if (rating) {
+    // A pending review's rating doesn't count toward the public average
+    // until it's approved (see approveReview, which runs this same recalc).
+    if (rating && !requiresModeration) {
       await this.recalcProductRating(productId);
       await this.recalcStoreRating(product.storeId);
     }
 
-    if (isVerifiedPurchase && rating && product.storeId) {
+    if (isVerifiedPurchase && rating && product.storeId && !requiresModeration) {
       this.loyaltyService
         .awardReviewPoints(product.storeId, userId)
         .catch(() => {});
     }
 
-    return { success: true, message: 'Review added', data: review };
+    return {
+      success: true,
+      message: requiresModeration ? 'Review submitted — awaiting seller approval' : 'Review added',
+      data: review,
+    };
   }
 
   async editReview(userId: string, reviewId: string, dto: EditReviewDto, storeId: string) {
@@ -316,6 +334,7 @@ export class RatingService {
                 image: (product as any).images?.[0] ?? null,
               }
             : null,
+          status: r.status,
           rating: r.rating,
           comments: r.comments,
           media: r.media,
@@ -353,7 +372,13 @@ export class RatingService {
     const limit = parseInt(query.limit) || 10;
     const skip = (page - 1) * limit;
 
-    const filter: any = { productId, isDelete: false };
+    // Public listing only ever shows 'published' reviews, plus the viewer's
+    // own review regardless of its status (pending/rejected) — same
+    // "I can always see my own thing" carve-out isAnonymous already has for
+    // the viewer's own name.
+    const filter: any = viewerId
+      ? { productId, isDelete: false, $or: [{ status: 'published' }, { userId: viewerId }] }
+      : { productId, isDelete: false, status: 'published' };
     if (query.rating) filter.rating = parseInt(query.rating);
     if (query.hasMedia === 'true') filter.media = { $exists: true, $ne: [] };
     if (query.verifiedOnly === 'true') filter.isVerifiedPurchase = true;
@@ -382,7 +407,7 @@ export class RatingService {
     }
 
     const allForStats = await ratingModel
-      .find({ productId, isDelete: false, rating: { $ne: null } })
+      .find({ productId, isDelete: false, rating: { $ne: null }, status: 'published' })
       .select('rating')
       .lean();
     const ratingBreakdown: Record<string, number> = {
@@ -418,6 +443,7 @@ export class RatingService {
               ? 'Anonymous'
               : (user as any)?.name || 'Unknown',
           isOwn,
+          status: r.status,
           rating: r.rating,
           comments: r.comments,
           media: r.media,
@@ -499,6 +525,11 @@ export class RatingService {
       filter.rating = parseInt(query.rating);
     if (query.productId && query.productId !== 'all')
       filter.productId = query.productId;
+    if (query.status && query.status !== 'all')
+      filter.status = query.status;
+    if (query.replyStatus === 'replied') filter.sellerReply = { $ne: null };
+    else if (query.replyStatus === 'unreplied') filter.sellerReply = null;
+    else if (query.replyStatus === 'flagged') filter.isFlagged = true;
 
     const totalReviews = await ratingModel.countDocuments(filter);
     const totalPages = Math.ceil(totalReviews / limit);
@@ -515,6 +546,17 @@ export class RatingService {
       .find({ storeId, isDelete: false })
       .lean();
 
+    // Powers the seller UI's "filter by product" dropdown — the distinct set
+    // of products that actually have a review, not the store's full catalog
+    // (a seller only ever needs to filter down to products with feedback).
+    const reviewedProductIds = [...new Set(allReviews.map((r: any) => r.productId).filter(Boolean))];
+    const reviewedProductDocs = reviewedProductIds.length
+      ? await this.r.productModel.find({ _id: { $in: reviewedProductIds } }).select('name').lean()
+      : [];
+    const reviewedProducts = reviewedProductDocs
+      .map((p: any) => ({ productId: String(p._id), name: p.name }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
     const ratingBreakdown: Record<string, number> = {
       '5': 0,
       '4': 0,
@@ -526,6 +568,7 @@ export class RatingService {
     let ratingCount = 0;
     let flaggedCount = 0;
     let repliedCount = 0;
+    let pendingCount = 0;
     let totalResponseMs = 0;
     let responseTimeCount = 0;
 
@@ -534,6 +577,7 @@ export class RatingService {
     let reviewsThisMonth = 0;
 
     for (const r of allReviews) {
+      if (r.status === 'pending') pendingCount++;
       if (r.rating) {
         ratingBreakdown[String(r.rating)] =
           (ratingBreakdown[String(r.rating)] || 0) + 1;
@@ -599,6 +643,7 @@ export class RatingService {
           isVerifiedPurchase: r.isVerifiedPurchase,
           sellerReply: r.sellerReply || null,
           isFlagged: r.isFlagged,
+          status: r.status,
           createdAt: r.createdAt,
         };
       }),
@@ -613,6 +658,8 @@ export class RatingService {
           ratingBreakdown: breakdownPercent,
           reviewsThisMonth,
           flaggedReviews: flaggedCount,
+          pendingReviews: pendingCount,
+          reviewedProducts,
           fiveStarRate: `${fiveStarRate}%`,
           responseRate: `${responseRate}%`,
           avgResponseTime: `${avgResponseHrs} hrs`,
@@ -670,6 +717,41 @@ export class RatingService {
     });
 
     return { success: true, message: 'Reply updated' };
+  }
+
+  /** Publishes a pending review — the counterpart to `addReview`'s "skip recalc while pending" branch, this is the moment its rating actually starts counting toward the public average. */
+  async approveReview(sellerId: string, role: string, reviewId: string) {
+    const { ratingModel } = this.r;
+
+    const review = await this.findReviewOrThrow(reviewId);
+    await this.verifyStoreAccess(review.storeId as string, sellerId, role);
+
+    if (review.status !== 'pending')
+      throw new BadRequestException('Only a pending review can be approved');
+
+    await ratingModel.findByIdAndUpdate(reviewId, { status: 'published' });
+
+    if (review.rating) {
+      await this.recalcProductRating(review.productId);
+      await this.recalcStoreRating(review.storeId);
+    }
+
+    return { success: true, message: 'Review approved and published' };
+  }
+
+  /** Keeps a pending review permanently off the public listing — a soft outcome, distinct from `moderateDeleteReview` (isDelete), so a rejected review still shows in the seller's own moderation history. */
+  async rejectReview(sellerId: string, role: string, reviewId: string) {
+    const { ratingModel } = this.r;
+
+    const review = await this.findReviewOrThrow(reviewId);
+    await this.verifyStoreAccess(review.storeId as string, sellerId, role);
+
+    if (review.status !== 'pending')
+      throw new BadRequestException('Only a pending review can be rejected');
+
+    await ratingModel.findByIdAndUpdate(reviewId, { status: 'rejected' });
+
+    return { success: true, message: 'Review rejected' };
   }
 
   async flagReview(sellerId: string, role: string, reviewId: string) {

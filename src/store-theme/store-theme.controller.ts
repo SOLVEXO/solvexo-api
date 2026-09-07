@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UseGuards, UseInterceptors, UsePipes, ValidationPipe } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -171,10 +171,5 @@ export class StoreThemeController {
   @Patch(':storeId/custom-css')
   updateCustomCss(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: UpdateCustomCssDto, @Query('instance') instance?: string) {
     return this.storeThemeService.updateCustomCss(storeId, req.user.userId, dto.customCss ?? null, instance);
-  }
-
-  @Patch(':storeId/custom-css')
-  updateCustomCss(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: UpdateCustomCssDto) {
-    return this.storeThemeService.updateCustomCss(storeId, req.user.userId, dto);
   }
 }

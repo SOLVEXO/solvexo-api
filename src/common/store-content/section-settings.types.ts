@@ -114,6 +114,14 @@ export interface CraftProcessSectionSettings extends BaseSectionSettings {}
 export interface TechSpecsCompareSectionSettings extends BaseSectionSettings {}
 // eslint-disable-next-line @typescript-eslint/no-empty-interface
 export interface SoftGallerySectionSettings extends BaseSectionSettings {}
+// eslint-disable-next-line @typescript-eslint/no-empty-interface
+export interface FeatureListSectionSettings extends BaseSectionSettings {}
+// eslint-disable-next-line @typescript-eslint/no-empty-interface
+export interface TeamGridSectionSettings extends BaseSectionSettings {}
+// eslint-disable-next-line @typescript-eslint/no-empty-interface
+export interface StatsCounterSectionSettings extends BaseSectionSettings {}
+// eslint-disable-next-line @typescript-eslint/no-empty-interface
+export interface GalleryGridSectionSettings extends BaseSectionSettings {}
 
 // Compile-time-only helper — `T`'s keys must cover every member of `K` (extra
 // keys on `T` are still allowed; TS's structural typing can't cheaply forbid
@@ -144,6 +152,10 @@ export type SectionSettingsMap = RequireAllKeys<SectionType, {
   craft_process: CraftProcessSectionSettings;
   tech_specs_compare: TechSpecsCompareSectionSettings;
   soft_gallery: SoftGallerySectionSettings;
+  feature_list: FeatureListSectionSettings;
+  team_grid: TeamGridSectionSettings;
+  stats_counter: StatsCounterSectionSettings;
+  gallery_grid: GalleryGridSectionSettings;
 }>;
 
 // ── Block settings, one per block `type` string ─────────────────────────────
@@ -268,6 +280,25 @@ export interface GalleryItemBlockSettings {
   caption?: string;
 }
 
+// ── feature_list / team_grid / stats_counter / gallery_grid section blocks ──
+export interface FeatureItemBlockSettings {
+  icon: string;
+  title: string;
+  description: string;
+}
+export interface TeamMemberBlockSettings {
+  name: string;
+  role: string;
+  bio?: string;
+}
+export interface StatItemBlockSettings {
+  value: string;
+  label: string;
+}
+export interface GalleryImageBlockSettings {
+  imageUrl: string;
+}
+
 export const BLOCK_TYPES = [
   'nav_link',
   'footer_column',
@@ -289,6 +320,10 @@ export const BLOCK_TYPES = [
   'craft_process_step',
   'spec_row',
   'gallery_item',
+  'feature_item',
+  'team_member',
+  'stat_item',
+  'gallery_image',
 ] as const;
 export type BlockType = (typeof BLOCK_TYPES)[number];
 
@@ -314,6 +349,10 @@ export type BlockSettingsMap = RequireAllKeys<BlockType, {
   craft_process_step: CraftProcessStepBlockSettings;
   spec_row: SpecRowBlockSettings;
   gallery_item: GalleryItemBlockSettings;
+  feature_item: FeatureItemBlockSettings;
+  team_member: TeamMemberBlockSettings;
+  stat_item: StatItemBlockSettings;
+  gallery_image: GalleryImageBlockSettings;
 }>;
 
 /** `SECTION_ALLOWED_BLOCK_TYPES`'s values are typed against this so a typo'd or retired block-type string in that map is a compile error, not a silent runtime gap. */
