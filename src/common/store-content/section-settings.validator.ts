@@ -328,6 +328,38 @@ export function validateBlockSettings(blockType: string, settings: Record<string
       maxLen(settings.caption, 150, 'caption');
       break;
 
+    // feature_list section blocks
+    case 'feature_item':
+      required(settings.icon, 'icon');
+      maxLen(settings.icon, 40, 'icon');
+      required(settings.title, 'title');
+      maxLen(settings.title, 80, 'title');
+      required(settings.description, 'description');
+      maxLen(settings.description, 300, 'description');
+      break;
+
+    // team_grid section blocks
+    case 'team_member':
+      required(settings.name, 'name');
+      maxLen(settings.name, 80, 'name');
+      required(settings.role, 'role');
+      maxLen(settings.role, 80, 'role');
+      maxLen(settings.bio, 300, 'bio');
+      break;
+
+    // stats_counter section blocks
+    case 'stat_item':
+      required(settings.value, 'value');
+      maxLen(settings.value, 20, 'value');
+      required(settings.label, 'label');
+      maxLen(settings.label, 60, 'label');
+      break;
+
+    // gallery_grid section blocks
+    case 'gallery_image':
+      assertHttpsUrl(settings.imageUrl, 'imageUrl');
+      break;
+
     default:
       throw new BadRequestException(`Unknown block type: ${blockType}`);
   }

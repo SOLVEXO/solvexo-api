@@ -117,9 +117,10 @@ export { Campaign, CampaignDocument, CampaignSchema } from '../marketing/schemas
 export { MediaAsset, MediaAssetDocument, MediaAssetSchema } from '../media-library/schemas/media-asset.schema';
 export { StoreBanner, StoreBannerDocument, StoreBannerSchema } from '../store-banner/schemas/store-banner.schema';
 export { StoreTheme, StoreThemeDocument, StoreThemeSchema } from '../store-theme/schemas/store-theme.schema';
+export { ThemeDefinition, ThemeDefinitionDocument, ThemeDefinitionSchema } from '../theme-catalog/schemas/theme-definition.schema';
 export { StorePage, StorePageDocument, StorePageSchema } from '../store-pages/schemas/store-page.schema';
 export { BlogPost, BlogPostDocument, BlogPostSchema } from '../store-blog/schemas/blog-post.schema';
 export { PromotionRequest, PromotionRequestDocument, PromotionRequestSchema } from '../promotions/schemas/promotion-request.schema';
 export { PromotionDailyStats, PromotionDailyStatsDocument, PromotionDailyStatsSchema } from '../promotions/schemas/promotion-daily-stats.schema';
 export { PromotionClickEvent, PromotionClickEventDocument, PromotionClickEventSchema } from '../promotions/schemas/promotion-click-event.schema';
-export { ThemeDefinition, ThemeDefinitionDocument, ThemeDefinitionSchema } from '../theme-catalog/schemas/theme-definition.schema';
+export { StoreCustomerMeta, StoreCustomerMetaDocument, StoreCustomerMetaSchema } from '../store/schemas/store-customer-meta.schema';

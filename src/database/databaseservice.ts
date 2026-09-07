@@ -274,6 +274,9 @@ export class DatabaseService {
     @InjectModel(schema.StoreTheme.name)
     private storeThemeModel: Model<schema.StoreThemeDocument>,
 
+    @InjectModel(schema.ThemeDefinition.name)
+    private themeDefinitionModel: Model<schema.ThemeDefinitionDocument>,
+
     @InjectModel(schema.StorePage.name)
     private storePageModel: Model<schema.StorePageDocument>,
 
@@ -306,8 +309,8 @@ export class DatabaseService {
     @InjectModel(schema.ReconciliationRun.name)
     private reconciliationRunModel: Model<schema.ReconciliationRunDocument>,
 
-    @InjectModel(schema.ThemeDefinition.name)
-    private themeDefinitionModel: Model<schema.ThemeDefinitionDocument>,
+    @InjectModel(schema.StoreCustomerMeta.name)
+    private storeCustomerMetaModel: Model<schema.StoreCustomerMetaDocument>,
 
   ) { }
 
@@ -405,6 +408,7 @@ export class DatabaseService {
       mediaAssetModel: this.mediaAssetModel,
       storeBannerModel: this.storeBannerModel,
       storeThemeModel: this.storeThemeModel,
+      themeDefinitionModel: this.themeDefinitionModel,
       storePageModel: this.storePageModel,
       blogPostModel: this.blogPostModel,
       promotionRequestModel: this.promotionRequestModel,
@@ -416,7 +420,7 @@ export class DatabaseService {
       stripeWebhookEventModel: this.stripeWebhookEventModel,
       refundRequestModel: this.refundRequestModel,
       reconciliationRunModel: this.reconciliationRunModel,
-      themeDefinitionModel: this.themeDefinitionModel,
+      storeCustomerMetaModel: this.storeCustomerMetaModel,
     };
   }
 }

@@ -1,11 +1,14 @@
 /* eslint-disable prettier/prettier */
-import { Controller, Post, Get, Patch, Body, Req, Param, Query, UseGuards } from '@nestjs/common';
+import { Controller, Post, Get, Patch, Body, Req, Res, Param, Query, UseGuards } from '@nestjs/common';
+import type { Response } from 'express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { OptionalJwtAuthGuard } from '../auth/guards/optional-jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { StoreService } from './store.service';
 import { UpdateStoreCustomerDto } from './dto/update-store-customer.dto';
+import { BulkTagCustomersDto } from './dto/bulk-tag-customers.dto';
+import { BulkArchiveCustomersDto } from './dto/bulk-archive-customers.dto';
 
 @Controller('api/store')
 export class StoreController {
@@ -251,6 +254,36 @@ export class StoreController {
     return this.storeService.getStoreCustomers(userId, storeId, query);
   }
 
+  // Registered BEFORE ':customerId' — a literal 'export' segment must be
+  // matched first, same static-before-parameterized precedent used
+  // elsewhere in this controller (e.g. 'public/resolve-domain').
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Get(':storeId/customers/export')
+  async exportStoreCustomers(@Req() req: any, @Param('storeId') storeId: string, @Query() query: any, @Res() res: Response) {
+    const { userId } = req.user;
+    const csv = await this.storeService.exportStoreCustomers(userId, storeId, query);
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="customers-${storeId}.csv"`);
+    res.send(csv);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Post(':storeId/customers/bulk-tag')
+  async bulkTagCustomers(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: BulkTagCustomersDto) {
+    const { userId } = req.user;
+    return this.storeService.bulkTagCustomers(userId, storeId, dto, req.ip, req.headers['user-agent']);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Patch(':storeId/customers/bulk-archive')
+  async bulkArchiveCustomers(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: BulkArchiveCustomersDto) {
+    const { userId } = req.user;
+    return this.storeService.bulkArchiveCustomers(userId, storeId, dto, req.ip, req.headers['user-agent']);
+  }
+
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('seller')
   @Patch(':storeId/customers/:customerId')
@@ -262,5 +295,18 @@ export class StoreController {
   ) {
     const { userId } = req.user;
     return this.storeService.updateStoreCustomer(userId, storeId, customerId, dto, req.ip, req.headers['user-agent']);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Patch(':storeId/customers/:customerId/meta')
+  async updateStoreCustomerMeta(
+    @Req() req: any,
+    @Param('storeId') storeId: string,
+    @Param('customerId') customerId: string,
+    @Body() dto: { tags?: string[]; notes?: string; marketingOptIn?: boolean },
+  ) {
+    const { userId } = req.user;
+    return this.storeService.updateStoreCustomerMeta(userId, storeId, customerId, dto, req.ip, req.headers['user-agent']);
   }
 }

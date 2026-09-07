@@ -3,8 +3,8 @@ import { ApiProperty } from '@nestjs/swagger';
 import { IsString, IsNotEmpty, IsEnum, IsOptional, MaxLength } from 'class-validator';
 
 export class ReportDto {
-  @ApiProperty({ enum: ['user', 'message', 'conversation'] })
-  @IsEnum(['user', 'message', 'conversation'])
+  @ApiProperty({ enum: ['user', 'message', 'conversation', 'review'] })
+  @IsEnum(['user', 'message', 'conversation', 'review'])
   targetType: string;
 
   @ApiProperty({ example: '665message001' })

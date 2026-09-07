@@ -68,9 +68,4 @@ export class StoreThemeController {
   updateIdentityBanner(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: UpdateIdentityBannerDto) {
     return this.storeThemeService.updateIdentityBanner(storeId, req.user.userId, dto);
   }
-
-  @Patch(':storeId/custom-css')
-  updateCustomCss(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: UpdateCustomCssDto) {
-    return this.storeThemeService.updateCustomCss(storeId, req.user.userId, dto);
-  }
 }

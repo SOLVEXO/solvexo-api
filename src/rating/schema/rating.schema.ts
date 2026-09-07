@@ -61,6 +61,14 @@ export class Rating {
   @Prop({ default: false })
   isFlagged!: boolean;
 
+  // Only meaningful for a store with `Store.reviewModerationEnabled` on —
+  // every other store's reviews are created straight to 'published' (see
+  // RatingService.addReview), so this defaulting to 'published' is what
+  // keeps every pre-existing review, and every review on a store that never
+  // opts in, behaving exactly as before this field existed.
+  @Prop({ type: String, enum: ['pending', 'published', 'rejected'], default: 'published' })
+  status!: 'pending' | 'published' | 'rejected';
+
   @Prop({ default: false })
   isVerifiedPurchase!: boolean;
 
