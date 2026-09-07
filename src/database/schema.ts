@@ -21,6 +21,9 @@ export { ExchangeRate, ExchangeRateDocument, ExchangeRateSchema } from '../excha
 export { StripeWebhookEvent, StripeWebhookEventDocument, StripeWebhookEventSchema } from '../payment/schemas/stripe-webhook-event.schema';
 export { RefundRequest, RefundRequestDocument, RefundRequestSchema } from '../refund-request/schemas/refund-request.schema';
 export { ReconciliationRun, ReconciliationRunDocument, ReconciliationRunSchema } from '../admin-finance/schemas/reconciliation-run.schema';
+export { StockAdjustment, StockAdjustmentDocument, StockAdjustmentSchema } from '../inventory/schemas/stock-adjustment.schema';
+export { VariantLocationStock, VariantLocationStockDocument, VariantLocationStockSchema } from '../inventory/schemas/variant-location-stock.schema';
+export { StockTransfer, StockTransferDocument, StockTransferSchema } from '../inventory/schemas/stock-transfer.schema';
 
 
 

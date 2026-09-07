@@ -125,8 +125,13 @@ export const AUTH_REGION_IMAGE_URL: Record<AuthVisualRegion, Record<AuthPageCont
     onboarding: 'https://images.unsplash.com/photo-1701397165417-f1db85c8b85f?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
   },
   default: {
-    register:   'https://images.unsplash.com/photo-1670121180530-cfcba4438038?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
-    login:      'https://images.unsplash.com/photo-1712404613042-2f14f02172d7?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    // Was a container-ship/crane photo — genuinely read as "industrial
+    // shipping yard," not "buyers and sellers marketplace" (a real,
+    // confirmed-by-eye critique of Solvexo's own brand fit, not a stock-
+    // photo-quality issue). A warm, colorful street-market scene actually
+    // represents "commerce" the way this brand means it.
+    register:   'https://images.unsplash.com/photo-1759542288517-1160b5adfcf9?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    login:      'https://images.unsplash.com/photo-1631897362327-4842446b5c51?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
     onboarding: 'https://images.unsplash.com/photo-1775883374751-d8157965021b?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
   },
 };

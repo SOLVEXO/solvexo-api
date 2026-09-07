@@ -804,7 +804,7 @@ export class OrdersService {
       );
     }
 
-    const { orderModel, storeModel } = this.databaseService.repositories;
+    const { orderModel, storeModel, productVariantModel } = this.databaseService.repositories;
 
     // store ownership check
     const store = await storeModel.findOne({
@@ -863,6 +863,42 @@ export class OrdersService {
       idx === sellerOrderIndex ? status : so.status,
     );
     updateData.orderStatus = deriveRollupStatus(allStatuses);
+
+    // Real stock decrement happens HERE, not at order-creation — see
+    // ProductVariant.committedStock's doc comment. Until now the item's
+    // quantity only ever lived in `committedStock` (reserved at checkout);
+    // reaching a fulfilled-or-beyond state is the actual physical-
+    // fulfillment moment, so this is where genuine on-hand `stock` finally
+    // drops and the reservation is released. Triggers on the FIRST
+    // transition into shipped/delivered/completed — not just `status ===
+    // 'shipped'` alone — since a seller can call this endpoint with
+    // `status: 'delivered'` or `'completed'` directly without ever passing
+    // through 'shipped' first (this method has no forced sequential state
+    // machine); gating on shipped-only would silently leave that item's
+    // reservation stuck in `committedStock` forever. Clamped at 0 rather
+    // than a strict atomic guard — a seller manually adjusting stock down
+    // (e.g. "damaged") between order-placement and shipment shouldn't
+    // block a shipment that's already contractually committed to the buyer.
+    const FULFILLED_STATES = ['shipped', 'delivered', 'completed'];
+    const wasAlreadyFulfilled = FULFILLED_STATES.includes(
+      order.sellerOrders[sellerOrderIndex].status,
+    );
+    if (!wasAlreadyFulfilled && FULFILLED_STATES.includes(status)) {
+      for (const item of soItems) {
+        if (item.type !== 'physical' || !item.variantId) continue;
+        const variant = await productVariantModel
+          .findOne({ _id: item.variantId })
+          .select('unlimitedStock stock committedStock')
+          .lean();
+        if (!variant || (variant as any).unlimitedStock) continue;
+        const newStock = Math.max(0, (variant as any).stock - item.quantity);
+        const newCommitted = Math.max(0, (variant as any).committedStock - item.quantity);
+        await productVariantModel.updateOne(
+          { _id: item.variantId },
+          { $set: { stock: newStock, committedStock: newCommitted } },
+        );
+      }
+    }
 
     await orderModel.findByIdAndUpdate(orderId, { $set: updateData });
 
@@ -1410,11 +1446,16 @@ export class OrdersService {
         ] = item.totalPrice;
       }
 
-      // physical item — stock wapas restore (skip unlimited-stock variants)
+      // physical item — release the reservation (never a real `stock`
+      // restore here): `BLOCKED` above already guarantees this item is
+      // still 'pending'/'processing', meaning it was only ever reserved
+      // via `committedStock` at checkout, never actually shipped/decremented
+      // from real `stock` — see ProductVariant.committedStock's doc comment.
       if (item.type === 'physical' && item.variantId) {
         await productVariantModel.updateOne(
           { _id: item.variantId, unlimitedStock: { $ne: true } },
-          { $inc: { stock: item.quantity } },
+          [{ $set: { committedStock: { $max: [0, { $subtract: ['$committedStock', item.quantity] }] } } }],
+          { updatePipeline: true } as any,
         );
       }
     }

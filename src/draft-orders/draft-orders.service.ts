@@ -181,14 +181,23 @@ export class DraftOrdersService {
     const physicalItems = draft.items.filter((i: any) => i.type === 'physical');
     const digitalItems = draft.items.filter((i: any) => i.type !== 'physical');
 
-    // Atomic stock decrement, physical items only — identical guard pattern
-    // to PaymentService.createOrder's checkout-time decrement.
+    // Atomic stock decrement, physical items only — a Draft Order is
+    // completed (fulfilled) instantly, same as a POS sale, so this decrements
+    // real `stock` directly rather than reserving via `committedStock` (that
+    // model is only for checkout's pending-until-shipped online orders — see
+    // ProductVariant.committedStock's doc comment). Guarded against real
+    // availability (`stock - committedStock`) so a Draft Order can't oversell
+    // stock already reserved by a pending online order.
     const decremented: { variantId: string; quantity: number }[] = [];
     for (const item of physicalItems) {
       const variant = await this.repos.productVariantModel.findOne({ _id: item.variantId, isDelete: false }).select('unlimitedStock').lean();
       if (!variant || (variant as any).unlimitedStock) continue;
       const res = await this.repos.productVariantModel.updateOne(
-        { _id: item.variantId, stock: { $gte: item.quantity }, isDelete: false },
+        {
+          _id: item.variantId,
+          isDelete: false,
+          $expr: { $gte: [{ $subtract: ['$stock', '$committedStock'] }, item.quantity] },
+        },
         { $inc: { stock: -item.quantity } },
       );
       if (res.modifiedCount === 0) {

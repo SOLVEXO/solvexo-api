@@ -45,6 +45,17 @@ export class ProductVariant {
   @Prop({ default: 0 })
   stock: number;
 
+  // Real-time "already reserved by a paid-but-not-yet-shipped order" pool —
+  // added alongside the reserve-at-checkout / decrement-at-shipment model
+  // (see PaymentService.createOrder and OrdersService.updateSellerOrderStatus).
+  // `stock` itself only ever decreases once the seller marks an order
+  // "shipped" — until then, the reserved quantity lives here instead, so
+  // `stock` still reflects genuine on-hand inventory. Everywhere that needs
+  // "can this still be sold right now" must read `stock - committedStock`
+  // (the Inventory page's "Available" column), never raw `stock` alone.
+  @Prop({ default: 0 })
+  committedStock: number;
+
   // physical only — when true, `stock` is ignored everywhere (cart, checkout,
   // payment, POS, inventory dashboard) and the product is always purchasable.
   @Prop({ default: false })

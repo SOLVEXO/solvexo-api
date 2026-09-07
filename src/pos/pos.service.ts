@@ -635,8 +635,12 @@ export class PosService {
       const variant = await this.r.productVariantModel.findOne({ _id: item.variantId, productId: item.productId, isDelete: false });
       if (!variant) throw new BadRequestException(`Variant not found: ${item.variantId}`);
 
-      if (!isHeld && !variant.unlimitedStock && variant.stock < item.qty) {
-        throw new BadRequestException(`Insufficient stock for "${variant.sku}" — available: ${variant.stock}`);
+      // Checked against `stock - committedStock` (real availability), not
+      // raw `stock` — some of it may already be reserved by a paid-but-
+      // unshipped online order (see ProductVariant.committedStock).
+      const availableForPos = variant.stock - (variant.committedStock || 0);
+      if (!isHeld && !variant.unlimitedStock && availableForPos < item.qty) {
+        throw new BadRequestException(`Insufficient stock for "${variant.sku}" — available: ${availableForPos}`);
       }
 
       const product = await this.r.productModel.findOne({ _id: item.productId, isDelete: false }).select('name gallery coverImages');
@@ -719,7 +723,11 @@ export class PosService {
       // drive stock negative — unlimited-stock variants are still skipped.
       for (const item of dto.items) {
         const result = await this.r.productVariantModel.updateOne(
-          { _id: item.variantId, unlimitedStock: { $ne: true }, stock: { $gte: item.qty } },
+          {
+            _id: item.variantId,
+            unlimitedStock: { $ne: true },
+            $expr: { $gte: [{ $subtract: ['$stock', '$committedStock'] }, item.qty] },
+          },
           { $inc: { stock: -item.qty } },
         );
         if (result.matchedCount === 0) {
@@ -760,12 +768,14 @@ export class PosService {
       this.requireManagerEmployee(employeeToken, (sale as any).storeId, 'apply a discount');
     }
 
-    // re-check stock before completing
+    // re-check stock before completing (against real availability — see
+    // ProductVariant.committedStock)
     for (const item of (sale as any).items) {
       const variant = await this.r.productVariantModel.findOne({ _id: item.variantId, isDelete: false });
       if (!variant) throw new BadRequestException(`Variant no longer available: ${item.sku}`);
-      if (!variant.unlimitedStock && variant.stock < item.qty) {
-        throw new BadRequestException(`Insufficient stock for "${item.sku}" — available: ${variant.stock}`);
+      const availableForPos = variant.stock - (variant.committedStock || 0);
+      if (!variant.unlimitedStock && availableForPos < item.qty) {
+        throw new BadRequestException(`Insufficient stock for "${item.sku}" — available: ${availableForPos}`);
       }
     }
 
@@ -791,7 +801,11 @@ export class PosService {
     // now decrement stock and update session (floor-guarded — see createSale)
     for (const item of (sale as any).items) {
       await this.r.productVariantModel.updateOne(
-        { _id: item.variantId, unlimitedStock: { $ne: true }, stock: { $gte: item.qty } },
+        {
+          _id: item.variantId,
+          unlimitedStock: { $ne: true },
+          $expr: { $gte: [{ $subtract: ['$stock', '$committedStock'] }, item.qty] },
+        },
         { $inc: { stock: -item.qty } },
       );
     }

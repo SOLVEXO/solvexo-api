@@ -360,6 +360,15 @@ export class DatabaseService {
     @InjectModel(schema.StoreAppRequest.name)
     private storeAppRequestModel: Model<schema.StoreAppRequestDocument>,
 
+    @InjectModel(schema.StockAdjustment.name)
+    private stockAdjustmentModel: Model<schema.StockAdjustmentDocument>,
+
+    @InjectModel(schema.VariantLocationStock.name)
+    private variantLocationStockModel: Model<schema.VariantLocationStockDocument>,
+
+    @InjectModel(schema.StockTransfer.name)
+    private stockTransferModel: Model<schema.StockTransferDocument>,
+
   ) { }
 
   get repositories() {
@@ -485,6 +494,9 @@ export class DatabaseService {
       refundRequestModel: this.refundRequestModel,
       reconciliationRunModel: this.reconciliationRunModel,
       storeAppRequestModel: this.storeAppRequestModel,
+      stockAdjustmentModel: this.stockAdjustmentModel,
+      variantLocationStockModel: this.variantLocationStockModel,
+      stockTransferModel: this.stockTransferModel,
     };
   }
 }

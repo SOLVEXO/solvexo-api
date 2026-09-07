@@ -168,7 +168,10 @@ export class PaymentService {
       });
       if (!variant)
         throw new BadRequestException(`Item not available: ${item.name}`);
-      if (!variant.unlimitedStock && variant.stock < item.quantity) {
+      // Same real-availability pre-check as the other pre-flight checks in
+      // this file — see ProductVariant.committedStock.
+      const availablePreCheck = variant.stock - (variant.committedStock || 0);
+      if (!variant.unlimitedStock && availablePreCheck < item.quantity) {
         throw new BadRequestException(`Insufficient stock for ${item.name}`);
       }
     }
@@ -921,9 +924,15 @@ export class PaymentService {
       });
       if (!variant)
         throw new BadRequestException(`Item not available: ${item.name}`);
-      if (!variant.unlimitedStock && variant.stock < item.quantity) {
+      // Pre-flight check against real availability (some of `stock` may
+      // already be reserved by another pending order — see
+      // ProductVariant.committedStock). The actual atomic guard is
+      // `createOrder`'s reserve step below; this is just a fast, friendly
+      // fail before that.
+      const availablePreCheck = variant.stock - (variant.committedStock || 0);
+      if (!variant.unlimitedStock && availablePreCheck < item.quantity) {
         throw new BadRequestException(
-          `Insufficient stock for ${item.name}. Available: ${variant.stock}, required: ${item.quantity}`,
+          `Insufficient stock for ${item.name}. Available: ${availablePreCheck}, required: ${item.quantity}`,
         );
       }
     }
@@ -1008,8 +1017,10 @@ export class PaymentService {
       if (item.type !== 'physical') continue;
       const variant = await productVariantModel.findOne({ _id: item.variantId, isDelete: false });
       if (!variant) throw new BadRequestException(`Item not available: ${item.name}`);
-      if (!variant.unlimitedStock && variant.stock < item.quantity) {
-        throw new BadRequestException(`Insufficient stock for ${item.name}. Available: ${variant.stock}, required: ${item.quantity}`);
+      // Same real-availability pre-check as the COD path above.
+      const availablePreCheck = variant.stock - (variant.committedStock || 0);
+      if (!variant.unlimitedStock && availablePreCheck < item.quantity) {
+        throw new BadRequestException(`Insufficient stock for ${item.name}. Available: ${availablePreCheck}, required: ${item.quantity}`);
       }
     }
 
@@ -1182,8 +1193,16 @@ export class PaymentService {
         ),
       );
 
-    // --- STOCK MINUS (atomic, sirf physical, unlimited variants skip decrement) ---
-    const decremented: { variantId: string; quantity: number }[] = [];
+    // --- STOCK RESERVE (atomic, physical only, unlimited variants skip) ---
+    // Real stock is NOT decremented here any more — this only reserves
+    // (`committedStock += qty`) against the still-genuine on-hand `stock`.
+    // The actual decrement happens once the seller marks the order
+    // "shipped" (OrdersService.updateSellerOrderStatus) — see
+    // ProductVariant.committedStock's doc comment for the full model.
+    // Guard is `stock - committedStock >= quantity` (i.e. real availability),
+    // via `$expr` since Mongo can't compare two of a document's own fields
+    // in a plain query filter.
+    const reserved: { variantId: string; quantity: number }[] = [];
 
     for (const item of physicalItems) {
       const variant = await productVariantModel
@@ -1195,24 +1214,24 @@ export class PaymentService {
       const res = await productVariantModel.updateOne(
         {
           _id: item.variantId,
-          stock: { $gte: item.quantity },
           isDelete: false,
+          $expr: { $gte: [{ $subtract: ['$stock', '$committedStock'] }, item.quantity] },
         },
-        { $inc: { stock: -item.quantity } },
+        { $inc: { committedStock: item.quantity } },
       );
 
       if (res.modifiedCount === 0) {
-        for (const d of decremented) {
+        for (const d of reserved) {
           await productVariantModel.updateOne(
             { _id: d.variantId },
-            { $inc: { stock: d.quantity } },
+            { $inc: { committedStock: -d.quantity } },
           );
         }
         throw new BadRequestException(
           `Stock not available for item: ${item.name}`,
         );
       }
-      decremented.push({ variantId: item.variantId, quantity: item.quantity });
+      reserved.push({ variantId: item.variantId, quantity: item.quantity });
     }
 
     // --- shipping address (physical ke liye) ---

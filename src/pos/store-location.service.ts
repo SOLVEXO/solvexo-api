@@ -28,9 +28,16 @@ export class StoreLocationService {
     await this.verifyStoreOwnership(storeId, sellerId);
     await this.entitlementsService.assertCanAddLocation(storeId);
 
+    // The very first location a store creates becomes its default — the
+    // one an existing variant's pre-multi-location stock is assigned to
+    // the first time Inventory ever splits it by location (see
+    // InventoryService.getVariantLocations).
+    const existingCount = await this.locationModel.countDocuments({ storeId, isDelete: false });
+
     const location = await this.locationModel.create({
       storeId, sellerId, name: dto.name,
       addressLine1: dto.addressLine1 ?? null, city: dto.city ?? null, phone: dto.phone ?? null,
+      isDefault: existingCount === 0,
       status: 'active',
     });
 

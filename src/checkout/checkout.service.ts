@@ -287,7 +287,11 @@ export class CheckoutService {
 
       if (product.type === 'physical') {
         hasPhysical = true;
-        if (!variant.unlimitedStock && variant.stock < cartItem.quantity) {
+        // Checked against real availability (`stock - committedStock`) —
+        // some of `stock` may already be reserved by another pending,
+        // paid-but-unshipped order. See ProductVariant.committedStock.
+        const available = variant.stock - ((variant as any).committedStock || 0);
+        if (!variant.unlimitedStock && available < cartItem.quantity) {
           throw new BadRequestException(
             `Insufficient stock for: ${product.name}`,
           );
