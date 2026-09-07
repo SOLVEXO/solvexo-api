@@ -6,6 +6,15 @@
  * handful of region-level visuals for their real markets plus one universal
  * default, never one photo per country. Every photo is a real, licensed
  * (Unsplash free license) photograph, manually curated for this project.
+ *
+ * Each region also has 3 distinct photos, one per `AuthPageContext` — so a
+ * visitor sees a genuinely different (but same-region) photo depending on
+ * whether they're on Register, Login, or Onboarding, instead of the exact
+ * same image everywhere. These are NOT meant to visually depict "someone
+ * registering" vs "someone logging in" (real stock photography has no such
+ * literal distinction — every candidate for that search is indistinguishable
+ * "person looking at a phone"); they're simply 3 different real, high-quality
+ * photos of that region, so the 3 screens don't feel identical.
  */
 
 export type AuthVisualRegion =
@@ -18,6 +27,10 @@ export type AuthVisualRegion =
   | 'africa'
   | 'latin_america'
   | 'default';
+
+export type AuthPageContext = 'register' | 'login' | 'onboarding';
+
+export const AUTH_PAGE_CONTEXTS: AuthPageContext[] = ['register', 'login', 'onboarding'];
 
 /** ISO-3166 alpha-2 → region. Anything not listed here (or a null/undetected
  *  country) falls through to `'default'` — never a hard error. */
@@ -67,21 +80,63 @@ export const COUNTRY_TO_AUTH_REGION: Record<string, AuthVisualRegion> = {
   PA: 'latin_america', DO: 'latin_america', GT: 'latin_america',
 };
 
-/** Stable, real Unsplash CDN URLs (no API key needed to keep loading —
- *  the key was only used once, at curation time, to search/select these). */
-export const AUTH_REGION_IMAGE_URL: Record<AuthVisualRegion, string> = {
-  south_asia:     'https://images.unsplash.com/photo-1674502754814-de8b0acb7e22?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
-  middle_east:    'https://images.unsplash.com/photo-1634007626524-f47fa37810a7?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
-  europe:         'https://images.unsplash.com/photo-1609971757431-439cf7b4141b?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
-  north_america:  'https://images.unsplash.com/photo-1511881830150-850572962174?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
-  east_asia:      'https://images.unsplash.com/photo-1602646993760-7b885ba225af?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
-  southeast_asia: 'https://images.unsplash.com/photo-1628221680019-f28a2716e727?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
-  africa:         'https://images.unsplash.com/photo-1570133435536-7ececf000ef6?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
-  latin_america:  'https://images.unsplash.com/photo-1651463378028-60bc2b22ba7b?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
-  default:        'https://images.unsplash.com/photo-1670121180530-cfcba4438038?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+/** Stable, real Unsplash CDN URLs (no API key needed to keep loading — the
+ *  key was only used once, at curation time, to search/select these). Each
+ *  region has 3 distinct photos, keyed by `AuthPageContext`. */
+export const AUTH_REGION_IMAGE_URL: Record<AuthVisualRegion, Record<AuthPageContext, string>> = {
+  south_asia: {
+    register:   'https://images.unsplash.com/photo-1674502754814-de8b0acb7e22?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    login:      'https://images.unsplash.com/photo-1706043197156-eb4b075b3108?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    onboarding: 'https://images.unsplash.com/photo-1658073404255-5c1da0f13f75?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+  },
+  middle_east: {
+    register:   'https://images.unsplash.com/photo-1634007626524-f47fa37810a7?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    login:      'https://images.unsplash.com/photo-1543579596-2c11997c7706?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    onboarding: 'https://images.unsplash.com/photo-1526495124232-a04e1849168c?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+  },
+  europe: {
+    register:   'https://images.unsplash.com/photo-1609971757431-439cf7b4141b?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    login:      'https://images.unsplash.com/photo-1539424675410-513ddd709ebd?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    onboarding: 'https://images.unsplash.com/photo-1547254002-e65e0179fe9f?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+  },
+  north_america: {
+    register:   'https://images.unsplash.com/photo-1511881830150-850572962174?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    login:      'https://images.unsplash.com/photo-1541336032412-2048a678540d?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    onboarding: 'https://images.unsplash.com/photo-1719858403455-9a2582eca805?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+  },
+  east_asia: {
+    register:   'https://images.unsplash.com/photo-1602646993760-7b885ba225af?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    login:      'https://images.unsplash.com/photo-1573455494057-12684d151bf4?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    onboarding: 'https://images.unsplash.com/photo-1596713109885-c94bdfd7f19d?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+  },
+  southeast_asia: {
+    register:   'https://images.unsplash.com/photo-1628221680019-f28a2716e727?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    login:      'https://images.unsplash.com/photo-1631670796270-72ca29fe0c9b?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    onboarding: 'https://images.unsplash.com/photo-1692533823876-e659c090a4ce?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+  },
+  africa: {
+    register:   'https://images.unsplash.com/photo-1570133435536-7ececf000ef6?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    login:      'https://images.unsplash.com/photo-1529528070131-eda9f3e90919?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    onboarding: 'https://images.unsplash.com/photo-1559738933-d69ac3ff674b?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+  },
+  latin_america: {
+    register:   'https://images.unsplash.com/photo-1654086441559-f2e71be7f050?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    login:      'https://images.unsplash.com/photo-1651463378028-60bc2b22ba7b?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    onboarding: 'https://images.unsplash.com/photo-1701397165417-f1db85c8b85f?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+  },
+  default: {
+    register:   'https://images.unsplash.com/photo-1670121180530-cfcba4438038?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    login:      'https://images.unsplash.com/photo-1712404613042-2f14f02172d7?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    onboarding: 'https://images.unsplash.com/photo-1775883374751-d8157965021b?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+  },
 };
 
 export function resolveAuthVisualRegion(country: string | null): AuthVisualRegion {
   if (!country) return 'default';
   return COUNTRY_TO_AUTH_REGION[country] ?? 'default';
+}
+
+export function resolveAuthVisualImageUrl(region: AuthVisualRegion, context: string | undefined): string {
+  const ctx: AuthPageContext = AUTH_PAGE_CONTEXTS.includes(context as AuthPageContext) ? (context as AuthPageContext) : 'register';
+  return AUTH_REGION_IMAGE_URL[region][ctx];
 }

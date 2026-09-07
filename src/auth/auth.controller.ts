@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Body, Controller, Post, Req, Get, Patch } from '@nestjs/common';
+import { Body, Controller, Post, Req, Get, Patch, Query } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
@@ -13,7 +13,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { Roles } from '../auth/decorators/roles.decorator'
 import { RolesGuard } from '../auth/guards/roles.guard'; ;
 import { resolveCountryFromIp } from '../common/geo-locate.util';
-import { resolveAuthVisualRegion, AUTH_REGION_IMAGE_URL } from '../common/auth-visual-region.const';
+import { resolveAuthVisualRegion, resolveAuthVisualImageUrl } from '../common/auth-visual-region.const';
 
 
 
@@ -29,17 +29,22 @@ export class AuthController {
   // same country; (2) `region`/`imageUrl` let AuthSplitLayout (shared by
   // every auth screen — Register/Login/Onboarding/etc.) show a real,
   // region-appropriate background photo instead of one fixed generic
-  // illustration for every visitor worldwide. `region`/`imageUrl` are
-  // resolved from a small curated map (`auth-visual-region.const.ts`) —
+  // illustration for every visitor worldwide. The optional `?context=`
+  // query param (`register`|`login`|`onboarding`) picks WHICH of that
+  // region's 3 curated photos comes back — so the same visitor sees a
+  // different (but same-region) photo depending on which auth screen
+  // they're on, instead of one identical image everywhere; an invalid or
+  // missing context safely falls back to `'register'`. `region`/`imageUrl`
+  // are resolved from a small curated map (`auth-visual-region.const.ts`) —
   // never per-country, real platforms only build out their actual top
   // markets — with `'default'` covering everything unmapped. Fail-open:
   // a null country still returns a valid 'default' region + photo, never
   // an error.
   @Get('detect-country')
-  detectCountry(@Req() req: any) {
+  detectCountry(@Req() req: any, @Query('context') context?: string) {
     const country = resolveCountryFromIp(req.ip);
     const region = resolveAuthVisualRegion(country);
-    return { success: true, data: { country, region, imageUrl: AUTH_REGION_IMAGE_URL[region] } };
+    return { success: true, data: { country, region, imageUrl: resolveAuthVisualImageUrl(region, context) } };
   }
 
   // ✅ Signup
