@@ -112,6 +112,23 @@ export class AuthController {
   return this.authService.resetPassword(email, role, otp, newPassword, storeId);
 }
 
+  // Lets the forgot-password OTP screen reject a wrong/expired code right
+  // there, instead of only finding out on the next screen when reset-
+  // password is called with a new password already typed in. Read-only —
+  // never marks the code used, so the follow-up reset-password call still
+  // needs (and validates) the same otp itself. Same brute-force reasoning
+  // as verifyOtp/reset-password above.
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Post('verify-reset-otp')
+  async verifyResetOtp(
+    @Body('email') email: string,
+    @Body('role') role: string,
+    @Body('otp') otp: string,
+    @Body('storeId') storeId?: string,
+  ) {
+    return this.authService.verifyResetOtp(email, role, otp, storeId);
+  }
+
   @UseGuards(JwtAuthGuard)
   @Post('logout')
   async logout(@Req() req: any) {

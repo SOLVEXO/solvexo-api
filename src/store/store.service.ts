@@ -803,8 +803,10 @@ export class StoreService {
 
   // seller ke saare stores
   async getMyStores(sellerId: string) {
-    const { storeModel, sellerModel, productModel, orderModel } =
-      this.databaseService.repositories;
+    const {
+      storeModel, sellerModel, productModel, orderModel,
+      sellerPlatformSubscriptionModel, platformPlanModel,
+    } = this.databaseService.repositories;
 
     const stores = await storeModel.find({ sellerId, isDelete: false }).lean();
 
@@ -858,14 +860,48 @@ export class StoreService {
       salesRows.map((r: any) => [r._id, round((r.gross ?? 0) - (r.refunds ?? 0))]),
     );
 
+    // The `plan`/`aiCredits` on the raw Store document below are a separate,
+    // legacy field that's never actually kept in sync with the real
+    // per-store subscription (SellerPlatformSubscriptionsService.getStorePlan
+    // is the source of truth Billing Center reads) — so this screen and
+    // Store Settings (which also reads store.plan directly) could show
+    // "Starter" for a store Billing Center correctly shows as "Professional
+    // (Locked)". Overriding with the real subscription's plan name here,
+    // the same way getStorePlan resolves it, is what makes all three screens
+    // finally agree.
+    const subs = storeIds.length
+      ? await sellerPlatformSubscriptionModel
+          .find({ storeId: { $in: storeIds }, isDelete: false })
+          .select('storeId platformPlanId status')
+          .lean()
+      : [];
+    const planIds = [...new Set(subs.map((s: any) => s.platformPlanId).filter(Boolean))];
+    const plans = planIds.length
+      ? await platformPlanModel.find({ _id: { $in: planIds } }).select('name').lean()
+      : [];
+    const planNameById = new Map<string, string>(plans.map((p: any) => [p._id.toString(), p.name]));
+    const subByStore = new Map<string, { planName: string | null; status: string }>(
+      subs.map((s: any) => [
+        s.storeId,
+        { planName: planNameById.get(String(s.platformPlanId)) ?? null, status: s.status },
+      ]),
+    );
+
     const data = stores.map((store: any) => {
       const id = store._id.toString();
+      const realSub = subByStore.get(id);
       return {
         ...store,
         sellerName: seller?.name ?? null,
         sellerEmail: seller?.email ?? null,
         productCount: productCountByStore.get(id) ?? 0,
         totalSalesUSD: salesByStore.get(id) ?? 0,
+        // Real subscription plan name when one exists, falling back to the
+        // legacy store.plan field only for a store with no subscription row
+        // at all yet (shouldn't normally happen — ensureDefaultSubscription
+        // runs at store creation — but never crash this list over it).
+        plan: realSub?.planName ?? store.plan,
+        planStatus: realSub?.status ?? null,
       };
     });
 
@@ -904,11 +940,16 @@ export class StoreService {
       return { success: true, data: store };
     }
 
-    const { sellerModel, productModel, orderModel } = this.databaseService.repositories;
+    const { sellerModel, productModel, orderModel, sellerPlatformSubscriptionModel, platformPlanModel } = this.databaseService.repositories;
 
-    const [seller, productCount, orderAgg] = await Promise.all([
+    const [seller, productCount, sub, orderAgg] = await Promise.all([
       sellerModel.findById(store.sellerId).select('name email phone').lean(),
       productModel.countDocuments({ storeId, isDelete: false }),
+      // Real subscription plan, same fix/reasoning as getMyStores() above —
+      // store.plan (spread in below via store.toObject()) is a legacy field
+      // this Settings page used to show as-is, disagreeing with Billing
+      // Center's real answer for the exact same store.
+      sellerPlatformSubscriptionModel.findOne({ storeId, isDelete: false }).select('platformPlanId status').lean(),
       orderModel.aggregate([
         { $match: { isDelete: false } },
         { $unwind: '$sellerOrders' },
@@ -937,6 +978,9 @@ export class StoreService {
 
     const agg = orderAgg[0] as { orderCount?: number; gross?: number; refunds?: number } | undefined;
     const round = (n: number) => Math.round(n * 100) / 100;
+    const realPlan = sub?.platformPlanId
+      ? await platformPlanModel.findById(sub.platformPlanId).select('name').lean()
+      : null;
 
     return {
       success: true,
@@ -948,6 +992,11 @@ export class StoreService {
         productCount,
         orderCount: agg?.orderCount ?? 0,
         totalSalesUSD: round((agg?.gross ?? 0) - (agg?.refunds ?? 0)),
+        // Real subscription plan overriding the legacy store.plan spread
+        // above — see the comment on the sellerPlatformSubscriptionModel
+        // lookup above for why.
+        plan: realPlan?.name ?? store.plan,
+        planStatus: sub?.status ?? null,
       },
     };
   }

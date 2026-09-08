@@ -11,7 +11,11 @@ export class Seller {
  @Prop()                 
   name: string;
 
-  @Prop({ required: true, unique: true })
+  // lowercase+trim: defense-in-depth so every write path (not just
+  // signup/socialLogin, which now normalize explicitly too) stores this
+  // consistently — auth.service.ts's emailScope() is what makes every
+  // lookup match it back.
+  @Prop({ required: true, unique: true, lowercase: true, trim: true })
   email: string;
 
   @Prop({ required: false})

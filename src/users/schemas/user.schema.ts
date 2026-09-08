@@ -11,7 +11,10 @@ export class User {
  @Prop()
   name: string;
 
-  @Prop({ required: true })
+  // lowercase+trim: defense-in-depth so every write path stores this
+  // consistently — auth.service.ts's emailScope() is what makes every
+  // lookup match it back.
+  @Prop({ required: true, lowercase: true, trim: true })
   email: string;
 
   // null = a legacy/apex-era global account (works on every store, same as

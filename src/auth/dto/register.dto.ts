@@ -34,8 +34,16 @@ export class RegisterDto {
   @IsString()
   address?: string;
 
+  // Was missing entirely — `MinLength` was already imported above (unused)
+  // but never actually applied here, so the backend accepted any non-empty
+  // password, including a single character, regardless of whatever the
+  // signup form's own client-side rule required. CreateAdminDto and
+  // ResetPasswordDto both already enforce a real minimum (6+) — this brings
+  // signup in line with them, since a client-side check alone is never a
+  // real floor (a direct API call skips it entirely).
   @IsString()
   @IsNotEmpty()
+  @MinLength(6, { message: 'Password must be at least 6 characters' })
   password: string;
 
   @IsOptional()

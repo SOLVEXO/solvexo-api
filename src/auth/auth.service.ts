@@ -41,7 +41,17 @@ export class AuthService {
    *  `User.storeId`'s schema comment) — every buyer lookup in this service
    *  must go through this, not a bare `{email}`. */
   private emailScope(email: string, role: string, storeId?: string | null): Record<string, unknown> {
-    return role === 'user' ? { email, storeId: storeId ?? null } : { email };
+    // Neither the User nor Seller schema normalizes `email` (no `lowercase`/
+    // `trim` schema option, and Mongoose doesn't apply those to query filters
+    // even where it does), and no signup/login path lowercased it either —
+    // so "Jane@Example.com" at signup vs "jane@example.com" typed at login
+    // (or a resend/forgot-password/verify-otp call) missed every one of
+    // these lookups and surfaced as a plain "Invalid email or password" /
+    // "User not found", indistinguishable from a genuine typo. Normalizing
+    // here fixes every caller at once, since every email-based account
+    // lookup in this service goes through emailScope.
+    const normalizedEmail = email?.trim().toLowerCase();
+    return role === 'user' ? { email: normalizedEmail, storeId: storeId ?? null } : { email: normalizedEmail };
   }
 
   /** A buyer's storeId is a partition key baked into the account (and later
@@ -105,8 +115,15 @@ export class AuthService {
 
   async signup(RegisterDto: RegisterDto) {
     try {
-      const { name, email, password, phone, address, role, profileImage, storeId } =
+      const { name, password, phone, address, role, profileImage, storeId } =
         RegisterDto;
+      // Stored normalized so this account is actually reachable by every
+      // later lookup — every one of them (login, resend-otp, verify-otp,
+      // forgot/reset-password) goes through emailScope(), which now
+      // normalizes the same way. Storing the raw, as-typed casing here would
+      // just move the same mismatch from "lookup" to "the one row it can
+      // never match."
+      const email = RegisterDto.email?.trim().toLowerCase();
 
       // Public registration only ever creates a buyer or seller account —
       // RegisterDto.role is already restricted to 'user'|'seller' at the
@@ -349,13 +366,17 @@ export class AuthService {
         socialId,
         userName,
         name,
-        email,
         image,
         fcmToken,
         token,
         role,
         storeId,
       } = dto;
+      // Same normalization as emailScope()/signup() — without it, a Google
+      // account emailing as "Jane@Example.com" could silently create a
+      // second row instead of matching an existing password-signup account
+      // stored as "jane@example.com" for the same person.
+      const email = dto.email?.trim().toLowerCase();
 
       await this.verifySocialToken(authProvider, socialId, token);
 
@@ -565,9 +586,20 @@ export class AuthService {
         tokenVersion: user.tokenVersion ?? 0,
         storeId: role === 'user' ? ((user as any).storeId ?? null) : undefined,
       };
-      const token = this.jwtService.sign(payload, { expiresIn: '1h' });
+      // Was `expiresIn: '1h'` + a 30-minute Redis TTL — a freshly-verified
+      // account got session-killed after 30 minutes (JwtAuthGuard rejects
+      // once the Redis key expires, regardless of the JWT's own exp claim),
+      // vs. ~24h for the exact same account signing in normally right after
+      // (see login() above, which signs with the module default and sets a
+      // 24h Redis TTL). There's also no silent-refresh safety net for this —
+      // no `/api/auth/refresh` route exists on the backend at all, so the
+      // refreshToken returned below is currently never actually used by
+      // anything. Matching login()'s session length here removes the
+      // shorter, inconsistent session entirely rather than needing a working
+      // refresh flow to paper over it.
+      const token = this.jwtService.sign(payload);
 
-      await this.redisService.set(token, user._id.toString(), 30 * 60);
+      await this.redisService.set(token, user._id.toString(), 24 * 60 * 60);
 
       const refreshToken = this.jwtService.sign(payload, {
         expiresIn: '7d',
@@ -697,6 +729,47 @@ export class AuthService {
       };
     } catch (error) {
       throw new UnauthorizedException(error.message || 'Password reset failed');
+    }
+  }
+
+  /** Read-only check used ONLY by the forgot-password OTP screen, so it can
+   *  reject a wrong/expired code immediately instead of silently carrying it
+   *  forward to the new-password step (which is what happened before this
+   *  existed — resetPassword was the only thing that ever validated the
+   *  code, one whole screen later). Deliberately does NOT touch `user.otp`/
+   *  `otpExpiresAt` — the code must still work when resetPassword is called
+   *  right after this with the same otp, and a correct-but-not-yet-final
+   *  verify here must never burn a code the user hasn't actually used yet. */
+  async verifyResetOtp(email: string, role: string, otp: string, storeId?: string) {
+    try {
+      let userModel;
+
+      if (role === 'user') {
+        userModel = this.databaseService.repositories.userModel;
+      } else if (role === 'seller') {
+        userModel = this.databaseService.repositories.sellerModel;
+      } else if (role === 'admin') {
+        userModel = this.databaseService.repositories.adminModel;
+      } else {
+        throw new UnauthorizedException('Invalid user type');
+      }
+
+      const user = await userModel.findOne(this.emailScope(email, role, storeId));
+      if (!user) {
+        throw new UnauthorizedException('User not found');
+      }
+
+      if (user.otp !== otp) {
+        throw new UnauthorizedException('Invalid OTP');
+      }
+
+      if (!user.otpExpiresAt || new Date() > user.otpExpiresAt) {
+        throw new UnauthorizedException('OTP has expired');
+      }
+
+      return { message: 'OTP verified', success: true };
+    } catch (error) {
+      throw new UnauthorizedException(error.message || 'OTP verification failed');
     }
   }
 
