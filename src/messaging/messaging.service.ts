@@ -488,6 +488,11 @@ export class MessagingService {
     if (updatedConv) {
       this.gateway.emitConversationUpdate([conv.buyerId, conv.sellerId], updatedConv);
     }
+    // Also clears the notification bell/toast badge for this conversation —
+    // previously only the conversation list's own unread counter cleared,
+    // leaving the bell stuck showing "1/2/3 new messages" even after the
+    // reader had actually opened and read the thread.
+    this.notificationsService.markMessageNotificationsRead(userId, NOTIFICATION_TYPES.NEW_MESSAGE, conversationId).catch(() => {});
     return { seen: true };
   }
 
