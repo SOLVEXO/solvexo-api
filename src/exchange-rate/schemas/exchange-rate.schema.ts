@@ -1,15 +1,16 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument } from 'mongoose';
 
-// A real, curated set of major world currencies — not literally every ISO
-// currency (no real platform, including Shopify, does that per-store either;
-// each is limited to whatever its payment processor + FX provider genuinely
-// support well). Every non-USD entry here needs a matching sanity band in
-// `PlatformConfig.fxSanityBands` (see admin-config/schemas/platform-config.schema.ts)
-// or `ingestRate` will reject its very first real rate. `ExchangeRateService`
-// itself (USD-pivot conversion, `refreshFromProvider`'s Frankfurter loop) was
-// already written currency-count-agnostic — adding an entry here is the one
-// real step to support it end-to-end.
+// @deprecated — RETIRED, kept only so nothing that still imports this type
+// breaks; do not add new usages. The platform's real, dynamic list of
+// enabled currencies is `AdminConfigService.getEnabledCurrencies()`
+// (`PlatformConfig.fxConfig.enabledCurrencies` + the fixed USD pivot), which
+// an admin can grow past this fixed 8-entry array with zero code change
+// (`AdminConfigService.addCurrency`/`enableAllCurrencies`) — every real call
+// site that used to gate on this array (checkout currency resolution, the
+// buyer profile currencyPreference field, admin finance reporting) has been
+// moved to that dynamic list. See ExchangeRateService.assertSupportedCurrency
+// and checkout.service.ts's resolveCheckoutCurrency for the pattern.
 export const SUPPORTED_CURRENCIES = ['USD', 'PKR', 'GBP', 'EUR', 'AED', 'INR', 'CAD', 'AUD'] as const;
 export type SupportedCurrency = (typeof SUPPORTED_CURRENCIES)[number];
 

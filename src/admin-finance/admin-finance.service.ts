@@ -9,7 +9,6 @@ import { buildAnalyticsCacheKey, withAnalyticsCache } from '../analytics/utils/a
 import { getPlatformEarnings } from '../common/platform-earnings.util';
 import { toCsv } from '../analytics/utils/csv.util';
 import { PdfReportBuilder } from '../analytics/utils/pdf-report.util';
-import { SUPPORTED_CURRENCIES } from '../exchange-rate/schemas/exchange-rate.schema';
 import { AdminConfigService } from '../admin-config/admin-config.service';
 import { ActivityLogService } from '../activity-log/activity-log.service';
 
@@ -82,7 +81,7 @@ export class AdminFinanceService {
         this.r.manualPaymentProofModel.countDocuments({ status: 'pending' }),
       ]);
 
-      const currencies = new Set<string>(SUPPORTED_CURRENCIES as readonly string[]);
+      const currencies = new Set<string>((await this.adminConfigService.getEnabledCurrencies()).map((c) => c.code));
       for (const row of byTypeRows) currencies.add(row._id.currency ?? 'USD');
       for (const row of balanceTotalsRows) currencies.add(row._id ?? 'USD');
 
@@ -165,7 +164,7 @@ export class AdminFinanceService {
         { $group: { _id: { bucket: '$bucket', type: '$type', currency: '$currency' }, total: { $sum: { $abs: '$amount' } } } },
       ]);
 
-      const currencies = new Set<string>(SUPPORTED_CURRENCIES as readonly string[]);
+      const currencies = new Set<string>((await this.adminConfigService.getEnabledCurrencies()).map((c) => c.code));
       for (const row of rows) currencies.add(row._id.currency ?? 'USD');
 
       const byBucket = new Map<number, Map<string, { gross: number; refunds: number }>>();
@@ -202,7 +201,7 @@ export class AdminFinanceService {
         { $group: { _id: { bucket: '$bucket', currency: '$currency' }, commission: { $sum: '$metadata.platformFee' }, processingFees: { $sum: '$metadata.processingFee' } } },
       ]);
 
-      const currencies = new Set<string>(SUPPORTED_CURRENCIES as readonly string[]);
+      const currencies = new Set<string>((await this.adminConfigService.getEnabledCurrencies()).map((c) => c.code));
       for (const row of rows) currencies.add(row._id.currency ?? 'USD');
 
       const byBucket = new Map<number, Map<string, any>>();
@@ -460,7 +459,7 @@ export class AdminFinanceService {
         this.r.sellerBalanceModel.aggregate([{ $group: { _id: '$currency', totalAvailable: { $sum: '$availableBalance' }, totalPending: { $sum: '$pendingBalance' } } }]),
       ]);
 
-      const currencies = new Set<string>(SUPPORTED_CURRENCIES as readonly string[]);
+      const currencies = new Set<string>((await this.adminConfigService.getEnabledCurrencies()).map((c) => c.code));
       for (const row of byTypeRows) currencies.add(row._id.currency ?? 'USD');
       for (const row of balanceTotalsRows) currencies.add(row._id ?? 'USD');
 
@@ -515,7 +514,7 @@ export class AdminFinanceService {
           getPlatformEarnings(this.r.transactionModel, this.r.subscriptionInvoiceModel, from, to),
         ]);
 
-        const currencies = new Set<string>(SUPPORTED_CURRENCIES as readonly string[]);
+        const currencies = new Set<string>((await this.adminConfigService.getEnabledCurrencies()).map((c) => c.code));
         for (const row of byTypeRows) currencies.add(row._id.currency ?? 'USD');
         const earningsByCurrency = new Map(earnings.byCurrency.map((e) => [e.currency, e]));
 

@@ -13,7 +13,8 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { Roles } from '../auth/decorators/roles.decorator'
 import { RolesGuard } from '../auth/guards/roles.guard'; ;
 import { resolveCountryFromIp } from '../common/geo-locate.util';
-import { resolveAuthVisualRegion, resolveAuthVisualImageUrl } from '../common/auth-visual-region.const';
+import { AuthVisualService } from '../common/auth-visual.service';
+import { AUTH_PAGE_CONTEXTS, type AuthPageContext } from '../common/auth-visual-region.const';
 
 
 
@@ -21,30 +22,39 @@ import { resolveAuthVisualRegion, resolveAuthVisualImageUrl } from '../common/au
 
 @Controller('api/auth')
 export class AuthController {
-  constructor(private readonly authService: AuthService) {}
+  constructor(
+    private readonly authService: AuthService,
+    private readonly authVisualService: AuthVisualService,
+  ) {}
 
   // Real IP-based country detection — powers two independent frontend
   // features off one lookup: (1) the Register form's phone input auto-
   // selects the right dial code/flag instead of defaulting everyone to the
   // same country; (2) `region`/`imageUrl` let AuthSplitLayout (shared by
   // every auth screen — Register/Login/Onboarding/etc.) show a real,
-  // region-appropriate background photo instead of one fixed generic
+  // LIVE, country-specific background photo instead of one fixed generic
   // illustration for every visitor worldwide. The optional `?context=`
-  // query param (`register`|`login`|`onboarding`) picks WHICH of that
-  // region's 3 curated photos comes back — so the same visitor sees a
-  // different (but same-region) photo depending on which auth screen
-  // they're on, instead of one identical image everywhere; an invalid or
-  // missing context safely falls back to `'register'`. `region`/`imageUrl`
-  // are resolved from a small curated map (`auth-visual-region.const.ts`) —
-  // never per-country, real platforms only build out their actual top
-  // markets — with `'default'` covering everything unmapped. Fail-open:
-  // a null country still returns a valid 'default' region + photo, never
-  // an error.
+  // query param (`register`|`login`|`onboarding`|`forgot_password`|`otp`|
+  // `new_password`) is folded into the search query — so the same visitor
+  // sees a different (but same-country) photo depending on which auth
+  // screen they're on; an invalid or missing context safely falls back to
+  // `'register'`. `imageUrl` is resolved by `AuthVisualService` — a real,
+  // per-request Unsplash Random Photo API lookup keyed off the visitor's
+  // actual detected country name (not a bucket of ~15-50 countries), with
+  // a 30-day Redis cache per country+screen so the same country/screen
+  // pair isn't re-fetched from Unsplash on every visitor. `region` is only
+  // still returned for backward compatibility with the earlier curated-map
+  // version of this endpoint. Fail-open at every layer (see
+  // `AuthVisualService`'s own header comment) — no Unsplash key
+  // configured, a network error, a timeout, or an undetectable IP all
+  // silently fall back to the curated 10-region map in
+  // `auth-visual-region.const.ts`, never an error or a broken image.
   @Get('detect-country')
-  detectCountry(@Req() req: any, @Query('context') context?: string) {
+  async detectCountry(@Req() req: any, @Query('context') context?: string) {
     const country = resolveCountryFromIp(req.ip);
-    const region = resolveAuthVisualRegion(country);
-    return { success: true, data: { country, region, imageUrl: resolveAuthVisualImageUrl(region, context) } };
+    const ctx = AUTH_PAGE_CONTEXTS.includes(context as AuthPageContext) ? (context as AuthPageContext) : 'register';
+    const { region, imageUrl, attribution } = await this.authVisualService.resolve(country, ctx);
+    return { success: true, data: { country, region, imageUrl, attribution } };
   }
 
   // ✅ Signup

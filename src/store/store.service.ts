@@ -1073,26 +1073,38 @@ export class StoreService {
     }
 
     // "Markets" — which supported currencies this store's buyers can check
-    // out in. Must be a real, non-empty subset of the platform's dynamic
-    // admin-enabled currency list (not the old fixed `SUPPORTED_CURRENCIES`
-    // array — see AdminConfigService.getEnabledCurrencies), and must always
-    // include the store's own baseCurrency (a seller can't disable checkout
-    // in the currency they're actually priced/paid in).
+    // out in. `undefined` (field omitted) means "leave untouched" — every
+    // OTHER field on this same General-tab save form uses that same
+    // convention, and this one must too: the frontend always sends the
+    // field it currently has loaded, so this is what stops an unrelated
+    // save (e.g. just the tagline) from silently touching Markets.
+    // `null` is a real, distinct, intentional value here — "no
+    // restriction, every platform currency is accepted" (the schema
+    // default) — NOT the same as "not provided". A real array must be
+    // non-empty, a real subset of the platform's dynamic admin-enabled
+    // currency list (not the old fixed `SUPPORTED_CURRENCIES` array — see
+    // AdminConfigService.getEnabledCurrencies), and must always include the
+    // store's own baseCurrency (a seller can't disable checkout in the
+    // currency they're actually priced/paid in).
     if (enabledCurrencies !== undefined) {
-      if (!Array.isArray(enabledCurrencies) || enabledCurrencies.length === 0) {
-        throw new BadRequestException('enabledCurrencies must be a non-empty array');
-      }
-      const platformCurrencies = await this.adminConfigService.getEnabledCurrencies();
-      const platformCodes = platformCurrencies.map((c) => c.code);
-      for (const c of enabledCurrencies) {
-        if (!platformCodes.includes(c)) {
-          throw new BadRequestException(`Unsupported currency "${c}" — must be one of: ${platformCodes.join(', ')}`);
+      if (enabledCurrencies === null) {
+        updateData.enabledCurrencies = null;
+      } else {
+        if (!Array.isArray(enabledCurrencies) || enabledCurrencies.length === 0) {
+          throw new BadRequestException('enabledCurrencies must be a non-empty array, or null to remove the restriction');
         }
+        const platformCurrencies = await this.adminConfigService.getEnabledCurrencies();
+        const platformCodes = platformCurrencies.map((c) => c.code);
+        for (const c of enabledCurrencies) {
+          if (!platformCodes.includes(c)) {
+            throw new BadRequestException(`Unsupported currency "${c}" — must be one of: ${platformCodes.join(', ')}`);
+          }
+        }
+        if (store.baseCurrency && !enabledCurrencies.includes(store.baseCurrency)) {
+          throw new BadRequestException(`enabledCurrencies must include this store's own currency (${store.baseCurrency})`);
+        }
+        updateData.enabledCurrencies = enabledCurrencies;
       }
-      if (store.baseCurrency && !enabledCurrencies.includes(store.baseCurrency)) {
-        throw new BadRequestException(`enabledCurrencies must include this store's own currency (${store.baseCurrency})`);
-      }
-      updateData.enabledCurrencies = enabledCurrencies;
     }
 
     // productTypes change ho to enabledTools bhi refresh

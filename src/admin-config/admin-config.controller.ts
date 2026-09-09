@@ -119,6 +119,18 @@ export class AdminConfigController {
     });
   }
 
+  // Bulk "enable every real currency" action — see AdminConfigService.enableAllCurrencies's
+  // own doc comment. Route is a fixed literal ('enable-all'), not a :code
+  // param, so it never collides with a real 3-letter currency code.
+  @Post('currencies/enable-all')
+  enableAllCurrencies(@Req() req: any) {
+    return this.adminConfigService.enableAllCurrencies({
+      adminId: req.user.userId,
+      ip: req.ip,
+      userAgent: req.headers['user-agent'],
+    });
+  }
+
   @Patch('currencies/:code')
   updateCurrencyBand(@Req() req: any, @Param('code') code: string, @Body() dto: UpdateCurrencyBandDto) {
     return this.adminConfigService.updateCurrencyBand(code, dto.sanityBandMin, dto.sanityBandMax, {

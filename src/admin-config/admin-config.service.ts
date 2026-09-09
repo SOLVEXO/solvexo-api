@@ -11,7 +11,7 @@ import { PlacementLimitKey } from '../common/promotion-placements.const';
 import { UpdatePayoutConfigDto } from './dto/update-payout-config.dto';
 import { UpdateManualPaymentConfigDto } from './dto/update-manual-payment-config.dto';
 import { UpdateFxConfigDto } from './dto/update-fx-config.dto';
-import { isRealCurrencyCode, FRANKFURTER_SUPPORTED_LIST } from '../common/currency-metadata.const';
+import { isRealCurrencyCode, ALL_CURRENCY_CODES } from '../common/currency-metadata.const';
 
 export type FeatureFlagKey =
   | 'aiStudio' | 'marketplace' | 'digitalUploads' | 'affiliateProgram'
@@ -111,39 +111,45 @@ export class AdminConfigService {
    * The real, dynamic list of currencies this platform accepts — always
    * includes 'USD' first (the fixed pivot, no band since it's never rate-
    * checked). Lazily seeds `fxConfig.enabledCurrencies` exactly once, the
-   * first time this is ever called on a given database — Shopify-style
-   * ("every real-time-priceable currency is on from day one," not a manual
-   * admin action per currency): PKR keeps its own real, historical band
-   * (from the deprecated `sanityBandMinPKR`/`sanityBandMaxPKR` fields, so a
-   * pre-existing platform's behavior is byte-identical), and every currency
-   * Frankfurter can auto-refresh (`FRANKFURTER_SUPPORTED_LIST` — the same
-   * ~30 real, major, live-priceable currencies `refreshFromProvider` already
-   * knows how to fetch) is auto-enabled alongside it with a deliberately
-   * wide, generic sanity band (0.0001–1,000,000 per USD) — this platform has
-   * no real-world per-currency range to hardcode without re-introducing the
-   * "source-code constant" problem this whole design exists to avoid; the
-   * band's actual job is only to catch a garbage FIRST rate (negative/zero/
-   * decimal-point error), while day-to-day movement is what
-   * `abnormalJumpAlertPercent` actually polices (see `ingestRate`). A
-   * currency OUTSIDE this auto-fetchable set still requires a real admin
-   * action (`addCurrency`) — it has no automatic rate source, so someone
-   * has to say "yes, I'll keep this one's rate updated manually."
+   * first time this is ever called on a given (brand-new) database —
+   * genuinely Shopify-style: EVERY real ISO-4217 currency this platform's
+   * own metadata table knows about (`ALL_CURRENCY_CODES`) is on from day
+   * one, not just the ~30 major ones a free provider happens to auto-price —
+   * an admin having to click a button just to turn on real, ordinary
+   * currencies isn't a real access-control decision, it's busywork, so a
+   * fresh platform doesn't require one. PKR keeps its own real, historical
+   * band (from the deprecated `sanityBandMinPKR`/`sanityBandMaxPKR` fields,
+   * so a pre-existing platform's behavior is byte-identical); every other
+   * currency gets a deliberately wide, generic sanity band (0.0001–1,000,000
+   * per USD) — this platform has no real-world per-currency range to
+   * hardcode without re-introducing the "source-code constant" problem this
+   * whole design exists to avoid; the band's actual job is only to catch a
+   * garbage FIRST rate (negative/zero/decimal-point error), while day-to-day
+   * movement is what `abnormalJumpAlertPercent` actually polices (see
+   * `ingestRate`). Currencies Frankfurter/ExchangeRate-API can auto-refresh
+   * (`refreshFromProvider`, ~168 of the ~152 in this table) get a real
+   * rate on the very next daily cron; the rare currency neither free
+   * provider prices (BZD, as of this writing) still needs a real admin
+   * action (a manual rate via the FX override endpoint) — that's a genuine
+   * "someone has to say I'll keep this one updated by hand" case, not
+   * busywork. NOTE: this seed only ever runs ONCE per database — a platform
+   * that was already live before this change keeps whatever it was already
+   * seeded with; `AdminConfigService.enableAllCurrencies` is the one-time
+   * catch-up action for that case, not something a fresh deployment needs.
    */
   async getEnabledCurrencies(): Promise<{ code: string; sanityBandMin: number | null; sanityBandMax: number | null }[]> {
     let config = await this.getRawConfig();
     if (!config.fxConfig?.enabledCurrencies || config.fxConfig.enabledCurrencies.length === 0) {
+      const seedEntries = ALL_CURRENCY_CODES
+        .filter((code) => code !== 'USD')
+        .map((code) =>
+          code === 'PKR'
+            ? { code: 'PKR', sanityBandMin: config.fxConfig?.sanityBandMinPKR ?? 150, sanityBandMax: config.fxConfig?.sanityBandMaxPKR ?? 450 }
+            : { code, sanityBandMin: 0.0001, sanityBandMax: 1_000_000 },
+        );
       config = await this.model.findOneAndUpdate(
         {},
-        { $set: {
-          'fxConfig.enabledCurrencies': [
-            {
-              code: 'PKR',
-              sanityBandMin: config.fxConfig?.sanityBandMinPKR ?? 150,
-              sanityBandMax: config.fxConfig?.sanityBandMaxPKR ?? 450,
-            },
-            ...FRANKFURTER_SUPPORTED_LIST.map((code) => ({ code, sanityBandMin: 0.0001, sanityBandMax: 1_000_000 })),
-          ],
-        } },
+        { $set: { 'fxConfig.enabledCurrencies': seedEntries } },
         { upsert: true, new: true, setDefaultsOnInsert: true },
       );
       this.invalidateCache();
@@ -224,6 +230,41 @@ export class AdminConfigService {
     this.invalidateCache();
     await this.logChange('fx_currency_removed', `Disabled ${normalized} for new checkout/settlement`, meta);
     return { success: true, message: `${normalized} disabled`, data: config?.fxConfig };
+  }
+
+  /**
+   * Admin-only bulk action: enables every real ISO-4217 currency in this
+   * platform's own metadata table (`ALL_CURRENCY_CODES`) that isn't already
+   * enabled — the "turn on the platform's full currency list" counterpart to
+   * `addCurrency`'s one-at-a-time path, for an admin who wants every real
+   * currency live rather than adding ~120 of them by hand. Every newly-added
+   * currency gets the same generic wide band already used for the
+   * Frankfurter-auto-seeded set (see `getEnabledCurrencies`'s own doc
+   * comment for why this platform has no real per-currency range to
+   * hardcode) — a currency's rate still goes through `ingestRate`'s real
+   * sanity/abnormal-jump checks on every future refresh; this band only
+   * guards against a garbage FIRST rate. `ExchangeRateService.refreshFromProvider`
+   * (Frankfurter + ExchangeRate-API) auto-refreshes every one of these going
+   * forward except the rare real currency neither free provider prices at
+   * all — that one still needs a manual admin rate via the FX override
+   * endpoint, same as always.
+   */
+  async enableAllCurrencies(meta: AuditMeta): Promise<{ success: true; message: string; added: string[]; alreadyEnabledCount: number }> {
+    const existing = await this.getEnabledCurrencies();
+    const existingCodes = new Set(existing.map((c) => c.code));
+    const toAdd = ALL_CURRENCY_CODES.filter((code) => code !== 'USD' && !existingCodes.has(code));
+    if (toAdd.length === 0) {
+      return { success: true, message: 'Every real currency is already enabled', added: [], alreadyEnabledCount: existingCodes.size };
+    }
+    const newEntries = toAdd.map((code) => ({ code, sanityBandMin: 0.0001, sanityBandMax: 1_000_000, enabledAt: new Date() }));
+    await this.model.findOneAndUpdate(
+      {},
+      { $push: { 'fxConfig.enabledCurrencies': { $each: newEntries } } },
+      { upsert: true, new: true, setDefaultsOnInsert: true },
+    );
+    this.invalidateCache();
+    await this.logChange('fx_currency_added', `Bulk-enabled ${toAdd.length} currencies for checkout/settlement: ${toAdd.join(', ')}`, meta);
+    return { success: true, message: `${toAdd.length} currencies enabled`, added: toAdd, alreadyEnabledCount: existingCodes.size };
   }
 
   private async logChange(action: string, description: string, meta: AuditMeta) {

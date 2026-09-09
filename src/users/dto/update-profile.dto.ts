@@ -5,9 +5,8 @@ import {
   IsOptional,
   MaxLength,
   IsUrl,
-  IsIn,
+  Matches,
 } from 'class-validator';
-import { SUPPORTED_CURRENCIES } from '@/exchange-rate/schemas/exchange-rate.schema';
 
 export class UpdateProfileDto {
   @ApiProperty({ required: false, example: 'Jami Raza' })
@@ -41,8 +40,13 @@ export class UpdateProfileDto {
   // or guest cookie (see CheckoutService). Folded into the existing profile
   // endpoint rather than a dedicated route, matching this codebase's
   // existing API surface instead of adding a sibling endpoint for one field.
-  @ApiProperty({ required: false, example: 'PKR', enum: SUPPORTED_CURRENCIES })
+  // Shape-only check here (a real 3-letter code) — whether it's actually one
+  // of the platform's real, dynamic ENABLED currencies is checked in
+  // UsersService.updateProfile against the live Markets list, not a fixed
+  // array (the old SUPPORTED_CURRENCIES 8-entry array this used to enforce
+  // is retired — see checkout.service.ts's resolveCheckoutCurrency for why).
+  @ApiProperty({ required: false, example: 'PKR', description: 'Real ISO-4217 3-letter code, validated against the platform\'s live enabled-currency list' })
   @IsOptional()
-  @IsIn(SUPPORTED_CURRENCIES)
+  @Matches(/^[A-Z]{3}$/, { message: 'currencyPreference must be a 3-letter currency code' })
   currencyPreference?: string;
 }

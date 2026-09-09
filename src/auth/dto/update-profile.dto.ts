@@ -1,7 +1,6 @@
 /* eslint-disable prettier/prettier */
-import { IsString, IsOptional, IsIn } from 'class-validator';
+import { IsString, IsOptional, Matches } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
-import { SUPPORTED_CURRENCIES } from '@/exchange-rate/schemas/exchange-rate.schema';
 
 export class UpdateProfileDto {
 
@@ -34,9 +33,14 @@ export class UpdateProfileDto {
   // route the frontend calls for profile updates (see
   // AuthController.editProfile) — NOT UsersController's separate
   // PUT /api/users/profile, which exists but isn't the one the app uses.
-  @ApiProperty({ required: false, example: 'PKR', enum: SUPPORTED_CURRENCIES })
+  // Shape-only check here (a real 3-letter code) — whether it's actually
+  // one of the platform's real, dynamic ENABLED currencies is checked in
+  // AuthService.editProfile against the live Markets list, not a fixed
+  // array (the old SUPPORTED_CURRENCIES 8-entry array this used to enforce
+  // is retired — see checkout.service.ts's resolveCheckoutCurrency for why).
+  @ApiProperty({ required: false, example: 'PKR', description: 'Real ISO-4217 3-letter code, validated against the platform\'s live enabled-currency list' })
   @IsOptional()
-  @IsIn(SUPPORTED_CURRENCIES)
+  @Matches(/^[A-Z]{3}$/, { message: 'currencyPreference must be a 3-letter currency code' })
   currencyPreference?: string;
 
 }
