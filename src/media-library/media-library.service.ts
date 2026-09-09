@@ -50,7 +50,7 @@ export class MediaLibraryService {
   }
 
   /** The real Files Library browse query — scoped to one store, with search/type/tag filters and pagination. */
-  async listForStore(storeId: string, query: { search?: string; type?: 'image' | 'video'; tag?: string; page?: number; limit?: number }) {
+  async listForStore(storeId: string, query: { search?: string; type?: 'image' | 'video' | 'raw'; tag?: string; page?: number; limit?: number }) {
     const page = Math.max(1, query.page ?? 1);
     const limit = Math.min(100, Math.max(1, query.limit ?? 40));
     const filter: Record<string, any> = { storeId };

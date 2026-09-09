@@ -9,7 +9,7 @@ export type MenuDocument = HydratedDocument<Menu>;
 // is the exact same link-target shape, just living in its own reusable,
 // named entity instead of being embedded one-off inside a Header/Footer
 // block. Kept in sync by hand since this is a different schema file.
-export const MENU_LINK_TYPES = ['home', 'page', 'blog', 'external', 'category', 'collection'] as const;
+export const MENU_LINK_TYPES = ['home', 'page', 'blog', 'search', 'external', 'category', 'collection', 'product'] as const;
 export type MenuLinkType = (typeof MENU_LINK_TYPES)[number];
 
 @Schema({ _id: false })
@@ -21,6 +21,7 @@ export class MenuItemChild {
   @Prop({ type: String, default: null }) url: string | null;
   @Prop({ type: String, default: null }) categoryId: string | null;
   @Prop({ type: String, default: null }) collectionId: string | null;
+  @Prop({ type: String, default: null }) productId: string | null;
   @Prop({ type: Boolean, default: false }) highlight: boolean;
 }
 export const MenuItemChildSchema = SchemaFactory.createForClass(MenuItemChild);
@@ -37,6 +38,7 @@ export class MenuItem {
   @Prop({ type: String, default: null }) url: string | null;
   @Prop({ type: String, default: null }) categoryId: string | null;
   @Prop({ type: String, default: null }) collectionId: string | null;
+  @Prop({ type: String, default: null }) productId: string | null;
   @Prop({ type: Boolean, default: false }) highlight: boolean;
   @Prop({ type: [MenuItemChildSchema], default: [] }) children: MenuItemChild[];
 }

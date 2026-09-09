@@ -12,4 +12,7 @@ export class UpdateBlogPostDto {
   @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(240) excerpt?: string;
   @ApiProperty({ required: false }) @IsOptional() @IsString() coverImage?: string;
   @ApiProperty({ required: false, type: [String] }) @IsOptional() @IsArray() tags?: string[];
+  @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(120) authorName?: string;
+  @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(70) seoTitle?: string;
+  @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(320) seoDescription?: string;
 }

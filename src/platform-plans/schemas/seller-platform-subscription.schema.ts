@@ -14,20 +14,31 @@ export type SellerPlatformSubscriptionDocument = SellerPlatformSubscription & Do
 export class SellerPlatformSubscription {
   @Prop({ type: String, required: true }) storeId: string;
   @Prop({ type: String, required: true }) sellerId: string;
-  @Prop({ type: String, required: true }) platformPlanId: string;
+  // Null for as long as this store is trialing — trial is a standalone
+  // concept (see `PlatformTrialSettings`), never "the [some plan]'s trial".
+  // Only ever set once a real plan is actually purchased/assigned (mid-trial
+  // or at trial-end "choose a plan"), or for a non-trialing subscription.
+  @Prop({ type: String, default: null }) platformPlanId: string | null;
 
   @Prop({ type: String, enum: ['monthly', 'yearly'], default: 'monthly' }) billingInterval: string;
   @Prop({ type: Number, required: true }) amountUSD: number; // snapshot, immune to later plan price edits
 
   @Prop({
     type: String,
-    // 'locked' — trial expired, or paid billing terminally failed/ended,
-    // with no successful conversion. Selling/checkout access is restricted
-    // (see BillingAccessGuard) but all seller/store data is untouched and
+    // 'trial_ended' — the trial's `durationDays` elapsed with no plan ever
+    // purchased (mid-trial or otherwise). Distinct from 'locked' (paid
+    // billing failed/ended after a real plan was in play) purely for
+    // seller-facing copy/framing — "choose a plan to continue" reads very
+    // differently from "your payment failed" — but restricts
+    // selling/checkout access exactly the same way (see BillingAccessGuard).
+    // 'locked' — trial expired with no successful conversion under the OLD
+    // per-plan-trial model, or paid billing terminally failed/ended with no
+    // successful conversion. Selling/checkout access is restricted (see
+    // BillingAccessGuard) but all seller/store data is untouched and
     // billing/account routes stay reachable so the seller can pay and
     // unlock. Only ever reached for `legacyFreeEligible: false` stores —
     // see that field's comment.
-    enum: ['trialing', 'active', 'past_due', 'locked', 'canceled'],
+    enum: ['trialing', 'trial_ended', 'active', 'past_due', 'locked', 'canceled'],
     default: 'trialing',
   })
   status: string;
@@ -60,9 +71,20 @@ export class SellerPlatformSubscription {
   @Prop({ type: Number, default: 0 }) totalPaidUSD: number;
   @Prop({ type: Number, default: 0 }) failedPaymentAttempts: number;
   @Prop({ type: Number, default: 0 }) creditBalanceUSD: number;
+  // Dedup marker for the `invoice.payment_failed` webhook — Stripe's Smart
+  // Retries fire this event multiple times for the SAME unpaid invoice as it
+  // retries over several days; without this, each retry re-incremented
+  // `failedPaymentAttempts`, so a store could hit MAX_RENEWAL_ATTEMPTS from
+  // Stripe's own retries on ONE invoice instead of genuinely separate
+  // billing-cycle failures. Mirrors the dedup `invoice.payment_succeeded`
+  // already does via `PlatformPlanInvoice.stripeInvoiceId` — that path can't
+  // be reused here since a failed invoice never creates one.
+  @Prop({ type: String, default: null }) lastFailedStripeInvoiceId: string | null;
 
   @Prop({ type: [Object], default: [] }) planHistory: Array<{
-    fromPlanId: string; fromPlanName: string; toPlanId: string; toPlanName: string;
+    // Null for the very first plan a store ever buys — moving FROM the
+    // trial (no plan attached) TO a real one.
+    fromPlanId: string | null; fromPlanName: string; toPlanId: string; toPlanName: string;
     proratedAmountUSD: number; changedAt: Date;
   }>;
 

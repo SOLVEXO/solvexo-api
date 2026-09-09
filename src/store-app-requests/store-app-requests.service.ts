@@ -280,7 +280,7 @@ export class StoreAppRequestsService {
 
     if (dto.status === 'published') {
       this.notificationsService.notify({
-        recipientId: request.sellerId, recipientRole: 'seller',
+        recipientId: request.sellerId, recipientRole: 'seller', storeId: request.storeId,
         type: NOTIFICATION_TYPES.STORE_APP_PUBLISHED,
         title: `Your ${platformLabel} app is live!`,
         body: `${request.appName} is now published on the ${dto.platform === 'android' ? 'Play Store' : 'App Store'}${(store as any)?.name ? ` for ${(store as any).name}` : ''}.`,
@@ -288,7 +288,7 @@ export class StoreAppRequestsService {
       }).catch(() => {});
     } else if (dto.status === 'rejected') {
       this.notificationsService.notify({
-        recipientId: request.sellerId, recipientRole: 'seller',
+        recipientId: request.sellerId, recipientRole: 'seller', storeId: request.storeId,
         type: NOTIFICATION_TYPES.STORE_APP_REJECTED,
         title: `${platformLabel} app request needs changes`,
         body: dto.rejectionReason || `Your ${platformLabel} app request couldn't be approved as submitted.`,
@@ -296,7 +296,7 @@ export class StoreAppRequestsService {
       }).catch(() => {});
     } else {
       this.notificationsService.notify({
-        recipientId: request.sellerId, recipientRole: 'seller',
+        recipientId: request.sellerId, recipientRole: 'seller', storeId: request.storeId,
         type: NOTIFICATION_TYPES.STORE_APP_PLATFORM_UPDATED,
         title: `${platformLabel} app update`,
         body: `Your ${platformLabel} app request for ${request.appName} is now "${dto.status.replace(/_/g, ' ')}".`,

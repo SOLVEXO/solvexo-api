@@ -353,6 +353,7 @@ export class MessagingService {
       this.notificationsService.notify({
         recipientId,
         recipientRole,
+        storeId: conv.storeId,
         type: NOTIFICATION_TYPES.NEW_MESSAGE,
         title: 'New message',
         body: dto.type === 'text' ? dto.text!.trim().slice(0, 120) : 'Sent an attachment',

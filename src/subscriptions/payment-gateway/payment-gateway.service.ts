@@ -128,4 +128,11 @@ export class PaymentGatewayService implements IPaymentGateway, OnModuleInit {
   }): Promise<{ providerProductId: string; providerPriceId: string }> {
     return this.provider.getOrCreatePrice(params);
   }
+
+  getOrCreateCoupon(params: {
+    planId: string; fullPriceUSD: number; introPriceUSD: number; durationCycles: number;
+    existingCouponId?: string | null;
+  }): Promise<{ providerCouponId: string }> {
+    return this.provider.getOrCreateCoupon(params);
+  }
 }

@@ -2,6 +2,7 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import { IsArray, IsBoolean, IsIn, IsObject, IsOptional, IsString, Matches, MaxLength, ValidateNested } from 'class-validator';
+import { STORE_PAGE_POLICY_TYPES, type StorePagePolicyType } from '../schemas/store-page.schema';
 
 class StorePageSeoInputDto {
   @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(70) metaTitle?: string;
@@ -31,4 +32,7 @@ export class UpdatePageDto {
 
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() showInNav?: boolean;
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() showInFooter?: boolean;
+
+  @ApiProperty({ required: false, enum: [...STORE_PAGE_POLICY_TYPES, null], description: 'Tags this page as a standard legal/policy page (Privacy Policy, Terms of Service, Refund Policy, Shipping Policy) — at most one page per store per type. Pass null to un-tag.' })
+  @IsOptional() @IsIn([...STORE_PAGE_POLICY_TYPES, null]) policyType?: StorePagePolicyType | null;
 }

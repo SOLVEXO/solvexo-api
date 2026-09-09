@@ -15,4 +15,7 @@ export class CreateBlogPostDto {
   @ApiProperty({ required: false }) @IsOptional() @IsString() coverImage?: string;
   @ApiProperty({ required: false, description: 'Which Blog this post belongs to — omit to use the store\'s default blog.' })
   @IsOptional() @IsString() blogId?: string;
+  @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(120) authorName?: string;
+  @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(70) seoTitle?: string;
+  @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(320) seoDescription?: string;
 }

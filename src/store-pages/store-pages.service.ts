@@ -53,6 +53,18 @@ export class StorePagesService {
   }
 
   /** Idempotent — called from `StoreService.createStore()` right after creation, and from the one-off backfill script for pre-existing stores. A brand-new home page starts as a usable draft with a hero + product catalog, not empty — its `draft.sections` starts identical to `sections`, since there's nothing yet to diverge. */
+  /** Root-cause fix: this used to seed a new store's home page at
+   *  `status: 'draft'` — real starter content (`starterHomeSections()`) sat
+   *  in both `sections` AND `draft.sections`, but `getPublicHome` only ever
+   *  serves a `status: 'published'` doc, so a brand-new store's live
+   *  storefront had literally nothing to show — no theme/home page ever
+   *  looked "active" — until the seller happened to open the Theme Editor
+   *  and click Publish once. Shopify's own default theme (Horizon) is live
+   *  the instant a store exists, with zero manual publish step required;
+   *  this makes Solvexo match that. The seller's OWN edits still go through
+   *  the normal draft→Publish cycle exactly as before — only the initial
+   *  seed state changes from draft to already-published, mirroring exactly
+   *  what `publish()` itself sets (`status`+`lastPublishedAt`) below. */
   async ensureHomePage(storeId: string) {
     return this.storePageModel.findOneAndUpdate(
       { storeId, type: 'home' },
@@ -64,7 +76,8 @@ export class StorePagesService {
           title: 'Home',
           sections: starterHomeSections(),
           draft: { sections: starterHomeSections() },
-          status: 'draft',
+          status: 'published',
+          lastPublishedAt: new Date(),
         },
       },
       { upsert: true, new: true, setDefaultsOnInsert: true },
@@ -146,11 +159,24 @@ export class StorePagesService {
       if (conflict) throw new ConflictException(`A page with slug "${dto.slug}" already exists`);
     }
 
+    if (dto.policyType !== undefined && dto.policyType !== null && dto.policyType !== page.policyType) {
+      // Same "at most one" rule the schema's partial unique index also
+      // enforces (belt-and-suspenders) — checked here first so a conflict
+      // comes back as a clear 409 instead of a raw duplicate-key error.
+      const conflict = await this.storePageModel.findOne({
+        storeId, policyType: dto.policyType, isDelete: false, _id: { $ne: pageId },
+      });
+      if (conflict) {
+        throw new ConflictException(`"${conflict.title}" is already this store's ${dto.policyType.replace(/_/g, ' ')} — untag it first`);
+      }
+    }
+
     const set: Record<string, unknown> = {};
     if (dto.title !== undefined) set.title = dto.title;
     if (dto.slug !== undefined) set.slug = dto.slug;
     if (dto.showInNav !== undefined) set.showInNav = dto.showInNav;
     if (dto.showInFooter !== undefined) set.showInFooter = dto.showInFooter;
+    if (dto.policyType !== undefined) set.policyType = dto.policyType;
     if (dto.seo?.metaTitle !== undefined) set['seo.metaTitle'] = dto.seo.metaTitle;
     // `metaDesc` is a deprecated write-compat alias — a caller still only
     // sending it (not yet updated to `metaDescription`) still lands in the
@@ -248,8 +274,20 @@ export class StorePagesService {
 
   async getPublicHome(storeId: string) {
     const page = await this.storePageModel.findOne({ storeId, type: 'home', status: 'published', isDelete: false }).lean();
-    if (!page) throw new NotFoundException('This store has no published home page yet');
-    return { success: true, data: page };
+    if (page) return { success: true, data: page };
+    // Defense-in-depth for stores created BEFORE the `ensureHomePage` fix
+    // above (when new stores were seeded at status: 'draft'): rather than a
+    // hard 404 that leaves the storefront blank forever, fall back to
+    // whatever home-page content already exists — same graceful-fallback
+    // shape `CollectionTemplateService` already uses for missing published
+    // templates. This is a read-only display fallback; it does not silently
+    // flip the stored doc to 'published' — the seller's own Publish action
+    // in the Theme/Page editor remains the real, intentional publish step
+    // for every page going forward.
+    const anyHome = await this.storePageModel.findOne({ storeId, type: 'home', isDelete: false }).lean();
+    const fallbackSections = anyHome?.sections?.length ? anyHome.sections : anyHome?.draft?.sections?.length ? anyHome.draft.sections : starterHomeSections();
+    if (anyHome) return { success: true, data: { ...anyHome, sections: fallbackSections } };
+    throw new NotFoundException('This store has no home page yet');
   }
 
   async getPublicPage(storeId: string, slug: string) {
@@ -261,7 +299,7 @@ export class StorePagesService {
   async listPublicPages(storeId: string) {
     const pages = await this.storePageModel
       .find({ storeId, type: 'custom', status: 'published', isDelete: false })
-      .select('slug title showInNav showInFooter')
+      .select('slug title showInNav showInFooter policyType')
       .lean();
     return { success: true, data: pages };
   }

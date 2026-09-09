@@ -1527,10 +1527,11 @@ export class PaymentService {
           .notify({
             recipientId: so.sellerId,
             recipientRole: 'seller',
+            storeId: so.storeId,
             type: NOTIFICATION_TYPES.ORDER_PLACED,
             title: 'New order received',
             body: `You have a new order #${createdOrder.orderNumber} for ${so.items.length} item(s).`,
-            data: { orderId: createdOrder._id.toString() },
+            data: { orderId: createdOrder._id.toString(), storeId: so.storeId },
           })
           .catch(() => {});
       }

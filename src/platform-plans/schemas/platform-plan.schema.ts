@@ -31,7 +31,24 @@ export class PlatformPlan {
   @Prop({ type: Boolean, default: false }) isCustomPricing: boolean;
   @Prop({ type: Number, default: null }) monthlyPriceUSD: number | null;
   @Prop({ type: Number, default: null }) yearlyPriceUSD: number | null;
+  // @deprecated — no longer read by `ensureDefaultSubscription` (trial is a
+  // standalone platform-wide policy now, see `PlatformTrialSettings`). Kept
+  // on the schema only so a pre-existing plan document with a real value
+  // here isn't silently data-lost; no code path writes or reads it any more.
   @Prop({ type: Number, default: 0 }) trialDays: number;
+
+  // ── Intro/promotional pricing (Shopify-style — e.g. "$1/mo for 3 months,
+  // then $39/mo") — a PLAN-level promotional price, separate from the
+  // platform-wide trial. Monthly billing only (mirrors Shopify's own real
+  // constraint — verified against their live pricing page: "The $1 offer
+  // only applies to monthly billing"), implemented as a Stripe repeating
+  // Coupon applied on top of the plan's real full price — never a second
+  // Price object or a Subscription Schedule, so the existing webhook/
+  // invoice/proration machinery (which all key off a plain Subscription)
+  // needs no changes at all. ─────────────────────────────────────────────
+  @Prop({ type: Boolean, default: false }) introOfferEnabled: boolean;
+  @Prop({ type: Number, default: null }) introPriceUSD: number | null;
+  @Prop({ type: Number, default: null }) introDurationCycles: number | null; // whole months
 
   @Prop({ type: [String], default: [] }) featureBullets: string[]; // marketing copy only, cosmetic
 
@@ -61,6 +78,8 @@ export class PlatformPlan {
       seoAiSuggestionsAllowed: false,
       searchConsoleIntegrationAllowed: false,
       customRedirectsAllowed: false,
+      maxActiveStoreBanners: 4,
+      maxActivePromotions: 1,
     }),
   })
   limits: {
@@ -85,6 +104,8 @@ export class PlatformPlan {
     seoAiSuggestionsAllowed: boolean;      // gates AI-generated meta suggestions (consumes AiCreditsWallet)
     searchConsoleIntegrationAllowed: boolean; // gates per-store Google Search Console / Bing Webmaster connection
     customRedirectsAllowed: boolean;       // gates seller-managed redirect rules & canonical overrides
+    maxActiveStoreBanners: number;         // -1 = unlimited — enforced by EntitlementsService.assertCanCreateStoreBanner
+    maxActivePromotions: number;           // -1 = unlimited — enforced by EntitlementsService.assertCanCreatePromotion
   };
 
   @Prop({ type: String, enum: ['active', 'archived'], default: 'active' }) status: string;
@@ -94,6 +115,9 @@ export class PlatformPlan {
   @Prop({ type: String, default: null }) stripeProductId: string | null;
   @Prop({ type: String, default: null }) stripeMonthlyPriceId: string | null;
   @Prop({ type: String, default: null }) stripeYearlyPriceId: string | null;
+  // Lazily-created Stripe Coupon backing the intro offer above — same
+  // immutable-cache-then-invalidate-on-edit convention as the two Price ids.
+  @Prop({ type: String, default: null }) stripeIntroCouponId: string | null;
 }
 
 export const PlatformPlanSchema = SchemaFactory.createForClass(PlatformPlan);

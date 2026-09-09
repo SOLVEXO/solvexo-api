@@ -6,8 +6,11 @@ export class ListMediaAssetsDto {
   @IsOptional() @IsString()
   search?: string;
 
-  @IsOptional() @IsIn(['image', 'video'])
-  type?: 'image' | 'video';
+  // 'raw' = Cloudinary's bucket for everything that isn't an image or video
+  // (PDF, Word/Excel/PowerPoint, zip, plain text — see UploadService's own
+  // `getResourceType`) — the Files Library's "Files" filter tab.
+  @IsOptional() @IsIn(['image', 'video', 'raw'])
+  type?: 'image' | 'video' | 'raw';
 
   @IsOptional() @IsString()
   tag?: string;

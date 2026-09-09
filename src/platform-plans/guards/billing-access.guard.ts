@@ -6,13 +6,16 @@ import { REQUIRE_ACTIVE_BILLING_KEY } from '../decorators/require-active-billing
 
 /**
  * Centralized billing-status gate — the single place that ever checks
- * `SellerPlatformSubscription.status === 'locked'`, so this never needs to
- * be scattered as `if (status === 'locked')` across individual controllers.
- * A `'locked'` store keeps every other route working (login, account,
+ * `SellerPlatformSubscription.status` for `'locked'`/`'trial_ended'`, so this
+ * never needs to be scattered as `if (status === X)` across individual
+ * controllers. Both statuses keep every other route working (login, account,
  * billing, plan selection, payment) — this guard only blocks the specific
  * routes explicitly opted in via `@RequireActiveBilling()` (product
  * create/edit, checkout/place-order). No data is touched here; this is
- * pure request-time access control.
+ * pure request-time access control. The two statuses are restricted
+ * identically here — they only differ in the seller-facing COPY shown on the
+ * Billing page ("choose a plan to continue" vs "payment failed"), not in
+ * what's blocked.
  */
 @Injectable()
 export class BillingAccessGuard implements CanActivate {
@@ -42,6 +45,11 @@ export class BillingAccessGuard implements CanActivate {
     if (sub && (sub as any).status === 'locked') {
       throw new ForbiddenException(
         'This store is currently locked — choose a plan and complete payment from the billing page to resume selling.',
+      );
+    }
+    if (sub && (sub as any).status === 'trial_ended') {
+      throw new ForbiddenException(
+        'Your free trial has ended — choose a plan from the billing page to continue selling.',
       );
     }
     return true;

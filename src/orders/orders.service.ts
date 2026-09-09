@@ -1592,22 +1592,21 @@ export class OrdersService {
     }
 
     if (actor.notifyRecipientRole === 'seller') {
-      const affectedSellerIds = [
-        ...new Set(
-          targetItems.map(
-            ({ soIndex }) => order.sellerOrders[soIndex].sellerId,
-          ),
-        ),
-      ];
-      affectedSellerIds.forEach((recipientId) => {
+      const affectedSellerOrders = new Map<string, { sellerId: string; storeId: string }>();
+      targetItems.forEach(({ soIndex }) => {
+        const so = order.sellerOrders[soIndex];
+        affectedSellerOrders.set(`${so.sellerId}:${so.storeId}`, { sellerId: so.sellerId, storeId: so.storeId });
+      });
+      affectedSellerOrders.forEach(({ sellerId, storeId }) => {
         this.notificationsService
           .notify({
-            recipientId,
+            recipientId: sellerId,
             recipientRole: 'seller',
+            storeId,
             type: NOTIFICATION_TYPES.ORDER_CANCELLED,
             title: actor.notifyTitle,
             body: actor.notifyBody(orderId),
-            data: { orderId },
+            data: { orderId, storeId },
           })
           .catch(() => {});
       });
@@ -1874,6 +1873,7 @@ export class OrdersService {
         .notify({
           recipientId: so.sellerId,
           recipientRole: 'seller',
+          storeId: so.storeId,
           type: NOTIFICATION_TYPES.REFUND_REQUESTED,
           title: 'Refund requested',
           body: `A refund has been requested for order #${order.orderNumber}.`,

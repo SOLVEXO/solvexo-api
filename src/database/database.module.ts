@@ -96,6 +96,7 @@ import { DatabaseService } from './databaseservice';
         schema: schema.IdempotencyRecordSchema,
       },
       { name: schema.PlatformPlan.name, schema: schema.PlatformPlanSchema },
+      { name: schema.PlatformTrialSettings.name, schema: schema.PlatformTrialSettingsSchema },
       {
         name: schema.SellerPlatformSubscription.name,
         schema: schema.SellerPlatformSubscriptionSchema,

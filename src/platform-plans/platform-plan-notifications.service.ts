@@ -148,16 +148,31 @@ export class PlatformPlanNotificationsService {
     await this.send(to, `${data.storeName} has been locked — action needed`, html);
   }
 
-  async sendTrialEndingSoon(to: string, data: { sellerName: string; storeName: string; planName: string; amountUSD: number; daysLeft: number; trialEndsAt: Date }) {
+  /**
+   * `committedPlan` is optional and, under the current onboarding/Billing
+   * UI, never actually set any more — trial is a standalone concept (no
+   * plan attached, see `PlatformTrialSettings`), and the one dormant backend
+   * path that could pre-commit a store to a plan mid-trial without charging
+   * yet (`changePlan`'s `billImmediately: false` branch) has no UI caller
+   * today. Kept optional (rather than removed) so this email still renders
+   * correctly for that path if it's ever driven directly via the API.
+   */
+  async sendTrialEndingSoon(to: string, data: {
+    sellerName: string; storeName: string; daysLeft: number; trialEndsAt: Date;
+    committedPlan?: { name: string; amountUSD: number };
+  }) {
+    const committedBox = data.committedPlan
+      ? `<div class="box">
+          <div class="row"><span class="label">Plan after trial</span><span class="value">${data.committedPlan.name}</span></div>
+          <div class="row"><span class="label">Amount to be charged</span><span class="value">${money(data.committedPlan.amountUSD)}</span></div>
+        </div>
+        <p style="text-align:center;color:#666;font-size:13px;">No action needed if you want to continue — your card will be charged automatically when the trial ends.</p>`
+      : `<p style="text-align:center;color:#666;font-size:13px;">Choose a plan before then to keep selling without interruption — your store's data is always safe either way.</p>`;
     const html = shell('Your trial is ending soon', `
       <p>Hi ${data.sellerName},</p>
-      <p>Your <strong>${data.planName}</strong> trial for <strong>${data.storeName}</strong> ends in
+      <p>Your free trial for <strong>${data.storeName}</strong> ends in
       <strong>${data.daysLeft} day${data.daysLeft === 1 ? '' : 's'}</strong> (${data.trialEndsAt.toDateString()}).</p>
-      <div class="box">
-        <div class="row"><span class="label">Plan after trial</span><span class="value">${data.planName}</span></div>
-        <div class="row"><span class="label">Amount to be charged</span><span class="value">${money(data.amountUSD)}</span></div>
-      </div>
-      <p style="text-align:center;color:#666;font-size:13px;">No action needed if you want to continue — your card will be charged automatically when the trial ends.</p>
+      ${committedBox}
     `);
     await this.send(to, `Your ${data.storeName} trial ends in ${data.daysLeft} day${data.daysLeft === 1 ? '' : 's'}`, html);
   }

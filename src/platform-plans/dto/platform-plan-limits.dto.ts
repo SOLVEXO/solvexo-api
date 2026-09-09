@@ -48,4 +48,12 @@ export class PlatformPlanLimitsDto {
   @IsOptional() @IsBoolean() searchConsoleIntegrationAllowed?: boolean;
   @ApiProperty({ required: false, description: 'Gates seller-managed redirect rules & canonical overrides' })
   @IsOptional() @IsBoolean() customRedirectsAllowed?: boolean;
+
+  @ApiProperty({ description: '-1 = unlimited' })
+  @IsOptional() @Type(() => Number) @IsNumber() @Min(-1)
+  maxActiveStoreBanners?: number;
+
+  @ApiProperty({ description: '-1 = unlimited' })
+  @IsOptional() @Type(() => Number) @IsNumber() @Min(-1)
+  maxActivePromotions?: number;
 }

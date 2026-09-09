@@ -139,7 +139,7 @@ export class PromotionsService {
 
     this.log(storeId, 'promotion_request_submitted', `Promotion request submitted for ${dto.placement}`, sellerId, 'seller', request._id);
     this.notificationsService.notify({
-      recipientId: sellerId, recipientRole: 'seller',
+      recipientId: sellerId, recipientRole: 'seller', storeId,
       type: NOTIFICATION_TYPES.PROMOTION_REQUEST_SUBMITTED,
       title: 'Promotion request submitted', body: `Your ${dto.placement} promotion request is awaiting admin review.`,
       data: { promotionRequestId: request._id },
@@ -206,7 +206,7 @@ export class PromotionsService {
 
     this.log(request.storeId, 'promotion_request_approved', 'Promotion request approved', adminId, 'admin', id);
     this.notificationsService.notify({
-      recipientId: request.sellerId, recipientRole: 'seller',
+      recipientId: request.sellerId, recipientRole: 'seller', storeId: request.storeId,
       type: NOTIFICATION_TYPES.PROMOTION_APPROVED,
       title: 'Promotion request approved', body: `Your ${request.placement} promotion was approved — complete payment to go live.`,
       data: { promotionRequestId: id },
@@ -229,7 +229,7 @@ export class PromotionsService {
 
     this.log(request.storeId, 'promotion_request_rejected', `Promotion request rejected: ${reason}`, adminId, 'admin', id);
     this.notificationsService.notify({
-      recipientId: request.sellerId, recipientRole: 'seller',
+      recipientId: request.sellerId, recipientRole: 'seller', storeId: request.storeId,
       type: NOTIFICATION_TYPES.PROMOTION_REJECTED,
       title: 'Promotion request rejected', body: reason,
       data: { promotionRequestId: id },
@@ -307,7 +307,7 @@ export class PromotionsService {
 
     this.log(request.storeId, 'promotion_request_live', 'Promotion went live', request.sellerId, 'seller', request._id.toString());
     this.notificationsService.notify({
-      recipientId: request.sellerId, recipientRole: 'seller',
+      recipientId: request.sellerId, recipientRole: 'seller', storeId: request.storeId,
       type: NOTIFICATION_TYPES.PROMOTION_GOING_LIVE,
       title: 'Your promotion is live', body: `Your ${request.placement} promotion is now showing.`,
       data: { promotionRequestId: request._id },
@@ -325,7 +325,7 @@ export class PromotionsService {
     request.paymentStatus = 'paid';
     await request.save();
     this.notificationsService.notify({
-      recipientId: request.sellerId, recipientRole: 'seller',
+      recipientId: request.sellerId, recipientRole: 'seller', storeId: request.storeId,
       type: NOTIFICATION_TYPES.PROMOTION_PAYMENT_SUCCEEDED,
       title: 'Payment received', body: `Payment of $${request.priceUSD} for your ${request.placement} promotion succeeded.`,
       data: { promotionRequestId: request._id },
@@ -378,7 +378,7 @@ export class PromotionsService {
     request.paymentStatus = 'failed';
     await request.save();
     this.notificationsService.notify({
-      recipientId: request.sellerId, recipientRole: 'seller',
+      recipientId: request.sellerId, recipientRole: 'seller', storeId: request.storeId,
       type: NOTIFICATION_TYPES.PROMOTION_PAYMENT_FAILED,
       title: 'Payment failed', body: `Payment for your ${request.placement} promotion failed. Please try again.`,
       data: { promotionRequestId: requestId },
@@ -454,7 +454,7 @@ export class PromotionsService {
       request.expiringSoonNotifiedAt = now;
       await request.save();
       this.notificationsService.notify({
-        recipientId: request.sellerId, recipientRole: 'seller',
+        recipientId: request.sellerId, recipientRole: 'seller', storeId: request.storeId,
         type: NOTIFICATION_TYPES.PROMOTION_EXPIRING_SOON,
         title: 'Promotion expiring soon', body: `Your ${request.placement} promotion ends within 6 hours.`,
         data: { promotionRequestId: request._id },
@@ -469,7 +469,7 @@ export class PromotionsService {
         await this.bannerModel.findByIdAndUpdate(request.resultingBannerId, { $set: { status: 'expired', isActive: false } });
       }
       this.notificationsService.notify({
-        recipientId: request.sellerId, recipientRole: 'seller',
+        recipientId: request.sellerId, recipientRole: 'seller', storeId: request.storeId,
         type: NOTIFICATION_TYPES.PROMOTION_EXPIRED,
         title: 'Promotion ended', body: `Your ${request.placement} promotion has ended.`,
         data: { promotionRequestId: request._id },

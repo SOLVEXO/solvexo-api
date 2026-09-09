@@ -11,6 +11,19 @@ export type StorePageType = (typeof STORE_PAGE_TYPES)[number];
 export const STORE_PAGE_STATUSES = ['draft', 'published'] as const;
 export type StorePageStatus = (typeof STORE_PAGE_STATUSES)[number];
 
+// A page can optionally be tagged as one of these standard legal/policy
+// roles — same "any custom page can BE the thing" pattern the rest of this
+// schema already uses (a page becomes the home page via `type:'home'`, not a
+// separate hardcoded home-page content system), so a "Privacy Policy" page
+// is just a normal StorePage the seller writes with the real Page Sections
+// editor, tagged so the storefront (footer, checkout) and the seller's Menu
+// editor can identify and auto-surface it as such. At most one page per
+// store may hold a given non-null value — enforced in
+// `StorePagesService#updatePage`, not here (this schema has no DB access to
+// check).
+export const STORE_PAGE_POLICY_TYPES = ['privacy_policy', 'terms_of_service', 'refund_policy', 'shipping_policy'] as const;
+export type StorePagePolicyType = (typeof STORE_PAGE_POLICY_TYPES)[number];
+
 // Brought to parity with the shared `SeoMeta` shape (`Product.seo`/
 // `Category.seo`) — previously just `{metaTitle, metaDesc}`, the only
 // non-symmetric SEO shape in the app. `metaDesc` is kept, additive, as a
@@ -116,6 +129,9 @@ export class StorePage {
   @Prop({ type: Boolean, default: false })
   showInFooter: boolean;
 
+  @Prop({ type: String, enum: STORE_PAGE_POLICY_TYPES, default: null })
+  policyType: StorePagePolicyType | null;
+
   @Prop({ type: Boolean, default: false })
   isDelete: boolean;
 
@@ -127,3 +143,9 @@ export const StorePageSchema = SchemaFactory.createForClass(StorePage);
 
 StorePageSchema.index({ storeId: 1, slug: 1 }, { unique: true, partialFilterExpression: { isDelete: false } });
 StorePageSchema.index({ storeId: 1, type: 1 });
+// Belt-and-suspenders alongside the service-layer check in `updatePage` —
+// at most one non-deleted page per store may hold a given `policyType`.
+StorePageSchema.index(
+  { storeId: 1, policyType: 1 },
+  { unique: true, partialFilterExpression: { isDelete: false, policyType: { $type: 'string' } } },
+);

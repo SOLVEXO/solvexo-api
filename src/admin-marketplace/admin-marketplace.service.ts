@@ -335,6 +335,7 @@ export class AdminMarketplaceService {
     this.notificationsService.notify({
       recipientId: store.sellerId,
       recipientRole: 'seller',
+      storeId: id,
       type: NOTIFICATION_TYPES.VERIFICATION_UNDER_REVIEW,
       title: 'Your verification is under review',
       body: `Our team has started reviewing "${store.name}"'s business verification.`,
@@ -372,6 +373,7 @@ export class AdminMarketplaceService {
     this.notificationsService.notify({
       recipientId: store.sellerId,
       recipientRole: 'seller',
+      storeId: id,
       type: NOTIFICATION_TYPES.STORE_APPROVED,
       title: 'Your store is live!',
       body: `"${store.name}" has been approved and is now visible on the marketplace.`,
@@ -398,6 +400,7 @@ export class AdminMarketplaceService {
     this.notificationsService.notify({
       recipientId: store.sellerId,
       recipientRole: 'seller',
+      storeId: id,
       type: NOTIFICATION_TYPES.STORE_REJECTED,
       title: 'Your store application was rejected',
       body: `"${store.name}" was rejected: ${reason}. You can correct the details and resubmit.`,

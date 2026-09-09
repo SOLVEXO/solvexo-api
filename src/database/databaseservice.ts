@@ -140,6 +140,9 @@ export class DatabaseService {
     @InjectModel(schema.PlatformPlan.name)
     private platformPlanModel: Model<schema.PlatformPlanDocument>,
 
+    @InjectModel(schema.PlatformTrialSettings.name)
+    private platformTrialSettingsModel: Model<schema.PlatformTrialSettingsDocument>,
+
     @InjectModel(schema.SellerPlatformSubscription.name)
     private sellerPlatformSubscriptionModel: Model<schema.SellerPlatformSubscriptionDocument>,
 
@@ -420,6 +423,7 @@ export class DatabaseService {
       subscriptionNotificationPreferenceModel: this.subscriptionNotificationPreferenceModel,
       idempotencyRecordModel: this.idempotencyRecordModel,
       platformPlanModel: this.platformPlanModel,
+      platformTrialSettingsModel: this.platformTrialSettingsModel,
       sellerPlatformSubscriptionModel: this.sellerPlatformSubscriptionModel,
       platformPlanInvoiceModel: this.platformPlanInvoiceModel,
       platformPlanPaymentAttemptModel: this.platformPlanPaymentAttemptModel,

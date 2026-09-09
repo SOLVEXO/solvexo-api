@@ -62,6 +62,7 @@ export { PlatformPlanInvoice, PlatformPlanInvoiceDocument, PlatformPlanInvoiceSc
 export { PlatformPlanPaymentAttempt, PlatformPlanPaymentAttemptDocument, PlatformPlanPaymentAttemptSchema } from '../platform-plans/schemas/platform-plan-payment-attempt.schema';
 export { AiCreditsWallet, AiCreditsWalletDocument, AiCreditsWalletSchema } from '../platform-plans/schemas/ai-credits-wallet.schema';
 export { PlatformAddonPurchase, PlatformAddonPurchaseDocument, PlatformAddonPurchaseSchema } from '../platform-plans/schemas/platform-addon-purchase.schema';
+export { PlatformTrialSettings, PlatformTrialSettingsDocument, PlatformTrialSettingsSchema } from '../platform-plans/schemas/platform-trial-settings.schema';
 export { StoreLocation, StoreLocationDocument, StoreLocationSchema } from '../pos/schemas/store-location.schema';
 export { BookableService, BookableServiceDocument, BookableServiceSchema } from '../bookings/schemas/bookable-service.schema';
 export { ServiceAvailability, ServiceAvailabilityDocument, ServiceAvailabilitySchema } from '../bookings/schemas/service-availability.schema';

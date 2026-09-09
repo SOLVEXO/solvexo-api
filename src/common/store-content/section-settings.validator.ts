@@ -66,7 +66,7 @@ function assertHttpsUrl(value: unknown, field: string): void {
 // category/collection actually belongs to this store before saving — this
 // validator has no DB access and never invents ownership guarantees it can't
 // actually check.
-export const LINK_TYPES = ['home', 'page', 'blog', 'external', 'category', 'collection'] as const;
+export const LINK_TYPES = ['home', 'page', 'blog', 'search', 'external', 'category', 'collection', 'product'] as const;
 
 /** Dynamic Sources — a `paragraph` block can bind to a real metafield
  *  (resolved at render time against whichever product a Product Template's
@@ -97,6 +97,7 @@ function assertLinkTarget(link: unknown, field: string): void {
   if (l.linkType === 'external') assertHttpsUrl(l.url, `${field}.url`);
   if (l.linkType === 'category') required(l.categoryId, `${field}.categoryId`);
   if (l.linkType === 'collection') required(l.collectionId, `${field}.collectionId`);
+  if (l.linkType === 'product') required(l.productId, `${field}.productId`);
 }
 
 // ── Section-level settings ──────────────────────────────────────────────────
@@ -240,6 +241,7 @@ export function validateBlockSettings(blockType: string, settings: Record<string
       if (settings.linkType === 'external') assertHttpsUrl(settings.url, 'url');
       if (settings.linkType === 'category') required(settings.categoryId, 'categoryId');
       if (settings.linkType === 'collection') required(settings.collectionId, 'collectionId');
+      if (settings.linkType === 'product') required(settings.productId, 'productId');
       if (settings.highlight !== undefined && typeof settings.highlight !== 'boolean') {
         throw new BadRequestException('highlight must be a boolean');
       }
@@ -264,6 +266,7 @@ export function validateBlockSettings(blockType: string, settings: Record<string
           if (child?.linkType === 'external') assertHttpsUrl(child?.url, 'children[].url');
           if (child?.linkType === 'category') required(child?.categoryId, 'children[].categoryId');
           if (child?.linkType === 'collection') required(child?.collectionId, 'children[].collectionId');
+          if (child?.linkType === 'product') required(child?.productId, 'children[].productId');
         }
       }
       break;

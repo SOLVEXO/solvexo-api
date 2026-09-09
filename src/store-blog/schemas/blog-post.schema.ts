@@ -40,6 +40,20 @@ export class BlogPost {
   @Prop({ type: String, default: '' })
   excerpt: string;
 
+  // Shopify shows the writer's name on every article — this platform had
+  // nowhere to set or render one at all until now.
+  @Prop({ type: String, default: '' })
+  authorName: string;
+
+  // Search-engine listing fields, same pattern as StorePage's `seo` block —
+  // a post's own on-page `title`/`excerpt` are reused for these when unset,
+  // same fallback the storefront already did before these existed.
+  @Prop({ type: String, default: null })
+  seoTitle: string | null;
+
+  @Prop({ type: String, default: null })
+  seoDescription: string | null;
+
   @Prop({ type: [BlockSchema], default: [] })
   content: Block[];
 

@@ -12,6 +12,7 @@ export class MenuItemChildDto {
   @ApiProperty({ required: false }) @IsOptional() @IsString() url?: string | null;
   @ApiProperty({ required: false }) @IsOptional() @IsString() categoryId?: string | null;
   @ApiProperty({ required: false }) @IsOptional() @IsString() collectionId?: string | null;
+  @ApiProperty({ required: false }) @IsOptional() @IsString() productId?: string | null;
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() highlight?: boolean;
 }
 
@@ -23,6 +24,7 @@ export class MenuItemDto {
   @ApiProperty({ required: false }) @IsOptional() @IsString() url?: string | null;
   @ApiProperty({ required: false }) @IsOptional() @IsString() categoryId?: string | null;
   @ApiProperty({ required: false }) @IsOptional() @IsString() collectionId?: string | null;
+  @ApiProperty({ required: false }) @IsOptional() @IsString() productId?: string | null;
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() highlight?: boolean;
   @ApiProperty({ type: [MenuItemChildDto], required: false })
   @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => MenuItemChildDto)

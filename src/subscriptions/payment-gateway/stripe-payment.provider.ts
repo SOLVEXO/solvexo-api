@@ -84,6 +84,28 @@ export class StripePaymentProvider implements IPaymentGateway {
     return { providerProductId, providerPriceId: price.id };
   }
 
+  async getOrCreateCoupon(params: {
+    planId: string; fullPriceUSD: number; introPriceUSD: number; durationCycles: number;
+    existingCouponId?: string | null;
+  }): Promise<{ providerCouponId: string }> {
+    // Stripe Coupons are immutable, same as Prices — a cached id is always safe to reuse verbatim.
+    if (params.existingCouponId) return { providerCouponId: params.existingCouponId };
+
+    const amountOffCents = Math.round((params.fullPriceUSD - params.introPriceUSD) * 100);
+    const coupon = await this.stripe.coupons.create(
+      {
+        amount_off: amountOffCents,
+        currency: 'usd',
+        duration: 'repeating',
+        duration_in_months: params.durationCycles,
+        metadata: { planId: params.planId, kind: 'platform_plan_intro_offer' },
+      },
+      { idempotencyKey: `coupon_create_${params.planId}_${amountOffCents}_${params.durationCycles}` },
+    );
+
+    return { providerCouponId: coupon.id };
+  }
+
   async createProviderSubscription(
     subscriptionId: string,
     _planName: string,
@@ -112,6 +134,12 @@ export class StripePaymentProvider implements IPaymentGateway {
         // invoice.payment_succeeded/failed webhooks this module already
         // handles — no separate "convert the trial" job needed.
         ...(context.trialEndUnixSeconds ? { trial_end: context.trialEndUnixSeconds } : {}),
+        // Plan intro offer (see getOrCreateCoupon) — a discount on top of the
+        // real Price, not a second Price/Schedule. Stripe reverts to the full
+        // Price automatically once the coupon's `duration_in_months` elapses;
+        // every invoice in between still fires the normal webhook this module
+        // already handles.
+        ...(context.couponId ? { discounts: [{ coupon: context.couponId }] } : {}),
       },
       { idempotencyKey: context.idempotencyKey ?? `sub_create_${subscriptionId}` },
     );

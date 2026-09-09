@@ -74,19 +74,32 @@ export class EntitlementsService {
   private get planModel() { return this.db.repositories.platformPlanModel; }
   private get subModel() { return this.db.repositories.sellerPlatformSubscriptionModel; }
 
+  /**
+   * A trialing store's `platformPlanId` is `null` by design (trial is a
+   * standalone concept — see `PlatformTrialSettings`) — `plan: null` is a
+   * valid, expected result here, NOT "no subscription found." Returning
+   * `null` in that case (as this used to) silently dropped the real
+   * `subscription` object from the caller, which made `applyTrialOverride`
+   * below think the store wasn't trialing at all (it reads
+   * `subscription?.status`) — a real bug, fixed by always returning the
+   * subscription once one exists, regardless of whether a plan is attached.
+   */
   async getActivePlanForStore(storeId: string): Promise<{ subscription: any; plan: any } | null> {
     const subscription = await this.subModel.findOne({ storeId, isDelete: false }).lean();
     if (!subscription) return null;
-    const plan = await this.planModel.findById((subscription as any).platformPlanId).lean();
-    if (!plan) return null;
+    const plan = (subscription as any).platformPlanId
+      ? await this.planModel.findById((subscription as any).platformPlanId).lean()
+      : null;
     return { subscription, plan };
   }
 
   private async resolvePlan(storeId: string): Promise<{ plan: any; subscription: any | null }> {
     const result = await this.getActivePlanForStore(storeId);
     if (result) return result;
-    // No subscription row yet (store predates this feature, or auto-assign
-    // hasn't run) — fall back to whichever plan is marked free, if any.
+    // No subscription row yet AT ALL (store predates this feature, or
+    // auto-assign hasn't run) — fall back to whichever plan is marked free,
+    // if any. Distinct from the trialing-with-no-plan case above, which
+    // already returned above with a real (non-null) `subscription`.
     const plan = await this.planModel.findOne({ isFree: true, status: 'active', isDelete: false }).lean();
     return { plan, subscription: null };
   }
@@ -268,7 +281,10 @@ export class EntitlementsService {
     }
 
     return {
-      currentPlanName: plan?.name ?? 'Starter (default)',
+      // `plan` is legitimately null while trialing (see `getActivePlanForStore`'s
+      // doc comment) — "Trial" there, never a borrowed/fake plan name; the
+      // genuine no-subscription-row-at-all fallback still reads "Starter (default)".
+      currentPlanName: plan?.name ?? (subscription?.status === 'trialing' ? 'Trial' : 'Starter (default)'),
       currentPlanId: plan?._id?.toString?.() ?? null,
       maxProducts: {
         limit: limits.maxProducts, used: productCount,

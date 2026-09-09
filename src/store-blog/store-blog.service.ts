@@ -139,6 +139,7 @@ export class StoreBlogService {
 
     const post = await this.blogPostModel.create({
       storeId, blogId, title: dto.title, slug: dto.slug, excerpt: dto.excerpt ?? '', coverImage: dto.coverImage ?? null,
+      authorName: dto.authorName ?? '', seoTitle: dto.seoTitle ?? null, seoDescription: dto.seoDescription ?? null,
       content: [], status: 'draft',
     });
     return { success: true, message: 'Post created', data: post };
@@ -157,6 +158,9 @@ export class StoreBlogService {
     if (dto.excerpt !== undefined) set.excerpt = dto.excerpt;
     if (dto.coverImage !== undefined) set.coverImage = dto.coverImage;
     if (dto.tags !== undefined) set.tags = dto.tags;
+    if (dto.authorName !== undefined) set.authorName = dto.authorName;
+    if (dto.seoTitle !== undefined) set.seoTitle = dto.seoTitle;
+    if (dto.seoDescription !== undefined) set.seoDescription = dto.seoDescription;
 
     const updated = await this.blogPostModel.findByIdAndUpdate(postId, { $set: set }, { new: true });
     return { success: true, message: 'Post updated', data: updated };
@@ -209,7 +213,7 @@ export class StoreBlogService {
     const [posts, total] = await Promise.all([
       this.blogPostModel.find(filter)
         .sort({ publishedAt: -1 }).skip(skip).limit(limit)
-        .select('title slug coverImage excerpt tags publishedAt').lean(),
+        .select('title slug coverImage excerpt tags publishedAt authorName').lean(),
       this.blogPostModel.countDocuments(filter),
     ]);
     return { success: true, data: { blog: { title: blog.title, slug: blog.slug }, posts, pagination: { page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) } } };

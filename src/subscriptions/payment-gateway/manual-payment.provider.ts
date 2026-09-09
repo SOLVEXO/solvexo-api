@@ -82,4 +82,8 @@ export class ManualPaymentProvider implements IPaymentGateway {
   async getOrCreatePrice(params: { planId: string }): Promise<{ providerProductId: string; providerPriceId: string }> {
     return { providerProductId: `manual_prod_${params.planId}`, providerPriceId: `manual_price_${params.planId}` };
   }
+
+  async getOrCreateCoupon(params: { planId: string }): Promise<{ providerCouponId: string }> {
+    return { providerCouponId: `manual_coupon_${params.planId}` };
+  }
 }

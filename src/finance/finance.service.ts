@@ -515,6 +515,7 @@ export class FinanceService {
         this.notificationsService.notify({
           recipientId: schedule.sellerId,
           recipientRole: 'seller',
+          storeId: schedule.storeId,
           type: NOTIFICATION_TYPES.PAYOUT_AUTO_INITIATED,
           title: 'Payout initiated',
           body: `We've automatically initiated a ${currency} ${amount.toFixed(2)} payout to your ${method.bankName || method.type} account, per your payout schedule.`,
@@ -989,6 +990,7 @@ export class FinanceService {
     this.notificationsService.notify({
       recipientId: payout.sellerId,
       recipientRole: 'seller',
+      storeId: payout.storeId,
       type: NOTIFICATION_TYPES.PAYOUT_COMPLETED,
       title: 'Payout completed',
       body: `Your ${payout.currency || 'USD'} ${payout.amount.toFixed(2)} payout has been sent.`,
@@ -1053,6 +1055,7 @@ export class FinanceService {
     this.notificationsService.notify({
       recipientId: payout.sellerId,
       recipientRole: 'seller',
+      storeId: payout.storeId,
       type: NOTIFICATION_TYPES.PAYOUT_REJECTED,
       title: 'Payout rejected',
       body: `Your ${payout.currency || 'USD'} ${payout.amount.toFixed(2)} payout was rejected (${reason}) — the funds have been returned to your available balance.`,
@@ -1120,6 +1123,7 @@ export class FinanceService {
     this.notificationsService.notify({
       recipientId: payout.sellerId,
       recipientRole: 'seller',
+      storeId: payout.storeId,
       type: NOTIFICATION_TYPES.PAYOUT_RETRIED,
       title: 'Payout re-queued',
       body: `Your ${payout.currency || 'USD'} ${payout.amount.toFixed(2)} payout is being processed again.`,
