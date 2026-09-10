@@ -18,7 +18,13 @@ async validate(payload: any) {
   return {
     userId: payload.sub,
     email: payload.email,
-    role: payload.role || null,         
+    role: payload.role || null,
+    // Carried through so JwtAuthGuard can compare it against the account's
+    // current DB value and reject a token issued before a suspend/deactivate.
+    tokenVersion: payload.tokenVersion ?? 0,
+    // Informational only for now (see User.storeId) — null/undefined for
+    // seller/admin and for a legacy apex-wide buyer account.
+    storeId: payload.storeId ?? null,
   };
 }
 }

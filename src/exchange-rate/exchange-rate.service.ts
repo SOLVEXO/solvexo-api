@@ -1,8 +1,9 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
-import { DatabaseService } from 'src/database/databaseservice';
-import { AdminConfigService } from 'src/admin-config/admin-config.service';
-import { ActivityLogService } from 'src/activity-log/activity-log.service';
-import { FxSnapshot, SUPPORTED_CURRENCIES, SupportedCurrency } from './schemas/exchange-rate.schema';
+import { DatabaseService } from '@/database/databaseservice';
+import { AdminConfigService } from '@/admin-config/admin-config.service';
+import { ActivityLogService } from '@/activity-log/activity-log.service';
+import { isFrankfurterSupported, getCurrencyDecimals } from '@/common/currency-metadata.const';
+import { FxSnapshot } from './schemas/exchange-rate.schema';
 
 interface AuditMeta {
   adminId?: string;
@@ -39,10 +40,15 @@ export class ExchangeRateService {
     return this.databaseService.repositories.exchangeRateModel;
   }
 
-  assertSupportedCurrency(currency: string): asserts currency is SupportedCurrency {
-    if (!SUPPORTED_CURRENCIES.includes(currency as SupportedCurrency)) {
+  /** Throws unless `currency` is on the platform's real, dynamic, admin-
+   *  enabled list (AdminConfigService.getEnabledCurrencies) — never the old
+   *  fixed `SUPPORTED_CURRENCIES` array, which is retired. Async now (a real
+   *  DB-backed check), so every caller must `await` it. */
+  async assertSupportedCurrency(currency: string): Promise<void> {
+    const enabled = await this.adminConfigService.getEnabledCurrencies();
+    if (!enabled.some((c) => c.code === currency)) {
       throw new BadRequestException(
-        `Unsupported currency "${currency}" — must be one of: ${SUPPORTED_CURRENCIES.join(', ')}`,
+        `Unsupported currency "${currency}" — must be one of: ${enabled.map((c) => c.code).join(', ')}`,
       );
     }
   }
@@ -56,8 +62,9 @@ export class ExchangeRateService {
   }
 
   async getAllCurrentRates(): Promise<Record<string, { ratePerUSD: number; effectiveFrom: Date; source: string } | null>> {
+    const enabled = await this.adminConfigService.getEnabledCurrencies();
     const entries = await Promise.all(
-      SUPPORTED_CURRENCIES.map(async (c) => [c, await this.getCurrentRate(c)] as const),
+      enabled.map(async (c) => [c.code, await this.getCurrentRate(c.code)] as const),
     );
     return Object.fromEntries(entries);
   }
@@ -66,7 +73,44 @@ export class ExchangeRateService {
     if (currency === 'USD') {
       return { currency: 'USD', ratePerUSD: 1, effectiveFrom: new Date(), source: 'admin' as const, _id: null };
     }
-    const rate = await this.getCurrentRate(currency);
+    let rate = await this.getCurrentRate(currency);
+    // Self-heals a currency that's enabled but hasn't had its first real
+    // rate fetched yet (auto-enabled currencies start this way — see
+    // AdminConfigService.getEnabledCurrencies's doc comment — and the daily
+    // refresh cron could still be up to 24h away) with ONE live fetch, right
+    // now, instead of making the buyer wait for tomorrow's cron. Frankfurter
+    // (ECB, ~30 major currencies) is tried first; anything it doesn't cover
+    // falls back to ExchangeRate-API's free open endpoint (~168 currencies,
+    // see fetchOpenErApiRate) before giving up — between the two, only a
+    // real currency neither provider prices at all (BZD, as of this
+    // writing) still needs a real admin-set rate first, same as always.
+    if (!rate && isFrankfurterSupported(currency)) {
+      try {
+        const res = await fetch(`https://api.frankfurter.app/latest?from=USD&to=${currency}`);
+        if (res.ok) {
+          const data = (await res.json()) as { rates?: Record<string, number> };
+          const live = data?.rates?.[currency];
+          if (typeof live === 'number' && Number.isFinite(live) && live > 0) {
+            await this.ingestRate(currency, live, 'provider');
+            rate = await this.getCurrentRate(currency);
+          }
+        }
+      } catch {
+        // fall through to the ExchangeRate-API attempt below — a bootstrap
+        // fetch failing here is no worse than the pre-existing behavior.
+      }
+    }
+    if (!rate && !isFrankfurterSupported(currency)) {
+      try {
+        const live = await this.fetchOpenErApiRate(currency);
+        if (live !== null) {
+          await this.ingestRate(currency, live, 'provider');
+          rate = await this.getCurrentRate(currency);
+        }
+      } catch {
+        // fall through to the "no rate available" error below.
+      }
+    }
     if (!rate) {
       throw new BadRequestException(
         `No exchange rate available for ${currency} — cannot convert or checkout in this currency yet`,
@@ -116,10 +160,19 @@ export class ExchangeRateService {
     return this.roundForCurrency(converted, toCurrency);
   }
 
-  /** PKR (and USD, in this codebase's convention) have no meaningful sub-unit for consumer pricing — whole units. USD keeps cents. */
+  /** PKR is a deliberate Solvexo pricing-convention override — ISO-4217
+   *  technically defines it with 2 decimals, but Pakistani retail pricing
+   *  never uses paisas, so this platform has always priced it as whole
+   *  units (kept exactly as-is, not a regression). Every other currency now
+   *  reads its REAL decimals from the ISO-4217 metadata table instead of a
+   *  hardcoded "PKR vs everything else" binary — correct for a real
+   *  zero-decimal currency like JPY the moment it's ever enabled, not just
+   *  today's set. */
   roundForCurrency(amount: number, currency: string): number {
-    if (currency === 'PKR') return Math.round(amount);
-    return Math.round(amount * 100) / 100;
+    const decimals = currency === 'PKR' ? 0 : getCurrencyDecimals(currency);
+    if (decimals === 0) return Math.round(amount);
+    const factor = Math.pow(10, decimals);
+    return Math.round(amount * factor) / factor;
   }
 
   /**
@@ -224,12 +277,17 @@ export class ExchangeRateService {
     source: 'provider' | 'admin',
     meta: AuditMeta = {},
   ) {
-    this.assertSupportedCurrency(currency);
+    await this.assertSupportedCurrency(currency);
     const fxConfig = await this.adminConfigService.getFxConfig();
 
     if (currency !== 'USD') {
-      const min = fxConfig?.sanityBandMinPKR ?? 150;
-      const max = fxConfig?.sanityBandMaxPKR ?? 450;
+      // Per-currency band (see EnabledCurrencyConfig) — a rate outside THIS
+      // currency's own real range, not a single global PKR-shaped band that
+      // would incorrectly reject e.g. a real EUR rate (~0.6-1.3).
+      const enabled = await this.adminConfigService.getEnabledCurrencies();
+      const band = enabled.find((c) => c.code === currency);
+      const min = band?.sanityBandMin ?? 150;
+      const max = band?.sanityBandMax ?? 450;
       if (!(ratePerUSD >= min && ratePerUSD <= max) || !Number.isFinite(ratePerUSD) || ratePerUSD <= 0) {
         await this.activityLogService.log({
           storeId: 'platform',
@@ -312,20 +370,34 @@ export class ExchangeRateService {
   }
 
   /**
-   * Called by SchedulerService's daily cron. Fetches each non-USD supported
-   * currency's rate from a free, keyless FX API (Frankfurter — ECB-sourced)
-   * and runs it through `ingestRate`'s sanity-band/abnormal-jump gate. A
-   * per-currency failure never blocks the others, and never throws out of
-   * this method — the caller (the cron job) must be able to complete the
-   * tick and leave every currency on its last-known-good rate if the
-   * provider is unreachable. NOTE: this sandboxed dev environment has no
-   * outbound internet egress to verify this call actually succeeds against
-   * a live provider — this must be verified in the real deployment
-   * environment before relying on it in production.
+   * Called by SchedulerService's daily cron. Fetches each non-USD enabled
+   * currency's rate from one of two free, keyless FX APIs and runs it
+   * through `ingestRate`'s sanity-band/abnormal-jump gate:
+   *  - Frankfurter (ECB-sourced, ~30 major currencies) is tried first, one
+   *    request per currency — this is the original, already live-verified
+   *    (see api/exchange-rate/current on production) path, left untouched.
+   *  - ExchangeRate-API's free open endpoint (open.er-api.com, no key,
+   *    ~168 currencies incl. PKR) covers every enabled currency Frankfurter
+   *    doesn't, in ONE request for the whole remaining batch (its own docs
+   *    ask callers not to hammer it with one request per currency) — this
+   *    is what actually makes "enable any real ISO currency" a genuinely
+   *    auto-refreshing feature rather than a permanent manual-rate chore.
+   * A per-currency (or per-batch, for the second provider) failure never
+   * blocks the others, and never throws out of this method — the caller
+   * (the cron job) must be able to complete the tick and leave every
+   * currency on its last-known-good rate if a provider is unreachable.
    */
   async refreshFromProvider(): Promise<void> {
-    for (const currency of SUPPORTED_CURRENCIES) {
-      if (currency === 'USD') continue;
+    const enabled = await this.adminConfigService.getEnabledCurrencies();
+
+    const frankfurterCodes: string[] = [];
+    const otherCodes: string[] = [];
+    for (const { code } of enabled) {
+      if (code === 'USD') continue;
+      (isFrankfurterSupported(code) ? frankfurterCodes : otherCodes).push(code);
+    }
+
+    for (const currency of frankfurterCodes) {
       try {
         const res = await fetch(`https://api.frankfurter.app/latest?from=USD&to=${currency}`);
         if (!res.ok) throw new Error(`Provider returned HTTP ${res.status}`);
@@ -336,18 +408,79 @@ export class ExchangeRateService {
         }
         await this.ingestRate(currency, rate, 'provider');
       } catch (err: any) {
-        this.logger.warn(`FX provider refresh failed for ${currency}: ${err?.message} — keeping last-known-good rate`);
+        this.logger.warn(`Frankfurter refresh failed for ${currency}: ${err?.message} — keeping last-known-good rate`);
         await this.activityLogService.log({
           storeId: 'platform',
           category: 'finance',
           action: 'fx_provider_refresh_failed',
-          description: `FX provider refresh failed for ${currency}: ${err?.message}`,
+          description: `Frankfurter refresh failed for ${currency}: ${err?.message}`,
           actorId: 'system',
           actorRole: 'system',
           isSecurityAlert: true,
         });
       }
     }
+
+    if (otherCodes.length === 0) return;
+    try {
+      const res = await fetch('https://open.er-api.com/v6/latest/USD');
+      if (!res.ok) throw new Error(`Provider returned HTTP ${res.status}`);
+      const data = (await res.json()) as { result?: string; rates?: Record<string, number> };
+      if (data?.result !== 'success' || !data.rates) {
+        throw new Error(`Provider returned an unexpected payload: ${JSON.stringify(data).slice(0, 200)}`);
+      }
+      for (const currency of otherCodes) {
+        try {
+          const rate = data.rates[currency];
+          if (typeof rate !== 'number' || !Number.isFinite(rate) || rate <= 0) {
+            throw new Error(`No rate for ${currency} in provider response`);
+          }
+          await this.ingestRate(currency, rate, 'provider');
+        } catch (err: any) {
+          this.logger.warn(`ExchangeRate-API refresh failed for ${currency}: ${err?.message} — keeping last-known-good rate`);
+          await this.activityLogService.log({
+            storeId: 'platform',
+            category: 'finance',
+            action: 'fx_provider_refresh_failed',
+            description: `ExchangeRate-API refresh failed for ${currency}: ${err?.message}`,
+            actorId: 'system',
+            actorRole: 'system',
+            isSecurityAlert: true,
+          });
+        }
+      }
+    } catch (err: any) {
+      // Whole-batch failure (network/provider down) — logged once; every
+      // currency in this batch simply keeps its last-known-good rate,
+      // exactly like a single Frankfurter failure already does above.
+      this.logger.warn(`ExchangeRate-API batch refresh failed: ${err?.message} — keeping last-known-good rates for ${otherCodes.join(', ')}`);
+      await this.activityLogService.log({
+        storeId: 'platform',
+        category: 'finance',
+        action: 'fx_provider_refresh_failed',
+        description: `ExchangeRate-API batch refresh failed: ${err?.message} (affected: ${otherCodes.join(', ')})`,
+        actorId: 'system',
+        actorRole: 'system',
+        isSecurityAlert: true,
+      });
+    }
+  }
+
+  /** Single-currency lookup against ExchangeRate-API's free open endpoint
+   *  (https://open.er-api.com/v6/latest/USD — no key, updated ~daily,
+   *  ~168 currencies). Used by requireCurrentRate's on-demand self-heal;
+   *  refreshFromProvider fetches the same endpoint itself once for its
+   *  whole batch rather than calling this per currency, since the provider's
+   *  own docs ask callers not to send one request per currency. Returns
+   *  null (never throws) on any failure — every caller already treats a
+   *  null/failed self-heal as "fall through to the existing error". */
+  private async fetchOpenErApiRate(currency: string): Promise<number | null> {
+    const res = await fetch('https://open.er-api.com/v6/latest/USD');
+    if (!res.ok) return null;
+    const data = (await res.json()) as { result?: string; rates?: Record<string, number> };
+    if (data?.result !== 'success') return null;
+    const rate = data?.rates?.[currency];
+    return typeof rate === 'number' && Number.isFinite(rate) && rate > 0 ? rate : null;
   }
 
   /**
@@ -373,8 +506,9 @@ export class ExchangeRateService {
   async getStaleness() {
     const fxConfig = await this.adminConfigService.getFxConfig();
     const thresholdHours = fxConfig?.staleRateAlertThresholdHours ?? 48;
+    const enabled = await this.adminConfigService.getEnabledCurrencies();
     const results: Record<string, { hoursOld: number; isStale: boolean } | null> = {};
-    for (const currency of SUPPORTED_CURRENCIES) {
+    for (const { code: currency } of enabled) {
       if (currency === 'USD') { results[currency] = { hoursOld: 0, isStale: false }; continue; }
       const rate = await this.getCurrentRate(currency);
       if (!rate) { results[currency] = null; continue; }

@@ -5,7 +5,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
-import { DatabaseService } from 'src/database/databaseservice';
+import { DatabaseService } from '@/database/databaseservice';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
 
@@ -25,7 +25,28 @@ export class UsersService {
     return user;
   }
 
+  /** Mirrors AdminConfigService.getEnabledCurrencies's *read* (not its
+   *  lazy-seed-on-first-call side effect — by the time a real buyer sets a
+   *  currency preference, checkout has already run at least once on this
+   *  platform and seeded it) so this is validated against the real, dynamic
+   *  Markets list, not the old fixed SUPPORTED_CURRENCIES array (retired —
+   *  see checkout.service.ts's resolveCheckoutCurrency). Reads the
+   *  PlatformConfig document directly rather than injecting
+   *  AdminConfigService: AdminConfigModule already imports AuthModule, and
+   *  UsersModule commonly sits alongside it, so pulling in the whole
+   *  AdminConfigModule here for one field's validation isn't worth the
+   *  extra module coupling. */
+  private async assertValidCurrencyPreference(code?: string): Promise<void> {
+    if (!code) return;
+    const config: any = await this.db.repositories.platformConfigModel.findOne({}).lean();
+    const enabled = ['USD', ...((config?.fxConfig?.enabledCurrencies ?? []).map((c: any) => c.code))];
+    if (!enabled.includes(code)) {
+      throw new BadRequestException(`Unsupported currency "${code}" — must be one of: ${enabled.join(', ')}`);
+    }
+  }
+
   async updateProfile(userId: string, dto: UpdateProfileDto) {
+    await this.assertValidCurrencyPreference(dto.currencyPreference);
     const user = await this.userModel.findById(userId);
     if (!user) throw new NotFoundException('User not found');
 
@@ -36,7 +57,10 @@ export class UsersService {
     user.currencyPreference = dto.currencyPreference ?? user.currencyPreference;
 
     if (dto.email && dto.email !== user.email) {
-      const emailExists = await this.userModel.findOne({ email: dto.email });
+      const emailExists = await this.userModel.findOne({
+        email: dto.email,
+        storeId: user.storeId,
+      });
       if (emailExists) throw new BadRequestException('Email already in use');
       user.email = dto.email;
       user.isVerified = false;
@@ -110,6 +134,7 @@ export class UsersService {
 
     user.isDelete = true;
     user.status = 'deleted';
+    user.tokenVersion = (user.tokenVersion ?? 0) + 1;
     await user.save();
 
     return {
@@ -130,6 +155,7 @@ export class UsersService {
 
     seller.isDelete = true;
     seller.status = 'deleted';
+    seller.tokenVersion = (seller.tokenVersion ?? 0) + 1;
     await seller.save();
 
     await this.db.repositories.storeModel.updateMany(

@@ -2,7 +2,7 @@
 import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
-import { DatabaseService } from 'src/database/databaseservice';
+import { DatabaseService } from '@/database/databaseservice';
 
 @Injectable()
 export class AddressService {
@@ -76,10 +76,10 @@ export class AddressService {
     }
   }
 
-    async updateAddress(addressId: string, body: any) {
+    async updateAddress(userId: string, addressId: string, body: any) {
     try {
-      const updated = await this.databaseService.repositories.addressModel.findByIdAndUpdate(
-        addressId,
+      const updated = await this.databaseService.repositories.addressModel.findOneAndUpdate(
+        { _id: addressId, userId },
         { $set: body },
         { new: true },
       );
@@ -99,10 +99,10 @@ export class AddressService {
     }
   }
 
-  async getAddressById(addressId: string) {
+  async getAddressById(userId: string, addressId: string) {
   try {
 
-    const address = await this.databaseService.repositories.addressModel.findById(addressId);
+    const address = await this.databaseService.repositories.addressModel.findOne({ _id: addressId, userId });
 
     return {
       message: 'Address fetched successfully',
@@ -199,9 +199,10 @@ async getDefaultAddress(userId: string) {
         { $set: { isDefault: false } },
       );
 
-      // set new default
-      const updated = await this.databaseService.repositories.addressModel.findByIdAndUpdate(
-        addressId,
+      // set new default — scoped to this user, or any authenticated caller
+      // could flip another user's address to "default" by guessing an id
+      const updated = await this.databaseService.repositories.addressModel.findOneAndUpdate(
+        { _id: addressId, userId, isDelete: false },
         { isDefault: true },
         { new: true },
       );

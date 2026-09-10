@@ -7,8 +7,13 @@ export type StoreLocationDocument = StoreLocation & Document;
 /**
  * A physical branch/outlet under one Store (e.g. "North Karachi", "Orangi
  * Town", "Five Star"). One Store stays one online marketplace listing;
- * StoreLocation only affects the POS side (registers, employees, sales,
- * reporting) — never products/orders/checkout, which remain store-wide.
+ * StoreLocation was originally POS-only (registers, employees, sales,
+ * reporting) — now ALSO doubles as a real Inventory location once a store
+ * creates 2+ of them: `VariantLocationStock` tracks per-location stock,
+ * and `ProductVariant.stock` becomes the auto-maintained sum across every
+ * location. Still never affects products/orders/checkout directly — those
+ * keep reading the one aggregate `ProductVariant.stock` field regardless
+ * of how many locations exist behind it.
  *
  * Registers/Employees/Sales predating this feature have `locationId: null`
  * and are grouped under an implicit "Unassigned" bucket in reports rather
@@ -23,6 +28,12 @@ export class StoreLocation {
   @Prop({ type: String, default: null }) addressLine1: string | null;
   @Prop({ type: String, default: null }) city: string | null;
   @Prop({ type: String, default: null }) phone: string | null;
+
+  // The location a new variant's existing (pre-multi-location) stock is
+  // assigned to the first time it's ever split by location — exactly one
+  // location per store should carry this at a time (enforced in
+  // StoreLocationService, not at the schema level).
+  @Prop({ default: false }) isDefault: boolean;
 
   @Prop({ type: String, enum: ['active', 'archived'], default: 'active' }) status: string;
   @Prop({ default: false }) isDelete: boolean;

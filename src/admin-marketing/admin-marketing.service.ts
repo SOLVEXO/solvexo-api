@@ -7,6 +7,7 @@ import { UpdateCampaignDto } from './dto/update-campaign.dto';
 import { UpdateCampaignStatusDto } from './dto/update-campaign-status.dto';
 import { CreatePlatformCouponDto } from './dto/create-platform-coupon.dto';
 import { UpdatePlatformCouponDto } from './dto/update-platform-coupon.dto';
+import { generateUniqueSlug } from '../common/slug.util';
 
 interface AuditMeta {
   adminId: string;
@@ -67,9 +68,11 @@ export class AdminMarketingService {
     // Defaults to "appended last" in the rotation, same convention as
     // Banner.order, unless the admin explicitly set a position.
     const currentCount = dto.order == null ? await this.r.campaignModel.countDocuments({ isDelete: false }) : 0;
+    const slug = await generateUniqueSlug(this.r.campaignModel, dto.name);
 
     const campaign = await this.r.campaignModel.create({
       name: dto.name,
+      slug,
       description: dto.description ?? null,
       bannerImage: dto.bannerImage ?? null,
       startDate: new Date(dto.startDate),

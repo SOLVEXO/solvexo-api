@@ -1,7 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { DatabaseService } from 'src/database/databaseservice';
-import { ActivityLogService } from 'src/activity-log/activity-log.service';
+import { DatabaseService } from '@/database/databaseservice';
+import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { UpdatePlatformSeoSettingsDto } from '../dto/update-platform-seo-settings.dto';
 import { UpsertSeoRuleDto } from '../dto/seo-rule.dto';
 

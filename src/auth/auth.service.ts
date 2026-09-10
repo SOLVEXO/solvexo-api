@@ -11,14 +11,15 @@ import { RegisterDto } from './dto/register.dto';
 import { SocialLoginDto } from './dto/social-login.dto';
 import { LoginDto } from './dto/login.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
-import { OtpService } from 'src/otp/otp.service';
-import { DatabaseService } from 'src/database/databaseservice';
+import { CreateAdminDto } from './dto/create-admin.dto';
+import { OtpService } from '@/otp/otp.service';
+import { DatabaseService } from '@/database/databaseservice';
 import { OAuth2Client } from 'google-auth-library';
 import * as appleSignin from 'apple-signin-auth';
 // import axios from 'axios';
 import { stat } from 'fs';
 import { RedisService } from '../redis/redis.service';
-import { ActivityLogService } from 'src/activity-log/activity-log.service';
+import { ActivityLogService } from '@/activity-log/activity-log.service';
 
 @Injectable()
 export class AuthService {
@@ -31,6 +32,44 @@ export class AuthService {
 
     private readonly jwtService: JwtService,
   ) {}
+
+  /** Only the buyer (`User`) collection has a `storeId` dimension — Seller/
+   *  Admin accounts are never store-scoped. Building the same `{email}` (or
+   *  `{email, storeId}`) filter in one place instead of repeating this
+   *  ternary in every method below is what actually makes the same email
+   *  resolve to a genuinely separate account per store (see
+   *  `User.storeId`'s schema comment) — every buyer lookup in this service
+   *  must go through this, not a bare `{email}`. */
+  private emailScope(email: string, role: string, storeId?: string | null): Record<string, unknown> {
+    // Neither the User nor Seller schema normalizes `email` (no `lowercase`/
+    // `trim` schema option, and Mongoose doesn't apply those to query filters
+    // even where it does), and no signup/login path lowercased it either —
+    // so "Jane@Example.com" at signup vs "jane@example.com" typed at login
+    // (or a resend/forgot-password/verify-otp call) missed every one of
+    // these lookups and surfaced as a plain "Invalid email or password" /
+    // "User not found", indistinguishable from a genuine typo. Normalizing
+    // here fixes every caller at once, since every email-based account
+    // lookup in this service goes through emailScope.
+    const normalizedEmail = email?.trim().toLowerCase();
+    return role === 'user' ? { email: normalizedEmail, storeId: storeId ?? null } : { email: normalizedEmail };
+  }
+
+  /** A buyer's storeId is a partition key baked into the account (and later
+   *  the JWT) for its whole lifetime — validate it against a real, active
+   *  Store up front so a typo'd/forged storeId can't silently create (or be
+   *  matched against) an account scoped to a store that doesn't exist. Only
+   *  called where a *new* account would be created; an existing account's
+   *  storeId was already validated when it was created. */
+  private async assertValidStoreId(storeId?: string | null): Promise<void> {
+    if (!storeId) return;
+    const store = await this.databaseService.repositories.storeModel
+      .findOne({ _id: storeId, isDelete: false })
+      .select('_id')
+      .lean();
+    if (!store) {
+      throw new UnauthorizedException('Invalid storeId');
+    }
+  }
 
   /** Deletes the Redis session key for this access token so `JwtAuthGuard` rejects it immediately, instead of waiting out its TTL. */
   async logout(token: string) {
@@ -76,24 +115,38 @@ export class AuthService {
 
   async signup(RegisterDto: RegisterDto) {
     try {
-      const { name, email, password, phone, address, role, profileImage } =
+      const { name, password, phone, address, role, profileImage, storeId } =
         RegisterDto;
+      // Stored normalized so this account is actually reachable by every
+      // later lookup — every one of them (login, resend-otp, verify-otp,
+      // forgot/reset-password) goes through emailScope(), which now
+      // normalizes the same way. Storing the raw, as-typed casing here would
+      // just move the same mismatch from "lookup" to "the one row it can
+      // never match."
+      const email = RegisterDto.email?.trim().toLowerCase();
 
+      // Public registration only ever creates a buyer or seller account —
+      // RegisterDto.role is already restricted to 'user'|'seller' at the
+      // validation layer, and there is deliberately no 'admin' branch here.
+      // Admin accounts are created only via the protected
+      // POST /api/auth/admin/create-admin endpoint (see createAdmin() below).
       let userModel;
 
       if (role === 'user') {
         userModel = this.databaseService.repositories.userModel;
       } else if (role === 'seller') {
         userModel = this.databaseService.repositories.sellerModel;
-      } else if (role === 'admin') {
-        userModel = this.databaseService.repositories.adminModel;
       } else {
         throw new UnauthorizedException('Invalid user type');
       }
 
-      const existingUser = await userModel.findOne({ email });
+      const existingUser = await userModel.findOne(this.emailScope(email, role, storeId));
       if (existingUser) {
         throw new UnauthorizedException('User already exists');
+      }
+
+      if (role === 'user') {
+        await this.assertValidStoreId(storeId);
       }
 
       const otp = Math.floor(100000 + Math.random() * 900000).toString();
@@ -112,19 +165,21 @@ export class AuthService {
         otp,
         otpExpiresAt,
         isVerified: false,
+        // Only the buyer collection has this field — Seller has none, so
+        // this is simply dropped for a seller signup (Mongoose ignores
+        // fields not declared on the schema).
+        ...(role === 'user' ? { storeId: storeId ?? null } : {}),
       });
 
       await user.save();
 
       await this.otpService.sendOtp(email, otp);
-      console.log(otp);
 
       return {
         message: 'OTP sent successfully',
         success: true,
         data: {
           userId: user._id,
-          otp: user.otp,
         },
       };
     } catch (error) {
@@ -134,7 +189,7 @@ export class AuthService {
 
   async login(loginDto: LoginDto, ip?: string, userAgent?: string) {
     try {
-      const { email, password, role } = loginDto;
+      const { email, password, role, storeId } = loginDto;
 
       let userModel;
 
@@ -148,9 +203,23 @@ export class AuthService {
         throw new UnauthorizedException('Invalid user type');
       }
 
-      const existingUser = await userModel.findOne({ email });
+      const existingUser = await userModel.findOne(this.emailScope(email, role, storeId));
       if (!existingUser) {
         throw new UnauthorizedException('Invalid email or password');
+      }
+
+      // Checked BEFORE the password compare — otherwise whether a wrong
+      // password gets 'Invalid email or password' vs an unverified account
+      // getting 'Account not verified' becomes a password oracle: an
+      // attacker who's guessed the right password for an unverified account
+      // would see the message change, confirming the guess without ever
+      // completing a real login. Checking this first means an unverified
+      // account always gets the same response regardless of the password
+      // tried.
+      if (!existingUser.isVerified) {
+        throw new UnauthorizedException(
+          'Account not verified. Please verify OTP first',
+        );
       }
 
       const isPasswordMatch = await bcrypt.compare(
@@ -186,12 +255,6 @@ export class AuthService {
         );
       }
 
-      if (!existingUser.isVerified) {
-        throw new UnauthorizedException(
-          'Account not verified. Please verify OTP first',
-        );
-      }
-
       if (role === 'seller') {
         this.logSellerSecurityEvent(
           existingUser._id.toString(),
@@ -204,10 +267,17 @@ export class AuthService {
         );
       }
 
+      // tokenVersion is embedded so a suspend/deactivate action elsewhere
+      // (which bumps the DB value) invalidates this token on its very next
+      // request — see JwtAuthGuard's comparison against the current DB value.
       const payload = {
         sub: existingUser._id,
         email: existingUser.email,
         role: existingUser.role,
+        tokenVersion: existingUser.tokenVersion ?? 0,
+        // Informational only — read from the resolved account, never from
+        // client input. Buyer-only; undefined for seller/admin.
+        storeId: role === 'user' ? ((existingUser as any).storeId ?? null) : undefined,
       };
 
       const token = this.jwtService.sign(payload);
@@ -288,64 +358,117 @@ export class AuthService {
     }
   }
 
-  /** Social login always creates/looks up a buyer (role: 'user') account — sellers keep using email/password + onboarding. */
+  /** Social login resolves against the buyer (User) or seller (Seller) collection based on dto.role (default 'user') — same role-picks-the-model pattern as login()/signup(). */
   async socialLogin(dto: SocialLoginDto) {
     try {
       const {
         authProvider,
         socialId,
         userName,
-        email,
+        name,
         image,
         fcmToken,
         token,
+        role,
+        storeId,
       } = dto;
+      // Same normalization as emailScope()/signup() — without it, a Google
+      // account emailing as "Jane@Example.com" could silently create a
+      // second row instead of matching an existing password-signup account
+      // stored as "jane@example.com" for the same person.
+      const email = dto.email?.trim().toLowerCase();
 
       await this.verifySocialToken(authProvider, socialId, token);
 
-      const userModel = this.databaseService.repositories.userModel;
-      let user = await userModel.findOne({
-        $or: [{ email }, { providerId: socialId, authProvider }],
+      const targetRole: 'user' | 'seller' = role === 'seller' ? 'seller' : 'user';
+      let accountModel;
+      if (targetRole === 'seller') {
+        accountModel = this.databaseService.repositories.sellerModel;
+      } else {
+        accountModel = this.databaseService.repositories.userModel;
+      }
+
+      // Both branches of this $or must stay scoped by storeId for a buyer —
+      // otherwise a Google sign-in at Store A could resolve into an account
+      // created by password signup at Store B (or the legacy global one)
+      // for the same email, defeating per-store identity separation.
+      const storeScope = targetRole === 'user' ? { storeId: storeId ?? null } : {};
+      let account = await accountModel.findOne({
+        $or: [
+          { email, ...storeScope },
+          { providerId: socialId, authProvider, ...storeScope },
+        ],
       });
 
-      if (!user) {
-        user = new userModel({
-          name: userName,
+      if (!account) {
+        if (targetRole === 'user') {
+          await this.assertValidStoreId(storeId);
+        }
+        account = new accountModel({
+          name: name || userName,
           email,
-          role: 'user',
+          role: targetRole,
           isVerified: true,
           authProvider,
           providerId: socialId,
           profileImage: image || null,
           fcmToken: fcmToken || undefined,
+          ...(targetRole === 'user' ? { storeId: storeId ?? null } : {}),
         });
-        await user.save();
+        await account.save();
       } else {
+        if (account.isDelete || account.status === 'deleted') {
+          throw new UnauthorizedException('This account has been deleted');
+        }
+        if (account.status === 'suspended') {
+          throw new UnauthorizedException(
+            'This account has been suspended. Please contact support.',
+          );
+        }
+
         let changed = false;
-        if (!user.providerId) {
-          user.providerId = socialId;
+        if (!account.providerId) {
+          account.providerId = socialId;
           changed = true;
         }
-        if (!user.authProvider) {
-          user.authProvider = authProvider;
+        if (!account.authProvider) {
+          account.authProvider = authProvider;
           changed = true;
         }
-        if (fcmToken && user.fcmToken !== fcmToken) {
-          user.fcmToken = fcmToken;
+        if (fcmToken && account.fcmToken !== fcmToken) {
+          account.fcmToken = fcmToken;
           changed = true;
         }
-        if (!user.isVerified) {
-          user.isVerified = true;
+        if (!account.isVerified) {
+          account.isVerified = true;
           changed = true;
         }
-        if (changed) await user.save();
+        if (changed) await account.save();
       }
 
-      const payload = { sub: user._id, email: user.email, role: user.role };
+      if (targetRole === 'seller') {
+        this.logSellerSecurityEvent(
+          account._id.toString(),
+          'security',
+          'login_success',
+          `Login via ${authProvider}`,
+          undefined,
+          undefined,
+          false,
+        );
+      }
+
+      const payload = {
+        sub: account._id,
+        email: account.email,
+        role: account.role,
+        tokenVersion: account.tokenVersion ?? 0,
+        storeId: targetRole === 'user' ? ((account as any).storeId ?? null) : undefined,
+      };
       const accessToken = this.jwtService.sign(payload);
       await this.redisService.set(
         accessToken,
-        user._id.toString(),
+        account._id.toString(),
         24 * 60 * 60,
       );
       const refreshToken = this.jwtService.sign(payload, { expiresIn: '7d' });
@@ -355,11 +478,11 @@ export class AuthService {
         success: true,
         data: {
           user: {
-            id: user._id,
-            name: user.name,
-            email: user.email,
-            role: user.role,
-            image: user.profileImage || null,
+            id: account._id,
+            name: account.name,
+            email: account.email,
+            role: account.role,
+            image: account.profileImage || null,
           },
           token: {
             accessToken,
@@ -372,21 +495,22 @@ export class AuthService {
     }
   }
 
-  async resendOtp(email: string, role: string) {
+  async resendOtp(email: string, role: string, storeId?: string) {
     try {
+      // OTP resend only ever applies to a not-yet-verified buyer/seller
+      // registration — admin accounts are always created pre-verified via
+      // createAdmin() below, so there is no legitimate 'admin' case here.
       let userModel;
 
       if (role === 'user') {
         userModel = this.databaseService.repositories.userModel;
       } else if (role === 'seller') {
         userModel = this.databaseService.repositories.sellerModel;
-      } else if (role === 'admin') {
-        userModel = this.databaseService.repositories.adminModel;
       } else {
         throw new UnauthorizedException('Invalid user type');
       }
 
-      const user = await userModel.findOne({ email });
+      const user = await userModel.findOne(this.emailScope(email, role, storeId));
       if (!user) {
         throw new UnauthorizedException('User not found');
       }
@@ -409,7 +533,6 @@ export class AuthService {
         success: true,
         data: {
           userId: user._id,
-          otp: user.otp,
         },
       };
     } catch (error) {
@@ -417,21 +540,24 @@ export class AuthService {
     }
   }
 
-  async verifyOtp(email: string, role: string, otp: string) {
+  async verifyOtp(email: string, role: string, otp: string, storeId?: string) {
     try {
+      // Registration-verification only — activates a not-yet-verified
+      // buyer/seller account. Admin accounts are always created
+      // pre-verified via createAdmin() below, so there is no legitimate
+      // 'admin' case here (closes the other half of the old public
+      // self-registration-as-admin path, alongside RegisterDto's fix).
       let userModel;
 
       if (role === 'user') {
         userModel = this.databaseService.repositories.userModel;
       } else if (role === 'seller') {
         userModel = this.databaseService.repositories.sellerModel;
-      } else if (role === 'admin') {
-        userModel = this.databaseService.repositories.adminModel;
       } else {
         throw new UnauthorizedException('Invalid user type');
       }
 
-      const user = await userModel.findOne({ email });
+      const user = await userModel.findOne(this.emailScope(email, role, storeId));
       if (!user) {
         throw new UnauthorizedException('User not found');
       }
@@ -453,10 +579,27 @@ export class AuthService {
       user.otpExpiresAt = null as any;
       await user.save();
 
-      const payload = { sub: user._id, email: user.email, role: user.role };
-      const token = this.jwtService.sign(payload, { expiresIn: '1h' });
+      const payload = {
+        sub: user._id,
+        email: user.email,
+        role: user.role,
+        tokenVersion: user.tokenVersion ?? 0,
+        storeId: role === 'user' ? ((user as any).storeId ?? null) : undefined,
+      };
+      // Was `expiresIn: '1h'` + a 30-minute Redis TTL — a freshly-verified
+      // account got session-killed after 30 minutes (JwtAuthGuard rejects
+      // once the Redis key expires, regardless of the JWT's own exp claim),
+      // vs. ~24h for the exact same account signing in normally right after
+      // (see login() above, which signs with the module default and sets a
+      // 24h Redis TTL). There's also no silent-refresh safety net for this —
+      // no `/api/auth/refresh` route exists on the backend at all, so the
+      // refreshToken returned below is currently never actually used by
+      // anything. Matching login()'s session length here removes the
+      // shorter, inconsistent session entirely rather than needing a working
+      // refresh flow to paper over it.
+      const token = this.jwtService.sign(payload);
 
-      await this.redisService.set(token, user._id.toString(), 30 * 60);
+      await this.redisService.set(token, user._id.toString(), 24 * 60 * 60);
 
       const refreshToken = this.jwtService.sign(payload, {
         expiresIn: '7d',
@@ -488,7 +631,13 @@ export class AuthService {
     }
   }
 
-  async forgotPassword(email: string, role: string) {
+  // Deliberately still supports role:'admin' here (and in resetPassword
+  // below) — unlike signup/verifyOtp, this never creates an account. It
+  // only emails an OTP to the address already on file for an EXISTING
+  // record, so an attacker gains nothing by requesting it for someone
+  // else's admin email; removing it would just lock real admins out of
+  // self-service password recovery for no security benefit.
+  async forgotPassword(email: string, role: string, storeId?: string) {
     try {
       let userModel;
 
@@ -502,27 +651,29 @@ export class AuthService {
         throw new UnauthorizedException('Invalid user type');
       }
 
-      const user = await userModel.findOne({ email });
-      if (!user) {
-        throw new UnauthorizedException('User not found with this email');
+      const user = await userModel.findOne(this.emailScope(email, role, storeId));
+
+      // Same response whether or not the account exists — an "email not
+      // found" error here would let anyone enumerate which emails are
+      // actually registered on Solvexo. Only genuinely sends an OTP when
+      // there's a real account to send it to; a non-existent email silently
+      // no-ops but still reports success, exactly as a real user's request
+      // would look from the outside.
+      if (user) {
+        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        const otpExpiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
+
+        user.otp = otp;
+        user.otpExpiresAt = otpExpiresAt;
+        await user.save();
+
+        await this.otpService.sendOtp(user.email, otp);
       }
 
-      const otp = Math.floor(100000 + Math.random() * 900000).toString();
-      const otpExpiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
-
-      user.otp = otp;
-      user.otpExpiresAt = otpExpiresAt;
-      await user.save();
-
-      await this.otpService.sendOtp(user.email, otp);
-
       return {
-        message: 'OTP sent successfully to your email for password reset',
+        message: 'If an account exists for this email, a password reset code has been sent.',
         success: true,
-        data: {
-          userId: user._id,
-          otp: user.otp,
-        },
+        data: null,
       };
     } catch (error) {
       throw new UnauthorizedException(
@@ -536,6 +687,7 @@ export class AuthService {
     role: string,
     otp: string,
     newPassword: string,
+    storeId?: string,
   ) {
     try {
       let userModel;
@@ -550,7 +702,7 @@ export class AuthService {
         throw new UnauthorizedException('Invalid user type');
       }
 
-      const user = await userModel.findOne({ email });
+      const user = await userModel.findOne(this.emailScope(email, role, storeId));
       if (!user) {
         throw new UnauthorizedException('User not found');
       }
@@ -580,8 +732,68 @@ export class AuthService {
     }
   }
 
+  /** Read-only check used ONLY by the forgot-password OTP screen, so it can
+   *  reject a wrong/expired code immediately instead of silently carrying it
+   *  forward to the new-password step (which is what happened before this
+   *  existed — resetPassword was the only thing that ever validated the
+   *  code, one whole screen later). Deliberately does NOT touch `user.otp`/
+   *  `otpExpiresAt` — the code must still work when resetPassword is called
+   *  right after this with the same otp, and a correct-but-not-yet-final
+   *  verify here must never burn a code the user hasn't actually used yet. */
+  async verifyResetOtp(email: string, role: string, otp: string, storeId?: string) {
+    try {
+      let userModel;
+
+      if (role === 'user') {
+        userModel = this.databaseService.repositories.userModel;
+      } else if (role === 'seller') {
+        userModel = this.databaseService.repositories.sellerModel;
+      } else if (role === 'admin') {
+        userModel = this.databaseService.repositories.adminModel;
+      } else {
+        throw new UnauthorizedException('Invalid user type');
+      }
+
+      const user = await userModel.findOne(this.emailScope(email, role, storeId));
+      if (!user) {
+        throw new UnauthorizedException('User not found');
+      }
+
+      if (user.otp !== otp) {
+        throw new UnauthorizedException('Invalid OTP');
+      }
+
+      if (!user.otpExpiresAt || new Date() > user.otpExpiresAt) {
+        throw new UnauthorizedException('OTP has expired');
+      }
+
+      return { message: 'OTP verified', success: true };
+    } catch (error) {
+      throw new UnauthorizedException(error.message || 'OTP verification failed');
+    }
+  }
+
+  /** Mirrors AdminConfigService.getEnabledCurrencies's *read* (not its
+   *  lazy-seed-on-first-call side effect — by the time a real buyer sets a
+   *  currency preference, checkout has already run at least once on this
+   *  platform and seeded it) so this is validated against the real, dynamic
+   *  Markets list, not the old fixed SUPPORTED_CURRENCIES array (retired —
+   *  see checkout.service.ts's resolveCheckoutCurrency). Reads the
+   *  PlatformConfig document directly rather than injecting
+   *  AdminConfigService: AdminConfigModule already imports AuthModule (for
+   *  its own guards), so the reverse import here would be circular. */
+  private async assertValidCurrencyPreference(code?: string): Promise<void> {
+    if (!code) return;
+    const config: any = await this.databaseService.repositories.platformConfigModel.findOne({}).lean();
+    const enabled = ['USD', ...((config?.fxConfig?.enabledCurrencies ?? []).map((c: any) => c.code))];
+    if (!enabled.includes(code)) {
+      throw new BadRequestException(`Unsupported currency "${code}" — must be one of: ${enabled.join(', ')}`);
+    }
+  }
+
   async editProfile(userId: string, role: string, dto: UpdateProfileDto) {
     try {
+      await this.assertValidCurrencyPreference(dto.currencyPreference);
       let userModel;
 
       if (role === 'user') {
@@ -649,6 +861,68 @@ export class AuthService {
     } catch (error) {
       throw new UnauthorizedException(
         error.message || 'Failed to fetch profile',
+      );
+    }
+  }
+
+  /** The only way an admin account can be created now that public
+   *  registration is restricted to 'user'|'seller'. Only reachable via
+   *  POST /api/auth/admin/create-admin, which is guarded by
+   *  JwtAuthGuard + Roles('admin') — so only an already-logged-in admin
+   *  can call it. Created pre-verified (no OTP round-trip needed, since
+   *  the caller is already a trusted, authenticated admin). */
+  async createAdmin(dto: CreateAdminDto, actor: { adminId: string; ip?: string; userAgent?: string }) {
+    try {
+      const adminModel = this.databaseService.repositories.adminModel;
+
+      const existing = await adminModel.findOne({ email: dto.email });
+      if (existing) {
+        throw new UnauthorizedException('An admin with this email already exists');
+      }
+
+      const hashedPassword = await bcrypt.hash(dto.password, 10);
+
+      const admin = new adminModel({
+        name: dto.name,
+        email: dto.email,
+        password: hashedPassword,
+        phone: dto.phone,
+        address: dto.address,
+        role: 'admin',
+        isVerified: true,
+        status: 'active',
+      });
+      await admin.save();
+
+      try {
+        await this.activityLogService.log({
+          category: 'security',
+          action: 'admin_account_created',
+          description: `Admin account "${dto.name}" (${dto.email}) created`,
+          actorId: actor.adminId,
+          actorRole: 'admin',
+          targetId: String(admin._id),
+          targetType: 'admin',
+          ip: actor.ip,
+          userAgent: actor.userAgent,
+          isSecurityAlert: true,
+        });
+      } catch {
+        // logging must never break account creation
+      }
+
+      return {
+        message: 'Admin account created successfully',
+        success: true,
+        data: {
+          id: admin._id,
+          name: admin.name,
+          email: admin.email,
+        },
+      };
+    } catch (error) {
+      throw new UnauthorizedException(
+        error.message || 'Failed to create admin account',
       );
     }
   }

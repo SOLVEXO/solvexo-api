@@ -1,8 +1,8 @@
 /* eslint-disable prettier/prettier */
 import { BadRequestException, HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { DatabaseService } from 'src/database/databaseservice';
-import { AiCreditsService } from 'src/platform-plans/ai-credits.service';
+import { DatabaseService } from '@/database/databaseservice';
+import { AiCreditsService } from '@/platform-plans/ai-credits.service';
 import { AiToolType } from './schemas/ai-generation.schema';
 
 /**

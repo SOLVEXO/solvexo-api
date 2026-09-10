@@ -1,7 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Document, Types } from 'mongoose';
-import { User } from 'src/users/schemas/user.schema';
+import { User } from '@/users/schemas/user.schema';
 
 export type AdminDocument = Admin & Document;
 
@@ -52,6 +52,13 @@ export class Admin {
 
     @Prop({default: false })
     isDelete: boolean ;
+
+    // Bumped whenever this account is suspended/deactivated so any
+    // already-issued JWT is invalidated on its next request — see
+    // JwtAuthGuard, which rejects a token whose tokenVersion claim doesn't
+    // match this current DB value.
+    @Prop({ default: 0 })
+    tokenVersion: number;
 }
 
 

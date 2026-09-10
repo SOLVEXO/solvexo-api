@@ -1,6 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsString, IsNotEmpty, IsEnum, IsOptional, MaxLength } from 'class-validator';
+import { IsString, IsNotEmpty, IsEnum, IsOptional, IsBoolean, MaxLength } from 'class-validator';
 
 export class SubscribePlatformPlanDto {
   @ApiProperty({ description: 'PlatformPlan _id to subscribe this store to' })
@@ -10,6 +10,15 @@ export class SubscribePlatformPlanDto {
   @ApiProperty({ enum: ['monthly', 'yearly'], default: 'monthly' })
   @IsEnum(['monthly', 'yearly'])
   billingInterval: 'monthly' | 'yearly';
+
+  // Only meaningful while the store is still `trialing` with time left. Omitted
+  // (default) — commit to this plan but keep the remaining trial: Stripe gets a
+  // real subscription now with `trial_end` set to the trial's own end date, so
+  // nothing is charged until then. `true` — seller explicitly asked to skip the
+  // rest of the trial and be billed right now ("Subscribe Now").
+  @ApiPropertyOptional({ description: 'Skip any remaining trial and bill immediately' })
+  @IsOptional() @IsBoolean()
+  billImmediately?: boolean;
 }
 
 export class ChangePlatformPlanDto {
@@ -20,6 +29,10 @@ export class ChangePlatformPlanDto {
   @ApiProperty({ enum: ['monthly', 'yearly'], default: 'monthly' })
   @IsEnum(['monthly', 'yearly'])
   newBillingInterval: 'monthly' | 'yearly';
+
+  @ApiPropertyOptional({ description: 'Skip any remaining trial and bill immediately' })
+  @IsOptional() @IsBoolean()
+  billImmediately?: boolean;
 }
 
 export class CancelPlatformPlanDto {
@@ -32,4 +45,21 @@ export class BillingPortalDto {
   @ApiProperty({ description: 'Where Stripe should send the seller back to after they leave the billing portal' })
   @IsString() @IsNotEmpty()
   returnUrl: string;
+}
+
+export class ConfirmOnboardingPaymentMethodDto {
+  @ApiProperty({ description: 'The SetupIntent id Stripe.js confirmed client-side during the onboarding Payment step' })
+  @IsString() @IsNotEmpty()
+  setupIntentId: string;
+}
+
+export class SaveOnboardingDraftDto {
+  @ApiProperty({ description: 'Which wizard step the seller is currently on (1-5)' })
+  step: number;
+
+  @ApiProperty({ description: 'Furthest step reached so far — drives which steps are clickable in the header' })
+  maxReached: number;
+
+  @ApiProperty({ description: 'The wizard form fields entered so far (storeName, categoryId, description, sellerType, productTypes, etc.)' })
+  form: Record<string, unknown>;
 }

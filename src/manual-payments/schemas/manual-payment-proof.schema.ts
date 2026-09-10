@@ -16,6 +16,10 @@ export class ManualPaymentProof {
   @Prop({ type: String, required: true }) userId: string;
   @Prop({ type: String, required: true }) checkoutId: string;
   @Prop({ type: [String], default: [] }) orderIds: string[];
+  // Every store touched by this proof's order(s) — lets a single-store app
+  // build filter "my payment proofs" down to just its own store, the same
+  // way orders/reviews/bookings are scoped elsewhere.
+  @Prop({ type: [String], default: [] }) storeIds: string[];
 
   // Snapshot of the amount at submission time — the USD figure is the
   // checkout's own total (source of truth for pricing everywhere else in

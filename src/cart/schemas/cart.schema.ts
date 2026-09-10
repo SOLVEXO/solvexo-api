@@ -48,6 +48,13 @@ export class Cart {
   @Prop({ type: String, required: true })
   userId: string;
 
+  // Scopes a logged-in buyer's cart to the store they're shopping on —
+  // each store's subdomain storefront is its own isolated experience, so
+  // the same buyer has a separate cart per store rather than one flat
+  // cross-store cart (see LoyaltyMember's {storeId,userId} composite).
+  @Prop({ type: String, required: true })
+  storeId: string;
+
   @Prop({ type: [CartItemSchema], default: [] })
   items: CartItem[];
 
@@ -65,3 +72,5 @@ export class Cart {
 }
 
 export const CartSchema = SchemaFactory.createForClass(Cart);
+
+CartSchema.index({ userId: 1, storeId: 1 });

@@ -2,7 +2,7 @@
 import { Processor, WorkerHost, OnWorkerEvent } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
-import { QUEUE_NAMES } from 'src/queues/queue.constants';
+import { QUEUE_NAMES } from '@/queues/queue.constants';
 import { SeoSitemapService } from './services/seo-sitemap.service';
 import { SitemapType } from './schemas/seo-sitemap-cache.schema';
 

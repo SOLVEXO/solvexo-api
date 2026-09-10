@@ -1,7 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { DatabaseService } from 'src/database/databaseservice';
-import { RedisService } from 'src/redis/redis.service';
+import { DatabaseService } from '@/database/databaseservice';
+import { RedisService } from '@/redis/redis.service';
 import { PlatformSeoService } from './platform-seo-settings.service';
 import { SeoSchemaGeneratorService } from './seo-schema-generator.service';
 

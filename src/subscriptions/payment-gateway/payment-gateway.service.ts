@@ -1,6 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import type Stripe from 'stripe';
 import {
   IPaymentGateway, ChargeResult, CreateProviderSubResult, ChargeContext,
   CreateCustomerResult, SetupIntentResult, BillingPortalResult, CheckoutSessionResult, RefundResult,
@@ -56,12 +57,16 @@ export class PaymentGatewayService implements IPaymentGateway, OnModuleInit {
   }
 
   /** Exposes the raw Stripe client for webhook signature verification — undefined for the manual provider. */
-  get stripeClient() {
+  get stripeClient(): InstanceType<typeof Stripe> | undefined {
     return this.provider instanceof StripePaymentProvider ? this.provider.client : undefined;
   }
 
   chargeSubscription(subscriptionId: string, amountUSD: number, context?: ChargeContext): Promise<ChargeResult> {
     return this.provider.chargeSubscription(subscriptionId, amountUSD, context);
+  }
+
+  chargeOneTime(referenceId: string, amountUSD: number, context?: ChargeContext): Promise<ChargeResult> {
+    return this.provider.chargeOneTime(referenceId, amountUSD, context);
   }
 
   createProviderSubscription(
@@ -122,5 +127,12 @@ export class PaymentGatewayService implements IPaymentGateway, OnModuleInit {
     existingProductId?: string | null; existingPriceId?: string | null;
   }): Promise<{ providerProductId: string; providerPriceId: string }> {
     return this.provider.getOrCreatePrice(params);
+  }
+
+  getOrCreateCoupon(params: {
+    planId: string; fullPriceUSD: number; introPriceUSD: number; durationCycles: number;
+    existingCouponId?: string | null;
+  }): Promise<{ providerCouponId: string }> {
+    return this.provider.getOrCreateCoupon(params);
   }
 }

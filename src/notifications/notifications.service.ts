@@ -2,22 +2,34 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
-import { DatabaseService } from 'src/database/databaseservice';
-import { FirebaseAdminService } from 'src/firebase/firebase.config';
-import { EmailService } from 'src/otp/services/email.service';
+import { DatabaseService } from '@/database/databaseservice';
+import { FirebaseAdminService } from '@/firebase/firebase.config';
+import { EmailService } from '@/otp/services/email.service';
+import { WhatsAppSenderService } from '@/integrations/whatsapp-sender.service';
 import { NotificationsGateway } from './notifications.gateway';
-import { QUEUE_NAMES, NOTIFICATION_PUSH_JOB, NOTIFICATION_EMAIL_JOB } from 'src/queues/queue.constants';
+import { QUEUE_NAMES, NOTIFICATION_PUSH_JOB, NOTIFICATION_EMAIL_JOB, NOTIFICATION_WHATSAPP_JOB } from '@/queues/queue.constants';
 import { NOTIFICATION_CATEGORY } from './notification.types';
 
 export interface NotifyParams {
   recipientId: string;
   recipientRole: 'user' | 'seller';
+  /** The store this notification belongs to — omit for an account-wide event with no single store. */
+  storeId?: string;
   type: string;
   title: string;
   body: string;
   data?: Record<string, any>;
   /** Only set this when the event should also send an email — not every in-app notification warrants one. */
   email?: { subject: string; html: string };
+  /**
+   * Only set this for order-lifecycle events a store might want on
+   * WhatsApp too. `storeId` picks which store's connected WhatsApp
+   * integration to send from — silently skipped (not an error) if that
+   * store hasn't connected one, exactly like push/email being gated by the
+   * recipient's own preferences. `templateName` must already be approved in
+   * that store's Meta Business Manager.
+   */
+  whatsapp?: { storeId: string; to: string; templateName: string; languageCode: string; bodyParams?: string[] };
 }
 
 @Injectable()
@@ -29,6 +41,7 @@ export class NotificationsService {
     private readonly gateway: NotificationsGateway,
     private readonly firebaseAdminService: FirebaseAdminService,
     private readonly emailService: EmailService,
+    private readonly whatsAppSenderService: WhatsAppSenderService,
     @InjectQueue(QUEUE_NAMES.NOTIFICATIONS) private readonly queue: Queue,
   ) {}
 
@@ -40,7 +53,7 @@ export class NotificationsService {
    */
   async notify(params: NotifyParams): Promise<void> {
     try {
-      const { recipientId, recipientRole, type, title, body, data, email } = params;
+      const { recipientId, recipientRole, storeId, type, title, body, data, email, whatsapp } = params;
       const prefs = await this.databaseService.repositories.notificationPreferenceModel
         .findOne({ userId: recipientId })
         .lean();
@@ -52,6 +65,7 @@ export class NotificationsService {
       const doc = await this.databaseService.repositories.notificationModel.create({
         recipientId,
         recipientRole,
+        storeId: storeId ?? null,
         type,
         title,
         body,
@@ -79,6 +93,16 @@ export class NotificationsService {
           await this.enqueue(NOTIFICATION_EMAIL_JOB, { to: user.email, subject: email.subject, html: email.html });
         }
       }
+
+      if (whatsapp) {
+        await this.enqueue(NOTIFICATION_WHATSAPP_JOB, {
+          storeId: whatsapp.storeId,
+          to: whatsapp.to,
+          templateName: whatsapp.templateName,
+          languageCode: whatsapp.languageCode,
+          bodyParams: whatsapp.bodyParams,
+        });
+      }
     } catch (err: any) {
       this.logger.error(`notify() failed: ${err?.message}`);
     }
@@ -101,34 +125,38 @@ export class NotificationsService {
         await this.firebaseAdminService.sendToUser(data.userId, { title: data.title, body: data.body, data: data.data });
       } else if (jobName === NOTIFICATION_EMAIL_JOB) {
         await this.emailService.sendMail(data.to, data.subject, data.html);
+      } else if (jobName === NOTIFICATION_WHATSAPP_JOB) {
+        await this.whatsAppSenderService.sendOrderTemplate(data.storeId, data.to, data.templateName, data.languageCode, data.bodyParams);
       }
     }
   }
 
   // ── Inbox REST surface (called by NotificationsController) ────────────────
 
-  async list(userId: string, query: { page?: string; limit?: string; unreadOnly?: string; type?: string }) {
+  async list(userId: string, query: { page?: string; limit?: string; unreadOnly?: string; type?: string; storeId?: string }) {
     const page = Math.max(1, parseInt(query.page as string) || 1);
     const limit = Math.min(100, Math.max(1, parseInt(query.limit as string) || 20));
     const filter: Record<string, any> = { recipientId: userId };
     if (query.unreadOnly === 'true') filter.isRead = false;
     if (query.type) filter.type = query.type;
+    if (query.storeId) filter.storeId = query.storeId;
 
     const model = this.databaseService.repositories.notificationModel;
+    const unreadFilter: Record<string, any> = { recipientId: userId, isRead: false };
+    if (query.storeId) unreadFilter.storeId = query.storeId;
     const [items, total, unreadCount] = await Promise.all([
       model.find(filter).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit).lean(),
       model.countDocuments(filter),
-      model.countDocuments({ recipientId: userId, isRead: false }),
+      model.countDocuments(unreadFilter),
     ]);
 
     return { success: true, data: { items, total, unreadCount, page, limit } };
   }
 
-  async unreadCount(userId: string) {
-    const unreadCount = await this.databaseService.repositories.notificationModel.countDocuments({
-      recipientId: userId,
-      isRead: false,
-    });
+  async unreadCount(userId: string, storeId?: string) {
+    const filter: Record<string, any> = { recipientId: userId, isRead: false };
+    if (storeId) filter.storeId = storeId;
+    const unreadCount = await this.databaseService.repositories.notificationModel.countDocuments(filter);
     return { success: true, data: { unreadCount } };
   }
 
@@ -141,9 +169,11 @@ export class NotificationsService {
     return { success: true, data: doc };
   }
 
-  async markAllRead(userId: string) {
+  async markAllRead(userId: string, storeId?: string) {
+    const filter: Record<string, any> = { recipientId: userId, isRead: false };
+    if (storeId) filter.storeId = storeId;
     await this.databaseService.repositories.notificationModel.updateMany(
-      { recipientId: userId, isRead: false },
+      filter,
       { $set: { isRead: true, readAt: new Date() } },
     );
     return { success: true, message: 'All notifications marked as read' };

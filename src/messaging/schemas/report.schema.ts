@@ -11,7 +11,13 @@ export class Report {
 
   // 'listing' | 'seller' | 'review' added for admin Content Moderation
   // (marketplace-wide flags), on top of the original messaging-abuse types.
-  @Prop({ type: String, enum: ['user', 'message', 'conversation', 'listing', 'seller', 'review'], required: true }) targetType: string;
+  // 'storePage' | 'blogPost' are RESERVED for future storefront-content
+  // moderation (sections/blocks builder, blog) — deliberately NOT wired into
+  // AdminModerationService's MARKETPLACE_TARGET_TYPES/enrich()/remove() yet;
+  // half-wiring a moderation queue that doesn't actually act on these types
+  // would be worse than not having one. Add that wiring as its own change
+  // when there's a real product decision to moderate storefront content.
+  @Prop({ type: String, enum: ['user', 'message', 'conversation', 'listing', 'seller', 'review', 'storePage', 'blogPost'], required: true }) targetType: string;
   @Prop({ type: String, required: true }) targetId: string;
 
   @Prop({ type: String, required: true }) reason: string;

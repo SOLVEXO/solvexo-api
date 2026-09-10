@@ -8,8 +8,6 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { IdempotencyInterceptor } from '../common/idempotency.interceptor';
-import { FeatureFlagGuard } from '../admin-config/guards/feature-flag.guard';
-import { RequireFeature } from '../admin-config/decorators/require-feature.decorator';
 import { AiStudioService } from './ai-studio.service';
 import {
   AcceptGenerationDto, GenerateEmailDto, GenerateImageEnhanceDto, GenerateListingDto,
@@ -33,9 +31,8 @@ import {
  */
 @ApiTags('AI Studio')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, RolesGuard, FeatureFlagGuard)
+@UseGuards(JwtAuthGuard, RolesGuard)
 @Roles('seller')
-@RequireFeature('aiStudio')
 @Controller('api/ai-studio')
 export class AiStudioController {
   constructor(private readonly aiStudio: AiStudioService) {}

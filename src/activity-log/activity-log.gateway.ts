@@ -11,7 +11,7 @@ import {
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 import { JwtService } from '@nestjs/jwt';
-import { DatabaseService } from 'src/database/databaseservice';
+import { DatabaseService } from '@/database/databaseservice';
 
 const WHITELIST = [
   'http://localhost:3000',
@@ -21,6 +21,7 @@ const WHITELIST = [
   'http://127.0.0.1:5173',
   'https://staging.solvexo.store',
   'https://solvexo.store',
+  'https://www.solvexo.store',
   'https://api.edudeen.com',
 ];
 

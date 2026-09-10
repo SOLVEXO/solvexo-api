@@ -118,6 +118,30 @@ export class AdminUsersService {
     const stores = await this.r.storeModel.find({ _id: { $in: storeIds } }, { plan: 1 });
     const planByStoreId = new Map(stores.map((s) => [String(s._id), s.plan]));
 
+    // A buyer (User) account has no storeId of its own — it's one global
+    // identity, not owned by any store — so "which store(s) is this person a
+    // customer of" has to be derived from their real Orders (Order.sellerOrders[].
+    // storeId), not read off a schema field. Only computed for the buyer rows
+    // actually on this page, not the whole collection.
+    const buyerRows = rows.filter((row) => row.roleLabel === 'buyer');
+    const buyerIds = buyerRows.map((row) => String(row._id));
+    const storeNamesByBuyerId = new Map<string, string[]>();
+    if (buyerIds.length) {
+      const grouped = await this.r.orderModel.aggregate([
+        { $match: { userId: { $in: buyerIds } } },
+        { $unwind: '$sellerOrders' },
+        { $group: { _id: { userId: '$userId', storeId: '$sellerOrders.storeId' } } },
+        { $group: { _id: '$_id.userId', storeIds: { $addToSet: '$_id.storeId' } } },
+      ]);
+      const allStoreIds = [...new Set(grouped.flatMap((g: any) => g.storeIds as string[]))];
+      const buyerStores = await this.r.storeModel.find({ _id: { $in: allStoreIds } }, { name: 1 });
+      const nameByStoreId = new Map(buyerStores.map((s: any) => [String(s._id), s.name as string]));
+      for (const g of grouped) {
+        const names = (g.storeIds as string[]).map((id) => nameByStoreId.get(String(id))).filter((n): n is string => !!n);
+        storeNamesByBuyerId.set(String(g._id), names);
+      }
+    }
+
     const items = rows.map((row) => ({
       id: row._id,
       name: row.name,
@@ -126,6 +150,7 @@ export class AdminUsersService {
       plan: row.roleLabel === 'seller' ? planByStoreId.get(row.storeId) ?? 'starter' : 'free',
       status: row.status,
       createdAt: row.createdAt,
+      stores: row.roleLabel === 'buyer' ? storeNamesByBuyerId.get(String(row._id)) ?? [] : undefined,
     }));
 
     return { success: true, data: { items, total, page, limit } };
@@ -146,19 +171,80 @@ export class AdminUsersService {
     return { success: true, data: doc };
   }
 
-  private async setStatus(role: 'buyer' | 'seller', id: string, status: string, meta: AuditMeta, action: string) {
-    const doc = await this.findOrThrow(role, id);
-    const model: any = role === 'buyer' ? this.r.userModel : this.r.sellerModel;
-    await model.findByIdAndUpdate(id, { $set: { status } });
-    this.log(action, `${role} "${doc.name ?? doc.email}" set to ${status}`, meta, id);
-    return { success: true, message: `${role === 'buyer' ? 'Buyer' : 'Seller'} set to ${status}` };
-  }
-
   async suspend(role: 'buyer' | 'seller', id: string, meta: AuditMeta) {
-    return this.setStatus(role, id, 'suspended', meta, `${role}_suspended`);
+    const doc = await this.findOrThrow(role, id);
+
+    if (role === 'buyer') {
+      await this.r.userModel.findByIdAndUpdate(id, {
+        $set: { status: 'suspended' },
+        $inc: { tokenVersion: 1 }, // invalidates any already-issued session on its next request
+      });
+      this.log('buyer_suspended', `Buyer "${doc.name ?? doc.email}" set to suspended`, meta, id);
+      return { success: true, message: 'Buyer set to suspended' };
+    }
+
+    // Seller suspension cascades to every store they own — otherwise their
+    // listings/storefronts stay live and purchasable under a suspended
+    // seller. Only the stores that were actually active at this moment are
+    // recorded, so unsuspend later restores exactly those and never
+    // reactivates a store that was independently suspended beforehand.
+    const activeStores = await this.r.storeModel.find(
+      { sellerId: id, isDelete: false, status: 'active' },
+      { _id: 1 },
+    );
+    const storeIdsToSuspend = activeStores.map((s: any) => String(s._id));
+
+    if (storeIdsToSuspend.length) {
+      await this.r.storeModel.updateMany(
+        { _id: { $in: storeIdsToSuspend } },
+        { $set: { status: 'suspended' } },
+      );
+    }
+
+    await this.r.sellerModel.findByIdAndUpdate(id, {
+      $set: { status: 'suspended', cascadeSuspendedStoreIds: storeIdsToSuspend },
+      $inc: { tokenVersion: 1 },
+    });
+
+    this.log(
+      'seller_suspended',
+      `Seller "${doc.name ?? doc.email}" suspended (${storeIdsToSuspend.length} store(s) suspended with it)`,
+      meta,
+      id,
+    );
+    return { success: true, message: 'Seller set to suspended' };
   }
 
   async unsuspend(role: 'buyer' | 'seller', id: string, meta: AuditMeta) {
-    return this.setStatus(role, id, 'active', meta, `${role}_unsuspended`);
+    const doc = await this.findOrThrow(role, id);
+
+    if (role === 'buyer') {
+      await this.r.userModel.findByIdAndUpdate(id, { $set: { status: 'active' } });
+      this.log('buyer_unsuspended', `Buyer "${doc.name ?? doc.email}" set to active`, meta, id);
+      return { success: true, message: 'Buyer set to active' };
+    }
+
+    const storeIdsToRestore: string[] = (doc as any).cascadeSuspendedStoreIds ?? [];
+    if (storeIdsToRestore.length) {
+      // Extra `status: 'suspended'` filter guards against restoring a store
+      // that got independently suspended (e.g. by moderation) while the
+      // seller-level suspension was in effect.
+      await this.r.storeModel.updateMany(
+        { _id: { $in: storeIdsToRestore }, status: 'suspended' },
+        { $set: { status: 'active' } },
+      );
+    }
+
+    await this.r.sellerModel.findByIdAndUpdate(id, {
+      $set: { status: 'active', cascadeSuspendedStoreIds: [] },
+    });
+
+    this.log(
+      'seller_unsuspended',
+      `Seller "${doc.name ?? doc.email}" unsuspended (${storeIdsToRestore.length} store(s) restored)`,
+      meta,
+      id,
+    );
+    return { success: true, message: 'Seller set to active' };
   }
 }

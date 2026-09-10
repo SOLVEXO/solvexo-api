@@ -1,8 +1,8 @@
 /* eslint-disable prettier/prettier */
 import { Injectable, NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
-import { DatabaseService } from 'src/database/databaseservice';
-import { ActivityLogService } from 'src/activity-log/activity-log.service';
-import { EntitlementsService } from 'src/platform-plans/entitlements.service';
+import { DatabaseService } from '@/database/databaseservice';
+import { ActivityLogService } from '@/activity-log/activity-log.service';
+import { EntitlementsService } from '@/platform-plans/entitlements.service';
 import { CreateStoreLocationDto } from './dto/create-store-location.dto';
 import { UpdateStoreLocationDto } from './dto/update-store-location.dto';
 
@@ -28,9 +28,16 @@ export class StoreLocationService {
     await this.verifyStoreOwnership(storeId, sellerId);
     await this.entitlementsService.assertCanAddLocation(storeId);
 
+    // The very first location a store creates becomes its default — the
+    // one an existing variant's pre-multi-location stock is assigned to
+    // the first time Inventory ever splits it by location (see
+    // InventoryService.getVariantLocations).
+    const existingCount = await this.locationModel.countDocuments({ storeId, isDelete: false });
+
     const location = await this.locationModel.create({
       storeId, sellerId, name: dto.name,
       addressLine1: dto.addressLine1 ?? null, city: dto.city ?? null, phone: dto.phone ?? null,
+      isDefault: existingCount === 0,
       status: 'active',
     });
 

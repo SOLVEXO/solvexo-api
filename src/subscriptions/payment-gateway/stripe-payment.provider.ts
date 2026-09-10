@@ -84,6 +84,28 @@ export class StripePaymentProvider implements IPaymentGateway {
     return { providerProductId, providerPriceId: price.id };
   }
 
+  async getOrCreateCoupon(params: {
+    planId: string; fullPriceUSD: number; introPriceUSD: number; durationCycles: number;
+    existingCouponId?: string | null;
+  }): Promise<{ providerCouponId: string }> {
+    // Stripe Coupons are immutable, same as Prices — a cached id is always safe to reuse verbatim.
+    if (params.existingCouponId) return { providerCouponId: params.existingCouponId };
+
+    const amountOffCents = Math.round((params.fullPriceUSD - params.introPriceUSD) * 100);
+    const coupon = await this.stripe.coupons.create(
+      {
+        amount_off: amountOffCents,
+        currency: 'usd',
+        duration: 'repeating',
+        duration_in_months: params.durationCycles,
+        metadata: { planId: params.planId, kind: 'platform_plan_intro_offer' },
+      },
+      { idempotencyKey: `coupon_create_${params.planId}_${amountOffCents}_${params.durationCycles}` },
+    );
+
+    return { providerCouponId: coupon.id };
+  }
+
   async createProviderSubscription(
     subscriptionId: string,
     _planName: string,
@@ -106,6 +128,18 @@ export class StripePaymentProvider implements IPaymentGateway {
         payment_settings: { save_default_payment_method: 'on_subscription' },
         expand: ['latest_invoice.payment_intent'],
         metadata: { internalSubscriptionId: subscriptionId, ...(context.metadata ?? {}) },
+        // Trial-conversion path (see SellerPlatformSubscriptionsService.changePlan):
+        // Stripe itself withholds any invoice/charge until this timestamp, then
+        // auto-bills the saved payment method and fires the same
+        // invoice.payment_succeeded/failed webhooks this module already
+        // handles — no separate "convert the trial" job needed.
+        ...(context.trialEndUnixSeconds ? { trial_end: context.trialEndUnixSeconds } : {}),
+        // Plan intro offer (see getOrCreateCoupon) — a discount on top of the
+        // real Price, not a second Price/Schedule. Stripe reverts to the full
+        // Price automatically once the coupon's `duration_in_months` elapses;
+        // every invoice in between still fires the normal webhook this module
+        // already handles.
+        ...(context.couponId ? { discounts: [{ coupon: context.couponId }] } : {}),
       },
       { idempotencyKey: context.idempotencyKey ?? `sub_create_${subscriptionId}` },
     );
@@ -165,6 +199,63 @@ export class StripePaymentProvider implements IPaymentGateway {
       return { success: false, providerChargeId: paymentIntent.id, failureReason: `Payment intent ended in status "${paymentIntent.status}"` };
     } catch (err: any) {
       this.logger.warn(`Stripe charge failed for sub=${subscriptionId}: ${err?.message}`);
+      return {
+        success: false, providerChargeId: '',
+        failureReason: err?.message ?? 'Card declined',
+        failureCode: err?.code ?? err?.decline_code ?? undefined,
+      };
+    }
+  }
+
+  /**
+   * One-off off-session charge — same shape as `chargeSubscription` (retrieve
+   * the customer's default payment method, confirm a PaymentIntent
+   * off-session) but with no subscription/price object involved. Used by
+   * BookingsService for appointment payments and package purchases.
+   */
+  async chargeOneTime(referenceId: string, amountUSD: number, context?: ChargeContext): Promise<ChargeResult> {
+    if (!context?.providerCustomerId) {
+      return { success: false, providerChargeId: '', failureReason: 'Missing Stripe customer id for this charge' };
+    }
+
+    try {
+      const customer = await this.stripe.customers.retrieve(context.providerCustomerId) as any;
+      const defaultPaymentMethod = customer?.invoice_settings?.default_payment_method as string | null | undefined;
+      if (!defaultPaymentMethod) {
+        return { success: false, providerChargeId: '', failureReason: 'No default payment method on file', failureCode: 'no_payment_method' };
+      }
+
+      const paymentIntent = await this.stripe.paymentIntents.create(
+        {
+          amount: Math.round(amountUSD * 100),
+          currency: 'usd',
+          customer: context.providerCustomerId,
+          payment_method: defaultPaymentMethod,
+          off_session: true,
+          confirm: true,
+          metadata: { internalReferenceId: referenceId, ...(context.metadata ?? {}) },
+        },
+        { idempotencyKey: context.idempotencyKey ?? `onetime_charge_${referenceId}_${Date.now()}` },
+      );
+
+      if (paymentIntent.status === 'succeeded') {
+        return {
+          success: true,
+          providerChargeId: paymentIntent.id,
+          paymentMethodType: paymentIntent.payment_method_types?.[0] ?? 'card',
+          currency: paymentIntent.currency,
+        };
+      }
+      if (paymentIntent.status === 'requires_action' || paymentIntent.status === 'requires_confirmation') {
+        return {
+          success: false, providerChargeId: paymentIntent.id, requiresAction: true,
+          clientSecret: paymentIntent.client_secret ?? undefined,
+          failureReason: 'Customer authentication (3DS) required',
+        };
+      }
+      return { success: false, providerChargeId: paymentIntent.id, failureReason: `Payment intent ended in status "${paymentIntent.status}"` };
+    } catch (err: any) {
+      this.logger.warn(`Stripe one-time charge failed for ref=${referenceId}: ${err?.message}`);
       return {
         success: false, providerChargeId: '',
         failureReason: err?.message ?? 'Card declined',

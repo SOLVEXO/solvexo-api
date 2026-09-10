@@ -4,12 +4,13 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { DatabaseService } from 'src/database/databaseservice';
-import { FinanceService } from 'src/finance/finance.service';
-import { PaymentService } from 'src/payment/payment.service';
-import { ExchangeRateService } from 'src/exchange-rate/exchange-rate.service';
-import { ActivityLogService } from 'src/activity-log/activity-log.service';
-import { verifyStoreOwnershipOrForbidden } from 'src/common/store-ownership.util';
+import { DatabaseService } from '@/database/databaseservice';
+import { FinanceService } from '@/finance/finance.service';
+import { PaymentService } from '@/payment/payment.service';
+import { ExchangeRateService } from '@/exchange-rate/exchange-rate.service';
+import { ActivityLogService } from '@/activity-log/activity-log.service';
+import { verifyStoreOwnershipOrForbidden } from '@/common/store-ownership.util';
+import { deriveRollupStatus } from '@/orders/order-status.util';
 import { CreateRefundRequestDto } from './dto/refund-request.dto';
 
 @Injectable()
@@ -116,7 +117,28 @@ export class RefundRequestService {
     return { success: true, message: 'Refund request submitted', data: created };
   }
 
-  async listForOrder(orderId: string) {
+  /** Ownership-checked the same way `createRequest` is — a buyer only ever
+   *  sees refund requests on their own order; a seller only ever sees ones
+   *  touching a sellerOrder that's theirs. Without this, any authenticated
+   *  user could read another buyer's refund reason/items by guessing an
+   *  orderId, since `orderId` alone carries no ownership information. */
+  async listForOrder(orderId: string, userId: string, role: 'user' | 'seller' | 'admin') {
+    const order = await this.databaseService.repositories.orderModel.findOne({
+      _id: orderId,
+      isDelete: false,
+    });
+    if (!order) throw new NotFoundException('Order not found');
+
+    if (role === 'user' && order.userId !== userId) {
+      throw new ForbiddenException('This order does not belong to you');
+    }
+    if (role === 'seller') {
+      const ownsASellerOrder = (order.sellerOrders as any[]).some((so) => so.sellerId === userId);
+      if (!ownsASellerOrder) {
+        throw new ForbiddenException('None of this order belongs to your store');
+      }
+    }
+
     const items = await this.model.find({ orderId, isDelete: false }).sort({ createdAt: -1 }).lean();
     return { success: true, data: items };
   }
@@ -259,6 +281,18 @@ export class RefundRequestService {
             item.refundedAmount = item.totalPrice;
           }
         }
+        // Previously this refund never touched `SellerOrder.status`/
+        // `Order.orderStatus` at all — an order could sit at
+        // orderStatus:'completed' forever after a real refund, permanently
+        // out of sync with its own items. See order-status.util.ts — the
+        // same single derivation function every other status-changing path
+        // in orders.service.ts now goes through.
+        liveSellerOrder.status = deriveRollupStatus(
+          (liveSellerOrder.items as any[]).map((i: any) => i.status),
+        );
+        liveOrder.orderStatus = deriveRollupStatus(
+          (liveOrder.sellerOrders as any[]).map((so: any) => so.status),
+        );
         await liveOrder.save();
       }
     }

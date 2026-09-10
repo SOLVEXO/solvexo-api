@@ -1,13 +1,14 @@
 /* eslint-disable prettier/prettier */
-import { Controller, Post, Get, Patch, Body, Req, Param, Query, UseGuards } from '@nestjs/common';
+import { Controller, Post, Get, Patch, Body, Req, Res, Param, Query, UseGuards } from '@nestjs/common';
+import { Throttle, SkipThrottle } from '@nestjs/throttler';
+import type { Response } from 'express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { OptionalJwtAuthGuard } from '../auth/guards/optional-jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { StoreService } from './store.service';
 import { UpdateStoreCustomerDto } from './dto/update-store-customer.dto';
-import { FeatureFlagGuard } from '../admin-config/guards/feature-flag.guard';
-import { RequireFeature } from '../admin-config/decorators/require-feature.decorator';
+import { resolveBuyerStoreScope } from '../common/store-scope.util';
 
 @Controller('api/store')
 export class StoreController {
@@ -33,6 +34,16 @@ export class StoreController {
   @Get('verification/requirements-preview')
   async previewVerificationRequirementsStandalone(@Query() query: { country?: string; businessType?: string }) {
     return this.storeService.previewVerificationRequirementsStandalone(query);
+  }
+
+  // Same "before a store exists" precedent as the route above — used by
+  // Onboarding's currency step to pre-fill (never force) a suggested
+  // currency from the seller's IP-detected country.
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Get('suggest-location')
+  async suggestLocation(@Req() req: any) {
+    return this.storeService.getSuggestedLocation(req.ip);
   }
 
   // seller ke saare stores
@@ -64,9 +75,43 @@ export class StoreController {
 
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('seller')
+  @Post(':storeId/custom-domain/verify')
+  async verifyCustomDomain(@Req() req: any, @Param('storeId') storeId: string) {
+    return this.storeService.verifyCustomDomain(req.user.userId, storeId);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Patch(':storeId/privacy')
+  async updateStorePrivacy(@Req() req: any, @Param('storeId') storeId: string, @Body() body: { privacyMode: 'public' | 'password' | 'coming_soon'; password?: string }) {
+    return this.storeService.updateStorePrivacy(req.user.userId, storeId, body);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Patch(':storeId/robots-txt')
+  async updateStoreRobotsTxt(@Req() req: any, @Param('storeId') storeId: string, @Body() body: { robotsTxtOverride: string | null }) {
+    return this.storeService.updateStoreRobotsTxt(req.user.userId, storeId, body?.robotsTxtOverride ?? null);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
   @Patch(':storeId/white-label')
   async setWhiteLabel(@Req() req: any, @Param('storeId') storeId: string, @Body() body: { enabled: boolean }) {
     return this.storeService.setWhiteLabel(req.user.userId, storeId, !!body.enabled);
+  }
+
+  // Solvexo POS is a single, already-published, PAID Google Play listing —
+  // Google Play collects payment directly from the merchant on install, so
+  // there is nothing to sell or gate on our side. This just hands back the
+  // listing URL (Android only for now) so the dashboard can render a QR/link
+  // to it. No Stripe, no per-store state — store-independent, so it's a
+  // literal segment rather than nested under `:storeId/...`.
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Get('pos-app-info')
+  getPosAppInfo() {
+    return this.storeService.getPosAppInfo();
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -144,9 +189,8 @@ export class StoreController {
 
   // ── Builder APIs ──────────────────────────────────────────────────────────
 
-  @UseGuards(JwtAuthGuard, RolesGuard, FeatureFlagGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('seller')
-  @RequireFeature('storeBuilder')
   @Post('save-builder-config')
   async saveBuilderConfig(@Req() req: any, @Body() body: any) {
     const { userId } = req.user;
@@ -180,14 +224,58 @@ export class StoreController {
     return this.storeService.getPlatformStats();
   }
 
-  @Get('public/testimonials')
-  async getTestimonials(@Query('limit') limit?: string) {
-    return this.storeService.getTestimonials(Math.min(12, parseInt(limit || '6') || 6));
+  // Real, dynamic Markets currency list (AdminConfigService.getEnabledCurrencies)
+  // — public/no-auth since Onboarding's currency step, a buyer's currency
+  // switcher, and a seller's own "Markets" card all need this before/without
+  // necessarily having a seller session.
+  @Get('public/enabled-currencies')
+  async getEnabledCurrencies() {
+    return { success: true, data: await this.storeService.getEnabledCurrencies() };
+  }
+
+  // Registered BEFORE 'public/:slug' — same reasoning as 'resolve-domain'
+  // below. Public/no-auth — a storefront visitor triggering this (on first
+  // landing on a store's subdomain) is usually not logged in yet.
+  @Get('public/:storeId/suggest-location')
+  async suggestLocationForStore(@Req() req: any, @Param('storeId') storeId: string) {
+    return this.storeService.getSuggestedLocationForStore(storeId, req.ip);
+  }
+
+// Registered BEFORE 'public/:slug' — a static path segment must be matched
+  // first, or Nest would swallow 'resolve-domain' as `:slug`.
+  @Get('public/resolve-domain')
+  async resolveStoreByDomain(@Query('host') host: string) {
+    return this.storeService.getPublicStoreByDomain(host);
   }
 
   @Get('public/:slug')
   async getPublicStore(@Param('slug') slug: string) {
     return this.storeService.getPublicStore(slug);
+  }
+
+  // Storefront password-gate submission — a visibility convenience, not an
+  // account-security boundary (see `Store.storePasswordHash`'s schema doc
+  // comment), so this only needs the same lightweight rate limiting every
+  // other unauthenticated write in this codebase uses, not a full lockout
+  // mechanism.
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Post('public/:storeId/verify-password')
+  async verifyStorePassword(@Param('storeId') storeId: string, @Body() body: { password: string }) {
+    return this.storeService.verifyStorePassword(storeId, body?.password ?? '');
+  }
+
+  // Plain text, not the standard `{success, data}` JSON envelope — a
+  // crawler expects a literal robots.txt body. See
+  // `StoreService.getPublicStoreRobotsTxt`'s own doc comment for the
+  // disclosed gap on actually routing `<slug>.solvexo.store/robots.txt`
+  // here (same category as the Custom Domain TLS caveat elsewhere in this
+  // codebase) — this endpoint itself is the complete application-layer half.
+  @SkipThrottle()
+  @Get('public/:storeId/robots.txt')
+  async getPublicStoreRobotsTxt(@Param('storeId') storeId: string, @Res() res: Response) {
+    const body = await this.storeService.getPublicStoreRobotsTxt(storeId);
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.send(body);
   }
 
   @UseGuards(OptionalJwtAuthGuard)
@@ -205,35 +293,6 @@ export class StoreController {
     return this.storeService.getPublicStoreFilters(storeId);
   }
 
-  // ── Follow APIs ───────────────────────────────────────────────────────────
-
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('user')
-  @Post(':storeId/follow')
-  async followStore(@Req() req: any, @Param('storeId') storeId: string) {
-    const { userId } = req.user;
-    return this.storeService.followStore(userId, storeId);
-  }
-
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('user')
-  @Get(':storeId/follow-status')
-  async getFollowStatus(@Req() req: any, @Param('storeId') storeId: string) {
-    const { userId } = req.user;
-    return this.storeService.getFollowStatus(userId, storeId);
-  }
-
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
-  @Get(':storeId/followers')
-  async getStoreFollowers(
-    @Req() req: any,
-    @Param('storeId') storeId: string,
-    @Query() query: any,
-  ) {
-    const { userId } = req.user;
-    return this.storeService.getStoreFollowers(userId, storeId, query);
-  }
 
   // ── Customers (staff-facing) ─────────────────────────────────────────────
 
@@ -256,5 +315,18 @@ export class StoreController {
   ) {
     const { userId } = req.user;
     return this.storeService.updateStoreCustomer(userId, storeId, customerId, dto, req.ip, req.headers['user-agent']);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Patch(':storeId/customers/:customerId/meta')
+  async updateStoreCustomerMeta(
+    @Req() req: any,
+    @Param('storeId') storeId: string,
+    @Param('customerId') customerId: string,
+    @Body() dto: { tags?: string[]; notes?: string },
+  ) {
+    const { userId } = req.user;
+    return this.storeService.updateStoreCustomerMeta(userId, storeId, customerId, dto, req.ip, req.headers['user-agent']);
   }
 }

@@ -14,6 +14,7 @@ import { PromotionPricingService } from './promotion-pricing.service';
 import { validateCreativeDimensions } from '../common/validate-creative-dimensions.util';
 import { verifyStoreOwnershipOrForbidden } from '../common/store-ownership.util';
 import { EntitlementsService } from '../platform-plans/entitlements.service';
+import { ExchangeRateService } from '../exchange-rate/exchange-rate.service';
 import { CreatePromotionRequestDto } from './dto/create-promotion-request.dto';
 import { PromotionPlacement } from '../common/promotion-placements.const';
 import type { PromotionEntityType } from './schemas/promotion-daily-stats.schema';
@@ -35,6 +36,7 @@ export class PromotionsService {
     private readonly pricingService: PromotionPricingService,
     private readonly configService: ConfigService,
     private readonly entitlementsService: EntitlementsService,
+    private readonly exchangeRateService: ExchangeRateService,
   ) {
     const secretKey = this.configService.get<string>('STRIPE_SECRET_KEY')?.trim();
     if (secretKey) this.stripe = new Stripe(secretKey, { apiVersion: '2025-04-30.basil' as any });
@@ -137,7 +139,7 @@ export class PromotionsService {
 
     this.log(storeId, 'promotion_request_submitted', `Promotion request submitted for ${dto.placement}`, sellerId, 'seller', request._id);
     this.notificationsService.notify({
-      recipientId: sellerId, recipientRole: 'seller',
+      recipientId: sellerId, recipientRole: 'seller', storeId,
       type: NOTIFICATION_TYPES.PROMOTION_REQUEST_SUBMITTED,
       title: 'Promotion request submitted', body: `Your ${dto.placement} promotion request is awaiting admin review.`,
       data: { promotionRequestId: request._id },
@@ -204,7 +206,7 @@ export class PromotionsService {
 
     this.log(request.storeId, 'promotion_request_approved', 'Promotion request approved', adminId, 'admin', id);
     this.notificationsService.notify({
-      recipientId: request.sellerId, recipientRole: 'seller',
+      recipientId: request.sellerId, recipientRole: 'seller', storeId: request.storeId,
       type: NOTIFICATION_TYPES.PROMOTION_APPROVED,
       title: 'Promotion request approved', body: `Your ${request.placement} promotion was approved — complete payment to go live.`,
       data: { promotionRequestId: id },
@@ -227,7 +229,7 @@ export class PromotionsService {
 
     this.log(request.storeId, 'promotion_request_rejected', `Promotion request rejected: ${reason}`, adminId, 'admin', id);
     this.notificationsService.notify({
-      recipientId: request.sellerId, recipientRole: 'seller',
+      recipientId: request.sellerId, recipientRole: 'seller', storeId: request.storeId,
       type: NOTIFICATION_TYPES.PROMOTION_REJECTED,
       title: 'Promotion request rejected', body: reason,
       data: { promotionRequestId: id },
@@ -245,13 +247,22 @@ export class PromotionsService {
     if (request.status !== 'approved') throw new BadRequestException('This request has not been approved yet');
     if (request.paymentStatus === 'paid') throw new BadRequestException('This request is already paid');
 
-    const amountCents = Math.round(request.priceUSD * 100);
+    // Charged in the seller's own store currency — Store.baseCurrency, set
+    // once at store creation and immutable afterward (the same real,
+    // per-store "billing currency" concept Shopify's own signup flow uses),
+    // not a hardcoded USD regardless of which store this is. `priceUSD`
+    // itself stays the admin-facing reference price (rate-card, reporting,
+    // display) — only the actual Stripe charge is converted.
+    const store = await this.storeModel.findById(request.storeId).select('baseCurrency').lean();
+    const currency = (store as any)?.baseCurrency ?? 'USD';
+    const chargeAmount = currency === 'USD' ? request.priceUSD : await this.exchangeRateService.convert(request.priceUSD, 'USD', currency);
+    const amountCents = Math.round(chargeAmount * 100);
     const idempotencyKey = `promotion_${id}_${amountCents}`;
 
     const paymentIntent = await this.stripe.paymentIntents.create(
       {
         amount: amountCents,
-        currency: 'usd',
+        currency: currency.toLowerCase(),
         metadata: { promotionRequestId: id, sellerId },
         automatic_payment_methods: { enabled: true, allow_redirects: 'never' },
       },
@@ -261,7 +272,12 @@ export class PromotionsService {
     request.stripePaymentIntentId = paymentIntent.id;
     await request.save();
 
-    return { success: true, data: { clientSecret: paymentIntent.client_secret, amount: request.priceUSD } };
+    // The real, actually-charged amount/currency (converted above) — never
+    // the raw USD reference price, so the frontend's Stripe Elements form
+    // and its displayed total both match what this PaymentIntent really
+    // charges (a mismatch here would be a real, visible bug for any
+    // non-USD store, not just a cosmetic one).
+    return { success: true, data: { clientSecret: paymentIntent.client_secret, amount: chargeAmount, currency } };
   }
 
   private async activatePaidRequest(request: any) {
@@ -291,7 +307,7 @@ export class PromotionsService {
 
     this.log(request.storeId, 'promotion_request_live', 'Promotion went live', request.sellerId, 'seller', request._id.toString());
     this.notificationsService.notify({
-      recipientId: request.sellerId, recipientRole: 'seller',
+      recipientId: request.sellerId, recipientRole: 'seller', storeId: request.storeId,
       type: NOTIFICATION_TYPES.PROMOTION_GOING_LIVE,
       title: 'Your promotion is live', body: `Your ${request.placement} promotion is now showing.`,
       data: { promotionRequestId: request._id },
@@ -309,7 +325,7 @@ export class PromotionsService {
     request.paymentStatus = 'paid';
     await request.save();
     this.notificationsService.notify({
-      recipientId: request.sellerId, recipientRole: 'seller',
+      recipientId: request.sellerId, recipientRole: 'seller', storeId: request.storeId,
       type: NOTIFICATION_TYPES.PROMOTION_PAYMENT_SUCCEEDED,
       title: 'Payment received', body: `Payment of $${request.priceUSD} for your ${request.placement} promotion succeeded.`,
       data: { promotionRequestId: request._id },
@@ -362,7 +378,7 @@ export class PromotionsService {
     request.paymentStatus = 'failed';
     await request.save();
     this.notificationsService.notify({
-      recipientId: request.sellerId, recipientRole: 'seller',
+      recipientId: request.sellerId, recipientRole: 'seller', storeId: request.storeId,
       type: NOTIFICATION_TYPES.PROMOTION_PAYMENT_FAILED,
       title: 'Payment failed', body: `Payment for your ${request.placement} promotion failed. Please try again.`,
       data: { promotionRequestId: requestId },
@@ -438,7 +454,7 @@ export class PromotionsService {
       request.expiringSoonNotifiedAt = now;
       await request.save();
       this.notificationsService.notify({
-        recipientId: request.sellerId, recipientRole: 'seller',
+        recipientId: request.sellerId, recipientRole: 'seller', storeId: request.storeId,
         type: NOTIFICATION_TYPES.PROMOTION_EXPIRING_SOON,
         title: 'Promotion expiring soon', body: `Your ${request.placement} promotion ends within 6 hours.`,
         data: { promotionRequestId: request._id },
@@ -453,7 +469,7 @@ export class PromotionsService {
         await this.bannerModel.findByIdAndUpdate(request.resultingBannerId, { $set: { status: 'expired', isActive: false } });
       }
       this.notificationsService.notify({
-        recipientId: request.sellerId, recipientRole: 'seller',
+        recipientId: request.sellerId, recipientRole: 'seller', storeId: request.storeId,
         type: NOTIFICATION_TYPES.PROMOTION_EXPIRED,
         title: 'Promotion ended', body: `Your ${request.placement} promotion has ended.`,
         data: { promotionRequestId: request._id },
@@ -490,12 +506,43 @@ export class PromotionsService {
     );
   }
 
-  async trackImpression(entityType: PromotionEntityType, entityId: string, device?: 'desktop' | 'mobile' | 'tablet') {
+  /** Confirms `entityId` is a real, existing entity of `entityType` before any
+   *  stat gets incremented — previously any caller could inflate/pollute
+   *  ANY store's impression/click counters (which plausibly drive seller
+   *  billing/ROI reporting) just by POSTing a guessed or copied id, with no
+   *  existence check at all. When a `storeId` is given (this app always has
+   *  one), also confirms the entity actually belongs to that store, closing
+   *  the same cross-store gap this pass fixed everywhere else. `banner`
+   *  (the platform-wide admin banner) has no store dimension, so only
+   *  existence is checked for that type. */
+  private async assertTrackableEntity(entityType: PromotionEntityType, entityId: string, storeId?: string) {
+    const { storeBannerModel, bannerModel, promotionRequestModel } = this.databaseService.repositories;
+    if (entityType === 'store_banner') {
+      const banner = await storeBannerModel.findById(entityId).select('storeId').lean();
+      if (!banner) throw new NotFoundException('Unknown promotion entity');
+      if (storeId && String((banner as any).storeId) !== storeId) {
+        throw new NotFoundException('Unknown promotion entity');
+      }
+    } else if (entityType === 'promotion_request') {
+      const promo = await promotionRequestModel.findById(entityId).select('storeId').lean();
+      if (!promo) throw new NotFoundException('Unknown promotion entity');
+      if (storeId && String((promo as any).storeId) !== storeId) {
+        throw new NotFoundException('Unknown promotion entity');
+      }
+    } else if (entityType === 'banner') {
+      const exists = await bannerModel.exists({ _id: entityId });
+      if (!exists) throw new NotFoundException('Unknown promotion entity');
+    }
+  }
+
+  async trackImpression(entityType: PromotionEntityType, entityId: string, device?: 'desktop' | 'mobile' | 'tablet', storeId?: string) {
+    await this.assertTrackableEntity(entityType, entityId, storeId);
     await this.bumpDailyStats(entityType, entityId, { impressions: 1 }, device);
     return { success: true };
   }
 
-  async trackClick(entityType: PromotionEntityType, entityId: string, device: 'desktop' | 'mobile' | 'tablet' = 'desktop', country?: string, city?: string, buyerId?: string | null) {
+  async trackClick(entityType: PromotionEntityType, entityId: string, device: 'desktop' | 'mobile' | 'tablet' = 'desktop', country?: string, city?: string, buyerId?: string | null, storeId?: string) {
+    await this.assertTrackableEntity(entityType, entityId, storeId);
     await this.bumpDailyStats(entityType, entityId, { clicks: 1 }, device);
     if (country) {
       await this.statsModel.updateOne(

@@ -1,0 +1,272 @@
+/**
+ * Geo-personalized background photo for Register/Login/Onboarding
+ * (`AuthSplitLayout`, shared by every auth screen). A visitor's IP-detected
+ * country (`resolveCountryFromIp`) resolves to one of 10 curated regions.
+ *
+ * SUPERSEDES an earlier 8-region version that only mapped ~106 countries —
+ * entire continents (Oceania, Central Asia) fell straight through to
+ * `'default'`, and roughly 90 real UN member states had no mapping at all.
+ * `COUNTRY_TO_AUTH_REGION` below now maps every one of the 195 UN member
+ * states (plus several commonly-geo-IP'd territories: HK/MO/TW, GL/FO,
+ * PF/NC/GU/AS/CK) to a real region — verified country-by-country against
+ * each region's full membership list, not just the biggest markets. Still
+ * genuinely region-level, not one photo per country: sourcing a real,
+ * verified, distinctly-licensed photo for all ~195 countries individually
+ * isn't something that can be done responsibly (verifying real content/
+ * license per photo) in one pass, and it's not how real large platforms do
+ * this either — a handful of well-chosen regions is the actual industry
+ * norm. `'default'` is now a true fail-safe (an undetectable/private/local
+ * IP), not a stand-in for "a country nobody got around to mapping."
+ *
+ * Every photo is a real, licensed (Unsplash free license) photograph —
+ * each URL was individually resolved from its real `unsplash.com/photos/...`
+ * permalink page (not guessed), and any candidate that turned out to be an
+ * Unsplash+ premium photo (`plus.unsplash.com`) was rejected and replaced
+ * with a free-license alternative.
+ *
+ * Each region has 6 distinct photos, one per `AuthPageContext` — so a
+ * visitor sees a genuinely different (but same-region) photo across
+ * Register/Login/Onboarding/Forgot-Password/OTP/New-Password instead of the
+ * exact same image everywhere. Most contexts are NOT meant to visually
+ * depict "someone registering" vs "someone logging in" (real stock
+ * photography has no such literal distinction) — they're simply different
+ * real, high-quality photos of that region. The one deliberate exception is
+ * `onboarding`: since that screen is specifically "I'm setting up my own
+ * store," its photo is chosen where a genuine region-appropriate candidate
+ * exists (a shopkeeper opening their shutter, a market stall, a storefront
+ * street) rather than an arbitrary landmark/skyline shot — so a seller in
+ * that country's onboarding flow sees something that actually reads as
+ * "starting a business here," not just "here's a nice photo of your region."
+ */
+
+export type AuthVisualRegion =
+  | 'south_asia'
+  | 'middle_east'
+  | 'europe'
+  | 'north_america'
+  | 'east_asia'
+  | 'southeast_asia'
+  | 'africa'
+  | 'latin_america'
+  | 'oceania'
+  | 'central_asia'
+  | 'default';
+
+export type AuthPageContext = 'register' | 'login' | 'onboarding' | 'forgot_password' | 'otp' | 'new_password';
+
+export const AUTH_PAGE_CONTEXTS: AuthPageContext[] = ['register', 'login', 'onboarding', 'forgot_password', 'otp', 'new_password'];
+
+/** ISO-3166 alpha-2 → region. Every one of the 195 UN member states is
+ *  mapped below (verified region-by-region against each region's real
+ *  membership list — see the file header). Anything genuinely not listed
+ *  here (or a null/undetected country) falls through to `'default'`. */
+export const COUNTRY_TO_AUTH_REGION: Record<string, AuthVisualRegion> = {
+  // South Asia (all 8)
+  PK: 'south_asia', IN: 'south_asia', BD: 'south_asia', LK: 'south_asia',
+  NP: 'south_asia', BT: 'south_asia', MV: 'south_asia', AF: 'south_asia',
+
+  // Middle East (incl. the Caucasus — geographically/culturally West Asia,
+  // not large enough on their own to justify a dedicated region+photo set)
+  AE: 'middle_east', SA: 'middle_east', QA: 'middle_east', KW: 'middle_east',
+  BH: 'middle_east', OM: 'middle_east', IQ: 'middle_east', IR: 'middle_east',
+  IL: 'middle_east', JO: 'middle_east', LB: 'middle_east', SY: 'middle_east',
+  YE: 'middle_east', TR: 'middle_east', PS: 'middle_east',
+  GE: 'middle_east', AM: 'middle_east', AZ: 'middle_east',
+
+  // Central Asia (new region — the 5 "-stans", previously entirely unmapped)
+  KZ: 'central_asia', UZ: 'central_asia', TM: 'central_asia',
+  TJ: 'central_asia', KG: 'central_asia',
+
+  // Europe (all 44 UN members + Vatican/micro-states + 2 Danish territories
+  // + Russia, grouped here per the common EMEA-style convention even though
+  // it's transcontinental)
+  GB: 'europe', IE: 'europe', FR: 'europe', DE: 'europe', ES: 'europe',
+  PT: 'europe', IT: 'europe', NL: 'europe', BE: 'europe', LU: 'europe',
+  CH: 'europe', AT: 'europe', SE: 'europe', NO: 'europe', DK: 'europe',
+  FI: 'europe', IS: 'europe', PL: 'europe', CZ: 'europe', SK: 'europe',
+  HU: 'europe', RO: 'europe', BG: 'europe', GR: 'europe', HR: 'europe',
+  SI: 'europe', RS: 'europe', UA: 'europe', BY: 'europe', LT: 'europe',
+  LV: 'europe', EE: 'europe', MT: 'europe', CY: 'europe',
+  AD: 'europe', MC: 'europe', LI: 'europe', SM: 'europe', VA: 'europe',
+  MD: 'europe', ME: 'europe', MK: 'europe', BA: 'europe', AL: 'europe',
+  XK: 'europe', RU: 'europe', GL: 'europe', FO: 'europe',
+
+  // North America
+  US: 'north_america', CA: 'north_america', BM: 'north_america',
+
+  // East Asia (all 5 UN members + 3 territories)
+  CN: 'east_asia', JP: 'east_asia', KR: 'east_asia', KP: 'east_asia',
+  TW: 'east_asia', HK: 'east_asia', MO: 'east_asia', MN: 'east_asia',
+
+  // Southeast Asia (all 11)
+  SG: 'southeast_asia', MY: 'southeast_asia', TH: 'southeast_asia',
+  ID: 'southeast_asia', PH: 'southeast_asia', VN: 'southeast_asia',
+  MM: 'southeast_asia', KH: 'southeast_asia', LA: 'southeast_asia',
+  BN: 'southeast_asia', TL: 'southeast_asia',
+
+  // Africa (all 54 UN members)
+  EG: 'africa', MA: 'africa', DZ: 'africa', TN: 'africa', LY: 'africa',
+  NG: 'africa', KE: 'africa', ZA: 'africa', GH: 'africa', ET: 'africa',
+  TZ: 'africa', UG: 'africa', SN: 'africa', CI: 'africa', CM: 'africa',
+  SD: 'africa', SS: 'africa', BJ: 'africa', BF: 'africa', CV: 'africa',
+  GM: 'africa', GN: 'africa', GW: 'africa', LR: 'africa', ML: 'africa',
+  MR: 'africa', NE: 'africa', SL: 'africa', TG: 'africa', AO: 'africa',
+  CD: 'africa', CG: 'africa', CF: 'africa', GA: 'africa', GQ: 'africa',
+  TD: 'africa', ST: 'africa', BI: 'africa', DJ: 'africa', ER: 'africa',
+  KM: 'africa', MG: 'africa', MW: 'africa', MU: 'africa', MZ: 'africa',
+  RW: 'africa', SC: 'africa', SO: 'africa', ZM: 'africa', ZW: 'africa',
+  BW: 'africa', LS: 'africa', NA: 'africa', SZ: 'africa',
+
+  // Latin America & the Caribbean (all 33 UN members)
+  MX: 'latin_america', BR: 'latin_america', AR: 'latin_america',
+  CO: 'latin_america', CL: 'latin_america', PE: 'latin_america',
+  VE: 'latin_america', EC: 'latin_america', BO: 'latin_america',
+  PY: 'latin_america', UY: 'latin_america', CR: 'latin_america',
+  PA: 'latin_america', DO: 'latin_america', GT: 'latin_america',
+  HN: 'latin_america', SV: 'latin_america', NI: 'latin_america',
+  BZ: 'latin_america', CU: 'latin_america', HT: 'latin_america',
+  JM: 'latin_america', TT: 'latin_america', BS: 'latin_america',
+  BB: 'latin_america', GY: 'latin_america', SR: 'latin_america',
+  AG: 'latin_america', DM: 'latin_america', GD: 'latin_america',
+  KN: 'latin_america', LC: 'latin_america', VC: 'latin_america',
+
+  // Oceania (new region — all 14 UN members + 5 territories, previously
+  // entirely unmapped, including Australia/New Zealand)
+  AU: 'oceania', NZ: 'oceania', FJ: 'oceania', PG: 'oceania', SB: 'oceania',
+  VU: 'oceania', WS: 'oceania', TO: 'oceania', KI: 'oceania', FM: 'oceania',
+  MH: 'oceania', PW: 'oceania', NR: 'oceania', TV: 'oceania',
+  NC: 'oceania', PF: 'oceania', GU: 'oceania', AS: 'oceania', CK: 'oceania',
+};
+
+/** Stable, real Unsplash CDN URLs (no API key needed to keep loading — the
+ *  key was only used once, at curation time, to search/select these). Each
+ *  region has 6 distinct photos, keyed by `AuthPageContext`. */
+export const AUTH_REGION_IMAGE_URL: Record<AuthVisualRegion, Record<AuthPageContext, string>> = {
+  south_asia: {
+    register:   'https://images.unsplash.com/photo-1674502754814-de8b0acb7e22?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    login:      'https://images.unsplash.com/photo-1706043197156-eb4b075b3108?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    // Replaced a generic Lahore mosque-domes shot — onboarding is specifically
+    // "I'm setting up my own store," so a real, bustling local street market
+    // reads as "starting a business here" the way a landmark photo can't.
+    onboarding: 'https://images.unsplash.com/photo-1518541162457-d21f1884e10f?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    forgot_password: 'https://images.unsplash.com/photo-1634628899975-2e681060c681?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    otp:             'https://images.unsplash.com/photo-1690015695305-a5e0218125a8?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    new_password:    'https://images.unsplash.com/photo-1767126624081-f692ed0db144?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+  },
+  middle_east: {
+    register:   'https://images.unsplash.com/photo-1634007626524-f47fa37810a7?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    login:      'https://images.unsplash.com/photo-1543579596-2c11997c7706?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    // Replaced a generic Dubai skyline shot — a real traditional shopfront
+    // (spice/perfume trader, storefront sign and all) reads as "starting a
+    // business here."
+    onboarding: 'https://images.unsplash.com/photo-1784382358915-5238fe2b6a7b?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    forgot_password: 'https://images.unsplash.com/photo-1636924271402-d639875aa2bb?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    otp:             'https://images.unsplash.com/photo-1786877030136-bfd84dcb8e0d?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    new_password:    'https://images.unsplash.com/photo-1759334928681-dc7ad674138e?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+  },
+  europe: {
+    register:   'https://images.unsplash.com/photo-1609971757431-439cf7b4141b?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    login:      'https://images.unsplash.com/photo-1539424675410-513ddd709ebd?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    // Replaced a generic Tower Bridge shot — a real independent shop's own
+    // hand-painted storefront sign reads as "starting a business here."
+    onboarding: 'https://images.unsplash.com/photo-1771101961440-ef89f1008a18?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    forgot_password: 'https://images.unsplash.com/photo-1786033086765-57332fef3583?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    otp:             'https://images.unsplash.com/photo-1778479959964-c2dffdd00749?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    new_password:    'https://images.unsplash.com/photo-1758296265626-b6530f338817?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+  },
+  north_america: {
+    register:   'https://images.unsplash.com/photo-1511881830150-850572962174?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    login:      'https://images.unsplash.com/photo-1541336032412-2048a678540d?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    // Replaced a generic Golden Gate Bridge shot — a real small coffee-shop
+    // counter in service reads as "starting a business here."
+    onboarding: 'https://images.unsplash.com/photo-1508766917616-d22f3f1eea14?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    forgot_password: 'https://images.unsplash.com/photo-1696699651613-b81a429a0fec?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    otp:             'https://images.unsplash.com/photo-1767024213062-ec1b72afc7f0?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    new_password:    'https://images.unsplash.com/photo-1775747259088-11edc25eee58?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+  },
+  east_asia: {
+    register:   'https://images.unsplash.com/photo-1602646993760-7b885ba225af?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    login:      'https://images.unsplash.com/photo-1573455494057-12684d151bf4?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    // Replaced a generic Tokyo alley/lanterns shot — a real Japanese market
+    // stall with its own goods and signage reads as "starting a business
+    // here."
+    onboarding: 'https://images.unsplash.com/photo-1759299983447-0f7e2e63cfeb?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    forgot_password: 'https://images.unsplash.com/photo-1786707237548-d065054f5219?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    otp:             'https://images.unsplash.com/photo-1766933233626-8f784567dfed?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    new_password:    'https://images.unsplash.com/photo-1771804358832-b71b7e4039ef?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+  },
+  southeast_asia: {
+    register:   'https://images.unsplash.com/photo-1628221680019-f28a2716e727?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    login:      'https://images.unsplash.com/photo-1631670796270-72ca29fe0c9b?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    // Replaced a generic Singapore skyline shot — Kuala Lumpur's own Central
+    // Market sign reads as "starting a business here."
+    onboarding: 'https://images.unsplash.com/photo-1741241858269-2917806a33f8?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    forgot_password: 'https://images.unsplash.com/photo-1786299599858-b94752c1ce38?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    otp:             'https://images.unsplash.com/photo-1786299600982-6261333a8b7b?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    new_password:    'https://images.unsplash.com/photo-1785011070032-a15b0fbfbb26?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+  },
+  africa: {
+    register:   'https://images.unsplash.com/photo-1570133435536-7ececf000ef6?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    login:      'https://images.unsplash.com/photo-1529528070131-eda9f3e90919?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    // Replaced a generic camel-and-pyramids shot — a real Marrakech spice/
+    // goods street market reads as "starting a business here."
+    onboarding: 'https://images.unsplash.com/photo-1570135460237-510ca82c6781?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    forgot_password: 'https://images.unsplash.com/photo-1761370980657-22586ea44093?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    otp:             'https://images.unsplash.com/photo-1760727466148-fd5049623510?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    new_password:    'https://images.unsplash.com/photo-1779088469713-e81a78846b4c?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+  },
+  latin_america: {
+    register:   'https://images.unsplash.com/photo-1654086441559-f2e71be7f050?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    login:      'https://images.unsplash.com/photo-1651463378028-60bc2b22ba7b?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    // Replaced a generic Rio-at-night shot — a real Mexican cafe & bakery's
+    // own storefront sign reads as "starting a business here."
+    onboarding: 'https://images.unsplash.com/photo-1564688414647-b2c1ecf243ac?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    forgot_password: 'https://images.unsplash.com/photo-1783513113196-626ac50b7560?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    otp:             'https://images.unsplash.com/photo-1759375242319-b0a3ad1398ed?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    new_password:    'https://images.unsplash.com/photo-1763821530010-89534ec80d19?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+  },
+  oceania: {
+    register:   'https://images.unsplash.com/photo-1624138784614-87fd1b6528f8?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    login:      'https://images.unsplash.com/photo-1506973035872-a4ec16b8e8d9?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    // A real small storefront (a cozy shop interior) — reads as "starting a
+    // business here," not just a generic regional landmark shot.
+    onboarding: 'https://images.unsplash.com/photo-1743720467770-db85e746dc15?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    forgot_password: 'https://images.unsplash.com/photo-1598948485421-33a1655d3c18?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    otp:             'https://images.unsplash.com/photo-1551783841-0271a5f7c868?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    new_password:    'https://images.unsplash.com/photo-1546268060-2592ff93ee24?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+  },
+  central_asia: {
+    register:   'https://images.unsplash.com/photo-1659651117607-d2b397cf100f?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    login:      'https://images.unsplash.com/photo-1728565721798-cf65c7bf1efe?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    // A real shopkeeper opening their shutter to start the day — same
+    // "starting a business here" intent as every other region's onboarding
+    // photo, not an arbitrary landmark shot.
+    onboarding: 'https://images.unsplash.com/photo-1743414254935-4c374bfacb2c?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    forgot_password: 'https://images.unsplash.com/photo-1717486489848-5c79b4d45879?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    otp:             'https://images.unsplash.com/photo-1715540335937-f54bf332585a?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    new_password:    'https://images.unsplash.com/photo-1700222599965-2f0ae5cc323c?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+  },
+  default: {
+    // Was a container-ship/crane photo — genuinely read as "industrial
+    // shipping yard," not "buyers and sellers marketplace" (a real,
+    // confirmed-by-eye critique of Solvexo's own brand fit, not a stock-
+    // photo-quality issue). A warm, colorful street-market scene actually
+    // represents "commerce" the way this brand means it.
+    register:   'https://images.unsplash.com/photo-1759542288517-1160b5adfcf9?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    login:      'https://images.unsplash.com/photo-1631897362327-4842446b5c51?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    onboarding: 'https://images.unsplash.com/photo-1775883374751-d8157965021b?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    forgot_password: 'https://images.unsplash.com/photo-1776941516229-8a922adf0782?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    otp:             'https://images.unsplash.com/photo-1772460759097-ad68b3232a4f?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    new_password:    'https://images.unsplash.com/photo-1775493765876-ffcd2e4e1e87?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+  },
+};
+
+export function resolveAuthVisualRegion(country: string | null): AuthVisualRegion {
+  if (!country) return 'default';
+  return COUNTRY_TO_AUTH_REGION[country] ?? 'default';
+}
+
+export function resolveAuthVisualImageUrl(region: AuthVisualRegion, context: string | undefined): string {
+  const ctx: AuthPageContext = AUTH_PAGE_CONTEXTS.includes(context as AuthPageContext) ? (context as AuthPageContext) : 'register';
+  return AUTH_REGION_IMAGE_URL[region][ctx];
+}

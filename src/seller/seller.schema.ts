@@ -11,7 +11,11 @@ export class Seller {
  @Prop()                 
   name: string;
 
-  @Prop({ required: true, unique: true })
+  // lowercase+trim: defense-in-depth so every write path (not just
+  // signup/socialLogin, which now normalize explicitly too) stores this
+  // consistently — auth.service.ts's emailScope() is what makes every
+  // lookup match it back.
+  @Prop({ required: true, unique: true, lowercase: true, trim: true })
   email: string;
 
   @Prop({ required: false})
@@ -68,6 +72,77 @@ export class Seller {
     // the same person might also have as a buyer of someone else's VIP plan.
     @Prop({ type: String, default: null })
     stripeCustomerId: string | null;
+
+    // Flips true once SellerPlatformSubscriptionsService.confirmOnboardingPaymentMethod
+    // has verified (server-side, against Stripe) that this seller completed the
+    // onboarding wizard's Payment step with a real card on file — StoreService.createStore
+    // uses this to skip the pending/admin-review Leads queue entirely and activate a
+    // self-serve seller's store immediately, Shopify-style (they've already paid/put a
+    // card down, so there's nothing left for an admin to gate).
+    @Prop({ type: Boolean, default: false })
+    hasPlatformPaymentMethod: boolean;
+
+    // Set the first time ANY store this seller owns is ever given a
+    // no-card-required trial (see SellerPlatformSubscriptionsService.
+    // ensureDefaultSubscription) — one 3-day introductory trial per SELLER
+    // account, not per store. A seller who already used it and then creates
+    // an additional store gets that new store locked immediately (real
+    // dashboard/data access, no selling) instead of a second free trial,
+    // closing the "create another store to get another trial" gap. Anchored
+    // to the Seller document itself (not email) since that's the strongest
+    // identity this data model actually has — there's no separate
+    // business/company entity to key off instead. Null for every
+    // grandfathered pre-trial-model seller; never backfilled, since giving
+    // them this field retroactively has no effect (they never enter the
+    // trialing code path at all — see legacyFreeEligible).
+    @Prop({ type: Date, default: null })
+    platformTrialUsedAt: Date | null;
+
+    // Stripe Connect (Express) account for RECEIVING buyer payments directly
+    // — a seller's "own payment gateway", completely separate from
+    // `stripeCustomerId` above (that one is the seller PAYING Solvexo for
+    // their platform plan; this one is Solvexo routing a BUYER's payment
+    // straight to the seller). See StripeConnectService.
+    @Prop({ type: String, default: null })
+    stripeConnectedAccountId: string | null;
+
+    // 'not_connected' until the seller starts onboarding; 'pending' while
+    // Stripe still needs more info/verification; 'active' once both
+    // chargesEnabled and payoutsEnabled are true on the Stripe account.
+    // Synced from Stripe (StripeConnectService.syncAccountStatus), never
+    // set directly from client input.
+    @Prop({ type: String, enum: ['not_connected', 'pending', 'active', 'restricted'], default: 'not_connected' })
+    stripeConnectStatus: 'not_connected' | 'pending' | 'active' | 'restricted';
+
+    @Prop({ type: Boolean, default: false })
+    stripeConnectChargesEnabled: boolean;
+
+    @Prop({ type: Boolean, default: false })
+    stripeConnectPayoutsEnabled: boolean;
+
+    // Bumped whenever this account is suspended/deactivated so any
+    // already-issued JWT is invalidated on its next request — see
+    // JwtAuthGuard, which rejects a token whose tokenVersion claim doesn't
+    // match this current DB value.
+    @Prop({ default: 0 })
+    tokenVersion: number;
+
+    // Snapshot of the store ids this seller's own OWNED stores that were
+    // auto-suspended as a side effect of THIS seller being suspended (see
+    // AdminUsersService.suspend/unsuspend and AdminModerationService.remove).
+    // Only these stores are restored to 'active' on unsuspend — a store that
+    // was already suspended for an unrelated reason before this seller was
+    // suspended is never in this list, so it's correctly left untouched.
+    @Prop({ type: [String], default: [] })
+    cascadeSuspendedStoreIds: string[];
+
+    // In-progress /onboard wizard state (step + form fields), so a page
+    // reload/lost connection/different device resumes exactly where the
+    // seller left off instead of losing everything back to step 1. Cleared
+    // (set back to null) once StoreService.createStore actually creates the
+    // store — there's nothing left to resume once onboarding is done.
+    @Prop({ type: Object, default: null })
+    onboardingDraft: { step: number; maxReached: number; form: Record<string, unknown> } | null;
 }
 
 

@@ -1,7 +1,17 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument } from 'mongoose';
 
-export const SUPPORTED_CURRENCIES = ['PKR', 'USD'] as const;
+// @deprecated — RETIRED, kept only so nothing that still imports this type
+// breaks; do not add new usages. The platform's real, dynamic list of
+// enabled currencies is `AdminConfigService.getEnabledCurrencies()`
+// (`PlatformConfig.fxConfig.enabledCurrencies` + the fixed USD pivot), which
+// an admin can grow past this fixed 8-entry array with zero code change
+// (`AdminConfigService.addCurrency`/`enableAllCurrencies`) — every real call
+// site that used to gate on this array (checkout currency resolution, the
+// buyer profile currencyPreference field, admin finance reporting) has been
+// moved to that dynamic list. See ExchangeRateService.assertSupportedCurrency
+// and checkout.service.ts's resolveCheckoutCurrency for the pattern.
+export const SUPPORTED_CURRENCIES = ['USD', 'PKR', 'GBP', 'EUR', 'AED', 'INR', 'CAD', 'AUD'] as const;
 export type SupportedCurrency = (typeof SUPPORTED_CURRENCIES)[number];
 
 // Embedded on Checkout/Order/PaymentTransaction — one entry per currency

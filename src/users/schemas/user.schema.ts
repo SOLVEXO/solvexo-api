@@ -11,8 +11,21 @@ export class User {
  @Prop()
   name: string;
 
-  @Prop({ required: true, unique: true })
+  // lowercase+trim: defense-in-depth so every write path stores this
+  // consistently — auth.service.ts's emailScope() is what makes every
+  // lookup match it back.
+  @Prop({ required: true, lowercase: true, trim: true })
   email: string;
+
+  // null = a legacy/apex-era global account (works on every store, same as
+  // before this field existed). A non-null value means this account was
+  // created through THAT specific store's own storefront — a genuinely
+  // separate identity from any other account sharing the same email,
+  // exactly like a real Shopify store's own customer accounts. Uniqueness
+  // is enforced on {storeId, email} below, not on email alone, so the same
+  // email can have one row per store plus at most one legacy null row.
+  @Prop({ type: String, default: null })
+  storeId: string | null;
 
   @Prop({ required: false})
   providerId: string;
@@ -70,8 +83,21 @@ export class User {
     // is never silently overridden by IP/locale detection again.
     @Prop({ type: String, default: null })
     currencyPreference: string | null;
+
+    // Bumped whenever this account is suspended/deactivated so any
+    // already-issued JWT is invalidated on its next request — see
+    // JwtAuthGuard, which rejects a token whose tokenVersion claim doesn't
+    // match this current DB value.
+    @Prop({ default: 0 })
+    tokenVersion: number;
 }
 
 
 
 export const UserSchema = SchemaFactory.createForClass(User);
+
+// Replaces the old bare unique index on `email` alone — see migration
+// script `scripts/migrate-user-store-scoped-email.ts`, which must run once
+// against any pre-existing database before this is enforced there (a fresh
+// database gets this correctly via autoIndex with no migration needed).
+UserSchema.index({ storeId: 1, email: 1 }, { unique: true });

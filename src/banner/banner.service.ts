@@ -3,7 +3,7 @@ import { Injectable, BadRequestException, NotFoundException } from '@nestjs/comm
 import { v2 as cloudinary } from 'cloudinary';
 import { CreateBannerDto } from './dto/create-banner.dto';
 import { UpdateBannerDto } from './dto/update-banner.dto';
-import { DatabaseService } from 'src/database/databaseservice';
+import { DatabaseService } from '@/database/databaseservice';
 import { AdminConfigService } from '../admin-config/admin-config.service';
 import { MediaLibraryService } from '../media-library/media-library.service';
 import { validateCreativeDimensions } from '../common/validate-creative-dimensions.util';
@@ -104,7 +104,7 @@ export class BannersService {
     let hosted: { secure_url: string; public_id: string; width?: number };
     try {
       hosted = await cloudinary.uploader.upload(dto.bannerImage, {
-        folder: 'uploads/banners',
+        folder: 'uploads/spotlight',
         resource_type: 'image',
         transformation: [{ width: HERO_MAX_DIMENSION, height: HERO_MAX_DIMENSION, crop: 'limit' }],
       });
@@ -149,7 +149,7 @@ export class BannersService {
     validateCreativeDimensions(file, placement);
 
     const uploaded = await this.mediaLibraryService.uploadAndTrack(file, 'admin', adminId, {
-      folder: 'uploads/banners',
+      folder: 'uploads/spotlight',
       maxDimension: HERO_MAX_DIMENSION,
     });
 

@@ -1,6 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { Injectable, BadRequestException, ForbiddenException } from '@nestjs/common';
-import { DatabaseService } from 'src/database/databaseservice';
+import { DatabaseService } from '@/database/databaseservice';
 
 export interface PlatformPlanLimits {
   maxProducts: number;
@@ -74,25 +74,81 @@ export class EntitlementsService {
   private get planModel() { return this.db.repositories.platformPlanModel; }
   private get subModel() { return this.db.repositories.sellerPlatformSubscriptionModel; }
 
+  /**
+   * A trialing store's `platformPlanId` is `null` by design (trial is a
+   * standalone concept — see `PlatformTrialSettings`) — `plan: null` is a
+   * valid, expected result here, NOT "no subscription found." Returning
+   * `null` in that case (as this used to) silently dropped the real
+   * `subscription` object from the caller, which made `applyTrialOverride`
+   * below think the store wasn't trialing at all (it reads
+   * `subscription?.status`) — a real bug, fixed by always returning the
+   * subscription once one exists, regardless of whether a plan is attached.
+   */
   async getActivePlanForStore(storeId: string): Promise<{ subscription: any; plan: any } | null> {
     const subscription = await this.subModel.findOne({ storeId, isDelete: false }).lean();
     if (!subscription) return null;
-    const plan = await this.planModel.findById((subscription as any).platformPlanId).lean();
-    if (!plan) return null;
+    const plan = (subscription as any).platformPlanId
+      ? await this.planModel.findById((subscription as any).platformPlanId).lean()
+      : null;
     return { subscription, plan };
   }
 
-  private async resolvePlan(storeId: string): Promise<any | null> {
+  private async resolvePlan(storeId: string): Promise<{ plan: any; subscription: any | null }> {
     const result = await this.getActivePlanForStore(storeId);
-    if (result) return result.plan;
-    // No subscription row yet (store predates this feature, or auto-assign
-    // hasn't run) — fall back to whichever plan is marked free, if any.
-    return this.planModel.findOne({ isFree: true, status: 'active', isDelete: false }).lean();
+    if (result) return result;
+    // No subscription row yet AT ALL (store predates this feature, or
+    // auto-assign hasn't run) — fall back to whichever plan is marked free,
+    // if any. Distinct from the trialing-with-no-plan case above, which
+    // already returned above with a real (non-null) `subscription`.
+    const plan = await this.planModel.findOne({ isFree: true, status: 'active', isDelete: false }).lean();
+    return { plan, subscription: null };
+  }
+
+  /**
+   * A `trialing` store gets full/open access to every product/staff/
+   * location/banner/promotion cap and every boolean feature — same
+   * philosophy as Shopify's own trial (no plan needs to be chosen to use
+   * the store-building features, only to keep selling once the trial
+   * ends). Deliberately does NOT touch `transactionFeeRate` or
+   * `aiCreditsPerMonth`: those aren't restrictions being tested, they're
+   * real revenue/cost mechanics that must stay exactly what the assigned
+   * plan defines whether trialing or not — a trial sale still owes Solvexo
+   * its real commission, and `aiCreditsPerMonth` also isn't a `-1`-aware
+   * field (`AiCreditsService.deduct` treats a negative balance as
+   * "insufficient", not "unlimited"), so overriding it here would silently
+   * break AI credits instead of opening them up.
+   */
+  private applyTrialOverride(limits: PlatformPlanLimits, subscription: any | null): PlatformPlanLimits {
+    if (subscription?.status !== 'trialing') return limits;
+    return {
+      ...limits,
+      maxProducts: -1,
+      maxStaffAccounts: -1,
+      maxPosLocations: -1,
+      maxActiveStoreBanners: -1,
+      maxActivePromotions: -1,
+      customDomainAllowed: true,
+      whiteLabelAllowed: true,
+      loyaltyProgramAllowed: true,
+      subscriptionProductsAllowed: true,
+      advancedAnalyticsAllowed: true,
+      abandonedCartRecoveryAllowed: true,
+      emailCampaignsAllowed: true,
+      apiWebhooksAllowed: true,
+      advancedSeoToolsAllowed: true,
+      seoAiSuggestionsAllowed: true,
+      searchConsoleIntegrationAllowed: true,
+      customRedirectsAllowed: true,
+      dedicatedAccountManager: true,
+      prioritySupport: true,
+      marketplaceFeaturedBadge: true,
+    };
   }
 
   async getLimits(storeId: string): Promise<PlatformPlanLimits> {
-    const plan = await this.resolvePlan(storeId);
-    return (plan?.limits as PlatformPlanLimits) ?? FALLBACK_LIMITS;
+    const { plan, subscription } = await this.resolvePlan(storeId);
+    const base = (plan?.limits as PlatformPlanLimits) ?? FALLBACK_LIMITS;
+    return this.applyTrialOverride(base, subscription);
   }
 
   async getTransactionFeeRate(storeId: string): Promise<number> {
@@ -201,8 +257,8 @@ export class EntitlementsService {
    * frontend business logic needed.
    */
   async getEntitlementsSummary(storeId: string) {
-    const plan = await this.resolvePlan(storeId);
-    const limits: PlatformPlanLimits = plan?.limits ?? FALLBACK_LIMITS;
+    const { plan, subscription } = await this.resolvePlan(storeId);
+    const limits: PlatformPlanLimits = this.applyTrialOverride((plan?.limits as PlatformPlanLimits) ?? FALLBACK_LIMITS, subscription);
 
     const [productCount, staffCount, posLocationCount, aiWallet, allActivePlans] = await Promise.all([
       this.db.repositories.productModel.countDocuments({ storeId, isDelete: false }),
@@ -225,7 +281,10 @@ export class EntitlementsService {
     }
 
     return {
-      currentPlanName: plan?.name ?? 'Starter (default)',
+      // `plan` is legitimately null while trialing (see `getActivePlanForStore`'s
+      // doc comment) — "Trial" there, never a borrowed/fake plan name; the
+      // genuine no-subscription-row-at-all fallback still reads "Starter (default)".
+      currentPlanName: plan?.name ?? (subscription?.status === 'trialing' ? 'Trial' : 'Starter (default)'),
       currentPlanId: plan?._id?.toString?.() ?? null,
       maxProducts: {
         limit: limits.maxProducts, used: productCount,

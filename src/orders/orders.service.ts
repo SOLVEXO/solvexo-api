@@ -4,17 +4,22 @@ import {
   NotFoundException,
   ForbiddenException,
 } from '@nestjs/common';
-import { DatabaseService } from 'src/database/databaseservice';
-import { UploadService } from 'src/upload/upload.service';
+import { DatabaseService } from '@/database/databaseservice';
+import { UploadService } from '@/upload/upload.service';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
-import { FinanceService } from 'src/finance/finance.service';
-import { ActivityLogService } from 'src/activity-log/activity-log.service';
-import { LoyaltyService } from 'src/loyalty/loyalty.service';
-import { SubscriptionBenefitsService } from 'src/subscriptions/subscription-benefits.service';
-import { NotificationsService } from 'src/notifications/notifications.service';
-import { NOTIFICATION_TYPES } from 'src/notifications/notification.types';
-import { round } from 'src/common/number.util';
+import { FinanceService } from '@/finance/finance.service';
+import { PaymentService } from '@/payment/payment.service';
+import { ExchangeRateService } from '@/exchange-rate/exchange-rate.service';
+import { ActivityLogService } from '@/activity-log/activity-log.service';
+import { LoyaltyService } from '@/loyalty/loyalty.service';
+import { SubscriptionBenefitsService } from '@/subscriptions/subscription-benefits.service';
+import { NotificationsService } from '@/notifications/notifications.service';
+import { ShippingRatesService } from '@/shipping-rates/shipping-rates.service';
+import { NOTIFICATION_TYPES } from '@/notifications/notification.types';
+import { round } from '@/common/number.util';
+import { deriveRollupStatus } from './order-status.util';
+import { toCsv } from '@/analytics/utils/csv.util';
 
 /** A sellerOrder's true payout basis for FinanceService.recordSale, in the
  *  SELLER'S OWN currency (so.settlementCurrency) — independent of what
@@ -42,10 +47,13 @@ export class OrdersService {
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
     private readonly financeService: FinanceService,
+    private readonly paymentService: PaymentService,
+    private readonly exchangeRateService: ExchangeRateService,
     private readonly activityLogService: ActivityLogService,
     private readonly loyaltyService: LoyaltyService,
     private readonly subscriptionBenefits: SubscriptionBenefitsService,
     private readonly notificationsService: NotificationsService,
+    private readonly shippingRatesService: ShippingRatesService,
   ) {}
 
   /** Subscribers earn points at their plan's configured multiplier (default 1x). */
@@ -71,14 +79,20 @@ export class OrdersService {
     );
   }
 
-  async getOrdersByUserId(userId: string, query: any) {
-    const { orderModel, sellerModel } = this.databaseService.repositories;
+  async getOrdersByUserId(userId: string, query: any, storeId: string) {
+    const { orderModel, sellerModel, ratingModel } =
+      this.databaseService.repositories;
 
     const page = parseInt(query.page) || 1;
     const limit = parseInt(query.limit) || 10;
     const skip = (page - 1) * limit;
 
-    const filter: any = { userId, isDelete: false };
+    // Scoped to this one store's app build — an order predating the
+    // single-store conversion (or one placed by a legacy cross-store
+    // account) may touch more than one store, but this build must never
+    // surface another store's segment of it. `sellerOrders.storeId` matches
+    // the same filter shape `getSellerOrders` already uses.
+    const filter: any = { userId, isDelete: false, 'sellerOrders.storeId': storeId };
 
     if (query.status && query.status !== 'all') {
       filter.orderStatus = query.status;
@@ -112,6 +126,29 @@ export class OrdersService {
       : [];
     const sellerMap = new Map(sellers.map((s: any) => [s._id.toString(), s]));
 
+    // Batch-resolve which products this buyer already reviewed, across every
+    // product in this page, so each item can be flagged `isReviewed` without
+    // a query per item.
+    const productIds = [
+      ...new Set(
+        orders.flatMap((order: any) =>
+          (order.sellerOrders ?? []).flatMap((so: any) =>
+            (so.items ?? []).map((item: any) => item.productId),
+          ),
+        ),
+      ),
+    ].filter(Boolean);
+    const reviewedProductIds = productIds.length
+      ? new Set(
+          (
+            await ratingModel
+              .find({ userId, productId: { $in: productIds }, isDelete: false })
+              .select('productId')
+              .lean()
+          ).map((r: any) => r.productId),
+        )
+      : new Set();
+
     const list = orders.map((order: any) => ({
       orderId: order._id,
       orderNumber: order.orderNumber,
@@ -126,7 +163,9 @@ export class OrdersService {
       totalAmount: order.totalAmount,
       currency: order.currency,
       shippingAddress: order.shippingAddress,
-      stores: (order.sellerOrders ?? []).map((so: any) => {
+      stores: (order.sellerOrders ?? [])
+        .filter((so: any) => so.storeId === storeId)
+        .map((so: any) => {
         const seller = sellerMap.get(so.sellerId?.toString());
         return {
           storeId: so.storeId,
@@ -152,6 +191,7 @@ export class OrdersService {
             originalPrice: item.originalPrice ?? null,
             subscriberDiscountUSD: item.subscriberDiscountUSD ?? 0,
             status: item.status,
+            isReviewed: reviewedProductIds.has(item.productId),
           })),
           tracking: so.tracking,
           shippedAt: so.shippedAt,
@@ -171,7 +211,7 @@ export class OrdersService {
     };
   }
 
-  async getOrderById(userId: string, orderId: string) {
+  async getOrderById(userId: string, orderId: string, storeId: string) {
     const { orderModel, sellerModel } = this.databaseService.repositories;
 
     const order = await orderModel
@@ -181,7 +221,16 @@ export class OrdersService {
     if ((order as any).userId !== userId)
       throw new ForbiddenException('Unauthorized');
 
-    const orderSellerOrders = ((order as any).sellerOrders ?? []) as any[];
+    // Same reasoning as getOrdersByUserId — never surface another store's
+    // segment of an order that happens to touch more than one store. If
+    // this order doesn't touch this build's store at all, treat it as not
+    // found rather than exposing that it exists elsewhere.
+    const orderSellerOrders = (
+      ((order as any).sellerOrders ?? []) as any[]
+    ).filter((so: any) => so.storeId === storeId);
+    if (orderSellerOrders.length === 0) {
+      throw new NotFoundException('Order not found');
+    }
     const sellerIds: string[] = [
       ...new Set(orderSellerOrders.map((so: any) => so.sellerId)),
     ].filter(Boolean);
@@ -245,6 +294,12 @@ export class OrdersService {
       isDelete: false,
     };
 
+    // Scope to one buyer's own order history within this store — reuses the
+    // exact same aggregation/pagination/stats logic below rather than a
+    // separate customer-order-history endpoint.
+    if (query.userId) {
+      matchFilter.userId = query.userId;
+    }
     if (query.type && query.type !== 'all') {
       matchFilter['sellerOrders.fulfillmentType'] = query.type;
     }
@@ -325,6 +380,7 @@ export class OrdersService {
           productType: firstItem?.productType ?? null,
           date: order.createdAt,
           amount: so.subtotal,
+          shippingAddress: order.shippingAddress ?? null,
           // `amount` above is so.subtotal, which is denominated in the order's
           // own currency (fixed per store) — carried per-row so a cross-store
           // "my orders" list can label each row correctly even when the
@@ -357,7 +413,175 @@ export class OrdersService {
     };
   }
 
-  async getDownloadUrls(userId: string, orderId: string, productId: string) {
+  /**
+   * The real seller-facing single-order detail view — previously nonexistent:
+   * `getOrderById` above is buyer-only (`order.userId !== userId` throws
+   * Forbidden for a seller calling it on their own order), and
+   * `getSellerOrders`'s rows only ever carry a flattened summary shape (no
+   * full item list, no shipping address, no tracking/timeline). Returns
+   * exactly this seller's own portion of the order (`sellerOrder`), never
+   * another seller's line items on the same multi-store order.
+   */
+  async getSellerOrderDetail(
+    sellerId: string,
+    storeId: string,
+    orderId: string,
+  ) {
+    const { orderModel, storeModel, userModel } =
+      this.databaseService.repositories;
+
+    const store = await storeModel.findOne({
+      _id: storeId,
+      sellerId,
+      isDelete: false,
+    });
+    if (!store) throw new ForbiddenException('Store not found or unauthorized');
+
+    const order = await orderModel
+      .findOne({ _id: orderId, isDelete: false })
+      .lean();
+    if (!order) throw new NotFoundException('Order not found');
+
+    const sellerOrder = (order.sellerOrders as any[]).find(
+      (so: any) => so.storeId === storeId && so.sellerId === sellerId,
+    );
+    if (!sellerOrder) throw new ForbiddenException('Unauthorized');
+
+    const buyer = await userModel
+      .findOne({ _id: order.userId })
+      .select('name email phone')
+      .lean();
+
+    return {
+      success: true,
+      data: {
+        orderId: order._id,
+        orderNumber: order.orderNumber,
+        createdAt: (order as any).createdAt,
+        currency: order.currency ?? 'USD',
+        paymentType: order.paymentType,
+        paymentStatus: order.paymentStatus,
+        isPaid: order.isPaid,
+        paidAt: order.paidAt,
+        shippingAddress: order.shippingAddress ?? null,
+        buyer: {
+          name: (buyer as any)?.name ?? 'Unknown',
+          email: (buyer as any)?.email ?? '',
+          phone: (buyer as any)?.phone ?? '',
+        },
+        // This store's own portion only — items, rollup status, tracking,
+        // fulfillment timestamps, return status. `subtotal` here is already
+        // scoped to this seller, unlike `order.subtotal` (the whole order).
+        sellerOrder,
+      },
+    };
+  }
+
+  /** Same filters as `getSellerOrders` (status/type/time), but no pagination
+   *  — capped at 5000 rows (matches AnalyticsService.exportCsv's own cap) so
+   *  a seller with an enormous order history can't trigger an unbounded
+   *  export. Previously "Export CSV" was a permanently-disabled button with
+   *  no backend route behind it at all. */
+  async exportOrdersCsv(
+    sellerId: string,
+    storeId: string | null,
+    query: any,
+  ): Promise<string> {
+    const { orderModel, storeModel, userModel } =
+      this.databaseService.repositories;
+
+    let storeIds: string[];
+    if (storeId) {
+      const store = await storeModel.findOne({
+        _id: storeId,
+        sellerId,
+        isDelete: false,
+      });
+      if (!store)
+        throw new ForbiddenException('Store not found or unauthorized');
+      storeIds = [storeId];
+    } else {
+      const stores = await storeModel
+        .find({ sellerId, isDelete: false })
+        .select('_id')
+        .lean();
+      storeIds = stores.map((s: any) => s._id.toString());
+    }
+
+    const matchFilter: any = {
+      'sellerOrders.storeId': { $in: storeIds },
+      isDelete: false,
+    };
+    if (query.type && query.type !== 'all')
+      matchFilter['sellerOrders.fulfillmentType'] = query.type;
+    if (query.status && query.status !== 'all')
+      matchFilter['sellerOrders.status'] = query.status;
+    if (query.time && query.time !== 'all') {
+      const now = new Date();
+      if (query.time === 'today')
+        matchFilter.createdAt = { $gte: new Date(now.setHours(0, 0, 0, 0)) };
+      else if (query.time === 'week') {
+        const week = new Date();
+        week.setDate(week.getDate() - 7);
+        matchFilter.createdAt = { $gte: week };
+      } else if (query.time === 'month') {
+        const month = new Date();
+        month.setMonth(month.getMonth() - 1);
+        matchFilter.createdAt = { $gte: month };
+      }
+    }
+
+    const orders = await orderModel
+      .find(matchFilter)
+      .sort({ createdAt: -1 })
+      .limit(5000)
+      .lean();
+    const userIds = [...new Set(orders.map((o: any) => o.userId))];
+    const users = await userModel
+      .find({ _id: { $in: userIds } })
+      .select('name email')
+      .lean();
+    const userMap = new Map(users.map((u: any) => [String(u._id), u]));
+
+    const rows: (string | number)[][] = [];
+    for (const order of orders as any[]) {
+      const so = order.sellerOrders.find((s: any) =>
+        storeIds.includes(s.storeId),
+      );
+      if (!so) continue;
+      const user = userMap.get(String(order.userId));
+      rows.push([
+        order.orderNumber,
+        new Date(order.createdAt).toISOString().split('T')[0],
+        user?.name ?? 'Unknown',
+        user?.email ?? '',
+        so.fulfillmentType,
+        so.status,
+        so.subtotal.toFixed(2),
+        order.currency ?? 'USD',
+        order.paymentType,
+        order.isPaid ? 'Yes' : 'No',
+      ]);
+    }
+
+    return toCsv(
+      [
+        'Order Number',
+        'Date',
+        'Customer',
+        'Email',
+        'Type',
+        'Status',
+        'Amount',
+        'Currency',
+        'Payment Type',
+        'Paid',
+      ],
+      rows,
+    );
+  }
+
+  async getDownloadUrls(userId: string, orderId: string, productId: string, storeId: string) {
     if (!orderId) throw new BadRequestException('orderId is required');
     if (!productId) throw new BadRequestException('productId is required');
 
@@ -371,10 +595,12 @@ export class OrdersService {
     // 2. payment check
     if (!order.isPaid) throw new BadRequestException('Order is not paid yet');
 
-    // 3. product is in this order
+    // 3. product is in THIS store's sellerOrder(s) within this order — never
+    // let this app's download link resolve to another store's digital item.
     let targetItem: any = null;
 
     for (const so of order.sellerOrders) {
+      if (so.storeId !== storeId) continue;
       for (const item of so.items) {
         if (item.productId === productId) {
           targetItem = item;
@@ -475,6 +701,90 @@ export class OrdersService {
     };
   }
 
+  /**
+   * Real, one-click "mark as shipped" — for a store that's connected Shippo
+   * (see ShippingRatesService/the Integrations page), fetches a fresh live
+   * rate quote for this exact order's destination + real item weight, buys
+   * the CHEAPEST option's label immediately, and marks the sellerOrder
+   * shipped with the real carrier/tracking number/label Shippo just issued —
+   * no manual tracking-number typing. Falls back with a clear error (not a
+   * silent no-op) whenever a live label genuinely can't be purchased: store
+   * hasn't connected Shippo, this order predates the `country` field on its
+   * address snapshot (see OrderShippingAddress), or Shippo itself is
+   * unreachable — the seller still has the existing manual
+   * `updateSellerOrderStatus({status:'shipped', tracking})` path for those
+   * cases, this is strictly an additional convenience.
+   */
+  async purchaseShippingLabel(sellerId: string, orderId: string, storeId: string, ip?: string, userAgent?: string) {
+    const { orderModel, storeModel, productVariantModel } = this.databaseService.repositories;
+
+    const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
+    if (!store) throw new ForbiddenException('Store not found or unauthorized');
+
+    const order = await orderModel.findOne({ _id: orderId, isDelete: false });
+    if (!order) throw new NotFoundException('Order not found');
+
+    const sellerOrderIndex = order.sellerOrders.findIndex(
+      (so: any) => so.storeId === storeId && so.sellerId === sellerId,
+    );
+    if (sellerOrderIndex === -1) throw new ForbiddenException('Unauthorized');
+
+    const addr = order.shippingAddress as any;
+    if (!addr) throw new BadRequestException('This order has no shipping address on file — it may be digital-only.');
+    if (!addr.country) {
+      throw new BadRequestException(
+        'This order\'s saved address has no country on file (it predates that field) — use the manual tracking-number entry instead.',
+      );
+    }
+
+    const sellerOrder = order.sellerOrders[sellerOrderIndex] as any;
+    const variantIds = [...new Set(sellerOrder.items.map((i: any) => i.variantId).filter(Boolean) as string[])];
+    const variants = await productVariantModel.find({ _id: { $in: variantIds } }).select('shippingWeight').lean();
+    const weightByVariant = new Map(variants.map((v: any) => [String(v._id), v.shippingWeight]));
+    const totalWeightKg = this.shippingRatesService.computeTotalWeightKg(
+      sellerOrder.items.map((item: any) => ({
+        shippingWeight: item.variantId ? weightByVariant.get(item.variantId) ?? null : null,
+        quantity: item.quantity ?? 1,
+      })),
+    );
+
+    const rates = await this.shippingRatesService.getLiveRates(
+      storeId,
+      {
+        name: addr.recipientName,
+        street1: addr.addressLine1,
+        street2: addr.addressLine2 ?? undefined,
+        city: addr.city,
+        state: addr.state,
+        zip: addr.zipCode,
+        country: addr.country,
+        phone: addr.phoneNumber ?? undefined,
+      },
+      totalWeightKg,
+    );
+    if (!rates || rates.length === 0) {
+      throw new BadRequestException('No live carrier rate is available for this order — connect Shippo in Integrations, or use the manual tracking-number entry instead.');
+    }
+    const cheapest = rates.reduce((best, r) => (r.amount < best.amount ? r : best), rates[0]);
+
+    const label = await this.shippingRatesService.purchaseLabel(storeId, cheapest.rateId);
+    if (!label) {
+      throw new BadRequestException('The label purchase failed — try again, or use the manual tracking-number entry instead.');
+    }
+
+    return this.updateSellerOrderStatus(
+      sellerId,
+      {
+        orderId,
+        storeId,
+        status: 'shipped',
+        tracking: { carrier: cheapest.carrier, trackingNumber: label.trackingNumber, trackingUrl: label.trackingUrlProvider },
+      },
+      ip,
+      userAgent,
+    );
+  }
+
   async updateSellerOrderStatus(
     sellerId: string,
     body: any,
@@ -494,7 +804,7 @@ export class OrdersService {
       );
     }
 
-    const { orderModel, storeModel } = this.databaseService.repositories;
+    const { orderModel, storeModel, productVariantModel } = this.databaseService.repositories;
 
     // store ownership check
     const store = await storeModel.findOne({
@@ -545,19 +855,49 @@ export class OrdersService {
       updateData[`sellerOrders.${sellerOrderIndex}.deliveredAt`] = new Date();
     }
 
-    // overall orderStatus derive
+    // overall orderStatus derive — single source of truth, see
+    // order-status.util.ts. Previously a hand-rolled if/else chain that fell
+    // through silently (leaving `orderStatus` stale) for a status mix like
+    // ['pending','processing'], which matched none of its three branches.
     const allStatuses = order.sellerOrders.map((so: any, idx: number) =>
       idx === sellerOrderIndex ? status : so.status,
     );
+    updateData.orderStatus = deriveRollupStatus(allStatuses);
 
-    if (allStatuses.every((s: string) => s === 'completed')) {
-      updateData.orderStatus = 'completed';
-    } else if (
-      allStatuses.some((s: string) => ['shipped', 'delivered'].includes(s))
-    ) {
-      updateData.orderStatus = 'partially_shipped';
-    } else if (allStatuses.every((s: string) => s === 'processing')) {
-      updateData.orderStatus = 'processing';
+    // Real stock decrement happens HERE, not at order-creation — see
+    // ProductVariant.committedStock's doc comment. Until now the item's
+    // quantity only ever lived in `committedStock` (reserved at checkout);
+    // reaching a fulfilled-or-beyond state is the actual physical-
+    // fulfillment moment, so this is where genuine on-hand `stock` finally
+    // drops and the reservation is released. Triggers on the FIRST
+    // transition into shipped/delivered/completed — not just `status ===
+    // 'shipped'` alone — since a seller can call this endpoint with
+    // `status: 'delivered'` or `'completed'` directly without ever passing
+    // through 'shipped' first (this method has no forced sequential state
+    // machine); gating on shipped-only would silently leave that item's
+    // reservation stuck in `committedStock` forever. Clamped at 0 rather
+    // than a strict atomic guard — a seller manually adjusting stock down
+    // (e.g. "damaged") between order-placement and shipment shouldn't
+    // block a shipment that's already contractually committed to the buyer.
+    const FULFILLED_STATES = ['shipped', 'delivered', 'completed'];
+    const wasAlreadyFulfilled = FULFILLED_STATES.includes(
+      order.sellerOrders[sellerOrderIndex].status,
+    );
+    if (!wasAlreadyFulfilled && FULFILLED_STATES.includes(status)) {
+      for (const item of soItems) {
+        if (item.type !== 'physical' || !item.variantId) continue;
+        const variant = await productVariantModel
+          .findOne({ _id: item.variantId })
+          .select('unlimitedStock stock committedStock')
+          .lean();
+        if (!variant || (variant as any).unlimitedStock) continue;
+        const newStock = Math.max(0, (variant as any).stock - item.quantity);
+        const newCommitted = Math.max(0, (variant as any).committedStock - item.quantity);
+        await productVariantModel.updateOne(
+          { _id: item.variantId },
+          { $set: { stock: newStock, committedStock: newCommitted } },
+        );
+      }
     }
 
     await orderModel.findByIdAndUpdate(orderId, { $set: updateData });
@@ -566,24 +906,31 @@ export class OrdersService {
     // transition into `completed`, never again if it was already completed (see guard above).
     if (status === 'completed' && !wasAlreadyCompleted) {
       const so = order.sellerOrders[sellerOrderIndex];
-      const platformSponsoredUSD = so.platformSponsoredDiscountUSD ?? 0;
-      const sponsoredCampaignId =
-        so.items.find((i: any) => i.campaignSponsorType === 'platform')
-          ?.campaignId ?? null;
-      try {
-        await this.financeService.recordSale(
-          so.storeId,
-          so.sellerId,
-          orderId,
-          sellerPayoutBasis(so),
-          `Sale — Order #${orderId}`,
-          platformSponsoredUSD,
-          sponsoredCampaignId,
-          sellerPayoutCurrency(so, order),
-          order.paymentType,
-        );
-      } catch (e) {
-        console.error('Finance recordSale failed:', e?.message);
+      // A Connect-settled sellerOrder's money already went straight to the
+      // seller's own Stripe-connected account at payment time — crediting
+      // the internal ledger here too would let them draw a second, duplicate
+      // payout through the platform's own payout-request flow. See
+      // PaymentService.initiatePayment/SellerOrder.settledViaConnect.
+      if (!so.settledViaConnect) {
+        const platformSponsoredUSD = so.platformSponsoredDiscountUSD ?? 0;
+        const sponsoredCampaignId =
+          so.items.find((i: any) => i.campaignSponsorType === 'platform')
+            ?.campaignId ?? null;
+        try {
+          await this.financeService.recordSale(
+            so.storeId,
+            so.sellerId,
+            orderId,
+            sellerPayoutBasis(so),
+            `Sale — Order #${orderId}`,
+            platformSponsoredUSD,
+            sponsoredCampaignId,
+            sellerPayoutCurrency(so, order),
+            order.paymentType,
+          );
+        } catch (e) {
+          console.error('Finance recordSale failed:', e?.message);
+        }
       }
 
       this.awardLoyaltyPointsWithMultiplier(
@@ -628,6 +975,24 @@ export class OrdersService {
               ? `Order #${orderId} is on its way${tracking?.carrier ? ` via ${tracking.carrier}` : ''}.`
               : `Order #${orderId} has been delivered.`,
           data: { orderId, status },
+          // Silently no-ops if `so.storeId` hasn't connected WhatsApp — see
+          // NotifyParams.whatsapp. Template names below must already be
+          // approved in that store's Meta Business Manager; if they aren't,
+          // WhatsAppCloudProvider.sendTemplateMessage just logs and returns,
+          // same as any other failed send.
+          whatsapp: order.shippingAddress?.phoneNumber
+            ? {
+                storeId: so.storeId,
+                to: order.shippingAddress.phoneNumber,
+                templateName:
+                  status === 'shipped' ? 'order_shipped' : 'order_delivered',
+                languageCode: 'en_US',
+                bodyParams:
+                  status === 'shipped'
+                    ? [orderId, tracking?.carrier ?? '']
+                    : [orderId],
+              }
+            : undefined,
         })
         .catch(() => {});
     }
@@ -661,8 +1026,11 @@ export class OrdersService {
 
     await orderModel.findByIdAndUpdate(orderId, { $set: updateData });
 
-    // Record sale in finance ledger for each store's sub-order
+    // Record sale in finance ledger for each store's sub-order — skipping
+    // any that settled directly via Stripe Connect (see the same guard/
+    // comment in the status-transition branch above).
     for (const so of order.sellerOrders) {
+      if (so.settledViaConnect) continue;
       const platformSponsoredUSD = so.platformSponsoredDiscountUSD ?? 0;
       const sponsoredCampaignId =
         so.items.find((i: any) => i.campaignSponsorType === 'platform')
@@ -767,7 +1135,22 @@ export class OrdersService {
       payload.orderId,
       payload.productId,
       payload.fileIndex,
+      payload.storeId,
     );
+  }
+
+  /** Confirms `productId` is one of the items in one of THIS store's
+   *  sellerOrder(s) on this order — closes both the cross-store leak and an
+   *  otherwise-unchecked path where any paid order + any digital productId
+   *  would resolve a download, whether or not that product was actually
+   *  purchased. */
+  private assertDigitalItemInStoreOrder(order: any, productId: string, storeId: string) {
+    const inThisStore = (order.sellerOrders as any[]).some(
+      (so: any) =>
+        so.storeId === storeId &&
+        (so.items as any[]).some((item: any) => item.productId === productId),
+    );
+    if (!inThisStore) throw new BadRequestException('Product not found in this order');
   }
 
   async streamStampedPdf(
@@ -775,6 +1158,7 @@ export class OrdersService {
     orderId: string,
     productId: string,
     fileIndex: number,
+    storeId: string,
   ) {
     const { orderModel, productModel, userModel } =
       this.databaseService.repositories;
@@ -783,6 +1167,7 @@ export class OrdersService {
     if (!order) throw new NotFoundException('Order not found');
     if (order.userId !== userId) throw new ForbiddenException('Unauthorized');
     if (!order.isPaid) throw new BadRequestException('Order is not paid');
+    this.assertDigitalItemInStoreOrder(order, productId, storeId);
 
     const product = await productModel.findOne({
       _id: productId,
@@ -818,6 +1203,7 @@ export class OrdersService {
     orderId: string,
     productId: string,
     fileIndex: number,
+    storeId: string,
   ) {
     const { orderModel, productModel } = this.databaseService.repositories;
 
@@ -825,6 +1211,7 @@ export class OrdersService {
     if (!order) throw new NotFoundException('Order not found');
     if (order.userId !== userId) throw new ForbiddenException('Unauthorized');
     if (!order.isPaid) throw new BadRequestException('Order is not paid yet');
+    this.assertDigitalItemInStoreOrder(order, productId, storeId);
 
     const product = await productModel.findOne({
       _id: productId,
@@ -837,7 +1224,7 @@ export class OrdersService {
     if (!file) throw new NotFoundException('File not found at this index');
 
     const token = this.jwtService.sign(
-      { userId, orderId, productId, fileIndex },
+      { userId, orderId, productId, fileIndex, storeId },
       {
         secret: this.configService.get<string>('JWT_SECRET'),
         expiresIn: '10m',
@@ -865,12 +1252,11 @@ export class OrdersService {
     };
   }
 
-  async cancelOrder(userId: string, orderId: string, body: any) {
+  async cancelOrder(userId: string, orderId: string, body: any, storeId: string) {
     const { reason, itemIds } = body;
     if (!reason) throw new BadRequestException('reason is required');
 
-    const { orderModel, productVariantModel } =
-      this.databaseService.repositories;
+    const { orderModel } = this.databaseService.repositories;
 
     const order = await orderModel.findOne({
       _id: orderId,
@@ -878,6 +1264,121 @@ export class OrdersService {
       isDelete: false,
     });
     if (!order) throw new NotFoundException('Order not found');
+
+    // A buyer's cancel must never touch another store's items within the
+    // same (possibly multi-store legacy) order. Default to every item on
+    // THIS store's sellerOrder(s) when no explicit itemIds were given
+    // (matches the old "cancel everything" behavior for the common
+    // single-store-order case), and reject any explicitly-given id that
+    // doesn't belong to this store.
+    const storeItemIds: string[] = (order.sellerOrders as any[])
+      .filter((so: any) => so.storeId === storeId)
+      .flatMap((so: any) => (so.items as any[]).map((item: any) => item._id.toString()));
+    if (storeItemIds.length === 0) throw new NotFoundException('Order not found');
+
+    const scopedItemIds =
+      itemIds && Array.isArray(itemIds) && itemIds.length > 0 ? itemIds : storeItemIds;
+    const foreignItemId = scopedItemIds.find((id: string) => !storeItemIds.includes(id));
+    if (foreignItemId) {
+      throw new ForbiddenException('One or more items do not belong to this store');
+    }
+
+    return this.executeCancellation(order, scopedItemIds, reason, {
+      actorId: userId,
+      actorRole: 'user',
+      notifyRecipientRole: 'seller',
+      notifyTitle: 'Order cancelled by buyer',
+      notifyBody: (id: string) =>
+        `Order #${id} was cancelled by the buyer — ${reason}`,
+    });
+  }
+
+  /**
+   * Seller-initiated cancellation (e.g. out-of-stock) — previously did not
+   * exist at all; a seller had no way to cancel an order except asking the
+   * buyer to do it themselves. Scoped to ONLY this seller's own sellerOrder
+   * within the (possibly multi-seller) order — never another seller's items
+   * on the same order, and `itemIds` (if given) must all belong to it.
+   */
+  async cancelOrderAsSeller(
+    sellerId: string,
+    storeId: string,
+    orderId: string,
+    body: any,
+  ) {
+    const { reason, itemIds } = body;
+    if (!reason) throw new BadRequestException('reason is required');
+
+    const { orderModel, storeModel } = this.databaseService.repositories;
+    const store = await storeModel.findOne({
+      _id: storeId,
+      sellerId,
+      isDelete: false,
+    });
+    if (!store) throw new ForbiddenException('Store not found or unauthorized');
+
+    const order = await orderModel.findOne({ _id: orderId, isDelete: false });
+    if (!order) throw new NotFoundException('Order not found');
+
+    const sellerOrder = (order.sellerOrders as any[]).find(
+      (so: any) => so.storeId === storeId && so.sellerId === sellerId,
+    );
+    if (!sellerOrder) throw new ForbiddenException('Unauthorized');
+
+    // A seller may only target their own sellerOrder's items — if no
+    // itemIds given, default to every item on THIS sellerOrder only (never
+    // "the whole order" the way a buyer's full cancel does, since a
+    // multi-seller order's other stores must never be touched by this call).
+    const ownItemIds =
+      itemIds && Array.isArray(itemIds) && itemIds.length > 0
+        ? itemIds
+        : sellerOrder.items.map((i: any) => i._id.toString());
+    const foreignItemId = ownItemIds.find(
+      (id: string) =>
+        !sellerOrder.items.some((i: any) => i._id.toString() === id),
+    );
+    if (foreignItemId)
+      throw new ForbiddenException(
+        `Item not found on your store's order: ${foreignItemId}`,
+      );
+
+    return this.executeCancellation(order, ownItemIds, reason, {
+      actorId: sellerId,
+      actorRole: 'seller',
+      notifyRecipientRole: 'user',
+      notifyTitle: 'Order cancelled by seller',
+      notifyBody: (id: string) =>
+        `Order #${id} was cancelled by the seller — ${reason}`,
+    });
+  }
+
+  /**
+   * Shared cancellation core — builds the item/sellerOrder/order status
+   * updates (via `deriveRollupStatus`, see order-status.util.ts), restores
+   * physical stock, and — for a paid order — moves REAL money: debits each
+   * affected seller's wallet via `FinanceService.recordRefund` and issues a
+   * real targeted Stripe refund for the buyer-facing amount. Previously this
+   * only ever flipped `paymentStatus` to 'refunded' in the DB with a comment
+   * admitting "no real Stripe call" — cancelling a paid order moved zero
+   * real money. Used by both the buyer (`cancelOrder`) and seller
+   * (`cancelOrderAsSeller`) entry points, which differ only in ownership
+   * checks and which items they're allowed to target.
+   */
+  private async executeCancellation(
+    order: any,
+    itemIds: string[] | undefined,
+    reason: string,
+    actor: {
+      actorId: string;
+      actorRole: 'user' | 'seller';
+      notifyRecipientRole: 'user' | 'seller';
+      notifyTitle: string;
+      notifyBody: (orderId: string) => string;
+    },
+  ) {
+    const orderId = order._id.toString();
+    const { orderModel, productVariantModel } =
+      this.databaseService.repositories;
 
     if (order.orderStatus === 'completed')
       throw new BadRequestException('Completed orders cannot be cancelled');
@@ -945,16 +1446,23 @@ export class OrdersService {
         ] = item.totalPrice;
       }
 
-      // physical item — stock wapas restore (skip unlimited-stock variants)
+      // physical item — release the reservation (never a real `stock`
+      // restore here): `BLOCKED` above already guarantees this item is
+      // still 'pending'/'processing', meaning it was only ever reserved
+      // via `committedStock` at checkout, never actually shipped/decremented
+      // from real `stock` — see ProductVariant.committedStock's doc comment.
       if (item.type === 'physical' && item.variantId) {
         await productVariantModel.updateOne(
           { _id: item.variantId, unlimitedStock: { $ne: true } },
-          { $inc: { stock: item.quantity } },
+          [{ $set: { committedStock: { $max: [0, { $subtract: ['$committedStock', item.quantity] }] } } }],
+          { updatePipeline: true } as any,
         );
       }
     }
 
-    // sellerOrder status recalculate
+    // sellerOrder status recalculate — unconditional now (see
+    // order-status.util.ts): a PARTIAL cancellation must still update this
+    // seller order's rollup status.
     order.sellerOrders.forEach((so: any, soIndex: number) => {
       const updatedStatuses = so.items.map((item: any, itemIndex: number) => {
         const wasUpdated = targetItems.find(
@@ -962,46 +1470,158 @@ export class OrdersService {
         );
         return wasUpdated ? 'cancelled' : item.status;
       });
+      updateData[`sellerOrders.${soIndex}.status`] =
+        deriveRollupStatus(updatedStatuses);
       if (updatedStatuses.every((s: string) => s === 'cancelled')) {
-        updateData[`sellerOrders.${soIndex}.status`] = 'cancelled';
         updateData[`sellerOrders.${soIndex}.cancelledAt`] = now;
         updateData[`sellerOrders.${soIndex}.cancelReason`] = reason;
       }
     });
 
-    // overall orderStatus recalculate
+    // overall orderStatus recalculate — also unconditional now, same reason.
     const updatedSOStatuses = order.sellerOrders.map(
       (so: any, soIndex: number) =>
         updateData[`sellerOrders.${soIndex}.status`] ?? so.status,
     );
-    if (updatedSOStatuses.every((s: string) => s === 'cancelled')) {
-      updateData.orderStatus = 'cancelled';
-    }
+    updateData.orderStatus = deriveRollupStatus(updatedSOStatuses);
 
-    // refund status — sirf DB update, no real Stripe call (stripePaymentIntentId null hai)
+    // ── Real money movement (paid orders only) ──────────────────────────
+    let totalBuyerRefund = 0;
     if (order.isPaid) {
       updateData.paymentStatus = 'refunded';
+
+      const amountBySoIndex = new Map<number, number>();
+      for (const { soIndex, item } of targetItems) {
+        amountBySoIndex.set(
+          soIndex,
+          (amountBySoIndex.get(soIndex) ?? 0) + item.totalPrice,
+        );
+      }
+      const buyerCurrency = order.currency || 'USD';
+
+      for (const [soIndex, amount] of amountBySoIndex) {
+        const so = order.sellerOrders[soIndex];
+        const settlementCurrency = so.settlementCurrency ?? buyerCurrency;
+        const sellerDebitAmount = this.exchangeRateService.convertWithSnapshots(
+          amount,
+          buyerCurrency,
+          settlementCurrency,
+          order.fxSnapshots ?? [],
+        );
+        try {
+          await this.financeService.recordRefund(
+            so.storeId,
+            so.sellerId,
+            orderId,
+            sellerDebitAmount,
+            actor.actorId,
+            actor.actorRole,
+            {
+              description: `Order cancelled — Order #${order.orderNumber}`,
+              targetType: 'order',
+              currency: settlementCurrency,
+            },
+          );
+        } catch (e: any) {
+          console.error(
+            'Finance recordRefund failed (order cancellation):',
+            e?.message,
+          );
+        }
+        totalBuyerRefund += amount;
+      }
+
+      if (order.paymentType === 'stripe' && totalBuyerRefund > 0) {
+        const transaction =
+          await this.databaseService.repositories.paymentTransactionModel.findOne(
+            {
+              orderIds: orderId,
+              status: 'completed',
+              isDelete: false,
+            },
+          );
+        if (transaction?.stripePaymentIntentId) {
+          try {
+            await this.paymentService.refundStripePaymentIntent(
+              transaction.stripePaymentIntentId,
+              totalBuyerRefund,
+              `order_cancel_${orderId}_${now.getTime()}`,
+            );
+          } catch (e: any) {
+            // Ledger already reversed above — same disclosed failure mode as
+            // refund-request.service.ts's approve(): a failed Stripe call
+            // here means the seller's wallet was correctly debited but the
+            // buyer's card hasn't been refunded yet, surfaced as a security
+            // alert rather than silently swallowed.
+            await this.activityLogService.log({
+              storeId: 'platform',
+              category: 'finance',
+              action: 'stripe_refund_failed_after_cancellation',
+              description: `Stripe refund failed for cancelled order #${order.orderNumber} after seller ledger(s) already reversed: ${e?.message}`,
+              actorId: actor.actorId,
+              actorRole: actor.actorRole,
+              isSecurityAlert: true,
+              targetId: orderId,
+              targetType: 'order',
+            });
+          }
+        }
+      }
     }
 
-    await orderModel.findByIdAndUpdate(orderId, { $set: updateData });
+    // Optimistic lock — this method now has TWO independent entry points
+    // (`cancelOrder` for the buyer, `cancelOrderAsSeller` for the seller),
+    // both computing `updateData` from the SAME `order` snapshot read at the
+    // top of this function. Without this guard, a buyer and seller
+    // cancelling different items on the same order at nearly the same
+    // moment would race: the second write's `$set` (still built from its
+    // own stale read) would silently clobber the first's already-applied
+    // item/status/refund changes — a real correctness gap a plain
+    // `findByIdAndUpdate` can't detect. Matching on the snapshot's own
+    // `updatedAt` makes the write a no-op (rather than a silent overwrite)
+    // if the order changed underneath it; the caller gets a clear,
+    // retryable error instead of quietly losing the other actor's changes.
+    const updated = await orderModel.findOneAndUpdate(
+      { _id: orderId, updatedAt: order.updatedAt },
+      { $set: updateData },
+    );
+    if (!updated) {
+      throw new BadRequestException(
+        'This order was just modified by someone else — please refresh and try again.',
+      );
+    }
 
-    const affectedSellerIds = [
-      ...new Set(
-        targetItems.map(({ soIndex }) => order.sellerOrders[soIndex].sellerId),
-      ),
-    ];
-    affectedSellerIds.forEach((sellerOrderSellerId) => {
+    if (actor.notifyRecipientRole === 'seller') {
+      const affectedSellerOrders = new Map<string, { sellerId: string; storeId: string }>();
+      targetItems.forEach(({ soIndex }) => {
+        const so = order.sellerOrders[soIndex];
+        affectedSellerOrders.set(`${so.sellerId}:${so.storeId}`, { sellerId: so.sellerId, storeId: so.storeId });
+      });
+      affectedSellerOrders.forEach(({ sellerId, storeId }) => {
+        this.notificationsService
+          .notify({
+            recipientId: sellerId,
+            recipientRole: 'seller',
+            storeId,
+            type: NOTIFICATION_TYPES.ORDER_CANCELLED,
+            title: actor.notifyTitle,
+            body: actor.notifyBody(orderId),
+            data: { orderId, storeId },
+          })
+          .catch(() => {});
+      });
+    } else {
       this.notificationsService
         .notify({
-          recipientId: sellerOrderSellerId,
-          recipientRole: 'seller',
+          recipientId: order.userId,
+          recipientRole: 'user',
           type: NOTIFICATION_TYPES.ORDER_CANCELLED,
-          title: 'Order cancelled by buyer',
-          body: `Order #${orderId} was cancelled by the buyer — ${reason}`,
+          title: actor.notifyTitle,
+          body: actor.notifyBody(orderId),
           data: { orderId },
         })
         .catch(() => {});
-    });
+    }
 
     return {
       success: true,
@@ -1133,7 +1753,7 @@ export class OrdersService {
     };
   }
 
-  async returnRequest(userId: string, orderId: string, body: any) {
+  async returnRequest(userId: string, orderId: string, body: any, storeId: string) {
     const { reason, itemIds } = body;
     if (!reason) throw new BadRequestException('reason is required');
 
@@ -1153,6 +1773,9 @@ export class OrdersService {
 
     const now = new Date();
 
+    // Scoped to THIS store's sellerOrder(s) only — a return request must
+    // never be raised against another store's items within the same
+    // (possibly multi-store legacy) order.
     const allItems: {
       soIndex: number;
       itemIndex: number;
@@ -1160,10 +1783,12 @@ export class OrdersService {
       so: any;
     }[] = [];
     order.sellerOrders.forEach((so: any, soIndex: number) => {
+      if (so.storeId !== storeId) return;
       so.items.forEach((item: any, itemIndex: number) => {
         allItems.push({ soIndex, itemIndex, item, so });
       });
     });
+    if (allItems.length === 0) throw new NotFoundException('Order not found');
 
     let targetItems: typeof allItems;
 
@@ -1239,6 +1864,23 @@ export class OrdersService {
     });
 
     await orderModel.findByIdAndUpdate(orderId, { $set: updateData });
+
+    const notifiedSellers = new Set<string>();
+    for (const { so } of targetItems) {
+      if (!so.sellerId || notifiedSellers.has(so.sellerId)) continue;
+      notifiedSellers.add(so.sellerId);
+      this.notificationsService
+        .notify({
+          recipientId: so.sellerId,
+          recipientRole: 'seller',
+          storeId: so.storeId,
+          type: NOTIFICATION_TYPES.REFUND_REQUESTED,
+          title: 'Refund requested',
+          body: `A refund has been requested for order #${order.orderNumber}.`,
+          data: { orderId, storeId: so.storeId },
+        })
+        .catch(() => {});
+    }
 
     return {
       success: true,
@@ -1360,27 +2002,89 @@ export class OrdersService {
 
     let refundProcessed = false;
     if (action === 'approve' && order.isPaid) {
-      const refundAmount = targetItems.reduce(
+      // buyerRefundAmount is in the order's own charge currency; the
+      // seller's wallet must be debited in THEIR settlement currency (same
+      // conversion refund-request.service.ts's approve() already does) —
+      // previously this passed the raw order-currency amount straight into
+      // recordRefund with zero conversion, silently mis-debiting any seller
+      // whose settlement currency differs from the buyer's charge currency.
+      const buyerRefundAmount = targetItems.reduce(
         (sum, t) => sum + (t.item.totalPrice || 0),
         0,
       );
-      if (refundAmount > 0) {
+      if (buyerRefundAmount > 0) {
+        const buyerCurrency = order.currency || 'USD';
+        const settlementCurrency =
+          sellerOrder.settlementCurrency ?? buyerCurrency;
+        const sellerDebitAmount = this.exchangeRateService.convertWithSnapshots(
+          buyerRefundAmount,
+          buyerCurrency,
+          settlementCurrency,
+          order.fxSnapshots ?? [],
+        );
         try {
           await this.financeService.recordRefund(
             storeId,
             sellerId,
             orderId,
-            refundAmount,
+            sellerDebitAmount,
             sellerId,
             'seller',
+            {
+              description: `Return approved — Order #${order.orderNumber}`,
+              targetType: 'order',
+              currency: settlementCurrency,
+            },
           );
           refundProcessed = true;
-        } catch (e) {
+        } catch (e: any) {
           console.error('Finance recordRefund failed:', e?.message);
         }
 
+        // Real buyer-facing Stripe refund — previously this ONLY debited the
+        // seller's wallet and never refunded the buyer's card at all, a
+        // genuine money-leak: the seller paid for a return the buyer never
+        // actually got their money back for. Mirrors
+        // refund-request.service.ts's approve() exactly.
+        if (order.paymentType === 'stripe') {
+          const transaction =
+            await this.databaseService.repositories.paymentTransactionModel.findOne(
+              {
+                orderIds: orderId,
+                status: 'completed',
+                isDelete: false,
+              },
+            );
+          if (transaction?.stripePaymentIntentId) {
+            try {
+              await this.paymentService.refundStripePaymentIntent(
+                transaction.stripePaymentIntentId,
+                buyerRefundAmount,
+                `return_action_${orderId}_${Date.now()}`,
+              );
+            } catch (e: any) {
+              await this.activityLogService.log({
+                storeId: 'platform',
+                category: 'finance',
+                action: 'stripe_refund_failed_after_ledger_reversal',
+                description: `Stripe refund failed for order #${order.orderNumber} after seller ledger was already reversed (return approval): ${e?.message}`,
+                actorId: sellerId,
+                actorRole: 'seller',
+                isSecurityAlert: true,
+                targetId: orderId,
+                targetType: 'order',
+              });
+            }
+          }
+        }
+
         this.loyaltyService
-          .clawbackPurchasePoints(storeId, order.userId, orderId, refundAmount)
+          .clawbackPurchasePoints(
+            storeId,
+            order.userId,
+            orderId,
+            buyerRefundAmount,
+          )
           .catch(() => {});
       }
     }

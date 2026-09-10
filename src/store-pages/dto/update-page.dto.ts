@@ -1,0 +1,38 @@
+/* eslint-disable prettier/prettier */
+import { ApiProperty } from '@nestjs/swagger';
+import { Type } from 'class-transformer';
+import { IsArray, IsBoolean, IsIn, IsObject, IsOptional, IsString, Matches, MaxLength, ValidateNested } from 'class-validator';
+import { STORE_PAGE_POLICY_TYPES, type StorePagePolicyType } from '../schemas/store-page.schema';
+
+class StorePageSeoInputDto {
+  @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(70) metaTitle?: string;
+  @ApiProperty({ required: false, deprecated: true, description: 'Superseded by metaDescription — kept as a one-release write-compat alias.' })
+  @IsOptional() @IsString() @MaxLength(160) metaDesc?: string;
+  @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(160) metaDescription?: string;
+  @ApiProperty({ required: false }) @IsOptional() @IsString() ogImage?: string;
+  @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(70) ogTitle?: string;
+  @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(200) ogDescription?: string;
+  @ApiProperty({ required: false, enum: ['summary', 'summary_large_image'] })
+  @IsOptional() @IsIn(['summary', 'summary_large_image']) twitterCard?: string;
+  @ApiProperty({ required: false }) @IsOptional() @IsString() canonicalUrlOverride?: string;
+  @ApiProperty({ required: false }) @IsOptional() @IsBoolean() noindex?: boolean;
+  @ApiProperty({ required: false, type: [String] }) @IsOptional() @IsArray() @IsString({ each: true }) keywords?: string[];
+}
+
+export class UpdatePageDto {
+  @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(80) title?: string;
+
+  @ApiProperty({ required: false, description: 'Custom pages only — the home page slug is fixed' })
+  @IsOptional() @IsString() @Matches(/^[a-z0-9]+(-[a-z0-9]+)*$/, { message: 'slug must be lowercase letters, numbers, and hyphens only' }) @MaxLength(80)
+  slug?: string;
+
+  @ApiProperty({ required: false, type: StorePageSeoInputDto })
+  @IsOptional() @IsObject() @ValidateNested() @Type(() => StorePageSeoInputDto)
+  seo?: StorePageSeoInputDto;
+
+  @ApiProperty({ required: false }) @IsOptional() @IsBoolean() showInNav?: boolean;
+  @ApiProperty({ required: false }) @IsOptional() @IsBoolean() showInFooter?: boolean;
+
+  @ApiProperty({ required: false, enum: [...STORE_PAGE_POLICY_TYPES, null], description: 'Tags this page as a standard legal/policy page (Privacy Policy, Terms of Service, Refund Policy, Shipping Policy) — at most one page per store per type. Pass null to un-tag.' })
+  @IsOptional() @IsIn([...STORE_PAGE_POLICY_TYPES, null]) policyType?: StorePagePolicyType | null;
+}

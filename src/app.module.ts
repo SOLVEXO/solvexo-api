@@ -19,6 +19,7 @@ import { BannersModule } from './banner/banner.module';
 import { FaqModule } from './faqs/faq.module';
 import { NewsletterModule } from './newsletter/newsletter.module';
 import { ContactModule } from './contact/contact.module';
+import { TestimonialsModule } from './testimonials/testimonials.module';
 import { RefundRequestModule } from './refund-request/refund-request.module';
 import { CheckoutModule } from './checkout/checkout.modoule';
 import { OrdersModule } from './orders/orders.module';
@@ -35,6 +36,10 @@ import { SchedulerModule } from './scheduler/scheduler.module';
 import { ActivityLogModule } from './activity-log/activity-log.module';
 import { MarketingModule } from './marketing/marketing.module';
 import { LoyaltyModule } from './loyalty/loyalty.module';
+import { GiftCardsModule } from './gift-cards/gift-cards.module';
+import { DiscountsModule } from './discounts/discounts.module';
+import { CollectionsModule } from './collections/collections.module';
+import { StripeConnectModule } from './stripe-connect/stripe-connect.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { PlatformSubscriptionsModule } from './platform-subscriptions/platform-subscriptions.module';
 import { AdminAnalyticsModule } from './admin-analytics/admin-analytics.module';
@@ -43,6 +48,7 @@ import { QueueModule } from './queues/queue.module';
 import { HealthModule } from './health/health.module';
 import { PlatformPlansModule } from './platform-plans/platform-plans.module';
 import { SeoModule } from './seo/seo.module';
+import { IntegrationsModule } from './integrations/integrations.module';
 import { AiStudioModule } from './ai-studio/ai-studio.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { AdminConfigModule } from './admin-config/admin-config.module';
@@ -51,13 +57,26 @@ import { AdminMarketplaceModule } from './admin-marketplace/admin-marketplace.mo
 import { AdminModerationModule } from './admin-moderation/admin-moderation.module';
 import { AdminUsersModule } from './admin-users/admin-users.module';
 import { AdminMarketingModule } from './admin-marketing/admin-marketing.module';
+import { ShippingZonesModule } from './shipping-zones/shipping-zones.module';
+import { ShippingCarriersModule } from './shipping-carriers/shipping-carriers.module';
 import { MediaLibraryModule } from './media-library/media-library.module';
 import { StoreBannerModule } from './store-banner/store-banner.module';
+import { StoreThemeModule } from './store-theme/store-theme.module';
+import { StorePagesModule } from './store-pages/store-pages.module';
+import { StoreFaqModule } from './store-faq/store-faq.module';
+import { CollectionTemplateModule } from './collection-template/collection-template.module';
+import { MetafieldsModule } from './metafields/metafields.module';
+import { MetaobjectsModule } from './metaobjects/metaobjects.module';
+import { MenusModule } from './menus/menus.module';
+import { DraftOrdersModule } from './draft-orders/draft-orders.module';
+import { StoreBlogModule } from './store-blog/store-blog.module';
 import { PromotionsModule } from './promotions/promotions.module';
 import { CommissionRulesModule } from './commission-rules/commission-rules.module';
 import { ManualPaymentsModule } from './manual-payments/manual-payments.module';
 import { ExchangeRateModule } from './exchange-rate/exchange-rate.module';
 import { OnboardingSlidesModule } from './onboarding-slides/onboarding-slides.module';
+import { BookingsModule } from './bookings/bookings.module';
+import { StoreAppRequestsModule } from './store-app-requests/store-app-requests.module';
 
 @Module({
   imports: [
@@ -87,6 +106,7 @@ import { OnboardingSlidesModule } from './onboarding-slides/onboarding-slides.mo
     FaqModule,
     NewsletterModule,
     ContactModule,
+    TestimonialsModule,
     RefundRequestModule,
     CheckoutModule,
     // checkoutModule,
@@ -104,26 +124,44 @@ import { OnboardingSlidesModule } from './onboarding-slides/onboarding-slides.mo
     ManualPaymentsModule,
     FinanceModule,
     SubscriptionsModule,
+    BookingsModule,
     PlatformPlansModule,
     AiStudioModule,
     SchedulerModule,
     MarketingModule,
     LoyaltyModule,
+    GiftCardsModule,
+    DiscountsModule,
+    CollectionsModule,
+    StripeConnectModule,
     AnalyticsModule,
     PlatformSubscriptionsModule,
     AdminAnalyticsModule,
     AdminFinanceModule,
     SeoModule,
+    IntegrationsModule,
     AdminConfigModule,
     AdminAnnouncementsModule,
     AdminMarketplaceModule,
     AdminModerationModule,
     AdminUsersModule,
     AdminMarketingModule,
+    ShippingZonesModule,
+    ShippingCarriersModule,
     MediaLibraryModule,
     StoreBannerModule,
+    StoreThemeModule,
+    StorePagesModule,
+    StoreFaqModule,
+    CollectionTemplateModule,
+    MetafieldsModule,
+    MetaobjectsModule,
+    MenusModule,
+    DraftOrdersModule,
+    StoreBlogModule,
     PromotionsModule,
     ExchangeRateModule,
+    StoreAppRequestsModule,
   ],
   controllers: [AppController],
   providers: [AppService, { provide: APP_GUARD, useClass: ThrottlerGuard }],

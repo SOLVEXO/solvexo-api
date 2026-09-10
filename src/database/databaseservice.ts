@@ -65,9 +65,6 @@ export class DatabaseService {
     @InjectModel(schema.Store.name)
     private storeModel: Model<schema.StoreDocument>,
 
-    @InjectModel(schema.StoreFollower.name)
-    private storeFollowerModel: Model<schema.StoreFollowerDocument>,
-
     @InjectModel(schema.Employee.name)
     private employeeModel: Model<schema.EmployeeDocument>,
 
@@ -143,6 +140,9 @@ export class DatabaseService {
     @InjectModel(schema.PlatformPlan.name)
     private platformPlanModel: Model<schema.PlatformPlanDocument>,
 
+    @InjectModel(schema.PlatformTrialSettings.name)
+    private platformTrialSettingsModel: Model<schema.PlatformTrialSettingsDocument>,
+
     @InjectModel(schema.SellerPlatformSubscription.name)
     private sellerPlatformSubscriptionModel: Model<schema.SellerPlatformSubscriptionDocument>,
 
@@ -161,6 +161,21 @@ export class DatabaseService {
     @InjectModel(schema.StoreLocation.name)
     private storeLocationModel: Model<schema.StoreLocationDocument>,
 
+    @InjectModel(schema.BookableService.name)
+    private bookableServiceModel: Model<schema.BookableServiceDocument>,
+
+    @InjectModel(schema.ServiceAvailability.name)
+    private serviceAvailabilityModel: Model<schema.ServiceAvailabilityDocument>,
+
+    @InjectModel(schema.ServicePackage.name)
+    private servicePackageModel: Model<schema.ServicePackageDocument>,
+
+    @InjectModel(schema.PackagePurchase.name)
+    private packagePurchaseModel: Model<schema.PackagePurchaseDocument>,
+
+    @InjectModel(schema.Booking.name)
+    private bookingModel: Model<schema.BookingDocument>,
+
     @InjectModel(schema.ActivityLog.name)
     private activityLogModel: Model<schema.ActivityLogDocument>,
 
@@ -178,6 +193,24 @@ export class DatabaseService {
 
     @InjectModel(schema.Reward.name)
     private rewardModel: Model<schema.RewardDocument>,
+
+    @InjectModel(schema.RewardVoucher.name)
+    private rewardVoucherModel: Model<schema.RewardVoucherDocument>,
+
+    @InjectModel(schema.GiftCard.name)
+    private giftCardModel: Model<schema.GiftCardDocument>,
+
+    @InjectModel(schema.GiftCardTransaction.name)
+    private giftCardTransactionModel: Model<schema.GiftCardTransactionDocument>,
+
+    @InjectModel(schema.GiftCardSettings.name)
+    private giftCardSettingsModel: Model<schema.GiftCardSettingsDocument>,
+
+    @InjectModel(schema.AutomaticDiscount.name)
+    private automaticDiscountModel: Model<schema.AutomaticDiscountDocument>,
+
+    @InjectModel(schema.Collection.name)
+    private collectionModel: Model<schema.CollectionDocument>,
 
     @InjectModel(schema.PlatformSubscription.name)
     private platformSubscriptionModel: Model<schema.PlatformSubscriptionDocument>,
@@ -199,6 +232,12 @@ export class DatabaseService {
 
     @InjectModel(schema.SeoIntegration.name)
     private seoIntegrationModel: Model<schema.SeoIntegrationDocument>,
+
+    @InjectModel(schema.StoreIntegration.name)
+    private storeIntegrationModel: Model<schema.StoreIntegrationDocument>,
+
+    @InjectModel(schema.IntegrationWebhookEvent.name)
+    private integrationWebhookEventModel: Model<schema.IntegrationWebhookEventDocument>,
 
     @InjectModel(schema.SeoCrawlLog.name)
     private seoCrawlLogModel: Model<schema.SeoCrawlLogDocument>,
@@ -253,6 +292,48 @@ export class DatabaseService {
     @InjectModel(schema.StoreBanner.name)
     private storeBannerModel: Model<schema.StoreBannerDocument>,
 
+    @InjectModel(schema.StoreTheme.name)
+    private storeThemeModel: Model<schema.StoreThemeDocument>,
+
+    @InjectModel(schema.StorePage.name)
+    private storePageModel: Model<schema.StorePageDocument>,
+
+    @InjectModel(schema.StoreFaq.name)
+    private storeFaqModel: Model<schema.StoreFaqDocument>,
+
+    @InjectModel(schema.CollectionTemplate.name)
+    private collectionTemplateModel: Model<schema.CollectionTemplateDocument>,
+
+    @InjectModel(schema.MetafieldDefinition.name)
+    private metafieldDefinitionModel: Model<schema.MetafieldDefinitionDocument>,
+
+    @InjectModel(schema.MetafieldValue.name)
+    private metafieldValueModel: Model<schema.MetafieldValueDocument>,
+
+    @InjectModel(schema.MetaobjectDefinition.name)
+    private metaobjectDefinitionModel: Model<schema.MetaobjectDefinitionDocument>,
+
+    @InjectModel(schema.MetaobjectEntry.name)
+    private metaobjectEntryModel: Model<schema.MetaobjectEntryDocument>,
+
+    @InjectModel(schema.Menu.name)
+    private menuModel: Model<schema.MenuDocument>,
+
+    @InjectModel(schema.DraftOrder.name)
+    private draftOrderModel: Model<schema.DraftOrderDocument>,
+
+    @InjectModel(schema.StoreCustomerMeta.name)
+    private storeCustomerMetaModel: Model<schema.StoreCustomerMetaDocument>,
+
+    @InjectModel(schema.BlogPost.name)
+    private blogPostModel: Model<schema.BlogPostDocument>,
+
+    @InjectModel(schema.Blog.name)
+    private blogModel: Model<schema.BlogDocument>,
+
+    @InjectModel(schema.BlogComment.name)
+    private blogCommentModel: Model<schema.BlogCommentDocument>,
+
     @InjectModel(schema.PromotionRequest.name)
     private promotionRequestModel: Model<schema.PromotionRequestDocument>,
 
@@ -278,6 +359,18 @@ export class DatabaseService {
 
     @InjectModel(schema.ReconciliationRun.name)
     private reconciliationRunModel: Model<schema.ReconciliationRunDocument>,
+
+    @InjectModel(schema.StoreAppRequest.name)
+    private storeAppRequestModel: Model<schema.StoreAppRequestDocument>,
+
+    @InjectModel(schema.StockAdjustment.name)
+    private stockAdjustmentModel: Model<schema.StockAdjustmentDocument>,
+
+    @InjectModel(schema.VariantLocationStock.name)
+    private variantLocationStockModel: Model<schema.VariantLocationStockDocument>,
+
+    @InjectModel(schema.StockTransfer.name)
+    private stockTransferModel: Model<schema.StockTransferDocument>,
 
   ) { }
 
@@ -305,7 +398,6 @@ export class DatabaseService {
       orderModel: this.orderModel,
       paymentTransactionModel: this.paymentTransactionModel,
       storeModel: this.storeModel,
-      storeFollowerModel: this.storeFollowerModel,
       employeeModel: this.employeeModel,
       registerSessionModel: this.registerSessionModel,
       saleModel: this.saleModel,
@@ -331,18 +423,30 @@ export class DatabaseService {
       subscriptionNotificationPreferenceModel: this.subscriptionNotificationPreferenceModel,
       idempotencyRecordModel: this.idempotencyRecordModel,
       platformPlanModel: this.platformPlanModel,
+      platformTrialSettingsModel: this.platformTrialSettingsModel,
       sellerPlatformSubscriptionModel: this.sellerPlatformSubscriptionModel,
       platformPlanInvoiceModel: this.platformPlanInvoiceModel,
       platformPlanPaymentAttemptModel: this.platformPlanPaymentAttemptModel,
       aiCreditsWalletModel: this.aiCreditsWalletModel,
       platformAddonPurchaseModel: this.platformAddonPurchaseModel,
       storeLocationModel: this.storeLocationModel,
+      bookableServiceModel: this.bookableServiceModel,
+      serviceAvailabilityModel: this.serviceAvailabilityModel,
+      servicePackageModel: this.servicePackageModel,
+      packagePurchaseModel: this.packagePurchaseModel,
+      bookingModel: this.bookingModel,
       activityLogModel: this.activityLogModel,
       couponModel: this.couponModel,
       loyaltyProgramModel: this.loyaltyProgramModel,
       loyaltyMemberModel: this.loyaltyMemberModel,
       loyaltyTransactionModel: this.loyaltyTransactionModel,
       rewardModel: this.rewardModel,
+      rewardVoucherModel: this.rewardVoucherModel,
+      giftCardModel: this.giftCardModel,
+      giftCardTransactionModel: this.giftCardTransactionModel,
+      giftCardSettingsModel: this.giftCardSettingsModel,
+      automaticDiscountModel: this.automaticDiscountModel,
+      collectionModel: this.collectionModel,
       platformSubscriptionModel: this.platformSubscriptionModel,
       platformSeoSettingsModel: this.platformSeoSettingsModel,
       seoRedirectModel: this.seoRedirectModel,
@@ -350,6 +454,8 @@ export class DatabaseService {
       seoLandingPageModel: this.seoLandingPageModel,
       seoSitemapCacheModel: this.seoSitemapCacheModel,
       seoIntegrationModel: this.seoIntegrationModel,
+      storeIntegrationModel: this.storeIntegrationModel,
+      integrationWebhookEventModel: this.integrationWebhookEventModel,
       seoCrawlLogModel: this.seoCrawlLogModel,
       seoIndexSnapshotModel: this.seoIndexSnapshotModel,
       seoAnalyticsSnapshotModel: this.seoAnalyticsSnapshotModel,
@@ -368,6 +474,20 @@ export class DatabaseService {
       campaignModel: this.campaignModel,
       mediaAssetModel: this.mediaAssetModel,
       storeBannerModel: this.storeBannerModel,
+      storeThemeModel: this.storeThemeModel,
+      storePageModel: this.storePageModel,
+      storeFaqModel: this.storeFaqModel,
+      collectionTemplateModel: this.collectionTemplateModel,
+      metafieldDefinitionModel: this.metafieldDefinitionModel,
+      metafieldValueModel: this.metafieldValueModel,
+      metaobjectDefinitionModel: this.metaobjectDefinitionModel,
+      metaobjectEntryModel: this.metaobjectEntryModel,
+      menuModel: this.menuModel,
+      draftOrderModel: this.draftOrderModel,
+      storeCustomerMetaModel: this.storeCustomerMetaModel,
+      blogPostModel: this.blogPostModel,
+      blogModel: this.blogModel,
+      blogCommentModel: this.blogCommentModel,
       promotionRequestModel: this.promotionRequestModel,
       promotionDailyStatsModel: this.promotionDailyStatsModel,
       promotionClickEventModel: this.promotionClickEventModel,
@@ -377,6 +497,10 @@ export class DatabaseService {
       stripeWebhookEventModel: this.stripeWebhookEventModel,
       refundRequestModel: this.refundRequestModel,
       reconciliationRunModel: this.reconciliationRunModel,
+      storeAppRequestModel: this.storeAppRequestModel,
+      stockAdjustmentModel: this.stockAdjustmentModel,
+      variantLocationStockModel: this.variantLocationStockModel,
+      stockTransferModel: this.stockTransferModel,
     };
   }
 }

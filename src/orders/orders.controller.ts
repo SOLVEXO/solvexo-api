@@ -46,6 +46,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { OrdersService } from './orders.service';
+import { resolveBuyerStoreScope } from '../common/store-scope.util';
 
 @Controller('api/orders')
 export class OrdersController {
@@ -56,7 +57,8 @@ export class OrdersController {
   @Get('my-orders')
   async getOrdersByUserId(@Req() req: any, @Query() query: any) {
     const { userId } = req.user;
-    return this.ordersService.getOrdersByUserId(userId, query);
+    const storeId = resolveBuyerStoreScope(req.user.storeId, query.storeId);
+    return this.ordersService.getOrdersByUserId(userId, query, storeId);
   }
 
   // signed URLs (non-stamped) + stamped stream URLs list
@@ -67,9 +69,11 @@ export class OrdersController {
     @Req() req: any,
     @Query('orderId') orderId: string,
     @Query('productId') productId: string,
+    @Query('storeId') storeIdQuery: string,
   ) {
     const { userId } = req.user;
-    return this.ordersService.getDownloadUrls(userId, orderId, productId);
+    const storeId = resolveBuyerStoreScope(req.user.storeId, storeIdQuery);
+    return this.ordersService.getDownloadUrls(userId, orderId, productId, storeId);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -90,6 +94,16 @@ export class OrdersController {
       req.ip,
       req.headers['user-agent'],
     );
+  }
+
+  /** Real one-click "mark as shipped" via a live-purchased carrier label —
+   *  see OrdersService.purchaseShippingLabel's own doc comment. */
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Put('purchase-shipping-label')
+  async purchaseShippingLabel(@Req() req: any, @Body() body: { orderId: string; storeId: string }) {
+    const { userId } = req.user;
+    return this.ordersService.purchaseShippingLabel(userId, body.orderId, body.storeId, req.ip, req.headers['user-agent']);
   }
 
   // Static path — must be declared before `seller-orders/:storeId` below, otherwise
@@ -114,6 +128,42 @@ export class OrdersController {
     return this.ordersService.getSellerOrders(userId, storeId, query);
   }
 
+  // Static segment — must be declared before `seller-orders/:storeId/:orderId`
+  // below, same reasoning as `seller-orders/my` above.
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller', 'admin')
+  @Get('seller-orders/:storeId/export')
+  async exportOrdersCsv(
+    @Req() req: any,
+    @Res() res: Response,
+    @Param('storeId') storeId: string,
+    @Query() query: any,
+  ) {
+    const { userId } = req.user;
+    const csv = await this.ordersService.exportOrdersCsv(
+      userId,
+      storeId,
+      query,
+    );
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="orders.csv"');
+    res.send(csv);
+  }
+
+  // A 3-segment path — never collides with the 2-segment `seller-orders/:storeId`
+  // above or the 1-segment catch-all `:orderId` below.
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller', 'admin')
+  @Get('seller-orders/:storeId/:orderId')
+  async getSellerOrderDetail(
+    @Req() req: any,
+    @Param('storeId') storeId: string,
+    @Param('orderId') orderId: string,
+  ) {
+    const { userId } = req.user;
+    return this.ordersService.getSellerOrderDetail(userId, storeId, orderId);
+  }
+
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('user')
   @Post('cancel/:orderId')
@@ -123,7 +173,28 @@ export class OrdersController {
     @Body() body: any,
   ) {
     const { userId } = req.user;
-    return this.ordersService.cancelOrder(userId, orderId, body);
+    const storeId = resolveBuyerStoreScope(req.user.storeId, body?.storeId);
+    return this.ordersService.cancelOrder(userId, orderId, body, storeId);
+  }
+
+  // Seller-initiated cancellation (e.g. out-of-stock) — scoped to only the
+  // seller's own sellerOrder within a (possibly multi-seller) order.
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller', 'admin')
+  @Post('seller-cancel/:storeId/:orderId')
+  async cancelOrderAsSeller(
+    @Req() req: any,
+    @Param('storeId') storeId: string,
+    @Param('orderId') orderId: string,
+    @Body() body: any,
+  ) {
+    const { userId } = req.user;
+    return this.ordersService.cancelOrderAsSeller(
+      userId,
+      storeId,
+      orderId,
+      body,
+    );
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -143,7 +214,8 @@ export class OrdersController {
     @Body() body: any,
   ) {
     const { userId } = req.user;
-    return this.ordersService.returnRequest(userId, orderId, body);
+    const storeId = resolveBuyerStoreScope(req.user.storeId, body?.storeId);
+    return this.ordersService.returnRequest(userId, orderId, body, storeId);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -173,14 +245,17 @@ export class OrdersController {
     @Query('orderId') orderId: string,
     @Query('productId') productId: string,
     @Query('fileIndex') fileIndex: string,
+    @Query('storeId') storeIdQuery: string,
   ) {
     const { userId } = req.user;
     const index = parseInt(fileIndex) || 0;
+    const storeId = resolveBuyerStoreScope(req.user.storeId, storeIdQuery);
     return this.ordersService.getDownloadLink(
       userId,
       orderId,
       productId,
       index,
+      storeId,
     );
   }
 
@@ -220,15 +295,18 @@ export class OrdersController {
     @Query('orderId') orderId: string,
     @Query('productId') productId: string,
     @Query('fileIndex') fileIndex: string,
+    @Query('storeId') storeIdQuery: string,
   ) {
     const { userId } = req.user;
     const index = parseInt(fileIndex) || 0;
+    const storeId = resolveBuyerStoreScope(req.user.storeId, storeIdQuery);
 
     const { buffer, fileName } = await this.ordersService.streamStampedPdf(
       userId,
       orderId,
       productId,
       index,
+      storeId,
     );
 
     res.set({
@@ -244,8 +322,13 @@ export class OrdersController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('user')
   @Get(':orderId')
-  async getOrderById(@Req() req: any, @Param('orderId') orderId: string) {
+  async getOrderById(
+    @Req() req: any,
+    @Param('orderId') orderId: string,
+    @Query('storeId') storeIdQuery: string,
+  ) {
     const { userId } = req.user;
-    return this.ordersService.getOrderById(userId, orderId);
+    const storeId = resolveBuyerStoreScope(req.user.storeId, storeIdQuery);
+    return this.ordersService.getOrderById(userId, orderId, storeId);
   }
 }

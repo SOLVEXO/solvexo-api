@@ -2,24 +2,27 @@ import {
   Injectable,
   UnauthorizedException,
   BadRequestException,
+  ForbiddenException,
   NotFoundException,
   HttpException,
   HttpStatus,
 } from '@nestjs/common';
 import { isValidObjectId } from 'mongoose';
 
-import { DatabaseService } from 'src/database/databaseservice';
-import { ProductType as StoreProductType } from 'src/store/schemas/store.schema';
-import { ActivityLogService } from 'src/activity-log/activity-log.service';
-import { SubscriptionBenefitsService } from 'src/subscriptions/subscription-benefits.service';
-import { EntitlementsService } from 'src/platform-plans/entitlements.service';
-import { MarketingService } from 'src/marketing/marketing.service';
-import { pickPrimaryCampaignForBadge } from 'src/marketing/campaign-pricing.util';
+import { DatabaseService } from '@/database/databaseservice';
+import { ProductType as StoreProductType } from '@/store/schemas/store.schema';
+import { ActivityLogService } from '@/activity-log/activity-log.service';
+import { SubscriptionBenefitsService } from '@/subscriptions/subscription-benefits.service';
+import { EntitlementsService } from '@/platform-plans/entitlements.service';
+import { MarketingService } from '@/marketing/marketing.service';
+import { pickPrimaryCampaignForBadge } from '@/marketing/campaign-pricing.util';
 import { EducationLevel } from './schemas/product.schema';
+import { toCsv, parseCsv } from '@/analytics/utils/csv.util';
 import { EducationLevelService } from './education-level.service';
-import { UploadService } from 'src/upload/upload.service';
-import { RedisService } from 'src/redis/redis.service';
-import { aggregateProductSales } from 'src/analytics/utils/order-aggregation.util';
+import { UploadService } from '@/upload/upload.service';
+import { generateUniqueSlug } from '@/common/slug.util';
+import { RedisService } from '@/redis/redis.service';
+import { aggregateProductSales } from '@/analytics/utils/order-aggregation.util';
 import {
   PREVIEW_RATE_LIMIT_MAX,
   PREVIEW_RATE_LIMIT_WINDOW_SECONDS,
@@ -237,8 +240,8 @@ export class ProductsService {
   }
 
   /** Public, pre-purchase preview of a digital product — always a watermarked/trimmed derivative, never the original file. */
-  async getProductPreview(productId: string, clientIp: string) {
-    const rateLimitKey = `preview:rl:${clientIp}:${productId}`;
+  async getProductPreview(idOrSlug: string, clientIp: string, storeId?: string) {
+    const rateLimitKey = `preview:rl:${clientIp}:${idOrSlug}`;
     const count = await this.redisService.incrWithTtl(
       rateLimitKey,
       PREVIEW_RATE_LIMIT_WINDOW_SECONDS,
@@ -254,10 +257,20 @@ export class ProductsService {
     }
 
     const { productModel } = this.databaseService.repositories;
-    const product = await productModel
-      .findOne({ _id: productId, status: 'active', isDelete: false })
+    // Same slug-first, id-fallback resolution as getProductById — the
+    // product-detail page passes whatever :slug route param it has.
+    let product = await productModel
+      .findOne({ slug: idOrSlug, status: 'active', isDelete: false })
       .lean();
+    if (!product && isValidObjectId(idOrSlug)) {
+      product = await productModel
+        .findOne({ _id: idOrSlug, status: 'active', isDelete: false })
+        .lean();
+    }
     if (!product) throw new NotFoundException('Product not found');
+    if (storeId && product.storeId && product.storeId !== storeId) {
+      throw new NotFoundException('Product not found');
+    }
     if (product.type !== 'digital' || !product.digital?.preview?.enabled) {
       throw new BadRequestException(
         'Preview is not available for this product',
@@ -338,12 +351,29 @@ export class ProductsService {
         .lean()
     ).map((s: any) => s._id.toString());
 
-    if (query.storeId?.$in) {
-      const existing = new Set(query.storeId.$in as string[]);
-      query.storeId = { $in: activeIds.filter((id) => existing.has(id)) };
-    } else {
-      query.storeId = { $in: activeIds };
+    query.storeId = this.narrowStoreIdConstraint(query.storeId, activeIds);
+  }
+
+  /** Narrows an existing `storeId` query constraint (none | a single exact id |
+   *  `{ $in: [...] }`) down to only the ids also present in `candidateIds`,
+   *  without ever widening it. Used to layer independent storeId restrictions
+   *  (a single-store app's own storeId, a campaign's participating stores,
+   *  the active-stores gate) on top of each other safely — e.g. a caller that
+   *  already scoped `query.storeId` to its own store keeps exactly that store
+   *  (or nothing, if that store isn't itself in `candidateIds`), rather than
+   *  having a later gate silently widen it back out to every candidate. */
+  private narrowStoreIdConstraint(current: any, candidateIds: string[]): any {
+    const candidates = new Set(candidateIds.map(String));
+    if (current == null) {
+      return { $in: Array.from(candidates) };
     }
+    if (typeof current === 'string') {
+      return candidates.has(current) ? current : { $in: [] };
+    }
+    if (current.$in) {
+      return { $in: (current.$in as string[]).filter((id) => candidates.has(String(id))) };
+    }
+    return { $in: [] };
   }
 
   async getProductsByCategoryId(
@@ -358,7 +388,8 @@ export class ProductsService {
     minPrice?: number,
     maxPrice?: number,
     minRating?: number,
-    sortBy?: 'newest' | 'price_asc' | 'price_desc' | 'rating',
+    sortBy?: 'newest' | 'price_asc' | 'price_desc' | 'rating' | 'popularity',
+    storeId?: string,
   ): Promise<any> {
     const productModel = this.databaseService.repositories.productModel;
     const productVariantModel =
@@ -369,6 +400,11 @@ export class ProductsService {
       status: 'active',
       isDelete: false,
     };
+
+    // A single-store app build passes its own storeId so category browsing
+    // never surfaces another store's products — narrowed further below by
+    // any campaign restriction and the active-stores gate, never widened.
+    if (storeId) query.storeId = storeId;
 
     // 0️⃣ Optional productType/educationLevel filters — used by verticals like the
     // Education marketplace to show only `productType: 'educational'` listings
@@ -384,22 +420,30 @@ export class ProductsService {
     // empty result, not an error: it should read as "nothing left on sale",
     // not a 404/500.
     if (campaignId) {
-      const campaign = isValidObjectId(campaignId)
-        ? await this.databaseService.repositories.campaignModel
-            .findOne({
-              _id: campaignId,
-              isDelete: false,
-              status: 'active',
-              startDate: { $lte: new Date() },
-              endDate: { $gte: new Date() },
-            })
-            .select('participatingStoreIds sponsorType')
-            .lean()
-        : null;
+      const campaignModel = this.databaseService.repositories.campaignModel;
+      const campaignBaseFilter = {
+        isDelete: false,
+        status: 'active',
+        startDate: { $lte: new Date() },
+        endDate: { $gte: new Date() },
+      };
+      // campaignId may be the new slug-based handle (?campaign=summer-sale)
+      // or an old bookmarked raw id — try slug first, then id, same
+      // resolution order as ProductsService.getProductById.
+      let campaign = await campaignModel
+        .findOne({ slug: campaignId, ...campaignBaseFilter })
+        .select('participatingStoreIds sponsorType')
+        .lean();
+      if (!campaign && isValidObjectId(campaignId)) {
+        campaign = await campaignModel
+          .findOne({ _id: campaignId, ...campaignBaseFilter })
+          .select('participatingStoreIds sponsorType')
+          .lean();
+      }
       // A platform-sponsored campaign applies to every store — no storeId
       // restriction at all, same universal rule as getActiveCampaignsForStores.
       if (campaign && campaign.sponsorType !== 'platform') {
-        query.storeId = { $in: campaign.participatingStoreIds ?? [] };
+        query.storeId = this.narrowStoreIdConstraint(query.storeId, campaign.participatingStoreIds ?? []);
       } else if (!campaign) {
         query.storeId = { $in: [] };
       }
@@ -500,7 +544,9 @@ export class ProductsService {
             ? { _minVariantPrice: -1, _id: -1 }
             : sortBy === 'rating'
               ? { averageRating: -1, _id: -1 }
-              : { createdAt: -1, _id: -1 };
+              : sortBy === 'popularity'
+                ? { purchaseCount: -1, _id: -1 }
+                : { createdAt: -1, _id: -1 };
 
       pipeline.push({
         $facet: {
@@ -521,7 +567,9 @@ export class ProductsService {
       const sortStage =
         sortBy === 'rating'
           ? { averageRating: -1, _id: -1 }
-          : { createdAt: -1, _id: -1 };
+          : sortBy === 'popularity'
+            ? { purchaseCount: -1, _id: -1 }
+            : { createdAt: -1, _id: -1 };
 
       total = await productModel.countDocuments(query);
       products = await productModel
@@ -675,6 +723,7 @@ export class ProductsService {
     page: number = 1,
     limit: number = 20,
     customerId?: string | null,
+    storeId?: string,
   ) {
     const productModel = this.databaseService.repositories.productModel;
 
@@ -697,6 +746,11 @@ export class ProductsService {
       isDelete: false,
       $or: [{ name: regex }, { description: regex }],
     };
+
+    // A single-store app build passes its own storeId so search never
+    // surfaces another store's products — narrowed further below by the
+    // active-stores gate, never widened.
+    if (storeId) query.storeId = storeId;
 
     await this.restrictToActiveStores(query);
 
@@ -730,13 +784,17 @@ export class ProductsService {
     if (!productIds.length) return [];
     const productModel = this.databaseService.repositories.productModel;
 
-    const products = await productModel
-      .find({
-        _id: { $in: productIds },
-        status: 'active',
-        isDelete: false,
-      })
-      .lean();
+    // Same active-store gate as getProductsByCategoryId/searchProducts —
+    // without it, a product whose store was suspended after being pinned/
+    // recently-viewed/etc. would still be servable through this id-list path.
+    const query: any = {
+      _id: { $in: productIds },
+      status: 'active',
+      isDelete: false,
+    };
+    await this.restrictToActiveStores(query);
+
+    const products = await productModel.find(query).lean();
 
     const shaped = await this.attachVariantsAndPricing(products, customerId);
     const byId = new Map(shaped.map((p) => [p._id.toString(), p]));
@@ -788,27 +846,52 @@ export class ProductsService {
     return this.getTopSellingProducts(storeId, sevenDaysAgo, limit, customerId);
   }
 
-  async getProductById(productId: string, customerId?: string | null) {
+  async getProductById(idOrSlug: string, customerId?: string | null, storeId?: string) {
     const productModel = this.databaseService.repositories.productModel;
     const productVariantModel =
       this.databaseService.repositories.productVariantModel;
     const sellerModel = this.databaseService.repositories.sellerModel;
     const storeModel = this.databaseService.repositories.storeModel;
 
-    // 1️⃣ Get product
-    const product = await productModel
+    // 1️⃣ Get product — resolve by slug (the canonical public URL) first,
+    // falling back to the raw Mongo id so old bookmarked/shared
+    // /marketplace/:id links keep working forever (ids never change, even
+    // if the product is later renamed and its slug regenerates).
+    let product = await productModel
       .findOne({
-        _id: productId,
+        slug: idOrSlug,
         status: 'active',
         isDelete: false,
       })
       .lean();
+
+    if (!product && isValidObjectId(idOrSlug)) {
+      product = await productModel
+        .findOne({
+          _id: idOrSlug,
+          status: 'active',
+          isDelete: false,
+        })
+        .lean();
+    }
 
     if (product && (await this.isHiddenByEarlyAccess(product, customerId))) {
       return { message: 'Product not found', success: false, data: null };
     }
 
     if (!product) {
+      return {
+        message: 'Product not found',
+        success: false,
+        data: null,
+      };
+    }
+
+    // A single-store app build passes its own storeId — a product belonging
+    // to a different store must 404 here exactly like a genuinely-missing
+    // one, the same way category/search/products-by-category were already
+    // scoped, so a raw id/slug lookup can't be used to bypass those.
+    if (storeId && product.storeId && product.storeId !== storeId) {
       return {
         message: 'Product not found',
         success: false,
@@ -830,8 +913,20 @@ export class ProductsService {
         _id: product.storeId,
         isDelete: false,
       })
-      .select('slug name logo followersCount')
+      .select('slug name logo followersCount status')
       .lean();
+
+    // A suspended/rejected store's product must not be directly viewable
+    // even by id — getProductsByCategoryId/searchProducts/getPublicStoreProducts
+    // already gate on this via restrictToActiveStores(); this was the one
+    // remaining gap where a direct product link stayed reachable.
+    if (!store || store.status !== 'active') {
+      return {
+        message: 'Product not found',
+        success: false,
+        data: null,
+      };
+    }
 
     const [productWithSeller] = await this.attachCampaignBadges([
       this.sanitizeDigitalForPublicView({
@@ -845,10 +940,11 @@ export class ProductsService {
       }),
     ]);
 
-    // 4️⃣ Get variants
+    // 4️⃣ Get variants — must key off the resolved document's real _id, not
+    // the route param (which may be a slug string, not the product's id).
     const rawVariants = await productVariantModel
       .find({
-        productId: productId,
+        productId: product._id.toString(),
         status: 'active',
         isDelete: false,
       })
@@ -882,7 +978,7 @@ export class ProductsService {
       },
     };
   }
-  async getVariantById(variantId: string) {
+  async getVariantById(variantId: string, storeId?: string) {
     const productModel = this.databaseService.repositories.productModel;
     const productVariantModel =
       this.databaseService.repositories.productVariantModel;
@@ -922,6 +1018,15 @@ export class ProductsService {
       };
     }
 
+    // Same cross-store guard as getProductById.
+    if (storeId && product.storeId && product.storeId !== storeId) {
+      return {
+        message: 'Variant not found',
+        success: false,
+        data: null,
+      };
+    }
+
     // 3️⃣ Get seller name
     const seller = await sellerModel
       .findOne({
@@ -947,6 +1052,46 @@ export class ProductsService {
 
   // ─── NEW APIS ───────────────────────────────────────────────────────────────
 
+  /** Resolves and validates the `categoryId` a product is saved under.
+   *  Categories are now store-scoped (a seller builds their own tree,
+   *  entirely at their own discretion — see CategoriesService) instead of
+   *  every product being forced onto the store's single fixed legacy root.
+   *  Accepts either: a category the seller created for THIS store
+   *  (`category.storeId === storeId`), or a legacy global/admin category
+   *  (`category.storeId` null) — the latter kept only so a pre-existing
+   *  store that still has an old `store.categoryId` root, or a product
+   *  request that hasn't been updated to the new picker yet, keeps working
+   *  unchanged. Falls back to the store's legacy `categoryId` only when the
+   *  request sends none at all. */
+  private async resolveProductCategoryId(
+    storeId: string,
+    legacyStoreCategoryId: string | null,
+    requestedCategoryId?: string,
+  ): Promise<string> {
+    const categoryId = requestedCategoryId || legacyStoreCategoryId;
+    if (!categoryId) {
+      throw new BadRequestException(
+        'Select a category for this product — create one from your store\'s Categories page first.',
+      );
+    }
+    if (!isValidObjectId(categoryId)) {
+      throw new BadRequestException('Invalid category selected');
+    }
+    const category = await this.databaseService.repositories.categoryModel.findOne({
+      _id: categoryId,
+      status: 'active',
+      isDelete: false,
+    });
+    if (!category) {
+      throw new BadRequestException('Selected category not found');
+    }
+    const belongsToStore = !category.storeId || String(category.storeId) === String(storeId);
+    if (!belongsToStore) {
+      throw new ForbiddenException('That category does not belong to your store');
+    }
+    return categoryId;
+  }
+
   async addPhysicalProduct(sellerId: string, body: any) {
     const { storeModel, sellerModel, productModel, productVariantModel } =
       this.databaseService.repositories;
@@ -962,6 +1107,7 @@ export class ProductsService {
       storeId,
       name,
       description,
+      categoryId: requestedCategoryId,
       subCategoryId,
       images,
       tags,
@@ -1001,6 +1147,19 @@ export class ProductsService {
       if (v?.price === undefined || v?.price === null) {
         throw new BadRequestException('Every variant requires a price');
       }
+      // Real server-side range validation — found via a live QA pass that
+      // a negative price/stock reached the database layer unvalidated
+      // (the schema itself has no `min` constraint), surfacing as a raw,
+      // unhelpful 500 instead of a clean field-specific error.
+      if (typeof v.price !== 'number' || Number.isNaN(v.price) || v.price < 0) {
+        throw new BadRequestException('Price cannot be negative');
+      }
+      if (v.compareAtPrice !== undefined && v.compareAtPrice !== null && (typeof v.compareAtPrice !== 'number' || v.compareAtPrice < 0)) {
+        throw new BadRequestException('Compare-at price cannot be negative');
+      }
+      if (!v.unlimitedStock && v.stock !== undefined && (typeof v.stock !== 'number' || Number.isNaN(v.stock) || v.stock < 0)) {
+        throw new BadRequestException('Stock quantity cannot be negative');
+      }
       try {
         validateOptions(v.options);
       } catch (e: any) {
@@ -1028,21 +1187,9 @@ export class ProductsService {
       );
     }
 
-    const categoryId = store.categoryId;
-    if (!categoryId)
-      throw new BadRequestException('Your store has no category selected');
+    const categoryId = await this.resolveProductCategoryId(storeId, store.categoryId, requestedCategoryId);
 
-    const baseSlug = name
-      .toLowerCase()
-      .trim()
-      .replace(/[^a-z0-9\s-]/g, '')
-      .replace(/\s+/g, '-')
-      .replace(/-+/g, '-');
-    let slug = baseSlug;
-    let count = 1;
-    while (await productModel.findOne({ slug })) {
-      slug = `${baseSlug}-${count++}`;
-    }
+    const slug = await generateUniqueSlug(productModel, name, { scope: { storeId } });
 
     const product = await productModel.create({
       sellerId,
@@ -1071,6 +1218,7 @@ export class ProductsService {
         return productVariantModel.create({
           productId: product._id.toString(),
           sku,
+          barcode: v.barcode ?? null,
           price: v.price,
           // Stamped from the owning store's own pricing currency — never
           // client-supplied, never a per-product choice. See
@@ -1087,10 +1235,13 @@ export class ProductsService {
       }),
     );
 
+    const defaultVariant =
+      createdVariants.find((v: any) => v.isDefault) || createdVariants[0] || null;
+
     return {
       success: true,
       message: 'Physical product created successfully',
-      data: { product, variants: createdVariants },
+      data: { product, variants: createdVariants, defaultVariant },
     };
   }
 
@@ -1110,6 +1261,7 @@ export class ProductsService {
       name,
       description,
       productType,
+      categoryId: requestedCategoryId,
       subCategoryId,
       images,
       tags,
@@ -1190,21 +1342,9 @@ export class ProductsService {
       }
     }
 
-    const categoryId = store.categoryId;
-    if (!categoryId)
-      throw new BadRequestException('Your store has no category selected');
+    const categoryId = await this.resolveProductCategoryId(storeId, store.categoryId, requestedCategoryId);
 
-    const baseSlug = name
-      .toLowerCase()
-      .trim()
-      .replace(/[^a-z0-9\s-]/g, '')
-      .replace(/\s+/g, '-')
-      .replace(/-+/g, '-');
-    let slug = baseSlug;
-    let count = 1;
-    while (await productModel.findOne({ slug })) {
-      slug = `${baseSlug}-${count++}`;
-    }
+    const slug = await generateUniqueSlug(productModel, name, { scope: { storeId } });
 
     const product = await productModel.create({
       sellerId,
@@ -1347,6 +1487,7 @@ export class ProductsService {
       productId,
       name,
       description,
+      categoryId: requestedCategoryId,
       subCategoryId,
       images,
       tags,
@@ -1358,6 +1499,7 @@ export class ProductsService {
       customLevel,
       price,
       compareAtPrice,
+      templateKey,
     } = body;
 
     if (!productId) throw new BadRequestException('productId is required');
@@ -1382,28 +1524,26 @@ export class ProductsService {
     const productUpdate: any = {};
 
     if (name && name !== product.name) {
-      const baseSlug = name
-        .toLowerCase()
-        .trim()
-        .replace(/[^a-z0-9\s-]/g, '')
-        .replace(/\s+/g, '-')
-        .replace(/-+/g, '-');
-      let slug = baseSlug;
-      let count = 1;
-      while (await productModel.findOne({ slug, _id: { $ne: productId } })) {
-        slug = `${baseSlug}-${count++}`;
-      }
+      const slug = await generateUniqueSlug(productModel, name, { excludeId: productId, scope: { storeId: product.storeId } });
       productUpdate.name = name;
       productUpdate.slug = slug;
     }
 
     if (description !== undefined) productUpdate.description = description;
+    if (requestedCategoryId !== undefined) {
+      productUpdate.categoryId = await this.resolveProductCategoryId(
+        String(product.storeId),
+        null,
+        requestedCategoryId,
+      );
+    }
     if (subCategoryId !== undefined)
       productUpdate.subCategoryId = subCategoryId;
     if (images !== undefined) productUpdate.images = images;
     if (tags !== undefined) productUpdate.tags = tags;
     if (isListedOnSolvexo !== undefined)
       productUpdate.isListedOnSolvexo = isListedOnSolvexo;
+    if (templateKey !== undefined) productUpdate.templateKey = templateKey;
     if (status !== undefined) {
       if (status === 'scheduled' && !scheduledAt) {
         throw new BadRequestException(
@@ -1520,6 +1660,228 @@ export class ProductsService {
       success: true,
       message: 'Product deleted successfully',
       data: null,
+    };
+  }
+
+  /**
+   * Real "Duplicate" — copies a product and every one of its real variants
+   * into a brand-new draft product, the same one-click convenience Shopify's
+   * own product list has (found missing during the Catalog audit — there
+   * was previously no way to base a new listing on an existing one without
+   * retyping everything by hand). Always lands as `status: 'draft'`
+   * regardless of the original's status, and counts against the store's own
+   * product-limit entitlement exactly like any other new product (a
+   * duplicate is a real new product, not a free pass around that limit).
+   */
+  async duplicateProduct(sellerId: string, productId: string) {
+    const { productModel, productVariantModel, sellerModel } = this.databaseService.repositories;
+
+    const seller = await sellerModel.findOne({ _id: sellerId, status: 'active', isDelete: false });
+    if (!seller) throw new UnauthorizedException('Unauthorized seller');
+
+    const original = await productModel.findOne({ _id: productId, isDelete: false });
+    if (!original) throw new BadRequestException('Product not found');
+    if (original.sellerId !== sellerId) throw new UnauthorizedException('You are not authorized to duplicate this product');
+
+    await this.entitlementsService.assertCanCreateProduct(original.storeId);
+
+    const originalObj: any = original.toObject();
+    const { _id: _origId, createdAt: _origCreatedAt, updatedAt: _origUpdatedAt, ...copy } = originalObj;
+    copy.name = `${copy.name} (Copy)`;
+    copy.slug = await generateUniqueSlug(productModel, copy.name, { scope: { storeId: copy.storeId } });
+    copy.status = 'draft';
+    copy.scheduledAt = null;
+    copy.purchaseCount = 0;
+    copy.viewCount = 0;
+    copy.isFeatured = false;
+    copy.earlyAccessUntil = null;
+
+    const created = await productModel.create(copy);
+
+    const originalVariants = await productVariantModel.find({ productId, isDelete: false }).lean();
+    if (originalVariants.length > 0) {
+      const variantCopies = originalVariants.map((v: any) => {
+        const vCopy = { ...v };
+        delete vCopy._id;
+        delete vCopy.createdAt;
+        delete vCopy.updatedAt;
+        vCopy.productId = created._id.toString();
+        return vCopy;
+      });
+      await productVariantModel.insertMany(variantCopies);
+    }
+
+    return { success: true, message: 'Product duplicated', data: created };
+  }
+
+  /** Real CSV export of a store's whole product catalog — the Products list
+   *  had no bulk export at all (found during the Catalog audit; the CSV
+   *  export elsewhere in this area is Product SEO metadata only, a
+   *  different thing). Deliberately read-only for this pass — a matching
+   *  bulk CSV *import* is a real, separate, larger feature (needs per-row
+   *  validation, category resolution, and a clear partial-failure story)
+   *  and isn't safe to rush in alongside this. */
+  async exportProductsCsv(sellerId: string, storeId: string): Promise<string> {
+    const { productModel, productVariantModel, storeModel, categoryModel } = this.databaseService.repositories;
+    const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
+    if (!store) throw new UnauthorizedException('Store not found or unauthorized');
+
+    const products = await productModel
+      .find({ storeId, sellerId, isDelete: false })
+      .sort({ createdAt: -1 })
+      .lean();
+    const productIds = products.map((p: any) => p._id.toString());
+    const variants = await productVariantModel
+      .find({ productId: { $in: productIds }, isDelete: false })
+      .lean();
+    const variantsByProduct: Record<string, any[]> = {};
+    for (const v of variants) {
+      if (!variantsByProduct[v.productId]) variantsByProduct[v.productId] = [];
+      variantsByProduct[v.productId].push(v);
+    }
+    const categoryIds = [...new Set((products as any[]).map((p) => p.categoryId).filter(Boolean))];
+    const categories = await categoryModel.find({ _id: { $in: categoryIds } }).lean();
+    const categoryNameById: Record<string, string> = {};
+    for (const c of categories as any[]) categoryNameById[c._id.toString()] = c.name;
+
+    const rows: (string | number)[][] = [];
+    for (const product of products as any[]) {
+      const pVariants = variantsByProduct[product._id.toString()] || [];
+      const defaultVariant = pVariants.find((v: any) => v.isDefault) || pVariants[0];
+      const totalStock = pVariants.reduce((sum: number, v: any) => sum + (v.unlimitedStock ? 0 : v.stock || 0), 0);
+      rows.push([
+        product.name,
+        defaultVariant?.sku ?? '',
+        product.type,
+        product.productType,
+        product.status,
+        defaultVariant?.price ?? 0,
+        defaultVariant?.compareAtPrice ?? '',
+        pVariants.some((v: any) => v.unlimitedStock) ? 'Unlimited' : totalStock,
+        pVariants.length,
+        (product.tags ?? []).join('; '),
+        product.purchaseCount || 0,
+        categoryNameById[product.categoryId] ?? '',
+      ]);
+    }
+
+    return toCsv(
+      ['Name', 'SKU', 'Type', 'Product Type', 'Status', 'Price', 'Compare-at Price', 'Stock', 'Variant Count', 'Tags', 'All-Time Sales', 'Category'],
+      rows,
+    );
+  }
+
+  /** POST /api/products/store-products/:storeId/import — bulk-create simple,
+   *  single-variant PHYSICAL products from an uploaded CSV (columns: Name*,
+   *  Price*, Description, SKU, Compare-at Price, Stock, Tags (`;`-separated),
+   *  Status (active/draft), Category (matched by case-insensitive name
+   *  against the store's own category tree) — the same shape `exportProductsCsv`
+   *  produces, so "export as a starting template, edit, re-upload" works).
+   *  Every row is created through the real `addPhysicalProduct` path (same
+   *  validation/entitlement/slug logic a manually-created product goes
+   *  through — never a raw shortcut `productModel.create`), so an imported
+   *  product is indistinguishable from a hand-built one. Deliberately scoped
+   *  to physical products only — a digital product's files can't come from a
+   *  CSV row. Partial-success: every row is attempted independently and
+   *  collected into `{created, failed}` rather than one all-or-nothing
+   *  transaction, matching how real bulk-import tools report results. */
+  async importProductsCsv(sellerId: string, storeId: string, csvText: string) {
+    const { storeModel, categoryModel } = this.databaseService.repositories;
+    const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
+    if (!store) throw new UnauthorizedException('Store not found or unauthorized');
+
+    const rows = parseCsv(csvText);
+    if (rows.length === 0) {
+      throw new BadRequestException('The CSV file has no data rows.');
+    }
+    if (rows.length > 500) {
+      throw new BadRequestException(
+        'A single import is capped at 500 rows — split larger catalogs into multiple files.',
+      );
+    }
+
+    const storeCategories = await categoryModel
+      .find({ storeId, isDelete: false, status: 'active' })
+      .lean();
+    const categoryIdByName = new Map<string, string>();
+    for (const c of storeCategories as any[]) {
+      categoryIdByName.set(String(c.name).trim().toLowerCase(), c._id.toString());
+    }
+
+    const created: { row: number; name: string }[] = [];
+    const failed: { row: number; name: string; error: string }[] = [];
+
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      const rowNumber = i + 2; // +1 for the header row, +1 for 1-based counting
+      const name = (r['Name'] ?? '').trim();
+      const priceRaw = (r['Price'] ?? '').trim();
+      const price = parseFloat(priceRaw);
+
+      if (!name) {
+        failed.push({ row: rowNumber, name: '(blank)', error: 'Name is required' });
+        continue;
+      }
+      if (!Number.isFinite(price) || price < 0) {
+        failed.push({ row: rowNumber, name, error: 'Price must be a real, non-negative number' });
+        continue;
+      }
+
+      let categoryId: string | undefined;
+      const categoryName = (r['Category'] ?? '').trim();
+      if (categoryName) {
+        categoryId = categoryIdByName.get(categoryName.toLowerCase());
+        if (!categoryId) {
+          failed.push({
+            row: rowNumber,
+            name,
+            error: `Category "${categoryName}" not found — create it first from the store's Categories page`,
+          });
+          continue;
+        }
+      }
+
+      const compareAtRaw = (r['Compare-at Price'] ?? '').trim();
+      const compareAtPrice = compareAtRaw ? parseFloat(compareAtRaw) : null;
+      const stockRaw = (r['Stock'] ?? '').trim();
+      const stock = stockRaw ? parseInt(stockRaw, 10) : 0;
+      const statusRaw = (r['Status'] ?? '').trim().toLowerCase();
+      const status = statusRaw === 'active' ? 'active' : 'draft';
+      const tags = (r['Tags'] ?? '')
+        .split(';')
+        .map((t) => t.trim())
+        .filter(Boolean);
+
+      try {
+        await this.addPhysicalProduct(sellerId, {
+          storeId,
+          name,
+          description: (r['Description'] ?? '').trim() || undefined,
+          categoryId,
+          images: [],
+          tags,
+          status,
+          variants: [
+            {
+              price,
+              compareAtPrice: Number.isFinite(compareAtPrice as number) ? compareAtPrice : null,
+              sku: (r['SKU'] ?? '').trim() || undefined,
+              stock: Number.isFinite(stock) ? stock : 0,
+              unlimitedStock: false,
+              isDefault: true,
+            },
+          ],
+        });
+        created.push({ row: rowNumber, name });
+      } catch (err: any) {
+        failed.push({ row: rowNumber, name, error: err?.message ?? 'Failed to create product' });
+      }
+    }
+
+    return {
+      success: true,
+      message: `Imported ${created.length} of ${rows.length} product(s).`,
+      data: { createdCount: created.length, totalRows: rows.length, created, failed },
     };
   }
 

@@ -156,6 +156,14 @@ export class StoreSeo {
     ogImage?: string | null;
     noindex?: boolean;
   }>;
+
+  // A seller's own custom `robots.txt` body for their storefront (e.g.
+  // blocking `/search` from being indexed, adding a crawl-delay). Null/empty
+  // means "use the generated default" — see `StoreService.getPublicStoreRobotsTxt`.
+  // Free text, not machine-validated beyond a length cap — a malformed line
+  // only affects that seller's own store's crawling, never another store's.
+  @Prop({ type: String, default: null, maxlength: 5000 })
+  robotsTxtOverride: string | null;
 }
 export const StoreSeoSchema = SchemaFactory.createForClass(StoreSeo);
 
@@ -176,6 +184,14 @@ export class StoreAnnouncementBar {
   @Prop({ type: Date, default: null }) endAt: Date | null;
 }
 export const StoreAnnouncementBarSchema = SchemaFactory.createForClass(StoreAnnouncementBar);
+
+// Solvexo's own single POS app (Android, for now — already built and
+// published). Unlike the white-label StoreAppRequest below, there's nothing
+// to build per seller and nothing for our backend to gate: POS is a paid
+// Google Play listing, so Google Play collects payment directly when a
+// merchant installs it. The dashboard only ever shows a QR/link to that
+// listing (see StoreService.getPosAppInfo) — no PaymentIntent, no per-store
+// "enabled" flag, nothing tracked here.
 
 // ── Seller business verification (KYC-style Leads review) ──────────────────
 // Three genuinely separate concepts, each its own field — never collapsed
@@ -321,11 +337,49 @@ export class Store {
   @Prop({ type: String, default: null })
   baseCurrency: string | null;
 
+  // "Markets" — which of the platform's `SUPPORTED_CURRENCIES` a buyer may
+  // actually check out in on THIS store (real, seller-configurable, distinct
+  // from `baseCurrency` which is what the seller is paid/priced in and
+  // never changes). Defaults to every supported currency so a pre-existing
+  // store's checkout behavior is byte-identical to before this field
+  // existed. Deliberately NOT a list of countries/regions/shipping-tax
+  // rules — that would need a much larger, disconnected subsystem (per-
+  // region shipping/tax) that doesn't exist in this codebase; this is
+  // honestly scoped to the one thing the existing FX/checkout-currency
+  // pipeline can actually support today: which currencies this store's
+  // buyers can pay in.
+  @Prop({ type: [String], default: null })
+  enabledCurrencies: string[] | null;
+
   @Prop({ type: String, default: null })
   categoryId!: string | null;
 
   @Prop({ type: String, default: null })
   description!: string | null;
+
+  // ── Store Settings identity fields (Phase 7) — short marketing line,
+  // buyer-facing contact info. Additive, optional, no migration needed.
+  @Prop({ type: String, default: null })
+  tagline!: string | null;
+  @Prop({ type: String, default: null })
+  contactEmail!: string | null;
+  @Prop({ type: String, default: null })
+  contactPhone!: string | null;
+
+  // Was a hardcoded module constant (10) in InventoryService — every store
+  // saw the exact same low-stock cutoff regardless of what "low" actually
+  // means for their catalog (a seller selling single handmade pieces vs. one
+  // selling bulk commodity stock have very different real thresholds).
+  @Prop({ type: Number, default: 10, min: 1 })
+  lowStockThreshold!: number;
+
+  // A deliberately simple flat-rate tax — NOT a real multi-jurisdiction
+  // compliance engine (see CheckoutService.createCheckout's tax-computation
+  // comment). 0 = no tax charged, matching every store's behavior before
+  // this field existed (a real, disclosed simplification, not a hidden
+  // compliance claim).
+  @Prop({ type: Number, default: 0, min: 0, max: 100 })
+  taxRate!: number;
 
   @Prop({
     type: String,
@@ -370,14 +424,56 @@ export class Store {
   @Prop({ type: String, default: null })
   coverImage: string | null;
 
+  // Real, dedicated brand-asset override — a store's `logo` is often a wide
+  // rectangular wordmark, which renders poorly shrunk into a 16-32px browser
+  // tab icon. Null (the pre-existing-store-safe default) falls back to
+  // `logo`, then to the platform default, exactly matching the storefront's
+  // behavior before this field existed — see `StorefrontLayout.tsx`'s
+  // `useStorefrontFavicon`. Not the same concept as `logo`/`coverImage`
+  // (storefront-visible brand imagery) — this is chrome-only, never rendered
+  // inside the page itself.
+  @Prop({ type: String, default: null })
+  faviconUrl: string | null;
+
   // Platform-plan-gated features (see EntitlementsService) — dedicated fields
   // rather than buried inside the opaque `builderConfig` blob, so backend
   // enforcement doesn't depend on parsing arbitrary frontend-owned JSON.
   @Prop({ type: String, default: null })
   customDomain: string | null;
 
+  // 'unverified' whenever `customDomain` is first set or changed — flips to
+  // 'verified' only once `StoreService.verifyCustomDomain` confirms the
+  // domain's own DNS actually CNAMEs to our platform target (see
+  // `CUSTOM_DOMAIN_CNAME_TARGET`). Public storefront resolution by domain
+  // (`getPublicStoreByDomain`) only ever matches a 'verified' domain, so an
+  // unverified/unproven claim can never serve as a live storefront.
+  @Prop({ type: String, enum: ['unverified', 'verified'], default: 'unverified' })
+  customDomainStatus: 'unverified' | 'verified';
+
   @Prop({ type: Boolean, default: false })
   whiteLabelEnabled: boolean;
+
+  // Real Shopify-style storefront access gate — deliberately independent of
+  // `status` above (a marketplace-listing/admin-review concept): a seller
+  // can gate their own already-active store's subdomain while building it
+  // out, or announce an upcoming relaunch, without touching admin review at
+  // all. `'public'` (default) is byte-identical to every store's behavior
+  // before this field existed. Enforced by `StorefrontLayout.tsx` gating the
+  // storefront's OWN chrome/routes client-side — a disclosed scope boundary
+  // (same category as this file's own Custom Domain comment above): the
+  // underlying public product/category APIs are not separately locked down,
+  // since this is a "hide the storefront from ordinary visitors" gate, not
+  // a security boundary for the data itself.
+  @Prop({ type: String, enum: ['public', 'password', 'coming_soon'], default: 'public' })
+  privacyMode: 'public' | 'password' | 'coming_soon';
+
+  // bcrypt hash only — the plaintext password is never persisted. `select:
+  // false` so it never rides along on a public store fetch; only
+  // `StoreService.verifyStorePassword` opts in via `.select('+storePasswordHash')`.
+  // Kept around even after switching back to 'public' so re-enabling
+  // password mode later doesn't force the seller to re-type it.
+  @Prop({ type: String, default: null, select: false })
+  storePasswordHash: string | null;
 
   @Prop({ type: Number, default: 0 })
   followersCount: number;

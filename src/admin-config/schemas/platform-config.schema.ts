@@ -15,6 +15,9 @@ export class FeatureFlags {
   @Prop({ type: Boolean, default: true }) storeBuilder: boolean;
   @Prop({ type: Boolean, default: false }) bulkProductImport: boolean;
   @Prop({ type: Boolean, default: true }) promotions: boolean;
+  // Unreleased — unlike the flags above (which default true/on for an
+  // already-shipped feature), a brand-new feature defaults off until QA'd.
+  @Prop({ type: Boolean, default: false }) storefrontBlog: boolean;
 }
 export const FeatureFlagsSchema = SchemaFactory.createForClass(FeatureFlags);
 
@@ -76,20 +79,43 @@ export class ManualPaymentConfig {
 }
 export const ManualPaymentConfigSchema = SchemaFactory.createForClass(ManualPaymentConfig);
 
-// Operational settings for the single authoritative PKR/USD (and later
-// EUR/GBP/...) exchange rate source — see ExchangeRateService and the
-// `exchangerates` collection it owns. This config holds only *how* rates
-// get refreshed/flagged, never the rate value itself (that's the append-only
-// ExchangeRate history, not a singleton field, so a full audit trail and
-// "which orders used rate X" traceability are possible).
+// One admin-enabled currency + its own sanity band — replaces the old
+// single hardcoded PKR-shaped band (`sanityBandMinPKR`/`sanityBandMaxPKR`
+// below) now that the platform supports more than 2 currencies. A rate that
+// makes sense for PKR (~150-450 per USD) would incorrectly reject every real
+// EUR/GBP rate (~0.6-1.3 per USD) — each currency's real-world range is
+// wildly different, so the band must travel WITH the currency, not be one
+// global number. Genuinely admin-configurable (not a source-code constant)
+// so adding a new currency — the actual "Shopify Markets"-style requirement —
+// is an admin action, never a code deploy.
+@Schema({ _id: false })
+export class EnabledCurrencyConfig {
+  @Prop({ type: String, required: true }) code: string;
+  @Prop({ type: Number, required: true }) sanityBandMin: number;
+  @Prop({ type: Number, required: true }) sanityBandMax: number;
+  @Prop({ type: Date, default: () => new Date() }) enabledAt: Date;
+}
+export const EnabledCurrencyConfigSchema = SchemaFactory.createForClass(EnabledCurrencyConfig);
+
+// Operational settings for the single authoritative multi-currency exchange
+// rate source — see ExchangeRateService and the `exchangerates` collection
+// it owns. This config holds only *how* rates get refreshed/flagged, never
+// the rate value itself (that's the append-only ExchangeRate history, not a
+// singleton field, so a full audit trail and "which orders used rate X"
+// traceability are possible).
 @Schema({ _id: false })
 export class FxConfig {
   @Prop({ type: Boolean, default: true }) autoRefreshEnabled: boolean;
   @Prop({ type: Number, default: 24 }) refreshIntervalHours: number;
   @Prop({ type: Number, default: 48 }) staleRateAlertThresholdHours: number;
-  // A newly-ingested rate outside [min,max] for its currency is rejected
-  // outright (not persisted as current) — guards against a malformed/zero/
-  // negative provider response.
+  // The real, dynamic source of truth for which non-USD currencies the
+  // platform accepts — see AdminConfigService.getEnabledCurrencies (lazily
+  // seeds this from the two deprecated fields below, once, for any
+  // pre-existing platform config doc).
+  @Prop({ type: [EnabledCurrencyConfigSchema], default: [] }) enabledCurrencies: EnabledCurrencyConfig[];
+  // @deprecated — superseded by `enabledCurrencies` (PKR's own band lives
+  // there now). Kept only as the one-time migration seed source for a
+  // pre-existing PlatformConfig doc; never read anywhere else.
   @Prop({ type: Number, default: 150 }) sanityBandMinPKR: number;
   @Prop({ type: Number, default: 450 }) sanityBandMaxPKR: number;
   // A newly-ingested rate that's within the sane band but moved more than

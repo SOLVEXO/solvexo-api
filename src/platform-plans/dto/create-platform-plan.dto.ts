@@ -44,13 +44,25 @@ export class CreatePlatformPlanDto {
   @IsOptional() @Type(() => Number) @IsNumber() @Min(0)
   yearlyPriceUSD?: number;
 
-  @ApiProperty({ required: false, default: 0 })
+  @ApiProperty({ required: false, default: 0, deprecated: true, description: 'No longer read anywhere — trial duration is now the platform-wide PlatformTrialSettings.durationDays, not per-plan.' })
   @IsOptional() @Type(() => Number) @IsNumber() @Min(0)
   trialDays?: number;
 
   @ApiProperty({ required: false, type: [String] })
   @IsOptional() @IsArray() @IsString({ each: true })
   featureBullets?: string[];
+
+  @ApiProperty({ required: false, default: false, description: 'Shopify-style "$1/mo for 3 months, then full price" — monthly billing only.' })
+  @IsOptional() @IsBoolean()
+  introOfferEnabled?: boolean;
+
+  @ApiProperty({ required: false, description: 'The discounted monthly price during the intro period — required if introOfferEnabled.' })
+  @IsOptional() @Type(() => Number) @IsNumber() @Min(0)
+  introPriceUSD?: number;
+
+  @ApiProperty({ required: false, description: 'Whole months the intro price lasts before reverting to monthlyPriceUSD — required if introOfferEnabled.' })
+  @IsOptional() @Type(() => Number) @IsNumber() @Min(1)
+  introDurationCycles?: number;
 
   @ApiProperty({ type: PlatformPlanLimitsDto })
   @ValidateNested()

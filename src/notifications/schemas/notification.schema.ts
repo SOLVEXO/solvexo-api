@@ -11,6 +11,10 @@ export class Notification {
   @Prop({ required: true, enum: ['user', 'seller'] })
   recipientRole: string;
 
+  /** Which store this notification belongs to — null for an account-wide event with no single store (e.g. a cross-store login/security notice). */
+  @Prop({ type: String, default: null })
+  storeId: string | null;
+
   @Prop({ required: true })
   type: string;
 
@@ -34,3 +38,5 @@ export const NotificationSchema = SchemaFactory.createForClass(Notification);
 
 NotificationSchema.index({ recipientId: 1, createdAt: -1 });
 NotificationSchema.index({ recipientId: 1, isRead: 1 });
+NotificationSchema.index({ recipientId: 1, storeId: 1, createdAt: -1 });
+NotificationSchema.index({ recipientId: 1, storeId: 1, isRead: 1 });

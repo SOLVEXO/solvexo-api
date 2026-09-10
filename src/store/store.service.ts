@@ -5,7 +5,10 @@ import {
   NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
-import { DatabaseService } from 'src/database/databaseservice';
+import { ConfigService } from '@nestjs/config';
+import { promises as dns } from 'dns';
+import * as bcrypt from 'bcrypt';
+import { DatabaseService } from '@/database/databaseservice';
 import {
   SellerType, ProductType, resolveTools,
   BUSINESS_TYPES, ID_DOCUMENT_TYPES, VERIFICATION_DOCUMENT_TYPES,
@@ -14,19 +17,23 @@ import {
   type VerificationStatus,
 } from './schemas/store.schema';
 import { getVerificationRequirements, isFieldSatisfied } from './verification-requirements.config';
-import { UploadService } from 'src/upload/upload.service';
-import { SUPPORTED_CURRENCIES } from 'src/exchange-rate/schemas/exchange-rate.schema';
-import { ActivityLogService } from 'src/activity-log/activity-log.service';
+import { resolveCountryFromIp } from '@/common/geo-locate.util';
+import { currencyForCountry } from '@/common/country-currency.const';
+import { UploadService } from '@/upload/upload.service';
+import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { UpdateStoreCustomerDto } from './dto/update-store-customer.dto';
-import { SubscriptionBenefitsService } from 'src/subscriptions/subscription-benefits.service';
-import { EntitlementsService } from 'src/platform-plans/entitlements.service';
-import { SellerPlatformSubscriptionsService } from 'src/platform-plans/seller-platform-subscriptions.service';
-import { NotificationsService } from 'src/notifications/notifications.service';
-import { NOTIFICATION_TYPES } from 'src/notifications/notification.types';
-import { RedisService } from 'src/redis/redis.service';
-import { MarketingService } from 'src/marketing/marketing.service';
-import { pickPrimaryCampaignForBadge } from 'src/marketing/campaign-pricing.util';
-import { AdminConfigService } from 'src/admin-config/admin-config.service';
+import { SubscriptionBenefitsService } from '@/subscriptions/subscription-benefits.service';
+import { EntitlementsService } from '@/platform-plans/entitlements.service';
+import { SellerPlatformSubscriptionsService } from '@/platform-plans/seller-platform-subscriptions.service';
+import { NotificationsService } from '@/notifications/notifications.service';
+import { NOTIFICATION_TYPES } from '@/notifications/notification.types';
+import { RedisService } from '@/redis/redis.service';
+import { MarketingService } from '@/marketing/marketing.service';
+import { pickPrimaryCampaignForBadge } from '@/marketing/campaign-pricing.util';
+import { AdminConfigService } from '@/admin-config/admin-config.service';
+import { StoreThemeService } from '../store-theme/store-theme.service';
+import { StorePagesService } from '../store-pages/store-pages.service';
+import { CollectionsService } from '../collections/collections.service';
 
 // Store slugs render at the site root (`solvexo.store/:slug`) — these are the
 // frontend's top-level static route segments (router/index.tsx), reserved so
@@ -34,9 +41,18 @@ import { AdminConfigService } from 'src/admin-config/admin-config.service';
 const RESERVED_STORE_SLUGS = new Set([
   'pricing', 'sellers', 'faq', 'privacy-policy', 'terms-of-service', 'cookie-policy',
   'contact-us', 'account', 'marketplace', 'cart', 'checkout', 'order-success',
-  'educationmarketplace', 'maintenance', 'login', 'register', 'onboard',
+  'educationmarketplace', 'education', 'product', 'maintenance', 'login', 'register', 'onboard',
   'forgot-password', 'verify-otp', 'new-password', 'seller', 'admin', 'store',
 ]);
+
+// The CNAME target every seller's custom domain must point at — the ONE
+// source of truth for this string, shown verbatim in the seller-facing DNS
+// instructions (`DomainWhiteLabelCard`, kept in sync by hand since the
+// frontend can't import a backend constant) and checked against in
+// `verifyCustomDomain`. Changing this value requires actually re-pointing
+// the platform's real infrastructure at it too (see that method's docblock
+// for the ops step this does NOT automate).
+export const CUSTOM_DOMAIN_CNAME_TARGET = 'stores.solvexo.store';
 
 @Injectable()
 export class StoreService {
@@ -51,7 +67,66 @@ export class StoreService {
     private readonly marketingService: MarketingService,
     private readonly adminConfigService: AdminConfigService,
     private readonly uploadService: UploadService,
+    private readonly storeThemeService: StoreThemeService,
+    private readonly storePagesService: StorePagesService,
+    private readonly collectionsService: CollectionsService,
+    private readonly configService: ConfigService,
   ) {}
+
+  /** Thin passthrough — AdminConfigService is already injected here for
+   *  `createStore`/`updateStore`'s own currency validation; the public
+   *  controller route reuses this rather than adding a second cross-module
+   *  injection just for a read. */
+  async getEnabledCurrencies() {
+    return this.adminConfigService.getEnabledCurrencies();
+  }
+
+  /**
+   * IP-detected country + a suggested currency for Onboarding's currency
+   * step — a suggestion only, never enforced (the seller can always pick
+   * differently; `createStore`'s own validation is the only real gate).
+   * `suggestedCurrency` is null (not a fabricated fallback) whenever the
+   * country's natural currency either isn't known (see COUNTRY_TO_CURRENCY)
+   * or isn't currently admin-enabled on this platform — never suggests a
+   * currency the seller couldn't actually pick.
+   */
+  async getSuggestedLocation(ip: string | undefined) {
+    const country = resolveCountryFromIp(ip);
+    if (!country) return { success: true, data: { country: null, suggestedCurrency: null } };
+    const natural = currencyForCountry(country);
+    if (!natural) return { success: true, data: { country, suggestedCurrency: null } };
+    const enabled = await this.adminConfigService.getEnabledCurrencies();
+    const suggestedCurrency = enabled.some((c) => c.code === natural) ? natural : null;
+    return { success: true, data: { country, suggestedCurrency } };
+  }
+
+  /** Same IP→country→currency suggestion as `getSuggestedLocation`, but for
+   *  a real buyer landing on ONE store's own subdomain — the suggestion must
+   *  also respect that store's own "Markets" restriction (Store.enabledCurrencies,
+   *  null/empty = every platform-enabled currency), never just the platform-
+   *  wide list alone, or a buyer could get suggested a currency this specific
+   *  store never agreed to accept. Public (no auth) — a storefront visitor is
+   *  usually not logged in yet when this fires. */
+  async getSuggestedLocationForStore(storeId: string, ip: string | undefined) {
+    const country = resolveCountryFromIp(ip);
+    if (!country) return { success: true, data: { country: null, suggestedCurrency: null } };
+    const natural = currencyForCountry(country);
+    if (!natural) return { success: true, data: { country, suggestedCurrency: null } };
+
+    const store = await this.databaseService.repositories.storeModel
+      .findById(storeId)
+      .select('enabledCurrencies')
+      .lean();
+    if (!store) return { success: true, data: { country, suggestedCurrency: null } };
+
+    const platformEnabled = await this.adminConfigService.getEnabledCurrencies();
+    const platformAllows = platformEnabled.some((c) => c.code === natural);
+    const storeAllows = !store.enabledCurrencies || store.enabledCurrencies.length === 0
+      || store.enabledCurrencies.includes(natural as any);
+
+    const suggestedCurrency = platformAllows && storeAllows ? natural : null;
+    return { success: true, data: { country, suggestedCurrency } };
+  }
 
   private generateSlug(name: string): string {
     return name
@@ -62,20 +137,8 @@ export class StoreService {
       .replace(/-+/g, '-');
   }
 
-  // A store's category must be one of the admin-curated main categories —
-  // not a subcategory, and not an arbitrary/made-up id.
-  private async assertValidRootCategory(categoryId: string) {
-    const category = await this.databaseService.repositories.categoryModel.findOne({
-      _id: categoryId,
-      status: 'active',
-      isDelete: false,
-    });
-    if (!category) throw new BadRequestException('Selected category not found');
-    if (category.parentId) throw new BadRequestException('Store category must be a main category, not a subcategory');
-  }
-
   async createStore(sellerId: string, body: any) {
-    const { name, logo, categoryId, description, sellerType, productTypes, baseCurrency } = body;
+    const { name, logo, description, sellerType, productTypes, baseCurrency, platformPlanId } = body;
 
     if (!name) throw new BadRequestException('Store name is required');
 
@@ -87,15 +150,16 @@ export class StoreService {
     // reinterpreted under a different currency later. The frontend
     // onboarding flow suggests a default from the seller's detected
     // country, but never forces it — this validation only enforces that
-    // whatever was chosen is one of the currencies Solvexo actually
-    // supports today.
-    if (!baseCurrency || !SUPPORTED_CURRENCIES.includes(baseCurrency)) {
+    // whatever was chosen has a real, admin-vetted exchange rate today
+    // (AdminConfigService.getEnabledCurrencies — the dynamic Markets list,
+    // not the old fixed `SUPPORTED_CURRENCIES` array, which is retired as
+    // an enforcement mechanism).
+    const enabledCurrencies = await this.adminConfigService.getEnabledCurrencies();
+    if (!baseCurrency || !enabledCurrencies.some((c) => c.code === baseCurrency)) {
       throw new BadRequestException(
-        `baseCurrency is required and must be one of: ${SUPPORTED_CURRENCIES.join(', ')}`,
+        `baseCurrency is required and must be one of: ${enabledCurrencies.map((c) => c.code).join(', ')}`,
       );
     }
-
-    if (categoryId) await this.assertValidRootCategory(categoryId);
 
     if (sellerType && !Object.values(SellerType).includes(sellerType)) {
       throw new BadRequestException('Invalid sellerType');
@@ -126,30 +190,58 @@ export class StoreService {
 
     const finalProductTypes = productTypes ?? [];
 
+    // Self-serve activation, unconditional. Used to require a card on file
+    // (Seller.hasPlatformPaymentMethod) as a proxy for "nothing left for an
+    // admin to gate" — but the trial-based billing model (see
+    // SellerPlatformSubscriptionsService.ensureDefaultSubscription) needs NO
+    // card to start a store's trial at all, matching Shopify's own signup
+    // (a store exists and is usable immediately, entirely independent of
+    // billing state). Flip this back to the hasPlatformPaymentMethod check
+    // to reinstate the old gate — the admin Leads/pending-review queue and
+    // its whole pipeline are untouched, just unreferenced by default now.
+    const selfServeActivation = true;
+
     const store = await this.databaseService.repositories.storeModel.create({
       sellerId,
       name,
       slug,
       logo: logo ?? null,
-      categoryId: categoryId ?? null,
       description: description ?? null,
       sellerType: sellerType ?? null,
       productTypes: finalProductTypes,
       enabledTools: resolveTools(finalProductTypes),
       baseCurrency,
-      // Goes into the admin Leads queue — not live on the marketplace until
-      // an admin approves it (see AdminMarketplaceService.approveLead).
-      status: 'pending',
+      // Shopify-style "Markets" default: a NEW store only accepts its own
+      // currency until the seller explicitly opts into more via Store
+      // Settings — previously this was left `null` (every supported
+      // currency silently accepted), which let a buyer complete a USD
+      // store's checkout in PKR (or vice versa) without the seller ever
+      // choosing that. Existing pre-existing stores are untouched (their
+      // `enabledCurrencies` stays whatever it already was) — this only
+      // changes the default for a store created from today onward.
+      enabledCurrencies: [baseCurrency],
+      status: selfServeActivation ? 'active' : 'pending',
+      ...(selfServeActivation ? { reviewedAt: new Date() } : {}),
     });
 
     // ✅ seller pe sirf onboarded mark — storeId nahi rakhte (source of truth = Store.sellerId)
+    // onboardingDraft cleared too — nothing left to resume once the store is real.
     await this.databaseService.repositories.sellerModel.findByIdAndUpdate(sellerId, {
       isOnboarded: true,
+      onboardingDraft: null,
     });
 
-    // Every store always has exactly one platform-plan subscription — auto
-    // start on the free tier so onboarding has zero friction (see EntitlementsService).
-    await this.sellerPlatformSubscriptionsService.ensureDefaultSubscription(store._id.toString(), sellerId);
+    // Every store always has exactly one platform-plan subscription — new
+    // stores start a no-card-required trial on the seller's OWN plan choice
+    // (see ensureDefaultSubscription), never a permanent free plan.
+    await this.sellerPlatformSubscriptionsService.ensureDefaultSubscription(store._id.toString(), sellerId, platformPlanId);
+
+    // Every store gets its own storefront chrome (theme/header/footer) and a
+    // home page seeded at creation time, not lazily on first public visit —
+    // lazy-on-a-public-GET would let two simultaneous buyer visits race on
+    // creating the same home page. Both calls are idempotent upserts.
+    await this.storeThemeService.ensureDefaultTheme(store._id.toString());
+    await this.storePagesService.ensureHomePage(store._id.toString());
 
     return {
       success: true,
@@ -440,20 +532,192 @@ export class StoreService {
     if (!store) throw new NotFoundException('Store not found');
     if (store.sellerId !== sellerId) throw new UnauthorizedException('Unauthorized');
 
-    if (domain) {
+    const normalized = domain ? domain.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/$/, '') : null;
+    if (normalized) {
       await this.entitlementsService.assertFeatureAllowed(storeId, 'customDomainAllowed', 'Custom domain');
+      if (!/^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/.test(normalized)) {
+        throw new BadRequestException('Enter a valid domain, e.g. shop.yourbrand.com');
+      }
+      const clash = await this.databaseService.repositories.storeModel.findOne({
+        customDomain: normalized, _id: { $ne: storeId }, isDelete: false,
+      }).lean();
+      if (clash) throw new BadRequestException('This domain is already connected to another store');
     }
 
-    store.customDomain = domain;
+    // Any change to the domain string invalidates whatever verification
+    // already existed — a seller changing the value must re-prove control
+    // of the NEW domain before it can serve as a live storefront.
+    if (normalized !== store.customDomain) store.customDomainStatus = 'unverified';
+    store.customDomain = normalized;
     await store.save();
 
     this.activityLogService.log({
       storeId, category: 'settings', action: 'custom_domain_updated',
-      description: domain ? `Custom domain set to ${domain}` : 'Custom domain removed',
+      description: normalized ? `Custom domain set to ${normalized}` : 'Custom domain removed',
       actorId: sellerId, actorRole: 'seller',
     });
 
-    return { success: true, message: 'Custom domain updated', data: { customDomain: store.customDomain } };
+    return {
+      success: true, message: 'Custom domain updated',
+      data: { customDomain: store.customDomain, customDomainStatus: store.customDomainStatus, cnameTarget: CUSTOM_DOMAIN_CNAME_TARGET },
+    };
+  }
+
+  /**
+   * Confirms the seller actually controls the domain they entered by
+   * checking its real DNS — the domain's CNAME chain must resolve to
+   * `CUSTOM_DOMAIN_CNAME_TARGET`. Only a 'verified' domain is ever matched
+   * by the public `getPublicStoreByDomain` lookup, so an unproven domain
+   * claim can never serve as a live storefront.
+   *
+   * **Deliberately out of scope here (real infra/ops work, not application
+   * logic):** this method only checks DNS — it does NOT provision anything.
+   * For a verified custom domain to actually SERVE the storefront over
+   * HTTPS, the platform's edge/reverse-proxy (whatever that is in
+   * production — a CDN's custom-hostname feature, an nginx/Caddy config
+   * with on-demand TLS, etc.) must separately be configured to (a) accept
+   * traffic for arbitrary incoming Host headers pointed at
+   * `CUSTOM_DOMAIN_CNAME_TARGET`, and (b) obtain a TLS certificate for each
+   * one (e.g. via ACME DNS-01/HTTP-01 automation). That step depends on
+   * whichever hosting provider is actually used and isn't something this
+   * application code can wire up blindly.
+   */
+  async verifyCustomDomain(sellerId: string, storeId: string) {
+    const store = await this.databaseService.repositories.storeModel.findOne({ _id: storeId, isDelete: false });
+    if (!store) throw new NotFoundException('Store not found');
+    if (store.sellerId !== sellerId) throw new UnauthorizedException('Unauthorized');
+    if (!store.customDomain) throw new BadRequestException('No custom domain is set for this store yet');
+
+    let verified = false;
+    let reason = '';
+    try {
+      const cnames = await dns.resolveCname(store.customDomain);
+      verified = cnames.some(c => c.toLowerCase().replace(/\.$/, '') === CUSTOM_DOMAIN_CNAME_TARGET);
+      if (!verified) reason = `Found a CNAME, but it doesn't point to ${CUSTOM_DOMAIN_CNAME_TARGET} yet.`;
+    } catch {
+      reason = `No CNAME record found for ${store.customDomain} yet — DNS changes can take a few minutes to a few hours to propagate.`;
+    }
+
+    store.customDomainStatus = verified ? 'verified' : 'unverified';
+    await store.save();
+
+    this.activityLogService.log({
+      storeId, category: 'settings', action: 'custom_domain_verify_attempted',
+      description: verified ? `Custom domain ${store.customDomain} verified` : `Custom domain verification failed: ${reason}`,
+      actorId: sellerId, actorRole: 'seller',
+    });
+
+    return {
+      success: true,
+      data: { customDomainStatus: store.customDomainStatus, verified, reason: verified ? null : reason, cnameTarget: CUSTOM_DOMAIN_CNAME_TARGET },
+    };
+  }
+
+  /** Seller-facing: switch the storefront gate mode and (only when moving
+   *  into 'password' mode with a new password typed) set a fresh bcrypt
+   *  hash. An empty/omitted `password` while already in 'password' mode
+   *  keeps the existing hash — the seller isn't forced to retype it just to
+   *  flip other settings. Switching away from 'password' leaves the hash in
+   *  place (see the schema field's own doc comment) so re-enabling it later
+   *  doesn't need a fresh password either, unless the seller explicitly
+   *  types a new one. */
+  async updateStorePrivacy(sellerId: string, storeId: string, body: { privacyMode: 'public' | 'password' | 'coming_soon'; password?: string }) {
+    const store = await this.databaseService.repositories.storeModel.findOne({ _id: storeId, isDelete: false });
+    if (!store) throw new NotFoundException('Store not found');
+    if (store.sellerId !== sellerId) throw new UnauthorizedException('Unauthorized');
+
+    const { privacyMode, password } = body;
+    if (!['public', 'password', 'coming_soon'].includes(privacyMode)) {
+      throw new BadRequestException('Invalid privacy mode');
+    }
+    if (privacyMode === 'password') {
+      if (password && password.trim()) {
+        if (password.trim().length < 4) throw new BadRequestException('Password must be at least 4 characters');
+        store.storePasswordHash = await bcrypt.hash(password.trim(), 10);
+      } else {
+        const existing = await this.databaseService.repositories.storeModel
+          .findOne({ _id: storeId }).select('+storePasswordHash').lean();
+        if (!existing?.storePasswordHash) throw new BadRequestException('Set a password to enable password protection');
+      }
+    }
+
+    store.privacyMode = privacyMode;
+    await store.save();
+
+    this.activityLogService.log({
+      storeId, category: 'settings', action: 'store_privacy_updated',
+      description: `Storefront visibility set to "${privacyMode}"`,
+      actorId: sellerId, actorRole: 'seller',
+    });
+
+    return { success: true, message: 'Storefront visibility updated', data: { privacyMode: store.privacyMode } };
+  }
+
+  /** Public — a storefront visitor submitting the password gate. Deliberately
+   *  minimal (no lockout/attempt-counter): the storefront password gate is a
+   *  visibility convenience, not an account-security boundary (see the
+   *  schema field's own doc comment on why the underlying product APIs
+   *  aren't separately locked down), so the same lighter posture applies
+   *  here — `@Throttle` on the route is the real anti-bruteforce measure. */
+  async verifyStorePassword(storeId: string, password: string) {
+    const store = await this.databaseService.repositories.storeModel
+      .findOne({ _id: storeId, isDelete: false }).select('+storePasswordHash').lean();
+    if (!store) throw new NotFoundException('Store not found');
+    if (store.privacyMode !== 'password' || !store.storePasswordHash) {
+      return { success: true, data: { valid: true } };
+    }
+    const valid = await bcrypt.compare(password || '', store.storePasswordHash);
+    return { success: true, data: { valid } };
+  }
+
+  /** Seller-facing: set/clear this store's custom `robots.txt` body. An
+   *  empty/whitespace-only value clears the override (falls back to the
+   *  generated default — see `getPublicStoreRobotsTxt`). */
+  async updateStoreRobotsTxt(sellerId: string, storeId: string, robotsTxtOverride: string | null) {
+    const store = await this.databaseService.repositories.storeModel.findOne({ _id: storeId, isDelete: false });
+    if (!store) throw new NotFoundException('Store not found');
+    if (store.sellerId !== sellerId) throw new UnauthorizedException('Unauthorized');
+
+    const trimmed = robotsTxtOverride?.trim() || null;
+    if (trimmed && trimmed.length > 5000) throw new BadRequestException('robots.txt must be 5000 characters or fewer');
+
+    const seo = (store as any).seo?.toObject?.() ?? (store as any).seo ?? {};
+    (store as any).seo = { ...seo, robotsTxtOverride: trimmed };
+    await store.save();
+
+    this.activityLogService.log({
+      storeId, category: 'seo', action: 'store_robots_txt_updated',
+      description: trimmed ? 'Custom robots.txt saved' : 'robots.txt reset to the generated default',
+      actorId: sellerId, actorRole: 'seller',
+    });
+
+    return { success: true, message: 'robots.txt updated', data: { robotsTxtOverride: trimmed } };
+  }
+
+  /** Public — the resolved `robots.txt` body for one store's storefront.
+   *  Real, seller-editable per-store output (see `updateStoreRobotsTxt`), but
+   *  see this method's own doc comment on the one disclosed gap: getting a
+   *  crawler request for `<slug>.solvexo.store/robots.txt` (or a connected
+   *  custom domain's) actually ROUTED to this endpoint depends on the
+   *  platform's edge/reverse-proxy rewriting that bare path to here — the
+   *  same category of real infra step already disclosed for Custom Domain
+   *  TLS termination (see `verifyCustomDomain`'s doc comment) — this method
+   *  itself is the complete, correct application-layer half of that. No
+   *  per-store `sitemap.xml` exists yet either (the platform's sitemap
+   *  system is still apex-domain-only — a separate, larger gap), so the
+   *  generated default deliberately omits a `Sitemap:` directive rather than
+   *  pointing at a URL that would 404. */
+  async getPublicStoreRobotsTxt(storeId: string) {
+    const store = await this.databaseService.repositories.storeModel
+      .findOne({ _id: storeId, isDelete: false }).select('seo').lean();
+    if (!store) throw new NotFoundException('Store not found');
+
+    const override = (store as any).seo?.robotsTxtOverride?.trim();
+    if (override) return override;
+
+    // Sensible default: fully crawlable except the buyer's own account/cart/
+    // checkout surfaces, which have no SEO value and shouldn't be indexed.
+    return ['User-agent: *', 'Allow: /', 'Disallow: /account', 'Disallow: /cart', 'Disallow: /checkout'].join('\n') + '\n';
   }
 
   /** Platform-plan-gated: only stores on a plan with `whiteLabelAllowed` may hide Solvexo branding. */
@@ -470,6 +734,28 @@ export class StoreService {
     await store.save();
 
     return { success: true, message: 'White-label setting updated', data: { whiteLabelEnabled: store.whiteLabelEnabled } };
+  }
+
+  /**
+   * Solvexo POS is a single, already-built Google Play listing (Android) —
+   * a *paid* listing, so Google Play collects payment directly from the
+   * merchant when they install it. There is nothing for our backend to
+   * sell, gate, or track here: this just hands back each platform's real
+   * store-listing URL so the dashboard can render it as a QR code/link.
+   * Each is independently configured via its own env var so either can
+   * change (or a real one appear for the first time) without a frontend
+   * deploy — `ios: null` today because no real App Store listing exists
+   * yet; set POS_APP_IOS_URL once one does and this starts returning it
+   * with zero other code changes, same as Android already works.
+   */
+  getPosAppInfo() {
+    return {
+      success: true,
+      data: {
+        android: this.configService.get<string>('POS_APP_ANDROID_URL') ?? null,
+        ios: this.configService.get<string>('POS_APP_IOS_URL') ?? null,
+      },
+    };
   }
 
   async updatePinnedProducts(sellerId: string, storeId: string, productIds: string[]) {
@@ -517,8 +803,10 @@ export class StoreService {
 
   // seller ke saare stores
   async getMyStores(sellerId: string) {
-    const { storeModel, sellerModel, productModel, orderModel } =
-      this.databaseService.repositories;
+    const {
+      storeModel, sellerModel, productModel, orderModel,
+      sellerPlatformSubscriptionModel, platformPlanModel,
+    } = this.databaseService.repositories;
 
     const stores = await storeModel.find({ sellerId, isDelete: false }).lean();
 
@@ -572,14 +860,48 @@ export class StoreService {
       salesRows.map((r: any) => [r._id, round((r.gross ?? 0) - (r.refunds ?? 0))]),
     );
 
+    // The `plan`/`aiCredits` on the raw Store document below are a separate,
+    // legacy field that's never actually kept in sync with the real
+    // per-store subscription (SellerPlatformSubscriptionsService.getStorePlan
+    // is the source of truth Billing Center reads) — so this screen and
+    // Store Settings (which also reads store.plan directly) could show
+    // "Starter" for a store Billing Center correctly shows as "Professional
+    // (Locked)". Overriding with the real subscription's plan name here,
+    // the same way getStorePlan resolves it, is what makes all three screens
+    // finally agree.
+    const subs = storeIds.length
+      ? await sellerPlatformSubscriptionModel
+          .find({ storeId: { $in: storeIds }, isDelete: false })
+          .select('storeId platformPlanId status')
+          .lean()
+      : [];
+    const planIds = [...new Set(subs.map((s: any) => s.platformPlanId).filter(Boolean))];
+    const plans = planIds.length
+      ? await platformPlanModel.find({ _id: { $in: planIds } }).select('name').lean()
+      : [];
+    const planNameById = new Map<string, string>(plans.map((p: any) => [p._id.toString(), p.name]));
+    const subByStore = new Map<string, { planName: string | null; status: string }>(
+      subs.map((s: any) => [
+        s.storeId,
+        { planName: planNameById.get(String(s.platformPlanId)) ?? null, status: s.status },
+      ]),
+    );
+
     const data = stores.map((store: any) => {
       const id = store._id.toString();
+      const realSub = subByStore.get(id);
       return {
         ...store,
         sellerName: seller?.name ?? null,
         sellerEmail: seller?.email ?? null,
         productCount: productCountByStore.get(id) ?? 0,
         totalSalesUSD: salesByStore.get(id) ?? 0,
+        // Real subscription plan name when one exists, falling back to the
+        // legacy store.plan field only for a store with no subscription row
+        // at all yet (shouldn't normally happen — ensureDefaultSubscription
+        // runs at store creation — but never crash this list over it).
+        plan: realSub?.planName ?? store.plan,
+        planStatus: realSub?.status ?? null,
       };
     });
 
@@ -618,11 +940,16 @@ export class StoreService {
       return { success: true, data: store };
     }
 
-    const { sellerModel, productModel, orderModel } = this.databaseService.repositories;
+    const { sellerModel, productModel, orderModel, sellerPlatformSubscriptionModel, platformPlanModel } = this.databaseService.repositories;
 
-    const [seller, productCount, orderAgg] = await Promise.all([
+    const [seller, productCount, sub, orderAgg] = await Promise.all([
       sellerModel.findById(store.sellerId).select('name email phone').lean(),
       productModel.countDocuments({ storeId, isDelete: false }),
+      // Real subscription plan, same fix/reasoning as getMyStores() above —
+      // store.plan (spread in below via store.toObject()) is a legacy field
+      // this Settings page used to show as-is, disagreeing with Billing
+      // Center's real answer for the exact same store.
+      sellerPlatformSubscriptionModel.findOne({ storeId, isDelete: false }).select('platformPlanId status').lean(),
       orderModel.aggregate([
         { $match: { isDelete: false } },
         { $unwind: '$sellerOrders' },
@@ -651,6 +978,9 @@ export class StoreService {
 
     const agg = orderAgg[0] as { orderCount?: number; gross?: number; refunds?: number } | undefined;
     const round = (n: number) => Math.round(n * 100) / 100;
+    const realPlan = sub?.platformPlanId
+      ? await platformPlanModel.findById(sub.platformPlanId).select('name').lean()
+      : null;
 
     return {
       success: true,
@@ -662,6 +992,11 @@ export class StoreService {
         productCount,
         orderCount: agg?.orderCount ?? 0,
         totalSalesUSD: round((agg?.gross ?? 0) - (agg?.refunds ?? 0)),
+        // Real subscription plan overriding the legacy store.plan spread
+        // above — see the comment on the sellerPlatformSubscriptionModel
+        // lookup above for why.
+        plan: realPlan?.name ?? store.plan,
+        planStatus: sub?.status ?? null,
       },
     };
   }
@@ -673,7 +1008,7 @@ export class StoreService {
   // body would let a seller un-suspend their own store (see
   // usersService.deleteSellerAccount, which suspends stores on delete).
   async updateStore(sellerId: string, storeId: string, body: any) {
-    const { name, logo, coverImage, description, sellerType, productTypes, codEnabled } = body;
+    const { name, logo, coverImage, faviconUrl, description, tagline, contactEmail, contactPhone, sellerType, productTypes, codEnabled, lowStockThreshold, taxRate, enabledCurrencies } = body;
 
     if (!storeId) throw new BadRequestException('storeId is required');
 
@@ -702,36 +1037,80 @@ export class StoreService {
 
     const updateData: any = {};
 
+    // Store.slug is the seller's live subdomain/custom-domain identity
+    // (hello.solvexo.store) — unlike a Product's slug, breaking it takes
+    // down the seller's entire storefront, not just one shared link.
+    // Deliberately NOT regenerated when the display name changes any more;
+    // it's only ever assigned once, at store creation (see createStore
+    // above). A silent regeneration here previously broke a seller's DNS
+    // subdomain/custom domain the moment they edited their store name.
     if (name && name !== store.name) {
-      const baseSlug = this.generateSlug(name);
-      let slug = baseSlug;
-      let count = 1;
-      while (
-        RESERVED_STORE_SLUGS.has(slug) ||
-        (await this.databaseService.repositories.storeModel.findOne({ slug, _id: { $ne: store._id } }))
-      ) {
-        slug = `${baseSlug}-${count}`;
-        count++;
-      }
       updateData.name = name;
-      updateData.slug = slug;
     }
 
     if (logo !== undefined) updateData.logo = logo;
     if (coverImage !== undefined) updateData.coverImage = coverImage;
+    if (faviconUrl !== undefined) updateData.faviconUrl = faviconUrl;
     if (description !== undefined) updateData.description = description;
+    if (tagline !== undefined) updateData.tagline = tagline;
+    if (contactEmail !== undefined) updateData.contactEmail = contactEmail;
+    if (contactPhone !== undefined) updateData.contactPhone = contactPhone;
     if (sellerType !== undefined) updateData.sellerType = sellerType;
     if (codEnabled !== undefined) updateData.codEnabled = !!codEnabled;
+    if (lowStockThreshold !== undefined) {
+      const parsed = Number(lowStockThreshold);
+      if (!Number.isFinite(parsed) || parsed < 1) {
+        throw new BadRequestException('lowStockThreshold must be a positive number');
+      }
+      updateData.lowStockThreshold = Math.floor(parsed);
+    }
+    if (taxRate !== undefined) {
+      const parsed = Number(taxRate);
+      if (!Number.isFinite(parsed) || parsed < 0 || parsed > 100) {
+        throw new BadRequestException('taxRate must be between 0 and 100');
+      }
+      updateData.taxRate = parsed;
+    }
+
+    // "Markets" — which supported currencies this store's buyers can check
+    // out in. `undefined` (field omitted) means "leave untouched" — every
+    // OTHER field on this same General-tab save form uses that same
+    // convention, and this one must too: the frontend always sends the
+    // field it currently has loaded, so this is what stops an unrelated
+    // save (e.g. just the tagline) from silently touching Markets.
+    // `null` is a real, distinct, intentional value here — "no
+    // restriction, every platform currency is accepted" (the schema
+    // default) — NOT the same as "not provided". A real array must be
+    // non-empty, a real subset of the platform's dynamic admin-enabled
+    // currency list (not the old fixed `SUPPORTED_CURRENCIES` array — see
+    // AdminConfigService.getEnabledCurrencies), and must always include the
+    // store's own baseCurrency (a seller can't disable checkout in the
+    // currency they're actually priced/paid in).
+    if (enabledCurrencies !== undefined) {
+      if (enabledCurrencies === null) {
+        updateData.enabledCurrencies = null;
+      } else {
+        if (!Array.isArray(enabledCurrencies) || enabledCurrencies.length === 0) {
+          throw new BadRequestException('enabledCurrencies must be a non-empty array, or null to remove the restriction');
+        }
+        const platformCurrencies = await this.adminConfigService.getEnabledCurrencies();
+        const platformCodes = platformCurrencies.map((c) => c.code);
+        for (const c of enabledCurrencies) {
+          if (!platformCodes.includes(c)) {
+            throw new BadRequestException(`Unsupported currency "${c}" — must be one of: ${platformCodes.join(', ')}`);
+          }
+        }
+        if (store.baseCurrency && !enabledCurrencies.includes(store.baseCurrency)) {
+          throw new BadRequestException(`enabledCurrencies must include this store's own currency (${store.baseCurrency})`);
+        }
+        updateData.enabledCurrencies = enabledCurrencies;
+      }
+    }
 
     // productTypes change ho to enabledTools bhi refresh
     if (productTypes !== undefined) {
       updateData.productTypes = productTypes;
       updateData.enabledTools = resolveTools(productTypes);
-    }
-
-    if (body.categoryId !== undefined) {
-      if (body.categoryId) await this.assertValidRootCategory(body.categoryId);
-      updateData.categoryId = body.categoryId;
     }
 
     const updated = await this.databaseService.repositories.storeModel.findByIdAndUpdate(
@@ -806,10 +1185,35 @@ export class StoreService {
     }).lean();
     if (!store) throw new NotFoundException('Store not found');
 
+    return this.shapePublicStoreResponse(store);
+  }
+
+  /** Same public shape as `getPublicStore`, resolved by a seller's VERIFIED
+   *  custom domain instead of their `solvexo.store` subdomain slug — this is
+   *  what lets a request arriving on an arbitrary hostname (once the
+   *  platform's edge is actually routing it here — see `verifyCustomDomain`'s
+   *  docblock) still load the right store. An unverified domain never
+   *  matches, so merely claiming a domain string is never enough to serve
+   *  as a live storefront. */
+  async getPublicStoreByDomain(host: string) {
+    if (!host) throw new BadRequestException('host is required');
+
+    const store = await this.databaseService.repositories.storeModel.findOne({
+      customDomain: host.trim().toLowerCase(),
+      customDomainStatus: 'verified',
+      isDelete: false,
+      status: 'active',
+    }).lean();
+    if (!store) throw new NotFoundException('No store is connected to this domain');
+
+    return this.shapePublicStoreResponse(store);
+  }
+
+  private async shapePublicStoreResponse(store: any) {
     const campaigns = await this.marketingService.getActiveCampaignsForStore(store._id.toString());
     const primaryCampaign = pickPrimaryCampaignForBadge(campaigns);
 
-    const bar = (store as any).announcementBar;
+    const bar = store.announcementBar;
     const now = Date.now();
     const announcementActive = !!bar?.isActive
       && (!bar.startAt || new Date(bar.startAt).getTime() <= now)
@@ -824,7 +1228,14 @@ export class StoreService {
         slug: store.slug,
         logo: store.logo,
         coverImage: store.coverImage ?? null,
+        faviconUrl: store.faviconUrl ?? null,
         description: store.description,
+        tagline: store.tagline ?? null,
+        contactEmail: store.contactEmail ?? null,
+        contactPhone: store.contactPhone ?? null,
+        lowStockThreshold: store.lowStockThreshold ?? 10,
+        taxRate: store.taxRate ?? 0,
+        categoryId: store.categoryId ?? null,
         followersCount: store.followersCount ?? 0,
         averageRating: store.averageRating ?? 0,
         reviewCount: store.reviewCount ?? 0,
@@ -834,9 +1245,16 @@ export class StoreService {
         // frontend uses this to convert every listed price into the
         // buyer's own chosen display currency.
         baseCurrency: store.baseCurrency ?? 'PKR',
-        sellerType: (store as any).sellerType ?? null,
-        badges: (store as any).badges ?? [],
-        createdAt: (store as any).createdAt,
+        // "Markets" — null/empty means every platform-enabled currency is
+        // accepted (a store that never touched this setting) — the
+        // frontend must treat null the same as "all", never as "none".
+        enabledCurrencies: store.enabledCurrencies && store.enabledCurrencies.length > 0 ? store.enabledCurrencies : null,
+        sellerType: store.sellerType ?? null,
+        badges: store.badges ?? [],
+        createdAt: store.createdAt,
+        // Not sensitive (never the hash) — the storefront needs it up front
+        // to decide whether to render the real site or the gate page.
+        privacyMode: store.privacyMode ?? 'public',
         announcementBar: announcementActive ? { message: bar.message, type: bar.type, ctaLabel: bar.ctaLabel, ctaLink: bar.ctaLink } : null,
         activeCampaign: primaryCampaign ? {
           campaignId: primaryCampaign.campaignId,
@@ -1006,55 +1424,6 @@ export class StoreService {
     return { success: true, data };
   }
 
-  // ── 3e. Testimonials — real, well-written reviews for the homepage social-proof
-  // section. Anonymous reviews stay anonymous; only reviews with real comment text
-  // qualify (a bare star rating with no words makes a poor testimonial). ──
-  async getTestimonials(limit: number) {
-    const cacheKey = `platform-testimonials:${limit}`;
-    const cached = await this.redisService.get(cacheKey);
-    if (cached) return { success: true, data: JSON.parse(cached) };
-
-    const { ratingModel, userModel, storeModel } = this.databaseService.repositories;
-
-    const candidates = await ratingModel
-      .find({
-        isDelete: false,
-        isFlagged: false,
-        rating: { $gte: 4 },
-        'comments.0': { $exists: true },
-      })
-      .sort({ rating: -1, isVerifiedPurchase: -1, createdAt: -1 })
-      .limit(limit * 3) // over-fetch — some will drop after the length filter below
-      .lean();
-
-    const withText = candidates
-      .map((r: any) => ({ ...r, text: r.comments?.[r.comments.length - 1]?.text?.trim() ?? '' }))
-      .filter((r: any) => r.text.length >= 25)
-      .slice(0, limit);
-
-    const userIds  = [...new Set(withText.map((r: any) => r.userId))];
-    const storeIds = [...new Set(withText.map((r: any) => r.storeId).filter(Boolean))];
-
-    const [users, stores] = await Promise.all([
-      userIds.length ? userModel.find({ _id: { $in: userIds } }).select('name').lean() : [],
-      storeIds.length ? storeModel.find({ _id: { $in: storeIds } }).select('name').lean() : [],
-    ]);
-    const userNameById  = new Map<string, string>(users.map((u: any): [string, string] => [u._id.toString(), u.name]));
-    const storeNameById = new Map<string, string>(stores.map((s: any): [string, string] => [s._id.toString(), s.name]));
-
-    const data = withText.map((r: any) => ({
-      id: r._id.toString(),
-      name: r.isAnonymous ? 'Verified Buyer' : (userNameById.get(r.userId) ?? 'Verified Buyer'),
-      storeName: r.storeId ? (storeNameById.get(r.storeId) ?? null) : null,
-      rating: r.rating,
-      text: r.text,
-      isVerifiedPurchase: r.isVerifiedPurchase,
-    }));
-
-    await this.redisService.set(cacheKey, JSON.stringify(data), 600);
-    return { success: true, data };
-  }
-
   // ── 4. Public store products ──────────────────────────────────────────────
   async getPublicStoreProducts(storeId: string, query: any, customerId?: string | null) {
     if (!storeId) throw new BadRequestException('storeId is required');
@@ -1066,14 +1435,58 @@ export class StoreService {
     }).lean();
     if (!store) throw new NotFoundException('Store not found');
 
-    const page  = parseInt(query.page)  || 1;
-    const limit = parseInt(query.limit) || 12;
+    // `limit` was previously unbounded — a caller passing `?limit=999999`
+    // (a Collection page's product grid, `?category=`, `?search=`, etc. all
+    // flow through this one method) could force an arbitrarily large,
+    // unpaginated query. Clamped to the same 50 ceiling `OrdersService`'s
+    // own seller-orders pagination already uses.
+    const page  = Math.max(1, parseInt(query.page) || 1);
+    const limit = Math.min(50, parseInt(query.limit) || 12);
     const skip  = (page - 1) * limit;
 
     const filter: any = { storeId, isDelete: false, status: 'active' };
     if (query.type && query.type !== 'all') filter.type = query.type;
-    if (query.categoryId && query.categoryId !== 'all') filter.categoryId = query.categoryId;
+    // `Product.categoryId` is the store's single fixed root category — every
+    // product in a store shares the exact same value there, so filtering on
+    // it within one store's own listing is meaningless (matches either
+    // everything or nothing). The only real per-product distinction inside
+    // one store is `subCategoryId` — this param is still named `categoryId`
+    // everywhere it's set (section settings, nav links, this query string)
+    // since a seller only ever picks from their store's subcategories, but
+    // it must be matched against `subCategoryId` here to actually filter
+    // anything (a real, previously-silent no-op bug, not a new behavior).
+    if (query.categoryId && query.categoryId !== 'all') filter.subCategoryId = query.categoryId;
     if (query.tag && query.tag !== 'all') filter.tags = query.tag;
+    if (query.search && String(query.search).trim()) {
+      filter.name = { $regex: String(query.search).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' };
+    }
+    // Collection membership — resolved via CollectionsService (manual: the
+    // seller's own ordered pick; automatic: category/tag rule, evaluated
+    // fresh) so this endpoint's existing variant/seller/campaign-pricing
+    // shaping pipeline is reused as-is rather than duplicated inside the
+    // collections module.
+    if (query.collectionId && query.collectionId !== 'all') {
+      const ids = await this.collectionsService.resolveProductIds(storeId, query.collectionId);
+      filter._id = { $in: ids.length ? ids : ['__none__'] };
+    }
+    // Same real "on sale" definition the product card's own discount badge
+    // already uses (compareAtPrice > price). compareAtPrice/price live on
+    // ProductVariant, not Product, so this resolves the matching product ids
+    // up front (before pagination) rather than post-filtering the page —
+    // otherwise `total`/skip/limit would silently disagree with what's
+    // actually returned.
+    if (query.onSale === true || query.onSale === 'true') {
+      const storeProductIds = (
+        await this.databaseService.repositories.productModel.find({ storeId, isDelete: false, status: 'active' }).select('_id').lean()
+      ).map((p: any) => p._id.toString());
+      const onSaleVariants = await this.databaseService.repositories.productVariantModel
+        .find({ productId: { $in: storeProductIds }, status: 'active', isDelete: false, $expr: { $gt: ['$compareAtPrice', '$price'] } })
+        .select('productId')
+        .lean();
+      const onSaleIds = [...new Set(onSaleVariants.map((v: any) => v.productId))];
+      const already: string[] | undefined = filter._id?.$in;
+      filter._id = { $in: already ? already.filter((id: string) => onSaleIds.includes(id)) : (onSaleIds.length ? onSaleIds : ['__none__']) };
+    }
 
     const sortMap: Record<string, any> = {
       newest:     { createdAt: -1 },
@@ -1172,121 +1585,44 @@ export class StoreService {
 
   // ── 5. Public store filters (tags) ───────────────────────────────────────
   async getPublicStoreFilters(storeId: string) {
-    const productModel = this.databaseService.repositories.productModel;
+    // Same 600s Redis TTL convention as getTopStores/getPlatformStats — a
+    // store's tag/category facets change only as often as products are
+    // added/edited, so a request-per-page-view cost here is pure waste.
+    const cacheKey = `store-filters:v1:${storeId}`;
+    const cached = await this.redisService.get(cacheKey);
+    if (cached) return { success: true, data: JSON.parse(cached) };
+
+    const { productModel, categoryModel } = this.databaseService.repositories;
     const tags: string[] = await productModel.distinct('tags', {
       storeId,
       isDelete: false,
       status: 'active',
     });
-    return {
-      success: true,
-      data: { tags: tags.filter(Boolean).sort() },
-    };
+
+    // Which subcategories this store's own active catalog actually uses —
+    // powers both `featured_category_grid` and a "shop by category" facet
+    // on the new /category browse route (Store Builder plan, Phase 11).
+    // Deliberately NOT admin-root categories (a store only ever belongs to
+    // one root — see assertValidRootCategory — so faceting by root would
+    // always return exactly one, useless, entry).
+    const categoryAgg = await productModel.aggregate([
+      { $match: { storeId, isDelete: false, status: 'active', subCategoryId: { $ne: null } } },
+      { $group: { _id: '$subCategoryId', count: { $sum: 1 } } },
+    ]);
+    const categoryIds = categoryAgg.map((c) => c._id).filter(Boolean);
+    const categories = categoryIds.length
+      ? await categoryModel.find({ _id: { $in: categoryIds }, isDelete: false }).select('name slug').lean()
+      : [];
+    const countById = new Map(categoryAgg.map((c) => [c._id, c.count]));
+    const categoryFacets = categories
+      .map((c: any) => ({ id: String(c._id), name: c.name, slug: c.slug, count: countById.get(String(c._id)) ?? 0 }))
+      .sort((a, b) => b.count - a.count);
+
+    const data = { tags: tags.filter(Boolean).sort(), categories: categoryFacets };
+    await this.redisService.set(cacheKey, JSON.stringify(data), 600);
+    return { success: true, data };
   }
 
-  // ── 6. Follow / Unfollow store ────────────────────────────────────────────
-  async followStore(userId: string, storeId: string) {
-    if (!storeId) throw new BadRequestException('storeId is required');
-
-    const store = await this.databaseService.repositories.storeModel.findOne({
-      _id: storeId,
-      isDelete: false,
-    });
-    if (!store) throw new NotFoundException('Store not found');
-
-    const existing = await this.databaseService.repositories.storeFollowerModel.findOne({
-      userId,
-      storeId,
-    });
-
-    if (existing) {
-      await this.databaseService.repositories.storeFollowerModel.deleteOne({ userId, storeId });
-      await this.databaseService.repositories.storeModel.findByIdAndUpdate(storeId, {
-        $inc: { followersCount: -1 },
-      });
-      return { success: true, message: 'Unfollowed', data: { following: false } };
-    }
-
-    await this.databaseService.repositories.storeFollowerModel.create({ userId, storeId });
-    await this.databaseService.repositories.storeModel.findByIdAndUpdate(storeId, {
-      $inc: { followersCount: 1 },
-    });
-
-    this.notificationsService.notify({
-      recipientId: store.sellerId,
-      recipientRole: 'seller',
-      type: NOTIFICATION_TYPES.NEW_FOLLOWER,
-      title: 'New follower',
-      body: `Someone just started following ${store.name}.`,
-      data: { storeId },
-    }).catch(() => {});
-
-    return { success: true, message: 'Following', data: { following: true } };
-  }
-
-  // ── 7. Get store followers (seller only) ─────────────────────────────────
-  async getStoreFollowers(sellerId: string, storeId: string, query: any) {
-    if (!storeId) throw new BadRequestException('storeId is required');
-
-    const store = await this.databaseService.repositories.storeModel.findOne({
-      _id: storeId,
-      isDelete: false,
-    }).lean();
-    if (!store) throw new NotFoundException('Store not found');
-    if (store.sellerId !== sellerId) throw new UnauthorizedException('Unauthorized');
-
-    const page  = parseInt(query.page)  || 1;
-    const limit = parseInt(query.limit) || 20;
-    const skip  = (page - 1) * limit;
-
-    const total = await this.databaseService.repositories.storeFollowerModel
-      .countDocuments({ storeId });
-
-    const followers = await this.databaseService.repositories.storeFollowerModel
-      .find({ storeId })
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit)
-      .lean();
-
-    const userIds = followers.map((f) => f.userId);
-    const users = await this.databaseService.repositories.userModel
-      .find({ _id: { $in: userIds } })
-      .select('name email profileImage')
-      .lean();
-
-    const userMap: Record<string, any> = {};
-    users.forEach((u: any) => { userMap[u._id.toString()] = u; });
-
-    const data = followers.map((f) => ({
-      followedAt: (f as any).createdAt,
-      user: userMap[f.userId] ?? { _id: f.userId, name: 'Unknown' },
-    }));
-
-    return {
-      success: true,
-      data: {
-        total,
-        pagination: { page, limit, totalPages: Math.ceil(total / limit) },
-        followers: data,
-      },
-    };
-  }
-
-  // ── 6. Get follow status ──────────────────────────────────────────────────
-  async getFollowStatus(userId: string, storeId: string) {
-    if (!storeId) throw new BadRequestException('storeId is required');
-
-    const existing = await this.databaseService.repositories.storeFollowerModel.findOne({
-      userId,
-      storeId,
-    }).lean();
-
-    return {
-      success: true,
-      data: { following: !!existing },
-    };
-  }
 
   // ── 7. Store customers (staff-facing: only people who have ordered from this store) ────
 
@@ -1337,8 +1673,33 @@ export class StoreService {
       { _id: unknown; name: string; email: string; phone: string; createdAt: Date }[];
     const userMap = new Map(users.map((u) => [String(u._id), u]));
 
+    // Seller-authored tags/notes — private to this store (see
+    // StoreCustomerMeta's doc comment for why this isn't a platform-wide
+    // customer profile field).
+    const metaRows = pageIds.length
+      ? await this.databaseService.repositories.storeCustomerMetaModel
+          .find({ storeId, userId: { $in: pageIds.map(String) } })
+          .select('userId tags notes')
+          .lean()
+      : [];
+    const metaMap = new Map(metaRows.map((m: any) => [m.userId, m]));
+
+    const AT_RISK_DAYS = 90;
+    const now = Date.now();
+
     const customers = stats.map((s) => {
       const u = userMap.get(String(s._id));
+      const meta = metaMap.get(String(s._id));
+      const daysSinceLastOrder = s.lastOrderAt ? (now - new Date(s.lastOrderAt).getTime()) / 86_400_000 : Infinity;
+      // A real, computed segment (not a stored label that would go stale the
+      // moment the buyer's next order changes which bucket they belong in)
+      // — mirrors the New/Returning/VIP/At-Risk buckets a real commerce
+      // platform's customer list shows.
+      const segment: 'new' | 'returning' | 'vip' | 'at_risk' =
+        s.orderCount >= 5 ? 'vip'
+        : daysSinceLastOrder > AT_RISK_DAYS ? 'at_risk'
+        : s.orderCount === 1 ? 'new'
+        : 'returning';
       return {
         _id: s._id,
         name: u?.name ?? 'Unknown',
@@ -1348,6 +1709,9 @@ export class StoreService {
         orderCount: s.orderCount,
         totalSpent: s.totalSpent,
         lastOrderAt: s.lastOrderAt,
+        segment,
+        tags: meta?.tags ?? [],
+        notes: meta?.notes ?? '',
       };
     });
 
@@ -1408,5 +1772,49 @@ export class StoreService {
     });
 
     return { success: true, message: 'Customer updated', data: customer };
+  }
+
+  /** Seller-private tags/notes about a buyer, scoped to this one store — see StoreCustomerMeta's doc comment. Upserts since most customers won't have a meta row yet. */
+  async updateStoreCustomerMeta(
+    sellerId: string,
+    storeId: string,
+    customerId: string,
+    dto: { tags?: string[]; notes?: string },
+    ip?: string,
+    userAgent?: string,
+  ) {
+    const store = await this.databaseService.repositories.storeModel.findOne({ _id: storeId, isDelete: false });
+    if (!store) throw new NotFoundException('Store not found');
+    if (store.sellerId !== sellerId) throw new UnauthorizedException('You are not authorized to edit this store\'s customers');
+
+    const { orderModel, storeCustomerMetaModel } = this.databaseService.repositories;
+    const hasOrderedHere = await orderModel.exists({ userId: customerId, 'sellerOrders.storeId': storeId, isDelete: false });
+    if (!hasOrderedHere) throw new BadRequestException('This customer has no orders with your store');
+
+    const set: Record<string, unknown> = {};
+    if (dto.tags !== undefined) set.tags = dto.tags.slice(0, 20).map((t) => t.trim()).filter(Boolean);
+    if (dto.notes !== undefined) set.notes = dto.notes.slice(0, 2000);
+    if (Object.keys(set).length === 0) throw new BadRequestException('Nothing to update');
+
+    const meta = await storeCustomerMetaModel.findOneAndUpdate(
+      { storeId, userId: customerId },
+      { $set: set, $setOnInsert: { storeId, userId: customerId } },
+      { upsert: true, new: true, setDefaultsOnInsert: true },
+    );
+
+    this.activityLogService.log({
+      storeId,
+      category: 'customers',
+      action: 'customer_meta_updated',
+      description: `Updated ${Object.keys(set).join(', ')} for customer ${customerId}`,
+      actorId: sellerId,
+      actorRole: 'seller',
+      targetId: customerId,
+      targetType: 'customer',
+      ip,
+      userAgent,
+    });
+
+    return { success: true, message: 'Customer notes updated', data: { tags: meta.tags, notes: meta.notes } };
   }
 }

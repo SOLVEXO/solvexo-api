@@ -11,6 +11,7 @@ import { EmailService } from '../otp/services/email.service';
 import { QueueModule } from '../queues/queue.module';
 import { AuthModule } from '../auth/auth.module';
 import { RedisModule } from '../redis/redis.module';
+import { IntegrationsModule } from '../integrations/integrations.module';
 
 // Global so OrdersService/PaymentService/MessagingService/LoyaltyService/etc.
 // can inject NotificationsService directly without importing this module
@@ -29,6 +30,7 @@ import { RedisModule } from '../redis/redis.module';
     QueueModule,
     AuthModule,
     RedisModule,
+    IntegrationsModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],

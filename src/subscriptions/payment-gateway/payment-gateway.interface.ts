@@ -56,6 +56,10 @@ export interface ChargeContext {
   idempotencyKey?: string;
   /** Free-form metadata attached to the provider-side object for support/reconciliation. */
   metadata?: Record<string, string>;
+  /** Only meaningful for `createProviderSubscription` — a Stripe-native `trial_end` (Unix seconds). When set, the provider must NOT charge anything until this timestamp; the manual provider ignores it (it has no real trial concept). */
+  trialEndUnixSeconds?: number;
+  /** Only meaningful for `createProviderSubscription` — a provider-native discount (e.g. Stripe Coupon id) applied on top of the price, for a plan's intro offer (see `getOrCreateCoupon`). */
+  couponId?: string;
 }
 
 /**
@@ -71,6 +75,17 @@ export interface ChargeContext {
 export interface IPaymentGateway {
   chargeSubscription(
     subscriptionId: string,
+    amountUSD: number,
+    context?: ChargeContext,
+  ): Promise<ChargeResult>;
+
+  /**
+   * A single, non-recurring off-session charge — no subscription/price object
+   * involved. Used by the Bookings module (appointment payments, package
+   * purchases) and any future one-off-charge flow.
+   */
+  chargeOneTime(
+    referenceId: string,
     amountUSD: number,
     context?: ChargeContext,
   ): Promise<ChargeResult>;
@@ -124,4 +139,19 @@ export interface IPaymentGateway {
     amountUSD: number; interval: 'monthly' | 'yearly';
     existingProductId?: string | null; existingPriceId?: string | null;
   }): Promise<{ providerProductId: string; providerPriceId: string }>;
+
+  /**
+   * Ensures a repeating discount exists for a plan's intro offer (e.g.
+   * "$1/mo for 3 months, then $39/mo"), creating it if the cached id is
+   * missing/stale. Deliberately a discount ON TOP of the plan's real full
+   * Price — never a second Price object or a Subscription Schedule — so a
+   * subscription created with this coupon is a completely ordinary
+   * Subscription as far as every existing webhook/invoice/proration code
+   * path is concerned; Stripe itself reverts to the full price automatically
+   * once `durationCycles` months have billed.
+   */
+  getOrCreateCoupon(params: {
+    planId: string; fullPriceUSD: number; introPriceUSD: number; durationCycles: number;
+    existingCouponId?: string | null;
+  }): Promise<{ providerCouponId: string }>;
 }

@@ -31,4 +31,12 @@ export class TrackPromotionEventDto {
   @IsOptional()
   @IsString()
   city?: string;
+
+  // The caller's own store — cross-checked against the entity's real
+  // storeId server-side so this beacon can't inflate/pollute a different
+  // store's stats by POSTing a copied or guessed entityId.
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsString()
+  storeId?: string;
 }

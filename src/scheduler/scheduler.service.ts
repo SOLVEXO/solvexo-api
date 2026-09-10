@@ -1,23 +1,26 @@
 /* eslint-disable prettier/prettier */
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
-import { DatabaseService } from 'src/database/databaseservice';
-import { LoyaltyService } from 'src/loyalty/loyalty.service';
-import { SubscriptionsService } from 'src/subscriptions/subscriptions.service';
-import { PlatformSubscriptionsService } from 'src/platform-subscriptions/platform-subscriptions.service';
-import { FinanceService } from 'src/finance/finance.service';
-import { RedisService } from 'src/redis/redis.service';
-import { SellerPlatformSubscriptionsService } from 'src/platform-plans/seller-platform-subscriptions.service';
-import { AiCreditsService } from 'src/platform-plans/ai-credits.service';
-import { PlatformAddonsService } from 'src/platform-plans/platform-addons.service';
-import { SeoSitemapService } from 'src/seo/services/seo-sitemap.service';
-import { SeoMonitoringService } from 'src/seo/services/seo-monitoring.service';
-import { SeoAuditService } from 'src/seo/services/seo-audit.service';
-import { AdminMarketingService } from 'src/admin-marketing/admin-marketing.service';
-import { PromotionsService } from 'src/promotions/promotions.service';
-import { ExchangeRateService } from 'src/exchange-rate/exchange-rate.service';
-import { ActivityLogService } from 'src/activity-log/activity-log.service';
-import { AdminFinanceService } from 'src/admin-finance/admin-finance.service';
+import { DatabaseService } from '@/database/databaseservice';
+import { LoyaltyService } from '@/loyalty/loyalty.service';
+import { SubscriptionsService } from '@/subscriptions/subscriptions.service';
+import { PlatformSubscriptionsService } from '@/platform-subscriptions/platform-subscriptions.service';
+import { FinanceService } from '@/finance/finance.service';
+import { RedisService } from '@/redis/redis.service';
+import { SellerPlatformSubscriptionsService } from '@/platform-plans/seller-platform-subscriptions.service';
+import { AiCreditsService } from '@/platform-plans/ai-credits.service';
+import { PlatformAddonsService } from '@/platform-plans/platform-addons.service';
+import { SeoSitemapService } from '@/seo/services/seo-sitemap.service';
+import { SeoMonitoringService } from '@/seo/services/seo-monitoring.service';
+import { SeoAuditService } from '@/seo/services/seo-audit.service';
+import { AdminMarketingService } from '@/admin-marketing/admin-marketing.service';
+import { PromotionsService } from '@/promotions/promotions.service';
+import { ExchangeRateService } from '@/exchange-rate/exchange-rate.service';
+import { ActivityLogService } from '@/activity-log/activity-log.service';
+import { AdminFinanceService } from '@/admin-finance/admin-finance.service';
+import { BookingsService } from '@/bookings/bookings.service';
+import { WhatsAppCloudProvider } from '@/integrations/providers/whatsapp-cloud.provider';
+import { decryptCredential } from '@/common/credential-encryption.util';
 
 @Injectable()
 export class SchedulerService {
@@ -41,6 +44,8 @@ export class SchedulerService {
     private readonly exchangeRateService: ExchangeRateService,
     private readonly activityLogService: ActivityLogService,
     private readonly adminFinanceService: AdminFinanceService,
+    private readonly bookingsService: BookingsService,
+    private readonly whatsAppProvider: WhatsAppCloudProvider,
   ) {}
 
   /**
@@ -60,7 +65,6 @@ export class SchedulerService {
   private async runLocked(jobName: string, ttlMs: number, fn: () => Promise<void>) {
     const result = await this.redis.withLock(`cron-lock:${jobName}`, ttlMs, async () => {
       await fn();
-      return 'ran' as const;
     });
     if (result === 'lock_not_acquired') {
       this.logger.debug(`Skipped "${jobName}" — another instance already holds the lock (or Redis is unavailable)`);
@@ -74,6 +78,25 @@ export class SchedulerService {
       await productModel.updateMany(
         { status: 'scheduled', scheduledAt: { $lte: new Date() }, isDelete: false },
         { $set: { status: 'active', scheduledAt: null } },
+      );
+    });
+  }
+
+  // Sibling to activateScheduledProducts above — StoreBlogService#publish
+  // previously had no way to go live at a future date at all (always
+  // published immediately); a scheduled post now flips to 'published' here
+  // once due, `publishedAt` set to the moment it was actually scheduled for.
+  @Cron('* * * * *')
+  async publishScheduledBlogPosts() {
+    await this.runLocked('publish-scheduled-blog-posts', 50_000, async () => {
+      const { blogPostModel } = this.databaseService.repositories;
+      await blogPostModel.updateMany(
+        { status: 'scheduled', scheduledAt: { $lte: new Date() }, isDelete: false },
+        [{ $set: { status: 'published', publishedAt: '$scheduledAt', scheduledAt: null } }],
+        // See ContentVersioningService for why this option is required on
+        // Mongoose 9 for any array (aggregation-pipeline) update — without
+        // it this cron silently threw every single run.
+        { updatePipeline: true },
       );
     });
   }
@@ -406,6 +429,94 @@ export class SchedulerService {
   async checkFxExposure() {
     await this.runLocked('fx-exposure-check', 30_000, async () => {
       await this.adminFinanceService.runFxExposureCheck();
+    });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // BOOKINGS — parallel to the Subscriptions cron jobs above, same locking.
+  // ═══════════════════════════════════════════════════════════════════════
+
+  // Runs every 15 minutes — flips 'confirmed' bookings whose date+endTime
+  // has already passed to 'completed'.
+  @Cron('*/15 * * * *')
+  async completePastBookings() {
+    await this.runLocked('bookings-complete-past', 10 * 60_000, async () => {
+      const result = await this.bookingsService.completePastBookings();
+      if (result.completed > 0) {
+        this.logger.log(`Bookings: ${result.completed} past booking(s) marked completed`);
+      }
+    });
+  }
+
+  // Runs daily — mirrors expireLoyaltyPoints' daily style: marks
+  // PackagePurchase docs past their expiresAt (still 'active') as 'expired'.
+  @Cron('0 2 * * *')
+  async expirePackagePurchases() {
+    await this.runLocked('bookings-expire-packages', 10 * 60_000, async () => {
+      const result = await this.bookingsService.expirePackagePurchases();
+      if (result.expired > 0) {
+        this.logger.log(`Bookings: ${result.expired} package purchase(s) expired`);
+      }
+    });
+  }
+
+  // Runs every 6 hours — mirrors sendSubscriptionReminders: notifies buyers
+  // with a confirmed booking in the next ~24h (deduped via reminderSentAt).
+  @Cron('0 */6 * * *')
+  async sendBookingReminders() {
+    await this.runLocked('bookings-send-reminders', 20 * 60_000, async () => {
+      const result = await this.bookingsService.sendBookingReminders();
+      if (result.sent > 0) {
+        this.logger.log(`Bookings: ${result.sent} reminder notification(s) sent`);
+      }
+    });
+  }
+
+  // Runs daily — catches a WhatsApp connection that broke outside our own
+  // disconnect flow (seller revoked access in Meta Business Manager, token
+  // expired) so it surfaces as `needs_reauth` on the seller's integrations
+  // page instead of silently failing the next time an order notification
+  // tries to send. See WhatsAppCloudProvider.checkTokenValidity.
+  @Cron('0 3 * * *')
+  async checkWhatsAppTokenHealth() {
+    await this.runLocked('whatsapp-token-health', 20 * 60_000, async () => {
+      const { storeIntegrationModel } = this.databaseService.repositories;
+      const connected = await storeIntegrationModel.find({ type: 'whatsapp', status: 'connected' });
+
+      let flagged = 0;
+      for (const integration of connected) {
+        if (!integration.credentialsEncrypted) continue;
+        let accessToken: string;
+        try {
+          accessToken = JSON.parse(decryptCredential(integration.credentialsEncrypted, 'INTEGRATIONS')).accessToken;
+        } catch {
+          continue;
+        }
+
+        const { isValid, expiresAt } = await this.whatsAppProvider.checkTokenValidity(accessToken);
+        const expiringSoon = expiresAt ? expiresAt.getTime() - Date.now() < 7 * 24 * 60 * 60 * 1000 : false;
+        if (isValid && !expiringSoon) continue;
+
+        await storeIntegrationModel.updateOne(
+          { _id: integration._id },
+          { $set: { status: 'needs_reauth', lastError: isValid ? 'Access token expiring soon' : 'Access token is no longer valid' } },
+        );
+        await this.activityLogService.log({
+          storeId: integration.storeId,
+          category: 'integrations',
+          action: 'integration.needs_reauth',
+          description: 'WhatsApp connection needs to be reconnected — access token invalid or expiring soon',
+          actorId: 'system',
+          actorRole: 'system',
+          targetId: String(integration._id),
+          targetType: 'StoreIntegration',
+          isSecurityAlert: true,
+        });
+        flagged++;
+      }
+      if (flagged > 0) {
+        this.logger.log(`WhatsApp token health: ${flagged} integration(s) flagged needs_reauth`);
+      }
     });
   }
 }
