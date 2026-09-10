@@ -9,5 +9,6 @@ import { RedisModule } from '../redis/redis.module';
   imports: [AuthModule, DatabaseModule, RedisModule],
   controllers: [RatingController],
   providers: [RatingService],
+  exports: [RatingService],
 })
 export class RatingModule {}

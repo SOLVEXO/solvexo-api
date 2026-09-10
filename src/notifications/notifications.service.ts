@@ -179,6 +179,25 @@ export class NotificationsService {
     return { success: true, message: 'All notifications marked as read' };
   }
 
+  /**
+   * Clears the bell/toast unread count for one conversation's worth of
+   * `NEW_MESSAGE` notifications — called from `MessagingService.markSeen()`
+   * so opening a thread also dismisses the notification bell badge for it,
+   * not just the conversation list's own unread counter (previously two
+   * independent "unread" signals that only the first one ever cleared).
+   */
+  async markMessageNotificationsRead(userId: string, type: string, conversationId: string) {
+    const model = this.databaseService.repositories.notificationModel;
+    const result = await model.updateMany(
+      { recipientId: userId, type, isRead: false, 'data.conversationId': conversationId },
+      { $set: { isRead: true, readAt: new Date() } },
+    );
+    if (result.modifiedCount > 0) {
+      const unreadCount = await model.countDocuments({ recipientId: userId, isRead: false });
+      this.gateway.emitUnreadCount(userId, unreadCount);
+    }
+  }
+
   async remove(userId: string, id: string) {
     await this.databaseService.repositories.notificationModel.deleteOne({ _id: id, recipientId: userId });
     return { success: true, message: 'Notification deleted' };

@@ -194,4 +194,11 @@ export class MessagingController {
   adminGetConversation(@Param('id') id: string) {
     return this.messagingService.adminGetConversation(id);
   }
+
+  @UseGuards(RolesGuard)
+  @Roles('admin')
+  @Patch('admin/reports/:id/resolve')
+  adminResolveReport(@Req() req: any, @Param('id') id: string, @Body() dto: { resolution?: 'approved' | 'removed'; adminNotes?: string }) {
+    return this.messagingService.adminResolveReport(req.user.userId, id, dto);
+  }
 }

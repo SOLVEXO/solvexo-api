@@ -138,6 +138,22 @@ export class RatingController {
 
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('seller', 'admin')
+  @Patch('moderate/:reviewId/approve')
+  async approveReview(@Req() req: any, @Param('reviewId') reviewId: string) {
+    const { userId: sellerId, role } = req.user;
+    return this.ratingService.approveReview(sellerId, role, reviewId);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller', 'admin')
+  @Patch('moderate/:reviewId/reject')
+  async rejectReview(@Req() req: any, @Param('reviewId') reviewId: string) {
+    const { userId: sellerId, role } = req.user;
+    return this.ratingService.rejectReview(sellerId, role, reviewId);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller', 'admin')
   @Post('flag/:reviewId')
   async flagReview(@Req() req: any, @Param('reviewId') reviewId: string) {
     const { userId: sellerId, role } = req.user;

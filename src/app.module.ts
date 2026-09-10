@@ -71,6 +71,7 @@ import { MenusModule } from './menus/menus.module';
 import { DraftOrdersModule } from './draft-orders/draft-orders.module';
 import { StoreBlogModule } from './store-blog/store-blog.module';
 import { PromotionsModule } from './promotions/promotions.module';
+import { ThemeCatalogModule } from './theme-catalog/theme-catalog.module';
 import { CommissionRulesModule } from './commission-rules/commission-rules.module';
 import { ManualPaymentsModule } from './manual-payments/manual-payments.module';
 import { ExchangeRateModule } from './exchange-rate/exchange-rate.module';
@@ -160,6 +161,7 @@ import { StoreAppRequestsModule } from './store-app-requests/store-app-requests.
     DraftOrdersModule,
     StoreBlogModule,
     PromotionsModule,
+    ThemeCatalogModule,
     ExchangeRateModule,
     StoreAppRequestsModule,
   ],

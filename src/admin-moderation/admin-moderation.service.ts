@@ -2,6 +2,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { DatabaseService } from '../database/databaseservice';
 import { ActivityLogService } from '../activity-log/activity-log.service';
+import { RatingService } from '../rating/rating.service';
 import { ModerationQueryDto } from './dto/moderation-query.dto';
 
 interface AuditMeta {
@@ -17,6 +18,7 @@ export class AdminModerationService {
   constructor(
     private readonly databaseService: DatabaseService,
     private readonly activityLogService: ActivityLogService,
+    private readonly ratingService: RatingService,
   ) {}
 
   private get r() {
@@ -73,16 +75,37 @@ export class AdminModerationService {
   private async enrich(reports: any[]) {
     const listingIds = reports.filter((r) => r.targetType === 'listing').map((r) => r.targetId);
     const sellerReportTargetIds = reports.filter((r) => r.targetType === 'seller').map((r) => r.targetId);
+    const reviewIds = reports.filter((r) => r.targetType === 'review').map((r) => r.targetId);
 
-    const [products, directSellers] = await Promise.all([
+    const [products, directSellers, reviews] = await Promise.all([
       this.r.productModel.find({ _id: { $in: listingIds } }, { name: 1, sellerId: 1 }),
       this.r.sellerModel.find({ _id: { $in: sellerReportTargetIds } }, { name: 1 }),
+      reviewIds.length
+        ? this.r.ratingModel.find({ _id: { $in: reviewIds } }, { productId: 1, rating: 1, comments: 1, isDelete: 1 }).lean()
+        : Promise.resolve([]),
     ]);
 
     const productById = new Map(products.map((p) => [String(p._id), p]));
     const productSellerIds = products.map((p) => p.sellerId);
-    const listingSellers = await this.r.sellerModel.find({ _id: { $in: productSellerIds } }, { name: 1 });
-    const sellerNameById = new Map([...listingSellers, ...directSellers].map((s) => [String(s._id), s.name]));
+
+    // A reported review's product/seller are a second hop away (Report →
+    // Rating → Product → Seller) — resolved here rather than joined once,
+    // since reviews are a small minority of the marketplace-wide queue.
+    const reviewProductIds = [...new Set(reviews.map((rv: any) => rv.productId).filter(Boolean))];
+    const reviewProducts = reviewProductIds.length
+      ? await this.r.productModel.find({ _id: { $in: reviewProductIds } }, { name: 1, sellerId: 1 })
+      : [];
+    const reviewProductById = new Map(reviewProducts.map((p) => [String(p._id), p]));
+    const reviewProductSellerIds = reviewProducts.map((p) => p.sellerId);
+
+    const [listingSellers, reviewSellers] = await Promise.all([
+      this.r.sellerModel.find({ _id: { $in: productSellerIds } }, { name: 1 }),
+      reviewProductSellerIds.length
+        ? this.r.sellerModel.find({ _id: { $in: reviewProductSellerIds } }, { name: 1 })
+        : Promise.resolve([]),
+    ]);
+    const sellerNameById = new Map([...listingSellers, ...directSellers, ...reviewSellers].map((s) => [String(s._id), s.name]));
+    const reviewById = new Map(reviews.map((rv: any): [string, any] => [String(rv._id), rv]));
 
     return reports.map((r) => {
       if (r.targetType === 'listing') {
@@ -96,7 +119,21 @@ export class AdminModerationService {
       if (r.targetType === 'seller') {
         return { ...r, itemLabel: sellerNameById.get(r.targetId) ?? 'Unknown seller', sellerName: sellerNameById.get(r.targetId) ?? 'Unknown' };
       }
-      return { ...r, itemLabel: `Review ${r.targetId}`, sellerName: null };
+      if (r.targetType === 'review') {
+        const review: any = reviewById.get(r.targetId);
+        const product = review ? reviewProductById.get(String(review.productId)) : null;
+        return {
+          ...r,
+          itemLabel: review
+            ? (product ? `Review on ${product.name}` : 'Review (product no longer exists)')
+            : 'Review (already removed)',
+          sellerName: product ? sellerNameById.get(product.sellerId) ?? 'Unknown' : null,
+          reviewRating: review?.rating ?? null,
+          reviewComment: review?.comments?.[0]?.text ?? null,
+          reviewRemoved: !review || review.isDelete,
+        };
+      }
+      return { ...r, itemLabel: `${r.targetType} ${r.targetId}`, sellerName: null };
     });
   }
 
@@ -170,6 +207,18 @@ export class AdminModerationService {
       await this.r.sellerModel.findByIdAndUpdate(report.targetId, {
         $set: { status: 'suspended', cascadeSuspendedStoreIds: storeIdsToSuspend },
         $inc: { tokenVersion: 1 },
+      });
+    } else if (report.targetType === 'review') {
+      // Reuses RatingService's own soft-delete (isDelete + product/store
+      // rating recalc) instead of duplicating that math here — an admin
+      // acting on a report is otherwise identical to a seller's own
+      // moderate-delete, just without the store-ownership check
+      // (verifyStoreAccess already bypasses that for role === 'admin').
+      // A review the seller already removed themselves throws NotFoundException
+      // here — the report can still resolve, since the outcome it wanted
+      // (review gone) already happened.
+      await this.ratingService.moderateDeleteReview(meta.adminId, 'admin', report.targetId).catch((err) => {
+        if (!(err instanceof NotFoundException)) throw err;
       });
     }
 

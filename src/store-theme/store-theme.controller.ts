@@ -1,9 +1,10 @@
 /* eslint-disable prettier/prettier */
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UseGuards, UseInterceptors, UsePipes, ValidationPipe } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { IdempotencyInterceptor } from '../common/idempotency.interceptor';
 import { StoreThemeService } from './store-theme.service';
 import { UpdateThemeDto } from './dto/update-theme.dto';
 import { UpdateHeaderDto } from './dto/update-header.dto';
@@ -116,6 +117,15 @@ export class StoreThemeController {
     @Query('instance') instance?: string,
   ) {
     return this.storeThemeService.restoreVersion(storeId, req.user.userId, versionId, instance);
+  }
+
+  // Theme Marketplace "Use Theme" — idempotency-guarded the same way
+  // `checkout.controller.ts#createCheckout` is, since a flaky mobile client
+  // retrying this must never double-apply/double-count `applyCount`.
+  @Post(':storeId/apply/:themeDefinitionId')
+  @UseInterceptors(IdempotencyInterceptor)
+  applyTheme(@Req() req: any, @Param('storeId') storeId: string, @Param('themeDefinitionId') themeDefinitionId: string) {
+    return this.storeThemeService.applyThemeDefinition(storeId, req.user.userId, themeDefinitionId);
   }
 
   @Patch(':storeId/theme')

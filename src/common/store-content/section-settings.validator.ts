@@ -186,6 +186,10 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
     case 'image_with_text':
     case 'testimonials':
     case 'faq':
+    case 'feature_list':
+    case 'team_grid':
+    case 'stats_counter':
+    case 'gallery_grid':
       break; // content lives entirely in blocks, no section-level settings beyond heading
     case 'collection_product_grid': {
       const s = settings as CollectionProductGridSectionSettings;
@@ -404,8 +408,56 @@ export function validateBlockSettings(blockType: string, settings: Record<string
       maxLen(settings.value, 120, 'value');
       break;
 
+    // feature_list section blocks
+    case 'feature_item':
+      required(settings.icon, 'icon');
+      maxLen(settings.icon, 40, 'icon');
+      required(settings.title, 'title');
+      maxLen(settings.title, 80, 'title');
+      required(settings.description, 'description');
+      maxLen(settings.description, 300, 'description');
+      break;
+
+    // team_grid section blocks
+    case 'team_member':
+      required(settings.name, 'name');
+      maxLen(settings.name, 80, 'name');
+      required(settings.role, 'role');
+      maxLen(settings.role, 80, 'role');
+      maxLen(settings.bio, 300, 'bio');
+      break;
+
+    // stats_counter section blocks
+    case 'stat_item':
+      required(settings.value, 'value');
+      maxLen(settings.value, 20, 'value');
+      required(settings.label, 'label');
+      maxLen(settings.label, 60, 'label');
+      break;
+
+    // gallery_grid section blocks
+    case 'gallery_image':
+      assertHttpsUrl(settings.imageUrl, 'imageUrl');
+      break;
+
     default:
       throw new BadRequestException(`Unknown block type: ${blockType}`);
+  }
+}
+
+// ── Header/footer block-array validation (StoreTheme header/footer, and the
+// ThemeDefinition catalog's own header/footer, which must satisfy the exact
+// same rule) — shared here rather than duplicated/cross-imported between
+// `store-theme` and `theme-catalog`. ─────────────────────────────────────
+
+export const HEADER_ALLOWED_BLOCK_TYPES = ['nav_link'];
+export const FOOTER_ALLOWED_BLOCK_TYPES = ['footer_column', 'social_link', 'copyright_text'];
+
+export function validateBlocks(blocks: { type: string; settings: Record<string, any> }[], allowed: readonly string[], max: number): void {
+  if (blocks.length > max) throw new BadRequestException(`Cannot have more than ${max} items`);
+  for (const block of blocks) {
+    if (!allowed.includes(block.type)) throw new BadRequestException(`Block type "${block.type}" is not allowed here`);
+    validateBlockSettings(block.type, block.settings ?? {});
   }
 }
 
@@ -443,4 +495,8 @@ export const SECTION_ALLOWED_BLOCK_TYPES: AllowedBlockTypesMap = {
   craft_process: ['craft_process_step'],
   tech_specs_compare: ['spec_row'],
   soft_gallery: ['gallery_item'],
+  feature_list: ['feature_item'],
+  team_grid: ['team_member'],
+  stats_counter: ['stat_item'],
+  gallery_grid: ['gallery_image'],
 };
