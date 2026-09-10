@@ -369,6 +369,12 @@ export class DatabaseService {
     @InjectModel(schema.StockTransfer.name)
     private stockTransferModel: Model<schema.StockTransferDocument>,
 
+    @InjectModel(schema.PosPlan.name)
+    private posPlanModel: Model<schema.PosPlanDocument>,
+
+    @InjectModel(schema.PosPurchase.name)
+    private posPurchaseModel: Model<schema.PosPurchaseDocument>,
+
   ) { }
 
   get repositories() {
@@ -497,6 +503,8 @@ export class DatabaseService {
       stockAdjustmentModel: this.stockAdjustmentModel,
       variantLocationStockModel: this.variantLocationStockModel,
       stockTransferModel: this.stockTransferModel,
+      posPlanModel: this.posPlanModel,
+      posPurchaseModel: this.posPurchaseModel,
     };
   }
 }

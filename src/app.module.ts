@@ -77,6 +77,7 @@ import { ExchangeRateModule } from './exchange-rate/exchange-rate.module';
 import { OnboardingSlidesModule } from './onboarding-slides/onboarding-slides.module';
 import { BookingsModule } from './bookings/bookings.module';
 import { StoreAppRequestsModule } from './store-app-requests/store-app-requests.module';
+import { PosPlansModule } from './pos-plans/pos-plans.module';
 
 @Module({
   imports: [
@@ -162,6 +163,7 @@ import { StoreAppRequestsModule } from './store-app-requests/store-app-requests.
     PromotionsModule,
     ExchangeRateModule,
     StoreAppRequestsModule,
+    PosPlansModule,
   ],
   controllers: [AppController],
   providers: [AppService, { provide: APP_GUARD, useClass: ThrottlerGuard }],
