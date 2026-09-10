@@ -60,6 +60,9 @@ export class MessagingGateway implements OnGatewayConnection, OnGatewayDisconnec
       const userId = payload.sub;
       (client.data).userId = userId;
       (client.data).joinedConversations = new Set<string>();
+      // Cached on join so `handleTyping`/`handleDisconnect` can resolve "who's
+      // the other participant" without a DB round trip on every keystroke.
+      (client.data).conversationMeta = new Map<string, { buyerId: string; sellerId: string }>();
 
       client.join(`user:${userId}`);
 
@@ -86,8 +89,14 @@ export class MessagingGateway implements OnGatewayConnection, OnGatewayDisconnec
     }
 
     const joined: Set<string> = (client.data)?.joinedConversations || new Set();
+    const meta: Map<string, { buyerId: string; sellerId: string }> = (client.data)?.conversationMeta || new Map();
     joined.forEach((conversationId) => {
       client.to(`conversation:${conversationId}`).emit('typing', { conversationId, userId, isTyping: false });
+      const conv = meta.get(conversationId);
+      const otherUserId = conv ? (conv.buyerId === userId ? conv.sellerId : conv.buyerId) : null;
+      if (otherUserId) {
+        this.server?.to(`user:${otherUserId}`).emit('conversation:typing', { conversationId, userId, isTyping: false });
+      }
     });
 
     this.logger.debug(`Client disconnected: ${client.id}`);
@@ -110,6 +119,7 @@ export class MessagingGateway implements OnGatewayConnection, OnGatewayDisconnec
 
     client.join(`conversation:${conversationId}`);
     (client.data).joinedConversations.add(conversationId);
+    (client.data).conversationMeta.set(conversationId, { buyerId: conv.buyerId, sellerId: conv.sellerId });
 
     const otherUserId = conv.buyerId === userId ? conv.sellerId : conv.buyerId;
     client.emit('messaging:joined', { conversationId, otherUserId, otherOnline: this.isOnline(otherUserId) });
@@ -133,6 +143,21 @@ export class MessagingGateway implements OnGatewayConnection, OnGatewayDisconnec
       userId,
       isTyping: !!body.isTyping,
     });
+
+    // Also reach the other participant's personal room — the conversation-
+    // room broadcast above only lands if they have this exact thread open;
+    // this is what lets the inbox list itself show "typing…" on a
+    // conversation the recipient hasn't opened yet, WhatsApp-style.
+    const meta: Map<string, { buyerId: string; sellerId: string }> | undefined = (client.data)?.conversationMeta;
+    const conv = meta?.get(body.conversationId);
+    const otherUserId = conv ? (conv.buyerId === userId ? conv.sellerId : conv.buyerId) : null;
+    if (otherUserId) {
+      this.server?.to(`user:${otherUserId}`).emit('conversation:typing', {
+        conversationId: body.conversationId,
+        userId,
+        isTyping: !!body.isTyping,
+      });
+    }
   }
 
   @SubscribeMessage('presence:check')
