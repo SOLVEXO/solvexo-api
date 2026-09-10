@@ -228,6 +228,8 @@ import { DatabaseService } from './databaseservice';
       { name: schema.StockAdjustment.name, schema: schema.StockAdjustmentSchema },
       { name: schema.VariantLocationStock.name, schema: schema.VariantLocationStockSchema },
       { name: schema.StockTransfer.name, schema: schema.StockTransferSchema },
+      { name: schema.PosPlan.name, schema: schema.PosPlanSchema },
+      { name: schema.PosPurchase.name, schema: schema.PosPurchaseSchema },
     ]),
   ],
   exports: [MongooseModule, DatabaseService],
