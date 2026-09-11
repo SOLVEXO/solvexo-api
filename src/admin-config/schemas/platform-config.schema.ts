@@ -94,6 +94,18 @@ export class EnabledCurrencyConfig {
   @Prop({ type: Number, required: true }) sanityBandMin: number;
   @Prop({ type: Number, required: true }) sanityBandMax: number;
   @Prop({ type: Date, default: () => new Date() }) enabledAt: Date;
+  // Whether Stripe has actually accepted this currency for an online card
+  // charge — null/undefined means "never tried yet" (the normal state for
+  // almost every currency, since most just work); PaymentService sets this
+  // to `false` the first time Stripe itself rejects a PaymentIntent with
+  // this currency (an "invalid currency" error, not a card decline), and
+  // CheckoutService then stops offering "Pay Online" for it going forward.
+  // Deliberately learned from Stripe's own real response rather than a
+  // hand-maintained allowlist here — Stripe's supported-currency list can
+  // change, and a hardcoded guess could wrongly block a currency Stripe
+  // actually supports. An admin can clear this back to null (retry) once
+  // Stripe adds support, or if this was a one-off Stripe-side hiccup.
+  @Prop({ type: Boolean, default: null }) stripeCardPaymentSupported: boolean | null;
 }
 export const EnabledCurrencyConfigSchema = SchemaFactory.createForClass(EnabledCurrencyConfig);
 
@@ -118,6 +130,18 @@ export class FxConfig {
   // pre-existing PlatformConfig doc; never read anywhere else.
   @Prop({ type: Number, default: 150 }) sanityBandMinPKR: number;
   @Prop({ type: Number, default: 450 }) sanityBandMaxPKR: number;
+  // One-time migration marker — set true the moment `enabledCurrencies` has
+  // ever been brought up to parity with the platform's full ISO-4217
+  // reference table (CURRENCY_METADATA), whether that happened via the
+  // brand-new-database lazy seed or the existing-database catch-up in
+  // AdminConfigService.getEnabledCurrencies. Once true, that catch-up never
+  // runs again — an admin's own later removeCurrency() calls (a deliberate
+  // "we don't want this currency" decision) are always respected after this
+  // point, never silently re-added on the next request. Exists so a
+  // pre-existing production database self-heals to the full currency list
+  // automatically on its very next request, with zero admin action and zero
+  // risk of ever overriding a real admin choice made afterward.
+  @Prop({ type: Boolean, default: false }) allCurrenciesBackfilled: boolean;
   // A newly-ingested rate that's within the sane band but moved more than
   // this percent from the current rate is held (isRejected: true, visible
   // in history) rather than auto-promoted — an admin must confirm it

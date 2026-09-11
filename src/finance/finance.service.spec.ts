@@ -69,6 +69,7 @@ describe('FinanceService', () => {
   let commissionRulesService: CommissionRulesService;
   let adminConfigService: AdminConfigService;
   let notificationsService: any;
+  let stripeConnectService: any;
 
   let orderModel: any;
 
@@ -77,7 +78,11 @@ describe('FinanceService', () => {
     txModel = makeConstructableModelMock();
     payoutModel = makeConstructableModelMock();
     payoutModel.exists = jest.fn().mockResolvedValue(false);
-    methodModel = { findById: jest.fn(), findOne: jest.fn(), find: jest.fn().mockReturnValue(makeChainableFind([])), exists: jest.fn().mockResolvedValue(true), updateMany: jest.fn() };
+    methodModel = {
+      findById: jest.fn(), findOne: jest.fn(), find: jest.fn().mockReturnValue(makeChainableFind([])),
+      exists: jest.fn().mockResolvedValue(true), updateMany: jest.fn(),
+      create: jest.fn().mockImplementation(async (doc: any) => ({ _id: 'auto-method-1', save: jest.fn(), ...doc })),
+    };
     scheduleModel = { findOne: jest.fn(), find: jest.fn().mockReturnValue(makeChainableFind([])), updateOne: jest.fn().mockResolvedValue({}) };
     storeModel = { findById: jest.fn().mockResolvedValue({ _id: STORE_ID, sellerId: SELLER_ID, isDelete: false }) };
     sellerModel = { findById: jest.fn().mockReturnValue({ select: jest.fn().mockReturnValue({ lean: jest.fn().mockResolvedValue({ name: 'Jane Seller' }) }) }) };
@@ -96,12 +101,20 @@ describe('FinanceService', () => {
     commissionRulesService = { resolveRate: jest.fn().mockResolvedValue({ rate: 0.08, source: 'hardcoded_fallback' }) } as any;
     adminConfigService = { getPayoutMinimum: jest.fn().mockResolvedValue(5) } as any;
     notificationsService = { notify: jest.fn().mockResolvedValue(undefined) };
+    // Stubbed as "seller has no Connect account" by default — the payout
+    // automation tests that DO care about the Connect rail override
+    // `getPayoutEligibility`/`createTransfer` per-test.
+    stripeConnectService = {
+      getPayoutEligibility: jest.fn().mockResolvedValue(null),
+      createTransfer: jest.fn(),
+      reverseTransfer: jest.fn(),
+    };
 
     // `connection.transaction(fn)` just runs fn with a stand-in session —
     // no real Mongo transaction semantics needed to unit-test the ledger math.
     connection = { transaction: jest.fn().mockImplementation(async (fn: any) => fn({})) };
 
-    service = new FinanceService(db, activityLogService, commissionRulesService, adminConfigService, notificationsService, connection);
+    service = new FinanceService(db, activityLogService, commissionRulesService, adminConfigService, notificationsService, stripeConnectService, connection);
   });
 
   describe('recordSale', () => {
@@ -374,6 +387,125 @@ describe('FinanceService', () => {
       expect(result.schedulesChecked).toBe(2);
       expect(result.payoutsCreated).toBe(1);
       expect(result.skipped).toBe(1);
+    });
+  });
+
+  describe('Stripe Connect automated payouts', () => {
+    it('ensureStripeConnectPayoutMethod creates an active auto-managed method when the seller has a fully-onboarded Connect account', async () => {
+      stripeConnectService.getPayoutEligibility.mockResolvedValue({ accountId: 'acct_123', eligible: true, status: 'active' });
+      methodModel.findOne.mockResolvedValue(null); // no existing row yet
+      methodModel.exists.mockResolvedValue(false); // no other USD method → becomes default
+
+      await service.getPayoutMethods(SELLER_ID, STORE_ID);
+
+      expect(methodModel.create).toHaveBeenCalledWith(expect.objectContaining({
+        storeId: STORE_ID, type: 'stripe_connect', currency: 'USD',
+        externalAccountId: 'acct_123', status: 'active', isDefault: true, autoManaged: true,
+      }));
+    });
+
+    it('deactivates a stale auto-managed method once the seller disconnects Stripe entirely', async () => {
+      stripeConnectService.getPayoutEligibility.mockResolvedValue(null);
+      const existing = { status: 'active', save: jest.fn() };
+      methodModel.findOne.mockResolvedValue(existing);
+
+      await service.getPayoutMethods(SELLER_ID, STORE_ID);
+
+      expect(existing.status).toBe('inactive');
+      expect(existing.save).toHaveBeenCalled();
+    });
+
+    it('requestPayout on a stripe_connect method moves money via a real Stripe Transfer and completes synchronously, no admin step', async () => {
+      const method = { _id: 'm-connect', storeId: STORE_ID, status: 'active', currency: 'USD', type: 'stripe_connect', externalAccountId: 'acct_123' };
+      methodModel.findById.mockResolvedValue(method);
+      const balance = makeBalance({ availableBalance: 100 });
+      balanceModel.findOne.mockResolvedValue(balance);
+      stripeConnectService.createTransfer.mockResolvedValue({ id: 'tr_abc123' });
+
+      const payout = await service.requestPayout(SELLER_ID, STORE_ID, { amount: 40, payoutMethodId: 'm-connect' } as any);
+
+      expect(stripeConnectService.createTransfer).toHaveBeenCalledWith(
+        'acct_123', 4000, 'USD', `payout-transfer-${payout._id}`,
+        expect.objectContaining({ payoutId: String(payout._id), storeId: STORE_ID, sellerId: SELLER_ID }),
+      );
+      expect(balance.availableBalance).toBe(60); // debited once, never restored — the transfer succeeded
+      expect(payout.railType).toBe('stripe_connect');
+      expect(payout.status).toBe('completed');
+      expect(payout.stripeTransferId).toBe('tr_abc123');
+    });
+
+    it('requestPayout on a stripe_connect method reverses the ledger debit when the real Stripe Transfer call fails', async () => {
+      const method = { _id: 'm-connect', storeId: STORE_ID, status: 'active', currency: 'USD', type: 'stripe_connect', externalAccountId: 'acct_123' };
+      methodModel.findById.mockResolvedValue(method);
+      const balance = makeBalance({ availableBalance: 100 });
+      balanceModel.findOne.mockResolvedValue(balance);
+      stripeConnectService.createTransfer.mockRejectedValue(new Error('destination account is not fully verified'));
+
+      const payout = await service.requestPayout(SELLER_ID, STORE_ID, { amount: 40, payoutMethodId: 'm-connect' } as any);
+
+      // Debited by debitAndCreatePayout, then fully credited back by the failure-reversal path — net zero.
+      expect(balance.availableBalance).toBe(100);
+      expect(payout.status).toBe('failed');
+      expect(payout.failureReason).toContain('not fully verified');
+    });
+
+    it('adminApprovePayout refuses to act on a stripe_connect payout — it already resolved itself synchronously', async () => {
+      payoutModel.findById = jest.fn().mockResolvedValue({ _id: 'p1', railType: 'stripe_connect', status: 'completed' });
+      await expect(service.adminApprovePayout('p1', 'admin-1')).rejects.toThrow(BadRequestException);
+    });
+
+    it('adminRejectPayout refuses to act on a stripe_connect payout', async () => {
+      payoutModel.findById = jest.fn().mockResolvedValue({ _id: 'p1', railType: 'stripe_connect', status: 'processing' });
+      await expect(service.adminRejectPayout('p1', 'admin-1', 'reason')).rejects.toThrow(BadRequestException);
+    });
+
+    it('handleConnectTransferReversed flips a completed payout to reversed and credits the balance back', async () => {
+      const payout = {
+        _id: 'p1', storeId: STORE_ID, sellerId: SELLER_ID, amount: 40, currency: 'USD',
+        railType: 'stripe_connect', status: 'completed', stripeTransferId: 'tr_abc123', save: jest.fn(),
+      };
+      payoutModel.findOne = jest.fn().mockResolvedValue(payout);
+      const balance = makeBalance({ availableBalance: 60, totalPayouts: 40 });
+      balanceModel.findOne.mockResolvedValue(balance);
+      balanceModel.updateOne = jest.fn().mockResolvedValue({});
+
+      await service.handleConnectTransferReversed('tr_abc123');
+
+      expect(payout.status).toBe('reversed');
+      expect(balance.availableBalance).toBe(100);
+      expect(balance.totalPayouts).toBe(0);
+      expect(balanceModel.updateOne).toHaveBeenCalledWith(
+        expect.objectContaining({ storeId: STORE_ID, currency: 'USD' }),
+        expect.objectContaining({ $set: expect.objectContaining({ isFlaggedForReview: true }) }),
+      );
+    });
+
+    it('handleConnectTransferReversed is a no-op for an unknown transfer id (ignores an unrelated webhook safely)', async () => {
+      payoutModel.findOne = jest.fn().mockResolvedValue(null);
+      await expect(service.handleConnectTransferReversed('tr_not_ours')).resolves.toBeUndefined();
+    });
+
+    it('adminReverseStripeConnectPayout calls the real Stripe reversal API and only ever applies to a completed stripe_connect payout', async () => {
+      const payout = {
+        _id: 'p1', storeId: STORE_ID, sellerId: SELLER_ID, amount: 40, currency: 'USD',
+        railType: 'stripe_connect', status: 'completed', stripeTransferId: 'tr_abc123', save: jest.fn(),
+      };
+      payoutModel.findById = jest.fn().mockResolvedValue(payout);
+      const balance = makeBalance({ availableBalance: 60, totalPayouts: 40 });
+      balanceModel.findOne.mockResolvedValue(balance);
+      balanceModel.updateOne = jest.fn().mockResolvedValue({});
+      stripeConnectService.reverseTransfer.mockResolvedValue({ id: 'trr_1' });
+
+      await service.adminReverseStripeConnectPayout('p1', 'admin-1', 'confirmed fraud');
+
+      expect(stripeConnectService.reverseTransfer).toHaveBeenCalledWith('tr_abc123', 'payout-reversal-p1');
+      expect(payout.status).toBe('reversed');
+      expect(balance.availableBalance).toBe(100);
+    });
+
+    it('adminReverseStripeConnectPayout rejects a manual-rail or non-completed payout', async () => {
+      payoutModel.findById = jest.fn().mockResolvedValue({ _id: 'p1', railType: 'manual', status: 'completed' });
+      await expect(service.adminReverseStripeConnectPayout('p1', 'admin-1', 'reason')).rejects.toThrow(BadRequestException);
     });
   });
 

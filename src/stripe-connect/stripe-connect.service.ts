@@ -157,4 +157,75 @@ export class StripeConnectService {
 
     return seller.stripeConnectedAccountId;
   }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // INTERNAL LEDGER PAYOUTS — used by FinanceService, a DIFFERENT money path
+  // from the direct-charge routing above. `getEligibleConnectAccountForStore`
+  // decides whether a BUYER's charge can skip Solvexo's ledger entirely and
+  // land straight in the seller's connected account. The methods below move
+  // money that already DID land in Solvexo's own platform Stripe balance
+  // (COD orders, split payments, multi-store carts, anything from before
+  // Connect was active) OUT to that same connected account after the fact —
+  // this is what makes FinanceService.requestPayout/processScheduledPayouts
+  // genuinely automated instead of "an admin manually wires it and clicks
+  // Approve." Both share the one Connect account per seller; Stripe doesn't
+  // care which of the two paths put money into it.
+  // ═══════════════════════════════════════════════════════════════════════
+
+  /**
+   * Moves money from the PLATFORM's own Stripe balance to a seller's
+   * connected account. `idempotencyKey` must be stable per attempt (the
+   * caller uses the Payout document's own _id) so a retried request after a
+   * network timeout can never create two transfers for the same payout.
+   */
+  async createTransfer(
+    destinationAccountId: string,
+    amountCents: number,
+    currency: string,
+    idempotencyKey: string,
+    metadata: Record<string, string>,
+  ): Promise<any> {
+    const stripe = this.assertStripeConfigured();
+    return stripe.transfers.create(
+      {
+        amount: amountCents,
+        currency: currency.toLowerCase(),
+        destination: destinationAccountId,
+        metadata,
+      },
+      { idempotencyKey },
+    );
+  }
+
+  /**
+   * Claws a previously-successful transfer back from the connected account
+   * to the platform balance — used when a completed payout is later found
+   * to be fraudulent/disputed (admin-initiated) or when Stripe itself
+   * reverses one (`transfer.reversed` webhook). Fails with a real Stripe
+   * error if the connected account no longer has enough balance to reverse
+   * against — that failure is surfaced to the caller, never silently eaten.
+   */
+  async reverseTransfer(transferId: string, idempotencyKey: string): Promise<any> {
+    const stripe = this.assertStripeConfigured();
+    return stripe.transfers.createReversal(transferId, {}, { idempotencyKey });
+  }
+
+  /**
+   * Cheap, DB-only read of a seller's Connect eligibility for the INTERNAL
+   * ledger payout rail — deliberately not the same gate as
+   * `getEligibleConnectAccountForStore` (which also requires the STORE to
+   * exist/not be deleted, irrelevant here since a payout is seller-level
+   * money already sitting in the platform balance, not a live checkout).
+   */
+  async getPayoutEligibility(sellerId: string): Promise<{ accountId: string; eligible: boolean; status: string } | null> {
+    const seller = await this.r.sellerModel.findById(sellerId).select(
+      'stripeConnectedAccountId stripeConnectStatus stripeConnectPayoutsEnabled',
+    ).lean();
+    if (!seller?.stripeConnectedAccountId) return null;
+    return {
+      accountId: seller.stripeConnectedAccountId,
+      eligible: seller.stripeConnectStatus === 'active' && !!seller.stripeConnectPayoutsEnabled,
+      status: seller.stripeConnectStatus,
+    };
+  }
 }

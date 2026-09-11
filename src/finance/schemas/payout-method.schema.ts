@@ -8,12 +8,22 @@ export class PayoutMethod {
   @Prop({ type: String, required: true }) storeId: string;
   @Prop({ type: String, required: true }) sellerId: string;
 
+  // 'stripe_connect' is never picked by a seller directly — it's created and
+  // kept in sync automatically by FinanceService.ensureStripeConnectPayoutMethod
+  // whenever the seller has a Stripe Connect account (see `autoManaged`
+  // below), and it's the ONLY type real automated payouts can flow through.
   @Prop({
     type: String,
-    enum: ['bank_transfer', 'jazzcash', 'easypaisa', 'paypal', 'stripe'],
+    enum: ['bank_transfer', 'jazzcash', 'easypaisa', 'paypal', 'stripe', 'stripe_connect'],
     required: true,
   })
   type: string;
+
+  // True only for the system-managed 'stripe_connect' row — the seller can
+  // still choose it as their default, but cannot edit or delete it directly
+  // (its destination/status are always re-derived from the seller's real
+  // Stripe Connect account, never hand-entered).
+  @Prop({ type: Boolean, default: false }) autoManaged: boolean;
 
   // Which of the seller's per-currency balances (see SellerBalance.currency)
   // this method pays out — bank_transfer/jazzcash/easypaisa default to PKR,

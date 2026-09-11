@@ -117,7 +117,12 @@ export class CheckoutController {
   // checkouts for the same buyer action — previously missing here entirely.
   @UseGuards(JwtAuthGuard, RolesGuard, BillingAccessGuard)
   @Roles('user')
-  @RequireActiveBilling()
+  // Real checkout is blocked even during a still-running trial (not just
+  // locked/trial_ended) — matches Shopify's own real trial ("private mode"
+  // checkout until a plan is chosen). See RequireActiveBillingOptions'
+  // own doc comment for why this option is checkout-only, never applied to
+  // product/store-building routes.
+  @RequireActiveBilling({ blockDuringTrial: true })
   @UseInterceptors(IdempotencyInterceptor)
   @Post('create-checkout')
   async createCheckout(@Req() req: any, @Body() body: any) {

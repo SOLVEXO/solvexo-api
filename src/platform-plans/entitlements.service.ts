@@ -106,7 +106,7 @@ export class EntitlementsService {
 
   /**
    * A `trialing` store gets full/open access to every product/staff/
-   * location/banner/promotion cap and every boolean feature — same
+   * location/banner/promotion cap and most boolean features — same
    * philosophy as Shopify's own trial (no plan needs to be chosen to use
    * the store-building features, only to keep selling once the trial
    * ends). Deliberately does NOT touch `transactionFeeRate` or
@@ -117,6 +117,16 @@ export class EntitlementsService {
    * field (`AiCreditsService.deduct` treats a negative balance as
    * "insufficient", not "unlimited"), so overriding it here would silently
    * break AI credits instead of opening them up.
+   *
+   * `customDomainAllowed` is the one deliberate EXCEPTION, always forced
+   * `false` here regardless of the underlying plan — verified against
+   * Shopify's own real trial (a standard trial cannot connect a custom
+   * domain; that only unlocks once a plan is chosen), matching real-world
+   * platform convention rather than this project's own earlier, more
+   * permissive default. Real checkout/order-placement is blocked
+   * separately, in `BillingAccessGuard` (`blockDuringTrial`), not here —
+   * this service only governs feature/limit gates, not the billing-status
+   * guard's own route-blocking.
    */
   private applyTrialOverride(limits: PlatformPlanLimits, subscription: any | null): PlatformPlanLimits {
     if (subscription?.status !== 'trialing') return limits;
@@ -127,7 +137,7 @@ export class EntitlementsService {
       maxPosLocations: -1,
       maxActiveStoreBanners: -1,
       maxActivePromotions: -1,
-      customDomainAllowed: true,
+      customDomainAllowed: false,
       whiteLabelAllowed: true,
       loyaltyProgramAllowed: true,
       subscriptionProductsAllowed: true,

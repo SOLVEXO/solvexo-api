@@ -346,6 +346,12 @@ export class AdminFinanceService {
     return { success: true, data };
   }
 
+  /** Reverses an already-completed Stripe Connect payout (fraud/dispute on the underlying sale) — see FinanceService.adminReverseStripeConnectPayout for why this is a separate action from reject (which only ever applies BEFORE money has moved). */
+  async reversePayout(payoutId: string, adminId: string, reason: string) {
+    const data = await this.financeService.adminReverseStripeConnectPayout(payoutId, adminId, reason);
+    return { success: true, data };
+  }
+
   async createManualPayout(storeId: string, adminId: string, amount: number, payoutMethodId: string | undefined, notes: string | undefined, ip?: string, userAgent?: string) {
     const data = await this.financeService.adminCreateManualPayout(storeId, adminId, amount, payoutMethodId, notes, ip, userAgent);
     return { success: true, data };

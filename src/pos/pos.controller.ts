@@ -10,6 +10,8 @@ import { StoreLocationService } from './store-location.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { BillingAccessGuard } from '../platform-plans/guards/billing-access.guard';
+import { RequireActiveBilling } from '../platform-plans/decorators/require-active-billing.decorator';
 import { CreateEmployeeDto } from './dto/create-employee.dto';
 import { UpdateEmployeeDto } from './dto/update-employee.dto';
 import { PinLoginDto } from './dto/pin-login.dto';
@@ -235,8 +237,18 @@ export class PosController {
   // SALES  (seller only)
   // ═══════════════════════════════════════════════════════════════════════════
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, BillingAccessGuard)
   @Roles('seller')
+  // Real in-person sale, blocked during a still-running trial — same
+  // "checkout disabled until a plan is chosen" rule as online checkout
+  // (see RequireActiveBillingOptions' own doc comment), matching Shopify's
+  // own real behavior (choosing a plan activates "online store checkout,
+  // and POS in-person sales"). Setup routes above (employees, registers,
+  // locations, PIN login) are deliberately NOT gated — only the actual
+  // sale-creation moment is. Enforced here at the backend, so it applies
+  // identically whether the caller is the web POS terminal or the native
+  // POS app — both hit this same endpoint.
+  @RequireActiveBilling({ blockDuringTrial: true })
   @Post('sales')
   createSale(@Req() req: any, @Body() dto: CreateSaleDto, @Headers('x-pos-employee-token') employeeToken?: string) {
     return this.posService.createSale(req.user.userId, dto, employeeToken);

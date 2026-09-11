@@ -132,12 +132,21 @@ export class AdminConfigService {
    * provider prices (BZD, as of this writing) still needs a real admin
    * action (a manual rate via the FX override endpoint) — that's a genuine
    * "someone has to say I'll keep this one updated by hand" case, not
-   * busywork. NOTE: this seed only ever runs ONCE per database — a platform
-   * that was already live before this change keeps whatever it was already
-   * seeded with; `AdminConfigService.enableAllCurrencies` is the one-time
-   * catch-up action for that case, not something a fresh deployment needs.
+   * busywork.
+   *
+   * NOTE on pre-existing databases: a platform that was already live before
+   * this change (i.e. `enabledCurrencies` is non-empty, seeded with only the
+   * old, smaller set) does NOT need any admin button click either — the
+   * `else if` branch below runs the exact same catch-up automatically, on
+   * this method's very next call, gated by `allCurrenciesBackfilled` so it
+   * fires exactly ONCE, ever. After that single automatic run, an admin's
+   * own later `removeCurrency()` calls (a deliberate "don't support this
+   * currency" decision) are always respected — this never silently re-adds
+   * a currency an admin explicitly turned off. `enableAllCurrencies` (the
+   * admin-facing "Enable All Currencies" button) still exists as a manual
+   * fallback/re-run, but is no longer required for normal operation.
    */
-  async getEnabledCurrencies(): Promise<{ code: string; sanityBandMin: number | null; sanityBandMax: number | null }[]> {
+  async getEnabledCurrencies(): Promise<{ code: string; sanityBandMin: number | null; sanityBandMax: number | null; stripeCardPaymentSupported: boolean | null }[]> {
     let config = await this.getRawConfig();
     if (!config.fxConfig?.enabledCurrencies || config.fxConfig.enabledCurrencies.length === 0) {
       const seedEntries = ALL_CURRENCY_CODES
@@ -149,15 +158,69 @@ export class AdminConfigService {
         );
       config = await this.model.findOneAndUpdate(
         {},
-        { $set: { 'fxConfig.enabledCurrencies': seedEntries } },
+        { $set: { 'fxConfig.enabledCurrencies': seedEntries, 'fxConfig.allCurrenciesBackfilled': true } },
         { upsert: true, new: true, setDefaultsOnInsert: true },
+      );
+      this.invalidateCache();
+    } else if (!config.fxConfig.allCurrenciesBackfilled) {
+      // Existing database, seeded before the platform expanded to the full
+      // 152-currency ISO-4217 table — bring it up to parity automatically,
+      // exactly once, right now, with zero admin action. Any currency the
+      // admin has already added by hand is left untouched (only genuinely
+      // missing codes are appended).
+      const existingCodes = new Set(config.fxConfig.enabledCurrencies.map((c: any) => c.code));
+      const toAdd = ALL_CURRENCY_CODES.filter((code) => code !== 'USD' && !existingCodes.has(code));
+      const newEntries = toAdd.map((code) => ({ code, sanityBandMin: 0.0001, sanityBandMax: 1_000_000, enabledAt: new Date() }));
+      config = await this.model.findOneAndUpdate(
+        {},
+        {
+          ...(newEntries.length > 0 ? { $push: { 'fxConfig.enabledCurrencies': { $each: newEntries } } } : {}),
+          $set: { 'fxConfig.allCurrenciesBackfilled': true },
+        },
+        { new: true },
       );
       this.invalidateCache();
     }
     return [
-      { code: 'USD', sanityBandMin: null, sanityBandMax: null },
-      ...config.fxConfig.enabledCurrencies.map((c: any) => ({ code: c.code, sanityBandMin: c.sanityBandMin, sanityBandMax: c.sanityBandMax })),
+      { code: 'USD', sanityBandMin: null, sanityBandMax: null, stripeCardPaymentSupported: true },
+      ...config.fxConfig.enabledCurrencies.map((c: any) => ({
+        code: c.code,
+        sanityBandMin: c.sanityBandMin,
+        sanityBandMax: c.sanityBandMax,
+        stripeCardPaymentSupported: c.stripeCardPaymentSupported ?? null,
+      })),
     ];
+  }
+
+  /** Called by PaymentService the first time Stripe itself rejects a
+   *  PaymentIntent for this currency with an "invalid currency" error (not a
+   *  card decline or any other failure) — records that fact so
+   *  CheckoutService stops offering "Pay Online" for it on every future
+   *  checkout, instead of buyers repeatedly hitting the same Stripe error.
+   *  Learned from Stripe's own real response, never a hand-maintained list. */
+  async markStripeCardPaymentUnsupported(code: string): Promise<void> {
+    await this.model.updateOne(
+      { 'fxConfig.enabledCurrencies.code': code },
+      { $set: { 'fxConfig.enabledCurrencies.$.stripeCardPaymentSupported': false } },
+    );
+    this.invalidateCache();
+  }
+
+  /** Admin-only — clears a currency's learned Stripe-support flag back to
+   *  "unknown" so the next checkout attempt re-tries Stripe fresh. For when
+   *  Stripe adds support for a currency it previously rejected, or the
+   *  original rejection was a one-off Stripe-side issue rather than a real
+   *  unsupported-currency error. */
+  async retryStripeCardPaymentSupport(code: string, meta: AuditMeta): Promise<void> {
+    const normalized = code.trim().toUpperCase();
+    const config = await this.model.findOneAndUpdate(
+      { 'fxConfig.enabledCurrencies.code': normalized },
+      { $set: { 'fxConfig.enabledCurrencies.$.stripeCardPaymentSupported': null } },
+      { new: true },
+    );
+    if (!config) throw new NotFoundException(`${normalized} is not currently enabled`);
+    this.invalidateCache();
+    await this.logChange('fx_currency_stripe_retry', `Reset ${normalized}'s Stripe card-payment support flag for a retry`, meta);
   }
 
   /** Admin-only — adds a new currency the platform will accept, with its own

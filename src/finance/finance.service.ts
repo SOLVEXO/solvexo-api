@@ -16,6 +16,7 @@ import { CommissionRulesService } from '@/commission-rules/commission-rules.serv
 import { AdminConfigService } from '@/admin-config/admin-config.service';
 import { NotificationsService } from '@/notifications/notifications.service';
 import { NOTIFICATION_TYPES } from '@/notifications/notification.types';
+import { StripeConnectService } from '@/stripe-connect/stripe-connect.service';
 
 // ── Platform fee constants ───────────────────────────────────────────────────
 export const PLATFORM_FEE_RATE       = 0.08;   // 8% per sale — last-resort fallback, see CommissionRulesService
@@ -46,6 +47,7 @@ export class FinanceService {
     private readonly commissionRulesService: CommissionRulesService,
     private readonly adminConfigService: AdminConfigService,
     private readonly notificationsService: NotificationsService,
+    private readonly stripeConnectService: StripeConnectService,
     @InjectConnection() private readonly connection: Connection,
   ) {}
 
@@ -114,6 +116,63 @@ export class FinanceService {
   }
 
   /**
+   * Keeps this store's system-managed `stripe_connect` PayoutMethod in sync
+   * with the seller's real Stripe Connect account (`Seller.stripeConnect*`,
+   * kept fresh by StripeConnectService.applyAccountUpdate via the onboarding
+   * return-flow sync and the `account.updated` webhook — this method never
+   * calls Stripe itself, it only reads that already-cached state). Called
+   * from every read/write path that touches payout methods so the method
+   * list is never stale by more than "however long since the seller's
+   * Connect status last changed."
+   *
+   * Stripe Connect transfers settle in the platform's own processing
+   * currency (USD here — see PaymentService's hardcoded `currency:'usd'` on
+   * every Stripe call) — a seller's PKR wallet (Pakistani bank
+   * transfer/JazzCash/Easypaisa sales) has no Stripe-automatable rail at
+   * all, since Stripe doesn't operate in Pakistan. That wallet keeps using
+   * the existing manual admin-approval payout flow — a real, disclosed
+   * platform/geography limitation, not something faked around here.
+   */
+  private async ensureStripeConnectPayoutMethod(storeId: string, sellerId: string): Promise<void> {
+    const info = await this.stripeConnectService.getPayoutEligibility(sellerId);
+    const existing = await this.methodModel.findOne({ storeId, type: 'stripe_connect' });
+
+    if (!info) {
+      // Seller has no Connect account (yet, or ever) — if a method row
+      // exists from a since-disconnected account, deactivate it rather than
+      // deleting (preserves payout history's `payoutMethodSnapshot` trail).
+      if (existing && existing.status !== 'inactive') {
+        existing.status = 'inactive';
+        await existing.save();
+      }
+      return;
+    }
+
+    const targetStatus = info.eligible ? 'active' : (info.status === 'restricted' ? 'inactive' : 'pending_verification');
+
+    if (!existing) {
+      const isFirstUsdMethod = !(await this.methodModel.exists({ storeId, currency: 'USD' }));
+      await this.methodModel.create({
+        storeId,
+        sellerId,
+        type: 'stripe_connect',
+        currency: 'USD',
+        externalAccountId: info.accountId,
+        status: targetStatus,
+        isDefault: isFirstUsdMethod,
+        autoManaged: true,
+      });
+      return;
+    }
+
+    if (existing.externalAccountId !== info.accountId || existing.status !== targetStatus) {
+      existing.externalAccountId = info.accountId;
+      existing.status = targetStatus;
+      await existing.save();
+    }
+  }
+
+  /**
    * Flags (or clears the flag on) a seller balance that's gone negative —
    * typically because a refund/chargeback reversal exceeded what was still
    * held after the seller already withdrew it (see Module 5 of the payout
@@ -124,6 +183,18 @@ export class FinanceService {
    * it being a number buried in a list. Mutates `balance` in place; caller
    * is responsible for saving it.
    */
+  /**
+   * `.lean()` bypasses Mongoose schema defaults (same gotcha `getDashboard`
+   * already normalizes `currency` for) — a `Payout` row written before
+   * `railType` existed on the schema comes back with the field entirely
+   * absent from a `.lean()` read, not defaulted to `'manual'`. Left alone,
+   * every legacy payout would be neither offered the admin approve/reject
+   * actions (frontend checks `railType === 'manual'`) nor treated as
+   * automated — normalize once, here, wherever a lean list of payouts is
+   * returned to a caller.
+   */
+  private readonly normalizeRailType = (p: any) => ({ ...p, railType: p.railType || 'manual' });
+
   private reevaluateDebtFlag(balance: any, reason?: string): { justFlagged: boolean; justCleared: boolean } {
     const isNegative = balance.availableBalance < 0 || balance.pendingBalance < 0;
     const wasFlagged = balance.isFlaggedForReview;
@@ -223,6 +294,7 @@ export class FinanceService {
    */
   async getDashboard(sellerId: string, storeId: string) {
     await this.verifyStoreOwnership(sellerId, storeId);
+    await this.ensureStripeConnectPayoutMethod(storeId, sellerId);
 
     const now = new Date();
     const thisMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -412,6 +484,7 @@ export class FinanceService {
       notes: notes || null,
       status: 'processing',
       source,
+      railType: method.type === 'stripe_connect' ? 'stripe_connect' : 'manual',
     });
     await payout.save({ session });
 
@@ -433,15 +506,242 @@ export class FinanceService {
     return payout;
   }
 
+  /**
+   * Reverses a payout's ledger effect — credits the amount back to
+   * `availableBalance`, decrements `totalPayouts`, writes a reversing
+   * `adjustment` transaction (the original entries are never edited/
+   * deleted, matching this ledger's append-only convention everywhere
+   * else). Shared by three real callers: `adminRejectPayout` (a manual-rail
+   * payout an admin declines before sending anything), a failed Stripe
+   * Transfer creation (`runStripeConnectTransfer`'s catch branch — the
+   * transfer never left the platform balance), and an actual reversal of an
+   * already-completed Stripe transfer (`handleConnectTransferReversed`,
+   * where money DID move and is now being clawed back).
+   */
+  /**
+   * `newStatus` is applied to the payout INSIDE the same transaction as the
+   * balance credit + reversing ledger entry — deliberately not left for the
+   * caller to save separately beforehand. Splitting those into two writes
+   * would reopen exactly the failure mode this ledger's transactional
+   * design elsewhere is built to avoid: if the balance-credit transaction
+   * failed after the payout had already been saved as 'failed'/'reversed',
+   * the seller's money would be gone from their balance with no payout
+   * record correctly reflecting that it never sent — a silent debt.
+   */
+  private async reverseLedgerForPayout(
+    payout: any,
+    newStatus: 'failed' | 'reversed',
+    reason: string,
+    extraTxDescription?: string,
+  ): Promise<void> {
+    const currency = payout.currency || 'USD';
+    await this.withTransaction(async (session) => {
+      const balance = await this.getOrCreateBalance(payout.storeId, payout.sellerId, currency, session);
+      const balanceBefore = balance.availableBalance;
+      balance.availableBalance = this.round(balance.availableBalance + payout.amount);
+      balance.totalPayouts = this.round(balance.totalPayouts - payout.amount);
+      this.reevaluateDebtFlag(balance);
+      await balance.save({ session });
+
+      payout.status = newStatus;
+      if (newStatus === 'failed') payout.failureReason = reason;
+      payout.processedAt = new Date();
+      await payout.save({ session });
+
+      const tx = new this.txModel({
+        storeId: payout.storeId,
+        sellerId: payout.sellerId,
+        currency,
+        type: 'adjustment',
+        amount: payout.amount,
+        balanceBefore,
+        balanceAfter: balance.availableBalance,
+        description: extraTxDescription ?? `Payout reversed — funds returned (${reason})`,
+        referenceId: (payout._id ?? payout.id)?.toString?.(),
+        referenceType: 'payout',
+        status: 'completed',
+        metadata: { reason },
+      });
+      await tx.save({ session });
+    });
+  }
+
+  /**
+   * The actual automation: moves money out of the platform's own Stripe
+   * balance into the seller's connected account via a real Transfer API
+   * call — no admin has to manually wire anything or click "Approve" for
+   * this rail. Called right after `debitAndCreatePayout`'s transaction has
+   * already committed (a Stripe API call must never happen from inside a
+   * Mongo transaction — if the transfer succeeds but the DB commit then
+   * failed to roll back, money would have left the platform with nothing to
+   * show for it).
+   *
+   * Success ends the payout's lifecycle here, at 'completed' — once the
+   * Transfer succeeds, the money has left Solvexo's ledger and is now
+   * sitting in the seller's OWN Stripe balance (legally and financially
+   * theirs), exactly the point at which Shopify's own "Payouts" list marks
+   * a payout as sent. Whatever Stripe does next (its own scheduled sweep of
+   * that connected account's balance to the seller's actual bank, per that
+   * account's own payout settings) is between Stripe and the seller — the
+   * same way Shopify's docs separately disclose a further 1-3 business days
+   * of bank processing time AFTER a payout already shows as paid.
+   */
+  private async runStripeConnectTransfer(payout: any, method: any): Promise<void> {
+    const idempotencyKey = `payout-transfer-${payout._id}`;
+    try {
+      const transfer = await this.stripeConnectService.createTransfer(
+        method.externalAccountId,
+        Math.round(payout.amount * 100),
+        payout.currency || 'usd',
+        idempotencyKey,
+        { payoutId: String(payout._id), storeId: payout.storeId, sellerId: payout.sellerId },
+      );
+
+      payout.status = 'completed';
+      payout.stripeTransferId = transfer.id;
+      payout.processedAt = new Date();
+      await payout.save();
+
+      this.activityLogService.log({
+        storeId: payout.storeId,
+        category: 'finance',
+        action: 'payout_auto_completed',
+        description: `Payout of ${payout.currency} ${payout.amount.toFixed(2)} sent automatically via Stripe Connect (transfer ${transfer.id})`,
+        actorId: 'system',
+        actorRole: 'system',
+        targetId: String(payout._id),
+        targetType: 'payout',
+      });
+
+      this.notificationsService.notify({
+        recipientId: payout.sellerId,
+        recipientRole: 'seller',
+        storeId: payout.storeId,
+        type: NOTIFICATION_TYPES.PAYOUT_COMPLETED,
+        title: 'Payout completed',
+        body: `Your ${payout.currency} ${payout.amount.toFixed(2)} payout was sent automatically via Stripe.`,
+        data: { payoutId: String(payout._id) },
+      }).catch(() => {});
+    } catch (err: any) {
+      const reason = err?.message?.slice(0, 500) || 'Stripe transfer failed';
+
+      // The transfer call itself never left the platform balance — this is
+      // a real reversal of the LEDGER debit only, not a Stripe-side undo.
+      // `reverseLedgerForPayout` sets payout.status/failureReason itself,
+      // atomically with the balance credit.
+      await this.reverseLedgerForPayout(payout, 'failed', reason, `Payout failed — funds returned (${reason})`);
+
+      this.activityLogService.log({
+        storeId: payout.storeId,
+        category: 'finance',
+        action: 'payout_auto_failed',
+        description: `Automated Stripe Connect payout of ${payout.currency} ${payout.amount.toFixed(2)} failed: ${reason}`,
+        actorId: 'system',
+        actorRole: 'system',
+        targetId: String(payout._id),
+        targetType: 'payout',
+        isSecurityAlert: true,
+      });
+
+      this.notificationsService.notify({
+        recipientId: payout.sellerId,
+        recipientRole: 'seller',
+        storeId: payout.storeId,
+        type: NOTIFICATION_TYPES.PAYOUT_REJECTED,
+        title: 'Payout failed',
+        body: `Your ${payout.currency} ${payout.amount.toFixed(2)} payout could not be sent (${reason}) — the funds have been returned to your available balance.`,
+        data: { payoutId: String(payout._id), reason },
+      }).catch(() => {});
+    }
+  }
+
+  /**
+   * Shared tail for both reversal paths below — flips the payout to
+   * 'reversed', reverses its ledger effect, flags the balance for review
+   * (a reversal is always an unusual event worth a human glancing at, even
+   * though it's self-healing), logs, and notifies the seller.
+   */
+  private async applyPayoutReversed(payout: any, reason: string, actorId: string, actorRole: 'system' | 'admin'): Promise<void> {
+    await this.reverseLedgerForPayout(payout, 'reversed', reason, 'Payout reversed — funds returned');
+
+    await this.balanceModel.updateOne(
+      { storeId: payout.storeId, currency: payout.currency || 'USD' },
+      { $set: { isFlaggedForReview: true, flaggedReason: `Payout ${payout._id} was reversed (${reason})`, flaggedAt: new Date() } },
+    );
+
+    this.activityLogService.log({
+      storeId: payout.storeId,
+      category: 'finance',
+      action: 'payout_reversed',
+      description: `Payout of ${payout.currency} ${payout.amount.toFixed(2)} was reversed (${reason})`,
+      actorId,
+      actorRole,
+      targetId: String(payout._id),
+      targetType: 'payout',
+      isSecurityAlert: true,
+    });
+
+    this.notificationsService.notify({
+      recipientId: payout.sellerId,
+      recipientRole: 'seller',
+      storeId: payout.storeId,
+      type: NOTIFICATION_TYPES.PAYOUT_REJECTED,
+      title: 'Payout reversed',
+      body: `Your ${payout.currency} ${payout.amount.toFixed(2)} payout was reversed (${reason}). Contact support if this looks wrong.`,
+      data: { payoutId: String(payout._id) },
+    }).catch(() => {});
+  }
+
+  /**
+   * Handles a `transfer.reversed` Stripe Connect event (see PaymentService's
+   * webhook handler) — a previously-completed automated payout is being
+   * clawed back, e.g. Stripe itself later found the connected account
+   * fraudulent/restricted. Distinct from `runStripeConnectTransfer`'s
+   * failure branch: that one never moved money at all; this one DID, and
+   * Stripe is now undoing it. Idempotent against a redelivered webhook via
+   * the payout's own status guard (only a 'completed' stripe_connect payout
+   * can be reversed) — combined with the generic Stripe-event dedup already
+   * done in PaymentService.stripeWebhook before this is ever called.
+   */
+  async handleConnectTransferReversed(transferId: string): Promise<void> {
+    const payout = await this.payoutModel.findOne({ stripeTransferId: transferId, railType: 'stripe_connect' });
+    if (!payout || payout.status !== 'completed') return; // already handled, or not one of ours
+    await this.applyPayoutReversed(payout, 'reversed by Stripe', 'system', 'system');
+  }
+
+  /**
+   * Admin-initiated reversal of an already-completed Stripe Connect payout —
+   * for a discovered-fraud/chargeback-on-the-underlying-sale scenario. Calls
+   * the real Stripe API to claw the money back from the connected account;
+   * if the connected account no longer has enough balance to reverse
+   * against, Stripe's own error surfaces to the admin unmodified rather than
+   * silently pretending the reversal succeeded.
+   */
+  async adminReverseStripeConnectPayout(payoutId: string, adminId: string, reason: string): Promise<any> {
+    const payout = await this.payoutModel.findById(payoutId);
+    if (!payout) throw new NotFoundException('Payout not found');
+    if (payout.railType !== 'stripe_connect' || payout.status !== 'completed') {
+      throw new BadRequestException('Only a completed Stripe Connect payout can be reversed this way.');
+    }
+    if (!payout.stripeTransferId) throw new BadRequestException('This payout has no Stripe transfer to reverse.');
+
+    await this.stripeConnectService.reverseTransfer(payout.stripeTransferId, `payout-reversal-${payout._id}`);
+    await this.applyPayoutReversed(payout, reason || 'reversed by admin', adminId, 'admin');
+    return payout;
+  }
+
   async requestPayout(sellerId: string, storeId: string, dto: RequestPayoutDto) {
     await this.verifyStoreOwnership(sellerId, storeId);
+    await this.ensureStripeConnectPayoutMethod(storeId, sellerId);
 
     const method = await this.methodModel.findById(dto.payoutMethodId);
     if (!method || method.storeId !== storeId) throw new NotFoundException('Payout method not found');
     if (method.status !== 'active') {
       throw new BadRequestException(
         method.status === 'pending_verification'
-          ? 'This payout method is still awaiting admin verification'
+          ? (method.type === 'stripe_connect'
+            ? 'Your Stripe Connect account is not fully set up yet — finish onboarding to enable automatic payouts.'
+            : 'This payout method is still awaiting admin verification')
           : 'Payout method is not active',
       );
     }
@@ -452,9 +752,15 @@ export class FinanceService {
       throw new BadRequestException(`Minimum payout amount is ${currency} ${minimum.toFixed(2)}`);
     }
 
-    return this.withTransaction((session) =>
+    const payout = await this.withTransaction((session) =>
       this.debitAndCreatePayout(session, storeId, sellerId, currency, dto.amount, method, dto.notes ?? null, 'seller_manual'),
     );
+
+    if (payout.railType === 'stripe_connect') {
+      await this.runStripeConnectTransfer(payout, method);
+    }
+
+    return payout;
   }
 
   /**
@@ -488,6 +794,12 @@ export class FinanceService {
         const nextDate = this.computeNextPayoutDate(schedule);
         await this.scheduleModel.updateOne({ _id: schedule._id }, { $set: { nextPayoutAt: nextDate } });
 
+        // Keeps the schedule's own USD `stripe_connect` method current even
+        // if the seller finished Connect onboarding after last setting up
+        // this schedule — otherwise a schedule pointed at a stale/inactive
+        // method would silently skip every single run.
+        await this.ensureStripeConnectPayoutMethod(schedule.storeId, schedule.sellerId);
+
         if (!schedule.defaultPayoutMethodId) { skipped++; continue; }
 
         const currency = schedule.currency || 'USD';
@@ -512,15 +824,23 @@ export class FinanceService {
         payoutsCreated++;
         totalAmount = this.round(totalAmount + amount);
 
-        this.notificationsService.notify({
-          recipientId: schedule.sellerId,
-          recipientRole: 'seller',
-          storeId: schedule.storeId,
-          type: NOTIFICATION_TYPES.PAYOUT_AUTO_INITIATED,
-          title: 'Payout initiated',
-          body: `We've automatically initiated a ${currency} ${amount.toFixed(2)} payout to your ${method.bankName || method.type} account, per your payout schedule.`,
-          data: { payoutId: (payout as any)._id.toString(), storeId: schedule.storeId },
-        }).catch(() => {});
+        if ((payout as any).railType === 'stripe_connect') {
+          // Real end-to-end automation — no admin queue involved at all.
+          await this.runStripeConnectTransfer(payout, method);
+        } else {
+          // Manual rail (JazzCash/Easypaisa/bank/PayPal) — Solvexo has no
+          // API to actually send this money, so it lands in the existing
+          // admin approve/reject queue exactly as before.
+          this.notificationsService.notify({
+            recipientId: schedule.sellerId,
+            recipientRole: 'seller',
+            storeId: schedule.storeId,
+            type: NOTIFICATION_TYPES.PAYOUT_AUTO_INITIATED,
+            title: 'Payout initiated',
+            body: `We've automatically initiated a ${currency} ${amount.toFixed(2)} payout to your ${method.bankName || method.type} account, per your payout schedule.`,
+            data: { payoutId: (payout as any)._id.toString(), storeId: schedule.storeId },
+          }).catch(() => {});
+        }
       } catch (err: any) {
         skipped++;
         console.error(`Scheduled payout failed for store ${schedule.storeId}:`, err?.message);
@@ -541,10 +861,11 @@ export class FinanceService {
     if (query.status) filter.status = query.status;
     if (query.currency) filter.currency = query.currency;
 
-    const [payouts, total] = await Promise.all([
+    const [rawPayouts, total] = await Promise.all([
       this.payoutModel.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
       this.payoutModel.countDocuments(filter),
     ]);
+    const payouts = (rawPayouts as any[]).map(this.normalizeRailType);
     return { payouts, total, page, limit, pages: Math.ceil(total / limit) };
   }
 
@@ -647,6 +968,7 @@ export class FinanceService {
 
   async getPayoutMethods(sellerId: string, storeId: string) {
     await this.verifyStoreOwnership(sellerId, storeId);
+    await this.ensureStripeConnectPayoutMethod(storeId, sellerId);
     return this.methodModel.find({ storeId }).sort({ isDefault: -1, createdAt: -1 }).lean();
   }
 
@@ -654,6 +976,11 @@ export class FinanceService {
     await this.verifyStoreOwnership(sellerId, storeId);
     const method = await this.methodModel.findOne({ _id: methodId, storeId });
     if (!method) throw new NotFoundException('Payout method not found');
+    if (method.autoManaged) {
+      throw new BadRequestException(
+        'This payout method is managed automatically from your Stripe Connect account — disconnect Stripe (Integrations page) to remove it instead.',
+      );
+    }
 
     // Any change to the actual destination invalidates a prior admin
     // verification — otherwise a seller could get a method verified once,
@@ -691,6 +1018,11 @@ export class FinanceService {
     await this.verifyStoreOwnership(sellerId, storeId);
     const method = await this.methodModel.findOne({ _id: methodId, storeId });
     if (!method) throw new NotFoundException('Payout method not found');
+    if (method.autoManaged) {
+      throw new BadRequestException(
+        'This payout method is managed automatically from your Stripe Connect account — disconnect Stripe (Integrations page) to remove it instead.',
+      );
+    }
     if (method.isDefault) throw new BadRequestException('Cannot delete the default payout method — set another as default first');
     await method.deleteOne();
     return { deleted: true };
@@ -898,7 +1230,7 @@ export class FinanceService {
         nextPayoutAt: s.nextPayoutAt,
       })),
       payoutMethods: methods,
-      recentPayouts,
+      recentPayouts: (recentPayouts as any[]).map(this.normalizeRailType),
     };
   }
 
@@ -941,15 +1273,17 @@ export class FinanceService {
     if (query.storeId)  filter.storeId  = query.storeId;
     if (query.sellerId) filter.sellerId = query.sellerId;
 
-    const [payouts, total, statusRows] = await Promise.all([
+    const [rawPayouts, total, statusRows] = await Promise.all([
       this.payoutModel.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
       this.payoutModel.countDocuments(filter),
       this.payoutModel.aggregate([{ $group: { _id: '$status', count: { $sum: 1 }, amount: { $sum: '$amount' } } }]),
     ]);
+    const payouts = (rawPayouts as any[]).map(this.normalizeRailType);
 
     const statusCounts: Record<string, { count: number; amount: number }> = {
       pending: { count: 0, amount: 0 }, processing: { count: 0, amount: 0 },
       completed: { count: 0, amount: 0 }, failed: { count: 0, amount: 0 },
+      reversed: { count: 0, amount: 0 },
     };
     for (const row of statusRows) {
       if (statusCounts[row._id]) statusCounts[row._id] = { count: row.count, amount: this.round(row.amount) };
@@ -959,14 +1293,22 @@ export class FinanceService {
   }
 
   /**
-   * Marks a pending/processing payout as completed. There is no live payment-processor
-   * integration anywhere in this codebase (payouts, like COD orders, are fulfilled
-   * manually outside the app) — this records that an admin has confirmed the transfer
-   * was actually sent via their bank/PayPal/Stripe dashboard. It does not itself move money.
+   * Marks a pending/processing MANUAL-rail payout as completed — JazzCash/
+   * Easypaisa/plain bank wire/PayPal, the rails Solvexo has no API access
+   * to actually move money on. This records that an admin has confirmed the
+   * transfer was actually sent via their own bank/PayPal dashboard; it does
+   * not itself move money. A `railType:'stripe_connect'` payout never
+   * reaches this — it's already resolved synchronously by
+   * `runStripeConnectTransfer` (completed or failed), so approving it here
+   * would be meaningless (or, worse, could mark a payout "completed" that a
+   * real Stripe transfer never actually made).
    */
   async adminApprovePayout(payoutId: string, adminId: string, ip?: string, userAgent?: string) {
     const payout = await this.payoutModel.findById(payoutId);
     if (!payout) throw new NotFoundException('Payout not found');
+    if (payout.railType === 'stripe_connect') {
+      throw new BadRequestException('This payout was processed automatically via Stripe Connect — manual approval does not apply.');
+    }
     if (!['pending', 'processing'].includes(payout.status)) {
       throw new BadRequestException(`Cannot approve a payout with status "${payout.status}"`);
     }
@@ -1000,45 +1342,18 @@ export class FinanceService {
     return payout;
   }
 
-  /** Rejects a pending/processing payout and returns the deducted funds to the seller's available balance via a reversing ledger entry (the original ledger history is never edited). */
+  /** Rejects a pending/processing MANUAL-rail payout and returns the deducted funds to the seller's available balance via a reversing ledger entry (the original ledger history is never edited). Never applies to a `stripe_connect` payout — see `adminApprovePayout`'s comment. */
   async adminRejectPayout(payoutId: string, adminId: string, reason: string, ip?: string, userAgent?: string) {
     const payout = await this.payoutModel.findById(payoutId);
     if (!payout) throw new NotFoundException('Payout not found');
+    if (payout.railType === 'stripe_connect') {
+      throw new BadRequestException('This payout was processed automatically via Stripe Connect — manual rejection does not apply.');
+    }
     if (!['pending', 'processing'].includes(payout.status)) {
       throw new BadRequestException(`Cannot reject a payout with status "${payout.status}"`);
     }
 
-    const currency = payout.currency || 'USD';
-
-    await this.withTransaction(async (session) => {
-      const balance = await this.getOrCreateBalance(payout.storeId, payout.sellerId, currency, session);
-      const balanceBefore = balance.availableBalance;
-      balance.availableBalance = this.round(balance.availableBalance + payout.amount);
-      balance.totalPayouts = this.round(balance.totalPayouts - payout.amount);
-      this.reevaluateDebtFlag(balance);
-      await balance.save({ session });
-
-      payout.status = 'failed';
-      payout.failureReason = reason;
-      payout.processedAt = new Date();
-      await payout.save({ session });
-
-      const tx = new this.txModel({
-        storeId: payout.storeId,
-        sellerId: payout.sellerId,
-        currency,
-        type: 'adjustment',
-        amount: payout.amount,
-        balanceBefore,
-        balanceAfter: balance.availableBalance,
-        description: `Payout rejected — funds returned (${reason})`,
-        referenceId: payoutId,
-        referenceType: 'payout',
-        status: 'completed',
-        metadata: { rejectedBy: adminId, reason },
-      });
-      await tx.save({ session });
-    });
+    await this.reverseLedgerForPayout(payout, 'failed', reason, `Payout rejected — funds returned (${reason})`);
 
     this.activityLogService.log({
       storeId: payout.storeId,
@@ -1065,7 +1380,17 @@ export class FinanceService {
     return payout;
   }
 
-  /** Re-attempts a previously-rejected payout — re-deducts the balance (rejecting already refunded it) and puts it back into `processing`. */
+  /**
+   * Re-attempts a previously-failed payout — re-deducts the balance (the
+   * failure already refunded it) and puts it back into `processing`. For a
+   * `railType:'stripe_connect'` payout this genuinely re-runs the Stripe
+   * Transfer call (a fresh idempotency key, since the payout's own _id
+   * hasn't changed but the attempt has — see below), so a transient failure
+   * (a momentary insufficient-platform-balance moment, a Stripe hiccup) can
+   * actually resolve into a real completed payout without any manual
+   * bank-transfer step. A manual-rail payout keeps its original behavior
+   * unchanged — re-queued for an admin to actually send.
+   */
   async adminRetryFailedPayout(payoutId: string, adminId: string, ip?: string, userAgent?: string) {
     const payout = await this.payoutModel.findById(payoutId);
     if (!payout) throw new NotFoundException('Payout not found');
@@ -1107,6 +1432,24 @@ export class FinanceService {
       });
       await tx.save({ session });
     });
+
+    // Stripe Connect rail — actually re-run the money movement, no admin
+    // hand-off. `runStripeConnectTransfer` uses `payout-transfer-<id>` as
+    // its idempotency key regardless of attempt count — that's intentional:
+    // if the FIRST attempt's Stripe call actually succeeded server-side but
+    // the response was lost before we recorded it (a real, if rare, network
+    // failure mode), replaying the same idempotency key returns Stripe's
+    // original successful transfer instead of creating a second one.
+    if (payout.railType === 'stripe_connect') {
+      const method = await this.methodModel.findById(payout.payoutMethodId);
+      if (!method) {
+        const reason = 'Original Stripe Connect payout method no longer exists';
+        await this.reverseLedgerForPayout(payout, 'failed', reason);
+        return payout;
+      }
+      await this.runStripeConnectTransfer(payout, method);
+      return payout;
+    }
 
     this.activityLogService.log({
       storeId: payout.storeId,

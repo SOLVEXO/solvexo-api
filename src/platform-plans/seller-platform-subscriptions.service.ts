@@ -108,6 +108,31 @@ export class SellerPlatformSubscriptionsService {
   }
 
   /**
+   * Shopify-style automatic "private mode": a brand-new trialing store's
+   * storefront is set to `coming_soon` the moment its trial starts (see
+   * `ensureDefaultSubscription`) — real visitors can't browse it until the
+   * seller actually commits to a plan. This is the other half: called from
+   * every real "a plan just went active" moment (immediate full payment,
+   * a Stripe-deferred trial-conversion payment succeeding, and the
+   * `invoice.payment_succeeded` webhook) to lift it automatically.
+   *
+   * Deliberately a no-op unless `privacyMode` is EXACTLY `coming_soon` right
+   * now — never overwrites a seller's own manual choice (e.g. they
+   * themselves set `password` mode for their own reasons, or already
+   * manually set `public`). Safe to call from every "plan is active" site
+   * unconditionally, including ones that aren't really a trial exit (e.g. an
+   * already-live store just switching between two paid plans) — those
+   * stores are already `public`, so this simply does nothing there.
+   */
+  private async unlockStorefrontIfComingSoon(storeId: string): Promise<void> {
+    try {
+      await this.storeModel.updateOne({ _id: storeId, privacyMode: 'coming_soon' }, { $set: { privacyMode: 'public' } });
+    } catch {
+      // Best-effort — must never fail the billing flow that called this.
+    }
+  }
+
+  /**
    * Moves a store to the platform's free plan — the terminal state for both
    * "dunning exhausted" (applyDunningFailure) and "cancellation reached period
    * end" (finalizeScheduledCancellations). No store is ever left with zero
@@ -349,7 +374,7 @@ export class SellerPlatformSubscriptionsService {
     const trialSettings = await this.trialSettingsModel.findOneAndUpdate({}, {}, { upsert: true, new: true, setDefaultsOnInsert: true });
     if (trialSettings.enabled) {
       const trialEndsAt = new Date(now.getTime() + trialSettings.durationDays * 24 * 60 * 60 * 1000);
-      return this.subModel.create({
+      const created = await this.subModel.create({
         storeId, sellerId, platformPlanId: null,
         billingInterval: 'monthly', amountUSD: 0, status: 'trialing',
         startedAt: now, trialEndsAt, currentPeriodStart: now, currentPeriodEnd: trialEndsAt,
@@ -358,6 +383,15 @@ export class SellerPlatformSubscriptionsService {
         paymentProvider: stripeCustomerId ? 'stripe' : 'manual',
         legacyFreeEligible: false,
       });
+      // Shopify-style automatic "private mode" — a fresh store's real
+      // storefront starts hidden from visitors the moment its trial begins;
+      // `unlockStorefrontIfComingSoon` lifts this once a plan actually goes
+      // active. Guarded to `privacyMode: 'public'` (the schema default) so
+      // this can never fire on a store that already had a different
+      // setting — not structurally possible this early anyway (the store
+      // was just created), but kept symmetric with the unlock guard.
+      await this.storeModel.updateOne({ _id: storeId, privacyMode: 'public' }, { $set: { privacyMode: 'coming_soon' } }).catch(() => {});
+      return created;
     }
 
     // Trial disabled platform-wide (admin turned it off in Trial Settings) —
@@ -749,6 +783,7 @@ export class SellerPlatformSubscriptionsService {
     sub.planHistory = [...(sub.planHistory ?? []), historyEntry];
     await sub.save();
     await this.syncFeaturedBadge(storeId, newPlan);
+    await this.unlockStorefrontIfComingSoon(storeId);
     if (hadPendingCancellation && this.gateway.isProviderDrivenBilling && sub.providerSubscriptionId) {
       await this.gateway.unscheduleProviderCancellation(sub.providerSubscriptionId);
     }
@@ -1037,6 +1072,7 @@ export class SellerPlatformSubscriptionsService {
         sub.status = 'active';
         sub.trialEndsAt = null;
         await sub.save();
+        await this.unlockStorefrontIfComingSoon(sub.storeId);
         expired++;
         continue;
       }
@@ -1195,6 +1231,7 @@ export class SellerPlatformSubscriptionsService {
     sub.totalPaidUSD = this.round(sub.totalPaidUSD + amountUSD);
     sub.failedPaymentAttempts = 0;
     await sub.save();
+    await this.unlockStorefrontIfComingSoon(sub.storeId);
 
     const plan = await this.planModel.findById(sub.platformPlanId).lean();
     await this.syncFeaturedBadge(sub.storeId, plan);

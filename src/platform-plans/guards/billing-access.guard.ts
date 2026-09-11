@@ -2,7 +2,7 @@
 import { Injectable, CanActivate, ExecutionContext, ForbiddenException } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { DatabaseService } from '@/database/databaseservice';
-import { REQUIRE_ACTIVE_BILLING_KEY } from '../decorators/require-active-billing.decorator';
+import { REQUIRE_ACTIVE_BILLING_KEY, type RequireActiveBillingOptions } from '../decorators/require-active-billing.decorator';
 
 /**
  * Centralized billing-status gate — the single place that ever checks
@@ -25,11 +25,11 @@ export class BillingAccessGuard implements CanActivate {
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    const required = this.reflector.getAllAndOverride<boolean>(REQUIRE_ACTIVE_BILLING_KEY, [
+    const options = this.reflector.getAllAndOverride<RequireActiveBillingOptions | undefined>(REQUIRE_ACTIVE_BILLING_KEY, [
       context.getHandler(),
       context.getClass(),
     ]);
-    if (!required) return true; // no @RequireActiveBilling() on this route
+    if (!options) return true; // no @RequireActiveBilling() on this route
 
     const req = context.switchToHttp().getRequest();
     // Covers both a seller-dashboard mutation (storeId in the URL) and a
@@ -50,6 +50,15 @@ export class BillingAccessGuard implements CanActivate {
     if (sub && (sub as any).status === 'trial_ended') {
       throw new ForbiddenException(
         'Your free trial has ended — choose a plan from the billing page to continue selling.',
+      );
+    }
+    // Real checkout only (see `RequireActiveBillingOptions.blockDuringTrial`'s
+    // own doc comment) — a genuinely still-trialing store can otherwise build
+    // freely (unlimited products/staff/etc.), matching Shopify's own real
+    // trial, which disables checkout specifically until a plan is chosen.
+    if (options.blockDuringTrial && sub && (sub as any).status === 'trialing') {
+      throw new ForbiddenException(
+        'This store is still in its free trial — choose a plan from the billing page to start accepting real orders.',
       );
     }
     return true;

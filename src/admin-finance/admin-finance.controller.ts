@@ -109,6 +109,11 @@ export class AdminFinanceController {
     return this.adminFinanceService.retryPayout(payoutId, req.user.userId, req.ip, req.headers['user-agent']);
   }
 
+  @Patch('payouts/:payoutId/reverse')
+  reversePayout(@Req() req: any, @Param('payoutId') payoutId: string, @Body() dto: RejectPayoutDto) {
+    return this.adminFinanceService.reversePayout(payoutId, req.user.userId, dto.reason);
+  }
+
   @Post('process-clearing')
   triggerClearingBalances() {
     return this.adminFinanceService.triggerClearingBalances();

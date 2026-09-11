@@ -318,6 +318,22 @@ export class PaymentService {
         { idempotencyKey },
       );
     } catch (err: any) {
+      // Stripe sets `param: 'currency'` specifically when it rejects the
+      // request because it doesn't support this presentment currency at
+      // all (as opposed to a card decline or any other failure) — learn
+      // that fact once, here, from Stripe's own real response, so
+      // CheckoutService stops ever offering "Pay Online" for this currency
+      // again instead of every future buyer hitting the same Stripe error.
+      // Never a hand-maintained currency list — Stripe's own support can
+      // change, and a hardcoded guess could wrongly block a real one.
+      if (err?.param === 'currency' && checkout.currency) {
+        await this.adminConfigService
+          .markStripeCardPaymentUnsupported(checkout.currency)
+          .catch(() => {}); // best-effort — never let this block the error response below
+        throw new BadRequestException(
+          `Online card payment isn't available for ${checkout.currency} — please use Cash on Delivery or Bank Transfer instead.`,
+        );
+      }
       throw new BadRequestException(
         `Payment initiation failed: ${err?.message || 'Stripe error'}`,
       );
@@ -441,6 +457,17 @@ export class PaymentService {
         // revoked, etc.) — arrives on the platform's own webhook endpoint
         // for every connected account, not a per-account one.
         await this.stripeConnectService.handleAccountUpdated(event.data.object);
+      } else if (event.type === 'transfer.reversed') {
+        // A previously-successful FinanceService payout Transfer (platform
+        // balance → seller's connected account, for a store's internal
+        // ledger balance — see FinanceService.runStripeConnectTransfer) was
+        // clawed back — e.g. Stripe itself later restricted the connected
+        // account. This is a genuinely separate money path from the direct-
+        // charge routing above (`event.account`/`getEligibleConnectAccountForStore`);
+        // a reversed direct charge is a `charge.refunded`/`charge.dispute.created`
+        // event instead, already handled above.
+        const transfer = event.data.object as any;
+        await this.financeService.handleConnectTransferReversed(transfer.id);
       }
     } catch (err: any) {
       console.error(`Stripe webhook handling failed (${event.type}):`, err?.message, { eventId: event.id });
@@ -1527,11 +1554,10 @@ export class PaymentService {
           .notify({
             recipientId: so.sellerId,
             recipientRole: 'seller',
-            storeId: so.storeId,
             type: NOTIFICATION_TYPES.ORDER_PLACED,
             title: 'New order received',
             body: `You have a new order #${createdOrder.orderNumber} for ${so.items.length} item(s).`,
-            data: { orderId: createdOrder._id.toString(), storeId: so.storeId },
+            data: { orderId: createdOrder._id.toString() },
           })
           .catch(() => {});
       }

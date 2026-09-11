@@ -757,6 +757,23 @@ export class CheckoutService {
     const withManualTransfer = (methods: string[]) =>
       manualTransferEnabled ? [...methods, 'manual_bank_transfer'] : methods;
 
+    // 'stripe' (and 'split', which routes its digital portion through the
+    // same Stripe charge) is dropped once this checkout's own currency has
+    // already been learned as Stripe-unsupported (see PaymentService
+    // .initiatePayment's catch block, which sets this the first time Stripe
+    // itself rejects that currency) — never guessed upfront, and never
+    // applied if it would leave the buyer with zero payment methods at all
+    // (better to let a genuinely rare, already-exhausted case reach Stripe's
+    // own clear error than block checkout outright).
+    const stripeCurrencySupport = (
+      await this.adminConfigService.getEnabledCurrencies()
+    ).find((c) => c.code === checkout.currency)?.stripeCardPaymentSupported;
+    const withoutUnsupportedStripe = (methods: string[]) => {
+      if (stripeCurrencySupport !== false) return methods;
+      const filtered = methods.filter((m) => m !== 'stripe' && m !== 'split');
+      return filtered.length > 0 ? filtered : methods;
+    };
+
     return {
       success: true,
       message: 'Checkout created successfully',
@@ -768,9 +785,11 @@ export class CheckoutService {
         // 'stripe' and 'cash_on_delivery' as before — unless COD isn't
         // eligible (see codEligible above), in which case 'stripe' (pay
         // everything online) is always the safe fallback.
-        allowedPaymentMethods: hasDigital
-          ? withManualTransfer(hasPhysical && codEligible ? ['stripe', 'split'] : ['stripe'])
-          : withManualTransfer(codEligible ? ['stripe', 'cash_on_delivery'] : ['stripe']),
+        allowedPaymentMethods: withoutUnsupportedStripe(
+          hasDigital
+            ? withManualTransfer(hasPhysical && codEligible ? ['stripe', 'split'] : ['stripe'])
+            : withManualTransfer(codEligible ? ['stripe', 'cash_on_delivery'] : ['stripe']),
+        ),
         summary: {
           subtotal,
           shippingFee: 0,

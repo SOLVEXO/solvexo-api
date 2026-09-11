@@ -131,6 +131,19 @@ export class AdminConfigController {
     });
   }
 
+  // Fixed literal suffix (not the bare :code param) so it never collides with
+  // updateCurrencyBand below — clears a currency's learned "Stripe rejected
+  // this" flag back to unknown, for a retry after Stripe adds support or the
+  // original rejection was a one-off. See AdminConfigService's own doc comment.
+  @Post('currencies/:code/retry-stripe')
+  retryStripeCardPaymentSupport(@Req() req: any, @Param('code') code: string) {
+    return this.adminConfigService.retryStripeCardPaymentSupport(code, {
+      adminId: req.user.userId,
+      ip: req.ip,
+      userAgent: req.headers['user-agent'],
+    });
+  }
+
   @Patch('currencies/:code')
   updateCurrencyBand(@Req() req: any, @Param('code') code: string, @Body() dto: UpdateCurrencyBandDto) {
     return this.adminConfigService.updateCurrencyBand(code, dto.sanityBandMin, dto.sanityBandMax, {
