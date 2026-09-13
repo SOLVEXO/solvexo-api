@@ -39,6 +39,8 @@ import { LoyaltyModule } from './loyalty/loyalty.module';
 import { GiftCardsModule } from './gift-cards/gift-cards.module';
 import { AbandonedCartModule } from './abandoned-cart/abandoned-cart.module';
 import { EmailCampaignsModule } from './email-campaigns/email-campaigns.module';
+import { AffiliateModule } from './affiliate/affiliate.module';
+import { TrackingPixelsModule } from './tracking-pixels/tracking-pixels.module';
 import { DiscountsModule } from './discounts/discounts.module';
 import { CollectionsModule } from './collections/collections.module';
 import { StripeConnectModule } from './stripe-connect/stripe-connect.module';
@@ -137,6 +139,8 @@ import { PosPlansModule } from './pos-plans/pos-plans.module';
     GiftCardsModule,
     AbandonedCartModule,
     EmailCampaignsModule,
+    AffiliateModule,
+    TrackingPixelsModule,
     DiscountsModule,
     CollectionsModule,
     StripeConnectModule,

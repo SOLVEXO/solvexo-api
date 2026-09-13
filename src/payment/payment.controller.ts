@@ -74,6 +74,26 @@ export class PaymentController {
     return { success: true, data: { count } };
   }
 
+  // Real "Capture Payment" action for a manual-capture store's authorized
+  // order — mirrors Shopify's own order-page "Capture Payment" button.
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Post('orders/:orderId/capture')
+  async captureOrderPayment(@Req() req: any, @Param('orderId') orderId: string, @Body() body: { amountToCapture?: number }) {
+    const data = await this.paymentService.captureOrderPayment(req.user.userId, orderId, body?.amountToCapture);
+    return { success: true, data };
+  }
+
+  // Real count of orders still awaiting capture, for the store dashboard's
+  // "Needs Attention" card.
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Get('orders/:storeId/awaiting-capture-count')
+  async getAwaitingCaptureCount(@Req() req: any, @Param('storeId') storeId: string) {
+    const count = await this.paymentService.getAwaitingCaptureCount(storeId, req.user.userId);
+    return { success: true, data: { count } };
+  }
+
   // Stripe calls this directly — no bearer token, trust is the HMAC
   // signature verified in the service via the raw request body.
   @Post('stripe-webhook')

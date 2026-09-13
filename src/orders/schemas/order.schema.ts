@@ -420,7 +420,14 @@ export class Order {
   // 'pending_verification' — manual bank-transfer order awaiting an admin to
   // review the buyer's uploaded proof (see manual-payments module). Never
   // set for stripe/COD orders.
-  @Prop({ enum: ['unpaid', 'pending_verification', 'paid', 'failed', 'refunded'], default: 'unpaid' })
+  // 'authorized' — real Stripe manual-capture flow only (Store.paymentCaptureMethod
+  // === 'manual'): the card was authorized (funds held) at checkout but not
+  // yet charged. `isPaid` stays false the whole time this status holds — see
+  // PaymentService's `payment_intent.amount_capturable_updated` handler (sets
+  // this) and OrdersService.captureOrderPayment (the only path that moves it
+  // to 'paid'). If the authorization window lapses uncaptured, this becomes
+  // 'failed' (Stripe cancels the PaymentIntent — `payment_intent.canceled`).
+  @Prop({ enum: ['unpaid', 'pending_verification', 'authorized', 'paid', 'failed', 'refunded'], default: 'unpaid' })
   paymentStatus: string;
 
   @Prop({ default: false })

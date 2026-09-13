@@ -722,6 +722,7 @@ export class CheckoutService {
       attributionSource,
       attributedBannerId: body.attributedBannerId ?? null,
       attributedStoreBannerId: body.attributedStoreBannerId ?? null,
+      attributedAffiliateCode: body.attributedAffiliateCode ?? null,
       expiredAt: new Date(Date.now() + 30 * 60 * 1000),
       isDelete: false,
     });

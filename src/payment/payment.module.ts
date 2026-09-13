@@ -10,11 +10,12 @@ import { ExchangeRateModule } from '@/exchange-rate/exchange-rate.module';
 import { GiftCardsModule } from '@/gift-cards/gift-cards.module';
 import { StripeConnectModule } from '@/stripe-connect/stripe-connect.module';
 import { AbandonedCartModule } from '@/abandoned-cart/abandoned-cart.module';
+import { AffiliateModule } from '@/affiliate/affiliate.module';
 
 @Module({
   // CommissionRulesModule is @Global() (see its own module file) so it
   // doesn't need to be imported here to inject CommissionRulesService.
-  imports: [AuthModule, RedisModule, PromotionsModule, FinanceModule, AdminConfigModule, ExchangeRateModule, GiftCardsModule, StripeConnectModule, AbandonedCartModule],
+  imports: [AuthModule, RedisModule, PromotionsModule, FinanceModule, AdminConfigModule, ExchangeRateModule, GiftCardsModule, StripeConnectModule, AbandonedCartModule, AffiliateModule],
   controllers: [PaymentController],
   providers: [PaymentService],
   exports: [PaymentService],

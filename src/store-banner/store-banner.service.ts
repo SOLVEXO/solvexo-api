@@ -96,13 +96,28 @@ export class StoreBannerService {
     await this.entitlementsService.assertCanCreateStoreBanner(storeId);
     if (!file) throw new BadRequestException('A banner image is required');
 
+    // Video Banners — the "Video" type needs an actual video file; every
+    // other type stays image-only. Checked both ways so a mismatched
+    // type/file pair fails loudly here instead of silently storing garbage.
+    const fileIsVideo = file.mimetype.startsWith('video/');
+    const wantsVideo = dto.type === 'video';
+    if (wantsVideo && !fileIsVideo) {
+      throw new BadRequestException('Video banners need a video file (e.g. .mp4/.webm) — please upload one, or pick a different banner type.');
+    }
+    if (!wantsVideo && fileIsVideo) {
+      throw new BadRequestException('A video file was uploaded, but the banner type isn\'t "Video" — switch the type or upload an image instead.');
+    }
+
     validateCreativeDimensions(file, 'storeHero');
     const uploaded = await this.mediaLibraryService.uploadAndTrack(file, 'seller', sellerId, {
       folder: 'uploads/store-banners',
       maxDimension: HERO_MAX_DIMENSION,
     });
 
-    if (uploaded.width && uploaded.width < HERO_MIN_SOURCE_WIDTH) {
+    // The min-source-width guard only makes sense for a static image render
+    // full-width — a video's own dimensions vary far more (vertical clips
+    // included) and it's rendered `object-cover`, so it's skipped for video.
+    if (!fileIsVideo && uploaded.width && uploaded.width < HERO_MIN_SOURCE_WIDTH) {
       await cloudinary.uploader.destroy(uploaded.publicId).catch(() => {});
       throw new BadRequestException(
         `Image is only ${uploaded.width}px wide — this banner renders full-width on desktop, so please upload at least ${HERO_MIN_SOURCE_WIDTH}px wide (recommended: 2560×720) to avoid blur.`,
@@ -128,10 +143,20 @@ export class StoreBannerService {
     const status = computeInitialStatus(dto.startAt, dto.endAt);
     const currentCount = await this.storeBannerModel.countDocuments({ storeId });
 
+    // For a video upload, `imageUrl` still gets populated — with a Cloudinary
+    // -generated poster frame (no extra upload/storage: same publicId, just a
+    // `.jpg` delivery of it) — so the seller's banner grid and the
+    // storefront `<video poster>` both have a real thumbnail to show while
+    // the clip itself loads/plays.
+    const imageUrl = fileIsVideo
+      ? cloudinary.url(uploaded.publicId, { resource_type: 'video', format: 'jpg', transformation: [{ width: HERO_MAX_DIMENSION, crop: 'limit' }] })
+      : uploaded.url;
+
     const banner = await this.storeBannerModel.create({
       storeId,
       type: dto.type ?? 'hero',
-      imageUrl: uploaded.url,
+      imageUrl,
+      videoUrl: fileIsVideo ? uploaded.url : null,
       publicId: uploaded.publicId,
       mobileImageUrl: mobileUploaded?.url ?? null,
       mobilePublicId: mobileUploaded?.publicId ?? '',
@@ -190,10 +215,15 @@ export class StoreBannerService {
   async remove(storeId: string, sellerId: string, bannerId: string) {
     const banner = await this.findOwned(storeId, sellerId, bannerId);
 
-    for (const publicId of [banner.publicId, banner.mobilePublicId]) {
+    // `banner.publicId` points at the video asset (not the poster — that's
+    // just a derived `.jpg` delivery of the same publicId) when this was a
+    // Video banner, so it must be destroyed with `resource_type: 'video'` or
+    // Cloudinary's image-default destroy silently no-ops on it.
+    const mainResourceType = banner.videoUrl ? 'video' : 'image';
+    for (const [publicId, resourceType] of [[banner.publicId, mainResourceType], [banner.mobilePublicId, 'image']] as const) {
       if (!publicId) continue;
       try {
-        await cloudinary.uploader.destroy(publicId);
+        await cloudinary.uploader.destroy(publicId, { resource_type: resourceType as any });
       } catch (err) {
         console.warn('Could not delete from Cloudinary:', err.message);
       }

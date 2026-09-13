@@ -824,6 +824,22 @@ export class OrdersService {
     );
     if (sellerOrderIndex === -1) throw new ForbiddenException('Unauthorized');
 
+    // Real safety net for Store.paymentCaptureMethod === 'manual' orders —
+    // mirrors Shopify's own "Automatically when order is fulfilled" capture
+    // option. `recordSale` below only ever fires once a sellerOrder reaches
+    // 'completed', with no `isPaid` check of its own — for every OTHER
+    // payment type that's fine (COD/manual-transfer orders are trusted to
+    // have been paid by the time a seller ships them), but a manual-capture
+    // Stripe authorization can genuinely expire with ZERO money ever having
+    // moved. Auto-capturing it right here, the moment a seller first commits
+    // to fulfilling the order, closes that gap — if the real Stripe capture
+    // fails (authorization already expired/voided), this throws and blocks
+    // the status change entirely, so an order can never be shipped AND
+    // silently un-paid at the same time.
+    if (order.paymentStatus === 'authorized' && ['shipped', 'delivered', 'completed'].includes(status)) {
+      await this.paymentService.captureOrderPayment(sellerId, orderId);
+    }
+
     // Guards against double-crediting the finance ledger if this sellerOrder was already
     // completed before this call (duplicate/retried request, double-click, etc.) — mirrors
     // the `order.isPaid` guard already used in `markPaid` below for the same reason.

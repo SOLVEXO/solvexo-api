@@ -139,6 +139,10 @@ import { DatabaseService } from './databaseservice';
       { name: schema.AbandonedCartSettings.name, schema: schema.AbandonedCartSettingsSchema },
       { name: schema.EmailCampaign.name, schema: schema.EmailCampaignSchema },
       { name: schema.EmailCampaignSend.name, schema: schema.EmailCampaignSendSchema },
+      { name: schema.AffiliateProgram.name, schema: schema.AffiliateProgramSchema },
+      { name: schema.Affiliate.name, schema: schema.AffiliateSchema },
+      { name: schema.AffiliateReferral.name, schema: schema.AffiliateReferralSchema },
+      { name: schema.TrackingPixelSettings.name, schema: schema.TrackingPixelSettingsSchema },
       { name: schema.AutomaticDiscount.name, schema: schema.AutomaticDiscountSchema },
       { name: schema.Collection.name, schema: schema.CollectionSchema },
       {

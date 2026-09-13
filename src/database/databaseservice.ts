@@ -215,6 +215,18 @@ export class DatabaseService {
     @InjectModel(schema.EmailCampaignSend.name)
     private emailCampaignSendModel: Model<schema.EmailCampaignSendDocument>,
 
+    @InjectModel(schema.AffiliateProgram.name)
+    private affiliateProgramModel: Model<schema.AffiliateProgramDocument>,
+
+    @InjectModel(schema.Affiliate.name)
+    private affiliateModel: Model<schema.AffiliateDocument>,
+
+    @InjectModel(schema.AffiliateReferral.name)
+    private affiliateReferralModel: Model<schema.AffiliateReferralDocument>,
+
+    @InjectModel(schema.TrackingPixelSettings.name)
+    private trackingPixelSettingsModel: Model<schema.TrackingPixelSettingsDocument>,
+
     @InjectModel(schema.AutomaticDiscount.name)
     private automaticDiscountModel: Model<schema.AutomaticDiscountDocument>,
 
@@ -466,6 +478,10 @@ export class DatabaseService {
       abandonedCartSettingsModel: this.abandonedCartSettingsModel,
       emailCampaignModel: this.emailCampaignModel,
       emailCampaignSendModel: this.emailCampaignSendModel,
+      affiliateProgramModel: this.affiliateProgramModel,
+      affiliateModel: this.affiliateModel,
+      affiliateReferralModel: this.affiliateReferralModel,
+      trackingPixelSettingsModel: this.trackingPixelSettingsModel,
       automaticDiscountModel: this.automaticDiscountModel,
       collectionModel: this.collectionModel,
       platformSubscriptionModel: this.platformSubscriptionModel,

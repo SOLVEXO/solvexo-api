@@ -42,8 +42,15 @@ export class PaymentTransaction {
   @Prop({ enum: ['full', 'digital_only'], default: 'full' })
   paymentScope: string;
 
+  // 'authorized' — real Stripe manual-capture flow only: the PaymentIntent
+  // reached `requires_capture` (card authorized, not yet charged) and the
+  // order was already created from it (see PaymentService's
+  // `payment_intent.amount_capturable_updated` handler). Moves to
+  // 'completed' once actually captured (Stripe re-fires
+  // `payment_intent.succeeded` on capture, handled by the same
+  // `finalizePaymentIntent` every automatic-capture charge already uses).
   @Prop({
-    enum: ['pending', 'completed', 'failed'],
+    enum: ['pending', 'authorized', 'completed', 'failed'],
     default: 'pending',
     index: true,
   })

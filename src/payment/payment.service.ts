@@ -2,6 +2,7 @@ import {
   Injectable,
   BadRequestException,
   NotFoundException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { DatabaseService } from '@/database/databaseservice';
@@ -16,7 +17,9 @@ import { GiftCardsService } from '@/gift-cards/gift-cards.service';
 import { StripeConnectService } from '@/stripe-connect/stripe-connect.service';
 import { CommissionRulesService } from '@/commission-rules/commission-rules.service';
 import { AbandonedCartService } from '@/abandoned-cart/abandoned-cart.service';
+import { AffiliateService } from '@/affiliate/affiliate.service';
 import { verifyStoreOwnershipStrict } from '@/common/store-ownership.util';
+import { deriveRollupStatus } from '@/orders/order-status.util';
 import Stripe from 'stripe';
 
 @Injectable()
@@ -40,6 +43,7 @@ export class PaymentService {
     private readonly stripeConnectService: StripeConnectService,
     private readonly commissionRulesService: CommissionRulesService,
     private readonly abandonedCartService: AbandonedCartService,
+    private readonly affiliateService: AffiliateService,
   ) {
     const secretKey = this.configService
       .get<string>('STRIPE_SECRET_KEY')
@@ -292,12 +296,21 @@ export class PaymentService {
     const checkoutStoreIds = [...new Set(checkout.items.map((i: any) => i.storeId))];
     let connectAccountId: string | null = null;
     let applicationFeeAmountCents = 0;
+    // Manual capture, like Connect direct-charge routing just above, only
+    // ever applies to a genuinely single-store, pay-in-full checkout —
+    // Stripe's `capture_method` is one setting per PaymentIntent, so a
+    // multi-store cart spanning stores with different capture preferences
+    // has no single correct answer and always falls back to 'automatic'.
+    let manualCapture = false;
     if (!useSplit && checkoutStoreIds.length === 1) {
       connectAccountId = await this.stripeConnectService.getEligibleConnectAccountForStore(checkoutStoreIds[0]);
       if (connectAccountId) {
         const { rate } = await this.commissionRulesService.resolveRate(checkoutStoreIds[0]);
         applicationFeeAmountCents = Math.round(amountCents * rate);
       }
+      const store = await this.databaseService.repositories.storeModel
+        .findById(checkoutStoreIds[0]).select('paymentCaptureMethod').lean();
+      manualCapture = (store as any)?.paymentCaptureMethod === 'manual';
     }
 
     let paymentIntent: any;
@@ -311,6 +324,7 @@ export class PaymentService {
             enabled: true,
             allow_redirects: 'never',
           },
+          ...(manualCapture ? { capture_method: 'manual' as const } : {}),
           ...(connectAccountId
             ? {
                 transfer_data: { destination: connectAccountId },
@@ -449,6 +463,22 @@ export class PaymentService {
           },
           { status: 'failed' },
         );
+      } else if (event.type === 'payment_intent.amount_capturable_updated') {
+        // Manual-capture authorization succeeded (card valid, funds held,
+        // nothing charged) — see authorizePaymentIntent's doc comment. Never
+        // fires for the default automatic-capture path.
+        const paymentIntent = event.data.object;
+        await this.authorizePaymentIntent(paymentIntent);
+      } else if (event.type === 'payment_intent.canceled') {
+        // A manual-capture authorization that was never captured in time —
+        // Stripe cancels it itself once the ~7-day authorization window
+        // lapses (or a seller/admin explicitly voids it via Stripe). Same
+        // real-world outcome as Shopify's own "authorization expired": the
+        // hold is released, the seller gets nothing, and the order needs to
+        // visibly reflect that instead of sitting silently as "Authorized"
+        // forever.
+        const paymentIntent = event.data.object;
+        await this.handleAuthorizationCanceled(paymentIntent);
       } else if (event.type === 'charge.refunded') {
         const charge = event.data.object;
         await this.handleChargeRefunded(charge);
@@ -758,10 +788,17 @@ export class PaymentService {
       cartModel,
     } = this.databaseService.repositories;
 
+    // Matches BOTH a first-ever automatic-capture success ('pending' — the
+    // overwhelming default case, unchanged) AND a manual-capture order's
+    // real Stripe capture completing ('authorized' — see
+    // `authorizePaymentIntent`, which is what put it in that state). Both
+    // land here because Stripe fires the identical `payment_intent.succeeded`
+    // event for either — an auto-captured charge succeeding immediately, or
+    // a manual-capture PaymentIntent finishing a real `capture()` call.
     const transaction = await paymentTransactionModel.findOneAndUpdate(
       {
         stripePaymentIntentId: paymentIntentId,
-        status: 'pending',
+        status: { $in: ['pending', 'authorized'] },
         isDelete: false,
       },
       { status: 'completed', paidAt: new Date() },
@@ -776,6 +813,16 @@ export class PaymentService {
       return existing?.status === 'completed'
         ? { orderIds: existing.orderIds }
         : null;
+    }
+
+    // The order(s) already exist — this transaction was 'authorized', which
+    // only ever happens after `authorizePaymentIntent` already ran
+    // `createOrder` once. This `payment_intent.succeeded` delivery is the
+    // CAPTURE completing, not the first creation — finish it by flipping the
+    // existing orders to paid, never by creating a second set of orders.
+    if (transaction.orderIds.length > 0) {
+      await this.markOrdersCaptured(transaction.orderIds);
+      return { orderIds: transaction.orderIds };
     }
 
     const checkout = await checkoutModel.findOne({
@@ -864,6 +911,291 @@ export class PaymentService {
     // Seller notifications are already sent inside `createOrder()` above —
     // no need to duplicate that here.
     return { orderIds: orders.map((o: any) => o._id.toString()) };
+  }
+
+  /**
+   * `payment_intent.amount_capturable_updated` — fires once a manual-capture
+   * PaymentIntent's authorization succeeds (card valid, funds held, nothing
+   * charged yet). Only ever reached for a store with
+   * `Store.paymentCaptureMethod === 'manual'` (see `initiatePayment`'s
+   * `capture_method` gate) — every automatic-capture checkout (the default)
+   * never emits this event at all, so this method is a strict addition with
+   * zero effect on the existing path.
+   *
+   * Creates the real order NOW, same as an automatic-capture success would —
+   * a manual-capture seller needs to actually see the order (to decide
+   * whether to fulfill/capture it) well before the money is taken, exactly
+   * like Shopify's own "Authorized" order state. `isPaid` stays false and
+   * `paymentStatus` is 'authorized' until a real Stripe capture happens (see
+   * `captureOrderPayment` and `finalizePaymentIntent`'s
+   * `transaction.orderIds.length > 0` branch, which finishes this once
+   * captured).
+   */
+  private async authorizePaymentIntent(
+    paymentIntent: { id: string; amount?: number; currency?: string },
+  ): Promise<void> {
+    const paymentIntentId = paymentIntent.id;
+    const { checkoutModel, paymentTransactionModel, orderModel, addressModel, cartModel } =
+      this.databaseService.repositories;
+
+    const transaction = await paymentTransactionModel.findOneAndUpdate(
+      { stripePaymentIntentId: paymentIntentId, status: 'pending', isDelete: false },
+      { status: 'authorized' },
+      { new: true },
+    );
+    // No match = either already authorized (redelivered webhook — the first
+    // findOneAndUpdate already flipped it out of 'pending') or genuinely not
+    // ours; either way there's nothing new to do.
+    if (!transaction) return;
+
+    const checkout = await checkoutModel.findOne({ _id: transaction.checkoutId, isDelete: false });
+    if (!checkout || checkout.status === 'completed') return;
+
+    // Same amount/currency safety net as `finalizePaymentIntent` — a
+    // mismatch here must never silently create an order either.
+    if (typeof paymentIntent.amount === 'number' && typeof paymentIntent.currency === 'string') {
+      const expectedAmountCents = Math.round(transaction.amount * 100);
+      const expectedCurrency = (checkout.currency || 'USD').toUpperCase();
+      const actualCurrency = paymentIntent.currency.toUpperCase();
+      if (paymentIntent.amount !== expectedAmountCents || actualCurrency !== expectedCurrency) {
+        await paymentTransactionModel.findByIdAndUpdate(transaction._id, { status: 'pending' });
+        await this.activityLogService.log({
+          storeId: 'platform',
+          category: 'finance',
+          action: 'payment_amount_currency_mismatch',
+          description: `Stripe authorized ${paymentIntent.amount} ${actualCurrency} but checkout ${checkout._id} expected ${expectedAmountCents} ${expectedCurrency} — order NOT created, needs manual review`,
+          actorId: 'system',
+          actorRole: 'system',
+          isSecurityAlert: true,
+          targetId: checkout._id.toString(),
+          targetType: 'checkout',
+        });
+        throw new BadRequestException('Payment amount/currency mismatch — this charge requires manual review');
+      }
+    }
+
+    // Manual capture is only ever offered for a single-store, pay-in-full
+    // checkout (see `initiatePayment`'s gate) — there is no digital_only/
+    // split-payment branch to consider here, unlike `finalizePaymentIntent`.
+    const paymentInfo = { paymentType: 'stripe', isPaid: false, paymentStatus: 'authorized' };
+
+    let orders: any[];
+    try {
+      orders = await this.createOrder(transaction.userId, checkout, orderModel, addressModel, paymentInfo, paymentInfo);
+    } catch (err: any) {
+      await paymentTransactionModel.findByIdAndUpdate(transaction._id, { status: 'pending' });
+      console.error('createOrder failed while authorizing payment:', err?.message, {
+        checkoutId: checkout._id, paymentIntentId,
+      });
+      throw new BadRequestException('Order creation failed, will retry');
+    }
+
+    await paymentTransactionModel.findByIdAndUpdate(transaction._id, {
+      orderIds: orders.map((o: any) => o._id.toString()),
+    });
+    await checkoutModel.findByIdAndUpdate(checkout._id, { status: 'completed' });
+    await this.removeCheckedOutItemsFromCart(transaction.userId, checkout, cartModel);
+    // Seller notifications (real "new order" push) already fire inside
+    // `createOrder()` — a manual-capture seller sees it exactly like any
+    // other new order, just with an "Authorized" payment badge instead of "Paid".
+  }
+
+  /**
+   * Flips already-created orders from 'authorized' to genuinely 'paid' —
+   * the real Stripe capture already happened by the time this runs (either
+   * `captureOrderPayment`'s inline call right after a successful
+   * `stripe.paymentIntents.capture()`, or the `payment_intent.succeeded`
+   * webhook that same capture call triggers — both call this, and it's a
+   * safe no-op on the second call via the `order.isPaid` guard below, so a
+   * redelivered webhook or a slow webhook arriving after the inline call
+   * both land here harmlessly).
+   *
+   * `capturedTotal` (omitted = full amount, the common case) is the REAL
+   * amount Stripe actually captured across every order this PaymentIntent
+   * covers (a single-store checkout can produce up to 2 — physical +
+   * digital). When it's less than what was originally authorized (a
+   * genuine partial capture — Shopify supports this too, e.g. an item
+   * turned out to be out of stock), every order/sellerOrder's
+   * money fields are scaled down by the same ratio BEFORE being marked
+   * paid — critical correctness: `OrdersService.recordSale` later reads
+   * `sellerOrder.settlementAmount` to credit the seller's ledger, and it
+   * must never credit them for money that was authorized but never
+   * actually captured.
+   */
+  private async markOrdersCaptured(orderIds: string[], capturedTotal?: number): Promise<void> {
+    const { orderModel } = this.databaseService.repositories;
+    const orders = await orderModel.find({ _id: { $in: orderIds }, isDelete: false });
+    const unpaid = (orders as any[]).filter((o) => !o.isPaid);
+    if (unpaid.length === 0) return;
+
+    const originalTotal = unpaid.reduce((s, o) => s + o.totalAmount, 0);
+    const isPartial = capturedTotal != null && originalTotal > 0 && capturedTotal < originalTotal - 0.01;
+    const ratio = isPartial ? capturedTotal! / originalTotal : 1;
+
+    for (const order of unpaid) {
+      if (isPartial) {
+        order.totalAmount = this.round(order.totalAmount * ratio);
+        for (const so of order.sellerOrders) {
+          so.settlementAmount = this.round(so.settlementAmount * ratio);
+          so.subtotal = this.round(so.subtotal * ratio);
+        }
+      }
+      order.isPaid = true;
+      order.paymentStatus = 'paid';
+      order.paidAt = new Date();
+      await order.save();
+
+      if (isPartial) {
+        this.activityLogService.log({
+          storeId: order.sellerOrders[0]?.storeId ?? 'platform',
+          category: 'finance',
+          action: 'payment_partially_captured',
+          description: `Order #${order.orderNumber} — only ${this.round(order.totalAmount)} of the originally-authorized amount was captured; the rest was released back to the buyer.`,
+          actorId: 'system',
+          actorRole: 'system',
+          targetId: order._id.toString(),
+          targetType: 'order',
+        });
+      }
+    }
+  }
+
+  /**
+   * A manual-capture authorization was never captured in time and Stripe
+   * itself canceled it (the ~7-day authorization window lapsed) — or a
+   * seller/admin explicitly voided it via the Stripe Dashboard. No money was
+   * ever taken, so there is nothing to reverse in the finance ledger (that
+   * only ever gets credited later, on real fulfillment — see
+   * OrdersService.updateSellerOrderStatus — and this order can now never
+   * reach that point). Releases the physical-item stock reservation
+   * (mirrors `createOrder`'s own reservation-rollback) and marks the
+   * order(s) cancelled so they stop appearing as "awaiting capture".
+   */
+  private async handleAuthorizationCanceled(paymentIntent: { id: string }): Promise<void> {
+    const { paymentTransactionModel, orderModel, productVariantModel } = this.databaseService.repositories;
+
+    const transaction = await paymentTransactionModel.findOneAndUpdate(
+      { stripePaymentIntentId: paymentIntent.id, status: 'authorized', isDelete: false },
+      { status: 'failed' },
+      { new: true },
+    );
+    if (!transaction || transaction.orderIds.length === 0) return;
+
+    const orders = await orderModel.find({ _id: { $in: transaction.orderIds }, isDelete: false });
+    for (const order of orders as any[]) {
+      if (order.paymentStatus !== 'authorized') continue; // already resolved some other way
+
+      for (const so of order.sellerOrders) {
+        for (const item of so.items) {
+          if (item.type !== 'physical' || !item.variantId) continue;
+          await productVariantModel.updateOne(
+            { _id: item.variantId },
+            { $inc: { committedStock: -item.quantity } },
+          );
+        }
+        so.status = 'cancelled';
+        so.cancelledAt = new Date();
+        so.cancelReason = 'Payment authorization expired before capture';
+        for (const item of so.items) item.status = 'cancelled';
+      }
+      order.paymentStatus = 'failed';
+      order.orderStatus = deriveRollupStatus(order.sellerOrders.map((so: any) => so.status));
+      await order.save();
+
+      for (const so of order.sellerOrders) {
+        this.notificationsService.notify({
+          recipientId: so.sellerId,
+          recipientRole: 'seller',
+          storeId: so.storeId,
+          type: NOTIFICATION_TYPES.ORDER_CANCELLED,
+          title: 'Order cancelled — payment authorization expired',
+          body: `Order #${order.orderNumber} was cancelled because the payment authorization wasn't captured in time.`,
+          data: { orderId: order._id.toString() },
+        }).catch(() => {});
+      }
+    }
+  }
+
+  /**
+   * Seller-facing manual capture — the real "Capture Payment" action (see
+   * PaymentController). Only ever valid for an order still 'authorized'
+   * (Store.paymentCaptureMethod === 'manual'); calls the real Stripe
+   * `paymentIntents.capture()` API — no ledger/notification logic lives
+   * here directly, it's delegated to `markOrdersCaptured` (the same method
+   * the webhook path uses) so both routes to "actually captured" can never
+   * drift apart.
+   *
+   * `amountToCapture` (omitted = capture the full authorized amount) is a
+   * real Stripe partial capture — Shopify supports this too (e.g. one item
+   * in the order turned out to be unavailable, so the seller only wants to
+   * charge for the rest). Stripe releases the un-captured remainder back to
+   * the buyer and settles the PaymentIntent at the lower amount; a single
+   * Stripe PaymentIntent can cover up to 2 of this codebase's orders
+   * (physical + digital, from one single-store checkout — see
+   * `initiatePayment`'s manual-capture gate), so the amount is validated
+   * and scaled against their COMBINED authorized total, not just this one
+   * order's.
+   */
+  async captureOrderPayment(sellerId: string, orderId: string, amountToCapture?: number): Promise<any> {
+    const { orderModel, paymentTransactionModel } = this.databaseService.repositories;
+
+    const order = await orderModel.findOne({ _id: orderId, isDelete: false });
+    if (!order) throw new NotFoundException('Order not found');
+    if (!order.sellerOrders.some((so: any) => so.sellerId === sellerId)) {
+      throw new ForbiddenException('Unauthorized');
+    }
+    if (order.paymentStatus !== 'authorized') {
+      throw new BadRequestException(`Cannot capture — this order's payment status is "${order.paymentStatus}", not "authorized"`);
+    }
+
+    const transaction = await paymentTransactionModel.findOne({
+      orderIds: orderId, status: 'authorized', isDelete: false,
+    });
+    if (!transaction?.stripePaymentIntentId) {
+      throw new BadRequestException('No authorized Stripe payment found for this order');
+    }
+
+    const coveredOrders = await orderModel.find({ _id: { $in: transaction.orderIds }, isDelete: false }).lean();
+    const authorizedTotal = this.round((coveredOrders as any[]).reduce((s, o) => s + o.totalAmount, 0));
+
+    let stripeParams: { amount_to_capture?: number } = {};
+    if (amountToCapture != null) {
+      if (!(amountToCapture > 0) || amountToCapture > authorizedTotal + 0.01) {
+        throw new BadRequestException(`Amount to capture must be between 0 and ${authorizedTotal.toFixed(2)} (the authorized total)`);
+      }
+      stripeParams = { amount_to_capture: Math.round(amountToCapture * 100) };
+    }
+
+    const stripe = this.assertStripeConfigured();
+    try {
+      await stripe.paymentIntents.capture(transaction.stripePaymentIntentId, stripeParams);
+    } catch (err: any) {
+      throw new BadRequestException(`Stripe capture failed: ${err?.message || 'unknown error'}`);
+    }
+
+    // Capture succeeded synchronously — finish immediately rather than
+    // waiting for Stripe's own `payment_intent.succeeded` webhook round-trip
+    // (that webhook still arrives and safely no-ops via markOrdersCaptured's
+    // `order.isPaid` guard, in case this response is ever lost mid-flight).
+    await paymentTransactionModel.updateOne(
+      { _id: transaction._id },
+      { status: 'completed', paidAt: new Date() },
+    );
+    const capturedTotal = amountToCapture ?? authorizedTotal;
+    await this.markOrdersCaptured(transaction.orderIds, capturedTotal);
+
+    return { captured: true, orderIds: transaction.orderIds, capturedAmount: capturedTotal };
+  }
+
+  /** Real count for the store dashboard's "Needs Attention" card — orders sitting in 'authorized' (manual-capture, not yet captured). */
+  async getAwaitingCaptureCount(storeId: string, sellerId: string): Promise<number> {
+    await verifyStoreOwnershipStrict(this.databaseService.repositories.storeModel, storeId, sellerId);
+    const { orderModel } = this.databaseService.repositories;
+    return orderModel.countDocuments({
+      isDelete: false,
+      paymentStatus: 'authorized',
+      'sellerOrders.storeId': storeId,
+    });
   }
 
   /** Generic-gateway equivalent of `finalizePaymentIntent` — for the new
@@ -1625,6 +1957,13 @@ export class PaymentService {
         return rows;
       });
       this.promotionsService.recordConversions(conversions).catch(() => {});
+    }
+
+    // Affiliate commission — a no-op unless this checkout carried a real
+    // referral code from a click-through (see AffiliateService.recordConversion
+    // for how a multi-store cart only credits the referring store's portion).
+    if (checkout.attributedAffiliateCode) {
+      this.affiliateService.recordConversion(String(checkout._id), checkout.attributedAffiliateCode, createdOrders).catch(() => {});
     }
 
     // purchaseCount increment — har item ke product pe

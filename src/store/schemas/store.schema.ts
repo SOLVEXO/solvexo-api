@@ -560,6 +560,29 @@ export class Store {
   @Prop({ type: Boolean, default: true })
   codEnabled: boolean;
 
+  // Shopify's real "Payment capture method" setting — mirrors its two
+  // most-used options ("Automatically at checkout" / "Manually") out of its
+  // four. 'automatic' (default — every existing store's unchanged behavior)
+  // charges the buyer's card the instant checkout succeeds, same as today.
+  // 'manual' authorizes the card (holds funds, doesn't take them) and lets
+  // the seller review the order before actually charging it via a real
+  // Stripe capture call — see PaymentService.initiatePayment (capture_method
+  // on the PaymentIntent) and OrdersService.captureOrderPayment. Only takes
+  // effect for a single-store checkout — same simplification
+  // `getEligibleConnectAccountForStore` already uses, since Stripe's
+  // capture_method is set once per PaymentIntent, not per line item.
+  @Prop({ type: String, enum: ['automatic', 'manual'], default: 'automatic' })
+  paymentCaptureMethod: string;
+
+  // Real Shopify-equivalent "customize your dashboard metrics" — which
+  // metric cards the seller's own Store Dashboard shows, and in what order.
+  // `null`/empty (every pre-existing store) means "show the default set"
+  // (see DASHBOARD_METRIC_CATALOG's `default` flag in
+  // store-dashboard-metrics.const.ts, the single source of truth both this
+  // backend and the frontend picker read from) — never hand-guessed here.
+  @Prop({ type: [String], default: null })
+  dashboardMetrics: string[] | null;
+
   // Opt-in per-store review moderation gate — off by default so every
   // existing store keeps today's behavior (a review publishes the instant
   // it's submitted). A seller who turns this on gets a real approve/reject

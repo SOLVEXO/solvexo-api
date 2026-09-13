@@ -34,6 +34,7 @@ import { AdminConfigService } from '@/admin-config/admin-config.service';
 import { StoreThemeService } from '../store-theme/store-theme.service';
 import { StorePagesService } from '../store-pages/store-pages.service';
 import { CollectionsService } from '../collections/collections.service';
+import { DASHBOARD_METRIC_IDS } from './store-dashboard-metrics.const';
 
 // Store slugs render at the site root (`solvexo.store/:slug`) — these are the
 // frontend's top-level static route segments (router/index.tsx), reserved so
@@ -1008,7 +1009,7 @@ export class StoreService {
   // body would let a seller un-suspend their own store (see
   // usersService.deleteSellerAccount, which suspends stores on delete).
   async updateStore(sellerId: string, storeId: string, body: any) {
-    const { name, logo, coverImage, faviconUrl, description, tagline, contactEmail, contactPhone, sellerType, productTypes, codEnabled, reviewModerationEnabled, lowStockThreshold, taxRate, enabledCurrencies } = body;
+    const { name, logo, coverImage, faviconUrl, description, tagline, contactEmail, contactPhone, sellerType, productTypes, codEnabled, paymentCaptureMethod, dashboardMetrics, reviewModerationEnabled, lowStockThreshold, taxRate, enabledCurrencies } = body;
 
     if (!storeId) throw new BadRequestException('storeId is required');
 
@@ -1057,6 +1058,25 @@ export class StoreService {
     if (contactPhone !== undefined) updateData.contactPhone = contactPhone;
     if (sellerType !== undefined) updateData.sellerType = sellerType;
     if (codEnabled !== undefined) updateData.codEnabled = !!codEnabled;
+    if (paymentCaptureMethod !== undefined) {
+      if (!['automatic', 'manual'].includes(paymentCaptureMethod)) {
+        throw new BadRequestException('paymentCaptureMethod must be "automatic" or "manual"');
+      }
+      updateData.paymentCaptureMethod = paymentCaptureMethod;
+    }
+    if (dashboardMetrics !== undefined) {
+      if (dashboardMetrics !== null) {
+        if (!Array.isArray(dashboardMetrics) || dashboardMetrics.length === 0) {
+          throw new BadRequestException('dashboardMetrics must be a non-empty array, or null to reset to the default set');
+        }
+        for (const id of dashboardMetrics) {
+          if (!DASHBOARD_METRIC_IDS.includes(id)) {
+            throw new BadRequestException(`Unknown dashboard metric: ${id}`);
+          }
+        }
+      }
+      updateData.dashboardMetrics = dashboardMetrics;
+    }
     if (reviewModerationEnabled !== undefined) updateData.reviewModerationEnabled = !!reviewModerationEnabled;
     if (lowStockThreshold !== undefined) {
       const parsed = Number(lowStockThreshold);

@@ -15,7 +15,10 @@ const CREATIVE_UPLOAD = FileFieldsInterceptor(
     { name: 'file', maxCount: 1 },
     { name: 'mobileFile', maxCount: 1 },
   ],
-  { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } },
+  // 50MB — raised from the original 5MB (image-only) cap so a real Video
+  // Banner clip actually fits; per-mimetype size enforcement still happens
+  // in `validateCreativeDimensions` (images stay capped at 5MB there).
+  { storage: memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } },
 );
 
 @ApiTags('Store Banners')

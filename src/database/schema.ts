@@ -91,6 +91,10 @@ export { GiftCardSettings, GiftCardSettingsDocument, GiftCardSettingsSchema } fr
 export { AbandonedCartSettings, AbandonedCartSettingsDocument, AbandonedCartSettingsSchema } from '../abandoned-cart/schemas/abandoned-cart-settings.schema';
 export { EmailCampaign, EmailCampaignDocument, EmailCampaignSchema } from '../email-campaigns/schemas/email-campaign.schema';
 export { EmailCampaignSend, EmailCampaignSendDocument, EmailCampaignSendSchema } from '../email-campaigns/schemas/email-campaign-send.schema';
+export { AffiliateProgram, AffiliateProgramDocument, AffiliateProgramSchema } from '../affiliate/schemas/affiliate-program.schema';
+export { Affiliate, AffiliateDocument, AffiliateSchema } from '../affiliate/schemas/affiliate.schema';
+export { AffiliateReferral, AffiliateReferralDocument, AffiliateReferralSchema } from '../affiliate/schemas/affiliate-referral.schema';
+export { TrackingPixelSettings, TrackingPixelSettingsDocument, TrackingPixelSettingsSchema } from '../tracking-pixels/schemas/tracking-pixel-settings.schema';
 export { AutomaticDiscount, AutomaticDiscountDocument, AutomaticDiscountSchema } from '../discounts/schemas/automatic-discount.schema';
 export { Collection, CollectionDocument, CollectionSchema } from '../collections/schemas/collection.schema';
 export { PlatformSubscription, PlatformSubscriptionDocument, PlatformSubscriptionSchema } from '../platform-subscriptions/schemas/platform-subscription.schema';

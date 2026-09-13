@@ -272,6 +272,16 @@ export class Checkout {
   @Prop({ type: String, default: null })
   attributedStoreBannerId: string | null;
 
+  // Set client-side from a `?ref=CODE` referral link (localStorage
+  // attribution token, same convention as attributedBannerId above) — copied
+  // onto the resulting Order(s) at placeOrder so AffiliateService can
+  // attribute a commission to whichever affiliate's code this was. A code
+  // belongs to one specific store's affiliate program, so on a multi-store
+  // cart only that store's portion of the order counts (see
+  // AffiliateService.recordConversion).
+  @Prop({ type: String, default: null })
+  attributedAffiliateCode: string | null;
+
   @Prop({ required: true })
   totalAmount: number;
 
