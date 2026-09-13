@@ -15,6 +15,8 @@ import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { GiftCardsService } from '@/gift-cards/gift-cards.service';
 import { StripeConnectService } from '@/stripe-connect/stripe-connect.service';
 import { CommissionRulesService } from '@/commission-rules/commission-rules.service';
+import { AbandonedCartService } from '@/abandoned-cart/abandoned-cart.service';
+import { verifyStoreOwnershipStrict } from '@/common/store-ownership.util';
 import Stripe from 'stripe';
 
 @Injectable()
@@ -37,6 +39,7 @@ export class PaymentService {
     private readonly giftCardsService: GiftCardsService,
     private readonly stripeConnectService: StripeConnectService,
     private readonly commissionRulesService: CommissionRulesService,
+    private readonly abandonedCartService: AbandonedCartService,
   ) {
     const secretKey = this.configService
       .get<string>('STRIPE_SECRET_KEY')
@@ -449,9 +452,21 @@ export class PaymentService {
       } else if (event.type === 'charge.refunded') {
         const charge = event.data.object;
         await this.handleChargeRefunded(charge);
+      } else if (event.type === 'charge.succeeded') {
+        // Real Stripe Radar fraud-risk read (`outcome.risk_level`) — purely
+        // informational metadata, never touches the ledger. See
+        // captureChargeRiskLevel / getHighRiskOrderCount.
+        const charge = event.data.object;
+        await this.captureChargeRiskLevel(charge);
       } else if (event.type === 'charge.dispute.created') {
         const dispute = event.data.object;
         await this.handleChargeDispute(dispute);
+      } else if (event.type === 'charge.dispute.updated' || event.type === 'charge.dispute.closed') {
+        // Status-only transition (evidence submitted, or a final won/lost
+        // outcome) — never re-reverses the ledger, that already happened on
+        // `charge.dispute.created`. See handleChargeDisputeStatusChange.
+        const dispute = event.data.object;
+        await this.handleChargeDisputeStatusChange(dispute);
       } else if (event.type === 'account.updated') {
         // Stripe Connect account status change (KYC completed, a capability
         // revoked, etc.) — arrives on the platform's own webhook endpoint
@@ -542,8 +557,119 @@ export class PaymentService {
     const disputeAmount = this.round((dispute.amount ?? 0) / 100);
     if (disputeAmount <= 0) return;
 
-    await paymentTransactionModel.findByIdAndUpdate(transaction._id, { $addToSet: { disputedChargeIds: dispute.id } });
+    // Also appends a real `disputes[]` entry (separate from the replay-guard
+    // `disputedChargeIds` above) — powers the seller dashboard's "N order(s)
+    // need your dispute response" task (mirrors Shopify Home's "Submit
+    // evidence for chargebacks" order task), which previously had no
+    // surface at all beyond the silent ledger reversal.
+    const storeIds = await this.resolveStoreIdsForOrders(transaction.orderIds);
+    const dueBy = dispute.evidence_details?.due_by ? new Date(dispute.evidence_details.due_by * 1000) : null;
+
+    await paymentTransactionModel.findByIdAndUpdate(transaction._id, {
+      $addToSet: { disputedChargeIds: dispute.id },
+      $push: {
+        disputes: {
+          disputeId: dispute.id,
+          status: dispute.status || 'needs_response',
+          reason: dispute.reason ?? null,
+          amount: disputeAmount,
+          currency: (dispute.currency || 'usd').toUpperCase(),
+          storeIds,
+          evidenceDueBy: dueBy,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      },
+    });
     await this.reverseSellerLedgerForOrders(transaction.orderIds, disputeAmount, 'Stripe dispute/chargeback');
+  }
+
+  /**
+   * `charge.dispute.updated`/`charge.dispute.closed` — Stripe's own dispute
+   * status transitions (evidence submitted → 'under_review', final outcome
+   * → 'won'/'lost'/'warning_closed'). Updates the matching `disputes[]`
+   * entry's `status` in place so the dashboard's open-dispute count
+   * automatically drops off once a dispute is no longer actionable.
+   */
+  private async handleChargeDisputeStatusChange(dispute: any) {
+    const { paymentTransactionModel } = this.databaseService.repositories;
+    await paymentTransactionModel.updateOne(
+      { 'disputes.disputeId': dispute.id },
+      { $set: { 'disputes.$.status': dispute.status, 'disputes.$.updatedAt': new Date() } },
+    );
+  }
+
+  /** Resolves the distinct set of storeIds a batch of orderIds belongs to (via each order's own `sellerOrders[].storeId`). */
+  private async resolveStoreIdsForOrders(orderIds: string[]): Promise<string[]> {
+    const { orderModel } = this.databaseService.repositories;
+    const orders = await orderModel.find({ _id: { $in: orderIds }, isDelete: false }).select('sellerOrders.storeId').lean();
+    const storeIds = new Set<string>();
+    for (const order of orders as any[]) {
+      for (const so of order.sellerOrders ?? []) storeIds.add(so.storeId);
+    }
+    return [...storeIds];
+  }
+
+  /**
+   * Real, actionable signal for the store dashboard's "Needs Attention"
+   * card — how many currently-open disputes (Stripe status
+   * 'needs_response'/'warning_needs_response' — genuinely awaiting the
+   * seller's evidence submission, not merely "under review") this store has
+   * right now.
+   */
+  async getOpenDisputeCount(storeId: string, sellerId: string): Promise<number> {
+    await verifyStoreOwnershipStrict(this.databaseService.repositories.storeModel, storeId, sellerId);
+    const { paymentTransactionModel } = this.databaseService.repositories;
+    return paymentTransactionModel.countDocuments({
+      disputes: { $elemMatch: { storeIds: storeId, status: { $in: ['needs_response', 'warning_needs_response'] } } },
+    });
+  }
+
+  /**
+   * `charge.succeeded` — captures Stripe Radar's own real risk assessment
+   * for this charge (never touches the ledger, purely informational). Not
+   * gated on the transaction's own status (this event can arrive slightly
+   * before or after `payment_intent.succeeded`), so this is a plain
+   * best-effort metadata write keyed only by the payment intent id.
+   */
+  private async captureChargeRiskLevel(charge: any) {
+    const paymentIntentId = typeof charge.payment_intent === 'string' ? charge.payment_intent : charge.payment_intent?.id;
+    const riskLevel = charge.outcome?.risk_level;
+    if (!paymentIntentId || !riskLevel) return;
+
+    await this.databaseService.repositories.paymentTransactionModel.updateOne(
+      { stripePaymentIntentId: paymentIntentId },
+      { $set: { riskLevel } },
+    );
+  }
+
+  /**
+   * Real, actionable signal for the store dashboard's "Needs Attention"
+   * card — mirrors Shopify Home's "Review high-risk orders" order task.
+   * "Needs review" = Stripe Radar flagged the charge 'elevated'/'highest'
+   * AND the underlying seller order hasn't shipped yet (`pending`/
+   * `processing`) — once fulfilled/cancelled/refunded there is nothing left
+   * to review before it goes out the door, so the count naturally clears
+   * itself without a separate "reviewed" flag to maintain.
+   */
+  async getHighRiskOrderCount(storeId: string, sellerId: string): Promise<number> {
+    await verifyStoreOwnershipStrict(this.databaseService.repositories.storeModel, storeId, sellerId);
+    const { paymentTransactionModel, orderModel } = this.databaseService.repositories;
+
+    const riskyTx = await paymentTransactionModel
+      .find({ riskLevel: { $in: ['elevated', 'highest'] }, orderIds: { $exists: true, $ne: [] } })
+      .select('orderIds')
+      .sort({ createdAt: -1 })
+      .limit(500)
+      .lean();
+    const orderIds = [...new Set((riskyTx as any[]).flatMap((t) => t.orderIds))];
+    if (orderIds.length === 0) return 0;
+
+    return orderModel.countDocuments({
+      _id: { $in: orderIds },
+      isDelete: false,
+      sellerOrders: { $elemMatch: { storeId, status: { $in: ['pending', 'processing'] } } },
+    });
   }
 
   /**
@@ -1544,6 +1670,12 @@ export class PaymentService {
         String(createdOrders[0]?._id ?? ''),
       );
     }
+
+    // Closes the Abandoned Cart Recovery loop — a no-op unless a recovery
+    // email had genuinely already been sent for THIS checkout (see the
+    // method's own doc comment), so a normal same-session purchase is never
+    // miscounted as a "recovery".
+    this.abandonedCartService.markRecovered(String(checkout._id)).catch(() => {});
 
     const notifiedSellers = new Set<string>();
     for (const createdOrder of createdOrders) {

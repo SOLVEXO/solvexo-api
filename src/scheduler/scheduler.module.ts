@@ -13,9 +13,11 @@ import { ExchangeRateModule } from '../exchange-rate/exchange-rate.module';
 import { AdminFinanceModule } from '../admin-finance/admin-finance.module';
 import { BookingsModule } from '../bookings/bookings.module';
 import { IntegrationsModule } from '../integrations/integrations.module';
+import { AbandonedCartModule } from '../abandoned-cart/abandoned-cart.module';
+import { EmailCampaignsModule } from '../email-campaigns/email-campaigns.module';
 
 @Module({
-  imports: [ScheduleModule.forRoot(), SubscriptionsModule, PlatformSubscriptionsModule, FinanceModule, RedisModule, SeoModule, AdminMarketingModule, PromotionsModule, ExchangeRateModule, AdminFinanceModule, BookingsModule, IntegrationsModule],
+  imports: [ScheduleModule.forRoot(), SubscriptionsModule, PlatformSubscriptionsModule, FinanceModule, RedisModule, SeoModule, AdminMarketingModule, PromotionsModule, ExchangeRateModule, AdminFinanceModule, BookingsModule, IntegrationsModule, AbandonedCartModule, EmailCampaignsModule],
   providers: [SchedulerService],
 })
 export class SchedulerModule {}

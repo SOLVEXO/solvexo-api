@@ -304,6 +304,32 @@ export class Checkout {
 
   @Prop({ default: false })
   isDelete: boolean;
+
+  // ── Abandoned Cart Recovery — see AbandonedCartService ──────────────────
+  // A checkout is "abandoned" once it sits at status 'pending'/'payment_pending'
+  // past a store's own configured delay with no further activity. These
+  // fields are the whole state machine: null → sent → (clicked) →
+  // (recovered, set the moment PaymentService.createOrder places a real
+  // order off THIS checkout). Never reset once set — they're a permanent
+  // record of what happened to this one abandoned attempt, not a live flag.
+
+  /** Opaque token embedded in the recovery email's link (`/api/abandoned-cart/click/:token`)
+   *  — set the moment the reminder email is sent, doubles as the idempotency
+   *  guard so the same checkout is never emailed twice. */
+  @Prop({ type: String, default: null })
+  abandonedRecoveryToken: string | null;
+
+  @Prop({ type: Date, default: null })
+  abandonedEmailSentAt: Date | null;
+
+  @Prop({ type: Date, default: null })
+  abandonedClickedAt: Date | null;
+
+  /** Set once this exact checkout goes on to place a real order, but ONLY
+   *  when abandonedEmailSentAt was already set — i.e. this is a genuine
+   *  "recovery", not just every normal purchase. */
+  @Prop({ type: Date, default: null })
+  recoveredAt: Date | null;
 }
 
 export const CheckoutSchema = SchemaFactory.createForClass(Checkout);
@@ -313,3 +339,5 @@ CheckoutSchema.index({ status: 1 });
 CheckoutSchema.index({ createdAt: -1 });
 CheckoutSchema.index({ 'items.sellerId': 1 });
 CheckoutSchema.index({ 'items.storeId': 1 });
+CheckoutSchema.index({ status: 1, abandonedEmailSentAt: 1, updatedAt: 1 });
+CheckoutSchema.index({ abandonedRecoveryToken: 1 }, { sparse: true });

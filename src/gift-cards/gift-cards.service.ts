@@ -273,6 +273,62 @@ export class GiftCardsService {
     });
   }
 
+  /**
+   * Mirror of `redeemAtOrderPlacement` for the refund direction — previously
+   * nothing ever called this: cancelling/refunding/returning an order that
+   * had a gift card applied permanently burned that value, it never came
+   * back onto the card. Called from OrdersService (cancellation + return
+   * approval) and RefundRequestService.approve(), for exactly the amount of
+   * `giftCardDiscountUSD` actually being refunded on this pass — never the
+   * card's full original value, so a partial-item refund only restores its
+   * own share.
+   *
+   * `idempotencyKey` must be unique per refund *event* (not just per order —
+   * a single order can be partially refunded more than once over time), e.g.
+   * `cancel:{orderId}:{itemId1,itemId2}` or a refund-request's own id. Reuses
+   * the `checkoutId` column to carry it (this row isn't tied to a checkout),
+   * checked before writing so a retried/duplicated refund call never
+   * double-credits the card.
+   */
+  async restoreOnRefund(storeId: string, code: string, amount: number, orderId: string, idempotencyKey: string, description = 'Restored from refund') {
+    if (!code || !(amount > 0)) return;
+    const rounded = this.round(amount);
+
+    const already = await this.r.giftCardTransactionModel.findOne({
+      storeId, type: 'refund', checkoutId: idempotencyKey,
+    });
+    if (already) return; // this exact refund event already restored the balance
+
+    const giftCard = await this.r.giftCardModel.findOneAndUpdate(
+      { storeId, code: code.toUpperCase() },
+      { $inc: { balance: rounded } },
+      { new: true },
+    );
+    if (!giftCard) return; // gift card record no longer exists — nothing to restore onto
+
+    await this.r.giftCardTransactionModel.create({
+      storeId, giftCardId: String(giftCard._id), type: 'refund', amount: rounded,
+      balanceAfter: giftCard.balance, checkoutId: idempotencyKey, orderId, description,
+    });
+  }
+
+  /** Exposes the per-transaction ledger a seller can currently never see —
+   *  every issue/redeem/refund row for one gift card, newest first. */
+  async listTransactions(sellerId: string, storeId: string, giftCardId: string, query: any) {
+    await this.verifyStoreOwnership(storeId, sellerId);
+    const giftCard = await this.r.giftCardModel.findOne({ _id: giftCardId, storeId, isDelete: false });
+    if (!giftCard) throw new NotFoundException('Gift card not found');
+
+    const page = Math.max(1, parseInt(query.page) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(query.limit) || 20));
+
+    const [items, total] = await Promise.all([
+      this.r.giftCardTransactionModel.find({ storeId, giftCardId }).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit).lean(),
+      this.r.giftCardTransactionModel.countDocuments({ storeId, giftCardId }),
+    ]);
+    return { success: true, message: 'Gift card transactions', data: { items, total, page, limit, giftCard } };
+  }
+
   private async createGiftCardRecord(opts: {
     storeId: string; currency: string; value: number; issuedBy: 'purchase' | 'manual';
     issuedByUserId: string | null; purchaserUserId: string | null; recipientEmail: string | null;

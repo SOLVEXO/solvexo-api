@@ -206,6 +206,15 @@ export class DatabaseService {
     @InjectModel(schema.GiftCardSettings.name)
     private giftCardSettingsModel: Model<schema.GiftCardSettingsDocument>,
 
+    @InjectModel(schema.AbandonedCartSettings.name)
+    private abandonedCartSettingsModel: Model<schema.AbandonedCartSettingsDocument>,
+
+    @InjectModel(schema.EmailCampaign.name)
+    private emailCampaignModel: Model<schema.EmailCampaignDocument>,
+
+    @InjectModel(schema.EmailCampaignSend.name)
+    private emailCampaignSendModel: Model<schema.EmailCampaignSendDocument>,
+
     @InjectModel(schema.AutomaticDiscount.name)
     private automaticDiscountModel: Model<schema.AutomaticDiscountDocument>,
 
@@ -454,6 +463,9 @@ export class DatabaseService {
       giftCardModel: this.giftCardModel,
       giftCardTransactionModel: this.giftCardTransactionModel,
       giftCardSettingsModel: this.giftCardSettingsModel,
+      abandonedCartSettingsModel: this.abandonedCartSettingsModel,
+      emailCampaignModel: this.emailCampaignModel,
+      emailCampaignSendModel: this.emailCampaignSendModel,
       automaticDiscountModel: this.automaticDiscountModel,
       collectionModel: this.collectionModel,
       platformSubscriptionModel: this.platformSubscriptionModel,

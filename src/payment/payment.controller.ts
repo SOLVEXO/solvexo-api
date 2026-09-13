@@ -3,6 +3,7 @@ import {
   Post,
   Get,
   Body,
+  Param,
   Query,
   Req,
   Headers,
@@ -51,6 +52,26 @@ export class PaymentController {
   ) {
     const { userId } = req.user;
     return this.paymentService.getPaymentStatus(userId, checkoutId);
+  }
+
+  // Seller-facing "Needs Attention" signal — real open-dispute count backed
+  // by real Stripe dispute-status tracking (see PaymentService.getOpenDisputeCount).
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Get('disputes/:storeId/open-count')
+  async getOpenDisputeCount(@Req() req: any, @Param('storeId') storeId: string) {
+    const count = await this.paymentService.getOpenDisputeCount(storeId, req.user.userId);
+    return { success: true, data: { count } };
+  }
+
+  // Mirrors Shopify Home's "Review high-risk orders" order task — real
+  // Stripe Radar fraud-risk signal, see PaymentService.getHighRiskOrderCount.
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Get('risk-orders/:storeId/open-count')
+  async getHighRiskOrderCount(@Req() req: any, @Param('storeId') storeId: string) {
+    const count = await this.paymentService.getHighRiskOrderCount(storeId, req.user.userId);
+    return { success: true, data: { count } };
   }
 
   // Stripe calls this directly — no bearer token, trust is the HMAC

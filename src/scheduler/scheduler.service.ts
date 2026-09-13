@@ -21,6 +21,8 @@ import { AdminFinanceService } from '@/admin-finance/admin-finance.service';
 import { BookingsService } from '@/bookings/bookings.service';
 import { WhatsAppCloudProvider } from '@/integrations/providers/whatsapp-cloud.provider';
 import { decryptCredential } from '@/common/credential-encryption.util';
+import { AbandonedCartService } from '@/abandoned-cart/abandoned-cart.service';
+import { EmailCampaignsService } from '@/email-campaigns/email-campaigns.service';
 
 @Injectable()
 export class SchedulerService {
@@ -46,6 +48,8 @@ export class SchedulerService {
     private readonly adminFinanceService: AdminFinanceService,
     private readonly bookingsService: BookingsService,
     private readonly whatsAppProvider: WhatsAppCloudProvider,
+    private readonly abandonedCartService: AbandonedCartService,
+    private readonly emailCampaignsService: EmailCampaignsService,
   ) {}
 
   /**
@@ -69,6 +73,35 @@ export class SchedulerService {
     if (result === 'lock_not_acquired') {
       this.logger.debug(`Skipped "${jobName}" — another instance already holds the lock (or Redis is unavailable)`);
     }
+  }
+
+  /** Every 15 min — real cadence doesn't need to be tighter than that since
+   *  the shortest configurable store delay is 5 minutes (see
+   *  AbandonedCartSettings.delayMinutes) and a few minutes' slack on when
+   *  the reminder actually goes out is normal for this kind of job. */
+  @Cron('*/15 * * * *')
+  async processAbandonedCarts() {
+    await this.runLocked('abandoned-cart-recovery', 120_000, async () => {
+      const result = await this.abandonedCartService.processAbandonedCarts();
+      if (result.sent > 0) {
+        this.logger.log(`processAbandonedCarts: sent ${result.sent}/${result.processed} recovery email(s)`);
+      }
+    });
+  }
+
+  // Runs every 5 minutes — picks up any seller Email Campaign whose
+  // scheduledAt has arrived and fires it (resolves the audience, queues one
+  // send job per recipient). Same cadence family as the abandoned-cart tick
+  // above; a campaign scheduled "for 9am" going out a few minutes late is
+  // normal for this kind of job.
+  @Cron('*/5 * * * *')
+  async processScheduledEmailCampaigns() {
+    await this.runLocked('email-campaigns-scheduled-send', 120_000, async () => {
+      const result = await this.emailCampaignsService.processScheduledCampaigns();
+      if (result.processed > 0) {
+        this.logger.log(`Email campaigns: ${result.processed} scheduled campaign(s) fired`);
+      }
+    });
   }
 
   @Cron('* * * * *')

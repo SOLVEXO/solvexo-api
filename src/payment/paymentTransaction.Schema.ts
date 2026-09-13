@@ -95,6 +95,46 @@ export class PaymentTransaction {
   @Prop({ type: [String], default: [] })
   disputedChargeIds: string[];
 
+  // Real, per-dispute lifecycle tracking — separate from `disputedChargeIds`
+  // above (that one is purely a replay guard for the ledger reversal and
+  // never changes after creation). This is what lets the seller dashboard
+  // show a genuine "N order(s) need your dispute response" task (mirrors
+  // Shopify Home's "Submit evidence for chargebacks" order task) instead of
+  // only silently reversing the ledger with no actionable surface for the
+  // seller. `storeIds` is resolved ONCE at creation (via each affected
+  // order's own `sellerOrders[].storeId` — a multi-store cart's dispute can
+  // affect more than one seller) so later queries are a plain indexed
+  // lookup, never a per-request orders join.
+  @Prop({
+    type: [{
+      _id: false,
+      disputeId: { type: String, required: true },
+      status: { type: String, required: true }, // Stripe's real values: needs_response | warning_needs_response | under_review | warning_under_review | won | lost | warning_closed | charge_refunded
+      reason: { type: String, default: null },
+      amount: { type: Number, default: 0 },
+      currency: { type: String, default: 'USD' },
+      storeIds: { type: [String], default: [] },
+      evidenceDueBy: { type: Date, default: null },
+      createdAt: { type: Date, default: Date.now },
+      updatedAt: { type: Date, default: Date.now },
+    }],
+    default: [],
+  })
+  disputes: Array<{
+    disputeId: string; status: string; reason: string | null; amount: number; currency: string;
+    storeIds: string[]; evidenceDueBy: Date | null; createdAt: Date; updatedAt: Date;
+  }>;
+
+  // Stripe Radar's own real fraud-risk assessment for this charge — captured
+  // from the `charge.succeeded` webhook's `outcome.risk_level` (Stripe runs
+  // Radar automatically on every charge, no separate fraud-scoring system
+  // needed here). Powers the seller dashboard's "N order(s) may need review"
+  // task (mirrors Shopify Home's "Review high-risk orders"). Never
+  // 'elevated'/'highest' without Stripe itself having flagged the charge —
+  // this is real third-party fraud signal, not a heuristic invented here.
+  @Prop({ type: String, enum: ['normal', 'elevated', 'highest', null], default: null })
+  riskLevel: string | null;
+
   @Prop({ default: false })
   isDelete: boolean;
 
@@ -109,3 +149,6 @@ PaymentTransactionSchema.index({ userId: 1 });
 PaymentTransactionSchema.index({ checkoutId: 1 });
 PaymentTransactionSchema.index({ orderIds: 1 });
 PaymentTransactionSchema.index({ stripePaymentIntentId: 1 });
+// Backs the seller dashboard's "open dispute" task count — a plain lookup
+// by store + open statuses, never a per-request orders join.
+PaymentTransactionSchema.index({ 'disputes.storeIds': 1, 'disputes.status': 1 });

@@ -37,11 +37,12 @@ describe('PaymentService — COD enforcement', () => {
     const giftCardsService = {} as any;
     const stripeConnectService = {} as any;
     const commissionRulesService = {} as any;
+    const abandonedCartService = {} as any;
 
     service = new PaymentService(
       db, notificationsService, configService, promotionsService,
       financeService, adminConfigService, exchangeRateService, activityLogService,
-      giftCardsService, stripeConnectService, commissionRulesService,
+      giftCardsService, stripeConnectService, commissionRulesService, abandonedCartService,
     );
   });
 

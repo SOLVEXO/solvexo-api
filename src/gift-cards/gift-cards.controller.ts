@@ -57,6 +57,16 @@ export class GiftCardsController {
     return this.giftCardsService.disableGiftCard(req.user.userId, storeId, giftCardId);
   }
 
+  /** The issue/redeem/refund ledger for one gift card — previously written
+   *  on every balance change but never readable from anywhere. */
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Get(':storeId/:giftCardId/transactions')
+  listTransactions(@Req() req: any, @Param('storeId') storeId: string, @Param('giftCardId') giftCardId: string, @Query() query: any) {
+    return this.giftCardsService.listTransactions(req.user.userId, storeId, giftCardId, query);
+  }
+
   // ── Buyer-facing ──────────────────────────────────────────────────────────
 
   @Get(':storeId/public-settings')

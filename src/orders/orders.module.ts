@@ -18,6 +18,7 @@ import { FinanceModule } from '@/finance/finance.module';
 import { PaymentModule } from '@/payment/payment.module';
 import { ExchangeRateModule } from '@/exchange-rate/exchange-rate.module';
 import { IntegrationsModule } from '@/integrations/integrations.module';
+import { GiftCardsModule } from '@/gift-cards/gift-cards.module';
 import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 
@@ -30,6 +31,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
     PaymentModule,
     ExchangeRateModule,
     IntegrationsModule,
+    GiftCardsModule,
     ConfigModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],

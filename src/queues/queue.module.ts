@@ -96,6 +96,19 @@ import { QUEUE_NAMES } from './queue.constants';
           removeOnFail: { count: 5000 },
         },
       },
+      {
+        // One job per recipient for a seller's Email Campaigns blast — see
+        // EmailCampaignsProcessor. A slower backoff than transactional email
+        // (SUBSCRIPTION_EMAILS) since a bulk blast has no urgency deadline,
+        // only eventual delivery.
+        name: QUEUE_NAMES.EMAIL_CAMPAIGNS,
+        defaultJobOptions: {
+          attempts: 4,
+          backoff: { type: 'exponential', delay: 15_000 },
+          removeOnComplete: { count: 5000 },
+          removeOnFail: { count: 5000 },
+        },
+      },
     ),
   ],
   exports: [BullModule],

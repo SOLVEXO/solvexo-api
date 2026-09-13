@@ -9,6 +9,7 @@ import { FinanceService } from '@/finance/finance.service';
 import { PaymentService } from '@/payment/payment.service';
 import { ExchangeRateService } from '@/exchange-rate/exchange-rate.service';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
+import { GiftCardsService } from '@/gift-cards/gift-cards.service';
 import { verifyStoreOwnershipOrForbidden } from '@/common/store-ownership.util';
 import { deriveRollupStatus } from '@/orders/order-status.util';
 import { CreateRefundRequestDto } from './dto/refund-request.dto';
@@ -21,6 +22,7 @@ export class RefundRequestService {
     private readonly paymentService: PaymentService,
     private readonly exchangeRateService: ExchangeRateService,
     private readonly activityLogService: ActivityLogService,
+    private readonly giftCardsService: GiftCardsService,
   ) {}
 
   private round(n: number) {
@@ -261,6 +263,27 @@ export class RefundRequestService {
             targetType: 'order',
           });
         }
+      }
+    }
+
+    // Gift-card balance reversal — same mirror-of-redemption pattern as
+    // OrdersService's cancellation/return-approval paths; a gift card
+    // applied at checkout comes back the moment its value is actually
+    // refunded, whichever of the three refund entry points did it.
+    if (order.giftCardCode) {
+      const giftCardReverseAmount = items.reduce(
+        (sum: number, i: any) => sum + (i.giftCardDiscountUSD || 0),
+        0,
+      );
+      if (giftCardReverseAmount > 0) {
+        await this.giftCardsService.restoreOnRefund(
+          sellerOrder.storeId,
+          order.giftCardCode,
+          giftCardReverseAmount,
+          order._id.toString(),
+          `refund_request:${request._id}`,
+          `Order #${order.orderNumber} — refund request approved`,
+        ).catch((e: any) => console.error('Gift card reversal failed (refund request approval):', e?.message));
       }
     }
 

@@ -6,9 +6,10 @@ import { RedisModule } from '../redis/redis.module';
 import { FinanceModule } from '../finance/finance.module';
 import { PaymentModule } from '../payment/payment.module';
 import { ExchangeRateModule } from '../exchange-rate/exchange-rate.module';
+import { GiftCardsModule } from '../gift-cards/gift-cards.module';
 
 @Module({
-  imports: [AuthModule, RedisModule, FinanceModule, PaymentModule, ExchangeRateModule],
+  imports: [AuthModule, RedisModule, FinanceModule, PaymentModule, ExchangeRateModule, GiftCardsModule],
   controllers: [RefundRequestController],
   providers: [RefundRequestService],
   exports: [RefundRequestService],

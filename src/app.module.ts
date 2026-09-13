@@ -37,6 +37,8 @@ import { ActivityLogModule } from './activity-log/activity-log.module';
 import { MarketingModule } from './marketing/marketing.module';
 import { LoyaltyModule } from './loyalty/loyalty.module';
 import { GiftCardsModule } from './gift-cards/gift-cards.module';
+import { AbandonedCartModule } from './abandoned-cart/abandoned-cart.module';
+import { EmailCampaignsModule } from './email-campaigns/email-campaigns.module';
 import { DiscountsModule } from './discounts/discounts.module';
 import { CollectionsModule } from './collections/collections.module';
 import { StripeConnectModule } from './stripe-connect/stripe-connect.module';
@@ -133,6 +135,8 @@ import { PosPlansModule } from './pos-plans/pos-plans.module';
     MarketingModule,
     LoyaltyModule,
     GiftCardsModule,
+    AbandonedCartModule,
+    EmailCampaignsModule,
     DiscountsModule,
     CollectionsModule,
     StripeConnectModule,

@@ -16,6 +16,7 @@ import { LoyaltyService } from '@/loyalty/loyalty.service';
 import { SubscriptionBenefitsService } from '@/subscriptions/subscription-benefits.service';
 import { NotificationsService } from '@/notifications/notifications.service';
 import { ShippingRatesService } from '@/shipping-rates/shipping-rates.service';
+import { GiftCardsService } from '@/gift-cards/gift-cards.service';
 import { NOTIFICATION_TYPES } from '@/notifications/notification.types';
 import { round } from '@/common/number.util';
 import { deriveRollupStatus } from './order-status.util';
@@ -54,6 +55,7 @@ export class OrdersService {
     private readonly subscriptionBenefits: SubscriptionBenefitsService,
     private readonly notificationsService: NotificationsService,
     private readonly shippingRatesService: ShippingRatesService,
+    private readonly giftCardsService: GiftCardsService,
   ) {}
 
   /** Subscribers earn points at their plan's configured multiplier (default 1x). */
@@ -1569,6 +1571,32 @@ export class OrdersService {
       }
     }
 
+    // ── Gift-card balance reversal (paid or not — a gift card is redeemed
+    // at order-placement time regardless of payment method, see
+    // PaymentService.createOrder, so it must be restored here regardless of
+    // `order.isPaid` too) ────────────────────────────────────────────────
+    if (order.giftCardCode) {
+      const giftCardReverseAmount = targetItems.reduce(
+        (sum, { item }) => sum + (item.giftCardDiscountUSD || 0),
+        0,
+      );
+      if (giftCardReverseAmount > 0) {
+        const giftCardSellerOrder = order.sellerOrders.find((so: any) =>
+          so.items.some((i: any) => i.giftCardDiscountUSD > 0),
+        );
+        if (giftCardSellerOrder) {
+          await this.giftCardsService.restoreOnRefund(
+            giftCardSellerOrder.storeId,
+            order.giftCardCode,
+            giftCardReverseAmount,
+            orderId,
+            `cancel:${orderId}:${targetItems.map((t) => t.item._id.toString()).sort().join(',')}`,
+            `Order #${order.orderNumber} cancelled`,
+          ).catch((e: any) => console.error('Gift card reversal failed (order cancellation):', e?.message));
+        }
+      }
+    }
+
     // Optimistic lock — this method now has TWO independent entry points
     // (`cancelOrder` for the buyer, `cancelOrderAsSeller` for the seller),
     // both computing `updateData` from the SAME `order` snapshot read at the
@@ -2086,6 +2114,26 @@ export class OrdersService {
             buyerRefundAmount,
           )
           .catch(() => {});
+      }
+
+      // Gift-card balance reversal — mirrors executeCancellation's own
+      // reversal; a return is a refund too, so a gift card applied at
+      // checkout must come back the same way.
+      if (order.giftCardCode) {
+        const giftCardReverseAmount = targetItems.reduce(
+          (sum, t) => sum + (t.item.giftCardDiscountUSD || 0),
+          0,
+        );
+        if (giftCardReverseAmount > 0) {
+          await this.giftCardsService.restoreOnRefund(
+            storeId,
+            order.giftCardCode,
+            giftCardReverseAmount,
+            orderId,
+            `return:${orderId}:${targetItems.map((t) => t.item._id.toString()).sort().join(',')}`,
+            `Order #${order.orderNumber} — return approved`,
+          ).catch((e: any) => console.error('Gift card reversal failed (return approval):', e?.message));
+        }
       }
     }
 

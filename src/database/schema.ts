@@ -88,6 +88,9 @@ export { RewardVoucher, RewardVoucherDocument, RewardVoucherSchema } from '../lo
 export { GiftCard, GiftCardDocument, GiftCardSchema } from '../gift-cards/schemas/gift-card.schema';
 export { GiftCardTransaction, GiftCardTransactionDocument, GiftCardTransactionSchema } from '../gift-cards/schemas/gift-card-transaction.schema';
 export { GiftCardSettings, GiftCardSettingsDocument, GiftCardSettingsSchema } from '../gift-cards/schemas/gift-card-settings.schema';
+export { AbandonedCartSettings, AbandonedCartSettingsDocument, AbandonedCartSettingsSchema } from '../abandoned-cart/schemas/abandoned-cart-settings.schema';
+export { EmailCampaign, EmailCampaignDocument, EmailCampaignSchema } from '../email-campaigns/schemas/email-campaign.schema';
+export { EmailCampaignSend, EmailCampaignSendDocument, EmailCampaignSendSchema } from '../email-campaigns/schemas/email-campaign-send.schema';
 export { AutomaticDiscount, AutomaticDiscountDocument, AutomaticDiscountSchema } from '../discounts/schemas/automatic-discount.schema';
 export { Collection, CollectionDocument, CollectionSchema } from '../collections/schemas/collection.schema';
 export { PlatformSubscription, PlatformSubscriptionDocument, PlatformSubscriptionSchema } from '../platform-subscriptions/schemas/platform-subscription.schema';

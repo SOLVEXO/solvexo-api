@@ -671,7 +671,17 @@ export class SubscriptionsService {
     await this.verifyStoreOwnership(sellerId, storeId);
     const sub = await this.verifySubInStore(storeId, subId);
 
-    if (sub.providerSubscriptionId) await this.gateway.cancelProviderSubscription(sub.providerSubscriptionId);
+    // Previously this ALWAYS called cancelProviderSubscription (immediate
+    // Stripe cancel) even when atPeriodEnd was true — the buyer's card
+    // stopped being billed right away while the local record still showed
+    // 'active' until period end, exactly contradicting the message below.
+    // atPeriodEnd must only SCHEDULE the Stripe-side cancellation;
+    // finalizeEndOfPeriodCancellations() does the real cancelProviderSubscription
+    // call once currentPeriodEnd actually arrives (see its own doc comment).
+    if (sub.providerSubscriptionId) {
+      if (atPeriodEnd) await this.gateway.scheduleProviderCancellation(sub.providerSubscriptionId);
+      else await this.gateway.cancelProviderSubscription(sub.providerSubscriptionId);
+    }
     const message = this.applyCancel(sub, atPeriodEnd, reason);
     await sub.save();
 
@@ -1168,7 +1178,12 @@ export class SubscriptionsService {
   async selfCancelSubscription(customerId: string, subId: string, atPeriodEnd: boolean, reason?: string) {
     const sub = await this.verifyMySub(customerId, subId);
 
-    if (sub.providerSubscriptionId) await this.gateway.cancelProviderSubscription(sub.providerSubscriptionId);
+    // Same at-period-end fix as the seller-side cancelSubscription above —
+    // schedule, don't immediately cancel, when the customer chose "at period end".
+    if (sub.providerSubscriptionId) {
+      if (atPeriodEnd) await this.gateway.scheduleProviderCancellation(sub.providerSubscriptionId);
+      else await this.gateway.cancelProviderSubscription(sub.providerSubscriptionId);
+    }
     const message = this.applyCancel(sub, atPeriodEnd, reason);
     await sub.save();
 
