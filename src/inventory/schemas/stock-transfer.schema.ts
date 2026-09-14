@@ -4,13 +4,22 @@ import { Document } from 'mongoose';
 
 export type StockTransferDocument = StockTransfer & Document;
 
-/** A real, immutable record of moving stock from one physical location to
- *  another — Shopify's own "Transfer" equivalent, only relevant once a
- *  store has 2+ real StoreLocations. Moving stock is always a lateral,
- *  net-zero operation on the variant's total (`ProductVariant.stock` is
- *  untouched by a transfer — only the two `VariantLocationStock` rows
- *  change), so this is purely a tracking/audit record, not a stock-level
- *  adjustment (that's `StockAdjustment`'s job). */
+export const STOCK_TRANSFER_STATUSES = ['in_transit', 'partially_received', 'received', 'cancelled'] as const;
+export type StockTransferStatus = (typeof STOCK_TRANSFER_STATUSES)[number];
+
+/** A real, stateful record of moving stock from one physical location to
+ *  another — Shopify's own "Transfer" equivalent (only relevant once a
+ *  store has 2+ real StoreLocations), including a genuine IN-TRANSIT
+ *  state: a real warehouse→store shipment takes days, so stock leaves the
+ *  source location immediately (`InventoryService.shipTransfer`) but does
+ *  NOT land at the destination until someone actually receives it there
+ *  (`InventoryService.receiveTransfer`, supports partial/short receipt the
+ *  same way Purchase Order receiving does). While `in_transit`, the shipped
+ *  quantity lives in `ProductVariant.inTransitStock` — genuinely owned,
+ *  genuinely not sellable at either location (see that field's own doc
+ *  comment). `ProductVariant.stock` itself (the aggregate total) is never
+ *  touched by a transfer either way — only which location/in-transit
+ *  bucket currently holds it changes. */
 @Schema({ timestamps: true })
 export class StockTransfer {
   @Prop({ type: String, required: true }) storeId: string;
@@ -24,7 +33,20 @@ export class StockTransfer {
   @Prop({ type: String, required: true }) toLocationId: string;
   @Prop({ type: String, required: true }) toLocationName: string;
 
+  // Quantity shipped at creation time — immutable afterward. `receivedQuantity`
+  // accumulates across one or more `receiveTransfer` calls (partial receipt);
+  // the transfer is fully settled once `receivedQuantity >= quantity`.
   @Prop({ type: Number, required: true }) quantity: number;
+  @Prop({ type: Number, default: 0 }) receivedQuantity: number;
+
+  @Prop({ type: String, enum: STOCK_TRANSFER_STATUSES, default: 'in_transit' })
+  status: StockTransferStatus;
+
+  @Prop({ type: Date, default: null }) receivedAt: Date | null;
+  @Prop({ type: String, default: null }) receivedBy: string | null;
+  @Prop({ type: String, default: null }) receivedByName: string | null;
+  @Prop({ type: Date, default: null }) cancelledAt: Date | null;
+
   @Prop({ type: String, default: null }) note: string | null;
 
   @Prop({ type: String, required: true }) transferredBy: string;
@@ -34,3 +56,4 @@ export class StockTransfer {
 export const StockTransferSchema = SchemaFactory.createForClass(StockTransfer);
 StockTransferSchema.index({ storeId: 1, createdAt: -1 });
 StockTransferSchema.index({ variantId: 1, createdAt: -1 });
+StockTransferSchema.index({ storeId: 1, status: 1 });

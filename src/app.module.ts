@@ -73,6 +73,8 @@ import { MetafieldsModule } from './metafields/metafields.module';
 import { MetaobjectsModule } from './metaobjects/metaobjects.module';
 import { MenusModule } from './menus/menus.module';
 import { DraftOrdersModule } from './draft-orders/draft-orders.module';
+import { PurchaseOrdersModule } from './purchase-orders/purchase-orders.module';
+import { StockCountsModule } from './stock-counts/stock-counts.module';
 import { StoreBlogModule } from './store-blog/store-blog.module';
 import { PromotionsModule } from './promotions/promotions.module';
 import { ThemeCatalogModule } from './theme-catalog/theme-catalog.module';
@@ -168,6 +170,8 @@ import { PosPlansModule } from './pos-plans/pos-plans.module';
     MetaobjectsModule,
     MenusModule,
     DraftOrdersModule,
+    PurchaseOrdersModule,
+    StockCountsModule,
     StoreBlogModule,
     PromotionsModule,
     ThemeCatalogModule,

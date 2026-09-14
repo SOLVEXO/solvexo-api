@@ -12,7 +12,7 @@ import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { GiftCardsService } from '@/gift-cards/gift-cards.service';
 import { verifyStoreOwnershipOrForbidden } from '@/common/store-ownership.util';
 import { deriveRollupStatus } from '@/orders/order-status.util';
-import { CreateRefundRequestDto } from './dto/refund-request.dto';
+import { CreateRefundRequestDto, type RestockDecision } from './dto/refund-request.dto';
 
 @Injectable()
 export class RefundRequestService {
@@ -186,7 +186,7 @@ export class RefundRequestService {
    * that buyer-facing amount. Atomic pending→approved transition guards
    * against a double-approval double-refunding everything.
    */
-  async approve(actorId: string, actorRole: 'seller' | 'admin', requestId: string) {
+  async approve(actorId: string, actorRole: 'seller' | 'admin', requestId: string, restockDecisions?: Record<string, RestockDecision>) {
     const existing = await this.model.findOne({ _id: requestId, isDelete: false }).lean();
     if (!existing) throw new NotFoundException('Refund request not found');
     await this.assertCanReview(actorRole, actorId, existing as any);
@@ -298,10 +298,53 @@ export class RefundRequestService {
         (so: any) => so._id.toString() === request.sellerOrderId,
       );
       if (liveSellerOrder) {
+        // Reverse Inventory link — a physical item refunded through this
+        // flow already reached the buyer (createRequest only accepts a
+        // request once the sellerOrder is delivered/completed), meaning
+        // real `stock` was already decremented for good at fulfillment
+        // time (see ProductVariant.committedStock's doc comment) — a
+        // pre-shipment cancellation is a different, already-existing path
+        // (OrdersService) and never reaches this code. `restockDecisions`
+        // (keyed by OrderItem id, defaulting to 'skip' — no behavior
+        // change for a caller that never sends it) lets the approver say
+        // whether the physical goods coming back are still sellable
+        // ('restock' — real `stock` credited back) or not ('damaged' —
+        // credited to `damagedStock` instead, still on-hand but never
+        // sellable, matching PurchaseOrdersService's identical bucket).
+        // Both write a real `StockAdjustment` audit row either way — never
+        // a silent stock change with no trace.
+        const { productVariantModel, stockAdjustmentModel } = this.databaseService.repositories;
+        const actorName = actorRole === 'seller'
+          ? (await this.databaseService.repositories.sellerModel.findOne({ _id: actorId }).select('name'))?.name ?? null
+          : (await this.databaseService.repositories.adminModel.findOne({ _id: actorId }).select('name'))?.name ?? null;
+
         for (const item of liveSellerOrder.items as any[]) {
           if (request.itemIds.includes(item._id.toString())) {
             item.status = 'refunded';
             item.refundedAmount = item.totalPrice;
+
+            const decision = restockDecisions?.[item._id.toString()] ?? 'skip';
+            if (item.type === 'physical' && item.variantId && (decision === 'restock' || decision === 'damaged')) {
+              const variant = await productVariantModel.findOne({ _id: item.variantId, isDelete: false });
+              if (variant && !variant.unlimitedStock) {
+                const qty = item.quantity;
+                const previousStock = variant.stock;
+                await productVariantModel.updateOne(
+                  { _id: item.variantId },
+                  decision === 'restock'
+                    ? { $inc: { stock: qty } }
+                    : { $inc: { stock: qty, damagedStock: qty } },
+                );
+                await stockAdjustmentModel.create({
+                  storeId: sellerOrder.storeId, productId: item.productId, variantId: item.variantId, locationId: null,
+                  productName: item.name, sku: item.sku ?? null,
+                  previousStock, newStock: previousStock + qty, delta: qty,
+                  reason: decision === 'restock' ? 'return' : 'damaged',
+                  note: `Return for order #${order.orderNumber}`,
+                  adjustedBy: actorId, adjustedByName: actorName,
+                });
+              }
+            }
           }
         }
         // Previously this refund never touched `SellerOrder.status`/

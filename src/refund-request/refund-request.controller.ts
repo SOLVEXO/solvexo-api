@@ -16,7 +16,7 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { IdempotencyInterceptor } from '../common/idempotency.interceptor';
 import { RefundRequestService } from './refund-request.service';
-import { CreateRefundRequestDto, RejectRefundRequestDto } from './dto/refund-request.dto';
+import { CreateRefundRequestDto, RejectRefundRequestDto, ApproveRefundRequestDto } from './dto/refund-request.dto';
 
 @ApiTags('Refund Requests')
 @ApiBearerAuth()
@@ -66,8 +66,8 @@ export class RefundRequestController {
   @Roles('seller', 'admin')
   @UseInterceptors(IdempotencyInterceptor)
   @Patch(':id/approve')
-  async approve(@Req() req: any, @Param('id') id: string) {
-    return this.refundRequestService.approve(req.user.userId, req.user.role, id);
+  async approve(@Req() req: any, @Param('id') id: string, @Body() dto: ApproveRefundRequestDto) {
+    return this.refundRequestService.approve(req.user.userId, req.user.role, id, dto?.restockDecisions);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)

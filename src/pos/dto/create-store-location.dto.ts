@@ -1,6 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { ApiProperty } from '@nestjs/swagger';
-import { IsString, IsNotEmpty, IsOptional } from 'class-validator';
+import { IsString, IsNotEmpty, IsOptional, IsIn } from 'class-validator';
 
 export class CreateStoreLocationDto {
   @ApiProperty({ example: 'North Karachi' })
@@ -18,4 +18,8 @@ export class CreateStoreLocationDto {
   @ApiProperty({ required: false })
   @IsOptional() @IsString()
   phone?: string;
+
+  @ApiProperty({ required: false, enum: ['store', 'warehouse'], default: 'store' })
+  @IsOptional() @IsIn(['store', 'warehouse'])
+  type?: 'store' | 'warehouse';
 }

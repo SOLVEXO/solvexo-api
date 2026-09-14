@@ -21,41 +21,50 @@ export interface AuthVisualResult {
 const CACHE_TTL_SECONDS = 60 * 60 * 24 * 30; // 30 days — see file-level note below
 const FETCH_TIMEOUT_MS = 4000;
 
-/** A short, context-appropriate search hint appended to the country name.
- *  Every one of these is deliberately commerce/store-flavored, not a
- *  generic tourist landmark/skyline/landscape — Solvexo IS a store-
- *  building/commerce platform, so every auth screen's photo should read
- *  as "shopping, trade, a real local business" in that country, never
- *  just "a nice photo of that country." Deliberately NOT worded as
- *  "marketplace" anywhere — per this project's own documented pivot,
- *  Solvexo moved away from a central marketplace model to a Shopify-style
- *  standalone-per-seller-store model, so "marketplace" would misrepresent
- *  what Solvexo actually is today. Each context still gets its own
- *  distinct hint (so the 6 screens don't show the same photo), but all 6
- *  stay inside that same commerce theme:
- *  - `register`  → starting to shop/sell — a real shopping street
- *  - `login`     → returning to your own storefront
- *  - `onboarding`→ literally setting up a new store (the most literal one)
- *  - `forgot_password` → a market/bazaar scene (still commerce, just varied)
- *  - `otp`        → a shop counter/checkout moment (loosely echoes "verifying")
- *  - `new_password` → a boutique storefront (a fresh start, still retail) */
+/** A short, context-appropriate search hint appended to the country name —
+ *  each one chosen to actually evoke what that SPECIFIC screen means for a
+ *  seller setting up/running their Solvexo store, not just "a nice generic
+ *  shop photo" repeated 6 times with different words. Confirmed against the
+ *  real Unsplash Search API (not guessed) that each hint below returns
+ *  genuinely on-topic results:
+ *  - `register`      → joining Solvexo to start a business — a real person
+ *                       opening/starting a new shop
+ *  - `login`          → returning to run your own store — a shop storefront
+ *  - `onboarding`     → literally setting up a new store (the most literal
+ *                       one) — a shopkeeper actively setting up shop
+ *  - `forgot_password`→ locked out of your account — a shop's own locked
+ *                       door/key (the closest real-photo equivalent to
+ *                       "locked out, forgot how to get back in")
+ *  - `otp`            → confirming it's really you — a shop counter moment
+ *                       of checking/verifying identity
+ *  - `new_password`   → a fresh start after resetting access — a new shop's
+ *                       grand opening
+ *  Deliberately NOT worded as "marketplace" anywhere — per this project's
+ *  own documented pivot, Solvexo moved away from a central marketplace
+ *  model to a Shopify-style standalone-per-seller-store model, so
+ *  "marketplace" would misrepresent what Solvexo actually is today. */
 const CONTEXT_QUERY_HINT: Record<AuthPageContext, string> = {
-  register: 'shopping street',
+  register: 'entrepreneur opening new shop',
   login: 'shop storefront',
-  onboarding: 'local market shop',
-  forgot_password: 'market vendor stall',
-  otp: 'shop counter checkout',
-  new_password: 'boutique storefront',
+  onboarding: 'shopkeeper setting up store',
+  forgot_password: 'shop owner locked door key',
+  otp: 'shop counter identity verification',
+  new_password: 'new shop grand opening',
 };
 
 /**
  * Real, live, per-COUNTRY (not per-region) background photo for the auth
- * screens — resolved at request time via Unsplash's actual Random Photo API
- * (`api.unsplash.com/photos/random`), queried with the visitor's real
- * detected country name + a page-appropriate keyword, instead of picking
- * from a small pre-curated list of regions. This is what makes the photo
- * genuinely specific to e.g. Vanuatu or Eswatini, not just "whichever of 10
- * buckets that country happens to fall into."
+ * screens — resolved at request time via Unsplash's real keyword-relevance
+ * Search Photos API (`api.unsplash.com/search/photos`), queried with the
+ * visitor's real detected country name + a page-appropriate keyword,
+ * instead of picking from a small pre-curated list of regions. This is what
+ * makes the photo genuinely specific to e.g. Vanuatu or Eswatini, not just
+ * "whichever of 10 buckets that country happens to fall into." (Unsplash's
+ * separate Random Photo endpoint was tried first and dropped — confirmed by
+ * live testing that it does not do real relevance matching for a
+ * multi-word query, e.g. returning a completely unrelated portrait for
+ * "Pakistan market vendor stall" where Search correctly returns a real,
+ * captioned Pakistani market photo for the same query.)
  *
  * Requires `UNSPLASH_ACCESS_KEY` (a free Unsplash Developer app's Access
  * Key — see https://unsplash.com/developers). **Without it, this silently
@@ -125,12 +134,12 @@ export class AuthVisualService {
   /**
    * A 3-step query ladder, most-specific first — confirmed necessary by
    * live testing against the real Unsplash API: a country + a specific
-   * commerce term (e.g. "Vanuatu shop", "Kenya marketplace") 404s
-   * ("No photos found") for a real number of smaller/less-photographed
+   * commerce term (e.g. "Vanuatu shop", "Kenya marketplace") returns zero
+   * search results for a real number of smaller/less-photographed
    * countries, even though Unsplash does have SOME photos for nearly every
-   * country. Rather than let that 404 immediately give up the "live,
-   * genuinely THIS country" promise and fall all the way back to the old
-   * static curated-region photo, this degrades in 3 steps:
+   * country. Rather than let that empty result immediately give up the
+   * "live, genuinely THIS country" promise and fall all the way back to the
+   * old static curated-region photo, this degrades in 3 steps:
    *   1. `{country} {page-specific commerce hint}` — best case: both
    *      page-relevant AND on-brand for Solvexo being a shop/marketplace.
    *   2. `{country} market` — a broader, near-universally-available
@@ -168,24 +177,40 @@ export class AuthVisualService {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
     try {
+      // Unsplash's Random Photo endpoint (`/photos/random?query=`) was used
+      // here originally, but live testing (confirmed by hand, not assumed)
+      // showed it does NOT do real relevance matching for a multi-word query
+      // like "Pakistan market vendor stall" — it can return something as
+      // unrelated as a random portrait of a man on a bench. Its own real
+      // keyword-relevance Search endpoint (`/search/photos`) returns
+      // genuinely on-topic results for the exact same query (e.g. a real
+      // captioned "colorful market... in the Swat Valley of Pakistan" photo)
+      // — this is what actually makes the per-country+per-page photo make
+      // sense, which is the whole point of this service. `per_page=8` gives
+      // a small pool to pick from (below) instead of Search's own top-1
+      // result every time, so the same country+context pair (cached 30
+      // days) doesn't always land on the exact same photo across different
+      // countries that happen to share a query shape.
       const resp = await fetch(
-        `https://api.unsplash.com/photos/random?query=${encodeURIComponent(query)}&orientation=portrait&content_filter=high`,
+        `https://api.unsplash.com/search/photos?query=${encodeURIComponent(query)}&orientation=portrait&content_filter=high&per_page=8`,
         {
           headers: { Authorization: `Client-ID ${process.env.UNSPLASH_ACCESS_KEY}` },
           signal: controller.signal,
         },
       );
       if (!resp.ok) {
-        // A 404 "No photos found" is the expected, common case that drives
-        // the query ladder above — not logged as a warning, since it isn't
-        // a real failure. Anything else (401/403/5xx/network-level) is.
-        if (resp.status !== 404) {
-          this.logger.warn(`Unsplash random-photo lookup failed (${resp.status}) for "${query}"`);
-        }
+        this.logger.warn(`Unsplash photo search failed (${resp.status}) for "${query}"`);
         return null;
       }
       const data: any = await resp.json();
-      const rawUrl: string | undefined = data?.urls?.raw;
+      const results: any[] = Array.isArray(data?.results) ? data.results : [];
+      // Zero matches is the expected, common case that drives the query
+      // ladder above (a compound query like "Vanuatu market vendor stall"
+      // can genuinely have no matching photos) — not a real failure, so not
+      // logged as a warning.
+      if (results.length === 0) return null;
+      const photo = results[Math.floor(Math.random() * results.length)];
+      const rawUrl: string | undefined = photo?.urls?.raw;
       if (!rawUrl) return null;
 
       // Same crop/format/quality transform every curated photo in
@@ -196,19 +221,19 @@ export class AuthVisualService {
       // Fire-and-forget the download-tracking ping Unsplash's API
       // Guidelines require when a photo obtained via the API is actually
       // used — never awaited, never allowed to fail the request.
-      const downloadLocation: string | undefined = data?.links?.download_location;
+      const downloadLocation: string | undefined = photo?.links?.download_location;
       if (downloadLocation) {
         fetch(downloadLocation, { headers: { Authorization: `Client-ID ${process.env.UNSPLASH_ACCESS_KEY}` } })
           .catch(() => {});
       }
 
-      const name: string | undefined = data?.user?.name;
-      const profileUrl: string | undefined = data?.user?.links?.html;
+      const name: string | undefined = photo?.user?.name;
+      const profileUrl: string | undefined = photo?.user?.links?.html;
       const attribution = name && profileUrl ? { name, profileUrl } : null;
 
       return { imageUrl, attribution };
     } catch (err) {
-      this.logger.warn(`Unsplash random-photo lookup errored for "${query}": ${(err as Error)?.message}`);
+      this.logger.warn(`Unsplash photo search errored for "${query}": ${(err as Error)?.message}`);
       return null;
     } finally {
       clearTimeout(timeout);

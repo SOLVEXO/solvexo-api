@@ -5,12 +5,19 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { DatabaseService } from '@/database/databaseservice';
-import { toCsv } from '@/analytics/utils/csv.util';
+import { toCsv, parseCsv } from '@/analytics/utils/csv.util';
+import { RedisService } from '@/redis/redis.service';
+import { NotificationsService } from '@/notifications/notifications.service';
+import { NOTIFICATION_TYPES } from '@/notifications/notification.types';
 import { STOCK_ADJUSTMENT_REASONS, type StockAdjustmentReason } from './schemas/stock-adjustment.schema';
 
 @Injectable()
 export class InventoryService {
-  constructor(private readonly databaseService: DatabaseService) {}
+  constructor(
+    private readonly databaseService: DatabaseService,
+    private readonly redis: RedisService,
+    private readonly notificationsService: NotificationsService,
+  ) {}
 
   async getStoreInventory(sellerId: string, storeId: string, query: any) {
     if (!storeId) throw new BadRequestException('storeId is required');
@@ -89,7 +96,7 @@ export class InventoryService {
         // Products list's convention). See ProductVariant.committedStock.
         const totalAvailable = Math.max(
           0,
-          variants.reduce((sum: number, v: any) => sum + ((v.stock || 0) - (v.committedStock || 0)), 0),
+          variants.reduce((sum: number, v: any) => sum + ((v.stock || 0) - (v.committedStock || 0) - (v.damagedStock || 0) - (v.inTransitStock || 0)), 0),
         );
 
         if (totalAvailable === 0) {
@@ -222,6 +229,75 @@ export class InventoryService {
     );
   }
 
+  /** POST api/inventory/:storeId/import-stock-csv — real bulk stock
+   *  RECONCILIATION, deliberately separate from `ProductsService.
+   *  importProductsCsv` (which only ever CREATES new products — re-
+   *  uploading a CSV of existing SKUs there would create duplicates, not
+   *  update their stock, a real gap found in this pass). Columns: `SKU,
+   *  Quantity` — an ABSOLUTE count (matches a real physical stock-take
+   *  export/re-import workflow), matched against this store's existing
+   *  SKUs. Same `created[]`/`failed[]` report shape `importProductsCsv`
+   *  already returns, so the frontend result-summary UI is identical. */
+  async importStockCsv(sellerId: string, storeId: string, csvText: string) {
+    if (!storeId) throw new BadRequestException('storeId is required');
+    const { productModel, productVariantModel, storeModel, stockAdjustmentModel, sellerModel } = this.databaseService.repositories;
+
+    const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
+    if (!store) throw new ForbiddenException('Store not found or unauthorized');
+
+    const rows = parseCsv(csvText);
+    if (rows.length === 0) throw new BadRequestException('The CSV file has no data rows.');
+    if (rows.length > 1000) {
+      throw new BadRequestException('A single import is capped at 1000 rows — split larger reconciliations into multiple files.');
+    }
+
+    const products = await productModel.find({ storeId, sellerId, isDelete: false }).select('name').lean();
+    const productIds = products.map((p: any) => p._id.toString());
+    const productById = new Map<string, any>(products.map((p: any) => [p._id.toString(), p]));
+    const variants = productIds.length
+      ? await productVariantModel.find({ productId: { $in: productIds }, isDelete: false })
+      : [];
+    const variantBySku = new Map(variants.map((v: any) => [v.sku, v]));
+
+    const seller = await sellerModel.findOne({ _id: sellerId }).select('name');
+    const updated: { row: number; sku: string }[] = [];
+    const failed: { row: number; sku: string; error: string }[] = [];
+
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      const rowNumber = i + 2;
+      const sku = (r['SKU'] ?? '').trim();
+      const qtyRaw = (r['Quantity'] ?? '').trim();
+      const qty = parseInt(qtyRaw, 10);
+
+      if (!sku) { failed.push({ row: rowNumber, sku: '(blank)', error: 'SKU is required' }); continue; }
+      if (!Number.isFinite(qty) || qty < 0) { failed.push({ row: rowNumber, sku, error: 'Quantity must be a non-negative number' }); continue; }
+
+      const variant: any = variantBySku.get(sku);
+      if (!variant) { failed.push({ row: rowNumber, sku, error: 'No SKU matches this in your store' }); continue; }
+      if (variant.unlimitedStock) { failed.push({ row: rowNumber, sku, error: 'This SKU has unlimited stock — skipped' }); continue; }
+      if (qty === variant.stock) { updated.push({ row: rowNumber, sku }); continue; } // no real change — still counts as a success, not a failure
+
+      const previousStock = variant.stock;
+      const delta = qty - previousStock;
+      await productVariantModel.updateOne({ _id: variant._id }, { $set: { stock: qty } });
+      await stockAdjustmentModel.create({
+        storeId, productId: variant.productId, variantId: variant._id.toString(), locationId: null,
+        productName: productById.get(variant.productId)?.name ?? '(deleted product)', sku: variant.sku,
+        previousStock, newStock: qty, delta,
+        reason: 'correction', note: 'Bulk CSV reconciliation',
+        adjustedBy: sellerId, adjustedByName: seller?.name ?? null,
+      });
+      updated.push({ row: rowNumber, sku });
+    }
+
+    return {
+      success: true,
+      message: `Reconciled ${updated.length} of ${rows.length} SKU(s).`,
+      data: { updatedCount: updated.length, totalRows: rows.length, updated, failed },
+    };
+  }
+
   // Store-wide low-stock summary for the seller dashboard's alert card —
   // unlike getStoreInventory above, this isn't paginated (it needs the true
   // store-wide count/list, not just the current page) and only returns the
@@ -257,15 +333,16 @@ export class InventoryService {
     const variants = productIds.length
       ? await productVariantModel
           .find({ productId: { $in: productIds }, isDelete: false })
-          .select('productId stock committedStock unlimitedStock')
+          .select('productId stock committedStock damagedStock inTransitStock unlimitedStock')
           .lean()
       : [];
 
-    // Uses real AVAILABLE stock (stock - committed), not raw on-hand — a
-    // product that's technically "5 in stock" but all 5 already promised
-    // to pending orders genuinely has nothing left to sell right now, and
-    // this alert exists specifically to warn about that (see
-    // ProductVariant.committedStock / getStockLines' identical reasoning).
+    // Uses real AVAILABLE stock (stock - committed - damaged), not raw
+    // on-hand — a product that's technically "5 in stock" but all 5
+    // already promised to pending orders (or sitting damaged) genuinely
+    // has nothing left to sell right now, and this alert exists
+    // specifically to warn about that (see ProductVariant.committedStock/
+    // damagedStock, and getStockLines' identical reasoning).
     const availableByProduct = new Map<string, number>();
     const unlimitedProducts = new Set<string>();
     for (const v of variants) {
@@ -273,7 +350,7 @@ export class InventoryService {
         unlimitedProducts.add(v.productId);
         continue;
       }
-      const available = Math.max(0, (v.stock || 0) - ((v as any).committedStock || 0));
+      const available = Math.max(0, (v.stock || 0) - ((v as any).committedStock || 0) - ((v as any).damagedStock || 0) - ((v as any).inTransitStock || 0));
       availableByProduct.set(v.productId, (availableByProduct.get(v.productId) ?? 0) + available);
     }
 
@@ -301,80 +378,121 @@ export class InventoryService {
    *  Inventory table (one row per SKU, not one row per product summed
    *  across its variants like `getStoreInventory` above — that endpoint
    *  stays as-is since the Products list still needs a product-level view;
-   *  this one is Inventory's own, dedicated to actual stock management). */
+   *  this one is Inventory's own, dedicated to actual stock management).
+   *
+   *  Real DB-level pagination via one aggregation pipeline (join to
+   *  `products` + `$facet` for page/stats) — the previous version fetched
+   *  EVERY variant for the store into memory, built the full lines array,
+   *  then `.slice()`d the page in JS. Fine at hundreds of SKUs, a genuine
+   *  problem at the thousands-of-SKUs scale this module targets. `status`/
+   *  `available` are computed in the pipeline itself (not in JS after the
+   *  fact) so search/status-filter/stats all operate on the same real
+   *  values without a second pass over the data. `productId` is stored as a
+   *  string on ProductVariant but as a real ObjectId `_id` on Product, so
+   *  the $lookup needs an explicit $toObjectId conversion — every variant's
+   *  `productId` is always a real product _id.toString() set at creation,
+   *  so this conversion is safe (never a hand-typed/foreign value). */
   async getStockLines(sellerId: string, storeId: string, query: any) {
     if (!storeId) throw new BadRequestException('storeId is required');
-    const { productModel, productVariantModel, storeModel } = this.databaseService.repositories;
+    const { productVariantModel, storeModel } = this.databaseService.repositories;
 
     const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
     if (!store) throw new ForbiddenException('Store not found or unauthorized');
     const lowStockThreshold = store.lowStockThreshold ?? 10;
 
-    const products = await productModel
-      .find({ storeId, sellerId, isDelete: false, type: { $ne: 'digital' } })
-      .select('name images')
-      .lean();
-    const productById = new Map<string, any>(products.map((p: any) => [p._id.toString(), p]));
-    const productIds = products.map((p: any) => p._id.toString());
+    const search = (query.search ?? '').trim();
+    const statusFilter: string | undefined = ['in_stock', 'low_stock', 'out_of_stock', 'unlimited'].includes(query.status)
+      ? query.status
+      : undefined;
+    const page = Math.max(1, parseInt(query.page) || 1);
+    const limit = Math.max(1, parseInt(query.limit) || 20);
 
-    const variants = productIds.length
-      ? await productVariantModel
-          .find({ productId: { $in: productIds }, isDelete: false })
-          .sort({ productId: 1, isDefault: -1 })
-          .lean()
-      : [];
-
-    let lines = variants.map((v: any) => {
-      const product = productById.get(v.productId);
-      const committed = v.committedStock || 0;
-      // "Available" (real sellable-right-now quantity) is what status/low-
-      // stock logic reacts to — a variant can show real `stock` while every
-      // last unit is already promised to a paid-but-unshipped order (see
-      // ProductVariant.committedStock's doc comment).
-      const available = Math.max(0, v.stock - committed);
-      let status: 'in_stock' | 'low_stock' | 'out_of_stock' | 'unlimited' = 'in_stock';
-      if (v.unlimitedStock) status = 'unlimited';
-      else if (available === 0) status = 'out_of_stock';
-      else if (available <= lowStockThreshold) status = 'low_stock';
-
-      return {
-        variantId: v._id.toString(),
-        productId: v.productId,
-        productName: product?.name ?? '(deleted product)',
-        image: product?.images?.[0] ?? null,
-        sku: v.sku,
-        options: v.options ?? [],
-        price: v.price,
-        stock: v.stock,
-        committedStock: committed,
-        available,
-        unlimitedStock: !!v.unlimitedStock,
-        status,
-      };
-    });
-
-    const search = (query.search ?? '').trim().toLowerCase();
-    if (search) {
-      lines = lines.filter(
-        (l) => l.productName.toLowerCase().includes(search) || l.sku.toLowerCase().includes(search),
-      );
-    }
-
-    const stats = {
-      totalLines: lines.length,
-      inStock: lines.filter((l) => l.status === 'in_stock' || l.status === 'unlimited').length,
-      lowStock: lines.filter((l) => l.status === 'low_stock').length,
-      outOfStock: lines.filter((l) => l.status === 'out_of_stock').length,
+    const available = {
+      $max: [0, {
+        $subtract: [
+          { $subtract: [{ $subtract: ['$stock', { $ifNull: ['$committedStock', 0] }] }, { $ifNull: ['$damagedStock', 0] }] },
+          { $ifNull: ['$inTransitStock', 0] },
+        ],
+      }],
+    };
+    const effectiveThreshold = { $ifNull: ['$reorderPoint', lowStockThreshold] };
+    const statusExpr = {
+      $switch: {
+        branches: [
+          { case: { $eq: ['$unlimitedStock', true] }, then: 'unlimited' },
+          { case: { $eq: [available, 0] }, then: 'out_of_stock' },
+          { case: { $lte: [available, effectiveThreshold] }, then: 'low_stock' },
+        ],
+        default: 'in_stock',
+      },
     };
 
-    const page = parseInt(query.page) || 1;
-    const limit = parseInt(query.limit) || 20;
-    const total = lines.length;
-    const paged = lines.slice((page - 1) * limit, page * limit);
+    const pipeline: any[] = [
+      { $match: { isDelete: false } },
+      { $addFields: { productObjId: { $toObjectId: '$productId' } } },
+      { $lookup: { from: 'products', localField: 'productObjId', foreignField: '_id', as: 'product' } },
+      { $unwind: '$product' },
+      { $match: { 'product.storeId': storeId, 'product.sellerId': sellerId, 'product.isDelete': false, 'product.type': { $ne: 'digital' } } },
+    ];
+    if (search) {
+      const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      pipeline.push({ $match: { $or: [{ sku: { $regex: escaped, $options: 'i' } }, { 'product.name': { $regex: escaped, $options: 'i' } }] } });
+    }
+    pipeline.push({
+      $addFields: {
+        computedAvailable: available,
+        computedStatus: statusExpr,
+      },
+    });
+    if (statusFilter) pipeline.push({ $match: { computedStatus: statusFilter } });
+    pipeline.push({
+      $facet: {
+        data: [
+          { $sort: { productId: 1, isDefault: -1 } },
+          { $skip: (page - 1) * limit },
+          { $limit: limit },
+          {
+            $project: {
+              variantId: '$_id',
+              productId: 1,
+              productName: '$product.name',
+              image: { $ifNull: [{ $arrayElemAt: ['$product.images', 0] }, null] },
+              sku: 1,
+              options: 1,
+              price: 1,
+              stock: 1,
+              committedStock: { $ifNull: ['$committedStock', 0] },
+              damagedStock: { $ifNull: ['$damagedStock', 0] },
+              inTransitStock: { $ifNull: ['$inTransitStock', 0] },
+              available: '$computedAvailable',
+              unlimitedStock: { $ifNull: ['$unlimitedStock', false] },
+              status: '$computedStatus',
+              reorderPoint: 1,
+              costPrice: 1,
+            },
+          },
+        ],
+        totalCount: [{ $count: 'count' }],
+        statusCounts: [{ $group: { _id: '$computedStatus', count: { $sum: 1 } } }],
+      },
+    });
+
+    const [result] = await productVariantModel.aggregate(pipeline);
+    const lines = (result?.data ?? []).map((l: any) => ({ ...l, variantId: l.variantId.toString() }));
+    const total = result?.totalCount?.[0]?.count ?? 0;
+    const countsByStatus: Record<string, number> = {};
+    for (const c of result?.statusCounts ?? []) countsByStatus[c._id] = c.count;
+
+    const stats = {
+      totalLines: total,
+      inStock: (countsByStatus['in_stock'] ?? 0) + (countsByStatus['unlimited'] ?? 0),
+      lowStock: countsByStatus['low_stock'] ?? 0,
+      outOfStock: countsByStatus['out_of_stock'] ?? 0,
+    };
 
     return {
       success: true,
-      data: { stats, pagination: { page, limit, total }, lines: paged },
+      data: { stats, pagination: { page, limit, total }, lines },
     };
   }
 
@@ -417,6 +535,75 @@ export class InventoryService {
       throw new BadRequestException('This variant has unlimited stock — quantity adjustments don\'t apply');
     }
 
+    const seller = await sellerModel.findOne({ _id: sellerId }).select('name');
+
+    // 'damaged'/'write_off' move units between real on-hand `stock` and the
+    // separate unsellable `damagedStock` pool — never a per-location
+    // VariantLocationStock row (damagedStock, like committedStock, is
+    // tracked store-wide per variant only — see the schema's doc comment).
+    if (reason === 'damaged' || reason === 'write_off') {
+      if (locationId) {
+        throw new BadRequestException(`A "${reason}" adjustment applies to the variant as a whole, not one location — omit locationId`);
+      }
+      if (delta > 0) {
+        throw new BadRequestException(`A "${reason}" adjustment only removes units — quantity must be negative`);
+      }
+      const qty = Math.abs(delta);
+      const previousStock = variant.stock;
+      const previousDamaged = variant.damagedStock || 0;
+
+      if (reason === 'damaged') {
+        // Units stay on-hand (`stock` unchanged) — they just move out of the
+        // sellable pool. Can't mark more damaged than is currently sellable.
+        const sellableAvailable = Math.max(0, previousStock - (variant.committedStock || 0) - previousDamaged);
+        if (qty > sellableAvailable) {
+          throw new BadRequestException(
+            `Cannot mark ${qty} unit(s) damaged — only ${sellableAvailable} sellable unit(s) available`,
+          );
+        }
+        const result = await productVariantModel.updateOne(
+          { _id: variantId, damagedStock: previousDamaged },
+          { $set: { damagedStock: previousDamaged + qty } },
+        );
+        if (result.modifiedCount === 0) {
+          throw new BadRequestException('Stock was changed by another action just now — please refresh and try again');
+        }
+        const adjustment = await stockAdjustmentModel.create({
+          storeId, productId: variant.productId, variantId, locationId: null,
+          productName: product.name, sku: variant.sku,
+          previousStock, newStock: previousStock, delta, reason,
+          note: note?.trim() || null, adjustedBy: sellerId, adjustedByName: seller?.name ?? null,
+        });
+        return {
+          success: true, message: 'Marked as damaged — moved out of sellable stock',
+          data: { variantId, previousStock, newStock: previousStock, adjustment },
+        };
+      }
+
+      // 'write_off' — permanently discards units already sitting in the
+      // damaged pool: both damagedStock AND real on-hand `stock` drop
+      // together, since the units are genuinely gone (thrown away/disposed),
+      // not just unsellable any more.
+      if (qty > previousDamaged) {
+        throw new BadRequestException(`Cannot write off ${qty} unit(s) — only ${previousDamaged} damaged unit(s) on record`);
+      }
+      const newStock = Math.max(0, previousStock - qty);
+      const result = await productVariantModel.updateOne(
+        { _id: variantId, damagedStock: previousDamaged, stock: previousStock },
+        { $set: { damagedStock: previousDamaged - qty, stock: newStock } },
+      );
+      if (result.modifiedCount === 0) {
+        throw new BadRequestException('Stock was changed by another action just now — please refresh and try again');
+      }
+      const adjustment = await stockAdjustmentModel.create({
+        storeId, productId: variant.productId, variantId, locationId: null,
+        productName: product.name, sku: variant.sku,
+        previousStock, newStock, delta, reason,
+        note: note?.trim() || null, adjustedBy: sellerId, adjustedByName: seller?.name ?? null,
+      });
+      return { success: true, message: 'Units written off', data: { variantId, previousStock, newStock, adjustment } };
+    }
+
     const previousStock = variant.stock;
     let newStock: number;
 
@@ -441,8 +628,13 @@ export class InventoryService {
         { upsert: true },
       );
 
+      // `stock` (the aggregate total) = sum of every location row + whatever
+      // is currently mid-transfer (see ProductVariant.inTransitStock) — not
+      // just the location rows alone, or a seller shipping a transfer and
+      // then making an unrelated location adjustment on the same SKU would
+      // silently erase the in-transit quantity from the visible total.
       const allRows = await variantLocationStockModel.find({ variantId }).lean();
-      newStock = allRows.reduce((sum, r: any) => sum + (r.stock || 0), 0);
+      newStock = allRows.reduce((sum, r: any) => sum + (r.stock || 0), 0) + (variant.inTransitStock || 0);
     } else {
       newStock = previousStock + delta;
     }
@@ -475,8 +667,6 @@ export class InventoryService {
         throw new BadRequestException('Stock was changed by another action just now — please refresh and try again');
       }
     }
-
-    const seller = await sellerModel.findOne({ _id: sellerId }).select('name');
 
     const adjustment = await stockAdjustmentModel.create({
       storeId,
@@ -535,8 +725,9 @@ export class InventoryService {
    *  VariantLocationStock rows exist yet for this variant, its whole
    *  current `stock` is assigned to the store's default location — so a
    *  pre-existing product doesn't just silently show 0 everywhere the
-   *  first time a seller looks at it by location. */
-  private async ensureLocationStockSeeded(storeId: string, variantId: string, variant: { productId: string; stock: number }) {
+   *  first time a seller looks at it by location. Public — PurchaseOrdersService
+   *  reuses this exact helper for receiving instead of duplicating it. */
+  async ensureLocationStockSeeded(storeId: string, variantId: string, variant: { productId: string; stock: number }) {
     const { variantLocationStockModel, storeLocationModel } = this.databaseService.repositories;
     const existing = await variantLocationStockModel.countDocuments({ variantId });
     if (existing > 0) return;
@@ -579,9 +770,12 @@ export class InventoryService {
       data: {
         variantId,
         totalStock: variant.stock,
+        inTransitStock: variant.inTransitStock || 0,
+        damagedStock: variant.damagedStock || 0,
         locations: locations.map((l: any) => ({
           locationId: l._id.toString(),
           locationName: l.name,
+          locationType: l.type ?? 'store',
           isDefault: !!l.isDefault,
           stock: stockByLocation.get(l._id.toString()) ?? 0,
         })),
@@ -605,11 +799,16 @@ export class InventoryService {
     return { success: true, data: locations };
   }
 
-  /** POST api/inventory/:storeId/variant/:variantId/transfer — real
-   *  branch-to-branch stock move (Shopify's own "Transfer" equivalent).
-   *  Always net-zero on the variant's total `stock` — only the two
-   *  location rows change — so this never touches ProductVariant.stock. */
-  async transferStock(
+  /** POST api/inventory/:storeId/variant/:variantId/transfer/ship — real
+   *  branch-to-branch stock move, Shopify's own "Transfer" equivalent, now a
+   *  genuine 2-step lifecycle (ship → later, receive) instead of an instant
+   *  teleport — a real warehouse→store shipment takes days, so stock must
+   *  leave the source right away without silently landing at the
+   *  destination before anyone has actually received it there. The shipped
+   *  quantity moves into `ProductVariant.inTransitStock` (see that field's
+   *  doc comment) — `stock` itself (the aggregate total) is untouched
+   *  either way, only which bucket currently holds it changes. */
+  async shipTransfer(
     sellerId: string,
     storeId: string,
     variantId: string,
@@ -655,11 +854,7 @@ export class InventoryService {
     if (decResult.modifiedCount === 0) {
       throw new BadRequestException(`Not enough stock at "${fromLocation.name}" to transfer ${quantity} unit(s)`);
     }
-    await variantLocationStockModel.updateOne(
-      { variantId, locationId: toLocationId },
-      { $inc: { stock: quantity }, $setOnInsert: { storeId, productId: variant.productId } },
-      { upsert: true },
-    );
+    await productVariantModel.updateOne({ _id: variantId }, { $inc: { inTransitStock: quantity } });
 
     const seller = await sellerModel.findOne({ _id: sellerId }).select('name');
 
@@ -674,11 +869,349 @@ export class InventoryService {
       toLocationId,
       toLocationName: toLocation.name,
       quantity,
+      receivedQuantity: 0,
+      status: 'in_transit',
       note: note?.trim() || null,
       transferredBy: sellerId,
       transferredByName: seller?.name ?? null,
     });
 
-    return { success: true, message: 'Stock transferred successfully', data: transfer };
+    return { success: true, message: 'Stock shipped — now in transit', data: transfer };
+  }
+
+  /** POST api/inventory/:storeId/transfer/:transferId/receive — settles some
+   *  or all of an in-transit transfer at its destination. Callable more than
+   *  once for a real multi-box/partial delivery, exactly like Purchase
+   *  Order receiving. */
+  async receiveTransfer(sellerId: string, storeId: string, transferId: string, receivedQty: number) {
+    const { storeModel, productVariantModel, variantLocationStockModel, stockTransferModel, stockAdjustmentModel, sellerModel } =
+      this.databaseService.repositories;
+
+    if (!Number.isFinite(receivedQty) || receivedQty <= 0) {
+      throw new BadRequestException('Received quantity must be greater than 0');
+    }
+
+    const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
+    if (!store) throw new ForbiddenException('Store not found or unauthorized');
+
+    const transfer = await stockTransferModel.findOne({ _id: transferId, storeId });
+    if (!transfer) throw new NotFoundException('Transfer not found');
+    if (transfer.status !== 'in_transit' && transfer.status !== 'partially_received') {
+      throw new BadRequestException(`This transfer is already "${transfer.status}" — nothing left to receive`);
+    }
+
+    const remaining = transfer.quantity - transfer.receivedQuantity;
+    if (receivedQty > remaining) {
+      throw new BadRequestException(`Only ${remaining} unit(s) remain to receive on this transfer`);
+    }
+
+    await variantLocationStockModel.updateOne(
+      { variantId: transfer.variantId, locationId: transfer.toLocationId },
+      { $inc: { stock: receivedQty }, $setOnInsert: { storeId, productId: transfer.productId } },
+      { upsert: true },
+    );
+    // inTransitStock floor-guarded at 0 via the pipeline $max — defensive
+    // only; it should never actually go negative since receivedQty is
+    // always bounded by `remaining` above.
+    await productVariantModel.updateOne(
+      { _id: transfer.variantId },
+      [{ $set: { inTransitStock: { $max: [0, { $subtract: ['$inTransitStock', receivedQty] }] } } }],
+      { updatePipeline: true } as any,
+    );
+
+    const newReceivedQuantity = transfer.receivedQuantity + receivedQty;
+    const fullyReceived = newReceivedQuantity >= transfer.quantity;
+    const seller = await sellerModel.findOne({ _id: sellerId }).select('name');
+
+    transfer.receivedQuantity = newReceivedQuantity;
+    transfer.status = fullyReceived ? 'received' : 'partially_received';
+    if (fullyReceived) {
+      transfer.receivedAt = new Date();
+      transfer.receivedBy = sellerId;
+      transfer.receivedByName = seller?.name ?? null;
+    }
+    await transfer.save();
+
+    await stockAdjustmentModel.create({
+      storeId,
+      productId: transfer.productId,
+      variantId: transfer.variantId,
+      locationId: transfer.toLocationId,
+      productName: transfer.productName,
+      sku: transfer.sku,
+      previousStock: 0,
+      newStock: 0,
+      delta: receivedQty,
+      reason: 'restocked',
+      note: `Received via transfer from "${transfer.fromLocationName}"`,
+      adjustedBy: sellerId,
+      adjustedByName: seller?.name ?? null,
+    });
+
+    return { success: true, message: fullyReceived ? 'Transfer fully received' : 'Partial receipt recorded', data: transfer };
+  }
+
+  /** POST api/inventory/:storeId/transfer/:transferId/cancel — only while
+   *  still `in_transit` (not yet partially/fully received) — the shipped
+   *  quantity goes straight back to the source location, since it never
+   *  actually left the seller's own hands from a data-integrity standpoint. */
+  async cancelTransfer(sellerId: string, storeId: string, transferId: string) {
+    const { storeModel, productVariantModel, variantLocationStockModel, stockTransferModel } = this.databaseService.repositories;
+
+    const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
+    if (!store) throw new ForbiddenException('Store not found or unauthorized');
+
+    const transfer = await stockTransferModel.findOne({ _id: transferId, storeId });
+    if (!transfer) throw new NotFoundException('Transfer not found');
+    if (transfer.status !== 'in_transit') {
+      throw new BadRequestException(`Only a fully in-transit transfer can be cancelled (this one is "${transfer.status}")`);
+    }
+
+    await variantLocationStockModel.updateOne(
+      { variantId: transfer.variantId, locationId: transfer.fromLocationId },
+      { $inc: { stock: transfer.quantity } },
+    );
+    await productVariantModel.updateOne(
+      { _id: transfer.variantId },
+      [{ $set: { inTransitStock: { $max: [0, { $subtract: ['$inTransitStock', transfer.quantity] }] } } }],
+      { updatePipeline: true } as any,
+    );
+
+    transfer.status = 'cancelled';
+    transfer.cancelledAt = new Date();
+    await transfer.save();
+
+    return { success: true, message: 'Transfer cancelled — stock returned to the source location', data: transfer };
+  }
+
+  /** GET api/inventory/:storeId/transfers — in-transit + recent transfer
+   *  history, so a seller can see everything currently "on a truck" without
+   *  drilling into each individual SKU. */
+  async listTransfers(sellerId: string, storeId: string, query: any) {
+    const { storeModel, stockTransferModel } = this.databaseService.repositories;
+    const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
+    if (!store) throw new ForbiddenException('Store not found or unauthorized');
+
+    const filter: any = { storeId };
+    if (query.status && query.status !== 'all') filter.status = query.status;
+
+    const transfers = await stockTransferModel.find(filter).sort({ createdAt: -1 }).limit(200).lean();
+    return { success: true, data: transfers };
+  }
+
+  /** GET api/inventory/:storeId/reorder-suggestions — every SKU at/below
+   *  its reorder point, grouped by whichever supplier it was most recently
+   *  RECEIVED from (via Purchase Order history) so a seller can generate
+   *  one PO per supplier covering all of that supplier's low SKUs at once,
+   *  instead of one PO per SKU (the real Shopify/Zoho replenishment
+   *  pattern — see PurchaseOrdersController). A SKU never received via a PO
+   *  yet groups under "No supplier yet". `daysOfStockLeft` is a cheap,
+   *  real, velocity-based estimate (units sold in the last 30 days ÷ 30),
+   *  not full demand forecasting — deliberately, see this pass's own scope
+   *  notes on ML-based forecasting being out of scope. */
+  async getReorderSuggestions(sellerId: string, storeId: string) {
+    const { storeModel, productModel, productVariantModel, purchaseOrderModel, orderModel } = this.databaseService.repositories;
+    const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
+    if (!store) throw new ForbiddenException('Store not found or unauthorized');
+    const lowStockThreshold = store.lowStockThreshold ?? 10;
+
+    const products = await productModel
+      .find({ storeId, sellerId, isDelete: false, type: { $ne: 'digital' } })
+      .select('name images')
+      .lean();
+    const productIds = products.map((p: any) => p._id.toString());
+    const productById = new Map<string, any>(products.map((p: any) => [p._id.toString(), p]));
+
+    const variants = productIds.length
+      ? await productVariantModel.find({ productId: { $in: productIds }, isDelete: false, unlimitedStock: { $ne: true } }).lean()
+      : [];
+
+    const lowVariants = variants.filter((v: any) => {
+      const available = Math.max(0, (v.stock || 0) - (v.committedStock || 0) - (v.damagedStock || 0) - (v.inTransitStock || 0));
+      const threshold = v.reorderPoint ?? lowStockThreshold;
+      return available <= threshold;
+    });
+    if (lowVariants.length === 0) return { success: true, data: { groups: [] } };
+    const variantIds = lowVariants.map((v: any) => v._id.toString());
+
+    const [recentPoItems, sales] = await Promise.all([
+      purchaseOrderModel.aggregate([
+        { $match: { storeId, status: { $in: ['received', 'partially_received'] } } },
+        { $sort: { receivedAt: -1 } },
+        { $unwind: '$items' },
+        { $match: { 'items.variantId': { $in: variantIds } } },
+        { $group: { _id: '$items.variantId', supplierId: { $first: '$supplierId' }, supplierName: { $first: '$supplierName' } } },
+      ]),
+      orderModel.aggregate([
+        { $match: { isDelete: false, createdAt: { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) } } },
+        { $unwind: '$sellerOrders' },
+        { $match: { 'sellerOrders.storeId': storeId } },
+        { $unwind: '$sellerOrders.items' },
+        { $match: { 'sellerOrders.items.variantId': { $in: variantIds }, 'sellerOrders.items.status': { $ne: 'cancelled' } } },
+        { $group: { _id: '$sellerOrders.items.variantId', qty: { $sum: '$sellerOrders.items.quantity' } } },
+      ]),
+    ]);
+    const supplierByVariant = new Map(recentPoItems.map((r: any) => [r._id, { supplierId: r.supplierId, supplierName: r.supplierName }]));
+    const velocityByVariant = new Map(sales.map((s: any) => [s._id, s.qty / 30]));
+
+    const groups = new Map<string, { supplierId: string | null; supplierName: string; items: any[] }>();
+    for (const v of lowVariants as any[]) {
+      const product = productById.get(v.productId);
+      const supplier = supplierByVariant.get(v._id.toString());
+      const key = supplier?.supplierId ?? 'unassigned';
+      if (!groups.has(key)) {
+        groups.set(key, { supplierId: supplier?.supplierId ?? null, supplierName: supplier?.supplierName ?? 'No supplier yet', items: [] });
+      }
+      const available = Math.max(0, (v.stock || 0) - (v.committedStock || 0) - (v.damagedStock || 0) - (v.inTransitStock || 0));
+      const perDay = velocityByVariant.get(v._id.toString()) ?? 0;
+      groups.get(key)!.items.push({
+        productId: v.productId, variantId: v._id.toString(),
+        productName: product?.name ?? '(deleted product)', image: product?.images?.[0] ?? null,
+        sku: v.sku, available, reorderPoint: v.reorderPoint ?? lowStockThreshold,
+        daysOfStockLeft: perDay > 0 ? Math.round(available / perDay) : null,
+      });
+    }
+
+    return { success: true, data: { groups: Array.from(groups.values()) } };
+  }
+
+  /** GET api/inventory/:storeId/valuation — real inventory-value + dead-
+   *  stock + top-movers reporting. Total value only sums SKUs that
+   *  actually have a `costPrice` set (via Purchase Order receiving or the
+   *  Inventory page's own "Reorder point & cost" action) — never assumes
+   *  0 for a SKU that's never had a real cost recorded, which would
+   *  understate value rather than honestly reporting it as unknown.
+   *  "Dead stock" = real on-hand units with zero sales in the last 90
+   *  days — a real, disclosed simplification: this is a variant-level
+   *  approximation (no per-batch/lot aging, deliberately out of scope —
+   *  see this pass's own scope notes on lot tracking). */
+  async getValuation(sellerId: string, storeId: string) {
+    const { storeModel, productModel, productVariantModel, orderModel } = this.databaseService.repositories;
+    const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
+    if (!store) throw new ForbiddenException('Store not found or unauthorized');
+
+    const products = await productModel
+      .find({ storeId, sellerId, isDelete: false, type: { $ne: 'digital' } })
+      .select('name')
+      .lean();
+    const productIds = products.map((p: any) => p._id.toString());
+    const productById = new Map<string, any>(products.map((p: any) => [p._id.toString(), p]));
+    const variants = productIds.length
+      ? await productVariantModel.find({ productId: { $in: productIds }, isDelete: false, unlimitedStock: { $ne: true } }).lean()
+      : [];
+
+    let totalValue = 0;
+    let valuedSkuCount = 0;
+    for (const v of variants as any[]) {
+      if (v.costPrice != null) { totalValue += (v.stock || 0) * v.costPrice; valuedSkuCount++; }
+    }
+
+    const since90 = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+    const sales90 = await orderModel.aggregate([
+      { $match: { isDelete: false, createdAt: { $gte: since90 } } },
+      { $unwind: '$sellerOrders' },
+      { $match: { 'sellerOrders.storeId': storeId } },
+      { $unwind: '$sellerOrders.items' },
+      { $match: { 'sellerOrders.items.status': { $ne: 'cancelled' } } },
+      { $group: { _id: '$sellerOrders.items.variantId', qty: { $sum: '$sellerOrders.items.quantity' } } },
+    ]);
+    const soldVariantIds90 = new Set(sales90.map((s: any) => s._id));
+
+    const deadStock = (variants as any[])
+      .filter(v => (v.stock || 0) > 0 && !soldVariantIds90.has(v._id.toString()))
+      .map(v => ({
+        productId: v.productId, variantId: v._id.toString(),
+        productName: productById.get(v.productId)?.name ?? '(deleted product)', sku: v.sku,
+        stock: v.stock, value: v.costPrice != null ? Math.round(v.stock * v.costPrice * 100) / 100 : null,
+      }))
+      .sort((a, b) => b.stock - a.stock)
+      .slice(0, 50);
+
+    const variantById = new Map((variants as any[]).map(v => [v._id.toString(), v]));
+    const topMovers = [...sales90]
+      .sort((a: any, b: any) => b.qty - a.qty)
+      .slice(0, 10)
+      .map((s: any) => {
+        const v = variantById.get(s._id);
+        if (!v) return null;
+        return { variantId: s._id, productName: productById.get(v.productId)?.name ?? '(deleted product)', sku: v.sku, qty: s.qty };
+      })
+      .filter(Boolean);
+
+    return {
+      success: true,
+      data: {
+        totalValue: Math.round(totalValue * 100) / 100,
+        valuedSkuCount, totalSkuCount: variants.length,
+        deadStock, topMovers,
+      },
+    };
+  }
+
+  /** Called once daily by SchedulerService (`runLocked`) — the real emitter
+   *  `NOTIFICATION_TYPES.LOW_STOCK` never had (it existed in
+   *  `notification.types.ts` but nothing ever called `notify()` with it).
+   *  One DIGEST notification per store ("N products are running low"), not
+   *  one per SKU — a store with 40 low-stock SKUs shouldn't flood its own
+   *  notification bell. Redis-deduped per store+day so re-running this
+   *  (or a retry) never double-sends the same day's digest. */
+  async sendLowStockDigests(): Promise<void> {
+    const { productVariantModel } = this.databaseService.repositories;
+
+    const pipeline: any[] = [
+      { $match: { isDelete: false, unlimitedStock: { $ne: true } } },
+      { $addFields: { productObjId: { $toObjectId: '$productId' } } },
+      { $lookup: { from: 'products', localField: 'productObjId', foreignField: '_id', as: 'product' } },
+      { $unwind: '$product' },
+      { $match: { 'product.isDelete': false, 'product.status': 'active', 'product.type': { $ne: 'digital' } } },
+      { $addFields: { storeObjId: { $toObjectId: '$product.storeId' } } },
+      { $lookup: { from: 'stores', localField: 'storeObjId', foreignField: '_id', as: 'store' } },
+      { $unwind: '$store' },
+      { $match: { 'store.isDelete': false, 'store.status': 'active' } },
+      {
+        $addFields: {
+          available: {
+            $max: [0, {
+              $subtract: [
+                { $subtract: [{ $subtract: ['$stock', { $ifNull: ['$committedStock', 0] }] }, { $ifNull: ['$damagedStock', 0] }] },
+                { $ifNull: ['$inTransitStock', 0] },
+              ],
+            }],
+          },
+          threshold: { $ifNull: ['$reorderPoint', { $ifNull: ['$store.lowStockThreshold', 10] }] },
+        },
+      },
+      { $match: { $expr: { $lte: ['$available', '$threshold'] } } },
+      { $group: { _id: '$product.storeId', sellerId: { $first: '$store.sellerId' }, count: { $sum: 1 } } },
+    ];
+
+    const groups = await productVariantModel.aggregate(pipeline);
+    const today = new Date().toISOString().slice(0, 10);
+
+    for (const g of groups) {
+      if (!g.count) continue;
+      const storeId = g._id as string;
+      const dedupeKey = `low-stock-notified:${storeId}:${today}`;
+      try {
+        const already = await this.redis.get(dedupeKey);
+        if (already) continue;
+      } catch {
+        // Redis unavailable — fail open and send anyway rather than silently skip forever.
+      }
+
+      await this.notificationsService.notify({
+        recipientId: g.sellerId, recipientRole: 'seller', storeId,
+        type: NOTIFICATION_TYPES.LOW_STOCK,
+        title: 'Stock running low',
+        body: `${g.count} product${g.count !== 1 ? 's are' : ' is'} running low on stock.`,
+        data: { count: g.count, link: `/store/${storeId}/inventory?status=low_stock` },
+      });
+
+      try {
+        await this.redis.set(dedupeKey, '1', 25 * 60 * 60); // 25h — comfortably covers one calendar day even with cron drift
+      } catch {
+        // Best-effort only — a missed dedupe write just risks one extra digest tomorrow, not a correctness bug.
+      }
+    }
   }
 }

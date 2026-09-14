@@ -23,6 +23,8 @@ import { WhatsAppCloudProvider } from '@/integrations/providers/whatsapp-cloud.p
 import { decryptCredential } from '@/common/credential-encryption.util';
 import { AbandonedCartService } from '@/abandoned-cart/abandoned-cart.service';
 import { EmailCampaignsService } from '@/email-campaigns/email-campaigns.service';
+import { InventoryService } from '@/inventory/inventory.service';
+import { PurchaseOrdersService } from '@/purchase-orders/purchase-orders.service';
 
 @Injectable()
 export class SchedulerService {
@@ -50,6 +52,8 @@ export class SchedulerService {
     private readonly whatsAppProvider: WhatsAppCloudProvider,
     private readonly abandonedCartService: AbandonedCartService,
     private readonly emailCampaignsService: EmailCampaignsService,
+    private readonly inventoryService: InventoryService,
+    private readonly purchaseOrdersService: PurchaseOrdersService,
   ) {}
 
   /**
@@ -502,6 +506,27 @@ export class SchedulerService {
       if (result.sent > 0) {
         this.logger.log(`Bookings: ${result.sent} reminder notification(s) sent`);
       }
+    });
+  }
+
+  // Runs once daily — the real emitter for `NOTIFICATION_TYPES.LOW_STOCK`,
+  // which previously existed as a type with nothing ever calling `notify()`
+  // for it (found during the Inventory enterprise-hardening pass). One
+  // digest per store, not per SKU — see InventoryService.sendLowStockDigests.
+  @Cron('0 8 * * *')
+  async sendLowStockDigests() {
+    await this.runLocked('inventory-low-stock-digest', 20 * 60_000, async () => {
+      await this.inventoryService.sendLowStockDigests();
+    });
+  }
+
+  // Runs once daily — flags any Purchase Order past its expected delivery
+  // date that's still awaiting (full) receipt. See
+  // PurchaseOrdersService.sendOverdueAlerts.
+  @Cron('15 8 * * *')
+  async sendPurchaseOrderOverdueAlerts() {
+    await this.runLocked('purchase-order-overdue-alerts', 20 * 60_000, async () => {
+      await this.purchaseOrdersService.sendOverdueAlerts();
     });
   }
 

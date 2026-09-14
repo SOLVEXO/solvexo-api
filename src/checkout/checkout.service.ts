@@ -16,13 +16,11 @@ import { resolveBuyerStoreScope } from '@/common/store-scope.util';
 import { TaxService } from '@/tax/tax.service';
 import { ShippingRatesService } from '@/shipping-rates/shipping-rates.service';
 
-// PLATFORM-wide zones (ShippingZone.storeId === null, admin-managed, predate
-// the per-store zone system entirely) have no currency field of their own —
-// every one of these rows was always implicitly priced in PKR (a Pakistan-
-// domestic admin rate table). This constant documents that assumption at its
-// point of use. A SELLER-owned zone (storeId set) is priced in that store's
-// own `baseCurrency` instead — see `resolveZoneSourceCurrency` below, which
-// is what actually decides which of the two applies for a given zone.
+// Fallback currency for the rare case a store's own `baseCurrency` can't be
+// resolved (e.g. store doc missing at read time). Every real `ShippingZone`
+// is now store-owned and priced in that store's own `baseCurrency` — see
+// `resolveZoneSourceCurrency` below. (The old platform-wide admin zone table,
+// always implicitly PKR, was removed — no admin-level checkout fallback.)
 const SHIPPING_ZONE_CURRENCY = 'PKR';
 
 @Injectable()
@@ -43,11 +41,10 @@ export class CheckoutService {
     return Math.round(n * 100) / 100;
   }
 
-  /** A seller-owned zone (`storeId` set) is priced in that store's own
-   *  `baseCurrency` — a platform-wide zone (`storeId` null) is always PKR
-   *  (see SHIPPING_ZONE_CURRENCY's comment). `storeBaseCurrency` is the
-   *  caller's already-fetched store doc's currency (or null if unknown/not
-   *  applicable), passed in rather than re-queried per zone. */
+  /** A seller-owned zone is priced in that store's own `baseCurrency`.
+   *  `storeBaseCurrency` is the caller's already-fetched store doc's
+   *  currency (or null if unknown), passed in rather than re-queried per
+   *  zone; falls back to SHIPPING_ZONE_CURRENCY only if that's missing. */
   private resolveZoneSourceCurrency(zone: { storeId?: unknown }, storeBaseCurrency: string | null | undefined): string {
     return zone.storeId && storeBaseCurrency ? storeBaseCurrency : SHIPPING_ZONE_CURRENCY;
   }
@@ -544,17 +541,16 @@ export class CheckoutService {
     // snapshotted rates, never a fresh live lookup, so a rate change
     // mid-checkout can never silently alter what the buyer is charged.
     //
-    // Shipping's real source currency (addShippingInCheckout, added in a
-    // later request) depends on WHICH zone ends up picked — a seller-owned
-    // zone is priced in that store's own baseCurrency (see
-    // resolveZoneSourceCurrency); only the platform-wide fallback zones are
-    // always PKR. Previously this unconditionally forced PKR into every
-    // physical checkout's snapshot "just in case" — meaning a 100%-USD store
-    // (own USD-priced zones, USD buyer) still required a fresh, non-stale
-    // PKR rate to exist, or the whole checkout failed with "temporarily
-    // unavailable" even though PKR was never actually going to be used. Now
-    // only forced in when the store has none of its own active zones (i.e.
-    // shipping really will fall back to a platform-wide PKR zone).
+    // Shipping's real source currency (addShippingInCheckout) is that
+    // store's own baseCurrency (see resolveZoneSourceCurrency). Previously
+    // this unconditionally forced PKR into every physical checkout's
+    // snapshot "just in case" — meaning a 100%-USD store (own USD-priced
+    // zones, USD buyer) still required a fresh, non-stale PKR rate to exist,
+    // or the whole checkout failed with "temporarily unavailable" even
+    // though PKR was never actually going to be used. A store with no zones
+    // of its own now has no shipping option at all (no admin-level PKR
+    // fallback), so this PKR pre-warm only matters as a harmless no-op in
+    // that case.
     let shippingCurrency: string | null = null;
     if (hasPhysical) {
       const hasOwnZones = storeId
@@ -862,13 +858,15 @@ export class CheckoutService {
       });
       if (!shippingZone) throw new NotFoundException('Shipping zone not found');
 
-      // A seller's own private zone (storeId set) can only ever be picked for
-      // THAT seller's own checkout — otherwise a buyer could cherry-pick a
-      // cheaper rate belonging to a completely unrelated store. A platform-wide
-      // zone (storeId null, the original/legacy rows) stays pickable by anyone,
-      // unchanged.
+      // A zone can only ever be picked for its OWN store's checkout —
+      // otherwise a buyer could cherry-pick a cheaper rate belonging to a
+      // completely unrelated store. There is no admin-level fallback zone
+      // anymore: a zone with no store (leftover legacy data, if any) is
+      // never valid to pick, same as one belonging to a different store —
+      // a store with none of its own zones simply has no shipping option,
+      // same as real Shopify.
       if (
-        shippingZone.storeId &&
+        !shippingZone.storeId ||
         !storeIdsInCheckout.includes(String(shippingZone.storeId))
       ) {
         throw new BadRequestException('This shipping option is not available for your cart.');
@@ -876,10 +874,8 @@ export class CheckoutService {
     }
 
     // A seller-owned zone's price is denominated in THAT store's own
-    // baseCurrency (not always PKR) — see `resolveZoneSourceCurrency`. Only
-    // fetched when the zone actually belongs to a store (platform-wide zones
-    // skip this lookup entirely and stay PKR, unchanged). A live rate's
-    // currency comes straight from Shippo's own verified response instead.
+    // baseCurrency — see `resolveZoneSourceCurrency`. A live rate's currency
+    // comes straight from Shippo's own verified response instead.
     let zoneStoreCurrency: string | null = null;
     if (shippingZone?.storeId) {
       const zoneStore = await this.databaseService.repositories.storeModel
@@ -987,67 +983,56 @@ export class CheckoutService {
   // Buyer-facing (checkout zone picker) — only ever `status:'active'` zones,
   // unlike the seller's own management view (ShippingZonesService.listForSeller),
   // which intentionally shows everything so a seller can see/toggle inactive
-  // rows too. `storeId` (new) scopes to that seller's own zones first; a store
-  // with none of its own falls back to the original platform-wide rows
-  // (`storeId: null`) — every pre-existing store keeps working unchanged.
-  // Omitting `storeId` entirely (the legacy marketplace multi-store cart, no
-  // longer linked from nav but still reachable) preserves the exact old
-  // behavior: every platform-wide zone, unfiltered by store.
+  // rows too. Scoped strictly to `storeId`'s own zones — no admin-level
+  // platform-wide fallback anymore, so a store with none of its own active
+  // zones simply gets an empty list here (the frontend shows "no shipping
+  // method available", same as real Shopify), rather than silently charging
+  // a rate the seller never set.
   //
-  // `displayCurrency` (new) — the frontend's already-resolved checkout
-  // currency (buyer preference / store's own currency before a real Checkout
-  // exists to read `.currency` off of). Each returned zone's `shippingPrice`
-  // is converted (live rate, display-only) into it so the number the buyer
-  // sees in the picker matches what `addShippingInCheckout` will actually
-  // charge — previously the raw source-currency number was returned
-  // unconverted, so a cross-currency checkout could show e.g. "$300"
-  // (implying $300) for a zone that's really priced at Rs300 (≈ $1). A
-  // per-zone conversion failure (e.g. a momentarily stale FX rate) falls back
-  // to the raw price rather than breaking the whole list — this is a display
-  // convenience, not the actual charge, which is always recomputed safely at
-  // `addShippingInCheckout` time regardless.
+  // `displayCurrency` — the frontend's already-resolved checkout currency
+  // (buyer preference / store's own currency before a real Checkout exists
+  // to read `.currency` off of). Each returned zone's `shippingPrice` is
+  // converted (live rate, display-only) into it so the number the buyer sees
+  // in the picker matches what `addShippingInCheckout` will actually charge.
+  // A per-zone conversion failure (e.g. a momentarily stale FX rate) falls
+  // back to the raw price rather than breaking the whole list — this is a
+  // display convenience, not the actual charge, which is always recomputed
+  // safely at `addShippingInCheckout` time regardless.
   async getShippingZones(storeId?: string, displayCurrency?: string) {
     try {
+      if (!storeId) {
+        return { message: 'Shipping zones fetched successfully', data: [] };
+      }
+
       const shippingZoneModel =
         this.databaseService.repositories.shippingZoneModel;
 
-      const convertForDisplay = async (zones: any[], sourceCurrency: string) => {
-        if (!displayCurrency || displayCurrency === sourceCurrency) return zones;
-        return Promise.all(zones.map(async (z) => {
-          const plain = z.toObject ? z.toObject() : z;
-          try {
-            const shippingPrice = await this.exchangeRateService.convert(plain.shippingPrice || 0, sourceCurrency, displayCurrency);
-            return { ...plain, shippingPrice };
-          } catch {
-            return plain;
-          }
-        }));
-      };
-
-      if (storeId) {
-        const ownZones = await shippingZoneModel
-          .find({ storeId, isDelete: false, status: 'active' })
-          .sort({ createdAt: -1 });
-        if (ownZones.length > 0) {
-          const store = await this.databaseService.repositories.storeModel
-            .findById(storeId)
-            .select('baseCurrency')
-            .lean();
-          const sourceCurrency = (store as any)?.baseCurrency || SHIPPING_ZONE_CURRENCY;
-          const data = await convertForDisplay(ownZones, sourceCurrency);
-          return { message: 'Shipping zones fetched successfully', data };
-        }
+      const ownZones = await shippingZoneModel
+        .find({ storeId, isDelete: false, status: 'active' })
+        .sort({ createdAt: -1 });
+      if (ownZones.length === 0) {
+        return { message: 'Shipping zones fetched successfully', data: [] };
       }
 
-      const platformZones = await shippingZoneModel
-        .find({ storeId: null, isDelete: false, status: 'active' })
-        .sort({ createdAt: -1 });
-      const data = await convertForDisplay(platformZones, SHIPPING_ZONE_CURRENCY);
+      const store = await this.databaseService.repositories.storeModel
+        .findById(storeId)
+        .select('baseCurrency')
+        .lean();
+      const sourceCurrency = (store as any)?.baseCurrency || SHIPPING_ZONE_CURRENCY;
 
-      return {
-        message: 'Shipping zones fetched successfully',
-        data,
-      };
+      if (!displayCurrency || displayCurrency === sourceCurrency) {
+        return { message: 'Shipping zones fetched successfully', data: ownZones };
+      }
+      const data = await Promise.all(ownZones.map(async (z) => {
+        const plain = z.toObject ? z.toObject() : z;
+        try {
+          const shippingPrice = await this.exchangeRateService.convert(plain.shippingPrice || 0, sourceCurrency, displayCurrency);
+          return { ...plain, shippingPrice };
+        } catch {
+          return plain;
+        }
+      }));
+      return { message: 'Shipping zones fetched successfully', data };
     } catch (error) {
       throw error;
     }

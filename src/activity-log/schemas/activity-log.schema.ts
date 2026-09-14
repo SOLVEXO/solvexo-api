@@ -5,6 +5,7 @@ export type ActivityLogDocument = ActivityLog & Document;
 
 export const ACTIVITY_LOG_CATEGORIES = [
   'products',
+  'inventory',
   'orders',
   'finance',
   'marketing',

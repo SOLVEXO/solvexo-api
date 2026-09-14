@@ -346,6 +346,15 @@ export class DatabaseService {
     @InjectModel(schema.DraftOrder.name)
     private draftOrderModel: Model<schema.DraftOrderDocument>,
 
+    @InjectModel(schema.Supplier.name)
+    private supplierModel: Model<schema.SupplierDocument>,
+
+    @InjectModel(schema.PurchaseOrder.name)
+    private purchaseOrderModel: Model<schema.PurchaseOrderDocument>,
+
+    @InjectModel(schema.StockCount.name)
+    private stockCountModel: Model<schema.StockCountDocument>,
+
     @InjectModel(schema.StoreCustomerMeta.name)
     private storeCustomerMetaModel: Model<schema.StoreCustomerMetaDocument>,
 
@@ -522,6 +531,9 @@ export class DatabaseService {
       metaobjectEntryModel: this.metaobjectEntryModel,
       menuModel: this.menuModel,
       draftOrderModel: this.draftOrderModel,
+      supplierModel: this.supplierModel,
+      purchaseOrderModel: this.purchaseOrderModel,
+      stockCountModel: this.stockCountModel,
       storeCustomerMetaModel: this.storeCustomerMetaModel,
       blogPostModel: this.blogPostModel,
       blogModel: this.blogModel,

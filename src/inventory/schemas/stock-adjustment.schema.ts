@@ -4,7 +4,18 @@ import { Document } from 'mongoose';
 
 export type StockAdjustmentDocument = StockAdjustment & Document;
 
-export const STOCK_ADJUSTMENT_REASONS = ['restocked', 'damaged', 'return', 'correction', 'other'] as const;
+export const STOCK_ADJUSTMENT_REASONS = [
+  'restocked', 'damaged', 'return', 'correction', 'other',
+  // 'purchase_received' — a Purchase Order receipt (PurchaseOrdersService.receive)
+  // gets its own reason so history reads "PO #123 received" instead of the
+  // generic 'restocked', without needing a schema change.
+  'purchase_received',
+  // 'write_off' — permanently discarding units already sitting in the
+  // damagedStock pool (InventoryService.writeOffDamagedStock) — distinct
+  // from 'damaged' itself, which only MOVES units into that pool (they stay
+  // on-hand, just unsellable) rather than removing them from existence.
+  'write_off',
+] as const;
 export type StockAdjustmentReason = (typeof STOCK_ADJUSTMENT_REASONS)[number];
 
 /** A real, immutable audit-trail row for every manual stock change made from

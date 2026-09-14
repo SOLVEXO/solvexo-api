@@ -1,8 +1,11 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, Req, Res, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Param, Patch, Post, Query, Req, Res, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
 import type { Response } from 'express';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { IdempotencyInterceptor } from '../common/idempotency.interceptor';
 import { InventoryService } from './inventory.service';
 import type { StockAdjustmentReason } from './schemas/stock-adjustment.schema';
 
@@ -35,10 +38,36 @@ export class InventoryController {
 
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('seller', 'admin')
+  @Post(':storeId/import-stock-csv')
+  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }))
+  async importStockCsv(@Req() req: any, @Param('storeId') storeId: string, @UploadedFile() file: Express.Multer.File) {
+    const { userId } = req.user;
+    if (!file) throw new BadRequestException('No CSV file uploaded');
+    return this.inventoryService.importStockCsv(userId, storeId, file.buffer.toString('utf-8'));
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller', 'admin')
   @Get('low-stock-summary/:storeId')
   async getLowStockSummary(@Req() req: any, @Param('storeId') storeId: string) {
     const { userId } = req.user;
     return this.inventoryService.getLowStockSummary(userId, storeId);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller', 'admin')
+  @Get(':storeId/valuation')
+  async getValuation(@Req() req: any, @Param('storeId') storeId: string) {
+    const { userId } = req.user;
+    return this.inventoryService.getValuation(userId, storeId);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller', 'admin')
+  @Get(':storeId/reorder-suggestions')
+  async getReorderSuggestions(@Req() req: any, @Param('storeId') storeId: string) {
+    const { userId } = req.user;
+    return this.inventoryService.getReorderSuggestions(userId, storeId);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -86,17 +115,47 @@ export class InventoryController {
 
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('seller', 'admin')
-  @Post(':storeId/variant/:variantId/transfer')
-  async transferStock(
+  @Post(':storeId/variant/:variantId/transfer/ship')
+  async shipTransfer(
     @Req() req: any,
     @Param('storeId') storeId: string,
     @Param('variantId') variantId: string,
     @Body() body: { fromLocationId: string; toLocationId: string; quantity: number; note?: string },
   ) {
     const { userId } = req.user;
-    return this.inventoryService.transferStock(
+    return this.inventoryService.shipTransfer(
       userId, storeId, variantId, body.fromLocationId, body.toLocationId, body.quantity, body.note,
     );
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller', 'admin')
+  @UseInterceptors(IdempotencyInterceptor)
+  @Post(':storeId/transfer/:transferId/receive')
+  async receiveTransfer(
+    @Req() req: any,
+    @Param('storeId') storeId: string,
+    @Param('transferId') transferId: string,
+    @Body() body: { receivedQty: number },
+  ) {
+    const { userId } = req.user;
+    return this.inventoryService.receiveTransfer(userId, storeId, transferId, body.receivedQty);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller', 'admin')
+  @Post(':storeId/transfer/:transferId/cancel')
+  async cancelTransfer(@Req() req: any, @Param('storeId') storeId: string, @Param('transferId') transferId: string) {
+    const { userId } = req.user;
+    return this.inventoryService.cancelTransfer(userId, storeId, transferId);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller', 'admin')
+  @Get(':storeId/transfers')
+  async listTransfers(@Req() req: any, @Param('storeId') storeId: string, @Query() query: any) {
+    const { userId } = req.user;
+    return this.inventoryService.listTransfers(userId, storeId, query);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)

@@ -502,19 +502,27 @@ export class ExchangeRateService {
     return [...snapshots, newSnapshot];
   }
 
-  /** Used by the hourly staleness-check cron and the admin FX settings page. */
+  /** Used by the hourly staleness-check cron and the admin FX settings page.
+   *  Was a sequential `for...of` loop awaiting `getCurrentRate` one currency
+   *  at a time — with all ~150 real ISO-4217 currencies enabled (see
+   *  AdminConfigService.enableAllCurrencies), that's ~150 back-to-back DB
+   *  round trips, measured taking 40+ seconds end-to-end and making the FX
+   *  Settings admin page look permanently stuck on "Loading…". Parallelized
+   *  to match `getAllCurrentRates`'s existing Promise.all pattern above —
+   *  same per-currency logic, just concurrent instead of one-at-a-time. */
   async getStaleness() {
     const fxConfig = await this.adminConfigService.getFxConfig();
     const thresholdHours = fxConfig?.staleRateAlertThresholdHours ?? 48;
     const enabled = await this.adminConfigService.getEnabledCurrencies();
-    const results: Record<string, { hoursOld: number; isStale: boolean } | null> = {};
-    for (const { code: currency } of enabled) {
-      if (currency === 'USD') { results[currency] = { hoursOld: 0, isStale: false }; continue; }
-      const rate = await this.getCurrentRate(currency);
-      if (!rate) { results[currency] = null; continue; }
-      const hoursOld = (Date.now() - new Date(rate.effectiveFrom).getTime()) / (1000 * 60 * 60);
-      results[currency] = { hoursOld, isStale: hoursOld > thresholdHours };
-    }
-    return results;
+    const entries = await Promise.all(
+      enabled.map(async ({ code: currency }): Promise<[string, { hoursOld: number; isStale: boolean } | null]> => {
+        if (currency === 'USD') return [currency, { hoursOld: 0, isStale: false }];
+        const rate = await this.getCurrentRate(currency);
+        if (!rate) return [currency, null];
+        const hoursOld = (Date.now() - new Date(rate.effectiveFrom).getTime()) / (1000 * 60 * 60);
+        return [currency, { hoursOld, isStale: hoursOld > thresholdHours }];
+      }),
+    );
+    return Object.fromEntries(entries) as Record<string, { hoursOld: number; isStale: boolean } | null>;
   }
 }

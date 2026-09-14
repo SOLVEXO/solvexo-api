@@ -29,6 +29,13 @@ export class StoreLocation {
   @Prop({ type: String, default: null }) city: string | null;
   @Prop({ type: String, default: null }) phone: string | null;
 
+  // 'store' (retail floor / POS-facing) vs 'warehouse' (fulfillment-only,
+  // never a POS register). Default 'store' reproduces every pre-existing
+  // location's real-world shape unchanged (they were all POS branches).
+  // Purchase Order receiving defaults its destination to a 'warehouse'
+  // location when the store has one, matching real replenishment flow.
+  @Prop({ type: String, enum: ['store', 'warehouse'], default: 'store' }) type: 'store' | 'warehouse';
+
   // The location a new variant's existing (pre-multi-location) stock is
   // assigned to the first time it's ever split by location — exactly one
   // location per store should carry this at a time (enforced in

@@ -1940,7 +1940,7 @@ export class OrdersService {
     ip?: string,
     userAgent?: string,
   ) {
-    const { storeId, itemIds, action, rejectReason } = body;
+    const { storeId, itemIds, action, rejectReason, restockDecisions } = body;
     if (!storeId) throw new BadRequestException('storeId is required');
     if (!itemIds || !Array.isArray(itemIds) || itemIds.length === 0)
       throw new BadRequestException('itemIds are required');
@@ -2149,6 +2149,46 @@ export class OrdersService {
             `return:${orderId}:${targetItems.map((t) => t.item._id.toString()).sort().join(',')}`,
             `Order #${order.orderNumber} — return approved`,
           ).catch((e: any) => console.error('Gift card reversal failed (return approval):', e?.message));
+        }
+      }
+
+      // Reverse Inventory link — every item reaching this point was already
+      // delivered/shipped (a return can only be requested after that), so
+      // real `stock` was already decremented for good at fulfillment time
+      // (see ProductVariant.committedStock's doc comment) — restocking here
+      // is a genuine physical-goods-coming-back credit, never touching the
+      // reservation math a pre-shipment cancellation uses instead.
+      // `restockDecisions` (an optional `{ [itemId]: 'restock'|'damaged' }`
+      // map on the request body, keyed by the same OrderItem ids as
+      // `itemIds`) is entirely opt-in — omit it and stock is left exactly
+      // as untouched as before this existed, matching the seller's Returns
+      // page not sending it yet unless updated to do so. 'restock' credits
+      // real sellable `stock` back; 'damaged' credits `damagedStock`
+      // instead — still genuinely on-hand, never sellable (see that
+      // field's own doc comment) — mirroring PurchaseOrdersService's
+      // identical bucket for damaged-on-arrival PO receipts.
+      if (restockDecisions && typeof restockDecisions === 'object') {
+        const { productVariantModel, stockAdjustmentModel, sellerModel } = this.databaseService.repositories;
+        const seller = await sellerModel.findOne({ _id: sellerId }).select('name');
+        for (const { item } of targetItems) {
+          const decision = restockDecisions[item._id.toString()];
+          if (item.type !== 'physical' || !item.variantId || (decision !== 'restock' && decision !== 'damaged')) continue;
+          const variant = await productVariantModel.findOne({ _id: item.variantId, isDelete: false });
+          if (!variant || variant.unlimitedStock) continue;
+          const qty = item.quantity;
+          const previousStock = variant.stock;
+          await productVariantModel.updateOne(
+            { _id: item.variantId },
+            decision === 'restock' ? { $inc: { stock: qty } } : { $inc: { stock: qty, damagedStock: qty } },
+          );
+          await stockAdjustmentModel.create({
+            storeId, productId: item.productId, variantId: item.variantId, locationId: null,
+            productName: item.name, sku: item.sku ?? null,
+            previousStock, newStock: previousStock + qty, delta: qty,
+            reason: decision === 'restock' ? 'return' : 'damaged',
+            note: `Return for order #${order.orderNumber}`,
+            adjustedBy: sellerId, adjustedByName: seller?.name ?? null,
+          });
         }
       }
     }

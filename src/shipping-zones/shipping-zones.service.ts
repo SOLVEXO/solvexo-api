@@ -7,14 +7,12 @@ import { CreateShippingZoneDto } from './dto/create-shipping-zone.dto';
 import { UpdateShippingZoneDto } from './dto/update-shipping-zone.dto';
 
 /**
- * Admin-only CRUD over `ShippingZone` — previously this schema had zero
- * write path anywhere in the codebase (confirmed by grep: only
- * `checkout.service.ts`'s `addShippingInCheckout` ever READ it). Every
- * shipping rate on the platform could only ever be created via direct DB
- * manipulation. `ShippingZone` has no `storeId`/`sellerId` at the schema
- * level — it's a single platform-wide rate table (by country/province/city),
- * not per-seller, so this stays admin-only rather than inventing per-store
- * scoping the schema doesn't support.
+ * Per-store CRUD over `ShippingZone` — each store owns and manages its own
+ * shipping zones/local-delivery rates (`storeId` set), verified via
+ * `verifyStoreOwnershipStrict` on every call. There is no platform-wide
+ * admin equivalent: the old admin-managed global zone table (and its
+ * checkout-time fallback) was removed, since a genuinely independent
+ * Shopify-style store is fully responsible for its own shipping setup.
  */
 @Injectable()
 export class ShippingZonesService {
@@ -27,87 +25,10 @@ export class ShippingZonesService {
     return this.databaseService.repositories.shippingZoneModel;
   }
 
-  async list(query: { status?: string; country?: string }) {
-    const filter: Record<string, unknown> = { isDelete: false };
-    if (query.status && query.status !== 'all') filter.status = query.status;
-    if (query.country) filter.country = query.country;
-    const zones = await this.model.find(filter).sort({ country: 1, province: 1, city: 1 }).lean();
-    return { success: true, data: zones };
-  }
-
-  async create(adminId: string, dto: CreateShippingZoneDto) {
-    const zone = await this.model.create({
-      country: dto.country,
-      province: dto.province ?? null,
-      city: dto.city ?? null,
-      shippingPrice: dto.shippingPrice,
-      estimatedDeliveryTime: dto.estimatedDeliveryTime ?? undefined,
-      status: dto.status ?? 'active',
-    });
-
-    await this.activityLogService.log({
-      storeId: 'platform',
-      category: 'settings',
-      action: 'shipping_zone_created',
-      description: `${dto.country}${dto.province ? `, ${dto.province}` : ''}${dto.city ? `, ${dto.city}` : ''} — ${dto.shippingPrice}`,
-      actorId: adminId,
-      actorRole: 'admin',
-      targetId: String(zone._id),
-      targetType: 'shipping_zone',
-    });
-
-    return { success: true, message: 'Shipping zone created', data: zone };
-  }
-
-  async update(adminId: string, zoneId: string, dto: UpdateShippingZoneDto) {
-    const zone = await this.model.findOneAndUpdate(
-      { _id: zoneId, isDelete: false },
-      { $set: dto },
-      { new: true },
-    );
-    if (!zone) throw new NotFoundException('Shipping zone not found');
-
-    await this.activityLogService.log({
-      storeId: 'platform',
-      category: 'settings',
-      action: 'shipping_zone_updated',
-      description: `${zone.country}${zone.province ? `, ${zone.province}` : ''} updated`,
-      actorId: adminId,
-      actorRole: 'admin',
-      targetId: zoneId,
-      targetType: 'shipping_zone',
-    });
-
-    return { success: true, message: 'Shipping zone updated', data: zone };
-  }
-
-  async remove(adminId: string, zoneId: string) {
-    const zone = await this.model.findOneAndUpdate(
-      { _id: zoneId, isDelete: false },
-      { $set: { isDelete: true } },
-      { new: true },
-    );
-    if (!zone) throw new NotFoundException('Shipping zone not found');
-
-    await this.activityLogService.log({
-      storeId: 'platform',
-      category: 'settings',
-      action: 'shipping_zone_deleted',
-      description: `${zone.country}${zone.province ? `, ${zone.province}` : ''} deleted`,
-      actorId: adminId,
-      actorRole: 'admin',
-      targetId: zoneId,
-      targetType: 'shipping_zone',
-    });
-
-    return { success: true, message: 'Shipping zone deleted' };
-  }
-
   // ── Seller (per-store) ───────────────────────────────────────────────────
-  // A seller's own zones (storeId set) — distinct from the admin platform-wide
-  // rows above (storeId: null). Returns everything regardless of status (the
-  // seller's own management view needs to see + toggle inactive zones too;
-  // buyer-facing checkout filtering happens separately in CheckoutService).
+  // Returns everything regardless of status (the seller's own management
+  // view needs to see + toggle inactive zones too; buyer-facing checkout
+  // filtering happens separately in CheckoutService).
 
   private get storeModel() {
     return this.databaseService.repositories.storeModel;
