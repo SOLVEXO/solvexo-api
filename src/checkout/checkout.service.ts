@@ -998,7 +998,17 @@ export class CheckoutService {
   // back to the raw price rather than breaking the whole list — this is a
   // display convenience, not the actual charge, which is always recomputed
   // safely at `addShippingInCheckout` time regardless.
-  async getShippingZones(storeId?: string, displayCurrency?: string) {
+  // Explicit return type — the real fix for a `nest build` failure
+  // ("inferred type ... exceeds the maximum length the compiler will
+  // serialize"): this method's branches return `data` as an empty array
+  // literal, a raw Mongoose document array, and a spread-merged plain-object
+  // array, and inference across all three (each carrying Mongoose's own
+  // Document type machinery) produced a type too large for the declaration
+  // emitter to write out. `data: any[]` matches this method's own genuinely
+  // loose, already-existing shape (already spreads `.toObject()` results and
+  // casts through `any` internally) — not a behavior change, just tells the
+  // compiler what to expect instead of inferring it from the branches.
+  async getShippingZones(storeId?: string, displayCurrency?: string): Promise<{ message: string; data: any[] }> {
     try {
       if (!storeId) {
         return { message: 'Shipping zones fetched successfully', data: [] };
