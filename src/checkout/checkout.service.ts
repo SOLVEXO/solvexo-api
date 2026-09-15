@@ -172,6 +172,18 @@ export class CheckoutService {
     // cart (see cart.controller.ts's use of the same helper).
     const storeId = resolveBuyerStoreScope(userStoreId, body.storeId);
 
+    // Platform-admin per-store block (StoreService.setCustomerBlockedAdmin) —
+    // independent of the buyer's platform-wide account status (that's
+    // enforced upstream by the auth guard/JWT tokenVersion). A blocked buyer
+    // can still browse this store, they just can't complete checkout here.
+    const blockedHere = await this.databaseService.repositories.storeCustomerMetaModel
+      .findOne({ storeId, userId, isBlocked: true })
+      .select('_id')
+      .lean();
+    if (blockedHere) {
+      throw new BadRequestException('You have been blocked from checking out at this store.');
+    }
+
     // "Markets" enforcement — see resolveStoreCurrency's comment. A cart is
     // always single-store today (the marketplace-to-standalone-store
     // pivot), so this one store's enabledCurrencies is authoritative for
@@ -288,7 +300,11 @@ export class CheckoutService {
         // some of `stock` may already be reserved by another pending,
         // paid-but-unshipped order. See ProductVariant.committedStock.
         const available = variant.stock - ((variant as any).committedStock || 0);
-        if (!variant.unlimitedStock && available < cartItem.quantity) {
+        // A variant with allowBackorder:true (Shopify's "continue selling
+        // when out of stock") never fails this pre-flight check — the real
+        // atomic reserve at order-placement time (PaymentService.createOrder)
+        // is the only place that decides whether it's genuinely oversold.
+        if (!variant.unlimitedStock && !(variant as any).allowBackorder && available < cartItem.quantity) {
           throw new BadRequestException(
             `Insufficient stock for: ${product.name}`,
           );

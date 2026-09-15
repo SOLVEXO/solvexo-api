@@ -294,7 +294,6 @@ export function validateBlockSettings(blockType: string, settings: Record<string
     // hero section blocks
     case 'hero_slide':
       assertHttpsUrl(settings.imageUrl, 'imageUrl');
-      if (settings.mobileImageUrl !== undefined) assertHttpsUrl(settings.mobileImageUrl, 'mobileImageUrl');
       maxLen(settings.heading, 100, 'heading');
       maxLen(settings.subheading, 200, 'subheading');
       maxLen(settings.ctaText, 40, 'ctaText');

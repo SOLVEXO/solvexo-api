@@ -85,6 +85,7 @@ import { OnboardingSlidesModule } from './onboarding-slides/onboarding-slides.mo
 import { BookingsModule } from './bookings/bookings.module';
 import { StoreAppRequestsModule } from './store-app-requests/store-app-requests.module';
 import { PosPlansModule } from './pos-plans/pos-plans.module';
+import { StaffModule } from './staff/staff.module';
 
 @Module({
   imports: [
@@ -178,6 +179,7 @@ import { PosPlansModule } from './pos-plans/pos-plans.module';
     ExchangeRateModule,
     StoreAppRequestsModule,
     PosPlansModule,
+    StaffModule,
   ],
   controllers: [AppController],
   providers: [AppService, { provide: APP_GUARD, useClass: ThrottlerGuard }],

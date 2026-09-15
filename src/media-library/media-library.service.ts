@@ -99,7 +99,7 @@ export class MediaLibraryService {
       repos.categoryModel.find({ image: url }).select('name').lean(),
       repos.collectionModel.find({ storeId, image: url }).select('name').lean(),
       repos.storeModel.findOne({ _id: storeId, $or: [{ logo: url }, { coverImage: url }] }).select('name').lean(),
-      repos.storeBannerModel.find({ storeId, $or: [{ imageUrl: url }, { mobileImageUrl: url }] }).lean(),
+      repos.storeBannerModel.find({ storeId, imageUrl: url }).lean(),
       repos.storePageModel.find({ storeId }).select('title sections').lean(),
       repos.storeThemeModel.findOne({ storeId }).lean(),
     ]);

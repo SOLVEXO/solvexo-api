@@ -411,6 +411,21 @@ export class DatabaseService {
     @InjectModel(schema.PosPurchase.name)
     private posPurchaseModel: Model<schema.PosPurchaseDocument>,
 
+    @InjectModel(schema.Bin.name)
+    private binModel: Model<schema.BinDocument>,
+
+    @InjectModel(schema.StaffMember.name)
+    private staffMemberModel: Model<schema.StaffMemberDocument>,
+
+    @InjectModel(schema.ApprovalRequest.name)
+    private approvalRequestModel: Model<schema.ApprovalRequestDocument>,
+
+    @InjectModel(schema.StockLot.name)
+    private stockLotModel: Model<schema.StockLotDocument>,
+
+    @InjectModel(schema.StockUnit.name)
+    private stockUnitModel: Model<schema.StockUnitDocument>,
+
   ) { }
 
   get repositories() {
@@ -553,6 +568,11 @@ export class DatabaseService {
       stockTransferModel: this.stockTransferModel,
       posPlanModel: this.posPlanModel,
       posPurchaseModel: this.posPurchaseModel,
+      binModel: this.binModel,
+      staffMemberModel: this.staffMemberModel,
+      approvalRequestModel: this.approvalRequestModel,
+      stockLotModel: this.stockLotModel,
+      stockUnitModel: this.stockUnitModel,
     };
   }
 }

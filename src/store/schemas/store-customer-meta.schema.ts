@@ -43,6 +43,15 @@ export class StoreCustomerMeta {
   @Prop({ type: Boolean, default: false })
   marketingOptIn: boolean;
 
+  // Platform-admin-only: blocks this one buyer from checking out at this one
+  // store, without touching their account elsewhere (AdminUsersService.suspend
+  // is the separate, platform-wide ban — a seller may own many stores, and a
+  // problem with one store's customer shouldn't lock them out of the rest of
+  // the platform). Enforced in CheckoutService.createCheckout. Sellers never
+  // set this themselves — only StoreService.setCustomerBlockedAdmin does.
+  @Prop({ type: Boolean, default: false })
+  isBlocked: boolean;
+
   createdAt?: Date;
   updatedAt?: Date;
 }

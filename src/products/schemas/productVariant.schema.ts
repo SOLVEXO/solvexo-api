@@ -99,6 +99,39 @@ export class ProductVariant {
   @Prop({ default: false })
   unlimitedStock: boolean;
 
+  // Real business-policy toggle (Shopify's "Continue selling when out of
+  // stock" equivalent) — deliberately scoped to the ONLINE CHECKOUT
+  // reservation path only (see PaymentService.createOrder's reserve step
+  // and CheckoutService's pre-flight checks), never to manual Inventory-page
+  // adjustments (those stay strict, non-negative, everywhere — a seller
+  // correcting/counting stock has no "backorder" concept) and never to POS
+  // (an in-person sale hands over a physical item that must actually be
+  // there — allowing a POS sale to go negative would misrepresent a real
+  // handoff). When true, a checkout reservation is allowed to push
+  // `committedStock` past `stock` — the order's affected line item(s) are
+  // flagged `isBackordered: true` (see Order/SellerOrder item schema) so the
+  // seller/buyer both see it was oversold on purpose, not by a bug. Default
+  // false reproduces the platform's original strict-everywhere behavior for
+  // every existing variant.
+  @Prop({ default: false })
+  allowBackorder: boolean;
+
+  // Opt-in real batch/lot tracking (see StockLot schema) — when true,
+  // Purchase Order receiving creates real lot rows instead of only updating
+  // this variant's weighted-average `costPrice`, and stock-leaving actions
+  // (manual adjustment, sale-time decrement) consume the oldest lot(s)
+  // first (FIFO/FEFO). Default false preserves the existing weighted-
+  // average-only behavior for every variant that doesn't need this.
+  @Prop({ default: false })
+  trackLots: boolean;
+
+  // Opt-in real per-unit serial-number tracking (see StockUnit schema) —
+  // when true, Purchase Order receiving asks for one serial number per
+  // unit received. Default false — most SKUs are fungible and never need
+  // per-unit identity.
+  @Prop({ default: false })
+  trackSerials: boolean;
+
   @Prop({ type: String, default: null })
   shippingWeight!: string | null;
 

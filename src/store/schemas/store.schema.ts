@@ -373,6 +373,16 @@ export class Store {
   @Prop({ type: Number, default: 10, min: 1 })
   lowStockThreshold!: number;
 
+  // Real Staff RBAC (see StaffMember/ApprovalRequest schemas) — a staff
+  // member WITHOUT `inventory.approve` who submits a stock adjustment at or
+  // above this quantity, or with reason 'damaged'/'write_off' (any
+  // quantity), gets a pending ApprovalRequest instead of an immediate
+  // mutation. Owner default is a reasonable "don't queue small counts,
+  // do queue anything that could materially misstate stock/valuation"
+  // threshold — editable per store from the Staff tab.
+  @Prop({ type: Number, default: 20, min: 1 })
+  staffApprovalThreshold!: number;
+
   // A deliberately simple flat-rate tax — NOT a real multi-jurisdiction
   // compliance engine (see CheckoutService.createCheckout's tax-computation
   // comment). 0 = no tax charged, matching every store's behavior before

@@ -3,33 +3,41 @@ import { Body, Controller, Get, Param, Post, Req, UseGuards, UseInterceptors } f
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
+import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { RequirePermission } from '../auth/decorators/require-permission.decorator';
 import { IdempotencyInterceptor } from '../common/idempotency.interceptor';
 import { StockCountsService } from './stock-counts.service';
 
+// See InventoryController's identical helper doc comment.
+function actingSellerId(user: any): string {
+  return user.role === 'staff' ? user.sellerId : user.userId;
+}
+
 @ApiTags('Stock Counts')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, RolesGuard)
-@Roles('seller', 'admin')
+@UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+@Roles('seller', 'admin', 'staff')
+@RequirePermission('inventory.count')
 @Controller('api/stock-counts')
 export class StockCountsController {
   constructor(private readonly service: StockCountsService) {}
 
   @Post(':storeId/start')
   async start(@Req() req: any, @Param('storeId') storeId: string, @Body() body: { locationId?: string }) {
-    const count = await this.service.start(storeId, req.user.userId, body?.locationId);
+    const count = await this.service.start(storeId, actingSellerId(req.user), body?.locationId);
     return { success: true, data: count };
   }
 
   @Get(':storeId')
   async list(@Req() req: any, @Param('storeId') storeId: string) {
-    const items = await this.service.list(storeId, req.user.userId);
+    const items = await this.service.list(storeId, actingSellerId(req.user));
     return { success: true, data: items };
   }
 
   @Get(':storeId/:id')
   async getById(@Req() req: any, @Param('storeId') storeId: string, @Param('id') id: string) {
-    const count = await this.service.getById(storeId, req.user.userId, id);
+    const count = await this.service.getById(storeId, actingSellerId(req.user), id);
     return { success: true, data: count };
   }
 
@@ -38,20 +46,20 @@ export class StockCountsController {
     @Req() req: any, @Param('storeId') storeId: string, @Param('id') id: string, @Param('itemId') itemId: string,
     @Body() body: { countedQty: number },
   ) {
-    const count = await this.service.submitCount(storeId, req.user.userId, id, itemId, body.countedQty);
+    const count = await this.service.submitCount(storeId, actingSellerId(req.user), id, itemId, body.countedQty);
     return { success: true, data: count };
   }
 
   @Post(':storeId/:id/cancel')
   async cancel(@Req() req: any, @Param('storeId') storeId: string, @Param('id') id: string) {
-    const count = await this.service.cancel(storeId, req.user.userId, id);
+    const count = await this.service.cancel(storeId, actingSellerId(req.user), id);
     return { success: true, data: count };
   }
 
   @UseInterceptors(IdempotencyInterceptor)
   @Post(':storeId/:id/finish')
   async finish(@Req() req: any, @Param('storeId') storeId: string, @Param('id') id: string) {
-    const result = await this.service.finish(storeId, req.user.userId, id);
+    const result = await this.service.finish(storeId, actingSellerId(req.user), id);
     return { success: true, data: result };
   }
 }

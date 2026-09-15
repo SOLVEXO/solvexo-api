@@ -13,7 +13,6 @@ import { UpdateStoreBannerDto } from './dto/update-store-banner.dto';
 const CREATIVE_UPLOAD = FileFieldsInterceptor(
   [
     { name: 'file', maxCount: 1 },
-    { name: 'mobileFile', maxCount: 1 },
   ],
   // 50MB — raised from the original 5MB (image-only) cap so a real Video
   // Banner clip actually fits; per-mimetype size enforcement still happens
@@ -41,9 +40,9 @@ export class StoreBannerController {
     @Req() req: any,
     @Param('storeId') storeId: string,
     @Body() dto: CreateStoreBannerDto,
-    @UploadedFiles() files: { file?: Express.Multer.File[]; mobileFile?: Express.Multer.File[] },
+    @UploadedFiles() files: { file?: Express.Multer.File[] },
   ) {
-    return this.storeBannerService.create(storeId, req.user.userId, dto, files?.file?.[0], files?.mobileFile?.[0]);
+    return this.storeBannerService.create(storeId, req.user.userId, dto, files?.file?.[0]);
   }
 
   @Patch(':storeId/:bannerId')

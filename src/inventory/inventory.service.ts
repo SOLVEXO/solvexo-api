@@ -469,6 +469,9 @@ export class InventoryService {
               status: '$computedStatus',
               reorderPoint: 1,
               costPrice: 1,
+              allowBackorder: { $ifNull: ['$allowBackorder', false] },
+              trackLots: { $ifNull: ['$trackLots', false] },
+              trackSerials: { $ifNull: ['$trackSerials', false] },
             },
           },
         ],
@@ -505,7 +508,136 @@ export class InventoryService {
    *  (that one is guarded/atomic for concurrency; this one is a single
    *  seller acting on their own dashboard, so a simple optimistic
    *  read-then-write check is enough — see the race-guard comment below). */
+  /** Public entry point — routes a STAFF caller (see StaffMember/
+   *  PermissionsGuard) without `inventory.approve` through the approval
+   *  queue instead of mutating real stock directly, whenever the
+   *  adjustment is large (`|delta| >= Store.staffApprovalThreshold`) or a
+   *  'damaged'/'write_off' reason (any quantity — these permanently affect
+   *  valuation/loss accounting, so they're always reviewed). A seller/admin
+   *  caller, or a staff member WHO DOES hold `inventory.approve`, always
+   *  applies immediately — identical behavior to before Staff RBAC existed. */
   async adjustStock(
+    sellerId: string,
+    storeId: string,
+    variantId: string,
+    delta: number,
+    reason: StockAdjustmentReason,
+    note?: string,
+    locationId?: string,
+    actor?: { actorId: string; actorRole: string; actorPermissions: string[] | null },
+  ) {
+    const requiresApproval =
+      actor?.actorRole === 'staff' && !(actor.actorPermissions ?? []).includes('inventory.approve');
+
+    if (requiresApproval) {
+      const { storeModel, productModel, productVariantModel, approvalRequestModel, staffMemberModel } = this.databaseService.repositories;
+      const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
+      if (!store) throw new ForbiddenException('Store not found or unauthorized');
+      const threshold = (store as any).staffApprovalThreshold ?? 20;
+      const needsApproval = reason === 'damaged' || reason === 'write_off' || Math.abs(delta) >= threshold;
+
+      if (needsApproval) {
+        const variant = await productVariantModel.findOne({ _id: variantId, isDelete: false }).lean();
+        if (!variant) throw new NotFoundException('Variant not found');
+        const product = await productModel.findOne({ _id: (variant as any).productId }).select('name').lean();
+        const staff = await staffMemberModel.findById(actor!.actorId).select('name').lean();
+
+        const approval = await approvalRequestModel.create({
+          storeId, type: 'stock_adjustment',
+          payload: { sellerId, storeId, variantId, delta, reason, note: note ?? null, locationId: locationId ?? null },
+          summary: `${delta > 0 ? '+' : ''}${delta} unit(s) — ${reason} — ${(product as any)?.name ?? 'Unknown product'}${(variant as any).sku ? ` (${(variant as any).sku})` : ''}`,
+          requestedBy: actor!.actorId, requestedByName: (staff as any)?.name ?? null,
+          status: 'pending',
+        });
+
+        return {
+          success: true,
+          message: 'This adjustment requires manager approval — submitted to the approval queue',
+          data: { pending: true, approval },
+        };
+      }
+    }
+
+    return this.applyStockAdjustment(sellerId, storeId, variantId, delta, reason, note, locationId);
+  }
+
+  /** GET api/inventory/:storeId/approvals — pending (or, with `?status=`,
+   *  approved/rejected) staff-submitted adjustment requests, newest first. */
+  async listApprovals(sellerId: string, storeId: string, status?: string) {
+    const { storeModel, approvalRequestModel } = this.databaseService.repositories;
+    const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
+    if (!store) throw new ForbiddenException('Store not found or unauthorized');
+
+    const filter: any = { storeId };
+    if (status && status !== 'all') filter.status = status;
+    else if (!status) filter.status = 'pending';
+
+    const items = await approvalRequestModel.find(filter).sort({ createdAt: -1 }).limit(200).lean();
+    return { success: true, data: items };
+  }
+
+  /** Applies the SNAPSHOTTED original adjustment verbatim — never re-derives
+   *  it from current state, which may have changed since the request was
+   *  raised (e.g. a different adjustment already happened in the meantime;
+   *  `applyStockAdjustment`'s own optimistic/atomic guards still protect
+   *  against a genuinely stale mutation, exactly as they do for a direct
+   *  seller adjustment). */
+  async approveRequest(sellerId: string, storeId: string, approvalId: string, reviewerId: string, reviewerRole: string) {
+    const { storeModel, approvalRequestModel, sellerModel, staffMemberModel } = this.databaseService.repositories;
+    const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
+    if (!store) throw new ForbiddenException('Store not found or unauthorized');
+
+    const approval = await approvalRequestModel.findOne({ _id: approvalId, storeId });
+    if (!approval) throw new NotFoundException('Approval request not found');
+    if (approval.status !== 'pending') {
+      throw new BadRequestException(`This request was already ${approval.status}`);
+    }
+
+    const p = approval.payload as any;
+    const result = await this.applyStockAdjustment(p.sellerId, p.storeId, p.variantId, p.delta, p.reason, p.note, p.locationId);
+
+    const reviewer = reviewerRole === 'staff'
+      ? await staffMemberModel.findById(reviewerId).select('name').lean()
+      : await sellerModel.findById(reviewerId).select('name').lean();
+    approval.status = 'approved';
+    approval.reviewedBy = reviewerId;
+    approval.reviewedByName = (reviewer as any)?.name ?? null;
+    approval.reviewedAt = new Date();
+    await approval.save();
+
+    return { success: true, message: 'Approved and applied', data: { approval: approval.toObject(), result: result.data } };
+  }
+
+  async rejectRequest(sellerId: string, storeId: string, approvalId: string, reviewerId: string, reviewerRole: string, reason?: string) {
+    const { storeModel, approvalRequestModel, sellerModel, staffMemberModel } = this.databaseService.repositories;
+    const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
+    if (!store) throw new ForbiddenException('Store not found or unauthorized');
+
+    const approval = await approvalRequestModel.findOne({ _id: approvalId, storeId });
+    if (!approval) throw new NotFoundException('Approval request not found');
+    if (approval.status !== 'pending') {
+      throw new BadRequestException(`This request was already ${approval.status}`);
+    }
+
+    const reviewer = reviewerRole === 'staff'
+      ? await staffMemberModel.findById(reviewerId).select('name').lean()
+      : await sellerModel.findById(reviewerId).select('name').lean();
+    approval.status = 'rejected';
+    approval.reviewedBy = reviewerId;
+    approval.reviewedByName = (reviewer as any)?.name ?? null;
+    approval.reviewedAt = new Date();
+    approval.rejectionReason = reason?.trim() || null;
+    await approval.save();
+
+    return { success: true, message: 'Rejected — nothing was applied', data: approval.toObject() };
+  }
+
+  /** The real, previously-monolithic `adjustStock` body — now the single
+   *  place that ACTUALLY mutates stock, called either directly (seller/
+   *  admin, or a staff member with `inventory.approve`) or via
+   *  `approveRequest` with a snapshotted payload. Unchanged from before
+   *  Staff RBAC existed. */
+  private async applyStockAdjustment(
     sellerId: string,
     storeId: string,
     variantId: string,
@@ -684,6 +816,20 @@ export class InventoryService {
       adjustedByName: seller?.name ?? null,
     });
 
+    // Real FIFO/FEFO lot consumption for a genuine reduction of sellable
+    // stock (restocked/correction/other going negative — 'damaged'/
+    // 'write_off' are handled in their own early-return branch above and
+    // deliberately don't touch lots, see that branch's own scope note).
+    // Best-effort — a lot-drain failure here never blocks the real,
+    // already-committed stock write above.
+    if ((variant as any).trackLots && delta < 0) {
+      try {
+        await this.consumeLotsFifo(variantId, Math.abs(delta));
+      } catch {
+        // Non-fatal — see comment above.
+      }
+    }
+
     return {
       success: true,
       message: 'Stock adjusted successfully',
@@ -745,12 +891,63 @@ export class InventoryService {
     });
   }
 
+  // ── Bins (bin/shelf-level granularity within one location — see Bin
+  // schema's own doc comment for the deliberately shallow scope). ────────
+
+  async listBins(sellerId: string, storeId: string, locationId: string) {
+    const { storeModel, binModel, storeLocationModel } = this.databaseService.repositories;
+    const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
+    if (!store) throw new ForbiddenException('Store not found or unauthorized');
+    const location = await storeLocationModel.findOne({ _id: locationId, storeId, isDelete: false });
+    if (!location) throw new NotFoundException('Location not found');
+
+    const bins = await binModel.find({ locationId, isDelete: false }).sort({ code: 1 }).lean();
+    return { success: true, data: bins };
+  }
+
+  async createBin(sellerId: string, storeId: string, locationId: string, body: { code: string; zone?: string; aisle?: string; shelf?: string }) {
+    const { storeModel, binModel, storeLocationModel } = this.databaseService.repositories;
+    const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
+    if (!store) throw new ForbiddenException('Store not found or unauthorized');
+    const location = await storeLocationModel.findOne({ _id: locationId, storeId, isDelete: false });
+    if (!location) throw new NotFoundException('Location not found');
+
+    const code = (body.code ?? '').trim();
+    if (!code) throw new BadRequestException('A bin code is required');
+    const existing = await binModel.findOne({ locationId, code, isDelete: false });
+    if (existing) throw new BadRequestException(`A bin with code "${code}" already exists at this location`);
+
+    const bin = await binModel.create({
+      storeId, locationId, code,
+      zone: body.zone?.trim() || null, aisle: body.aisle?.trim() || null, shelf: body.shelf?.trim() || null,
+    });
+    return { success: true, data: bin };
+  }
+
+  async deleteBin(sellerId: string, storeId: string, binId: string) {
+    const { storeModel, binModel, variantLocationStockModel } = this.databaseService.repositories;
+    const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
+    if (!store) throw new ForbiddenException('Store not found or unauthorized');
+    const bin = await binModel.findOne({ _id: binId, storeId, isDelete: false });
+    if (!bin) throw new NotFoundException('Bin not found');
+
+    const stockRows = await variantLocationStockModel.find({ binId, stock: { $gt: 0 } }).limit(1).lean();
+    if (stockRows.length > 0) {
+      throw new BadRequestException('This bin still has stock assigned to it — move or count it out before deleting the bin');
+    }
+
+    bin.isDelete = true;
+    await bin.save();
+    return { success: true, message: 'Bin deleted' };
+  }
+
   /** GET api/inventory/:storeId/variant/:variantId/locations — real
    *  per-branch stock breakdown for one SKU. Only meaningful once the
    *  store has 2+ active locations — the frontend only shows this option
-   *  in that case. */
+   *  in that case. Each location also carries its own `bins` breakdown
+   *  (empty array when that location has no real Bins defined yet). */
   async getVariantLocations(sellerId: string, storeId: string, variantId: string) {
-    const { storeModel, productVariantModel, variantLocationStockModel, storeLocationModel } = this.databaseService.repositories;
+    const { storeModel, productVariantModel, variantLocationStockModel, storeLocationModel, binModel } = this.databaseService.repositories;
     const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
     if (!store) throw new ForbiddenException('Store not found or unauthorized');
 
@@ -759,11 +956,26 @@ export class InventoryService {
 
     await this.ensureLocationStockSeeded(storeId, variantId, variant);
 
-    const [locations, rows] = await Promise.all([
+    const [locations, rows, bins] = await Promise.all([
       storeLocationModel.find({ storeId, isDelete: false, status: 'active' }).sort({ createdAt: 1 }).lean(),
       variantLocationStockModel.find({ variantId }).lean(),
+      binModel.find({ storeId, isDelete: false }).lean(),
     ]);
-    const stockByLocation = new Map(rows.map((r: any) => [r.locationId, r.stock]));
+    // A location can now have MORE THAN ONE row for the same variant (one
+    // per bin — see VariantLocationStock.binId) — sum them, never assume
+    // exactly one row per location.
+    const stockByLocation = new Map<string, number>();
+    const stockByBin = new Map<string, number>();
+    for (const r of rows as any[]) {
+      stockByLocation.set(r.locationId, (stockByLocation.get(r.locationId) ?? 0) + (r.stock || 0));
+      if (r.binId) stockByBin.set(r.binId, (stockByBin.get(r.binId) ?? 0) + (r.stock || 0));
+    }
+    const binsByLocation = new Map<string, any[]>();
+    for (const b of bins as any[]) {
+      const list = binsByLocation.get(b.locationId) ?? [];
+      list.push({ binId: b._id.toString(), code: b.code, zone: b.zone, aisle: b.aisle, shelf: b.shelf, stock: stockByBin.get(b._id.toString()) ?? 0 });
+      binsByLocation.set(b.locationId, list);
+    }
 
     return {
       success: true,
@@ -778,6 +990,7 @@ export class InventoryService {
           locationType: l.type ?? 'store',
           isDefault: !!l.isDefault,
           stock: stockByLocation.get(l._id.toString()) ?? 0,
+          bins: binsByLocation.get(l._id.toString()) ?? [],
         })),
       },
     };
@@ -883,8 +1096,8 @@ export class InventoryService {
    *  or all of an in-transit transfer at its destination. Callable more than
    *  once for a real multi-box/partial delivery, exactly like Purchase
    *  Order receiving. */
-  async receiveTransfer(sellerId: string, storeId: string, transferId: string, receivedQty: number) {
-    const { storeModel, productVariantModel, variantLocationStockModel, stockTransferModel, stockAdjustmentModel, sellerModel } =
+  async receiveTransfer(sellerId: string, storeId: string, transferId: string, receivedQty: number, binId?: string) {
+    const { storeModel, productVariantModel, variantLocationStockModel, stockTransferModel, stockAdjustmentModel, sellerModel, binModel } =
       this.databaseService.repositories;
 
     if (!Number.isFinite(receivedQty) || receivedQty <= 0) {
@@ -905,8 +1118,15 @@ export class InventoryService {
       throw new BadRequestException(`Only ${remaining} unit(s) remain to receive on this transfer`);
     }
 
+    let targetBinId: string | null = null;
+    if (binId) {
+      const bin = await binModel.findOne({ _id: binId, locationId: transfer.toLocationId, isDelete: false });
+      if (!bin) throw new NotFoundException('Bin not found at the destination location');
+      targetBinId = binId;
+    }
+
     await variantLocationStockModel.updateOne(
-      { variantId: transfer.variantId, locationId: transfer.toLocationId },
+      { variantId: transfer.variantId, locationId: transfer.toLocationId, binId: targetBinId },
       { $inc: { stock: receivedQty }, $setOnInsert: { storeId, productId: transfer.productId } },
       { upsert: true },
     );
@@ -1076,17 +1296,21 @@ export class InventoryService {
   }
 
   /** GET api/inventory/:storeId/valuation — real inventory-value + dead-
-   *  stock + top-movers reporting. Total value only sums SKUs that
-   *  actually have a `costPrice` set (via Purchase Order receiving or the
-   *  Inventory page's own "Reorder point & cost" action) — never assumes
-   *  0 for a SKU that's never had a real cost recorded, which would
-   *  understate value rather than honestly reporting it as unknown.
-   *  "Dead stock" = real on-hand units with zero sales in the last 90
-   *  days — a real, disclosed simplification: this is a variant-level
-   *  approximation (no per-batch/lot aging, deliberately out of scope —
-   *  see this pass's own scope notes on lot tracking). */
+   *  stock + top-movers reporting. For a `trackLots` variant, total value
+   *  uses the REAL FIFO figure — `Σ lot.quantityRemaining × lot.costPrice`
+   *  across its still-active lots — genuine accounting-grade valuation, not
+   *  a blended average. Every other SKU still uses `stock × costPrice`
+   *  (weighted-average), only summed when `costPrice` is actually set (via
+   *  Purchase Order receiving or the Inventory page's "Reorder point &
+   *  cost" action) — never assumes 0 for a SKU with no recorded cost,
+   *  which would understate value rather than honestly reporting it as
+   *  unknown. "Dead stock" = real on-hand units with zero sales in the last
+   *  90 days — a disclosed variant-level approximation (no per-lot aging in
+   *  THIS list, even for a lot-tracked SKU — the total VALUE above is real
+   *  FIFO, but per-lot expiry-aware dead-stock aging is a further,
+   *  deliberately out-of-scope refinement). */
   async getValuation(sellerId: string, storeId: string) {
-    const { storeModel, productModel, productVariantModel, orderModel } = this.databaseService.repositories;
+    const { storeModel, productModel, productVariantModel, orderModel, stockLotModel } = this.databaseService.repositories;
     const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
     if (!store) throw new ForbiddenException('Store not found or unauthorized');
 
@@ -1100,10 +1324,26 @@ export class InventoryService {
       ? await productVariantModel.find({ productId: { $in: productIds }, isDelete: false, unlimitedStock: { $ne: true } }).lean()
       : [];
 
+    const lotTrackedVariantIds = (variants as any[]).filter((v) => v.trackLots).map((v) => v._id.toString());
+    const lotValueByVariant = new Map<string, number>();
+    if (lotTrackedVariantIds.length > 0) {
+      const lotTotals = await stockLotModel.aggregate([
+        { $match: { variantId: { $in: lotTrackedVariantIds }, status: 'active', quantityRemaining: { $gt: 0 } } },
+        { $group: { _id: '$variantId', value: { $sum: { $multiply: ['$quantityRemaining', '$costPrice'] } } } },
+      ]);
+      for (const t of lotTotals) lotValueByVariant.set(t._id, t.value);
+    }
+
     let totalValue = 0;
     let valuedSkuCount = 0;
     for (const v of variants as any[]) {
-      if (v.costPrice != null) { totalValue += (v.stock || 0) * v.costPrice; valuedSkuCount++; }
+      if (v.trackLots) {
+        // Only "valued" if it actually has at least one active lot — a
+        // freshly lot-enabled SKU with no receipts yet has no lots to sum.
+        if (lotValueByVariant.has(v._id.toString())) { totalValue += lotValueByVariant.get(v._id.toString())!; valuedSkuCount++; }
+      } else if (v.costPrice != null) {
+        totalValue += (v.stock || 0) * v.costPrice; valuedSkuCount++;
+      }
     }
 
     const since90 = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
@@ -1146,6 +1386,41 @@ export class InventoryService {
         deadStock, topMovers,
       },
     };
+  }
+
+  /** Real FIFO/FEFO lot consumption — same logic/contract as OrdersService's
+   *  identically-named private helper (kept as a small, deliberate
+   *  duplication rather than a shared cross-module abstraction for two
+   *  call sites — see this pass's own "no premature abstraction"
+   *  convention). Drains the oldest active lot(s) first; returns the real
+   *  consumed cost, or does nothing (returns null) if no lots exist yet. */
+  private async consumeLotsFifo(variantId: string, quantity: number): Promise<number | null> {
+    const { stockLotModel } = this.databaseService.repositories;
+    let remainingToConsume = quantity;
+    let totalCost = 0;
+    let anyLotFound = false;
+
+    const activeLots = await stockLotModel
+      .find({ variantId, status: 'active', quantityRemaining: { $gt: 0 } })
+      .sort({ expiryDate: 1, receivedAt: 1 })
+      .lean();
+
+    for (const lot of activeLots as any[]) {
+      if (remainingToConsume <= 0) break;
+      anyLotFound = true;
+      const takeFromThisLot = Math.min(lot.quantityRemaining, remainingToConsume);
+      totalCost += takeFromThisLot * lot.costPrice;
+      remainingToConsume -= takeFromThisLot;
+
+      const newRemaining = lot.quantityRemaining - takeFromThisLot;
+      await stockLotModel.updateOne(
+        { _id: lot._id },
+        { $set: { quantityRemaining: newRemaining, status: newRemaining <= 0 ? 'depleted' : 'active' } },
+      );
+    }
+
+    if (!anyLotFound) return null;
+    return Math.round(totalCost * 100) / 100;
   }
 
   /** Called once daily by SchedulerService (`runLocked`) — the real emitter

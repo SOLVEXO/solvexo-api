@@ -68,4 +68,16 @@ export class UpdateVariantDto {
   @IsNumber()
   @Min(0)
   costPrice?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  allowBackorder?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  trackLots?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  trackSerials?: boolean;
 }

@@ -67,4 +67,8 @@ export class CreateVariantDto {
   @IsOptional()
   @IsBoolean()
   isDefault?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  allowBackorder?: boolean;
 }

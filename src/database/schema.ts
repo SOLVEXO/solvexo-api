@@ -24,6 +24,11 @@ export { ReconciliationRun, ReconciliationRunDocument, ReconciliationRunSchema }
 export { StockAdjustment, StockAdjustmentDocument, StockAdjustmentSchema } from '../inventory/schemas/stock-adjustment.schema';
 export { VariantLocationStock, VariantLocationStockDocument, VariantLocationStockSchema } from '../inventory/schemas/variant-location-stock.schema';
 export { StockTransfer, StockTransferDocument, StockTransferSchema } from '../inventory/schemas/stock-transfer.schema';
+export { Bin, BinDocument, BinSchema } from '../inventory/schemas/bin.schema';
+export { StaffMember, StaffMemberDocument, StaffMemberSchema } from '../staff/schemas/staff-member.schema';
+export { ApprovalRequest, ApprovalRequestDocument, ApprovalRequestSchema } from '../staff/schemas/approval-request.schema';
+export { StockLot, StockLotDocument, StockLotSchema } from '../inventory/schemas/stock-lot.schema';
+export { StockUnit, StockUnitDocument, StockUnitSchema } from '../inventory/schemas/stock-unit.schema';
 
 
 

@@ -261,6 +261,24 @@ export class PurchaseOrdersService {
         continue;
       }
 
+      // Serial-tracked variant — one real serial per good unit, required
+      // (not best-effort) so a serial-tracked SKU never silently ends up
+      // with untracked units mixed into a tracked one. Damaged-on-arrival
+      // units still get a serial too (status 'damaged') — they're real,
+      // identifiable units, just not sellable.
+      if ((variant as any).trackSerials) {
+        const serials = (line.serialNumbers ?? []).map((s) => s.trim()).filter(Boolean);
+        if (serials.length !== totalThisReceipt) {
+          discrepancies.push(`${item.name}: is serial-tracked — expected ${totalThisReceipt} serial number(s), got ${serials.length} — this line was skipped`);
+          continue;
+        }
+        const dupes = await this.repos.stockUnitModel.find({ variantId: item.variantId, serialNumber: { $in: serials } }).select('serialNumber').lean();
+        if (dupes.length > 0) {
+          discrepancies.push(`${item.name}: serial number(s) already on record: ${dupes.map((d: any) => d.serialNumber).join(', ')} — this line was skipped`);
+          continue;
+        }
+      }
+
       const previousStock = variant.stock || 0;
       const previousCost = variant.costPrice;
       const newCost = previousCost == null
@@ -279,6 +297,40 @@ export class PurchaseOrdersService {
         { _id: item.variantId },
         { $inc: { stock: totalThisReceipt, damagedStock: damagedQty }, $set: { costPrice: round(newCost) } },
       );
+
+      // Real batch/lot ledger row — see StockLot's doc comment. Kept IN
+      // ADDITION to the weighted-average `costPrice` update above (never
+      // instead of it) — costPrice stays a quick at-a-glance figure, the
+      // lot is the real FIFO/FEFO source of truth once opted in. Only the
+      // GOOD quantity forms a sellable lot; damaged units never enter it.
+      if ((variant as any).trackLots && goodQty > 0) {
+        await this.repos.stockLotModel.create({
+          storeId, productId: item.productId, variantId: item.variantId, locationId: po.locationId ?? null,
+          lotNumber: line.lotNumber?.trim() || `LOT-${po.poNumber}-${item._id.toString().slice(-4).toUpperCase()}`,
+          expiryDate: line.expiryDate ? new Date(line.expiryDate) : null,
+          quantityReceived: goodQty, quantityRemaining: goodQty, costPrice: item.unitCost,
+          supplierId: po.supplierId ?? null, purchaseOrderId: po._id.toString(),
+          status: 'active',
+        });
+      }
+
+      if ((variant as any).trackSerials) {
+        const serials = (line.serialNumbers ?? []).map((s) => s.trim()).filter(Boolean);
+        const goodSerials = serials.slice(0, goodQty);
+        const damagedSerials = serials.slice(goodQty);
+        if (goodSerials.length > 0) {
+          await this.repos.stockUnitModel.insertMany(goodSerials.map((serialNumber) => ({
+            storeId, productId: item.productId, variantId: item.variantId, locationId: po.locationId ?? null,
+            serialNumber, status: 'in_stock', purchaseOrderId: po._id.toString(),
+          })));
+        }
+        if (damagedSerials.length > 0) {
+          await this.repos.stockUnitModel.insertMany(damagedSerials.map((serialNumber) => ({
+            storeId, productId: item.productId, variantId: item.variantId, locationId: null,
+            serialNumber, status: 'damaged', purchaseOrderId: po._id.toString(),
+          })));
+        }
+      }
 
       item.quantityReceived += goodQty;
       item.quantityDamaged += damagedQty;

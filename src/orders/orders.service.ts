@@ -787,6 +787,53 @@ export class OrdersService {
     );
   }
 
+  /** Real FIFO/FEFO consumption for a lot-tracked variant (see StockLot
+   *  schema) — drains the OLDEST active lot(s) first (earliest
+   *  `expiryDate` when any active lot has one set, i.e. FEFO; otherwise
+   *  plain FIFO by `receivedAt`), decrementing each lot's
+   *  `quantityRemaining` and flipping it to `status:'depleted'` once it
+   *  hits 0. Returns the real summed cost of the consumed units (rounded to
+   *  2dp) — the actual `costOfGoodsSold` for this sale — or `null` if this
+   *  variant has no lots at all yet (e.g. `trackLots` was just turned on
+   *  and nothing has been received into a lot since; falls back to no COGS
+   *  stamped for that line rather than guessing).
+   *
+   *  Deliberately scoped to this ONE real stock-leaving path (the
+   *  fulfillment-time decrement above) and `InventoryService.
+   *  applyStockAdjustment`'s manual stock-reducing reasons — not every
+   *  conceivable stock-leaving code path in the app (POS sale, draft-order
+   *  completion, refund/return-to-damaged) — a disclosed, deliberate scope
+   *  boundary for this pass rather than a full retrofit of every
+   *  historical stock-mutation call site. */
+  private async consumeLotsFifo(variantId: string, quantity: number): Promise<number | null> {
+    const { stockLotModel } = this.databaseService.repositories;
+    let remainingToConsume = quantity;
+    let totalCost = 0;
+    let anyLotFound = false;
+
+    const activeLots = await stockLotModel
+      .find({ variantId, status: 'active', quantityRemaining: { $gt: 0 } })
+      .sort({ expiryDate: 1, receivedAt: 1 })
+      .lean();
+
+    for (const lot of activeLots as any[]) {
+      if (remainingToConsume <= 0) break;
+      anyLotFound = true;
+      const takeFromThisLot = Math.min(lot.quantityRemaining, remainingToConsume);
+      totalCost += takeFromThisLot * lot.costPrice;
+      remainingToConsume -= takeFromThisLot;
+
+      const newRemaining = lot.quantityRemaining - takeFromThisLot;
+      await stockLotModel.updateOne(
+        { _id: lot._id },
+        { $set: { quantityRemaining: newRemaining, status: newRemaining <= 0 ? 'depleted' : 'active' } },
+      );
+    }
+
+    if (!anyLotFound) return null;
+    return Math.round(totalCost * 100) / 100;
+  }
+
   async updateSellerOrderStatus(
     sellerId: string,
     body: any,
@@ -902,11 +949,12 @@ export class OrdersService {
       order.sellerOrders[sellerOrderIndex].status,
     );
     if (!wasAlreadyFulfilled && FULFILLED_STATES.includes(status)) {
-      for (const item of soItems) {
+      for (let itemIndex = 0; itemIndex < soItems.length; itemIndex++) {
+        const item = soItems[itemIndex];
         if (item.type !== 'physical' || !item.variantId) continue;
         const variant = await productVariantModel
           .findOne({ _id: item.variantId })
-          .select('unlimitedStock stock committedStock')
+          .select('unlimitedStock stock committedStock trackLots')
           .lean();
         if (!variant || (variant as any).unlimitedStock) continue;
         const newStock = Math.max(0, (variant as any).stock - item.quantity);
@@ -915,6 +963,18 @@ export class OrdersService {
           { _id: item.variantId },
           { $set: { stock: newStock, committedStock: newCommitted } },
         );
+
+        // Real FIFO/FEFO cost-of-goods-sold — only for a lot-tracked
+        // variant (see StockLot schema / consumeLotsFifo's own doc
+        // comment). This is the ACTUAL fulfillment moment a physical unit
+        // leaves the building, so it's the correct point to decide which
+        // lot(s) it came from — never at checkout/reservation time.
+        if ((variant as any).trackLots) {
+          const cogs = await this.consumeLotsFifo(item.variantId, item.quantity);
+          if (cogs != null) {
+            updateData[`sellerOrders.${sellerOrderIndex}.items.${itemIndex}.costOfGoodsSold`] = cogs;
+          }
+        }
       }
     }
 

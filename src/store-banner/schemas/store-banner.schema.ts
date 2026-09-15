@@ -29,12 +29,6 @@ export class StoreBanner {
   @Prop({ default: '' })
   publicId: string;
 
-  @Prop({ type: String, default: null })
-  mobileImageUrl: string | null;
-
-  @Prop({ type: String, default: '' })
-  mobilePublicId: string;
-
   // Video Banners — set when `type === 'video'` (see `StoreBannerService.create`).
   // `imageUrl` is still always populated too: for a video banner it holds a
   // Cloudinary-generated poster/thumbnail frame (grid preview + storefront

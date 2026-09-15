@@ -1228,6 +1228,7 @@ export class ProductsService {
           options: v.options ?? [],
           stock: v.stock ?? 0,
           unlimitedStock: !!v.unlimitedStock,
+          allowBackorder: !!v.allowBackorder,
           shippingWeight: v.shippingWeight ?? null,
           images: v.images ?? [],
           isDefault: defaultIndex === -1 ? index === 0 : index === defaultIndex,

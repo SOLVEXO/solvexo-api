@@ -194,7 +194,6 @@ export interface CopyrightTextBlockSettings {
 }
 export interface HeroSlideBlockSettings {
   imageUrl: string;
-  mobileImageUrl?: string;
   heading?: string;
   subheading?: string;
   ctaText?: string;

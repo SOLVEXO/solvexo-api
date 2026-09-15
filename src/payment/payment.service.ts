@@ -1415,7 +1415,9 @@ export class PaymentService {
       // `createOrder`'s reserve step below; this is just a fast, friendly
       // fail before that.
       const availablePreCheck = variant.stock - (variant.committedStock || 0);
-      if (!variant.unlimitedStock && availablePreCheck < item.quantity) {
+      // See ProductVariant.allowBackorder — never fails this friendly
+      // pre-check; the real gate is createOrder's atomic reserve below.
+      if (!variant.unlimitedStock && !(variant as any).allowBackorder && availablePreCheck < item.quantity) {
         throw new BadRequestException(
           `Insufficient stock for ${item.name}. Available: ${availablePreCheck}, required: ${item.quantity}`,
         );
@@ -1502,9 +1504,10 @@ export class PaymentService {
       if (item.type !== 'physical') continue;
       const variant = await productVariantModel.findOne({ _id: item.variantId, isDelete: false });
       if (!variant) throw new BadRequestException(`Item not available: ${item.name}`);
-      // Same real-availability pre-check as the COD path above.
+      // Same real-availability pre-check as the COD path above — see
+      // ProductVariant.allowBackorder for why it's skipped here too.
       const availablePreCheck = variant.stock - (variant.committedStock || 0);
-      if (!variant.unlimitedStock && availablePreCheck < item.quantity) {
+      if (!variant.unlimitedStock && !(variant as any).allowBackorder && availablePreCheck < item.quantity) {
         throw new BadRequestException(`Insufficient stock for ${item.name}. Available: ${availablePreCheck}, required: ${item.quantity}`);
       }
     }
@@ -1688,13 +1691,32 @@ export class PaymentService {
     // via `$expr` since Mongo can't compare two of a document's own fields
     // in a plain query filter.
     const reserved: { variantId: string; quantity: number }[] = [];
+    // See ProductVariant.allowBackorder — a checkout-only, per-variant
+    // "continue selling when out of stock" toggle. A variant reserved here
+    // while genuinely short is recorded so the built order line can be
+    // flagged `isBackordered: true` below (informational only).
+    const backorderedVariantIds = new Set<string>();
 
     for (const item of physicalItems) {
       const variant = await productVariantModel
         .findOne({ _id: item.variantId, isDelete: false })
-        .select('unlimitedStock')
+        .select('unlimitedStock allowBackorder stock committedStock')
         .lean();
       if (!variant || (variant as any).unlimitedStock) continue;
+
+      if ((variant as any).allowBackorder) {
+        // No availability guard at all — this variant is explicitly allowed
+        // to go negative. Still a real atomic $inc (never a blind write),
+        // just without the $expr floor the strict path below enforces.
+        await productVariantModel.updateOne(
+          { _id: item.variantId, isDelete: false },
+          { $inc: { committedStock: item.quantity } },
+        );
+        const availableBefore = ((variant as any).stock || 0) - ((variant as any).committedStock || 0);
+        if (availableBefore < item.quantity) backorderedVariantIds.add(item.variantId);
+        reserved.push({ variantId: item.variantId, quantity: item.quantity });
+        continue;
+      }
 
       const res = await productVariantModel.updateOne(
         {
@@ -1819,6 +1841,7 @@ export class PaymentService {
             campaignSponsorType: i.campaignSponsorType ?? null,
             autoDiscountId: i.autoDiscountId ?? null,
             autoDiscountUSD: convFrom(i.autoDiscountUSD ?? 0, storeCurrency),
+            isBackordered: i.variantId ? backorderedVariantIds.has(i.variantId) : false,
             status: 'pending',
           })),
           subtotal: convFrom(subtotalNative, storeCurrency),

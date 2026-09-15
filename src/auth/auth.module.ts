@@ -13,6 +13,7 @@ import { OtpModule } from '@/otp/otp.module';
 import { User, UserSchema } from '../users/schemas/user.schema';
 import { RedisModule } from '@/redis/redis.module';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
+import { PermissionsGuard } from './guards/permissions.guard';
 import { AuthVisualService } from '../common/auth-visual.service';
 
 @Module({
@@ -37,7 +38,7 @@ import { AuthVisualService } from '../common/auth-visual.service';
     MongooseModule.forFeature([{ name: User.name, schema: UserSchema }]),
   ],
   controllers: [AuthController],
-  providers: [AuthService, JwtStrategy, JwtAuthGuard, AuthVisualService],
-  exports: [AuthService, JwtAuthGuard],
+  providers: [AuthService, JwtStrategy, JwtAuthGuard, PermissionsGuard, AuthVisualService],
+  exports: [AuthService, JwtAuthGuard, PermissionsGuard],
 })
 export class AuthModule {}

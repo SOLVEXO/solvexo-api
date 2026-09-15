@@ -72,6 +72,7 @@ export class JwtAuthGuard extends AuthGuard('jwt') {
     if (role === 'user') return repos.userModel;
     if (role === 'seller') return repos.sellerModel;
     if (role === 'admin') return repos.adminModel;
+    if (role === 'staff') return repos.staffMemberModel;
     return null;
   }
 }

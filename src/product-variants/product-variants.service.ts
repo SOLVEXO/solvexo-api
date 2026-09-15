@@ -122,6 +122,7 @@ export class ProductVariantsService {
       options,
       stock: dto.stock ?? 0,
       unlimitedStock: !!dto.unlimitedStock,
+      allowBackorder: !!dto.allowBackorder,
       shippingWeight: dto.shippingWeight ?? null,
       images: dto.images ?? [],
       isDefault: existing.length === 0,
@@ -182,6 +183,9 @@ export class ProductVariantsService {
     if (dto.barcode !== undefined) update.barcode = dto.barcode;
     if (dto.reorderPoint !== undefined) update.reorderPoint = dto.reorderPoint;
     if (dto.costPrice !== undefined) update.costPrice = dto.costPrice;
+    if (dto.allowBackorder !== undefined) update.allowBackorder = !!dto.allowBackorder;
+    if (dto.trackLots !== undefined) update.trackLots = !!dto.trackLots;
+    if (dto.trackSerials !== undefined) update.trackSerials = !!dto.trackSerials;
 
     // A real audit trail for manual stock adjustments — previously a stock
     // edit through this endpoint left zero record of who changed it, when,

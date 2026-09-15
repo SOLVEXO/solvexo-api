@@ -1726,6 +1726,7 @@ export class StoreService {
           notes: { $ifNull: ['$meta.notes', ''] },
           isArchived: { $ifNull: ['$meta.isArchived', false] },
           marketingOptIn: { $ifNull: ['$meta.marketingOptIn', false] },
+          isBlocked: { $ifNull: ['$meta.isBlocked', false] },
         },
       },
     ];
@@ -1809,6 +1810,102 @@ export class StoreService {
         customers,
       },
     };
+  }
+
+  /** Platform-admin variant of `getStoreCustomers` above — same pipeline and
+   *  shape (so the admin panel and a seller's own Customers page can never
+   *  disagree about who a store's customers are), but skips the
+   *  `store.sellerId !== sellerId` ownership check since the caller here is
+   *  platform admin, not the owning seller. Also surfaces `isBlocked` so the
+   *  admin UI can show/toggle the per-store block state. */
+  async getStoreCustomersAdmin(storeId: string, query: any) {
+    const store = await this.databaseService.repositories.storeModel.findOne({ _id: storeId, isDelete: false });
+    if (!store) throw new NotFoundException('Store not found');
+
+    const { orderModel } = this.databaseService.repositories;
+
+    const page = parseInt(query.page) || 1;
+    const limit = parseInt(query.limit) || 20;
+    const skip = (page - 1) * limit;
+
+    const sortableFields: Record<string, string> = {
+      name: 'name', totalSpent: 'totalSpent', orderCount: 'orderCount',
+      lastOrderAt: 'lastOrderAt', createdAt: 'createdAt',
+    };
+    const sortField = sortableFields[query.sortBy] || 'lastOrderAt';
+    const sortDir = query.sortDir === 'asc' ? 1 : -1;
+
+    const customerIds = await orderModel.distinct('userId', { 'sellerOrders.storeId': storeId, isDelete: false });
+    const pipeline = this.buildStoreCustomersPipeline(storeId, customerIds, query);
+
+    const [customers, [totals]] = await Promise.all([
+      orderModel.aggregate([
+        ...pipeline,
+        { $sort: { [sortField]: sortDir } },
+        { $skip: skip },
+        { $limit: limit },
+        {
+          $project: {
+            _id: 1, name: 1, email: 1, phone: 1, createdAt: 1,
+            orderCount: 1, totalSpent: 1, lastOrderAt: 1, segment: 1, isBlocked: 1,
+          },
+        },
+      ]),
+      orderModel.aggregate([
+        ...pipeline,
+        { $group: { _id: null, total: { $sum: 1 } } },
+      ]),
+    ]);
+
+    return {
+      success: true,
+      data: {
+        storeName: store.name,
+        pagination: { page, limit, total: totals?.total ?? 0 },
+        customers,
+      },
+    };
+  }
+
+  /** Blocks (or restores) one buyer from checking out at this one store only
+   *  — platform-admin action, independent of AdminUsersService.suspend
+   *  (that bans the buyer's whole account, platform-wide) and independent of
+   *  the seller's other stores. Backed by the same per-store
+   *  StoreCustomerMeta row the seller's own tags/notes/archive already live
+   *  on. Enforced in CheckoutService.createCheckout. */
+  async setCustomerBlockedAdmin(
+    storeId: string,
+    customerId: string,
+    blocked: boolean,
+    meta: { adminId: string; ip?: string; userAgent?: string },
+  ) {
+    const store = await this.databaseService.repositories.storeModel.findOne({ _id: storeId, isDelete: false });
+    if (!store) throw new NotFoundException('Store not found');
+
+    const { orderModel, storeCustomerMetaModel } = this.databaseService.repositories;
+    const hasOrderedHere = await orderModel.exists({ userId: customerId, 'sellerOrders.storeId': storeId, isDelete: false });
+    if (!hasOrderedHere) throw new BadRequestException('This person has no orders with this store');
+
+    await storeCustomerMetaModel.findOneAndUpdate(
+      { storeId, userId: customerId },
+      { $set: { isBlocked: blocked }, $setOnInsert: { storeId, userId: customerId } },
+      { upsert: true, setDefaultsOnInsert: true },
+    );
+
+    this.activityLogService.log({
+      storeId,
+      category: 'customers',
+      action: blocked ? 'customer_blocked_by_admin' : 'customer_unblocked_by_admin',
+      description: `Admin ${blocked ? 'blocked' : 'unblocked'} customer ${customerId} from store "${store.name}"`,
+      actorId: meta.adminId,
+      actorRole: 'admin',
+      targetId: customerId,
+      targetType: 'customer',
+      ip: meta.ip,
+      userAgent: meta.userAgent,
+    });
+
+    return { success: true, message: blocked ? 'Customer blocked from this store' : 'Customer unblocked from this store' };
   }
 
   /** CSV export of the same filtered set `getStoreCustomers` would return — capped so a huge store can't blow up memory on one request. */

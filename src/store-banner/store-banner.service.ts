@@ -18,8 +18,6 @@ import { EntitlementsService } from '../platform-plans/entitlements.service';
 // visitor bandwidth, only Cloudinary storage.
 const HERO_MAX_DIMENSION = 2560;
 const HERO_MIN_SOURCE_WIDTH = 1280;
-const MOBILE_HERO_MAX_DIMENSION = 1440;
-const MOBILE_HERO_MIN_SOURCE_WIDTH = 640;
 
 function computeInitialStatus(startAt?: string, endAt?: string): StoreBannerStatus {
   if (endAt && new Date(endAt).getTime() < Date.now()) {
@@ -91,7 +89,7 @@ export class StoreBannerService {
     return { success: true, data: banners };
   }
 
-  async create(storeId: string, sellerId: string, dto: CreateStoreBannerDto, file: Express.Multer.File | undefined, mobileFile?: Express.Multer.File) {
+  async create(storeId: string, sellerId: string, dto: CreateStoreBannerDto, file: Express.Multer.File | undefined) {
     await verifyStoreOwnershipOrForbidden(this.storeModel, storeId, sellerId);
     await this.entitlementsService.assertCanCreateStoreBanner(storeId);
     if (!file) throw new BadRequestException('A banner image is required');
@@ -124,22 +122,6 @@ export class StoreBannerService {
       );
     }
 
-    let mobileUploaded: { url: string; publicId: string; width?: number } | null = null;
-    if (mobileFile) {
-      validateCreativeDimensions(mobileFile, 'mobile');
-      mobileUploaded = await this.mediaLibraryService.uploadAndTrack(mobileFile, 'seller', sellerId, {
-        folder: 'uploads/store-banners',
-        maxDimension: MOBILE_HERO_MAX_DIMENSION,
-      });
-
-      if (mobileUploaded.width && mobileUploaded.width < MOBILE_HERO_MIN_SOURCE_WIDTH) {
-        await cloudinary.uploader.destroy(mobileUploaded.publicId).catch(() => {});
-        throw new BadRequestException(
-          `Mobile image is only ${mobileUploaded.width}px wide — please upload at least ${MOBILE_HERO_MIN_SOURCE_WIDTH}px wide.`,
-        );
-      }
-    }
-
     const status = computeInitialStatus(dto.startAt, dto.endAt);
     const currentCount = await this.storeBannerModel.countDocuments({ storeId });
 
@@ -158,8 +140,6 @@ export class StoreBannerService {
       imageUrl,
       videoUrl: fileIsVideo ? uploaded.url : null,
       publicId: uploaded.publicId,
-      mobileImageUrl: mobileUploaded?.url ?? null,
-      mobilePublicId: mobileUploaded?.publicId ?? '',
       ctaLabel: dto.ctaLabel ?? null,
       linkType: dto.linkType ?? 'external',
       linkTarget: dto.linkTarget ?? null,
@@ -220,10 +200,9 @@ export class StoreBannerService {
     // Video banner, so it must be destroyed with `resource_type: 'video'` or
     // Cloudinary's image-default destroy silently no-ops on it.
     const mainResourceType = banner.videoUrl ? 'video' : 'image';
-    for (const [publicId, resourceType] of [[banner.publicId, mainResourceType], [banner.mobilePublicId, 'image']] as const) {
-      if (!publicId) continue;
+    if (banner.publicId) {
       try {
-        await cloudinary.uploader.destroy(publicId, { resource_type: resourceType as any });
+        await cloudinary.uploader.destroy(banner.publicId, { resource_type: mainResourceType as any });
       } catch (err) {
         console.warn('Could not delete from Cloudinary:', err.message);
       }

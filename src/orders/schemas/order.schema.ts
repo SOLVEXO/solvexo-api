@@ -45,6 +45,28 @@ export class OrderItem {
   @Prop({ required: true })
   quantity: number;
 
+  // Set true only when this line's checkout reservation pushed real
+  // availability below 0 — i.e. the variant had `allowBackorder: true` and
+  // there genuinely wasn't enough on-hand stock at the moment of purchase.
+  // See ProductVariant.allowBackorder's own doc comment for the full scope
+  // boundary (checkout-only, never POS/manual adjustment). Purely
+  // informational for the seller/buyer ("this item shipped a bit late" /
+  // "we oversold this on purpose") — never read by any stock-mutation logic.
+  @Prop({ default: false })
+  isBackordered: boolean;
+
+  // Real accounting-grade cost of goods sold for this line — only ever set
+  // when the sold variant has `trackLots: true` (see StockLot schema and
+  // OrdersService.consumeLotsFifo). Null for every non-lot-tracked line,
+  // which still only has the coarser weighted-average `ProductVariant.
+  // costPrice` available (not stamped per-order-line at all — a seller
+  // wanting per-sale margin on those SKUs reads the store-wide valuation
+  // report instead). Set at the same real fulfillment-time stock-decrement
+  // moment `stock` itself finally drops — never at checkout/reservation
+  // time, since which physical lot ships isn't decided until then.
+  @Prop({ type: Number, default: null })
+  costOfGoodsSold: number | null;
+
   @Prop({ required: true })
   price: number;
 
