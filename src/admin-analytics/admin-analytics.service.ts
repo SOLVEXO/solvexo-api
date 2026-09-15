@@ -24,6 +24,8 @@ import {
 import { toCsv } from '../analytics/utils/csv.util';
 import { PdfReportBuilder } from '../analytics/utils/pdf-report.util';
 import { getPlatformEarnings as getPlatformEarningsUtil } from '../common/platform-earnings.util';
+import { getPaymentMethodLabel } from '../analytics/utils/payment-method-label.util';
+import { resolveCustomerIdentities, NOT_RECORDED_LABEL } from '../analytics/utils/customer-identity.util';
 
 const CACHE_TTL_SECONDS = 600; // 10 minutes — same convention as seller analytics
 const CSV_ROW_LIMIT = 5000;
@@ -441,16 +443,18 @@ export class AdminAnalyticsService {
         : 0;
 
       const topByLtv = [...allTime].sort((a, b) => b.lifetimeValue - a.lifetimeValue).slice(0, 10);
-      const users = await this.r.userModel.find({ _id: { $in: topByLtv.map((c) => c.userId) } }).select('name email').lean();
-      const userMap = new Map(users.map((u: any) => [u._id.toString(), u]));
+      const identityMap = await resolveCustomerIdentities(this.r.userModel, this.r.orderModel, topByLtv.map((c) => c.userId));
 
-      const topCustomers = topByLtv.map((c) => ({
-        userId: c.userId,
-        name: userMap.get(c.userId)?.name ?? 'Unknown',
-        email: userMap.get(c.userId)?.email ?? '',
-        totalOrders: c.totalOrders,
-        lifetimeValue: c.lifetimeValue,
-      }));
+      const topCustomers = topByLtv.map((c) => {
+        const identity = identityMap.get(c.userId)!;
+        return {
+          userId: c.userId,
+          name: identity.name,
+          email: identity.email,
+          totalOrders: c.totalOrders,
+          lifetimeValue: c.lifetimeValue,
+        };
+      });
 
       const geoRows = await this.r.orderModel.aggregate([
         ...sellerOrderMatchStage(from, to, scope),
@@ -478,9 +482,14 @@ export class AdminAnalyticsService {
           newVsReturning: series,
           averageLifetimeValue: avgLifetimeValue,
           topCustomersByLtv: topCustomers,
-          geographicBreakdown: geoRows.map((r: any) => ({ state: r._id ?? 'Unknown', orders: r.orders, revenue: round(r.revenue) })),
-          countryBreakdown: countryRows.map((r: any) => ({ country: r._id ?? 'Unknown', orders: r.orders, revenue: round(r.revenue) })),
-          note: 'Geographic breakdown covers physical orders only (digital orders have no shippingAddress) — same limitation as seller analytics.',
+          geographicBreakdown: geoRows.map((r: any) => ({ state: r._id || NOT_RECORDED_LABEL, orders: r.orders, revenue: round(r.revenue) })),
+          countryBreakdown: countryRows.map((r: any) => ({ country: r._id || NOT_RECORDED_LABEL, orders: r.orders, revenue: round(r.revenue) })),
+          // `shippingAddress.country` was added to the schema after `state`/`city` —
+          // see OrderShippingAddress's own comment — so any order placed before that
+          // field existed genuinely has no country captured. This is a real historical
+          // gap, not a broken lookup, and nothing here should guess a country from the
+          // state to paper over it.
+          note: 'Geographic breakdown covers physical orders only (digital orders have no shippingAddress) — same limitation as seller analytics. "Not Recorded" means the order predates shippingAddress.country being captured, not a resolution failure.',
         },
       };
     });
@@ -792,10 +801,9 @@ export class AdminAnalyticsService {
         { $match: { 'sellerOrders.status': { $ne: 'cancelled' } } },
         { $group: { _id: '$paymentType', count: { $sum: 1 }, revenue: { $sum: '$sellerOrders.subtotal' } } },
       ]);
-      const labels: Record<string, string> = { cash_on_delivery: 'Cash on Delivery', stripe: 'Card (Stripe)' };
       const methodBreakdown = (methodRows).map((r) => ({
         paymentType: r._id,
-        label: labels[r._id] ?? r._id,
+        label: getPaymentMethodLabel(r._id),
         orderCount: r.count,
         revenue: round(r.revenue),
       }));
@@ -918,7 +926,7 @@ export class AdminAnalyticsService {
         ]);
         return toCsv(
           ['Order Number', 'Date', 'Status', 'Store ID', 'Subtotal', 'Payment Type'],
-          (rows).map((r) => [r.orderNumber, new Date(r.createdAt).toISOString().split('T')[0], r.status, r.storeId, r.subtotal.toFixed(2), r.paymentType ?? '']),
+          (rows).map((r) => [r.orderNumber, new Date(r.createdAt).toISOString().split('T')[0], r.status, r.storeId, r.subtotal.toFixed(2), getPaymentMethodLabel(r.paymentType)]),
         );
       }
       case 'sellers': {
@@ -944,11 +952,13 @@ export class AdminAnalyticsService {
         const allTime = await allTimeCustomerAggregate(this.r.orderModel, scope);
         allTime.sort((a, b) => b.lifetimeValue - a.lifetimeValue);
         const top = allTime.slice(0, CSV_ROW_LIMIT);
-        const users = await this.r.userModel.find({ _id: { $in: top.map((c) => c.userId) } }).select('name email').lean();
-        const userMap = new Map(users.map((u: any) => [u._id.toString(), u]));
+        const identityMap = await resolveCustomerIdentities(this.r.userModel, this.r.orderModel, top.map((c) => c.userId));
         return toCsv(
           ['Customer', 'Email', 'Total Orders', 'Lifetime Value'],
-          top.map((c) => [userMap.get(c.userId)?.name ?? 'Unknown', userMap.get(c.userId)?.email ?? '', c.totalOrders, c.lifetimeValue.toFixed(2)]),
+          top.map((c) => {
+            const identity = identityMap.get(c.userId)!;
+            return [identity.name, identity.email, c.totalOrders, c.lifetimeValue.toFixed(2)];
+          }),
         );
       }
       case 'payments': {

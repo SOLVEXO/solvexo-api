@@ -26,6 +26,8 @@ import {
 } from './utils/order-aggregation.util';
 import { toCsv } from './utils/csv.util';
 import { PdfReportBuilder } from './utils/pdf-report.util';
+import { getPaymentMethodLabel } from './utils/payment-method-label.util';
+import { resolveCustomerIdentities, NOT_RECORDED_LABEL } from './utils/customer-identity.util';
 
 const ATTRIBUTION_SOURCES = ['marketplace_search', 'direct_link', 'social_media', 'email', 'other'] as const;
 const CACHE_TTL_SECONDS = 600; // 10 minutes
@@ -432,19 +434,18 @@ export class AnalyticsService {
         : 0;
 
       const topByLtv = [...allTime].sort((a, b) => b.lifetimeValue - a.lifetimeValue).slice(0, 10);
-      const users = await this.r.userModel
-        .find({ _id: { $in: topByLtv.map((c) => c.userId) } })
-        .select('name email')
-        .lean();
-      const userMap = new Map(users.map((u: any) => [u._id.toString(), u]));
+      const identityMap = await resolveCustomerIdentities(this.r.userModel, this.r.orderModel, topByLtv.map((c) => c.userId));
 
-      const topCustomers = topByLtv.map((c) => ({
-        userId: c.userId,
-        name: userMap.get(c.userId)?.name ?? 'Unknown',
-        email: userMap.get(c.userId)?.email ?? '',
-        totalOrders: c.totalOrders,
-        lifetimeValue: c.lifetimeValue,
-      }));
+      const topCustomers = topByLtv.map((c) => {
+        const identity = identityMap.get(c.userId)!;
+        return {
+          userId: c.userId,
+          name: identity.name,
+          email: identity.email,
+          totalOrders: c.totalOrders,
+          lifetimeValue: c.lifetimeValue,
+        };
+      });
 
       // Geographic breakdown — physical orders only (digital orders have no shippingAddress).
       const geoRows = await this.r.orderModel.aggregate([
@@ -474,12 +475,12 @@ export class AnalyticsService {
           averageLifetimeValue: avgLifetimeValue,
           topCustomersByLtv: topCustomers,
           geographicBreakdown: geoRows.map((r: any) => ({
-            state: r._id ?? 'Unknown',
+            state: r._id || NOT_RECORDED_LABEL,
             orders: r.orders,
             revenue: this.round(r.revenue),
           })),
           countryBreakdown: countryRows.map((r: any) => ({
-            country: r._id ?? 'Unknown',
+            country: r._id || NOT_RECORDED_LABEL,
             orders: r.orders,
             revenue: this.round(r.revenue),
           })),
@@ -638,12 +639,11 @@ export class AnalyticsService {
         { $group: { _id: '$paymentType', count: { $sum: 1 }, revenue: { $sum: '$sellerOrders.subtotal' } } },
       ]);
 
-      const labels: Record<string, string> = { cash_on_delivery: 'Cash on Delivery', stripe: 'Card (Stripe)' };
       return {
         success: true,
         data: rows.map((r: any) => ({
           paymentType: r._id,
-          label: labels[r._id] ?? r._id,
+          label: getPaymentMethodLabel(r._id),
           orderCount: r.count,
           revenue: this.round(r.revenue),
         })),
@@ -709,7 +709,7 @@ export class AnalyticsService {
         ]);
         return toCsv(
           ['Order Number', 'Date', 'Status', 'Subtotal', 'Payment Type'],
-          rows.map((r: any) => [r.orderNumber, new Date(r.createdAt).toISOString().split('T')[0], r.status, r.subtotal.toFixed(2), r.paymentType ?? '']),
+          rows.map((r: any) => [r.orderNumber, new Date(r.createdAt).toISOString().split('T')[0], r.status, r.subtotal.toFixed(2), getPaymentMethodLabel(r.paymentType)]),
         );
       }
       case 'products': {
@@ -722,13 +722,14 @@ export class AnalyticsService {
       }
       case 'customers': {
         const allTime = await this.allTimeCustomerAggregate(scope);
-        const users = await this.r.userModel.find({ _id: { $in: allTime.map((c) => c.userId) } }).select('name email').lean();
-        const userMap = new Map(users.map((u: any) => [u._id.toString(), u]));
+        allTime.sort((a, b) => b.lifetimeValue - a.lifetimeValue);
+        const identityMap = await resolveCustomerIdentities(this.r.userModel, this.r.orderModel, allTime.map((c) => c.userId));
         return toCsv(
           ['Customer', 'Email', 'Total Orders', 'Lifetime Value'],
-          allTime
-            .sort((a, b) => b.lifetimeValue - a.lifetimeValue)
-            .map((c) => [userMap.get(c.userId)?.name ?? 'Unknown', userMap.get(c.userId)?.email ?? '', c.totalOrders, c.lifetimeValue.toFixed(2)]),
+          allTime.map((c) => {
+            const identity = identityMap.get(c.userId)!;
+            return [identity.name, identity.email, c.totalOrders, c.lifetimeValue.toFixed(2)];
+          }),
         );
       }
       case 'revenue':
