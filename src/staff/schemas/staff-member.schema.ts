@@ -79,6 +79,32 @@ export const STAFF_PERMISSIONS = [
   'settings.domains.manage', 'settings.pixels.manage', 'settings.payments.manage',
   // Finance
   'finance.payouts.view', 'finance.payments.manage', 'finance.tax_documents.manage',
+  // Messaging — no dedicated `:storeId` route param on this controller
+  // (storeId only ever arrives via body/query), so `PermissionsGuard`'s
+  // usual storeId-route-param pin is a no-op here; store isolation for a
+  // staff caller is instead enforced inside `MessagingService` itself (see
+  // `assertConversationAccess`'s doc comment) — this permission alone
+  // doesn't guarantee cross-store isolation the way it does elsewhere.
+  'messaging.view', 'messaging.manage',
+  // Loyalty — award is a real, independent money-equivalent grant action
+  // (same class of split as `inventory.adjust` vs `.view`), kept apart from
+  // general program/reward management.
+  'loyalty.view', 'loyalty.manage', 'loyalty.points.award',
+  // Subscriptions — the store's OWN buyer-facing recurring-order feature
+  // (`subscriptions/subscriptions.controller.ts`), NOT Solvexo's own
+  // seller-pays-Solvexo platform-plan billing (`platform-plans/`, which
+  // stays seller-only — see `settings.billing.*` above for that one).
+  // `.subscribers.manage` (pause/resume/cancel/refund) is kept apart from
+  // plan CRUD since it touches customer accounts and money directly.
+  'subscriptions.view', 'subscriptions.manage', 'subscriptions.subscribers.manage',
+  // SEO — a clean view/write split holds across all 10 seller-facing SEO
+  // controllers; no third genuinely independent capability tier exists.
+  'seo.view', 'seo.manage',
+  // AI Studio — `.use` covers every generation tool; there is no seller-
+  // facing "AI Studio settings" route to gate separately (credit top-up
+  // is a `platform-plans` addon purchase, a different controller/permission
+  // entirely — see `settings.billing.manage`).
+  'aistudio.view', 'aistudio.use',
   // Staff management itself
   'staff.manage',
 ] as const;

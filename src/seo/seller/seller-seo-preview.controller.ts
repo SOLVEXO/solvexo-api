@@ -3,9 +3,12 @@ import { Controller, Get, Param, Req, UseGuards, UseInterceptors, BadRequestExce
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from '@/auth/guards/jwt-auth.guard';
 import { RolesGuard } from '@/auth/guards/roles.guard';
+import { PermissionsGuard } from '@/auth/guards/permissions.guard';
 import { Roles } from '@/auth/decorators/roles.decorator';
+import { RequirePermission } from '@/auth/decorators/require-permission.decorator';
 import { DatabaseService } from '@/database/databaseservice';
 import { verifyStoreOwnershipStrict } from '@/common/store-ownership.util';
+import { actingSellerId } from '@/common/acting-seller-id.util';
 import { SeoResolutionService, SeoEntityType } from '../services/seo-resolution.service';
 import { SeoResponseInterceptor } from '../seo-response.interceptor';
 
@@ -17,11 +20,13 @@ const VALID_ENTITY_TYPES: SeoEntityType[] = ['product', 'category', 'store'];
  * one of their own entities, before it goes live. Read-only, computed on
  * the fly — no caching bypass needed here since a seller checking a preview
  * after an edit expects to see the freshly-invalidated result anyway.
+ * Class-level `@RequirePermission` — every route here is view-only.
  */
 @ApiTags('Seller SEO — Preview')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, RolesGuard)
-@Roles('seller')
+@UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+@Roles('seller', 'staff')
+@RequirePermission('seo.view', 'seo.manage')
 @UseInterceptors(SeoResponseInterceptor)
 @Controller('api/store/:storeId/seo/preview')
 export class SellerSeoPreviewController {
@@ -32,14 +37,14 @@ export class SellerSeoPreviewController {
 
   @Get('schema/:entityType/:entityId')
   async previewSchema(@Req() req: any, @Param('storeId') storeId: string, @Param('entityType') entityType: string, @Param('entityId') entityId: string) {
-    await this.assertOwnedEntity(storeId, entityType, entityId, req.user.userId);
+    await this.assertOwnedEntity(storeId, entityType, entityId, actingSellerId(req.user));
     const resolved = await this.resolution.resolve(entityType as SeoEntityType, entityId);
     return { jsonLd: resolved.jsonLd };
   }
 
   @Get('social/:entityType/:entityId')
   async previewSocial(@Req() req: any, @Param('storeId') storeId: string, @Param('entityType') entityType: string, @Param('entityId') entityId: string) {
-    await this.assertOwnedEntity(storeId, entityType, entityId, req.user.userId);
+    await this.assertOwnedEntity(storeId, entityType, entityId, actingSellerId(req.user));
     const resolved = await this.resolution.resolve(entityType as SeoEntityType, entityId);
     return {
       ogTitle: resolved.ogTitle,

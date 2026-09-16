@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { DatabaseService } from '../database/databaseservice';
 import { AdminAnalyticsService } from '../admin-analytics/admin-analytics.service';
 import { PlatformHealthService } from '../platform-health/platform-health.service';
@@ -32,6 +32,8 @@ const SEVERITY_RANK: Record<AlertSeverity, number> = { critical: 0, warning: 1, 
 // return values, per the "no rebuild of working logic" rule.
 @Injectable()
 export class PlatformAlertsService {
+  private readonly logger = new Logger(PlatformAlertsService.name);
+
   private static readonly WEBHOOK_FAILURE_RATE_THRESHOLD_PERCENT = 10;
   private static readonly WEBHOOK_MIN_SAMPLE_SIZE = 5; // below this, a single failure would swing the rate wildly — not a reliable signal yet
   private static readonly PAYMENT_FAILURE_RATE_THRESHOLD_PERCENT = 10;
@@ -58,11 +60,21 @@ export class PlatformAlertsService {
       this.r.sellerModel.find({ isDelete: false }).select('createdAt').lean(),
       allTimeSellerActivity(this.r.orderModel),
     ]);
-    const activityMap = new Map(activity.map((a) => [a.sellerId, a]));
+    // `allTimeSellerActivity` groups on `sellerOrders.sellerId`, which Mongo
+    // returns as an ObjectId, not a string — keying the Map on the raw value
+    // (as opposed to `.toString()`) would mean `activityMap.get(s._id.toString())`
+    // below could never match, silently treating every seller as if they had
+    // no orders. Normalize both sides to strings so the lookup actually works.
+    const activityMap = new Map(activity.map((a) => [String(a.sellerId), a]));
 
     const counts = { new: 0, active: 0, atRisk: 0, dormant: 0 };
     for (const s of sellers as any[]) {
-      const status = deriveSellerSalesStatus(s.createdAt, activityMap.get(s._id.toString())?.lastOrderAt ?? null);
+      // Defensive: `timestamps: true` means every seller created through the
+      // app has a real `createdAt`, but this guards against any record that
+      // predates that (a raw insert/migration) instead of crashing the whole
+      // alerts endpoint over one bad row.
+      if (!s.createdAt) continue;
+      const status = deriveSellerSalesStatus(new Date(s.createdAt), activityMap.get(String(s._id))?.lastOrderAt ?? null);
       if (status === 'new') counts.new += 1;
       else if (status === 'active') counts.active += 1;
       else if (status === 'at_risk') counts.atRisk += 1;
@@ -72,7 +84,13 @@ export class PlatformAlertsService {
   }
 
   async getAlerts(query: any) {
-    const [health, payments, overview, inventory, sellerStatusCounts] = await Promise.all([
+    // Phase 11 composes 5 independent real-data sources. Using
+    // Promise.allSettled (rather than Promise.all) means one source
+    // throwing doesn't 500 the whole endpoint and hide every other real
+    // alert — the checks that depend on a failed source are simply skipped,
+    // and the skip is disclosed in the response's own `note`, never
+    // silently reported as "0 / all clear".
+    const [healthR, paymentsR, overviewR, inventoryR, sellerStatusR] = await Promise.allSettled([
       this.platformHealthService.getPlatformHealth(query),
       this.adminAnalyticsService.getPaymentBreakdown(query),
       this.adminAnalyticsService.getOverview(query),
@@ -80,18 +98,37 @@ export class PlatformAlertsService {
       this.getSellerStatusCounts(),
     ]);
 
+    const skipped: string[] = [];
+    const logFailure = (label: string, r: PromiseSettledResult<any>) => {
+      if (r.status === 'rejected') {
+        this.logger.error(`Alerts: "${label}" source failed — skipping the alerts that depend on it: ${r.reason?.message ?? r.reason}`, r.reason?.stack);
+        skipped.push(label);
+      }
+    };
+    logFailure('platform health', healthR);
+    logFailure('payment breakdown', paymentsR);
+    logFailure('overview', overviewR);
+    logFailure('inventory insights', inventoryR);
+    logFailure('seller status counts', sellerStatusR);
+
+    const health = healthR.status === 'fulfilled' ? healthR.value : null;
+    const payments = paymentsR.status === 'fulfilled' ? paymentsR.value : null;
+    const overview = overviewR.status === 'fulfilled' ? overviewR.value : null;
+    const inventory = inventoryR.status === 'fulfilled' ? inventoryR.value : null;
+    const sellerStatusCounts = sellerStatusR.status === 'fulfilled' ? sellerStatusR.value : null;
+
     const alerts: PlatformAlert[] = [];
 
     // 1. CRITICAL — a real dependency (Mongo/Redis) is down right now, per
     // the exact same live check HealthController exposes at /health/ready.
-    if (health.data.dependencyStatus.mongodb === 'down') {
+    if (health && health.data.dependencyStatus.mongodb === 'down') {
       alerts.push({
         id: 'dependency-mongodb-down', severity: 'critical', category: 'Infrastructure',
         message: 'MongoDB is reporting down on the live dependency health check.',
         metricValue: 'down', threshold: 'up',
       });
     }
-    if (health.data.dependencyStatus.redis === 'down') {
+    if (health && health.data.dependencyStatus.redis === 'down') {
       alerts.push({
         id: 'dependency-redis-down', severity: 'critical', category: 'Infrastructure',
         message: 'Redis is reporting disconnected.',
@@ -101,8 +138,8 @@ export class PlatformAlertsService {
 
     // 2. WARNING — real webhook-processing failure rate above a fixed
     // threshold (subscription-billing webhook only — see PlatformHealthService).
-    const wh = health.data.webhookReliability;
-    if (wh.totalEvents >= PlatformAlertsService.WEBHOOK_MIN_SAMPLE_SIZE && wh.failureRatePercent > PlatformAlertsService.WEBHOOK_FAILURE_RATE_THRESHOLD_PERCENT) {
+    const wh = health?.data.webhookReliability;
+    if (wh && wh.totalEvents >= PlatformAlertsService.WEBHOOK_MIN_SAMPLE_SIZE && wh.failureRatePercent > PlatformAlertsService.WEBHOOK_FAILURE_RATE_THRESHOLD_PERCENT) {
       alerts.push({
         id: 'webhook-failure-rate-high', severity: 'warning', category: 'Integrations',
         message: `${wh.failedEvents} of ${wh.totalEvents} subscription-billing webhook events failed to process in this period.`,
@@ -111,7 +148,7 @@ export class PlatformAlertsService {
     }
 
     // 3. WARNING — real, live BullMQ dead-letter jobs or an unreachable queue.
-    for (const q of health.data.queueBacklog) {
+    for (const q of health?.data.queueBacklog ?? []) {
       if (q.unavailable) {
         alerts.push({
           id: `queue-unavailable-${q.name}`, severity: 'warning', category: 'Infrastructure',
@@ -128,19 +165,21 @@ export class PlatformAlertsService {
     }
 
     // 4. WARNING — real payment failure rate, ignoring tiny samples.
-    const p = payments.data;
-    const totalPayments = p.successfulPayments.count + p.failedPayments.count + p.pendingPayments.count;
-    const paymentFailureRatePercent = totalPayments > 0 ? round((p.failedPayments.count / totalPayments) * 100) : 0;
-    if (totalPayments >= PlatformAlertsService.PAYMENT_MIN_SAMPLE_SIZE && paymentFailureRatePercent > PlatformAlertsService.PAYMENT_FAILURE_RATE_THRESHOLD_PERCENT) {
-      alerts.push({
-        id: 'payment-failure-rate-high', severity: 'warning', category: 'Payments',
-        message: `${p.failedPayments.count} of ${totalPayments} payments failed in this period.`,
-        metricValue: paymentFailureRatePercent, threshold: `> ${PlatformAlertsService.PAYMENT_FAILURE_RATE_THRESHOLD_PERCENT}%`,
-      });
+    const p = payments?.data;
+    if (p) {
+      const totalPayments = p.successfulPayments.count + p.failedPayments.count + p.pendingPayments.count;
+      const paymentFailureRatePercent = totalPayments > 0 ? round((p.failedPayments.count / totalPayments) * 100) : 0;
+      if (totalPayments >= PlatformAlertsService.PAYMENT_MIN_SAMPLE_SIZE && paymentFailureRatePercent > PlatformAlertsService.PAYMENT_FAILURE_RATE_THRESHOLD_PERCENT) {
+        alerts.push({
+          id: 'payment-failure-rate-high', severity: 'warning', category: 'Payments',
+          message: `${p.failedPayments.count} of ${totalPayments} payments failed in this period.`,
+          metricValue: paymentFailureRatePercent, threshold: `> ${PlatformAlertsService.PAYMENT_FAILURE_RATE_THRESHOLD_PERCENT}%`,
+        });
+      }
     }
 
     // 5. WARNING — real refund rate (USD-normalized gross vs. refunds — see Phase 0/2).
-    if (overview.data.refundRatePercent > PlatformAlertsService.REFUND_RATE_THRESHOLD_PERCENT) {
+    if (overview && overview.data.refundRatePercent > PlatformAlertsService.REFUND_RATE_THRESHOLD_PERCENT) {
       alerts.push({
         id: 'refund-rate-high', severity: 'warning', category: 'Revenue',
         message: `Refund rate is ${overview.data.refundRatePercent}% of gross revenue in this period.`,
@@ -149,14 +188,14 @@ export class PlatformAlertsService {
     }
 
     // 6. INFO — real, date-derived seller sales-recency status counts (see deriveSellerSalesStatus).
-    if (sellerStatusCounts.dormant > 0) {
+    if (sellerStatusCounts && sellerStatusCounts.dormant > 0) {
       alerts.push({
         id: 'sellers-dormant', severity: 'info', category: 'Sellers',
         message: `${sellerStatusCounts.dormant} seller(s) are dormant (no order in over 90 days, or never sold and registered over 30 days ago).`,
         metricValue: sellerStatusCounts.dormant, threshold: '> 0',
       });
     }
-    if (sellerStatusCounts.atRisk > 0) {
+    if (sellerStatusCounts && sellerStatusCounts.atRisk > 0) {
       alerts.push({
         id: 'sellers-at-risk', severity: 'info', category: 'Sellers',
         message: `${sellerStatusCounts.atRisk} seller(s) are at risk (last order 31–90 days ago).`,
@@ -165,7 +204,7 @@ export class PlatformAlertsService {
     }
 
     // 7. INFO — real out-of-stock count (see getInventoryInsights).
-    if (inventory.data.outOfStockCount > 0) {
+    if (inventory && inventory.data.outOfStockCount > 0) {
       alerts.push({
         id: 'products-out-of-stock', severity: 'info', category: 'Inventory',
         message: `${inventory.data.outOfStockCount} active product(s) are out of stock.`,
@@ -180,7 +219,8 @@ export class PlatformAlertsService {
       data: {
         alerts,
         note:
-          'Every alert above is a fixed, documented threshold check against real data already computed elsewhere in this dashboard — dependency health, webhook/payment/refund rates, seller sales-recency status, and inventory. None of it is AI-generated, a learned/tuned anomaly score, or a subjective judgment call; the thresholds are hardcoded constants in PlatformAlertsService, not derived from the data itself.',
+          'Every alert above is a fixed, documented threshold check against real data already computed elsewhere in this dashboard — dependency health, webhook/payment/refund rates, seller sales-recency status, and inventory. None of it is AI-generated, a learned/tuned anomaly score, or a subjective judgment call; the thresholds are hardcoded constants in PlatformAlertsService, not derived from the data itself.'
+          + (skipped.length > 0 ? ` NOTE: ${skipped.join(', ')} could not be loaded this time, so any alert(s) depending on it are not shown above — this is a data-availability gap, never reported as "no alert".` : ''),
       },
     };
   }

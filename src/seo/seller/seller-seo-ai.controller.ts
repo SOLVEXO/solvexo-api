@@ -4,10 +4,13 @@ import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { JwtAuthGuard } from '@/auth/guards/jwt-auth.guard';
 import { RolesGuard } from '@/auth/guards/roles.guard';
+import { PermissionsGuard } from '@/auth/guards/permissions.guard';
 import { Roles } from '@/auth/decorators/roles.decorator';
+import { RequirePermission } from '@/auth/decorators/require-permission.decorator';
 import { DatabaseService } from '@/database/databaseservice';
 import { IdempotencyInterceptor } from '@/common/idempotency.interceptor';
 import { verifyStoreOwnershipStrict } from '@/common/store-ownership.util';
+import { actingSellerId } from '@/common/acting-seller-id.util';
 import { SeoAiService } from '../services/seo-ai.service';
 import { GenerateAiSuggestionDto, GenerateAiSuggestionBulkDto } from '../dto/generate-ai-suggestion.dto';
 import { SeoResponseInterceptor } from '../seo-response.interceptor';
@@ -17,8 +20,8 @@ import { SeoResponseInterceptor } from '../seo-response.interceptor';
 // wallet, and throttled since LLM calls are expensive per-request.
 @ApiTags('Seller SEO — AI Suggestions')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, RolesGuard)
-@Roles('seller')
+@UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+@Roles('seller', 'staff')
 @UseInterceptors(SeoResponseInterceptor)
 @Controller('api/store/:storeId/seo/ai')
 export class SellerSeoAiController {
@@ -27,25 +30,30 @@ export class SellerSeoAiController {
     private readonly db: DatabaseService,
   ) {}
 
+  @RequirePermission('seo.manage')
   @Post('generate')
   @UseInterceptors(IdempotencyInterceptor)
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   async generate(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: GenerateAiSuggestionDto) {
-    await verifyStoreOwnershipStrict(this.db.repositories.storeModel, storeId, req.user.userId);
-    return this.seoAi.generate(dto.entityType, dto.entityId, req.user.userId, { id: req.user.userId, role: req.user.role });
+    const sellerId = actingSellerId(req.user);
+    await verifyStoreOwnershipStrict(this.db.repositories.storeModel, storeId, sellerId);
+    return this.seoAi.generate(dto.entityType, dto.entityId, sellerId, { id: req.user.userId, role: req.user.role });
   }
 
+  @RequirePermission('seo.manage')
   @Post('generate-bulk')
   @UseInterceptors(IdempotencyInterceptor)
   @Throttle({ default: { limit: 3, ttl: 60_000 } })
   async generateBulk(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: GenerateAiSuggestionBulkDto) {
-    await verifyStoreOwnershipStrict(this.db.repositories.storeModel, storeId, req.user.userId);
-    return this.seoAi.enqueueBulkGenerate(dto.entityType, dto.entityIds, storeId, req.user.userId, { id: req.user.userId, role: req.user.role });
+    const sellerId = actingSellerId(req.user);
+    await verifyStoreOwnershipStrict(this.db.repositories.storeModel, storeId, sellerId);
+    return this.seoAi.enqueueBulkGenerate(dto.entityType, dto.entityIds, storeId, sellerId, { id: req.user.userId, role: req.user.role });
   }
 
+  @RequirePermission('seo.view', 'seo.manage')
   @Get('suggestions')
   async getSuggestions(@Req() req: any, @Param('storeId') storeId: string, @Query() query: any) {
-    await verifyStoreOwnershipStrict(this.db.repositories.storeModel, storeId, req.user.userId);
+    await verifyStoreOwnershipStrict(this.db.repositories.storeModel, storeId, actingSellerId(req.user));
     return this.seoAi.getSuggestionHistory(storeId, query);
   }
 }

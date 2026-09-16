@@ -55,10 +55,21 @@ export class MessagingService {
   // role — an account can be a buyer in one conversation and a seller (of a
   // different store) in another, so role alone can't tell you which side
   // you're on here.
-  private assertConversationAccess(conv: any, userId: string, role: string) {
+  private assertConversationAccess(conv: any, userId: string, role: string, callerStoreId?: string | null) {
     if (role === 'admin') return;
     const isParticipant = conv.buyerId.toString() === userId || conv.sellerId.toString() === userId;
     if (!isParticipant) throw new ForbiddenException('Access denied');
+    // A staff session is scoped to exactly one store's inbox — its acting
+    // identity resolves to the owning seller (via `actingSellerId`), which
+    // would otherwise pass the participant check above for EVERY store
+    // that seller owns. Pin a staff caller to their own JWT-assigned store
+    // so Messaging can never leak a different store's conversation just
+    // because the same seller happens to own both — the storeId route-
+    // param pin `PermissionsGuard` does for every other module can't apply
+    // here since this controller has no `:storeId` route param at all.
+    if (role === 'staff' && callerStoreId && conv.storeId?.toString() !== callerStoreId) {
+      throw new ForbiddenException('Access denied');
+    }
   }
 
   // Spam detection hook: score based on URL density and length
@@ -140,6 +151,12 @@ export class MessagingService {
     } else if (query.storeId) {
       const store = await this.db.repositories.storeModel.findById(query.storeId);
       if (!store || store.sellerId.toString() !== userId) throw new ForbiddenException('Access denied');
+      // Pin a staff caller to their own assigned store's inbox — the check
+      // above only proves the SELLER owns `query.storeId`, which passes for
+      // every store that seller has (since a staff caller's identity
+      // resolves to the owning seller) — see assertConversationAccess's
+      // own doc comment for the full reasoning.
+      if (role === 'staff' && userStoreId && query.storeId !== userStoreId) throw new ForbiddenException('Access denied');
       filter = { storeId: query.storeId, deletedBySeller: false };
       if (query.isArchived !== undefined) filter.isArchived = query.isArchived === 'true';
       if (query.isPinned !== undefined) filter.isPinned = query.isPinned === 'true';
@@ -186,9 +203,9 @@ export class MessagingService {
     return { conversations: enriched, total, page, limit, pages: Math.ceil(total / limit) };
   }
 
-  async getConversationById(userId: string, role: string, conversationId: string) {
+  async getConversationById(userId: string, role: string, conversationId: string, callerStoreId?: string | null) {
     const conv = await this.getConversationOrThrow(conversationId);
-    this.assertConversationAccess(conv, userId, role);
+    this.assertConversationAccess(conv, userId, role, callerStoreId);
 
     const [buyer, store] = await Promise.all([
       this.db.repositories.userModel.findById(conv.buyerId).select('name profileImage email').lean(),
@@ -198,33 +215,36 @@ export class MessagingService {
     return { ...conv.toObject(), buyer, store };
   }
 
-  async archiveConversation(sellerId: string, conversationId: string, archive: boolean) {
+  async archiveConversation(sellerId: string, conversationId: string, archive: boolean, role?: string, callerStoreId?: string | null) {
     const conv = await this.getConversationOrThrow(conversationId);
     if (conv.sellerId.toString() !== sellerId) throw new ForbiddenException('Access denied');
+    if (role === 'staff' && callerStoreId && conv.storeId?.toString() !== callerStoreId) throw new ForbiddenException('Access denied');
     conv.isArchived = archive;
     await conv.save();
     return { isArchived: conv.isArchived };
   }
 
-  async pinConversation(sellerId: string, conversationId: string, pin: boolean) {
+  async pinConversation(sellerId: string, conversationId: string, pin: boolean, role?: string, callerStoreId?: string | null) {
     const conv = await this.getConversationOrThrow(conversationId);
     if (conv.sellerId.toString() !== sellerId) throw new ForbiddenException('Access denied');
+    if (role === 'staff' && callerStoreId && conv.storeId?.toString() !== callerStoreId) throw new ForbiddenException('Access denied');
     conv.isPinned = pin;
     await conv.save();
     return { isPinned: conv.isPinned };
   }
 
-  async muteConversation(sellerId: string, conversationId: string, mute: boolean) {
+  async muteConversation(sellerId: string, conversationId: string, mute: boolean, role?: string, callerStoreId?: string | null) {
     const conv = await this.getConversationOrThrow(conversationId);
     if (conv.sellerId.toString() !== sellerId) throw new ForbiddenException('Access denied');
+    if (role === 'staff' && callerStoreId && conv.storeId?.toString() !== callerStoreId) throw new ForbiddenException('Access denied');
     conv.isMuted = mute;
     await conv.save();
     return { isMuted: conv.isMuted };
   }
 
-  async deleteConversationForSelf(userId: string, role: string, conversationId: string) {
+  async deleteConversationForSelf(userId: string, role: string, conversationId: string, callerStoreId?: string | null) {
     const conv = await this.getConversationOrThrow(conversationId);
-    this.assertConversationAccess(conv, userId, role);
+    this.assertConversationAccess(conv, userId, role, callerStoreId);
 
     if (conv.buyerId.toString() === userId) conv.deletedByBuyer = true;
     else conv.deletedBySeller = true;
@@ -232,13 +252,14 @@ export class MessagingService {
     return { deleted: true };
   }
 
-  async searchConversations(userId: string, role: string, q: string, storeId?: string) {
+  async searchConversations(userId: string, role: string, q: string, storeId?: string, callerStoreId?: string | null) {
     if (!q || q.trim().length < 2) throw new BadRequestException('Search query must be at least 2 characters');
 
     const filter: any = {};
     if (storeId) {
       const store = await this.db.repositories.storeModel.findById(storeId);
       if (!store || store.sellerId.toString() !== userId) throw new ForbiddenException('Access denied');
+      if (role === 'staff' && callerStoreId && storeId !== callerStoreId) throw new ForbiddenException('Access denied');
       filter.storeId = storeId;
     } else {
       filter.buyerId = userId;
@@ -255,9 +276,9 @@ export class MessagingService {
   // MESSAGES
   // ═══════════════════════════════════════════════════════════════════════════
 
-  async sendMessage(userId: string, role: string, conversationId: string, dto: SendMessageDto) {
+  async sendMessage(userId: string, role: string, conversationId: string, dto: SendMessageDto, callerStoreId?: string | null) {
     const conv = await this.getConversationOrThrow(conversationId);
-    this.assertConversationAccess(conv, userId, role);
+    this.assertConversationAccess(conv, userId, role, callerStoreId);
     // Which side of THIS conversation the sender is on — not their JWT role,
     // since the same account can be a buyer here and a seller elsewhere.
     const iAmBuyer = conv.buyerId.toString() === userId;
@@ -363,9 +384,9 @@ export class MessagingService {
     return message;
   }
 
-  async getMessages(userId: string, role: string, conversationId: string, query: any) {
+  async getMessages(userId: string, role: string, conversationId: string, query: any, callerStoreId?: string | null) {
     const conv = await this.getConversationOrThrow(conversationId);
-    this.assertConversationAccess(conv, userId, role);
+    this.assertConversationAccess(conv, userId, role, callerStoreId);
 
     const limit = Math.min(50, parseInt(query.limit) || 30);
     const filter: any = {
@@ -403,9 +424,17 @@ export class MessagingService {
     return { messages: messages.reverse(), nextCursor, hasMore }; // reverse so oldest-first for display
   }
 
-  async editMessage(userId: string, messageId: string, dto: EditMessageDto) {
+  async editMessage(userId: string, messageId: string, dto: EditMessageDto, role?: string, callerStoreId?: string | null) {
     const message = await this.getMessageOrThrow(messageId);
     if (message.senderId.toString() !== userId) throw new ForbiddenException('You can only edit your own messages');
+    // A staff caller's identity resolves to the owning seller (same id
+    // regardless of which store/staff member actually sent it), so the
+    // senderId check above alone can't tell apart "my own store's message"
+    // from "a different store this same seller owns" — pin explicitly.
+    if (role === 'staff' && callerStoreId) {
+      const conv = await this.convModel.findById(message.conversationId).select('storeId').lean();
+      if (conv && (conv as any).storeId?.toString() !== callerStoreId) throw new ForbiddenException('Access denied');
+    }
     if (message.type !== 'text') throw new BadRequestException('Only text messages can be edited');
     if (message.isDeleted) throw new BadRequestException('Cannot edit a deleted message');
 
@@ -421,13 +450,16 @@ export class MessagingService {
     return message;
   }
 
-  async deleteMessageForSelf(userId: string, messageId: string) {
+  async deleteMessageForSelf(userId: string, messageId: string, role?: string, callerStoreId?: string | null) {
     const message = await this.getMessageOrThrow(messageId);
 
     // Ensure user is part of the conversation
     const conv = await this.convModel.findById(message.conversationId);
     if (!conv) throw new NotFoundException('Conversation not found');
     if (conv.buyerId.toString() !== userId && conv.sellerId.toString() !== userId) {
+      throw new ForbiddenException('Access denied');
+    }
+    if (role === 'staff' && callerStoreId && conv.storeId?.toString() !== callerStoreId) {
       throw new ForbiddenException('Access denied');
     }
 
@@ -450,9 +482,9 @@ export class MessagingService {
     return { deleted: true };
   }
 
-  async markSeen(userId: string, role: string, conversationId: string, lastMessageId: string) {
+  async markSeen(userId: string, role: string, conversationId: string, lastMessageId: string, callerStoreId?: string | null) {
     const conv = await this.getConversationOrThrow(conversationId);
-    this.assertConversationAccess(conv, userId, role);
+    this.assertConversationAccess(conv, userId, role, callerStoreId);
 
     if (!Types.ObjectId.isValid(lastMessageId)) throw new BadRequestException('Invalid message ID');
 
@@ -497,11 +529,11 @@ export class MessagingService {
     return { seen: true };
   }
 
-  async searchMessages(userId: string, role: string, conversationId: string, q: string) {
+  async searchMessages(userId: string, role: string, conversationId: string, q: string, callerStoreId?: string | null) {
     if (!q || q.trim().length < 2) throw new BadRequestException('Search query must be at least 2 characters');
 
     const conv = await this.getConversationOrThrow(conversationId);
-    this.assertConversationAccess(conv, userId, role);
+    this.assertConversationAccess(conv, userId, role, callerStoreId);
 
     const results = await this.msgModel
       .find({
@@ -522,9 +554,9 @@ export class MessagingService {
   // ATTACHMENTS
   // ═══════════════════════════════════════════════════════════════════════════
 
-  async uploadAttachment(userId: string, role: string, conversationId: string, file: Express.Multer.File) {
+  async uploadAttachment(userId: string, role: string, conversationId: string, file: Express.Multer.File, callerStoreId?: string | null) {
     const conv = await this.getConversationOrThrow(conversationId);
-    this.assertConversationAccess(conv, userId, role);
+    this.assertConversationAccess(conv, userId, role, callerStoreId);
 
     if (!file) throw new BadRequestException('No file provided');
 

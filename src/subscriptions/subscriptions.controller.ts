@@ -9,8 +9,11 @@ import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { SubscriptionsService } from './subscriptions.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
+import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { RequirePermission } from '../auth/decorators/require-permission.decorator';
 import { IdempotencyInterceptor } from '../common/idempotency.interceptor';
+import { actingSellerId } from '../common/acting-seller-id.util';
 import { CreatePlanDto } from './dto/create-plan.dto';
 import { UpdatePlanDto } from './dto/update-plan.dto';
 import { SubscribeDto } from './dto/subscribe.dto';
@@ -277,107 +280,120 @@ export class SubscriptionsController {
   // ═══════════════════════════════════════════════════════════════════════════
 
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('subscriptions.manage')
   @Post(':storeId/plans')
   createPlan(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: CreatePlanDto) {
-    return this.subscriptionsService.createPlan(req.user.userId, storeId, dto);
+    return this.subscriptionsService.createPlan(actingSellerId(req.user), storeId, dto);
   }
 
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('subscriptions.view', 'subscriptions.manage', 'subscriptions.subscribers.manage')
   @Get(':storeId/plans')
   listPlans(@Req() req: any, @Param('storeId') storeId: string) {
-    return this.subscriptionsService.listPlans(req.user.userId, storeId);
+    return this.subscriptionsService.listPlans(actingSellerId(req.user), storeId);
   }
 
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('subscriptions.view', 'subscriptions.manage', 'subscriptions.subscribers.manage')
   @Get(':storeId/plans/:id')
   getPlanById(@Req() req: any, @Param('storeId') storeId: string, @Param('id') id: string) {
-    return this.subscriptionsService.getPlanById(req.user.userId, storeId, id);
+    return this.subscriptionsService.getPlanById(actingSellerId(req.user), storeId, id);
   }
 
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('subscriptions.manage')
   @Patch(':storeId/plans/:id')
   updatePlan(@Req() req: any, @Param('storeId') storeId: string, @Param('id') id: string, @Body() dto: UpdatePlanDto) {
-    return this.subscriptionsService.updatePlan(req.user.userId, storeId, id, dto);
+    return this.subscriptionsService.updatePlan(actingSellerId(req.user), storeId, id, dto);
   }
 
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('subscriptions.manage')
   @Delete(':storeId/plans/:id')
   archivePlan(@Req() req: any, @Param('storeId') storeId: string, @Param('id') id: string, @Query('force') force: string) {
-    return this.subscriptionsService.archivePlan(req.user.userId, storeId, id, force === 'true');
+    return this.subscriptionsService.archivePlan(actingSellerId(req.user), storeId, id, force === 'true');
   }
 
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('subscriptions.view', 'subscriptions.manage', 'subscriptions.subscribers.manage')
   @Get(':storeId/dashboard')
   getDashboard(@Req() req: any, @Param('storeId') storeId: string) {
-    return this.subscriptionsService.getDashboard(req.user.userId, storeId);
+    return this.subscriptionsService.getDashboard(actingSellerId(req.user), storeId);
   }
 
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('subscriptions.view', 'subscriptions.manage', 'subscriptions.subscribers.manage')
   @Get(':storeId/analytics/advanced')
   getAdvancedAnalytics(@Req() req: any, @Param('storeId') storeId: string) {
-    return this.subscriptionsService.getAdvancedSellerAnalytics(req.user.userId, storeId);
+    return this.subscriptionsService.getAdvancedSellerAnalytics(actingSellerId(req.user), storeId);
   }
 
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('subscriptions.view', 'subscriptions.manage', 'subscriptions.subscribers.manage')
   @Get(':storeId/export')
   async exportCsv(@Req() req: any, @Param('storeId') storeId: string, @Query() query: any, @Res() res: Response) {
-    const csv = await this.subscriptionsService.exportCsv(req.user.userId, storeId, query);
+    const csv = await this.subscriptionsService.exportCsv(actingSellerId(req.user), storeId, query);
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', `attachment; filename="subscribers-${storeId}.csv"`);
     res.send(csv);
   }
 
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('subscriptions.view', 'subscriptions.manage', 'subscriptions.subscribers.manage')
   @Get(':storeId/subscribers')
   listSubscriptions(@Req() req: any, @Param('storeId') storeId: string, @Query() query: any) {
-    return this.subscriptionsService.listSubscriptions(req.user.userId, storeId, query);
+    return this.subscriptionsService.listSubscriptions(actingSellerId(req.user), storeId, query);
   }
 
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('subscriptions.view', 'subscriptions.manage', 'subscriptions.subscribers.manage')
   @Get(':storeId/subscribers/:id')
   getSubscriptionById(@Req() req: any, @Param('storeId') storeId: string, @Param('id') id: string) {
-    return this.subscriptionsService.getSubscriptionById(req.user.userId, storeId, id);
+    return this.subscriptionsService.getSubscriptionById(actingSellerId(req.user), storeId, id);
   }
 
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('subscriptions.subscribers.manage')
   @Patch(':storeId/subscribers/:id/pause')
   pauseSubscription(@Req() req: any, @Param('storeId') storeId: string, @Param('id') id: string) {
-    return this.subscriptionsService.pauseSubscription(req.user.userId, storeId, id);
+    return this.subscriptionsService.pauseSubscription(actingSellerId(req.user), storeId, id);
   }
 
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('subscriptions.subscribers.manage')
   @Patch(':storeId/subscribers/:id/resume')
   resumeSubscription(@Req() req: any, @Param('storeId') storeId: string, @Param('id') id: string) {
-    return this.subscriptionsService.resumeSubscription(req.user.userId, storeId, id);
+    return this.subscriptionsService.resumeSubscription(actingSellerId(req.user), storeId, id);
   }
 
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('subscriptions.subscribers.manage')
   @Patch(':storeId/subscribers/:id/cancel')
   cancelSubscription(
     @Req() req: any,
@@ -386,12 +402,13 @@ export class SubscriptionsController {
     @Query('atPeriodEnd') atPeriodEnd: string,
     @Body() body: CancelSubscriptionDto,
   ) {
-    return this.subscriptionsService.cancelSubscription(req.user.userId, storeId, id, atPeriodEnd === 'true', body.reason);
+    return this.subscriptionsService.cancelSubscription(actingSellerId(req.user), storeId, id, atPeriodEnd === 'true', body.reason);
   }
 
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('subscriptions.subscribers.manage')
   @Post(':storeId/subscribers/:id/invoices/:invoiceId/refund')
   sellerRefundInvoice(
     @Req() req: any,
@@ -400,18 +417,19 @@ export class SubscriptionsController {
     @Param('invoiceId') invoiceId: string,
     @Body() dto: RefundInvoiceDto,
   ) {
-    return this.subscriptionsService.sellerRefundInvoice(req.user.userId, storeId, id, invoiceId, dto.amountUSD, dto.reason);
+    return this.subscriptionsService.sellerRefundInvoice(actingSellerId(req.user), storeId, id, invoiceId, dto.amountUSD, dto.reason);
   }
 
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('subscriptions.manage')
   @Post(':storeId/plans/estimate-health')
   estimatePlanHealth(
     @Req() req: any,
     @Param('storeId') storeId: string,
     @Body() body: EstimatePlanHealthDto,
   ) {
-    return this.subscriptionsService.estimatePlanHealth(req.user.userId, storeId, body.benefits ?? [], body.monthlyPriceUSD);
+    return this.subscriptionsService.estimatePlanHealth(actingSellerId(req.user), storeId, body.benefits ?? [], body.monthlyPriceUSD);
   }
 }
