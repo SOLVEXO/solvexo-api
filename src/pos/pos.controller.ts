@@ -9,7 +9,10 @@ import { PosService } from './pos.service';
 import { StoreLocationService } from './store-location.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
+import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { RequirePermission } from '../auth/decorators/require-permission.decorator';
+import { actingSellerId } from '../common/acting-seller-id.util';
 import { BillingAccessGuard } from '../platform-plans/guards/billing-access.guard';
 import { RequireActiveBilling } from '../platform-plans/decorators/require-active-billing.decorator';
 import { CreateEmployeeDto } from './dto/create-employee.dto';
@@ -43,47 +46,53 @@ export class PosController {
   // MULTI-LOCATION POS (seller only) — physical branches under one store
   // ═══════════════════════════════════════════════════════════════════════════
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('settings.locations.manage')
   @Post('locations/:storeId')
   createLocation(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: CreateStoreLocationDto) {
-    return this.storeLocationService.createLocation(req.user.userId, storeId, dto);
+    return this.storeLocationService.createLocation(actingSellerId(req.user), storeId, dto);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('settings.locations.manage')
   @Get('locations/:storeId')
   listLocations(@Req() req: any, @Param('storeId') storeId: string) {
-    return this.storeLocationService.listLocations(req.user.userId, storeId);
+    return this.storeLocationService.listLocations(actingSellerId(req.user), storeId);
   }
 
   // combined "all branches" comparison — must be before the parameterized :locationId route
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('settings.locations.manage')
   @Get('locations/:storeId/overview')
   getLocationsOverview(@Req() req: any, @Param('storeId') storeId: string, @Query() query: any) {
-    return this.storeLocationService.getLocationsOverview(req.user.userId, storeId, query);
+    return this.storeLocationService.getLocationsOverview(actingSellerId(req.user), storeId, query);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('settings.locations.manage')
   @Get('locations/:storeId/:locationId')
   getLocationById(@Req() req: any, @Param('storeId') storeId: string, @Param('locationId') locationId: string) {
-    return this.storeLocationService.getLocationById(req.user.userId, storeId, locationId);
+    return this.storeLocationService.getLocationById(actingSellerId(req.user), storeId, locationId);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('settings.locations.manage')
   @Patch('locations/:storeId/:locationId')
   updateLocation(@Req() req: any, @Param('storeId') storeId: string, @Param('locationId') locationId: string, @Body() dto: UpdateStoreLocationDto) {
-    return this.storeLocationService.updateLocation(req.user.userId, storeId, locationId, dto);
+    return this.storeLocationService.updateLocation(actingSellerId(req.user), storeId, locationId, dto);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('settings.locations.manage')
   @Delete('locations/:storeId/:locationId')
   archiveLocation(@Req() req: any, @Param('storeId') storeId: string, @Param('locationId') locationId: string, @Query('force') force: string) {
-    return this.storeLocationService.archiveLocation(req.user.userId, storeId, locationId, force === 'true');
+    return this.storeLocationService.archiveLocation(actingSellerId(req.user), storeId, locationId, force === 'true');
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

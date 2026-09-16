@@ -968,13 +968,19 @@ export class ProductsService {
           )
         : null;
 
+    // Same real fix as getVariantById — a fully public route, and until now
+    // every variant's `costPrice` (the seller's own margin data) leaked
+    // straight through with no sanitization.
+    const publicVariants = variants.map((v: any) => { const { costPrice: _c, ...rest } = v; return rest; });
+    const publicDefaultVariant = defaultVariant ? (() => { const { costPrice: _c, ...rest } = defaultVariant as any; return rest; })() : null;
+
     return {
       message: 'Product fetched successfully',
       success: true,
       data: {
         product: productWithSeller,
-        variants,
-        defaultVariant,
+        variants: publicVariants,
+        defaultVariant: publicDefaultVariant,
       },
     };
   }
@@ -1040,11 +1046,21 @@ export class ProductsService {
       sellerName: seller ? seller.name : null,
     });
 
+    // Real fix — this is a fully public, unauthenticated route (no
+    // JwtAuthGuard at all, used for buyer-facing product pages); the raw
+    // `.lean()` variant previously included `costPrice` (a seller's own
+    // margin data) with no sanitization at all, unlike `product` above
+    // (which already goes through `sanitizeDigitalForPublicView`). Found
+    // while building the staff-facing `products.view_cost` permission split
+    // — that split would have been cosmetic if the same cost figure leaked
+    // to any anonymous caller regardless of permission.
+    const { costPrice: _costPrice, ...publicVariant } = variant as any;
+
     return {
       message: 'Variant & Product fetched successfully',
       success: true,
       data: {
-        variant,
+        variant: publicVariant,
         product: productWithSeller,
       },
     };

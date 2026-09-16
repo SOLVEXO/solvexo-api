@@ -25,7 +25,10 @@ describe('ContentVersioningService', () => {
       // and the write of the live fields atomic in the same operation.
       expect(Array.isArray(pipeline)).toBe(true);
       expect(pipeline).toEqual([{ $set: { sections: '$draft.sections', status: 'published' } }]);
-      expect(options).toEqual({ new: true });
+      // Mongoose 9 requires this explicit flag before it accepts an
+      // aggregation-pipeline array as an update (previously auto-detected) —
+      // see ContentVersioningService.publishDraft's own doc comment.
+      expect(options).toEqual({ new: true, updatePipeline: true });
     });
 
     it('merges fieldMap and extraSet into one $set stage, with extraSet keys present alongside the copied fields', async () => {
@@ -57,7 +60,7 @@ describe('ContentVersioningService', () => {
       const [filter, pipeline, options] = model.findOneAndUpdate.mock.calls[0];
       expect(filter).toEqual({ storeId: 's1' });
       expect(pipeline).toEqual([{ $set: { draft: { theme: '$theme', header: '$header' } } }]);
-      expect(options).toEqual({ new: true });
+      expect(options).toEqual({ new: true, updatePipeline: true });
     });
 
     it('supports a flat dot-path field (the StorePage shape)', async () => {

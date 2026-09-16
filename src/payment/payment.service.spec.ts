@@ -44,7 +44,7 @@ describe('PaymentService — COD enforcement', () => {
       db, notificationsService, configService, promotionsService,
       financeService, adminConfigService, exchangeRateService, activityLogService,
       giftCardsService, stripeConnectService, commissionRulesService, abandonedCartService,
-      affiliateService,
+      affiliateService, {} as any,
     );
   });
 
@@ -125,7 +125,7 @@ describe('PaymentService — manual payment capture', () => {
     service = new PaymentService(
       db, notificationsService, configService, {} as any,
       {} as any, {} as any, {} as any, { log: jest.fn() } as any,
-      {} as any, {} as any, {} as any, {} as any, {} as any,
+      {} as any, {} as any, {} as any, {} as any, {} as any, {} as any,
     );
     (service as any).stripe.paymentIntents.capture = captureSpy;
   });

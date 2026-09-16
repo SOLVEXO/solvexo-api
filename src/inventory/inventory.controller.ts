@@ -8,18 +8,9 @@ import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { RequirePermission } from '../auth/decorators/require-permission.decorator';
 import { IdempotencyInterceptor } from '../common/idempotency.interceptor';
+import { actingSellerId } from '../common/acting-seller-id.util';
 import { InventoryService } from './inventory.service';
 import type { StockAdjustmentReason } from './schemas/stock-adjustment.schema';
-
-// A staff member's JWT carries their OWNING seller's id as `sellerId` (see
-// JwtStrategy's doc comment) — every handler below passes THIS into
-// InventoryService's existing `sellerId`-scoped methods unchanged, so a
-// store-ownership check written for a seller's own JWT also correctly
-// passes for a staff caller acting on that same store. A seller/admin
-// caller's own `userId` IS already that value.
-function actingSellerId(user: any): string {
-  return user.role === 'staff' ? user.sellerId : user.userId;
-}
 
 @Controller('api/inventory')
 @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
@@ -164,11 +155,25 @@ export class InventoryController {
     @Req() req: any,
     @Param('storeId') storeId: string,
     @Param('variantId') variantId: string,
-    @Body() body: { fromLocationId: string; toLocationId: string; quantity: number; note?: string },
+    @Body() body: { fromLocationId: string; toLocationId: string; quantity: number; note?: string; carrier?: string; trackingNumber?: string; trackingUrl?: string },
   ) {
     return this.inventoryService.shipTransfer(
       actingSellerId(req.user), storeId, variantId, body.fromLocationId, body.toLocationId, body.quantity, body.note,
+      { carrier: body.carrier, trackingNumber: body.trackingNumber, trackingUrl: body.trackingUrl },
     );
+  }
+
+  // Real "Manage shipments" — add/edit carrier/tracking on an already-
+  // shipped, still-in-transit transfer. See InventoryService.updateTransferShipping.
+  @RequirePermission('inventory.transfer')
+  @Patch(':storeId/transfer/:transferId/shipping')
+  async updateTransferShipping(
+    @Req() req: any,
+    @Param('storeId') storeId: string,
+    @Param('transferId') transferId: string,
+    @Body() body: { carrier?: string; trackingNumber?: string; trackingUrl?: string },
+  ) {
+    return this.inventoryService.updateTransferShipping(actingSellerId(req.user), storeId, transferId, body);
   }
 
   @RequirePermission('inventory.transfer')

@@ -3,6 +3,12 @@ import { Injectable } from '@nestjs/common';
 import { isValidObjectId } from 'mongoose';
 import { DatabaseService } from '../database/databaseservice';
 import { RedisService } from '../redis/redis.service';
+// PlatformPlansModule is @Global() (see its own module file) — injectable
+// here with no explicit module import, same as EntitlementsService is
+// elsewhere. Phase 1 — Overview reuses PlatformPlansService.adminGetRevenue
+// (the EXISTING, already-correct MRR/ARR/churn computation) rather than
+// re-deriving it from SellerPlatformSubscription documents itself.
+import { PlatformPlansService } from '../platform-plans/platform-plans.service';
 import {
   absoluteChange,
   enumerateBuckets,
@@ -15,15 +21,27 @@ import { buildAnalyticsCacheKey, withAnalyticsCache } from '../analytics/utils/a
 import {
   aggregateProductSales,
   allTimeCustomerAggregate,
+  allTimeSellerActivity,
+  deriveSellerSalesStatus,
   itemRefundSumField,
   notCancelledCond,
   periodTotals,
   repeatBuyerPercent,
   sellerOrderMatchStage,
+  sumUSD,
+  toUSD,
+  unconvertibleCountField,
 } from '../analytics/utils/order-aggregation.util';
+// Phase 6 — consumes the Phase 5 product-view tracking foundation.
+import { aggregateProductViews, viewToPurchaseConversionPercent } from '../analytics/utils/product-view-aggregation.util';
+// Phase 8 — real Payments-tab USD normalization from PaymentTransaction's own fxSnapshots.
+import { amountUSDExpr } from '../analytics/utils/payment-transaction-aggregation.util';
+// Phase 9 — Merchant Acquisition Tracking, from the real Seller.acquisitionSource
+// snapshot captured at signup. Deliberately never touches Order.attributionSource.
+import { aggregateSellerAcquisition, SellerAcquisitionLean } from '../analytics/utils/seller-acquisition-aggregation.util';
 import { toCsv } from '../analytics/utils/csv.util';
 import { PdfReportBuilder } from '../analytics/utils/pdf-report.util';
-import { getPlatformEarnings as getPlatformEarningsUtil } from '../common/platform-earnings.util';
+import { getPlatformEarnings as getPlatformEarningsUtil, PlatformEarnings } from '../common/platform-earnings.util';
 import { getPaymentMethodLabel } from '../analytics/utils/payment-method-label.util';
 import { resolveCustomerIdentities, NOT_RECORDED_LABEL } from '../analytics/utils/customer-identity.util';
 
@@ -43,6 +61,7 @@ export class AdminAnalyticsService {
   constructor(
     private readonly databaseService: DatabaseService,
     private readonly redis: RedisService,
+    private readonly platformPlansService: PlatformPlansService,
   ) {}
 
   private get r() {
@@ -93,8 +112,9 @@ export class AdminAnalyticsService {
           _id: '$sellerOrders.sellerId',
           orderCount: { $sum: 1 },
           unitsSold: { $sum: '$itemUnits' },
-          grossRevenue: { $sum: '$sellerOrders.subtotal' },
-          refundedAmount: { $sum: '$itemRefund' },
+          grossRevenue: sumUSD('$sellerOrders.subtotal'),
+          refundedAmount: sumUSD('$itemRefund'),
+          unconvertibleOrderCount: unconvertibleCountField(),
           buyerIds: { $addToSet: '$userId' },
         },
       },
@@ -108,6 +128,10 @@ export class AdminAnalyticsService {
       refundedAmount: round(r.refundedAmount),
       netRevenue: round(r.grossRevenue - r.refundedAmount),
       uniqueBuyerCount: (r.buyerIds ?? []).length,
+      // Orders included in orderCount/unitsSold above but excluded from the
+      // USD revenue figures because this order's ratePerUSD is unknown (a
+      // pre-ratePerUSD, non-USD-currency order — see Order.ratePerUSD).
+      unconvertibleOrderCount: r.unconvertibleOrderCount ?? 0,
     }));
   }
 
@@ -134,6 +158,34 @@ export class AdminAnalyticsService {
     });
   }
 
+  /**
+   * Phase 2 — `PlatformEarnings.commission`/`.processingFees`/`.total` are
+   * explicitly `@deprecated` on `platform-earnings.util.ts` (its own comment
+   * names THIS service as the caller that needs to migrate): they blend
+   * every seller's own settlement currency (`Transaction.currency`) into one
+   * meaningless number, the exact same class of bug `Order.ratePerUSD` fixed
+   * for buyer-currency revenue in Phase 0 — just a different currency
+   * (seller settlement currency, not buyer checkout currency), so it isn't
+   * fixable with `toUSD`/`ratePerUSD`. `byCurrency` (computed correctly
+   * already) is the real source of truth; this extracts the USD entry as
+   * Solvexo's own reporting-currency figure and separately DISCLOSES any
+   * non-USD commission rather than blending it in or silently dropping it.
+   * `subscriptionRevenue` needs no such split — SubscriptionInvoice has no
+   * multi-currency support, it's always USD.
+   */
+  private earningsInUSD(earnings: PlatformEarnings) {
+    const usd = earnings.byCurrency.find((e) => e.currency === 'USD');
+    const nonUsdCommissionByCurrency = earnings.byCurrency
+      .filter((e) => e.currency !== 'USD' && (e.commission > 0 || e.processingFees > 0))
+      .map((e) => ({ currency: e.currency, commission: e.commission, processingFees: e.processingFees }));
+    return {
+      commission: usd?.commission ?? 0,
+      processingFees: usd?.processingFees ?? 0,
+      subscriptionRevenue: earnings.subscriptionRevenue,
+      nonUsdCommissionByCurrency,
+    };
+  }
+
   // ═══════════════════════════════════════════════════════════════════════
   // A. DASHBOARD OVERVIEW
   // ═══════════════════════════════════════════════════════════════════════
@@ -158,15 +210,32 @@ export class AdminAnalyticsService {
       ]);
 
       const refundRatePercent = current.grossRevenue > 0 ? round((current.refundAmount / current.grossRevenue) * 100) : 0;
+      const earningsUSD = this.earningsInUSD(platformEarnings);
+
+      // Phase 1 — reuses PlatformPlansService.adminGetRevenue (the EXISTING
+      // MRR/ARR/churn computation over SellerPlatformSubscription — sellers
+      // paying Solvexo for their store plan) rather than re-deriving it here.
+      // Platform-wide ONLY, same reasoning as getPlatformEarnings' own
+      // subscriptionRevenue above (a seller's platform plan isn't a
+      // per-store concept — attributing it to one drilled-down store would
+      // misrepresent it), so this is omitted (not zero-filled) whenever a
+      // storeId/sellerId drill-down scope is active.
+      const platformPlanMetrics = scope ? null : await this.platformPlansService.adminGetRevenue({ from, to });
 
       const data: Record<string, any> = {
         period: { from, to },
         totalGMV: current.grossRevenue,
         totalRevenue: current.netRevenue,
         totalRevenueChangePercent: percentChange(current.netRevenue, previous.netRevenue),
-        platformEarnings: platformEarnings.total,
-        platformCommission: platformEarnings.commission,
-        subscriptionRevenue: platformEarnings.subscriptionRevenue,
+        // Phase 2 — USD-only (Solvexo's reporting currency), not the
+        // deprecated blended-across-settlement-currencies fields. See
+        // earningsInUSD's doc comment.
+        platformEarnings: round(earningsUSD.commission + earningsUSD.subscriptionRevenue),
+        platformCommission: earningsUSD.commission,
+        subscriptionRevenue: earningsUSD.subscriptionRevenue,
+        ...(earningsUSD.nonUsdCommissionByCurrency.length > 0
+          ? { nonUsdCommissionByCurrency: earningsUSD.nonUsdCommissionByCurrency }
+          : {}),
         totalOrders: current.orderCount,
         totalOrdersChange: absoluteChange(current.orderCount, previous.orderCount),
         totalSellers,
@@ -179,7 +248,15 @@ export class AdminAnalyticsService {
         totalRefunds: current.refundAmount,
         refundRatePercent,
         cancelledOrders: current.cancelledCount,
-        note: '"totalRevenue" is net order revenue platform-wide (GMV minus refunds) — it is the money that flowed through the marketplace. "platformEarnings" is Solvexo\'s own cut of that (commission + subscription revenue) and is a separate figure, not a component already subtracted from totalRevenue.',
+        ...(platformPlanMetrics
+          ? {
+              sellerPlatformMRR: platformPlanMetrics.data.mrr,
+              sellerPlatformARR: platformPlanMetrics.data.arr,
+              activePlatformSubscribers: platformPlanMetrics.data.activeSubscribers,
+              sellerChurnRatePercent: platformPlanMetrics.data.churnRatePercent,
+            }
+          : {}),
+        note: '"totalRevenue" is net order revenue platform-wide (GMV minus refunds) — it is the money that flowed through the marketplace. "platformEarnings" is Solvexo\'s own cut of that (commission + subscription revenue, i.e. BUYER-VIP-plan revenue) and is a separate figure, not a component already subtracted from totalRevenue. "platformCommission" is USD-only (Solvexo\'s reporting currency) — a seller settled in another currency\'s commission is disclosed separately in "nonUsdCommissionByCurrency" (present only when non-zero) rather than blended in or dropped. "sellerPlatformMRR"/"sellerPlatformARR" are a THIRD, distinct revenue stream — Solvexo\'s recurring revenue from SELLERS paying for their own store plan (PlatformPlan) — not the same as "subscriptionRevenue" above. "sellerPlatformMRR"/ARR/activePlatformSubscribers/sellerChurnRatePercent are platform-wide only and omitted when a storeId/sellerId drill-down is active.',
       };
 
       if (compare) {
@@ -219,21 +296,33 @@ export class AdminAnalyticsService {
         {
           $group: {
             _id: '$bucket',
-            grossRevenue: { $sum: { $cond: [notCancelledCond(), '$sellerOrders.subtotal', 0] } },
-            refundAmount: { $sum: { $cond: [notCancelledCond(), '$itemRefund', 0] } },
+            grossRevenue: { $sum: { $cond: [notCancelledCond(), { $ifNull: [toUSD('$sellerOrders.subtotal'), 0] }, 0] } },
+            refundAmount: { $sum: { $cond: [notCancelledCond(), { $ifNull: [toUSD('$itemRefund'), 0] }, 0] } },
+            unconvertibleOrderCount: { $sum: { $cond: [{ $and: [notCancelledCond(), { $or: [{ $eq: ['$ratePerUSD', null] }, { $lte: ['$ratePerUSD', 0] }] }] }, 1, 0] } },
           },
         },
       ]);
 
       const byBucket = new Map(rows.map((r: any) => [r._id.getTime(), r]));
+      let totalUnconvertible = 0;
       const series = enumerateBuckets(from, to, granularity).map((bucket) => {
         const row = byBucket.get(bucket.getTime());
         const gross = round(row?.grossRevenue ?? 0);
         const refund = round(row?.refundAmount ?? 0);
+        totalUnconvertible += row?.unconvertibleOrderCount ?? 0;
         return { date: bucket, grossRevenue: gross, netRevenue: round(gross - refund) };
       });
 
-      return { success: true, data: { granularity, series } };
+      return {
+        success: true,
+        data: {
+          granularity,
+          series,
+          ...(totalUnconvertible > 0
+            ? { note: `${totalUnconvertible} order(s) in this period predate USD normalization (no ratePerUSD) and are excluded from these totals rather than guessed at.` }
+            : {}),
+        },
+      };
     });
   }
 
@@ -250,26 +339,36 @@ export class AdminAnalyticsService {
         compare ? this.getPlatformEarnings(previousFrom, previousTo, scope) : null,
       ]);
 
+      // Phase 2 — USD-only commission/fees (see earningsInUSD's doc comment);
+      // non-USD seller-settlement-currency commission is disclosed
+      // separately, never blended into these platform-reporting-currency
+      // totals.
+      const earningsUSD = this.earningsInUSD(platformEarnings);
+      const previousEarningsUSD = previousPlatformEarnings ? this.earningsInUSD(previousPlatformEarnings) : null;
+
       const data: Record<string, any> = {
         period: { from, to },
         oneTimeOrderRevenue: orderTotals.netRevenue,
-        recurringSubscriptionRevenue: platformEarnings.subscriptionRevenue,
-        platformCommissionRevenue: platformEarnings.commission,
-        paymentProcessingFees: platformEarnings.processingFees,
-        totalPlatformRevenue: round(platformEarnings.commission + platformEarnings.subscriptionRevenue),
-        totalMarketplaceRevenue: round(orderTotals.netRevenue + platformEarnings.subscriptionRevenue),
-        note: 'oneTimeOrderRevenue is net seller order revenue (does not belong to the platform); platformCommissionRevenue + recurringSubscriptionRevenue is what Solvexo itself earns. Commission is recognized at sale time regardless of payout-clearing status.',
+        recurringSubscriptionRevenue: earningsUSD.subscriptionRevenue,
+        platformCommissionRevenue: earningsUSD.commission,
+        paymentProcessingFees: earningsUSD.processingFees,
+        totalPlatformRevenue: round(earningsUSD.commission + earningsUSD.subscriptionRevenue),
+        totalMarketplaceRevenue: round(orderTotals.netRevenue + earningsUSD.subscriptionRevenue),
+        ...(earningsUSD.nonUsdCommissionByCurrency.length > 0
+          ? { nonUsdCommissionByCurrency: earningsUSD.nonUsdCommissionByCurrency }
+          : {}),
+        note: 'oneTimeOrderRevenue is net seller order revenue (does not belong to the platform); platformCommissionRevenue + recurringSubscriptionRevenue is what Solvexo itself earns. Commission is recognized at sale time regardless of payout-clearing status. platformCommissionRevenue/paymentProcessingFees are USD-only (Solvexo\'s reporting currency) — a seller settled in another currency is disclosed separately in "nonUsdCommissionByCurrency" (present only when non-zero), never blended in.',
       };
 
-      if (compare && previousOrderTotals && previousPlatformEarnings) {
+      if (compare && previousOrderTotals && previousEarningsUSD) {
         data.previousPeriod = {
           period: { from: previousFrom, to: previousTo },
           oneTimeOrderRevenue: previousOrderTotals.netRevenue,
-          recurringSubscriptionRevenue: previousPlatformEarnings.subscriptionRevenue,
-          platformCommissionRevenue: previousPlatformEarnings.commission,
-          paymentProcessingFees: previousPlatformEarnings.processingFees,
-          totalPlatformRevenue: round(previousPlatformEarnings.commission + previousPlatformEarnings.subscriptionRevenue),
-          totalMarketplaceRevenue: round(previousOrderTotals.netRevenue + previousPlatformEarnings.subscriptionRevenue),
+          recurringSubscriptionRevenue: previousEarningsUSD.subscriptionRevenue,
+          platformCommissionRevenue: previousEarningsUSD.commission,
+          paymentProcessingFees: previousEarningsUSD.processingFees,
+          totalPlatformRevenue: round(previousEarningsUSD.commission + previousEarningsUSD.subscriptionRevenue),
+          totalMarketplaceRevenue: round(previousOrderTotals.netRevenue + previousEarningsUSD.subscriptionRevenue),
         };
       }
 
@@ -322,22 +421,28 @@ export class AdminAnalyticsService {
     const order = query.order === 'asc' ? 'asc' : 'desc';
 
     return this.cached(this.key('seller-performance', 'platform', { from, to, page, limit, sort, order }), async () => {
-      const [sales, sellers, storeCounts] = await Promise.all([
+      const [sales, sellers, storeCounts, allTimeActivity] = await Promise.all([
         this.aggregateSellerSales(from, to),
-        this.r.sellerModel.find({ isDelete: false }).select('name email').lean(),
+        this.r.sellerModel.find({ isDelete: false }).select('name email createdAt').lean(),
         this.r.storeModel.aggregate([
           { $match: { isDelete: false } },
           { $group: { _id: '$sellerId', storeCount: { $sum: 1 }, activeStoreCount: { $sum: { $cond: [{ $eq: ['$status', 'active'] }, 1, 0] } } } },
         ]),
+        // Phase 3 — all-time, NOT scoped to the tab's from/to window: a
+        // seller's sales-recency status is about their real current state,
+        // never an artifact of whatever date filter is currently selected.
+        allTimeSellerActivity(this.r.orderModel),
       ]);
 
       const salesMap = new Map(sales.map((s) => [s.sellerId, s]));
       const storeCountMap = new Map(storeCounts.map((r: any) => [r._id, r]));
+      const activityMap = new Map(allTimeActivity.map((a) => [a.sellerId, a]));
 
       const merged = sellers.map((s: any) => {
         const id = s._id.toString();
         const sale = salesMap.get(id);
         const stores = storeCountMap.get(id);
+        const activity = activityMap.get(id);
         const grossRevenue = sale?.grossRevenue ?? 0;
         const refundedAmount = sale?.refundedAmount ?? 0;
         return {
@@ -350,6 +455,10 @@ export class AdminAnalyticsService {
           refundRatePercent: sale && grossRevenue > 0 ? round((refundedAmount / grossRevenue) * 100) : 0,
           storeCount: stores?.storeCount ?? 0,
           activeStoreCount: stores?.activeStoreCount ?? 0,
+          // Phase 3 — deterministic, documented rules only (see
+          // deriveSellerSalesStatus's doc comment) — never an arbitrary or
+          // AI-guessed label.
+          salesStatus: deriveSellerSalesStatus(s.createdAt, activity?.lastOrderAt ?? null),
         };
       });
 
@@ -367,6 +476,7 @@ export class AdminAnalyticsService {
         data: {
           pagination: { page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) },
           sellers: pageItems,
+          note: 'salesStatus is deterministic, based only on real dates: "new" = registered ≤30 days ago with no orders yet; "active" = last order within 30 days; "at_risk" = last order 31–90 days ago; "dormant" = last order over 90 days ago, or an established (>30-day-old) seller with zero orders ever. Never an AI judgment or an arbitrary label.',
         },
       };
     });
@@ -459,7 +569,7 @@ export class AdminAnalyticsService {
       const geoRows = await this.r.orderModel.aggregate([
         ...sellerOrderMatchStage(from, to, scope),
         { $match: { 'sellerOrders.status': { $ne: 'cancelled' }, shippingAddress: { $ne: null } } },
-        { $group: { _id: '$shippingAddress.state', orders: { $sum: 1 }, revenue: { $sum: '$sellerOrders.subtotal' } } },
+        { $group: { _id: '$shippingAddress.state', orders: { $sum: 1 }, revenue: sumUSD('$sellerOrders.subtotal'), unconvertibleOrderCount: unconvertibleCountField() } },
         { $sort: { revenue: -1 } },
       ]);
 
@@ -469,9 +579,10 @@ export class AdminAnalyticsService {
       const countryRows = await this.r.orderModel.aggregate([
         ...sellerOrderMatchStage(from, to, scope),
         { $match: { 'sellerOrders.status': { $ne: 'cancelled' }, shippingAddress: { $ne: null } } },
-        { $group: { _id: '$shippingAddress.country', orders: { $sum: 1 }, revenue: { $sum: '$sellerOrders.subtotal' } } },
+        { $group: { _id: '$shippingAddress.country', orders: { $sum: 1 }, revenue: sumUSD('$sellerOrders.subtotal'), unconvertibleOrderCount: unconvertibleCountField() } },
         { $sort: { revenue: -1 } },
       ]);
+      const geoUnconvertibleTotal = geoRows.reduce((s: number, r: any) => s + (r.unconvertibleOrderCount ?? 0), 0);
 
       return {
         success: true,
@@ -489,7 +600,8 @@ export class AdminAnalyticsService {
           // field existed genuinely has no country captured. This is a real historical
           // gap, not a broken lookup, and nothing here should guess a country from the
           // state to paper over it.
-          note: 'Geographic breakdown covers physical orders only (digital orders have no shippingAddress) — same limitation as seller analytics. "Not Recorded" means the order predates shippingAddress.country being captured, not a resolution failure.',
+          note: 'Geographic breakdown covers physical orders only (digital orders have no shippingAddress) — same limitation as seller analytics. "Not Recorded" means the order predates shippingAddress.country being captured, not a resolution failure.'
+            + (geoUnconvertibleTotal > 0 ? ` ${geoUnconvertibleTotal} order(s) also predate USD normalization (no ratePerUSD) and are excluded from these revenue figures rather than guessed at.` : ''),
         },
       };
     });
@@ -516,15 +628,29 @@ export class AdminAnalyticsService {
 
       rows.sort((a, b) => (sort === 'units_sold' ? b.unitsSold - a.unitsSold : b.netRevenue - a.netRevenue));
 
+      // Phase 6 — real views for the SAME window/scope, from Phase 5's
+      // tracking. Never scoped/windowed differently than the sales figures
+      // above, so "orders / views" is always a like-for-like comparison.
+      const top = rows.slice(0, limit);
+      const viewsMap = await aggregateProductViews(this.r.productViewModel, from, to, { storeId: query.storeId, sellerId: query.sellerId });
+
+      // Note on views/conversion coverage lives on getProductPerformance's
+      // response (same Products tab, same caveat) rather than duplicated
+      // onto this array-shaped response.
       return {
         success: true,
-        data: rows.slice(0, limit).map((r) => ({
-          productId: r.productId,
-          name: r.name,
-          orderCount: r.orderCount,
-          unitsSold: r.unitsSold,
-          revenue: r.netRevenue,
-        })),
+        data: top.map((r) => {
+          const views = viewsMap.get(r.productId) ?? 0;
+          return {
+            productId: r.productId,
+            name: r.name,
+            orderCount: r.orderCount,
+            unitsSold: r.unitsSold,
+            revenue: r.netRevenue,
+            views,
+            viewToPurchaseConversionPercent: viewToPurchaseConversionPercent(r.orderCount, views),
+          };
+        }),
       };
     });
   }
@@ -596,9 +722,11 @@ export class AdminAnalyticsService {
       if (query.sellerId) productFilter.sellerId = query.sellerId;
       if (query.categoryId) productFilter.categoryId = query.categoryId;
 
-      const [sales, products] = await Promise.all([
+      const [sales, products, viewsMap] = await Promise.all([
         aggregateProductSales(this.r.orderModel, from, to, scope),
         this.r.productModel.find(productFilter).select('name').lean(),
+        // Phase 6 — real views for this same window/scope (Phase 5 tracking).
+        aggregateProductViews(this.r.productViewModel, from, to, { storeId: query.storeId, sellerId: query.sellerId }),
       ]);
 
       const salesMap = new Map(sales.map((s) => [s.productId, s]));
@@ -617,6 +745,8 @@ export class AdminAnalyticsService {
         const unitsSold = sale?.unitsSold ?? 0;
         const revenue = sale?.netRevenue ?? 0;
         const refundedAmount = sale?.refundedAmount ?? 0;
+        const orderCount = sale?.orderCount ?? 0;
+        const views = viewsMap.get(id) ?? 0;
         return {
           productId: id,
           name: p.name,
@@ -625,6 +755,8 @@ export class AdminAnalyticsService {
           refundRatePercent: sale && sale.grossRevenue > 0 ? round((refundedAmount / sale.grossRevenue) * 100) : 0,
           currentStock: stock,
           isLowPerformer: unitsSold === 0 && stock > 0,
+          views,
+          viewToPurchaseConversionPercent: viewToPurchaseConversionPercent(orderCount, views),
         };
       });
 
@@ -637,6 +769,7 @@ export class AdminAnalyticsService {
         data: {
           pagination: { page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) },
           products: merged.slice(start, start + limit),
+          note: 'Views are only recorded from the Phase 5 view-tracking launch date forward — a product with real pre-launch traffic can legitimately show 0 views and no conversion rate here.',
         },
       };
     });
@@ -787,6 +920,104 @@ export class AdminAnalyticsService {
     });
   }
 
+  /**
+   * Phase 7 — the real, individual-order list behind the Orders tab. Unlike
+   * getSellerPerformance/getProductPerformance (which fetch every matching
+   * row and `.slice()` in JS — fine at seller/product scale), this paginates
+   * with a Mongo `$skip`/`$limit` INSIDE the aggregation, because the order
+   * volume behind this tab can be far larger and must never be pulled fully
+   * into memory just to page through it.
+   *
+   * One row = one seller's sub-order (`sellerOrders[]` entry), the same
+   * granularity `sellerOrderMatchStage` already unwinds to everywhere else
+   * in this service — an Order split across 2 sellers is 2 rows here, and
+   * `note` says so rather than leaving that ambiguous.
+   */
+  async getOrdersList(query: any) {
+    const { from, to } = resolveDateRange(query);
+    const scope = this.buildScope(query);
+    const page = Math.max(1, Number(query.page) || 1);
+    const limit = Math.min(100, Number(query.limit) || 20);
+    const skip = (page - 1) * limit;
+    const status = typeof query.status === 'string' && query.status ? query.status : undefined;
+
+    return this.cached(this.key('orders-list', this.scopeLabel(scope), { from, to, page, limit, status }), async () => {
+      const pipeline: any[] = [
+        ...sellerOrderMatchStage(from, to, scope),
+        ...(status ? [{ $match: { 'sellerOrders.status': status } }] : []),
+        { $sort: { createdAt: -1, _id: -1 } },
+        {
+          $facet: {
+            rows: [
+              { $skip: skip },
+              { $limit: limit },
+              {
+                $project: {
+                  _id: 0,
+                  orderId: '$_id',
+                  createdAt: 1,
+                  userId: 1,
+                  status: '$sellerOrders.status',
+                  sellerId: '$sellerOrders.sellerId',
+                  storeId: '$sellerOrders.storeId',
+                  itemCount: { $size: { $ifNull: ['$sellerOrders.items', []] } },
+                  grossAmountUSD: toUSD('$sellerOrders.subtotal'),
+                  refundedAmountUSD: toUSD(itemRefundSumField()),
+                },
+              },
+            ],
+            totalCount: [{ $count: 'count' }],
+          },
+        },
+      ];
+
+      const [facetResult] = await this.r.orderModel.aggregate(pipeline);
+      const rows: any[] = facetResult?.rows ?? [];
+      const total: number = facetResult?.totalCount?.[0]?.count ?? 0;
+
+      // Resolve buyer/seller/store names for just this page's rows — never
+      // the full matching set, keeping this a small, page-sized lookup.
+      const [identityMap, sellers, stores] = await Promise.all([
+        resolveCustomerIdentities(this.r.userModel, this.r.orderModel, rows.map((r) => r.userId)),
+        this.r.sellerModel.find({ _id: { $in: rows.map((r) => r.sellerId) } }).select('name').lean(),
+        this.r.storeModel.find({ _id: { $in: rows.map((r) => r.storeId) } }).select('name').lean(),
+      ]);
+      const sellerNameMap = new Map(sellers.map((s: any) => [s._id.toString(), s.name]));
+      const storeNameMap = new Map(stores.map((s: any) => [s._id.toString(), s.name]));
+
+      const orders = rows.map((r) => {
+        const buyer = identityMap.get(r.userId);
+        // toUSD returns null (not 0) when this order predates ratePerUSD —
+        // a real historical gap, disclosed rather than guessed at.
+        const unconvertible = r.grossAmountUSD == null;
+        return {
+          orderId: r.orderId,
+          createdAt: r.createdAt,
+          buyerName: buyer?.name ?? 'Deleted account',
+          buyerEmail: buyer?.email ?? '',
+          sellerId: r.sellerId,
+          sellerName: sellerNameMap.get(r.sellerId) ?? 'Unknown',
+          storeId: r.storeId,
+          storeName: storeNameMap.get(r.storeId) ?? 'Unknown',
+          status: r.status,
+          itemCount: r.itemCount,
+          grossAmountUSD: unconvertible ? null : round(r.grossAmountUSD),
+          refundedAmountUSD: unconvertible ? null : round(r.refundedAmountUSD ?? 0),
+          unconvertible,
+        };
+      });
+
+      return {
+        success: true,
+        data: {
+          pagination: { page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) },
+          orders,
+          note: 'Each row is one seller\'s fulfillment of an order, not one Order document — an order split across 2 sellers appears here as 2 rows, matching how every other figure on this tab is computed. "unconvertible: true" means the order predates USD-rate capture and its amount is intentionally omitted rather than guessed.',
+        },
+      };
+    });
+  }
+
   // ═══════════════════════════════════════════════════════════════════════
   // G. PAYMENT ANALYTICS
   // ═══════════════════════════════════════════════════════════════════════
@@ -799,8 +1030,9 @@ export class AdminAnalyticsService {
       const methodRows = await this.r.orderModel.aggregate([
         ...sellerOrderMatchStage(from, to, scope),
         { $match: { 'sellerOrders.status': { $ne: 'cancelled' } } },
-        { $group: { _id: '$paymentType', count: { $sum: 1 }, revenue: { $sum: '$sellerOrders.subtotal' } } },
+        { $group: { _id: '$paymentType', count: { $sum: 1 }, revenue: sumUSD('$sellerOrders.subtotal'), unconvertibleOrderCount: unconvertibleCountField() } },
       ]);
+      const methodUnconvertibleTotal = methodRows.reduce((s: number, r: any) => s + (r.unconvertibleOrderCount ?? 0), 0);
       const methodBreakdown = (methodRows).map((r) => ({
         paymentType: r._id,
         label: getPaymentMethodLabel(r._id),
@@ -811,18 +1043,36 @@ export class AdminAnalyticsService {
       // Checkout-level payment attempts — the tri-state succeeded/failed/pending concept lives on
       // `PaymentTransaction`, not on `Order.paymentStatus`. No storeId/sellerId scoping is applied here:
       // a PaymentTransaction can back multiple orders across sellers, so it has no single store/seller owner.
+      //
+      // Phase 8 fix: `PaymentTransaction.amount` is in that transaction's OWN
+      // `currency` — this used to `$sum` it raw across transactions, blending
+      // different buyer currencies into one meaningless number (the same bug
+      // Order revenue had before Phase 0). Fixed here by deriving each
+      // transaction's own rate from its OWN immutable `fxSnapshots` (see
+      // payment-transaction-aggregation.util.ts) — never touching payment
+      // creation/webhook code, purely a read-only analytics-side derivation
+      // from data that was already being written.
       const statusRows = await this.r.paymentTransactionModel.aggregate([
         { $match: { isDelete: false, createdAt: { $gte: from, $lte: to } } },
-        { $group: { _id: '$status', count: { $sum: 1 }, amount: { $sum: '$amount' } } },
+        { $addFields: { amountUSD: amountUSDExpr() } },
+        {
+          $group: {
+            _id: '$status',
+            count: { $sum: 1 },
+            amount: { $sum: { $ifNull: ['$amountUSD', 0] } },
+            unconvertibleCount: { $sum: { $cond: [{ $eq: ['$amountUSD', null] }, 1, 0] } },
+          },
+        },
       ]);
-      const byStatus: Record<string, { count: number; amount: number }> = {
-        pending: { count: 0, amount: 0 },
-        completed: { count: 0, amount: 0 },
-        failed: { count: 0, amount: 0 },
+      const byStatus: Record<string, { count: number; amount: number; unconvertibleCount: number }> = {
+        pending: { count: 0, amount: 0, unconvertibleCount: 0 },
+        completed: { count: 0, amount: 0, unconvertibleCount: 0 },
+        failed: { count: 0, amount: 0, unconvertibleCount: 0 },
       };
       for (const r of statusRows) {
-        if (byStatus[r._id]) byStatus[r._id] = { count: r.count, amount: round(r.amount) };
+        if (byStatus[r._id]) byStatus[r._id] = { count: r.count, amount: round(r.amount), unconvertibleCount: r.unconvertibleCount ?? 0 };
       }
+      const transactionsUnconvertibleTotal = byStatus.pending.unconvertibleCount + byStatus.completed.unconvertibleCount + byStatus.failed.unconvertibleCount;
 
       return {
         success: true,
@@ -831,7 +1081,9 @@ export class AdminAnalyticsService {
           successfulPayments: byStatus.completed,
           failedPayments: byStatus.failed,
           pendingPayments: byStatus.pending,
-          note: 'successfulPayments/failedPayments/pendingPayments are checkout-level PaymentTransaction attempts (platform-wide, not filterable by storeId/sellerId — a single payment attempt can span multiple sellers\' orders); methodBreakdown is order-level and does respect the storeId/sellerId filter.',
+          note: 'successfulPayments/failedPayments/pendingPayments are checkout-level PaymentTransaction attempts (platform-wide, not filterable by storeId/sellerId — a single payment attempt can span multiple sellers\' orders), USD-normalized from each transaction\'s own fxSnapshots. methodBreakdown is order-level, USD-normalized from Order.ratePerUSD, and does respect the storeId/sellerId filter.'
+            + (transactionsUnconvertibleTotal > 0 ? ` ${transactionsUnconvertibleTotal} transaction(s) predate fxSnapshots capture and are excluded from these amounts (see each status's own unconvertibleCount) rather than guessed at.` : '')
+            + (methodUnconvertibleTotal > 0 ? ` ${methodUnconvertibleTotal} order(s) in methodBreakdown predate USD normalization and are excluded from its revenue figures rather than guessed at.` : ''),
         },
       };
     });
@@ -907,6 +1159,41 @@ export class AdminAnalyticsService {
     });
   }
 
+  // Phase 9 — Merchant Acquisition Tracking. Real data only: groups sellers
+  // who signed up in [from, to) by the UTM/referrer snapshot captured
+  // client-side at THEIR OWN signup (Seller.acquisitionSource/Medium/
+  // Campaign — see seller.schema.ts and AuthService.signup). Deliberately
+  // never touches Order.attributionSource (a different, buyer-side,
+  // checkout-time signal) — the standing rule this codebase already
+  // documents against conflating the two.
+  async getSellerAcquisitionBreakdown(query: any) {
+    const { from, to } = resolveDateRange(query);
+
+    return this.cached(this.key('seller-acquisition', 'platform', { from, to }), async () => {
+      const sellers = (await this.r.sellerModel
+        .find({ isDelete: false, createdAt: { $gte: from, $lte: to } })
+        .select('acquisitionSource acquisitionMedium acquisitionCampaign acquisitionCapturedAt')
+        .lean()) as unknown as SellerAcquisitionLean[];
+
+      const breakdown = aggregateSellerAcquisition(sellers);
+      const totalSellers = sellers.length;
+      const attributedCount = sellers.filter((s) => !!s.acquisitionCapturedAt).length;
+
+      return {
+        success: true,
+        data: {
+          totalSellers,
+          attributedCount,
+          breakdown,
+          note:
+            totalSellers === 0
+              ? 'No sellers signed up in this period.'
+              : `Attribution is captured once, client-side, at the moment a seller signs up (UTM parameters or an external referrer present on that visit). ${totalSellers - attributedCount} of ${totalSellers} sellers in this period have no captured attribution — this bucket ("Organic / Direct") mixes genuine organic/direct signups with any seller who signed up before this tracking existed; the two cannot be distinguished from stored data alone. This is a separate signal from a buyer's own checkout-time attribution on their order, and is never derived from or blended with it.`,
+        },
+      };
+    });
+  }
+
   // ═══════════════════════════════════════════════════════════════════════
   // I. EXPORT
   // ═══════════════════════════════════════════════════════════════════════
@@ -920,13 +1207,27 @@ export class AdminAnalyticsService {
       case 'orders': {
         const rows = await this.r.orderModel.aggregate([
           ...sellerOrderMatchStage(from, to, scope),
-          { $project: { _id: 0, orderNumber: 1, createdAt: 1, status: '$sellerOrders.status', storeId: '$sellerOrders.storeId', subtotal: '$sellerOrders.subtotal', paymentType: 1 } },
+          {
+            $project: {
+              _id: 0, orderNumber: 1, createdAt: 1, status: '$sellerOrders.status', storeId: '$sellerOrders.storeId',
+              currency: { $ifNull: ['$currency', 'USD'] },
+              subtotal: '$sellerOrders.subtotal',
+              // Additive column — the pre-existing `subtotal` column above is
+              // left exactly as-is (that order's own real charged amount, in
+              // its own currency). This is only for a reader who wants a
+              // cross-order-comparable figure; null means this order predates
+              // USD normalization (see Order.ratePerUSD) and is genuinely
+              // unconvertible, never a guessed value.
+              subtotalUSD: toUSD('$sellerOrders.subtotal'),
+              paymentType: 1,
+            },
+          },
           { $sort: { createdAt: -1 } },
           { $limit: CSV_ROW_LIMIT },
         ]);
         return toCsv(
-          ['Order Number', 'Date', 'Status', 'Store ID', 'Subtotal', 'Payment Type'],
-          (rows).map((r) => [r.orderNumber, new Date(r.createdAt).toISOString().split('T')[0], r.status, r.storeId, r.subtotal.toFixed(2), getPaymentMethodLabel(r.paymentType)]),
+          ['Order Number', 'Date', 'Status', 'Store ID', 'Currency', 'Subtotal', 'Subtotal (USD)', 'Payment Type'],
+          (rows).map((r) => [r.orderNumber, new Date(r.createdAt).toISOString().split('T')[0], r.status, r.storeId, r.currency, r.subtotal.toFixed(2), r.subtotalUSD == null ? 'N/A' : r.subtotalUSD.toFixed(2), getPaymentMethodLabel(r.paymentType)]),
         );
       }
       case 'sellers': {

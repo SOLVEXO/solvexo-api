@@ -8,6 +8,8 @@ import { RedisModule } from '../redis/redis.module';
 import { ActivityLogModule } from '../activity-log/activity-log.module';
 import { StaffController } from './staff.controller';
 import { StaffService } from './staff.service';
+import { RoleController } from './role.controller';
+import { RoleService } from './role.service';
 
 @Module({
   imports: [
@@ -28,8 +30,8 @@ import { StaffService } from './staff.service';
       }),
     }),
   ],
-  controllers: [StaffController],
-  providers: [StaffService],
-  exports: [StaffService],
+  controllers: [StaffController, RoleController],
+  providers: [StaffService, RoleService],
+  exports: [StaffService, RoleService],
 })
 export class StaffModule {}

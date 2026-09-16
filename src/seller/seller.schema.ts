@@ -143,8 +143,48 @@ export class Seller {
     // store — there's nothing left to resume once onboarding is done.
     @Prop({ type: Object, default: null })
     onboardingDraft: { step: number; maxReached: number; form: Record<string, unknown> } | null;
+
+    // Phase 9 — Merchant Acquisition Tracking. Captured ONCE, at signup, from
+    // a UTM/referrer snapshot the frontend takes client-side (see
+    // src/utils/sellerAcquisitionAttribution.ts — same "capture on landing,
+    // read back at conversion" pattern as promotionAttribution.ts, and the
+    // same "snapshot once at the moment that matters, immutable after" as
+    // AffiliateReferral/fxSnapshots elsewhere in this codebase). Never
+    // written to again after signup. All null = organic/direct traffic, OR
+    // this seller signed up before this tracking existed — those two cases
+    // are indistinguishable at the data level and MUST be disclosed as such
+    // by any analytics reading these fields (see
+    // seller-acquisition-aggregation.util.ts). Deliberately UNRELATED to
+    // Order.attributionSource, which is buyer-side/checkout-time/self-
+    // reported and answers a completely different question — never derive
+    // one from the other.
+    @Prop({ type: String, default: null })
+    acquisitionSource: string | null;
+
+    @Prop({ type: String, default: null })
+    acquisitionMedium: string | null;
+
+    @Prop({ type: String, default: null })
+    acquisitionCampaign: string | null;
+
+    @Prop({ type: String, default: null })
+    acquisitionLandingPage: string | null;
+
+    // Set only when at least one of the fields above was actually captured
+    // (non-null) — this is what distinguishes "we have real attribution
+    // data" from "all fields are null." Never set retroactively/backfilled.
+    @Prop({ type: Date, default: null })
+    acquisitionCapturedAt: Date | null;
 }
 
 
 
-export const SellerSchema = SchemaFactory.createForClass(Seller); 
+export const SellerSchema = SchemaFactory.createForClass(Seller);
+
+// This schema had zero indexes beyond the implicit `email: unique` before
+// this — every `isDelete: false` filter (every seller-count/list query in
+// this codebase, including AdminAnalyticsService's dashboards and
+// getSellerRegistrationTrends' dated aggregate) was a full collection scan.
+// isDelete first (the near-universal equality predicate), createdAt second
+// so the date-ranged registration-trends aggregate can also use it directly.
+SellerSchema.index({ isDelete: 1, createdAt: -1 });

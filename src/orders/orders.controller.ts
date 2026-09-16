@@ -44,9 +44,12 @@ import {
 import { Response } from 'express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
+import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { RequirePermission } from '../auth/decorators/require-permission.decorator';
 import { OrdersService } from './orders.service';
 import { resolveBuyerStoreScope } from '../common/store-scope.util';
+import { actingSellerId } from '../common/acting-seller-id.util';
 
 @Controller('api/orders')
 export class OrdersController {
@@ -83,13 +86,42 @@ export class OrdersController {
     return this.ordersService.markPaid(orderId);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller', 'admin')
+  // Real "Record payments" — see OrdersService.recordOrderPayment's doc
+  // comment. Distinct from the legacy `markPaid` above (kept untouched for
+  // backward compatibility) — this one captures amount/method/reference and
+  // supports partial/installment entries.
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'admin', 'staff')
+  @RequirePermission('orders.record_payment')
+  @Post('record-payment/:storeId/:orderId')
+  async recordOrderPayment(
+    @Req() req: any,
+    @Param('storeId') storeId: string,
+    @Param('orderId') orderId: string,
+    @Body() body: { amount: number; method: 'cash' | 'bank_transfer' | 'other'; reference?: string; note?: string },
+  ) {
+    return this.ordersService.recordOrderPayment(
+      actingSellerId(req.user), storeId, orderId, body,
+      { actorId: req.user.userId ?? req.user.sellerId, actorRole: req.user.role },
+    );
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'admin', 'staff')
+  @RequirePermission('orders.record_payment')
+  @Get('payment-records/:storeId/:orderId')
+  async listOrderPayments(@Req() req: any, @Param('storeId') storeId: string, @Param('orderId') orderId: string) {
+    const records = await this.ordersService.listOrderPayments(actingSellerId(req.user), storeId, orderId);
+    return { success: true, data: records };
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'admin', 'staff')
+  @RequirePermission('orders.fulfill')
   @Put('update-status')
   async updateSellerOrderStatus(@Req() req: any, @Body() body: any) {
-    const { userId } = req.user;
     return this.ordersService.updateSellerOrderStatus(
-      userId,
+      actingSellerId(req.user),
       body,
       req.ip,
       req.headers['user-agent'],
@@ -98,40 +130,41 @@ export class OrdersController {
 
   /** Real one-click "mark as shipped" via a live-purchased carrier label —
    *  see OrdersService.purchaseShippingLabel's own doc comment. */
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('orders.buy_shipping_label')
   @Put('purchase-shipping-label')
   async purchaseShippingLabel(@Req() req: any, @Body() body: { orderId: string; storeId: string }) {
-    const { userId } = req.user;
-    return this.ordersService.purchaseShippingLabel(userId, body.orderId, body.storeId, req.ip, req.headers['user-agent']);
+    return this.ordersService.purchaseShippingLabel(actingSellerId(req.user), body.orderId, body.storeId, req.ip, req.headers['user-agent']);
   }
 
   // Static path — must be declared before `seller-orders/:storeId` below, otherwise
   // that param route would swallow this literal segment as `storeId: 'my'`.
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller', 'admin')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'admin', 'staff')
+  @RequirePermission('orders.view')
   @Get('seller-orders/my')
   async getMySellerOrders(@Req() req: any, @Query() query: any) {
-    const { userId } = req.user;
-    return this.ordersService.getSellerOrders(userId, null, query);
+    return this.ordersService.getSellerOrders(actingSellerId(req.user), null, query);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller', 'admin')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'admin', 'staff')
+  @RequirePermission('orders.view')
   @Get('seller-orders/:storeId')
   async getSellerOrders(
     @Req() req: any,
     @Param('storeId') storeId: string,
     @Query() query: any,
   ) {
-    const { userId } = req.user;
-    return this.ordersService.getSellerOrders(userId, storeId, query);
+    return this.ordersService.getSellerOrders(actingSellerId(req.user), storeId, query);
   }
 
   // Static segment — must be declared before `seller-orders/:storeId/:orderId`
   // below, same reasoning as `seller-orders/my` above.
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller', 'admin')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'admin', 'staff')
+  @RequirePermission('orders.export')
   @Get('seller-orders/:storeId/export')
   async exportOrdersCsv(
     @Req() req: any,
@@ -139,9 +172,8 @@ export class OrdersController {
     @Param('storeId') storeId: string,
     @Query() query: any,
   ) {
-    const { userId } = req.user;
     const csv = await this.ordersService.exportOrdersCsv(
-      userId,
+      actingSellerId(req.user),
       storeId,
       query,
     );
@@ -152,16 +184,16 @@ export class OrdersController {
 
   // A 3-segment path — never collides with the 2-segment `seller-orders/:storeId`
   // above or the 1-segment catch-all `:orderId` below.
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller', 'admin')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'admin', 'staff')
+  @RequirePermission('orders.view')
   @Get('seller-orders/:storeId/:orderId')
   async getSellerOrderDetail(
     @Req() req: any,
     @Param('storeId') storeId: string,
     @Param('orderId') orderId: string,
   ) {
-    const { userId } = req.user;
-    return this.ordersService.getSellerOrderDetail(userId, storeId, orderId);
+    return this.ordersService.getSellerOrderDetail(actingSellerId(req.user), storeId, orderId);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -179,8 +211,9 @@ export class OrdersController {
 
   // Seller-initiated cancellation (e.g. out-of-stock) — scoped to only the
   // seller's own sellerOrder within a (possibly multi-seller) order.
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller', 'admin')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'admin', 'staff')
+  @RequirePermission('orders.cancel')
   @Post('seller-cancel/:storeId/:orderId')
   async cancelOrderAsSeller(
     @Req() req: any,
@@ -188,21 +221,40 @@ export class OrdersController {
     @Param('orderId') orderId: string,
     @Body() body: any,
   ) {
-    const { userId } = req.user;
     return this.ordersService.cancelOrderAsSeller(
-      userId,
+      actingSellerId(req.user),
       storeId,
       orderId,
       body,
     );
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller', 'admin')
+  // Standalone "Refund $X" — independent of Cancel/Return, no item status
+  // changes. See OrdersService.refundOrderAsSeller's own doc comment.
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'admin', 'staff')
+  @RequirePermission('orders.refund')
+  @Post('seller-refund/:storeId/:orderId')
+  async refundOrderAsSeller(
+    @Req() req: any,
+    @Param('storeId') storeId: string,
+    @Param('orderId') orderId: string,
+    @Body() body: { amount: number; reason?: string },
+  ) {
+    return this.ordersService.refundOrderAsSeller(
+      actingSellerId(req.user),
+      storeId,
+      orderId,
+      body,
+    );
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'admin', 'staff')
+  @RequirePermission('orders.return')
   @Get('returns')
   async getSellerReturns(@Req() req: any, @Query() query: any) {
-    const { userId: sellerId } = req.user;
-    return this.ordersService.getSellerReturns(sellerId, query);
+    return this.ordersService.getSellerReturns(actingSellerId(req.user), query);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -218,17 +270,17 @@ export class OrdersController {
     return this.ordersService.returnRequest(userId, orderId, body, storeId);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller', 'admin')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'admin', 'staff')
+  @RequirePermission('orders.return')
   @Put('return-action/:orderId')
   async returnAction(
     @Req() req: any,
     @Param('orderId') orderId: string,
     @Body() body: any,
   ) {
-    const { userId: sellerId } = req.user;
     return this.ordersService.returnAction(
-      sellerId,
+      actingSellerId(req.user),
       orderId,
       body,
       req.ip,

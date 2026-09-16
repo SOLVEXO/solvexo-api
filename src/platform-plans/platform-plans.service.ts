@@ -248,12 +248,48 @@ export class PlatformPlansService {
       isDelete: false, status: { $in: ['trialing', 'active', 'past_due'] },
     });
 
+    // Seller churn — Solvexo's own subscriber base (sellers paying for a
+    // platform plan) churning off entirely, distinct from a buyer churning
+    // off a seller's VIP plan (SubscriptionsService's own churnRate, a
+    // different collection/relationship). Uses `canceledAt` — a real,
+    // precise timestamp on this schema — rather than a startedAt-based
+    // proxy, so this is an exact count, not an approximation.
+    //
+    // Deterministic definitions (never arbitrary):
+    //   activeAtPeriodStart = subscriptions that had already started before
+    //     `from` AND were not yet canceled as of `from` (canceledAt is null,
+    //     or falls on/after `from`) AND are not a pure trial (a trial that
+    //     never converts was never a paying subscriber to begin with, so its
+    //     later cancellation isn't "churn" in the MRR sense).
+    //   canceledInPeriod = subscriptions whose `canceledAt` falls within
+    //     [from, to] — an exact, not-inferred, cancellation count.
+    //   churnRatePercent = canceledInPeriod / activeAtPeriodStart * 100,
+    //   0 when activeAtPeriodStart is 0 (nothing to churn from — not
+    //   fabricated, not divide-by-zero).
+    const [activeAtPeriodStart, canceledInPeriod] = await Promise.all([
+      this.subModel.countDocuments({
+        isDelete: false,
+        startedAt: { $lt: from },
+        status: { $ne: 'trialing' },
+        $or: [{ canceledAt: null }, { canceledAt: { $gte: from } }],
+      }),
+      this.subModel.countDocuments({
+        isDelete: false,
+        status: 'canceled',
+        canceledAt: { $gte: from, $lte: to },
+      }),
+    ]);
+    const churnRatePercent = activeAtPeriodStart > 0 ? this.round((canceledInPeriod / activeAtPeriodStart) * 100) : 0;
+
     return {
       success: true,
       data: {
         mrr,
         arr: this.round(mrr * 12),
         activeSubscribers: activeSubscribersCount,
+        churnRatePercent,
+        canceledInPeriod,
+        activeAtPeriodStart,
         planBreakdown: Object.keys(activeCountMap).map((planId) => ({
           planName: planMap[planId]?.name ?? 'Unknown',
           subscriberCount: activeCountMap[planId] ?? 0,
@@ -266,7 +302,7 @@ export class PlatformPlansService {
           revenueUSD: this.round(r.total), invoiceCount: r.count,
           currentActiveStores: activeCountMap[r._id] ?? 0,
         })),
-        note: 'This is platform-plan (seller-to-Solvexo) revenue — a separate line item from buyer-VIP-plan subscription revenue (SubscriptionInvoice) and order commission (FinanceService).',
+        note: 'This is platform-plan (seller-to-Solvexo) revenue — a separate line item from buyer-VIP-plan subscription revenue (SubscriptionInvoice) and order commission (FinanceService). churnRatePercent is seller-subscriber churn (sellers canceling their platform plan), not buyer-VIP churn.',
       },
     };
   }

@@ -521,6 +521,13 @@ export class StoreThemeService {
         baseThemeId: '$baseThemeId',
         themeDefinitionId: '$themeDefinitionId',
         customCss: '$customCss',
+        // A theme-apply staged into the draft (applyThemeDefinition) but
+        // never published must be discarded too — otherwise "revert" would
+        // silently leave the pending home-section swap sitting there, ready
+        // to fire on some future, unrelated publish the seller never asked
+        // for. Explicit `null`, not copied from live (the live root has no
+        // `pendingHomeSections` field at all — it's draft-only).
+        pendingHomeSections: null,
       },
     });
     return { success: true, message: 'Draft reverted to the published theme', data: updated };

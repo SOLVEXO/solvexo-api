@@ -159,3 +159,8 @@ PaymentTransactionSchema.index({ stripePaymentIntentId: 1 });
 // Backs the seller dashboard's "open dispute" task count — a plain lookup
 // by store + open statuses, never a per-request orders join.
 PaymentTransactionSchema.index({ 'disputes.storeIds': 1, 'disputes.status': 1 });
+// AdminAnalyticsService#getPaymentBreakdown range-queries
+// `{ isDelete: false, createdAt: { $gte, $lte } }` on this collection with no
+// index at all today (a full collection scan for every Payments-tab load).
+// isDelete first, same reasoning as Order's compound index above.
+PaymentTransactionSchema.index({ isDelete: 1, createdAt: -1 });

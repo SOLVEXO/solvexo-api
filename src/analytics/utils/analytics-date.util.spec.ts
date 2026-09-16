@@ -25,6 +25,10 @@ describe('percentChange', () => {
     expect(percentChange(0, 0)).toBe(0);
   });
 
+  it('computes a full -100% drop when current falls to 0 from a positive previous value', () => {
+    expect(percentChange(0, 100)).toBe(-100);
+  });
+
   it('rounds to one decimal place', () => {
     expect(percentChange(133, 100)).toBe(33);
     expect(percentChange(101, 100)).toBe(1);

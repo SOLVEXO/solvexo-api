@@ -51,6 +51,15 @@ export class StockTransfer {
 
   @Prop({ type: String, required: true }) transferredBy: string;
   @Prop({ type: String, default: null }) transferredByName: string | null;
+
+  // Real "Manage shipments" fields — previously a transfer had no way to
+  // record how the in-transit shipment is actually moving between
+  // locations (the Tier-2 audit's disclosed gap). Set at ship time
+  // (optional — a same-city/hand-carried transfer has no carrier) and
+  // editable while still `in_transit`.
+  @Prop({ type: String, default: null }) carrier: string | null;
+  @Prop({ type: String, default: null }) trackingNumber: string | null;
+  @Prop({ type: String, default: null }) trackingUrl: string | null;
 }
 
 export const StockTransferSchema = SchemaFactory.createForClass(StockTransfer);

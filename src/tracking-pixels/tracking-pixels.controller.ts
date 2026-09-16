@@ -4,7 +4,10 @@ import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { TrackingPixelsService } from './tracking-pixels.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
+import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { RequirePermission } from '../auth/decorators/require-permission.decorator';
+import { actingSellerId } from '../common/acting-seller-id.util';
 import { UpdateTrackingPixelSettingsDto } from './dto/update-tracking-pixel-settings.dto';
 
 @ApiTags('Tracking Pixels')
@@ -21,18 +24,20 @@ export class TrackingPixelsController {
   // ── Seller-facing ─────────────────────────────────────────────────────────
 
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('settings.pixels.manage')
   @Get(':storeId')
   getSettings(@Req() req: any, @Param('storeId') storeId: string) {
-    return this.trackingPixelsService.getSettings(req.user.userId, storeId);
+    return this.trackingPixelsService.getSettings(actingSellerId(req.user), storeId);
   }
 
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('settings.pixels.manage')
   @Patch(':storeId')
   updateSettings(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: UpdateTrackingPixelSettingsDto) {
-    return this.trackingPixelsService.updateSettings(req.user.userId, storeId, dto);
+    return this.trackingPixelsService.updateSettings(actingSellerId(req.user), storeId, dto);
   }
 }

@@ -1080,6 +1080,7 @@ export class SellerPlatformSubscriptionsService {
       if (sub.legacyFreeEligible) {
         const freePlan = await this.downgradeToFree(sub);
         if (!freePlan) continue;
+        sub.trialEndsAt = null;
       } else {
         await this.markTrialEnded(sub);
         const { sellerName, sellerEmail, storeName } = await this.getSellerAndStoreNames(sub.sellerId, sub.storeId);
@@ -1098,8 +1099,13 @@ export class SellerPlatformSubscriptionsService {
           description: 'Trial ended (selling restricted) — no plan was ever purchased',
           actorRole: 'system', targetId: sub._id.toString(), targetType: 'seller_platform_subscription',
         });
+        // Deliberately NOT nulled here (unlike the two branches above) — this
+        // is the one remaining record of when the trial actually ended. The
+        // seller-facing "Trial Ended" sidebar reads `startedAt`/`trialEndsAt`
+        // together to show the real trial length and end date; nulling this
+        // discarded that with no functional benefit (nothing gates on it
+        // being null — `isTrialing`/this query both key off `status`).
       }
-      sub.trialEndsAt = null;
       await sub.save();
       expired++;
     }

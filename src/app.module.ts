@@ -47,6 +47,10 @@ import { StripeConnectModule } from './stripe-connect/stripe-connect.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { PlatformSubscriptionsModule } from './platform-subscriptions/platform-subscriptions.module';
 import { AdminAnalyticsModule } from './admin-analytics/admin-analytics.module';
+// Phase 11 — Alerts & Insights. A separate top-level module (not folded
+// into AdminAnalyticsModule) purely to avoid a circular import — see
+// platform-alerts.module.ts's own comment.
+import { PlatformAlertsModule } from './platform-alerts/platform-alerts.module';
 import { AdminFinanceModule } from './admin-finance/admin-finance.module';
 import { QueueModule } from './queues/queue.module';
 import { HealthModule } from './health/health.module';
@@ -73,8 +77,6 @@ import { MetafieldsModule } from './metafields/metafields.module';
 import { MetaobjectsModule } from './metaobjects/metaobjects.module';
 import { MenusModule } from './menus/menus.module';
 import { DraftOrdersModule } from './draft-orders/draft-orders.module';
-import { PurchaseOrdersModule } from './purchase-orders/purchase-orders.module';
-import { StockCountsModule } from './stock-counts/stock-counts.module';
 import { StoreBlogModule } from './store-blog/store-blog.module';
 import { PromotionsModule } from './promotions/promotions.module';
 import { ThemeCatalogModule } from './theme-catalog/theme-catalog.module';
@@ -85,7 +87,7 @@ import { OnboardingSlidesModule } from './onboarding-slides/onboarding-slides.mo
 import { BookingsModule } from './bookings/bookings.module';
 import { StoreAppRequestsModule } from './store-app-requests/store-app-requests.module';
 import { PosPlansModule } from './pos-plans/pos-plans.module';
-import { StaffModule } from './staff/staff.module';
+import { ProductViewsModule } from './product-views/product-views.module';
 
 @Module({
   imports: [
@@ -150,6 +152,7 @@ import { StaffModule } from './staff/staff.module';
     AnalyticsModule,
     PlatformSubscriptionsModule,
     AdminAnalyticsModule,
+    PlatformAlertsModule,
     AdminFinanceModule,
     SeoModule,
     IntegrationsModule,
@@ -171,15 +174,13 @@ import { StaffModule } from './staff/staff.module';
     MetaobjectsModule,
     MenusModule,
     DraftOrdersModule,
-    PurchaseOrdersModule,
-    StockCountsModule,
     StoreBlogModule,
     PromotionsModule,
     ThemeCatalogModule,
     ExchangeRateModule,
     StoreAppRequestsModule,
     PosPlansModule,
-    StaffModule,
+    ProductViewsModule,
   ],
   controllers: [AppController],
   providers: [AppService, { provide: APP_GUARD, useClass: ThrottlerGuard }],

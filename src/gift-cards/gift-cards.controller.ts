@@ -4,7 +4,10 @@ import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { GiftCardsService } from './gift-cards.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
+import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { RequirePermission } from '../auth/decorators/require-permission.decorator';
+import { actingSellerId } from '../common/acting-seller-id.util';
 import { UpdateGiftCardSettingsDto } from './dto/update-gift-card-settings.dto';
 import { IssueManualGiftCardDto } from './dto/issue-manual-gift-card.dto';
 import { CreatePurchaseIntentDto } from './dto/create-purchase-intent.dto';
@@ -34,37 +37,58 @@ export class GiftCardsController {
   }
 
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('giftcards.manage')
   @Post(':storeId/issue')
   issueManual(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: IssueManualGiftCardDto) {
-    return this.giftCardsService.issueManual(req.user.userId, storeId, dto);
+    return this.giftCardsService.issueManual(actingSellerId(req.user), storeId, dto);
+  }
+
+  // Real "Edit existing card value" — see GiftCardsService.adjustBalance's
+  // own doc comment. Closes the Tier-2 audit's disclosed "Create/edit" gap
+  // (issuance was already real, editing an existing card wasn't).
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('giftcards.manage')
+  @Patch(':storeId/:giftCardId/adjust')
+  adjustBalance(
+    @Req() req: any,
+    @Param('storeId') storeId: string,
+    @Param('giftCardId') giftCardId: string,
+    @Body() body: { delta: number; reason?: string },
+  ) {
+    return this.giftCardsService.adjustBalance(actingSellerId(req.user), storeId, giftCardId, body.delta, body.reason ?? '');
   }
 
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('giftcards.view')
   @Get(':storeId')
   listGiftCards(@Req() req: any, @Param('storeId') storeId: string, @Query() query: any) {
-    return this.giftCardsService.listGiftCards(req.user.userId, storeId, query);
+    return this.giftCardsService.listGiftCards(actingSellerId(req.user), storeId, query);
   }
 
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('giftcards.deactivate')
   @Patch(':storeId/:giftCardId/disable')
   disableGiftCard(@Req() req: any, @Param('storeId') storeId: string, @Param('giftCardId') giftCardId: string) {
-    return this.giftCardsService.disableGiftCard(req.user.userId, storeId, giftCardId);
+    return this.giftCardsService.disableGiftCard(actingSellerId(req.user), storeId, giftCardId);
   }
 
   /** The issue/redeem/refund ledger for one gift card — previously written
    *  on every balance change but never readable from anywhere. */
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('giftcards.view')
   @Get(':storeId/:giftCardId/transactions')
   listTransactions(@Req() req: any, @Param('storeId') storeId: string, @Param('giftCardId') giftCardId: string, @Query() query: any) {
-    return this.giftCardsService.listTransactions(req.user.userId, storeId, giftCardId, query);
+    return this.giftCardsService.listTransactions(actingSellerId(req.user), storeId, giftCardId, query);
   }
 
   // ── Buyer-facing ──────────────────────────────────────────────────────────

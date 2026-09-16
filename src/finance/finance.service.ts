@@ -17,6 +17,7 @@ import { AdminConfigService } from '@/admin-config/admin-config.service';
 import { NotificationsService } from '@/notifications/notifications.service';
 import { NOTIFICATION_TYPES } from '@/notifications/notification.types';
 import { StripeConnectService } from '@/stripe-connect/stripe-connect.service';
+import { PdfReportBuilder } from '@/analytics/utils/pdf-report.util';
 
 // ── Platform fee constants ───────────────────────────────────────────────────
 export const PLATFORM_FEE_RATE       = 0.08;   // 8% per sale — last-resort fallback, see CommissionRulesService
@@ -1126,6 +1127,57 @@ export class FinanceService {
     );
 
     return report;
+  }
+
+  /** Real, downloadable tax-document PDF — closes the previously-dead
+   *  `TaxReport.pdfUrl` field (the frontend's Finance tab already had a
+   *  conditional "PDF" download link wired up for it, but `generateTaxReport`
+   *  above never set it, so the button never actually appeared). Built
+   *  on-demand from the already-computed report figures via the same
+   *  `PdfReportBuilder` analytics' own PDF export uses — no persistent
+   *  storage/upload needed, mirroring `AnalyticsService.exportPdf`'s
+   *  stream-on-request pattern instead of `pdfUrl` itself, which is why this
+   *  method returns a Buffer rather than ever writing to that field. Still
+   *  an internal financial summary, not a certified government tax filing
+   *  document (see this app's disclosed "no tax handling" boundary — no
+   *  jurisdiction-specific form/1099-K/VAT-return logic exists here), stated
+   *  explicitly on the document itself so it's never mistaken for one. */
+  async buildTaxReportPdf(sellerId: string, storeId: string, reportId: string): Promise<Buffer> {
+    await this.verifyStoreOwnership(sellerId, storeId);
+
+    const report = await this.taxModel.findOne({ _id: reportId, storeId }).lean();
+    if (!report) throw new NotFoundException('Tax report not found');
+
+    const store = await this.storeModel.findOne({ _id: storeId }).select('name').lean();
+    const periodLabel = report.period === 'annual' ? `Annual ${report.year}` : `${report.period.toUpperCase()} ${report.year}`;
+    const fmt = (n: number) => amountFmt(n, report.currency);
+
+    const pdf = await PdfReportBuilder.create(
+      `${(store as any)?.name ?? 'Store'} — Tax Report`,
+      `Period: ${periodLabel}  ·  ${new Date(report.fromDate).toLocaleDateString()} – ${new Date(report.toDate).toLocaleDateString()}  ·  Generated ${new Date(report.generatedAt ?? report.fromDate).toLocaleDateString()}`,
+    );
+
+    pdf.addSectionHeading('Revenue Summary');
+    pdf.addKeyValueGrid([
+      { label: 'Total Revenue', value: fmt(report.totalRevenue) },
+      { label: 'Total Fees', value: fmt(report.totalFees) },
+      { label: 'Total Refunds', value: fmt(report.totalRefunds) },
+      { label: 'Total Payouts', value: fmt(report.totalPayouts) },
+      { label: 'Net Revenue', value: fmt(report.netRevenue) },
+      { label: 'Transaction Count', value: String(report.transactionCount) },
+    ]);
+
+    pdf.addSectionHeading('Estimated Tax');
+    pdf.addKeyValueGrid([
+      { label: `Estimated Tax (${(ESTIMATED_TAX_RATE * 100).toFixed(0)}% of net revenue)`, value: fmt(report.estimatedTax) },
+    ]);
+    pdf.addEmptyNote(
+      'This is an internal financial summary generated from your store\'s own transaction records, not a certified '
+      + 'government tax filing document. The estimated tax figure is a flat-rate approximation only — consult a tax '
+      + 'professional for your actual filing obligations in your jurisdiction.',
+    );
+
+    return pdf.build();
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

@@ -3,7 +3,10 @@ import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UseGuard
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
+import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { RequirePermission } from '../auth/decorators/require-permission.decorator';
+import { actingSellerId } from '../common/acting-seller-id.util';
 import { StoreBlogService } from './store-blog.service';
 import { CreateBlogPostDto } from './dto/create-blog-post.dto';
 import { UpdateBlogPostDto } from './dto/update-blog-post.dto';
@@ -13,8 +16,9 @@ import { UpdateBlogDto } from './dto/update-blog.dto';
 
 @ApiTags('Store Blog')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, RolesGuard)
-@Roles('seller')
+@UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+@Roles('seller', 'staff')
+@RequirePermission('onlinestore.content.manage')
 @Controller('api/store-blog')
 export class StoreBlogController {
   constructor(private readonly storeBlogService: StoreBlogService) {}
@@ -25,80 +29,80 @@ export class StoreBlogController {
 
   @Get(':storeId/blogs')
   listBlogs(@Req() req: any, @Param('storeId') storeId: string) {
-    return this.storeBlogService.listBlogs(storeId, req.user.userId);
+    return this.storeBlogService.listBlogs(storeId, actingSellerId(req.user));
   }
 
   @Post(':storeId/blogs')
   createBlog(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: CreateBlogDto) {
-    return this.storeBlogService.createBlog(storeId, req.user.userId, dto);
+    return this.storeBlogService.createBlog(storeId, actingSellerId(req.user), dto);
   }
 
   @Patch(':storeId/blogs/:blogId')
   updateBlog(@Req() req: any, @Param('storeId') storeId: string, @Param('blogId') blogId: string, @Body() dto: UpdateBlogDto) {
-    return this.storeBlogService.updateBlog(storeId, req.user.userId, blogId, dto);
+    return this.storeBlogService.updateBlog(storeId, actingSellerId(req.user), blogId, dto);
   }
 
   @Delete(':storeId/blogs/:blogId')
   removeBlog(@Req() req: any, @Param('storeId') storeId: string, @Param('blogId') blogId: string) {
-    return this.storeBlogService.deleteBlog(storeId, req.user.userId, blogId);
+    return this.storeBlogService.deleteBlog(storeId, actingSellerId(req.user), blogId);
   }
 
   // ── Comments — same static-before-dynamic ordering requirement. ─────────
 
   @Get(':storeId/comments')
   listComments(@Req() req: any, @Param('storeId') storeId: string, @Query('status') status?: string) {
-    return this.storeBlogService.listCommentsForSeller(storeId, req.user.userId, status);
+    return this.storeBlogService.listCommentsForSeller(storeId, actingSellerId(req.user), status);
   }
 
   @Patch(':storeId/comments/:commentId')
   moderateComment(@Req() req: any, @Param('storeId') storeId: string, @Param('commentId') commentId: string, @Body() body: { status: 'approved' | 'spam' | 'pending' }) {
-    return this.storeBlogService.moderateComment(storeId, req.user.userId, commentId, body.status);
+    return this.storeBlogService.moderateComment(storeId, actingSellerId(req.user), commentId, body.status);
   }
 
   @Delete(':storeId/comments/:commentId')
   removeComment(@Req() req: any, @Param('storeId') storeId: string, @Param('commentId') commentId: string) {
-    return this.storeBlogService.deleteComment(storeId, req.user.userId, commentId);
+    return this.storeBlogService.deleteComment(storeId, actingSellerId(req.user), commentId);
   }
 
   // ── Posts ─────────────────────────────────────────────────────────────
 
   @Get(':storeId')
   list(@Req() req: any, @Param('storeId') storeId: string, @Query('blogId') blogId?: string) {
-    return this.storeBlogService.listForSeller(storeId, req.user.userId, blogId);
+    return this.storeBlogService.listForSeller(storeId, actingSellerId(req.user), blogId);
   }
 
   @Get(':storeId/:postId')
   get(@Req() req: any, @Param('storeId') storeId: string, @Param('postId') postId: string) {
-    return this.storeBlogService.getForSeller(storeId, req.user.userId, postId);
+    return this.storeBlogService.getForSeller(storeId, actingSellerId(req.user), postId);
   }
 
   @Post(':storeId')
   create(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: CreateBlogPostDto) {
-    return this.storeBlogService.createPost(storeId, req.user.userId, dto);
+    return this.storeBlogService.createPost(storeId, actingSellerId(req.user), dto);
   }
 
   @Patch(':storeId/:postId')
   update(@Req() req: any, @Param('storeId') storeId: string, @Param('postId') postId: string, @Body() dto: UpdateBlogPostDto) {
-    return this.storeBlogService.updatePost(storeId, req.user.userId, postId, dto);
+    return this.storeBlogService.updatePost(storeId, actingSellerId(req.user), postId, dto);
   }
 
   @Patch(':storeId/:postId/content')
   updateContent(@Req() req: any, @Param('storeId') storeId: string, @Param('postId') postId: string, @Body() dto: UpdateBlogContentDto) {
-    return this.storeBlogService.updateContent(storeId, req.user.userId, postId, dto);
+    return this.storeBlogService.updateContent(storeId, actingSellerId(req.user), postId, dto);
   }
 
   @Patch(':storeId/:postId/publish')
   publish(@Req() req: any, @Param('storeId') storeId: string, @Param('postId') postId: string, @Body() body?: { scheduledAt?: string | null }) {
-    return this.storeBlogService.publish(storeId, req.user.userId, postId, body?.scheduledAt);
+    return this.storeBlogService.publish(storeId, actingSellerId(req.user), postId, body?.scheduledAt);
   }
 
   @Patch(':storeId/:postId/unpublish')
   unpublish(@Req() req: any, @Param('storeId') storeId: string, @Param('postId') postId: string) {
-    return this.storeBlogService.unpublish(storeId, req.user.userId, postId);
+    return this.storeBlogService.unpublish(storeId, actingSellerId(req.user), postId);
   }
 
   @Delete(':storeId/:postId')
   remove(@Req() req: any, @Param('storeId') storeId: string, @Param('postId') postId: string) {
-    return this.storeBlogService.deletePost(storeId, req.user.userId, postId);
+    return this.storeBlogService.deletePost(storeId, actingSellerId(req.user), postId);
   }
 }

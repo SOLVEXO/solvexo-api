@@ -6,7 +6,10 @@ import {
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
+import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { RequirePermission } from '../auth/decorators/require-permission.decorator';
+import { actingSellerId } from '../common/acting-seller-id.util';
 import { DraftOrdersService } from './draft-orders.service';
 import { CreateDraftOrderDto } from './dto/create-draft-order.dto';
 import { UpdateDraftOrderDto } from './dto/update-draft-order.dto';
@@ -32,17 +35,23 @@ export class DraftOrdersController {
     return { success: true, data: draft };
   }
 
+  @UseGuards(PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('draft_orders.view')
   @Get(':storeId')
   async list(@Req() req: any, @Param('storeId') storeId: string, @Query('status') status?: string, @Query('page') page?: string, @Query('limit') limit?: string) {
-    const result = await this.draftOrdersService.list(storeId, req.user.userId, {
+    const result = await this.draftOrdersService.list(storeId, actingSellerId(req.user), {
       status, page: page ? Number(page) : undefined, limit: limit ? Number(limit) : undefined,
     });
     return { success: true, data: result };
   }
 
+  @UseGuards(PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('draft_orders.view')
   @Get(':storeId/:id')
   async getById(@Req() req: any, @Param('storeId') storeId: string, @Param('id') id: string) {
-    const draft = await this.draftOrdersService.getById(storeId, req.user.userId, id);
+    const draft = await this.draftOrdersService.getById(storeId, actingSellerId(req.user), id);
     return { success: true, data: draft };
   }
 
@@ -55,6 +64,35 @@ export class DraftOrdersController {
   @Delete(':storeId/:id')
   async cancel(@Req() req: any, @Param('storeId') storeId: string, @Param('id') id: string) {
     const draft = await this.draftOrdersService.cancel(storeId, req.user.userId, id);
+    return { success: true, data: draft };
+  }
+
+  // Real hard-delete (isDelete soft-delete convention) — distinct from
+  // `cancel` above (kept on its existing DELETE :storeId/:id route for
+  // backward compatibility). Restricted to a never-completed draft — see
+  // DraftOrdersService.deleteDraft's own doc comment.
+  @Delete(':storeId/:id/permanent')
+  async deleteDraft(@Req() req: any, @Param('storeId') storeId: string, @Param('id') id: string) {
+    return this.draftOrdersService.deleteDraft(storeId, req.user.userId, id);
+  }
+
+  @Post(':storeId/:id/duplicate')
+  async duplicate(@Req() req: any, @Param('storeId') storeId: string, @Param('id') id: string) {
+    const draft = await this.draftOrdersService.duplicate(storeId, req.user.userId, id);
+    return { success: true, data: draft };
+  }
+
+  @Post(':storeId/:id/send-invoice')
+  async sendInvoice(@Req() req: any, @Param('storeId') storeId: string, @Param('id') id: string) {
+    return this.draftOrdersService.sendInvoice(storeId, req.user.userId, id);
+  }
+
+  @UseGuards(PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('draft_orders.mark_paid')
+  @Post(':storeId/:id/mark-paid')
+  async markPaid(@Req() req: any, @Param('storeId') storeId: string, @Param('id') id: string) {
+    const draft = await this.draftOrdersService.markAsPaid(storeId, actingSellerId(req.user), id);
     return { success: true, data: draft };
   }
 

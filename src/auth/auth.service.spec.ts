@@ -201,6 +201,15 @@ describe('AuthService — per-store buyer identity', () => {
       const originalPasswordA = accountA.password;
       const originalPasswordB = accountB.password;
 
+      // signup() itself already stamps a real, unconsumed email-verification
+      // OTP on every new account (see AuthService.signup) — clear both
+      // accounts' leftover OTP here to simulate "already verified, no
+      // pending code," so the assertions below actually prove
+      // forgotPassword's own storeId-scoping rather than just observing
+      // accountB's own never-cleared signup OTP still sitting there.
+      accountA.otp = null;
+      accountB.otp = null;
+
       await service.forgotPassword('reset@example.com', 'user', 'storeA');
 
       expect(accountA.otp).toBeTruthy();

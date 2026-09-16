@@ -1078,13 +1078,15 @@ export class OrdersService {
     return { success: true, message: `Order status updated to ${status}` };
   }
 
-  async markPaid(orderId: string) {
+  /** Shared "this order is now fully paid" completion — sets isPaid/paidAt/
+   *  orderStatus, completes every sellerOrder+item, credits the finance
+   *  ledger (skipping Connect-settled sellerOrders, same guard as the
+   *  status-transition branch elsewhere), awards loyalty points, notifies
+   *  the buyer. Used by both the legacy one-click `markPaid()` and
+   *  `recordOrderPayment()` once its cumulative recorded total reaches the
+   *  order's full amount. */
+  private async finalizeOrderPayment(order: any, orderId: string) {
     const { orderModel } = this.databaseService.repositories;
-
-    const order = await orderModel.findOne({ _id: orderId, isDelete: false });
-    if (!order) throw new NotFoundException('Order not found');
-    if (order.isPaid) throw new BadRequestException('Order is already paid');
-
     const now = new Date();
     const updateData: any = {
       isPaid: true,
@@ -1147,8 +1149,111 @@ export class OrdersService {
         data: { orderId },
       })
       .catch(() => {});
+  }
+
+  /** Legacy one-click "Mark as Paid" — kept byte-for-byte behaviorally
+   *  unchanged (same signature, same lack of storeId scoping) so neither
+   *  existing frontend caller (OrderList.tsx's quick action, OrderDetail's
+   *  original button) needs to change. Now ALSO writes a real
+   *  `OrderPaymentRecord` row for the full amount, so the payment ledger
+   *  `recordOrderPayment`/the frontend payment-history list reads from
+   *  stays complete regardless of which action a seller used. */
+  async markPaid(orderId: string) {
+    const { orderModel, orderPaymentRecordModel } = this.databaseService.repositories;
+
+    const order = await orderModel.findOne({ _id: orderId, isDelete: false });
+    if (!order) throw new NotFoundException('Order not found');
+    if (order.isPaid) throw new BadRequestException('Order is already paid');
+
+    await this.finalizeOrderPayment(order, orderId);
+
+    const firstSo = order.sellerOrders[0];
+    if (firstSo) {
+      await orderPaymentRecordModel.create({
+        orderId, storeId: firstSo.storeId, sellerId: firstSo.sellerId,
+        amount: order.totalAmount, currency: order.currency || 'USD',
+        method: 'other', reference: null, note: 'Marked as paid (quick action)',
+        recordedBy: firstSo.sellerId, recordedByRole: 'seller',
+      });
+    }
 
     return { success: true, message: 'Order marked as paid' };
+  }
+
+  /**
+   * Real "Record payments" — Shopify's actual permission: capture a
+   * specific manually-collected payment (amount/method/reference/note)
+   * against an order, supporting multiple partial entries (deposits/
+   * installments) rather than one blind boolean flip. Automatically
+   * finalizes the order (same completion path as `markPaid`) once the
+   * cumulative recorded total reaches the order's full amount.
+   */
+  async recordOrderPayment(
+    sellerId: string,
+    storeId: string,
+    orderId: string,
+    body: { amount: number; method: 'cash' | 'bank_transfer' | 'other'; reference?: string; note?: string },
+    actor: { actorId: string; actorRole: 'seller' | 'staff' | 'admin' },
+  ) {
+    const amount = Number(body?.amount);
+    if (!amount || amount <= 0) throw new BadRequestException('A positive amount is required');
+    if (!['cash', 'bank_transfer', 'other'].includes(body?.method)) {
+      throw new BadRequestException('A valid payment method is required');
+    }
+
+    const { orderModel, storeModel, orderPaymentRecordModel } = this.databaseService.repositories;
+    const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false }).lean();
+    if (!store) throw new ForbiddenException('Store not found or unauthorized');
+
+    const order = await orderModel.findOne({ _id: orderId, isDelete: false });
+    if (!order) throw new NotFoundException('Order not found');
+    if (order.isPaid) throw new BadRequestException('This order is already fully paid');
+
+    const belongsToStore = (order.sellerOrders as any[]).some((so: any) => so.storeId === storeId);
+    if (!belongsToStore) throw new ForbiddenException('This order does not belong to your store');
+
+    const existingTotal = await orderPaymentRecordModel.aggregate([
+      { $match: { orderId } },
+      { $group: { _id: null, total: { $sum: '$amount' } } },
+    ]);
+    const alreadyRecorded = existingTotal[0]?.total ?? 0;
+    const remaining = round(order.totalAmount - alreadyRecorded);
+    if (amount > remaining) {
+      throw new BadRequestException(`Amount exceeds what's left to record on this order (max ${remaining}).`);
+    }
+
+    await orderPaymentRecordModel.create({
+      orderId, storeId, sellerId,
+      amount, currency: order.currency || 'USD',
+      method: body.method, reference: (body.reference ?? '').trim() || null, note: (body.note ?? '').trim(),
+      recordedBy: actor.actorId, recordedByRole: actor.actorRole,
+    });
+
+    const newTotal = round(alreadyRecorded + amount);
+    const fullyPaid = newTotal >= round(order.totalAmount);
+    if (fullyPaid) {
+      await this.finalizeOrderPayment(order, orderId);
+    } else {
+      await orderModel.updateOne({ _id: orderId }, { $set: { paymentStatus: 'partially_paid' } });
+    }
+
+    return {
+      success: true,
+      message: fullyPaid ? 'Payment recorded — order is now fully paid' : 'Payment recorded',
+      data: { orderId, amount, totalRecorded: newTotal, remaining: round(order.totalAmount - newTotal), fullyPaid },
+    };
+  }
+
+  /** Real payment-ledger list for an order — every manually-recorded entry
+   *  (OrdersService.recordOrderPayment), newest first. */
+  async listOrderPayments(sellerId: string, storeId: string, orderId: string) {
+    const { storeModel, orderPaymentRecordModel } = this.databaseService.repositories;
+    const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false }).lean();
+    if (!store) throw new ForbiddenException('Store not found or unauthorized');
+    return orderPaymentRecordModel
+      .find({ orderId, storeId })
+      .sort({ createdAt: -1 })
+      .lean();
   }
 
   async downloadFile(
@@ -1738,6 +1843,134 @@ export class OrdersService {
         cancelledItems: targetItems.length,
         refundProcessed: order.isPaid,
       },
+    };
+  }
+
+  /**
+   * Standalone "Refund $X" — Shopify's real "Refund to original payment
+   * method" as its own action, independent of Cancel/Return: no item is
+   * cancelled/returned, nothing about fulfillment status changes. Used for a
+   * goodwill partial refund, a shipping-fee waiver after the fact, a
+   * price-adjustment credit, etc. Real money movement, same primitives
+   * `executeCancellation` already uses (FX-converted ledger debit + a real
+   * targeted Stripe refund) — capped by `SellerOrder.manualRefundedAmount`
+   * plus the sum of any item-level `refundedAmount` already issued via
+   * cancellation/return, so the two mechanisms can never together refund
+   * more than the sellerOrder's own subtotal.
+   */
+  async refundOrderAsSeller(
+    sellerId: string,
+    storeId: string,
+    orderId: string,
+    body: { amount: number; reason?: string },
+  ) {
+    const amount = Number(body?.amount);
+    if (!amount || amount <= 0) throw new BadRequestException('A positive refund amount is required');
+    const reason = (body?.reason ?? '').trim() || 'Refund issued by seller';
+
+    const { orderModel, storeModel } = this.databaseService.repositories;
+    const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
+    if (!store) throw new ForbiddenException('Store not found or unauthorized');
+
+    const order = await orderModel.findOne({ _id: orderId, isDelete: false });
+    if (!order) throw new NotFoundException('Order not found');
+    if (!order.isPaid) throw new BadRequestException('This order has not been paid yet — nothing to refund');
+
+    const soIndex = (order.sellerOrders as any[]).findIndex(
+      (so: any) => so.storeId === storeId && so.sellerId === sellerId,
+    );
+    if (soIndex === -1) throw new ForbiddenException('Unauthorized');
+    const so = (order.sellerOrders as any[])[soIndex];
+
+    const alreadyRefunded =
+      (so.items as any[]).reduce((sum, i: any) => sum + (i.refundedAmount || 0), 0) +
+      (so.manualRefundedAmount || 0);
+    const maxRefundable = round(so.subtotal - alreadyRefunded);
+    if (amount > maxRefundable) {
+      throw new BadRequestException(
+        `Refund amount exceeds what's left to refund for this order (max ${maxRefundable}).`,
+      );
+    }
+
+    const buyerCurrency = order.currency || 'USD';
+    const settlementCurrency = so.settlementCurrency ?? buyerCurrency;
+    const sellerDebitAmount = this.exchangeRateService.convertWithSnapshots(
+      amount,
+      buyerCurrency,
+      settlementCurrency,
+      order.fxSnapshots ?? [],
+    );
+
+    try {
+      await this.financeService.recordRefund(
+        storeId,
+        sellerId,
+        orderId,
+        sellerDebitAmount,
+        sellerId,
+        'seller',
+        {
+          description: `Refund issued — Order #${order.orderNumber} — ${reason}`,
+          targetType: 'order',
+          currency: settlementCurrency,
+        },
+      );
+    } catch (e: any) {
+      console.error('Finance recordRefund failed (standalone seller refund):', e?.message);
+      throw new BadRequestException('Failed to record the refund against your balance — please try again.');
+    }
+
+    let stripeRefundId: string | null = null;
+    if (order.paymentType === 'stripe') {
+      const transaction = await this.databaseService.repositories.paymentTransactionModel.findOne({
+        orderIds: orderId, status: 'completed', isDelete: false,
+      });
+      if (transaction?.stripePaymentIntentId) {
+        try {
+          const refund = await this.paymentService.refundStripePaymentIntent(
+            transaction.stripePaymentIntentId,
+            amount,
+            `order_manual_refund_${orderId}_${Date.now()}`,
+          );
+          stripeRefundId = refund?.id ?? null;
+        } catch (e: any) {
+          await this.activityLogService.log({
+            storeId: 'platform', category: 'finance',
+            action: 'stripe_refund_failed_after_manual_refund',
+            description: `Stripe refund failed for order #${order.orderNumber} after the seller's ledger was already debited: ${e?.message}`,
+            actorId: sellerId, actorRole: 'seller',
+            isSecurityAlert: true, targetId: orderId, targetType: 'order',
+          });
+        }
+      }
+    }
+
+    await orderModel.updateOne(
+      { _id: orderId },
+      { $inc: { [`sellerOrders.${soIndex}.manualRefundedAmount`]: amount } },
+    );
+
+    await this.activityLogService.log({
+      storeId, category: 'orders', action: 'order_manual_refund_issued',
+      description: `Refunded ${amount} ${buyerCurrency} on order #${order.orderNumber} — ${reason}`,
+      actorId: sellerId, actorRole: 'seller', targetId: orderId, targetType: 'order',
+    });
+
+    this.notificationsService
+      .notify({
+        recipientId: order.userId,
+        recipientRole: 'user',
+        type: NOTIFICATION_TYPES.REFUND_ISSUED,
+        title: 'Refund issued',
+        body: `You've been refunded ${amount} ${buyerCurrency} for order #${order.orderNumber}.`,
+        data: { orderId },
+      })
+      .catch(() => {});
+
+    return {
+      success: true,
+      message: 'Refund issued successfully',
+      data: { orderId, amount, stripeRefundId },
     };
   }
 
@@ -2365,5 +2598,54 @@ export class OrdersService {
 
     const arrayBuffer = await response.arrayBuffer();
     return { buffer: Buffer.from(arrayBuffer), fileName: file.name, mimeType };
+  }
+
+  /** Called once daily by SchedulerService (`runLocked`) — real automated
+   *  dunning for a completed Order carrying real payment terms (converted
+   *  from a Draft Order fulfilled now, invoiced later — see
+   *  Order.paymentTerms's doc comment) whose `dueDate` has passed while
+   *  still unpaid. Unlike an open Draft Order's invoice (see
+   *  DraftOrdersService.sendOverdueInvoiceReminders), a completed Order has
+   *  no live online-payment link to re-send — the seller is the one who has
+   *  to actually chase payment (bank transfer, in-person, etc.), so this
+   *  notifies the seller only. One reminder per overdue order, deduped via
+   *  `overdueReminderSentAt`. */
+  async sendOverdueOrderReminders(): Promise<void> {
+    const { orderModel } = this.databaseService.repositories;
+    const overdue = await orderModel
+      .find({
+        paymentTerms: { $ne: null },
+        isPaid: false,
+        dueDate: { $lt: new Date() },
+        overdueReminderSentAt: null,
+      })
+      .select('orderNumber sellerOrders totalAmount currency dueDate')
+      .lean();
+
+    for (const order of overdue as any[]) {
+      // Notify each distinct seller/store pair this order actually belongs
+      // to (a draft-order-converted order is always single-seller, but this
+      // stays correct for any future multi-seller order that ever carries
+      // payment terms too) — paired from the real sellerOrders, not two
+      // independently-deduped arrays that could misalign.
+      const seenPairs = new Set<string>();
+      const amount = order.totalAmount ?? 0;
+      const symbol = order.currency === 'PKR' ? 'Rs. ' : order.currency === 'USD' ? '$' : `${order.currency} `;
+
+      for (const so of order.sellerOrders) {
+        const pairKey = `${so.sellerId}:${so.storeId}`;
+        if (seenPairs.has(pairKey)) continue;
+        seenPairs.add(pairKey);
+        await this.notificationsService.notify({
+          recipientId: so.sellerId, recipientRole: 'seller', storeId: so.storeId,
+          type: NOTIFICATION_TYPES.ORDER_PAYMENT_OVERDUE,
+          title: 'Order payment overdue',
+          body: `Order ${order.orderNumber} (${symbol}${amount}) was due ${new Date(order.dueDate).toLocaleDateString()} and is still unpaid.`,
+          data: { orderId: order._id.toString(), link: `/store/${so.storeId}/orders/${order._id.toString()}` },
+        });
+      }
+
+      await orderModel.updateOne({ _id: order._id }, { $set: { overdueReminderSentAt: new Date() } });
+    }
   }
 }

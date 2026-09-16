@@ -25,6 +25,8 @@ import { AbandonedCartService } from '@/abandoned-cart/abandoned-cart.service';
 import { EmailCampaignsService } from '@/email-campaigns/email-campaigns.service';
 import { InventoryService } from '@/inventory/inventory.service';
 import { PurchaseOrdersService } from '@/purchase-orders/purchase-orders.service';
+import { DraftOrdersService } from '@/draft-orders/draft-orders.service';
+import { OrdersService } from '@/orders/orders.service';
 
 @Injectable()
 export class SchedulerService {
@@ -54,6 +56,8 @@ export class SchedulerService {
     private readonly emailCampaignsService: EmailCampaignsService,
     private readonly inventoryService: InventoryService,
     private readonly purchaseOrdersService: PurchaseOrdersService,
+    private readonly draftOrdersService: DraftOrdersService,
+    private readonly ordersService: OrdersService,
   ) {}
 
   /**
@@ -527,6 +531,28 @@ export class SchedulerService {
   async sendPurchaseOrderOverdueAlerts() {
     await this.runLocked('purchase-order-overdue-alerts', 20 * 60_000, async () => {
       await this.purchaseOrdersService.sendOverdueAlerts();
+    });
+  }
+
+  // Runs once daily — real automated dunning for an open Draft Order
+  // invoice whose dueDate has passed unpaid (re-emails the customer the
+  // same payment link + notifies the seller). See
+  // DraftOrdersService.sendOverdueInvoiceReminders.
+  @Cron('30 8 * * *')
+  async sendDraftOrderInvoiceOverdueReminders() {
+    await this.runLocked('draft-order-invoice-overdue-reminders', 20 * 60_000, async () => {
+      await this.draftOrdersService.sendOverdueInvoiceReminders();
+    });
+  }
+
+  // Runs once daily — real automated dunning for a completed Order carrying
+  // payment terms (net-15/30/60, converted from a fulfilled-now-invoiced-
+  // later Draft Order) whose dueDate has passed unpaid. See
+  // OrdersService.sendOverdueOrderReminders.
+  @Cron('45 8 * * *')
+  async sendOrderPaymentOverdueReminders() {
+    await this.runLocked('order-payment-overdue-reminders', 20 * 60_000, async () => {
+      await this.ordersService.sendOverdueOrderReminders();
     });
   }
 

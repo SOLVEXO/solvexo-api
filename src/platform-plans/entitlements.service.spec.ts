@@ -53,7 +53,7 @@ describe('EntitlementsService — trial vs. paid limits', () => {
     service = new EntitlementsService(db);
   }
 
-  it('a trialing store gets unlimited caps and every boolean feature — but the SAME transactionFeeRate/aiCreditsPerMonth as its assigned plan', async () => {
+  it('a trialing store gets unlimited caps and every boolean feature except customDomainAllowed — but the SAME transactionFeeRate/aiCreditsPerMonth as its assigned plan', async () => {
     setup({ storeId: STORE_ID, status: 'trialing', platformPlanId: 'plan-1' });
 
     const limits = await service.getLimits(STORE_ID);
@@ -63,7 +63,10 @@ describe('EntitlementsService — trial vs. paid limits', () => {
     expect(limits.maxPosLocations).toBe(-1);
     expect(limits.maxActiveStoreBanners).toBe(-1);
     expect(limits.maxActivePromotions).toBe(-1);
-    expect(limits.customDomainAllowed).toBe(true);
+    // Deliberate exception, not an oversight — see
+    // EntitlementsService.applyTrialOverride's own doc comment: a standard
+    // trial can't connect a custom domain, matching real Shopify behavior.
+    expect(limits.customDomainAllowed).toBe(false);
     expect(limits.whiteLabelAllowed).toBe(true);
     expect(limits.loyaltyProgramAllowed).toBe(true);
     expect(limits.subscriptionProductsAllowed).toBe(true);

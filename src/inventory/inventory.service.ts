@@ -1029,6 +1029,7 @@ export class InventoryService {
     toLocationId: string,
     quantity: number,
     note?: string,
+    shipping?: { carrier?: string; trackingNumber?: string; trackingUrl?: string },
   ) {
     const { storeModel, productModel, productVariantModel, variantLocationStockModel, storeLocationModel, stockTransferModel, sellerModel } =
       this.databaseService.repositories;
@@ -1087,9 +1088,42 @@ export class InventoryService {
       note: note?.trim() || null,
       transferredBy: sellerId,
       transferredByName: seller?.name ?? null,
+      carrier: shipping?.carrier?.trim() || null,
+      trackingNumber: shipping?.trackingNumber?.trim() || null,
+      trackingUrl: shipping?.trackingUrl?.trim() || null,
     });
 
     return { success: true, message: 'Stock shipped — now in transit', data: transfer };
+  }
+
+  /** Real "Manage shipments" — lets a seller add/edit carrier/tracking
+   *  details on an already-shipped transfer (e.g. a label was only booked
+   *  after the truck left, or a courier's tracking number changed).
+   *  Restricted to a still-`in_transit`/`partially_received` transfer —
+   *  once fully received or cancelled, shipment details are historical. */
+  async updateTransferShipping(
+    sellerId: string,
+    storeId: string,
+    transferId: string,
+    shipping: { carrier?: string; trackingNumber?: string; trackingUrl?: string },
+  ) {
+    const { storeModel, stockTransferModel } = this.databaseService.repositories;
+    const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
+    if (!store) throw new ForbiddenException('Store not found or unauthorized');
+
+    const transfer = await stockTransferModel.findOne({ _id: transferId, storeId });
+    if (!transfer) throw new NotFoundException('Transfer not found');
+    if (transfer.status !== 'in_transit' && transfer.status !== 'partially_received') {
+      throw new BadRequestException('Shipment details can only be edited while a transfer is still in transit.');
+    }
+
+    const update: Record<string, unknown> = {};
+    if (shipping.carrier !== undefined) update.carrier = shipping.carrier.trim() || null;
+    if (shipping.trackingNumber !== undefined) update.trackingNumber = shipping.trackingNumber.trim() || null;
+    if (shipping.trackingUrl !== undefined) update.trackingUrl = shipping.trackingUrl.trim() || null;
+
+    const updated = await stockTransferModel.findByIdAndUpdate(transferId, { $set: update }, { new: true });
+    return { success: true, message: 'Shipment details updated', data: updated };
   }
 
   /** POST api/inventory/:storeId/transfer/:transferId/receive — settles some

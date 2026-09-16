@@ -16,13 +16,7 @@ import { UpdatePurchaseOrderDto } from './dto/update-purchase-order.dto';
 import { ReceivePurchaseOrderDto } from './dto/receive-purchase-order.dto';
 import { CreateSupplierDto } from './dto/create-supplier.dto';
 import { UpdateSupplierDto } from './dto/update-supplier.dto';
-
-// See InventoryController's identical helper doc comment — a staff JWT
-// carries its OWNING seller's id as `sellerId`, which every handler below
-// passes into PurchaseOrdersService's existing `sellerId`-scoped methods.
-function actingSellerId(user: any): string {
-  return user.role === 'staff' ? user.sellerId : user.userId;
-}
+import { actingSellerId } from '../common/acting-seller-id.util';
 
 @ApiTags('Purchase Orders')
 @ApiBearerAuth()

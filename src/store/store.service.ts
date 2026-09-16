@@ -1652,7 +1652,7 @@ export class StoreService {
   // re-running the pipeline.
   private static readonly CUSTOMER_AT_RISK_DAYS = 90;
   private static readonly CUSTOMER_VIP_ORDER_COUNT = 5;
-  private static readonly CUSTOMER_SEGMENTS = ['new', 'returning', 'vip', 'at_risk'] as const;
+  private static readonly CUSTOMER_SEGMENTS = ['new', 'returning', 'vip', 'at_risk', 'no_orders'] as const;
 
   /**
    * One aggregation pipeline (through the segment/tags/notes $addFields
@@ -1660,6 +1660,16 @@ export class StoreService {
    * CSV export — so "how many customers match these filters" and "which
    * customers are on this page" can never disagree with each other.
    */
+  /** `customerIds` (ids with at least one real order at this store) is the
+   *  pipeline's original, still-primary source. The `$unionWith` branch
+   *  below ADDITIONALLY surfaces a customer this seller created directly
+   *  (`createStoreCustomer`) or tagged/noted before their first order —
+   *  real via the already-existing `StoreCustomerMeta` junction row, with
+   *  zero orders/spend, its own `'no_orders'` segment bucket. Previously
+   *  this pipeline was anchored EXCLUSIVELY on `Order` (`$match`→`$unwind`→
+   *  `$group`), so a zero-order customer could never produce a row at any
+   *  stage no matter how the input id set was widened — this is what
+   *  actually fixes that, not just a broader `$in` filter. */
   private buildStoreCustomersPipeline(storeId: string, customerIds: string[], query: any) {
     const { userModel, storeCustomerMetaModel } = this.databaseService.repositories;
 
@@ -1676,19 +1686,54 @@ export class StoreService {
         },
       },
       {
+        // Real zero-order customers — a `StoreCustomerMeta` row exists for
+        // this store (created via `createStoreCustomer`, or tagged/noted
+        // some other way) but the id isn't in the order-derived set above.
+        // Synthesized with the same field shape (`_id`/orderCount/
+        // totalSpent/lastOrderAt) so every stage below applies uniformly
+        // to both branches.
+        $unionWith: {
+          coll: storeCustomerMetaModel.collection.name,
+          pipeline: [
+            { $match: { storeId, userId: { $nin: customerIds } } },
+            {
+              $project: {
+                _id: '$userId',
+                orderCount: { $literal: 0 },
+                totalSpent: { $literal: 0 },
+                lastOrderAt: { $literal: null },
+              },
+            },
+          ],
+        },
+      },
+      {
         $addFields: {
-          daysSinceLastOrder: { $divide: [{ $subtract: ['$$NOW', '$lastOrderAt'] }, 86_400_000] },
+          // Null-safe — a zero-order customer's `lastOrderAt` is null, and
+          // subtracting a Date from null would otherwise produce a bogus
+          // (very large) number instead of "no order yet."
+          daysSinceLastOrder: {
+            $cond: [
+              { $eq: ['$lastOrderAt', null] },
+              null,
+              { $divide: [{ $subtract: ['$$NOW', '$lastOrderAt'] }, 86_400_000] },
+            ],
+          },
         },
       },
       {
         // A real, computed segment (not a stored label that would go stale
         // the moment the buyer's next order changes which bucket they
         // belong in) — mirrors the New/Returning/VIP/At-Risk buckets a real
-        // commerce platform's customer list shows.
+        // commerce platform's customer list shows. `no_orders` is real
+        // too, not a placeholder — a customer the seller created/tagged
+        // but who hasn't purchased yet genuinely isn't "new" in the same
+        // sense a first-time buyer is.
         $addFields: {
           segment: {
             $switch: {
               branches: [
+                { case: { $eq: ['$orderCount', 0] }, then: 'no_orders' },
                 { case: { $gte: ['$orderCount', StoreService.CUSTOMER_VIP_ORDER_COUNT] }, then: 'vip' },
                 { case: { $gt: ['$daysSinceLastOrder', StoreService.CUSTOMER_AT_RISK_DAYS] }, then: 'at_risk' },
                 { case: { $eq: ['$orderCount', 1] }, then: 'new' },
@@ -1757,6 +1802,82 @@ export class StoreService {
 
     pipeline.push({ $match: filter });
     return pipeline;
+  }
+
+  /** Real "this store actually knows this person" check — an order OR a
+   *  `StoreCustomerMeta` row (tagged/noted/created directly). Replaces the
+   *  old order-only `hasOrderedHere` guard on `updateStoreCustomer`/
+   *  `updateStoreCustomerMeta`, which otherwise made a seller-created
+   *  zero-order customer permanently uneditable the moment after creating
+   *  them. */
+  private async isKnownStoreCustomer(storeId: string, userId: string): Promise<boolean> {
+    const { orderModel, storeCustomerMetaModel } = this.databaseService.repositories;
+    const [hasOrder, hasMeta] = await Promise.all([
+      orderModel.exists({ userId, 'sellerOrders.storeId': storeId, isDelete: false }),
+      storeCustomerMetaModel.exists({ storeId, userId }),
+    ]);
+    return !!hasOrder || !!hasMeta;
+  }
+
+  /** Real "Create customer profile" — the Tier-2 audit's disclosed gap
+   *  (edit existed, no seller-initiated create). Finds an existing `User`
+   *  by email first (never creates a duplicate identity for someone who
+   *  already has an account — e.g. a past buyer this store simply hasn't
+   *  had an order from yet); otherwise creates a new one scoped to THIS
+   *  store (`User.storeId`), matching that field's own documented intent
+   *  ("a genuinely separate identity ... exactly like a real Shopify
+   *  store's own customer accounts") — never touches/merges into an
+   *  existing global/legacy account. Either way, upserts a
+   *  `StoreCustomerMeta` row (`$setOnInsert` — never overwrites tags/notes
+   *  a prior order might already have attached) so the customer is
+   *  immediately visible in `getStoreCustomers`/export via the
+   *  `$unionWith` branch above, with zero orders. No password is set — the
+   *  same "no login until they reset their password" shape a manually
+   *  issued gift-card recipient or a POS walk-in customer already has
+   *  elsewhere in this app. */
+  async createStoreCustomer(
+    sellerId: string, storeId: string,
+    dto: { name: string; email: string; phone?: string },
+    ip?: string, userAgent?: string,
+  ) {
+    const store = await this.databaseService.repositories.storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
+    if (!store) throw new UnauthorizedException('Store not found or unauthorized');
+
+    const name = (dto.name ?? '').trim();
+    const email = (dto.email ?? '').trim().toLowerCase();
+    if (!name) throw new BadRequestException('A customer name is required');
+    if (!email) throw new BadRequestException('A customer email is required');
+
+    const { userModel, storeCustomerMetaModel } = this.databaseService.repositories;
+    let user = await userModel.findOne({ storeId, email, isDelete: { $ne: true } });
+    let created = false;
+    if (!user) {
+      user = await userModel.create({
+        name, email, phone: dto.phone?.trim() || undefined,
+        storeId, role: 'user', isVerified: false, status: 'active',
+      });
+      created = true;
+    }
+    const userId = user._id.toString();
+
+    await storeCustomerMetaModel.updateOne(
+      { storeId, userId },
+      { $setOnInsert: { storeId, userId, tags: [], notes: '', isArchived: false, marketingOptIn: false } },
+      { upsert: true },
+    );
+
+    this.activityLogService.log({
+      storeId, category: 'customers', action: 'customer_profile_created',
+      description: `${name} added as a customer${created ? '' : ' (matched an existing account by email)'}`,
+      actorId: sellerId, actorRole: 'seller', targetId: userId, targetType: 'customer',
+      ip, userAgent,
+    });
+
+    return {
+      success: true,
+      message: created ? 'Customer created' : 'Customer added — an existing account with this email was linked',
+      data: { _id: userId, name: user.name, email: user.email, phone: user.phone ?? null, createdAt: (user as any).createdAt },
+    };
   }
 
   async getStoreCustomers(sellerId: string, storeId: string, query: any) {
@@ -1882,9 +2003,9 @@ export class StoreService {
     const store = await this.databaseService.repositories.storeModel.findOne({ _id: storeId, isDelete: false });
     if (!store) throw new NotFoundException('Store not found');
 
-    const { orderModel, storeCustomerMetaModel } = this.databaseService.repositories;
-    const hasOrderedHere = await orderModel.exists({ userId: customerId, 'sellerOrders.storeId': storeId, isDelete: false });
-    if (!hasOrderedHere) throw new BadRequestException('This person has no orders with this store');
+    const { storeCustomerMetaModel } = this.databaseService.repositories;
+    const known = await this.isKnownStoreCustomer(storeId, customerId);
+    if (!known) throw new BadRequestException('This person is not a customer of this store');
 
     await storeCustomerMetaModel.findOneAndUpdate(
       { storeId, userId: customerId },
@@ -1928,14 +2049,19 @@ export class StoreService {
     return lines.join('\n');
   }
 
-  /** Resolves the subset of a seller's requested customer ids that have actually ordered from this store — the same ownership guard every other customer mutation applies, generalized for bulk endpoints. */
+  /** Resolves the subset of a seller's requested customer ids that this
+   *  store actually knows (an order OR a real `StoreCustomerMeta` row —
+   *  same `isKnownStoreCustomer` definition every other customer mutation
+   *  now uses), generalized for bulk endpoints. */
   private async resolveStoreCustomerIds(storeId: string, customerIds: string[]) {
     const ids = [...new Set((customerIds ?? []).filter(Boolean))];
     if (!ids.length) throw new BadRequestException('customerIds is required');
-    const { orderModel } = this.databaseService.repositories;
-    const validIds: string[] = await orderModel.distinct('userId', {
-      userId: { $in: ids }, 'sellerOrders.storeId': storeId, isDelete: false,
-    });
+    const { orderModel, storeCustomerMetaModel } = this.databaseService.repositories;
+    const [orderIds, metaIds] = await Promise.all([
+      orderModel.distinct('userId', { userId: { $in: ids }, 'sellerOrders.storeId': storeId, isDelete: false }),
+      storeCustomerMetaModel.distinct('userId', { userId: { $in: ids }, storeId }),
+    ]);
+    const validIds = [...new Set([...orderIds, ...metaIds])];
     if (!validIds.length) throw new BadRequestException('None of the selected customers belong to this store');
     return validIds;
   }
@@ -2028,10 +2154,10 @@ export class StoreService {
     if (!store) throw new NotFoundException('Store not found');
     if (store.sellerId !== sellerId) throw new UnauthorizedException('You are not authorized to edit this store\'s customers');
 
-    const { orderModel, userModel } = this.databaseService.repositories;
+    const { userModel } = this.databaseService.repositories;
 
-    const hasOrderedHere = await orderModel.exists({ userId: customerId, 'sellerOrders.storeId': storeId, isDelete: false });
-    if (!hasOrderedHere) throw new BadRequestException('This customer has no orders with your store');
+    const known = await this.isKnownStoreCustomer(storeId, customerId);
+    if (!known) throw new BadRequestException('This person is not a customer of this store');
 
     const update: any = {};
     if (dto.name !== undefined) update.name = dto.name;
@@ -2078,9 +2204,9 @@ export class StoreService {
     if (!store) throw new NotFoundException('Store not found');
     if (store.sellerId !== sellerId) throw new UnauthorizedException('You are not authorized to edit this store\'s customers');
 
-    const { orderModel, storeCustomerMetaModel } = this.databaseService.repositories;
-    const hasOrderedHere = await orderModel.exists({ userId: customerId, 'sellerOrders.storeId': storeId, isDelete: false });
-    if (!hasOrderedHere) throw new BadRequestException('This customer has no orders with your store');
+    const { storeCustomerMetaModel } = this.databaseService.repositories;
+    const known = await this.isKnownStoreCustomer(storeId, customerId);
+    if (!known) throw new BadRequestException('This person is not a customer of this store');
 
     const set: Record<string, unknown> = {};
     if (dto.tags !== undefined) set.tags = dto.tags.slice(0, 20).map((t) => t.trim()).filter(Boolean);

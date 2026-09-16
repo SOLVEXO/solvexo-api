@@ -3,6 +3,7 @@ import { Type } from 'class-transformer';
 import {
   IsArray, IsIn, IsNotEmpty, IsNumber, IsOptional, IsString, Min, ValidateNested,
 } from 'class-validator';
+import { DraftOrderShippingAddressDto } from './create-draft-order.dto';
 
 class DraftOrderItemDto {
   @IsString() @IsNotEmpty()
@@ -48,4 +49,10 @@ export class UpdateDraftOrderDto {
 
   @IsOptional() @IsString()
   notes?: string;
+
+  @IsOptional() @ValidateNested() @Type(() => DraftOrderShippingAddressDto)
+  shippingAddress?: DraftOrderShippingAddressDto;
+
+  @IsOptional() @IsIn(['due_on_receipt', 'net_15', 'net_30', 'net_60'])
+  paymentTerms?: 'due_on_receipt' | 'net_15' | 'net_30' | 'net_60';
 }

@@ -121,6 +121,43 @@ export class GiftCardsService {
     return { success: true, message: 'Gift cards', data: { items, total, page, limit } };
   }
 
+  /** Real "Edit existing card value" — the Tier-2 audit's disclosed gap
+   *  (issuance was already real, but nothing let a seller correct/top-up/
+   *  deduct an already-issued card's balance). `delta` can be positive
+   *  (goodwill top-up, correcting an under-issue) or negative (correcting
+   *  an over-issue, clawing back a mistaken credit) — never allowed to push
+   *  `balance` below 0. Writes a real `GiftCardTransaction(type:'adjustment')`
+   *  row, same audit-ledger convention every other balance change already uses. */
+  async adjustBalance(sellerId: string, storeId: string, giftCardId: string, delta: number, reason: string) {
+    await this.verifyStoreOwnership(storeId, sellerId);
+    if (!delta || !Number.isFinite(delta)) throw new BadRequestException('A non-zero adjustment amount is required');
+    const rounded = this.round(delta);
+
+    const giftCard = await this.r.giftCardModel.findOne({ _id: giftCardId, storeId, isDelete: false });
+    if (!giftCard) throw new NotFoundException('Gift card not found');
+    if (giftCard.status !== 'active') throw new BadRequestException('Only an active gift card can be adjusted');
+
+    const newBalance = this.round(giftCard.balance + rounded);
+    if (newBalance < 0) throw new BadRequestException(`This would take the balance below 0 (current: ${giftCard.balance}).`);
+
+    const updated = await this.r.giftCardModel.findByIdAndUpdate(
+      giftCardId, { $set: { balance: newBalance } }, { new: true },
+    );
+
+    await this.r.giftCardTransactionModel.create({
+      storeId, giftCardId, type: 'adjustment', amount: rounded,
+      balanceAfter: newBalance, description: (reason ?? '').trim() || (rounded > 0 ? 'Manual credit' : 'Manual deduction'),
+    });
+
+    await this.activityLogService.log({
+      storeId, category: 'marketing', action: 'gift_card_adjusted',
+      description: `${giftCard.code} — ${rounded > 0 ? '+' : ''}${rounded} ${giftCard.currency} (${reason || 'no reason given'})`,
+      actorId: sellerId, actorRole: 'seller', targetId: giftCardId, targetType: 'gift_card',
+    });
+
+    return { success: true, message: 'Gift card balance adjusted', data: updated };
+  }
+
   async disableGiftCard(sellerId: string, storeId: string, giftCardId: string) {
     await this.verifyStoreOwnership(storeId, sellerId);
     const giftCard = await this.r.giftCardModel.findOneAndUpdate(

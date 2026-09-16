@@ -18,6 +18,7 @@ import { StripeConnectService } from '@/stripe-connect/stripe-connect.service';
 import { CommissionRulesService } from '@/commission-rules/commission-rules.service';
 import { AbandonedCartService } from '@/abandoned-cart/abandoned-cart.service';
 import { AffiliateService } from '@/affiliate/affiliate.service';
+import { DraftOrdersService } from '@/draft-orders/draft-orders.service';
 import { verifyStoreOwnershipStrict } from '@/common/store-ownership.util';
 import { deriveRollupStatus } from '@/orders/order-status.util';
 import Stripe from 'stripe';
@@ -44,6 +45,7 @@ export class PaymentService {
     private readonly commissionRulesService: CommissionRulesService,
     private readonly abandonedCartService: AbandonedCartService,
     private readonly affiliateService: AffiliateService,
+    private readonly draftOrdersService: DraftOrdersService,
   ) {
     const secretKey = this.configService
       .get<string>('STRIPE_SECRET_KEY')
@@ -450,6 +452,12 @@ export class PaymentService {
         // finalizePaymentIntent, which only knows about checkout orders.
         if (paymentIntent.metadata?.purpose === 'gift_card_purchase') {
           await this.giftCardsService.finalizeGiftCardPurchase(paymentIntent);
+        } else if (paymentIntent.metadata?.purpose === 'draft_order_invoice') {
+          // Real "Send invoice" online payment — standalone PaymentIntent
+          // with no PaymentTransaction/Checkout behind it either, same
+          // shape as the gift-card branch above. See
+          // DraftOrdersService.finalizeInvoicePayment.
+          await this.draftOrdersService.finalizeInvoicePayment(paymentIntent);
         } else {
           await this.finalizePaymentIntent(paymentIntent);
         }
@@ -612,6 +620,25 @@ export class PaymentService {
       },
     });
     await this.reverseSellerLedgerForOrders(transaction.orderIds, disputeAmount, 'Stripe dispute/chargeback');
+
+    // Real, actionable notification — previously a dispute only ever showed
+    // up as a silent ledger reversal + the "Needs Attention" count; a seller
+    // had no push/notification-feed signal that a new dispute exists at all.
+    for (const storeId of storeIds) {
+      const store = await this.databaseService.repositories.storeModel.findById(storeId).select('sellerId').lean();
+      if (!store) continue;
+      this.notificationsService
+        .notify({
+          recipientId: (store as any).sellerId,
+          recipientRole: 'seller',
+          storeId,
+          type: NOTIFICATION_TYPES.DISPUTE_OPENED,
+          title: 'New payment dispute',
+          body: `A buyer disputed a ${disputeAmount} ${(dispute.currency || 'usd').toUpperCase()} charge${dueBy ? ` — evidence due by ${dueBy.toLocaleDateString()}` : ''}.`,
+          data: { disputeId: dispute.id, storeId },
+        })
+        .catch(() => {});
+    }
   }
 
   /**
@@ -623,10 +650,29 @@ export class PaymentService {
    */
   private async handleChargeDisputeStatusChange(dispute: any) {
     const { paymentTransactionModel } = this.databaseService.repositories;
-    await paymentTransactionModel.updateOne(
+    const transaction = await paymentTransactionModel.findOneAndUpdate(
       { 'disputes.disputeId': dispute.id },
       { $set: { 'disputes.$.status': dispute.status, 'disputes.$.updatedAt': new Date() } },
     );
+    if (!transaction) return;
+
+    const entry = (transaction.disputes ?? []).find((d: any) => d.disputeId === dispute.id);
+    if (!entry) return;
+    for (const storeId of entry.storeIds ?? []) {
+      const store = await this.databaseService.repositories.storeModel.findById(storeId).select('sellerId').lean();
+      if (!store) continue;
+      this.notificationsService
+        .notify({
+          recipientId: (store as any).sellerId,
+          recipientRole: 'seller',
+          storeId,
+          type: NOTIFICATION_TYPES.DISPUTE_UPDATED,
+          title: 'Dispute status updated',
+          body: `A dispute is now "${String(dispute.status).replace(/_/g, ' ')}".`,
+          data: { disputeId: dispute.id, storeId },
+        })
+        .catch(() => {});
+    }
   }
 
   /** Resolves the distinct set of storeIds a batch of orderIds belongs to (via each order's own `sellerOrders[].storeId`). */
@@ -653,6 +699,70 @@ export class PaymentService {
     return paymentTransactionModel.countDocuments({
       disputes: { $elemMatch: { storeIds: storeId, status: { $in: ['needs_response', 'warning_needs_response'] } } },
     });
+  }
+
+  /** Real "Disputes" list for the seller dashboard — closes the previously-
+   *  disclosed gap where only an open-dispute COUNT existed, no detail view.
+   *  Flattens every store-scoped `disputes[]` entry across every
+   *  `PaymentTransaction`, newest first. */
+  async listDisputes(storeId: string, sellerId: string, status?: string) {
+    await verifyStoreOwnershipStrict(this.databaseService.repositories.storeModel, storeId, sellerId);
+    const { paymentTransactionModel } = this.databaseService.repositories;
+    const match: Record<string, unknown> = { storeIds: storeId };
+    if (status) match.status = status;
+
+    const transactions = await paymentTransactionModel
+      .find({ disputes: { $elemMatch: match } })
+      .select('disputes orderIds stripePaymentIntentId')
+      .lean();
+
+    const rows: any[] = [];
+    for (const t of transactions as any[]) {
+      for (const d of t.disputes ?? []) {
+        if (!d.storeIds?.includes(storeId)) continue;
+        if (status && d.status !== status) continue;
+        rows.push({ ...d, orderIds: t.orderIds, stripePaymentIntentId: t.stripePaymentIntentId });
+      }
+    }
+    rows.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    return rows;
+  }
+
+  /** Real Stripe evidence submission — `stripe.disputes.update` with
+   *  `submit: true` files the dispute for Stripe's review (never a local-
+   *  only "acknowledged" flag). Stripe's own `charge.dispute.updated`
+   *  webhook (handleChargeDisputeStatusChange, above) is what actually
+   *  advances the locally-tracked `status` afterward — this call doesn't
+   *  optimistically set it here, to avoid drifting from Stripe's own truth. */
+  async submitDisputeEvidence(
+    storeId: string,
+    sellerId: string,
+    disputeId: string,
+    evidence: { productDescription?: string; customerCommunication?: string; shippingDocumentation?: string; uncategorizedText?: string },
+  ) {
+    await verifyStoreOwnershipStrict(this.databaseService.repositories.storeModel, storeId, sellerId);
+    const stripe = this.assertStripeConfigured();
+
+    const { paymentTransactionModel } = this.databaseService.repositories;
+    const transaction = await paymentTransactionModel.findOne({
+      disputes: { $elemMatch: { disputeId, storeIds: storeId } },
+    }).select('disputes');
+    if (!transaction) throw new BadRequestException('Dispute not found for this store');
+
+    const hasContent = Object.values(evidence).some((v) => v && v.trim());
+    if (!hasContent) throw new BadRequestException('At least one piece of evidence is required');
+
+    await stripe.disputes.update(disputeId, {
+      evidence: {
+        product_description: evidence.productDescription || undefined,
+        customer_communication: evidence.customerCommunication || undefined,
+        shipping_documentation: evidence.shippingDocumentation || undefined,
+        uncategorized_text: evidence.uncategorizedText || undefined,
+      },
+      submit: true,
+    });
+
+    return { success: true, message: 'Evidence submitted to Stripe for review' };
   }
 
   /**
@@ -1661,6 +1771,16 @@ export class PaymentService {
 
     const orderCurrency = currencyConversion?.code ?? (checkout.currency || 'USD');
     const fxSnapshots = (checkout.fxSnapshots as any) ?? [];
+    // Phase 0 — currency normalization: units of `orderCurrency` per 1 USD,
+    // captured once here from this checkout's OWN immutable fxSnapshots (see
+    // Order.ratePerUSD's schema comment for the full formula/rationale).
+    // null only when orderCurrency is non-USD and this checkout genuinely
+    // has no matching fxSnapshots entry — should not happen for a real
+    // checkout (CheckoutService always builds one), but never fabricated
+    // here if it somehow does.
+    const ratePerUSD: number | null = orderCurrency === 'USD'
+      ? 1
+      : (fxSnapshots.find((s: any) => s.currency === orderCurrency)?.ratePerUSD ?? null);
     // Converts `amount` from its OWN source currency into `orderCurrency`,
     // using this checkout's frozen fxSnapshots — never a fresh live rate.
     // Replaces the old single-blanket-multiplier conversion (correct only
@@ -1895,6 +2015,7 @@ export class PaymentService {
         checkoutId: checkout._id.toString(),
         currency: orderCurrency,
         fxSnapshots,
+        ratePerUSD,
         sellerOrders,
         shippingAddress,
         subtotal,
@@ -1941,6 +2062,7 @@ export class PaymentService {
         checkoutId: checkout._id.toString(),
         currency: orderCurrency,
         fxSnapshots,
+        ratePerUSD,
         sellerOrders,
         shippingAddress: null,
         subtotal,

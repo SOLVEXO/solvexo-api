@@ -1,5 +1,5 @@
-import { IsArray, IsIn, IsOptional, IsString } from 'class-validator';
-import { STAFF_PERMISSIONS, STAFF_ROLES } from '../schemas/staff-member.schema';
+import { IsIn, IsOptional, IsString } from 'class-validator';
+import { STAFF_ROLES } from '../schemas/staff-member.schema';
 
 export class UpdateStaffDto {
   @IsOptional()
@@ -11,9 +11,8 @@ export class UpdateStaffDto {
   role?: string;
 
   @IsOptional()
-  @IsArray()
-  @IsIn(STAFF_PERMISSIONS as any, { each: true })
-  permissions?: string[];
+  @IsString()
+  roleId?: string;
 
   @IsOptional()
   @IsString()

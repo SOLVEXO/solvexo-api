@@ -16,6 +16,8 @@ export { UserPaymentMethod, UserPaymentMethodDocument, UserPaymentMethodSchema }
 export { ShippingZone, ShippingZoneDocument, ShippingZoneSchema } from '../checkout/shipping.schema';   
 export { Checkout, CheckoutDocument, CheckoutSchema } from '../checkout/checkout.schema';
 export { Order, OrderDocument, OrderSchema } from '../orders/schemas/order.schema';
+export { OrderPaymentRecord, OrderPaymentRecordDocument, OrderPaymentRecordSchema } from '../orders/schemas/order-payment-record.schema';
+export { SavedReport, SavedReportDocument, SavedReportSchema } from '../analytics/schemas/saved-report.schema';
 export { PaymentTransaction, PaymentTransactionDocument, PaymentTransactionSchema } from '../payment/paymentTransaction.Schema';
 export { ExchangeRate, ExchangeRateDocument, ExchangeRateSchema } from '../exchange-rate/schemas/exchange-rate.schema';
 export { StripeWebhookEvent, StripeWebhookEventDocument, StripeWebhookEventSchema } from '../payment/schemas/stripe-webhook-event.schema';
@@ -26,6 +28,7 @@ export { VariantLocationStock, VariantLocationStockDocument, VariantLocationStoc
 export { StockTransfer, StockTransferDocument, StockTransferSchema } from '../inventory/schemas/stock-transfer.schema';
 export { Bin, BinDocument, BinSchema } from '../inventory/schemas/bin.schema';
 export { StaffMember, StaffMemberDocument, StaffMemberSchema } from '../staff/schemas/staff-member.schema';
+export { Role, RoleDocument, RoleSchema } from '../staff/schemas/role.schema';
 export { ApprovalRequest, ApprovalRequestDocument, ApprovalRequestSchema } from '../staff/schemas/approval-request.schema';
 export { StockLot, StockLotDocument, StockLotSchema } from '../inventory/schemas/stock-lot.schema';
 export { StockUnit, StockUnitDocument, StockUnitSchema } from '../inventory/schemas/stock-unit.schema';
@@ -162,3 +165,5 @@ export { PromotionClickEvent, PromotionClickEventDocument, PromotionClickEventSc
 export { StoreAppRequest, StoreAppRequestDocument, StoreAppRequestSchema } from '../store-app-requests/schemas/store-app-request.schema';
 export { PosPlan, PosPlanDocument, PosPlanSchema } from '../pos-plans/schemas/pos-plan.schema';
 export { PosPurchase, PosPurchaseDocument, PosPurchaseSchema } from '../pos-plans/schemas/pos-purchase.schema';
+// Phase 5 — Product Tracking Foundation (see product-view.schema.ts).
+export { ProductView, ProductViewDocument, ProductViewSchema } from '../product-views/schemas/product-view.schema';

@@ -34,11 +34,22 @@ export class StaffService {
     return store;
   }
 
+  /** Resolves a `roleId` into its real `Role.permissions` — returns `[]`
+   *  for `null`/a deleted role rather than throwing, since "no role yet" is
+   *  a valid transient state (e.g. a staff account created before a role
+   *  is assigned) and should just mean "no access", not a hard error. */
+  private async resolvePermissions(storeId: string, roleId: string | null): Promise<string[]> {
+    if (!roleId) return [];
+    const role = await this.repos.roleModel.findOne({ _id: roleId, storeId, isDelete: false }).select('permissions').lean();
+    return (role as any)?.permissions ?? [];
+  }
+
   /** Store-scoped staff login — a real email+password against `StaffMember`,
    *  never the seller's own `Seller` collection. Same JWT shape/signing
    *  mechanism as every other role, with `role:'staff'`, a required
-   *  `storeId` claim, and `permissions` embedded directly (see
-   *  JwtStrategy/PermissionsGuard). */
+   *  `storeId` claim, and `permissions` (resolved from the staff member's
+   *  assigned `Role` at THIS moment, not cached anywhere) embedded directly
+   *  (see JwtStrategy/PermissionsGuard). */
   async login(storeId: string, email: string, password: string) {
     const staff = await this.repos.staffMemberModel
       .findOne({ storeId, email: email.toLowerCase().trim(), isDelete: false })
@@ -49,13 +60,15 @@ export class StaffService {
     const match = await bcrypt.compare(password, (staff as any).passwordHash);
     if (!match) throw new UnauthorizedException('Invalid email or password');
 
+    const permissions = await this.resolvePermissions(storeId, (staff as any).roleId);
+
     const payload = {
       sub: staff._id,
       email: staff.email,
       role: 'staff',
       tokenVersion: staff.tokenVersion ?? 0,
       storeId,
-      permissions: staff.permissions ?? [],
+      permissions,
       sellerId: staff.sellerId,
     };
     const accessToken = this.jwtService.sign(payload);
@@ -72,7 +85,7 @@ export class StaffService {
         accessToken,
         staff: {
           id: staff._id, name: staff.name, email: staff.email,
-          role: staff.role, permissions: staff.permissions, storeId,
+          role: staff.role, roleId: (staff as any).roleId, permissions, storeId,
         },
       },
     };
@@ -80,18 +93,15 @@ export class StaffService {
 
   /** Creating a staff account is a seller/admin-only action, OR a staff
    *  member who already holds `staff.manage` — but a staff creator can
-   *  never grant a permission they don't themselves hold (privilege-
-   *  escalation guard). */
+   *  never assign a Role that grants a permission they don't themselves
+   *  hold (privilege-escalation guard, checked against the target ROLE's
+   *  real permission set, not a client-supplied list). */
   async create(actorId: string, actorRole: string, actorPermissions: string[] | null, storeId: string, dto: CreateStaffDto) {
     if (actorRole === 'seller') await this.verifyStoreOwnership(storeId, actorId);
     this.assertCanManageStaff(actorRole, actorPermissions);
 
-    const requested = dto.permissions ?? [];
-    if (actorRole === 'staff') {
-      const disallowed = requested.filter((p) => !(actorPermissions ?? []).includes(p));
-      if (disallowed.length > 0) {
-        throw new ForbiddenException(`You can't grant permissions you don't have: ${disallowed.join(', ')}`);
-      }
+    if (dto.roleId) {
+      await this.assertActorCanAssignRole(storeId, actorRole, actorPermissions, dto.roleId);
     }
 
     const existing = await this.repos.staffMemberModel.findOne({ storeId, email: dto.email.toLowerCase().trim() });
@@ -105,14 +115,14 @@ export class StaffService {
       email: dto.email.toLowerCase().trim(),
       passwordHash,
       role: dto.role ?? 'staff',
-      permissions: requested,
+      roleId: dto.roleId ?? null,
       locationId: dto.locationId ?? null,
       status: 'active',
     });
 
     this.activityLogService.log({
       storeId, category: 'settings', action: 'staff_member_added',
-      description: `Staff member "${staff.name}" added (${(staff.permissions ?? []).length} permission(s))`,
+      description: `Staff member "${staff.name}" added`,
       actorId, actorRole: actorRole as any,
       targetId: (staff as any)._id.toString(), targetType: 'staff_member',
     });
@@ -138,24 +148,21 @@ export class StaffService {
     const staff = await this.repos.staffMemberModel.findOne({ _id: staffId, storeId, isDelete: false });
     if (!staff) throw new NotFoundException('Staff member not found');
 
-    if (dto.permissions !== undefined && actorRole === 'staff') {
-      const disallowed = dto.permissions.filter((p) => !(actorPermissions ?? []).includes(p));
-      if (disallowed.length > 0) {
-        throw new ForbiddenException(`You can't grant permissions you don't have: ${disallowed.join(', ')}`);
-      }
+    if (dto.roleId !== undefined && dto.roleId !== null) {
+      await this.assertActorCanAssignRole(storeId, actorRole, actorPermissions, dto.roleId);
     }
 
-    let permissionsOrStatusChanged = false;
+    let roleOrStatusChanged = false;
     if (dto.name !== undefined) staff.name = dto.name;
-    if (dto.role !== undefined) { staff.role = dto.role as any; permissionsOrStatusChanged = true; }
-    if (dto.permissions !== undefined) { staff.permissions = dto.permissions as any; permissionsOrStatusChanged = true; }
+    if (dto.role !== undefined) { staff.role = dto.role as any; }
+    if (dto.roleId !== undefined) { (staff as any).roleId = dto.roleId; roleOrStatusChanged = true; }
     if (dto.locationId !== undefined) staff.locationId = dto.locationId as any;
-    if (dto.status !== undefined) { staff.status = dto.status; permissionsOrStatusChanged = true; }
+    if (dto.status !== undefined) { staff.status = dto.status; roleOrStatusChanged = true; }
 
-    // A permission/role/status change invalidates any already-issued token
-    // immediately — same tokenVersion-bump revocation JwtAuthGuard already
-    // enforces for User/Seller/Admin.
-    if (permissionsOrStatusChanged) staff.tokenVersion = (staff.tokenVersion ?? 0) + 1;
+    // A role/status change invalidates any already-issued token immediately
+    // — same tokenVersion-bump revocation JwtAuthGuard already enforces for
+    // User/Seller/Admin.
+    if (roleOrStatusChanged) staff.tokenVersion = (staff.tokenVersion ?? 0) + 1;
 
     await staff.save();
 
@@ -178,6 +185,20 @@ export class StaffService {
     if (actorRole === 'seller' || actorRole === 'admin') return;
     if (actorRole === 'staff' && (actorPermissions ?? []).includes('staff.manage')) return;
     throw new ForbiddenException("You don't have permission to manage staff");
+  }
+
+  /** A staff member (never a seller/admin, who always pass unconditionally)
+   *  can only assign a Role whose permissions are a SUBSET of their own —
+   *  real privilege-escalation prevention, checked against the target
+   *  Role's actual stored `permissions`, not anything client-supplied. */
+  private async assertActorCanAssignRole(storeId: string, actorRole: string, actorPermissions: string[] | null, roleId: string) {
+    if (actorRole !== 'staff') return;
+    const role = await this.repos.roleModel.findOne({ _id: roleId, storeId, isDelete: false }).select('permissions name').lean();
+    if (!role) throw new NotFoundException('Role not found');
+    const disallowed = ((role as any).permissions ?? []).filter((p: string) => !(actorPermissions ?? []).includes(p));
+    if (disallowed.length > 0) {
+      throw new ForbiddenException(`You can't assign the "${(role as any).name}" role — it grants permissions you don't have: ${disallowed.join(', ')}`);
+    }
   }
 
   listPermissions() {

@@ -58,4 +58,29 @@ export class RegisterDto {
   @IsOptional()
   @IsString()
   storeId?: string;
+
+  // Phase 9 — Merchant Acquisition Tracking. Only meaningful when role is
+  // 'seller' (see AuthService.signup) — a buyer's UTM/referrer is not
+  // captured here at all. Optional and best-effort: a real signup with no
+  // UTM params/referrer (organic/direct traffic) simply omits these, which
+  // AuthService.signup stores as null, never a guessed value. Sourced
+  // client-side from a localStorage snapshot (see
+  // src/utils/sellerAcquisitionAttribution.ts in the frontend), never
+  // trusted as a stable identity — this is marketing attribution, not an
+  // auth/security field.
+  @IsOptional()
+  @IsString()
+  acquisitionSource?: string;
+
+  @IsOptional()
+  @IsString()
+  acquisitionMedium?: string;
+
+  @IsOptional()
+  @IsString()
+  acquisitionCampaign?: string;
+
+  @IsOptional()
+  @IsString()
+  acquisitionLandingPage?: string;
 }

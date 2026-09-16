@@ -20,9 +20,12 @@ export interface PlatformEarningsByCurrency {
 
 export interface PlatformEarnings {
   /** @deprecated blends every settlement currency into one meaningless
-   *  number — kept only so existing non-currency-aware callers (e.g.
-   *  AdminAnalyticsService) don't break. New callers should use
-   *  `byCurrency` instead, never these blended totals. */
+   *  number. AdminAnalyticsService (Owner Analytics) migrated off this in
+   *  Phase 2 — see its own `earningsInUSD` helper, which extracts the USD
+   *  entry from `byCurrency` and discloses any other currency separately.
+   *  Kept only so AdminFinanceService (not yet migrated) doesn't break.
+   *  Any new caller should use `byCurrency` instead, never these blended
+   *  totals. */
   commission: number;
   processingFees: number;
   subscriptionRevenue: number;

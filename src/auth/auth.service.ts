@@ -115,8 +115,10 @@ export class AuthService {
 
   async signup(RegisterDto: RegisterDto) {
     try {
-      const { name, password, phone, address, role, profileImage, storeId } =
-        RegisterDto;
+      const {
+        name, password, phone, address, role, profileImage, storeId,
+        acquisitionSource, acquisitionMedium, acquisitionCampaign, acquisitionLandingPage,
+      } = RegisterDto;
       // Stored normalized so this account is actually reachable by every
       // later lookup — every one of them (login, resend-otp, verify-otp,
       // forgot/reset-password) goes through emailScope(), which now
@@ -169,6 +171,27 @@ export class AuthService {
         // this is simply dropped for a seller signup (Mongoose ignores
         // fields not declared on the schema).
         ...(role === 'user' ? { storeId: storeId ?? null } : {}),
+        // Phase 9 — Merchant Acquisition Tracking. Captured ONCE, here, at
+        // the moment a seller account is created — never written again
+        // after this (see Seller.acquisitionSource and friends). Buyer
+        // (`role === 'user'`) accounts have none of these fields on their
+        // schema, so this is simply dropped for a buyer signup, same as
+        // storeId above. acquisitionCapturedAt is only set when at least
+        // one real value came through — a signup with no UTM params/
+        // referrer (organic/direct) correctly leaves every field null
+        // rather than stamping a capture time for data that doesn't exist.
+        ...(role === 'seller'
+          ? {
+              acquisitionSource: acquisitionSource ?? null,
+              acquisitionMedium: acquisitionMedium ?? null,
+              acquisitionCampaign: acquisitionCampaign ?? null,
+              acquisitionLandingPage: acquisitionLandingPage ?? null,
+              acquisitionCapturedAt:
+                acquisitionSource || acquisitionMedium || acquisitionCampaign
+                  ? new Date()
+                  : null,
+            }
+          : {}),
       });
 
       await user.save();

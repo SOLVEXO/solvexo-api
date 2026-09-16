@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Injectable } from '@nestjs/common';
+import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
 import { DatabaseService } from '../database/databaseservice';
 import { RedisService } from '../redis/redis.service';
 import { verifyStoreOwnershipOrForbidden } from '../common/store-ownership.util';
@@ -23,6 +23,9 @@ import {
   repeatBuyerPercent as repeatBuyerPercentUtil,
   returningBuyerSet as returningBuyerSetUtil,
   sellerOrderMatchStage,
+  sumUSD,
+  toUSD,
+  unconvertibleCountField,
 } from './utils/order-aggregation.util';
 import { toCsv } from './utils/csv.util';
 import { PdfReportBuilder } from './utils/pdf-report.util';
@@ -73,18 +76,21 @@ export class AnalyticsService {
     return { scope: { 'sellerOrders.storeId': { $in: storeIds } }, storeIds };
   }
 
-  /** Every revenue/order-value figure below is denominated in each order's own
-   *  `Order.currency`, which is fixed per store (Store.baseCurrency). A single-
-   *  store scope is always unambiguous. A cross-store ("all stores") scope is
-   *  too UNLESS the seller happens to run stores in more than one currency —
-   *  in that case a blended sum would silently mix PKR and USD into one
-   *  meaningless number, so this resolves to `null` instead and callers must
-   *  not label the aggregate with any one currency's symbol. */
-  private async resolveScopeCurrency(storeIds: string[]): Promise<string | null> {
-    if (storeIds.length === 0) return null;
-    const stores = await this.r.storeModel.find({ _id: { $in: storeIds } }).select('baseCurrency').lean();
-    const currencies = new Set(stores.map((s: any) => s.baseCurrency ?? 'PKR'));
-    return currencies.size === 1 ? [...currencies][0] : null;
+  /**
+   * Phase 0 — currency normalization: every revenue/order-value figure below
+   * used to be a raw sum of each order's own `Order.currency` amount, which
+   * this function used to label — correctly for one store, but resolving to
+   * `null` ("don't label it") the moment a seller's stores spanned more than
+   * one currency, since a blended raw sum across currencies was genuinely
+   * meaningless. Every such figure is now normalized to USD instead (see
+   * `Order.ratePerUSD` and `order-aggregation.util.ts#toUSD` — Solvexo's own
+   * platform/reporting currency), so the result is always unambiguous and
+   * always `'USD'`, single-store or cross-store alike. Kept as a function
+   * (rather than inlining the literal at each call site) so the "why" stays
+   * documented in one place.
+   */
+  private async resolveScopeCurrency(_storeIds: string[]): Promise<string> {
+    return 'USD';
   }
 
   private async cached<T>(cacheKey: string, compute: () => Promise<T>): Promise<T> {
@@ -261,21 +267,32 @@ export class AnalyticsService {
         {
           $group: {
             _id: '$bucket',
-            grossRevenue: { $sum: { $cond: [this.notCancelled(), '$sellerOrders.subtotal', 0] } },
-            refundAmount: { $sum: { $cond: [this.notCancelled(), '$itemRefund', 0] } },
+            grossRevenue: { $sum: { $cond: [this.notCancelled(), { $ifNull: [toUSD('$sellerOrders.subtotal'), 0] }, 0] } },
+            refundAmount: { $sum: { $cond: [this.notCancelled(), { $ifNull: [toUSD('$itemRefund'), 0] }, 0] } },
+            unconvertibleOrderCount: { $sum: { $cond: [{ $and: [this.notCancelled(), { $or: [{ $eq: ['$ratePerUSD', null] }, { $lte: ['$ratePerUSD', 0] }] }] }, 1, 0] } },
           },
         },
       ]);
 
       const byBucket = new Map(rows.map((r: any) => [r._id.getTime(), r]));
+      let totalUnconvertible = 0;
       const series = enumerateBuckets(from, to, granularity).map((bucket) => {
         const row = byBucket.get(bucket.getTime());
         const gross = this.round(row?.grossRevenue ?? 0);
         const refund = this.round(row?.refundAmount ?? 0);
+        totalUnconvertible += row?.unconvertibleOrderCount ?? 0;
         return { date: bucket, grossRevenue: gross, netRevenue: this.round(gross - refund) };
       });
 
-      return { success: true, data: { granularity, currency, series } };
+      return {
+        success: true,
+        data: {
+          granularity, currency, series,
+          ...(totalUnconvertible > 0
+            ? { note: `${totalUnconvertible} order(s) in this period predate USD normalization (no ratePerUSD) and are excluded from these totals rather than guessed at.` }
+            : {}),
+        },
+      };
     });
   }
 
@@ -332,7 +349,7 @@ export class AnalyticsService {
           $group: {
             _id: { $ifNull: ['$attributionSource', 'other'] },
             count: { $sum: 1 },
-            revenue: { $sum: '$sellerOrders.subtotal' },
+            revenue: sumUSD('$sellerOrders.subtotal'),
           },
         },
       ]);
@@ -451,7 +468,7 @@ export class AnalyticsService {
       const geoRows = await this.r.orderModel.aggregate([
         ...this.matchStage(scope, from, to),
         { $match: { 'sellerOrders.status': { $ne: 'cancelled' }, shippingAddress: { $ne: null } } },
-        { $group: { _id: '$shippingAddress.state', orders: { $sum: 1 }, revenue: { $sum: '$sellerOrders.subtotal' } } },
+        { $group: { _id: '$shippingAddress.state', orders: { $sum: 1 }, revenue: sumUSD('$sellerOrders.subtotal'), unconvertibleOrderCount: unconvertibleCountField() } },
         { $sort: { revenue: -1 } },
       ]);
 
@@ -463,9 +480,11 @@ export class AnalyticsService {
       const countryRows = await this.r.orderModel.aggregate([
         ...this.matchStage(scope, from, to),
         { $match: { 'sellerOrders.status': { $ne: 'cancelled' }, shippingAddress: { $ne: null } } },
-        { $group: { _id: '$shippingAddress.country', orders: { $sum: 1 }, revenue: { $sum: '$sellerOrders.subtotal' } } },
+        { $group: { _id: '$shippingAddress.country', orders: { $sum: 1 }, revenue: sumUSD('$sellerOrders.subtotal'), unconvertibleOrderCount: unconvertibleCountField() } },
         { $sort: { revenue: -1 } },
       ]);
+      const geoUnconvertibleTotal = geoRows.reduce((s: number, r: any) => s + (r.unconvertibleOrderCount ?? 0), 0)
+        + countryRows.reduce((s: number, r: any) => s + (r.unconvertibleOrderCount ?? 0), 0);
 
       return {
         success: true,
@@ -484,6 +503,9 @@ export class AnalyticsService {
             orders: r.orders,
             revenue: this.round(r.revenue),
           })),
+          ...(geoUnconvertibleTotal > 0
+            ? { note: `${geoUnconvertibleTotal} order(s) predate USD normalization (no ratePerUSD) and are excluded from these revenue figures rather than guessed at.` }
+            : {}),
         },
       };
     });
@@ -636,7 +658,7 @@ export class AnalyticsService {
       const rows = await this.r.orderModel.aggregate([
         ...this.matchStage(scope, from, to),
         { $match: { 'sellerOrders.status': { $ne: 'cancelled' } } },
-        { $group: { _id: '$paymentType', count: { $sum: 1 }, revenue: { $sum: '$sellerOrders.subtotal' } } },
+        { $group: { _id: '$paymentType', count: { $sum: 1 }, revenue: sumUSD('$sellerOrders.subtotal') } },
       ]);
 
       return {
@@ -684,6 +706,45 @@ export class AnalyticsService {
   }
 
   // ═══════════════════════════════════════════════════════════════════════
+  // F.5 SAVED REPORTS — real "Reports" permission (Shopify's actual scope):
+  // a named, persisted filter configuration a seller can re-run later
+  // instead of reconfiguring the AnalyticsFilterBar from scratch. Running a
+  // saved report is just its `config` spread back into the existing
+  // `export` call — no separate report-execution engine.
+  // ═══════════════════════════════════════════════════════════════════════
+
+  async listSavedReports(sellerId: string, storeId: string) {
+    await this.verifyStoreOwnership(storeId, sellerId);
+    const reports = await this.r.savedReportModel.find({ storeId }).sort({ createdAt: -1 }).lean();
+    return { success: true, data: reports };
+  }
+
+  async createSavedReport(sellerId: string, storeId: string, body: { name: string; config: Record<string, unknown> }) {
+    await this.verifyStoreOwnership(storeId, sellerId);
+    if (!body?.name?.trim()) throw new BadRequestException('A report name is required');
+    const cfg = (body.config ?? {}) as Record<string, any>;
+    const report = await this.r.savedReportModel.create({
+      storeId, sellerId, name: body.name.trim(),
+      config: {
+        range: cfg.range ?? '30d',
+        from: cfg.from ?? null,
+        to: cfg.to ?? null,
+        compareToPreviousPeriod: !!cfg.compareToPreviousPeriod,
+        format: cfg.format ?? 'csv',
+        section: cfg.section ?? null,
+      },
+    });
+    return { success: true, message: 'Report saved', data: report };
+  }
+
+  async deleteSavedReport(sellerId: string, storeId: string, reportId: string) {
+    await this.verifyStoreOwnership(storeId, sellerId);
+    const result = await this.r.savedReportModel.deleteOne({ _id: reportId, storeId });
+    if (result.deletedCount === 0) throw new NotFoundException('Report not found');
+    return { success: true, message: 'Report deleted' };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
   // G. EXPORT — single-store only for now; not part of the cross-store view.
   // ═══════════════════════════════════════════════════════════════════════
 
@@ -703,13 +764,24 @@ export class AnalyticsService {
       case 'orders': {
         const rows = await this.r.orderModel.aggregate([
           ...this.matchStage(scope, from, to),
-          { $project: { _id: 0, orderNumber: 1, createdAt: 1, status: '$sellerOrders.status', subtotal: '$sellerOrders.subtotal', paymentType: 1 } },
+          {
+            $project: {
+              _id: 0, orderNumber: 1, createdAt: 1, status: '$sellerOrders.status',
+              currency: { $ifNull: ['$currency', 'USD'] },
+              subtotal: '$sellerOrders.subtotal',
+              // Additive — see admin-analytics.service.ts#exportCsv's same
+              // column for why this sits alongside (never replaces) the raw
+              // native-currency `subtotal` above.
+              subtotalUSD: toUSD('$sellerOrders.subtotal'),
+              paymentType: 1,
+            },
+          },
           { $sort: { createdAt: -1 } },
           { $limit: 5000 },
         ]);
         return toCsv(
-          ['Order Number', 'Date', 'Status', 'Subtotal', 'Payment Type'],
-          rows.map((r: any) => [r.orderNumber, new Date(r.createdAt).toISOString().split('T')[0], r.status, r.subtotal.toFixed(2), getPaymentMethodLabel(r.paymentType)]),
+          ['Order Number', 'Date', 'Status', 'Currency', 'Subtotal', 'Subtotal (USD)', 'Payment Type'],
+          rows.map((r: any) => [r.orderNumber, new Date(r.createdAt).toISOString().split('T')[0], r.status, r.currency, r.subtotal.toFixed(2), r.subtotalUSD == null ? 'N/A' : r.subtotalUSD.toFixed(2), getPaymentMethodLabel(r.paymentType)]),
         );
       }
       case 'products': {

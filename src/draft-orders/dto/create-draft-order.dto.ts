@@ -20,6 +20,29 @@ class DraftOrderItemDto {
   unitPrice?: number;
 }
 
+export class DraftOrderShippingAddressDto {
+  @IsString() @IsNotEmpty()
+  recipientName: string;
+
+  @IsString() @IsNotEmpty()
+  addressLine1: string;
+
+  @IsOptional() @IsString()
+  addressLine2?: string;
+
+  @IsString() @IsNotEmpty()
+  city: string;
+
+  @IsOptional() @IsString()
+  state?: string;
+
+  @IsOptional() @IsString()
+  zipCode?: string;
+
+  @IsString() @IsNotEmpty()
+  phoneNumber: string;
+}
+
 export class CreateDraftOrderDto {
   // Either a real registered buyer id, or omit and describe a guest below
   // (a guest draft can be saved/priced/invoiced but not converted to a real
@@ -53,4 +76,10 @@ export class CreateDraftOrderDto {
 
   @IsOptional() @IsString()
   notes?: string;
+
+  @IsOptional() @ValidateNested() @Type(() => DraftOrderShippingAddressDto)
+  shippingAddress?: DraftOrderShippingAddressDto;
+
+  @IsOptional() @IsIn(['due_on_receipt', 'net_15', 'net_30', 'net_60'])
+  paymentTerms?: 'due_on_receipt' | 'net_15' | 'net_30' | 'net_60';
 }

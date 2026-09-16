@@ -2,6 +2,7 @@
 import { Injectable, BadRequestException, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { DatabaseService } from '@/database/databaseservice';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
+import { toCsv } from '@/analytics/utils/csv.util';
 import { CreateAutomaticDiscountDto } from './dto/create-automatic-discount.dto';
 import { UpdateAutomaticDiscountDto } from './dto/update-automatic-discount.dto';
 
@@ -81,6 +82,37 @@ export class DiscountsService {
     await this.verifyStoreOwnership(storeId, sellerId);
     const discounts = await this.r.automaticDiscountModel.find({ storeId, isDelete: false }).sort({ createdAt: -1 }).lean();
     return { success: true, message: 'Discounts', data: discounts };
+  }
+
+  /** Real "Export discounts" — the Tier-2 audit's disclosed gap (CRUD was
+   *  already real, no CSV route existed at all, unlike every other module
+   *  in this app). Same hand-rolled `toCsv` convention as products/customers/
+   *  gift-cards export. */
+  async exportDiscountsCsv(sellerId: string, storeId: string): Promise<string> {
+    await this.verifyStoreOwnership(storeId, sellerId);
+    const discounts = await this.r.automaticDiscountModel.find({ storeId, isDelete: false }).sort({ createdAt: -1 }).lean();
+
+    const headers = [
+      'Name', 'Type', 'Value', 'Target', 'Categories', 'Products',
+      'Min Order Amount', 'Starts At', 'Ends At', 'Active', 'Created At',
+    ];
+    const rows = discounts.map((d: any) => [
+      d.name,
+      d.discountType,
+      d.discountType === 'percentage' ? `${d.discountValue}%`
+        : d.discountType === 'fixed' ? `${d.currency ?? ''} ${d.discountValue}`
+        : d.discountType === 'bogo' ? `Buy ${d.buyQuantity ?? '-'} Get ${d.getQuantity ?? '-'} at ${d.getDiscountPercent}% off`
+        : 'Free shipping',
+      d.target,
+      (d.categoryIds ?? []).join('; '),
+      (d.productIds ?? []).join('; '),
+      d.minOrderAmount ?? '',
+      d.startsAt ? new Date(d.startsAt).toISOString() : '',
+      d.endsAt ? new Date(d.endsAt).toISOString() : '',
+      d.isActive ? 'Yes' : 'No',
+      new Date(d.createdAt).toISOString(),
+    ]);
+    return toCsv(headers, rows);
   }
 
   async updateDiscount(sellerId: string, storeId: string, discountId: string, dto: UpdateAutomaticDiscountDto) {

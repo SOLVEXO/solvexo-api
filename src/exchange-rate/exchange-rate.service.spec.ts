@@ -33,7 +33,16 @@ describe('ExchangeRateService', () => {
       create: jest.fn().mockImplementation(async (doc: any) => ({ ...doc, _id: 'rate-1' })),
     };
     db = { repositories: { exchangeRateModel: model } } as any;
-    adminConfigService = { getFxConfig: jest.fn().mockResolvedValue(DEFAULT_FX_CONFIG) } as any;
+    adminConfigService = {
+      getFxConfig: jest.fn().mockResolvedValue(DEFAULT_FX_CONFIG),
+      // Real shape from AdminConfigService.getEnabledCurrencies — every spec
+      // in this file only ever exercises PKR/USD (Solvexo's real
+      // SUPPORTED_CURRENCIES), so both are mocked as enabled.
+      getEnabledCurrencies: jest.fn().mockResolvedValue([
+        { code: 'USD', sanityBandMin: null, sanityBandMax: null, stripeCardPaymentSupported: null },
+        { code: 'PKR', sanityBandMin: null, sanityBandMax: null, stripeCardPaymentSupported: null },
+      ]),
+    } as any;
     activityLogService = { log: jest.fn() } as any;
     service = new ExchangeRateService(db, adminConfigService, activityLogService);
   });

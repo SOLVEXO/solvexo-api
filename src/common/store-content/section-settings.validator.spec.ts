@@ -24,9 +24,27 @@ describe('section-settings.validator', () => {
         trust_badges: {},
         newsletter: {},
         collection_product_grid: {},
+        metaobject_list: { metaobjectType: 'team_member' },
+        editorial_lookbook: {},
+        farm_story: {},
+        drop_countdown: {},
+        craft_process: {},
+        tech_specs_compare: {},
+        soft_gallery: {},
+        feature_list: {},
+        team_grid: {},
+        stats_counter: {},
+        gallery_grid: {},
       };
       for (const type of SECTION_TYPES) {
-        expect(() => validateSectionSettings(type, minimalSettings[type])).not.toThrow();
+        // `?? {}` — a section type not yet listed above (this map has
+        // drifted from SECTION_TYPES more than once as new section types
+        // were added) now fails with validateSectionSettings' own clear
+        // BadRequestException for a genuinely-required field, instead of a
+        // confusing "Cannot read properties of undefined" from indexing a
+        // missing map entry — a real type still needing an entry here shows
+        // up as an actionable assertion failure either way.
+        expect(() => validateSectionSettings(type, minimalSettings[type] ?? {})).not.toThrow();
       }
     });
 

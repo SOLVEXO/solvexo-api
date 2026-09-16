@@ -8,11 +8,7 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { RequirePermission } from '../auth/decorators/require-permission.decorator';
 import { IdempotencyInterceptor } from '../common/idempotency.interceptor';
 import { StockCountsService } from './stock-counts.service';
-
-// See InventoryController's identical helper doc comment.
-function actingSellerId(user: any): string {
-  return user.role === 'staff' ? user.sellerId : user.userId;
-}
+import { actingSellerId } from '../common/acting-seller-id.util';
 
 @ApiTags('Stock Counts')
 @ApiBearerAuth()

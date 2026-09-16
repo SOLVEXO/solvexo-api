@@ -12,6 +12,7 @@ import {
   UseInterceptors,
   UploadedFile,
   BadRequestException,
+  ForbiddenException,
 } from '@nestjs/common';
 import type { Response } from 'express';
 import { FileInterceptor } from '@nestjs/platform-express';
@@ -22,6 +23,10 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { OptionalJwtAuthGuard } from '../auth/guards/optional-jwt-auth.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { RolesGuard } from '../auth/guards/roles.guard';
+import { PermissionsGuard } from '../auth/guards/permissions.guard';
+import { RequirePermission } from '../auth/decorators/require-permission.decorator';
+import { actingSellerId } from '../common/acting-seller-id.util';
+import { canViewProductCost, omitCostPrice, omitCostPriceFromVariants } from '../common/product-cost-visibility.util';
 import { BillingAccessGuard } from '../platform-plans/guards/billing-access.guard';
 import { RequireActiveBilling } from '../platform-plans/decorators/require-active-billing.decorator';
 
@@ -138,15 +143,22 @@ export class productController {
     return this.ProductsService.addDigitalProduct(sellerId, body);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('products.view')
   @Get('get-my-product/:productId')
   async getSellerProductById(
     @Req() req: any,
     @Param('productId') productId: string,
   ) {
-    const { userId: sellerId } = req.user;
-    return this.ProductsService.getSellerProductById(sellerId, productId);
+    const result: any = await this.ProductsService.getSellerProductById(actingSellerId(req.user), productId);
+    // Real "View products" vs "View cost" split — see products.view_cost's
+    // doc comment (common/product-cost-visibility.util.ts).
+    if (!canViewProductCost(req.user)) {
+      result.data.variants = omitCostPriceFromVariants(result.data.variants);
+      result.data.defaultVariant = result.data.defaultVariant ? omitCostPrice(result.data.defaultVariant) : null;
+    }
+    return result;
   }
 
   // ── Storefront promotion sections — public, no auth required ──────────────
@@ -177,24 +189,28 @@ export class productController {
     return this.ProductsService.getTrendingProducts(storeId, limit, req.user?.userId ?? null);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('products.view')
   @Get('store-products/:storeId')
   async getStoreProducts(
     @Req() req: any,
     @Param('storeId') storeId: string,
     @Query() query: any,
   ) {
-    const { userId: sellerId } = req.user;
-    return this.ProductsService.getStoreProducts(sellerId, storeId, query);
+    const result: any = await this.ProductsService.getStoreProducts(actingSellerId(req.user), storeId, query);
+    if (!canViewProductCost(req.user)) {
+      result.data.products = result.data.products.map((p: any) => ({ ...p, variants: omitCostPriceFromVariants(p.variants) }));
+    }
+    return result;
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('products.export')
   @Get('store-products/:storeId/export')
   async exportProductsCsv(@Req() req: any, @Res() res: Response, @Param('storeId') storeId: string) {
-    const { userId: sellerId } = req.user;
-    const csv = await this.ProductsService.exportProductsCsv(sellerId, storeId);
+    const csv = await this.ProductsService.exportProductsCsv(actingSellerId(req.user), storeId);
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', 'attachment; filename="products.csv"');
     res.send(csv);
@@ -221,21 +237,34 @@ export class productController {
   // BillingAccessGuard's own decorator doc names "creating/editing products"
   // as its intended scope, but this route was missed when the guard was
   // first wired up (found while re-verifying the 'locked' enforcement).
-  @UseGuards(JwtAuthGuard, RolesGuard, BillingAccessGuard)
-  @Roles('seller')
+  // Tier-2 real split of the Products edit/price fusion the Tier-1 audit
+  // flagged as Partial: `products.edit` is the baseline for a staff caller;
+  // touching `price`/`compareAtPrice` (only ever applied here for a
+  // digital/educational product's default variant — see
+  // ProductsService.editProduct's own doc comment) additionally requires
+  // `products.edit_price`, same imperative-check shape as
+  // `product-variants.controller.ts`'s real physical-variant split.
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard, BillingAccessGuard)
+  @Roles('seller', 'admin', 'staff')
+  @RequirePermission('products.edit')
   @RequireActiveBilling()
   @Post('edit-product')
   async editProduct(@Req() req: any, @Body() body: any) {
-    const { userId: sellerId } = req.user;
-    return this.ProductsService.editProduct(sellerId, body);
+    if (req.user.role === 'staff' && (body?.price !== undefined || body?.compareAtPrice !== undefined)) {
+      const permissions: string[] = Array.isArray(req.user.permissions) ? req.user.permissions : [];
+      if (!permissions.includes('products.edit_price')) {
+        throw new ForbiddenException("Your staff account doesn't have permission to edit product prices.");
+      }
+    }
+    return this.ProductsService.editProduct(actingSellerId(req.user), body);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('products.delete')
   @Delete('delete-product/:productId')
   async deleteProduct(@Req() req: any, @Param('productId') productId: string) {
-    const { userId: sellerId } = req.user;
-    return this.ProductsService.deleteProduct(sellerId, productId);
+    return this.ProductsService.deleteProduct(actingSellerId(req.user), productId);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)

@@ -5,7 +5,10 @@ import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { AbandonedCartService } from './abandoned-cart.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
+import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { RequirePermission } from '../auth/decorators/require-permission.decorator';
+import { actingSellerId } from '../common/acting-seller-id.util';
 import { UpdateAbandonedCartSettingsDto } from './dto/update-abandoned-cart-settings.dto';
 
 const PLATFORM_ORIGIN = 'https://solvexo.store';
@@ -18,35 +21,39 @@ export class AbandonedCartController {
   // ── Seller-facing ─────────────────────────────────────────────────────────
 
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('orders.abandoned_checkouts')
   @Get(':storeId/settings')
   getSettings(@Req() req: any, @Param('storeId') storeId: string) {
-    return this.abandonedCartService.getSettings(req.user.userId, storeId);
+    return this.abandonedCartService.getSettings(actingSellerId(req.user), storeId);
   }
 
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('orders.abandoned_checkouts')
   @Patch(':storeId/settings')
   updateSettings(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: UpdateAbandonedCartSettingsDto) {
-    return this.abandonedCartService.updateSettings(req.user.userId, storeId, dto);
+    return this.abandonedCartService.updateSettings(actingSellerId(req.user), storeId, dto);
   }
 
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('orders.abandoned_checkouts')
   @Get(':storeId/stats')
   getStats(@Req() req: any, @Param('storeId') storeId: string) {
-    return this.abandonedCartService.getStats(req.user.userId, storeId);
+    return this.abandonedCartService.getStats(actingSellerId(req.user), storeId);
   }
 
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('orders.abandoned_checkouts')
   @Get(':storeId')
   listAbandoned(@Req() req: any, @Param('storeId') storeId: string, @Query() query: any) {
-    return this.abandonedCartService.listAbandoned(req.user.userId, storeId, query);
+    return this.abandonedCartService.listAbandoned(actingSellerId(req.user), storeId, query);
   }
 
   // ── Public — the link embedded in the recovery email ────────────────────

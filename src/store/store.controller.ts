@@ -1,11 +1,14 @@
 /* eslint-disable prettier/prettier */
-import { Controller, Post, Get, Patch, Body, Req, Res, Param, Query, UseGuards } from '@nestjs/common';
+import { Controller, Post, Get, Patch, Body, Req, Res, Param, Query, UseGuards, ForbiddenException } from '@nestjs/common';
 import { Throttle, SkipThrottle } from '@nestjs/throttler';
 import type { Response } from 'express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { OptionalJwtAuthGuard } from '../auth/guards/optional-jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
+import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { RequirePermission } from '../auth/decorators/require-permission.decorator';
+import { actingSellerId } from '../common/acting-seller-id.util';
 import { StoreService } from './store.service';
 import { UpdateStoreCustomerDto } from './dto/update-store-customer.dto';
 import { BulkTagCustomersDto } from './dto/bulk-tag-customers.dto';
@@ -68,18 +71,20 @@ export class StoreController {
     return this.storeService.getStoreById(storeId, req.user?.userId ?? null);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('settings.domains.manage')
   @Patch(':storeId/custom-domain')
   async setCustomDomain(@Req() req: any, @Param('storeId') storeId: string, @Body() body: { domain: string | null }) {
-    return this.storeService.setCustomDomain(req.user.userId, storeId, body.domain ?? null);
+    return this.storeService.setCustomDomain(actingSellerId(req.user), storeId, body.domain ?? null);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('settings.domains.manage')
   @Post(':storeId/custom-domain/verify')
   async verifyCustomDomain(@Req() req: any, @Param('storeId') storeId: string) {
-    return this.storeService.verifyCustomDomain(req.user.userId, storeId);
+    return this.storeService.verifyCustomDomain(actingSellerId(req.user), storeId);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -180,13 +185,28 @@ export class StoreController {
     return this.storeService.submitVerification(req.user.userId, storeId);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  // Real "Manage general store settings" — previously seller-only with no
+  // staff path at all. NOTE: storeId travels in the body, not a route
+  // param, so `PermissionsGuard`'s store-scope pin is a no-op here (same
+  // disclosed shape as stripe-connect.controller.ts) — real ownership is
+  // still enforced by `updateStore`'s own service-layer check.
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('settings.general.manage')
   @Post('update-store')
   async updateStore(@Req() req: any, @Body() body: any) {
-    const { userId } = req.user;
     const { storeId, ...updateData } = body;
-    return this.storeService.updateStore(userId, storeId, updateData);
+    // `taxRate` is Shopify's real, separate "Manage taxes" permission —
+    // fused into this same general-settings endpoint (Store has no
+    // dedicated tax route), so the split is enforced imperatively here,
+    // same pattern as products' price/cost split.
+    if (req.user.role === 'staff' && updateData.taxRate !== undefined) {
+      const permissions: string[] = Array.isArray(req.user.permissions) ? req.user.permissions : [];
+      if (!permissions.includes('settings.taxes.manage')) {
+        throw new ForbiddenException("Your staff account doesn't have permission to manage tax settings.");
+      }
+    }
+    return this.storeService.updateStore(actingSellerId(req.user), storeId, updateData);
   }
 
   // ── Builder APIs ──────────────────────────────────────────────────────────
@@ -298,46 +318,62 @@ export class StoreController {
 
   // ── Customers (staff-facing) ─────────────────────────────────────────────
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('customers.view')
   @Get(':storeId/customers')
   async getStoreCustomers(@Req() req: any, @Param('storeId') storeId: string, @Query() query: any) {
-    const { userId } = req.user;
-    return this.storeService.getStoreCustomers(userId, storeId, query);
+    return this.storeService.getStoreCustomers(actingSellerId(req.user), storeId, query);
   }
 
   // Registered BEFORE ':customerId' — a literal 'export' segment must be
   // matched first, same static-before-parameterized precedent used
   // elsewhere in this controller (e.g. 'public/resolve-domain').
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('customers.export')
   @Get(':storeId/customers/export')
   async exportStoreCustomers(@Req() req: any, @Param('storeId') storeId: string, @Query() query: any, @Res() res: Response) {
-    const { userId } = req.user;
-    const csv = await this.storeService.exportStoreCustomers(userId, storeId, query);
+    const csv = await this.storeService.exportStoreCustomers(actingSellerId(req.user), storeId, query);
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="customers-${storeId}.csv"`);
     res.send(csv);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  // Real "Create customer profile" — the Tier-2 audit's disclosed gap
+  // (edit existed, no seller-initiated create). See
+  // StoreService.createStoreCustomer's own doc comment.
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('customers.edit')
+  @Post(':storeId/customers')
+  async createStoreCustomer(
+    @Req() req: any,
+    @Param('storeId') storeId: string,
+    @Body() dto: { name: string; email: string; phone?: string },
+  ) {
+    return this.storeService.createStoreCustomer(actingSellerId(req.user), storeId, dto, req.ip, req.headers['user-agent']);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('customers.edit')
   @Post(':storeId/customers/bulk-tag')
   async bulkTagCustomers(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: BulkTagCustomersDto) {
-    const { userId } = req.user;
-    return this.storeService.bulkTagCustomers(userId, storeId, dto, req.ip, req.headers['user-agent']);
+    return this.storeService.bulkTagCustomers(actingSellerId(req.user), storeId, dto, req.ip, req.headers['user-agent']);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('customers.edit')
   @Patch(':storeId/customers/bulk-archive')
   async bulkArchiveCustomers(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: BulkArchiveCustomersDto) {
-    const { userId } = req.user;
-    return this.storeService.bulkArchiveCustomers(userId, storeId, dto, req.ip, req.headers['user-agent']);
+    return this.storeService.bulkArchiveCustomers(actingSellerId(req.user), storeId, dto, req.ip, req.headers['user-agent']);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('customers.edit')
   @Patch(':storeId/customers/:customerId')
   async updateStoreCustomer(
     @Req() req: any,
@@ -345,12 +381,12 @@ export class StoreController {
     @Param('customerId') customerId: string,
     @Body() dto: UpdateStoreCustomerDto,
   ) {
-    const { userId } = req.user;
-    return this.storeService.updateStoreCustomer(userId, storeId, customerId, dto, req.ip, req.headers['user-agent']);
+    return this.storeService.updateStoreCustomer(actingSellerId(req.user), storeId, customerId, dto, req.ip, req.headers['user-agent']);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('customers.edit')
   @Patch(':storeId/customers/:customerId/meta')
   async updateStoreCustomerMeta(
     @Req() req: any,
@@ -358,7 +394,6 @@ export class StoreController {
     @Param('customerId') customerId: string,
     @Body() dto: { tags?: string[]; notes?: string; marketingOptIn?: boolean },
   ) {
-    const { userId } = req.user;
-    return this.storeService.updateStoreCustomerMeta(userId, storeId, customerId, dto, req.ip, req.headers['user-agent']);
+    return this.storeService.updateStoreCustomerMeta(actingSellerId(req.user), storeId, customerId, dto, req.ip, req.headers['user-agent']);
   }
 }

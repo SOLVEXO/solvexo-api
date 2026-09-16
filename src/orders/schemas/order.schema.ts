@@ -45,28 +45,6 @@ export class OrderItem {
   @Prop({ required: true })
   quantity: number;
 
-  // Set true only when this line's checkout reservation pushed real
-  // availability below 0 — i.e. the variant had `allowBackorder: true` and
-  // there genuinely wasn't enough on-hand stock at the moment of purchase.
-  // See ProductVariant.allowBackorder's own doc comment for the full scope
-  // boundary (checkout-only, never POS/manual adjustment). Purely
-  // informational for the seller/buyer ("this item shipped a bit late" /
-  // "we oversold this on purpose") — never read by any stock-mutation logic.
-  @Prop({ default: false })
-  isBackordered: boolean;
-
-  // Real accounting-grade cost of goods sold for this line — only ever set
-  // when the sold variant has `trackLots: true` (see StockLot schema and
-  // OrdersService.consumeLotsFifo). Null for every non-lot-tracked line,
-  // which still only has the coarser weighted-average `ProductVariant.
-  // costPrice` available (not stamped per-order-line at all — a seller
-  // wanting per-sale margin on those SKUs reads the store-wide valuation
-  // report instead). Set at the same real fulfillment-time stock-decrement
-  // moment `stock` itself finally drops — never at checkout/reservation
-  // time, since which physical lot ships isn't decided until then.
-  @Prop({ type: Number, default: null })
-  costOfGoodsSold: number | null;
-
   @Prop({ required: true })
   price: number;
 
@@ -232,6 +210,19 @@ export class SellerOrder {
   @Prop({ type: String, default: null })
   stripeConnectedAccountId: string | null;
 
+  // Cumulative total of standalone "Refund $X" actions issued against this
+  // sellerOrder (OrdersService.refundOrderAsSeller) — in the BUYER's
+  // checkout currency (Order.currency), same denomination `item.totalPrice`/
+  // `executeCancellation`'s `totalBuyerRefund` already use, so refund caps
+  // can be compared apples-to-apples. Deliberately separate from each
+  // item's own `refundedAmount` (set only by cancellation/return) — a
+  // standalone refund is never tied to cancelling or returning an item
+  // (e.g. a goodwill partial refund, a shipping-fee waiver after the fact),
+  // so it needed its own running total rather than overloading item-level
+  // bookkeeping.
+  @Prop({ type: Number, default: 0 })
+  manualRefundedAmount: number;
+
   // Derived — see `order-status.util.ts#deriveSellerOrderStatus`, the ONE
   // function that computes this value; never hand-set independently.
   // `partially_cancelled`/`partially_refunded`/`partially_shipped` added
@@ -349,6 +340,25 @@ export class Order {
   @Prop({ type: [FxSnapshotSchema], default: [] })
   fxSnapshots: FxSnapshot[];
 
+  // Units of `currency` (above) per 1 USD — same semantics as
+  // FxSnapshot.ratePerUSD, captured once at order-creation from this order's
+  // OWN immutable `fxSnapshots` (1 when `currency` is already 'USD', never a
+  // fresh/live rate). Every amount on this Order and its sellerOrders
+  // (subtotal, item totals, refunds, tax, shipping) is denominated in this
+  // single `currency` — never mixed within one order — so ANY such field can
+  // be normalized to USD via `amountUSD = amount / ratePerUSD`. This is what
+  // lets analytics sum revenue ACROSS orders placed in different currencies
+  // without silently blending PKR and USD figures into one meaningless
+  // number (see admin-analytics/analytics order-aggregation.util.ts#toUSD).
+  // null on an order whose `currency` is non-USD and has no matching
+  // fxSnapshots entry — a genuine historical gap (an order placed before
+  // this field existed, or before fxSnapshots existed) that must be
+  // EXCLUDED from USD-normalized totals, never guessed at. Purely
+  // additive: does not change `subtotal`/`totalAmount`/`settlementAmount`/
+  // any other existing field on this document.
+  @Prop({ type: Number, default: null })
+  ratePerUSD: number | null;
+
   // har store ka hissa
   @Prop({ type: [SellerOrderSchema], required: true })
   sellerOrders: SellerOrder[];
@@ -441,15 +451,10 @@ export class Order {
 
   // 'pending_verification' — manual bank-transfer order awaiting an admin to
   // review the buyer's uploaded proof (see manual-payments module). Never
-  // set for stripe/COD orders.
-  // 'authorized' — real Stripe manual-capture flow only (Store.paymentCaptureMethod
-  // === 'manual'): the card was authorized (funds held) at checkout but not
-  // yet charged. `isPaid` stays false the whole time this status holds — see
-  // PaymentService's `payment_intent.amount_capturable_updated` handler (sets
-  // this) and OrdersService.captureOrderPayment (the only path that moves it
-  // to 'paid'). If the authorization window lapses uncaptured, this becomes
-  // 'failed' (Stripe cancels the PaymentIntent — `payment_intent.canceled`).
-  @Prop({ enum: ['unpaid', 'pending_verification', 'authorized', 'paid', 'failed', 'refunded'], default: 'unpaid' })
+  // set for stripe/COD orders. 'partially_paid' — real "Record payments"
+  // ledger (OrdersService.recordOrderPayment) has recorded SOME but not yet
+  // the full order total; flips to 'paid' automatically once fully covered.
+  @Prop({ enum: ['unpaid', 'pending_verification', 'partially_paid', 'paid', 'failed', 'refunded'], default: 'unpaid' })
   paymentStatus: string;
 
   @Prop({ default: false })
@@ -457,6 +462,23 @@ export class Order {
 
   @Prop({ type: Date, default: null })
   paidAt: Date | null;
+
+  // Real Shopify-equivalent payment terms — carried over from a Draft Order
+  // that had them set (DraftOrder.paymentTerms/dueDate). Null for every
+  // buyer-checkout order (payment terms only ever apply to a manually
+  // created merchant order).
+  @Prop({ type: String, enum: ['due_on_receipt', 'net_15', 'net_30', 'net_60', null], default: null })
+  paymentTerms: 'due_on_receipt' | 'net_15' | 'net_30' | 'net_60' | null;
+
+  @Prop({ type: Date, default: null })
+  dueDate: Date | null;
+
+  // Real overdue-payment dunning dedup — set once
+  // OrdersService.sendOverdueOrderReminders notifies the seller this
+  // order's `dueDate` has passed while still unpaid, so the same order
+  // never re-notifies on every subsequent daily cron tick.
+  @Prop({ type: Date, default: null })
+  overdueReminderSentAt: Date | null;
 
   // Overall derived status — see `order-status.util.ts#deriveOrderStatus`,
   // the ONE function that computes this value from `sellerOrders[].status`;
@@ -523,3 +545,11 @@ OrderSchema.index({ 'sellerOrders.storeId': 1 });
 OrderSchema.index({ 'sellerOrders.items.status': 1 });
 OrderSchema.index({ paymentStatus: 1 });
 OrderSchema.index({ createdAt: -1 });
+// Every analytics aggregation (order-aggregation.util.ts#sellerOrderMatchStage,
+// and every direct orderModel.aggregate() call in admin-analytics/analytics)
+// leads with `{ isDelete: false, createdAt: { $gte, $lte } }` as its very
+// first $match — a lone `createdAt` index still has to fall back to an
+// in-memory filter for `isDelete` on every candidate document. Compound here
+// (isDelete first, since it's the equality predicate) lets that first $match
+// be satisfied by the index alone.
+OrderSchema.index({ isDelete: 1, createdAt: -1 });

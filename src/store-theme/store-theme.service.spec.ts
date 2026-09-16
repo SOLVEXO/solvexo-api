@@ -3,6 +3,8 @@ import { ForbiddenException } from '@nestjs/common';
 import { StoreThemeService } from './store-theme.service';
 import { DatabaseService } from '../database/databaseservice';
 import { ThemeCatalogService } from '../theme-catalog/theme-catalog.service';
+import { ContentVersioningService } from '../common/content-versioning/content-versioning.service';
+import { MenusService } from '../menus/menus.service';
 
 const STORE_ID = 'store-1';
 const OTHER_STORE_ID = 'store-2';
@@ -17,6 +19,7 @@ describe('StoreThemeService', () => {
   let storePageModel: any;
   let db: DatabaseService;
   let themeCatalogService: ThemeCatalogService;
+  let menusService: MenusService;
 
   // The seller's own existing draft BEFORE any apply/publish/revert call —
   // used to assert that a theme's own (empty) header/footer blocks never
@@ -47,7 +50,21 @@ describe('StoreThemeService', () => {
     storeThemeModel = {
       findOneAndUpdate: jest.fn().mockResolvedValue({}),
       updateOne: jest.fn().mockResolvedValue({}),
-      findOne: jest.fn().mockResolvedValue({ draft: existingDraft() }),
+      // ensureDefaultTheme's real legacy-row backfill (installed-theme
+      // migration) — not itself under test here, just a real call every
+      // resolveInstance() path makes before doing anything else.
+      updateMany: jest.fn().mockResolvedValue({}),
+      // Real resolveInstance()/ensureDefaultTheme() return the store's own
+      // installed-theme-instance DOCUMENT — every mutating method below
+      // (applyThemeDefinition/publishTheme/revertDraftToPublished) then
+      // filters its own update by that instance's real `_id`, not `storeId`
+      // (a store can have several installed rows since the multi-install
+      // architecture landed — see StoreThemeService's own doc comments), so
+      // the mock derives a stable, per-store `_id` instead of leaving it
+      // undefined.
+      findOne: jest.fn().mockImplementation((query: any) =>
+        Promise.resolve({ _id: `instance-${query.storeId}`, storeId: query.storeId, draft: existingDraft() }),
+      ),
     };
     storeModel = {
       // `verifyStoreOwnershipStrict` (real implementation, not mocked) reads
@@ -63,8 +80,17 @@ describe('StoreThemeService', () => {
       getPublishedForApply: jest.fn().mockResolvedValue(themeDefinition()),
       incrementApplyCount: jest.fn().mockResolvedValue(undefined),
     } as any;
+    // Real, undoubled instance — ContentVersioningService is a pure,
+    // dependency-free utility (no constructor args, see its own spec file),
+    // so mocking its 7 methods by hand would just re-implement the real
+    // thing with more risk of drifting from it.
+    const contentVersioningService = new ContentVersioningService();
+    // Only reached when header.menuId/footer.menuId is set — no fixture in
+    // this file sets either, so this is never actually invoked; mocked for
+    // constructor-shape correctness only.
+    menusService = { getRaw: jest.fn().mockResolvedValue(null) } as any;
 
-    service = new StoreThemeService(db, themeCatalogService);
+    service = new StoreThemeService(db, contentVersioningService, menusService, themeCatalogService);
   });
 
   describe('applyThemeDefinition', () => {
@@ -85,7 +111,7 @@ describe('StoreThemeService', () => {
       );
       expect(applyCall).toBeDefined();
       const [filter, update] = applyCall;
-      expect(filter).toEqual({ storeId: STORE_ID }); // never touches any other store's document
+      expect(filter).toEqual({ _id: `instance-${STORE_ID}` }); // never touches any other store's document
       expect(update.$set['draft.theme']).toEqual({ primaryColor: '#1F1B2E' });
       expect(update.$set['draft.identityBanner']).toEqual({ showFollowButton: false });
       expect(update.$set['draft.baseThemeId']).toBe(THEME_DEF_ID);
@@ -131,6 +157,7 @@ describe('StoreThemeService', () => {
   describe('publishTheme', () => {
     it('writes a pending theme-application\'s home sections into the home StorePage and clears the pending field', async () => {
       storeThemeModel.findOne = jest.fn().mockResolvedValue({
+        _id: `instance-${STORE_ID}`,
         draft: { ...existingDraft(), pendingHomeSections: [{ type: 'hero', settings: {}, blocks: [] }] },
       });
 
@@ -141,13 +168,13 @@ describe('StoreThemeService', () => {
         { $set: { sections: [{ type: 'hero', settings: {}, blocks: [] }] } },
       );
       expect(storeThemeModel.updateOne).toHaveBeenCalledWith(
-        { storeId: STORE_ID },
+        { _id: `instance-${STORE_ID}` },
         { $set: { 'draft.pendingHomeSections': null } },
       );
     });
 
     it('never touches the home StorePage when there is no pending theme application', async () => {
-      storeThemeModel.findOne = jest.fn().mockResolvedValue({ draft: { ...existingDraft(), pendingHomeSections: null } });
+      storeThemeModel.findOne = jest.fn().mockResolvedValue({ _id: `instance-${STORE_ID}`, draft: { ...existingDraft(), pendingHomeSections: null } });
 
       await service.publishTheme(STORE_ID, SELLER_ID);
 
@@ -188,8 +215,8 @@ describe('StoreThemeService', () => {
         ([, update]: any[]) => update?.$set?.['draft.theme'] !== undefined,
       );
       expect(applyCalls).toHaveLength(2);
-      expect(applyCalls[0][0]).toEqual({ storeId: STORE_ID });
-      expect(applyCalls[1][0]).toEqual({ storeId: OTHER_STORE_ID });
+      expect(applyCalls[0][0]).toEqual({ _id: `instance-${STORE_ID}` });
+      expect(applyCalls[1][0]).toEqual({ _id: `instance-${OTHER_STORE_ID}` });
     });
   });
 });

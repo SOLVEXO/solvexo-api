@@ -417,6 +417,9 @@ export class DatabaseService {
     @InjectModel(schema.StaffMember.name)
     private staffMemberModel: Model<schema.StaffMemberDocument>,
 
+    @InjectModel(schema.Role.name)
+    private roleModel: Model<schema.RoleDocument>,
+
     @InjectModel(schema.ApprovalRequest.name)
     private approvalRequestModel: Model<schema.ApprovalRequestDocument>,
 
@@ -425,6 +428,16 @@ export class DatabaseService {
 
     @InjectModel(schema.StockUnit.name)
     private stockUnitModel: Model<schema.StockUnitDocument>,
+
+    @InjectModel(schema.OrderPaymentRecord.name)
+    private orderPaymentRecordModel: Model<schema.OrderPaymentRecordDocument>,
+
+    // Phase 5 — Product Tracking Foundation.
+    @InjectModel(schema.ProductView.name)
+    private productViewModel: Model<schema.ProductViewDocument>,
+
+    @InjectModel(schema.SavedReport.name)
+    private savedReportModel: Model<schema.SavedReportDocument>,
 
   ) { }
 
@@ -570,9 +583,13 @@ export class DatabaseService {
       posPurchaseModel: this.posPurchaseModel,
       binModel: this.binModel,
       staffMemberModel: this.staffMemberModel,
+      roleModel: this.roleModel,
       approvalRequestModel: this.approvalRequestModel,
       stockLotModel: this.stockLotModel,
       stockUnitModel: this.stockUnitModel,
+      orderPaymentRecordModel: this.orderPaymentRecordModel,
+      productViewModel: this.productViewModel,
+      savedReportModel: this.savedReportModel,
     };
   }
 }

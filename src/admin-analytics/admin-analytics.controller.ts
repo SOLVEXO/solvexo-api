@@ -13,6 +13,8 @@ import { AdminTopProductsQueryDto } from './dto/top-products-query.dto';
 import { TopCategoriesQueryDto } from './dto/top-categories-query.dto';
 import { AdminProductPerformanceQueryDto } from './dto/product-performance-query.dto';
 import { AdminExportQueryDto } from './dto/export-query.dto';
+import { OrdersListQueryDto } from './dto/orders-list-query.dto';
+import { PlatformHealthService } from '../platform-health/platform-health.service';
 
 @ApiTags('Admin Analytics')
 @ApiBearerAuth()
@@ -21,7 +23,10 @@ import { AdminExportQueryDto } from './dto/export-query.dto';
 @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
 @Controller('api/admin/analytics')
 export class AdminAnalyticsController {
-  constructor(private readonly adminAnalyticsService: AdminAnalyticsService) {}
+  constructor(
+    private readonly adminAnalyticsService: AdminAnalyticsService,
+    private readonly platformHealthService: PlatformHealthService,
+  ) {}
 
   // ─── Dashboard overview ─────────────────────────────────────────────────
 
@@ -100,6 +105,11 @@ export class AdminAnalyticsController {
     return this.adminAnalyticsService.getOrderStatusBreakdown(query);
   }
 
+  @Get('orders/list')
+  getOrdersList(@Query() query: OrdersListQueryDto) {
+    return this.adminAnalyticsService.getOrdersList(query);
+  }
+
   // ─── Payment analytics ──────────────────────────────────────────────────
 
   @Get('payments/breakdown')
@@ -112,6 +122,25 @@ export class AdminAnalyticsController {
   @Get('platform-metrics')
   getPlatformMetrics(@Query() query: AdminAnalyticsQueryDto) {
     return this.adminAnalyticsService.getPlatformMetrics(query);
+  }
+
+  // Phase 9 — Merchant Acquisition Tracking (real UTM/referrer capture at
+  // seller signup — see Seller.acquisitionSource et al.). Deliberately a
+  // sibling of platform-metrics, not seller/*, since this is a
+  // marketing/growth signal for the Platform tab, not a seller-performance one.
+  @Get('platform/seller-acquisition')
+  getSellerAcquisitionBreakdown(@Query() query: AdminAnalyticsQueryDto) {
+    return this.adminAnalyticsService.getSellerAcquisitionBreakdown(query);
+  }
+
+  // Phase 10 — Platform Health. Real, live infrastructure data only (Mongo/
+  // Redis dependency status, real webhook-processing failure rate, real
+  // BullMQ queue backlog) — never a fabricated uptime/latency/error-rate
+  // number derived from business analytics. See PlatformHealthService's
+  // header comment for exactly which real sources back each field.
+  @Get('platform/health')
+  getPlatformHealth(@Query() query: AdminAnalyticsQueryDto) {
+    return this.platformHealthService.getPlatformHealth(query);
   }
 
   // ─── Export ──────────────────────────────────────────────────────────────

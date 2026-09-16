@@ -15,8 +15,11 @@ import {
 import { Request } from 'express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
+import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { RequirePermission } from '../auth/decorators/require-permission.decorator';
 import { IdempotencyInterceptor } from '../common/idempotency.interceptor';
+import { actingSellerId } from '../common/acting-seller-id.util';
 import { PaymentService } from './payment.service';
 
 @Controller('api/payment')
@@ -64,6 +67,30 @@ export class PaymentController {
     return { success: true, data: { count } };
   }
 
+  // Real disputes list/detail view — closes the audit's disclosed gap
+  // ("only an open-count is shown; no detail/evidence UI").
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'admin', 'staff')
+  @RequirePermission('orders.disputes_manage')
+  @Get('disputes/:storeId')
+  async listDisputes(@Req() req: any, @Param('storeId') storeId: string, @Query('status') status?: string) {
+    const disputes = await this.paymentService.listDisputes(storeId, actingSellerId(req.user), status);
+    return { success: true, data: disputes };
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'admin', 'staff')
+  @RequirePermission('orders.disputes_manage')
+  @Post('disputes/:storeId/:disputeId/evidence')
+  async submitDisputeEvidence(
+    @Req() req: any,
+    @Param('storeId') storeId: string,
+    @Param('disputeId') disputeId: string,
+    @Body() body: { productDescription?: string; customerCommunication?: string; shippingDocumentation?: string; uncategorizedText?: string },
+  ) {
+    return this.paymentService.submitDisputeEvidence(storeId, actingSellerId(req.user), disputeId, body);
+  }
+
   // Mirrors Shopify Home's "Review high-risk orders" order task — real
   // Stripe Radar fraud-risk signal, see PaymentService.getHighRiskOrderCount.
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -76,11 +103,12 @@ export class PaymentController {
 
   // Real "Capture Payment" action for a manual-capture store's authorized
   // order — mirrors Shopify's own order-page "Capture Payment" button.
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('orders.capture_payment')
   @Post('orders/:orderId/capture')
   async captureOrderPayment(@Req() req: any, @Param('orderId') orderId: string, @Body() body: { amountToCapture?: number }) {
-    const data = await this.paymentService.captureOrderPayment(req.user.userId, orderId, body?.amountToCapture);
+    const data = await this.paymentService.captureOrderPayment(actingSellerId(req.user), orderId, body?.amountToCapture);
     return { success: true, data };
   }
 

@@ -12,8 +12,11 @@ export class GiftCardTransaction {
   @Prop({ required: true })
   giftCardId: string;
 
-  @Prop({ required: true, enum: ['issue', 'redeem', 'refund'] })
-  type: 'issue' | 'redeem' | 'refund';
+  // 'adjustment' — real "Edit existing card value" (GiftCardsService.adjustBalance):
+  // a manual correction/goodwill top-up/deduction, distinct from an 'issue'
+  // (the card's original creation) or a checkout 'redeem'/'refund'.
+  @Prop({ required: true, enum: ['issue', 'redeem', 'refund', 'adjustment'] })
+  type: 'issue' | 'redeem' | 'refund' | 'adjustment';
 
   @Prop({ required: true })
   amount: number;
