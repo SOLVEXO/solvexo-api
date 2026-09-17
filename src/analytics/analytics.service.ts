@@ -31,6 +31,7 @@ import { toCsv } from './utils/csv.util';
 import { PdfReportBuilder } from './utils/pdf-report.util';
 import { getPaymentMethodLabel } from './utils/payment-method-label.util';
 import { resolveCustomerIdentities, NOT_RECORDED_LABEL } from './utils/customer-identity.util';
+import { forecastDailyDemand } from '../inventory/demand-forecast.util';
 
 const ATTRIBUTION_SOURCES = ['marketplace_search', 'direct_link', 'social_media', 'email', 'other'] as const;
 const CACHE_TTL_SECONDS = 600; // 10 minutes
@@ -297,6 +298,139 @@ export class AnalyticsService {
   }
 
   // ═══════════════════════════════════════════════════════════════════════
+  // B2. SALES FORECAST — real trend+seasonality forecasting (Holt's linear
+  // exponential smoothing + day-of-week factor, `demand-forecast.util.ts`,
+  // the same technique Inventory's Reorder Suggestions uses, applied here to
+  // daily NET REVENUE instead of per-SKU units). Falls back to a plain
+  // 30-day daily average whenever there isn't enough order history to
+  // forecast responsibly (a new/low-volume store) — every seller always
+  // gets an honest projected figure, never a confident-looking guess from
+  // too little data. `method` on the response discloses which one was used.
+  // ═══════════════════════════════════════════════════════════════════════
+
+  async getSalesForecast(sellerId: string, storeId: string | null | undefined) {
+    const { scope } = await this.resolveScope(sellerId, storeId);
+    const from = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+    const to = new Date();
+
+    return this.cached(this.key('sales-forecast', this.scopeLabel(sellerId, storeId), {}), async () => {
+      const currency = 'USD';
+      const rows = await this.r.orderModel.aggregate([
+        ...this.matchStage(scope, from, to),
+        {
+          $addFields: {
+            itemRefund: this.itemRefundField(),
+            day: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt', timezone: 'UTC' } },
+          },
+        },
+        {
+          $group: {
+            _id: '$day',
+            netRevenue: {
+              $sum: {
+                $cond: [this.notCancelled(), { $ifNull: [{ $subtract: [toUSD('$sellerOrders.subtotal'), toUSD('$itemRefund')] }, 0] }, 0],
+              },
+            },
+          },
+        },
+      ]);
+
+      const dailyRevenue = new Map<string, number>(rows.map((r: any) => [r._id, Math.max(0, this.round(r.netRevenue))]));
+      const forecast = forecastDailyDemand(dailyRevenue);
+      const thirtyDayCutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+      const thirtyDaySum = Array.from(dailyRevenue.entries()).reduce((sum, [day, rev]) => (day >= thirtyDayCutoff ? sum + rev : sum), 0);
+      const simpleAvg = thirtyDaySum / 30;
+      const forecastedDailyRevenue = this.round(forecast ?? simpleAvg);
+
+      return {
+        success: true,
+        data: {
+          currency,
+          method: forecast != null ? 'trend_seasonal' : 'simple_average',
+          forecastedDailyRevenue,
+          projectedNext7Days: this.round(forecastedDailyRevenue * 7),
+          projectedNext30Days: this.round(forecastedDailyRevenue * 30),
+        },
+      };
+    });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // B3. WEEKDAY PERFORMANCE — a real, honest insight for Marketing/Discounts:
+  // which day of the week this store's sales are consistently weakest, over
+  // the last 90 days, so a seller can target a discount/campaign at their
+  // actual slow day instead of guessing. Same underlying day-of-week
+  // averaging idea as the seasonality factor in `demand-forecast.util.ts`,
+  // surfaced directly here since "which day is slow" is itself the useful
+  // answer, not an intermediate step toward a forecast number.
+  // ═══════════════════════════════════════════════════════════════════════
+
+  private static readonly WEEKDAY_LABELS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  /** Needs at least this many distinct sale-days in the 90-day window before
+   *  a weekday comparison is considered meaningful (same guardrail spirit as
+   *  `demand-forecast.util.ts`'s MIN_SALE_DAYS) — a near-empty store gets
+   *  `null` rather than a misleading "your slowest day is X" from 2 data points. */
+  private static readonly WEEKDAY_MIN_SALE_DAYS = 14;
+
+  async getWeekdayPerformance(sellerId: string, storeId: string | null | undefined) {
+    const { scope } = await this.resolveScope(sellerId, storeId);
+    const from = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+    const to = new Date();
+
+    return this.cached(this.key('weekday-performance', this.scopeLabel(sellerId, storeId), {}), async () => {
+      const rows = await this.r.orderModel.aggregate([
+        ...this.matchStage(scope, from, to),
+        {
+          $addFields: {
+            itemRefund: this.itemRefundField(),
+            day: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt', timezone: 'UTC' } },
+            weekday: { $dayOfWeek: { date: '$createdAt', timezone: 'UTC' } }, // 1=Sunday..7=Saturday
+          },
+        },
+        {
+          $group: {
+            _id: { day: '$day', weekday: '$weekday' },
+            netRevenue: {
+              $sum: {
+                $cond: [this.notCancelled(), { $ifNull: [{ $subtract: [toUSD('$sellerOrders.subtotal'), toUSD('$itemRefund')] }, 0] }, 0],
+              },
+            },
+          },
+        },
+      ]);
+
+      if (rows.length < AnalyticsService.WEEKDAY_MIN_SALE_DAYS) {
+        return { success: true, data: null };
+      }
+
+      const totals = Array(7).fill(0);
+      const counts = Array(7).fill(0);
+      for (const row of rows as any[]) {
+        const idx = row._id.weekday - 1; // 1..7 -> 0..6
+        totals[idx] += Math.max(0, row.netRevenue);
+        counts[idx] += 1;
+      }
+      const averages = totals.map((t, i) => (counts[i] > 0 ? t / counts[i] : 0));
+      const overallAvg = averages.reduce((a, b) => a + b, 0) / 7;
+      if (overallAvg <= 0) return { success: true, data: null };
+
+      let slowestIdx = 0;
+      for (let i = 1; i < 7; i++) if (counts[i] > 0 && averages[i] < averages[slowestIdx]) slowestIdx = i;
+      let busiestIdx = 0;
+      for (let i = 1; i < 7; i++) if (averages[i] > averages[busiestIdx]) busiestIdx = i;
+
+      return {
+        success: true,
+        data: {
+          slowestDay: AnalyticsService.WEEKDAY_LABELS[slowestIdx],
+          slowestDayBelowAveragePercent: this.round(((overallAvg - averages[slowestIdx]) / overallAvg) * 100),
+          busiestDay: AnalyticsService.WEEKDAY_LABELS[busiestIdx],
+        },
+      };
+    });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
   // C. ORDERS OVER TIME
   // ═══════════════════════════════════════════════════════════════════════
 
@@ -402,6 +536,56 @@ export class AnalyticsService {
   /** Shared item-level sales aggregation reused by top-products and product-performance (and by admin analytics, platform-wide). */
   private async aggregateProductSales(scope: Record<string, any>, from: Date, to: Date) {
     return aggregateProductSalesUtil(this.r.orderModel, from, to, scope);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // E2. TRENDING PRODUCTS — real week-over-week growth detection (last 7
+  // days vs the prior 7 days, per product), independent of whatever date
+  // range the analytics filter bar happens to be set to. Surfaces products
+  // with genuinely rising demand so a seller can react (restock, feature,
+  // discount) before the trend fades or the shelf empties. Deliberately NOT
+  // the same trend+seasonality model as Sales Forecast/Reorder Suggestions —
+  // week-over-week comparison is the right, simpler tool for "what's hot
+  // right now," not a multi-week smoothed projection. A product needs a
+  // minimum recent volume to qualify, so "300% up" noise from a product that
+  // sold 1 unit instead of 0 never surfaces.
+  // ═══════════════════════════════════════════════════════════════════════
+
+  private static readonly TRENDING_MIN_UNITS = 3;
+
+  async getTrendingProducts(sellerId: string, storeId: string | null | undefined) {
+    const { scope } = await this.resolveScope(sellerId, storeId);
+    const now = new Date();
+    const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const fourteenDaysAgo = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000);
+
+    return this.cached(this.key('trending-products', this.scopeLabel(sellerId, storeId), {}), async () => {
+      const [recent, prior] = await Promise.all([
+        this.aggregateProductSales(scope, sevenDaysAgo, now),
+        this.aggregateProductSales(scope, fourteenDaysAgo, sevenDaysAgo),
+      ]);
+      const priorByProduct = new Map(prior.map((r) => [r.productId, r.unitsSold]));
+
+      const trending = recent
+        .filter((r) => r.unitsSold >= AnalyticsService.TRENDING_MIN_UNITS)
+        .map((r) => {
+          const priorUnits = priorByProduct.get(r.productId) ?? 0;
+          // `null` = no prior-week baseline to compare against (a genuinely
+          // new/rarely-sold product suddenly moving) rather than a fake "∞%".
+          const growthPercent = priorUnits > 0 ? this.round(((r.unitsSold - priorUnits) / priorUnits) * 100) : null;
+          return { productId: r.productId, name: r.name, unitsSoldLast7Days: r.unitsSold, unitsSoldPrior7Days: priorUnits, growthPercent };
+        })
+        .filter((r) => r.growthPercent === null || r.growthPercent > 0)
+        .sort((a, b) => {
+          if (a.growthPercent === null && b.growthPercent === null) return b.unitsSoldLast7Days - a.unitsSoldLast7Days;
+          if (a.growthPercent === null) return 1;
+          if (b.growthPercent === null) return -1;
+          return b.growthPercent - a.growthPercent;
+        })
+        .slice(0, 5);
+
+      return { success: true, data: trending };
+    });
   }
 
   // ═══════════════════════════════════════════════════════════════════════

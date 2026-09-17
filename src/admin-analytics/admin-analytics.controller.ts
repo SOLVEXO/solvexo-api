@@ -47,6 +47,15 @@ export class AdminAnalyticsController {
     return this.adminAnalyticsService.getRevenueBreakdown(query);
   }
 
+  // Real trend+seasonality platform growth forecast — see
+  // AdminAnalyticsService's own doc comment for the method and its honest
+  // fallback. Same optional storeId/sellerId drill-down as every sibling
+  // route here (omitted = platform-wide).
+  @Get('growth-forecast')
+  getPlatformGrowthForecast(@Query() query: AdminAnalyticsQueryDto) {
+    return this.adminAnalyticsService.getPlatformGrowthForecast(query);
+  }
+
   // ─── Seller analytics ───────────────────────────────────────────────────
 
   @Get('sellers/top')

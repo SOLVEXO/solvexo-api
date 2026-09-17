@@ -167,6 +167,27 @@ export class SubscriptionsService {
     return sub.status === 'active' && !!sub.canceledAt;
   }
 
+  /**
+   * Real, rule-based churn-risk classification — deliberately NOT the
+   * statistical trend model used elsewhere (Inventory/Analytics/Admin
+   * Growth Forecast). A subscription's own real, known state already
+   * carries the honest signal: `'past_due'` means a real payment is
+   * actively failing right now (the strongest concrete churn indicator
+   * there is); `'paused'` or a recovered-but-previously-failed payment
+   * (`status:'active'` with `failedPaymentAttempts > 0`) are real but
+   * softer warning signs. No engagement/order-behavior modeling is
+   * attempted — that data isn't tracked on this schema, and inventing a
+   * score from data that doesn't exist would be exactly the "confident-
+   * looking but meaningless" mistake this pass's other forecasts are
+   * built to avoid.
+   */
+  private churnRisk(sub: any): 'high' | 'medium' | 'none' {
+    if (sub.status === 'past_due') return 'high';
+    if (sub.status === 'paused') return 'medium';
+    if (sub.status === 'active' && (sub.failedPaymentAttempts ?? 0) > 0) return 'medium';
+    return 'none';
+  }
+
   private async getCustomerAndStoreNames(customerId: string, storeId: string) {
     const [customer, store] = await Promise.all([
       this.db.repositories.userModel.findById(customerId).select('name email').lean(),
@@ -324,6 +345,19 @@ export class SubscriptionsService {
       type: NOTIFICATION_TYPES.SUBSCRIPTION_PAYMENT_FAILED,
       title: 'Membership payment failed',
       body: `We couldn't process your ${storeName} membership payment — we'll retry on ${retryAt.toDateString()}.`,
+      data: { subscriptionId: String(sub._id) },
+    }).catch(() => {});
+    // Seller-facing counterpart — this is exactly the moment the new
+    // Retention Risk badge (see SubscriptionsService.churnRisk) flips to
+    // 'high' for this subscriber; the seller shouldn't have to be actively
+    // browsing the Subscribers list to find out their revenue is at risk.
+    this.notificationsService.notify({
+      recipientId: sub.sellerId,
+      recipientRole: 'seller',
+      storeId: sub.storeId,
+      type: NOTIFICATION_TYPES.SUBSCRIBER_AT_RISK,
+      title: 'A subscriber payment failed',
+      body: `${customerName}'s payment for ${planName} failed (attempt ${sub.failedPaymentAttempts}/${MAX_RENEWAL_ATTEMPTS}) — we'll retry on ${retryAt.toDateString()}.`,
       data: { subscriptionId: String(sub._id) },
     }).catch(() => {});
     return { canceled: false };
@@ -488,6 +522,7 @@ export class SubscriptionsService {
       customer: customer ?? { name: 'Unknown', email: 'N/A' },
       planName: (plan as any)?.name ?? 'Plan not found',
       pendingCancellation: this.pendingCancellation(sub),
+      churnRisk: this.churnRisk(sub),
     };
   }
 
@@ -533,6 +568,7 @@ export class SubscriptionsService {
         plan: plan ?? null,
         invoices,
         pendingCancellation: this.pendingCancellation(sub),
+        churnRisk: this.churnRisk(sub),
       },
     };
   }

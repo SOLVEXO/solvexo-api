@@ -75,6 +75,24 @@ export class MediaLibraryController {
     return { success: true, data: result };
   }
 
+  @Post(':storeId/upload-from-url')
+  @Roles('seller', 'staff')
+  @RequirePermission('files.manage')
+  @UseGuards(RolesGuard, PermissionsGuard)
+  async uploadFromUrl(
+    @Req() req: any,
+    @Param('storeId') storeId: string,
+    @Body() body: { url: string; altText?: string; tags?: string },
+  ) {
+    const sellerId = actingSellerId(req.user);
+    await verifyStoreOwnershipStrict(this.databaseService.repositories.storeModel, storeId, sellerId);
+    const tags = body.tags ? body.tags.split(',').map(t => t.trim()).filter(Boolean) : [];
+    const result = await this.mediaLibraryService.uploadFromUrlAndTrack(body.url, 'seller', sellerId, {
+      storeId, altText: body.altText, tags,
+    });
+    return { success: true, data: result };
+  }
+
   @Patch(':storeId/:assetId')
   @Roles('seller', 'staff')
   @RequirePermission('files.manage')

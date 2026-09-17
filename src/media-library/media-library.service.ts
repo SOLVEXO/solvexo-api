@@ -45,6 +45,34 @@ export class MediaLibraryService {
     return { ...uploaded, mediaAssetId: asset._id };
   }
 
+  /** Same as `uploadAndTrack`, sourced from a pasted URL instead of a multipart
+   *  file — the "paste URL" option in `ImageUpload`, tracked into the Files
+   *  Library exactly like a real file upload would be. */
+  async uploadFromUrlAndTrack(
+    url: string,
+    ownerType: 'admin' | 'seller',
+    ownerId: string,
+    options?: { folder?: string; maxDimension?: number; storeId?: string | null; altText?: string; tags?: string[] },
+  ) {
+    const uploaded = await this.uploadService.uploadFromUrl(url, options);
+    const asset = await this.model.create({
+      ownerType,
+      ownerId,
+      storeId: options?.storeId ?? null,
+      url: uploaded.url,
+      publicId: uploaded.publicId,
+      resourceType: uploaded.resourceType,
+      width: uploaded.width ?? null,
+      height: uploaded.height ?? null,
+      sizeBytes: null,
+      mimeType: null,
+      filename: url.split('/').pop()?.split('?')[0] ?? '',
+      altText: options?.altText ?? '',
+      tags: options?.tags ?? [],
+    });
+    return { ...uploaded, mediaAssetId: asset._id };
+  }
+
   async listForOwner(ownerType: 'admin' | 'seller', ownerId: string, limit = 60) {
     return this.model.find({ ownerType, ownerId }).sort({ createdAt: -1 }).limit(limit).lean();
   }

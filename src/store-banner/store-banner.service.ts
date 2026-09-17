@@ -8,6 +8,7 @@ import { ActivityLogService } from '../activity-log/activity-log.service';
 import { validateCreativeDimensions } from '../common/validate-creative-dimensions.util';
 import { verifyStoreOwnershipOrForbidden } from '../common/store-ownership.util';
 import { CreateStoreBannerDto } from './dto/create-store-banner.dto';
+import { CreateStoreBannerFromUrlDto } from './dto/create-store-banner-from-url.dto';
 import { UpdateStoreBannerDto } from './dto/update-store-banner.dto';
 import { StoreBannerStatus } from './schemas/store-banner.schema';
 import { EntitlementsService } from '../platform-plans/entitlements.service';
@@ -139,6 +140,55 @@ export class StoreBannerService {
       type: dto.type ?? 'hero',
       imageUrl,
       videoUrl: fileIsVideo ? uploaded.url : null,
+      publicId: uploaded.publicId,
+      ctaLabel: dto.ctaLabel ?? null,
+      linkType: dto.linkType ?? 'external',
+      linkTarget: dto.linkTarget ?? null,
+      order: dto.order ?? currentCount,
+      priority: dto.priority ?? 0,
+      status,
+      startAt: dto.startAt ?? null,
+      endAt: dto.endAt ?? null,
+      createdBy: sellerId,
+    });
+
+    this.log(storeId, 'store_banner_created', `Created a "${banner.type}" store banner`, sellerId, banner._id);
+    return { success: true, message: 'Store banner created', data: banner };
+  }
+
+  // ── "Paste a URL" alternative to `create()` — image only (a Video banner
+  // still needs a real file upload for its poster-frame generation, which
+  // this simpler path doesn't build). Re-hosts through Cloudinary via the
+  // same `uploadFromUrlAndTrack` helper the shared Files Library uses, then
+  // runs the identical post-upload min-width guard `create()` already has. ──
+  async createFromUrl(storeId: string, sellerId: string, dto: CreateStoreBannerFromUrlDto) {
+    await verifyStoreOwnershipOrForbidden(this.storeModel, storeId, sellerId);
+    await this.entitlementsService.assertCanCreateStoreBanner(storeId);
+    if (dto.type === 'video') {
+      throw new BadRequestException('Video banners need an uploaded video file — paste-a-URL only supports images.');
+    }
+
+    const uploaded = await this.mediaLibraryService.uploadFromUrlAndTrack(dto.imageUrl, 'seller', sellerId, {
+      storeId,
+      folder: 'uploads/store-banners',
+      maxDimension: HERO_MAX_DIMENSION,
+    });
+
+    if (uploaded.width && uploaded.width < HERO_MIN_SOURCE_WIDTH) {
+      await cloudinary.uploader.destroy(uploaded.publicId).catch(() => {});
+      throw new BadRequestException(
+        `Image is only ${uploaded.width}px wide — this banner renders full-width on desktop, so please use an image at least ${HERO_MIN_SOURCE_WIDTH}px wide (recommended: 2560×720) to avoid blur.`,
+      );
+    }
+
+    const status = computeInitialStatus(dto.startAt, dto.endAt);
+    const currentCount = await this.storeBannerModel.countDocuments({ storeId });
+
+    const banner = await this.storeBannerModel.create({
+      storeId,
+      type: dto.type ?? 'hero',
+      imageUrl: uploaded.url,
+      videoUrl: null,
       publicId: uploaded.publicId,
       ctaLabel: dto.ctaLabel ?? null,
       linkType: dto.linkType ?? 'external',

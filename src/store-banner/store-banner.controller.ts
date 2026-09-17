@@ -8,6 +8,7 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { StoreBannerService } from './store-banner.service';
 import { CreateStoreBannerDto } from './dto/create-store-banner.dto';
+import { CreateStoreBannerFromUrlDto } from './dto/create-store-banner-from-url.dto';
 import { UpdateStoreBannerDto } from './dto/update-store-banner.dto';
 
 const CREATIVE_UPLOAD = FileFieldsInterceptor(
@@ -43,6 +44,11 @@ export class StoreBannerController {
     @UploadedFiles() files: { file?: Express.Multer.File[] },
   ) {
     return this.storeBannerService.create(storeId, req.user.userId, dto, files?.file?.[0]);
+  }
+
+  @Post(':storeId/from-url')
+  createFromUrl(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: CreateStoreBannerFromUrlDto) {
+    return this.storeBannerService.createFromUrl(storeId, req.user.userId, dto);
   }
 
   @Patch(':storeId/:bannerId')

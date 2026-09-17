@@ -48,6 +48,20 @@ export class AnalyticsController {
     return this.analyticsService.getRevenueOverTime(actingSellerId(req.user), query.storeId, query);
   }
 
+  // Real trend+seasonality sales forecast — see AnalyticsService's own doc
+  // comment for the method used and its honest fallback.
+  @Get('sales-forecast')
+  getSalesForecast(@Req() req: any, @Query() query: AnalyticsQueryDto) {
+    return this.analyticsService.getSalesForecast(actingSellerId(req.user), query.storeId);
+  }
+
+  // Real slow/busy-day detection for Marketing/Discounts — see
+  // AnalyticsService's own doc comment.
+  @Get('weekday-performance')
+  getWeekdayPerformance(@Req() req: any, @Query() query: AnalyticsQueryDto) {
+    return this.analyticsService.getWeekdayPerformance(actingSellerId(req.user), query.storeId);
+  }
+
   @Get('orders-over-time')
   getOrdersOverTime(@Req() req: any, @Query() query: AnalyticsQueryDto) {
     return this.analyticsService.getOrdersOverTime(actingSellerId(req.user), query.storeId, query);
@@ -61,6 +75,13 @@ export class AnalyticsController {
   @Get('top-products')
   getTopProducts(@Req() req: any, @Query() query: TopProductsQueryDto) {
     return this.analyticsService.getTopProducts(actingSellerId(req.user), query.storeId, query);
+  }
+
+  // Real week-over-week growth detection — see AnalyticsService's own doc
+  // comment for the method used.
+  @Get('trending-products')
+  getTrendingProducts(@Req() req: any, @Query() query: AnalyticsQueryDto) {
+    return this.analyticsService.getTrendingProducts(actingSellerId(req.user), query.storeId);
   }
 
   @Get('customers')

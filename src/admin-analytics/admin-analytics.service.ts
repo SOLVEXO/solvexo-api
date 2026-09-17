@@ -44,6 +44,7 @@ import { PdfReportBuilder } from '../analytics/utils/pdf-report.util';
 import { getPlatformEarnings as getPlatformEarningsUtil, PlatformEarnings } from '../common/platform-earnings.util';
 import { getPaymentMethodLabel } from '../analytics/utils/payment-method-label.util';
 import { resolveCustomerIdentities, NOT_RECORDED_LABEL } from '../analytics/utils/customer-identity.util';
+import { forecastDailyDemand } from '../inventory/demand-forecast.util';
 
 const CACHE_TTL_SECONDS = 600; // 10 minutes — same convention as seller analytics
 const CSV_ROW_LIMIT = 5000;
@@ -321,6 +322,63 @@ export class AdminAnalyticsService {
           ...(totalUnconvertible > 0
             ? { note: `${totalUnconvertible} order(s) in this period predate USD normalization (no ratePerUSD) and are excluded from these totals rather than guessed at.` }
             : {}),
+        },
+      };
+    });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // B2. PLATFORM GROWTH FORECAST — platform-wide (or one seller/store's own,
+  // via the same optional drill-down every sibling method here supports)
+  // trend+seasonality revenue projection, using the exact same technique as
+  // the seller-facing Sales Forecast (`AnalyticsService.getSalesForecast`) —
+  // Holt's linear exponential smoothing + a day-of-week factor
+  // (`inventory/demand-forecast.util.ts`), applied here to daily net GMV
+  // instead of one seller's own revenue. Falls back to a plain 30-day daily
+  // average whenever there isn't enough order history in scope to forecast
+  // responsibly (a brand-new platform, or a seller/store drill-down with
+  // little volume) — `method` on the response discloses which one was used.
+  // ═══════════════════════════════════════════════════════════════════════
+
+  async getPlatformGrowthForecast(query: { storeId?: string; sellerId?: string }) {
+    const scope = this.buildScope(query);
+    const from = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+    const to = new Date();
+
+    return this.cached(this.key('platform-growth-forecast', this.scopeLabel(scope), {}), async () => {
+      const rows = await this.r.orderModel.aggregate([
+        ...sellerOrderMatchStage(from, to, scope),
+        {
+          $addFields: {
+            itemRefund: itemRefundSumField(),
+            day: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt', timezone: 'UTC' } },
+          },
+        },
+        {
+          $group: {
+            _id: '$day',
+            netRevenue: {
+              $sum: { $cond: [notCancelledCond(), { $ifNull: [{ $subtract: [toUSD('$sellerOrders.subtotal'), toUSD('$itemRefund')] }, 0] }, 0] },
+            },
+          },
+        },
+      ]);
+
+      const dailyRevenue = new Map<string, number>(rows.map((r: any) => [r._id, Math.max(0, round(r.netRevenue))]));
+      const forecast = forecastDailyDemand(dailyRevenue);
+      const thirtyDayCutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+      const thirtyDaySum = Array.from(dailyRevenue.entries()).reduce((sum, [day, rev]) => (day >= thirtyDayCutoff ? sum + rev : sum), 0);
+      const simpleAvg = thirtyDaySum / 30;
+      const forecastedDailyRevenue = round(forecast ?? simpleAvg);
+
+      return {
+        success: true,
+        data: {
+          currency: 'USD',
+          method: forecast != null ? 'trend_seasonal' : 'simple_average',
+          forecastedDailyRevenue,
+          projectedNext7Days: round(forecastedDailyRevenue * 7),
+          projectedNext30Days: round(forecastedDailyRevenue * 30),
         },
       };
     });

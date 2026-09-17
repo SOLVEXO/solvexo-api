@@ -10,6 +10,7 @@ import { RedisService } from '@/redis/redis.service';
 import { NotificationsService } from '@/notifications/notifications.service';
 import { NOTIFICATION_TYPES } from '@/notifications/notification.types';
 import { STOCK_ADJUSTMENT_REASONS, type StockAdjustmentReason } from './schemas/stock-adjustment.schema';
+import { forecastDailyDemand } from './demand-forecast.util';
 
 @Injectable()
 export class InventoryService {
@@ -1259,10 +1260,19 @@ export class InventoryService {
    *  one PO per supplier covering all of that supplier's low SKUs at once,
    *  instead of one PO per SKU (the real Shopify/Zoho replenishment
    *  pattern — see PurchaseOrdersController). A SKU never received via a PO
-   *  yet groups under "No supplier yet". `daysOfStockLeft` is a cheap,
-   *  real, velocity-based estimate (units sold in the last 30 days ÷ 30),
-   *  not full demand forecasting — deliberately, see this pass's own scope
-   *  notes on ML-based forecasting being out of scope. */
+   *  yet groups under "No supplier yet".
+   *
+   *  `daysOfStockLeft` is now a real HYBRID forecast, not a flat average:
+   *  for a SKU with enough sales history, `forecastDailyDemand()`
+   *  (`demand-forecast.util.ts`) computes a trend+seasonality-aware
+   *  forecast (Holt's linear exponential smoothing + a day-of-week
+   *  multiplier) off its last 90 days of daily sales; for a SKU without
+   *  enough history (a new product/store), it falls back to the original
+   *  velocity estimate (units sold in the last 30 days ÷ 30) — every
+   *  seller always gets an honest number, regardless of how much sales
+   *  data they have. `forecastMethod` on each item discloses which one was
+   *  actually used, so the UI never claims a "smart" prediction it didn't
+   *  have enough data to make. */
   async getReorderSuggestions(sellerId: string, storeId: string) {
     const { storeModel, productModel, productVariantModel, purchaseOrderModel, orderModel } = this.databaseService.repositories;
     const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
@@ -1288,7 +1298,7 @@ export class InventoryService {
     if (lowVariants.length === 0) return { success: true, data: { groups: [] } };
     const variantIds = lowVariants.map((v: any) => v._id.toString());
 
-    const [recentPoItems, sales] = await Promise.all([
+    const [recentPoItems, dailySales] = await Promise.all([
       purchaseOrderModel.aggregate([
         { $match: { storeId, status: { $in: ['received', 'partially_received'] } } },
         { $sort: { receivedAt: -1 } },
@@ -1297,16 +1307,36 @@ export class InventoryService {
         { $group: { _id: '$items.variantId', supplierId: { $first: '$supplierId' }, supplierName: { $first: '$supplierName' } } },
       ]),
       orderModel.aggregate([
-        { $match: { isDelete: false, createdAt: { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) } } },
+        { $match: { isDelete: false, createdAt: { $gte: new Date(Date.now() - 90 * 24 * 60 * 60 * 1000) } } },
         { $unwind: '$sellerOrders' },
         { $match: { 'sellerOrders.storeId': storeId } },
         { $unwind: '$sellerOrders.items' },
         { $match: { 'sellerOrders.items.variantId': { $in: variantIds }, 'sellerOrders.items.status': { $ne: 'cancelled' } } },
-        { $group: { _id: '$sellerOrders.items.variantId', qty: { $sum: '$sellerOrders.items.quantity' } } },
+        {
+          $group: {
+            _id: { variantId: '$sellerOrders.items.variantId', day: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } } },
+            qty: { $sum: '$sellerOrders.items.quantity' },
+          },
+        },
       ]),
     ]);
     const supplierByVariant = new Map(recentPoItems.map((r: any) => [r._id, { supplierId: r.supplierId, supplierName: r.supplierName }]));
-    const velocityByVariant = new Map(sales.map((s: any) => [s._id, s.qty / 30]));
+
+    // Per-variant daily-quantity maps (for the forecast) + a plain 30-day
+    // sum (for the fallback average) — both derived from the same 90-day
+    // fetch, no second query needed.
+    const dailyByVariant = new Map<string, Map<string, number>>();
+    const thirtyDayCutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const thirtyDaySumByVariant = new Map<string, number>();
+    for (const row of dailySales as any[]) {
+      const variantId = row._id.variantId;
+      const day: string = row._id.day;
+      if (!dailyByVariant.has(variantId)) dailyByVariant.set(variantId, new Map());
+      dailyByVariant.get(variantId)!.set(day, row.qty);
+      if (day >= thirtyDayCutoff) {
+        thirtyDaySumByVariant.set(variantId, (thirtyDaySumByVariant.get(variantId) ?? 0) + row.qty);
+      }
+    }
 
     const groups = new Map<string, { supplierId: string | null; supplierName: string; items: any[] }>();
     for (const v of lowVariants as any[]) {
@@ -1317,12 +1347,16 @@ export class InventoryService {
         groups.set(key, { supplierId: supplier?.supplierId ?? null, supplierName: supplier?.supplierName ?? 'No supplier yet', items: [] });
       }
       const available = Math.max(0, (v.stock || 0) - (v.committedStock || 0) - (v.damagedStock || 0) - (v.inTransitStock || 0));
-      const perDay = velocityByVariant.get(v._id.toString()) ?? 0;
+      const variantId = v._id.toString();
+      const forecast = forecastDailyDemand(dailyByVariant.get(variantId) ?? new Map());
+      const simpleAvg = (thirtyDaySumByVariant.get(variantId) ?? 0) / 30;
+      const perDay = forecast ?? simpleAvg;
       groups.get(key)!.items.push({
-        productId: v.productId, variantId: v._id.toString(),
+        productId: v.productId, variantId,
         productName: product?.name ?? '(deleted product)', image: product?.images?.[0] ?? null,
         sku: v.sku, available, reorderPoint: v.reorderPoint ?? lowStockThreshold,
         daysOfStockLeft: perDay > 0 ? Math.round(available / perDay) : null,
+        forecastMethod: forecast != null ? 'trend_seasonal' : 'simple_average',
       });
     }
 

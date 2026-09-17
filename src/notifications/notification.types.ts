@@ -22,6 +22,11 @@ export const NOTIFICATION_TYPES = {
   SUBSCRIPTION_RENEWAL_REMINDER: 'subscription_renewal_reminder',
   SUBSCRIPTION_PAYMENT_FAILED: 'subscription_payment_failed',
   SUBSCRIPTION_CANCELLED: 'subscription_cancelled',
+  // Seller-facing counterpart to SUBSCRIPTION_PAYMENT_FAILED (buyer-facing,
+  // above) — a store's own subscriber going 'past_due' is a real retention
+  // risk the seller should know about, not just something visible only if
+  // they happen to check the Subscribers list's Retention Risk column.
+  SUBSCRIBER_AT_RISK: 'subscriber_at_risk',
   PLATFORM_PLAN_RENEWAL_REMINDER: 'platform_plan_renewal_reminder',
   PLATFORM_PLAN_PAYMENT_FAILED: 'platform_plan_payment_failed',
   // Distinct from PAYMENT_FAILED — a trial ending with no plan ever
@@ -81,6 +86,7 @@ export const NOTIFICATION_CATEGORY: Record<string, 'orders' | 'messages' | 'prom
   [NOTIFICATION_TYPES.SUBSCRIPTION_RENEWAL_REMINDER]: 'subscriptions',
   [NOTIFICATION_TYPES.SUBSCRIPTION_PAYMENT_FAILED]: 'subscriptions',
   [NOTIFICATION_TYPES.SUBSCRIPTION_CANCELLED]: 'subscriptions',
+  [NOTIFICATION_TYPES.SUBSCRIBER_AT_RISK]: 'subscriptions',
   [NOTIFICATION_TYPES.PLATFORM_PLAN_RENEWAL_REMINDER]: 'subscriptions',
   [NOTIFICATION_TYPES.PLATFORM_PLAN_PAYMENT_FAILED]: 'subscriptions',
   [NOTIFICATION_TYPES.PLATFORM_PLAN_TRIAL_ENDED]: 'subscriptions',

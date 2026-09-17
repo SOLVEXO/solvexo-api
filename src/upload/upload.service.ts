@@ -70,6 +70,33 @@ export class UploadService {
     });
   }
 
+  // ── PUBLIC upload from an external URL ──
+  // Re-hosts a pasted image URL through Cloudinary (same `cloudinary.uploader.upload(url,...)`
+  // pattern already used by the admin Banner "create from URL" flow) instead of trusting/
+  // linking the external URL directly — so every image this app serves is transformable
+  // (responsive srcset, `f_auto`/`q_auto`) and doesn't silently break if the source ever
+  // goes offline. Restricted to images only, matching `ImageUpload`'s scope.
+  async uploadFromUrl(
+    url: string,
+    options?: { folder?: string; maxDimension?: number },
+  ): Promise<{ url: string; publicId: string; resourceType: string; width?: number; height?: number }> {
+    if (!/^https?:\/\//i.test(url)) throw new BadRequestException('Please enter a valid image URL');
+    const folder = options?.folder ?? 'uploads/images';
+    const transformation = options?.maxDimension
+      ? [{ width: options.maxDimension, height: options.maxDimension, crop: 'limit' }, { quality: 'auto' }, { fetch_format: 'auto' }]
+      : undefined;
+    try {
+      const result = await cloudinary.uploader.upload(url, {
+        folder,
+        resource_type: 'image',
+        ...(transformation ? { transformation } : {}),
+      });
+      return { url: result.secure_url, publicId: result.public_id, resourceType: 'image', width: result.width, height: result.height };
+    } catch (err: any) {
+      throw new BadRequestException(err?.message || 'Could not load that image URL');
+    }
+  }
+
   // ── PRIVATE upload (digital products, and other sensitive files e.g. KYC
   // documents — `folder` defaults to the original digital-products path so
   // every existing caller is unaffected) ──

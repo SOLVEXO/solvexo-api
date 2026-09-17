@@ -25,6 +25,17 @@ const PRESET_ROLES: { name: string; description: string; permissions: string[] }
       'settings.billing.view', 'settings.general.manage',
       'settings.shipping.manage', 'settings.locations.manage', 'settings.pixels.manage',
       'finance.payouts.view',
+      // Messaging/Loyalty/Subscriptions/SEO/AI Studio — added once these 5
+      // modules gained real staff-permission gates; all fit this preset's
+      // existing "near-full operational access" scope the same way
+      // marketing.manage/discounts.manage/onlinestore.content.manage
+      // already do (customer-facing/marketing-adjacent tools, not
+      // financial/ownership-level access).
+      'messaging.view', 'messaging.manage',
+      'loyalty.view', 'loyalty.manage', 'loyalty.points.award',
+      'subscriptions.view', 'subscriptions.manage', 'subscriptions.subscribers.manage',
+      'seo.view', 'seo.manage',
+      'aistudio.view', 'aistudio.use',
     ],
   },
   {
@@ -34,8 +45,8 @@ const PRESET_ROLES: { name: string; description: string; permissions: string[] }
   },
   {
     name: 'Support Staff',
-    description: 'View and fulfill orders, view customers.',
-    permissions: ['home.view', 'orders.view', 'orders.fulfill', 'orders.return', 'customers.view'],
+    description: 'View and fulfill orders, view customers, and reply to customer messages.',
+    permissions: ['home.view', 'orders.view', 'orders.fulfill', 'orders.return', 'customers.view', 'messaging.view', 'messaging.manage'],
   },
 ];
 

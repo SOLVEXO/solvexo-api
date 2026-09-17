@@ -32,6 +32,16 @@ export class UploadController {
     return { success: true, message: 'File uploaded successfully', data: result };
   }
 
+  // ── PUBLIC image from a pasted URL — the "paste URL instead of a file"
+  // option every `ImageUpload` call site offers alongside the default file
+  // picker ──
+  @Post('from-url')
+  async uploadFromUrl(@Body('url') url?: string) {
+    if (!url) throw new BadRequestException('url is required');
+    const result = await this.uploadService.uploadFromUrl(url);
+    return { success: true, message: 'Image uploaded successfully', data: result };
+  }
+
   // ── PRIVATE file (digital products for sale) — sirf seller ──
   @Post('private-file')
   @UseGuards(RolesGuard)

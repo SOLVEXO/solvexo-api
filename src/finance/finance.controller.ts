@@ -38,6 +38,14 @@ export class FinanceController {
     return this.financeService.getDashboard(actingSellerId(req.user), storeId);
   }
 
+  // Real, deterministic upcoming-payout forecast — see FinanceService's own
+  // doc comment for why this is scheduled-fact math, not a statistical guess.
+  @RequirePermission('finance.payouts.view')
+  @Get(':storeId/payout-forecast')
+  getPayoutForecast(@Req() req: any, @Param('storeId') storeId: string) {
+    return this.financeService.getPayoutForecast(actingSellerId(req.user), storeId);
+  }
+
   // ═══════════════════════════════════════════════════════════════════════════
   // TRANSACTIONS  (static routes before parameterized)
   // ═══════════════════════════════════════════════════════════════════════════

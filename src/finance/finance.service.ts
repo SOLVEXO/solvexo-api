@@ -387,6 +387,46 @@ export class FinanceService {
     };
   }
 
+  /**
+   * Real, DETERMINISTIC upcoming-payout forecast — deliberately NOT the same
+   * statistical trend+seasonality technique used elsewhere (Inventory
+   * Reorder/Sales Forecast/Trending Products/Weekday Performance/Admin
+   * Growth Forecast) — money moving from `pendingBalance` to
+   * `availableBalance` is never a guess here, it's a known scheduled fact:
+   * every still-`pending` sale transaction already carries its own real
+   * `metadata.clearingDays` (the same field `processClearingBalances`
+   * itself reads as the single source of truth for when a sale actually
+   * clears), so exactly when its `netAmount` becomes withdrawable is
+   * computable directly, not forecast. Buckets are cumulative ("available
+   * WITHIN N days"), grouped per currency (a USD and a PKR balance are never
+   * summed). A transaction already past its own eligible date (the hourly
+   * `processClearingBalances` cron just hasn't run yet) is correctly folded
+   * into the very next bucket, not dropped or double-counted.
+   */
+  async getPayoutForecast(sellerId: string, storeId: string) {
+    await this.verifyStoreOwnership(sellerId, storeId);
+    const pendingSales = await this.txModel.find({ storeId, type: 'sale', status: 'pending' }).lean();
+    const now = Date.now();
+
+    const buckets = new Map<string, { next7Days: number; next14Days: number; next30Days: number; beyond30Days: number }>();
+    for (const tx of pendingSales as any[]) {
+      const netAmount = tx.metadata?.netAmount ?? 0;
+      if (netAmount <= 0) continue;
+      const clearingDays = tx.metadata?.clearingDays ?? CLEARING_DAYS;
+      const eligibleAt = new Date(tx.createdAt).getTime() + clearingDays * 24 * 60 * 60 * 1000;
+      const daysUntilEligible = (eligibleAt - now) / (24 * 60 * 60 * 1000);
+      const currency = tx.currency || 'USD';
+      if (!buckets.has(currency)) buckets.set(currency, { next7Days: 0, next14Days: 0, next30Days: 0, beyond30Days: 0 });
+      const b = buckets.get(currency)!;
+      if (daysUntilEligible <= 7) b.next7Days = this.round(b.next7Days + netAmount);
+      if (daysUntilEligible <= 14) b.next14Days = this.round(b.next14Days + netAmount);
+      if (daysUntilEligible <= 30) b.next30Days = this.round(b.next30Days + netAmount);
+      else b.beyond30Days = this.round(b.beyond30Days + netAmount);
+    }
+
+    return Array.from(buckets.entries()).map(([currency, b]) => ({ currency, ...b }));
+  }
+
   // ═══════════════════════════════════════════════════════════════════════════
   // TRANSACTIONS
   // ═══════════════════════════════════════════════════════════════════════════
