@@ -18,18 +18,46 @@ export class AutomaticDiscount {
   @Prop({ required: true, trim: true })
   name: string;
 
-  @Prop({ required: true, enum: ['percentage', 'fixed'] })
-  discountType: 'percentage' | 'fixed';
+  // 'bogo'/'free_shipping' were previously 100% unsupported — every seller
+  // automatic discount could only ever be a plain percentage/fixed-amount
+  // off. 'bogo' uses buyQuantity/getQuantity/getDiscountPercent below;
+  // 'free_shipping' ignores discountValue entirely (see checkout.service.ts
+  // #addShippingInCheckout, the only place it's actually consumed) and is
+  // restricted to target:'store' at creation time — "free shipping if you
+  // buy this specific product" isn't a coherent effect since shipping is a
+  // whole-checkout amount, not a per-item one.
+  @Prop({
+    required: true,
+    enum: ['percentage', 'fixed', 'bogo', 'free_shipping'],
+  })
+  discountType: 'percentage' | 'fixed' | 'bogo' | 'free_shipping';
 
   @Prop({ required: true })
   discountValue: number;
+
+  // Only meaningful when discountType === 'bogo' — e.g. buyQuantity:2,
+  // getQuantity:1, getDiscountPercent:100 = "buy 2 get 1 free"; a smaller
+  // getDiscountPercent gives a partial discount on the "get" units instead
+  // (e.g. 50 = "buy 2 get 1 half off").
+  @Prop({ type: Number, default: null })
+  buyQuantity: number | null;
+
+  @Prop({ type: Number, default: null })
+  getQuantity: number | null;
+
+  @Prop({ type: Number, default: 100 })
+  getDiscountPercent: number;
 
   // Only meaningful when discountType === 'fixed' — the issuing store's own
   // baseCurrency, same convention as Coupon.currency for a seller coupon.
   @Prop({ type: String, default: null })
   currency: string | null;
 
-  @Prop({ required: true, enum: ['store', 'category', 'products'], default: 'store' })
+  @Prop({
+    required: true,
+    enum: ['store', 'category', 'products'],
+    default: 'store',
+  })
   target: 'store' | 'category' | 'products';
 
   // Only meaningful when target === 'category'.
@@ -58,6 +86,7 @@ export class AutomaticDiscount {
   isDelete: boolean;
 }
 
-export const AutomaticDiscountSchema = SchemaFactory.createForClass(AutomaticDiscount);
+export const AutomaticDiscountSchema =
+  SchemaFactory.createForClass(AutomaticDiscount);
 
 AutomaticDiscountSchema.index({ storeId: 1, isActive: 1 });

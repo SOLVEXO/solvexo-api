@@ -23,6 +23,14 @@ export class UploadService {
     });
   }
 
+  // Best-effort — a Cloudinary-side failure (already gone, transient network
+  // issue) should never block the caller's own DB-row deletion; callers log
+  // and swallow, matching how every other "cleanup" side effect in this
+  // codebase (e.g. activity-log writes) is treated as non-blocking.
+  async deleteFile(publicId: string, resourceType: string): Promise<void> {
+    await cloudinary.uploader.destroy(publicId, { resource_type: resourceType as any });
+  }
+
   // ── PUBLIC upload ──
   // `options` lets a caller that needs Cloudinary-side resize/optimization (e.g.
   // promotional creatives, which used to go through a separate CloudinaryStorage

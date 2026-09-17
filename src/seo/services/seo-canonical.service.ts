@@ -1,7 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { Injectable, ConflictException, NotFoundException } from '@nestjs/common';
-import { DatabaseService } from 'src/database/databaseservice';
-import { ActivityLogService } from 'src/activity-log/activity-log.service';
+import { DatabaseService } from '@/database/databaseservice';
+import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { CreateCanonicalRuleDto } from '../dto/create-canonical-rule.dto';
 import { UpdateCanonicalRuleDto } from '../dto/update-canonical-rule.dto';
 import { assertSafeSeoDestination } from './seo-url-safety.util';

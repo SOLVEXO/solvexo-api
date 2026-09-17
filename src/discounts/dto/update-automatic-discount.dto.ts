@@ -8,16 +8,34 @@ export class UpdateAutomaticDiscountDto {
   @IsString()
   name?: string;
 
-  @ApiProperty({ required: false, enum: ['percentage', 'fixed'] })
+  @ApiProperty({ required: false, enum: ['percentage', 'fixed', 'bogo', 'free_shipping'] })
   @IsOptional()
-  @IsEnum(['percentage', 'fixed'])
-  discountType?: 'percentage' | 'fixed';
+  @IsEnum(['percentage', 'fixed', 'bogo', 'free_shipping'])
+  discountType?: 'percentage' | 'fixed' | 'bogo' | 'free_shipping';
 
   @ApiProperty({ required: false })
   @IsOptional()
   @IsNumber()
   @Min(0)
   discountValue?: number;
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  buyQuantity?: number;
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  getQuantity?: number;
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  getDiscountPercent?: number;
 
   @ApiProperty({ required: false, enum: ['store', 'category', 'products'] })
   @IsOptional()

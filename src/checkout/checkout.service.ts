@@ -3,22 +3,26 @@ import {
   BadRequestException,
   NotFoundException,
 } from '@nestjs/common';
-import { DatabaseService } from 'src/database/databaseservice';
-import { SubscriptionBenefitsService } from 'src/subscriptions/subscription-benefits.service';
-import { MarketingService } from 'src/marketing/marketing.service';
-import { pickBestCampaign } from 'src/marketing/campaign-pricing.util';
-import { AdminConfigService } from 'src/admin-config/admin-config.service';
-import { ExchangeRateService } from 'src/exchange-rate/exchange-rate.service';
-import { SUPPORTED_CURRENCIES, FxSnapshot } from 'src/exchange-rate/schemas/exchange-rate.schema';
-import { GiftCardsService } from 'src/gift-cards/gift-cards.service';
-import { DiscountsService } from 'src/discounts/discounts.service';
+import { DatabaseService } from '@/database/databaseservice';
+import { SubscriptionBenefitsService } from '@/subscriptions/subscription-benefits.service';
+import { MarketingService } from '@/marketing/marketing.service';
+import { pickBestCampaign } from '@/marketing/campaign-pricing.util';
+import { AdminConfigService } from '@/admin-config/admin-config.service';
+import { ExchangeRateService } from '@/exchange-rate/exchange-rate.service';
+import { FxSnapshot } from '@/exchange-rate/schemas/exchange-rate.schema';
+import { GiftCardsService } from '@/gift-cards/gift-cards.service';
+import { DiscountsService } from '@/discounts/discounts.service';
+import { resolveBuyerStoreScope } from '@/common/store-scope.util';
+import { TaxService } from '@/tax/tax.service';
+import { ShippingRatesService } from '@/shipping-rates/shipping-rates.service';
 
-// Shipping zones are a Pakistan-domestic geography feature (predates the
-// PKR/USD split entirely) — ShippingZone.shippingPrice has no currency
-// field of its own because every zone was always implicitly priced in PKR.
-// Rather than add a schema field for something that's effectively one fixed
-// currency by design, this constant documents that assumption at its one
-// point of use (addShippingInCheckout) instead.
+// PLATFORM-wide zones (ShippingZone.storeId === null, admin-managed, predate
+// the per-store zone system entirely) have no currency field of their own —
+// every one of these rows was always implicitly priced in PKR (a Pakistan-
+// domestic admin rate table). This constant documents that assumption at its
+// point of use. A SELLER-owned zone (storeId set) is priced in that store's
+// own `baseCurrency` instead — see `resolveZoneSourceCurrency` below, which
+// is what actually decides which of the two applies for a given zone.
 const SHIPPING_ZONE_CURRENCY = 'PKR';
 
 @Injectable()
@@ -31,10 +35,21 @@ export class CheckoutService {
     private readonly exchangeRateService: ExchangeRateService,
     private readonly giftCardsService: GiftCardsService,
     private readonly discountsService: DiscountsService,
+    private readonly taxService: TaxService,
+    private readonly shippingRatesService: ShippingRatesService,
   ) {}
 
   private round(n: number) {
     return Math.round(n * 100) / 100;
+  }
+
+  /** A seller-owned zone (`storeId` set) is priced in that store's own
+   *  `baseCurrency` — a platform-wide zone (`storeId` null) is always PKR
+   *  (see SHIPPING_ZONE_CURRENCY's comment). `storeBaseCurrency` is the
+   *  caller's already-fetched store doc's currency (or null if unknown/not
+   *  applicable), passed in rather than re-queried per zone. */
+  private resolveZoneSourceCurrency(zone: { storeId?: unknown }, storeBaseCurrency: string | null | undefined): string {
+    return zone.storeId && storeBaseCurrency ? storeBaseCurrency : SHIPPING_ZONE_CURRENCY;
   }
 
   /** Sums `items[].totalPrice` (each still in its OWN native seller
@@ -103,10 +118,18 @@ export class CheckoutService {
    * blindly from the client.
    */
   private async resolveCheckoutCurrency(userId: string, requested?: string | null): Promise<string> {
+    // Validated against the real, dynamic admin-enabled Markets list
+    // (AdminConfigService.getEnabledCurrencies), not the retired static
+    // SUPPORTED_CURRENCIES array — a currency an admin enables AFTER launch
+    // (beyond whatever the array happened to contain at deploy time) must be
+    // checkout-able immediately, with zero code change. Found and fixed
+    // while re-verifying the currency architecture — this was the one real
+    // call site still gating on the old array.
+    const platformCurrencies = (await this.adminConfigService.getEnabledCurrencies()).map((c) => c.code);
     if (requested) {
-      if (!SUPPORTED_CURRENCIES.includes(requested as any)) {
+      if (!platformCurrencies.includes(requested)) {
         throw new BadRequestException(
-          `Unsupported currency "${requested}" — must be one of: ${SUPPORTED_CURRENCIES.join(', ')}`,
+          `Unsupported currency "${requested}" — must be one of: ${platformCurrencies.join(', ')}`,
         );
       }
       return requested;
@@ -115,7 +138,23 @@ export class CheckoutService {
     return (user as any)?.currencyPreference ?? 'PKR';
   }
 
-  async createCheckout(userId: string, body: any = {}) {
+  /** "Markets" enforcement — a store may restrict which of the platform's
+   *  supported currencies its buyers can actually check out in
+   *  (Store.enabledCurrencies, null/absent = every supported currency,
+   *  preserving pre-existing behavior for every store that never touched
+   *  this setting). Falls back to the store's own baseCurrency rather than
+   *  rejecting the checkout outright — a buyer whose preference isn't
+   *  accepted here still completes checkout, just priced in the store's
+   *  currency instead of silently erroring. */
+  private async resolveStoreCurrency(preferred: string, store: { baseCurrency?: string | null; enabledCurrencies?: string[] | null }): Promise<string> {
+    const allowed: string[] = store.enabledCurrencies && store.enabledCurrencies.length > 0
+      ? store.enabledCurrencies
+      : (await this.adminConfigService.getEnabledCurrencies()).map((c) => c.code);
+    if (allowed.includes(preferred)) return preferred;
+    return store.baseCurrency && allowed.includes(store.baseCurrency) ? store.baseCurrency : allowed[0];
+  }
+
+  async createCheckout(userId: string, body: any = {}, userStoreId?: string | null) {
     const {
       cartModel,
       productModel,
@@ -123,15 +162,27 @@ export class CheckoutService {
       addressModel,
       checkoutModel,
       storeModel,
+      shippingZoneModel,
     } = this.databaseService.repositories;
 
-    const checkoutCurrency = await this.resolveCheckoutCurrency(userId, body.currencyPreference);
+    const preferredCurrency = await this.resolveCheckoutCurrency(userId, body.currencyPreference);
 
     // Cart is now store-scoped (a buyer can have a separate cart per store's
     // subdomain) — without storeId this lookup would be ambiguous the moment
-    // a buyer has shopped at more than one store.
-    const { storeId } = body;
-    if (!storeId) throw new BadRequestException('storeId is required');
+    // a buyer has shopped at more than one store. Resolved through
+    // resolveBuyerStoreScope rather than trusting body.storeId outright — a
+    // store-scoped buyer account can only ever check out their own store's
+    // cart (see cart.controller.ts's use of the same helper).
+    const storeId = resolveBuyerStoreScope(userStoreId, body.storeId);
+
+    // "Markets" enforcement — see resolveStoreCurrency's comment. A cart is
+    // always single-store today (the marketplace-to-standalone-store
+    // pivot), so this one store's enabledCurrencies is authoritative for
+    // the whole checkout.
+    const targetStore = await storeModel.findById(storeId).select('baseCurrency enabledCurrencies').lean();
+    const checkoutCurrency = targetStore
+      ? await this.resolveStoreCurrency(preferredCurrency, targetStore as any)
+      : preferredCurrency;
 
     const cart = await cartModel.findOne({
       userId,
@@ -401,6 +452,10 @@ export class CheckoutService {
 
       let best: { discount: any; items: any[]; amount: number } | null = null;
       for (const discount of candidates) {
+        // free_shipping never discounts items — it's applied later, against
+        // the whole checkout's shipping fee, in addShippingInCheckout below
+        // (shipping is a flat whole-checkout amount, never a per-item one).
+        if (discount.discountType === 'free_shipping') continue;
         if (discount.minOrderAmount != null && wholeStoreSubtotal < discount.minOrderAmount) continue;
 
         const eligible = discount.target === 'store'
@@ -416,9 +471,28 @@ export class CheckoutService {
         const eligibleSubtotal = this.round(eligible.reduce((s: number, i: any) => s + i.totalPrice, 0));
         if (eligibleSubtotal <= 0) continue;
 
-        const amount = discount.discountType === 'percentage'
-          ? this.round(eligibleSubtotal * (discount.discountValue / 100))
-          : Math.min(discount.discountValue, eligibleSubtotal);
+        let amount: number;
+        if (discount.discountType === 'percentage') {
+          amount = this.round(eligibleSubtotal * (discount.discountValue / 100));
+        } else if (discount.discountType === 'fixed') {
+          amount = Math.min(discount.discountValue, eligibleSubtotal);
+        } else {
+          // bogo — "buy X get Y [% off]": across every eligible unit
+          // (aggregated, not per-product — a mixed cart of eligible products
+          // still counts toward the same buy/get sets), the cheapest
+          // eligible units are the ones discounted, same real-world
+          // interpretation as a physical store's "cheapest item free" BOGO.
+          const setSize = (discount.buyQuantity ?? 0) + (discount.getQuantity ?? 0);
+          const totalQty = eligible.reduce((s: number, i: any) => s + i.quantity, 0);
+          const freeUnits = setSize > 0 ? Math.floor(totalQty / setSize) * (discount.getQuantity ?? 0) : 0;
+          if (freeUnits <= 0) continue;
+          const unitPrices: number[] = [];
+          for (const i of eligible) for (let k = 0; k < i.quantity; k++) unitPrices.push(i.price);
+          unitPrices.sort((a, b) => a - b);
+          amount = this.round(
+            unitPrices.slice(0, freeUnits).reduce((s, p) => s + p * ((discount.getDiscountPercent ?? 100) / 100), 0),
+          );
+        }
         if (amount <= 0) continue;
 
         if (!best || amount > best.amount) best = { discount, items: eligible, amount };
@@ -431,6 +505,11 @@ export class CheckoutService {
     }
 
     let defaultAddressId: string | null = null;
+    // Hoisted out of the `if (hasPhysical)` block below (not just the id) —
+    // the real live tax (TaxJar) and live shipping-rate (Shippo) quotes both
+    // need the buyer's actual destination address (country/state/city/zip),
+    // not just its id.
+    let resolvedAddress: any = null;
 
     if (hasPhysical) {
       let defaultAddress = await addressModel.findOne({ userId, isDefault: true, isDelete: false });
@@ -450,6 +529,7 @@ export class CheckoutService {
 
       if (!defaultAddress) throw new BadRequestException('No default address found. Please set a default address first');
       defaultAddressId = defaultAddress._id.toString();
+      resolvedAddress = defaultAddress;
     }
 
     // FX snapshot — one entry per distinct currency actually involved (every
@@ -459,16 +539,30 @@ export class CheckoutService {
     // (shipping, coupon application) must convert using these exact
     // snapshotted rates, never a fresh live lookup, so a rate change
     // mid-checkout can never silently alter what the buyer is charged.
-    // Shipping (addShippingInCheckout, added in a later request) always
-    // needs a PKR rate available — see SHIPPING_ZONE_CURRENCY's comment —
-    // so a physical-item checkout always includes PKR here even if no cart
-    // line happens to be PKR-priced, rather than risk a missing-snapshot
-    // error when shipping is added afterward.
+    //
+    // Shipping's real source currency (addShippingInCheckout, added in a
+    // later request) depends on WHICH zone ends up picked — a seller-owned
+    // zone is priced in that store's own baseCurrency (see
+    // resolveZoneSourceCurrency); only the platform-wide fallback zones are
+    // always PKR. Previously this unconditionally forced PKR into every
+    // physical checkout's snapshot "just in case" — meaning a 100%-USD store
+    // (own USD-priced zones, USD buyer) still required a fresh, non-stale
+    // PKR rate to exist, or the whole checkout failed with "temporarily
+    // unavailable" even though PKR was never actually going to be used. Now
+    // only forced in when the store has none of its own active zones (i.e.
+    // shipping really will fall back to a platform-wide PKR zone).
+    let shippingCurrency: string | null = null;
+    if (hasPhysical) {
+      const hasOwnZones = storeId
+        ? (await shippingZoneModel.countDocuments({ storeId, isDelete: false, status: 'active' })) > 0
+        : false;
+      shippingCurrency = hasOwnZones && targetStore?.baseCurrency ? targetStore.baseCurrency : SHIPPING_ZONE_CURRENCY;
+    }
     const involvedCurrencies = [
       ...new Set([
         checkoutCurrency,
         ...checkoutItems.map((i) => i.currency),
-        ...(hasPhysical ? [SHIPPING_ZONE_CURRENCY] : []),
+        ...(shippingCurrency ? [shippingCurrency] : []),
       ]),
     ];
     const fxSnapshots = await this.exchangeRateService.buildSnapshots(involvedCurrencies);
@@ -479,7 +573,62 @@ export class CheckoutService {
     // hazard confirmed in the Phase 0 audit (a PKR-priced line must never
     // be treated as a same-scale USD figure).
     const subtotal = this.convertedSubtotal(checkoutItems, checkoutCurrency, fxSnapshots);
-    const taxAmount = 0; // no tax system exists yet — explicitly out of scope, not invented here
+
+    // Two tiers, per store: a real live tax quote (TaxJar, via TaxService —
+    // whichever real US/EU/UK/etc. jurisdiction rules actually apply, looked
+    // up live from the buyer's own destination address) when that store has
+    // connected its own TaxJar account; otherwise the pre-existing flat
+    // percentage the seller sets on their own store (Store.taxRate) — a
+    // deliberately simple fallback, not a real multi-jurisdiction engine of
+    // its own. Computed once per distinct store (never per line item, since
+    // a multi-seller cart can have stores with different tax rates/providers),
+    // using that store's own item subtotal, converted into the checkout
+    // currency the same per-item way `convertedSubtotal` does.
+    //
+    // Known, disclosed limitation of the live-tax quote: it's computed
+    // BEFORE the shipping zone/rate is chosen (a later step — see
+    // `selectShippingZone` below), so it quotes tax on the item subtotal
+    // only, not "subtotal + shipping" — some US states tax shipping too,
+    // which this doesn't yet capture. Still strictly more accurate than the
+    // flat-rate fallback for every store that connects it.
+    const taxRateStoreIds = [...new Set(checkoutItems.map((i) => i.storeId))];
+    const taxRateStores = await this.databaseService.repositories.storeModel
+      .find({ _id: { $in: taxRateStoreIds } })
+      .select('taxRate')
+      .lean();
+    const taxRateByStore = new Map(taxRateStores.map((s: any) => [String(s._id), s.taxRate ?? 0]));
+
+    let taxAmount = 0;
+    for (const sid of taxRateStoreIds) {
+      const storeItems = checkoutItems.filter((item: any) => item.storeId === sid);
+      const storeSubtotal = storeItems.reduce((sum: number, item: any) => {
+        return sum + this.exchangeRateService.convertWithSnapshots(
+          item.totalPrice,
+          item.currency ?? checkoutCurrency,
+          checkoutCurrency,
+          fxSnapshots ?? [],
+        );
+      }, 0);
+
+      const live = resolvedAddress
+        ? await this.taxService.calculateLiveTax(sid, {
+            amount: storeSubtotal,
+            shipping: 0,
+            toCountry: resolvedAddress.country ?? null,
+            toState: resolvedAddress.state ?? null,
+            toZip: resolvedAddress.zipCode ?? null,
+            toCity: resolvedAddress.city ?? null,
+          })
+        : null;
+
+      if (live) {
+        taxAmount += live.taxAmount;
+      } else {
+        const rate = taxRateByStore.get(sid) ?? 0;
+        if (rate > 0) taxAmount += storeSubtotal * (rate / 100);
+      }
+    }
+    taxAmount = this.round(taxAmount);
     const totalAmount = this.round(subtotal + taxAmount);
 
     // Checkout-time upsell: for any store in this cart the buyer is NOT
@@ -635,10 +784,10 @@ export class CheckoutService {
   }
 
   async addShippingInCheckout(userId: string, body: any) {
-    const { checkoutId, shippingZoneId } = body;
+    const { checkoutId, shippingZoneId, liveRateId } = body;
 
     if (!checkoutId) throw new BadRequestException('checkoutId is required');
-    if (!shippingZoneId)
+    if (!shippingZoneId && !liveRateId)
       throw new BadRequestException('shippingZoneId is required');
 
     const { checkoutModel, shippingZoneModel } =
@@ -661,30 +810,99 @@ export class CheckoutService {
       throw new BadRequestException('Checkout has expired');
     }
 
-    const shippingZone = await shippingZoneModel.findOne({
-      _id: shippingZoneId,
-      isDelete: false,
-    });
-    if (!shippingZone) throw new NotFoundException('Shipping zone not found');
-
-    // ShippingZone.shippingPrice is always PKR (see SHIPPING_ZONE_CURRENCY's
-    // comment) — converted into this checkout's own currency using its
-    // already-frozen fxSnapshots, never a fresh live rate.
-    let shippingFee = this.exchangeRateService.convertWithSnapshots(
-      shippingZone.shippingPrice || 0,
-      SHIPPING_ZONE_CURRENCY,
-      checkout.currency,
-      (checkout.fxSnapshots as any) ?? [],
-    );
-
-    // Free/discounted shipping benefit — only applied when every item in the
-    // checkout belongs to a single store (the shipping fee itself is a flat,
-    // whole-checkout amount, not per-seller, so a mixed-store cart can't
-    // unambiguously attribute the waiver to one store's membership).
     const storeIdsInCheckout = [
       ...new Set((checkout.items as any[]).map((i) => i.storeId)),
     ];
+
+    // ── Real live carrier rate (Shippo) — a completely separate path from
+    // the flat-zone one below. Only ever reachable for a single-store cart
+    // (a live rate is quoted from one store's own ship-from address — see
+    // ShippingRatesService.getLiveRates). The rate is ALWAYS re-verified
+    // directly against Shippo here, never trusted from the client — a
+    // buyer's browser could otherwise submit any amount it wants.
+    let liveRate: { amount: number; currency: string; carrier: string; service: string } | null = null;
+    if (liveRateId) {
+      if (storeIdsInCheckout.length !== 1) {
+        throw new BadRequestException('Live carrier rates are only available for a single-store checkout.');
+      }
+      const verified = await this.shippingRatesService.verifyRate(storeIdsInCheckout[0], liveRateId);
+      if (!verified) throw new BadRequestException('This shipping rate is no longer available — please pick another option.');
+      liveRate = verified;
+    }
+
+    let shippingZone: any = null;
+    if (!liveRate) {
+      shippingZone = await shippingZoneModel.findOne({
+        _id: shippingZoneId,
+        isDelete: false,
+      });
+      if (!shippingZone) throw new NotFoundException('Shipping zone not found');
+
+      // A seller's own private zone (storeId set) can only ever be picked for
+      // THAT seller's own checkout — otherwise a buyer could cherry-pick a
+      // cheaper rate belonging to a completely unrelated store. A platform-wide
+      // zone (storeId null, the original/legacy rows) stays pickable by anyone,
+      // unchanged.
+      if (
+        shippingZone.storeId &&
+        !storeIdsInCheckout.includes(String(shippingZone.storeId))
+      ) {
+        throw new BadRequestException('This shipping option is not available for your cart.');
+      }
+    }
+
+    // A seller-owned zone's price is denominated in THAT store's own
+    // baseCurrency (not always PKR) — see `resolveZoneSourceCurrency`. Only
+    // fetched when the zone actually belongs to a store (platform-wide zones
+    // skip this lookup entirely and stay PKR, unchanged). A live rate's
+    // currency comes straight from Shippo's own verified response instead.
+    let zoneStoreCurrency: string | null = null;
+    if (shippingZone?.storeId) {
+      const zoneStore = await this.databaseService.repositories.storeModel
+        .findById(shippingZone.storeId)
+        .select('baseCurrency')
+        .lean();
+      zoneStoreCurrency = (zoneStore as any)?.baseCurrency ?? null;
+    }
+    const zoneSourceCurrency = liveRate ? liveRate.currency : this.resolveZoneSourceCurrency(shippingZone, zoneStoreCurrency);
+    const zonePrice = liveRate ? liveRate.amount : (shippingZone.shippingPrice || 0);
+
+    // Converted into this checkout's own currency using its already-frozen
+    // fxSnapshots, never a fresh live rate — `ensureCurrencyInSnapshots`
+    // extends the checkout's snapshot set on the fly if this zone's source
+    // currency wasn't anticipated when the checkout was first created (e.g.
+    // a store's own currency differing from every cart item's currency,
+    // which can't happen today since items are already store-native, but is
+    // a safe guard regardless of that).
+    const shippingFxSnapshots = await this.exchangeRateService.ensureCurrencyInSnapshots(
+      (checkout.fxSnapshots as any) ?? [],
+      zoneSourceCurrency,
+    );
+    let shippingFee = this.exchangeRateService.convertWithSnapshots(
+      zonePrice,
+      zoneSourceCurrency,
+      checkout.currency,
+      shippingFxSnapshots,
+    );
+    // A seller's own 'free_shipping' automatic discount (DiscountsService) —
+    // always target:'store' (enforced at creation), so eligibility only
+    // ever needs minOrderAmount checked against the whole checkout's
+    // subtotal, unlike the item-level percentage/fixed/bogo discounts
+    // resolved earlier in createCheckout's Pass 3.5. Checked before the
+    // subscriber shipping-benefit reduction below since 0 can't be reduced
+    // any further.
+    let freeShippingApplied = false;
     if (storeIdsInCheckout.length === 1) {
+      const discountsByStore = await this.discountsService.getActiveDiscountsForStores(storeIdsInCheckout);
+      const freeShippingDiscount = discountsByStore.get(storeIdsInCheckout[0])?.find(
+        (d: any) => d.discountType === 'free_shipping' && (d.minOrderAmount == null || checkout.subtotal >= d.minOrderAmount),
+      );
+      if (freeShippingDiscount) {
+        shippingFee = 0;
+        freeShippingApplied = true;
+      }
+    }
+    if (!freeShippingApplied && storeIdsInCheckout.length === 1) {
       const benefitsEntry = await this.subscriptionBenefits.getActiveBenefits(
         userId,
         storeIdsInCheckout[0],
@@ -709,9 +927,22 @@ export class CheckoutService {
     const totalAmount = this.round(checkout.subtotal + shippingFee);
 
     await checkoutModel.findByIdAndUpdate(checkoutId, {
-      shippingZoneId,
+      // A live rate and a flat zone are mutually exclusive on one checkout —
+      // whichever wasn't chosen is explicitly nulled out, so a buyer who
+      // reselects a flat zone after trying a live rate (or vice versa) never
+      // leaves a stale id from the other path behind.
+      shippingZoneId: liveRate ? null : shippingZoneId,
+      liveShippingRateId: liveRate ? liveRateId : null,
+      liveShippingCarrier: liveRate ? liveRate.carrier : null,
+      liveShippingService: liveRate ? liveRate.service : null,
       shippingFee,
       totalAmount,
+      // Persist the (possibly-extended) snapshot set — see
+      // `ensureCurrencyInSnapshots`'s doc comment: the addition only becomes
+      // part of this checkout's immutable FX history once written back here,
+      // which is what lets a later refund/settlement recompute this exact
+      // shipping fee from history instead of a fresh live rate.
+      fxSnapshots: shippingFxSnapshots,
     });
 
     return {
@@ -719,7 +950,8 @@ export class CheckoutService {
       message: 'Shipping added to checkout',
       data: {
         checkoutId,
-        shippingZoneId,
+        shippingZoneId: liveRate ? null : shippingZoneId,
+        liveShippingRateId: liveRate ? liveRateId : null,
         shippingFee,
         subtotal: checkout.subtotal,
         totalAmount,
@@ -728,25 +960,124 @@ export class CheckoutService {
     };
   }
 
-  async getShippingZones() {
+  // Buyer-facing (checkout zone picker) — only ever `status:'active'` zones,
+  // unlike the seller's own management view (ShippingZonesService.listForSeller),
+  // which intentionally shows everything so a seller can see/toggle inactive
+  // rows too. `storeId` (new) scopes to that seller's own zones first; a store
+  // with none of its own falls back to the original platform-wide rows
+  // (`storeId: null`) — every pre-existing store keeps working unchanged.
+  // Omitting `storeId` entirely (the legacy marketplace multi-store cart, no
+  // longer linked from nav but still reachable) preserves the exact old
+  // behavior: every platform-wide zone, unfiltered by store.
+  //
+  // `displayCurrency` (new) — the frontend's already-resolved checkout
+  // currency (buyer preference / store's own currency before a real Checkout
+  // exists to read `.currency` off of). Each returned zone's `shippingPrice`
+  // is converted (live rate, display-only) into it so the number the buyer
+  // sees in the picker matches what `addShippingInCheckout` will actually
+  // charge — previously the raw source-currency number was returned
+  // unconverted, so a cross-currency checkout could show e.g. "$300"
+  // (implying $300) for a zone that's really priced at Rs300 (≈ $1). A
+  // per-zone conversion failure (e.g. a momentarily stale FX rate) falls back
+  // to the raw price rather than breaking the whole list — this is a display
+  // convenience, not the actual charge, which is always recomputed safely at
+  // `addShippingInCheckout` time regardless.
+  async getShippingZones(storeId?: string, displayCurrency?: string) {
     try {
       const shippingZoneModel =
         this.databaseService.repositories.shippingZoneModel;
 
-      // get all shipping zones
-      const shippingZones = await shippingZoneModel
-        .find({
-          isDelete: false,
-        })
+      const convertForDisplay = async (zones: any[], sourceCurrency: string) => {
+        if (!displayCurrency || displayCurrency === sourceCurrency) return zones;
+        return Promise.all(zones.map(async (z) => {
+          const plain = z.toObject ? z.toObject() : z;
+          try {
+            const shippingPrice = await this.exchangeRateService.convert(plain.shippingPrice || 0, sourceCurrency, displayCurrency);
+            return { ...plain, shippingPrice };
+          } catch {
+            return plain;
+          }
+        }));
+      };
+
+      if (storeId) {
+        const ownZones = await shippingZoneModel
+          .find({ storeId, isDelete: false, status: 'active' })
+          .sort({ createdAt: -1 });
+        if (ownZones.length > 0) {
+          const store = await this.databaseService.repositories.storeModel
+            .findById(storeId)
+            .select('baseCurrency')
+            .lean();
+          const sourceCurrency = (store as any)?.baseCurrency || SHIPPING_ZONE_CURRENCY;
+          const data = await convertForDisplay(ownZones, sourceCurrency);
+          return { message: 'Shipping zones fetched successfully', data };
+        }
+      }
+
+      const platformZones = await shippingZoneModel
+        .find({ storeId: null, isDelete: false, status: 'active' })
         .sort({ createdAt: -1 });
+      const data = await convertForDisplay(platformZones, SHIPPING_ZONE_CURRENCY);
 
       return {
         message: 'Shipping zones fetched successfully',
-        data: shippingZones,
+        data,
       };
     } catch (error) {
       throw error;
     }
+  }
+
+  /**
+   * Real live carrier rates (DHL/FedEx/UPS/USPS/etc., via the store's own
+   * connected Shippo account) for the buyer's current cart + saved address —
+   * an ADDITIONAL option alongside the existing flat `getShippingZones` list,
+   * never a replacement: returns `data: null` (not an error) whenever a live
+   * quote genuinely isn't available (store hasn't connected Shippo, buyer has
+   * no saved address yet, cart is empty, or the provider is unreachable), so
+   * the frontend simply shows only the flat zone list in that case — exactly
+   * today's behavior for every store that never connects this.
+   */
+  async getLiveShippingRates(userId: string, storeId: string) {
+    const { cartModel, addressModel, productVariantModel } = this.databaseService.repositories;
+
+    let address = await addressModel.findOne({ userId, isDefault: true, isDelete: false }).lean();
+    if (!address) {
+      address = await addressModel.findOne({ userId, isDelete: false }).sort({ createdAt: 1 }).lean();
+    }
+    if (!address) return { success: true, data: null };
+
+    const cart = await cartModel.findOne({ userId, storeId, status: 'active', isDelete: false }).lean();
+    if (!cart || !(cart as any).items?.length) return { success: true, data: null };
+
+    const variantIds: string[] = [...new Set((cart as any).items.map((i: any) => i.productVariantId).filter(Boolean) as string[])];
+    const variants = await productVariantModel.find({ _id: { $in: variantIds } }).select('shippingWeight').lean();
+    const weightByVariant = new Map(variants.map((v: any) => [String(v._id), v.shippingWeight]));
+
+    const totalWeightKg = this.shippingRatesService.computeTotalWeightKg(
+      (cart as any).items.map((item: any) => ({
+        shippingWeight: weightByVariant.get(item.productVariantId) ?? null,
+        quantity: item.quantity ?? 1,
+      })),
+    );
+
+    const rates = await this.shippingRatesService.getLiveRates(
+      storeId,
+      {
+        name: (address as any).recipientName,
+        street1: (address as any).addressLine1,
+        street2: (address as any).addressLine2 ?? undefined,
+        city: (address as any).city,
+        state: (address as any).state,
+        zip: (address as any).zipCode,
+        country: (address as any).country ?? '',
+        phone: (address as any).phoneNumber ?? undefined,
+      },
+      totalWeightKg,
+    );
+
+    return { success: true, data: rates };
   }
 
   /** Validates a seller-created coupon against this checkout and, if valid,
@@ -801,6 +1132,8 @@ export class CheckoutService {
       // .redeemReward), so try that before failing outright.
       return this.applyRewardVoucher(checkout, items, storeIdsInCheckout, normalizedCode, userId);
     }
+    if (coupon.startsAt && coupon.startsAt > new Date())
+      throw new BadRequestException('This coupon is not active yet');
     if (coupon.expiresAt && coupon.expiresAt < new Date())
       throw new BadRequestException('This coupon has expired');
     if (coupon.usageLimit != null && coupon.usageCount >= coupon.usageLimit) {

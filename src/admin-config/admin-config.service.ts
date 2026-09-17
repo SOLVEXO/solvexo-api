@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { DatabaseService } from '../database/databaseservice';
 import { ActivityLogService } from '../activity-log/activity-log.service';
 import { UpdateFeatureFlagsDto } from './dto/update-feature-flags.dto';
@@ -11,6 +11,7 @@ import { PlacementLimitKey } from '../common/promotion-placements.const';
 import { UpdatePayoutConfigDto } from './dto/update-payout-config.dto';
 import { UpdateManualPaymentConfigDto } from './dto/update-manual-payment-config.dto';
 import { UpdateFxConfigDto } from './dto/update-fx-config.dto';
+import { isRealCurrencyCode, FRANKFURTER_SUPPORTED_LIST } from '../common/currency-metadata.const';
 
 export type FeatureFlagKey =
   | 'aiStudio' | 'marketplace' | 'digitalUploads' | 'affiliateProgram'
@@ -104,6 +105,125 @@ export class AdminConfigService {
   async getFxConfig() {
     const config = await this.getRawConfig();
     return config.fxConfig;
+  }
+
+  /**
+   * The real, dynamic list of currencies this platform accepts — always
+   * includes 'USD' first (the fixed pivot, no band since it's never rate-
+   * checked). Lazily seeds `fxConfig.enabledCurrencies` exactly once, the
+   * first time this is ever called on a given database — Shopify-style
+   * ("every real-time-priceable currency is on from day one," not a manual
+   * admin action per currency): PKR keeps its own real, historical band
+   * (from the deprecated `sanityBandMinPKR`/`sanityBandMaxPKR` fields, so a
+   * pre-existing platform's behavior is byte-identical), and every currency
+   * Frankfurter can auto-refresh (`FRANKFURTER_SUPPORTED_LIST` — the same
+   * ~30 real, major, live-priceable currencies `refreshFromProvider` already
+   * knows how to fetch) is auto-enabled alongside it with a deliberately
+   * wide, generic sanity band (0.0001–1,000,000 per USD) — this platform has
+   * no real-world per-currency range to hardcode without re-introducing the
+   * "source-code constant" problem this whole design exists to avoid; the
+   * band's actual job is only to catch a garbage FIRST rate (negative/zero/
+   * decimal-point error), while day-to-day movement is what
+   * `abnormalJumpAlertPercent` actually polices (see `ingestRate`). A
+   * currency OUTSIDE this auto-fetchable set still requires a real admin
+   * action (`addCurrency`) — it has no automatic rate source, so someone
+   * has to say "yes, I'll keep this one's rate updated manually."
+   */
+  async getEnabledCurrencies(): Promise<{ code: string; sanityBandMin: number | null; sanityBandMax: number | null }[]> {
+    let config = await this.getRawConfig();
+    if (!config.fxConfig?.enabledCurrencies || config.fxConfig.enabledCurrencies.length === 0) {
+      config = await this.model.findOneAndUpdate(
+        {},
+        { $set: {
+          'fxConfig.enabledCurrencies': [
+            {
+              code: 'PKR',
+              sanityBandMin: config.fxConfig?.sanityBandMinPKR ?? 150,
+              sanityBandMax: config.fxConfig?.sanityBandMaxPKR ?? 450,
+            },
+            ...FRANKFURTER_SUPPORTED_LIST.map((code) => ({ code, sanityBandMin: 0.0001, sanityBandMax: 1_000_000 })),
+          ],
+        } },
+        { upsert: true, new: true, setDefaultsOnInsert: true },
+      );
+      this.invalidateCache();
+    }
+    return [
+      { code: 'USD', sanityBandMin: null, sanityBandMax: null },
+      ...config.fxConfig.enabledCurrencies.map((c: any) => ({ code: c.code, sanityBandMin: c.sanityBandMin, sanityBandMax: c.sanityBandMax })),
+    ];
+  }
+
+  /** Admin-only — adds a new currency the platform will accept, with its own
+   *  real sanity band (see EnabledCurrencyConfig's own doc comment for why a
+   *  per-currency band is required, not a shared global one). Validated
+   *  against the real, complete ISO-4217 table (`isRealCurrencyCode`), not a
+   *  hand-picked shortlist — any real-world currency can be enabled, no
+   *  source-code change required. */
+  async addCurrency(code: string, sanityBandMin: number, sanityBandMax: number, meta: AuditMeta) {
+    const normalized = code.trim().toUpperCase();
+    if (!isRealCurrencyCode(normalized)) {
+      throw new BadRequestException(`"${normalized}" is not a real ISO-4217 currency code`);
+    }
+    if (normalized === 'USD') {
+      throw new BadRequestException('USD is always enabled as the platform pivot — nothing to add');
+    }
+    if (sanityBandMin <= 0 || sanityBandMax <= sanityBandMin) {
+      throw new BadRequestException('sanityBandMax must be greater than sanityBandMin, both must be positive');
+    }
+    const existing = await this.getEnabledCurrencies();
+    if (existing.some((c) => c.code === normalized)) {
+      throw new BadRequestException(`${normalized} is already enabled`);
+    }
+    const config = await this.model.findOneAndUpdate(
+      {},
+      { $push: { 'fxConfig.enabledCurrencies': { code: normalized, sanityBandMin, sanityBandMax, enabledAt: new Date() } } },
+      { upsert: true, new: true, setDefaultsOnInsert: true },
+    );
+    this.invalidateCache();
+    await this.logChange('fx_currency_added', `Enabled ${normalized} for checkout/settlement (band [${sanityBandMin}, ${sanityBandMax}])`, meta);
+    return { success: true, message: `${normalized} enabled`, data: config.fxConfig };
+  }
+
+  async updateCurrencyBand(code: string, sanityBandMin: number, sanityBandMax: number, meta: AuditMeta) {
+    const normalized = code.trim().toUpperCase();
+    if (sanityBandMin <= 0 || sanityBandMax <= sanityBandMin) {
+      throw new BadRequestException('sanityBandMax must be greater than sanityBandMin, both must be positive');
+    }
+    const config = await this.model.findOneAndUpdate(
+      { 'fxConfig.enabledCurrencies.code': normalized },
+      { $set: { 'fxConfig.enabledCurrencies.$.sanityBandMin': sanityBandMin, 'fxConfig.enabledCurrencies.$.sanityBandMax': sanityBandMax } },
+      { new: true },
+    );
+    if (!config) throw new NotFoundException(`${normalized} is not currently enabled`);
+    this.invalidateCache();
+    await this.logChange('fx_currency_band_updated', `Updated ${normalized}'s sanity band to [${sanityBandMin}, ${sanityBandMax}]`, meta);
+    return { success: true, message: `${normalized} band updated`, data: config.fxConfig };
+  }
+
+  /** Refuses to remove a currency any real store currently prices in — a
+   *  store's `baseCurrency` is otherwise-immutable (see Store.baseCurrency's
+   *  own doc comment), so disabling it here would leave that store unable
+   *  to ever price/checkout again. Matches this codebase's established
+   *  "check real usage before allowing removal" convention (e.g. Media
+   *  Library's `checkUsage`). */
+  async removeCurrency(code: string, meta: AuditMeta) {
+    const normalized = code.trim().toUpperCase();
+    if (normalized === 'USD') {
+      throw new BadRequestException('USD is the platform pivot and cannot be removed');
+    }
+    const inUseByStore = await this.databaseService.repositories.storeModel.exists({ baseCurrency: normalized });
+    if (inUseByStore) {
+      throw new BadRequestException(`Cannot remove ${normalized} — at least one store still prices in it`);
+    }
+    const config = await this.model.findOneAndUpdate(
+      {},
+      { $pull: { 'fxConfig.enabledCurrencies': { code: normalized } } },
+      { new: true },
+    );
+    this.invalidateCache();
+    await this.logChange('fx_currency_removed', `Disabled ${normalized} for new checkout/settlement`, meta);
+    return { success: true, message: `${normalized} disabled`, data: config?.fxConfig };
   }
 
   private async logChange(action: string, description: string, meta: AuditMeta) {

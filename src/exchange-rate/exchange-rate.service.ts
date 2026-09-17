@@ -1,8 +1,9 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
-import { DatabaseService } from 'src/database/databaseservice';
-import { AdminConfigService } from 'src/admin-config/admin-config.service';
-import { ActivityLogService } from 'src/activity-log/activity-log.service';
-import { FxSnapshot, SUPPORTED_CURRENCIES, SupportedCurrency } from './schemas/exchange-rate.schema';
+import { DatabaseService } from '@/database/databaseservice';
+import { AdminConfigService } from '@/admin-config/admin-config.service';
+import { ActivityLogService } from '@/activity-log/activity-log.service';
+import { isFrankfurterSupported, getCurrencyDecimals } from '@/common/currency-metadata.const';
+import { FxSnapshot } from './schemas/exchange-rate.schema';
 
 interface AuditMeta {
   adminId?: string;
@@ -39,10 +40,15 @@ export class ExchangeRateService {
     return this.databaseService.repositories.exchangeRateModel;
   }
 
-  assertSupportedCurrency(currency: string): asserts currency is SupportedCurrency {
-    if (!SUPPORTED_CURRENCIES.includes(currency as SupportedCurrency)) {
+  /** Throws unless `currency` is on the platform's real, dynamic, admin-
+   *  enabled list (AdminConfigService.getEnabledCurrencies) — never the old
+   *  fixed `SUPPORTED_CURRENCIES` array, which is retired. Async now (a real
+   *  DB-backed check), so every caller must `await` it. */
+  async assertSupportedCurrency(currency: string): Promise<void> {
+    const enabled = await this.adminConfigService.getEnabledCurrencies();
+    if (!enabled.some((c) => c.code === currency)) {
       throw new BadRequestException(
-        `Unsupported currency "${currency}" — must be one of: ${SUPPORTED_CURRENCIES.join(', ')}`,
+        `Unsupported currency "${currency}" — must be one of: ${enabled.map((c) => c.code).join(', ')}`,
       );
     }
   }
@@ -56,8 +62,9 @@ export class ExchangeRateService {
   }
 
   async getAllCurrentRates(): Promise<Record<string, { ratePerUSD: number; effectiveFrom: Date; source: string } | null>> {
+    const enabled = await this.adminConfigService.getEnabledCurrencies();
     const entries = await Promise.all(
-      SUPPORTED_CURRENCIES.map(async (c) => [c, await this.getCurrentRate(c)] as const),
+      enabled.map(async (c) => [c.code, await this.getCurrentRate(c.code)] as const),
     );
     return Object.fromEntries(entries);
   }
@@ -66,7 +73,30 @@ export class ExchangeRateService {
     if (currency === 'USD') {
       return { currency: 'USD', ratePerUSD: 1, effectiveFrom: new Date(), source: 'admin' as const, _id: null };
     }
-    const rate = await this.getCurrentRate(currency);
+    let rate = await this.getCurrentRate(currency);
+    // Self-heals a currency that's enabled but hasn't had its first real
+    // rate fetched yet (auto-enabled currencies start this way — see
+    // AdminConfigService.getEnabledCurrencies's doc comment — and the daily
+    // refresh cron could still be up to 24h away) with ONE live fetch, right
+    // now, instead of making the buyer wait for tomorrow's cron. Only for a
+    // currency Frankfurter actually covers; anything else still needs a real
+    // admin-set rate first, same as always.
+    if (!rate && isFrankfurterSupported(currency)) {
+      try {
+        const res = await fetch(`https://api.frankfurter.app/latest?from=USD&to=${currency}`);
+        if (res.ok) {
+          const data = (await res.json()) as { rates?: Record<string, number> };
+          const live = data?.rates?.[currency];
+          if (typeof live === 'number' && Number.isFinite(live) && live > 0) {
+            await this.ingestRate(currency, live, 'provider');
+            rate = await this.getCurrentRate(currency);
+          }
+        }
+      } catch {
+        // fall through to the "no rate available" error below — a bootstrap
+        // fetch failing here is no worse than the pre-existing behavior.
+      }
+    }
     if (!rate) {
       throw new BadRequestException(
         `No exchange rate available for ${currency} — cannot convert or checkout in this currency yet`,
@@ -116,10 +146,19 @@ export class ExchangeRateService {
     return this.roundForCurrency(converted, toCurrency);
   }
 
-  /** PKR (and USD, in this codebase's convention) have no meaningful sub-unit for consumer pricing — whole units. USD keeps cents. */
+  /** PKR is a deliberate Solvexo pricing-convention override — ISO-4217
+   *  technically defines it with 2 decimals, but Pakistani retail pricing
+   *  never uses paisas, so this platform has always priced it as whole
+   *  units (kept exactly as-is, not a regression). Every other currency now
+   *  reads its REAL decimals from the ISO-4217 metadata table instead of a
+   *  hardcoded "PKR vs everything else" binary — correct for a real
+   *  zero-decimal currency like JPY the moment it's ever enabled, not just
+   *  today's set. */
   roundForCurrency(amount: number, currency: string): number {
-    if (currency === 'PKR') return Math.round(amount);
-    return Math.round(amount * 100) / 100;
+    const decimals = currency === 'PKR' ? 0 : getCurrencyDecimals(currency);
+    if (decimals === 0) return Math.round(amount);
+    const factor = Math.pow(10, decimals);
+    return Math.round(amount * factor) / factor;
   }
 
   /**
@@ -224,12 +263,17 @@ export class ExchangeRateService {
     source: 'provider' | 'admin',
     meta: AuditMeta = {},
   ) {
-    this.assertSupportedCurrency(currency);
+    await this.assertSupportedCurrency(currency);
     const fxConfig = await this.adminConfigService.getFxConfig();
 
     if (currency !== 'USD') {
-      const min = fxConfig?.sanityBandMinPKR ?? 150;
-      const max = fxConfig?.sanityBandMaxPKR ?? 450;
+      // Per-currency band (see EnabledCurrencyConfig) — a rate outside THIS
+      // currency's own real range, not a single global PKR-shaped band that
+      // would incorrectly reject e.g. a real EUR rate (~0.6-1.3).
+      const enabled = await this.adminConfigService.getEnabledCurrencies();
+      const band = enabled.find((c) => c.code === currency);
+      const min = band?.sanityBandMin ?? 150;
+      const max = band?.sanityBandMax ?? 450;
       if (!(ratePerUSD >= min && ratePerUSD <= max) || !Number.isFinite(ratePerUSD) || ratePerUSD <= 0) {
         await this.activityLogService.log({
           storeId: 'platform',
@@ -324,8 +368,14 @@ export class ExchangeRateService {
    * environment before relying on it in production.
    */
   async refreshFromProvider(): Promise<void> {
-    for (const currency of SUPPORTED_CURRENCIES) {
+    const enabled = await this.adminConfigService.getEnabledCurrencies();
+    for (const { code: currency } of enabled) {
       if (currency === 'USD') continue;
+      // Frankfurter (ECB-sourced) only covers ~30 major currencies — a real,
+      // disclosed limit of the free auto-refresh pipeline, not of what can
+      // be enabled. A currency outside its coverage relies entirely on a
+      // manual admin-set rate (ingestRate(..., source:'admin')) instead.
+      if (!isFrankfurterSupported(currency)) continue;
       try {
         const res = await fetch(`https://api.frankfurter.app/latest?from=USD&to=${currency}`);
         if (!res.ok) throw new Error(`Provider returned HTTP ${res.status}`);
@@ -373,8 +423,9 @@ export class ExchangeRateService {
   async getStaleness() {
     const fxConfig = await this.adminConfigService.getFxConfig();
     const thresholdHours = fxConfig?.staleRateAlertThresholdHours ?? 48;
+    const enabled = await this.adminConfigService.getEnabledCurrencies();
     const results: Record<string, { hoursOld: number; isStale: boolean } | null> = {};
-    for (const currency of SUPPORTED_CURRENCIES) {
+    for (const { code: currency } of enabled) {
       if (currency === 'USD') { results[currency] = { hoursOld: 0, isStale: false }; continue; }
       const rate = await this.getCurrentRate(currency);
       if (!rate) { results[currency] = null; continue; }

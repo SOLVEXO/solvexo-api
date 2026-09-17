@@ -1,7 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Document } from 'mongoose';
-import { SeoMeta, SeoMetaSchema } from 'src/seo/schemas/seo-meta.schema';
+import { SeoMeta, SeoMetaSchema } from '@/seo/schemas/seo-meta.schema';
 
 export type ProductDocument = Product & Document;
 
@@ -118,7 +118,14 @@ export class Product {
   @Prop({ required: true })
   name: string;
 
-  @Prop({ type: String, unique: true })
+  // Uniqueness is enforced per-store (see the compound index below), not
+  // globally — a bare `unique: true` here used to mean two unrelated
+  // sellers naming a product the same common thing ("T-Shirt") collided
+  // with EACH OTHER, and a soft-deleted product's slug stayed permanently
+  // squatted platform-wide forever. Found as a real bug during the Catalog
+  // audit; every other per-store slug in this codebase (Collection, Blog,
+  // StorePage) already scopes this way.
+  @Prop({ type: String })
   slug: string;
 
   @Prop({ type: String, required: true })
@@ -192,6 +199,17 @@ export class Product {
   @Prop({ enum: ['active', 'inactive', 'draft', 'scheduled'], default: 'draft' })
   status: string;
 
+  // Which of this store's own Product alternate templates
+  // (`collection-template` module, `resourceType:'product'`) this product's
+  // detail page renders its SURROUNDING sections through — e.g. `'default'`
+  // vs a seller-created `'minimal'` or `'featured'` template. The
+  // commerce-critical core (gallery, variant/qty/add-to-cart) is fixed
+  // chrome outside this system regardless of `templateKey` — see
+  // `StorefrontProductPage`. Falls back to `'default'` if the referenced
+  // template was since deleted.
+  @Prop({ type: String, default: 'default' })
+  templateKey: string;
+
   @Prop({ type: Date, default: null })
   scheduledAt: Date | null;
 
@@ -221,6 +239,10 @@ export const ProductSchema = SchemaFactory.createForClass(Product);
 
 ProductSchema.index({ sellerId: 1 });
 ProductSchema.index({ storeId: 1 });
+// Real per-store uniqueness — replaces the old bare `slug: { unique: true }`
+// field-level index (see that field's own doc comment). Partial-filtered on
+// isDelete so a deleted product never permanently squats its slug.
+ProductSchema.index({ storeId: 1, slug: 1 }, { unique: true, partialFilterExpression: { isDelete: false } });
 ProductSchema.index({ name: 1 });
 ProductSchema.index({ categoryId: 1 });
 ProductSchema.index({ productType: 1 });

@@ -16,7 +16,7 @@ export class PaymentTransaction {
   @Prop({ type: [String], default: [] })
   orderIds: string[];
 
-  @Prop({ enum: ['cash_on_delivery', 'stripe', 'manual_bank_transfer'], required: true })
+  @Prop({ enum: ['cash_on_delivery', 'stripe', 'manual_bank_transfer', 'safepay'], required: true })
   paymentType: string;
 
   @Prop({ required: true })
@@ -51,6 +51,15 @@ export class PaymentTransaction {
 
   @Prop({ type: String, default: null })
   stripePaymentIntentId: string | null;
+
+  // Generic equivalent of `stripePaymentIntentId` for the new per-store
+  // gateway module (`src/integrations`) — Safepay's tracker token today,
+  // any future non-Stripe provider's own session id tomorrow. Populated by
+  // `CheckoutPaymentMethodsService.initiatePayment`, looked up by
+  // `PaymentService.finalizeGatewayPayment`/`failGatewayPayment` when that
+  // gateway's webhook reports the outcome (see PaymentWebhooksController).
+  @Prop({ type: String, default: null, index: true })
+  providerSessionId: string | null;
 
   // Set only when this charge was routed directly to a seller's own
   // connected Stripe account (StripeConnectService) instead of the

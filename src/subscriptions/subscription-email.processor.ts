@@ -3,7 +3,7 @@ import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
 import { SubscriptionNotificationsService } from './subscription-notifications.service';
-import { QUEUE_NAMES } from 'src/queues/queue.constants';
+import { QUEUE_NAMES } from '@/queues/queue.constants';
 
 /**
  * Sends every subscription-related email through a durable, retried queue

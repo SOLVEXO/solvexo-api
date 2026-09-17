@@ -1,14 +1,14 @@
 /* eslint-disable prettier/prettier */
 import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
-import { DatabaseService } from 'src/database/databaseservice';
-import { UploadService } from 'src/upload/upload.service';
-import { PaymentService } from 'src/payment/payment.service';
-import { FinanceService } from 'src/finance/finance.service';
-import { AdminConfigService } from 'src/admin-config/admin-config.service';
-import { ActivityLogService } from 'src/activity-log/activity-log.service';
-import { NotificationsService } from 'src/notifications/notifications.service';
-import { NOTIFICATION_TYPES } from 'src/notifications/notification.types';
-import { round } from 'src/common/number.util';
+import { DatabaseService } from '@/database/databaseservice';
+import { UploadService } from '@/upload/upload.service';
+import { PaymentService } from '@/payment/payment.service';
+import { FinanceService } from '@/finance/finance.service';
+import { AdminConfigService } from '@/admin-config/admin-config.service';
+import { ActivityLogService } from '@/activity-log/activity-log.service';
+import { NotificationsService } from '@/notifications/notifications.service';
+import { NOTIFICATION_TYPES } from '@/notifications/notification.types';
+import { round } from '@/common/number.util';
 import { SubmitManualPaymentDto } from './dto/submit-manual-payment.dto';
 import { ReuploadManualPaymentDto } from './dto/reupload-manual-payment.dto';
 
@@ -71,10 +71,19 @@ export class ManualPaymentsService {
     const { orders, amountUSD, amountPKR, fxRate } = await this.paymentService.manualBankTransferPayment(userId, dto.checkoutId);
     const upload = await this.uploadService.uploadFile(file);
 
+    const storeIdSet = new Set<string>();
+    for (const o of orders as any[]) {
+      for (const so of (o.sellerOrders ?? []) as any[]) {
+        storeIdSet.add(String(so.storeId));
+      }
+    }
+    const storeIds: string[] = Array.from(storeIdSet);
+
     const proof = await this.proofModel.create({
       userId,
       checkoutId: dto.checkoutId,
-      orderIds: orders.map((o: any) => o._id.toString()),
+      orderIds: (orders as any[]).map((o: any) => o._id.toString()),
+      storeIds,
       amountUSD,
       amountPKR,
       fxRateUsed: fxRate,
@@ -126,14 +135,19 @@ export class ManualPaymentsService {
     return proof;
   }
 
-  async getProofStatus(userId: string, proofId: string) {
-    const proof = await this.proofModel.findOne({ _id: proofId, userId }).lean();
+  async getProofStatus(userId: string, proofId: string, storeId?: string) {
+    const proof = await this.proofModel
+      .findOne({ _id: proofId, userId, ...(storeId ? { storeIds: storeId } : {}) })
+      .lean();
     if (!proof) throw new NotFoundException('Payment proof not found');
     return proof;
   }
 
-  async getMyProofs(userId: string) {
-    return this.proofModel.find({ userId }).sort({ createdAt: -1 }).lean();
+  async getMyProofs(userId: string, storeId?: string) {
+    return this.proofModel
+      .find({ userId, ...(storeId ? { storeIds: storeId } : {}) })
+      .sort({ createdAt: -1 })
+      .lean();
   }
 
   // ═══════════════════════════════════════════════════════════════════════

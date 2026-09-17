@@ -1,0 +1,27 @@
+name: CI (solvexo-api)
+on:
+  pull_request:
+  push:
+    branches-ignore: [main, staging]
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npx jest --runInBand
+      # Lint is informational only for now, not a required check — this
+      # codebase has real, pre-existing lint debt (disclosed separately, not
+      # introduced by this workflow — hundreds of pre-existing `any`-typing
+      # violations) that a blocking gate would flag as permanently red on
+      # every run, which is worse than no gate at all. Also note: `npm run
+      # lint` itself runs with `--fix` baked in (see package.json) — never
+      # wire that into a blocking CI gate even after the debt is paid down,
+      # since it would silently rewrite files rather than just reporting.
+      - run: npx eslint "{src,apps,libs,test}/**/*.ts"
+        continue-on-error: true

@@ -7,6 +7,13 @@ export class CreateCategoryDto {
   @IsOptional()
   parentId?: string;
 
+  // Present → a store-owned category, created at the seller's own discretion
+  // for that one store only. Omitted → the legacy global/admin taxonomy
+  // (unchanged behavior). See CategoriesService.addCategory.
+  @IsOptional()
+  @IsString()
+  storeId?: string;
+
   @IsString()
   @IsOptional()
   image?: string;

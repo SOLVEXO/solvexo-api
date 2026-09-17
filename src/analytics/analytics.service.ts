@@ -454,6 +454,18 @@ export class AnalyticsService {
         { $sort: { revenue: -1 } },
       ]);
 
+      // Country breakdown — a sibling of the state-level one above, for a
+      // multi-currency/international-selling store where "state" alone
+      // doesn't distinguish e.g. a Pakistani buyer from a UK one. Uses
+      // `shippingAddress.country` (ISO-3166 alpha-2, already stamped onto
+      // Order at checkout — see Address.country's own doc comment).
+      const countryRows = await this.r.orderModel.aggregate([
+        ...this.matchStage(scope, from, to),
+        { $match: { 'sellerOrders.status': { $ne: 'cancelled' }, shippingAddress: { $ne: null } } },
+        { $group: { _id: '$shippingAddress.country', orders: { $sum: 1 }, revenue: { $sum: '$sellerOrders.subtotal' } } },
+        { $sort: { revenue: -1 } },
+      ]);
+
       return {
         success: true,
         data: {
@@ -463,6 +475,11 @@ export class AnalyticsService {
           topCustomersByLtv: topCustomers,
           geographicBreakdown: geoRows.map((r: any) => ({
             state: r._id ?? 'Unknown',
+            orders: r.orders,
+            revenue: this.round(r.revenue),
+          })),
+          countryBreakdown: countryRows.map((r: any) => ({
+            country: r._id ?? 'Unknown',
             orders: r.orders,
             revenue: this.round(r.revenue),
           })),

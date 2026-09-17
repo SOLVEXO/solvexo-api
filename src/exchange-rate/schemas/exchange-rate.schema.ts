@@ -1,7 +1,16 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument } from 'mongoose';
 
-export const SUPPORTED_CURRENCIES = ['PKR', 'USD'] as const;
+// A real, curated set of major world currencies — not literally every ISO
+// currency (no real platform, including Shopify, does that per-store either;
+// each is limited to whatever its payment processor + FX provider genuinely
+// support well). Every non-USD entry here needs a matching sanity band in
+// `PlatformConfig.fxSanityBands` (see admin-config/schemas/platform-config.schema.ts)
+// or `ingestRate` will reject its very first real rate. `ExchangeRateService`
+// itself (USD-pivot conversion, `refreshFromProvider`'s Frankfurter loop) was
+// already written currency-count-agnostic — adding an entry here is the one
+// real step to support it end-to-end.
+export const SUPPORTED_CURRENCIES = ['USD', 'PKR', 'GBP', 'EUR', 'AED', 'INR', 'CAD', 'AUD'] as const;
 export type SupportedCurrency = (typeof SUPPORTED_CURRENCIES)[number];
 
 // Embedded on Checkout/Order/PaymentTransaction — one entry per currency

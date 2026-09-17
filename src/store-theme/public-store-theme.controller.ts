@@ -13,4 +13,13 @@ export class PublicStoreThemeController {
   get(@Param('storeId') storeId: string) {
     return this.storeThemeService.getPublic(storeId);
   }
+
+  // Real, shareable "see this before it's live" link — see `PreviewToken`'s
+  // schema comment for the scope boundary. Declared as its own static
+  // segment (`preview/:token`) ahead of nothing here since `:storeId` is
+  // the only other route on this controller and doesn't collide.
+  @Get(':storeId/preview/:token')
+  getPreview(@Param('storeId') storeId: string, @Param('token') token: string) {
+    return this.storeThemeService.getPreviewByToken(storeId, token);
+  }
 }

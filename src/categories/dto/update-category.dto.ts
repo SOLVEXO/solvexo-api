@@ -5,6 +5,8 @@ import {
   MaxLength,
   IsUrl,
   IsBoolean,
+  IsInt,
+  Min,
 } from 'class-validator';
 
 export class UpdateCategoryDto {
@@ -48,4 +50,14 @@ export class UpdateCategoryDto {
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
+
+  @ApiProperty({
+    required: false,
+    example: 0,
+    description: 'Display order among sibling categories (same parent) — lower shows first.',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  sortOrder?: number;
 }

@@ -3,7 +3,7 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { Faq, FaqDocument } from './schemas/faq.schema';
 import { CreateFaqDto, UpdateFaqDto } from './dto/faq.dto';
-import { UpdateSeoMetaDto } from 'src/seo/dto/update-seo-meta.dto';
+import { UpdateSeoMetaDto } from '@/seo/dto/update-seo-meta.dto';
 
 @Injectable()
 export class FaqService {

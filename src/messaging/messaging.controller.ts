@@ -16,6 +16,7 @@ import { SendMessageDto } from './dto/send-message.dto';
 import { EditMessageDto } from './dto/edit-message.dto';
 import { BlockDto } from './dto/block.dto';
 import { ReportDto } from './dto/report.dto';
+import { resolveBuyerStoreScope } from '../common/store-scope.util';
 
 @ApiTags('Messaging')
 @ApiBearerAuth()
@@ -35,13 +36,14 @@ export class MessagingController {
   @Roles('user', 'seller')
   @Post('conversations')
   startConversation(@Req() req: any, @Body() dto: StartConversationDto) {
-    return this.messagingService.startOrGetConversation(req.user.userId, dto);
+    const storeId = resolveBuyerStoreScope(req.user.storeId, dto.storeId);
+    return this.messagingService.startOrGetConversation(req.user.userId, dto, storeId);
   }
 
   // Seller/buyer/admin lists their inbox
   @Get('conversations')
   getConversations(@Req() req: any, @Query() query: any) {
-    return this.messagingService.getConversations(req.user.userId, req.user.role, query);
+    return this.messagingService.getConversations(req.user.userId, req.user.role, query, req.user.storeId);
   }
 
   // ── Static routes BEFORE /:id ─────────────────────────────────────────────

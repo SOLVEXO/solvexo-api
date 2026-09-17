@@ -1,6 +1,6 @@
 import { Injectable, ExecutionContext } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
-import { RedisService } from 'src/redis/redis.service';
+import { RedisService } from '@/redis/redis.service';
 
 // Same checks as JwtAuthGuard, but never blocks the request — an anonymous
 // visitor gets req.user = null instead of a 401. Used by public endpoints

@@ -56,6 +56,8 @@ export interface ChargeContext {
   idempotencyKey?: string;
   /** Free-form metadata attached to the provider-side object for support/reconciliation. */
   metadata?: Record<string, string>;
+  /** Only meaningful for `createProviderSubscription` — a Stripe-native `trial_end` (Unix seconds). When set, the provider must NOT charge anything until this timestamp; the manual provider ignores it (it has no real trial concept). */
+  trialEndUnixSeconds?: number;
 }
 
 /**
@@ -71,6 +73,17 @@ export interface ChargeContext {
 export interface IPaymentGateway {
   chargeSubscription(
     subscriptionId: string,
+    amountUSD: number,
+    context?: ChargeContext,
+  ): Promise<ChargeResult>;
+
+  /**
+   * A single, non-recurring off-session charge — no subscription/price object
+   * involved. Used by the Bookings module (appointment payments, package
+   * purchases) and any future one-off-charge flow.
+   */
+  chargeOneTime(
+    referenceId: string,
     amountUSD: number,
     context?: ChargeContext,
   ): Promise<ChargeResult>;

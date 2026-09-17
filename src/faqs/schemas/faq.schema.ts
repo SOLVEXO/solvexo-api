@@ -1,6 +1,6 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument } from 'mongoose';
-import { SeoMeta, SeoMetaSchema } from 'src/seo/schemas/seo-meta.schema';
+import { SeoMeta, SeoMetaSchema } from '@/seo/schemas/seo-meta.schema';
 
 export type FaqDocument = HydratedDocument<Faq>;
 

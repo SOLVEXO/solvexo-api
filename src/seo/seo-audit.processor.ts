@@ -2,7 +2,7 @@
 import { Processor, WorkerHost, OnWorkerEvent } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
-import { QUEUE_NAMES } from 'src/queues/queue.constants';
+import { QUEUE_NAMES } from '@/queues/queue.constants';
 import { SeoAuditService } from './services/seo-audit.service';
 
 @Processor(QUEUE_NAMES.SEO_AUDIT)

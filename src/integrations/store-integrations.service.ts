@@ -1,0 +1,439 @@
+/* eslint-disable prettier/prettier */
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { randomBytes } from 'crypto';
+import { DatabaseService } from '../database/databaseservice';
+import { ActivityLogService } from '../activity-log/activity-log.service';
+import { StripeConnectService } from '../stripe-connect/stripe-connect.service';
+import { TaxService } from '../tax/tax.service';
+import { ShippingRatesService } from '../shipping-rates/shipping-rates.service';
+import { verifyStoreOwnershipStrict } from '../common/store-ownership.util';
+import { encryptCredential, decryptCredential, maskSecret } from '../common/credential-encryption.util';
+import { PaymentProviderRegistry } from './payment-provider.registry';
+import { WhatsAppCloudProvider } from './providers/whatsapp-cloud.provider';
+import { toDecryptedPaymentConfig } from './integration-credentials.helper';
+import {
+  STORE_INTEGRATION_PROVIDERS,
+  StoreIntegrationDocument,
+  StoreIntegrationProvider,
+  StoreIntegrationType,
+} from './schemas/store-integration.schema';
+
+/** Providers available for a store's own bound currency — see Phase 2 §currency and Store.baseCurrency. */
+const PROVIDERS_BY_CURRENCY: Record<'PKR' | 'USD', StoreIntegrationProvider[]> = {
+  PKR: ['safepay', 'jazzcash', 'easypaisa', 'payfast'],
+  USD: ['stripe'],
+};
+
+function maskCredentials(credentials: Record<string, any>): Record<string, string> {
+  const masked: Record<string, string> = {};
+  for (const [key, value] of Object.entries(credentials)) {
+    if (typeof value === 'string') masked[key] = maskSecret(value);
+  }
+  return masked;
+}
+
+@Injectable()
+export class StoreIntegrationsService {
+  constructor(
+    private readonly databaseService: DatabaseService,
+    private readonly activityLogService: ActivityLogService,
+    private readonly registry: PaymentProviderRegistry,
+    private readonly whatsAppProvider: WhatsAppCloudProvider,
+    private readonly stripeConnectService: StripeConnectService,
+    private readonly taxService: TaxService,
+    private readonly shippingRatesService: ShippingRatesService,
+  ) {}
+
+  private get repos() {
+    return this.databaseService.repositories;
+  }
+
+  private async assertOwnedStore(storeId: string, sellerId: string) {
+    return verifyStoreOwnershipStrict(this.repos.storeModel, storeId, sellerId);
+  }
+
+  private toPublicView(integration: StoreIntegrationDocument) {
+    return {
+      id: String(integration._id),
+      type: integration.type,
+      provider: integration.provider,
+      mode: integration.mode,
+      status: integration.status,
+      isEnabledForCheckout: integration.isEnabledForCheckout,
+      lastVerifiedAt: integration.lastVerifiedAt,
+      lastError: integration.lastError,
+      config: { ...integration.config, maskedHints: undefined },
+      maskedHints: integration.config?.maskedHints ?? {},
+      // Not a secret — it's a routing token embedded in a public webhook
+      // URL, not credentials. The seller needs this back to actually
+      // register `{yourBackendBaseUrl}/webhooks/payments/{provider}/{webhookToken}`
+      // with the gateway. Null for types (e.g. whatsapp) that don't use
+      // per-store webhook URLs at all.
+      webhookToken: integration.webhookToken ?? null,
+      createdAt: (integration as any).createdAt,
+      updatedAt: (integration as any).updatedAt,
+    };
+  }
+
+  /**
+   * Available + connected integrations for this store, scoped by its own
+   * `baseCurrency` (never a client-supplied currency) — a PKR store only
+   * ever sees Pakistani gateways, a USD store only ever sees Stripe. Stripe
+   * has no `StoreIntegration` row of its own (see StripePaymentProvider's
+   * class doc) — its entry here is synthesized live from the existing
+   * per-seller Stripe Connect status instead of being stored twice.
+   */
+  async list(storeId: string, sellerId: string) {
+    const store = await this.assertOwnedStore(storeId, sellerId);
+    // Checked directly against the store's REAL currency — not collapsed
+    // into a PKR/USD binary, which used to silently treat every non-USD
+    // store (GBP, EUR, AED, ...) as if it were PKR (a real bug for the
+    // Markets/multi-currency expansion — see the currency-architecture
+    // plan's "Real gap #1"). Local (PKR-only) gateways stay currency-gated —
+    // a non-PKR store has no use for a PKR-settling provider. Stripe Connect
+    // is deliberately NOT gated the same way: it's a per-SELLER capability
+    // (one Stripe account, same level `Seller.stripeCustomerId` already
+    // lives at), not tied to any one store's currency — a PKR-store seller
+    // can and should still be able to connect it here too, the same as they
+    // always could from the old standalone "Payment Gateway" Settings card
+    // this replaced (see the seller-integrations frontend's
+    // `StripeConnectSection`). Only providers with a real implementation
+    // registered show up — jazzcash/easypaisa/payfast stay hidden from the
+    // seller dashboard until their provider classes exist.
+    const localProviders = store.baseCurrency === 'PKR' ? PROVIDERS_BY_CURRENCY.PKR : [];
+    const availableProviders: StoreIntegrationProvider[] = [
+      ...localProviders.filter((p) => this.registry.isSupported(p)),
+      'stripe',
+    ];
+
+    const stored = await this.repos.storeIntegrationModel.find({ storeId, type: 'payment' });
+    const byProvider = new Map(stored.map((doc) => [doc.provider, doc]));
+
+    const payment = await Promise.all(
+      availableProviders.map(async (provider) => {
+        if (provider === 'stripe') {
+          const { data } = await this.stripeConnectService.getStatus(sellerId);
+          return {
+            id: null,
+            type: 'payment' as const,
+            provider: 'stripe' as const,
+            mode: 'live' as const,
+            status: data.connected && data.chargesEnabled && data.payoutsEnabled ? 'connected' : data.connected ? 'error' : 'not_connected',
+            isEnabledForCheckout: data.connected && data.chargesEnabled && data.payoutsEnabled,
+            lastVerifiedAt: null,
+            lastError: data.connected && !(data.chargesEnabled && data.payoutsEnabled) ? 'Stripe onboarding incomplete' : null,
+            // Stripe Connect settles into the seller's own account in
+            // whatever real currency their store is priced in — never
+            // hardcoded to USD (that was the same binary-collapse bug as
+            // the local-provider gating above).
+            config: { displayName: 'Card payment (Stripe)', currency: store.baseCurrency ?? 'USD' },
+            maskedHints: {},
+            manageVia: { statusUrl: '/api/stripe-connect/status', connectUrl: '/api/stripe-connect/onboarding-link' },
+          };
+        }
+        const doc = byProvider.get(provider);
+        if (doc) return this.toPublicView(doc);
+        return {
+          id: null,
+          type: 'payment' as const,
+          provider,
+          mode: 'sandbox' as const,
+          status: 'not_connected' as const,
+          isEnabledForCheckout: false,
+          lastVerifiedAt: null,
+          lastError: null,
+          // Reached only for a local (PKR-only) gateway — `localProviders`
+          // above is only ever populated when store.baseCurrency === 'PKR'.
+          config: { currency: 'PKR' },
+          maskedHints: {},
+        };
+      }),
+    );
+
+    const whatsapp = await this.repos.storeIntegrationModel.findOne({ storeId, type: 'whatsapp', provider: 'whatsapp_cloud' });
+    const tax = await this.repos.storeIntegrationModel.findOne({ storeId, type: 'tax', provider: 'taxjar' });
+    const shipping = await this.repos.storeIntegrationModel.findOne({ storeId, type: 'shipping', provider: 'shippo' });
+
+    const notConnected = (type: StoreIntegrationType, provider: StoreIntegrationProvider) => ({
+      id: null, type, provider, mode: 'live' as const, status: 'not_connected' as const,
+      isEnabledForCheckout: false, lastVerifiedAt: null, lastError: null, config: {}, maskedHints: {},
+      webhookToken: null,
+    });
+
+    return {
+      success: true,
+      data: {
+        payment,
+        whatsapp: whatsapp ? this.toPublicView(whatsapp) : notConnected('whatsapp', 'whatsapp_cloud'),
+        // Real live tax (TaxJar) and shipping-rate (Shippo) connections — see
+        // TaxService/ShippingRatesService for what "connected" actually
+        // unlocks at checkout. Both are additive/opt-in, so `not_connected`
+        // is a completely normal, unbroken state (the existing flat
+        // Store.taxRate / per-zone shipping price keeps working).
+        tax: tax ? this.toPublicView(tax) : notConnected('tax', 'taxjar'),
+        shipping: shipping ? this.toPublicView(shipping) : notConnected('shipping', 'shippo'),
+      },
+    };
+  }
+
+  async connect(storeId: string, sellerId: string, type: StoreIntegrationType, provider: StoreIntegrationProvider, body: Record<string, any>) {
+    const store = await this.assertOwnedStore(storeId, sellerId);
+
+    if (!STORE_INTEGRATION_PROVIDERS.includes(provider)) {
+      throw new BadRequestException(`Unknown provider "${provider}"`);
+    }
+    if (provider === 'stripe') {
+      throw new BadRequestException(
+        'Stripe is connected via the existing Stripe Connect onboarding flow — POST /api/stripe-connect/onboarding-link, not this endpoint.',
+      );
+    }
+
+    if (type === 'payment') {
+      // Every local gateway in PROVIDERS_BY_CURRENCY is PKR-only today, and
+      // 'stripe' (the only USD-bucket entry) is already rejected above — so
+      // this is really just "is this a PKR store," checked directly against
+      // the store's real currency instead of a collapsed PKR/USD binary
+      // (which used to name the wrong currency in the error message for any
+      // non-PKR, non-USD store like GBP/EUR).
+      if (store.baseCurrency !== 'PKR' || !PROVIDERS_BY_CURRENCY.PKR.includes(provider)) {
+        throw new BadRequestException(`"${provider}" is not available for a ${store.baseCurrency ?? 'USD'} store`);
+      }
+      return this.connectPayment(storeId, sellerId, provider, body);
+    }
+    if (type === 'whatsapp' && provider === 'whatsapp_cloud') {
+      return this.connectWhatsApp(storeId, sellerId, body);
+    }
+    if (type === 'tax' && provider === 'taxjar') {
+      return this.taxService.connect(storeId, sellerId, body.apiToken);
+    }
+    if (type === 'shipping' && provider === 'shippo') {
+      return this.shippingRatesService.connect(storeId, sellerId, body.apiToken, body.originAddress);
+    }
+    throw new BadRequestException(`"${provider}" does not support type "${type}"`);
+  }
+
+  private async connectPayment(storeId: string, sellerId: string, provider: StoreIntegrationProvider, body: Record<string, any>) {
+    if (provider === 'safepay') {
+      const { secretKey, clientId, webhookSecret, displayName } = body;
+      if (!secretKey || !clientId) {
+        throw new BadRequestException('secretKey and clientId are required');
+      }
+      // `webhookSecret` is deliberately optional here — Safepay only issues
+      // it once a webhook URL is registered in their dashboard, and that URL
+      // is only knowable after this call generates `webhookToken` below.
+      // Real sequence: connect with just secretKey+clientId -> we hand back
+      // the webhookToken-bearing URL -> seller registers it with Safepay,
+      // gets a webhookSecret -> PATCH .../:id with { webhookSecret } to add
+      // it (see `update()`). Inbound webhooks fail safely (rejected, not a
+      // security hole) until it's added — `SafepayPaymentProvider.handleWebhook`
+      // simply can't compute a valid HMAC against a null secret.
+      const credentials = { secretKey, clientId, webhookSecret: webhookSecret ?? null };
+      const credentialsEncrypted = encryptCredential(JSON.stringify(credentials), 'INTEGRATIONS');
+      const mode = String(secretKey).includes('_live_') ? 'live' : 'sandbox';
+
+      const doc = await this.repos.storeIntegrationModel.findOneAndUpdate(
+        { storeId, type: 'payment', provider },
+        {
+          $set: {
+            sellerId,
+            mode,
+            status: 'connected',
+            credentialsEncrypted,
+            'config.displayName': displayName ?? 'Safepay',
+            'config.currency': 'PKR',
+            'config.maskedHints': maskCredentials(credentials),
+            lastError: null,
+          },
+          $setOnInsert: { webhookToken: randomBytes(32).toString('hex'), isEnabledForCheckout: false },
+        },
+        { new: true, upsert: true },
+      );
+
+      await this.logChange(storeId, sellerId, 'integration.connect', doc, { provider, mode });
+      return { success: true, data: this.toPublicView(doc) };
+    }
+
+    // JazzCash/Easypaisa/PayFast follow the same shape once their provider
+    // classes are implemented (see PaymentProviderRegistry) — not built yet.
+    throw new BadRequestException(`"${provider}" is not implemented yet`);
+  }
+
+  private async connectWhatsApp(storeId: string, sellerId: string, body: Record<string, any>) {
+    const { code, phoneNumberId, businessId, displayName } = body;
+    if (!code || !phoneNumberId) {
+      throw new BadRequestException('code and phoneNumberId are required (from the Embedded Signup callback)');
+    }
+
+    const { accessToken, expiresAt } = await this.whatsAppProvider.exchangeAuthCode(code);
+
+    // Never trust a client-claimed phoneNumberId/wabaId — prove the token
+    // this store's seller actually authenticated with has real access to
+    // that phone number first, since inbound webhook routing matches
+    // purely on this field (see Phase 8 security review). `wabaId` is
+    // taken from Meta's own response, never the request body.
+    const { verified, wabaId } = await this.whatsAppProvider.verifyPhoneNumberAccess(accessToken, phoneNumberId);
+    if (!verified) {
+      throw new BadRequestException('This access token does not have access to the given phoneNumberId');
+    }
+
+    const existingElsewhere = await this.repos.storeIntegrationModel.findOne({
+      type: 'whatsapp',
+      'config.phoneNumberId': phoneNumberId,
+      storeId: { $ne: storeId },
+    });
+    if (existingElsewhere) {
+      throw new BadRequestException('This WhatsApp phone number is already connected to a different store');
+    }
+
+    const credentialsEncrypted = encryptCredential(JSON.stringify({ accessToken }), 'INTEGRATIONS');
+
+    const doc = await this.repos.storeIntegrationModel.findOneAndUpdate(
+      { storeId, type: 'whatsapp', provider: 'whatsapp_cloud' },
+      {
+        $set: {
+          sellerId,
+          mode: 'live',
+          status: 'connected',
+          credentialsEncrypted,
+          'config.displayName': displayName ?? 'WhatsApp Business',
+          'config.wabaId': wabaId,
+          'config.phoneNumberId': phoneNumberId,
+          'config.businessId': businessId ?? null,
+          'config.tokenExpiresAt': expiresAt,
+          lastVerifiedAt: new Date(),
+          lastError: null,
+        },
+        $setOnInsert: { isEnabledForCheckout: false },
+      },
+      { new: true, upsert: true },
+    );
+
+    await this.logChange(storeId, sellerId, 'integration.connect', doc, { provider: 'whatsapp_cloud' });
+    return { success: true, data: this.toPublicView(doc) };
+  }
+
+  /**
+   * Confirms the stored credentials still work, without going live.
+   * WhatsApp: a real check against Meta's `debug_token` endpoint. Payment
+   * gateways: validates the credentials are present and well-formed only —
+   * NOT a live sandbox transaction, since that would require confirming
+   * each gateway's own no-op verification endpoint against a real sandbox
+   * account first (flagged in SafepayPaymentProvider's own file doc; do not
+   * extend this to a live call without that confirmation).
+   */
+  async test(storeId: string, sellerId: string, id: string) {
+    await this.assertOwnedStore(storeId, sellerId);
+    const integration = await this.repos.storeIntegrationModel.findOne({ _id: id, storeId });
+    if (!integration) throw new NotFoundException('Integration not found');
+
+    let ok = false;
+    let message = '';
+    if (integration.type === 'whatsapp') {
+      const config = toDecryptedPaymentConfig(integration);
+      const { isValid } = await this.whatsAppProvider.checkTokenValidity(config.credentials.accessToken);
+      ok = isValid;
+      message = isValid ? 'WhatsApp access token is valid' : 'WhatsApp access token is invalid or expired';
+    } else {
+      ok = !!integration.credentialsEncrypted;
+      message = ok ? 'Credentials are present and decrypt correctly' : 'No credentials stored';
+      if (ok) {
+        try {
+          decryptCredential(integration.credentialsEncrypted!, 'INTEGRATIONS');
+        } catch {
+          ok = false;
+          message = 'Stored credentials failed to decrypt';
+        }
+      }
+    }
+
+    await this.repos.storeIntegrationModel.updateOne(
+      { _id: id },
+      ok
+        ? { $set: { lastVerifiedAt: new Date(), lastError: null } }
+        : { $set: { status: 'error', lastError: message } },
+    );
+    await this.logChange(storeId, sellerId, 'integration.test', integration, { result: ok ? 'ok' : 'failed' });
+
+    return { success: true, data: { ok, message } };
+  }
+
+  async update(
+    storeId: string,
+    sellerId: string,
+    id: string,
+    patch: { isEnabledForCheckout?: boolean; displayName?: string; webhookSecret?: string },
+  ) {
+    await this.assertOwnedStore(storeId, sellerId);
+    const integration = await this.repos.storeIntegrationModel.findOne({ _id: id, storeId });
+    if (!integration) throw new NotFoundException('Integration not found');
+
+    if (patch.isEnabledForCheckout && integration.mode === 'live' && !integration.lastVerifiedAt) {
+      throw new BadRequestException('Run a successful test before enabling a live-mode integration for checkout');
+    }
+
+    const $set: Record<string, any> = {};
+    if (typeof patch.isEnabledForCheckout === 'boolean') $set.isEnabledForCheckout = patch.isEnabledForCheckout;
+    if (patch.displayName) $set['config.displayName'] = patch.displayName;
+
+    // Step 2 of the connect flow's own doc comment: the seller only gets a
+    // real webhookSecret from the gateway's dashboard AFTER registering the
+    // webhookToken-bearing URL there, which is only knowable after connect()
+    // already ran — so it arrives here, later, merged into the existing
+    // encrypted credential blob rather than requiring a second connect() call.
+    if (patch.webhookSecret) {
+      if (!integration.credentialsEncrypted) {
+        throw new BadRequestException('Connect this integration with its API credentials first');
+      }
+      const existing = JSON.parse(decryptCredential(integration.credentialsEncrypted, 'INTEGRATIONS'));
+      const merged = { ...existing, webhookSecret: patch.webhookSecret };
+      $set.credentialsEncrypted = encryptCredential(JSON.stringify(merged), 'INTEGRATIONS');
+      $set['config.maskedHints'] = maskCredentials(merged);
+      $set.lastError = null;
+    }
+
+    const doc = await this.repos.storeIntegrationModel.findOneAndUpdate({ _id: id, storeId }, { $set }, { new: true });
+    await this.logChange(storeId, sellerId, 'integration.update', doc!, {
+      changedFields: Object.keys($set).map((f) => (f === 'credentialsEncrypted' ? 'credentials.webhookSecret' : f)),
+    });
+    return { success: true, data: this.toPublicView(doc!) };
+  }
+
+  /** Wipes the credential blob and reverts to `not_connected` — keeps the row (audit trail, webhookToken history) rather than hard-deleting it. */
+  async disconnect(storeId: string, sellerId: string, id: string) {
+    await this.assertOwnedStore(storeId, sellerId);
+    const integration = await this.repos.storeIntegrationModel.findOne({ _id: id, storeId });
+    if (!integration) throw new NotFoundException('Integration not found');
+
+    const doc = await this.repos.storeIntegrationModel.findOneAndUpdate(
+      { _id: id, storeId },
+      {
+        $set: {
+          status: 'not_connected',
+          credentialsEncrypted: null,
+          isEnabledForCheckout: false,
+          'config.maskedHints': {},
+          lastVerifiedAt: null,
+          lastError: null,
+        },
+      },
+      { new: true },
+    );
+    await this.logChange(storeId, sellerId, 'integration.disconnect', doc!, { provider: integration.provider });
+    return { success: true, message: 'Integration disconnected' };
+  }
+
+  private async logChange(storeId: string, sellerId: string, action: string, integration: StoreIntegrationDocument, metadata: Record<string, any>) {
+    await this.activityLogService.log({
+      storeId,
+      category: 'integrations',
+      action,
+      description: `${integration.type}/${integration.provider} — ${action}`,
+      actorId: sellerId,
+      actorRole: 'seller',
+      targetId: String(integration._id),
+      targetType: 'StoreIntegration',
+      isSecurityAlert: true,
+      metadata,
+    });
+  }
+}

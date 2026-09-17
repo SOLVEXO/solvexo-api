@@ -3,7 +3,7 @@ import { Injectable, BadRequestException, NotFoundException } from '@nestjs/comm
 import { v2 as cloudinary } from 'cloudinary';
 import { CreateBannerDto } from './dto/create-banner.dto';
 import { UpdateBannerDto } from './dto/update-banner.dto';
-import { DatabaseService } from 'src/database/databaseservice';
+import { DatabaseService } from '@/database/databaseservice';
 import { AdminConfigService } from '../admin-config/admin-config.service';
 import { MediaLibraryService } from '../media-library/media-library.service';
 import { validateCreativeDimensions } from '../common/validate-creative-dimensions.util';

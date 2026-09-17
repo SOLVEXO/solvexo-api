@@ -3,8 +3,8 @@ import {
   BadRequestException, HttpException, HttpStatus, Injectable, Logger, NotFoundException,
 } from '@nestjs/common';
 import { Types } from 'mongoose';
-import { DatabaseService } from 'src/database/databaseservice';
-import { verifyStoreOwnershipOrForbidden } from 'src/common/store-ownership.util';
+import { DatabaseService } from '@/database/databaseservice';
+import { verifyStoreOwnershipOrForbidden } from '@/common/store-ownership.util';
 import { AiStudioCreditsService } from './ai-studio-credits.service';
 import { AiProviderError } from './providers/ai-provider.interfaces';
 import { TextGenerationService } from './providers/text-generation.service';

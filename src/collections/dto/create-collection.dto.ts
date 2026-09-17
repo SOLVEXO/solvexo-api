@@ -52,4 +52,9 @@ export class CreateCollectionDto {
   @ValidateNested()
   @Type(() => CollectionRulesDto)
   rules?: CollectionRulesDto;
+
+  @ApiProperty({ required: false, enum: ['active', 'draft'] })
+  @IsOptional()
+  @IsIn(['active', 'draft'])
+  status?: 'active' | 'draft';
 }

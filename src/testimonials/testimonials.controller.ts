@@ -1,10 +1,10 @@
-import { Body, Controller, Delete, Get, Param, Post, Put, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Put, Query, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { TestimonialsService } from './testimonials.service';
-import { CreateTestimonialDto, UpdateTestimonialDto } from './dto/testimonial.dto';
+import { CreateTestimonialDto, UpdateTestimonialDto, SubmitTestimonialDto } from './dto/testimonial.dto';
 
 @ApiTags('Testimonials')
 @Controller('api/testimonials')
@@ -15,6 +15,23 @@ export class TestimonialsController {
   @Get()
   getActive(@Query('limit') limit?: string) {
     return this.testimonialsService.findAllActive(Math.min(12, parseInt(limit || '6', 10) || 6));
+  }
+
+  // ── SELLER (Auth Required) — self-submit a testimonial for review ───────
+  @Get('mine')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @ApiBearerAuth()
+  getMine(@Req() req: any) {
+    return this.testimonialsService.getMySubmission(req.user.userId);
+  }
+
+  @Post('submit')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @ApiBearerAuth()
+  submit(@Req() req: any, @Body() dto: SubmitTestimonialDto) {
+    return this.testimonialsService.submitAsSeller(req.user.userId, dto);
   }
 
   // ── ADMIN (Auth Required) ────────────────────────────────────────────────
@@ -56,5 +73,21 @@ export class TestimonialsController {
   @ApiBearerAuth()
   remove(@Param('id') id: string) {
     return this.testimonialsService.remove(id);
+  }
+
+  @Patch(':id/approve')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('admin')
+  @ApiBearerAuth()
+  approve(@Param('id') id: string) {
+    return this.testimonialsService.approve(id);
+  }
+
+  @Patch(':id/reject')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('admin')
+  @ApiBearerAuth()
+  reject(@Param('id') id: string) {
+    return this.testimonialsService.reject(id);
   }
 }

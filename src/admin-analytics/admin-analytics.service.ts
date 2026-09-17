@@ -459,6 +459,16 @@ export class AdminAnalyticsService {
         { $sort: { revenue: -1 } },
       ]);
 
+      // Platform-wide country breakdown — where Solvexo's buyers actually
+      // are, across every seller/store. `shippingAddress.country` is
+      // ISO-3166 alpha-2, already stamped onto Order at checkout.
+      const countryRows = await this.r.orderModel.aggregate([
+        ...sellerOrderMatchStage(from, to, scope),
+        { $match: { 'sellerOrders.status': { $ne: 'cancelled' }, shippingAddress: { $ne: null } } },
+        { $group: { _id: '$shippingAddress.country', orders: { $sum: 1 }, revenue: { $sum: '$sellerOrders.subtotal' } } },
+        { $sort: { revenue: -1 } },
+      ]);
+
       return {
         success: true,
         data: {
@@ -469,6 +479,7 @@ export class AdminAnalyticsService {
           averageLifetimeValue: avgLifetimeValue,
           topCustomersByLtv: topCustomers,
           geographicBreakdown: geoRows.map((r: any) => ({ state: r._id ?? 'Unknown', orders: r.orders, revenue: round(r.revenue) })),
+          countryBreakdown: countryRows.map((r: any) => ({ country: r._id ?? 'Unknown', orders: r.orders, revenue: round(r.revenue) })),
           note: 'Geographic breakdown covers physical orders only (digital orders have no shippingAddress) — same limitation as seller analytics.',
         },
       };

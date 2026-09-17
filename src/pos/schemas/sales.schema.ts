@@ -90,8 +90,15 @@ export class Sale {
   @Prop({ enum: ['completed', 'held', 'refunded', 'voided', 'partially_refunded'], default: 'completed' })
   status: string;
 
-  @Prop({ type: String, default: null })
-  idempotencyKey: string | null;
+  // No `default: null` — a `sparse` index only excludes documents where
+  // the field is truly absent, not ones where it's explicitly `null`.
+  // Mongoose applies a schema `default` even when the field is omitted
+  // from `.create()`, so a default here would silently reintroduce the
+  // exact E11000-on-every-key-less-sale bug the unique+sparse index (see
+  // below) was meant to avoid. Leave the field unset entirely when no
+  // client-generated key is supplied — see PosService.createSale.
+  @Prop({ type: String })
+  idempotencyKey?: string | null;
 
   @Prop({ type: Date, default: null })
   voidedAt: Date | null;
@@ -112,4 +119,9 @@ SaleSchema.index({ sessionId: 1 });
 SaleSchema.index({ employeeId: 1 });
 SaleSchema.index({ storeId: 1, saleNumber: 1 }, { unique: true });
 SaleSchema.index({ 'items.variantId': 1 });
-SaleSchema.index({ idempotencyKey: 1 }, { sparse: true });
+// unique (not just sparse) — the old sparse-only index let two requests
+// carrying the same client-generated idempotencyKey both pass a
+// findOne-then-create check before either had written, creating duplicate
+// sales on a retried checkout. See PosService.createSale's duplicate-key
+// catch, which now relies on this constraint to detect that race.
+SaleSchema.index({ idempotencyKey: 1 }, { unique: true, sparse: true });

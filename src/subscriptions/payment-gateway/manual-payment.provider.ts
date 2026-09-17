@@ -23,6 +23,12 @@ export class ManualPaymentProvider implements IPaymentGateway {
     return { success: true, providerChargeId, paymentMethodType: 'manual', currency: 'usd' };
   }
 
+  async chargeOneTime(referenceId: string, amountUSD: number, _context?: ChargeContext): Promise<ChargeResult> {
+    const providerChargeId = this.fakeId('manual_chg');
+    console.log(`[ManualPayment] Simulated one-time charge: $${amountUSD.toFixed(2)} USD | ref=${referenceId} | chargeId=${providerChargeId}`);
+    return { success: true, providerChargeId, paymentMethodType: 'manual', currency: 'usd' };
+  }
+
   async createProviderSubscription(
     subscriptionId: string,
     planName: string,

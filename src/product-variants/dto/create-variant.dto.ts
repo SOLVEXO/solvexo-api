@@ -61,6 +61,10 @@ export class CreateVariantDto {
   sku?: string;
 
   @IsOptional()
+  @IsString()
+  barcode?: string;
+
+  @IsOptional()
   @IsBoolean()
   isDefault?: boolean;
 }

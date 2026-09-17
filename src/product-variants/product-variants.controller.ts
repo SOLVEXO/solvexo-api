@@ -1,4 +1,16 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Req,
+  UseGuards,
+  UsePipes,
+  ValidationPipe,
+} from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -9,8 +21,11 @@ import { UpdateVariantDto } from './dto/update-variant.dto';
 @Controller('api/products')
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles('seller')
+@UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
 export class ProductVariantsController {
-  constructor(private readonly productVariantsService: ProductVariantsService) {}
+  constructor(
+    private readonly productVariantsService: ProductVariantsService,
+  ) {}
 
   @Get(':productId/variants')
   async listVariants(@Req() req: any, @Param('productId') productId: string) {
@@ -36,7 +51,14 @@ export class ProductVariantsController {
     @Body() body: UpdateVariantDto,
   ) {
     const { userId: sellerId } = req.user;
-    return this.productVariantsService.updateVariant(sellerId, productId, variantId, body);
+    return this.productVariantsService.updateVariant(
+      sellerId,
+      productId,
+      variantId,
+      body,
+      req.ip,
+      req.headers['user-agent'],
+    );
   }
 
   @Delete(':productId/variants/:variantId')
@@ -46,6 +68,10 @@ export class ProductVariantsController {
     @Param('variantId') variantId: string,
   ) {
     const { userId: sellerId } = req.user;
-    return this.productVariantsService.deleteVariant(sellerId, productId, variantId);
+    return this.productVariantsService.deleteVariant(
+      sellerId,
+      productId,
+      variantId,
+    );
   }
 }

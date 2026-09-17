@@ -7,7 +7,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { IdempotencyInterceptor } from '../common/idempotency.interceptor';
-import { ChangePlatformPlanDto, CancelPlatformPlanDto, BillingPortalDto, ConfirmOnboardingPaymentMethodDto } from './dto/subscribe-platform-plan.dto';
+import { ChangePlatformPlanDto, CancelPlatformPlanDto, BillingPortalDto, ConfirmOnboardingPaymentMethodDto, SaveOnboardingDraftDto } from './dto/subscribe-platform-plan.dto';
 import { RefundInvoiceDto } from '../subscriptions/dto/refund-invoice.dto';
 
 @ApiTags('Platform Plans — Seller')
@@ -53,6 +53,25 @@ export class SellerPlatformSubscriptionsController {
   @Post('onboarding/confirm-payment-method')
   confirmOnboardingPaymentMethod(@Req() req: any, @Body() dto: ConfirmOnboardingPaymentMethodDto) {
     return this.sellerPlatformSubscriptionsService.confirmOnboardingPaymentMethod(req.user.userId, dto.setupIntentId);
+  }
+
+  // Lets the onboarding wizard resume exactly where the seller left off
+  // (step + form data) instead of restarting from step 1 after a
+  // reload/lost connection/different device.
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Get('onboarding/progress')
+  getOnboardingProgress(@Req() req: any) {
+    return this.sellerPlatformSubscriptionsService.getOnboardingProgress(req.user.userId);
+  }
+
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Patch('onboarding/draft')
+  saveOnboardingDraft(@Req() req: any, @Body() dto: SaveOnboardingDraftDto) {
+    return this.sellerPlatformSubscriptionsService.saveOnboardingDraft(req.user.userId, dto.step, dto.maxReached, dto.form);
   }
 
   @ApiBearerAuth()

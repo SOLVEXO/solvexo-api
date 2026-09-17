@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
-import { Body, Controller, Post, Req, Get, Patch } from '@nestjs/common';
+import { Body, Controller, Post, Req, Get, Patch, Query } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
@@ -11,6 +12,8 @@ import { UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { Roles } from '../auth/decorators/roles.decorator'
 import { RolesGuard } from '../auth/guards/roles.guard'; ;
+import { resolveCountryFromIp } from '../common/geo-locate.util';
+import { resolveAuthVisualRegion, resolveAuthVisualImageUrl } from '../common/auth-visual-region.const';
 
 
 
@@ -20,55 +23,93 @@ import { RolesGuard } from '../auth/guards/roles.guard'; ;
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
+  // Real IP-based country detection — powers two independent frontend
+  // features off one lookup: (1) the Register form's phone input auto-
+  // selects the right dial code/flag instead of defaulting everyone to the
+  // same country; (2) `region`/`imageUrl` let AuthSplitLayout (shared by
+  // every auth screen — Register/Login/Onboarding/etc.) show a real,
+  // region-appropriate background photo instead of one fixed generic
+  // illustration for every visitor worldwide. The optional `?context=`
+  // query param (`register`|`login`|`onboarding`) picks WHICH of that
+  // region's 3 curated photos comes back — so the same visitor sees a
+  // different (but same-region) photo depending on which auth screen
+  // they're on, instead of one identical image everywhere; an invalid or
+  // missing context safely falls back to `'register'`. `region`/`imageUrl`
+  // are resolved from a small curated map (`auth-visual-region.const.ts`) —
+  // never per-country, real platforms only build out their actual top
+  // markets — with `'default'` covering everything unmapped. Fail-open:
+  // a null country still returns a valid 'default' region + photo, never
+  // an error.
+  @Get('detect-country')
+  detectCountry(@Req() req: any, @Query('context') context?: string) {
+    const country = resolveCountryFromIp(req.ip);
+    const region = resolveAuthVisualRegion(country);
+    return { success: true, data: { country, region, imageUrl: resolveAuthVisualImageUrl(region, context) } };
+  }
+
   // ✅ Signup
- 
+  // Rate-limited (per IP) same as every other public account-creation-shaped
+  // endpoint in this codebase (contact/newsletter) — previously relied only
+  // on the 100/min global default, which does nothing against a scripted
+  // burst of registration/OTP attempts.
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @Post('register')
   async signup( @Body() RegisterDto: RegisterDto) {
     return this.authService.signup(RegisterDto);
   }
 
-  // ✅ Login
+  // ✅ Login — tighter than the 100/min global default specifically to slow
+  // down password-guessing against one account from one IP.
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Post('login')
   async login(@Req() req: any, @Body() loginDto: LoginDto) {
     return this.authService.login(loginDto, req.ip, req.headers['user-agent']);
   }
 
-  // ✅ Social login (Google / Facebook / Apple) — always buyer (role: 'user')
+  // ✅ Social login (Google / Facebook / Apple) — resolves to buyer or seller per dto.role (default 'user')
   @Post('social-login')
   async socialLogin(@Body() socialLoginDto: SocialLoginDto) {
     return this.authService.socialLogin(socialLoginDto);
   }
 
-  
-   @Post('resend-otp') 
-  async resendOtp(@Body() body: { email: string; role: string }) {
-    const { email, role } = body;
-    return this.authService.resendOtp(email, role);
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @Post('resend-otp')
+  async resendOtp(@Body() body: { email: string; role: string; storeId?: string }) {
+    const { email, role, storeId } = body;
+    return this.authService.resendOtp(email, role, storeId);
   }
 
-    @Post('verifyOtp') 
-  async verifyOtp(@Body() body: { email: string; role: string, otp: string }) {
-    const { email, role, otp } = body;
-    return this.authService.verifyOtp(email, role, otp);
+  // A 6-digit OTP is only 1,000,000 combinations — without a tight per-IP
+  // limit here, that's brute-forceable well within the OTP's expiry window.
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Post('verifyOtp')
+  async verifyOtp(@Body() body: { email: string; role: string, otp: string; storeId?: string }) {
+    const { email, role, otp, storeId } = body;
+    return this.authService.verifyOtp(email, role, otp, storeId);
   }
 
-   @Post('forgot-password')
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @Post('forgot-password')
   async forgotPassword(
     @Body('email') email: string,
     @Body('role') role: string,
+    @Body('storeId') storeId?: string,
   ) {
-    return this.authService.forgotPassword(email, role);
+    return this.authService.forgotPassword(email, role, storeId);
   }
 
-  
+  // Same OTP-brute-force reasoning as verifyOtp above — reset-password also
+  // takes a raw `otp` guess.
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Post('reset-password')
   async resetPassword(
   @Body('email') email: string,
   @Body('role') role: string,
   @Body('otp') otp: string,
   @Body('newPassword') newPassword: string,
+  @Body('storeId') storeId?: string,
 ) {
-  return this.authService.resetPassword(email, role, otp, newPassword);
+  return this.authService.resetPassword(email, role, otp, newPassword, storeId);
 }
 
   @UseGuards(JwtAuthGuard)

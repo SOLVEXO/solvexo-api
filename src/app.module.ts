@@ -48,6 +48,7 @@ import { QueueModule } from './queues/queue.module';
 import { HealthModule } from './health/health.module';
 import { PlatformPlansModule } from './platform-plans/platform-plans.module';
 import { SeoModule } from './seo/seo.module';
+import { IntegrationsModule } from './integrations/integrations.module';
 import { AiStudioModule } from './ai-studio/ai-studio.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { AdminConfigModule } from './admin-config/admin-config.module';
@@ -56,10 +57,18 @@ import { AdminMarketplaceModule } from './admin-marketplace/admin-marketplace.mo
 import { AdminModerationModule } from './admin-moderation/admin-moderation.module';
 import { AdminUsersModule } from './admin-users/admin-users.module';
 import { AdminMarketingModule } from './admin-marketing/admin-marketing.module';
+import { ShippingZonesModule } from './shipping-zones/shipping-zones.module';
+import { ShippingCarriersModule } from './shipping-carriers/shipping-carriers.module';
 import { MediaLibraryModule } from './media-library/media-library.module';
 import { StoreBannerModule } from './store-banner/store-banner.module';
 import { StoreThemeModule } from './store-theme/store-theme.module';
 import { StorePagesModule } from './store-pages/store-pages.module';
+import { StoreFaqModule } from './store-faq/store-faq.module';
+import { CollectionTemplateModule } from './collection-template/collection-template.module';
+import { MetafieldsModule } from './metafields/metafields.module';
+import { MetaobjectsModule } from './metaobjects/metaobjects.module';
+import { MenusModule } from './menus/menus.module';
+import { DraftOrdersModule } from './draft-orders/draft-orders.module';
 import { StoreBlogModule } from './store-blog/store-blog.module';
 import { PromotionsModule } from './promotions/promotions.module';
 import { ThemeCatalogModule } from './theme-catalog/theme-catalog.module';
@@ -67,6 +76,8 @@ import { CommissionRulesModule } from './commission-rules/commission-rules.modul
 import { ManualPaymentsModule } from './manual-payments/manual-payments.module';
 import { ExchangeRateModule } from './exchange-rate/exchange-rate.module';
 import { OnboardingSlidesModule } from './onboarding-slides/onboarding-slides.module';
+import { BookingsModule } from './bookings/bookings.module';
+import { StoreAppRequestsModule } from './store-app-requests/store-app-requests.module';
 
 @Module({
   imports: [
@@ -114,6 +125,7 @@ import { OnboardingSlidesModule } from './onboarding-slides/onboarding-slides.mo
     ManualPaymentsModule,
     FinanceModule,
     SubscriptionsModule,
+    BookingsModule,
     PlatformPlansModule,
     AiStudioModule,
     SchedulerModule,
@@ -128,20 +140,30 @@ import { OnboardingSlidesModule } from './onboarding-slides/onboarding-slides.mo
     AdminAnalyticsModule,
     AdminFinanceModule,
     SeoModule,
+    IntegrationsModule,
     AdminConfigModule,
     AdminAnnouncementsModule,
     AdminMarketplaceModule,
     AdminModerationModule,
     AdminUsersModule,
     AdminMarketingModule,
+    ShippingZonesModule,
+    ShippingCarriersModule,
     MediaLibraryModule,
     StoreBannerModule,
     StoreThemeModule,
     StorePagesModule,
+    StoreFaqModule,
+    CollectionTemplateModule,
+    MetafieldsModule,
+    MetaobjectsModule,
+    MenusModule,
+    DraftOrdersModule,
     StoreBlogModule,
     PromotionsModule,
     ThemeCatalogModule,
     ExchangeRateModule,
+    StoreAppRequestsModule,
   ],
   controllers: [AppController],
   providers: [AppService, { provide: APP_GUARD, useClass: ThrottlerGuard }],

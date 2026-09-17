@@ -15,11 +15,11 @@ export class PublicPromotionsController {
 
   @Post('track/impression')
   trackImpression(@Body() dto: TrackPromotionEventDto) {
-    return this.promotionsService.trackImpression(dto.entityType, dto.entityId, dto.device);
+    return this.promotionsService.trackImpression(dto.entityType, dto.entityId, dto.device, dto.storeId);
   }
 
   @Post('track/click')
   trackClick(@Req() req: any, @Body() dto: TrackPromotionEventDto) {
-    return this.promotionsService.trackClick(dto.entityType, dto.entityId, dto.device, dto.country, dto.city, req.user?.userId ?? null);
+    return this.promotionsService.trackClick(dto.entityType, dto.entityId, dto.device, dto.country, dto.city, req.user?.userId ?? null, dto.storeId);
   }
 }

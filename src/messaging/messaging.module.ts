@@ -4,9 +4,9 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { MessagingController } from './messaging.controller';
 import { MessagingService } from './messaging.service';
 import { MessagingGateway } from './messaging.gateway';
-import { AuthModule } from 'src/auth/auth.module';
-import { RedisModule } from 'src/redis/redis.module';
-import { UploadModule } from 'src/upload/upload.module';
+import { AuthModule } from '@/auth/auth.module';
+import { RedisModule } from '@/redis/redis.module';
+import { UploadModule } from '@/upload/upload.module';
 
 @Module({
   imports: [

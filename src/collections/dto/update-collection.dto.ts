@@ -52,4 +52,9 @@ export class UpdateCollectionDto {
   @IsOptional()
   @IsIn(['active', 'draft'])
   status?: 'active' | 'draft';
+
+  @ApiProperty({ required: false, description: 'Which of the store\'s own Collection alternate templates (collection-template module, resourceType: "collection") this collection renders through.' })
+  @IsOptional()
+  @IsString()
+  templateKey?: string;
 }

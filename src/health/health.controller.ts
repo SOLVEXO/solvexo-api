@@ -3,7 +3,7 @@ import { Controller, Get } from '@nestjs/common';
 import { SkipThrottle } from '@nestjs/throttler';
 import { ApiExcludeController } from '@nestjs/swagger';
 import { HealthCheckService, HealthCheck, MongooseHealthIndicator, HealthIndicatorResult } from '@nestjs/terminus';
-import { RedisService } from 'src/redis/redis.service';
+import { RedisService } from '@/redis/redis.service';
 
 /**
  * Liveness/readiness endpoints for load balancers and orchestrators

@@ -131,6 +131,23 @@ export class PlatformPlanNotificationsService {
     await this.send(to, `${data.storeName} was moved to the free plan after failed payments`, html);
   }
 
+  /** Trial-based-model equivalent of sendDowngradedDueToFailedPayments — there's no free plan to fall back to, so the store is locked (selling restricted) instead, never deleted/hidden. */
+  async sendStoreLocked(to: string, data: { sellerName: string; storeName: string; reason: 'trial_ended' | 'payment_failed' | 'subscription_ended' }) {
+    const reasonText = {
+      trial_ended: 'your free trial ended without an active paid plan',
+      payment_failed: 'repeated payment attempts failed',
+      subscription_ended: 'your subscription ended',
+    }[data.reason];
+    const html = shell('Your store has been locked', `
+      <p>Hi ${data.sellerName},</p>
+      <p>Your store <strong>${data.storeName}</strong> has been locked because ${reasonText}.</p>
+      <div class="danger">Selling and checkout are paused for now — but every product, order, customer, and setting is
+      untouched and safe.</div>
+      <p>Choose a plan and add a payment method any time to unlock your store immediately.</p>
+    `);
+    await this.send(to, `${data.storeName} has been locked — action needed`, html);
+  }
+
   async sendTrialEndingSoon(to: string, data: { sellerName: string; storeName: string; planName: string; amountUSD: number; daysLeft: number; trialEndsAt: Date }) {
     const html = shell('Your trial is ending soon', `
       <p>Hi ${data.sellerName},</p>

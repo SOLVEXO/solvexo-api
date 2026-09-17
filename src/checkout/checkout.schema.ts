@@ -172,6 +172,21 @@ export class Checkout {
   @Prop({ type: String, default: null })
   shippingZoneId: string | null;
 
+  // Set INSTEAD of shippingZoneId when the buyer picked a real live carrier
+  // rate (Shippo) rather than the store's flat per-zone price — see
+  // CheckoutService.addShippingInCheckout's live-rate branch. Never both at
+  // once. `liveShippingCarrier`/`liveShippingService` are display-only
+  // (e.g. "DHL Express"), captured at selection time so the order/receipt
+  // can show what was actually booked without a second Shippo lookup later.
+  @Prop({ type: String, default: null })
+  liveShippingRateId: string | null;
+
+  @Prop({ type: String, default: null })
+  liveShippingCarrier: string | null;
+
+  @Prop({ type: String, default: null })
+  liveShippingService: string | null;
+
   @Prop({ type: String, enum: ['cash_on_delivery', 'stripe', 'manual_bank_transfer'], default: null })
   paymentType: string | null;
 
