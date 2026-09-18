@@ -25,13 +25,13 @@ export class NotificationsController {
   }
 
   @Get('preferences')
-  getPreferences(@Req() req: any) {
-    return this.notificationsService.getPreferences(req.user.userId, req.user.role);
+  getPreferences(@Req() req: any, @Query('storeId') storeId?: string) {
+    return this.notificationsService.getPreferences(req.user.userId, req.user.role, storeId);
   }
 
   @Patch('preferences')
-  updatePreferences(@Req() req: any, @Body() dto: UpdatePreferencesDto) {
-    return this.notificationsService.updatePreferences(req.user.userId, req.user.role, dto);
+  updatePreferences(@Req() req: any, @Body() dto: UpdatePreferencesDto, @Query('storeId') storeId?: string) {
+    return this.notificationsService.updatePreferences(req.user.userId, req.user.role, dto, storeId);
   }
 
   @Post('device-token')

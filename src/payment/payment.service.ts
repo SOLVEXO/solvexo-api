@@ -19,6 +19,7 @@ import { CommissionRulesService } from '@/commission-rules/commission-rules.serv
 import { AbandonedCartService } from '@/abandoned-cart/abandoned-cart.service';
 import { AffiliateService } from '@/affiliate/affiliate.service';
 import { DraftOrdersService } from '@/draft-orders/draft-orders.service';
+import { EmailService } from '@/otp/services/email.service';
 import { verifyStoreOwnershipStrict } from '@/common/store-ownership.util';
 import { deriveRollupStatus } from '@/orders/order-status.util';
 import Stripe from 'stripe';
@@ -46,6 +47,7 @@ export class PaymentService {
     private readonly abandonedCartService: AbandonedCartService,
     private readonly affiliateService: AffiliateService,
     private readonly draftOrdersService: DraftOrdersService,
+    private readonly emailService: EmailService,
   ) {
     const secretKey = this.configService
       .get<string>('STRIPE_SECRET_KEY')
@@ -1921,6 +1923,11 @@ export class PaymentService {
               : 0),
           0,
         );
+        // Sum of this store's items' own taxUSD (see CheckoutItem.taxUSD) —
+        // the buyer was actually charged this at checkout; folding it into
+        // settlementAmount below is what makes the seller actually receive
+        // it, instead of it being charged but never credited to anyone.
+        const taxAmountNative = storeItems.reduce((s, i) => s + (i.taxUSD ?? 0), 0);
         // Settlement basis: `storeCurrency` IS this seller's own
         // Store.baseCurrency (settlementCurrency) by construction — an
         // item's `currency` was stamped from its owning store at
@@ -1929,7 +1936,7 @@ export class PaymentService {
         // the seller is credited — no conversion, and no risk of
         // compounding rounding error from converting native→orderCurrency
         // and back again just to arrive at the same number.
-        const settlementAmount = this.round(subtotalNative + platformSponsoredDiscountUSDNative);
+        const settlementAmount = this.round(subtotalNative + platformSponsoredDiscountUSDNative + taxAmountNative);
         const isConnectSettled = connectInfo?.storeId === sellerStoreId;
         return {
           sellerId: storeItems[0].sellerId,
@@ -1961,11 +1968,13 @@ export class PaymentService {
             campaignSponsorType: i.campaignSponsorType ?? null,
             autoDiscountId: i.autoDiscountId ?? null,
             autoDiscountUSD: convFrom(i.autoDiscountUSD ?? 0, storeCurrency),
+            taxUSD: convFrom(i.taxUSD ?? 0, storeCurrency),
             isBackordered: i.variantId ? backorderedVariantIds.has(i.variantId) : false,
             status: 'pending',
           })),
           subtotal: convFrom(subtotalNative, storeCurrency),
           platformSponsoredDiscountUSD: convFrom(platformSponsoredDiscountUSDNative, storeCurrency),
+          taxAmount: convFrom(taxAmountNative, storeCurrency),
           status: 'pending',
           tracking: null,
           shippedAt: null,
@@ -2008,6 +2017,11 @@ export class PaymentService {
       const platformSponsoredDiscountTotal = convertedSum(
         physicalItems, 'campaignDiscountUSD', (i) => i.campaignSponsorType === 'platform',
       );
+      // See CheckoutItem.taxUSD's doc comment — this is the buyer's actual
+      // tax charge for this order's items, real money already folded into
+      // `checkout.totalAmount` at checkout time. Must be added into this
+      // order's own `totalAmount` too, or the two would silently disagree.
+      const taxTotal = convertedSum(physicalItems, 'taxUSD');
 
       const physicalOrder = await orderModel.create({
         orderNumber: genOrderNumber(),
@@ -2020,7 +2034,7 @@ export class PaymentService {
         shippingAddress,
         subtotal,
         shippingFee,
-        taxAmount: 0,
+        taxAmount: taxTotal,
         subscriberDiscountTotal,
         couponCode: couponDiscountTotal > 0 ? checkout.couponCode : null,
         couponDiscountTotal,
@@ -2029,7 +2043,7 @@ export class PaymentService {
         campaignDiscountTotal,
         autoDiscountTotal,
         platformSponsoredDiscountTotal,
-        totalAmount: this.round(subtotal + shippingFee),
+        totalAmount: this.round(subtotal + shippingFee + taxTotal),
         paymentType: physicalPayment.paymentType,
         paymentStatus: physicalPayment.paymentStatus ?? (physicalPayment.isPaid ? 'paid' : 'unpaid'),
         isPaid: physicalPayment.isPaid,
@@ -2055,6 +2069,7 @@ export class PaymentService {
       const platformSponsoredDiscountTotal = convertedSum(
         digitalItems, 'campaignDiscountUSD', (i) => i.campaignSponsorType === 'platform',
       );
+      const taxTotal = convertedSum(digitalItems, 'taxUSD');
 
       const digitalOrder = await orderModel.create({
         orderNumber: genOrderNumber(),
@@ -2067,7 +2082,7 @@ export class PaymentService {
         shippingAddress: null,
         subtotal,
         shippingFee: 0,
-        taxAmount: 0,
+        taxAmount: taxTotal,
         subscriberDiscountTotal,
         couponCode: couponDiscountTotal > 0 ? checkout.couponCode : null,
         couponDiscountTotal,
@@ -2076,7 +2091,7 @@ export class PaymentService {
         campaignDiscountTotal,
         autoDiscountTotal,
         platformSponsoredDiscountTotal,
-        totalAmount: subtotal,
+        totalAmount: this.round(subtotal + taxTotal),
         paymentType: digitalPayment.paymentType,
         paymentStatus: digitalPayment.paymentStatus ?? (digitalPayment.isPaid ? 'paid' : 'unpaid'),
         isPaid: digitalPayment.isPaid,
@@ -2179,6 +2194,68 @@ export class PaymentService {
       }
     }
 
+    // Order-confirmation email to the buyer — one per STORE in this
+    // checkout (a checkout can still span >1 sellerOrder), same convention
+    // as real Shopify: the store's own `contactEmail` becomes the email's
+    // reply-to, so a buyer hitting "reply" reaches that seller directly,
+    // never the platform's shared SMTP sender. Fire-and-forget, same as
+    // every other side-effect above — a slow/broken SMTP must never block
+    // order placement.
+    this.sendOrderConfirmationEmails(userId, createdOrders, orderCurrency, storeModel).catch(() => {});
+
     return createdOrders;
+  }
+
+  private async sendOrderConfirmationEmails(
+    userId: string,
+    createdOrders: any[],
+    orderCurrency: string,
+    storeModel: any,
+  ) {
+    const buyer = await this.databaseService.repositories.userModel
+      .findById(userId)
+      .select('email')
+      .lean();
+    if (!buyer?.email) return;
+
+    const byStore = new Map<string, { items: any[]; subtotal: number; orderNumbers: Set<string> }>();
+    for (const createdOrder of createdOrders) {
+      for (const so of createdOrder.sellerOrders) {
+        const entry = byStore.get(so.storeId) ?? { items: [], subtotal: 0, orderNumbers: new Set<string>() };
+        entry.items.push(...so.items);
+        entry.subtotal += so.subtotal ?? 0;
+        entry.orderNumbers.add(createdOrder.orderNumber);
+        byStore.set(so.storeId, entry);
+      }
+    }
+    if (byStore.size === 0) return;
+
+    const stores = await storeModel
+      .find({ _id: { $in: [...byStore.keys()] } })
+      .select('name contactEmail')
+      .lean();
+    const storeById = new Map(stores.map((s: any) => [String(s._id), s]));
+
+    for (const [storeId, entry] of byStore) {
+      const store = storeById.get(storeId) as { name?: string; contactEmail?: string } | undefined;
+      const storeName = store?.name ?? 'your order';
+      const itemRows = entry.items
+        .map(
+          (i: any) =>
+            `<tr><td style="padding:6px 0;">${i.name} &times; ${i.quantity}</td><td style="padding:6px 0; text-align:right;">${(i.totalPrice ?? 0).toFixed(2)} ${orderCurrency}</td></tr>`,
+        )
+        .join('');
+      const html = `
+        <div style="font-family: Arial, sans-serif; max-width: 560px; margin: 0 auto; color:#222;">
+          <h2 style="margin-bottom: 4px;">Thanks for your order!</h2>
+          <p style="color:#555;">Order ${[...entry.orderNumbers].join(', ')} from <strong>${storeName}</strong> is confirmed.</p>
+          <table style="width:100%; border-collapse:collapse; margin:16px 0;">${itemRows}</table>
+          <p style="font-weight:bold; text-align:right;">Total: ${entry.subtotal.toFixed(2)} ${orderCurrency}</p>
+          <p style="color:#888; font-size:13px;">Questions about this order? Just reply to this email.</p>
+        </div>`;
+      this.emailService
+        .sendMail(buyer.email, `Your order from ${storeName} is confirmed`, html, store?.contactEmail ?? null)
+        .catch(() => {});
+    }
   }
 }

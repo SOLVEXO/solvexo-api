@@ -590,14 +590,16 @@ export class CheckoutService {
     // be treated as a same-scale USD figure).
     const subtotal = this.convertedSubtotal(checkoutItems, checkoutCurrency, fxSnapshots);
 
-    // Two tiers, per store: a real live tax quote (TaxJar, via TaxService —
-    // whichever real US/EU/UK/etc. jurisdiction rules actually apply, looked
-    // up live from the buyer's own destination address) when that store has
-    // connected its own TaxJar account; otherwise the pre-existing flat
-    // percentage the seller sets on their own store (Store.taxRate) — a
-    // deliberately simple fallback, not a real multi-jurisdiction engine of
-    // its own. Computed once per distinct store (never per line item, since
-    // a multi-seller cart can have stores with different tax rates/providers),
+    // Three tiers, per store, in priority order: (1) a real live tax quote
+    // (TaxJar, via TaxService — whichever real US/EU/UK/etc. jurisdiction
+    // rules actually apply, looked up live from the buyer's own destination
+    // address) when that store has connected its own TaxJar account;
+    // (2) a manual per-destination rate from `Store.taxRegions` (Shopify-
+    // "Tax regions"-style — country+state match, then country-only match)
+    // when the buyer's resolved address matches one; (3) the store's single
+    // flat `Store.taxRate` — the original, always-available fallback.
+    // Computed once per distinct store (never per line item, since a
+    // multi-seller cart can have stores with different tax rates/providers),
     // using that store's own item subtotal, converted into the checkout
     // currency the same per-item way `convertedSubtotal` does.
     //
@@ -610,9 +612,21 @@ export class CheckoutService {
     const taxRateStoreIds = [...new Set(checkoutItems.map((i) => i.storeId))];
     const taxRateStores = await this.databaseService.repositories.storeModel
       .find({ _id: { $in: taxRateStoreIds } })
-      .select('taxRate')
+      .select('taxRate taxRegions')
       .lean();
     const taxRateByStore = new Map(taxRateStores.map((s: any) => [String(s._id), s.taxRate ?? 0]));
+    const taxRegionsByStore = new Map(taxRateStores.map((s: any) => [String(s._id), (s.taxRegions ?? []) as { country: string; state: string | null; rate: number }[]]));
+    // Country+state match wins over a country-only ('state: null') entry,
+    // which wins over the flat `Store.taxRate` fallback.
+    const resolveRegionRate = (regions: { country: string; state: string | null; rate: number }[]): number | null => {
+      if (!resolvedAddress?.country || regions.length === 0) return null;
+      const country = resolvedAddress.country.trim().toLowerCase();
+      const state = resolvedAddress.state?.trim().toLowerCase() ?? null;
+      const exact = regions.find((r) => r.country.trim().toLowerCase() === country && r.state && r.state.trim().toLowerCase() === state);
+      if (exact) return exact.rate;
+      const countryOnly = regions.find((r) => r.country.trim().toLowerCase() === country && !r.state);
+      return countryOnly ? countryOnly.rate : null;
+    };
 
     let taxAmount = 0;
     for (const sid of taxRateStoreIds) {
@@ -637,11 +651,35 @@ export class CheckoutService {
           })
         : null;
 
+      // In checkoutCurrency — this store's own share of the buyer's total tax.
+      let storeTax = 0;
       if (live) {
-        taxAmount += live.taxAmount;
+        storeTax = live.taxAmount;
       } else {
-        const rate = taxRateByStore.get(sid) ?? 0;
-        if (rate > 0) taxAmount += storeSubtotal * (rate / 100);
+        const rate = resolveRegionRate(taxRegionsByStore.get(sid) ?? []) ?? taxRateByStore.get(sid) ?? 0;
+        if (rate > 0) storeTax = storeSubtotal * (rate / 100);
+      }
+      taxAmount += storeTax;
+
+      // Distribute this store's tax across ITS OWN items (proportional to
+      // each item's share of the store's native-currency subtotal), stamped
+      // in the item's own native currency — the same convention every other
+      // per-item charge (campaignDiscountUSD, autoDiscountUSD, ...) already
+      // follows. This is what lets the tax survive past this checkout
+      // document into the placed Order/SellerOrder — without it, the tax
+      // the buyer is charged here has nowhere to go once this checkout is
+      // gone (see CheckoutItem.taxUSD's own doc comment).
+      if (storeTax > 0) {
+        const storeCurrency = storeItems[0].currency ?? checkoutCurrency;
+        const storeTaxNative = this.exchangeRateService.convertWithSnapshots(
+          storeTax, checkoutCurrency, storeCurrency, fxSnapshots ?? [],
+        );
+        const storeSubtotalNative = storeItems.reduce((s: number, i: any) => s + i.totalPrice, 0);
+        if (storeSubtotalNative > 0) {
+          for (const item of storeItems) {
+            item.taxUSD = this.round((item.totalPrice / storeSubtotalNative) * storeTaxNative);
+          }
+        }
       }
     }
     taxAmount = this.round(taxAmount);

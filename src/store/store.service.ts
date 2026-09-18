@@ -25,6 +25,7 @@ import { UpdateStoreCustomerDto } from './dto/update-store-customer.dto';
 import { SubscriptionBenefitsService } from '@/subscriptions/subscription-benefits.service';
 import { EntitlementsService } from '@/platform-plans/entitlements.service';
 import { SellerPlatformSubscriptionsService } from '@/platform-plans/seller-platform-subscriptions.service';
+import { AiCreditsService } from '@/platform-plans/ai-credits.service';
 import { NotificationsService } from '@/notifications/notifications.service';
 import { NOTIFICATION_TYPES } from '@/notifications/notification.types';
 import { RedisService } from '@/redis/redis.service';
@@ -35,6 +36,20 @@ import { StoreThemeService } from '../store-theme/store-theme.service';
 import { StorePagesService } from '../store-pages/store-pages.service';
 import { CollectionsService } from '../collections/collections.service';
 import { DASHBOARD_METRIC_IDS } from './store-dashboard-metrics.const';
+
+// Real EU member states + UK (retains UK GDPR post-Brexit, same as Shopify's
+// own "regions with consent laws" cookie-banner scoping) — a plain, explicit
+// list rather than trusting a third-party geoip package's own `eu` flag
+// semantics, so this stays easy to audit/update.
+const EU_UK_COUNTRIES = new Set([
+  'AT', 'BE', 'BG', 'HR', 'CY', 'CZ', 'DK', 'EE', 'FI', 'FR', 'DE', 'GR',
+  'HU', 'IE', 'IT', 'LV', 'LT', 'LU', 'MT', 'NL', 'PL', 'PT', 'RO', 'SK',
+  'SI', 'ES', 'SE', 'GB',
+]);
+
+function isEuOrUkCountry(countryCode: string | null): boolean {
+  return !!countryCode && EU_UK_COUNTRIES.has(countryCode);
+}
 
 // Store slugs render at the site root (`solvexo.store/:slug`) — these are the
 // frontend's top-level static route segments (router/index.tsx), reserved so
@@ -63,6 +78,7 @@ export class StoreService {
     private readonly subscriptionBenefits: SubscriptionBenefitsService,
     private readonly entitlementsService: EntitlementsService,
     private readonly sellerPlatformSubscriptionsService: SellerPlatformSubscriptionsService,
+    private readonly aiCreditsService: AiCreditsService,
     private readonly notificationsService: NotificationsService,
     private readonly redisService: RedisService,
     private readonly marketingService: MarketingService,
@@ -671,6 +687,34 @@ export class StoreService {
     return { success: true, data: { valid } };
   }
 
+  /** Public — the real submit action behind the storefront's "Do Not Sell My
+   *  Personal Information" dialog (real Shopify "data sale opt-out request"
+   *  equivalent). Stored on the store itself (see `Store.privacyRequests`'s
+   *  own doc comment for why an embedded array, not a new collection). */
+  async submitPrivacyRequest(storeId: string, email: string) {
+    const trimmed = (email || '').trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
+      throw new BadRequestException('A valid email is required');
+    }
+    const store = await this.databaseService.repositories.storeModel.findOne({ _id: storeId, isDelete: false });
+    if (!store) throw new NotFoundException('Store not found');
+    store.privacyRequests.push({ email: trimmed, status: 'pending', createdAt: new Date() } as any);
+    await store.save();
+    return { success: true, message: 'Your request has been submitted.' };
+  }
+
+  /** Seller-facing: mark a submitted "Do Not Sell" request as resolved. */
+  async completePrivacyRequest(sellerId: string, storeId: string, requestId: string) {
+    const store = await this.databaseService.repositories.storeModel.findOne({ _id: storeId, isDelete: false });
+    if (!store) throw new NotFoundException('Store not found');
+    if (store.sellerId !== sellerId) throw new UnauthorizedException('Unauthorized');
+    const request = (store.privacyRequests as any[]).find(r => r._id?.toString() === requestId);
+    if (!request) throw new NotFoundException('Request not found');
+    request.status = 'completed';
+    await store.save();
+    return { success: true, message: 'Marked complete', data: store.privacyRequests };
+  }
+
   /** Seller-facing: set/clear this store's custom `robots.txt` body. An
    *  empty/whitespace-only value clears the override (falls back to the
    *  generated default — see `getPublicStoreRobotsTxt`). */
@@ -943,7 +987,7 @@ export class StoreService {
 
     const { sellerModel, productModel, orderModel, sellerPlatformSubscriptionModel, platformPlanModel } = this.databaseService.repositories;
 
-    const [seller, productCount, sub, orderAgg] = await Promise.all([
+    const [seller, productCount, sub, realAiCredits, orderAgg] = await Promise.all([
       sellerModel.findById(store.sellerId).select('name email phone').lean(),
       productModel.countDocuments({ storeId, isDelete: false }),
       // Real subscription plan, same fix/reasoning as getMyStores() above —
@@ -951,6 +995,11 @@ export class StoreService {
       // this Settings page used to show as-is, disagreeing with Billing
       // Center's real answer for the exact same store.
       sellerPlatformSubscriptionModel.findOne({ storeId, isDelete: false }).select('platformPlanId status').lean(),
+      // Real AI Studio wallet balance, same fix/reasoning as `plan` above —
+      // store.aiCredits (spread in below via store.toObject()) is a legacy
+      // field never kept in sync with AiCreditsWalletModel, the real ledger
+      // AiStudioCreditsService.hold()/grant() actually deduct/credit against.
+      this.aiCreditsService.getBalance(storeId),
       orderModel.aggregate([
         { $match: { isDelete: false } },
         { $unwind: '$sellerOrders' },
@@ -998,6 +1047,9 @@ export class StoreService {
         // lookup above for why.
         plan: realPlan?.name ?? store.plan,
         planStatus: sub?.status ?? null,
+        // Real AI credits balance overriding the legacy store.aiCredits
+        // spread above — see the comment on the getBalance call above.
+        aiCredits: realAiCredits,
       },
     };
   }
@@ -1009,7 +1061,7 @@ export class StoreService {
   // body would let a seller un-suspend their own store (see
   // usersService.deleteSellerAccount, which suspends stores on delete).
   async updateStore(sellerId: string, storeId: string, body: any) {
-    const { name, logo, coverImage, faviconUrl, description, tagline, contactEmail, contactPhone, sellerType, productTypes, codEnabled, paymentCaptureMethod, dashboardMetrics, reviewModerationEnabled, lowStockThreshold, taxRate, enabledCurrencies } = body;
+    const { name, logo, coverImage, faviconUrl, description, tagline, contactEmail, contactPhone, sellerType, productTypes, codEnabled, paymentCaptureMethod, dashboardMetrics, reviewModerationEnabled, lowStockThreshold, taxRate, taxRegions, enabledCurrencies, cookieBannerEnabled, cookieBannerMessage, showDoNotSellLink, cookieBannerRegionMode, cookieBannerPosition, cookieBannerColorMode } = body;
 
     if (!storeId) throw new BadRequestException('storeId is required');
 
@@ -1092,6 +1144,19 @@ export class StoreService {
       }
       updateData.taxRate = parsed;
     }
+    if (taxRegions !== undefined) {
+      if (!Array.isArray(taxRegions)) throw new BadRequestException('taxRegions must be an array');
+      updateData.taxRegions = taxRegions.map((r: any) => {
+        const country = String(r?.country ?? '').trim();
+        const rate = Number(r?.rate);
+        if (!country) throw new BadRequestException('Each tax region needs a country');
+        if (!Number.isFinite(rate) || rate < 0 || rate > 100) {
+          throw new BadRequestException(`Tax region rate for ${country} must be between 0 and 100`);
+        }
+        const state = r?.state ? String(r.state).trim() : null;
+        return { country, state: state || null, rate };
+      });
+    }
 
     // "Markets" — which supported currencies this store's buyers can check
     // out in. `undefined` (field omitted) means "leave untouched" — every
@@ -1126,6 +1191,28 @@ export class StoreService {
         }
         updateData.enabledCurrencies = enabledCurrencies;
       }
+    }
+
+    if (cookieBannerEnabled !== undefined) updateData.cookieBannerEnabled = !!cookieBannerEnabled;
+    if (cookieBannerMessage !== undefined) updateData.cookieBannerMessage = cookieBannerMessage || null;
+    if (showDoNotSellLink !== undefined) updateData.showDoNotSellLink = !!showDoNotSellLink;
+    if (cookieBannerRegionMode !== undefined) {
+      if (!['all', 'eu_uk_only'].includes(cookieBannerRegionMode)) {
+        throw new BadRequestException('cookieBannerRegionMode must be "all" or "eu_uk_only"');
+      }
+      updateData.cookieBannerRegionMode = cookieBannerRegionMode;
+    }
+    if (cookieBannerPosition !== undefined) {
+      if (!['bottom_bar', 'bottom_corner'].includes(cookieBannerPosition)) {
+        throw new BadRequestException('cookieBannerPosition must be "bottom_bar" or "bottom_corner"');
+      }
+      updateData.cookieBannerPosition = cookieBannerPosition;
+    }
+    if (cookieBannerColorMode !== undefined) {
+      if (!['dark', 'light', 'brand'].includes(cookieBannerColorMode)) {
+        throw new BadRequestException('cookieBannerColorMode must be "dark", "light", or "brand"');
+      }
+      updateData.cookieBannerColorMode = cookieBannerColorMode;
     }
 
     // productTypes change ho to enabledTools bhi refresh
@@ -1196,7 +1283,7 @@ export class StoreService {
   }
 
   // ── 3. Public store by slug ───────────────────────────────────────────────
-  async getPublicStore(slug: string) {
+  async getPublicStore(slug: string, visitorIp?: string) {
     if (!slug) throw new BadRequestException('slug is required');
 
     const store = await this.databaseService.repositories.storeModel.findOne({
@@ -1206,7 +1293,7 @@ export class StoreService {
     }).lean();
     if (!store) throw new NotFoundException('Store not found');
 
-    return this.shapePublicStoreResponse(store);
+    return this.shapePublicStoreResponse(store, visitorIp);
   }
 
   /** Same public shape as `getPublicStore`, resolved by a seller's VERIFIED
@@ -1216,7 +1303,7 @@ export class StoreService {
    *  docblock) still load the right store. An unverified domain never
    *  matches, so merely claiming a domain string is never enough to serve
    *  as a live storefront. */
-  async getPublicStoreByDomain(host: string) {
+  async getPublicStoreByDomain(host: string, visitorIp?: string) {
     if (!host) throw new BadRequestException('host is required');
 
     const store = await this.databaseService.repositories.storeModel.findOne({
@@ -1227,10 +1314,10 @@ export class StoreService {
     }).lean();
     if (!store) throw new NotFoundException('No store is connected to this domain');
 
-    return this.shapePublicStoreResponse(store);
+    return this.shapePublicStoreResponse(store, visitorIp);
   }
 
-  private async shapePublicStoreResponse(store: any) {
+  private async shapePublicStoreResponse(store: any, visitorIp?: string) {
     const campaigns = await this.marketingService.getActiveCampaignsForStore(store._id.toString());
     const primaryCampaign = pickPrimaryCampaignForBadge(campaigns);
 
@@ -1276,6 +1363,23 @@ export class StoreService {
         // Not sensitive (never the hash) — the storefront needs it up front
         // to decide whether to render the real site or the gate page.
         privacyMode: store.privacyMode ?? 'public',
+        // Customer Privacy — cookie consent + CCPA disclosure. The storefront
+        // gates tracking-pixel script injection on this resolved boolean
+        // (see StorefrontLayout.tsx) — already region-scoped here (real
+        // Shopify-equivalent "regions with consent laws" behavior) so the
+        // frontend never has to re-derive it: `false` when the seller hasn't
+        // enabled it, OR when it's scoped to `eu_uk_only` and this visitor's
+        // IP doesn't resolve to one of those countries. Both default
+        // false/'all', so a pre-existing store's behavior is unchanged until
+        // its seller opts in.
+        cookieBannerEnabled: !!store.cookieBannerEnabled
+          && (store.cookieBannerRegionMode !== 'eu_uk_only' || isEuOrUkCountry(resolveCountryFromIp(visitorIp))),
+        cookieBannerMessage: store.cookieBannerMessage ?? null,
+        // Purely cosmetic — no effect on consent/enforcement, just how the
+        // banner looks/where it sits (see `CookieConsentBanner.tsx`).
+        cookieBannerPosition: store.cookieBannerPosition ?? 'bottom_bar',
+        cookieBannerColorMode: store.cookieBannerColorMode ?? 'dark',
+        showDoNotSellLink: !!store.showDoNotSellLink,
         announcementBar: announcementActive ? { message: bar.message, type: bar.type, ctaLabel: bar.ctaLabel, ctaLink: bar.ctaLink } : null,
         activeCampaign: primaryCampaign ? {
           campaignId: primaryCampaign.campaignId,

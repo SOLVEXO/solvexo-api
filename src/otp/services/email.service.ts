@@ -28,14 +28,21 @@ export class EmailService {
     return this.sendMail(email, subject, html);
   }
 
-  /** Generic transactional email — used by any module (e.g. subscription notifications). */
-  async sendMail(to: string, subject: string, html: string): Promise<boolean> {
+  /** Generic transactional email — used by any module (e.g. subscription notifications).
+   *  `replyTo` lets a per-store email (e.g. an order confirmation) route a
+   *  buyer's reply straight to that store's own contact address instead of
+   *  the platform's shared SMTP sender — same convention as Shopify, where
+   *  a store's "Store contact email" becomes the reply-to on its own
+   *  customer-facing emails. Omitted (or falsy) leaves replies going to the
+   *  platform sender, unchanged from before this param existed. */
+  async sendMail(to: string, subject: string, html: string, replyTo?: string | null): Promise<boolean> {
     try {
       const info = await this.transporter.sendMail({
         from: `"${process.env.APP_NAME || 'Your App'}" <${process.env.SMTP_FROM || process.env.SMTP_USER}>`,
         to,
         subject,
         html,
+        ...(replyTo ? { replyTo } : {}),
       });
 
       console.log('✅ Email sent:', info.messageId);

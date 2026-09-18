@@ -10,6 +10,7 @@ import { StaffController } from './staff.controller';
 import { StaffService } from './staff.service';
 import { RoleController } from './role.controller';
 import { RoleService } from './role.service';
+import { EmailService } from '../otp/services/email.service';
 
 @Module({
   imports: [
@@ -31,7 +32,7 @@ import { RoleService } from './role.service';
     }),
   ],
   controllers: [StaffController, RoleController],
-  providers: [StaffService, RoleService],
+  providers: [StaffService, RoleService, EmailService],
   exports: [StaffService, RoleService],
 })
 export class StaffModule {}

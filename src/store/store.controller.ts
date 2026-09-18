@@ -266,13 +266,31 @@ export class StoreController {
 // Registered BEFORE 'public/:slug' — a static path segment must be matched
   // first, or Nest would swallow 'resolve-domain' as `:slug`.
   @Get('public/resolve-domain')
-  async resolveStoreByDomain(@Query('host') host: string) {
-    return this.storeService.getPublicStoreByDomain(host);
+  async resolveStoreByDomain(@Req() req: any, @Query('host') host: string) {
+    return this.storeService.getPublicStoreByDomain(host, req.ip);
   }
 
   @Get('public/:slug')
-  async getPublicStore(@Param('slug') slug: string) {
-    return this.storeService.getPublicStore(slug);
+  async getPublicStore(@Req() req: any, @Param('slug') slug: string) {
+    return this.storeService.getPublicStore(slug, req.ip);
+  }
+
+  // Real Shopify "data sale opt-out request" — the storefront's "Do Not Sell
+  // My Personal Information" dialog submit action (see
+  // AtelierFooter.tsx/NovaFooter.tsx). Same lightweight rate-limit posture
+  // as `verify-password` above — a visibility/disclosure feature, not an
+  // account-security boundary.
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @Post('public/:storeId/privacy-requests')
+  async submitPrivacyRequest(@Param('storeId') storeId: string, @Body() body: { email: string }) {
+    return this.storeService.submitPrivacyRequest(storeId, body?.email ?? '');
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Patch(':storeId/privacy-requests/:requestId/complete')
+  async completePrivacyRequest(@Req() req: any, @Param('storeId') storeId: string, @Param('requestId') requestId: string) {
+    return this.storeService.completePrivacyRequest(req.user.userId, storeId, requestId);
   }
 
   // Storefront password-gate submission — a visibility convenience, not an

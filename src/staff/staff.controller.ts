@@ -8,6 +8,7 @@ import { RequirePermission } from '../auth/decorators/require-permission.decorat
 import { StaffService } from './staff.service';
 import { CreateStaffDto } from './dto/create-staff.dto';
 import { UpdateStaffDto } from './dto/update-staff.dto';
+import { AcceptStaffInviteDto } from './dto/accept-staff-invite.dto';
 
 @Controller('api/staff')
 export class StaffController {
@@ -22,6 +23,20 @@ export class StaffController {
   @Get('permissions')
   listPermissions() {
     return this.staffService.listPermissions();
+  }
+
+  // Public — invite-acceptance routes, literal `invite/:token` segments
+  // registered ahead of the dynamic `:storeId`-shaped routes below (same
+  // route-ordering convention this codebase follows everywhere else),
+  // though the differing segment count already makes collision impossible.
+  @Get('invite/:token')
+  async getInvite(@Param('token') token: string) {
+    return this.staffService.getInvite(token);
+  }
+
+  @Post('invite/:token/accept')
+  async acceptInvite(@Param('token') token: string, @Body() dto: AcceptStaffInviteDto) {
+    return this.staffService.acceptInvite(token, dto);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
@@ -63,5 +78,14 @@ export class StaffController {
   async deactivate(@Req() req: any, @Param('storeId') storeId: string, @Param('staffId') staffId: string) {
     const { userId, role, permissions } = req.user;
     return this.staffService.deactivate(userId, role, permissions, storeId, staffId);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'admin', 'staff')
+  @RequirePermission('staff.manage')
+  @Post(':storeId/:staffId/resend-invite')
+  async resendInvite(@Req() req: any, @Param('storeId') storeId: string, @Param('staffId') staffId: string) {
+    const { userId, role, permissions } = req.user;
+    return this.staffService.resendInvite(userId, role, permissions, storeId, staffId);
   }
 }

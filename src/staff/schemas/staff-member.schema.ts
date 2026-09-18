@@ -129,7 +129,25 @@ export class StaffMember {
 
   @Prop({ type: String, required: true }) name: string;
   @Prop({ type: String, required: true }) email: string;
-  @Prop({ type: String, required: true, select: false }) passwordHash: string;
+
+  // Null until the invited staff member actually accepts their invite and
+  // sets their OWN password (see `inviteToken` below) — the seller never
+  // knows/sets this. `login()` rejects with a clear "accept your invite
+  // first" message while this is still null, instead of a generic
+  // "Invalid email or password".
+  @Prop({ type: String, default: null, select: false }) passwordHash: string | null;
+
+  // Real Shopify-style invite flow: `create()` generates this (a one-time,
+  // random, hard-to-guess token — never the password itself) and emails a
+  // link built from it; `acceptInvite()` consumes it exactly once to let
+  // the staff member set their own password, proving they actually own
+  // this email address. Cleared (both fields null) once accepted — a used/
+  // consumed invite link can never be replayed. Expires after
+  // INVITE_EXPIRY_DAYS regardless of use, same "don't trust a stale link
+  // forever" convention as every other token in this codebase.
+  @Prop({ type: String, default: null, select: false }) inviteToken: string | null;
+  @Prop({ type: Date, default: null }) inviteTokenExpiresAt: Date | null;
+  @Prop({ type: Date, default: null }) inviteAcceptedAt: Date | null;
 
   // A plain display label (Shopify-parity Role/permissions live on the
   // separate `Role` entity below — this is just "what to call this person
@@ -161,3 +179,4 @@ export class StaffMember {
 export const StaffMemberSchema = SchemaFactory.createForClass(StaffMember);
 StaffMemberSchema.index({ storeId: 1, status: 1 });
 StaffMemberSchema.index({ storeId: 1, email: 1 }, { unique: true });
+StaffMemberSchema.index({ inviteToken: 1 }, { sparse: true });

@@ -85,6 +85,15 @@ export class OrderItem {
   @Prop({ type: Number, default: 0 })
   autoDiscountUSD: number;
 
+  // This line's share of its store's tax, copied through from
+  // CheckoutItem.taxUSD at order-creation time — see that field's own doc
+  // comment. Included in SellerOrder.taxAmount/settlementAmount so the
+  // seller actually receives the tax money they're responsible for
+  // remitting to their own government (Solvexo has no tax-filing engine of
+  // its own — same real-world division of responsibility as Shopify).
+  @Prop({ type: Number, default: 0 })
+  taxUSD: number;
+
   // Who bears campaignDiscountUSD — see Campaign.sponsorType /
   // CheckoutItem.campaignSponsorType. 'platform' means this line's discount
   // was reimbursed to the seller (see SellerOrder.platformSponsoredDiscountUSD),
@@ -182,6 +191,16 @@ export class SellerOrder {
   // seller's own payout (see FinanceService.recordSale's saleAmount param).
   @Prop({ type: Number, default: 0 })
   platformSponsoredDiscountUSD: number;
+
+  // Sum of this store's items' taxUSD — the buyer WAS actually charged this
+  // (folded into Checkout.totalAmount at checkout time), and this is what
+  // makes that money reach the seller's own payout via `settlementAmount`
+  // below, instead of being charged to the buyer but never credited
+  // anywhere (the real, previously-undetected bug this field fixes). Same
+  // real-world split as Shopify: the platform never keeps sales tax, the
+  // seller receives it and is responsible for remitting it themselves.
+  @Prop({ type: Number, default: 0 })
+  taxAmount: number;
 
   // What this specific seller is actually credited, in THEIR OWN
   // Store.baseCurrency — independent of the buyer's checkout currency

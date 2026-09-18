@@ -221,15 +221,24 @@ export class NotificationsService {
 
   // ── Preferences ─────────────────────────────────────────────────────────
 
-  async getPreferences(userId: string, role: string) {
-    let prefs = await this.databaseService.repositories.notificationPreferenceModel.findOne({ userId }).lean();
+  // `storeId` omitted/undefined normalizes to `null` — the account-wide row
+  // (every buyer, plus the seller's own cross-store pages). Inside a
+  // specific store's workspace, the frontend passes that store's real id so
+  // each store gets its own independent preference row (see
+  // NotificationPreference.storeId's own doc comment for why).
+  async getPreferences(userId: string, role: string, storeId?: string | null) {
+    const scopedStoreId = storeId ?? null;
+    let prefs = await this.databaseService.repositories.notificationPreferenceModel
+      .findOne({ userId, storeId: scopedStoreId })
+      .lean();
     if (!prefs) {
-      prefs = await this.databaseService.repositories.notificationPreferenceModel.create({ userId, role });
+      prefs = await this.databaseService.repositories.notificationPreferenceModel.create({ userId, role, storeId: scopedStoreId });
     }
     return { success: true, data: prefs };
   }
 
-  async updatePreferences(userId: string, role: string, dto: Record<string, any>) {
+  async updatePreferences(userId: string, role: string, dto: Record<string, any>, storeId?: string | null) {
+    const scopedStoreId = storeId ?? null;
     const { pushEnabled, emailEnabled, ...prefFlags } = dto;
     const update: Record<string, any> = {};
     if (pushEnabled !== undefined) update.pushEnabled = pushEnabled;
@@ -239,8 +248,8 @@ export class NotificationsService {
     }
 
     const doc = await this.databaseService.repositories.notificationPreferenceModel.findOneAndUpdate(
-      { userId },
-      { $set: update, $setOnInsert: { role } },
+      { userId, storeId: scopedStoreId },
+      { $set: update, $setOnInsert: { role, storeId: scopedStoreId } },
       { upsert: true, new: true },
     );
     return { success: true, data: doc };

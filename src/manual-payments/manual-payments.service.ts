@@ -22,7 +22,7 @@ import { ReuploadManualPaymentDto } from './dto/reupload-manual-payment.dto';
  *  settlementAmount/settlementCurrency existed. */
 function sellerPayoutBasis(so: any): number {
   if (so.settlementAmount != null) return so.settlementAmount;
-  return round(so.subtotal + (so.platformSponsoredDiscountUSD ?? 0));
+  return round(so.subtotal + (so.platformSponsoredDiscountUSD ?? 0) + (so.taxAmount ?? 0));
 }
 
 function sellerPayoutCurrency(so: any, order: any): string {

@@ -12,13 +12,14 @@ import { StripeConnectModule } from '@/stripe-connect/stripe-connect.module';
 import { AbandonedCartModule } from '@/abandoned-cart/abandoned-cart.module';
 import { AffiliateModule } from '@/affiliate/affiliate.module';
 import { DraftOrdersModule } from '@/draft-orders/draft-orders.module';
+import { EmailService } from '@/otp/services/email.service';
 
 @Module({
   // CommissionRulesModule is @Global() (see its own module file) so it
   // doesn't need to be imported here to inject CommissionRulesService.
   imports: [AuthModule, RedisModule, PromotionsModule, FinanceModule, AdminConfigModule, ExchangeRateModule, GiftCardsModule, StripeConnectModule, AbandonedCartModule, AffiliateModule, DraftOrdersModule],
   controllers: [PaymentController],
-  providers: [PaymentService],
+  providers: [PaymentService, EmailService],
   exports: [PaymentService],
 })
 export class PaymentModule {}

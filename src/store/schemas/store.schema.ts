@@ -383,13 +383,29 @@ export class Store {
   @Prop({ type: Number, default: 20, min: 1 })
   staffApprovalThreshold!: number;
 
-  // A deliberately simple flat-rate tax — NOT a real multi-jurisdiction
-  // compliance engine (see CheckoutService.createCheckout's tax-computation
-  // comment). 0 = no tax charged, matching every store's behavior before
-  // this field existed (a real, disclosed simplification, not a hidden
-  // compliance claim).
+  // A deliberately simple flat-rate tax — the DEFAULT rate for any order
+  // whose destination doesn't match one of `taxRegions` below (or when the
+  // store has no regions configured at all — every pre-existing store's
+  // exact prior behavior). 0 = no tax charged. Real per-country/state rates
+  // (`taxRegions`) or a live TaxJar quote (see TaxService) both take
+  // priority over this when they apply — see CheckoutService.createCheckout's
+  // tax-computation comment for the full precedence order.
   @Prop({ type: Number, default: 0, min: 0, max: 100 })
   taxRate!: number;
+
+  // Manual, Shopify-"Tax regions"-style per-destination rates — a seller
+  // without a TaxJar account can still charge a DIFFERENT rate per country
+  // (and, optionally, per state/province within it) instead of one single
+  // flat number for every buyer everywhere. `state: null` matches every
+  // state/province within that country. Checked before `taxRate` at
+  // checkout, in country+state → country-only → `taxRate` priority order.
+  // `country` is the same ISO-3166 alpha-2 code `Address.country` stores
+  // (e.g. 'US', 'PK', 'GB') — matched case-insensitively.
+  @Prop({
+    type: [{ country: { type: String, required: true }, state: { type: String, default: null }, rate: { type: Number, required: true, min: 0, max: 100 } }],
+    default: [],
+  })
+  taxRegions: { country: string; state: string | null; rate: number }[];
 
   @Prop({
     type: String,
@@ -611,6 +627,55 @@ export class Store {
 
   @Prop({ type: StoreAnnouncementBarSchema, default: () => ({}) })
   announcementBar: StoreAnnouncementBar;
+
+  // Real Shopify-style "Customer Privacy" — a cookie-consent banner that
+  // gates tracking-pixel script injection (see `StorefrontLayout.tsx`'s
+  // pixel-loading effect) until a visitor accepts, plus a CCPA-style
+  // disclosure link. Off by default — every pre-existing store keeps
+  // today's behavior (pixels load unconditionally) until a seller opts in,
+  // matching this app's convention of never inventing a compliance
+  // requirement for a seller that hasn't asked for one (see `taxRate`'s own
+  // "not a tax-compliance engine" disclaimer for the same reasoning).
+  @Prop({ type: Boolean, default: false })
+  cookieBannerEnabled: boolean;
+
+  @Prop({ type: String, default: null })
+  cookieBannerMessage: string | null;
+
+  @Prop({ type: Boolean, default: false })
+  showDoNotSellLink: boolean;
+
+  // Real Shopify-style region scoping for the cookie banner — 'all' shows it
+  // to every visitor (default, matches how it behaved before this field
+  // existed); 'eu_uk_only' only shows it to a visitor whose IP resolves to
+  // an EU member state or the UK (see `isEuOrUkCountry()` in
+  // store.service.ts), same real-region gate Shopify's own cookie-banner
+  // "regions with consent laws" option uses.
+  @Prop({ type: String, enum: ['all', 'eu_uk_only'], default: 'all' })
+  cookieBannerRegionMode: 'all' | 'eu_uk_only';
+
+  // Real Shopify-style cookie-banner appearance controls — purely cosmetic,
+  // no effect on consent/enforcement logic. 'bottom_bar' (default) is the
+  // full-width bar every pre-existing store already renders; 'bottom_corner'
+  // is a compact floating card. 'dark' (default) matches the original
+  // fixed look; 'light'/'brand' let a seller match their own storefront.
+  @Prop({ type: String, enum: ['bottom_bar', 'bottom_corner'], default: 'bottom_bar' })
+  cookieBannerPosition: 'bottom_bar' | 'bottom_corner';
+
+  @Prop({ type: String, enum: ['dark', 'light', 'brand'], default: 'dark' })
+  cookieBannerColorMode: 'dark' | 'light' | 'brand';
+
+  // Real Shopify "Data sale opt-out requests" — a visitor submits their
+  // email via the storefront's "Do Not Sell My Personal Information" dialog
+  // (see AtelierFooter.tsx/NovaFooter.tsx), the seller reviews/marks it
+  // resolved from the Privacy settings tab. An embedded array (not a
+  // separate collection) since real submission volume is genuinely tiny —
+  // most stores will never receive one.
+  @Prop({
+    type: [{ email: String, status: { type: String, enum: ['pending', 'completed'], default: 'pending' }, createdAt: { type: Date, default: Date.now } }],
+    default: [],
+  })
+  privacyRequests: { _id?: string; email: string; status: 'pending' | 'completed'; createdAt: Date }[];
 }
 
 export const StoreSchema = SchemaFactory.createForClass(Store);

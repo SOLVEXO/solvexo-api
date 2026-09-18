@@ -211,7 +211,10 @@ export class RefundRequestService {
 
     const items = (sellerOrder.items as any[]).filter((i: any) => request.itemIds.includes(i._id.toString()));
 
-    const buyerRefundAmount = this.round(items.reduce((s: number, i: any) => s + i.totalPrice, 0));
+    // Includes each item's own taxUSD share — see orders.service.ts's
+    // identical fix in returnAction/executeCancellation for why (item price
+    // + its tax must be refunded and clawed back from the seller together).
+    const buyerRefundAmount = this.round(items.reduce((s: number, i: any) => s + i.totalPrice + (i.taxUSD ?? 0), 0));
     const buyerRefundCurrency = order.currency || 'USD';
     const settlementCurrency = sellerOrder.settlementCurrency ?? buyerRefundCurrency;
     const sellerDebitAmount = this.exchangeRateService.convertWithSnapshots(

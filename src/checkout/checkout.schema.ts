@@ -135,6 +135,19 @@ export class CheckoutItem {
   // lookup, whether to restore the seller's payout for this line.
   @Prop({ type: String, enum: ['seller', 'platform'], default: null })
   campaignSponsorType: 'seller' | 'platform' | null;
+
+  // This line's share of its STORE's tax (see CheckoutService's tax block,
+  // right after `items` is fully built) — the store-level tax amount is
+  // distributed across that store's items proportionally by `totalPrice`,
+  // in this item's own native currency, the same convention every other
+  // per-item charge here follows. Real money the buyer is actually charged
+  // (already folded into Checkout.totalAmount) — this field is what lets
+  // that same amount also reach the seller's own payout (see
+  // PaymentService.buildSellerOrders/SellerOrder.taxAmount) instead of
+  // silently going untracked once the order/ledger no longer has the
+  // checkout's own aggregate `taxAmount` to read from.
+  @Prop({ type: Number, default: 0 })
+  taxUSD: number;
 }
 
 export const CheckoutItemSchema = SchemaFactory.createForClass(CheckoutItem);

@@ -33,7 +33,7 @@ import { toCsv } from '@/analytics/utils/csv.util';
  *  settlementAmount/settlementCurrency existed. */
 function sellerPayoutBasis(so: any): number {
   if (so.settlementAmount != null) return so.settlementAmount;
-  return round(so.subtotal + (so.platformSponsoredDiscountUSD ?? 0));
+  return round(so.subtotal + (so.platformSponsoredDiscountUSD ?? 0) + (so.taxAmount ?? 0));
 }
 
 function sellerPayoutCurrency(so: any, order: any): string {
@@ -1675,9 +1675,13 @@ export class OrdersService {
 
       const amountBySoIndex = new Map<number, number>();
       for (const { soIndex, item } of targetItems) {
+        // Includes this item's own taxUSD share — the buyer was charged tax
+        // on this item too, and the seller was credited it (see
+        // SellerOrder.taxAmount), so cancelling it must refund/claw both
+        // back together, not just the item price.
         amountBySoIndex.set(
           soIndex,
-          (amountBySoIndex.get(soIndex) ?? 0) + item.totalPrice,
+          (amountBySoIndex.get(soIndex) ?? 0) + item.totalPrice + (item.taxUSD ?? 0),
         );
       }
       const buyerCurrency = order.currency || 'USD';
@@ -2345,8 +2349,11 @@ export class OrdersService {
       // previously this passed the raw order-currency amount straight into
       // recordRefund with zero conversion, silently mis-debiting any seller
       // whose settlement currency differs from the buyer's charge currency.
+      // Includes each item's own taxUSD share — see the cancellation path's
+      // identical fix above for why (item price + its tax must be refunded
+      // and clawed back from the seller together).
       const buyerRefundAmount = targetItems.reduce(
-        (sum, t) => sum + (t.item.totalPrice || 0),
+        (sum, t) => sum + (t.item.totalPrice || 0) + (t.item.taxUSD || 0),
         0,
       );
       if (buyerRefundAmount > 0) {
