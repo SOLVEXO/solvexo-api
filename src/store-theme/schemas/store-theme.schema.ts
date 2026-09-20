@@ -221,15 +221,33 @@ export class StoreThemeDraft {
   @Prop({ type: String, default: null })
   baseThemeId: string | null;
 
-  // Which theme package (a code-shipped `ThemeDefinition`, see
-  // `builder/themes/` on the frontend — never a Mongo-stored definition,
-  // per the Theme Definition vs. Installed Theme Instance split) this
-  // installed row is running. Switching definitions is itself a normal
-  // draft→publish action like any other theme edit, so it lives here too
-  // (not just at the document root) — see `ThemeVersion.themeDefinitionId`
-  // for why a version snapshot also needs to remember it.
+  // Which theme package (a code-shipped `NEW_THEME_REGISTRY` key — see
+  // `storefront-themes/registry.ts` on the frontend, e.g. 'theme-01-atelier'
+  // — never a Mongo-stored definition) this installed row's REACT CODE is.
+  // Mirrors the document root's own `themeDefinitionId` exactly and should
+  // never diverge from it outside of `ensureDefaultTheme`'s legacy backfill
+  // — nothing in the draft/publish flow is meant to change *which code*
+  // renders a storefront; only Theme Library's install/activate does that.
+  // Do NOT write a `ThemeDefinition` catalog id here (see
+  // `appliedCatalogThemeId` below for that) — this exact field previously
+  // collided with a catalog id via `StoreThemeService.applyThemeDefinition`,
+  // confirmed live to corrupt the document root's own `themeDefinitionId` on
+  // the next publish, silently flipping which theme's code a storefront
+  // renders.
   @Prop({ type: String, default: null })
   themeDefinitionId: string | null;
+
+  // A `ThemeDefinition` (admin theme-catalog) Mongo `_id`, staged here by
+  // `StoreThemeService.applyThemeDefinition` when a seller applies a
+  // catalog theme's colors/header/footer/home-sections. Deliberately its
+  // own field, in its own ID namespace, so it can never be confused with —
+  // or overwrite — `themeDefinitionId` above (a fixed code-registry key).
+  // Purely informational today (no current frontend reads it — the
+  // seller-facing catalog "browse and apply" UI isn't wired up yet); a
+  // future Theme Library surface for the catalog can read this to show
+  // "applied but not yet published."
+  @Prop({ type: String, default: null })
+  appliedCatalogThemeId: string | null;
 
   // Real "developer/advanced authoring" capability #1 — see the class
   // comment on `StoreTheme.customCss` below for the full safety rationale.

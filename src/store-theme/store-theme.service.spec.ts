@@ -143,6 +143,17 @@ describe('StoreThemeService', () => {
       expect(applyCall[1].$set['draft.header'].blocks).toEqual(richTheme.header.blocks);
     });
 
+    it('stages the catalog theme id into appliedCatalogThemeId — never into themeDefinitionId (regression: a confirmed live collision where this used to corrupt which theme\'s code the storefront renders)', async () => {
+      await service.applyThemeDefinition(STORE_ID, SELLER_ID, THEME_DEF_ID);
+
+      const applyCall = storeThemeModel.findOneAndUpdate.mock.calls.find(
+        ([, update]: any[]) => update?.$set?.['draft.theme'] !== undefined,
+      );
+      const { $set } = applyCall[1];
+      expect($set['draft.appliedCatalogThemeId']).toBe(THEME_DEF_ID);
+      expect($set['draft.themeDefinitionId']).toBeUndefined();
+    });
+
     it('increments the catalog theme\'s apply counter and never mutates the catalog document itself', async () => {
       await service.applyThemeDefinition(STORE_ID, SELLER_ID, THEME_DEF_ID);
       // eslint-disable-next-line @typescript-eslint/unbound-method -- jest.fn() mock, not a real bound class method

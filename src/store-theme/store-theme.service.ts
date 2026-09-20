@@ -305,7 +305,21 @@ export class StoreThemeService {
         'draft.footer': footer,
         'draft.identityBanner': themeDef.identityBanner,
         'draft.baseThemeId': themeDefinitionId,
-        'draft.themeDefinitionId': themeDefinitionId,
+        // NOT 'draft.themeDefinitionId' — that field is a code-registry key
+        // (`NEW_THEME_REGISTRY`'s 'theme-01-atelier'/'theme-02-nova', see
+        // registry.ts), and `themeDefinitionId` here is a `ThemeDefinition`
+        // catalog Mongo _id — a completely different ID namespace. Writing
+        // the catalog id into that field (as this line used to) would get
+        // copied to the document root on the next publishTheme() call,
+        // silently corrupting which theme's REACT CODE the storefront
+        // renders — confirmed live: applying a catalog theme then publishing
+        // flipped a Nova-active store's root `themeDefinitionId` to a raw
+        // Mongo ObjectId, which `NEW_THEME_REGISTRY` doesn't recognize, so
+        // every consumer (ThemedRoute, AtelierLivePreview, getThemeManifest)
+        // silently fell back to DEFAULT_THEME_ID. `appliedCatalogThemeId` is
+        // its own field precisely so this can never collide with the
+        // code-registry key again.
+        'draft.appliedCatalogThemeId': themeDefinitionId,
         'draft.pendingHomeSections': themeDef.homePageSections ?? [],
       } },
       { new: true },
