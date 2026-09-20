@@ -123,6 +123,22 @@ export interface StatsCounterSectionSettings extends BaseSectionSettings {}
 // eslint-disable-next-line @typescript-eslint/no-empty-interface
 export interface GalleryGridSectionSettings extends BaseSectionSettings {}
 
+// ── Core/locked sections (Phase 4) — see `SECTION_TYPES`'s own comment.
+// No section-level settings for any of these; `product_main`'s real content
+// is entirely its 7 fixed blocks (below). ──────────────────────────────────
+// eslint-disable-next-line @typescript-eslint/no-empty-interface
+export interface ProductMainSectionSettings {}
+// eslint-disable-next-line @typescript-eslint/no-empty-interface
+export interface SearchResultsSectionSettings {}
+// eslint-disable-next-line @typescript-eslint/no-empty-interface
+export interface CartItemsSectionSettings {}
+// eslint-disable-next-line @typescript-eslint/no-empty-interface
+export interface CartSummarySectionSettings {}
+// eslint-disable-next-line @typescript-eslint/no-empty-interface
+export interface BlogPostListSectionSettings {}
+// eslint-disable-next-line @typescript-eslint/no-empty-interface
+export interface ArticleContentSectionSettings {}
+
 // Compile-time-only helper — `T`'s keys must cover every member of `K` (extra
 // keys on `T` are still allowed; TS's structural typing can't cheaply forbid
 // those without losing the specific per-key value types, and the real risk
@@ -156,6 +172,12 @@ export type SectionSettingsMap = RequireAllKeys<SectionType, {
   team_grid: TeamGridSectionSettings;
   stats_counter: StatsCounterSectionSettings;
   gallery_grid: GalleryGridSectionSettings;
+  product_main: ProductMainSectionSettings;
+  search_results: SearchResultsSectionSettings;
+  cart_items: CartItemsSectionSettings;
+  cart_summary: CartSummarySectionSettings;
+  blog_post_list: BlogPostListSectionSettings;
+  article_content: ArticleContentSectionSettings;
 }>;
 
 // ── Block settings, one per block `type` string ─────────────────────────────
@@ -298,6 +320,27 @@ export interface GalleryImageBlockSettings {
   imageUrl: string;
 }
 
+// ── `product_main`'s 7 fixed blocks (Phase 4) — no settings beyond the
+// generic `label`/`enabled` every block already carries; each just marks
+// which real, already-rendered piece of `AtelierProductPage` (gallery,
+// title, price, variant picker, quantity, buy buttons, description) this
+// entry represents, so a merchant can hide/reorder it. See
+// `collection-template/core-sections.util.ts`. ──────────────────────────────
+// eslint-disable-next-line @typescript-eslint/no-empty-interface
+export interface ProductMediaBlockSettings {}
+// eslint-disable-next-line @typescript-eslint/no-empty-interface
+export interface ProductTitleBlockSettings {}
+// eslint-disable-next-line @typescript-eslint/no-empty-interface
+export interface ProductPriceBlockSettings {}
+// eslint-disable-next-line @typescript-eslint/no-empty-interface
+export interface ProductVariantPickerBlockSettings {}
+// eslint-disable-next-line @typescript-eslint/no-empty-interface
+export interface ProductQuantityBlockSettings {}
+// eslint-disable-next-line @typescript-eslint/no-empty-interface
+export interface ProductBuyButtonsBlockSettings {}
+// eslint-disable-next-line @typescript-eslint/no-empty-interface
+export interface ProductDescriptionBlockSettings {}
+
 export const BLOCK_TYPES = [
   'nav_link',
   'footer_column',
@@ -323,6 +366,13 @@ export const BLOCK_TYPES = [
   'team_member',
   'stat_item',
   'gallery_image',
+  'product_media',
+  'product_title',
+  'product_price',
+  'product_variant_picker',
+  'product_quantity',
+  'product_buy_buttons',
+  'product_description',
 ] as const;
 export type BlockType = (typeof BLOCK_TYPES)[number];
 
@@ -352,6 +402,13 @@ export type BlockSettingsMap = RequireAllKeys<BlockType, {
   team_member: TeamMemberBlockSettings;
   stat_item: StatItemBlockSettings;
   gallery_image: GalleryImageBlockSettings;
+  product_media: ProductMediaBlockSettings;
+  product_title: ProductTitleBlockSettings;
+  product_price: ProductPriceBlockSettings;
+  product_variant_picker: ProductVariantPickerBlockSettings;
+  product_quantity: ProductQuantityBlockSettings;
+  product_buy_buttons: ProductBuyButtonsBlockSettings;
+  product_description: ProductDescriptionBlockSettings;
 }>;
 
 /** `SECTION_ALLOWED_BLOCK_TYPES`'s values are typed against this so a typo'd or retired block-type string in that map is a compile error, not a silent runtime gap. */

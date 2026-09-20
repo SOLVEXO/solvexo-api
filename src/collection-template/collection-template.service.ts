@@ -8,25 +8,27 @@ import { ContentVersioningService } from '../common/content-versioning/content-v
 import { UpdateSectionsDto } from '../store-pages/dto/update-sections.dto';
 import { ResourceTemplateType } from './schemas/collection-template.schema';
 import { CreateResourceTemplateDto } from './dto/create-resource-template.dto';
+import { buildCoreSections, findMissingCoreParts } from './core-sections.util';
 
 const MAX_SECTIONS_PER_TEMPLATE = 40;
 const DEFAULT_TEMPLATE_KEY = 'default';
 
-function starterSections(resourceType: ResourceTemplateType) {
-  // The one section a template of each resource type can't meaningfully
-  // ship without — a seller can add more sections above/below it, reorder,
-  // or hide it, but it's always pre-seeded so a fresh store's browse/detail
-  // pages never render blank. Product's "core" commerce block (gallery/
-  // variant/add-to-cart) is fixed chrome outside this section system
-  // entirely (see StorefrontProductPage) — a product template's sections are
-  // purely the SURROUNDING content (recommendations, rich text, etc.), so it
-  // starts empty rather than pre-seeded with a placeholder. Same for 'page'
-  // templates (Blog Index, Search, and any other non-collection page bucket)
-  // — these already have their own real, non-section-driven listing content
-  // (blog posts, search results), so pre-seeding a commerce product grid on
-  // top of that would render a second, unrelated product grid on the page.
-  if (resourceType === 'product' || resourceType === 'page') return [];
-  return [{ type: 'collection_product_grid' as SectionType, settings: { columns: 3, showFilters: true }, blocks: [] }];
+/** The one section (or two, for Cart) a template of each resource type can't
+ *  meaningfully ship without. `collection` keeps its own pre-existing
+ *  `collection_product_grid` seed. Every other resource type (Product, and
+ *  the `page` bucket's Search/Cart/Blog-Index/Blog-Article templateKeys)
+ *  seeds its real, locked "core" section(s) — see `core-sections.util.ts`
+ *  for what these represent and why they exist (Phase 4: these templates
+ *  used to seed `[]`, which made the Customize editor's section list/live
+ *  preview look blank even though the real page never was). A seller can
+ *  still add more sections above/below a core one, reorder, or hide it — but
+ *  never remove the core section/its required blocks outright (enforced in
+ *  the editor UI and, server-side, by `findMissingCoreParts` below). */
+function starterSections(resourceType: ResourceTemplateType, templateKey: string) {
+  if (resourceType === 'collection') {
+    return [{ type: 'collection_product_grid' as SectionType, settings: { columns: 3, showFilters: true }, blocks: [] }];
+  }
+  return buildCoreSections(resourceType, templateKey);
 }
 
 function validateSections(sections: { type: SectionType; settings: Record<string, any>; blocks: { type: string; settings: Record<string, any> }[] }[]) {
@@ -53,10 +55,10 @@ export class CollectionTemplateService {
     return this.databaseService.repositories.storeModel;
   }
 
-  /** Idempotent getOrCreate for one (resourceType, templateKey) pair — same shape as `StorePagesService#ensureHomePage`. A brand-new template starts as a usable draft with its starter content already in it, not empty (except Product's, see `starterSections`). Every pre-existing caller omits both params and gets exactly today's single collection-layout document back. */
+  /** Idempotent getOrCreate for one (resourceType, templateKey) pair — same shape as `StorePagesService#ensureHomePage`. A brand-new template starts as a usable draft with its starter content already in it. Every pre-existing caller omits both params and gets exactly today's single collection-layout document back. Also lazily backfills a required core section (see `backfillCoreSections`) onto a template that already existed before Phase 4 — so a store that never re-opens the editor still gets it the first time anything touches this template again, without ever duplicating it on a later call. */
   async ensureTemplate(storeId: string, resourceType: ResourceTemplateType = 'collection', templateKey = DEFAULT_TEMPLATE_KEY) {
-    const seed = starterSections(resourceType);
-    return this.collectionTemplateModel.findOneAndUpdate(
+    const seed = starterSections(resourceType, templateKey);
+    const doc = await this.collectionTemplateModel.findOneAndUpdate(
       { storeId, resourceType, templateKey },
       {
         $setOnInsert: {
@@ -72,6 +74,48 @@ export class CollectionTemplateService {
       },
       { upsert: true, new: true, setDefaultsOnInsert: true },
     );
+    return this.backfillCoreSections(doc, resourceType, templateKey);
+  }
+
+  /** Prepends any required core section that's missing from `sections`
+   *  and/or `draft.sections` — a genuine no-op (no DB write at all) once
+   *  it's already present, so a repeat call (every page load) never
+   *  duplicates it. Only relevant for a template that already existed
+   *  before this field was seeded; `ensureTemplate`'s own `$setOnInsert`
+   *  already covers a brand-new one. Never touches any section a seller
+   *  already added themselves.
+   *
+   *  Each push is its own atomic, race-safe `findOneAndUpdate` whose FILTER
+   *  re-checks "not already present" against the database at write time
+   *  (`'sections.type': { $ne: type }`) — not a decision made once from an
+   *  earlier JS read of `doc`. Two near-simultaneous callers (e.g. a
+   *  merchant with the same never-yet-touched template open in two browser
+   *  tabs) can therefore never both win and double-insert the same core
+   *  section — the second one's filter simply no longer matches once the
+   *  first has written. (An earlier version of this method computed
+   *  "missing" once from the passed-in `doc` and pushed unconditionally —
+   *  found, via real browser testing, to double-insert `product_main`
+   *  under exactly that race; fixed here before this ever reached a real
+   *  merchant.) */
+  private async backfillCoreSections(doc: any, resourceType: ResourceTemplateType, templateKey: string) {
+    const required = buildCoreSections(resourceType, templateKey);
+    if (required.length === 0 || !doc) return doc;
+    let current = doc;
+    for (const section of required) {
+      const pushedLive = await this.collectionTemplateModel.findOneAndUpdate(
+        { _id: doc._id, 'sections.type': { $ne: section.type } },
+        { $push: { sections: { $each: [section], $position: 0 } } },
+        { new: true },
+      );
+      if (pushedLive) current = pushedLive;
+      const pushedDraft = await this.collectionTemplateModel.findOneAndUpdate(
+        { _id: doc._id, 'draft.sections.type': { $ne: section.type } },
+        { $push: { 'draft.sections': { $each: [section], $position: 0 } } },
+        { new: true },
+      );
+      if (pushedDraft) current = pushedDraft;
+    }
+    return current;
   }
 
   /** See `ContentVersioningService#backfillDraft` — a template saved before the draft/publish split gets `draft.sections` seeded from its live `sections` the first time it's touched. */
@@ -108,8 +152,8 @@ export class CollectionTemplateService {
     if (existing) throw new BadRequestException(`A ${resourceType} template with key "${templateKey}" already exists`);
 
     const seed = dto.cloneFromTemplateKey
-      ? (await this.collectionTemplateModel.findOne({ storeId, resourceType, templateKey: dto.cloneFromTemplateKey }))?.sections ?? starterSections(resourceType)
-      : starterSections(resourceType);
+      ? (await this.collectionTemplateModel.findOne({ storeId, resourceType, templateKey: dto.cloneFromTemplateKey }))?.sections ?? starterSections(resourceType, templateKey)
+      : starterSections(resourceType, templateKey);
 
     const created = await this.collectionTemplateModel.create({
       storeId,
@@ -157,6 +201,13 @@ export class CollectionTemplateService {
   async updateSections(storeId: string, sellerId: string, dto: UpdateSectionsDto, resourceType: ResourceTemplateType = 'collection', templateKey = DEFAULT_TEMPLATE_KEY) {
     const template = await this.findOwnedTemplate(storeId, sellerId, resourceType, templateKey);
     validateSections(dto.sections);
+    // Defense in depth beyond the editor UI (which already hides the Remove
+    // control for a core section/its required blocks) — a direct API call
+    // can't silently delete required core content either.
+    const missingCore = findMissingCoreParts(resourceType, templateKey, dto.sections);
+    if (missingCore.length > 0) {
+      throw new BadRequestException(`This template's required content cannot be removed: ${missingCore.join(', ')}`);
+    }
     const updated = await this.collectionTemplateModel.findOneAndUpdate(
       { _id: template._id },
       { $set: { 'draft.sections': dto.sections } },
@@ -220,6 +271,6 @@ export class CollectionTemplateService {
       .findOne({ storeId, resourceType, templateKey, status: 'published' }, { draft: 0, versions: 0 })
       .lean();
     if (template) return { success: true, data: template };
-    return { success: true, data: { sections: starterSections(resourceType) } };
+    return { success: true, data: { sections: starterSections(resourceType, templateKey) } };
   }
 }

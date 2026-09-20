@@ -220,6 +220,13 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
       assertLinkTarget(s.ctaLink, 'settings.ctaLink');
       break;
     }
+    case 'product_main':
+    case 'search_results':
+    case 'cart_items':
+    case 'cart_summary':
+    case 'blog_post_list':
+    case 'article_content':
+      break; // core/locked sections — no section-level settings, see SECTION_TYPES's comment
     default: {
       // Exhaustiveness guard: if a new SectionType is ever added to
       // SECTION_TYPES without a case above, `type` here is no longer `never`
@@ -439,6 +446,18 @@ export function validateBlockSettings(blockType: string, settings: Record<string
       assertHttpsUrl(settings.imageUrl, 'imageUrl');
       break;
 
+    // product_main's 7 fixed blocks (Phase 4) — no settings, purely
+    // enable/disable + reorder of an already-real, already-rendered piece
+    // of the product page. See `core-sections.util.ts`.
+    case 'product_media':
+    case 'product_title':
+    case 'product_price':
+    case 'product_variant_picker':
+    case 'product_quantity':
+    case 'product_buy_buttons':
+    case 'product_description':
+      break;
+
     default:
       throw new BadRequestException(`Unknown block type: ${blockType}`);
   }
@@ -498,4 +517,10 @@ export const SECTION_ALLOWED_BLOCK_TYPES: AllowedBlockTypesMap = {
   team_grid: ['team_member'],
   stats_counter: ['stat_item'],
   gallery_grid: ['gallery_image'],
+  product_main: ['product_media', 'product_title', 'product_price', 'product_variant_picker', 'product_quantity', 'product_buy_buttons', 'product_description'],
+  search_results: [],
+  cart_items: [],
+  cart_summary: [],
+  blog_post_list: [],
+  article_content: [],
 };
