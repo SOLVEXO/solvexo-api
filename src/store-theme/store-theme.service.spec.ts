@@ -210,6 +210,26 @@ describe('StoreThemeService', () => {
     });
   });
 
+  describe('ensureDefaultTheme', () => {
+    // Regression for a real bug found via fresh sign-off QA on a brand-new
+    // store: the upsert used to seed only the ROOT `themeDefinitionId`,
+    // leaving `draft`'s own copy at the schema's `null` default — silently
+    // corrupting the row to `null` the moment the seller's first Publish
+    // copied draft → root (breaks Draft/Share Preview's theme-registry
+    // lookup). Asserts the upsert's `$setOnInsert` now seeds `draft`'s
+    // `themeDefinitionId`/`baseThemeId` too, matching `installTheme`'s own
+    // already-correct seeding.
+    it('seeds draft.themeDefinitionId and draft.baseThemeId on the upsert, not just the root fields', async () => {
+      await service.ensureDefaultTheme(STORE_ID);
+
+      const [filter, update] = storeThemeModel.findOneAndUpdate.mock.calls[0];
+      expect(filter).toEqual({ storeId: STORE_ID, status: 'active' });
+      expect(update.$setOnInsert.themeDefinitionId).toBe('theme-01-atelier');
+      expect(update.$setOnInsert['draft.themeDefinitionId']).toBe('theme-01-atelier');
+      expect(update.$setOnInsert['draft.baseThemeId']).toBe('theme-01-atelier');
+    });
+  });
+
   describe('cross-seller isolation', () => {
     it('applying the same theme to two different stores never lets one leak into the other\'s update call', async () => {
       storeModel.findById = jest.fn().mockImplementation((id: string) =>

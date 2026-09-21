@@ -147,7 +147,24 @@ export class StoreThemeService {
   async ensureDefaultTheme(storeId: string) {
     await this.storeThemeModel.findOneAndUpdate(
       { storeId, status: 'active' },
-      { $setOnInsert: { storeId, status: 'active', themeDefinitionId: DEFAULT_THEME_DEFINITION_ID } },
+      {
+        $setOnInsert: {
+          storeId, status: 'active', themeDefinitionId: DEFAULT_THEME_DEFINITION_ID,
+          // Real bug found via fresh sign-off QA on a brand-new store: this
+          // upsert only ever set the ROOT `themeDefinitionId` — `draft`'s
+          // own `themeDefinitionId`/`baseThemeId` were left to the schema's
+          // `null` default (Mongoose still persists the `draft` subdocument
+          // itself at insert, so `backfillDraft`'s `$exists` guard below
+          // correctly saw "a draft already exists" and never touched it).
+          // The mismatch stayed invisible until the seller's first Publish,
+          // which copies `draft.themeDefinitionId` over the correct root
+          // value — silently corrupting a brand-new store's very first
+          // installed row to an unrecognized theme id (breaks Draft/Share
+          // Preview, matches `installTheme`'s own already-correct seeding).
+          'draft.themeDefinitionId': DEFAULT_THEME_DEFINITION_ID,
+          'draft.baseThemeId': DEFAULT_THEME_DEFINITION_ID,
+        },
+      },
       { upsert: true, new: true, setDefaultsOnInsert: true },
     );
     // Backfill `themeDefinitionId` for any active row written before this

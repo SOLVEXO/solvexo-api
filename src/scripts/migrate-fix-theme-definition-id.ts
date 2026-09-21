@@ -13,11 +13,18 @@
  * which looks the value up in the frontend's code registry and silently
  * falls back to "no preview available" for anything it doesn't recognize).
  *
- * This script only ever REPAIRS an invalid value — it never touches a
- * document whose `themeDefinitionId`/`baseThemeId` is already one of the
- * two known-valid registry keys (or `null`, the legitimate "not yet
- * backfilled" state `ensureDefaultTheme` already handles on its own). An
- * invalid value (anything else — typically a 24-hex ObjectId) is replaced
+ * SUPERSEDES an earlier version of this doc comment that treated `null` as
+ * a legitimate "not yet backfilled" state to leave alone — found via fresh
+ * sign-off QA on a brand-new store that `null` is NEVER legitimate here:
+ * `ensureDefaultTheme`'s upsert only seeded the ROOT `themeDefinitionId`,
+ * leaving `draft`'s own copy at the schema's `null` default (now fixed at
+ * the source too, in `ensureDefaultTheme` itself), and that mismatch
+ * silently propagates `null` onto ROOT the moment the seller's first
+ * Publish copies draft → root. This script only ever REPAIRS an invalid
+ * value — it never touches a document whose `themeDefinitionId`/
+ * `baseThemeId` is already one of the two known-valid registry keys.
+ * Anything else (a wrong non-null string like a stray 24-hex ObjectId, or
+ * `null`/empty on a row that should already have a real value) is replaced
  * with `DEFAULT_THEME_DEFINITION_ID`, the exact same fallback the frontend
  * registry itself already applies at render time for an unrecognized id
  * (`registry.ts`: "a map doesn't cover falls back to DEFAULT_THEME_ID") —
@@ -37,7 +44,25 @@ const DEFAULT_THEME_DEFINITION_ID = 'theme-01-atelier';
 const VALID_THEME_DEFINITION_IDS = new Set(['theme-01-atelier', 'theme-02-nova']);
 
 function isInvalid(value: unknown): boolean {
+  // A wrong non-null string (the original catalog-id-collision bug this
+  // script was written for) is always invalid. `null`/empty is deliberately
+  // NOT flagged by this narrower check — used for `baseThemeId`, which is a
+  // genuinely different, legitimately-nullable field ("last curated preset
+  // bulk-applied — null if never applied one," per its own schema comment),
+  // unrelated to which code package renders the theme.
   return typeof value === 'string' && value.length > 0 && !VALID_THEME_DEFINITION_IDS.has(value);
+}
+
+// `themeDefinitionId` (root or draft) must ALWAYS be a real registry key
+// once a row exists — unlike `baseThemeId` above, `null` is never
+// legitimate here. Found via fresh sign-off QA on a brand-new store:
+// `ensureDefaultTheme`'s upsert only ever seeded the ROOT
+// `themeDefinitionId` (now fixed at the source too), leaving `draft`'s own
+// copy at the schema's `null` default; that mismatch then silently
+// propagates `null` onto root the moment the seller's first Publish copies
+// draft → root — corrupting a brand-new store's very first theme row.
+function isInvalidThemeDefinitionId(value: unknown): boolean {
+  return typeof value !== 'string' || value.length === 0 || !VALID_THEME_DEFINITION_IDS.has(value);
 }
 
 async function run() {
@@ -59,9 +84,9 @@ async function run() {
   let repaired = 0;
   for (const doc of docs) {
     const set: Record<string, string> = {};
-    if (isInvalid(doc.themeDefinitionId)) set.themeDefinitionId = DEFAULT_THEME_DEFINITION_ID;
+    if (isInvalidThemeDefinitionId(doc.themeDefinitionId)) set.themeDefinitionId = DEFAULT_THEME_DEFINITION_ID;
     if (isInvalid(doc.baseThemeId)) set.baseThemeId = DEFAULT_THEME_DEFINITION_ID;
-    if (isInvalid(doc.draft?.themeDefinitionId)) set['draft.themeDefinitionId'] = DEFAULT_THEME_DEFINITION_ID;
+    if (isInvalidThemeDefinitionId(doc.draft?.themeDefinitionId)) set['draft.themeDefinitionId'] = DEFAULT_THEME_DEFINITION_ID;
     if (isInvalid(doc.draft?.baseThemeId)) set['draft.baseThemeId'] = DEFAULT_THEME_DEFINITION_ID;
 
     if (Object.keys(set).length > 0) {
