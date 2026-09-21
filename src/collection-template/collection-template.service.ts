@@ -3,12 +3,16 @@ import { BadRequestException, ForbiddenException, Injectable, NotFoundException 
 import { DatabaseService } from '../database/databaseservice';
 import { verifyStoreOwnershipStrict } from '../common/store-ownership.util';
 import { validateSectionSettings, validateBlocksOfType, SECTION_ALLOWED_BLOCK_TYPES } from '../common/store-content/section-settings.validator';
+import { sectionAcceptsAppBlocks } from '../common/store-content/app-block.util';
 import { SectionType } from '../common/schemas/section.schema';
 import { ContentVersioningService } from '../common/content-versioning/content-versioning.service';
 import { UpdateSectionsDto } from '../store-pages/dto/update-sections.dto';
 import { ResourceTemplateType } from './schemas/collection-template.schema';
 import { CreateResourceTemplateDto } from './dto/create-resource-template.dto';
 import { buildCoreSections, findMissingCoreParts } from './core-sections.util';
+import { AppsService } from '../apps/apps.service';
+import { MetafieldsService } from '../metafields/metafields.service';
+import type { MetafieldOwnerResource } from '../metafields/schemas/metafield-definition.schema';
 
 const MAX_SECTIONS_PER_TEMPLATE = 40;
 const DEFAULT_TEMPLATE_KEY = 'default';
@@ -31,13 +35,33 @@ function starterSections(resourceType: ResourceTemplateType, templateKey: string
   return buildCoreSections(resourceType, templateKey);
 }
 
+/**
+ * Phase 9 — Dynamic Sources. Which real, singular resource (if any) a
+ * template's own `dynamicSourceKey` bindings resolve against: Product/
+ * Collection templates each bind to whichever real Product/Collection is
+ * currently being viewed (same "one shared template, resolved per real
+ * instance" pattern Product Template already used before this phase); the
+ * Blog Article template (`resourceType:'page', templateKey:'blog-article'`)
+ * binds to whichever real BlogPost is being viewed — a real, singular
+ * resource despite living in the same `resourceType:'page'` bucket Search/
+ * Cart/Blog-Index also use. Those three have no single resource at all
+ * (Search/Cart render aggregate results; Blog Index lists many posts) —
+ * `null`, matching the Home-page precedent on the StorePage side.
+ */
+export function resolveTemplateOwnerResource(resourceType: ResourceTemplateType, templateKey: string): MetafieldOwnerResource | null {
+  if (resourceType === 'product') return 'product';
+  if (resourceType === 'collection') return 'collection';
+  if (resourceType === 'page' && templateKey === 'blog-article') return 'article';
+  return null;
+}
+
 function validateSections(sections: { type: SectionType; settings: Record<string, any>; blocks: { type: string; settings: Record<string, any> }[] }[]) {
   if (sections.length > MAX_SECTIONS_PER_TEMPLATE) {
     throw new BadRequestException(`A template cannot have more than ${MAX_SECTIONS_PER_TEMPLATE} sections`);
   }
   for (const section of sections) {
     validateSectionSettings(section.type, section.settings ?? {});
-    validateBlocksOfType(section.blocks ?? [], SECTION_ALLOWED_BLOCK_TYPES[section.type]);
+    validateBlocksOfType(section.blocks ?? [], SECTION_ALLOWED_BLOCK_TYPES[section.type], sectionAcceptsAppBlocks(section.type));
   }
 }
 
@@ -46,6 +70,8 @@ export class CollectionTemplateService {
   constructor(
     private readonly databaseService: DatabaseService,
     private readonly contentVersioningService: ContentVersioningService,
+    private readonly appsService: AppsService,
+    private readonly metafieldsService: MetafieldsService,
   ) {}
 
   private get collectionTemplateModel() {
@@ -208,6 +234,10 @@ export class CollectionTemplateService {
     if (missingCore.length > 0) {
       throw new BadRequestException(`This template's required content cannot be removed: ${missingCore.join(', ')}`);
     }
+    // Phase 8 — the second, DB-aware half of app-block validation.
+    await this.appsService.assertBlocksAllowed(storeId, dto.sections);
+    // Phase 9 — Dynamic Sources.
+    await this.metafieldsService.assertDynamicSourceBindingsValid(storeId, resolveTemplateOwnerResource(resourceType, templateKey), dto.sections);
     const updated = await this.collectionTemplateModel.findOneAndUpdate(
       { _id: template._id },
       { $set: { 'draft.sections': dto.sections } },

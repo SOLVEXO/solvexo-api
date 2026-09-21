@@ -3,8 +3,11 @@ import { BadRequestException, ConflictException, ForbiddenException, Injectable,
 import { DatabaseService } from '../database/databaseservice';
 import { verifyStoreOwnershipStrict } from '../common/store-ownership.util';
 import { validateSectionSettings, validateBlocksOfType, SECTION_ALLOWED_BLOCK_TYPES } from '../common/store-content/section-settings.validator';
+import { sectionAcceptsAppBlocks } from '../common/store-content/app-block.util';
 import { SectionType } from '../common/schemas/section.schema';
 import { ContentVersioningService } from '../common/content-versioning/content-versioning.service';
+import { AppsService } from '../apps/apps.service';
+import { MetafieldsService } from '../metafields/metafields.service';
 import { CreatePageDto } from './dto/create-page.dto';
 import { UpdatePageDto } from './dto/update-page.dto';
 import { UpdateSectionsDto } from './dto/update-sections.dto';
@@ -27,7 +30,7 @@ function validateSections(sections: { type: SectionType; settings: Record<string
   }
   for (const section of sections) {
     validateSectionSettings(section.type, section.settings ?? {});
-    validateBlocksOfType(section.blocks ?? [], SECTION_ALLOWED_BLOCK_TYPES[section.type]);
+    validateBlocksOfType(section.blocks ?? [], SECTION_ALLOWED_BLOCK_TYPES[section.type], sectionAcceptsAppBlocks(section.type));
   }
 }
 
@@ -43,6 +46,8 @@ export class StorePagesService {
   constructor(
     private readonly databaseService: DatabaseService,
     private readonly contentVersioningService: ContentVersioningService,
+    private readonly appsService: AppsService,
+    private readonly metafieldsService: MetafieldsService,
   ) {}
 
   private get storePageModel() {
@@ -203,8 +208,18 @@ export class StorePagesService {
    * immediately. A buyer never sees this until `publish()` is called.
    */
   async updateSections(storeId: string, sellerId: string, pageId: string, dto: UpdateSectionsDto) {
-    await this.findOwnedPage(storeId, sellerId, pageId);
+    const page = await this.findOwnedPage(storeId, sellerId, pageId);
     validateSections(dto.sections);
+    // Phase 8 — the second, DB-aware half of app-block validation (is the
+    // app installed for THIS store, is the section type actually
+    // supported, do settings match the app's own schema).
+    await this.appsService.assertBlocksAllowed(storeId, dto.sections);
+    // Phase 9 — Dynamic Sources: only a custom page is one real, singular
+    // resource a metafield value can attach to; the Home page has no such
+    // "current resource" (same reasoning Search/Cart/Blog-Index templates
+    // already have on the CollectionTemplate side — see
+    // CollectionTemplateService's own resolveOwnerResource).
+    await this.metafieldsService.assertDynamicSourceBindingsValid(storeId, page.type === 'custom' ? 'page' : null, dto.sections);
     const updated = await this.storePageModel.findOneAndUpdate(
       { _id: pageId, storeId },
       { $set: { 'draft.sections': dto.sections } },

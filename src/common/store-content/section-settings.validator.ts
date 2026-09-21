@@ -1,6 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { BadRequestException } from '@nestjs/common';
 import type { SectionType } from '../schemas/section.schema';
+import { isAppBlockType } from './app-block.util';
 import type {
   AllowedBlockTypesMap,
   FeaturedProductsSectionSettings,
@@ -88,6 +89,33 @@ function assertDynamicSource(namespace: unknown, key: unknown, field: string): v
   }
 }
 
+/**
+ * Phase 9 — Dynamic Sources. Every place in the schema a section/block
+ * settings object carries a `dynamicSourceNamespace`/`dynamicSourceKey`
+ * pair (bare, unprefixed — safe since each of these 3 lives in its own
+ * settings object with no sibling bindable field, see each site's own
+ * comment): the `rich_text` SECTION's own `heading`, and the `heading`/
+ * `paragraph` BLOCK's own `text`. Walked once here (not per-caller) so the
+ * DB-aware existence/type-compatibility check (`MetafieldsService.
+ * assertDynamicSourceBindingsValid`, called right after this file's pure
+ * validation, same two-layer pattern Phase 8's `AppsService.
+ * assertBlocksAllowed` established for app blocks) has one real list of
+ * every binding a save actually contains, instead of re-deriving it.
+ */
+export function collectDynamicSourceBindings(sections: { type: string; settings?: Record<string, any>; blocks?: { type: string; settings?: Record<string, any> }[] }[]): { namespace: string; key: string }[] {
+  const out: { namespace: string; key: string }[] = [];
+  const push = (settings: Record<string, any> | undefined) => {
+    if (settings?.dynamicSourceNamespace && settings?.dynamicSourceKey) {
+      out.push({ namespace: settings.dynamicSourceNamespace, key: settings.dynamicSourceKey });
+    }
+  };
+  for (const section of sections) {
+    push(section.settings);
+    for (const block of section.blocks ?? []) push(block.settings);
+  }
+  return out;
+}
+
 function assertLinkTarget(link: unknown, field: string): void {
   if (link === undefined || link === null) return;
   if (typeof link !== 'object') throw new BadRequestException(`${field} is invalid`);
@@ -114,6 +142,12 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
     case 'rich_text': {
       const s = settings as RichTextSectionSettings;
       oneOf(s.alignment, ['left', 'center', 'right'] as const, 'settings.alignment');
+      // Dynamic Sources — the section's own heading can bind to a real
+      // metafield too (a section SETTING, not a block one), same
+      // presence-pairing check `paragraph`'s block-level binding already
+      // uses. `settings.heading` itself stays optional either way (a
+      // rich_text section's heading was always optional).
+      assertDynamicSource(s.dynamicSourceNamespace, s.dynamicSourceKey, 'dynamicSource');
       break;
     }
     case 'featured_products': {
@@ -317,11 +351,15 @@ export function validateBlockSettings(blockType: string, settings: Record<string
       assertDynamicSource(settings.dynamicSourceNamespace, settings.dynamicSourceKey, 'dynamicSource');
       break;
     }
-    case 'heading':
-      required(settings.text, 'text');
+    case 'heading': {
+      // Dynamic Sources — same optional-when-bound convention as `paragraph`.
+      const boundToMetafield = !!settings.dynamicSourceNamespace && !!settings.dynamicSourceKey;
+      if (!boundToMetafield) required(settings.text, 'text');
       maxLen(settings.text, 150, 'text');
       oneOf(settings.level, ['h2', 'h3', 'h4'] as const, 'level');
+      assertDynamicSource(settings.dynamicSourceNamespace, settings.dynamicSourceKey, 'dynamicSource');
       break;
+    }
     case 'image':
       assertHttpsUrl(settings.imageUrl, 'imageUrl');
       maxLen(settings.caption, 200, 'caption');
@@ -479,12 +517,24 @@ export function validateBlocks(blocks: { type: string; settings: Record<string, 
   }
 }
 
-/** Validates every block in an array against the given expected type(s) — used when a section type only accepts one specific block type. */
-export function validateBlocksOfType(blocks: { type: string; settings: Record<string, any> }[], allowedTypes: readonly string[]): void {
+/** Validates every block in an array against the given expected type(s) —
+ *  used when a section type only accepts one specific block type.
+ *
+ *  Phase 8 — `allowAppBlocks` (default false, so every pre-existing call
+ *  site is unaffected) lets an app-provided block (`Block.type` shaped
+ *  `app:<appId>:<blockKey>`, see `app-block.util.ts`) through this
+ *  first-party check untouched — it's validated separately, WITH real
+ *  database access (is the app installed for this store? is this section
+ *  type actually in that app's own supported list?), by
+ *  `AppsService.assertBlocksAllowed`, called from the same service right
+ *  after this function — this file stays a pure, DB-free validator, same
+ *  as before this feature existed. */
+export function validateBlocksOfType(blocks: { type: string; settings: Record<string, any> }[], allowedTypes: readonly string[], allowAppBlocks = false): void {
   if (blocks.length > MAX_BLOCKS_PER_SECTION) {
     throw new BadRequestException(`A section cannot have more than ${MAX_BLOCKS_PER_SECTION} blocks`);
   }
   for (const block of blocks) {
+    if (allowAppBlocks && isAppBlockType(block.type)) continue;
     if (!allowedTypes.includes(block.type)) {
       throw new BadRequestException(`Block type "${block.type}" is not allowed in this section`);
     }

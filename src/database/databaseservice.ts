@@ -310,6 +310,9 @@ export class DatabaseService {
     @InjectModel(schema.MediaAsset.name)
     private mediaAssetModel: Model<schema.MediaAssetDocument>,
 
+    @InjectModel(schema.AppInstallation.name)
+    private appInstallationModel: Model<schema.AppInstallationDocument>,
+
     @InjectModel(schema.StoreBanner.name)
     private storeBannerModel: Model<schema.StoreBannerDocument>,
 
@@ -547,6 +550,7 @@ export class DatabaseService {
       announcementModel: this.announcementModel,
       campaignModel: this.campaignModel,
       mediaAssetModel: this.mediaAssetModel,
+      appInstallationModel: this.appInstallationModel,
       storeBannerModel: this.storeBannerModel,
       storeThemeModel: this.storeThemeModel,
       themeDefinitionModel: this.themeDefinitionModel,

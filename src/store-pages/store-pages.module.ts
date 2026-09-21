@@ -3,6 +3,8 @@ import { AuthModule } from '../auth/auth.module';
 import { RedisModule } from '../redis/redis.module';
 import { AdminConfigModule } from '../admin-config/admin-config.module';
 import { ContentVersioningModule } from '../common/content-versioning/content-versioning.module';
+import { AppsModule } from '../apps/apps.module';
+import { MetafieldsModule } from '../metafields/metafields.module';
 import { StorePagesController } from './store-pages.controller';
 import { PublicStorePagesController } from './public-store-pages.controller';
 import { StorePagesService } from './store-pages.service';
@@ -13,6 +15,8 @@ import { StorePagesService } from './store-pages.service';
     RedisModule,
     AdminConfigModule,
     ContentVersioningModule,
+    AppsModule,
+    MetafieldsModule,
   ],
   controllers: [StorePagesController, PublicStorePagesController],
   providers: [StorePagesService],

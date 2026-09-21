@@ -19,7 +19,15 @@ describe('CollectionTemplateService — core sections (Phase 4)', () => {
       findById: jest.fn().mockResolvedValue({ _id: STORE_ID, sellerId: SELLER_ID, isDelete: false }),
     };
     db = { repositories: { collectionTemplateModel: undefined as any, storeModel } } as unknown as DatabaseService;
-    service = new CollectionTemplateService(db, new ContentVersioningService());
+    // Phase 8's AppsService only matters when a section's blocks actually
+    // include an app-block-shaped type — none of these Phase 4 tests do,
+    // so a minimal no-op stub (rather than a real AppsService + its own
+    // DatabaseService mock) keeps this file scoped to what it actually tests.
+    const appsServiceStub = { assertBlocksAllowed: jest.fn().mockResolvedValue(undefined) } as any;
+    // Phase 9 — same minimal no-op-stub reasoning as `appsServiceStub` above;
+    // none of this file's scenarios exercise Dynamic Sources.
+    const metafieldsServiceStub = { assertDynamicSourceBindingsValid: jest.fn().mockResolvedValue(undefined) } as any;
+    service = new CollectionTemplateService(db, new ContentVersioningService(), appsServiceStub, metafieldsServiceStub);
   });
 
   /** A faithful-enough fake of Mongo's real `findOneAndUpdate` for exactly

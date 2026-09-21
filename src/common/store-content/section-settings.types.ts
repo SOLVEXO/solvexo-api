@@ -41,8 +41,13 @@ export interface LinkTarget {
 export interface HeroSectionSettings extends BaseSectionSettings {
   heightPreset?: 'small' | 'medium' | 'large';
 }
+/** Dynamic Sources — the section's own `heading` (inherited from
+ *  `BaseSectionSettings`) can bind to a real metafield the same way a
+ *  `paragraph`/`heading` BLOCK's `text` can. */
 export interface RichTextSectionSettings extends BaseSectionSettings {
   alignment?: 'left' | 'center' | 'right';
+  dynamicSourceNamespace?: string;
+  dynamicSourceKey?: string;
 }
 export interface FeaturedProductsSectionSettings extends BaseSectionSettings {
   source: 'manual' | 'category' | 'collection' | 'bestsellers' | 'newArrivals' | 'trending' | 'pinned' | 'onSale';
@@ -234,9 +239,12 @@ export interface ParagraphBlockSettings {
   dynamicSourceNamespace?: string;
   dynamicSourceKey?: string;
 }
+/** Dynamic Sources — same optional-when-bound convention as `ParagraphBlockSettings` above. */
 export interface HeadingBlockSettings {
-  text: string;
+  text?: string;
   level?: 'h2' | 'h3' | 'h4';
+  dynamicSourceNamespace?: string;
+  dynamicSourceKey?: string;
 }
 export interface ImageBlockSettings {
   imageUrl: string;

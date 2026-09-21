@@ -7,8 +7,11 @@ export type MetafieldDefinitionDocument = HydratedDocument<MetafieldDefinition>;
 // Which resource a definition's values attach to — the same four resource
 // types `CollectionTemplate`'s `RESOURCE_TEMPLATE_TYPES` already covers,
 // plus 'collection' as its own real target (a Collection is a distinct
-// Mongoose collection from a Category in this codebase).
-export const METAFIELD_OWNER_RESOURCES = ['product', 'category', 'collection', 'page'] as const;
+// Mongoose collection from a Category in this codebase). 'article' (Phase 9
+// — Dynamic Sources) is a real `BlogPost` — added so a seller can define
+// per-post custom fields the Blog Article template can bind to, the same
+// way Product Template already binds to a per-product one.
+export const METAFIELD_OWNER_RESOURCES = ['product', 'category', 'collection', 'page', 'article'] as const;
 export type MetafieldOwnerResource = (typeof METAFIELD_OWNER_RESOURCES)[number];
 
 // A deliberately-scoped subset of Shopify's ~113 metafield types (see

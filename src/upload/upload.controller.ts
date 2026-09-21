@@ -14,6 +14,7 @@ import { UploadService } from './upload.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { publicUploadFileFilter, privateUploadFileFilter } from './upload-file-validation';
 
 @Controller('api/upload')
 @UseGuards(JwtAuthGuard)
@@ -25,6 +26,7 @@ export class UploadController {
   @UseInterceptors(FileInterceptor('file', {
     storage: memoryStorage(),
     limits: { fileSize: 100 * 1024 * 1024 }, // 100MB
+    fileFilter: publicUploadFileFilter,
   }))
   async uploadFile(@UploadedFile() file: Express.Multer.File) {
     if (!file) throw new BadRequestException('No file uploaded');
@@ -49,6 +51,7 @@ export class UploadController {
   @UseInterceptors(FileInterceptor('file', {
     storage: memoryStorage(),
     limits: { fileSize: 500 * 1024 * 1024 }, // 500MB
+    fileFilter: privateUploadFileFilter,
   }))
   async uploadPrivateFile(@UploadedFile() file: Express.Multer.File, @Body('purpose') purpose?: string) {
     if (!file) throw new BadRequestException('No file uploaded');

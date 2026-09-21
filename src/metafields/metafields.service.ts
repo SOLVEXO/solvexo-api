@@ -2,10 +2,21 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { DatabaseService } from '../database/databaseservice';
 import { verifyStoreOwnershipStrict } from '../common/store-ownership.util';
+import { collectDynamicSourceBindings } from '../common/store-content/section-settings.validator';
 import { CreateDefinitionDto } from './dto/create-definition.dto';
 import { UpdateDefinitionDto } from './dto/update-definition.dto';
 import { SetValuesDto } from './dto/set-values.dto';
 import { MetafieldOwnerResource, MetafieldType } from './schemas/metafield-definition.schema';
+
+/** Dynamic Sources — a metafield type incompatible with a plain-text-
+ *  rendering field (`paragraph`/`heading`/a section's own `heading`, the
+ *  only fields this MVP wires a picker onto — see `sectionRegistry.ts`).
+ *  `json` is structured data; pasting it inline as text would be a real,
+ *  visible footgun. Every other type (including `boolean`, e.g. "Handmade:
+ *  true") renders as a reasonable plain string. */
+const DYNAMIC_SOURCE_INCOMPATIBLE_TYPES: readonly MetafieldType[] = ['json'];
+
+type SectionLike = { type: string; settings?: Record<string, any>; blocks?: { type: string; settings?: Record<string, any> }[] };
 
 /** Real per-type validation for a metafield's string value — same
  *  "everything is a string, `type` says how to read it" model the schema
@@ -145,5 +156,48 @@ export class MetafieldsService {
     }));
 
     return this.resolveValues(storeId, ownerResource, ownerId);
+  }
+
+  /**
+   * Phase 9 — Dynamic Sources. The DB-aware half of validating a
+   * `dynamicSourceKey` binding (the pure, sync half — "is this section/block
+   * shaped like a real dynamic-source pair" — lives in
+   * `section-settings.validator.ts`'s `assertDynamicSource`/
+   * `collectDynamicSourceBindings`). Same two-layer pattern Phase 8's
+   * `AppsService.assertBlocksAllowed` established for app blocks: called
+   * from `StorePagesService.updateSections`/`CollectionTemplateService.
+   * updateSections` right after their own pure validator pass.
+   *
+   * Enforces, per binding, in order: (1) `ownerResource` is non-null — a
+   * scope with no single real resource to bind against (Home page, a shared
+   * Search/Cart/Blog-Index template) can never have one, closing what used
+   * to be a merely-disclosed "not validated against page context" gap;
+   * (2) a real `MetafieldDefinition` exists for THIS store — a stale/typo'd
+   * key is rejected outright now instead of silently resolving to nothing
+   * at render time; this lookup is always scoped by the caller's own
+   * `storeId`, so it's also the real tenant-isolation boundary — a key that
+   * only exists for a DIFFERENT store can never validate here; (3) the
+   * definition's `type` is compatible with a plain-text-rendering field.
+   */
+  async assertDynamicSourceBindingsValid(storeId: string, ownerResource: MetafieldOwnerResource | null, sections: SectionLike[]): Promise<void> {
+    const bindings = collectDynamicSourceBindings(sections);
+    if (bindings.length === 0) return;
+
+    if (!ownerResource) {
+      throw new BadRequestException('Dynamic sources aren\'t supported on this page — there\'s no single real item for a custom field to bind to.');
+    }
+
+    const definitions = await this.definitionModel.find({ storeId, ownerResource }).lean();
+    const defByKey = new Map(definitions.map(d => [`${d.namespace}:${d.key}`, d]));
+
+    for (const { namespace, key } of bindings) {
+      const def = defByKey.get(`${namespace}:${key}`);
+      if (!def) {
+        throw new BadRequestException(`No "${key}" custom field is defined for ${ownerResource}s on this store`);
+      }
+      if (DYNAMIC_SOURCE_INCOMPATIBLE_TYPES.includes(def.type)) {
+        throw new BadRequestException(`"${def.name}" (${def.type}) can't be used as a text value — pick a text/number/date/url/color field instead`);
+      }
+    }
   }
 }

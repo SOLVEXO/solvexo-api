@@ -71,6 +71,7 @@ import { MediaLibraryModule } from './media-library/media-library.module';
 import { StoreBannerModule } from './store-banner/store-banner.module';
 import { StoreThemeModule } from './store-theme/store-theme.module';
 import { StorePagesModule } from './store-pages/store-pages.module';
+import { AppsModule } from './apps/apps.module';
 import { StoreFaqModule } from './store-faq/store-faq.module';
 import { CollectionTemplateModule } from './collection-template/collection-template.module';
 import { MetafieldsModule } from './metafields/metafields.module';
@@ -168,6 +169,7 @@ import { ProductViewsModule } from './product-views/product-views.module';
     StoreBannerModule,
     StoreThemeModule,
     StorePagesModule,
+    AppsModule,
     StoreFaqModule,
     CollectionTemplateModule,
     MetafieldsModule,
