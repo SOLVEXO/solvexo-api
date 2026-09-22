@@ -3,6 +3,7 @@ import { Injectable, Logger, ForbiddenException, NotFoundException } from '@nest
 import { DatabaseService } from '@/database/databaseservice';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { EmailService } from '@/otp/services/email.service';
+import { EntitlementsService } from '@/platform-plans/entitlements.service';
 import { randomBytes } from 'crypto';
 import { UpdateAbandonedCartSettingsDto } from './dto/update-abandoned-cart-settings.dto';
 
@@ -32,6 +33,7 @@ export class AbandonedCartService {
     private readonly db: DatabaseService,
     private readonly activityLogService: ActivityLogService,
     private readonly emailService: EmailService,
+    private readonly entitlementsService: EntitlementsService,
   ) {}
 
   private get r() {
@@ -61,6 +63,14 @@ export class AbandonedCartService {
 
   async updateSettings(sellerId: string, storeId: string, dto: UpdateAbandonedCartSettingsDto) {
     await this.verifyStoreOwnership(storeId, sellerId);
+    // Only the explicit "turn it on" case needs a check here — `enabled`
+    // being left untouched (including a store that's never called this at
+    // all, which is why recovery is on-by-default) is enforced at the real
+    // send point instead, in resolveTriggerSettings(), since a plan
+    // downgrade after a seller already enabled this must also stop sending.
+    if (dto.enabled === true) {
+      await this.entitlementsService.assertFeatureAllowed(storeId, 'abandonedCartRecoveryAllowed', 'Abandoned Cart Recovery');
+    }
     const settings = await this.r.abandonedCartSettingsModel.findOneAndUpdate(
       { storeId },
       { $set: { storeId, ...dto }, $setOnInsert: DEFAULT_SETTINGS },
@@ -147,7 +157,16 @@ export class AbandonedCartService {
       .filter((s: any) => s.enabled && ageMinutes >= s.delayMinutes)
       .sort((a: any, b: any) => a.delayMinutes - b.delayMinutes);
 
-    return candidates[0] ?? null;
+    // The real enforcement point — `enabled` defaults to true with no
+    // settings doc at all, so a store's plan can only ever be checked here,
+    // at send time, never trusted from whatever was true when the seller
+    // last touched settings (or never touched them). A plan downgrade takes
+    // effect on the very next cron tick, with no separate cleanup needed.
+    for (const candidate of candidates) {
+      const limits = await this.entitlementsService.getLimits((candidate as any).storeId);
+      if (limits.abandonedCartRecoveryAllowed) return candidate;
+    }
+    return null;
   }
 
   private renderTemplate(template: string, vars: Record<string, string>) {

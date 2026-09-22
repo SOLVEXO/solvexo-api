@@ -36,6 +36,18 @@ export class ForwardedFromDto {
   @ApiProperty() @IsString() @IsNotEmpty() originalSenderRole: string;
 }
 
+// The composer resolves this via GET messages/link-preview?url=... before
+// sending (so the sender can see/dismiss it first), then passes the already-
+// resolved result back here — it's baked into the stored Message as-is, never
+// re-fetched server-side a second time.
+export class LinkPreviewDto {
+  @ApiProperty() @IsString() @IsNotEmpty() url: string;
+  @ApiProperty({ required: false }) @IsOptional() @IsString() title?: string;
+  @ApiProperty({ required: false }) @IsOptional() @IsString() description?: string;
+  @ApiProperty({ required: false }) @IsOptional() @IsString() image?: string;
+  @ApiProperty({ required: false }) @IsOptional() @IsString() siteName?: string;
+}
+
 export class SendMessageDto {
   @ApiProperty({ enum: ['text', 'image', 'video', 'pdf', 'document', 'voice', 'product_share'] })
   @IsEnum(['text', 'image', 'video', 'pdf', 'document', 'voice', 'product_share'])
@@ -75,4 +87,10 @@ export class SendMessageDto {
   @ValidateNested()
   @Type(() => ForwardedFromDto)
   forwardedFrom?: ForwardedFromDto;
+
+  @ApiProperty({ type: LinkPreviewDto, required: false })
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => LinkPreviewDto)
+  linkPreview?: LinkPreviewDto;
 }

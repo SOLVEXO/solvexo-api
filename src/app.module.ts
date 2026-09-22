@@ -89,6 +89,8 @@ import { BookingsModule } from './bookings/bookings.module';
 import { StoreAppRequestsModule } from './store-app-requests/store-app-requests.module';
 import { PosPlansModule } from './pos-plans/pos-plans.module';
 import { ProductViewsModule } from './product-views/product-views.module';
+import { StaffModule } from './staff/staff.module';
+import { StockCountsModule } from './stock-counts/stock-counts.module';
 
 @Module({
   imports: [
@@ -183,6 +185,8 @@ import { ProductViewsModule } from './product-views/product-views.module';
     StoreAppRequestsModule,
     PosPlansModule,
     ProductViewsModule,
+    StaffModule,
+    StockCountsModule,
   ],
   controllers: [AppController],
   providers: [AppService, { provide: APP_GUARD, useClass: ThrottlerGuard }],

@@ -76,6 +76,27 @@ export class Message {
   // Spam detection hook — flagged by automated scoring
   @Prop({ type: Number, default: 0 }) spamScore: number;
   @Prop({ type: Boolean, default: false }) isFlagged: boolean;
+
+  // Reactions — one emoji per user per message (WhatsApp-style: re-tapping the
+  // same emoji removes it, tapping a different one replaces it). Stored as a
+  // flat array rather than a Map so Mongoose's plain-object diffing/toJSON
+  // stays simple and it serializes straight to the frontend as-is.
+  @Prop({ type: [Object], default: [] })
+  reactions: { userId: string; emoji: string; reactedAt: Date }[];
+
+  // Link preview — resolved server-side (SSRF-guarded) at send time from the
+  // first URL found in `text`, then baked permanently into the message so
+  // every viewer sees an identical, already-resolved preview (never re-fetched
+  // per-viewer). `null` when the message has no URL or resolution failed/timed
+  // out — the bubble just renders as plain text in that case.
+  @Prop({ type: Object, default: null })
+  linkPreview: {
+    url: string;
+    title: string | null;
+    description: string | null;
+    image: string | null;
+    siteName: string | null;
+  } | null;
 }
 
 export const MessageSchema = SchemaFactory.createForClass(Message);

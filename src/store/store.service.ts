@@ -1876,6 +1876,7 @@ export class StoreService {
           isArchived: { $ifNull: ['$meta.isArchived', false] },
           marketingOptIn: { $ifNull: ['$meta.marketingOptIn', false] },
           isBlocked: { $ifNull: ['$meta.isBlocked', false] },
+          isErased: { $ifNull: ['$meta.isErased', false] },
         },
       },
     ];
@@ -2015,7 +2016,7 @@ export class StoreService {
           $project: {
             _id: 1, name: 1, email: 1, phone: 1, createdAt: 1,
             orderCount: 1, totalSpent: 1, lastOrderAt: 1, segment: 1,
-            tags: 1, notes: 1, isArchived: 1, marketingOptIn: 1,
+            tags: 1, notes: 1, isArchived: 1, marketingOptIn: 1, isErased: 1,
           },
         },
       ]),
@@ -2338,5 +2339,128 @@ export class StoreService {
     });
 
     return { success: true, message: 'Customer notes updated', data: { tags: meta.tags, notes: meta.notes, marketingOptIn: meta.marketingOptIn } };
+  }
+
+  /** Real GDPR "right to access" — a downloadable bundle of everything THIS
+   *  STORE holds about one customer: profile fields, this store's own
+   *  seller-private tags/notes, every order they've placed at this store
+   *  (with only this store's own slice of `sellerOrders` — never another
+   *  store's portion of a hypothetical shared checkout), and every review
+   *  they've left on this store's products. Deliberately does NOT reach into
+   *  `Address`/other stores' orders/etc. — those aren't this store's data to
+   *  export (see the shared-`User`-identity boundary this app already
+   *  documents elsewhere: a buyer's account isn't owned by any one store). */
+  async exportCustomerData(sellerId: string, storeId: string, customerId: string) {
+    const store = await this.databaseService.repositories.storeModel.findOne({ _id: storeId, isDelete: false });
+    if (!store) throw new NotFoundException('Store not found');
+    if (store.sellerId !== sellerId) throw new UnauthorizedException('You are not authorized to view this store\'s customers');
+
+    const known = await this.isKnownStoreCustomer(storeId, customerId);
+    if (!known) throw new BadRequestException('This person is not a customer of this store');
+
+    const { userModel, storeCustomerMetaModel, orderModel, ratingModel } = this.databaseService.repositories;
+    const [user, meta, orders, reviews] = await Promise.all([
+      userModel.findById(customerId).select('name email phone createdAt').lean(),
+      storeCustomerMetaModel.findOne({ storeId, userId: customerId }).lean(),
+      orderModel.find({ userId: customerId, 'sellerOrders.storeId': storeId, isDelete: false })
+        .select('orderNumber createdAt currency shippingAddress sellerOrders').lean(),
+      ratingModel.find({ userId: customerId, storeId, isDelete: false })
+        .select('productId rating comments media isVerifiedPurchase createdAt').lean(),
+    ]);
+    if (!user) throw new NotFoundException('Customer not found');
+
+    return {
+      exportedAt: new Date().toISOString(),
+      storeId,
+      profile: { name: user.name, email: user.email, phone: user.phone ?? null, accountCreatedAt: (user as any).createdAt ?? null },
+      storeSpecificData: {
+        tags: meta?.tags ?? [],
+        notes: meta?.notes ?? '',
+        marketingOptIn: meta?.marketingOptIn ?? false,
+      },
+      orders: orders.map((o: any) => ({
+        orderNumber: o.orderNumber,
+        placedAt: o.createdAt,
+        currency: o.currency,
+        shippingAddress: o.shippingAddress ?? null,
+        // Only this store's own slice — an order can in principle span
+        // several stores' sellerOrders, and the other stores' portions
+        // aren't this store's data to hand over.
+        items: (o.sellerOrders ?? []).filter((so: any) => so.storeId === storeId),
+      })),
+      reviews: reviews.map((r: any) => ({
+        productId: r.productId, rating: r.rating, comments: r.comments, media: r.media,
+        isVerifiedPurchase: r.isVerifiedPurchase, createdAt: r.createdAt,
+      })),
+    };
+  }
+
+  /** Real GDPR "right to erasure" — scoped honestly to what this ONE store
+   *  actually owns, not the buyer's shared platform identity. This app's own
+   *  documented architecture (see the marketplace-to-standalone-store pivot
+   *  notes) is explicit that `User` is still ONE global account a buyer may
+   *  use across many different stores' subdomains — silently scrubbing
+   *  `User.name`/`email`/`phone` here would break that same person's login
+   *  and history at every OTHER store they shop at, which a single store's
+   *  seller has no right to do. So erasure here touches only:
+   *  (1) this store's own `StoreCustomerMeta` (tags/notes, flagged erased),
+   *  (2) this store's own snapshotted `Order.shippingAddress` PII — and only
+   *  on orders that are genuinely single-store (every `sellerOrders[]` entry
+   *  belongs to this store), so a legacy multi-store order's shared address
+   *  field is never touched on another store's behalf without their own
+   *  request. Order totals/line items are deliberately left intact — those
+   *  are financial records this store may have a legal duty to retain, and
+   *  they aren't personally-identifying once the name/address are gone. */
+  async eraseCustomerData(sellerId: string, storeId: string, customerId: string, ip?: string, userAgent?: string) {
+    const store = await this.databaseService.repositories.storeModel.findOne({ _id: storeId, isDelete: false });
+    if (!store) throw new NotFoundException('Store not found');
+    if (store.sellerId !== sellerId) throw new UnauthorizedException('You are not authorized to edit this store\'s customers');
+
+    const known = await this.isKnownStoreCustomer(storeId, customerId);
+    if (!known) throw new BadRequestException('This person is not a customer of this store');
+
+    const { storeCustomerMetaModel, orderModel } = this.databaseService.repositories;
+
+    await storeCustomerMetaModel.updateOne(
+      { storeId, userId: customerId },
+      { $set: { tags: [], notes: '', isErased: true, erasedAt: new Date() }, $setOnInsert: { storeId, userId: customerId } },
+      { upsert: true },
+    );
+
+    const singleStoreOrders = await orderModel.find({ userId: customerId, 'sellerOrders.storeId': storeId, isDelete: false })
+      .select('_id sellerOrders shippingAddress').lean();
+    const eraseIds = singleStoreOrders
+      // Digital-only orders have `shippingAddress: null` — a dotted-path
+      // `$set` below would error against a null parent, so those are
+      // correctly excluded (nothing to redact on them anyway).
+      .filter((o: any) => o.shippingAddress != null && (o.sellerOrders ?? []).every((so: any) => so.storeId === storeId))
+      .map((o: any) => o._id);
+
+    let ordersScrubbed = 0;
+    if (eraseIds.length) {
+      const res = await orderModel.updateMany(
+        { _id: { $in: eraseIds } },
+        { $set: {
+          'shippingAddress.recipientName': 'Redacted Customer',
+          'shippingAddress.phoneNumber': 'REDACTED',
+          'shippingAddress.addressLine1': 'REDACTED',
+          'shippingAddress.addressLine2': null,
+        } },
+      );
+      ordersScrubbed = res.modifiedCount ?? 0;
+    }
+
+    this.activityLogService.log({
+      storeId, category: 'customers', action: 'customer_data_erased',
+      description: `Erased this store's personal data for customer ${customerId} (${ordersScrubbed} order${ordersScrubbed === 1 ? '' : 's'} redacted)`,
+      actorId: sellerId, actorRole: 'seller', targetId: customerId, targetType: 'customer',
+      ip, userAgent,
+    });
+
+    return {
+      success: true,
+      message: `Erased this store's personal data for this customer (${ordersScrubbed} order${ordersScrubbed === 1 ? '' : 's'} redacted). Their account itself is untouched — it's shared with other stores, not owned by this one.`,
+      data: { isErased: true, ordersScrubbed },
+    };
   }
 }

@@ -16,6 +16,7 @@ import { RequirePermission } from '../auth/decorators/require-permission.decorat
 import { StartConversationDto } from './dto/start-conversation.dto';
 import { SendMessageDto } from './dto/send-message.dto';
 import { EditMessageDto } from './dto/edit-message.dto';
+import { ToggleReactionDto } from './dto/toggle-reaction.dto';
 import { BlockDto } from './dto/block.dto';
 import { ReportDto } from './dto/report.dto';
 import { resolveBuyerStoreScope } from '../common/store-scope.util';
@@ -205,6 +206,26 @@ export class MessagingController {
   @Post('messages/:id/seen')
   markSeen(@Req() req: any, @Param('id') id: string, @Query('conversationId') conversationId: string) {
     return this.messagingService.markSeen(actingSellerId(req.user), req.user.role, conversationId, id, req.user.storeId);
+  }
+
+  // WhatsApp/Instagram-style tap-an-emoji reaction — same tap toggles it off,
+  // a different emoji replaces it (see MessagingService.toggleReaction).
+  @UseGuards(RolesGuard, PermissionsGuard)
+  @Roles('user', 'seller', 'staff')
+  @RequirePermission(STAFF_MANAGE)
+  @Post('messages/:id/reaction')
+  toggleReaction(@Req() req: any, @Param('id') id: string, @Body() dto: ToggleReactionDto) {
+    return this.messagingService.toggleReaction(actingSellerId(req.user), req.user.role, id, dto.emoji, req.user.storeId);
+  }
+
+  // Link preview — resolved server-side (SSRF-guarded) BEFORE sending, so the
+  // composer can show/let the sender dismiss it; the result is then passed
+  // back on the actual send-message call and baked into the stored message.
+  // Static route, no conversation/message context needed — just proves the
+  // caller has an active JWT of some kind.
+  @Get('link-preview')
+  getLinkPreview(@Query('url') url: string) {
+    return this.messagingService.getLinkPreview(url);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

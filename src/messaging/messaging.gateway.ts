@@ -185,6 +185,10 @@ export class MessagingGateway implements OnGatewayConnection, OnGatewayDisconnec
     this.server?.to(`conversation:${conversationId}`).emit('message:seen', { conversationId, userId, lastMessageId });
   }
 
+  emitMessageReaction(conversationId: string, messageId: string, reactions: unknown) {
+    this.server?.to(`conversation:${conversationId}`).emit('message:reaction', { messageId, reactions });
+  }
+
   /** Pushed to each participant's personal room — drives inbox reordering + unread badge without opening the thread. */
   emitConversationUpdate(participantIds: string[], conversation: unknown) {
     participantIds.forEach((id) => this.server?.to(`user:${id}`).emit('conversation:update', conversation));

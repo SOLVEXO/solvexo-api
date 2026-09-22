@@ -349,6 +349,7 @@ export class StripePaymentProvider implements IPaymentGateway {
     providerSubscriptionId: string,
     newProviderPriceId: string,
     prorationBehavior: 'create_prorations' | 'none' | 'always_invoice',
+    resetBillingCycleAnchor?: boolean,
   ): Promise<{ latestInvoiceId?: string }> {
     const subscription = await this.stripe.subscriptions.retrieve(providerSubscriptionId);
     const itemId = subscription.items.data[0]?.id;
@@ -356,7 +357,11 @@ export class StripePaymentProvider implements IPaymentGateway {
 
     const updated = await this.stripe.subscriptions.update(
       providerSubscriptionId,
-      { items: [{ id: itemId, price: newProviderPriceId }], proration_behavior: prorationBehavior },
+      {
+        items: [{ id: itemId, price: newProviderPriceId }],
+        proration_behavior: prorationBehavior,
+        ...(resetBillingCycleAnchor ? { billing_cycle_anchor: 'now' as const } : {}),
+      },
       { idempotencyKey: `sub_update_${providerSubscriptionId}_${newProviderPriceId}` },
     );
 

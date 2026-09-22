@@ -117,8 +117,9 @@ export class PaymentGatewayService implements IPaymentGateway, OnModuleInit {
     providerSubscriptionId: string,
     newProviderPriceId: string,
     prorationBehavior: 'create_prorations' | 'none' | 'always_invoice',
+    resetBillingCycleAnchor?: boolean,
   ): Promise<{ latestInvoiceId?: string }> {
-    return this.provider.updateProviderSubscriptionPrice(providerSubscriptionId, newProviderPriceId, prorationBehavior);
+    return this.provider.updateProviderSubscriptionPrice(providerSubscriptionId, newProviderPriceId, prorationBehavior, resetBillingCycleAnchor);
   }
 
   getOrCreatePrice(params: {

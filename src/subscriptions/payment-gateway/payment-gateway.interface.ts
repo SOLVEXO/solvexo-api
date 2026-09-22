@@ -126,11 +126,17 @@ export interface IPaymentGateway {
 
   refund(providerChargeId: string, amountUSD: number, reason?: string): Promise<RefundResult>;
 
-  /** Swaps the price on an already-running provider subscription (upgrade/downgrade), with provider-native proration. */
+  /** Swaps the price on an already-running provider subscription (upgrade/downgrade), with provider-native proration.
+   *  `resetBillingCycleAnchor` (default false, existing behavior unchanged): pass true only when the CALLER has already
+   *  reset its own local `currentPeriodStart/End` to start fresh from now (see platform-plans' changePlan) — otherwise
+   *  the provider keeps invoicing on its old anchor date while the local period says something else, which either
+   *  double-bills (an upgrade already manually top-up-charged locally, then invoiced again by the provider at the old
+   *  date for the full new price) or fires the provider's next invoice earlier/later than the local record expects. */
   updateProviderSubscriptionPrice(
     providerSubscriptionId: string,
     newProviderPriceId: string,
     prorationBehavior: 'create_prorations' | 'none' | 'always_invoice',
+    resetBillingCycleAnchor?: boolean,
   ): Promise<{ latestInvoiceId?: string }>;
 
   /** Ensures a catalog Product+Price exists for this plan/interval, creating it if the cached id is missing/stale. */

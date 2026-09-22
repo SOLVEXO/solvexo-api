@@ -52,6 +52,18 @@ export class StoreCustomerMeta {
   @Prop({ type: Boolean, default: false })
   isBlocked: boolean;
 
+  // Real GDPR "right to erasure" marker — set by StoreService.eraseCustomerData.
+  // Scoped to what this ONE store actually holds (this row's own tags/notes,
+  // plus this store's own Order.shippingAddress snapshots) — never the shared
+  // global `User` identity, which isn't this store's data to erase and may
+  // still be the buyer's real login for other stores. See that method's own
+  // doc comment for the full boundary.
+  @Prop({ type: Boolean, default: false })
+  isErased: boolean;
+
+  @Prop({ type: Date, default: null })
+  erasedAt: Date | null;
+
   createdAt?: Date;
   updatedAt?: Date;
 }

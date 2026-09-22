@@ -708,6 +708,15 @@ export class SellerPlatformSubscriptionsService {
         );
         sub.providerSubscriptionId = created.providerSubscriptionId;
         sub.stripeCustomerId = seller.stripeCustomerId;
+        // Without this, a trial-converted store never becomes distinguishable
+        // from a plain manual-billed one: expireTrials()'s `paymentProvider
+        // === 'stripe'` check (which defers to Stripe's own trial_end
+        // invoicing) would miss it and lock the store out from under a
+        // seller who is actually paying, and processRenewals()'s `{
+        // paymentProvider: 'manual' }` query would pick it up and attempt a
+        // manual off-session charge with no providerCustomerId, which can
+        // only fail.
+        sub.paymentProvider = 'stripe';
         sub.status = created.status === 'trialing' ? 'trialing' : (created.status === 'active' ? 'active' : 'past_due');
 
         sub.platformPlanId = newPlanId;
@@ -792,7 +801,18 @@ export class SellerPlatformSubscriptionsService {
       const newProviderPriceId = newInterval === 'yearly' ? newPlan.stripeYearlyPriceId : newPlan.stripeMonthlyPriceId;
       if (newProviderPriceId) {
         try {
-          await this.gateway.updateProviderSubscriptionPrice(sub.providerSubscriptionId, newProviderPriceId, 'none');
+          // The local currentPeriodStart/End was just reset to a fresh
+          // full period starting `now` (lines above) — netDue already
+          // charged/credited the difference for that fresh period, in
+          // full, right now. Without also moving Stripe's own billing
+          // anchor to `now`, Stripe would keep invoicing on its OLD
+          // schedule for the (already-updated) new price, which either
+          // double-bills an upgrade (charged here, then invoiced again by
+          // Stripe at the old date) or fires out of step with what the
+          // local record now says. `proration_behavior: 'none'` still
+          // applies, so Stripe itself generates no extra invoice for the
+          // anchor move.
+          await this.gateway.updateProviderSubscriptionPrice(sub.providerSubscriptionId, newProviderPriceId, 'none', true);
         } catch (err: any) {
           this.logger.warn(`Failed to sync Stripe platform-plan price for store ${storeId}: ${err?.message}`);
         }
@@ -920,22 +940,34 @@ export class SellerPlatformSubscriptionsService {
       await this.gateway.scheduleProviderCancellation(sub.providerSubscriptionId);
     }
 
+    // What actually happens at period end (finalizeScheduledCancellations)
+    // depends on `legacyFreeEligible` — a pre-trial-model store really does
+    // fall back to the free plan, but every store onboarded under the
+    // trial-based model has no free-plan fallback at all and gets `lockStore`d
+    // instead (selling restricted until a new plan is chosen). Telling every
+    // seller "you'll move to the free tier" regardless was simply false for
+    // the (now-majority) non-legacy case.
+    const periodEndLabel = sub.currentPeriodEnd.toDateString();
+    const outcomeLabel = sub.legacyFreeEligible
+      ? `move to the free tier on ${periodEndLabel}`
+      : `end on ${periodEndLabel}, and selling will be paused until you choose a new plan`;
+
     this.activityLogService.log({
       storeId, category: 'platform_plans', action: 'plan_cancel_scheduled',
-      description: `Cancellation scheduled — plan reverts to the free tier on ${sub.currentPeriodEnd.toDateString()}${reason ? ` (reason: ${reason})` : ''}`,
+      description: `Cancellation scheduled — plan will ${outcomeLabel}${reason ? ` (reason: ${reason})` : ''}`,
       actorId: sellerId, actorRole: 'seller', targetId: sub._id.toString(), targetType: 'seller_platform_subscription',
     });
     this.notificationsService.notify({
       recipientId: sellerId, recipientRole: 'seller', storeId,
       type: NOTIFICATION_TYPES.PLATFORM_PLAN_RENEWAL_REMINDER,
       title: 'Cancellation scheduled',
-      body: `Your plan will revert to the free tier on ${sub.currentPeriodEnd.toDateString()}. You keep full access until then.`,
+      body: `Your plan will ${outcomeLabel}. You keep full access until then.`,
       data: { subscriptionId: String(sub._id) },
     }).catch(() => {});
 
     return {
       success: true,
-      message: `Your plan will move to the free tier on ${sub.currentPeriodEnd.toDateString()} — you keep full access until then.`,
+      message: `Your plan will ${outcomeLabel} — you keep full access until then.`,
       data: { subscription: sub },
     };
   }

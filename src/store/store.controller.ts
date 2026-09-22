@@ -414,4 +414,29 @@ export class StoreController {
   ) {
     return this.storeService.updateStoreCustomerMeta(actingSellerId(req.user), storeId, customerId, dto, req.ip, req.headers['user-agent']);
   }
+
+  // Real GDPR "right to access" — a downloadable JSON bundle of everything
+  // THIS store holds about one customer. See StoreService.exportCustomerData's
+  // own doc comment for exactly what is/isn't included and why.
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('customers.export')
+  @Get(':storeId/customers/:customerId/export-data')
+  async exportCustomerData(@Req() req: any, @Param('storeId') storeId: string, @Param('customerId') customerId: string, @Res() res: Response) {
+    const bundle = await this.storeService.exportCustomerData(actingSellerId(req.user), storeId, customerId);
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="customer-${customerId}-data.json"`);
+    res.send(JSON.stringify(bundle, null, 2));
+  }
+
+  // Real GDPR "right to erasure" — scoped to this store's own data only, not
+  // the buyer's shared platform identity. See StoreService.eraseCustomerData's
+  // own doc comment for the full, deliberate boundary.
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('customers.edit')
+  @Post(':storeId/customers/:customerId/erase-data')
+  async eraseCustomerData(@Req() req: any, @Param('storeId') storeId: string, @Param('customerId') customerId: string) {
+    return this.storeService.eraseCustomerData(actingSellerId(req.user), storeId, customerId, req.ip, req.headers['user-agent']);
+  }
 }

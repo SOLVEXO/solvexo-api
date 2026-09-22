@@ -5,6 +5,7 @@ import { Queue } from 'bullmq';
 import { DatabaseService } from '@/database/databaseservice';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { QUEUE_NAMES, EMAIL_CAMPAIGN_SEND_JOB } from '@/queues/queue.constants';
+import { EntitlementsService } from '@/platform-plans/entitlements.service';
 import { CreateEmailCampaignDto } from './dto/create-email-campaign.dto';
 import { UpdateEmailCampaignDto } from './dto/update-email-campaign.dto';
 import { EmailCampaignAudience } from './schemas/email-campaign.schema';
@@ -23,6 +24,7 @@ export class EmailCampaignsService {
   constructor(
     private readonly db: DatabaseService,
     private readonly activityLogService: ActivityLogService,
+    private readonly entitlementsService: EntitlementsService,
     @InjectQueue(QUEUE_NAMES.EMAIL_CAMPAIGNS) private readonly queue: Queue,
   ) {}
 
@@ -150,6 +152,12 @@ export class EmailCampaignsService {
    *  resolved recipient, then flips the campaign to 'sending' (the
    *  processor moves it to 'sent' once every job has resolved). */
   private async executeSend(campaign: any) {
+    // The one real point both sendNow() and the scheduled-campaign cron
+    // funnel through — checked here, not at create/schedule time, so a plan
+    // downgrade between scheduling and the campaign's actual send date still
+    // blocks it (processScheduledCampaigns already catches and marks a
+    // thrown campaign 'failed', so this needs no extra error handling here).
+    await this.entitlementsService.assertFeatureAllowed(campaign.storeId, 'emailCampaignsAllowed', 'Email Campaigns');
     const store = await this.r.storeModel.findById(campaign.storeId).select('name').lean();
     const recipients = await this.resolveAudience(campaign.storeId, campaign.audience);
 

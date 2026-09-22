@@ -9,6 +9,7 @@ import {
 import { Types } from 'mongoose';
 import { DatabaseService } from '@/database/databaseservice';
 import { UploadService } from '@/upload/upload.service';
+import { RedisService } from '@/redis/redis.service';
 import { StartConversationDto } from './dto/start-conversation.dto';
 import { SendMessageDto } from './dto/send-message.dto';
 import { EditMessageDto } from './dto/edit-message.dto';
@@ -18,6 +19,7 @@ import { SubscriptionBenefitsService } from '@/subscriptions/subscription-benefi
 import { MessagingGateway } from './messaging.gateway';
 import { NotificationsService } from '@/notifications/notifications.service';
 import { NOTIFICATION_TYPES } from '@/notifications/notification.types';
+import { fetchLinkPreview, LinkPreviewResult } from '@/common/link-preview.util';
 
 @Injectable()
 export class MessagingService {
@@ -27,6 +29,7 @@ export class MessagingService {
     private readonly subscriptionBenefits: SubscriptionBenefitsService,
     private readonly gateway: MessagingGateway,
     private readonly notificationsService: NotificationsService,
+    private readonly redisService: RedisService,
   ) { }
 
   // ── Helpers ──────────────────────────────────────────────────────────────
@@ -338,6 +341,15 @@ export class MessagingService {
       status: 'sent',
       spamScore: score,
       isFlagged: score >= 3,
+      // Resolved client-side (before send) via GET messages/link-preview —
+      // baked in once here, never re-resolved per-viewer.
+      linkPreview: dto.type === 'text' && dto.linkPreview ? {
+        url: dto.linkPreview.url,
+        title: dto.linkPreview.title || null,
+        description: dto.linkPreview.description || null,
+        image: dto.linkPreview.image || null,
+        siteName: dto.linkPreview.siteName || null,
+      } : null,
     });
 
     // Update conversation: last message snapshot + unread counter
@@ -421,7 +433,19 @@ export class MessagingService {
       );
     }
 
-    return { messages: messages.reverse(), nextCursor, hasMore }; // reverse so oldest-first for display
+    // `.lean()` skips Mongoose's schema-default hydration, so a message
+    // created before `reactions`/`linkPreview` existed on the schema comes
+    // back with those keys simply absent, not `[]`/`null` — normalize here
+    // rather than relying on every frontend consumer to guard against
+    // `undefined` (the reaction-toggle logic in particular calls `.find()`
+    // on this array, which would throw on an old message otherwise).
+    const normalized = messages.map((m: any) => ({
+      ...m,
+      reactions: m.reactions ?? [],
+      linkPreview: m.linkPreview ?? null,
+    }));
+
+    return { messages: normalized.reverse(), nextCursor, hasMore }; // reverse so oldest-first for display
   }
 
   async editMessage(userId: string, messageId: string, dto: EditMessageDto, role?: string, callerStoreId?: string | null) {
@@ -548,6 +572,74 @@ export class MessagingService {
       .lean();
 
     return results;
+  }
+
+  // WhatsApp-style toggle: tapping the same emoji you already reacted with
+  // removes it; tapping a different emoji replaces your existing one (never
+  // more than one reaction per user per message, matching real WhatsApp/
+  // Instagram DM behavior).
+  async toggleReaction(userId: string, role: string, messageId: string, emoji: string, callerStoreId?: string | null) {
+    if (!emoji || !emoji.trim()) throw new BadRequestException('emoji is required');
+
+    const message = await this.getMessageOrThrow(messageId);
+    const conv = await this.convModel.findById(message.conversationId);
+    if (!conv) throw new NotFoundException('Conversation not found');
+    this.assertConversationAccess(conv, userId, role, callerStoreId);
+
+    if (message.isDeleted) throw new BadRequestException('Cannot react to a deleted message');
+
+    const existing = message.reactions.find((r) => r.userId === userId);
+    let action: 'added' | 'removed' | 'replaced';
+    if (existing && existing.emoji === emoji) {
+      message.reactions = message.reactions.filter((r) => r.userId !== userId);
+      action = 'removed';
+    } else if (existing) {
+      existing.emoji = emoji;
+      existing.reactedAt = new Date();
+      action = 'replaced';
+    } else {
+      message.reactions.push({ userId, emoji, reactedAt: new Date() });
+      action = 'added';
+    }
+
+    await message.save();
+    this.gateway.emitMessageReaction(message.conversationId, messageId, message.reactions);
+
+    // Notify only on a genuinely new reaction, only if the sender isn't
+    // already looking at the thread — same "don't double-buzz someone
+    // already watching live" rule sendMessage() follows.
+    if (action !== 'removed' && message.senderId !== userId && !this.gateway.isOnline(message.senderId)) {
+      this.notificationsService.notify({
+        recipientId: message.senderId,
+        recipientRole: message.senderRole === 'user' ? 'user' : 'seller',
+        storeId: conv.storeId,
+        type: NOTIFICATION_TYPES.NEW_MESSAGE,
+        title: 'New reaction',
+        body: `Reacted ${emoji} to your message`,
+        data: { conversationId: message.conversationId },
+      }).catch(() => {});
+    }
+
+    return { reactions: message.reactions };
+  }
+
+  // Resolves a URL into a WhatsApp/Instagram-style unfurl card — called by
+  // the composer BEFORE send (so the sender sees/can dismiss it), never
+  // re-fetched afterward (see sendMessage()'s `dto.linkPreview` handling).
+  // Redis-cached per URL for a day: this is publicly-shared page metadata,
+  // identical for every sender, so there's no reason to re-fetch the same
+  // link repeatedly.
+  async getLinkPreview(url: string): Promise<LinkPreviewResult | null> {
+    if (!url || !url.trim()) throw new BadRequestException('url is required');
+    const trimmed = url.trim();
+
+    const cacheKey = `link-preview:${trimmed}`;
+    const cached = await this.redisService.get(cacheKey).catch(() => null);
+    if (cached !== null) return cached === 'null' ? null : JSON.parse(cached);
+
+    const result = await fetchLinkPreview(trimmed);
+    await this.redisService.set(cacheKey, result ? JSON.stringify(result) : 'null', 24 * 60 * 60).catch(() => {});
+    return result;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
