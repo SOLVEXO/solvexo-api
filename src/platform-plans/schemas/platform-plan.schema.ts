@@ -52,6 +52,16 @@ export class PlatformPlan {
 
   @Prop({ type: [String], default: [] }) featureBullets: string[]; // marketing copy only, cosmetic
 
+  // How many days a LOCKED (dunning-exhausted) or TRIAL_ENDED (never
+  // converted) store's storefront stays fully browsable/purchasable-looking
+  // before it's actually gated (Store.privacyMode -> 'coming_soon' — see
+  // SellerPlatformSubscriptionsService.expireGracePeriods()). Checkout is
+  // ALREADY blocked immediately on lock (BillingAccessGuard), independent of
+  // this — this field only controls how long BROWSING stays open, giving a
+  // seller a short honest window to fix payment before buyers stop seeing
+  // their store at all. 0 = gate immediately, no grace window.
+  @Prop({ type: Number, default: 3 }) gracePeriodDays: number;
+
   // ── Server-enforced limits/entitlements — the real mechanism ─────────────
   @Prop({
     type: Object,

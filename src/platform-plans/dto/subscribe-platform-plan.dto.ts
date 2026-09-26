@@ -1,6 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsString, IsNotEmpty, IsEnum, IsOptional, IsBoolean, MaxLength } from 'class-validator';
+import { IsString, IsNotEmpty, IsEnum, IsOptional, IsBoolean, IsNumber, Min, MaxLength } from 'class-validator';
 
 export class SubscribePlatformPlanDto {
   @ApiProperty({ description: 'PlatformPlan _id to subscribe this store to' })
@@ -51,6 +51,33 @@ export class ConfirmOnboardingPaymentMethodDto {
   @ApiProperty({ description: 'The SetupIntent id Stripe.js confirmed client-side during the onboarding Payment step' })
   @IsString() @IsNotEmpty()
   setupIntentId: string;
+}
+
+// ── Admin manual override — real support tools, previously only possible via a direct DB edit ──
+export class AdminExtendSubscriptionDto {
+  @ApiProperty({ description: 'How many days to push the current billing/trial period end forward by' })
+  @IsNumber() @Min(1)
+  days: number;
+
+  @ApiPropertyOptional({ description: 'Free-text reason, logged for support/audit — never shown to the seller verbatim' })
+  @IsOptional() @IsString() @MaxLength(500)
+  reason?: string;
+}
+
+export class AdminAssignPlanDto {
+  @ApiProperty({ description: 'PlatformPlan _id to assign this store to, without charging — cancels any live Stripe subscription first' })
+  @IsString() @IsNotEmpty()
+  planId: string;
+
+  @ApiPropertyOptional({ description: 'Free-text reason, logged for support/audit' })
+  @IsOptional() @IsString() @MaxLength(500)
+  reason?: string;
+}
+
+export class AdminUnlockOrLockDto {
+  @ApiPropertyOptional({ description: 'Free-text reason, logged for support/audit' })
+  @IsOptional() @IsString() @MaxLength(500)
+  reason?: string;
 }
 
 export class SaveOnboardingDraftDto {

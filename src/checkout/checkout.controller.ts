@@ -122,7 +122,7 @@ export class CheckoutController {
   // checkout until a plan is chosen). See RequireActiveBillingOptions'
   // own doc comment for why this option is checkout-only, never applied to
   // product/store-building routes.
-  @RequireActiveBilling({ blockDuringTrial: true })
+  @RequireActiveBilling({ blockDuringTrial: true, audience: 'buyer' })
   @UseInterceptors(IdempotencyInterceptor)
   @Post('create-checkout')
   async createCheckout(@Req() req: any, @Body() body: any) {

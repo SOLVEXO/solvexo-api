@@ -322,6 +322,21 @@ export class SchedulerService {
     });
   }
 
+  // Runs daily, after the trial/renewal jobs above (so a store locked/trial-
+  // ended earlier in this same run is eligible immediately, not a day late)
+  // — hides the storefront of any locked/trial-ended store whose own grace
+  // period has elapsed. Checkout is already blocked from the moment of lock
+  // regardless of this job; see expireGracePeriods()'s own doc comment.
+  @Cron('0 3 * * *')
+  async expirePlatformPlanGracePeriods() {
+    await this.runLocked('platform-plan-grace-period-expiry', 10 * 60_000, async () => {
+      const result = await this.sellerPlatformSubscriptionsService.expireGracePeriods();
+      if (result.gated > 0) {
+        this.logger.log(`Platform-plan grace periods expired: ${result.gated} storefront(s) hidden`);
+      }
+    });
+  }
+
   // Runs daily — "your trial ends in ≤3 days" reminder emails.
   @Cron('0 9 * * *')
   async sendPlatformPlanTrialReminders() {
@@ -329,6 +344,19 @@ export class SchedulerService {
       const result = await this.sellerPlatformSubscriptionsService.sendTrialEndingReminders();
       if (result.sent > 0) {
         this.logger.log(`Platform-plan trial reminders sent: ${result.sent}`);
+      }
+    });
+  }
+
+  // Runs daily — "you'll be charged $X in ≤3 days" reminder for a real PAID
+  // (non-trial) platform-plan subscription — closes a real, previously-open
+  // gap (only the trial had a reminder before this).
+  @Cron('15 9 * * *')
+  async sendPlatformPlanRenewalReminders() {
+    await this.runLocked('platform-plan-renewal-reminders', 15 * 60_000, async () => {
+      const result = await this.sellerPlatformSubscriptionsService.sendUpcomingRenewalReminders();
+      if (result.sent > 0) {
+        this.logger.log(`Platform-plan renewal reminders sent: ${result.sent}`);
       }
     });
   }

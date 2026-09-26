@@ -64,6 +64,10 @@ export class CreatePlatformPlanDto {
   @IsOptional() @Type(() => Number) @IsNumber() @Min(1)
   introDurationCycles?: number;
 
+  @ApiProperty({ required: false, default: 3, description: 'Days a locked/trial-ended store on this plan stays browsable before its storefront is hidden from buyers. Checkout is blocked immediately regardless of this — see expireGracePeriods().' })
+  @IsOptional() @Type(() => Number) @IsNumber() @Min(0)
+  gracePeriodDays?: number;
+
   @ApiProperty({ type: PlatformPlanLimitsDto })
   @ValidateNested()
   @Type(() => PlatformPlanLimitsDto)

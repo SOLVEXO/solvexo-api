@@ -42,14 +42,20 @@ export class BillingAccessGuard implements CanActivate {
       .select('status')
       .lean();
 
+    const forBuyer = options.audience === 'buyer';
+
     if (sub && (sub as any).status === 'locked') {
       throw new ForbiddenException(
-        'This store is currently locked — choose a plan and complete payment from the billing page to resume selling.',
+        forBuyer
+          ? 'This seller\'s subscription has expired — products from this store are no longer available for purchase.'
+          : 'This store is currently locked — choose a plan and complete payment from the billing page to resume selling.',
       );
     }
     if (sub && (sub as any).status === 'trial_ended') {
       throw new ForbiddenException(
-        'Your free trial has ended — choose a plan from the billing page to continue selling.',
+        forBuyer
+          ? 'This store is not currently accepting orders.'
+          : 'Your free trial has ended — choose a plan from the billing page to continue selling.',
       );
     }
     // Real checkout only (see `RequireActiveBillingOptions.blockDuringTrial`'s
@@ -58,7 +64,9 @@ export class BillingAccessGuard implements CanActivate {
     // trial, which disables checkout specifically until a plan is chosen.
     if (options.blockDuringTrial && sub && (sub as any).status === 'trialing') {
       throw new ForbiddenException(
-        'This store is still in its free trial — choose a plan from the billing page to start accepting real orders.',
+        forBuyer
+          ? 'This store is not currently accepting orders.'
+          : 'This store is still in its free trial — choose a plan from the billing page to start accepting real orders.',
       );
     }
     return true;

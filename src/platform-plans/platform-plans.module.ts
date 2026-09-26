@@ -14,6 +14,7 @@ import { AuthModule } from '../auth/auth.module';
 import { RedisModule } from '../redis/redis.module';
 import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
 import { EmailService } from '../otp/services/email.service';
+import { CriticalAlertService } from '../common/critical-alert.service';
 
 // @Global() so any module (Products, Employee/POS, Store, Loyalty, Finance,
 // the buyer-facing Subscriptions module) can inject EntitlementsService /
@@ -39,6 +40,7 @@ import { EmailService } from '../otp/services/email.service';
     PlatformAddonsService,
     PlatformPlanNotificationsService,
     EmailService,
+    CriticalAlertService,
     BillingAccessGuard,
   ],
   exports: [PlatformPlansService, SellerPlatformSubscriptionsService, EntitlementsService, AiCreditsService, PlatformAddonsService, BillingAccessGuard],

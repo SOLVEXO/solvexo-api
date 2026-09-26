@@ -1,6 +1,8 @@
 /* eslint-disable prettier/prettier */
 import { Injectable, NotFoundException, BadRequestException, ForbiddenException, Logger } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
+import { InjectConnection } from '@nestjs/mongoose';
+import { Connection, ClientSession } from 'mongoose';
 import { DatabaseService } from '@/database/databaseservice';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { PlatformPlanNotificationsService } from './platform-plan-notifications.service';
@@ -9,9 +11,15 @@ import { verifyStoreOwnershipStrict } from '@/common/store-ownership.util';
 import { SubscribePlatformPlanDto, ChangePlatformPlanDto } from './dto/subscribe-platform-plan.dto';
 import { NotificationsService } from '@/notifications/notifications.service';
 import { NOTIFICATION_TYPES } from '@/notifications/notification.types';
+import { CriticalAlertService } from '@/common/critical-alert.service';
 
 const MAX_RENEWAL_ATTEMPTS = 3;
 const RETRY_INTERVAL_DAYS = 1;
+// Fallback grace period (days a locked/trial-ended store's storefront stays
+// browsable before Store.privacyMode gates it — see expireGracePeriods())
+// for the one case with no PlatformPlan to read gracePeriodDays from: a
+// trial that elapsed with no plan ever attached (markTrialEnded).
+const DEFAULT_GRACE_PERIOD_DAYS = 3;
 // Every Stripe object created by THIS module is tagged with this so the shared
 // webhook processor can tell a platform-plan event apart from a buyer-VIP-plan
 // event (both flow through the same Stripe account/webhook endpoint).
@@ -27,7 +35,26 @@ export class SellerPlatformSubscriptionsService {
     private readonly activityLogService: ActivityLogService,
     private readonly notifications: PlatformPlanNotificationsService,
     private readonly notificationsService: NotificationsService,
+    private readonly criticalAlerts: CriticalAlertService,
+    @InjectConnection() private readonly connection: Connection,
   ) {}
+
+  /**
+   * Same convention as FinanceService.withTransaction — MongoDB Atlas is
+   * always a replica set, so real multi-document transactions are available
+   * in every environment this API runs in. Used wherever a Stripe charge is
+   * followed by MORE THAN ONE local write (invoice + subscription state,
+   * etc.) — a crash between them would otherwise leave a real charge on
+   * Stripe's side with only a PARTIAL local record (e.g. an invoice marked
+   * paid but the subscription's own period/amount never updated). This does
+   * NOT make the Stripe call itself atomic with the DB (that's structurally
+   * impossible across two separate systems) — it only guarantees that once
+   * Stripe has responded, every local write for that outcome commits
+   * together or not at all.
+   */
+  private async withTransaction<T>(fn: (session: ClientSession) => Promise<T>): Promise<T> {
+    return this.connection.transaction(fn);
+  }
 
   private get planModel() { return this.db.repositories.platformPlanModel; }
   private get trialSettingsModel() { return this.db.repositories.platformTrialSettingsModel; }
@@ -124,9 +151,20 @@ export class SellerPlatformSubscriptionsService {
    * already-live store just switching between two paid plans) — those
    * stores are already `public`, so this simply does nothing there.
    */
+  private async getGracePeriodDays(sub: any): Promise<number> {
+    if (!sub.platformPlanId) return DEFAULT_GRACE_PERIOD_DAYS;
+    const plan = await this.planModel.findById(sub.platformPlanId).select('gracePeriodDays').lean();
+    return (plan as any)?.gracePeriodDays ?? DEFAULT_GRACE_PERIOD_DAYS;
+  }
+
   private async unlockStorefrontIfComingSoon(storeId: string): Promise<void> {
     try {
       await this.storeModel.updateOne({ _id: storeId, privacyMode: 'coming_soon' }, { $set: { privacyMode: 'public' } });
+      // Whatever grace-period countdown was running (lockStore/markTrialEnded)
+      // is moot now that the store is sellable again — cleared unconditionally
+      // (not just when privacyMode actually flipped above) so a later lock
+      // always starts a fresh countdown, never inherits a stale date.
+      await this.subModel.updateOne({ storeId }, { $set: { gracePeriodEndsAt: null, storefrontGatedAt: null } });
     } catch {
       // Best-effort — must never fail the billing flow that called this.
     }
@@ -148,6 +186,17 @@ export class SellerPlatformSubscriptionsService {
     sub.cancelAtPeriodEnd = false;
     sub.canceledAt = null;
     sub.cancelReason = null;
+    // A legacy store landing here could have been mid-grace-period (or
+    // already gated) from a PRIOR lock — this is a real "sellable again"
+    // transition too, same as unlockStorefrontIfComingSoon's own moments.
+    // Set on the in-memory doc (persisted whenever the caller's own
+    // sub.save() runs) rather than a raw subModel update, since callers
+    // haven't saved `sub` yet at this point.
+    sub.gracePeriodEndsAt = null;
+    sub.storefrontGatedAt = null;
+    // Store.privacyMode lives on a different document, so this is safe to
+    // write immediately regardless of when the caller saves `sub`.
+    try { await this.storeModel.updateOne({ _id: sub.storeId, privacyMode: 'coming_soon' }, { $set: { privacyMode: 'public' } }); } catch { /* best-effort */ }
     await this.syncFeaturedBadge(sub.storeId, freePlan);
     return freePlan;
   }
@@ -172,6 +221,12 @@ export class SellerPlatformSubscriptionsService {
     // platformPlanId/amountUSD deliberately left as-is — "you were on
     // Professional" is what the billing/recovery UI shows while locked, and
     // it's also what a simple "reactivate" (successful payment) resumes.
+    // Starts the storefront-visibility countdown — see expireGracePeriods().
+    // Checkout is already blocked immediately regardless (BillingAccessGuard);
+    // this only controls when BROWSING actually stops.
+    const graceDays = await this.getGracePeriodDays(sub);
+    sub.gracePeriodEndsAt = new Date(Date.now() + graceDays * 24 * 60 * 60 * 1000);
+    sub.storefrontGatedAt = null;
   }
 
   /**
@@ -190,6 +245,10 @@ export class SellerPlatformSubscriptionsService {
     sub.cancelAtPeriodEnd = false;
     sub.canceledAt = null;
     sub.cancelReason = null;
+    // No plan is attached here (see class comment above) — always the
+    // fallback default, never a plan-specific gracePeriodDays.
+    sub.gracePeriodEndsAt = new Date(Date.now() + DEFAULT_GRACE_PERIOD_DAYS * 24 * 60 * 60 * 1000);
+    sub.storefrontGatedAt = null;
   }
 
   private async getSellerAndStoreNames(sellerId: string, storeId: string) {
@@ -571,6 +630,172 @@ export class SellerPlatformSubscriptionsService {
     });
 
     return { success: true, message: `$${refundAmount.toFixed(2)} refunded`, data: invoice };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // Admin manual override — real support tools. Before these existed, the
+  // only way to unlock a wrongly-locked store, comp a plan, extend a period,
+  // or force-lock a store was a direct database edit — a real operational
+  // gap (the first real support ticket would have hit it). Every action here
+  // is logged via ActivityLogService with `actorRole: 'admin'`, matching the
+  // one existing admin mutation (adminRefundInvoice) above.
+  // ═══════════════════════════════════════════════════════════════════════
+
+  /** Restores selling/checkout access for a `locked`/`trial_ended`/`past_due`
+   *  store WITHOUT any charge or new invoice — a real comp, not billing. */
+  async adminUnlockStore(adminId: string, storeId: string, reason?: string) {
+    const sub = await this.subModel.findOne({ storeId, isDelete: false });
+    if (!sub) throw new NotFoundException('This store has no platform-plan record yet');
+    if (!['locked', 'trial_ended', 'past_due'].includes(sub.status)) {
+      throw new BadRequestException(`This store isn't locked — its status is "${sub.status}"`);
+    }
+
+    sub.status = 'active';
+    sub.failedPaymentAttempts = 0;
+    sub.gracePeriodEndsAt = null;
+    sub.storefrontGatedAt = null;
+    await sub.save();
+    await this.unlockStorefrontIfComingSoon(storeId);
+
+    this.activityLogService.log({
+      storeId, category: 'platform_plans', action: 'admin_unlocked_store',
+      description: `Admin manually unlocked this store's subscription${reason ? ` (reason: ${reason})` : ''}`,
+      actorId: adminId, actorRole: 'admin', targetId: sub._id.toString(), targetType: 'seller_platform_subscription',
+    });
+    const { storeName } = await this.getSellerAndStoreNames(sub.sellerId, storeId);
+    this.notificationsService.notify({
+      recipientId: sub.sellerId, recipientRole: 'seller', storeId,
+      type: NOTIFICATION_TYPES.PLATFORM_PLAN_ADMIN_ACTION,
+      title: 'Your store has been unlocked',
+      body: `${storeName} has been unlocked by Solvexo support — selling is restored.`,
+      data: { subscriptionId: String(sub._id) },
+    }).catch(() => {});
+
+    return { success: true, message: 'Store unlocked', data: { subscription: sub } };
+  }
+
+  /** Pushes the store's current billing (or trial) period end forward by N days — no charge, no plan change. */
+  async adminExtendSubscription(adminId: string, storeId: string, days: number, reason?: string) {
+    const sub = await this.subModel.findOne({ storeId, isDelete: false });
+    if (!sub) throw new NotFoundException('This store has no platform-plan record yet');
+
+    const extendMs = days * 24 * 60 * 60 * 1000;
+    if (sub.status === 'trialing' && sub.trialEndsAt) {
+      sub.trialEndsAt = new Date(sub.trialEndsAt.getTime() + extendMs);
+    } else {
+      sub.currentPeriodEnd = new Date(sub.currentPeriodEnd.getTime() + extendMs);
+      sub.nextBillingDate = sub.currentPeriodEnd;
+    }
+    // A store still mid-grace-period gets the same extension so the two
+    // clocks stay in step — otherwise an extended-but-still-locked store's
+    // storefront could get gated before the extended period even ends.
+    if (sub.gracePeriodEndsAt) {
+      sub.gracePeriodEndsAt = new Date(sub.gracePeriodEndsAt.getTime() + extendMs);
+    }
+    await sub.save();
+
+    this.activityLogService.log({
+      storeId, category: 'platform_plans', action: 'admin_extended_subscription',
+      description: `Admin extended this store's billing period by ${days} day(s)${reason ? ` (reason: ${reason})` : ''}`,
+      actorId: adminId, actorRole: 'admin', targetId: sub._id.toString(), targetType: 'seller_platform_subscription',
+    });
+    const { storeName } = await this.getSellerAndStoreNames(sub.sellerId, storeId);
+    this.notificationsService.notify({
+      recipientId: sub.sellerId, recipientRole: 'seller', storeId,
+      type: NOTIFICATION_TYPES.PLATFORM_PLAN_ADMIN_ACTION,
+      title: 'Your billing period was extended',
+      body: `${storeName}'s current period was extended by ${days} day(s) by Solvexo support.`,
+      data: { subscriptionId: String(sub._id) },
+    }).catch(() => {});
+
+    return { success: true, message: `Extended by ${days} day(s)`, data: { subscription: sub } };
+  }
+
+  /** Manually comps a store onto a plan — cancels any live Stripe subscription first (never runs alongside real recurring billing for the same store), never creates an invoice/charge. */
+  async adminAssignPlan(adminId: string, storeId: string, planId: string, reason?: string) {
+    const sub = await this.subModel.findOne({ storeId, isDelete: false });
+    if (!sub) throw new NotFoundException('This store has no platform-plan record yet');
+    const plan = await this.planModel.findOne({ _id: planId, isDelete: false, status: 'active' });
+    if (!plan) throw new NotFoundException('Target platform plan not found or inactive');
+
+    const oldPlanId = sub.platformPlanId;
+    const oldPlan = oldPlanId ? await this.planModel.findById(oldPlanId).lean() : null;
+
+    if (sub.providerSubscriptionId) {
+      await this.gateway.cancelProviderSubscription(sub.providerSubscriptionId);
+      sub.providerSubscriptionId = null;
+    }
+
+    const now = new Date();
+    sub.platformPlanId = (plan as any)._id.toString();
+    sub.amountUSD = plan.isFree ? 0 : (plan.monthlyPriceUSD ?? 0);
+    sub.billingInterval = 'monthly';
+    sub.paymentProvider = 'manual';
+    sub.status = 'active';
+    sub.failedPaymentAttempts = 0;
+    sub.cancelAtPeriodEnd = false;
+    sub.canceledAt = null;
+    sub.cancelReason = null;
+    sub.currentPeriodStart = now;
+    sub.currentPeriodEnd = this.addPeriod(now, 'monthly');
+    sub.nextBillingDate = sub.currentPeriodEnd;
+    sub.gracePeriodEndsAt = null;
+    sub.storefrontGatedAt = null;
+    sub.planHistory = [...(sub.planHistory ?? []), {
+      fromPlanId: oldPlanId, fromPlanName: (oldPlan as any)?.name ?? 'Unknown',
+      toPlanId: (plan as any)._id.toString(), toPlanName: plan.name,
+      proratedAmountUSD: 0, changedAt: now,
+    }];
+    await sub.save();
+    await this.syncFeaturedBadge(storeId, plan);
+    await this.unlockStorefrontIfComingSoon(storeId);
+
+    this.activityLogService.log({
+      storeId, category: 'platform_plans', action: 'admin_assigned_plan',
+      description: `Admin manually assigned "${plan.name}" plan (no charge)${reason ? ` (reason: ${reason})` : ''}`,
+      actorId: adminId, actorRole: 'admin', targetId: sub._id.toString(), targetType: 'seller_platform_subscription',
+    });
+    const { storeName } = await this.getSellerAndStoreNames(sub.sellerId, storeId);
+    this.notificationsService.notify({
+      recipientId: sub.sellerId, recipientRole: 'seller', storeId,
+      type: NOTIFICATION_TYPES.PLATFORM_PLAN_ADMIN_ACTION,
+      title: 'Your plan was updated',
+      body: `${storeName} was moved to the "${plan.name}" plan by Solvexo support — no charge was made.`,
+      data: { subscriptionId: String(sub._id) },
+    }).catch(() => {});
+
+    return { success: true, message: `Assigned "${plan.name}" plan`, data: { subscription: sub } };
+  }
+
+  /** Force-locks a store immediately (e.g. a ToS enforcement action) — distinct from the seller's own graceful "cancel at period end". Cancels any live Stripe subscription first. Reuses the exact same terminal-state helpers dunning exhaustion already uses. */
+  async adminLockStore(adminId: string, storeId: string, reason?: string) {
+    const sub = await this.subModel.findOne({ storeId, isDelete: false });
+    if (!sub) throw new NotFoundException('This store has no platform-plan record yet');
+    if (sub.status === 'locked') throw new BadRequestException('This store is already locked');
+
+    if (sub.providerSubscriptionId) {
+      await this.gateway.cancelProviderSubscription(sub.providerSubscriptionId);
+      sub.providerSubscriptionId = null;
+    }
+
+    if (sub.legacyFreeEligible) {
+      await this.downgradeToFree(sub);
+    } else {
+      await this.lockStore(sub);
+    }
+    await sub.save();
+
+    this.activityLogService.log({
+      storeId, category: 'platform_plans', action: 'admin_locked_store',
+      description: `Admin manually locked this store's subscription${reason ? ` (reason: ${reason})` : ''}`,
+      actorId: adminId, actorRole: 'admin', targetId: sub._id.toString(), targetType: 'seller_platform_subscription',
+    });
+    const { sellerName, sellerEmail, storeName } = await this.getSellerAndStoreNames(sub.sellerId, storeId);
+    if (sellerEmail) {
+      await this.notifications.sendStoreLocked(sellerEmail, { sellerName, storeName, reason: 'subscription_ended' }).catch(() => {});
+    }
+
+    return { success: true, message: 'Store locked', data: { subscription: sub } };
   }
 
   /**
@@ -1035,17 +1260,53 @@ export class SellerPlatformSubscriptionsService {
           ? await this.gateway.chargeSubscription(sub._id.toString(), chargeAmount)
           : { success: true, providerChargeId: null as string | null, paymentMethodType: 'manual' };
 
-        const invoice = await this.invoiceModel.create({
-          // Non-null: this loop only ever processes `paymentProvider: 'manual',
-          // amountUSD > 0` subs (see the query above) — a trialing store
-          // (null platformPlanId, $0 amount) can never reach here.
-          storeId: sub.storeId, sellerId: sub.sellerId, platformPlanId: sub.platformPlanId!,
-          invoiceNumber: await this.generateInvoiceNumber(), type: 'recurring',
-          amountUSD: chargeAmount, status: charge.success ? 'paid' : 'failed',
-          paidAt: charge.success ? now : null, providerChargeId: charge.providerChargeId,
-          paymentMethodType: (charge as any).paymentMethodType ?? 'manual',
+        // Reserved before the transaction opens — its own atomic $inc counter,
+        // unrelated to the invoice/sub consistency the transaction protects.
+        const invoiceNumber = await this.generateInvoiceNumber();
+
+        // Real multi-document risk this closes (same shape as
+        // handleInvoicePaymentSucceeded above): without a transaction, a
+        // crash between the invoice write and the sub write would leave a
+        // "paid"/"failed" invoice on record while the subscription's own
+        // status/period/dunning-attempt-count never actually updated to
+        // match. `applyDunningFailure`'s email sends run inside this
+        // transaction's scope on the failure path — an accepted trade-off
+        // (this loop processes at most a handful of subs per daily tick, well
+        // within MongoDB's default 60s transaction timeout) in exchange for
+        // never having a dunning attempt silently "double-count" or "not
+        // count" against `sub.failedPaymentAttempts` on a partial failure.
+        let invoice: any;
+        await this.withTransaction(async (session) => {
+          const [createdInvoice] = await this.invoiceModel.create([{
+            // Non-null: this loop only ever processes `paymentProvider: 'manual',
+            // amountUSD > 0` subs (see the query above) — a trialing store
+            // (null platformPlanId, $0 amount) can never reach here.
+            storeId: sub.storeId, sellerId: sub.sellerId, platformPlanId: sub.platformPlanId!,
+            invoiceNumber, type: 'recurring',
+            amountUSD: chargeAmount, status: charge.success ? 'paid' : 'failed',
+            paidAt: charge.success ? now : null, providerChargeId: charge.providerChargeId,
+            paymentMethodType: (charge as any).paymentMethodType ?? 'manual',
+          }], { session });
+          invoice = createdInvoice;
+
+          if (charge.success) {
+            const periodEnd = this.addPeriod(now, sub.billingInterval as 'monthly' | 'yearly');
+            sub.status = 'active';
+            sub.currentPeriodStart = now;
+            sub.currentPeriodEnd = periodEnd;
+            sub.nextBillingDate = periodEnd;
+            sub.totalPaidUSD = this.round(sub.totalPaidUSD + chargeAmount);
+            sub.creditBalanceUSD = this.round((sub.creditBalanceUSD ?? 0) - creditToApply);
+            sub.failedPaymentAttempts = 0;
+          } else {
+            await this.applyDunningFailure(sub, chargeAmount);
+          }
+          await sub.save({ session });
         });
 
+        // Best-effort audit trail (its own doc comment: "must never break
+        // billing") — deliberately outside the transaction, same as the
+        // webhook handler's equivalent side effects.
         await this.recordAttempt({
           storeId: sub.storeId, sellerId: sub.sellerId, attemptType: 'renewal',
           outcome: charge.success ? 'success' : 'failed', amountUSD: chargeAmount,
@@ -1053,23 +1314,17 @@ export class SellerPlatformSubscriptionsService {
           invoiceId: invoice._id.toString(), providerChargeId: charge.providerChargeId,
         });
 
-        if (charge.success) {
-          const periodEnd = this.addPeriod(now, sub.billingInterval as 'monthly' | 'yearly');
-          sub.status = 'active';
-          sub.currentPeriodStart = now;
-          sub.currentPeriodEnd = periodEnd;
-          sub.nextBillingDate = periodEnd;
-          sub.totalPaidUSD = this.round(sub.totalPaidUSD + chargeAmount);
-          sub.creditBalanceUSD = this.round((sub.creditBalanceUSD ?? 0) - creditToApply);
-          sub.failedPaymentAttempts = 0;
-          succeeded++;
-        } else {
-          await this.applyDunningFailure(sub, chargeAmount);
-          failed++;
-        }
-        await sub.save();
+        if (charge.success) succeeded++; else failed++;
       } catch (err: any) {
         this.logger.error(`Platform-plan renewal failed for store ${sub.storeId}: ${err?.message}`);
+        // A genuine unexpected exception (Stripe API error, DB error) —
+        // never fires for an ordinary declined card, which resolves inside
+        // the try block above via applyDunningFailure and never throws.
+        this.criticalAlerts.send({
+          title: 'Platform-plan renewal cron: unexpected failure',
+          message: `Renewal processing threw for store ${sub.storeId} — this store's billing period was NOT advanced and no dunning attempt was recorded.`,
+          context: { storeId: sub.storeId, sellerId: sub.sellerId, error: err?.message },
+        }).catch(() => {});
         failed++;
       }
     }
@@ -1142,6 +1397,66 @@ export class SellerPlatformSubscriptionsService {
       expired++;
     }
     return { expired };
+  }
+
+  /**
+   * The real enforcement half of the grace-period concept `lockStore()`/
+   * `markTrialEnded()` start a countdown for: a store that's still
+   * `locked`/`trial_ended` once its own `gracePeriodEndsAt` has passed gets
+   * its storefront gated (`Store.privacyMode -> 'coming_soon'`), so buyers
+   * stop being able to browse/add-to-cart it, not just fail at the final
+   * checkout step (which BillingAccessGuard already blocks from the moment
+   * of lock, independent of this). `storefrontGatedAt` makes this idempotent
+   * — a row already gated is skipped on every later tick, and is the one
+   * signal cleared (by `unlockStorefrontIfComingSoon`/`downgradeToFree`)
+   * that lets a later lock re-run this from a clean slate.
+   */
+  async expireGracePeriods(): Promise<{ gated: number }> {
+    const now = new Date();
+    const due = await this.subModel.find({
+      status: { $in: ['locked', 'trial_ended'] },
+      gracePeriodEndsAt: { $lte: now },
+      storefrontGatedAt: null,
+      isDelete: false,
+    });
+
+    let gated = 0;
+    for (const sub of due) {
+      try {
+        // Never overwrites a seller's own different manual choice (e.g.
+        // 'password' mode) — same convention `unlockStorefrontIfComingSoon`
+        // already follows in the other direction.
+        const result = await this.storeModel.updateOne({ _id: sub.storeId, privacyMode: 'public' }, { $set: { privacyMode: 'coming_soon' } });
+        sub.storefrontGatedAt = now;
+        await sub.save();
+        if (result.modifiedCount > 0) gated++;
+
+        const { sellerName, sellerEmail, storeName } = await this.getSellerAndStoreNames(sub.sellerId, sub.storeId);
+        if (sellerEmail) {
+          await this.notifications.sendStorefrontHidden(sellerEmail, { sellerName, storeName }).catch(() => {});
+        }
+        this.notificationsService.notify({
+          recipientId: sub.sellerId, recipientRole: 'seller', storeId: sub.storeId,
+          type: NOTIFICATION_TYPES.PLATFORM_PLAN_STOREFRONT_HIDDEN,
+          title: 'Your storefront is now hidden',
+          body: `${storeName}'s grace period ended — your storefront is no longer visible to buyers. Choose a plan to make it visible again.`,
+          data: { subscriptionId: String(sub._id) },
+        }).catch(() => {});
+        this.activityLogService.log({
+          storeId: sub.storeId, category: 'platform_plans', action: 'storefront_gated_grace_period_expired',
+          description: 'Grace period expired — storefront hidden from buyers (checkout was already blocked since lock)',
+          actorRole: 'system', targetId: sub._id.toString(), targetType: 'seller_platform_subscription',
+        });
+      } catch (err: any) {
+        this.logger.error(`expireGracePeriods: failed for store ${sub.storeId}: ${err?.message}`);
+        this.criticalAlerts.send({
+          title: 'Grace-period expiry cron: unexpected failure',
+          message: `Gating store ${sub.storeId}'s storefront after grace-period expiry threw — its storefront may still be publicly visible despite the store being locked.`,
+          context: { storeId: sub.storeId, sellerId: sub.sellerId, error: err?.message },
+        }).catch(() => {});
+      }
+    }
+    return { gated };
   }
 
   /**
@@ -1234,6 +1549,58 @@ export class SellerPlatformSubscriptionsService {
     return { sent };
   }
 
+  /**
+   * Real gap fixed: a PAID (non-trial) subscription never got a "you'll be
+   * charged $X in N days" reminder before this — only a trial's own end date
+   * did (sendTrialEndingReminders above). Scoped to `paymentProvider:
+   * 'manual'` only — a real Stripe subscription is billed automatically by
+   * Stripe itself and Stripe already sends its own upcoming-invoice email
+   * when that's configured on the Stripe account; duplicating it here would
+   * be a second, possibly-conflicting reminder for the same charge.
+   */
+  async sendUpcomingRenewalReminders(): Promise<{ sent: number }> {
+    const REMINDER_WINDOW_DAYS = 3;
+    const now = new Date();
+    const windowEnd = new Date(now.getTime() + REMINDER_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+
+    const due = await this.subModel.find({
+      status: 'active', paymentProvider: 'manual', amountUSD: { $gt: 0 },
+      cancelAtPeriodEnd: { $ne: true }, // a scheduled cancellation won't actually renew — no false "you'll be charged" reminder
+      nextBillingDate: { $gte: now, $lte: windowEnd },
+      isDelete: false,
+    });
+
+    let sent = 0;
+    for (const sub of due) {
+      // Already reminded for THIS exact billing date — `nextBillingDate`
+      // only changes on the next real renewal/plan-change, so this is a
+      // real once-per-cycle dedup, not a one-time-ever flag.
+      if (sub.renewalReminderSentForDate && sub.renewalReminderSentForDate.getTime() === sub.nextBillingDate.getTime()) continue;
+
+      const [{ sellerName, sellerEmail, storeName }, plan] = await Promise.all([
+        this.getSellerAndStoreNames(sub.sellerId, sub.storeId),
+        sub.platformPlanId ? this.planModel.findById(sub.platformPlanId).select('name').lean() : null,
+      ]);
+      if (sellerEmail) {
+        await this.notifications.sendUpcomingRenewalReminder(sellerEmail, {
+          sellerName, storeName, planName: (plan as any)?.name ?? 'your plan',
+          amountUSD: sub.amountUSD, renewalDate: sub.nextBillingDate,
+        }).catch(() => {});
+      }
+      this.notificationsService.notify({
+        recipientId: sub.sellerId, recipientRole: 'seller', storeId: sub.storeId,
+        type: NOTIFICATION_TYPES.PLATFORM_PLAN_RENEWAL_REMINDER,
+        title: 'Upcoming renewal',
+        body: `${storeName} will be charged $${sub.amountUSD.toFixed(2)} on ${sub.nextBillingDate.toDateString()}.`,
+        data: { subscriptionId: String(sub._id) },
+      }).catch(() => {});
+      sub.renewalReminderSentForDate = sub.nextBillingDate;
+      await sub.save();
+      sent++;
+    }
+    return { sent };
+  }
+
   // ═══════════════════════════════════════════════════════════════════════
   // Stripe webhook handlers — same shape as SubscriptionsService's
   // ═══════════════════════════════════════════════════════════════════════
@@ -1251,24 +1618,38 @@ export class SellerPlatformSubscriptionsService {
     const periodEnd = line?.period?.end ? new Date(line.period.end * 1000) : this.addPeriod(new Date(), sub.billingInterval as any);
     const providerChargeId = typeof invoice.payment_intent === 'string' ? invoice.payment_intent : invoice.payment_intent?.id ?? null;
 
-    await this.invoiceModel.create({
-      // Non-null: only reachable for a sub with a real `providerSubscriptionId`
-      // (matched above) — that only ever exists once a real plan is attached.
-      storeId: sub.storeId, sellerId: sub.sellerId, platformPlanId: sub.platformPlanId!,
-      invoiceNumber: await this.generateInvoiceNumber(),
-      type: invoice.billing_reason === 'subscription_create' ? 'initial' : 'recurring',
-      amountUSD, status: 'paid', paidAt: new Date(), providerChargeId, stripeInvoiceId: invoice.id,
-      hostedInvoiceUrl: invoice.hosted_invoice_url ?? null, invoicePdfUrl: invoice.invoice_pdf ?? null,
-      paymentMethodType: 'card',
-    });
+    // A generated invoiceNumber must be reserved BEFORE the transaction opens
+    // (this counter update is its own atomic $inc, unrelated to the
+    // sub/invoice consistency this transaction protects).
+    const invoiceNumber = await this.generateInvoiceNumber();
 
-    sub.status = 'active';
-    sub.currentPeriodStart = new Date();
-    sub.currentPeriodEnd = periodEnd;
-    sub.nextBillingDate = periodEnd;
-    sub.totalPaidUSD = this.round(sub.totalPaidUSD + amountUSD);
-    sub.failedPaymentAttempts = 0;
-    await sub.save();
+    // Real multi-document risk this closes: without a transaction, a crash
+    // between the invoice write and the sub write would leave a "paid"
+    // invoice on record while the subscription still shows its OLD
+    // status/period — exactly the drift this webhook exists to prevent.
+    // Wrapping both together also makes a Stripe webhook retry safe: if the
+    // transaction rolls back, the dedup check above (`invoiceModel.exists`)
+    // correctly sees no invoice yet and the whole handler re-runs cleanly.
+    await this.withTransaction(async (session) => {
+      await this.invoiceModel.create([{
+        // Non-null: only reachable for a sub with a real `providerSubscriptionId`
+        // (matched above) — that only ever exists once a real plan is attached.
+        storeId: sub.storeId, sellerId: sub.sellerId, platformPlanId: sub.platformPlanId!,
+        invoiceNumber,
+        type: invoice.billing_reason === 'subscription_create' ? 'initial' : 'recurring',
+        amountUSD, status: 'paid', paidAt: new Date(), providerChargeId, stripeInvoiceId: invoice.id,
+        hostedInvoiceUrl: invoice.hosted_invoice_url ?? null, invoicePdfUrl: invoice.invoice_pdf ?? null,
+        paymentMethodType: 'card',
+      }], { session });
+
+      sub.status = 'active';
+      sub.currentPeriodStart = new Date();
+      sub.currentPeriodEnd = periodEnd;
+      sub.nextBillingDate = periodEnd;
+      sub.totalPaidUSD = this.round(sub.totalPaidUSD + amountUSD);
+      sub.failedPaymentAttempts = 0;
+      await sub.save({ session });
+    });
     await this.unlockStorefrontIfComingSoon(sub.storeId);
 
     const plan = await this.planModel.findById(sub.platformPlanId).lean();

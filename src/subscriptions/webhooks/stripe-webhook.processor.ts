@@ -6,6 +6,7 @@ import { Job } from 'bullmq';
 import { DatabaseService } from '@/database/databaseservice';
 import { PaymentGatewayService } from '../payment-gateway/payment-gateway.service';
 import { QUEUE_NAMES } from '@/queues/queue.constants';
+import { CriticalAlertService } from '@/common/critical-alert.service';
 
 /**
  * Consumes verified Stripe webhook events (enqueued by StripeWebhookService)
@@ -45,6 +46,7 @@ export class StripeWebhookProcessor extends WorkerHost {
     private readonly db: DatabaseService,
     private readonly gateway: PaymentGatewayService,
     private readonly eventEmitter: EventEmitter2,
+    private readonly criticalAlerts: CriticalAlertService,
   ) {
     super();
   }
@@ -95,5 +97,14 @@ export class StripeWebhookProcessor extends WorkerHost {
   @OnWorkerEvent('failed')
   handleFailed(job: Job, err: Error) {
     this.logger.error(`Stripe webhook job ${job.id} failed permanently after ${job.attemptsMade} attempts: ${err.message}`);
+    // Real ops-facing alert (see CriticalAlertService's own doc comment) —
+    // this only fires once BullMQ has exhausted every retry, so it's never
+    // noise from a single transient failure; a Stripe billing event (either
+    // buyer-subscription or seller platform-plan) is now stuck unprocessed.
+    this.criticalAlerts.send({
+      title: 'Stripe billing webhook permanently failed',
+      message: `Job ${job.id} (event type: ${(job.data as any)?.type ?? 'unknown'}) failed after ${job.attemptsMade} attempt(s) and will not be retried automatically.`,
+      context: { eventId: (job.data as any)?.eventId, jobId: String(job.id), error: err.message },
+    }).catch(() => {});
   }
 }

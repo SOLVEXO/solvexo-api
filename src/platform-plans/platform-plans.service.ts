@@ -74,6 +74,7 @@ export class PlatformPlansService {
       introOfferEnabled: dto.introOfferEnabled ?? false,
       introPriceUSD: dto.introPriceUSD != null ? this.round(dto.introPriceUSD) : null,
       introDurationCycles: dto.introDurationCycles ?? null,
+      gracePeriodDays: dto.gracePeriodDays ?? 3,
     });
 
     this.activityLogService.log({
@@ -131,6 +132,7 @@ export class PlatformPlansService {
     if (dto.limits !== undefined) plan.limits = { ...plan.limits, ...dto.limits } as any;
     if (dto.status !== undefined) plan.status = dto.status;
     if (dto.isPubliclyVisible !== undefined) plan.isPubliclyVisible = dto.isPubliclyVisible;
+    if (dto.gracePeriodDays !== undefined) plan.gracePeriodDays = dto.gracePeriodDays;
 
     if (dto.introOfferEnabled !== undefined) plan.introOfferEnabled = dto.introOfferEnabled;
     if (dto.introPriceUSD !== undefined) plan.introPriceUSD = dto.introPriceUSD != null ? this.round(dto.introPriceUSD) : null;

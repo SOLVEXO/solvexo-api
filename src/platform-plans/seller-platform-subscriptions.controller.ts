@@ -1,6 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { Controller, Get, Post, Patch, Param, Body, Req, Query, UseGuards, UseInterceptors } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { SellerPlatformSubscriptionsService } from './seller-platform-subscriptions.service';
 import { EntitlementsService } from './entitlements.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -10,7 +11,7 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { RequirePermission } from '../auth/decorators/require-permission.decorator';
 import { actingSellerId } from '../common/acting-seller-id.util';
 import { IdempotencyInterceptor } from '../common/idempotency.interceptor';
-import { ChangePlatformPlanDto, CancelPlatformPlanDto, BillingPortalDto, ConfirmOnboardingPaymentMethodDto, SaveOnboardingDraftDto } from './dto/subscribe-platform-plan.dto';
+import { ChangePlatformPlanDto, CancelPlatformPlanDto, BillingPortalDto, ConfirmOnboardingPaymentMethodDto, SaveOnboardingDraftDto, AdminExtendSubscriptionDto, AdminAssignPlanDto, AdminUnlockOrLockDto } from './dto/subscribe-platform-plan.dto';
 import { RefundInvoiceDto } from '../subscriptions/dto/refund-invoice.dto';
 
 @ApiTags('Platform Plans — Seller')
@@ -27,6 +28,39 @@ export class SellerPlatformSubscriptionsController {
   @Post('admin/invoices/:invoiceId/refund')
   adminRefundInvoice(@Req() req: any, @Param('invoiceId') invoiceId: string, @Body() dto: RefundInvoiceDto) {
     return this.sellerPlatformSubscriptionsService.adminRefundInvoice(req.user.userId, invoiceId, dto.amountUSD, dto.reason);
+  }
+
+  // ── Admin manual override — real support tools (unlock/extend/assign/lock) ──
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('admin')
+  @Post('admin/stores/:storeId/unlock')
+  adminUnlockStore(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: AdminUnlockOrLockDto) {
+    return this.sellerPlatformSubscriptionsService.adminUnlockStore(req.user.userId, storeId, dto.reason);
+  }
+
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('admin')
+  @Post('admin/stores/:storeId/extend')
+  adminExtendSubscription(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: AdminExtendSubscriptionDto) {
+    return this.sellerPlatformSubscriptionsService.adminExtendSubscription(req.user.userId, storeId, dto.days, dto.reason);
+  }
+
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('admin')
+  @Post('admin/stores/:storeId/assign-plan')
+  adminAssignPlan(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: AdminAssignPlanDto) {
+    return this.sellerPlatformSubscriptionsService.adminAssignPlan(req.user.userId, storeId, dto.planId, dto.reason);
+  }
+
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('admin')
+  @Post('admin/stores/:storeId/lock')
+  adminLockStore(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: AdminUnlockOrLockDto) {
+    return this.sellerPlatformSubscriptionsService.adminLockStore(req.user.userId, storeId, dto.reason);
   }
 
   @ApiBearerAuth()
@@ -111,11 +145,17 @@ export class SellerPlatformSubscriptionsController {
     return this.sellerPlatformSubscriptionsService.listInvoices(actingSellerId(req.user), storeId, query);
   }
 
+  // Tighter than the 100/min global default specifically — a real Stripe
+  // charge/subscription mutation, never meant to be scriptable at scale.
+  // Admin routes are deliberately left off this tighter limit (see spec
+  // above the admin section) — this only covers a seller/staff's own
+  // self-serve billing actions.
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('seller', 'staff')
   @RequirePermission('settings.billing.manage')
   @UseInterceptors(IdempotencyInterceptor)
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @Patch(':storeId/change-plan')
   changePlan(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: ChangePlatformPlanDto) {
     return this.sellerPlatformSubscriptionsService.changePlan(actingSellerId(req.user), storeId, dto, req.headers['idempotency-key']);
@@ -135,6 +175,7 @@ export class SellerPlatformSubscriptionsController {
   @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('seller', 'staff')
   @RequirePermission('settings.billing.manage')
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @Post(':storeId/cancel')
   cancelSubscription(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: CancelPlatformPlanDto) {
     return this.sellerPlatformSubscriptionsService.cancelSubscription(actingSellerId(req.user), storeId, dto.reason);
@@ -144,6 +185,7 @@ export class SellerPlatformSubscriptionsController {
   @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('seller', 'staff')
   @RequirePermission('settings.billing.manage')
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @Post(':storeId/reactivate')
   reactivateSubscription(@Req() req: any, @Param('storeId') storeId: string) {
     return this.sellerPlatformSubscriptionsService.reactivateSubscription(actingSellerId(req.user), storeId);
@@ -153,6 +195,7 @@ export class SellerPlatformSubscriptionsController {
   @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('seller', 'staff')
   @RequirePermission('settings.billing.manage')
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @Post(':storeId/billing-portal')
   createBillingPortalSession(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: BillingPortalDto) {
     return this.sellerPlatformSubscriptionsService.createBillingPortalSession(actingSellerId(req.user), storeId, dto.returnUrl);

@@ -12,6 +12,7 @@ import { StripeWebhookProcessor } from './webhooks/stripe-webhook.processor';
 import { SubscriptionEmailProcessor } from './subscription-email.processor';
 import { IdempotencyInterceptor } from '../common/idempotency.interceptor';
 import { EmailService } from '../otp/services/email.service';
+import { CriticalAlertService } from '../common/critical-alert.service';
 import { AuthModule } from '../auth/auth.module';
 import { RedisModule } from '../redis/redis.module';
 import { FinanceModule } from '../finance/finance.module';
@@ -35,6 +36,7 @@ import { QueueModule } from '../queues/queue.module';
     SubscriptionEmailProcessor,
     IdempotencyInterceptor,
     EmailService,
+    CriticalAlertService,
   ],
   exports: [SubscriptionsService, SubscriptionBenefitsService, PaymentGatewayService],
 })

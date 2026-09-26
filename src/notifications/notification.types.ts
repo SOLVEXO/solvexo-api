@@ -33,6 +33,14 @@ export const NOTIFICATION_TYPES = {
   // purchased means nothing was ever charged, so "payment failed" would be
   // a false claim. See SellerPlatformSubscriptionsService.markTrialEnded.
   PLATFORM_PLAN_TRIAL_ENDED: 'platform_plan_trial_ended',
+  // Distinct from PLATFORM_PLAN_TRIAL_ENDED/PAYMENT_FAILED — those fire the
+  // moment selling/checkout is blocked; this fires DAYS LATER once the
+  // store's own grace period elapses and the storefront itself becomes
+  // unbrowsable. See SellerPlatformSubscriptionsService.expireGracePeriods.
+  PLATFORM_PLAN_STOREFRONT_HIDDEN: 'platform_plan_storefront_hidden',
+  // Fires from the admin support tools (unlock/assign-plan/extend) — see
+  // SellerPlatformSubscriptionsService.adminUnlockStore/adminAssignPlan.
+  PLATFORM_PLAN_ADMIN_ACTION: 'platform_plan_admin_action',
   PROMOTION_REQUEST_SUBMITTED: 'promotion_request_submitted',
   PROMOTION_APPROVED: 'promotion_approved',
   PROMOTION_REJECTED: 'promotion_rejected',
@@ -90,6 +98,8 @@ export const NOTIFICATION_CATEGORY: Record<string, 'orders' | 'messages' | 'prom
   [NOTIFICATION_TYPES.PLATFORM_PLAN_RENEWAL_REMINDER]: 'subscriptions',
   [NOTIFICATION_TYPES.PLATFORM_PLAN_PAYMENT_FAILED]: 'subscriptions',
   [NOTIFICATION_TYPES.PLATFORM_PLAN_TRIAL_ENDED]: 'subscriptions',
+  [NOTIFICATION_TYPES.PLATFORM_PLAN_STOREFRONT_HIDDEN]: 'subscriptions',
+  [NOTIFICATION_TYPES.PLATFORM_PLAN_ADMIN_ACTION]: 'subscriptions',
   [NOTIFICATION_TYPES.PROMOTION_REQUEST_SUBMITTED]: 'promotions',
   [NOTIFICATION_TYPES.PROMOTION_APPROVED]: 'promotions',
   [NOTIFICATION_TYPES.PROMOTION_REJECTED]: 'promotions',

@@ -46,6 +46,13 @@ export class SellerPlatformSubscription {
   @Prop({ type: Date, required: true }) startedAt: Date;
   @Prop({ type: Date, default: null }) trialEndsAt: Date | null;
   @Prop({ type: Boolean, default: false }) trialReminderSent: boolean;
+  // Dedup for the "you'll be charged $X in N days" reminder on a real PAID
+  // (non-trial) subscription — stores the exact `nextBillingDate` the
+  // reminder was already sent for, so it fires exactly once per billing
+  // cycle even though `nextBillingDate` itself changes every renewal (a
+  // plain boolean would need a separate reset step; comparing against the
+  // billing date it was sent for needs none).
+  @Prop({ type: Date, default: null }) renewalReminderSentForDate: Date | null;
 
   // true only for a subscription that already existed before the trial-based
   // billing model shipped (backfilled once by migrate-legacy-free-eligible.ts).
@@ -80,6 +87,21 @@ export class SellerPlatformSubscription {
   // already does via `PlatformPlanInvoice.stripeInvoiceId` — that path can't
   // be reused here since a failed invoice never creates one.
   @Prop({ type: String, default: null }) lastFailedStripeInvoiceId: string | null;
+
+  // Set the moment this store enters 'locked'/'trial_ended' (now + the
+  // plan's — or, for 'trial_ended', a fallback default — gracePeriodDays).
+  // `expireGracePeriods()`'s cron flips Store.privacyMode to 'coming_soon'
+  // once this passes and the store is still in one of those two states.
+  // Cleared back to null the moment the store becomes sellable again
+  // (reactivated/paid/moved to free) so a stale date can never leak into a
+  // later lock. Independent of `BillingAccessGuard`, which already blocks
+  // checkout immediately on lock regardless of this field.
+  @Prop({ type: Date, default: null }) gracePeriodEndsAt: Date | null;
+  // Timestamp of the actual gate action (privacyMode flip) — lets the cron's
+  // own query be idempotent (only acts on rows where this is still null)
+  // without re-deriving "already gated" from privacyMode itself, which the
+  // seller could have manually changed for an unrelated reason.
+  @Prop({ type: Date, default: null }) storefrontGatedAt: Date | null;
 
   @Prop({ type: [Object], default: [] }) planHistory: Array<{
     // Null for the very first plan a store ever buys — moving FROM the

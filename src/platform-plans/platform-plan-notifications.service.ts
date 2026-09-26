@@ -149,6 +149,38 @@ export class PlatformPlanNotificationsService {
   }
 
   /**
+   * Distinct from `sendStoreLocked` — this fires DAYS LATER, once a locked/
+   * trial-ended store's grace period elapses and its storefront actually
+   * stops being browsable to buyers (Store.privacyMode -> 'coming_soon').
+   * Selling/checkout was already blocked the moment the store was locked;
+   * this is the escalation the seller needs to know about separately, not a
+   * duplicate of the original lock email.
+   */
+  /** Real gap fixed: no PAID (non-trial) subscription ever got a "you'll be
+   *  charged $X in N days" reminder before this — only a trial's own end
+   *  date had one (sendTrialEndingSoon). See
+   *  SellerPlatformSubscriptionsService.sendUpcomingRenewalReminders. */
+  async sendUpcomingRenewalReminder(to: string, data: { sellerName: string; storeName: string; planName: string; amountUSD: number; renewalDate: Date }) {
+    const html = shell('Upcoming renewal', `
+      <p>Hi ${data.sellerName},</p>
+      <p>${data.storeName}'s <strong>${data.planName}</strong> plan will renew on <strong>${data.renewalDate.toDateString()}</strong>.</p>
+      <div class="amount">${money(data.amountUSD)} will be charged</div>
+      <p style="text-align:center;color:#666;font-size:13px;">No action needed if you want to continue — this is just a heads-up before your card is charged.</p>
+    `);
+    await this.send(to, `${data.storeName}'s plan renews on ${data.renewalDate.toDateString()} — ${money(data.amountUSD)}`, html);
+  }
+
+  async sendStorefrontHidden(to: string, data: { sellerName: string; storeName: string }) {
+    const html = shell('Your storefront is now hidden from buyers', `
+      <p>Hi ${data.sellerName},</p>
+      <p>Your store <strong>${data.storeName}</strong>'s grace period has ended — your storefront is no longer visible to buyers, on top of selling already being paused.</p>
+      <div class="danger">Every product, order, customer, and setting is still untouched and safe.</div>
+      <p>Choose a plan and add a payment method any time to make your store visible and sellable again immediately.</p>
+    `);
+    await this.send(to, `${data.storeName}'s storefront is now hidden — action needed`, html);
+  }
+
+  /**
    * `committedPlan` is optional and, under the current onboarding/Billing
    * UI, never actually set any more — trial is a standalone concept (no
    * plan attached, see `PlatformTrialSettings`), and the one dormant backend
