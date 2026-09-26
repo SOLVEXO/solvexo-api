@@ -26,6 +26,30 @@ export interface PlatformPlanLimits {
   customRedirectsAllowed: boolean;
   maxActiveStoreBanners: number;
   maxActivePromotions: number;
+  /** Shopify "third-party calculated shipping rates" — live carrier rates
+   *  at checkout (Solvexo: the Shippo integration). Shopify: Advanced+ only. */
+  calculatedShippingRatesAllowed: boolean;
+  /** Shopify "markets" — how many checkout currencies a store may enable
+   *  (Store.enabledCurrencies, base currency always included). -1 = unlimited. */
+  maxMarkets: number;
+}
+
+/** Values used for any field an OLDER plan document doesn't have yet (a plan
+ *  saved before that field existed). Merged under the plan's own limits so
+ *  a missing field never reads as `undefined`. */
+const NEW_FIELD_DEFAULTS: Pick<PlatformPlanLimits, 'calculatedShippingRatesAllowed' | 'maxMarkets'> = {
+  calculatedShippingRatesAllowed: false,
+  maxMarkets: 3,
+};
+
+/** Keeps a store's checkout currencies within its plan's market limit —
+ *  base currency always kept first, extras dropped in their saved order. */
+export function trimToMarketsLimit(allowed: string[], baseCurrency: string | null | undefined, maxMarkets: number): string[] {
+  if (maxMarkets === -1 || allowed.length <= maxMarkets) return allowed;
+  const ordered = baseCurrency && allowed.includes(baseCurrency)
+    ? [baseCurrency, ...allowed.filter((c) => c !== baseCurrency)]
+    : allowed;
+  return ordered.slice(0, Math.max(1, maxMarkets));
 }
 
 // Used only as a last-resort fallback for a store that somehow has no
@@ -41,6 +65,7 @@ const FALLBACK_LIMITS: PlatformPlanLimits = {
   dedicatedAccountManager: false, prioritySupport: false, marketplaceFeaturedBadge: false, slaUptimePercent: null,
   advancedSeoToolsAllowed: false, seoAiSuggestionsAllowed: false, searchConsoleIntegrationAllowed: false, customRedirectsAllowed: false,
   maxActiveStoreBanners: 4, maxActivePromotions: 1,
+  calculatedShippingRatesAllowed: false, maxMarkets: 1,
 };
 
 const BOOLEAN_FEATURES: Array<{ key: keyof PlatformPlanLimits; label: string }> = [
@@ -56,6 +81,7 @@ const BOOLEAN_FEATURES: Array<{ key: keyof PlatformPlanLimits; label: string }> 
   { key: 'seoAiSuggestionsAllowed', label: 'AI-generated SEO suggestions' },
   { key: 'searchConsoleIntegrationAllowed', label: 'Search Console / Bing Webmaster integration' },
   { key: 'customRedirectsAllowed', label: 'Custom redirects & canonical overrides' },
+  { key: 'calculatedShippingRatesAllowed', label: 'Live carrier shipping rates' },
 ];
 
 /**
@@ -152,12 +178,14 @@ export class EntitlementsService {
       dedicatedAccountManager: true,
       prioritySupport: true,
       marketplaceFeaturedBadge: true,
+      calculatedShippingRatesAllowed: true,
+      maxMarkets: -1,
     };
   }
 
   async getLimits(storeId: string): Promise<PlatformPlanLimits> {
     const { plan, subscription } = await this.resolvePlan(storeId);
-    const base = (plan?.limits as PlatformPlanLimits) ?? FALLBACK_LIMITS;
+    const base: PlatformPlanLimits = plan?.limits ? { ...NEW_FIELD_DEFAULTS, ...(plan.limits as PlatformPlanLimits) } : FALLBACK_LIMITS;
     return this.applyTrialOverride(base, subscription);
   }
 
@@ -178,26 +206,37 @@ export class EntitlementsService {
     }
   }
 
-  /** Throws if the store is already at (or over) its staff-seat limit. Call BEFORE adding a new employee. */
+  /**
+   * Counts the store's dashboard staff accounts exactly the way Shopify
+   * counts "users" against a plan: every non-removed, active staff member
+   * (pending invites included — an invite holds a seat). POS-only employees
+   * (PIN login, no dashboard access) are deliberately NOT counted — Shopify's
+   * own rule: "POS only staff ... do not count toward the user limit".
+   * Any still-active legacy "extra staff seat" add-on keeps its paid seats
+   * until that add-on lapses (the add-on itself is no longer sold).
+   */
+  async countStaffSeats(storeId: string): Promise<{ used: number; extraSeats: number }> {
+    const [used, extraSeatAddons] = await Promise.all([
+      this.db.repositories.staffMemberModel.countDocuments({ storeId, isDelete: false, status: 'active' }),
+      this.db.repositories.platformAddonPurchaseModel
+        .find({ storeId, addonType: 'extra_staff_seat', status: 'active' }).lean(),
+    ]);
+    const extraSeats = (extraSeatAddons as any[]).reduce((sum: number, a: any) => sum + (a.quantity ?? 1), 0);
+    return { used, extraSeats };
+  }
+
+  /** Throws if the store is already at (or over) its staff-account limit. Call BEFORE inviting or re-activating a dashboard staff member. */
   async assertCanAddStaff(storeId: string): Promise<void> {
     const limits = await this.getLimits(storeId);
     if (limits.maxStaffAccounts === -1) return;
 
-    // "Additional Staff Seats" add-on purchases top up the base plan limit
-    // without requiring a full plan upgrade (see PlatformAddonsService) —
-    // queried directly here rather than injecting PlatformAddonsService, to
-    // avoid a circular dependency (PlatformAddonsService → AiCreditsService → EntitlementsService).
-    const extraSeatAddons = await this.db.repositories.platformAddonPurchaseModel
-      .find({ storeId, addonType: 'extra_staff_seat', status: 'active' }).lean();
-    const extraSeats = extraSeatAddons.reduce((sum: number, a: any) => sum + (a.quantity ?? 1), 0);
+    const { used, extraSeats } = await this.countStaffSeats(storeId);
     const effectiveLimit = limits.maxStaffAccounts + extraSeats;
-
-    const count = await this.db.repositories.employeeModel.countDocuments({ storeId, isDelete: false });
-    if (count >= effectiveLimit) {
+    if (used >= effectiveLimit) {
       throw new BadRequestException(
         effectiveLimit === 0
-          ? 'Staff accounts are not available on your current plan — upgrade your platform plan to add staff.'
-          : `Staff account limit reached (${effectiveLimit}) for your current plan — upgrade your platform plan or buy an extra staff seat add-on to add more.`,
+          ? 'Staff accounts are not included in your current plan — upgrade your plan to add staff.'
+          : `Staff account limit reached (${effectiveLimit}) for your current plan — upgrade your plan or deactivate a staff member to add another.`,
       );
     }
   }
@@ -268,11 +307,13 @@ export class EntitlementsService {
    */
   async getEntitlementsSummary(storeId: string) {
     const { plan, subscription } = await this.resolvePlan(storeId);
-    const limits: PlatformPlanLimits = this.applyTrialOverride((plan?.limits as PlatformPlanLimits) ?? FALLBACK_LIMITS, subscription);
+    const base: PlatformPlanLimits = plan?.limits ? { ...NEW_FIELD_DEFAULTS, ...(plan.limits as PlatformPlanLimits) } : FALLBACK_LIMITS;
+    const limits: PlatformPlanLimits = this.applyTrialOverride(base, subscription);
 
-    const [productCount, staffCount, posLocationCount, aiWallet, allActivePlans] = await Promise.all([
+    const [productCount, staffSeats, posLocationCount, aiWallet, allActivePlans] = await Promise.all([
       this.db.repositories.productModel.countDocuments({ storeId, isDelete: false }),
-      this.db.repositories.employeeModel.countDocuments({ storeId, isDelete: false }),
+      // Same seat count assertCanAddStaff() enforces — dashboard staff only.
+      this.countStaffSeats(storeId),
       // Same count assertCanAddLocation() already uses to gate creation —
       // reused here so the usage meter shows the real number instead of a
       // hardcoded 0.
@@ -301,8 +342,9 @@ export class EntitlementsService {
         allowed: limits.maxProducts === -1 || productCount < limits.maxProducts,
       },
       maxStaffAccounts: {
-        limit: limits.maxStaffAccounts, used: staffCount,
-        allowed: limits.maxStaffAccounts === -1 || staffCount < limits.maxStaffAccounts,
+        limit: limits.maxStaffAccounts === -1 ? -1 : limits.maxStaffAccounts + staffSeats.extraSeats,
+        used: staffSeats.used,
+        allowed: limits.maxStaffAccounts === -1 || staffSeats.used < limits.maxStaffAccounts + staffSeats.extraSeats,
       },
       maxPosLocations: {
         limit: limits.maxPosLocations, used: posLocationCount,
@@ -313,6 +355,7 @@ export class EntitlementsService {
         balance: (aiWallet as any)?.balance ?? 0,
       },
       transactionFeeRate: limits.transactionFeeRate,
+      maxMarkets: limits.maxMarkets,
       ...booleanFeatures,
       dedicatedAccountManager: !!limits.dedicatedAccountManager,
       prioritySupport: !!limits.prioritySupport,

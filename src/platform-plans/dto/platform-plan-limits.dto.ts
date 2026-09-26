@@ -1,6 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { ApiProperty } from '@nestjs/swagger';
-import { IsBoolean, IsNumber, IsOptional, Max, Min } from 'class-validator';
+import { IsBoolean, IsNumber, IsOptional, Max, Min, NotEquals } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class PlatformPlanLimitsDto {
@@ -56,4 +56,11 @@ export class PlatformPlanLimitsDto {
   @ApiProperty({ description: '-1 = unlimited' })
   @IsOptional() @Type(() => Number) @IsNumber() @Min(-1)
   maxActivePromotions?: number;
+
+  @ApiProperty({ required: false, description: 'Live carrier shipping rates at checkout (Shopify: third-party calculated shipping rates)' })
+  @IsOptional() @IsBoolean() calculatedShippingRatesAllowed?: boolean;
+
+  @ApiProperty({ required: false, description: 'Max checkout currencies (markets), base currency included. -1 = unlimited' })
+  @IsOptional() @Type(() => Number) @IsNumber() @Min(-1) @NotEquals(0, { message: 'maxMarkets must be -1 (unlimited) or at least 1' })
+  maxMarkets?: number;
 }

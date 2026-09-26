@@ -5,26 +5,28 @@ import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { PaymentGatewayService } from '@/subscriptions/payment-gateway/payment-gateway.service';
 import { AiCreditsService } from './ai-credits.service';
 import { verifyStoreOwnershipStrict } from '@/common/store-ownership.util';
-import { PurchaseAddonDto } from './dto/purchase-addon.dto';
+import { PurchaseAddonDto, PURCHASABLE_ADDON_TYPES } from './dto/purchase-addon.dto';
 
 /**
- * One-off / recurring add-on purchases — "Extra AI Credits", "Additional
- * Staff Seats", "Priority Marketplace Placement" etc. from the pricing
- * page's add-ons row. Independent of the base PlatformPlan: a store can buy
- * these regardless of tier, without a full plan upgrade.
+ * One-off / recurring add-on purchases, independent of the base PlatformPlan.
  *
- * Pricing table is intentionally simple/flat (not a database-driven catalog
- * like PlatformPlan) — these are small, fixed-price add-ons; making them
- * admin-configurable would be reasonable future work but wasn't required
- * for the core plan/entitlement system.
+ * Only add-ons that deliver a real, working benefit are sold (see
+ * PURCHASABLE_ADDON_TYPES). The other historical types are listed in
+ * `DISCONTINUED_ADDONS` so any still-active purchase is closed out at its
+ * next billing date instead of being charged again.
  */
-const ADDON_PRICING: Record<string, { priceUSD: number; recurring: boolean; unitLabel: string }> = {
-  extra_ai_credits: { priceUSD: 10, recurring: false, unitLabel: '500 credits' },
-  extra_staff_seat: { priceUSD: 5, recurring: true, unitLabel: 'seat/month' },
-  priority_marketplace_placement: { priceUSD: 29, recurring: true, unitLabel: 'month' },
-  advanced_tax_compliance: { priceUSD: 15, recurring: true, unitLabel: 'month' },
-  sms_notifications: { priceUSD: 5, recurring: true, unitLabel: 'month (base enablement fee)' },
+const ADDON_PRICING: Record<(typeof PURCHASABLE_ADDON_TYPES)[number], { priceUSD: number; recurring: boolean; unitLabel: string; label: string; description: string }> = {
+  extra_ai_credits: {
+    priceUSD: 10, recurring: false, unitLabel: '500 credits',
+    label: 'Extra AI Credits',
+    description: '500 AI credits added to your store wallet right away. One-time charge, no subscription.',
+  },
 };
+
+/** No longer sold and never renewed again — each one either delivered
+ *  nothing (tax compliance, SMS, marketplace placement) or isn't a thing
+ *  Shopify sells (extra staff seats; more staff comes with a higher plan). */
+const DISCONTINUED_ADDONS = new Set(['extra_staff_seat', 'priority_marketplace_placement', 'advanced_tax_compliance', 'sms_notifications']);
 
 @Injectable()
 export class PlatformAddonsService {
@@ -85,7 +87,7 @@ export class PlatformAddonsService {
   async purchaseAddon(sellerId: string, storeId: string, dto: PurchaseAddonDto) {
     await this.verifyStoreOwnership(storeId, sellerId);
     const pricing = ADDON_PRICING[dto.addonType];
-    if (!pricing) throw new BadRequestException('Unknown add-on type');
+    if (!pricing) throw new BadRequestException('This add-on is not available for purchase');
 
     const quantity = dto.quantity ?? 1;
     const totalPriceUSD = this.round(pricing.priceUSD * quantity);
@@ -110,9 +112,6 @@ export class PlatformAddonsService {
     if (dto.addonType === 'extra_ai_credits') {
       await this.aiCreditsService.grant(storeId, sellerId, quantity * 500, `Purchased ${quantity} × 500 AI credits`);
     }
-    if (dto.addonType === 'priority_marketplace_placement') {
-      await this.syncPriorityPlacementBadge(storeId);
-    }
 
     this.activityLogService.log({
       storeId, category: 'platform_plans', action: 'addon_purchased',
@@ -122,6 +121,15 @@ export class PlatformAddonsService {
     });
 
     return { success: true, message: 'Add-on purchased', data: addon };
+  }
+
+  /** What a seller can buy right now, with the exact price — the frontend's
+   *  confirm step reads this instead of hardcoding prices. */
+  getAddonCatalog() {
+    return {
+      success: true,
+      data: PURCHASABLE_ADDON_TYPES.map((type) => ({ addonType: type, ...ADDON_PRICING[type] })),
+    };
   }
 
   async listAddons(sellerId: string, storeId: string) {
@@ -168,6 +176,24 @@ export class PlatformAddonsService {
     let succeeded = 0, failed = 0;
     for (const addon of due) {
       try {
+        // Discontinued add-ons are never charged again — they're closed out
+        // at their next billing date instead (the already-paid period is
+        // honored, nothing more is billed).
+        if (DISCONTINUED_ADDONS.has(addon.addonType)) {
+          addon.status = 'canceled';
+          addon.nextBillingDate = null;
+          await addon.save();
+          if (addon.addonType === 'priority_marketplace_placement') {
+            await this.syncPriorityPlacementBadge(addon.storeId);
+          }
+          this.activityLogService.log({
+            storeId: addon.storeId, category: 'platform_plans', action: 'addon_discontinued',
+            description: `Add-on "${addon.addonType}" is no longer offered — canceled at the end of its paid period, no further charges`,
+            actorRole: 'system', targetId: (addon as any)._id.toString(), targetType: 'platform_addon_purchase',
+          });
+          continue;
+        }
+
         const sub = await this.db.repositories.sellerPlatformSubscriptionModel.findOne({ storeId: addon.storeId });
         const charge = await this.gateway.chargeSubscription(`addon_renewal_${addon._id}`, addon.priceUSD, {
           providerCustomerId: sub?.stripeCustomerId ?? undefined,

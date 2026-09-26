@@ -90,6 +90,8 @@ export class PlatformPlan {
       customRedirectsAllowed: false,
       maxActiveStoreBanners: 4,
       maxActivePromotions: 1,
+      calculatedShippingRatesAllowed: false,
+      maxMarkets: 3,
     }),
   })
   limits: {
@@ -116,6 +118,8 @@ export class PlatformPlan {
     customRedirectsAllowed: boolean;       // gates seller-managed redirect rules & canonical overrides
     maxActiveStoreBanners: number;         // -1 = unlimited — enforced by EntitlementsService.assertCanCreateStoreBanner
     maxActivePromotions: number;           // -1 = unlimited — enforced by EntitlementsService.assertCanCreatePromotion
+    calculatedShippingRatesAllowed: boolean; // live carrier rates (Shippo) — Shopify: "third-party calculated shipping rates"
+    maxMarkets: number;                    // -1 = unlimited — max checkout currencies (Store.enabledCurrencies), base included
   };
 
   @Prop({ type: String, enum: ['active', 'archived'], default: 'active' }) status: string;

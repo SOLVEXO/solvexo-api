@@ -23,7 +23,7 @@ import { UploadService } from '@/upload/upload.service';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { UpdateStoreCustomerDto } from './dto/update-store-customer.dto';
 import { SubscriptionBenefitsService } from '@/subscriptions/subscription-benefits.service';
-import { EntitlementsService } from '@/platform-plans/entitlements.service';
+import { EntitlementsService, trimToMarketsLimit } from '@/platform-plans/entitlements.service';
 import { SellerPlatformSubscriptionsService } from '@/platform-plans/seller-platform-subscriptions.service';
 import { AiCreditsService } from '@/platform-plans/ai-credits.service';
 import { NotificationsService } from '@/notifications/notifications.service';
@@ -1173,6 +1173,26 @@ export class StoreService {
     // store's own baseCurrency (a seller can't disable checkout in the
     // currency they're actually priced/paid in).
     if (enabledCurrencies !== undefined) {
+      // Plan "markets" limit (Shopify: markets per plan). `null` means
+      // "every platform currency", so it counts as that many markets.
+      // Only a CHANGE is checked — Store Settings re-sends this field on every
+      // save, and an untouched value (e.g. a store left on "all" before this
+      // limit existed) must not block saving unrelated settings. What buyers
+      // actually see is still capped by effectiveEnabledCurrencies().
+      const normalize = (v: unknown) =>
+        Array.isArray(v) && v.length > 0 ? JSON.stringify([...(v as string[])].sort()) : 'null';
+      const unchanged = normalize(enabledCurrencies) === normalize(store.enabledCurrencies);
+      const { maxMarkets } = await this.entitlementsService.getLimits(storeId);
+      if (maxMarkets !== -1 && !unchanged) {
+        const requestedCount = enabledCurrencies === null
+          ? (await this.adminConfigService.getEnabledCurrencies()).length
+          : Array.isArray(enabledCurrencies) ? enabledCurrencies.length : 0;
+        if (requestedCount > maxMarkets) {
+          throw new BadRequestException(
+            `Your plan allows up to ${maxMarkets} checkout ${maxMarkets === 1 ? 'currency' : 'currencies'} (markets) — pick ${maxMarkets === 1 ? 'only your store currency' : `at most ${maxMarkets}`}, or upgrade your plan for more.`,
+          );
+        }
+      }
       if (enabledCurrencies === null) {
         updateData.enabledCurrencies = null;
       } else {
@@ -1317,6 +1337,18 @@ export class StoreService {
     return this.shapePublicStoreResponse(store, visitorIp);
   }
 
+  /** Checkout currencies a buyer actually sees — the store's own "Markets"
+   *  choice, capped at its plan's `maxMarkets` (a store that later moved to
+   *  a smaller plan keeps its base currency + the first extras that fit).
+   *  `null` still means "every platform currency" when the plan is unlimited. */
+  private async effectiveEnabledCurrencies(store: any): Promise<string[] | null> {
+    const stored: string[] | null = store.enabledCurrencies && store.enabledCurrencies.length > 0 ? store.enabledCurrencies : null;
+    const { maxMarkets } = await this.entitlementsService.getLimits(String(store._id));
+    if (maxMarkets === -1) return stored;
+    const allowed = stored ?? (await this.adminConfigService.getEnabledCurrencies()).map((c) => c.code);
+    return trimToMarketsLimit(allowed, store.baseCurrency, maxMarkets);
+  }
+
   private async shapePublicStoreResponse(store: any, visitorIp?: string) {
     const campaigns = await this.marketingService.getActiveCampaignsForStore(store._id.toString());
     const primaryCampaign = pickPrimaryCampaignForBadge(campaigns);
@@ -1356,7 +1388,7 @@ export class StoreService {
         // "Markets" — null/empty means every platform-enabled currency is
         // accepted (a store that never touched this setting) — the
         // frontend must treat null the same as "all", never as "none".
-        enabledCurrencies: store.enabledCurrencies && store.enabledCurrencies.length > 0 ? store.enabledCurrencies : null,
+        enabledCurrencies: await this.effectiveEnabledCurrencies(store),
         sellerType: store.sellerType ?? null,
         badges: store.badges ?? [],
         createdAt: store.createdAt,

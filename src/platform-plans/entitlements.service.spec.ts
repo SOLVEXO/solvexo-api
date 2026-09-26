@@ -1,6 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { BadRequestException } from '@nestjs/common';
-import { EntitlementsService } from './entitlements.service';
+import { EntitlementsService, trimToMarketsLimit } from './entitlements.service';
 import { DatabaseService } from '../database/databaseservice';
 
 const STORE_ID = 'store-1';
@@ -24,6 +24,9 @@ describe('EntitlementsService — trial vs. paid limits', () => {
   let subModel: any;
   let planModel: any;
   let productModel: any;
+  let staffMemberModel: any;
+  let employeeModel: any;
+  let addonModel: any;
 
   const leanFindOne = (value: any) => jest.fn().mockReturnValue({ lean: jest.fn().mockResolvedValue(value) });
 
@@ -35,17 +38,21 @@ describe('EntitlementsService — trial vs. paid limits', () => {
       find: jest.fn().mockReturnValue({ sort: jest.fn().mockReturnValue({ lean: jest.fn().mockResolvedValue([]) }) }),
     };
     productModel = { countDocuments: jest.fn().mockResolvedValue(0) };
+    staffMemberModel = { countDocuments: jest.fn().mockResolvedValue(0) };
+    employeeModel = { countDocuments: jest.fn().mockResolvedValue(0) };
+    addonModel = { find: jest.fn().mockReturnValue({ lean: jest.fn().mockResolvedValue([]) }) };
 
     const db = {
       repositories: {
         sellerPlatformSubscriptionModel: subModel,
         platformPlanModel: planModel,
         productModel,
-        employeeModel: { countDocuments: jest.fn().mockResolvedValue(0) },
+        employeeModel,
+        staffMemberModel,
         storeLocationModel: { countDocuments: jest.fn().mockResolvedValue(0) },
         storeBannerModel: { countDocuments: jest.fn().mockResolvedValue(0) },
         promotionRequestModel: { countDocuments: jest.fn().mockResolvedValue(0) },
-        platformAddonPurchaseModel: { find: jest.fn().mockReturnValue({ lean: jest.fn().mockResolvedValue([]) }) },
+        platformAddonPurchaseModel: addonModel,
         aiCreditsWalletModel: { findOne: leanFindOne(null) },
       },
     } as unknown as DatabaseService;
@@ -81,6 +88,8 @@ describe('EntitlementsService — trial vs. paid limits', () => {
     expect(limits.dedicatedAccountManager).toBe(true);
     expect(limits.prioritySupport).toBe(true);
     expect(limits.marketplaceFeaturedBadge).toBe(true);
+    expect(limits.calculatedShippingRatesAllowed).toBe(true);
+    expect(limits.maxMarkets).toBe(-1);
 
     // Deliberately untouched — real revenue/cost mechanics, not a restriction to lift.
     expect(limits.transactionFeeRate).toBe(0.03);
@@ -92,7 +101,9 @@ describe('EntitlementsService — trial vs. paid limits', () => {
 
     const limits = await service.getLimits(STORE_ID);
 
-    expect(limits).toEqual(PAID_PLAN.limits);
+    // A plan saved before the two newest fields existed gets their
+    // defaults merged in (never `undefined`) — everything else is the plan's own value.
+    expect(limits).toEqual({ calculatedShippingRatesAllowed: false, maxMarkets: 3, ...PAID_PLAN.limits });
   });
 
   it('a store with no subscription row at all (legacy/pre-migration) falls back to FALLBACK_LIMITS, not the trial bypass', async () => {
@@ -127,5 +138,53 @@ describe('EntitlementsService — trial vs. paid limits', () => {
     expect(summary.maxProducts.limit).toBe(-1);
     expect(summary.maxProducts.allowed).toBe(true);
     expect(summary.transactionFeeRate).toBe(0.03);
+  });
+
+  // ── Staff accounts — Shopify rule: dashboard users count, POS-only staff don't ──
+  it('assertCanAddStaff counts dashboard staff members, not POS employees', async () => {
+    setup({ storeId: STORE_ID, status: 'active', platformPlanId: 'plan-1' }); // plan allows 2
+    employeeModel.countDocuments.mockResolvedValue(50); // lots of POS employees — must not matter
+    staffMemberModel.countDocuments.mockResolvedValue(1);
+
+    await expect(service.assertCanAddStaff(STORE_ID)).resolves.toBeUndefined();
+    expect(staffMemberModel.countDocuments).toHaveBeenCalledWith({ storeId: STORE_ID, isDelete: false, status: 'active' });
+    expect(employeeModel.countDocuments).not.toHaveBeenCalled();
+  });
+
+  it('assertCanAddStaff throws once active dashboard staff reach the plan limit', async () => {
+    setup({ storeId: STORE_ID, status: 'active', platformPlanId: 'plan-1' });
+    staffMemberModel.countDocuments.mockResolvedValue(2);
+
+    await expect(service.assertCanAddStaff(STORE_ID)).rejects.toThrow(BadRequestException);
+  });
+
+  it('a still-active legacy extra-seat add-on keeps its paid seats until it lapses', async () => {
+    setup({ storeId: STORE_ID, status: 'active', platformPlanId: 'plan-1' });
+    staffMemberModel.countDocuments.mockResolvedValue(2);
+    addonModel.find.mockReturnValue({ lean: jest.fn().mockResolvedValue([{ quantity: 1 }]) });
+
+    await expect(service.assertCanAddStaff(STORE_ID)).resolves.toBeUndefined();
+  });
+
+  it('getEntitlementsSummary reports the dashboard staff count', async () => {
+    setup({ storeId: STORE_ID, status: 'active', platformPlanId: 'plan-1' });
+    staffMemberModel.countDocuments.mockResolvedValue(1);
+
+    const summary = await service.getEntitlementsSummary(STORE_ID);
+
+    expect(summary.maxStaffAccounts).toEqual({ limit: 2, used: 1, allowed: true });
+    expect(summary.maxMarkets).toBe(3);
+  });
+});
+
+describe('trimToMarketsLimit', () => {
+  it('keeps the list untouched when unlimited or already within the limit', () => {
+    expect(trimToMarketsLimit(['PKR', 'USD', 'AED'], 'PKR', -1)).toEqual(['PKR', 'USD', 'AED']);
+    expect(trimToMarketsLimit(['PKR', 'USD'], 'PKR', 3)).toEqual(['PKR', 'USD']);
+  });
+
+  it('always keeps the base currency first and drops extras past the limit', () => {
+    expect(trimToMarketsLimit(['USD', 'AED', 'PKR'], 'PKR', 2)).toEqual(['PKR', 'USD']);
+    expect(trimToMarketsLimit(['USD', 'PKR'], 'PKR', 1)).toEqual(['PKR']);
   });
 });

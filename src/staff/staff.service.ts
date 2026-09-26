@@ -17,6 +17,7 @@ import { CreateStaffDto } from './dto/create-staff.dto';
 import { UpdateStaffDto } from './dto/update-staff.dto';
 import { AcceptStaffInviteDto } from './dto/accept-staff-invite.dto';
 import { STAFF_PERMISSIONS } from './schemas/staff-member.schema';
+import { EntitlementsService } from '../platform-plans/entitlements.service';
 
 const INVITE_EXPIRY_DAYS = 7;
 
@@ -28,6 +29,7 @@ export class StaffService {
     private readonly redis: RedisService,
     private readonly activityLogService: ActivityLogService,
     private readonly emailService: EmailService,
+    private readonly entitlementsService: EntitlementsService,
   ) {}
 
   private get repos() {
@@ -115,6 +117,9 @@ export class StaffService {
 
     const existing = await this.repos.staffMemberModel.findOne({ storeId, email: dto.email.toLowerCase().trim() });
     if (existing) throw new BadRequestException('A staff member with this email already exists for this store');
+
+    // Plan staff-account limit (Shopify-style: dashboard users only).
+    await this.entitlementsService.assertCanAddStaff(storeId);
 
     const store = await this.repos.storeModel.findById(storeId).select('name sellerId contactEmail').lean() as any;
     const inviteToken = randomBytes(24).toString('hex');
@@ -227,6 +232,12 @@ export class StaffService {
 
     if (dto.roleId !== undefined && dto.roleId !== null) {
       await this.assertActorCanAssignRole(storeId, actorRole, actorPermissions, dto.roleId);
+    }
+
+    // Re-activating a deactivated member takes a seat again — same limit
+    // check as a new invite, so deactivate→invite→reactivate can't exceed it.
+    if (dto.status === 'active' && staff.status !== 'active') {
+      await this.entitlementsService.assertCanAddStaff(storeId);
     }
 
     let roleOrStatusChanged = false;

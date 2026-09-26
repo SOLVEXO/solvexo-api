@@ -113,8 +113,10 @@ export class PosService {
     });
     if (existing) throw new BadRequestException('Employee with this email already exists in this store');
 
-    // Platform-plan staff-seat gate — see EntitlementsService.
-    await this.entitlementsService.assertCanAddStaff(dto.storeId);
+    // No plan staff-seat check here on purpose: POS employees (PIN-only, no
+    // dashboard access) don't count toward the plan's staff-account limit —
+    // Shopify's own rule for POS-only staff. (The plan's location limit is
+    // still enforced where locations are created — StoreLocationService.)
     await this.assertLocationBelongsToStore(dto.storeId, dto.locationId);
 
     const hashedPin = await bcrypt.hash(dto.pin, 10);

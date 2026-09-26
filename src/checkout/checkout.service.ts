@@ -15,6 +15,7 @@ import { DiscountsService } from '@/discounts/discounts.service';
 import { resolveBuyerStoreScope } from '@/common/store-scope.util';
 import { TaxService } from '@/tax/tax.service';
 import { ShippingRatesService } from '@/shipping-rates/shipping-rates.service';
+import { EntitlementsService, trimToMarketsLimit } from '@/platform-plans/entitlements.service';
 
 // Fallback currency for the rare case a store's own `baseCurrency` can't be
 // resolved (e.g. store doc missing at read time). Every real `ShippingZone`
@@ -35,6 +36,7 @@ export class CheckoutService {
     private readonly discountsService: DiscountsService,
     private readonly taxService: TaxService,
     private readonly shippingRatesService: ShippingRatesService,
+    private readonly entitlementsService: EntitlementsService,
   ) {}
 
   private round(n: number) {
@@ -143,10 +145,16 @@ export class CheckoutService {
    *  rejecting the checkout outright — a buyer whose preference isn't
    *  accepted here still completes checkout, just priced in the store's
    *  currency instead of silently erroring. */
-  private async resolveStoreCurrency(preferred: string, store: { baseCurrency?: string | null; enabledCurrencies?: string[] | null }): Promise<string> {
-    const allowed: string[] = store.enabledCurrencies && store.enabledCurrencies.length > 0
+  private async resolveStoreCurrency(preferred: string, store: { _id?: unknown; baseCurrency?: string | null; enabledCurrencies?: string[] | null }): Promise<string> {
+    let allowed: string[] = store.enabledCurrencies && store.enabledCurrencies.length > 0
       ? store.enabledCurrencies
       : (await this.adminConfigService.getEnabledCurrencies()).map((c) => c.code);
+    // Plan "markets" cap — a store on a smaller plan than its saved Markets
+    // list allows only gets its base currency + the extras that fit.
+    if (store._id) {
+      const { maxMarkets } = await this.entitlementsService.getLimits(String(store._id));
+      allowed = trimToMarketsLimit(allowed, store.baseCurrency, maxMarkets);
+    }
     if (allowed.includes(preferred)) return preferred;
     return store.baseCurrency && allowed.includes(store.baseCurrency) ? store.baseCurrency : allowed[0];
   }
@@ -899,6 +907,9 @@ export class CheckoutService {
       if (storeIdsInCheckout.length !== 1) {
         throw new BadRequestException('Live carrier rates are only available for a single-store checkout.');
       }
+      if (!(await this.shippingRatesService.isLiveCheckoutRatesAllowed(storeIdsInCheckout[0]))) {
+        throw new BadRequestException('Live carrier rates are not available for this store — please pick another shipping option.');
+      }
       const verified = await this.shippingRatesService.verifyRate(storeIdsInCheckout[0], liveRateId);
       if (!verified) throw new BadRequestException('This shipping rate is no longer available — please pick another option.');
       liveRate = verified;
@@ -1114,6 +1125,12 @@ export class CheckoutService {
    */
   async getLiveShippingRates(userId: string, storeId: string) {
     const { cartModel, addressModel, productVariantModel } = this.databaseService.repositories;
+
+    // Store's plan doesn't include live calculated rates — buyers just see
+    // the flat per-zone rates, same as a store that never connected Shippo.
+    if (!(await this.shippingRatesService.isLiveCheckoutRatesAllowed(storeId))) {
+      return { success: true, data: null };
+    }
 
     let address = await addressModel.findOne({ userId, isDefault: true, isDelete: false }).lean();
     if (!address) {

@@ -23,6 +23,15 @@ export class PlatformAddonsController {
     return this.addonsService.adminListAddonPurchases(query);
   }
 
+  // Static route — also registered before ":storeId/addons".
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Get('addons/catalog')
+  getAddonCatalog() {
+    return this.addonsService.getAddonCatalog();
+  }
+
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('seller')

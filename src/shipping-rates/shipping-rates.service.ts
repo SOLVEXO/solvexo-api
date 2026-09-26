@@ -3,6 +3,7 @@ import { Injectable, BadRequestException } from '@nestjs/common';
 import { DatabaseService } from '@/database/databaseservice';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { encryptCredential, decryptCredential, maskSecret } from '@/common/credential-encryption.util';
+import { EntitlementsService } from '@/platform-plans/entitlements.service';
 
 export interface ShippingOriginAddress {
   name: string;
@@ -56,7 +57,17 @@ export class ShippingRatesService {
   constructor(
     private readonly databaseService: DatabaseService,
     private readonly activityLogService: ActivityLogService,
+    private readonly entitlementsService: EntitlementsService,
   ) {}
+
+  /** Plan gate for live carrier rates AT CHECKOUT — Shopify's "third-party
+   *  calculated shipping rates" (Advanced+ there). Deliberately NOT applied
+   *  to connecting Shippo or buying labels: label buying is on every Shopify
+   *  plan, only showing buyers live calculated rates is tier-gated. */
+  async isLiveCheckoutRatesAllowed(storeId: string): Promise<boolean> {
+    const limits = await this.entitlementsService.getLimits(storeId);
+    return !!limits.calculatedShippingRatesAllowed;
+  }
 
   private get repos() {
     return this.databaseService.repositories;

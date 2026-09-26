@@ -1106,16 +1106,25 @@ export class SellerPlatformSubscriptionsService {
     let usageWarnings: Array<{ label: string; used: number; newLimit: number }> = [];
     if (direction === 'downgrade') {
       const newLimits = (newPlan as any).limits ?? {};
-      const [productCount, staffCount, locationCount] = await Promise.all([
+      // Staff = active dashboard staff only (POS-only staff don't count —
+      // Shopify rule, same as EntitlementsService.countStaffSeats).
+      const [productCount, staffCount, locationCount, storeDoc] = await Promise.all([
         this.db.repositories.productModel.countDocuments({ storeId, isDelete: false }),
-        this.db.repositories.employeeModel.countDocuments({ storeId, isDelete: false }),
+        this.db.repositories.staffMemberModel.countDocuments({ storeId, isDelete: false, status: 'active' }),
         this.db.repositories.storeLocationModel.countDocuments({ storeId, status: 'active', isDelete: false }),
+        this.db.repositories.storeModel.findById(storeId).select('enabledCurrencies').lean(),
       ]);
+      const chosenCurrencies = (storeDoc as any)?.enabledCurrencies;
       const checks: Array<{ label: string; used: number; limit: number }> = [
         { label: 'Products', used: productCount, limit: newLimits.maxProducts },
         { label: 'Staff accounts', used: staffCount, limit: newLimits.maxStaffAccounts },
         { label: 'POS locations', used: locationCount, limit: newLimits.maxPosLocations },
       ];
+      // Markets — only when the seller picked a specific list; buyers keep the
+      // store currency + the first extras that fit (trimToMarketsLimit).
+      if (Array.isArray(chosenCurrencies) && chosenCurrencies.length > 0 && typeof newLimits.maxMarkets === 'number') {
+        checks.push({ label: 'Checkout currencies (markets)', used: chosenCurrencies.length, limit: newLimits.maxMarkets });
+      }
       usageWarnings = checks
         .filter(c => c.limit !== -1 && c.used > c.limit)
         .map(c => ({ label: c.label, used: c.used, newLimit: c.limit }));

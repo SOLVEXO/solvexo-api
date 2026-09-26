@@ -18,6 +18,7 @@ const DEFAULT_LIMITS = {
   // those asserts read as "unlimited" (see FALLBACK_LIMITS in entitlements.service.ts —
   // same values used there for the equivalent no-plan-at-all fallback).
   maxActiveStoreBanners: 4, maxActivePromotions: 1,
+  calculatedShippingRatesAllowed: false, maxMarkets: 3,
 };
 
 /** Admin CRUD + public browse for PlatformPlan — the tiers on the pricing page. */
