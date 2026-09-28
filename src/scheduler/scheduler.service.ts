@@ -27,6 +27,7 @@ import { InventoryService } from '@/inventory/inventory.service';
 import { PurchaseOrdersService } from '@/purchase-orders/purchase-orders.service';
 import { DraftOrdersService } from '@/draft-orders/draft-orders.service';
 import { OrdersService } from '@/orders/orders.service';
+import { MarketingAutomationsService } from '@/marketing-automations/marketing-automations.service';
 
 @Injectable()
 export class SchedulerService {
@@ -58,6 +59,7 @@ export class SchedulerService {
     private readonly purchaseOrdersService: PurchaseOrdersService,
     private readonly draftOrdersService: DraftOrdersService,
     private readonly ordersService: OrdersService,
+    private readonly marketingAutomationsService: MarketingAutomationsService,
   ) {}
 
   /**
@@ -102,6 +104,33 @@ export class SchedulerService {
   // send job per recipient). Same cadence family as the abandoned-cart tick
   // above; a campaign scheduled "for 9am" going out a few minutes late is
   // normal for this kind of job.
+  // Marketing automations (see MarketingAutomationsService). Back-in-stock is
+  // time-sensitive (a restock can sell out again), so it runs often; price
+  // drops hourly; win-back once a day in the morning (UTC).
+  @Cron('*/10 * * * *')
+  async processBackInStockAlerts() {
+    await this.runLocked('automation-back-in-stock', 9 * 60_000, async () => {
+      const result = await this.marketingAutomationsService.processBackInStock();
+      if (result.notified > 0) this.logger.log(`Back-in-stock: ${result.notified} alert(s) sent`);
+    });
+  }
+
+  @Cron('20 * * * *')
+  async processPriceDropAlerts() {
+    await this.runLocked('automation-price-drop', 50 * 60_000, async () => {
+      const result = await this.marketingAutomationsService.processPriceDrops();
+      if (result.notified > 0) this.logger.log(`Price drop: ${result.notified} alert(s) sent`);
+    });
+  }
+
+  @Cron('0 9 * * *')
+  async processWinBackEmails() {
+    await this.runLocked('automation-win-back', 60 * 60_000, async () => {
+      const result = await this.marketingAutomationsService.processWinBack();
+      if (result.notified > 0) this.logger.log(`Win-back: ${result.notified} email(s) sent`);
+    });
+  }
+
   @Cron('*/5 * * * *')
   async processScheduledEmailCampaigns() {
     await this.runLocked('email-campaigns-scheduled-send', 120_000, async () => {

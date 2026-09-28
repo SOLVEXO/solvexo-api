@@ -6,6 +6,7 @@ export const QUEUE_NAMES = {
   SEO_AI: 'seo-ai',
   NOTIFICATIONS: 'notifications',
   EMAIL_CAMPAIGNS: 'email-campaigns',
+  NEWSLETTER_BROADCASTS: 'newsletter-broadcasts',
 } as const;
 
 export const STRIPE_WEBHOOK_JOB = 'process-stripe-event';
@@ -14,6 +15,7 @@ export const NOTIFICATION_PUSH_JOB = 'send-notification-push';
 export const NOTIFICATION_EMAIL_JOB = 'send-notification-email';
 export const NOTIFICATION_WHATSAPP_JOB = 'send-notification-whatsapp';
 export const EMAIL_CAMPAIGN_SEND_JOB = 'send-email-campaign-message';
+export const NEWSLETTER_BROADCAST_SEND_JOB = 'send-newsletter-broadcast-message';
 
 export const SEO_SITEMAP_REGENERATE_JOB = 'regenerate-sitemap';
 export const SEO_AUDIT_RUN_JOB = 'run-audit';

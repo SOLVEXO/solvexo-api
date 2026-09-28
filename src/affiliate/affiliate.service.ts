@@ -3,6 +3,8 @@ import { Injectable, Logger, ForbiddenException, NotFoundException, BadRequestEx
 import { DatabaseService } from '@/database/databaseservice';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { randomBytes } from 'crypto';
+import { API_PUBLIC_ORIGIN } from '@/common/api-origin';
+import { storePublicUrl } from '@/newsletter/marketing-email.util';
 import { CreateAffiliateDto } from './dto/create-affiliate.dto';
 import { UpdateAffiliateDto } from './dto/update-affiliate.dto';
 import { UpdateAffiliateProgramDto } from './dto/update-affiliate-program.dto';
@@ -103,7 +105,7 @@ export class AffiliateService {
   private toApiShape(affiliate: any) {
     return {
       ...(affiliate.toObject ? affiliate.toObject() : affiliate),
-      referralLink: `${PLATFORM_ORIGIN}/api/affiliate/r/${affiliate.referralCode}`,
+      referralLink: `${API_PUBLIC_ORIGIN}/api/affiliate/r/${affiliate.referralCode}`,
     };
   }
 
@@ -117,7 +119,7 @@ export class AffiliateService {
       this.r.affiliateModel.find(filter).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit).lean(),
       this.r.affiliateModel.countDocuments(filter),
     ]);
-    const withLinks = affiliates.map((a: any) => ({ ...a, referralLink: `${PLATFORM_ORIGIN}/api/affiliate/r/${a.referralCode}` }));
+    const withLinks = affiliates.map((a: any) => ({ ...a, referralLink: `${API_PUBLIC_ORIGIN}/api/affiliate/r/${a.referralCode}` }));
     return { success: true, message: 'Affiliates', data: { affiliates: withLinks, total, page, limit } };
   }
 
@@ -243,9 +245,11 @@ export class AffiliateService {
     );
     if (!affiliate) return PLATFORM_ORIGIN;
 
-    const store = await this.r.storeModel.findById(affiliate.storeId).select('slug').lean();
-    const slug = (store as any)?.slug;
-    return slug ? `${PLATFORM_ORIGIN}/store/${slug}?ref=${referralCode}` : `${PLATFORM_ORIGIN}?ref=${referralCode}`;
+    // The store's own storefront — there is no `/store/:slug` route on the
+    // platform site.
+    const store = await this.r.storeModel.findById(affiliate.storeId).select('slug customDomain customDomainStatus').lean();
+    const base = storePublicUrl(store as any) ?? PLATFORM_ORIGIN;
+    return `${base}?ref=${encodeURIComponent(referralCode)}`;
   }
 
   // ── Order-placement hook (called from PaymentService.createOrder) ───────

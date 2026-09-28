@@ -84,8 +84,13 @@ export { Banner, BannerDocument, BannerSchema } from '../banner/schemas/banner.s
 export { OnboardingSlide, OnboardingSlideDocument, OnboardingSlideSchema } from '../onboarding-slides/schemas/onboarding-slide.schema';
 export type { Faq, FaqSchema } from '../faqs/schemas/faq.schema';
 export type { FaqDocument } from '../faqs/schemas/faq.schema';
-export type { NewsletterSubscriber, NewsletterSubscriberSchema } from '../newsletter/schemas/newsletter-subscriber.schema';
+export { NewsletterSubscriber, NewsletterSubscriberSchema } from '../newsletter/schemas/newsletter-subscriber.schema';
 export type { NewsletterSubscriberDocument } from '../newsletter/schemas/newsletter-subscriber.schema';
+export { NewsletterBroadcast, NewsletterBroadcastDocument, NewsletterBroadcastSchema } from '../newsletter/schemas/newsletter-broadcast.schema';
+export { MarketingAutomationSettings, MarketingAutomationSettingsDocument, MarketingAutomationSettingsSchema } from '../marketing-automations/schemas/marketing-automation-settings.schema';
+export { BackInStockRequest, BackInStockRequestDocument, BackInStockRequestSchema } from '../marketing-automations/schemas/back-in-stock-request.schema';
+export { AutomationSendLog, AutomationSendLogDocument, AutomationSendLogSchema } from '../marketing-automations/schemas/automation-send-log.schema';
+export { PriceSnapshot, PriceSnapshotDocument, PriceSnapshotSchema } from '../marketing-automations/schemas/price-snapshot.schema';
 export { ActivityLog, ActivityLogDocument, ActivityLogSchema } from '../activity-log/schemas/activity-log.schema';
 export { Coupon, CouponDocument, CouponSchema } from '../marketing/schemas/coupon.schema';
 export { LoyaltyProgram, LoyaltyProgramDocument, LoyaltyProgramSchema } from '../loyalty/schemas/loyalty-program.schema';

@@ -361,6 +361,24 @@ export class DatabaseService {
     @InjectModel(schema.StoreCustomerMeta.name)
     private storeCustomerMetaModel: Model<schema.StoreCustomerMetaDocument>,
 
+    @InjectModel(schema.NewsletterSubscriber.name)
+    private newsletterSubscriberModel: Model<schema.NewsletterSubscriberDocument>,
+
+    @InjectModel(schema.NewsletterBroadcast.name)
+    private newsletterBroadcastModel: Model<schema.NewsletterBroadcastDocument>,
+
+    @InjectModel(schema.MarketingAutomationSettings.name)
+    private marketingAutomationSettingsModel: Model<schema.MarketingAutomationSettingsDocument>,
+
+    @InjectModel(schema.BackInStockRequest.name)
+    private backInStockRequestModel: Model<schema.BackInStockRequestDocument>,
+
+    @InjectModel(schema.AutomationSendLog.name)
+    private automationSendLogModel: Model<schema.AutomationSendLogDocument>,
+
+    @InjectModel(schema.PriceSnapshot.name)
+    private priceSnapshotModel: Model<schema.PriceSnapshotDocument>,
+
     @InjectModel(schema.BlogPost.name)
     private blogPostModel: Model<schema.BlogPostDocument>,
 
@@ -567,6 +585,12 @@ export class DatabaseService {
       purchaseOrderModel: this.purchaseOrderModel,
       stockCountModel: this.stockCountModel,
       storeCustomerMetaModel: this.storeCustomerMetaModel,
+      newsletterSubscriberModel: this.newsletterSubscriberModel,
+      newsletterBroadcastModel: this.newsletterBroadcastModel,
+      marketingAutomationSettingsModel: this.marketingAutomationSettingsModel,
+      backInStockRequestModel: this.backInStockRequestModel,
+      automationSendLogModel: this.automationSendLogModel,
+      priceSnapshotModel: this.priceSnapshotModel,
       blogPostModel: this.blogPostModel,
       blogModel: this.blogModel,
       blogCommentModel: this.blogCommentModel,

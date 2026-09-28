@@ -34,8 +34,17 @@ export class EmailService {
    *  the platform's shared SMTP sender — same convention as Shopify, where
    *  a store's "Store contact email" becomes the reply-to on its own
    *  customer-facing emails. Omitted (or falsy) leaves replies going to the
-   *  platform sender, unchanged from before this param existed. */
-  async sendMail(to: string, subject: string, html: string, replyTo?: string | null): Promise<boolean> {
+   *  platform sender, unchanged from before this param existed.
+   *  `headers` carries extra MIME headers — marketing sends use it for
+   *  List-Unsubscribe / List-Unsubscribe-Post (required by Gmail/Yahoo for
+   *  bulk senders). */
+  async sendMail(
+    to: string,
+    subject: string,
+    html: string,
+    replyTo?: string | null,
+    headers?: Record<string, string>,
+  ): Promise<boolean> {
     try {
       const info = await this.transporter.sendMail({
         from: `"${process.env.APP_NAME || 'Your App'}" <${process.env.SMTP_FROM || process.env.SMTP_USER}>`,
@@ -43,6 +52,7 @@ export class EmailService {
         subject,
         html,
         ...(replyTo ? { replyTo } : {}),
+        ...(headers ? { headers } : {}),
       });
 
       console.log('✅ Email sent:', info.messageId);

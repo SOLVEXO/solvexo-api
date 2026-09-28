@@ -1,6 +1,8 @@
 /* eslint-disable prettier/prettier */
 import { ApiProperty } from '@nestjs/swagger';
-import { IsIn, IsISO8601, IsOptional, IsString, MaxLength } from 'class-validator';
+import { IsIn, IsObject, IsISO8601, IsOptional, IsString, MaxLength, ValidateNested } from 'class-validator';
+import { Type } from 'class-transformer';
+import { CampaignSegmentDto } from './campaign-segment.dto';
 
 // A campaign can only be edited (or scheduled) while it's still a 'draft' —
 // enforced in EmailCampaignsService, not here.
@@ -26,6 +28,17 @@ export class UpdateEmailCampaignDto {
   @IsOptional()
   @IsIn(['all', 'buyers', 'abandoned'])
   audience?: 'all' | 'buyers' | 'abandoned';
+
+  @ApiProperty({ required: false, type: CampaignSegmentDto })
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => CampaignSegmentDto)
+  segment?: CampaignSegmentDto | null;
+
+  @ApiProperty({ required: false, description: 'Editor block design (JSON); `message` is its rendered HTML' })
+  @IsOptional()
+  @IsObject()
+  design?: Record<string, unknown> | null;
 }
 
 export class ScheduleEmailCampaignDto {

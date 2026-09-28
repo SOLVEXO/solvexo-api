@@ -19,9 +19,10 @@ import { InventoryModule } from '../inventory/inventory.module';
 import { PurchaseOrdersModule } from '../purchase-orders/purchase-orders.module';
 import { DraftOrdersModule } from '../draft-orders/draft-orders.module';
 import { OrdersModule } from '../orders/orders.module';
+import { MarketingAutomationsModule } from '../marketing-automations/marketing-automations.module';
 
 @Module({
-  imports: [ScheduleModule.forRoot(), SubscriptionsModule, PlatformSubscriptionsModule, FinanceModule, RedisModule, SeoModule, AdminMarketingModule, PromotionsModule, ExchangeRateModule, AdminFinanceModule, BookingsModule, IntegrationsModule, AbandonedCartModule, EmailCampaignsModule, InventoryModule, PurchaseOrdersModule, DraftOrdersModule, OrdersModule],
+  imports: [ScheduleModule.forRoot(), SubscriptionsModule, PlatformSubscriptionsModule, FinanceModule, RedisModule, SeoModule, AdminMarketingModule, PromotionsModule, ExchangeRateModule, AdminFinanceModule, BookingsModule, IntegrationsModule, AbandonedCartModule, EmailCampaignsModule, InventoryModule, PurchaseOrdersModule, DraftOrdersModule, OrdersModule, MarketingAutomationsModule],
   providers: [SchedulerService],
 })
 export class SchedulerModule {}

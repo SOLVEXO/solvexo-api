@@ -18,6 +18,13 @@ export type EmailCampaignDocument = EmailCampaign & Document;
 //                  Abandoned Cart module's own Checkout fields instead of
 //                  duplicating that tracking.
 export type EmailCampaignAudience = 'all' | 'buyers' | 'abandoned';
+export interface EmailCampaignSegment {
+  minOrders?: number;
+  minTotalSpent?: number;
+  orderedWithinDays?: number;
+  notOrderedWithinDays?: number;
+  tags?: string[];
+}
 export type EmailCampaignStatus = 'draft' | 'scheduled' | 'sending' | 'sent' | 'failed';
 
 /** A seller-authored bulk email blast — the Shopify Email equivalent.
@@ -45,6 +52,19 @@ export class EmailCampaign {
 
   @Prop({ type: String, enum: ['all', 'buyers', 'abandoned'], required: true })
   audience: EmailCampaignAudience;
+
+  // Optional filters ANDed on top of `audience` (see CampaignSegmentDto) —
+  // null means the whole audience. Applied at send time like the audience.
+  @Prop({ type: Object, default: null })
+  segment: EmailCampaignSegment | null;
+
+  // The drag-and-drop editor's block design (owned by the web app —
+  // marketing/emailDesign.ts). `message` holds its rendered HTML, which is
+  // what's actually sent; this is kept so the seller can reopen and edit it.
+  // Non-null also means the email carries its own buttons, so no automatic
+  // "Visit store" button is appended at send time.
+  @Prop({ type: Object, default: null })
+  design: Record<string, unknown> | null;
 
   @Prop({
     type: String,

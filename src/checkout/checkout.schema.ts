@@ -345,6 +345,12 @@ export class Checkout {
   @Prop({ type: Date, default: null })
   abandonedEmailSentAt: Date | null;
 
+  /** Set instead of abandonedEmailSentAt when the shopper had unsubscribed
+   *  from the store's emails — takes the checkout out of the recovery scan
+   *  for good without counting it as a sent reminder in the stats. */
+  @Prop({ type: Date, default: null })
+  abandonedEmailSuppressedAt: Date | null;
+
   @Prop({ type: Date, default: null })
   abandonedClickedAt: Date | null;
 

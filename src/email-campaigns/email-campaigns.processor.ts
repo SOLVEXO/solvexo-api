@@ -5,8 +5,9 @@ import { Job } from 'bullmq';
 import { EmailService } from '@/otp/services/email.service';
 import { EmailCampaignsService } from './email-campaigns.service';
 import { QUEUE_NAMES } from '@/queues/queue.constants';
-
-const PLATFORM_ORIGIN = 'https://solvexo.store';
+import { API_PUBLIC_ORIGIN } from '@/common/api-origin';
+import { unsubscribeHeaders } from '@/newsletter/marketing-email.util';
+import { renderCampaignEmail } from './campaign-email.util';
 
 interface EmailCampaignSendJob {
   sendId: string;
@@ -16,6 +17,10 @@ interface EmailCampaignSendJob {
   storeName: string;
   subject: string;
   message: string;
+  // Optional only for jobs already queued before these fields existed.
+  storeContactEmail?: string | null;
+  unsubscribeUrl?: string;
+  designed?: boolean;
 }
 
 /** One job per recipient — SMTP latency/a single bad address never blocks
@@ -33,30 +38,23 @@ export class EmailCampaignsProcessor extends WorkerHost {
     super();
   }
 
-  private renderTemplate(template: string, vars: Record<string, string>) {
-    return Object.entries(vars).reduce((text, [key, val]) => text.split(`{{${key}}}`).join(val), template);
-  }
-
   async process(job: Job<EmailCampaignSendJob>): Promise<void> {
-    const { sendId, campaignId, email, customerName, storeName, subject, message } = job.data;
+    const { sendId, campaignId, email, customerName, storeName, subject, message, storeContactEmail, unsubscribeUrl, designed } = job.data;
 
     try {
-      const vars = { customerName, storeName };
-      const renderedSubject = this.renderTemplate(subject, vars);
-      const renderedBody = this.renderTemplate(message, vars);
-
-      // Every click routes through the tracking redirect first; a real open
+      // Every click routes through the tracking redirect first (the redirect
+      // only honours targets that are really in this campaign); a real open
       // pixel is appended at send time (not authored by the seller).
-      const clickUrl = `${PLATFORM_ORIGIN}/api/email-campaigns/track/click/${sendId}`;
-      const openPixel = `${PLATFORM_ORIGIN}/api/email-campaigns/track/open/${sendId}`;
-
-      const html = `<div style="font-family:sans-serif;max-width:600px;margin:0 auto">
-        ${renderedBody}
-        <p style="margin-top:24px"><a href="${clickUrl}" style="background:#141413;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;display:inline-block">Visit ${storeName}</a></p>
-        <img src="${openPixel}" width="1" height="1" alt="" style="display:none" />
-      </div>`;
-
-      const sent = await this.emailService.sendMail(email, renderedSubject, html);
+      const clickBase = `${API_PUBLIC_ORIGIN}/api/email-campaigns/track/click/${sendId}`;
+      const rendered = renderCampaignEmail({
+        subject, message, customerName, storeName,
+        designed: !!designed,
+        trackLink: (href) => `${clickBase}?u=${encodeURIComponent(href)}`,
+        ctaUrl: clickBase,
+        openPixelUrl: `${API_PUBLIC_ORIGIN}/api/email-campaigns/track/open/${sendId}`,
+        unsubscribeUrl: unsubscribeUrl ?? null,
+      });
+      const sent = await this.emailService.sendMail(email, rendered.subject, rendered.html, storeContactEmail ?? null, unsubscribeHeaders(unsubscribeUrl));
       await this.emailCampaignsService.markSendResult(sendId, campaignId, sent, sent ? undefined : 'sendMail returned false');
     } catch (e: any) {
       this.logger.error(`EmailCampaignsProcessor: failed for send ${sendId}: ${e?.message}`);

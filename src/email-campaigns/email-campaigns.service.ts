@@ -8,7 +8,11 @@ import { QUEUE_NAMES, EMAIL_CAMPAIGN_SEND_JOB } from '@/queues/queue.constants';
 import { EntitlementsService } from '@/platform-plans/entitlements.service';
 import { CreateEmailCampaignDto } from './dto/create-email-campaign.dto';
 import { UpdateEmailCampaignDto } from './dto/update-email-campaign.dto';
-import { EmailCampaignAudience } from './schemas/email-campaign.schema';
+import { EmailCampaignAudience, EmailCampaignSegment } from './schemas/email-campaign.schema';
+import { newsletterUnsubscribeUrl } from '@/newsletter/newsletter-consent.util';
+import { storePublicUrl } from '@/newsletter/marketing-email.util';
+import { EmailService } from '@/otp/services/email.service';
+import { campaignLinkTargets, renderCampaignEmail } from './campaign-email.util';
 
 const PLATFORM_ORIGIN = 'https://solvexo.store';
 
@@ -25,6 +29,7 @@ export class EmailCampaignsService {
     private readonly db: DatabaseService,
     private readonly activityLogService: ActivityLogService,
     private readonly entitlementsService: EntitlementsService,
+    private readonly emailService: EmailService,
     @InjectQueue(QUEUE_NAMES.EMAIL_CAMPAIGNS) private readonly queue: Queue,
   ) {}
 
@@ -90,55 +95,155 @@ export class EmailCampaignsService {
 
   // ── Audience resolution ──────────────────────────────────────────────────
 
-  /** Resolved fresh every time a campaign actually fires — see the audience
-   *  doc comment on the schema for what each value means on a marketplace
-   *  (a store's own customer list, not the whole platform). Deduped by
-   *  email since the same person can be both a native-storefront account
-   *  and a buyer, or (rarely) hold more than one account with the same
-   *  email across legacy/per-store rows. */
-  private async resolveAudience(storeId: string, audience: EmailCampaignAudience) {
-    const { userModel, orderModel, checkoutModel } = this.r;
+  /** Resolved fresh every time a campaign actually fires. Marketing email
+   *  only ever goes to this store's own *subscribers* — an active
+   *  NewsletterSubscriber row for (storeId, email), i.e. someone who opted
+   *  in on this store's storefront/checkout or whom the seller marked as
+   *  opted-in. Having ordered once is not consent (GDPR/CAN-SPAM, and it's
+   *  how Shopify Email works too). The audience value narrows that list:
+   *    - 'all'       every subscriber, customer or not (e.g. footer signups)
+   *    - 'buyers'    subscribers who have ordered from this store
+   *    - 'abandoned' subscribers with an unrecovered abandoned checkout
+   *  Deduped by email, since the same person can hold more than one account
+   *  with the same email across legacy/per-store rows. */
+  private async resolveAudience(storeId: string, audience: EmailCampaignAudience, segment?: EmailCampaignSegment | null) {
+    const { userModel, orderModel, checkoutModel, newsletterSubscriberModel } = this.r;
 
-    let buyerIds: string[] = [];
-    if (audience === 'buyers' || audience === 'all') {
-      buyerIds = await orderModel.distinct('userId', { 'sellerOrders.storeId': storeId });
-    }
+    const subscribers = await newsletterSubscriberModel
+      .find({ storeId, isActive: true })
+      .select('email userId unsubscribeToken')
+      .lean();
+    if (subscribers.length === 0) return [];
 
-    let abandonedIds: string[] = [];
-    if (audience === 'abandoned') {
-      abandonedIds = await checkoutModel.distinct('userId', {
+    let allowedUserIds: Set<string> | null = null;
+    if (audience === 'buyers') {
+      allowedUserIds = new Set((await orderModel.distinct('userId', { 'sellerOrders.storeId': storeId })).map(String));
+    } else if (audience === 'abandoned') {
+      allowedUserIds = new Set((await checkoutModel.distinct('userId', {
         'items.storeId': storeId,
         abandonedEmailSentAt: { $ne: null },
         recoveredAt: null,
         isDelete: false,
+      })).map(String));
+    }
+
+    // Accounts behind the subscribers' emails — for the {{customerName}}
+    // merge tag, the deleted-account check, and the buyers/abandoned filter.
+    const users = await userModel
+      .find({ email: { $in: subscribers.map((s) => s.email) } })
+      .select('name email isDelete')
+      .lean();
+    const usersByEmail = new Map<string, any[]>();
+    for (const u of users as any[]) {
+      const list = usersByEmail.get(u.email) ?? [];
+      list.push(u);
+      usersByEmail.set(u.email, list);
+    }
+
+    const recipients: { userId: string | null; accountIds: string[]; email: string; name: string; unsubscribeToken: string }[] = [];
+    const seen = new Set<string>();
+    for (const sub of subscribers as any[]) {
+      if (seen.has(sub.email)) continue;
+      const accounts = usersByEmail.get(sub.email) ?? [];
+      if (accounts.length > 0 && accounts.every((u) => u.isDelete === true)) continue;
+      const live = accounts.filter((u) => u.isDelete !== true);
+      let account = live.find((u) => String(u._id) === sub.userId) ?? live[0] ?? null;
+      if (allowedUserIds) {
+        account = live.find((u) => allowedUserIds!.has(String(u._id))) ?? null;
+        if (!account) continue;
+      }
+      seen.add(sub.email);
+      recipients.push({
+        userId: account ? String(account._id) : sub.userId ?? null,
+        accountIds: live.map((u) => String(u._id)),
+        email: sub.email,
+        name: account?.name || 'there',
+        unsubscribeToken: sub.unsubscribeToken,
       });
     }
+    return this.applySegment(storeId, recipients, segment);
+  }
 
-    let nativeStoreUsers: any[] = [];
-    if (audience === 'all') {
-      nativeStoreUsers = await userModel.find({ storeId, isDelete: { $ne: true } }).select('name email').lean();
+  private hasSegment(segment?: EmailCampaignSegment | null): segment is EmailCampaignSegment {
+    if (!segment) return false;
+    return segment.minOrders != null || segment.minTotalSpent != null || segment.orderedWithinDays != null
+      || segment.notOrderedWithinDays != null || (segment.tags?.length ?? 0) > 0;
+  }
+
+  /** Narrows resolved recipients by order history / customer tags at this
+   *  store. A subscriber with no account counts as zero orders and no tags. */
+  private async applySegment<T extends { email: string; accountIds: string[] }>(
+    storeId: string, recipients: T[], segment?: EmailCampaignSegment | null,
+  ): Promise<T[]> {
+    if (!this.hasSegment(segment) || recipients.length === 0) return recipients;
+    const allIds = [...new Set(recipients.flatMap((r) => r.accountIds))];
+
+    const needsOrders = segment.minOrders != null || segment.minTotalSpent != null
+      || segment.orderedWithinDays != null || segment.notOrderedWithinDays != null;
+    const stats = new Map<string, { count: number; spent: number; last: Date | null }>();
+    if (needsOrders && allIds.length) {
+      const rows = await this.r.orderModel.aggregate([
+        { $match: { userId: { $in: allIds }, isDelete: false, 'sellerOrders.storeId': storeId } },
+        { $unwind: '$sellerOrders' },
+        { $match: { 'sellerOrders.storeId': storeId } },
+        { $group: { _id: '$userId', count: { $sum: 1 }, spent: { $sum: '$sellerOrders.subtotal' }, last: { $max: '$createdAt' } } },
+      ]);
+      for (const row of rows as any[]) stats.set(String(row._id), { count: row.count, spent: row.spent ?? 0, last: row.last ?? null });
     }
 
-    const idsToFetch = [...new Set([...buyerIds, ...abandonedIds])];
-    const idBasedUsers = idsToFetch.length
-      ? await userModel.find({ _id: { $in: idsToFetch }, isDelete: { $ne: true } }).select('name email').lean()
-      : [];
-
-    const byEmail = new Map<string, { userId: string; email: string; name: string }>();
-    for (const u of [...nativeStoreUsers, ...idBasedUsers] as any[]) {
-      const email = (u.email || '').toLowerCase().trim();
-      if (!email || byEmail.has(email)) continue;
-      byEmail.set(email, { userId: u._id.toString(), email, name: u.name || 'there' });
+    const tagged = new Set<string>();
+    if (segment.tags?.length && allIds.length) {
+      const wanted = segment.tags.map((t) => t.trim()).filter(Boolean);
+      const metas = await this.r.storeCustomerMetaModel.find({ storeId, userId: { $in: allIds }, tags: { $in: wanted } }).select('userId').lean();
+      for (const m of metas as any[]) tagged.add(String(m.userId));
     }
-    return [...byEmail.values()];
+
+    const now = Date.now();
+    return recipients.filter((r) => {
+      const agg = r.accountIds.reduce(
+        (acc, id) => {
+          const s = stats.get(id);
+          if (!s) return acc;
+          return { count: acc.count + s.count, spent: acc.spent + s.spent, last: !acc.last || (s.last && s.last > acc.last) ? s.last : acc.last };
+        },
+        { count: 0, spent: 0, last: null as Date | null },
+      );
+      if (segment.minOrders != null && agg.count < segment.minOrders) return false;
+      if (segment.minTotalSpent != null && agg.spent < segment.minTotalSpent) return false;
+      if (segment.orderedWithinDays != null && (!agg.last || now - new Date(agg.last).getTime() > segment.orderedWithinDays * 86_400_000)) return false;
+      if (segment.notOrderedWithinDays != null && agg.last && now - new Date(agg.last).getTime() < segment.notOrderedWithinDays * 86_400_000) return false;
+      if (segment.tags?.length && !r.accountIds.some((id) => tagged.has(id))) return false;
+      return true;
+    });
   }
 
   /** Lets the frontend show "~N recipients" before the seller actually
    *  commits to sending — same resolution logic, no side effects. */
-  async previewAudience(sellerId: string, storeId: string, audience: EmailCampaignAudience) {
+  async previewAudience(sellerId: string, storeId: string, audience: EmailCampaignAudience, segment?: EmailCampaignSegment | null) {
     await this.verifyStoreOwnership(storeId, sellerId);
-    const recipients = await this.resolveAudience(storeId, audience);
+    const recipients = await this.resolveAudience(storeId, audience, segment);
     return { success: true, data: { recipientCount: recipients.length } };
+  }
+
+  /** "Send test email" — the campaign exactly as a subscriber would get it,
+   *  to the seller's own inbox (or an address they pick). No tracking, no
+   *  EmailCampaignSend row, doesn't change the campaign. */
+  async sendTest(sellerId: string, storeId: string, campaignId: string, email: string | null) {
+    const campaign = await this.getOwnedCampaign(storeId, sellerId, campaignId);
+    if (!email) throw new BadRequestException('No email address to send the test to');
+    const store = await this.r.storeModel.findById(storeId).select('name slug customDomain customDomainStatus contactEmail').lean();
+    const rendered = renderCampaignEmail({
+      subject: campaign.subject,
+      message: campaign.message,
+      customerName: 'there',
+      storeName: (store as any)?.name ?? 'the store',
+      designed: !!campaign.design,
+      ctaUrl: storePublicUrl(store as any),
+      unsubscribeUrl: '#',
+    });
+    const sent = await this.emailService.sendMail(email, `[Test] ${rendered.subject}`, rendered.html, (store as any)?.contactEmail ?? null);
+    if (!sent) throw new BadRequestException('The test email could not be sent. Check the email settings and try again.');
+    return { success: true, message: `Test email sent to ${email}` };
   }
 
   private renderTemplate(template: string, vars: Record<string, string>) {
@@ -158,8 +263,8 @@ export class EmailCampaignsService {
     // blocks it (processScheduledCampaigns already catches and marks a
     // thrown campaign 'failed', so this needs no extra error handling here).
     await this.entitlementsService.assertFeatureAllowed(campaign.storeId, 'emailCampaignsAllowed', 'Email Campaigns');
-    const store = await this.r.storeModel.findById(campaign.storeId).select('name').lean();
-    const recipients = await this.resolveAudience(campaign.storeId, campaign.audience);
+    const store = await this.r.storeModel.findById(campaign.storeId).select('name contactEmail').lean();
+    const recipients = await this.resolveAudience(campaign.storeId, campaign.audience, campaign.segment);
 
     if (recipients.length === 0) {
       campaign.status = 'failed';
@@ -188,6 +293,9 @@ export class EmailCampaignsService {
         email: rcpt.email,
         customerName: rcpt.name,
         storeName: (store as any)?.name ?? 'the store',
+        storeContactEmail: (store as any)?.contactEmail ?? null,
+        designed: !!campaign.design,
+        unsubscribeUrl: newsletterUnsubscribeUrl(rcpt.unsubscribeToken),
         subject: campaign.subject,
         message: campaign.message,
       });
@@ -205,6 +313,14 @@ export class EmailCampaignsService {
   async sendNow(sellerId: string, storeId: string, campaignId: string) {
     const campaign = await this.getOwnedCampaign(storeId, sellerId, campaignId);
     if (!['draft', 'scheduled'].includes(campaign.status)) throw new BadRequestException('Campaign already sent/sending');
+    // Checked up front so an empty audience leaves the draft editable
+    // instead of burning it as 'failed' (executeSend's own guard still
+    // covers the scheduled path, where there's no one to tell).
+    if ((await this.resolveAudience(storeId, campaign.audience, campaign.segment)).length === 0) {
+      throw new BadRequestException(
+        'No subscribers in this audience yet. Only customers who opted in to marketing emails can receive campaigns.',
+      );
+    }
     campaign.scheduledAt = null;
     const result = await this.executeSend(campaign);
     return { success: true, message: `Campaign sending to ${result.recipientCount} recipient(s)`, data: campaign };
@@ -287,20 +403,33 @@ export class EmailCampaignsService {
 
   /** Every link in the email body is rewritten to point here first — records
    *  the click once, then redirects on to the store. */
-  async trackClick(sendId: string): Promise<string> {
+  /** Records the first click per recipient (clickCount = unique clickers) and
+   *  returns where to send them: `target` when it's a link that really is in
+   *  this campaign's email (never an arbitrary URL — no open redirect), else
+   *  the store's storefront. */
+  async trackClick(sendId: string, target?: string | null): Promise<string> {
     let send: any = null;
     try {
       send = await this.r.emailCampaignSendModel.findOneAndUpdate(
         { _id: sendId, clickedAt: null },
         { $set: { clickedAt: new Date() } },
       );
+      if (send) await this.r.emailCampaignModel.updateOne({ _id: send.campaignId }, { $inc: { clickCount: 1 } });
+      // Repeat click — still needs the send to know which store/campaign.
+      else send = await this.r.emailCampaignSendModel.findById(sendId).lean();
     } catch {
       // malformed/unknown id — fall through to the platform default below
     }
-    if (send) await this.r.emailCampaignModel.updateOne({ _id: send.campaignId }, { $inc: { clickCount: 1 } });
+
+    if (send && target) {
+      const campaign = await this.r.emailCampaignModel.findById(send.campaignId).select('message').lean().catch(() => null);
+      if (campaign && campaignLinkTargets((campaign as any).message).has(target)) return target;
+    }
+
     const storeId = send?.storeId;
-    const store = storeId ? await this.r.storeModel.findById(storeId).select('slug').lean() : null;
-    const slug = (store as any)?.slug;
-    return slug ? `${PLATFORM_ORIGIN}/store/${slug}` : PLATFORM_ORIGIN;
+    // The store's own storefront (custom domain or subdomain) — there is no
+    // `/store/:slug` route on the platform site.
+    const store = storeId ? await this.r.storeModel.findById(storeId).select('slug customDomain customDomainStatus').lean().catch(() => null) : null;
+    return storePublicUrl(store as any) ?? PLATFORM_ORIGIN;
   }
 }

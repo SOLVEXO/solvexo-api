@@ -36,6 +36,7 @@ import { StoreThemeService } from '../store-theme/store-theme.service';
 import { StorePagesService } from '../store-pages/store-pages.service';
 import { CollectionsService } from '../collections/collections.service';
 import { DASHBOARD_METRIC_IDS } from './store-dashboard-metrics.const';
+import { setMarketingConsent } from '../newsletter/newsletter-consent.util';
 
 // Real EU member states + UK (retains UK GDPR post-Brexit, same as Shopify's
 // own "regions with consent laws" cookie-banner scoping) — a plain, explicit
@@ -1807,7 +1808,7 @@ export class StoreService {
    *  stage no matter how the input id set was widened — this is what
    *  actually fixes that, not just a broader `$in` filter. */
   private buildStoreCustomersPipeline(storeId: string, customerIds: string[], query: any) {
-    const { userModel, storeCustomerMetaModel } = this.databaseService.repositories;
+    const { userModel, storeCustomerMetaModel, newsletterSubscriberModel } = this.databaseService.repositories;
 
     const pipeline: any[] = [
       { $match: { userId: { $in: customerIds }, isDelete: false, 'sellerOrders.storeId': storeId } },
@@ -1897,6 +1898,21 @@ export class StoreService {
         },
       },
       { $unwind: { path: '$meta', preserveNullAndEmptyArrays: true } },
+      // Marketing consent comes from the store's subscriber list, not the
+      // meta flag — a buyer who subscribed on the storefront or at checkout
+      // may have no meta row at all.
+      {
+        $lookup: {
+          from: newsletterSubscriberModel.collection.name,
+          let: { em: { $toLower: '$user.email' } },
+          pipeline: [
+            { $match: { $expr: { $and: [{ $eq: ['$storeId', storeId] }, { $eq: ['$email', '$$em'] }, { $eq: ['$isActive', true] }] } } },
+            { $limit: 1 },
+            { $project: { _id: 1 } },
+          ],
+          as: 'subscription',
+        },
+      },
       {
         $addFields: {
           name: '$user.name',
@@ -1906,7 +1922,7 @@ export class StoreService {
           tags: { $ifNull: ['$meta.tags', []] },
           notes: { $ifNull: ['$meta.notes', ''] },
           isArchived: { $ifNull: ['$meta.isArchived', false] },
-          marketingOptIn: { $ifNull: ['$meta.marketingOptIn', false] },
+          marketingOptIn: { $gt: [{ $size: '$subscription' }, 0] },
           isBlocked: { $ifNull: ['$meta.isBlocked', false] },
           isErased: { $ifNull: ['$meta.isErased', false] },
         },
@@ -2357,6 +2373,21 @@ export class StoreService {
       { upsert: true, new: true, setDefaultsOnInsert: true },
     );
 
+    // The subscriber row is what campaigns actually read — the meta flag is
+    // only its mirror (see NewsletterSubscriber's doc comment).
+    if (dto.marketingOptIn !== undefined) {
+      const customer = await this.databaseService.repositories.userModel.findById(customerId).select('email').lean();
+      if (customer?.email) {
+        await setMarketingConsent(this.databaseService.repositories.newsletterSubscriberModel, {
+          storeId,
+          email: customer.email,
+          subscribed: !!dto.marketingOptIn,
+          source: 'seller',
+          userId: customerId,
+        });
+      }
+    }
+
     this.activityLogService.log({
       storeId,
       category: 'customers',
@@ -2455,9 +2486,17 @@ export class StoreService {
 
     await storeCustomerMetaModel.updateOne(
       { storeId, userId: customerId },
-      { $set: { tags: [], notes: '', isErased: true, erasedAt: new Date() }, $setOnInsert: { storeId, userId: customerId } },
+      { $set: { tags: [], notes: '', isErased: true, erasedAt: new Date(), marketingOptIn: false }, $setOnInsert: { storeId, userId: customerId } },
       { upsert: true },
     );
+
+    // This store's subscriber row holds the email + consent history — store
+    // data, so it goes too (the platform's own list, storeId null, is not
+    // this store's to erase).
+    const erasedUser = await this.databaseService.repositories.userModel.findById(customerId).select('email').lean();
+    if (erasedUser?.email) {
+      await this.databaseService.repositories.newsletterSubscriberModel.deleteOne({ storeId, email: erasedUser.email.toLowerCase() });
+    }
 
     const singleStoreOrders = await orderModel.find({ userId: customerId, 'sellerOrders.storeId': storeId, isDelete: false })
       .select('_id sellerOrders shippingAddress').lean();

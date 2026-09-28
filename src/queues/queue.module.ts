@@ -109,6 +109,18 @@ import { QUEUE_NAMES } from './queue.constants';
           removeOnFail: { count: 5000 },
         },
       },
+      {
+        // One job per recipient of a Solvexo-admin broadcast to the platform
+        // newsletter list — see NewsletterBroadcastProcessor. Same delivery
+        // profile as seller campaigns; durable across restarts/deploys.
+        name: QUEUE_NAMES.NEWSLETTER_BROADCASTS,
+        defaultJobOptions: {
+          attempts: 4,
+          backoff: { type: 'exponential', delay: 15_000 },
+          removeOnComplete: { count: 5000 },
+          removeOnFail: { count: 5000 },
+        },
+      },
     ),
   ],
   exports: [BullModule],

@@ -8,6 +8,7 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CreateEmailCampaignDto } from './dto/create-email-campaign.dto';
 import { UpdateEmailCampaignDto, ScheduleEmailCampaignDto } from './dto/update-email-campaign.dto';
+import { AudiencePreviewDto, SendTestEmailDto } from './dto/campaign-segment.dto';
 
 @ApiTags('Email Campaigns')
 @Controller('api/email-campaigns')
@@ -38,6 +39,23 @@ export class EmailCampaignsController {
   @Get(':storeId/audience-preview')
   previewAudience(@Req() req: any, @Param('storeId') storeId: string, @Query('audience') audience: 'all' | 'buyers' | 'abandoned') {
     return this.emailCampaignsService.previewAudience(req.user.userId, storeId, audience);
+  }
+
+  /** Same as the GET above, but with segment filters (too structured for a query string). */
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Post(':storeId/audience-preview')
+  previewAudienceWithSegment(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: AudiencePreviewDto) {
+    return this.emailCampaignsService.previewAudience(req.user.userId, storeId, dto.audience, dto.segment ?? null);
+  }
+
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Post(':storeId/:campaignId/test')
+  sendTest(@Req() req: any, @Param('storeId') storeId: string, @Param('campaignId') campaignId: string, @Body() dto: SendTestEmailDto) {
+    return this.emailCampaignsService.sendTest(req.user.userId, storeId, campaignId, dto.email ?? req.user.email ?? null);
   }
 
   @ApiBearerAuth()
@@ -93,8 +111,8 @@ export class EmailCampaignsController {
   }
 
   @Get('track/click/:id')
-  async trackClick(@Param('id') id: string, @Res() res: Response) {
-    const redirectUrl = await this.emailCampaignsService.trackClick(id);
+  async trackClick(@Param('id') id: string, @Query('u') target: string | undefined, @Res() res: Response) {
+    const redirectUrl = await this.emailCampaignsService.trackClick(id, target ?? null);
     return res.redirect(302, redirectUrl);
   }
 }

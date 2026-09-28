@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { NestFactory } from '@nestjs/core';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
 import cookieParser from 'cookie-parser';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
@@ -10,7 +11,12 @@ async function bootstrap() {
   // subscriptions, and the new integrations-module gateway webhooks) — each
   // reads `req.rawBody`, which Nest only populates when this flag is set.
   // Without it those routes always throw "Raw request body unavailable".
-  const app = await NestFactory.create(AppModule, { rawBody: true });
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, { rawBody: true });
+
+  // Express's default JSON limit is 100 KB — too small for an email campaign
+  // (editor design JSON + its rendered HTML) or a subscriber CSV chunk.
+  // useBodyParser keeps the rawBody capture above working.
+  app.useBodyParser('json', { limit: '1mb' });
 
   app.use(cookieParser());
 

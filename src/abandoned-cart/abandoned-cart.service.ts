@@ -7,7 +7,7 @@ import { EntitlementsService } from '@/platform-plans/entitlements.service';
 import { randomBytes } from 'crypto';
 import { UpdateAbandonedCartSettingsDto } from './dto/update-abandoned-cart-settings.dto';
 
-const PLATFORM_ORIGIN = 'https://solvexo.store'; // same origin SeoResolutionService resolves canonical URLs against
+import { API_PUBLIC_ORIGIN } from '@/common/api-origin';
 const DEFAULT_SETTINGS = { enabled: true, delayMinutes: 60, subject: 'You left something in your cart', message: "Hi {{customerName}}, you still have items waiting in your cart at {{storeName}}. Complete your order before they're gone: {{cartUrl}}" };
 const BATCH_SIZE = 200; // per cron tick — never let one runaway backlog block the lock for too long
 
@@ -183,6 +183,7 @@ export class AbandonedCartService {
         status: { $in: ['pending', 'payment_pending'] },
         isDelete: false,
         abandonedEmailSentAt: null,
+        abandonedEmailSuppressedAt: null,
         'items.0': { $exists: true },
       })
       .sort({ updatedAt: 1 })
@@ -203,9 +204,19 @@ export class AbandonedCartService {
         const email = (user as any)?.email;
         if (!email) continue; // nothing to send to — leave it for the next tick in case the user record appears
 
+        // Recovery emails go to any shopper by default (as on Shopify), but
+        // an explicit unsubscribe from this store's emails is always honored.
+        const optedOut = await this.r.newsletterSubscriberModel.exists({
+          storeId: trigger.storeId, email: String(email).toLowerCase(), isActive: false,
+        });
+        if (optedOut) {
+          await this.r.checkoutModel.updateOne({ _id: checkout._id }, { $set: { abandonedEmailSuppressedAt: now } });
+          continue;
+        }
+
         const store = await this.r.storeModel.findById(trigger.storeId).select('name').lean();
         const token = randomBytes(16).toString('hex');
-        const cartUrl = `${PLATFORM_ORIGIN}/api/abandoned-cart/click/${token}`;
+        const cartUrl = `${API_PUBLIC_ORIGIN}/api/abandoned-cart/click/${token}`;
 
         const subject = this.renderTemplate(trigger.subject, { customerName: (user as any)?.name ?? 'there', storeName: (store as any)?.name ?? 'the store' });
         const message = this.renderTemplate(trigger.message, {
