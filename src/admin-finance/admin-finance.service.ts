@@ -302,6 +302,17 @@ export class AdminFinanceService {
     return { success: true, data };
   }
 
+  /** Cross-store rollup for the Clients workspace's Finance tab — see `FinanceService.adminGetSellerFinancialRollup`'s own comment for why this is a single indexed query, not a per-store loop. */
+  async getSellerFinancialRollup(sellerId: string) {
+    const data = await this.financeService.adminGetSellerFinancialRollup(sellerId);
+    return { success: true, data };
+  }
+
+  async getSellerTransactionsBySeller(sellerId: string, query: any) {
+    const data = await this.financeService.adminGetSellerTransactionsBySeller(sellerId, query);
+    return { success: true, data };
+  }
+
   /** Joins `storeName` onto rows that only carry a bare `storeId` — a display-layer concern, kept out of `FinanceService` since seller-facing endpoints never need it (a seller already knows their own store's name). */
   private async attachStoreNames<T extends { storeId: string }>(rows: T[]): Promise<Array<T & { storeName: string }>> {
     if (rows.length === 0) return [];

@@ -72,7 +72,10 @@ export class AdminModerationService {
     };
   }
 
-  private async enrich(reports: any[]) {
+  /** Public so the admin Clients workspace's Moderation tab can reuse the
+   *  exact same itemLabel/sellerName resolution this page's own queue uses,
+   *  instead of a second, duplicated join. */
+  async enrich(reports: any[]) {
     const listingIds = reports.filter((r) => r.targetType === 'listing').map((r) => r.targetId);
     const sellerReportTargetIds = reports.filter((r) => r.targetType === 'seller').map((r) => r.targetId);
     const reviewIds = reports.filter((r) => r.targetType === 'review').map((r) => r.targetId);

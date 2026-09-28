@@ -65,6 +65,7 @@ import { AdminAnnouncementsModule } from './admin-announcements/admin-announceme
 import { AdminMarketplaceModule } from './admin-marketplace/admin-marketplace.module';
 import { AdminModerationModule } from './admin-moderation/admin-moderation.module';
 import { AdminUsersModule } from './admin-users/admin-users.module';
+import { AdminClientsModule } from './admin-clients/admin-clients.module';
 import { AdminMarketingModule } from './admin-marketing/admin-marketing.module';
 import { ShippingZonesModule } from './shipping-zones/shipping-zones.module';
 import { ShippingCarriersModule } from './shipping-carriers/shipping-carriers.module';
@@ -165,6 +166,7 @@ import { StockCountsModule } from './stock-counts/stock-counts.module';
     AdminMarketplaceModule,
     AdminModerationModule,
     AdminUsersModule,
+    AdminClientsModule,
     AdminMarketingModule,
     ShippingZonesModule,
     ShippingCarriersModule,

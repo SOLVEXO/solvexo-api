@@ -71,6 +71,19 @@ export class SellerPlatformSubscriptionsController {
     return this.sellerPlatformSubscriptionsService.getSellerOverview(req.user.userId);
   }
 
+  // Admin equivalent of the seller-self-service route above, for the Clients
+  // workspace's Subscription/Billing tab — `getSellerOverview` itself takes
+  // a plain `sellerId` argument and does no internal ownership check (it
+  // just reads whatever stores that id owns), so this route only needed a
+  // real admin-authorized entry point, not new service logic.
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('admin')
+  @Get('admin/sellers/:sellerId/overview')
+  adminGetSellerOverview(@Param('sellerId') sellerId: string) {
+    return this.sellerPlatformSubscriptionsService.getSellerOverview(sellerId);
+  }
+
   // Onboarding wizard's Payment step — no store exists yet at this point, so
   // these are literal routes declared ahead of the `:storeId` routes below
   // (same convention as every other literal-vs-param route split in this

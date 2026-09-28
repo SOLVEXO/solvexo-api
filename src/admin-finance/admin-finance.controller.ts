@@ -80,6 +80,21 @@ export class AdminFinanceController {
     return this.adminFinanceService.createManualPayout(storeId, req.user.userId, dto.amount, dto.payoutMethodId, dto.notes, req.ip, req.headers['user-agent']);
   }
 
+  // ─── Cross-store seller rollup (Clients workspace's Finance tab) — a
+  // distinct path segment (`sellers-by-id`, not `sellers`) from the
+  // store-scoped routes above so `:sellerId` never collides with `:storeId`
+  // on the same route shape. ────────────────────────────────────────────────
+
+  @Get('sellers-by-id/:sellerId/summary')
+  getSellerFinancialRollup(@Param('sellerId') sellerId: string) {
+    return this.adminFinanceService.getSellerFinancialRollup(sellerId);
+  }
+
+  @Get('sellers-by-id/:sellerId/transactions')
+  getSellerTransactionsBySeller(@Param('sellerId') sellerId: string, @Query() query: AdminTransactionsQueryDto) {
+    return this.adminFinanceService.getSellerTransactionsBySeller(sellerId, query);
+  }
+
   // ─── Platform transactions ───────────────────────────────────────────────
 
   @Get('transactions')

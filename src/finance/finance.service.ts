@@ -1333,6 +1333,66 @@ export class FinanceService {
   }
 
   /**
+   * Cross-store seller-level rollup for the admin Clients workspace's
+   * Finance tab — sums every store's `SellerBalance` by currency (a seller
+   * can hold balances in more than one currency per store, see
+   * `SellerBalance`'s own comment) and lists the seller's most recent
+   * payouts across every store they own. `SellerBalance`/`Payout` both
+   * carry `sellerId` directly and it's indexed on both — this is exactly
+   * one query per collection, never a per-store loop, so it costs the same
+   * whether the seller owns 1 store or 50.
+   */
+  async adminGetSellerFinancialRollup(sellerId: string) {
+    const seller = await this.sellerModel.findById(sellerId).select('name email').lean();
+    if (!seller) throw new NotFoundException('Seller not found');
+
+    const [balances, recentPayouts] = await Promise.all([
+      this.balanceModel.find({ sellerId }).lean(),
+      this.payoutModel.find({ sellerId }).sort({ createdAt: -1 }).limit(10).lean(),
+    ]);
+
+    const byCurrency = new Map<string, {
+      currency: string; availableBalance: number; pendingBalance: number;
+      totalRevenue: number; totalFees: number; totalRefunds: number; totalPayouts: number;
+    }>();
+    for (const b of balances as any[]) {
+      const row = byCurrency.get(b.currency) ?? {
+        currency: b.currency, availableBalance: 0, pendingBalance: 0,
+        totalRevenue: 0, totalFees: 0, totalRefunds: 0, totalPayouts: 0,
+      };
+      row.availableBalance += b.availableBalance;
+      row.pendingBalance   += b.pendingBalance;
+      row.totalRevenue     += b.totalRevenue;
+      row.totalFees        += b.totalFees;
+      row.totalRefunds     += b.totalRefunds;
+      row.totalPayouts     += b.totalPayouts;
+      byCurrency.set(b.currency, row);
+    }
+
+    return {
+      seller: { name: (seller as any).name, email: (seller as any).email },
+      balances: [...byCurrency.values()].map((r) => ({
+        currency: r.currency,
+        availableBalance: this.round(r.availableBalance),
+        pendingBalance: this.round(r.pendingBalance),
+        totalRevenue: this.round(r.totalRevenue),
+        totalFees: this.round(r.totalFees),
+        totalRefunds: this.round(r.totalRefunds),
+        totalPayouts: this.round(r.totalPayouts),
+      })),
+      recentPayouts: (recentPayouts as any[]).map(this.normalizeRailType),
+    };
+  }
+
+  /** Same shared `buildTransactionFilter`/`queryTransactions` pair every other transaction list uses, keyed by `sellerId` instead of `storeId` — a single indexed query across every store the seller owns, not a per-store loop. */
+  async adminGetSellerTransactionsBySeller(sellerId: string, query: any) {
+    const seller = await this.sellerModel.findById(sellerId).select('_id').lean();
+    if (!seller) throw new NotFoundException('Seller not found');
+    const filter = this.buildTransactionFilter(query, { sellerId });
+    return this.queryTransactions(filter, query);
+  }
+
+  /**
    * Admin-only refinement — `Transaction` doesn't carry a payment method
    * (only `Order.paymentType` does), so a `paymentMethodType` filter
    * (stripe / cash_on_delivery / manual_bank_transfer) resolves the matching
