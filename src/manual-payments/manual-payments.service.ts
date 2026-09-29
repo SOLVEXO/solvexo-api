@@ -4,10 +4,11 @@ import { DatabaseService } from '@/database/databaseservice';
 import { UploadService } from '@/upload/upload.service';
 import { PaymentService } from '@/payment/payment.service';
 import { FinanceService } from '@/finance/finance.service';
-import { AdminConfigService } from '@/admin-config/admin-config.service';
+import { ExchangeRateService } from '@/exchange-rate/exchange-rate.service';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { NotificationsService } from '@/notifications/notifications.service';
 import { NOTIFICATION_TYPES } from '@/notifications/notification.types';
+import { verifyStoreOwnershipStrict } from '@/common/store-ownership.util';
 import { round } from '@/common/number.util';
 import { SubmitManualPaymentDto } from './dto/submit-manual-payment.dto';
 import { ReuploadManualPaymentDto } from './dto/reupload-manual-payment.dto';
@@ -36,22 +37,30 @@ export class ManualPaymentsService {
     private readonly uploadService: UploadService,
     private readonly paymentService: PaymentService,
     private readonly financeService: FinanceService,
-    private readonly adminConfigService: AdminConfigService,
+    private readonly exchangeRateService: ExchangeRateService,
     private readonly activityLogService: ActivityLogService,
     private readonly notificationsService: NotificationsService,
   ) {}
 
   private get proofModel() { return this.db.repositories.manualPaymentProofModel; }
   private get orderModel() { return this.db.repositories.orderModel; }
+  private get storeModel() { return this.db.repositories.storeModel; }
+  private get storeIntegrationModel() { return this.db.repositories.storeIntegrationModel; }
 
-  async getBankDetails() {
-    const config = await this.adminConfigService.getManualPaymentConfig();
-    if (!config?.enabled) {
+  /** The seller's own bank account for this store — see StoreIntegrationsService's 'bank_transfer' provider. */
+  async getBankDetails(storeId: string) {
+    if (!storeId) throw new BadRequestException('storeId is required');
+    const integration = await this.storeIntegrationModel.findOne({
+      storeId, type: 'payment', provider: 'bank_transfer', isEnabledForCheckout: true,
+    }).lean();
+    if (!integration) {
       throw new BadRequestException('Bank transfer payment is not available right now.');
     }
+    const config = integration.config ?? {};
     // `usdToPkrRate` is included so the app can show "you'll transfer approximately
     // PKR X" before the buyer commits — the authoritative amount is computed
     // (and locked in) server-side at submission time in `submitPayment`.
+    const rate = await this.exchangeRateService.getCurrentRate('PKR');
     return {
       bankName: config.bankName,
       accountTitle: config.accountTitle,
@@ -60,7 +69,7 @@ export class ManualPaymentsService {
       jazzcashNumber: config.jazzcashNumber,
       easypaisaNumber: config.easypaisaNumber,
       instructions: config.instructions,
-      usdToPkrRate: config.usdToPkrRate,
+      usdToPkrRate: rate?.ratePerUSD ?? null,
     };
   }
 
@@ -151,15 +160,17 @@ export class ManualPaymentsService {
   }
 
   // ═══════════════════════════════════════════════════════════════════════
-  // ADMIN — Pending Manual Payments queue
+  // SELLER — this store's own pending manual-payment-proof queue
   // ═══════════════════════════════════════════════════════════════════════
 
-  async adminListQueue(query: any) {
+  async sellerListQueue(storeId: string, sellerId: string, query: any) {
+    await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
+
     const page = Math.max(1, parseInt(query.page) || 1);
     const limit = Math.min(100, parseInt(query.limit) || 20);
     const skip = (page - 1) * limit;
 
-    const filter: Record<string, any> = {};
+    const filter: Record<string, any> = { storeIds: storeId };
     if (query.status) filter.status = query.status;
 
     const [proofs, total] = await Promise.all([
@@ -181,14 +192,16 @@ export class ManualPaymentsService {
     };
   }
 
-  async adminGetById(proofId: string) {
-    const proof = await this.proofModel.findById(proofId).lean();
+  async sellerGetById(storeId: string, sellerId: string, proofId: string) {
+    await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
+    const proof = await this.proofModel.findOne({ _id: proofId, storeIds: storeId }).lean();
     if (!proof) throw new NotFoundException('Payment proof not found');
     return proof;
   }
 
-  async adminApprove(proofId: string, adminId: string, ip?: string, userAgent?: string) {
-    const proof = await this.proofModel.findById(proofId);
+  async sellerApprove(storeId: string, sellerId: string, proofId: string, ip?: string, userAgent?: string) {
+    await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
+    const proof = await this.proofModel.findOne({ _id: proofId, storeIds: storeId });
     if (!proof) throw new NotFoundException('Payment proof not found');
     if (proof.status !== 'pending') {
       throw new BadRequestException(`Cannot approve a proof with status "${proof.status}"`);
@@ -231,17 +244,18 @@ export class ManualPaymentsService {
     }
 
     proof.status = 'approved';
-    proof.reviewedByAdminId = adminId;
+    // Field name predates the per-store rework — now holds the reviewing seller's id, not an admin's.
+    proof.reviewedByAdminId = sellerId;
     proof.reviewedAt = now;
     await proof.save();
 
     this.activityLogService.log({
-      storeId: 'platform',
+      storeId,
       category: 'finance',
       action: 'manual_payment_approved',
       description: `Manual bank-transfer payment of PKR ${proof.amountPKR.toFixed(2)} approved for ${orders.length} order(s)`,
-      actorId: adminId,
-      actorRole: 'admin',
+      actorId: sellerId,
+      actorRole: 'seller',
       targetId: proofId,
       targetType: 'manual_payment_proof',
       ip, userAgent,
@@ -261,8 +275,9 @@ export class ManualPaymentsService {
     return proof;
   }
 
-  async adminReject(proofId: string, adminId: string, reason: string, ip?: string, userAgent?: string) {
-    const proof = await this.proofModel.findById(proofId);
+  async sellerReject(storeId: string, sellerId: string, proofId: string, reason: string, ip?: string, userAgent?: string) {
+    await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
+    const proof = await this.proofModel.findOne({ _id: proofId, storeIds: storeId });
     if (!proof) throw new NotFoundException('Payment proof not found');
     if (proof.status !== 'pending') {
       throw new BadRequestException(`Cannot reject a proof with status "${proof.status}"`);
@@ -270,17 +285,17 @@ export class ManualPaymentsService {
 
     proof.status = 'rejected';
     proof.rejectionReason = reason;
-    proof.reviewedByAdminId = adminId;
+    proof.reviewedByAdminId = sellerId;
     proof.reviewedAt = new Date();
     await proof.save();
 
     this.activityLogService.log({
-      storeId: 'platform',
+      storeId,
       category: 'finance',
       action: 'manual_payment_rejected',
       description: `Manual bank-transfer payment of PKR ${proof.amountPKR.toFixed(2)} rejected — ${reason}`,
-      actorId: adminId,
-      actorRole: 'admin',
+      actorId: sellerId,
+      actorRole: 'seller',
       targetId: proofId,
       targetType: 'manual_payment_proof',
       ip, userAgent,

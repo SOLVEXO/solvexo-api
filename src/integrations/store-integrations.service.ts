@@ -20,9 +20,15 @@ import {
 
 /** Providers available for a store's own bound currency — see Phase 2 §currency and Store.baseCurrency. */
 const PROVIDERS_BY_CURRENCY: Record<'PKR' | 'USD', StoreIntegrationProvider[]> = {
-  PKR: ['safepay', 'jazzcash', 'easypaisa', 'payfast'],
+  PKR: ['safepay', 'jazzcash', 'easypaisa', 'payfast', 'bank_transfer'],
   USD: ['stripe'],
 };
+
+// Providers with no PaymentProviderRegistry entry at all — not a real-time
+// gateway (no API calls, no webhook), so `registry.isSupported()` below
+// would always exclude it. Stays available whenever it's in the
+// currency-gated list, same as 'stripe' is unconditionally appended.
+const REGISTRY_EXEMPT_PROVIDERS: StoreIntegrationProvider[] = ['bank_transfer'];
 
 function maskCredentials(credentials: Record<string, any>): Record<string, string> {
   const masked: Record<string, string> = {};
@@ -102,7 +108,7 @@ export class StoreIntegrationsService {
     // seller dashboard until their provider classes exist.
     const localProviders = store.baseCurrency === 'PKR' ? PROVIDERS_BY_CURRENCY.PKR : [];
     const availableProviders: StoreIntegrationProvider[] = [
-      ...localProviders.filter((p) => this.registry.isSupported(p)),
+      ...localProviders.filter((p) => REGISTRY_EXEMPT_PROVIDERS.includes(p) || this.registry.isSupported(p)),
       'stripe',
     ];
 
@@ -250,6 +256,40 @@ export class StoreIntegrationsService {
       );
 
       await this.logChange(storeId, sellerId, 'integration.connect', doc, { provider, mode });
+      return { success: true, data: this.toPublicView(doc) };
+    }
+
+    if (provider === 'bank_transfer') {
+      const { bankName, accountTitle, accountNumber, iban, jazzcashNumber, easypaisaNumber, instructions } = body;
+      if (!bankName || !accountTitle || !accountNumber) {
+        throw new BadRequestException('bankName, accountTitle and accountNumber are required');
+      }
+      // No credentialsEncrypted — these fields aren't a secret, they're what
+      // gets shown to the buyer at checkout so they know where to send money.
+      const doc = await this.repos.storeIntegrationModel.findOneAndUpdate(
+        { storeId, type: 'payment', provider },
+        {
+          $set: {
+            sellerId,
+            mode: 'live',
+            status: 'connected',
+            credentialsEncrypted: null,
+            config: {
+              bankName, accountTitle, accountNumber,
+              iban: iban ?? null,
+              jazzcashNumber: jazzcashNumber ?? null,
+              easypaisaNumber: easypaisaNumber ?? null,
+              instructions: instructions ?? null,
+              currency: 'PKR',
+            },
+            lastError: null,
+          },
+          $setOnInsert: { isEnabledForCheckout: false },
+        },
+        { new: true, upsert: true },
+      );
+
+      await this.logChange(storeId, sellerId, 'integration.connect', doc, { provider, mode: 'live' });
       return { success: true, data: this.toPublicView(doc) };
     }
 

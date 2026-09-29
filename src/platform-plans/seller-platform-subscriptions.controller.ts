@@ -84,6 +84,17 @@ export class SellerPlatformSubscriptionsController {
     return this.sellerPlatformSubscriptionsService.getSellerOverview(sellerId);
   }
 
+  // Invoice list for a specific store, for the Clients workspace's Billing
+  // tab — an admin needs to see which invoice to refund before calling
+  // adminRefundInvoice above.
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('admin')
+  @Get('admin/stores/:storeId/invoices')
+  adminListInvoices(@Param('storeId') storeId: string, @Query() query: any) {
+    return this.sellerPlatformSubscriptionsService.adminListInvoices(storeId, query);
+  }
+
   // Onboarding wizard's Payment step — no store exists yet at this point, so
   // these are literal routes declared ahead of the `:storeId` routes below
   // (same convention as every other literal-vs-param route split in this

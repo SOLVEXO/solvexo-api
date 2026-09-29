@@ -34,8 +34,8 @@ export class ManualPaymentsController {
   // this same `api/payment/*` prefix (the service layer itself stays
   // envelope-agnostic, same as FinanceService, so it's reusable either way).
   @Get('bank-details')
-  async getBankDetails() {
-    const data = await this.manualPaymentsService.getBankDetails();
+  async getBankDetails(@Query('storeId') storeId: string) {
+    const data = await this.manualPaymentsService.getBankDetails(storeId);
     return { success: true, data };
   }
 

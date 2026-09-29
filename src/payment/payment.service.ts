@@ -1581,11 +1581,6 @@ export class PaymentService {
   async manualBankTransferPayment(userId: string, checkoutId: string) {
     if (!checkoutId) throw new BadRequestException('checkoutId is required');
 
-    const manualConfig = await this.adminConfigService.getManualPaymentConfig();
-    if (!manualConfig?.enabled) {
-      throw new BadRequestException('Bank transfer payment is not available right now — please use another payment method.');
-    }
-
     const {
       checkoutModel,
       paymentTransactionModel,
@@ -1593,6 +1588,7 @@ export class PaymentService {
       addressModel,
       productVariantModel,
       cartModel,
+      storeIntegrationModel,
     } = this.databaseService.repositories;
 
     const checkout = await checkoutModel.findOne({
@@ -1610,6 +1606,24 @@ export class PaymentService {
     if (checkout.expiredAt && checkout.expiredAt < new Date()) {
       await checkoutModel.findByIdAndUpdate(checkout._id, { status: 'expired' });
       throw new BadRequestException('Checkout has expired');
+    }
+
+    // Bank transfer settles into ONE seller's own bank account (see
+    // StoreIntegrationsService — 'bank_transfer' provider), so a cart that
+    // spans multiple stores has no single destination account to show the
+    // buyer. Same single-store constraint as the direct Stripe Connect
+    // settlement path (getEligibleConnectAccountForStore).
+    const storeIds = [...new Set((checkout.items as any[]).map((i) => String(i.storeId)))];
+    if (storeIds.length !== 1) {
+      throw new BadRequestException('Bank transfer isn\'t available for a cart with items from more than one store — please check out one store at a time.');
+    }
+    const [storeId] = storeIds;
+
+    const bankIntegration = await storeIntegrationModel.findOne({
+      storeId, type: 'payment', provider: 'bank_transfer', isEnabledForCheckout: true,
+    });
+    if (!bankIntegration) {
+      throw new BadRequestException('Bank transfer payment is not available right now — please use another payment method.');
     }
 
     for (const item of checkout.items) {

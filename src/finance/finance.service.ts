@@ -4,7 +4,7 @@ import {
   BadRequestException, ConflictException,
 } from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
-import { Connection, ClientSession } from 'mongoose';
+import { Connection, ClientSession, isValidObjectId } from 'mongoose';
 import { DatabaseService } from '@/database/databaseservice';
 import { RequestPayoutDto } from './dto/request-payout.dto';
 import { AddPayoutMethodDto } from './dto/add-payout-method.dto';
@@ -1343,6 +1343,7 @@ export class FinanceService {
    * whether the seller owns 1 store or 50.
    */
   async adminGetSellerFinancialRollup(sellerId: string) {
+    if (!isValidObjectId(sellerId)) throw new BadRequestException('A valid sellerId is required');
     const seller = await this.sellerModel.findById(sellerId).select('name email').lean();
     if (!seller) throw new NotFoundException('Seller not found');
 
@@ -1386,6 +1387,7 @@ export class FinanceService {
 
   /** Same shared `buildTransactionFilter`/`queryTransactions` pair every other transaction list uses, keyed by `sellerId` instead of `storeId` — a single indexed query across every store the seller owns, not a per-store loop. */
   async adminGetSellerTransactionsBySeller(sellerId: string, query: any) {
+    if (!isValidObjectId(sellerId)) throw new BadRequestException('A valid sellerId is required');
     const seller = await this.sellerModel.findById(sellerId).select('_id').lean();
     if (!seller) throw new NotFoundException('Seller not found');
     const filter = this.buildTransactionFilter(query, { sellerId });

@@ -196,6 +196,29 @@ export class OrdersController {
     return this.ordersService.getSellerOrderDetail(actingSellerId(req.user), storeId, orderId);
   }
 
+  // ── Admin-authorized VIEW of a seller-order's detail, for the Clients
+  // workspace's Orders tab — read-only, deliberately. The seller-facing
+  // route above 403s for an admin caller (`actingSellerId(req.user)`
+  // resolves to the admin's own userId, which never matches a store's real
+  // sellerId), so this resolves the store's real sellerId server-side
+  // instead (OrdersService.resolveStoreSellerId) — same pattern as
+  // SellerPlatformSubscriptionsService's admin billing routes. No admin
+  // cancel/refund route exists here by design: Solvexo stores are
+  // independent (Shopify-style), not a curated marketplace — a seller's
+  // own order data is theirs to act on, never admin's to touch on their
+  // behalf. (Cancel/refund admin routes were built once, then deliberately
+  // removed for exactly this reason.) ─────────────────────────────────────
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('admin')
+  @Get('admin-orders/:storeId/:orderId')
+  async adminGetOrderDetail(
+    @Param('storeId') storeId: string,
+    @Param('orderId') orderId: string,
+  ) {
+    return this.ordersService.adminGetSellerOrderDetail(storeId, orderId);
+  }
+
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('user')
   @Post('cancel/:orderId')

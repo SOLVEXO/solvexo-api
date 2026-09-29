@@ -13,6 +13,12 @@ export const STORE_INTEGRATION_PROVIDERS = [
   'payfast',
   'safepay',
   'stripe',
+  // Manual bank transfer — the seller's own bank account details, shown to
+  // the buyer at checkout (not a secret, unlike every other provider here:
+  // no credentialsEncrypted, the account number IS what gets displayed).
+  // Buyer uploads a transfer proof; the seller reviews it from their own
+  // store (see manual-payments module) — no gateway API, no webhook.
+  'bank_transfer',
   'whatsapp_cloud',
   // Real, live per-order tax calculation (TaxService) — a seller's own
   // TaxJar API token, same encrypted-credential shape as every other

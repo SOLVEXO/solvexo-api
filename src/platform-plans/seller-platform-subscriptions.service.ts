@@ -2,7 +2,7 @@
 import { Injectable, NotFoundException, BadRequestException, ForbiddenException, Logger } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 import { InjectConnection } from '@nestjs/mongoose';
-import { Connection, ClientSession } from 'mongoose';
+import { Connection, ClientSession, isValidObjectId } from 'mongoose';
 import { DatabaseService } from '@/database/databaseservice';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { PlatformPlanNotificationsService } from './platform-plan-notifications.service';
@@ -575,7 +575,25 @@ export class SellerPlatformSubscriptionsService {
   /** Seller's own platform-plan billing history for one store — invoice list + download links. */
   async listInvoices(sellerId: string, storeId: string, query: any) {
     await this.verifyStoreOwnership(storeId, sellerId);
+    return this.queryInvoices(storeId, query);
+  }
 
+  /**
+   * Admin equivalent of `listInvoices` — for the Clients workspace's Billing
+   * tab (refunding a specific invoice needs to see the invoice list first).
+   * Confirms the store exists (so a bogus id still 404s) but skips the
+   * seller-ownership check an admin caller can never satisfy — same
+   * resolve-the-real-id-server-side pattern as `getSellerOverview`, not a
+   * bypass flag threaded through the shared, security-sensitive method.
+   */
+  async adminListInvoices(storeId: string, query: any) {
+    if (!isValidObjectId(storeId)) throw new BadRequestException('A valid storeId is required');
+    const store = await this.storeModel.findById(storeId).select('_id').lean();
+    if (!store) throw new NotFoundException('Store not found');
+    return this.queryInvoices(storeId, query);
+  }
+
+  private async queryInvoices(storeId: string, query: any) {
     const page = Math.max(1, parseInt(query.page) || 1);
     const limit = Math.min(50, parseInt(query.limit) || 20);
     const skip = (page - 1) * limit;
@@ -1757,6 +1775,7 @@ export class SellerPlatformSubscriptionsService {
   // ═══════════════════════════════════════════════════════════════════════
 
   async getSellerOverview(sellerId: string) {
+    if (!isValidObjectId(sellerId)) throw new BadRequestException('A valid sellerId is required');
     const stores = await this.storeModel.find({ sellerId, isDelete: false }).select('name slug logo status').lean();
     const storeIds = stores.map((s: any) => s._id.toString());
 

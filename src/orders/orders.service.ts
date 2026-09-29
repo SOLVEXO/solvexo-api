@@ -4,6 +4,7 @@ import {
   NotFoundException,
   ForbiddenException,
 } from '@nestjs/common';
+import { isValidObjectId } from 'mongoose';
 import { DatabaseService } from '@/database/databaseservice';
 import { UploadService } from '@/upload/upload.service';
 import { JwtService } from '@nestjs/jwt';
@@ -477,6 +478,37 @@ export class OrdersService {
         sellerOrder,
       },
     };
+  }
+
+  /**
+   * Resolves a store's REAL owning sellerId for an admin caller.
+   * `getSellerOrderDetail` does its own ownership check via
+   * `storeModel.findOne({_id, sellerId})` — for a seller's own JWT,
+   * `actingSellerId(req.user)` already IS that value, but for an admin
+   * caller it's the admin's own userId, which never matches any store's
+   * real `sellerId`. Resolving the real sellerId here and passing THAT
+   * into the exact same method is the same pattern already used for
+   * `SellerPlatformSubscriptionsService.getSellerOverview` — not a bypass
+   * flag threaded through the shared, security-sensitive ownership check
+   * itself. Deliberately only backs `adminGetSellerOrderDetail` (a read) —
+   * no admin cancel/refund equivalent exists: Solvexo stores are
+   * independent (Shopify-style), a seller's own order data is theirs to
+   * act on, never admin's to touch on their behalf.
+   */
+  private async resolveStoreSellerId(storeId: string): Promise<string> {
+    if (!isValidObjectId(storeId)) throw new BadRequestException('A valid storeId is required');
+    const store = await this.databaseService.repositories.storeModel
+      .findOne({ _id: storeId, isDelete: false })
+      .select('sellerId')
+      .lean();
+    if (!store) throw new NotFoundException('Store not found');
+    return (store as any).sellerId;
+  }
+
+  /** Admin READ-ONLY equivalent of `getSellerOrderDetail` — for the Clients workspace's Orders tab. */
+  async adminGetSellerOrderDetail(storeId: string, orderId: string) {
+    const sellerId = await this.resolveStoreSellerId(storeId);
+    return this.getSellerOrderDetail(sellerId, storeId, orderId);
   }
 
   /** Same filters as `getSellerOrders` (status/type/time), but no pagination
