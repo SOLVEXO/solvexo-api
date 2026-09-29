@@ -12,9 +12,6 @@ export class Announcement {
   @Prop({ required: true })
   message: string;
 
-  @Prop({ type: String, enum: ['all', 'sellers', 'buyers'], default: 'all' })
-  audience: string;
-
   @Prop({ type: String, enum: ['draft', 'published', 'scheduled'], default: 'draft' })
   status: string;
 
@@ -34,4 +31,3 @@ export class Announcement {
 export const AnnouncementSchema = SchemaFactory.createForClass(Announcement);
 
 AnnouncementSchema.index({ status: 1, createdAt: -1 });
-AnnouncementSchema.index({ audience: 1 });

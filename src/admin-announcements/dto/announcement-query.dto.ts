@@ -8,11 +8,6 @@ export class AnnouncementQueryDto {
   @IsEnum(['draft', 'published', 'scheduled'])
   status?: string;
 
-  @ApiProperty({ enum: ['all', 'sellers', 'buyers'], required: false })
-  @IsOptional()
-  @IsEnum(['all', 'sellers', 'buyers'])
-  audience?: string;
-
   @ApiProperty({ required: false })
   @IsOptional()
   @IsString()

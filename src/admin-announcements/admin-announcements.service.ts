@@ -2,6 +2,8 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { DatabaseService } from '../database/databaseservice';
 import { ActivityLogService } from '../activity-log/activity-log.service';
+import { NotificationsService } from '../notifications/notifications.service';
+import { NOTIFICATION_TYPES } from '../notifications/notification.types';
 import { CreateAnnouncementDto } from './dto/create-announcement.dto';
 import { UpdateAnnouncementDto } from './dto/update-announcement.dto';
 import { UpdateAnnouncementStatusDto } from './dto/update-announcement-status.dto';
@@ -18,10 +20,21 @@ export class AdminAnnouncementsService {
   constructor(
     private readonly databaseService: DatabaseService,
     private readonly activityLogService: ActivityLogService,
+    private readonly notificationsService: NotificationsService,
   ) {}
 
   private get model() {
     return this.databaseService.repositories.announcementModel;
+  }
+
+  /** One Notification per store + at most one email per seller — see NotificationsService.notifyAllStores. */
+  private async broadcast(announcement: { title: string; message: string }) {
+    return this.notificationsService.notifyAllStores({
+      type: NOTIFICATION_TYPES.PLATFORM_ANNOUNCEMENT,
+      title: announcement.title,
+      body: announcement.message,
+      email: { subject: announcement.title, html: `<p>${announcement.message}</p>` },
+    });
   }
 
   private log(action: string, description: string, meta: AuditMeta, targetId?: string) {
@@ -47,7 +60,6 @@ export class AdminAnnouncementsService {
     const announcement = await this.model.create({
       title: dto.title,
       message: dto.message,
-      audience: dto.audience ?? 'all',
       status: dto.status ?? 'draft',
       scheduledAt: dto.scheduledAt ? new Date(dto.scheduledAt) : null,
       publishedAt: dto.status === 'published' ? new Date() : null,
@@ -55,13 +67,13 @@ export class AdminAnnouncementsService {
     });
 
     this.log('announcement_created', `Announcement "${dto.title}" created`, meta, String(announcement._id));
+    if (announcement.status === 'published') await this.broadcast(announcement);
     return { success: true, message: 'Announcement created', data: announcement };
   }
 
   async list(query: AnnouncementQueryDto) {
     const filter: Record<string, unknown> = { isDelete: false };
     if (query.status) filter.status = query.status;
-    if (query.audience) filter.audience = query.audience;
     if (query.search) filter.title = { $regex: query.search, $options: 'i' };
 
     const page = query.page ?? 1;
@@ -87,7 +99,6 @@ export class AdminAnnouncementsService {
     const update: Record<string, unknown> = {};
     if (dto.title !== undefined) update.title = dto.title;
     if (dto.message !== undefined) update.message = dto.message;
-    if (dto.audience !== undefined) update.audience = dto.audience;
     if (dto.scheduledAt !== undefined) update.scheduledAt = new Date(dto.scheduledAt);
 
     const announcement = await this.model.findByIdAndUpdate(id, { $set: update }, { new: true });
@@ -108,6 +119,7 @@ export class AdminAnnouncementsService {
 
     const announcement = await this.model.findByIdAndUpdate(id, { $set: update }, { new: true });
     this.log('announcement_status_changed', `Announcement "${announcement!.title}" set to ${dto.status}`, meta, id);
+    if (dto.status === 'published') await this.broadcast(announcement!);
     return { success: true, message: `Announcement set to ${dto.status}`, data: announcement };
   }
 
@@ -118,21 +130,24 @@ export class AdminAnnouncementsService {
     return { success: true, message: 'Announcement deleted' };
   }
 
-  // ─── Public consumption (buyer/seller) ──────────────────────────────────
-  // No cron flips 'scheduled' -> 'published' in this codebase, so a scheduled
-  // announcement whose time has already passed is treated as live here at
-  // read-time instead.
-  async getActiveForAudience(audience: 'buyers' | 'sellers') {
-    const now = new Date();
-    const items = await this.model
-      .find({
-        isDelete: false,
-        audience: { $in: ['all', audience] },
-        $or: [{ status: 'published' }, { status: 'scheduled', scheduledAt: { $lte: now } }],
-      })
-      .sort({ publishedAt: -1, scheduledAt: -1, createdAt: -1 })
-      .limit(5);
+  // ─── Scheduled publish (called from SchedulerService, every 5 min) ──────
+  // Same "flip to published once due" shape as activateScheduledProducts/
+  // publishScheduledBlogPosts in scheduler.service.ts, plus the actual
+  // broadcast fan-out those two don't need.
+  async processScheduledAnnouncements(): Promise<{ processed: number }> {
+    const due = await this.model.find({
+      status: 'scheduled',
+      scheduledAt: { $lte: new Date() },
+      isDelete: false,
+    });
 
-    return { success: true, data: items };
+    for (const announcement of due) {
+      announcement.status = 'published';
+      announcement.publishedAt = announcement.scheduledAt;
+      await announcement.save();
+      await this.broadcast(announcement);
+    }
+
+    return { processed: due.length };
   }
 }

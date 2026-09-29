@@ -20,6 +20,7 @@ import { ShippingRatesService } from '@/shipping-rates/shipping-rates.service';
 import { GiftCardsService } from '@/gift-cards/gift-cards.service';
 import { NOTIFICATION_TYPES } from '@/notifications/notification.types';
 import { round } from '@/common/number.util';
+import { buildDiffMetadata } from '@/common/activity-diff.util';
 import { deriveRollupStatus } from './order-status.util';
 import { toCsv } from '@/analytics/utils/csv.util';
 
@@ -1990,6 +1991,11 @@ export class OrdersService {
       storeId, category: 'orders', action: 'order_manual_refund_issued',
       description: `Refunded ${amount} ${buyerCurrency} on order #${order.orderNumber} — ${reason}`,
       actorId: sellerId, actorRole: 'seller', targetId: orderId, targetType: 'order',
+      metadata: buildDiffMetadata(
+        { refundedAmount: round(alreadyRefunded) },
+        { refundedAmount: round(alreadyRefunded + amount) },
+        ['refundedAmount'],
+      ),
     });
 
     this.notificationsService

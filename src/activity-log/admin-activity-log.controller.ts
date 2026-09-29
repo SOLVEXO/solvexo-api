@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Controller, Get, Query, Res, UseGuards } from '@nestjs/common';
+import { Controller, Get, Param, Query, Res, UseGuards } from '@nestjs/common';
 import { Response } from 'express';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { ActivityLogService } from './activity-log.service';
@@ -26,6 +26,17 @@ export class AdminActivityLogController {
   @Get()
   getAll(@Query() query: any) {
     return this.activityLogService.adminFindAll(query);
+  }
+
+  @Get('stats')
+  getStats() {
+    return this.activityLogService.adminGetStats();
+  }
+
+  // Static path above must stay registered before this dynamic one.
+  @Get('timeline/:targetId')
+  getTimeline(@Param('targetId') targetId: string) {
+    return this.activityLogService.getTimeline(targetId);
   }
 
   @Get('export')

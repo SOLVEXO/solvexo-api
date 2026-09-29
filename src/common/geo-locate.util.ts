@@ -17,3 +17,17 @@ export function resolveCountryFromIp(ip: string | undefined): string | null {
   const result = geoip.lookup(cleaned);
   return result?.country ?? null;
 }
+
+/**
+ * City + country for display (e.g. Activity Log's "where from" column) —
+ * same offline lookup as `resolveCountryFromIp` above, just returning the
+ * fuller shape that one call site needs instead of country alone. Returns
+ * null for a private/loopback/local-dev IP, same as the sibling function.
+ */
+export function resolveLocationFromIp(ip: string | null | undefined): { city: string | null; country: string | null } | null {
+  if (!ip) return null;
+  const cleaned = ip.startsWith('::ffff:') ? ip.slice(7) : ip;
+  const result = geoip.lookup(cleaned);
+  if (!result) return null;
+  return { city: result.city || null, country: result.country || null };
+}

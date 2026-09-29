@@ -13,11 +13,6 @@ export class CreateAnnouncementDto {
   @IsNotEmpty()
   message: string;
 
-  @ApiProperty({ enum: ['all', 'sellers', 'buyers'], required: false })
-  @IsOptional()
-  @IsEnum(['all', 'sellers', 'buyers'])
-  audience?: string;
-
   @ApiProperty({ enum: ['draft', 'published', 'scheduled'], required: false })
   @IsOptional()
   @IsEnum(['draft', 'published', 'scheduled'])

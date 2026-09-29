@@ -4,6 +4,7 @@ import { DatabaseService } from '../database/databaseservice';
 import { ActivityLogService } from '../activity-log/activity-log.service';
 import { EntitlementsService } from '../platform-plans/entitlements.service';
 import { verifyStoreExists } from '../common/store-ownership.util';
+import { buildDiffMetadata } from '../common/activity-diff.util';
 
 export type CommissionRateSource = 'seller_override' | 'platform_plan' | 'global_default' | 'hardcoded_fallback';
 
@@ -121,6 +122,7 @@ export class CommissionRulesService {
       actorRole: 'admin',
       targetId: storeId,
       targetType: 'commission_rule',
+      metadata: buildDiffMetadata({ rate: previous?.rate ?? null }, { rate }, ['rate']),
     });
 
     return rule;

@@ -12,6 +12,7 @@ import { UpdatePayoutScheduleDto } from './dto/update-payout-schedule.dto';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { round } from '@/common/number.util';
 import { verifyStoreExists, verifyStoreOwnershipStrict } from '@/common/store-ownership.util';
+import { buildDiffMetadata } from '@/common/activity-diff.util';
 import { CommissionRulesService } from '@/commission-rules/commission-rules.service';
 import { AdminConfigService } from '@/admin-config/admin-config.service';
 import { NotificationsService } from '@/notifications/notifications.service';
@@ -1467,6 +1468,7 @@ export class FinanceService {
       throw new BadRequestException(`Cannot approve a payout with status "${payout.status}"`);
     }
 
+    const oldStatus = payout.status;
     payout.status = 'completed';
     payout.processedAt = new Date();
     await payout.save();
@@ -1481,6 +1483,7 @@ export class FinanceService {
       targetId: payoutId,
       targetType: 'payout',
       ip, userAgent,
+      metadata: buildDiffMetadata({ status: oldStatus }, { status: payout.status }, ['status']),
     });
 
     this.notificationsService.notify({
@@ -1507,6 +1510,7 @@ export class FinanceService {
       throw new BadRequestException(`Cannot reject a payout with status "${payout.status}"`);
     }
 
+    const oldStatus = payout.status;
     await this.reverseLedgerForPayout(payout, 'failed', reason, `Payout rejected — funds returned (${reason})`);
 
     this.activityLogService.log({
@@ -1519,6 +1523,7 @@ export class FinanceService {
       targetId: payoutId,
       targetType: 'payout',
       ip, userAgent,
+      metadata: buildDiffMetadata({ status: oldStatus }, { status: payout.status }, ['status']),
     });
 
     this.notificationsService.notify({
@@ -1550,6 +1555,7 @@ export class FinanceService {
     if (!payout) throw new NotFoundException('Payout not found');
     if (payout.status !== 'failed') throw new BadRequestException('Only failed payouts can be retried');
 
+    const oldStatus = payout.status;
     const currency = payout.currency || 'USD';
 
     await this.withTransaction(async (session) => {
@@ -1615,6 +1621,7 @@ export class FinanceService {
       targetId: payoutId,
       targetType: 'payout',
       ip, userAgent,
+      metadata: buildDiffMetadata({ status: oldStatus }, { status: payout.status }, ['status']),
     });
 
     this.notificationsService.notify({

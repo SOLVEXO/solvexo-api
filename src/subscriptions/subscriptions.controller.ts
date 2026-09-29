@@ -251,13 +251,12 @@ export class SubscriptionsController {
     return this.subscriptionsService.adminGetSubscriptionDetail(id);
   }
 
-  @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('admin')
-  @Post('admin/invoices/:invoiceId/refund')
-  adminRefundInvoice(@Req() req: any, @Param('invoiceId') invoiceId: string, @Body() dto: RefundInvoiceDto) {
-    return this.subscriptionsService.adminRefundInvoice(req.user.userId, invoiceId, dto.amountUSD, dto.reason);
-  }
+  // Admin invoice refund route was removed by design — a seller's own
+  // subscription-invoice money is between the seller and THEIR customer,
+  // never admin's to touch on their behalf (same "a seller's own order data
+  // is theirs to act on, never admin's to touch" principle documented above
+  // OrdersController.adminGetOrderDetail). `sellerRefundInvoice` below is the
+  // only real refund path left for a subscription invoice.
 
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard, RolesGuard)

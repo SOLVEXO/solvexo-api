@@ -25,6 +25,11 @@ export class ActivityLogController {
     return this.activityLogService.getStats(req.user.userId, storeId);
   }
 
+  @Get(':storeId/timeline/:targetId')
+  getTimeline(@Req() req: any, @Param('storeId') storeId: string, @Param('targetId') targetId: string) {
+    return this.activityLogService.getTimelineForSeller(req.user.userId, storeId, targetId);
+  }
+
   @Get(':storeId/export')
   async export(@Req() req: any, @Param('storeId') storeId: string, @Query() query: any, @Res() res: Response) {
     const csv = await this.activityLogService.exportCsv(req.user.userId, storeId, query);

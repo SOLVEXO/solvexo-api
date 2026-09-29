@@ -639,10 +639,10 @@ export class SubscriptionsService {
     return this.refundInvoiceInternal(invoiceId, amountUSD, reason, sellerId, 'seller');
   }
 
-  /** Admin-initiated refund — can act on any store's invoice. */
-  async adminRefundInvoice(adminId: string, invoiceId: string, amountUSD?: number, reason?: string) {
-    return this.refundInvoiceInternal(invoiceId, amountUSD, reason, adminId, 'admin');
-  }
+  // Admin-initiated refund was removed by design — see the doc comment above
+  // SubscriptionsController's removed `admin/invoices/:invoiceId/refund`
+  // route. `sellerRefundInvoice` above is the only real refund path left for
+  // a subscription invoice.
 
   // ── Shared status-transition logic (used by both seller override and buyer self-serve) ──
 
@@ -1547,31 +1547,38 @@ export class SubscriptionsService {
       this.attemptModel.countDocuments(filter),
     ]);
 
+    // Deliberately no buyer/customer lookup here — a seller's own customer's
+    // name/email is theirs, never admin's to see for a dunning/retry audit
+    // view (same "a seller's own order data is theirs to act on, never
+    // admin's to touch" principle documented above
+    // OrdersController.adminGetOrderDetail). Store name and every aggregate
+    // field (amount, failure reason, dates, attempt type) stay — those are
+    // platform-operational, not the seller's customer's PII.
     const storeIds = [...new Set(attempts.map((a: any) => a.storeId))];
-    const customerIds = [...new Set(attempts.map((a: any) => a.customerId))];
-    const [stores, customers] = await Promise.all([
-      this.storeModel.find({ _id: { $in: storeIds } }).select('name slug').lean(),
-      this.db.repositories.userModel.find({ _id: { $in: customerIds } }).select('name email').lean(),
-    ]);
+    const stores = await this.storeModel.find({ _id: { $in: storeIds } }).select('name slug').lean();
     const storeMap = Object.fromEntries(stores.map((s: any) => [s._id.toString(), s]));
-    const customerMap = Object.fromEntries(customers.map((c: any) => [c._id.toString(), c]));
 
     const rows = attempts.map((a: any) => ({
       ...a,
       store: storeMap[a.storeId] ?? null,
-      customer: customerMap[a.customerId] ?? null,
     }));
 
     return { success: true, data: { pagination: { page, limit, total, pages: Math.ceil(total / limit) }, failures: rows } };
   }
 
+  /**
+   * Deliberately no buyer/customer lookup (name/email/phone) here — same
+   * privacy principle as `adminGetPaymentFailures` above: a seller's own
+   * customer's PII is theirs, never admin's to see for a dunning drill-down.
+   * Store name, plan info, invoice/attempt history, and every other
+   * aggregate/operational field stay.
+   */
   async adminGetSubscriptionDetail(subId: string) {
     const sub = await this.subModel.findOne({ _id: subId, isDelete: false }).lean();
     if (!sub) throw new NotFoundException('Subscription not found');
 
-    const [store, customer, plan, invoices, attempts] = await Promise.all([
+    const [store, plan, invoices, attempts] = await Promise.all([
       this.storeModel.findById((sub as any).storeId).select('name slug sellerId').lean(),
-      this.db.repositories.userModel.findById((sub as any).customerId).select('name email phone').lean(),
       this.planModel.findById((sub as any).planId).select('name monthlyPriceUSD yearlyPriceUSD').lean(),
       this.invoiceModel.find({ subscriptionId: subId, isDelete: false }).sort({ createdAt: -1 }).lean(),
       this.attemptModel.find({ subscriptionId: subId }).sort({ createdAt: -1 }).lean(),
@@ -1579,7 +1586,7 @@ export class SubscriptionsService {
 
     return {
       success: true,
-      data: { ...sub, store, customer, plan, invoices, paymentAttempts: attempts, pendingCancellation: this.pendingCancellation(sub) },
+      data: { ...sub, store, plan, invoices, paymentAttempts: attempts, pendingCancellation: this.pendingCancellation(sub) },
     };
   }
 

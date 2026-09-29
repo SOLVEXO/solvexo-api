@@ -171,7 +171,8 @@ export const STORE_ANNOUNCEMENT_TYPES = ['info', 'sale', 'coupon', 'warning', 's
 export type StoreAnnouncementType = (typeof STORE_ANNOUNCEMENT_TYPES)[number];
 
 // Seller-controlled dismissible bar on their own storefront — distinct from the
-// admin-managed platform-wide `Announcement` (comman/ui `AnnouncementBanner`).
+// admin-managed platform-wide `Announcement` (admin-announcements module),
+// which now reaches sellers as real per-store Notifications, not a banner.
 @Schema({ _id: false })
 export class StoreAnnouncementBar {
   @Prop({ type: String, default: null }) message: string | null;

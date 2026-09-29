@@ -28,6 +28,7 @@ import { PurchaseOrdersService } from '@/purchase-orders/purchase-orders.service
 import { DraftOrdersService } from '@/draft-orders/draft-orders.service';
 import { OrdersService } from '@/orders/orders.service';
 import { MarketingAutomationsService } from '@/marketing-automations/marketing-automations.service';
+import { AdminAnnouncementsService } from '@/admin-announcements/admin-announcements.service';
 
 @Injectable()
 export class SchedulerService {
@@ -60,6 +61,7 @@ export class SchedulerService {
     private readonly draftOrdersService: DraftOrdersService,
     private readonly ordersService: OrdersService,
     private readonly marketingAutomationsService: MarketingAutomationsService,
+    private readonly adminAnnouncementsService: AdminAnnouncementsService,
   ) {}
 
   /**
@@ -137,6 +139,20 @@ export class SchedulerService {
       const result = await this.emailCampaignsService.processScheduledCampaigns();
       if (result.processed > 0) {
         this.logger.log(`Email campaigns: ${result.processed} scheduled campaign(s) fired`);
+      }
+    });
+  }
+
+  // Runs every 5 minutes — same cadence as processScheduledEmailCampaigns
+  // above. Flips any platform Announcement whose scheduledAt has arrived to
+  // 'published' and fires its broadcast (one Notification per store, one
+  // email per seller — see AdminAnnouncementsService.broadcast).
+  @Cron('*/5 * * * *')
+  async processScheduledAnnouncements() {
+    await this.runLocked('announcements-scheduled-publish', 120_000, async () => {
+      const result = await this.adminAnnouncementsService.processScheduledAnnouncements();
+      if (result.processed > 0) {
+        this.logger.log(`Announcements: ${result.processed} scheduled announcement(s) published`);
       }
     });
   }

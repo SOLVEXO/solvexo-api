@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { DatabaseService } from '@/database/databaseservice';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
+import { buildDiffMetadata } from '@/common/activity-diff.util';
 import { CreateVariantDto } from './dto/create-variant.dto';
 import { UpdateVariantDto } from './dto/update-variant.dto';
 import {
@@ -202,6 +203,30 @@ export class ProductVariantsService {
         targetType: 'product_variant',
         ip,
         userAgent,
+        metadata: buildDiffMetadata({ stock: variant.stock }, { stock: dto.stock }, ['stock']),
+      });
+    }
+
+    // Same "who changed what, from/to what value" audit as the stock
+    // adjustment above — previously a price edit left no record at all.
+    const priceDiff = buildDiffMetadata(
+      { price: variant.price, compareAtPrice: variant.compareAtPrice },
+      { price: dto.price ?? variant.price, compareAtPrice: dto.compareAtPrice ?? variant.compareAtPrice },
+      ['price', 'compareAtPrice'],
+    );
+    if (priceDiff) {
+      await this.activityLogService.log({
+        storeId: product.storeId,
+        category: 'products',
+        action: 'price_updated',
+        description: `Price for "${product.name}"${variant.sku ? ` (${variant.sku})` : ''} updated`,
+        actorId: sellerId,
+        actorRole: 'seller',
+        targetId: variantId,
+        targetType: 'product_variant',
+        ip,
+        userAgent,
+        metadata: priceDiff,
       });
     }
 

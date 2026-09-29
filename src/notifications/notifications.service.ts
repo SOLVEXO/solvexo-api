@@ -108,6 +108,66 @@ export class NotificationsService {
     }
   }
 
+  /**
+   * Platform → every seller broadcast (currently just AdminAnnouncementsService).
+   * Deliberately NOT "call notify() once per store" — that would also queue
+   * one email per store, and a seller with many stores has exactly one
+   * inbox. So the in-app side fans out per STORE (one Notification each,
+   * consistent with every other notification being storeId-scoped —
+   * surfaces in that store's own bell/list), while email is deduped down to
+   * one send per unique SELLER.
+   */
+  async notifyAllStores(params: { type: string; title: string; body: string; email?: { subject: string; html: string } }): Promise<{ storesNotified: number; emailsSent: number }> {
+    try {
+      const stores = await this.databaseService.repositories.storeModel.find({ isDelete: false }).select('_id sellerId').lean();
+      if (stores.length === 0) return { storesNotified: 0, emailsSent: 0 };
+
+      const now = new Date();
+      const docs = stores.map((s: any) => ({
+        recipientId: String(s.sellerId),
+        recipientRole: 'seller' as const,
+        storeId: String(s._id),
+        type: params.type,
+        title: params.title,
+        body: params.body,
+        data: null,
+        isRead: false,
+        readAt: null,
+        createdAt: now,
+        updatedAt: now,
+      }));
+      const created = await this.databaseService.repositories.notificationModel.insertMany(docs);
+
+      const sellerIds = [...new Set(stores.map((s: any) => String(s.sellerId)))];
+      for (const doc of created) this.gateway.emitNewNotification(doc.recipientId, doc.toObject());
+      for (const sellerId of sellerIds) {
+        const unreadCount = await this.databaseService.repositories.notificationModel.countDocuments({ recipientId: sellerId, isRead: false });
+        this.gateway.emitUnreadCount(sellerId, unreadCount);
+      }
+
+      let emailsSent = 0;
+      if (params.email) {
+        const [prefsList, sellers] = await Promise.all([
+          this.databaseService.repositories.notificationPreferenceModel.find({ userId: { $in: sellerIds } }).lean(),
+          this.databaseService.repositories.sellerModel.find({ _id: { $in: sellerIds } }).select('email').lean(),
+        ]);
+        const prefsBySeller = new Map(prefsList.map((p: any) => [String(p.userId), p]));
+        for (const seller of sellers as any[]) {
+          const prefs = prefsBySeller.get(String(seller._id));
+          const emailEnabled = prefs?.emailEnabled !== false;
+          if (!emailEnabled || !seller.email) continue;
+          await this.enqueue(NOTIFICATION_EMAIL_JOB, { to: seller.email, subject: params.email.subject, html: params.email.html });
+          emailsSent++;
+        }
+      }
+
+      return { storesNotified: stores.length, emailsSent };
+    } catch (err: any) {
+      this.logger.error(`notifyAllStores() failed: ${err?.message}`);
+      return { storesNotified: 0, emailsSent: 0 };
+    }
+  }
+
   private async findRecipient(recipientId: string, recipientRole: 'user' | 'seller') {
     if (recipientRole === 'seller') {
       return this.databaseService.repositories.sellerModel.findById(recipientId).select('email').lean();

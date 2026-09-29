@@ -3,6 +3,8 @@ import { ForbiddenException, Injectable, Logger } from '@nestjs/common';
 import { DatabaseService } from '../database/databaseservice';
 import { ActivityLogCategory } from './schemas/activity-log.schema';
 import { ActivityLogGateway } from './activity-log.gateway';
+import { resolveLocationFromIp } from '../common/geo-locate.util';
+import { describeUserAgent } from '../common/user-agent.util';
 
 export interface LogActivityInput {
   /** Omit for a platform-level action with no single store (e.g. admin managing a PlatformPlan) — stored as the 'platform' sentinel. */
@@ -57,13 +59,34 @@ export class ActivityLogService {
     }
   }
 
-  /** Chronological audit trail for one entity (e.g. a StoreBanner or PromotionRequest) — no separate timeline schema, this just reads ActivityLog. */
-  async getTimeline(targetId: string) {
+  /**
+   * Read-time enrichment — never persisted. `ip`/`userAgent` are stored raw
+   * (see `log()` above); this just makes them human-readable for whoever's
+   * viewing the log, computed fresh on every read instead of at write time
+   * (so an already-written entry benefits from library updates too).
+   */
+  private enrich<T extends { ip?: string | null; userAgent?: string | null }>(logs: T[]): (T & { location: { city: string | null; country: string | null } | null; device: string | null })[] {
+    return logs.map((l) => ({
+      ...l,
+      location: resolveLocationFromIp(l.ip),
+      device: describeUserAgent(l.userAgent),
+    }));
+  }
+
+  /** Chronological audit trail for one entity (e.g. a StoreBanner or PromotionRequest) — no separate timeline schema, this just reads ActivityLog.
+   *  `storeId` narrows it to one store — always pass it for a seller caller (see `getTimelineForSeller` below) so one store's targetId guess can never surface another's timeline; omitted only by the admin (platform-wide) route. */
+  async getTimeline(targetId: string, storeId?: string) {
     const logs = await this.databaseService.repositories.activityLogModel
-      .find({ targetId })
+      .find({ targetId, ...(storeId ? { storeId } : {}) })
       .sort({ createdAt: 1 })
       .lean();
-    return { success: true, data: logs };
+    return { success: true, data: this.enrich(logs) };
+  }
+
+  /** Seller-facing wrapper — same ownership check every other seller-facing method here does before touching this store's data. */
+  async getTimelineForSeller(sellerId: string, storeId: string, targetId: string) {
+    await this.verifyStoreOwnership(storeId, sellerId);
+    return this.getTimeline(targetId, storeId);
   }
 
   private async verifyStoreOwnership(storeId: string, sellerId: string) {
@@ -113,7 +136,7 @@ export class ActivityLogService {
       success: true,
       data: {
         pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
-        logs,
+        logs: this.enrich(logs),
       },
     };
   }
@@ -148,7 +171,13 @@ export class ActivityLogService {
         activeStaffToday: activeStaffToday.length,
         securityAlerts,
         lastLogin: lastLogin
-          ? { at: (lastLogin as any).createdAt, actorName: (lastLogin as any).actorName, ip: (lastLogin as any).ip, userAgent: (lastLogin as any).userAgent }
+          ? {
+              at: (lastLogin as any).createdAt,
+              actorName: (lastLogin as any).actorName,
+              ip: (lastLogin as any).ip,
+              location: resolveLocationFromIp((lastLogin as any).ip),
+              device: describeUserAgent((lastLogin as any).userAgent),
+            }
           : null,
       },
     };
@@ -208,7 +237,48 @@ export class ActivityLogService {
       success: true,
       data: {
         pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
-        logs,
+        logs: this.enrich(logs),
+      },
+    };
+  }
+
+  /** Platform-wide equivalent of getStats() above — same shape, no storeId scope. */
+  async adminGetStats() {
+    const { activityLogModel } = this.databaseService.repositories;
+
+    const ninetyDaysAgo = new Date();
+    ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
+
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+
+    const [totalEvents, actionsToday, activeActorsToday, securityAlerts, lastLogin] = await Promise.all([
+      activityLogModel.countDocuments({ createdAt: { $gte: ninetyDaysAgo } }),
+      activityLogModel.countDocuments({ createdAt: { $gte: startOfToday } }),
+      activityLogModel.distinct('actorId', { createdAt: { $gte: startOfToday }, actorId: { $ne: null } }),
+      activityLogModel.countDocuments({ isSecurityAlert: true, createdAt: { $gte: ninetyDaysAgo } }),
+      activityLogModel
+        .findOne({ category: 'security', action: 'login_success' })
+        .sort({ createdAt: -1 })
+        .lean(),
+    ]);
+
+    return {
+      success: true,
+      data: {
+        totalEvents,
+        actionsToday,
+        activeActorsToday: activeActorsToday.length,
+        securityAlerts,
+        lastLogin: lastLogin
+          ? {
+              at: (lastLogin as any).createdAt,
+              actorName: (lastLogin as any).actorName,
+              ip: (lastLogin as any).ip,
+              location: resolveLocationFromIp((lastLogin as any).ip),
+              device: describeUserAgent((lastLogin as any).userAgent),
+            }
+          : null,
       },
     };
   }

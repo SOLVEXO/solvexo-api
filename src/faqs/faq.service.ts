@@ -74,8 +74,6 @@ export class FaqService {
       category: dto.category?.toLowerCase() || 'general',
     });
 
-    console.log('✅ FAQ created:', faq.question);
-
     return {
       success: true,
       message: 'FAQ created successfully',
@@ -101,8 +99,6 @@ export class FaqService {
       throw new NotFoundException('FAQ not found');
     }
 
-    console.log('✅ FAQ updated:', id);
-
     return {
       success: true,
       message: 'FAQ updated successfully',
@@ -124,8 +120,6 @@ export class FaqService {
     faq.isActive = !faq.isActive;
     await faq.save();
 
-    console.log(`✅ FAQ ${faq.isActive ? 'activated' : 'deactivated'}:`, id);
-
     return {
       success: true,
       message: `FAQ ${faq.isActive ? 'activated' : 'deactivated'} successfully`,
@@ -143,8 +137,6 @@ export class FaqService {
     if (!faq) {
       throw new NotFoundException('FAQ not found');
     }
-
-    console.log('✅ FAQ deleted:', id);
 
     return {
       success: true,

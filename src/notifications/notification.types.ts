@@ -68,6 +68,10 @@ export const NOTIFICATION_TYPES = {
   BOOKING_RESCHEDULED: 'booking_rescheduled',
   BOOKING_REMINDER: 'booking_reminder',
   PACKAGE_PURCHASED: 'package_purchased',
+  // Platform → every seller broadcast (see AdminAnnouncementsService) — one
+  // Notification per STORE (so it surfaces in that store's own bell/list),
+  // but at most one email per SELLER (see NotificationsService.notifyAllStores).
+  PLATFORM_ANNOUNCEMENT: 'platform_announcement',
 } as const;
 
 export type NotificationType = (typeof NOTIFICATION_TYPES)[keyof typeof NOTIFICATION_TYPES];
