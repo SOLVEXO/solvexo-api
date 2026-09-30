@@ -77,7 +77,11 @@ async function bootstrap() {
     },
     credentials: true,
     methods: ['GET','HEAD','PUT','PATCH','POST','DELETE','OPTIONS'],
-    allowedHeaders: ['Content-Type','Authorization','X-Requested-With','Accept','Origin'],
+    // `Idempotency-Key` must be listed: the web app sends it on every charge-bearing
+    // mutation (plan change, add-ons, manual payment, stock counts, purchase orders…).
+    // Without it the browser's CORS preflight is rejected and the call surfaces only as
+    // a generic "Network Error" — no request ever reaches the API.
+    allowedHeaders: ['Content-Type','Authorization','X-Requested-With','Accept','Origin','Idempotency-Key'],
     exposedHeaders: ['Content-Length','X-Request-Id'],
   });
 
