@@ -489,7 +489,18 @@ export class SellerPlatformSubscriptionsService {
       await seller.save();
     }
 
-    const setupIntent = await this.gateway.createSetupIntent(seller.stripeCustomerId);
+    let setupIntent;
+    try {
+      setupIntent = await this.gateway.createSetupIntent(seller.stripeCustomerId);
+    } catch (err: any) {
+      // A stored customer id from another Stripe mode/account (e.g. test → live
+      // key switch) doesn't exist here — mint a fresh customer and retry once.
+      if (err?.code !== 'resource_missing' || err?.param !== 'customer') throw err;
+      const { providerCustomerId } = await this.gateway.getOrCreateCustomer(sellerId, seller.email, seller.name ?? '');
+      seller.stripeCustomerId = providerCustomerId;
+      await seller.save();
+      setupIntent = await this.gateway.createSetupIntent(providerCustomerId);
+    }
     return { success: true, data: { clientSecret: setupIntent.clientSecret, customerId: seller.stripeCustomerId } };
   }
 
