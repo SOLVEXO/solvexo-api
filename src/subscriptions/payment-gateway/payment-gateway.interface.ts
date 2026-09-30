@@ -107,7 +107,10 @@ export interface IPaymentGateway {
   unscheduleProviderCancellation(providerSubscriptionId: string): Promise<void>;
 
   /** Idempotent from the caller's perspective as long as the caller passes a stable idempotencyKey. */
-  getOrCreateCustomer(customerId: string, email: string, name: string): Promise<CreateCustomerResult>;
+  getOrCreateCustomer(customerId: string, email: string, name: string, replacingStaleProviderCustomerId?: string): Promise<CreateCustomerResult>;
+
+  /** False when the provider has no (or a deleted) customer with this id — e.g. an id created under test keys that a live key has never seen. Other errors (network, auth) still throw. */
+  customerExists(providerCustomerId: string): Promise<boolean>;
 
   /** For collecting/updating a card without an immediate charge (buyer's "add payment method" flow). */
   createSetupIntent(providerCustomerId: string): Promise<SetupIntentResult>;

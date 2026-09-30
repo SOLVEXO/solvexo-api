@@ -7,6 +7,7 @@ import { DatabaseService } from '@/database/databaseservice';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { PlatformPlanNotificationsService } from './platform-plan-notifications.service';
 import { PaymentGatewayService } from '@/subscriptions/payment-gateway/payment-gateway.service';
+import { ensureSellerCustomerId, resolveSubCustomerId } from './stripe-customer.util';
 import { verifyStoreOwnershipStrict } from '@/common/store-ownership.util';
 import { SubscribePlatformPlanDto, ChangePlatformPlanDto } from './dto/subscribe-platform-plan.dto';
 import { NotificationsService } from '@/notifications/notifications.service';
@@ -401,7 +402,17 @@ export class SellerPlatformSubscriptionsService {
     // upgrade never has to create a second customer for the same seller.
     // Purely informational at this point — no Stripe subscription is created
     // here, so nothing is charged just because a card happens to be on file.
-    const stripeCustomerId = seller?.stripeCustomerId ?? null;
+    let stripeCustomerId = seller?.stripeCustomerId ?? null;
+    // Don't copy a stale id (created under another Stripe mode/account) onto the new
+    // store's subscription — it would break that store's first charge/portal later.
+    if (stripeCustomerId) {
+      try {
+        if (!(await this.gateway.customerExists(stripeCustomerId))) stripeCustomerId = null;
+      } catch (err: any) {
+        // Stripe unreachable — keep the id as-is; store creation must never hinge on this check.
+        this.logger.warn(`Could not verify Stripe customer for seller ${sellerId}: ${err?.message}`);
+      }
+    }
     const now = new Date();
 
     if (seller && !seller.platformTrialUsedAt) {
@@ -483,25 +494,10 @@ export class SellerPlatformSubscriptionsService {
     const seller = await this.db.repositories.sellerModel.findById(sellerId);
     if (!seller) throw new NotFoundException('Seller account not found');
 
-    if (!seller.stripeCustomerId) {
-      const { providerCustomerId } = await this.gateway.getOrCreateCustomer(sellerId, seller.email, seller.name ?? '');
-      seller.stripeCustomerId = providerCustomerId;
-      await seller.save();
-    }
-
-    let setupIntent;
-    try {
-      setupIntent = await this.gateway.createSetupIntent(seller.stripeCustomerId);
-    } catch (err: any) {
-      // A stored customer id from another Stripe mode/account (e.g. test → live
-      // key switch) doesn't exist here — mint a fresh customer and retry once.
-      if (err?.code !== 'resource_missing' || err?.param !== 'customer') throw err;
-      const { providerCustomerId } = await this.gateway.getOrCreateCustomer(sellerId, seller.email, seller.name ?? '');
-      seller.stripeCustomerId = providerCustomerId;
-      await seller.save();
-      setupIntent = await this.gateway.createSetupIntent(providerCustomerId);
-    }
-    return { success: true, data: { clientSecret: setupIntent.clientSecret, customerId: seller.stripeCustomerId } };
+    // Recreates the customer if the stored id is stale (e.g. test → live key switch).
+    const customerId = await ensureSellerCustomerId(this.gateway, seller);
+    const setupIntent = await this.gateway.createSetupIntent(customerId);
+    return { success: true, data: { clientSecret: setupIntent.clientSecret, customerId } };
   }
 
   /** Verifies (server-side, against Stripe — never trusting the client's word
@@ -910,11 +906,9 @@ export class SellerPlatformSubscriptionsService {
         // First time this store goes onto a paid Stripe-billed plan.
         const seller = await this.db.repositories.sellerModel.findById(sellerId);
         if (!seller) throw new NotFoundException('Seller account not found');
-        if (!seller.stripeCustomerId) {
-          const { providerCustomerId } = await this.gateway.getOrCreateCustomer(sellerId, seller.email, seller.name ?? '');
-          seller.stripeCustomerId = providerCustomerId;
-          await seller.save();
-        }
+        // Validates the stored id too — a stale one (e.g. created under test keys) would
+        // otherwise fail the subscription create below with "No such customer".
+        await ensureSellerCustomerId(this.gateway, seller);
         if (!newPlan[newInterval === 'yearly' ? 'stripeYearlyPriceId' : 'stripeMonthlyPriceId']) {
           const { providerProductId, providerPriceId } = await this.gateway.getOrCreatePrice({
             planId: newPlan._id.toString(), planName: `Platform: ${newPlan.name}`, storeId,
@@ -1006,7 +1000,10 @@ export class SellerPlatformSubscriptionsService {
       }
 
       // Manual provider (or Stripe subscription already exists — proration top-up charge)
-      const charge = await this.gateway.chargeSubscription(sub._id.toString(), netDue, { providerCustomerId: sub.stripeCustomerId ?? undefined, idempotencyKey });
+      const chargeCustomerId = await resolveSubCustomerId(
+        this.gateway, this.db.repositories.sellerModel, this.subModel, sub, sellerId,
+      );
+      const charge = await this.gateway.chargeSubscription(sub._id.toString(), netDue, { providerCustomerId: chargeCustomerId, idempotencyKey });
       invoice = await this.invoiceModel.create({
         storeId, sellerId, platformPlanId: newPlanId,
         invoiceNumber: await this.generateInvoiceNumber(), type: isFirstPaidPurchase ? 'initial' : 'proration',
@@ -1270,7 +1267,10 @@ export class SellerPlatformSubscriptionsService {
     if (!sub || !(sub as any).stripeCustomerId) {
       throw new BadRequestException('No Stripe billing profile exists yet for this store — subscribe to a paid plan first.');
     }
-    const result = await this.gateway.createBillingPortalSession((sub as any).stripeCustomerId, returnUrl);
+    const portalCustomerId = (await resolveSubCustomerId(
+      this.gateway, this.db.repositories.sellerModel, this.subModel, sub, sellerId,
+    )) as string;
+    const result = await this.gateway.createBillingPortalSession(portalCustomerId, returnUrl);
     return { success: true, data: result };
   }
 

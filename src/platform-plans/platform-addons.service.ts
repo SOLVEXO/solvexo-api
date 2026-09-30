@@ -3,6 +3,7 @@ import { Injectable, BadRequestException, NotFoundException, Logger } from '@nes
 import { DatabaseService } from '@/database/databaseservice';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { PaymentGatewayService } from '@/subscriptions/payment-gateway/payment-gateway.service';
+import { resolveSubCustomerId } from './stripe-customer.util';
 import { AiCreditsService } from './ai-credits.service';
 import { verifyStoreOwnershipStrict } from '@/common/store-ownership.util';
 import { PurchaseAddonDto, PURCHASABLE_ADDON_TYPES } from './dto/purchase-addon.dto';
@@ -93,8 +94,11 @@ export class PlatformAddonsService {
     const totalPriceUSD = this.round(pricing.priceUSD * quantity);
 
     const sub = await this.db.repositories.sellerPlatformSubscriptionModel.findOne({ storeId, isDelete: false });
+    const customerId = await resolveSubCustomerId(
+      this.gateway, this.db.repositories.sellerModel, this.db.repositories.sellerPlatformSubscriptionModel, sub, sellerId,
+    );
     const charge = await this.gateway.chargeSubscription(`addon_${storeId}_${dto.addonType}_${Date.now()}`, totalPriceUSD, {
-      providerCustomerId: sub?.stripeCustomerId ?? undefined,
+      providerCustomerId: customerId,
     });
     if (!charge.success) {
       throw new BadRequestException(`Payment of $${totalPriceUSD.toFixed(2)} failed — ${charge.failureReason ?? 'declined'}`);
@@ -195,8 +199,11 @@ export class PlatformAddonsService {
         }
 
         const sub = await this.db.repositories.sellerPlatformSubscriptionModel.findOne({ storeId: addon.storeId });
+        const renewalCustomerId = await resolveSubCustomerId(
+          this.gateway, this.db.repositories.sellerModel, this.db.repositories.sellerPlatformSubscriptionModel, sub, addon.sellerId,
+        );
         const charge = await this.gateway.chargeSubscription(`addon_renewal_${addon._id}`, addon.priceUSD, {
-          providerCustomerId: sub?.stripeCustomerId ?? undefined,
+          providerCustomerId: renewalCustomerId,
         });
 
         if (charge.success) {

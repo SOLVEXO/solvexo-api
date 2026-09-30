@@ -91,8 +91,12 @@ export class PaymentGatewayService implements IPaymentGateway, OnModuleInit {
     return this.provider.unscheduleProviderCancellation(providerSubscriptionId);
   }
 
-  getOrCreateCustomer(customerId: string, email: string, name: string): Promise<CreateCustomerResult> {
-    return this.provider.getOrCreateCustomer(customerId, email, name);
+  getOrCreateCustomer(customerId: string, email: string, name: string, replacingStaleProviderCustomerId?: string): Promise<CreateCustomerResult> {
+    return this.provider.getOrCreateCustomer(customerId, email, name, replacingStaleProviderCustomerId);
+  }
+
+  customerExists(providerCustomerId: string): Promise<boolean> {
+    return this.provider.customerExists(providerCustomerId);
   }
 
   createSetupIntent(providerCustomerId: string): Promise<SetupIntentResult> {

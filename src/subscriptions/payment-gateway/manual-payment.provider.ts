@@ -53,8 +53,12 @@ export class ManualPaymentProvider implements IPaymentGateway {
     console.log(`[ManualPayment] Simulated unschedule-cancellation: provId=${providerSubscriptionId}`);
   }
 
-  async getOrCreateCustomer(customerId: string, email: string, _name: string): Promise<CreateCustomerResult> {
+  async getOrCreateCustomer(customerId: string, email: string, _name: string, _replacing?: string): Promise<CreateCustomerResult> {
     return { providerCustomerId: `manual_cus_${customerId}` };
+  }
+
+  async customerExists(_providerCustomerId: string): Promise<boolean> {
+    return true;
   }
 
   async createSetupIntent(providerCustomerId: string): Promise<SetupIntentResult> {

@@ -40,12 +40,28 @@ export class StripePaymentProvider implements IPaymentGateway {
     return this.stripe;
   }
 
-  async getOrCreateCustomer(customerId: string, email: string, name: string): Promise<CreateCustomerResult> {
+  async getOrCreateCustomer(customerId: string, email: string, name: string, replacingStaleProviderCustomerId?: string): Promise<CreateCustomerResult> {
+    // The idempotency key is stable per internal id so a retried request reuses its customer.
+    // When REPLACING a stale one the key also carries the stale id — otherwise Stripe would
+    // hand back the very customer it already returned for this key (within its 24h window).
+    const idempotencyKey = replacingStaleProviderCustomerId
+      ? `cust_create_${customerId}_replacing_${replacingStaleProviderCustomerId}`
+      : `cust_create_${customerId}`;
     const customer = await this.stripe.customers.create(
       { email, name: name || undefined, metadata: { internalCustomerId: customerId } },
-      { idempotencyKey: `cust_create_${customerId}` },
+      { idempotencyKey },
     );
     return { providerCustomerId: customer.id };
+  }
+
+  async customerExists(providerCustomerId: string): Promise<boolean> {
+    try {
+      const customer = await this.stripe.customers.retrieve(providerCustomerId);
+      return !('deleted' in customer && customer.deleted);
+    } catch (err: any) {
+      if (err?.code === 'resource_missing') return false;
+      throw err;
+    }
   }
 
   async getOrCreatePrice(params: {
