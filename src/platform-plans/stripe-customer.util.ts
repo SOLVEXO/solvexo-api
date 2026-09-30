@@ -30,7 +30,7 @@ export async function ensureSellerCustomerId(gateway: PaymentGatewayService, sel
  * The customer id a store subscription should charge. Returns the stored one if
  * it still exists; if it's stale, repoints the subscription at the seller's
  * (validated) customer and returns that. `undefined` when the subscription has
- * no customer at all (manual provider / never billed).
+ * no customer anywhere (neither on the subscription nor on the seller).
  */
 export async function resolveSubCustomerId(
   gateway: PaymentGatewayService,
@@ -40,7 +40,15 @@ export async function resolveSubCustomerId(
   sellerId: string,
 ): Promise<string | undefined> {
   const stored: string | null | undefined = sub?.stripeCustomerId;
-  if (!stored) return undefined;
+  if (!stored) {
+    // A store that was never billed through Stripe has no customer on its own
+    // subscription, but its seller may have saved a card (e.g. just to buy an
+    // add-on) — that card lives on the seller's customer.
+    const owner = await sellerModel.findById(sellerId);
+    const sellerCustomerId: string | null | undefined = owner?.stripeCustomerId;
+    if (sellerCustomerId && (await gateway.customerExists(sellerCustomerId))) return sellerCustomerId;
+    return undefined;
+  }
   if (await gateway.customerExists(stored)) return stored;
 
   const seller = await sellerModel.findById(sellerId);
