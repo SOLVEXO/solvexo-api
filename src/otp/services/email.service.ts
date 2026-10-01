@@ -15,6 +15,12 @@ export class EmailService {
         user: process.env.SMTP_USER,
         pass: process.env.SMTP_PASSWORD,
       },
+      // nodemailer's defaults wait up to 2 minutes to connect and 10 minutes on an idle
+      // socket — long enough for one dead SMTP server to stall every request that sends
+      // a mail. Fail fast instead (sendMail() already turns a failure into `false`).
+      connectionTimeout: 8000,
+      greetingTimeout: 8000,
+      socketTimeout: 12000,
     });
   }
 

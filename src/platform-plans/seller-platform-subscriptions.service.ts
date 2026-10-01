@@ -1078,17 +1078,21 @@ export class SellerPlatformSubscriptionsService {
 
     const { sellerName, sellerEmail, storeName } = await this.getSellerAndStoreNames(sellerId, storeId);
     if (sellerEmail) {
-      if (isFreeMoveIn) {
-        await this.notifications.sendMovedToFreePlan(sellerEmail, { sellerName, storeName, planName: newPlan.name });
-      } else if (netDue > 0) {
-        await this.notifications.sendPlanUpgraded(sellerEmail, {
-          sellerName, storeName, fromPlanName: historyEntry.fromPlanName, toPlanName: newPlan.name, amountUSD: netDue,
-        });
-      } else {
-        await this.notifications.sendPlanChangeCredited(sellerEmail, {
-          sellerName, storeName, fromPlanName: historyEntry.fromPlanName, toPlanName: newPlan.name, creditUSD: sub.creditBalanceUSD,
-        });
-      }
+      // Fire-and-forget: the plan change (and any charge) is already done, so a slow or
+      // failing mail server must never hold the seller's request open — it used to,
+      // and with SMTP down the checkout request just hung until the client timed out.
+      const confirmation = isFreeMoveIn
+        ? this.notifications.sendMovedToFreePlan(sellerEmail, { sellerName, storeName, planName: newPlan.name })
+        : netDue > 0
+          ? this.notifications.sendPlanUpgraded(sellerEmail, {
+              sellerName, storeName, fromPlanName: historyEntry.fromPlanName, toPlanName: newPlan.name, amountUSD: netDue,
+            })
+          : this.notifications.sendPlanChangeCredited(sellerEmail, {
+              sellerName, storeName, fromPlanName: historyEntry.fromPlanName, toPlanName: newPlan.name, creditUSD: sub.creditBalanceUSD,
+            });
+      void Promise.resolve(confirmation).catch((err: any) => {
+        this.logger.warn(`Plan-change email to ${sellerEmail} failed for store ${storeId}: ${err?.message}`);
+      });
     }
 
     return { success: true, message, data: { subscription: sub, invoice } };
