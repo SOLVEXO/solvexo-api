@@ -69,8 +69,8 @@ export class StripePaymentProvider implements PaymentProvider {
     }
 
     const amountCents = Math.round(order.amount * 100);
-    const { rate } = await this.commissionRulesService.resolveRate(order.storeId);
-    const applicationFeeAmountCents = Math.round(amountCents * rate);
+    // Card-network cost passed through (+ a custom per-seller commission, if one was agreed) — no plan commission on this rail.
+    const applicationFeeAmountCents = await this.commissionRulesService.cardApplicationFeeCents(order.storeId, amountCents);
 
     const paymentIntent = await this.stripe.paymentIntents.create({
       amount: amountCents,

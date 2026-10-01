@@ -509,7 +509,37 @@ export class OrdersService {
   /** Admin READ-ONLY equivalent of `getSellerOrderDetail` — for the Clients workspace's Orders tab. */
   async adminGetSellerOrderDetail(storeId: string, orderId: string) {
     const sellerId = await this.resolveStoreSellerId(storeId);
-    return this.getSellerOrderDetail(sellerId, storeId, orderId);
+    const result = await this.getSellerOrderDetail(sellerId, storeId, orderId);
+
+    // Admin sees USD only: convert a non-USD order with the rate captured on
+    // the order itself (Order.ratePerUSD) - never today's rate, never a guess.
+    const { orderModel } = this.databaseService.repositories;
+    const order: any = await orderModel.findById(orderId).select('ratePerUSD currency').lean();
+    const currency = order?.currency ?? 'USD';
+    if (currency === 'USD') return result;
+
+    const rate = order?.ratePerUSD;
+    const usable = typeof rate === 'number' && rate > 0;
+    const conv = (n: any) => (usable && typeof n === 'number' ? Math.round((n / rate) * 100) / 100 : null);
+    const so: any = result.data.sellerOrder;
+    return {
+      ...result,
+      data: {
+        ...result.data,
+        currency: 'USD',
+        unconvertible: !usable,
+        sellerOrder: {
+          ...so,
+          subtotal: conv(so.subtotal),
+          items: (so.items ?? []).map((it: any) => ({
+            ...it,
+            price: conv(it.price),
+            totalPrice: conv(it.totalPrice),
+            refundedAmount: conv(it.refundedAmount ?? 0),
+          })),
+        },
+      },
+    };
   }
 
   /** Same filters as `getSellerOrders` (status/type/time), but no pagination

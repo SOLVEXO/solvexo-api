@@ -309,8 +309,8 @@ export class PaymentService {
     if (!useSplit && checkoutStoreIds.length === 1) {
       connectAccountId = await this.stripeConnectService.getEligibleConnectAccountForStore(checkoutStoreIds[0]);
       if (connectAccountId) {
-        const { rate } = await this.commissionRulesService.resolveRate(checkoutStoreIds[0]);
-        applicationFeeAmountCents = Math.round(amountCents * rate);
+        // Card-network cost passed through (+ a custom per-seller commission, if one was agreed) — no plan commission on this rail.
+        applicationFeeAmountCents = await this.commissionRulesService.cardApplicationFeeCents(checkoutStoreIds[0], amountCents);
       }
       const store = await this.databaseService.repositories.storeModel
         .findById(checkoutStoreIds[0]).select('paymentCaptureMethod').lean();

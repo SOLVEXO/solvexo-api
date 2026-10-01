@@ -165,15 +165,38 @@ describe('FinanceService', () => {
       expect(feeTx.metadata.processingFee).toBe(0);
     });
 
-    it('does not charge a card-processing fee for a manual bank-transfer sale either', async () => {
+    // Shopify-style fee model: the plan's transaction fee is a THIRD-PARTY gateway fee only.
+    it('charges no commission and no card fee on a manual bank-transfer sale under a plan rate', async () => {
       const balance = makeBalance();
       balanceModel.findOne.mockResolvedValue(balance);
-      commissionRulesService.resolveRate = jest.fn().mockResolvedValue({ rate: 0.03, source: 'platform_plan' });
+      commissionRulesService.resolveRate = jest.fn().mockResolvedValue({ rate: 0.02, source: 'platform_plan' });
 
       await service.recordSale(STORE_ID, SELLER_ID, 'order-mbt', 27800, 'desc', 0, null, 'PKR', 'manual_bank_transfer');
 
-      const feeTx = txModel.created.find((t: any) => t.referenceId === 'order-mbt' && t.type === 'fee');
-      expect(feeTx.amount).toBeCloseTo(-834, 2); // 3% of 27800, no processing fee
+      expect(balance.pendingBalance).toBe(27800); // nothing deducted: manual payments are fee-free
+      expect(balance.totalFees).toBe(0);
+    });
+
+    it('charges the plan\'s third-party gateway fee on a SafePay sale (and no card-network fee)', async () => {
+      const balance = makeBalance();
+      balanceModel.findOne.mockResolvedValue(balance);
+      commissionRulesService.resolveRate = jest.fn().mockResolvedValue({ rate: 0.02, source: 'platform_plan' });
+
+      await service.recordSale(STORE_ID, SELLER_ID, 'order-safepay', 27800, 'desc', 0, null, 'PKR', 'safepay');
+
+      expect(balance.totalFees).toBeCloseTo(556, 2); // 2% of 27800 — the third-party fee
+      expect(balance.pendingBalance).toBeCloseTo(27244, 2);
+    });
+
+    it('charges only the card-processing cost (no plan commission) on a Stripe sale through Solvexo Payments', async () => {
+      const balance = makeBalance();
+      balanceModel.findOne.mockResolvedValue(balance);
+      commissionRulesService.resolveRate = jest.fn().mockResolvedValue({ rate: 0.02, source: 'platform_plan' });
+
+      await service.recordSale(STORE_ID, SELLER_ID, 'order-card', 100, 'desc', 0, null, 'USD', 'stripe');
+
+      expect(balance.totalFees).toBeCloseTo(3.20, 2); // 2.9% + $0.30, nothing on top
+      expect(balance.pendingBalance).toBeCloseTo(96.80, 2);
     });
 
     it('still charges the card-processing fee for a Stripe sale', async () => {

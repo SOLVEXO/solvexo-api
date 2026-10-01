@@ -83,7 +83,7 @@ export class PlatformPlanCatalogService implements OnModuleInit {
     if (doc.key === plan.key && (doc.catalogVersion ?? 0) >= CATALOG_VERSION) return; // already aligned
 
     // ── Align an adopted / older plan once per catalog version ─────────────
-    const keepFee = typeof doc.limits?.transactionFeeRate === 'number' ? doc.limits.transactionFeeRate : plan.limits.transactionFeeRate;
+
     const before = `${doc.monthlyPriceUSD}|${doc.yearlyPriceUSD}|${doc.introOfferEnabled}|${doc.introPriceUSD}|${doc.introDurationCycles}`;
 
     doc.key = plan.key;
@@ -92,7 +92,9 @@ export class PlatformPlanCatalogService implements OnModuleInit {
     doc.isCustomPricing = plan.isCustomPricing;
     doc.sortOrder = plan.sortOrder;
     doc.status = 'active';
-    doc.limits = { ...plan.limits, transactionFeeRate: keepFee };
+    // transactionFeeRate changed meaning in catalog v3 (an old value was a commission on EVERY sale; it is now the
+    // third-party gateway fee), so the catalog value replaces it rather than being carried over.
+    doc.limits = { ...plan.limits };
     if (!doc.description) doc.description = plan.description;
     // A badge that just repeats the plan's name ("Basic" on Basic) is noise — use the catalog's.
     if (!doc.badge || String(doc.badge).trim().toLowerCase() === String(doc.name).trim().toLowerCase()) doc.badge = plan.badge;

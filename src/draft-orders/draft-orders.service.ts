@@ -431,8 +431,8 @@ export class DraftOrdersService {
     const connectAccountId = await this.stripeConnectService.getEligibleConnectAccountForStore(draft.storeId);
     let applicationFeeAmountCents = 0;
     if (connectAccountId) {
-      const { rate } = await this.commissionRulesService.resolveRate(draft.storeId);
-      applicationFeeAmountCents = Math.round(amountCents * rate);
+      // Card-network cost passed through (+ a custom per-seller commission, if one was agreed) — no plan commission on this rail.
+      applicationFeeAmountCents = await this.commissionRulesService.cardApplicationFeeCents(draft.storeId, amountCents);
     }
 
     const paymentIntent = await stripe.paymentIntents.create({

@@ -22,8 +22,9 @@ import { PdfReportBuilder } from '@/analytics/utils/pdf-report.util';
 
 // ── Platform fee constants ───────────────────────────────────────────────────
 export const PLATFORM_FEE_RATE       = 0.08;   // 8% per sale — last-resort fallback, see CommissionRulesService
-export const PAYMENT_PROCESSING_RATE = 0.029;  // 2.9%
-export const PAYMENT_PROCESSING_FIXED = 0.30;  // $0.30 per transaction
+import { PAYMENT_PROCESSING_RATE, PAYMENT_PROCESSING_FIXED } from '../common/payment-fees.const';
+import { rateForPaymentRail } from '../commission-rules/payment-rail';
+export { PAYMENT_PROCESSING_RATE, PAYMENT_PROCESSING_FIXED };
 export const CLEARING_DAYS           = 3;      // default — non-card rails (manual bank transfer, COD)
 // Card-funded (Stripe) sales carry real chargeback exposure that can
 // surface weeks after the charge — a Pakistani bank-transfer payment has no
@@ -379,7 +380,11 @@ export class FinanceService {
       wallets,
       feeBreakdown: {
         marketplaceListingFee: 'Free',
-        transactionFee: `${(commissionRate.rate * 100).toFixed(2)}% per sale`,
+        // Shopify-style: no commission on card sales through Solvexo Payments or on COD/bank transfer;
+        // the plan's rate applies only to third-party gateways (unless a custom per-seller rate was agreed).
+        transactionFee: commissionRate.source === 'seller_override'
+          ? `${(commissionRate.rate * 100).toFixed(2)}% per sale (custom rate agreed with Solvexo)`
+          : `0% on card sales (Solvexo Payments), COD and bank transfer — ${(commissionRate.rate * 100).toFixed(2)}% only on third-party payment gateways`,
         transactionFeeSource: commissionRate.source,
         paymentProcessing: `${PAYMENT_PROCESSING_RATE * 100}% + $${PAYMENT_PROCESSING_FIXED} (card payments only — not charged for COD or bank transfer)`,
         digitalDelivery: 'Included',
@@ -1642,6 +1647,7 @@ export class FinanceService {
     storeId: string, adminId: string,
     amount: number, payoutMethodId: string | undefined, notes: string | undefined,
     ip?: string, userAgent?: string,
+    walletCurrency?: string,
   ) {
     const store = await this.verifyStoreExistsForAdmin(storeId);
     if (amount <= 0) throw new BadRequestException('Amount must be greater than zero');
@@ -1650,7 +1656,9 @@ export class FinanceService {
       type: 'manual', bankName: null, accountLast4: 'ADMIN',
     };
     let resolvedMethodId = 'admin-manual';
-    let currency = 'USD';
+    // `amount` is denominated in `walletCurrency` (the store's own wallet);
+    // defaults to USD for any pre-existing caller that doesn't pass it.
+    let currency = walletCurrency ?? 'USD';
     if (payoutMethodId) {
       const method = await this.methodModel.findOne({ _id: payoutMethodId, storeId });
       if (!method) throw new NotFoundException('Payout method not found');
@@ -1797,7 +1805,10 @@ export class FinanceService {
     platformSponsoredUSD = 0, campaignId?: string | null, currency = 'USD', paymentMethodType = 'stripe',
   ) {
     const chargesProcessingFee = paymentMethodType === 'stripe';
-    const { rate: platformFeeRate, source: feeRateSource } = await this.commissionRulesService.resolveRate(storeId);
+    // Shopify-style: the plan's transaction fee applies only to third-party gateways — card sales through
+    // Solvexo Payments and manual payments (COD / bank transfer) carry no commission (a custom per-seller
+    // override still applies everywhere). See commission-rules/payment-rail.ts.
+    const { rate: platformFeeRate, source: feeRateSource } = rateForPaymentRail(await this.commissionRulesService.resolveRate(storeId), paymentMethodType);
     const platformFee   = this.round(saleAmount * platformFeeRate);
     const processingFee = chargesProcessingFee ? this.round(saleAmount * PAYMENT_PROCESSING_RATE + PAYMENT_PROCESSING_FIXED) : 0;
     const netAmount     = this.round(saleAmount - platformFee - processingFee);

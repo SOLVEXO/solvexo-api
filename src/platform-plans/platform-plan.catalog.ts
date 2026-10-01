@@ -17,6 +17,10 @@ import type { PlatformPlan } from './schemas/platform-plan.schema';
  * them yet: `advancedAnalyticsAllowed`, `apiWebhooksAllowed`, `marketplaceFeaturedBadge`,
  * `slaUptimePercent`. Turn one on only once the feature behind it exists.
  *
+ * `transactionFeeRate` is the Shopify-style THIRD-PARTY gateway fee: charged only on sales paid through
+ * a gateway other than Solvexo Payments (SafePay, JazzCash…). Card sales through Solvexo Payments and
+ * manual payments (COD, bank transfer) carry no commission — see commission-rules/payment-rail.ts.
+ *
  * Everything else Solvexo ships (orders, draft orders, returns, gift cards, discount
  * codes, blog/pages/menus, themes & editor, inventory/purchase orders/stock counts,
  * Shippo shipping, newsletters, reviews, messaging, affiliate, tracking pixels,
@@ -28,7 +32,7 @@ export type PlanKey = 'basic' | 'grow' | 'advanced' | 'enterprise';
 
 /** Bump when the limits/features in `PLAN_CATALOG` change — existing plan documents
  *  are re-aligned to the catalog once per bump (see PlatformPlanCatalogService). */
-export const CATALOG_VERSION = 2; // v2: Enterprise became a fixed-price self-serve plan
+export const CATALOG_VERSION = 3; // v2: Enterprise became fixed-price · v3: transactionFeeRate now means the Shopify-style third-party gateway fee
 
 export interface CatalogPlan {
   key: PlanKey;
@@ -63,7 +67,7 @@ export const PLAN_CATALOG: CatalogPlan[] = [
     gracePeriodDays: 3,
     limits: {
       maxProducts: 25, maxStaffAccounts: 1, maxPosLocations: 1, aiCreditsPerMonth: 100,
-      transactionFeeRate: 0.05,
+      transactionFeeRate: 0.02,
       maxActiveStoreBanners: 4, maxActivePromotions: 1, maxMarkets: 3,
       customDomainAllowed: true, emailCampaignsAllowed: true, advancedSeoToolsAllowed: true,
       abandonedCartRecoveryAllowed: false, loyaltyProgramAllowed: false, customRedirectsAllowed: false,
@@ -81,7 +85,7 @@ export const PLAN_CATALOG: CatalogPlan[] = [
     gracePeriodDays: 3,
     limits: {
       maxProducts: -1, maxStaffAccounts: 5, maxPosLocations: 3, aiCreditsPerMonth: 500,
-      transactionFeeRate: 0.03,
+      transactionFeeRate: 0.01,
       maxActiveStoreBanners: 10, maxActivePromotions: 5, maxMarkets: 5,
       customDomainAllowed: true, emailCampaignsAllowed: true, advancedSeoToolsAllowed: true,
       abandonedCartRecoveryAllowed: true, loyaltyProgramAllowed: true, customRedirectsAllowed: true,
@@ -99,7 +103,7 @@ export const PLAN_CATALOG: CatalogPlan[] = [
     gracePeriodDays: 3,
     limits: {
       maxProducts: -1, maxStaffAccounts: 15, maxPosLocations: 10, aiCreditsPerMonth: 2000,
-      transactionFeeRate: 0.02,
+      transactionFeeRate: 0.006,
       maxActiveStoreBanners: -1, maxActivePromotions: -1, maxMarkets: 10,
       customDomainAllowed: true, emailCampaignsAllowed: true, advancedSeoToolsAllowed: true,
       abandonedCartRecoveryAllowed: true, loyaltyProgramAllowed: true, customRedirectsAllowed: true,
@@ -116,7 +120,7 @@ export const PLAN_CATALOG: CatalogPlan[] = [
     gracePeriodDays: 7,
     limits: {
       maxProducts: -1, maxStaffAccounts: -1, maxPosLocations: -1, aiCreditsPerMonth: 10000,
-      transactionFeeRate: 0.015,
+      transactionFeeRate: 0.002,
       maxActiveStoreBanners: -1, maxActivePromotions: -1, maxMarkets: -1,
       customDomainAllowed: true, emailCampaignsAllowed: true, advancedSeoToolsAllowed: true,
       abandonedCartRecoveryAllowed: true, loyaltyProgramAllowed: true, customRedirectsAllowed: true,
@@ -289,6 +293,6 @@ export function buildFeatureBullets(
   for (const { key, label } of FLAG_FEATURES) {
     if (l[key] && !(p && p[key])) lines.push(label);
   }
-  if (changed('transactionFeeRate')) lines.push(`${percent(l.transactionFeeRate)} transaction fee`);
+  if (changed('transactionFeeRate')) lines.push(`${percent(l.transactionFeeRate)} third-party gateway fee`);
   return lines;
 }

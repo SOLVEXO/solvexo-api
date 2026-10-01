@@ -5,8 +5,12 @@ import { ActivityLogService } from '../activity-log/activity-log.service';
 import { EntitlementsService } from '../platform-plans/entitlements.service';
 import { verifyStoreExists } from '../common/store-ownership.util';
 import { buildDiffMetadata } from '../common/activity-diff.util';
+import { PAYMENT_PROCESSING_RATE, PAYMENT_PROCESSING_FIXED } from '../common/payment-fees.const';
+import { rateForPaymentRail } from './payment-rail';
 
-export type CommissionRateSource = 'seller_override' | 'platform_plan' | 'global_default' | 'hardcoded_fallback';
+export { classifyPaymentRail, rateForPaymentRail, type PaymentRail } from './payment-rail';
+
+export type CommissionRateSource = 'seller_override' | 'platform_plan' | 'global_default' | 'hardcoded_fallback' | 'payment_method_exempt';
 
 export interface ResolvedCommissionRate {
   rate: number;
@@ -58,6 +62,19 @@ export class CommissionRulesService {
 
     const fallbackRate = await this.entitlementsService.getTransactionFeeRate(storeId);
     return { rate: fallbackRate, source: 'hardcoded_fallback' };
+  }
+
+  /**
+   * What Solvexo keeps from a card sale paid through its own Stripe (Stripe Connect
+   * `application_fee_amount`): the card-network cost passed through to the seller —
+   * exactly like Shopify Payments' card rate — plus a commission ONLY if an admin
+   * agreed a custom per-seller rate. The plan's transaction fee does not apply to
+   * this rail (see payment-rail.ts). Capped at the charge amount, as Stripe requires.
+   */
+  async cardApplicationFeeCents(storeId: string, amountCents: number): Promise<number> {
+    const commission = rateForPaymentRail(await this.resolveRate(storeId), 'stripe').rate;
+    const fee = Math.round(amountCents * (commission + PAYMENT_PROCESSING_RATE)) + Math.round(PAYMENT_PROCESSING_FIXED * 100);
+    return Math.min(amountCents, fee);
   }
 
   // ── Global default ──────────────────────────────────────────────────────
