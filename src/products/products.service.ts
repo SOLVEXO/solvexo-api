@@ -1828,6 +1828,8 @@ export class ProductsService {
     const created: { row: number; name: string }[] = [];
     const failed: { row: number; name: string; error: string }[] = [];
 
+    const jobs: { rowNumber: number; name: string; body: any }[] = [];
+
     for (let i = 0; i < rows.length; i++) {
       const r = rows[i];
       const rowNumber = i + 2; // +1 for the header row, +1 for 1-based counting
@@ -1856,6 +1858,18 @@ export class ProductsService {
           });
           continue;
         }
+      } else if (!store.categoryId) {
+        // A product must have a category. Blank Category cell + no legacy store
+        // category → use the store's first category instead of failing the row.
+        categoryId = (storeCategories as any[])[0]?._id?.toString();
+        if (!categoryId) {
+          failed.push({
+            row: rowNumber,
+            name,
+            error: 'No category available — create one from the store\'s Categories page first',
+          });
+          continue;
+        }
       }
 
       const compareAtRaw = (r['Compare-at Price'] ?? '').trim();
@@ -1869,11 +1883,14 @@ export class ProductsService {
         .map((t) => t.trim())
         .filter(Boolean);
 
-      try {
-        await this.addPhysicalProduct(sellerId, {
+      jobs.push({
+        rowNumber,
+        name,
+        body: {
           storeId,
           name,
-          description: (r['Description'] ?? '').trim() || undefined,
+          // The product schema requires a non-empty description; fall back to the name.
+          description: (r['Description'] ?? '').trim() || name,
           categoryId,
           images: [],
           tags,
@@ -1888,12 +1905,61 @@ export class ProductsService {
               isDefault: true,
             },
           ],
-        });
-        created.push({ row: rowNumber, name });
-      } catch (err: any) {
-        failed.push({ row: rowNumber, name, error: err?.message ?? 'Failed to create product' });
-      }
+        },
+      });
     }
+
+    // Create in small parallel batches (rows are independent, so this is much
+    // faster than one-by-one). A batch never holds two rows with the same
+    // name/slug, so concurrent slug generation can't collide.
+    const slugKey = (n: string) => n.toLowerCase().replace(/[^a-z0-9]+/g, '');
+    const batches: (typeof jobs)[] = [];
+    let current: typeof jobs = [];
+    let currentKeys = new Set<string>();
+    for (const job of jobs) {
+      const key = slugKey(job.name);
+      if (current.length >= 5 || currentKeys.has(key)) {
+        batches.push(current);
+        current = [];
+        currentKeys = new Set();
+      }
+      current.push(job);
+      currentKeys.add(key);
+    }
+    if (current.length) batches.push(current);
+
+    // Honour the plan's product limit exactly, even with parallel creates.
+    const limits = await this.entitlementsService.getLimits(storeId);
+    let remaining =
+      limits.maxProducts === -1
+        ? Infinity
+        : limits.maxProducts -
+          (await this.databaseService.repositories.productModel.countDocuments({ storeId, isDelete: false }));
+
+    for (const batch of batches) {
+      await Promise.all(
+        batch.map(async (job) => {
+          if (remaining <= 0) {
+            failed.push({
+              row: job.rowNumber,
+              name: job.name,
+              error: `Product limit reached (${limits.maxProducts}) for your current plan — upgrade your platform plan to add more products.`,
+            });
+            return;
+          }
+          remaining--;
+          try {
+            await this.addPhysicalProduct(sellerId, job.body);
+            created.push({ row: job.rowNumber, name: job.name });
+          } catch (err: any) {
+            remaining++;
+            failed.push({ row: job.rowNumber, name: job.name, error: err?.message ?? 'Failed to create product' });
+          }
+        }),
+      );
+    }
+    created.sort((a, b) => a.row - b.row);
+    failed.sort((a, b) => a.row - b.row);
 
     return {
       success: true,
