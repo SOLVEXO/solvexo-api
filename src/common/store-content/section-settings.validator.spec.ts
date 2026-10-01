@@ -81,8 +81,9 @@ describe('section-settings.validator', () => {
       expect(() => validateSectionSettings('featured_category_grid', { categoryIds: Array(13).fill('c') })).toThrow(BadRequestException);
     });
 
-    it('video: requires a YouTube/Vimeo https:// link, rejects anything else', () => {
-      expect(() => validateSectionSettings('video', { videoUrl: 'https://evil.example.com/x' })).toThrow(BadRequestException);
+    it('video: accepts any https:// link, rejects non-https schemes', () => {
+      expect(() => validateSectionSettings('video', { videoUrl: 'https://example.com/clip.mp4' })).not.toThrow();
+      expect(() => validateSectionSettings('video', { videoUrl: 'http://example.com/clip.mp4' })).toThrow(BadRequestException);
       expect(() => validateSectionSettings('video', { videoUrl: 'javascript:alert(1)' })).toThrow(BadRequestException);
       expect(() => validateSectionSettings('video', { videoUrl: 'https://vimeo.com/12345' })).not.toThrow();
     });

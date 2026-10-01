@@ -18,6 +18,8 @@ export const SECTION_TYPES = [
   'featured_category_grid',
   'trust_badges',
   'newsletter',
+  // Latest posts from the store's default blog — for Home etc.
+  'blog_posts',
   // Metaobjects — lists real entries of a seller-defined custom content type
   // (see `metaobjects/`), e.g. every "Team Member" entry. Genuinely dynamic:
   // `settings.metaobjectType` is the only thing stored, resolved against the

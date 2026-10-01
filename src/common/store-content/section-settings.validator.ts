@@ -9,6 +9,7 @@ import type {
   FeaturedCategoryGridSectionSettings,
   VideoSectionSettings,
   NewsletterSectionSettings,
+  BlogPostsSectionSettings,
   HeroSectionSettings,
   RichTextSectionSettings,
   CollectionProductGridSectionSettings,
@@ -198,6 +199,13 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
     }
     case 'trust_badges':
       break; // content lives entirely in trust_badge_item blocks
+    case 'blog_posts': {
+      const s = settings as BlogPostsSectionSettings;
+      if (s.limit !== undefined && (typeof s.limit !== 'number' || s.limit < 1 || s.limit > 12)) {
+        throw new BadRequestException('settings.limit must be between 1 and 12');
+      }
+      break;
+    }
     case 'newsletter': {
       const s = settings as NewsletterSectionSettings;
       maxLen(s.subtext, 200, 'settings.subtext');
@@ -210,9 +218,17 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
     }
     case 'video': {
       const s = settings as VideoSectionSettings;
-      required(s.videoUrl, 'settings.videoUrl');
-      if (typeof s.videoUrl !== 'string' || !/^https:\/\/(www\.)?(youtube\.com|youtu\.be|vimeo\.com)\//i.test(s.videoUrl)) {
-        throw new BadRequestException('settings.videoUrl must be a YouTube or Vimeo link');
+      // Either an uploaded file (our own Cloudinary-hosted https URL) or a YouTube/Vimeo link.
+      if (s.videoFileUrl) {
+        if (typeof s.videoFileUrl !== 'string' || !/^https:\/\/res\.cloudinary\.com\//i.test(s.videoFileUrl)) {
+          throw new BadRequestException('settings.videoFileUrl must be an uploaded video file');
+        }
+      } else {
+        required(s.videoUrl, 'settings.videoUrl');
+        // Any https link: YouTube/Vimeo play as an embed, anything else as a direct video file.
+        if (typeof s.videoUrl !== 'string' || !/^https:\/\/[^\s]+$/i.test(s.videoUrl)) {
+          throw new BadRequestException('settings.videoUrl must be a valid https:// video link, or upload a video file');
+        }
       }
       oneOf(s.aspectRatio, ['16:9', '4:3', '1:1'] as const, 'settings.aspectRatio');
       break;
@@ -555,6 +571,7 @@ export const SECTION_ALLOWED_BLOCK_TYPES: AllowedBlockTypesMap = {
   featured_category_grid: [],
   trust_badges: ['trust_badge_item'],
   newsletter: [],
+  blog_posts: [],
   metaobject_list: [],
   collection_product_grid: [],
   editorial_lookbook: ['lookbook_item'],

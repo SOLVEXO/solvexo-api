@@ -73,7 +73,9 @@ export interface TestimonialsSectionSettings extends BaseSectionSettings {}
 export interface FaqSectionSettings extends BaseSectionSettings {}
 export interface VideoSectionSettings extends BaseSectionSettings {
   /** Must be a youtube.com/youtu.be/vimeo.com https:// link. */
-  videoUrl: string;
+  videoUrl?: string;
+  /** Alternative to `videoUrl`: an uploaded (Cloudinary-hosted) video file. */
+  videoFileUrl?: string;
   aspectRatio?: '16:9' | '4:3' | '1:1';
 }
 export interface FeaturedCategoryGridSectionSettings extends BaseSectionSettings {
@@ -82,6 +84,11 @@ export interface FeaturedCategoryGridSectionSettings extends BaseSectionSettings
 }
 // eslint-disable-next-line @typescript-eslint/no-empty-interface
 export interface TrustBadgesSectionSettings extends BaseSectionSettings {}
+/** Latest posts from the store's default blog. */
+export interface BlogPostsSectionSettings extends BaseSectionSettings {
+  /** 1-12, default 3. */
+  limit?: number;
+}
 export interface NewsletterSectionSettings extends BaseSectionSettings {
   subtext?: string;
 }
@@ -165,6 +172,7 @@ export type SectionSettingsMap = RequireAllKeys<SectionType, {
   featured_category_grid: FeaturedCategoryGridSectionSettings;
   trust_badges: TrustBadgesSectionSettings;
   newsletter: NewsletterSectionSettings;
+  blog_posts: BlogPostsSectionSettings;
   metaobject_list: MetaobjectListSectionSettings;
   collection_product_grid: CollectionProductGridSectionSettings;
   editorial_lookbook: EditorialLookbookSectionSettings;
