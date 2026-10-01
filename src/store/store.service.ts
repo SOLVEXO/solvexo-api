@@ -1648,20 +1648,78 @@ export class StoreService {
 
     const sortMap: Record<string, any> = {
       newest:     { createdAt: -1 },
-      price_asc:  { 'variants.price': 1 },
-      price_desc: { 'variants.price': -1 },
+      oldest:     { createdAt: 1 },
+      title_asc:  { name: 1 },
+      title_desc: { name: -1 },
       best_rated: { averageRating: -1 },
       default:    { createdAt: -1 },
     };
-    const sort = sortMap[query.sort] ?? sortMap['default'];
 
-    const total    = await this.databaseService.repositories.productModel.countDocuments(filter);
-    const products = await this.databaseService.repositories.productModel
-      .find(filter)
-      .sort(sort)
-      .skip(skip)
-      .limit(limit)
-      .lean();
+    const { productModel, productVariantModel } = this.databaseService.repositories;
+    const minPrice = query.minPrice !== undefined && query.minPrice !== '' ? Number(query.minPrice) : null;
+    const maxPrice = query.maxPrice !== undefined && query.maxPrice !== '' ? Number(query.maxPrice) : null;
+    const availability: string | undefined = ['in_stock', 'out_of_stock'].includes(query.availability) ? query.availability : undefined;
+    const priceSort = query.sort === 'price_asc' || query.sort === 'price_desc';
+    const hasMin = minPrice !== null && Number.isFinite(minPrice);
+    const hasMax = maxPrice !== null && Number.isFinite(maxPrice);
+
+    let total: number;
+    let products: any[];
+
+    if (priceSort || hasMin || hasMax || availability) {
+      // Price and stock live on ProductVariant (not Product), so these are
+      // resolved per product up front — before pagination — so that
+      // `total`/skip/limit agree with what's actually returned. A product's
+      // price is its cheapest active variant's, same as the card shows.
+      const candidates = await productModel.find(filter).select('_id').lean();
+      const candidateIds = candidates.map((p: any) => p._id.toString());
+      const agg = await productVariantModel.aggregate([
+        { $match: { productId: { $in: candidateIds }, status: 'active', isDelete: false } },
+        {
+          $group: {
+            _id: '$productId',
+            minPrice: { $min: '$price' },
+            inStock: { $max: { $cond: [{ $or: ['$unlimitedStock', { $gt: ['$stock', 0] }] }, 1, 0] } },
+          },
+        },
+      ]);
+      const info = new Map<string, { minPrice: number; inStock: boolean }>(
+        agg.map((a: any) => [a._id, { minPrice: a.minPrice, inStock: a.inStock === 1 }]),
+      );
+      let ids = candidateIds.filter((id) => {
+        const i = info.get(id);
+        if (!i) return availability === 'out_of_stock'; // no active variant → can't be bought
+        if (hasMin && i.minPrice < (minPrice as number)) return false;
+        if (hasMax && i.minPrice > (maxPrice as number)) return false;
+        if (availability === 'in_stock' && !i.inStock) return false;
+        if (availability === 'out_of_stock' && i.inStock) return false;
+        return true;
+      });
+      if (priceSort) {
+        const dir = query.sort === 'price_asc' ? 1 : -1;
+        ids.sort((a, b) => ((info.get(a)?.minPrice ?? 0) - (info.get(b)?.minPrice ?? 0)) * dir);
+      } else {
+        const ordered = await productModel
+          .find({ _id: { $in: ids } })
+          .sort(sortMap[query.sort] ?? sortMap['default'])
+          .select('_id')
+          .lean();
+        ids = ordered.map((p: any) => p._id.toString());
+      }
+      total = ids.length;
+      const pageIds = ids.slice(skip, skip + limit);
+      const docs = await productModel.find({ _id: { $in: pageIds } }).lean();
+      const byId = new Map(docs.map((d: any) => [d._id.toString(), d]));
+      products = pageIds.map((id) => byId.get(id)).filter(Boolean);
+    } else {
+      total = await productModel.countDocuments(filter);
+      products = await productModel
+        .find(filter)
+        .sort(sortMap[query.sort] ?? sortMap['default'])
+        .skip(skip)
+        .limit(limit)
+        .lean();
+    }
 
     // Cheapest active variant per product — powers the card price and, when
     // the buyer has an active subscription to this store, the member price.
@@ -1718,6 +1776,7 @@ export class StoreService {
         variantId:           variant?._id ?? null,
         stock:               variant?.stock ?? null,
         compareAtPrice:      variant?.compareAtPrice ?? null,
+        inStock:             (variantsByProduct.get(p._id.toString()) ?? []).some((v: any) => v.unlimitedStock || v.stock > 0),
         activeCampaign:      activeCampaignBadge,
       };
       if (variant && benefits) {

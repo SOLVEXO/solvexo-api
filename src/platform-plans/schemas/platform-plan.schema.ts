@@ -16,6 +16,12 @@ export type PlatformPlanDocument = PlatformPlan & Document;
  */
 @Schema({ timestamps: true })
 export class PlatformPlan {
+  // Stable identity of a plan that is defined in code (see platform-plan.catalog.ts):
+  // 'basic' | 'grow' | 'advanced' | 'enterprise'. Null for any other plan (legacy /
+  // admin-made). Never shown to sellers; renaming a plan never changes its key.
+  @Prop({ type: String, default: null }) key: string | null;
+  // The catalog version this document's limits were last aligned to (0 = never).
+  @Prop({ type: Number, default: 0 }) catalogVersion: number;
   @Prop({ type: String, required: true }) name: string;
   @Prop({ type: String, default: null }) description: string | null;
   @Prop({ type: String, default: null }) badge: string | null; // e.g. "Popular" / "Recommended"
@@ -137,3 +143,5 @@ export class PlatformPlan {
 export const PlatformPlanSchema = SchemaFactory.createForClass(PlatformPlan);
 PlatformPlanSchema.index({ status: 1, sortOrder: 1 });
 PlatformPlanSchema.index({ isFree: 1 });
+// One document per catalog plan. Partial (not sparse) so legacy plans with key null/absent never collide.
+PlatformPlanSchema.index({ key: 1 }, { unique: true, partialFilterExpression: { key: { $type: 'string' } } });

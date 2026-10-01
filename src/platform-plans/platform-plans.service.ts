@@ -5,21 +5,8 @@ import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { CreatePlatformPlanDto } from './dto/create-platform-plan.dto';
 import { UpdatePlatformPlanDto } from './dto/update-platform-plan.dto';
 import { UpdateTrialSettingsDto } from './dto/update-trial-settings.dto';
-
-const DEFAULT_LIMITS = {
-  maxProducts: 10, maxStaffAccounts: 0, maxPosLocations: 1, aiCreditsPerMonth: 0,
-  transactionFeeRate: 0.03, customDomainAllowed: false, whiteLabelAllowed: false,
-  loyaltyProgramAllowed: false, subscriptionProductsAllowed: false, advancedAnalyticsAllowed: false,
-  abandonedCartRecoveryAllowed: false, emailCampaignsAllowed: false, apiWebhooksAllowed: false,
-  dedicatedAccountManager: false, prioritySupport: false, marketplaceFeaturedBadge: false, slaUptimePercent: null,
-  // Previously missing from this default — EntitlementsService.assertCanCreateStoreBanner/
-  // assertCanCreatePromotion already enforce both, but a plan created via this default
-  // (bypassing the admin form, e.g. a future seed script) got `undefined` here, which
-  // those asserts read as "unlimited" (see FALLBACK_LIMITS in entitlements.service.ts —
-  // same values used there for the equivalent no-plan-at-all fallback).
-  maxActiveStoreBanners: 4, maxActivePromotions: 1,
-  calculatedShippingRatesAllowed: false, maxMarkets: 3,
-};
+import { PlatformPlanCatalogService } from './platform-plan-catalog.service';
+import { validatePlanLimits, validatePlanPricing, validateTierOrder } from './platform-plan.catalog';
 
 /** Admin CRUD + public browse for PlatformPlan — the tiers on the pricing page. */
 @Injectable()
@@ -27,6 +14,7 @@ export class PlatformPlansService {
   constructor(
     private readonly db: DatabaseService,
     private readonly activityLogService: ActivityLogService,
+    private readonly catalog: PlatformPlanCatalogService,
   ) {}
 
   private get planModel() { return this.db.repositories.platformPlanModel; }
@@ -37,55 +25,18 @@ export class PlatformPlansService {
 
   // ── Admin ──────────────────────────────────────────────────────────────
 
-  /** Shared by create+update — an intro offer needs a real price/duration, and must be genuinely cheaper than the full price. */
-  private validateIntroOffer(introOfferEnabled: boolean | undefined, introPriceUSD: number | null | undefined, introDurationCycles: number | null | undefined, fullMonthlyPriceUSD: number | null) {
-    if (!introOfferEnabled) return;
-    if (introPriceUSD == null || introDurationCycles == null) {
-      throw new BadRequestException('introPriceUSD and introDurationCycles are both required when introOfferEnabled is true');
-    }
-    if (fullMonthlyPriceUSD == null) {
-      throw new BadRequestException('An intro offer requires a real monthlyPriceUSD on the plan (not free/custom-pricing)');
-    }
-    if (introPriceUSD >= fullMonthlyPriceUSD) {
-      throw new BadRequestException('introPriceUSD must be lower than the plan\'s regular monthlyPriceUSD');
-    }
+  /** True for the plans defined in code (basic / grow / advanced / enterprise). */
+  private isCatalogPlan(plan: any): boolean {
+    return typeof plan?.key === 'string' && plan.key.length > 0;
   }
 
-  async adminCreatePlan(adminId: string, dto: CreatePlatformPlanDto) {
-    if (!dto.isFree && !dto.isCustomPricing && dto.monthlyPriceUSD == null) {
-      throw new BadRequestException('monthlyPriceUSD is required unless the plan is free or custom-priced');
-    }
-    const monthlyPriceUSD = dto.monthlyPriceUSD != null ? this.round(dto.monthlyPriceUSD) : null;
-    this.validateIntroOffer(dto.introOfferEnabled, dto.introPriceUSD, dto.introDurationCycles, monthlyPriceUSD);
-
-    const plan = await this.planModel.create({
-      name: dto.name,
-      description: dto.description ?? null,
-      badge: dto.badge ?? null,
-      sortOrder: dto.sortOrder ?? 0,
-      isFree: dto.isFree ?? false,
-      isCustomPricing: dto.isCustomPricing ?? false,
-      monthlyPriceUSD,
-      yearlyPriceUSD: dto.yearlyPriceUSD != null ? this.round(dto.yearlyPriceUSD) : null,
-      trialDays: dto.trialDays ?? 0,
-      featureBullets: dto.featureBullets ?? [],
-      limits: { ...DEFAULT_LIMITS, ...dto.limits },
-      status: 'active',
-      isPubliclyVisible: dto.isPubliclyVisible ?? true,
-      introOfferEnabled: dto.introOfferEnabled ?? false,
-      introPriceUSD: dto.introPriceUSD != null ? this.round(dto.introPriceUSD) : null,
-      introDurationCycles: dto.introDurationCycles ?? null,
-      gracePeriodDays: dto.gracePeriodDays ?? 3,
-    });
-
-    this.activityLogService.log({
-      category: 'platform_plans', action: 'plan_created',
-      description: `Platform plan "${plan.name}" created by admin`,
-      actorId: adminId, actorRole: 'admin',
-      targetId: (plan as any)._id.toString(), targetType: 'platform_plan',
-    });
-
-    return { success: true, data: plan };
+  /** Plans are defined by the platform (platform-plan.catalog.ts) and created at
+   *  server start — an admin manages them, but doesn't build new ones. A
+   *  special customer deal is the Enterprise plan assigned to that store. */
+  async adminCreatePlan(_adminId: string, _dto: CreatePlatformPlanDto): Promise<never> {
+    throw new BadRequestException(
+      'Plans are defined by the platform and can\'t be created here. Edit an existing plan\'s price, offer or limits instead — for a special deal, assign the Enterprise plan to that store.',
+    );
   }
 
   async adminListPlans(includeArchived: boolean) {
@@ -111,13 +62,26 @@ export class PlatformPlansService {
   async adminUpdatePlan(adminId: string, id: string, dto: UpdatePlatformPlanDto) {
     const plan = await this.planModel.findOne({ _id: id, isDelete: false });
     if (!plan) throw new NotFoundException('Platform plan not found');
+    const isCatalog = this.isCatalogPlan(plan);
+
+    // What KIND of plan a core plan is — and its place in the tier order — is fixed in code.
+    if (isCatalog) {
+      const locked: string[] = [];
+      if (dto.isFree !== undefined && dto.isFree !== plan.isFree) locked.push('free/paid');
+      if (dto.isCustomPricing !== undefined && dto.isCustomPricing !== plan.isCustomPricing) locked.push('custom pricing');
+      if (dto.sortOrder !== undefined && dto.sortOrder !== plan.sortOrder) locked.push('order');
+      if (dto.status !== undefined && dto.status !== 'active') locked.push('archiving');
+      if (locked.length) {
+        throw new BadRequestException(`"${plan.name}" is one of the platform's core plans — ${locked.join(', ')} can't be changed.`);
+      }
+    }
 
     if (dto.name !== undefined) plan.name = dto.name;
     if (dto.description !== undefined) plan.description = dto.description ?? null;
     if (dto.badge !== undefined) plan.badge = dto.badge ?? null;
-    if (dto.sortOrder !== undefined) plan.sortOrder = dto.sortOrder;
-    if (dto.isFree !== undefined) plan.isFree = dto.isFree;
-    if (dto.isCustomPricing !== undefined) plan.isCustomPricing = dto.isCustomPricing;
+    if (!isCatalog && dto.sortOrder !== undefined) plan.sortOrder = dto.sortOrder;
+    if (!isCatalog && dto.isFree !== undefined) plan.isFree = dto.isFree;
+    if (!isCatalog && dto.isCustomPricing !== undefined) plan.isCustomPricing = dto.isCustomPricing;
     if (dto.monthlyPriceUSD !== undefined) {
       plan.monthlyPriceUSD = dto.monthlyPriceUSD != null ? this.round(dto.monthlyPriceUSD) : null;
       // Price changed — cached Stripe Price ids are now stale (Stripe Prices are
@@ -129,9 +93,10 @@ export class PlatformPlansService {
       plan.stripeYearlyPriceId = null;
     }
     if (dto.trialDays !== undefined) plan.trialDays = dto.trialDays;
-    if (dto.featureBullets !== undefined) plan.featureBullets = dto.featureBullets;
+    // A core plan's bullets are generated from its limits — never typed — so text can't disagree with enforcement.
+    if (!isCatalog && dto.featureBullets !== undefined) plan.featureBullets = dto.featureBullets;
     if (dto.limits !== undefined) plan.limits = { ...plan.limits, ...dto.limits } as any;
-    if (dto.status !== undefined) plan.status = dto.status;
+    if (!isCatalog && dto.status !== undefined) plan.status = dto.status;
     if (dto.isPubliclyVisible !== undefined) plan.isPubliclyVisible = dto.isPubliclyVisible;
     if (dto.gracePeriodDays !== undefined) plan.gracePeriodDays = dto.gracePeriodDays;
 
@@ -139,14 +104,44 @@ export class PlatformPlansService {
     if (dto.introPriceUSD !== undefined) plan.introPriceUSD = dto.introPriceUSD != null ? this.round(dto.introPriceUSD) : null;
     if (dto.introDurationCycles !== undefined) plan.introDurationCycles = dto.introDurationCycles ?? null;
     if (dto.introOfferEnabled !== undefined || dto.introPriceUSD !== undefined || dto.introDurationCycles !== undefined) {
-      this.validateIntroOffer(plan.introOfferEnabled, plan.introPriceUSD, plan.introDurationCycles, plan.monthlyPriceUSD);
       // Any intro-offer field changed — the cached Stripe Coupon (if one was
       // ever created) reflects the OLD terms; Stripe Coupons are immutable
       // just like Prices, so clear it the same way price edits already do.
       plan.stripeIntroCouponId = null;
     }
 
+    // ── Guard-rails — nothing below has been saved yet, so a failed check changes nothing ──
+    const problems: string[] = [];
+    problems.push(...validatePlanPricing({
+      isFree: plan.isFree, isCustomPricing: plan.isCustomPricing,
+      monthlyPriceUSD: plan.monthlyPriceUSD, yearlyPriceUSD: plan.yearlyPriceUSD,
+      introOfferEnabled: plan.introOfferEnabled, introPriceUSD: plan.introPriceUSD, introDurationCycles: plan.introDurationCycles,
+    }));
+    if (dto.limits !== undefined) {
+      problems.push(...validatePlanLimits(plan.limits));
+      if (isCatalog && problems.length === 0) {
+        // Each tier must include at least what the one below it includes.
+        const others: any[] = await this.planModel
+          .find({ key: { $type: 'string' }, isDelete: false, _id: { $ne: plan._id } }).select('name sortOrder limits').lean();
+        const tiers = [...others, plan].sort((a: any, b: any) => a.sortOrder - b.sortOrder);
+        const at = tiers.findIndex((t: any) => t === plan);
+        if (at > 0) problems.push(...validateTierOrder(tiers[at - 1], plan as any));
+        if (at < tiers.length - 1) problems.push(...validateTierOrder(plan as any, tiers[at + 1]));
+      }
+    }
+    // The pricing page and onboarding must always have a plan a seller can buy.
+    const sellable = !plan.isFree && !plan.isCustomPricing;
+    const nowHidden = plan.isPubliclyVisible === false || plan.status !== 'active';
+    if (sellable && nowHidden) {
+      const stillBuyable = await this.planModel.countDocuments({
+        _id: { $ne: plan._id }, status: 'active', isDelete: false, isPubliclyVisible: { $ne: false }, isFree: false, isCustomPricing: false,
+      });
+      if (stillBuyable === 0) problems.push('At least one paid plan must stay visible for sellers to buy.');
+    }
+    if (problems.length) throw new BadRequestException(problems.join(' '));
+
     await plan.save();
+    if (isCatalog) await this.catalog.refreshBullets(); // a plan's bullets are "what's new vs the plan below"
 
     this.activityLogService.log({
       category: 'platform_plans', action: 'plan_updated',
@@ -155,12 +150,16 @@ export class PlatformPlansService {
       targetId: id, targetType: 'platform_plan',
     });
 
-    return { success: true, data: plan };
+    const fresh = await this.planModel.findById(plan._id).lean();
+    // Limits/features apply to every store on this plan right away — tell the admin how many.
+    const subscriberCount = await this.subModel.countDocuments({ platformPlanId: id, isDelete: false });
+    return { success: true, data: fresh ?? plan, impact: { subscriberCount } };
   }
 
   async adminArchivePlan(adminId: string, id: string, force: boolean) {
     const plan = await this.planModel.findOne({ _id: id, isDelete: false });
     if (!plan) throw new NotFoundException('Platform plan not found');
+    if (this.isCatalogPlan(plan)) throw new BadRequestException(`"${plan.name}" is one of the platform's core plans and can't be archived. Use "visible to sellers" to hide it instead.`);
     if (plan.isFree) throw new BadRequestException('The free/default plan cannot be archived');
 
     const activeCount = await this.subModel.countDocuments({ platformPlanId: id, status: { $in: ['trialing', 'active', 'past_due'] } });
@@ -362,7 +361,7 @@ export class PlatformPlansService {
     return {
       success: true,
       data: plans.map((p: any) => ({
-        _id: p._id, name: p.name, description: p.description, badge: p.badge,
+        _id: p._id, key: p.key ?? null, name: p.name, description: p.description, badge: p.badge,
         isFree: p.isFree, isCustomPricing: p.isCustomPricing,
         monthlyPriceUSD: p.monthlyPriceUSD, yearlyPriceUSD: p.yearlyPriceUSD, trialDays: p.trialDays,
         featureBullets: p.featureBullets, limits: p.limits,

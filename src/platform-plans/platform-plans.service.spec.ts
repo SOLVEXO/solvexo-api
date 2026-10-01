@@ -48,7 +48,7 @@ describe('PlatformPlansService.adminGetRevenue — seller churn', () => {
     } as unknown as DatabaseService;
 
     const activityLogService = {} as ActivityLogService;
-    service = new PlatformPlansService(db, activityLogService);
+    service = new PlatformPlansService(db, activityLogService, { refreshBullets: jest.fn() } as any);
   }
 
   it('computes churnRatePercent as canceledInPeriod / activeAtPeriodStart * 100', async () => {

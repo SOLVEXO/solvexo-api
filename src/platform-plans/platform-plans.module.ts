@@ -4,6 +4,7 @@ import { PlatformPlansController } from './platform-plans.controller';
 import { SellerPlatformSubscriptionsController } from './seller-platform-subscriptions.controller';
 import { PlatformAddonsController } from './platform-addons.controller';
 import { PlatformPlansService } from './platform-plans.service';
+import { PlatformPlanCatalogService } from './platform-plan-catalog.service';
 import { SellerPlatformSubscriptionsService } from './seller-platform-subscriptions.service';
 import { EntitlementsService } from './entitlements.service';
 import { AiCreditsService } from './ai-credits.service';
@@ -34,6 +35,7 @@ import { CriticalAlertService } from '../common/critical-alert.service';
   controllers: [PlatformAddonsController, PlatformPlansController, SellerPlatformSubscriptionsController],
   providers: [
     PlatformPlansService,
+    PlatformPlanCatalogService,
     SellerPlatformSubscriptionsService,
     EntitlementsService,
     AiCreditsService,
@@ -43,6 +45,6 @@ import { CriticalAlertService } from '../common/critical-alert.service';
     CriticalAlertService,
     BillingAccessGuard,
   ],
-  exports: [PlatformPlansService, SellerPlatformSubscriptionsService, EntitlementsService, AiCreditsService, PlatformAddonsService, BillingAccessGuard],
+  exports: [PlatformPlansService, PlatformPlanCatalogService, SellerPlatformSubscriptionsService, EntitlementsService, AiCreditsService, PlatformAddonsService, BillingAccessGuard],
 })
 export class PlatformPlansModule {}
