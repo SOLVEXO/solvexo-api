@@ -8,8 +8,8 @@ import { PaymentProviderRegistry } from './payment-provider.registry';
 
 const USER_ID = 'user-1';
 
-function checkout(items: Array<{ storeId: string; totalPrice: number }>) {
-  return { _id: 'checkout-1', userId: USER_ID, items };
+function checkout(items: Array<{ storeId: string; totalPrice: number }>, totalAmount = items.reduce((s, i) => s + i.totalPrice, 0)) {
+  return { _id: 'checkout-1', userId: USER_ID, items, totalAmount, currency: 'PKR', status: 'pending' };
 }
 
 describe('CheckoutPaymentMethodsService', () => {
@@ -40,6 +40,9 @@ describe('CheckoutPaymentMethodsService', () => {
     paymentService = {
       finalizeGatewayPayment: jest.fn().mockResolvedValue({ orderIds: ['order-1'] }),
       failGatewayPayment: jest.fn().mockResolvedValue(undefined),
+      // The real helper converts checkout.totalAmount with frozen snapshots; here: identity on totalAmount.
+      computeGatewayCharge: jest.fn().mockImplementation(async (c: any) => ({ amount: c.totalAmount ?? 0, fxSnapshots: [{ currency: 'PKR', ratePerUSD: 280 }] })),
+      assertGatewayPaymentMatches: jest.fn().mockResolvedValue(undefined),
     } as any;
     activityLogService = { log: jest.fn() } as any;
 
@@ -121,12 +124,10 @@ describe('CheckoutPaymentMethodsService', () => {
       ).rejects.toThrow('spans multiple stores');
     });
 
-    it('sums only the target store\'s own items into the charge amount, in that store\'s own currency — no FX conversion', async () => {
+    it('REGRESSION: charges the checkout FINAL payable total (items + shipping + tax), not just the sum of item prices', async () => {
+      // items 150 + shipping 30 + tax 20 = 200 payable
       checkoutModel.findOne.mockResolvedValue(
-        checkout([
-          { storeId: 'store-A', totalPrice: 100 },
-          { storeId: 'store-A', totalPrice: 50 },
-        ]),
+        checkout([{ storeId: 'store-A', totalPrice: 100 }, { storeId: 'store-A', totalPrice: 50 }], 200),
       );
       storeIntegrationModel.findOne.mockResolvedValue({
         provider: 'safepay',
@@ -141,9 +142,10 @@ describe('CheckoutPaymentMethodsService', () => {
       await service.initiatePayment('checkout-1', USER_ID, 'safepay', 'https://x.com/r', 'https://x.com/c');
 
       expect(initiatePayment).toHaveBeenCalledWith(
-        expect.objectContaining({ amount: 150, currency: 'PKR', storeId: 'store-A' }),
+        expect.objectContaining({ amount: 200, currency: 'PKR', storeId: 'store-A' }),
         expect.anything(),
       );
+      expect(paymentService.computeGatewayCharge).toHaveBeenCalledWith(expect.objectContaining({ totalAmount: 200 }), 'PKR');
       // The linkage row PaymentWebhooksController -> PaymentService.finalizeGatewayPayment
       // looks up by providerSessionId once the gateway reports an outcome —
       // without this, a successful payment has nothing to attach an Order to.
@@ -152,12 +154,30 @@ describe('CheckoutPaymentMethodsService', () => {
           userId: USER_ID,
           checkoutId: 'checkout-1',
           paymentType: 'safepay',
-          amount: 150,
+          amount: 200,
           currency: 'PKR',
+          fxSnapshots: [{ currency: 'PKR', ratePerUSD: 280 }],
           status: 'pending',
           providerSessionId: 'track_1',
         }),
       );
+    });
+
+    it.each(['completed', 'cancelled', 'expired'])('REGRESSION: refuses to open a gateway session on a %s checkout', async (status) => {
+      checkoutModel.findOne.mockResolvedValue({ ...checkout([{ storeId: 'store-A', totalPrice: 100 }]), status });
+      await expect(
+        service.initiatePayment('checkout-1', USER_ID, 'safepay', 'https://x.com/r', 'https://x.com/c'),
+      ).rejects.toThrow(/can no longer be paid/);
+      expect(paymentTransactionModel.create).not.toHaveBeenCalled();
+    });
+
+    it('refuses an initiate for a suspended store', async () => {
+      checkoutModel.findOne.mockResolvedValue(checkout([{ storeId: 'store-A', totalPrice: 100 }]));
+      storeIntegrationModel.findOne.mockResolvedValue({ provider: 'safepay', credentialsEncrypted: null, config: {}, mode: 'sandbox', webhookToken: null });
+      storeModel.findById.mockReturnValue({ select: jest.fn().mockResolvedValue({ baseCurrency: 'PKR', status: 'suspended' }) });
+      await expect(
+        service.initiatePayment('checkout-1', USER_ID, 'safepay', 'https://x.com/r', 'https://x.com/c'),
+      ).rejects.toThrow('not currently accepting payments');
     });
 
     it('rejects a provider with no connected, checkout-enabled integration for this store', async () => {
@@ -221,6 +241,7 @@ describe('CheckoutPaymentMethodsService', () => {
       storeIntegrationModel.findOne.mockResolvedValue(integrationDoc());
       const verifyPayment = jest.fn().mockResolvedValue({ status: 'paid', providerReference: 'track_1', amount: 999, currency: 'PKR' });
       (registry.resolve as jest.Mock).mockReturnValue({ verifyPayment });
+      (paymentService.assertGatewayPaymentMatches as jest.Mock).mockRejectedValue(new BadRequestException('Payment amount mismatch (paid 999, expected 100)'));
 
       await expect(service.confirmPayment('checkout-1', USER_ID, 'safepay', 'track_1')).rejects.toThrow('amount mismatch');
       expect(paymentService.finalizeGatewayPayment).not.toHaveBeenCalled();
@@ -234,6 +255,11 @@ describe('CheckoutPaymentMethodsService', () => {
       (registry.resolve as jest.Mock).mockReturnValue({ verifyPayment });
 
       const result = await service.confirmPayment('checkout-1', USER_ID, 'safepay', 'track_1');
+
+      // Verified against the stored transaction (amount/currency charged at initiate) + this store.
+      expect(paymentService.assertGatewayPaymentMatches).toHaveBeenCalledWith({
+        providerSessionId: 'track_1', paymentType: 'safepay', storeId: 'store-A', paidAmount: 100, paidCurrency: 'PKR',
+      });
 
       // Must be the sessionId-keyed method (same one PaymentWebhooksController
       // calls) — not a separate checkoutId-keyed path, or the PaymentTransaction

@@ -1,43 +1,35 @@
 /* eslint-disable prettier/prettier */
 import { Global, Module } from '@nestjs/common';
-import { SubscriptionsController } from './subscriptions.controller';
-import { SubscriptionsService } from './subscriptions.service';
-import { SubscriptionBenefitsService } from './subscription-benefits.service';
 import { PaymentGatewayService } from './payment-gateway/payment-gateway.service';
-import { CurrencyDisplayService } from './currency-display.service';
-import { SubscriptionNotificationsService } from './subscription-notifications.service';
 import { StripeWebhookController } from './webhooks/stripe-webhook.controller';
+import { StripeWebhookAdminController } from './webhooks/stripe-webhook-admin.controller';
 import { StripeWebhookService } from './webhooks/stripe-webhook.service';
 import { StripeWebhookProcessor } from './webhooks/stripe-webhook.processor';
-import { SubscriptionEmailProcessor } from './subscription-email.processor';
-import { IdempotencyInterceptor } from '../common/idempotency.interceptor';
-import { EmailService } from '../otp/services/email.service';
+import { BuyerSubscriptionWindDownService } from './buyer-subscription-wind-down.service';
+import { BuyerSubscriptionWindDownController } from './buyer-subscription-wind-down.controller';
 import { CriticalAlertService } from '../common/critical-alert.service';
 import { AuthModule } from '../auth/auth.module';
 import { RedisModule } from '../redis/redis.module';
-import { FinanceModule } from '../finance/finance.module';
 import { QueueModule } from '../queues/queue.module';
 
-// Global so ProductsService/StoreService/CheckoutService/OrdersService can
-// inject SubscriptionBenefitsService without importing this module directly
-// (same pattern as ActivityLogModule/LoyaltyModule).
+/**
+ * Despite the name this module no longer contains any buyer-facing "VIP / membership plans"
+ * (that feature was removed — Shopify has no such core feature). It keeps the shared Stripe
+ * payment gateway wrapper, the Stripe webhook intake + queue processor (seller platform plans,
+ * POS plans, promotions … all fan out from here), and the one-off wind-down of the buyers who
+ * were already subscribed when the feature was retired.
+ */
 @Global()
 @Module({
-  imports: [AuthModule, RedisModule, FinanceModule, QueueModule],
-  controllers: [SubscriptionsController, StripeWebhookController],
+  imports: [AuthModule, RedisModule, QueueModule],
+  controllers: [StripeWebhookController, StripeWebhookAdminController, BuyerSubscriptionWindDownController],
   providers: [
-    SubscriptionsService,
-    SubscriptionBenefitsService,
     PaymentGatewayService,
-    CurrencyDisplayService,
-    SubscriptionNotificationsService,
     StripeWebhookService,
     StripeWebhookProcessor,
-    SubscriptionEmailProcessor,
-    IdempotencyInterceptor,
-    EmailService,
+    BuyerSubscriptionWindDownService,
     CriticalAlertService,
   ],
-  exports: [SubscriptionsService, SubscriptionBenefitsService, PaymentGatewayService],
+  exports: [PaymentGatewayService, BuyerSubscriptionWindDownService],
 })
 export class SubscriptionsModule {}

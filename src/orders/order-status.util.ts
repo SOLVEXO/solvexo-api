@@ -80,3 +80,31 @@ export function deriveSellerOrderStatus(items: { status: string }[]): RollupStat
 export function deriveOrderStatus(sellerOrders: { status: string }[]): RollupStatus {
   return deriveRollupStatus(sellerOrders.map((so) => so.status));
 }
+
+/**
+ * Seller-driven fulfilment status transitions (`updateSellerOrderStatus`).
+ *
+ * Forward-only along pending → processing → shipped → delivered → completed
+ * (a seller may skip ahead, e.g. mark a digital/COD order `completed`
+ * directly), same-status is allowed (idempotent re-submit / tracking edit),
+ * and a `cancelled` or `refunded` sub-order is final — it can never be
+ * revived, which previously let a cancelled order be "completed" and credit
+ * the seller. Partial rollup labels sit at the rank of the work still open.
+ */
+const SELLER_STATUS_RANK: Record<string, number> = {
+  pending: 0,
+  processing: 1,
+  partially_cancelled: 1,
+  partially_refunded: 1,
+  partially_shipped: 2,
+  shipped: 2,
+  delivered: 3,
+  completed: 4,
+};
+
+export function isAllowedSellerOrderTransition(current: string, next: string): boolean {
+  const from = SELLER_STATUS_RANK[current];
+  const to = SELLER_STATUS_RANK[next];
+  if (from === undefined || to === undefined) return false; // cancelled / refunded / unknown are terminal
+  return to >= from;
+}

@@ -181,7 +181,6 @@ export class IdentityBanner {
   @Prop({ type: Boolean, default: true }) showFollowButton: boolean;
   @Prop({ type: Boolean, default: true }) showMessageButton: boolean;
   @Prop({ type: Boolean, default: true }) showLoyaltyButton: boolean;
-  @Prop({ type: Boolean, default: true }) showMembershipButton: boolean;
 
   // ── Layout/visibility around those 4 fixed buttons (Phase 11) — genuinely
   // configurable presentation, not new transactional surface: the buttons

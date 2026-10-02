@@ -209,6 +209,12 @@ export class ManualPaymentsService {
 
     const orders = await this.orderModel.find({ _id: { $in: proof.orderIds }, isDelete: false });
     if (orders.length === 0) throw new NotFoundException('No orders found for this payment proof');
+    // A cancelled/refunded order must never be revived into "paid + completed"
+    // (that completes every sub-order and credits the ledger).
+    const dead = ['cancelled', 'refunded'];
+    if ((orders as any[]).some((o) => dead.includes(o.orderStatus) || (o.sellerOrders ?? []).some((so: any) => dead.includes(so.status)))) {
+      throw new BadRequestException('This proof covers an order that was cancelled or refunded — it cannot be approved. Reject the proof instead.');
+    }
 
     const now = new Date();
     for (const order of orders as any[]) {

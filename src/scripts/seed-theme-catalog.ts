@@ -253,7 +253,6 @@ const IDENTITY_BANNER_DEFAULT = {
   showFollowButton: true,
   showMessageButton: true,
   showLoyaltyButton: true,
-  showMembershipButton: true,
   layout: 'standard',
   showBadges: true,
   showFollowerCount: true,

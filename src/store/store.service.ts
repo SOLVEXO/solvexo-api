@@ -22,7 +22,6 @@ import { currencyForCountry } from '@/common/country-currency.const';
 import { UploadService } from '@/upload/upload.service';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { UpdateStoreCustomerDto } from './dto/update-store-customer.dto';
-import { SubscriptionBenefitsService } from '@/subscriptions/subscription-benefits.service';
 import { EntitlementsService, trimToMarketsLimit } from '@/platform-plans/entitlements.service';
 import { SellerPlatformSubscriptionsService } from '@/platform-plans/seller-platform-subscriptions.service';
 import { AiCreditsService } from '@/platform-plans/ai-credits.service';
@@ -76,7 +75,6 @@ export class StoreService {
   constructor(
     private readonly databaseService: DatabaseService,
     private readonly activityLogService: ActivityLogService,
-    private readonly subscriptionBenefits: SubscriptionBenefitsService,
     private readonly entitlementsService: EntitlementsService,
     private readonly sellerPlatformSubscriptionsService: SellerPlatformSubscriptionsService,
     private readonly aiCreditsService: AiCreditsService,
@@ -1749,8 +1747,6 @@ export class StoreService {
       .select('name isVerified')
       .lean();
 
-    const benefits = await this.subscriptionBenefits.getActiveBenefits(customerId, storeId);
-
     // Every product on this page belongs to the same store, so this is one
     // lookup for the whole page, not per-product — same active-campaign
     // resolution checkout pricing uses.
@@ -1779,15 +1775,6 @@ export class StoreService {
         inStock:             (variantsByProduct.get(p._id.toString()) ?? []).some((v: any) => v.unlimitedStock || v.stock > 0),
         activeCampaign:      activeCampaignBadge,
       };
-      if (variant && benefits) {
-        const discount = this.subscriptionBenefits.resolveProductDiscount(benefits.benefits, p, variant.price);
-        if (discount) {
-          base.subscriberPrice = discount.subscriberPrice;
-          base.youSaveUSD = discount.savingsUSD;
-          base.discountPercent = discount.discountPercent;
-          base.subscriberPlanName = benefits.planName;
-        }
-      }
       return base;
     });
 

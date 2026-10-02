@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { NestFactory } from '@nestjs/core';
+import { ValidationPipe } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
 import cookieParser from 'cookie-parser';
@@ -19,6 +20,18 @@ async function bootstrap() {
   app.useBodyParser('json', { limit: '1mb' });
 
   app.use(cookieParser());
+
+  // Global validation: every `@Body()/@Query()/@Param()` typed with a
+  // class-validator DTO is now actually checked (previously only the ~36
+  // controllers that opted in with @UsePipes were — e.g. the cart's `@Min`
+  // quantity rule never ran). Deliberately `transform: false` and no
+  // `whitelist`: it only REJECTS invalid input and never rewrites or strips
+  // the payload, so handlers keep receiving the exact plain objects they
+  // always did (class instances would carry `undefined` props under
+  // ES2023 class fields). Controller-level pipes with their own options
+  // still run on top of this. Untyped (`any`) bodies are not covered — those
+  // handlers must whitelist fields themselves.
+  app.useGlobalPipes(new ValidationPipe({ transform: false }));
 
   const config = new DocumentBuilder()
     .setTitle('Solvexo API')

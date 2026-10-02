@@ -55,3 +55,10 @@ export const TransactionSchema = SchemaFactory.createForClass(Transaction);
 TransactionSchema.index({ storeId: 1, createdAt: -1 });
 TransactionSchema.index({ storeId: 1, type: 1, createdAt: -1 });
 TransactionSchema.index({ referenceId: 1 });
+// One sale credit per (store, order): the DB-level guard behind recordSale's idempotency check
+// (a concurrent double call loses the race on this index instead of double-crediting the seller).
+// NOTE: if historical duplicate sale rows exist this index cannot build until they are de-duplicated.
+TransactionSchema.index(
+  { storeId: 1, referenceId: 1, referenceType: 1, type: 1 },
+  { unique: true, partialFilterExpression: { type: 'sale', referenceType: 'order' } },
+);

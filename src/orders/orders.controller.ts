@@ -79,11 +79,23 @@ export class OrdersController {
     return this.ordersService.getDownloadUrls(userId, orderId, productId, storeId);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller', 'admin')
-  @Put('mark-paid/:orderId')
-  async markPaid(@Param('orderId') orderId: string) {
-    return this.ordersService.markPaid(orderId);
+  // Store-scoped: the caller must own `:storeId` (or be staff of it with the
+  // permission) AND the order must contain a sub-order for that store. The
+  // previous unscoped `mark-paid/:orderId` let any seller mark any store's
+  // order paid (and credit its ledger).
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('orders.record_payment')
+  @Put('mark-paid/:storeId/:orderId')
+  async markPaid(
+    @Req() req: any,
+    @Param('storeId') storeId: string,
+    @Param('orderId') orderId: string,
+  ) {
+    return this.ordersService.markPaid(actingSellerId(req.user), storeId, orderId, {
+      actorId: req.user.userId ?? req.user.sellerId,
+      actorRole: req.user.role,
+    });
   }
 
   // Real "Record payments" — see OrdersService.recordOrderPayment's doc
@@ -262,7 +274,7 @@ export class OrdersController {
     @Req() req: any,
     @Param('storeId') storeId: string,
     @Param('orderId') orderId: string,
-    @Body() body: { amount: number; reason?: string },
+    @Body() body: { amount: number; reason?: string; refundTo?: 'original' | 'store_credit' },
   ) {
     return this.ordersService.refundOrderAsSeller(
       actingSellerId(req.user),

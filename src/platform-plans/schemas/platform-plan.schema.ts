@@ -81,7 +81,6 @@ export class PlatformPlan {
       customDomainAllowed: false,
       whiteLabelAllowed: false,
       loyaltyProgramAllowed: false,
-      subscriptionProductsAllowed: false, // gates the buyer-facing VIP-plan module
       advancedAnalyticsAllowed: false,
       abandonedCartRecoveryAllowed: false,
       emailCampaignsAllowed: false,
@@ -109,7 +108,6 @@ export class PlatformPlan {
     customDomainAllowed: boolean;
     whiteLabelAllowed: boolean;
     loyaltyProgramAllowed: boolean;
-    subscriptionProductsAllowed: boolean;
     advancedAnalyticsAllowed: boolean;
     abandonedCartRecoveryAllowed: boolean;
     emailCampaignsAllowed: boolean;

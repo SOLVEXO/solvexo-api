@@ -106,6 +106,10 @@ import { DatabaseService } from './databaseservice';
         schema: schema.PlatformPlanInvoiceSchema,
       },
       {
+        name: schema.TransactionFeeBill.name,
+        schema: schema.TransactionFeeBillSchema,
+      },
+      {
         name: schema.PlatformPlanPaymentAttempt.name,
         schema: schema.PlatformPlanPaymentAttemptSchema,
       },
@@ -135,6 +139,7 @@ import { DatabaseService } from './databaseservice';
       { name: schema.RewardVoucher.name, schema: schema.RewardVoucherSchema },
       { name: schema.GiftCard.name, schema: schema.GiftCardSchema },
       { name: schema.GiftCardTransaction.name, schema: schema.GiftCardTransactionSchema },
+      { name: schema.StoreCreditTransaction.name, schema: schema.StoreCreditTransactionSchema },
       { name: schema.GiftCardSettings.name, schema: schema.GiftCardSettingsSchema },
       { name: schema.AbandonedCartSettings.name, schema: schema.AbandonedCartSettingsSchema },
       { name: schema.EmailCampaign.name, schema: schema.EmailCampaignSchema },

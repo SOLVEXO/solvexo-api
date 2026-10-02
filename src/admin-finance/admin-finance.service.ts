@@ -69,6 +69,79 @@ export class AdminFinanceService {
   }
 
   // ═══════════════════════════════════════════════════════════════════════
+  // A0. PLATFORM REVENUE — what sellers pay Solvexo (Shopify's own revenue lines)
+  // ═══════════════════════════════════════════════════════════════════════
+
+  /**
+   * What the platform itself earns, USD only (admin never sees a store's currency here):
+   *  1. Plans & subscriptions — paid platform-plan invoices, net of refunds.
+   *  2. Third-party transaction fees — collected on sellers' monthly bills
+   *     (TransactionFeeBill); also shows what is invoiced-but-unpaid and what has
+   *     accrued but not been billed yet, so nothing is overstated.
+   * Card payments are NOT a revenue line: they settle straight into the seller's
+   * connected account and the card-network cost is passed through.
+   */
+  async getPlatformRevenue(query: any) {
+    const { from, to } = resolveDateRange(query);
+
+    return this.cached(this.key('platform-revenue-v1', { from, to }), async () => {
+      const [planRows, paidBillRows, openBillRows, accruedRows, rates] = await Promise.all([
+        this.r.platformPlanInvoiceModel.aggregate([
+          { $match: { status: { $in: ['paid', 'partially_refunded', 'refunded'] }, isDelete: false, paidAt: { $gte: from, $lte: to } } },
+          { $group: { _id: null, gross: { $sum: '$amountUSD' }, refunded: { $sum: '$refundedAmountUSD' }, count: { $sum: 1 } } },
+        ]),
+        this.r.transactionFeeBillModel.aggregate([
+          { $match: { status: 'paid', isDelete: false, paidAt: { $gte: from, $lte: to } } },
+          { $group: { _id: null, total: { $sum: '$amountUSD' }, count: { $sum: 1 } } },
+        ]),
+        this.r.transactionFeeBillModel.aggregate([
+          { $match: { status: { $in: ['invoiced', 'payment_failed'] }, isDelete: false, createdAt: { $gte: from, $lte: to } } },
+          { $group: { _id: null, total: { $sum: '$amountUSD' }, count: { $sum: 1 } } },
+        ]),
+        this.r.transactionModel.aggregate([
+          { $match: { type: 'fee', 'metadata.billing.status': 'pending_invoice' } },
+          { $group: { _id: '$currency', amount: { $sum: { $abs: '$amount' } } } },
+        ]),
+        this.getUsdRates(),
+      ]);
+
+      const planGross = round(planRows[0]?.gross ?? 0);
+      const planRefunded = round(planRows[0]?.refunded ?? 0);
+      const planNet = round(planGross - planRefunded);
+      const feesCollected = round(paidBillRows[0]?.total ?? 0);
+      const feesInvoicedUnpaid = round(openBillRows[0]?.total ?? 0);
+
+      // Accrued-but-unbilled fees accrue in each seller's own currency — convert at the latest rate
+      // and DISCLOSE any currency with no known rate instead of guessing.
+      let accruedUnbilled = 0;
+      const unconvertibleCurrencies: string[] = [];
+      for (const row of accruedRows as any[]) {
+        const usd = this.toUsd(row.amount ?? 0, row._id ?? 'USD', rates);
+        if (usd === null) unconvertibleCurrencies.push(row._id);
+        else accruedUnbilled += usd;
+      }
+
+      return {
+        success: true,
+        data: {
+          currency: 'USD',
+          range: { from, to },
+          planRevenue: { grossUSD: planGross, refundedUSD: planRefunded, netUSD: planNet, invoiceCount: planRows[0]?.count ?? 0 },
+          transactionFees: {
+            collectedUSD: feesCollected,
+            billCount: paidBillRows[0]?.count ?? 0,
+            invoicedUnpaidUSD: feesInvoicedUnpaid,
+            accruedUnbilledUSD: round(accruedUnbilled),
+            ...(unconvertibleCurrencies.length ? { unconvertibleCurrencies } : {}),
+          },
+          totalRevenueUSD: round(planNet + feesCollected),
+          note: 'Revenue = what sellers pay Solvexo: platform plans (net of refunds) + third-party transaction fees collected on their monthly bills. "invoicedUnpaidUSD" and "accruedUnbilledUSD" are NOT counted until collected. Buyer card payments settle directly into the seller\'s own connected account and are not platform revenue.',
+        },
+      };
+    });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
   // A. DASHBOARD OVERVIEW
   // ═══════════════════════════════════════════════════════════════════════
 
@@ -98,7 +171,7 @@ export class AdminFinanceService {
         ]),
         this.r.payoutModel.aggregate([{ $group: { _id: { status: '$status', currency: '$currency' }, count: { $sum: 1 }, amount: { $sum: '$amount' } } }]),
         this.r.sellerBalanceModel.countDocuments({}),
-        getPlatformEarnings(this.r.transactionModel, this.r.subscriptionInvoiceModel, from, to),
+        getPlatformEarnings(this.r.transactionModel, from, to),
         this.r.sellerBalanceModel.countDocuments({ isFlaggedForReview: true }),
         this.r.payoutMethodModel.countDocuments({ status: 'pending_verification' }),
         this.r.manualPaymentProofModel.countDocuments({ status: 'pending' }),
@@ -117,7 +190,7 @@ export class AdminFinanceService {
         const gmv = round(saleRow?.total ?? 0);
         const refunds = round(refundRow?.total ?? 0);
         const balances: any = balancesByCurrency.get(currency) ?? { totalAvailable: 0, totalPending: 0, totalRevenue: 0, totalFees: 0, totalRefunds: 0, totalPayouts: 0 };
-        const currencyEarnings = earningsByCurrency.get(currency) ?? { commission: 0, processingFees: 0, subscriptionRevenue: 0, total: 0 };
+        const currencyEarnings = earningsByCurrency.get(currency) ?? { commission: 0, processingFees: 0, total: 0 };
 
         return {
           currency,
@@ -127,7 +200,6 @@ export class AdminFinanceService {
           totalOrders: saleRow?.count ?? 0,
           platformEarnings: currencyEarnings.total,
           platformCommission: currencyEarnings.commission,
-          subscriptionRevenue: currencyEarnings.subscriptionRevenue,
           paymentProcessingFees: currencyEarnings.processingFees,
           sellerBalances: {
             totalAvailable: round(balances.totalAvailable ?? 0),
@@ -167,7 +239,7 @@ export class AdminFinanceService {
       const consolidatedUSD = {
         currency: 'USD',
         gmv: 0, netRevenue: 0, refunds: 0, totalOrders: 0,
-        platformEarnings: 0, platformCommission: 0, subscriptionRevenue: 0, paymentProcessingFees: 0,
+        platformEarnings: 0, platformCommission: 0, paymentProcessingFees: 0,
         sellerBalances: { totalAvailable: 0, totalPending: 0 },
         pkrShare: { gmv: 0, platformEarnings: 0 },
       };
@@ -180,7 +252,6 @@ export class AdminFinanceService {
         consolidatedUSD.totalOrders += c.totalOrders;
         consolidatedUSD.platformEarnings += conv(c.platformEarnings)!;
         consolidatedUSD.platformCommission += conv(c.platformCommission)!;
-        consolidatedUSD.subscriptionRevenue += conv(c.subscriptionRevenue)!;
         consolidatedUSD.paymentProcessingFees += conv(c.paymentProcessingFees)!;
         consolidatedUSD.sellerBalances.totalAvailable += conv(c.sellerBalances.totalAvailable)!;
         consolidatedUSD.sellerBalances.totalPending += conv(c.sellerBalances.totalPending)!;
@@ -189,7 +260,7 @@ export class AdminFinanceService {
           consolidatedUSD.pkrShare.platformEarnings += conv(c.platformEarnings)!;
         }
       }
-      for (const k of ['gmv', 'netRevenue', 'refunds', 'platformEarnings', 'platformCommission', 'subscriptionRevenue', 'paymentProcessingFees'] as const) {
+      for (const k of ['gmv', 'netRevenue', 'refunds', 'platformEarnings', 'platformCommission', 'paymentProcessingFees'] as const) {
         consolidatedUSD[k] = round(consolidatedUSD[k]);
       }
       consolidatedUSD.sellerBalances.totalAvailable = round(consolidatedUSD.sellerBalances.totalAvailable);
@@ -743,7 +814,7 @@ export class AdminFinanceService {
             { $match: { status: { $ne: 'failed' }, createdAt: { $gte: from, $lte: to } } },
             { $group: { _id: { type: '$type', currency: '$currency' }, total: { $sum: { $abs: '$amount' } } } },
           ]),
-          getPlatformEarnings(this.r.transactionModel, this.r.subscriptionInvoiceModel, from, to),
+          getPlatformEarnings(this.r.transactionModel, from, to),
         ]);
 
         const currencies = new Set<string>((await this.adminConfigService.getEnabledCurrencies()).map((c) => c.code));
@@ -753,19 +824,18 @@ export class AdminFinanceService {
         const byCurrency = [...currencies].map((currency) => {
           const stats: Record<string, number> = { sale: 0, fee: 0, refund: 0, payout: 0 };
           for (const row of byTypeRows) if ((row._id.currency ?? 'USD') === currency) stats[row._id.type] = round(row.total);
-          const currencyEarnings = earningsByCurrency.get(currency) ?? { commission: 0, subscriptionRevenue: 0, total: 0 };
+          const currencyEarnings = earningsByCurrency.get(currency) ?? { commission: 0, total: 0 };
           return {
             currency,
             gmv: stats.sale,
             refunds: stats.refund,
             payouts: stats.payout,
             platformCommission: currencyEarnings.commission,
-            subscriptionRevenue: currencyEarnings.subscriptionRevenue,
             platformEarnings: currencyEarnings.total,
           };
         }).filter((c) => c.gmv !== 0 || c.refunds !== 0 || c.payouts !== 0 || c.platformEarnings !== 0);
 
-        const usd = { gmv: 0, refunds: 0, payouts: 0, platformCommission: 0, subscriptionRevenue: 0, platformEarnings: 0 };
+        const usd = { gmv: 0, refunds: 0, payouts: 0, platformCommission: 0, platformEarnings: 0 };
         for (const c of byCurrency) {
           if (this.toUsd(1, c.currency, rates) === null) continue;
           for (const k of Object.keys(usd) as (keyof typeof usd)[]) usd[k] += this.toUsd(c[k], c.currency, rates)!;
@@ -875,7 +945,6 @@ export class AdminFinanceService {
       { label: 'GMV (USD)', value: u.gmv.toFixed(2) },
       { label: 'Net Revenue (USD)', value: u.netRevenue.toFixed(2) },
       { label: 'Platform Commission (USD)', value: u.platformCommission.toFixed(2) },
-      { label: 'Subscription Revenue (USD)', value: u.subscriptionRevenue.toFixed(2) },
       { label: 'Total Available owed (USD)', value: u.sellerBalances.totalAvailable.toFixed(2) },
       { label: 'Total Pending owed (USD)', value: u.sellerBalances.totalPending.toFixed(2) },
     ]);

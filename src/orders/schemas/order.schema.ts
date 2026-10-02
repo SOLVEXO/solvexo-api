@@ -69,6 +69,10 @@ export class OrderItem {
   @Prop({ type: Number, default: 0 })
   giftCardDiscountUSD: number;
 
+  // Store credit allocated to this line at checkout — see CheckoutItem.storeCreditDiscountUSD.
+  @Prop({ type: Number, default: 0 })
+  storeCreditDiscountUSD: number;
+
   // Automatic platform-campaign discount allocated to this line at checkout —
   // see CheckoutItem.campaignId/campaignDiscountUSD, copied through as-is.
   @Prop({ type: String, default: null })
@@ -418,6 +422,10 @@ export class Order {
   @Prop({ default: 0 })
   giftCardDiscountTotal: number;
 
+  // Store credit the buyer spent on this order — see Checkout.storeCreditDiscountTotalUSD.
+  @Prop({ default: 0 })
+  storeCreditDiscountTotal: number;
+
   // Sum of every sellerOrder item's campaignDiscountUSD — see
   // Checkout.campaignDiscountTotalUSD for why there's no single order-level
   // campaignId (a multi-store order can carry a different campaign per store).
@@ -459,6 +467,7 @@ export class Order {
       'cash_on_delivery',
       'stripe',
       'manual_bank_transfer',
+      'store_credit',
       'safepay',
       'jazzcash',
       'easypaisa',

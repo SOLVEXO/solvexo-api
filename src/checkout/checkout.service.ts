@@ -4,7 +4,6 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { DatabaseService } from '@/database/databaseservice';
-import { SubscriptionBenefitsService } from '@/subscriptions/subscription-benefits.service';
 import { MarketingService } from '@/marketing/marketing.service';
 import { pickBestCampaign } from '@/marketing/campaign-pricing.util';
 import { AdminConfigService } from '@/admin-config/admin-config.service';
@@ -16,6 +15,8 @@ import { resolveBuyerStoreScope } from '@/common/store-scope.util';
 import { TaxService } from '@/tax/tax.service';
 import { ShippingRatesService } from '@/shipping-rates/shipping-rates.service';
 import { EntitlementsService, trimToMarketsLimit } from '@/platform-plans/entitlements.service';
+import { StripeConnectService } from '@/stripe-connect/stripe-connect.service';
+import { StoreCreditService } from '@/store-credit/store-credit.service';
 
 // Fallback currency for the rare case a store's own `baseCurrency` can't be
 // resolved (e.g. store doc missing at read time). Every real `ShippingZone`
@@ -24,11 +25,19 @@ import { EntitlementsService, trimToMarketsLimit } from '@/platform-plans/entitl
 // always implicitly PKR, was removed — no admin-level checkout fallback.)
 const SHIPPING_ZONE_CURRENCY = 'PKR';
 
+/**
+ * Shopify rule: a store with no payment provider can't take cards. Online card payment
+ * ('stripe', plus 'split' which charges its digital part the same way) is offered only when
+ * the store has a provider (an eligible Stripe Connect account); COD / bank transfer are untouched.
+ */
+export function stripCardMethodsIfNoProvider(methods: string[], cardAvailable: boolean): string[] {
+  return cardAvailable ? methods : methods.filter((m) => m !== 'stripe' && m !== 'split');
+}
+
 @Injectable()
 export class CheckoutService {
   constructor(
     private readonly databaseService: DatabaseService,
-    private readonly subscriptionBenefits: SubscriptionBenefitsService,
     private readonly marketingService: MarketingService,
     private readonly adminConfigService: AdminConfigService,
     private readonly exchangeRateService: ExchangeRateService,
@@ -37,10 +46,27 @@ export class CheckoutService {
     private readonly taxService: TaxService,
     private readonly shippingRatesService: ShippingRatesService,
     private readonly entitlementsService: EntitlementsService,
+    private readonly stripeConnectService: StripeConnectService,
+    private readonly storeCreditService: StoreCreditService,
   ) {}
 
   private round(n: number) {
     return Math.round(n * 100) / 100;
+  }
+
+  /**
+   * The ONE place a checkout's payable total is derived: items subtotal +
+   * shipping + tax. `taxAmount` is fixed at `createCheckout` time (stamped
+   * per item as `taxUSD`, which `PaymentService.createOrder` later sums into
+   * the order total and the seller's `settlementAmount`), so every later
+   * recompute — shipping, coupon, gift card, reward voucher, and their
+   * removals — MUST include it, otherwise the buyer is charged without tax
+   * while the order/ledger count it (the platform would fund the tax).
+   * Known simplification: tax is not re-quoted after a coupon/voucher lowers
+   * item prices (it stays the amount computed at checkout creation).
+   */
+  checkoutTotal(subtotal: number, parts: { shippingFee?: number | null; taxAmount?: number | null }): number {
+    return this.round((subtotal || 0) + (parts.shippingFee || 0) + (parts.taxAmount || 0));
   }
 
   /** A seller-owned zone is priced in that store's own `baseCurrency`.
@@ -229,24 +255,6 @@ export class CheckoutService {
     const checkoutItems: any[] = [];
     let hasPhysical = false;
 
-    // Cache one lookup per store so a multi-item cart from the same store
-    // doesn't re-query the buyer's subscription per item.
-    const benefitsCache = new Map<
-      string,
-      { benefits: any[]; planName: string } | null
-    >();
-    const getBenefits = async (storeId: string) => {
-      if (!benefitsCache.has(storeId)) {
-        benefitsCache.set(
-          storeId,
-          await this.subscriptionBenefits.getActiveBenefits(userId, storeId),
-        );
-      }
-      return benefitsCache.get(storeId);
-    };
-
-    let subscriberSavingsUSD = 0;
-
     // Cache one lookup per store — a multi-item cart from the same store
     // shouldn't re-query the store's status per item.
     const storeStatusCache = new Map<string, boolean>();
@@ -261,18 +269,18 @@ export class CheckoutService {
       return storeStatusCache.get(storeId)!;
     };
 
-    // Pass 1: resolve product/variant, validate stock, and compute each
-    // store's RAW (pre-discount) subtotal. A discount benefit's
-    // `minOrderValueUSD` must be checked against the order value, but the
-    // order value isn't known until every line in the cart has been priced —
-    // so resolving and applying the discount in a single pass (as before)
-    // meant `minOrderValueUSD` was accepted by the API/DTO but never actually
-    // enforced; every subscriber discount applied unconditionally regardless
-    // of cart size.
+    // Pass 1: resolve product/variant and validate stock.
     const rawItems: Array<{ product: any; variant: any; cartItem: any }> = [];
-    const storeSubtotals = new Map<string, number>();
 
     for (const cartItem of selectedItems) {
+      // Re-validate quantity at purchase time (a corrupted/legacy cart row
+      // must never yield a zero/negative/fractional line total).
+      if (!Number.isInteger(cartItem.quantity) || cartItem.quantity < 1) {
+        throw new BadRequestException(
+          'Invalid quantity in cart. Please remove the item and add it again.',
+        );
+      }
+
       const product = await productModel.findOne({
         _id: cartItem.productId,
         status: 'active',
@@ -282,6 +290,14 @@ export class CheckoutService {
         throw new BadRequestException(
           `Product not found: ${cartItem.productId}`,
         );
+
+      // The cart is store-scoped — an item whose product belongs to another
+      // store can never be checked out here.
+      if (product.storeId !== storeId) {
+        throw new BadRequestException(
+          `"${product.name}" does not belong to this store. Please remove it from your cart.`,
+        );
+      }
 
       // A seller/store can be suspended after an item was already sitting
       // in the buyer's cart — checkout must re-check store status at the
@@ -297,7 +313,7 @@ export class CheckoutService {
         status: 'active',
         isDelete: false,
       });
-      if (!variant)
+      if (!variant || String(variant.productId) !== String(product._id))
         throw new BadRequestException(
           `Variant not found: ${cartItem.productVariantId}`,
         );
@@ -320,13 +336,6 @@ export class CheckoutService {
       }
 
       rawItems.push({ product, variant, cartItem });
-      storeSubtotals.set(
-        product.storeId,
-        this.round(
-          (storeSubtotals.get(product.storeId) ?? 0) +
-            variant.price * cartItem.quantity,
-        ),
-      );
     }
 
     // Batch-resolve seller name + verification badge across every distinct
@@ -343,32 +352,9 @@ export class CheckoutService {
       : [];
     const sellerMap = new Map(sellers.map((s: any) => [s._id.toString(), s]));
 
-    // Pass 2: resolve subscriber pricing now that each store's raw subtotal is known.
+    // Pass 2: build the checkout lines at the variant's list price.
     for (const { product, variant, cartItem } of rawItems) {
-      // Subscriber pricing is resolved server-side only — the client never
-      // supplies a discount, it can only ever be computed from the buyer's
-      // real active subscription to this product's store.
-      const benefitsEntry = await getBenefits(product.storeId);
-      let discount = benefitsEntry
-        ? this.subscriptionBenefits.resolveProductDiscount(
-            benefitsEntry.benefits,
-            product,
-            variant.price,
-          )
-        : null;
-
-      if (
-        discount?.minOrderValueUSD != null &&
-        (storeSubtotals.get(product.storeId) ?? 0) < discount.minOrderValueUSD
-      ) {
-        discount = null; // cart doesn't meet this store's minimum order value for the discount
-      }
-
-      const unitPrice = discount?.subscriberPrice ?? variant.price;
-      const lineDiscount = discount
-        ? this.round(discount.savingsUSD * cartItem.quantity)
-        : 0;
-      subscriberSavingsUSD += lineDiscount;
+      const unitPrice = variant.price;
 
       const seller = sellerMap.get(product.sellerId?.toString());
 
@@ -394,17 +380,14 @@ export class CheckoutService {
         currency: variant.currency ?? 'PKR',
         price: unitPrice,
         totalPrice: this.round(unitPrice * cartItem.quantity),
-        originalPrice: discount ? variant.price : null,
-        subscriberDiscountUSD: lineDiscount,
+        originalPrice: null,
       });
     }
 
     // Pass 3: automatic platform-campaign discount. Resolved per store — a
     // store can be opted into more than one currently-active campaign, so
     // whichever one currently saves the buyer the most on that store's
-    // (already subscriber-priced) subtotal wins (see pickBestCampaign).
-    // Applied on top of subscriber pricing, same as a "sale on top of your
-    // membership price" would read to a buyer — never on the raw list price.
+    // subtotal wins (see pickBestCampaign).
     let campaignSavingsUSD = 0;
     const appliedCampaigns: Array<{
       campaignId: string;
@@ -693,56 +676,6 @@ export class CheckoutService {
     taxAmount = this.round(taxAmount);
     const totalAmount = this.round(subtotal + taxAmount);
 
-    // Checkout-time upsell: for any store in this cart the buyer is NOT
-    // subscribed to, but which has an active plan offering a discount,
-    // surface what they'd have saved — the highest-intent moment to convert.
-    const subscriptionSavingsHints: Array<{
-      storeId: string;
-      storeName: string;
-      storeSlug: string;
-      planId: string;
-      planName: string;
-      potentialSavingsUSD: number;
-    }> = [];
-    const storeIdsInCart = [...new Set(checkoutItems.map((i) => i.storeId))];
-    for (const sid of storeIdsInCart) {
-      if (benefitsCache.get(sid)) continue; // already subscribed here
-      const plan = await this.databaseService.repositories.subscriptionPlanModel
-        .findOne({
-          storeId: sid,
-          status: 'active',
-          isDelete: false,
-          'benefits.type': 'discount',
-        })
-        .sort({ monthlyPriceUSD: 1 })
-        .lean();
-      if (!plan) continue;
-      const storeItems = checkoutItems.filter((i) => i.storeId === sid);
-      let potentialSavings = 0;
-      for (const item of storeItems) {
-        const d = this.subscriptionBenefits.resolveProductDiscount(
-          (plan as any).benefits,
-          { _id: item.productId } as any,
-          item.price,
-        );
-        if (d) potentialSavings += this.round(d.savingsUSD * item.quantity);
-      }
-      if (potentialSavings > 0) {
-        const store = await this.databaseService.repositories.storeModel
-          .findById(sid)
-          .select('name slug')
-          .lean();
-        subscriptionSavingsHints.push({
-          storeId: sid,
-          storeName: (store as any)?.name ?? 'this store',
-          storeSlug: (store as any)?.slug ?? '',
-          planId: (plan as any)._id.toString(),
-          planName: (plan as any).name,
-          potentialSavingsUSD: this.round(potentialSavings),
-        });
-      }
-    }
-
     // Client-reported attribution — a mobile app has no meaningful
     // Referer/UTM headers, so this can only ever be as good as what the app
     // itself reports (e.g. "opened via a shared product link"). Unknown or
@@ -772,7 +705,6 @@ export class CheckoutService {
       subtotal,
       shippingFee: 0,
       taxAmount,
-      subscriberSavingsUSD: this.round(subscriberSavingsUSD),
       campaignDiscountTotalUSD: campaignSavingsUSD,
       autoDiscountTotalUSD: autoDiscountSavingsUSD,
       totalAmount,
@@ -807,8 +739,8 @@ export class CheckoutService {
         ).every((s: any) => s.codEnabled !== false)
       : true;
 
-    // Manual bank-transfer (Pakistan track — pay into the platform's own
-    // account, upload proof) is a Stripe-equivalent alternative, not a COD
+    // Manual bank-transfer (Pakistan track — pay into the SELLER's own bank
+    // account, upload proof, the seller approves it) is a Stripe-equivalent alternative, not a COD
     // substitute — it's offered alongside 'stripe' whenever an admin has it
     // enabled, regardless of digital/physical mix. Admin-config-gated so it
     // can be turned off platform-wide without a deploy.
@@ -833,6 +765,20 @@ export class CheckoutService {
       return filtered.length > 0 ? filtered : methods;
     };
 
+    // Shopify rule: a store with no payment provider can't take cards. Online
+    // card payment ('stripe', and 'split' which charges its digital part the
+    // same way) goes ONLY to the seller's own connected account, so it is
+    // offered only for a single-store checkout whose seller has an eligible
+    // Connect account — never as a fallback onto the platform's own account.
+    // Unlike the unsupported-currency filter above this is NOT relaxed when it
+    // would leave nothing: with no card provider, COD/bank transfer/the
+    // store's own gateways are the real options (and "none" is a real state).
+    const cardStoreIds = [...new Set(checkoutItems.map((i) => i.storeId))];
+    const cardAvailable =
+      cardStoreIds.length === 1 &&
+      !!(await this.stripeConnectService.getEligibleConnectAccountForStore(cardStoreIds[0]));
+    const withoutCardIfNoProvider = (methods: string[]) => stripCardMethodsIfNoProvider(methods, cardAvailable);
+
     return {
       success: true,
       message: 'Checkout created successfully',
@@ -844,22 +790,21 @@ export class CheckoutService {
         // 'stripe' and 'cash_on_delivery' as before — unless COD isn't
         // eligible (see codEligible above), in which case 'stripe' (pay
         // everything online) is always the safe fallback.
-        allowedPaymentMethods: withoutUnsupportedStripe(
+        allowedPaymentMethods: withoutCardIfNoProvider(withoutUnsupportedStripe(
           hasDigital
             ? withManualTransfer(hasPhysical && codEligible ? ['stripe', 'split'] : ['stripe'])
             : withManualTransfer(codEligible ? ['stripe', 'cash_on_delivery'] : ['stripe']),
-        ),
+        )),
+        cardPaymentAvailable: cardAvailable,
         summary: {
           subtotal,
           shippingFee: 0,
           taxAmount,
           totalAmount,
-          subscriberSavingsUSD: this.round(subscriberSavingsUSD),
           campaignDiscountUSD: campaignSavingsUSD,
           autoDiscountUSD: autoDiscountSavingsUSD,
           ...this.splitSubtotalsByType(checkoutItems),
         },
-        subscriptionSavingsHints,
         appliedCampaigns,
       },
     };
@@ -973,10 +918,7 @@ export class CheckoutService {
     // always target:'store' (enforced at creation), so eligibility only
     // ever needs minOrderAmount checked against the whole checkout's
     // subtotal, unlike the item-level percentage/fixed/bogo discounts
-    // resolved earlier in createCheckout's Pass 3.5. Checked before the
-    // subscriber shipping-benefit reduction below since 0 can't be reduced
-    // any further.
-    let freeShippingApplied = false;
+    // resolved earlier in createCheckout's Pass 3.5.
     if (storeIdsInCheckout.length === 1) {
       const discountsByStore = await this.discountsService.getActiveDiscountsForStores(storeIdsInCheckout);
       const freeShippingDiscount = discountsByStore.get(storeIdsInCheckout[0])?.find(
@@ -984,32 +926,9 @@ export class CheckoutService {
       );
       if (freeShippingDiscount) {
         shippingFee = 0;
-        freeShippingApplied = true;
       }
     }
-    if (!freeShippingApplied && storeIdsInCheckout.length === 1) {
-      const benefitsEntry = await this.subscriptionBenefits.getActiveBenefits(
-        userId,
-        storeIdsInCheckout[0],
-      );
-      if (benefitsEntry) {
-        const shippingBenefit =
-          this.subscriptionBenefits.resolveShippingBenefit(
-            benefitsEntry.benefits,
-          );
-        if (
-          shippingBenefit &&
-          (shippingBenefit.minOrderValueForShippingUSD == null ||
-            checkout.subtotal >= shippingBenefit.minOrderValueForShippingUSD)
-        ) {
-          shippingFee = this.round(
-            shippingFee * (1 - shippingBenefit.discountPercent / 100),
-          );
-        }
-      }
-    }
-
-    const totalAmount = this.round(checkout.subtotal + shippingFee);
+    const totalAmount = this.checkoutTotal(checkout.subtotal, { shippingFee, taxAmount: checkout.taxAmount });
 
     await checkoutModel.findByIdAndUpdate(checkoutId, {
       // A live rate and a flat zone are mutually exclusive on one checkout —
@@ -1336,12 +1255,17 @@ export class CheckoutService {
       this.distributeCouponDiscount(eligibleItems, totalDiscount);
     }
 
+    // Store credit is the outermost layer: re-applied on top of whatever the other discounts just produced.
+
+    const sc = await this.settleStoreCredit(checkout, items);
+
     const newSubtotal = this.convertedSubtotal(items, checkout.currency, checkout.fxSnapshots as any);
-    const newTotal = this.round(newSubtotal + (checkout.shippingFee || 0));
+    const newTotal = this.checkoutTotal(newSubtotal, checkout);
 
     await checkoutModel.findByIdAndUpdate(checkoutId, {
       items: items.map((i: any) => (i.toObject ? i.toObject() : i)),
       subtotal: newSubtotal,
+      storeCreditDiscountTotalUSD: sc.applied,
       totalAmount: newTotal,
       couponCode: normalizedCode,
       couponStoreId: coupon.storeId,
@@ -1359,6 +1283,7 @@ export class CheckoutService {
         subtotal: newSubtotal,
         shippingFee: checkout.shippingFee || 0,
         totalAmount: newTotal,
+        storeCreditDiscountUSD: sc.applied,
         ...this.splitSubtotalsByType(items),
       },
     };
@@ -1401,12 +1326,17 @@ export class CheckoutService {
     const hadGiftCard = !!checkout.giftCardCode;
     this.revertGiftCardFromItems(items);
 
+    // Store credit is the outermost layer: re-applied on top of whatever the other discounts just produced.
+
+    const sc = await this.settleStoreCredit(checkout, items);
+
     const newSubtotal = this.convertedSubtotal(items, checkout.currency, checkout.fxSnapshots as any);
-    const newTotal = this.round(newSubtotal + (checkout.shippingFee || 0));
+    const newTotal = this.checkoutTotal(newSubtotal, checkout);
 
     await checkoutModel.findByIdAndUpdate(checkoutId, {
       items: items.map((i: any) => (i.toObject ? i.toObject() : i)),
       subtotal: newSubtotal,
+      storeCreditDiscountTotalUSD: sc.applied,
       totalAmount: newTotal,
       couponCode: null,
       couponStoreId: null,
@@ -1423,6 +1353,7 @@ export class CheckoutService {
         subtotal: newSubtotal,
         shippingFee: checkout.shippingFee || 0,
         totalAmount: newTotal,
+        storeCreditDiscountUSD: sc.applied,
         ...this.splitSubtotalsByType(items),
       },
     };
@@ -1478,12 +1409,17 @@ export class CheckoutService {
     const appliedAmount = this.round(Math.min(giftCard.balance, storeSubtotal));
     this.distributeGiftCardDiscount(storeItems, appliedAmount);
 
+    // Store credit is the outermost layer: re-applied on top of whatever the other discounts just produced.
+
+    const sc = await this.settleStoreCredit(checkout, items);
+
     const newSubtotal = this.convertedSubtotal(items, checkout.currency, checkout.fxSnapshots as any);
-    const newTotal = this.round(newSubtotal + (checkout.shippingFee || 0));
+    const newTotal = this.checkoutTotal(newSubtotal, checkout);
 
     await checkoutModel.findByIdAndUpdate(checkoutId, {
       items: items.map((i: any) => (i.toObject ? i.toObject() : i)),
       subtotal: newSubtotal,
+      storeCreditDiscountTotalUSD: sc.applied,
       totalAmount: newTotal,
       giftCardCode: normalizedCode,
       giftCardStoreId: giftCard.storeId,
@@ -1501,6 +1437,7 @@ export class CheckoutService {
         subtotal: newSubtotal,
         shippingFee: checkout.shippingFee || 0,
         totalAmount: newTotal,
+        storeCreditDiscountUSD: sc.applied,
         ...this.splitSubtotalsByType(items),
       },
     };
@@ -1523,12 +1460,17 @@ export class CheckoutService {
     const hadCoupon = !!checkout.couponCode;
     this.revertCouponFromItems(items);
 
+    // Store credit is the outermost layer: re-applied on top of whatever the other discounts just produced.
+
+    const sc = await this.settleStoreCredit(checkout, items);
+
     const newSubtotal = this.convertedSubtotal(items, checkout.currency, checkout.fxSnapshots as any);
-    const newTotal = this.round(newSubtotal + (checkout.shippingFee || 0));
+    const newTotal = this.checkoutTotal(newSubtotal, checkout);
 
     await checkoutModel.findByIdAndUpdate(checkoutId, {
       items: items.map((i: any) => (i.toObject ? i.toObject() : i)),
       subtotal: newSubtotal,
+      storeCreditDiscountTotalUSD: sc.applied,
       totalAmount: newTotal,
       giftCardCode: null,
       giftCardStoreId: null,
@@ -1544,15 +1486,131 @@ export class CheckoutService {
         subtotal: newSubtotal,
         shippingFee: checkout.shippingFee || 0,
         totalAmount: newTotal,
+        storeCreditDiscountUSD: sc.applied,
         ...this.splitSubtotalsByType(items),
       },
     };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // STORE CREDIT (Shopify-style) — a customer's per-store credit balance applied at checkout
+  // ═══════════════════════════════════════════════════════════════════
+
+  /** Restores each item's pre-store-credit price/totalPrice in place — a no-op for items without it. */
+  private revertStoreCreditFromItems(items: any[]) {
+    for (const item of items) {
+      if (item.totalPriceBeforeStoreCredit != null) {
+        item.price = item.priceBeforeStoreCredit;
+        item.totalPrice = item.totalPriceBeforeStoreCredit;
+        item.priceBeforeStoreCredit = null;
+        item.totalPriceBeforeStoreCredit = null;
+        item.storeCreditDiscountUSD = 0;
+      }
+    }
+  }
+
+  private distributeStoreCreditDiscount(storeItems: any[], totalDiscount: number) {
+    this.proportionallyDistribute(storeItems, totalDiscount, (item, share) => {
+      item.priceBeforeStoreCredit = item.price;
+      item.totalPriceBeforeStoreCredit = item.totalPrice;
+      item.storeCreditDiscountUSD = share;
+      item.totalPrice = this.round(item.totalPrice - share);
+      item.price = item.quantity > 0 ? this.round(item.totalPrice / item.quantity) : item.totalPrice;
+    });
+  }
+
+  /**
+   * Brings the store-credit layer up to date: peels any previously-applied credit off the items,
+   * and — if the buyer has it switched on — re-applies it, up to their CURRENT spendable balance
+   * and the store's remaining item total. Called after every coupon / gift-card / voucher change so
+   * the credit always sits on top of the final discounted prices. Returns the amount now applied
+   * (in the store's currency).
+   */
+  private async settleStoreCredit(checkout: any, items: any[]): Promise<{ applied: number }> {
+    this.revertStoreCreditFromItems(items);
+    if (!checkout.storeCreditApplied || !checkout.storeCreditStoreId) return { applied: 0 };
+
+    const storeItems = items.filter((i) => i.storeId === checkout.storeCreditStoreId);
+    const storeSubtotal = this.round(storeItems.reduce((sum, i) => sum + i.totalPrice, 0));
+    if (storeSubtotal <= 0) return { applied: 0 };
+
+    const balance = await this.storeCreditService.getSpendableBalance(checkout.storeCreditStoreId, String(checkout.userId));
+    const amount = this.round(Math.min(balance, storeSubtotal));
+    if (amount <= 0) return { applied: 0 };
+
+    this.distributeStoreCreditDiscount(storeItems, amount);
+    return { applied: amount };
+  }
+
+  private async loadOpenCheckoutForCredit(userId: string, checkoutId: string) {
+    if (!checkoutId) throw new BadRequestException('checkoutId is required');
+    const { checkoutModel } = this.databaseService.repositories;
+    const checkout = await checkoutModel.findOne({ _id: checkoutId, userId, isDelete: false });
+    if (!checkout) throw new NotFoundException('Checkout not found');
+    if (checkout.status === 'completed') throw new BadRequestException('Checkout already completed');
+    if (checkout.status === 'cancelled') throw new BadRequestException('Checkout is cancelled');
+    if (checkout.status === 'expired') throw new BadRequestException('Checkout has expired');
+    if (checkout.expiredAt && checkout.expiredAt < new Date()) {
+      await checkoutModel.findByIdAndUpdate(checkout._id, { status: 'expired' });
+      throw new BadRequestException('Checkout has expired');
+    }
+    return { checkout, checkoutModel };
+  }
+
+  private async persistStoreCredit(checkoutModel: any, checkout: any, items: any[], flag: { storeCreditApplied: boolean; storeCreditStoreId: string | null }) {
+    const applied = (await this.settleStoreCredit({ ...checkout.toObject?.() ?? checkout, userId: checkout.userId, ...flag }, items)).applied;
+    const newSubtotal = this.convertedSubtotal(items, checkout.currency, checkout.fxSnapshots as any);
+    const newTotal = this.checkoutTotal(newSubtotal, checkout);
+    await checkoutModel.findByIdAndUpdate(checkout._id, {
+      items: items.map((i: any) => (i.toObject ? i.toObject() : i)),
+      subtotal: newSubtotal,
+      totalAmount: newTotal,
+      storeCreditApplied: flag.storeCreditApplied,
+      storeCreditStoreId: flag.storeCreditApplied ? flag.storeCreditStoreId : null,
+      storeCreditDiscountTotalUSD: applied,
+    });
+    return {
+      success: true,
+      data: {
+        checkoutId: String(checkout._id),
+        storeCreditApplied: flag.storeCreditApplied && applied > 0,
+        storeCreditDiscountUSD: applied,
+        subtotal: newSubtotal,
+        shippingFee: checkout.shippingFee || 0,
+        totalAmount: newTotal,
+        ...this.splitSubtotalsByType(items),
+      },
+    };
+  }
+
+  /** Switches the buyer's store credit on for this checkout (Shopify applies it automatically as a payment). */
+  async applyStoreCredit(userId: string, body: any) {
+    const { checkout, checkoutModel } = await this.loadOpenCheckoutForCredit(userId, body?.checkoutId);
+    const items = checkout.items as any[];
+    const storeIds = [...new Set(items.map((i) => i.storeId))];
+    if (storeIds.length !== 1) {
+      throw new BadRequestException('Store credit can only be used when checking out from a single store.');
+    }
+    const storeId = String(storeIds[0]);
+    const balance = await this.storeCreditService.getSpendableBalance(storeId, String(userId));
+    if (!(balance > 0)) throw new BadRequestException("You don't have any store credit at this store.");
+
+    const res = await this.persistStoreCredit(checkoutModel, checkout, items, { storeCreditApplied: true, storeCreditStoreId: storeId });
+    if (!(res.data.storeCreditDiscountUSD > 0)) throw new BadRequestException('There is nothing left in your cart to apply store credit to.');
+    return { ...res, message: 'Store credit applied' };
+  }
+
+  async removeStoreCredit(userId: string, body: any) {
+    const { checkout, checkoutModel } = await this.loadOpenCheckoutForCredit(userId, body?.checkoutId);
+    const res = await this.persistStoreCredit(checkoutModel, checkout, checkout.items as any[], { storeCreditApplied: false, storeCreditStoreId: null });
+    return { ...res, message: 'Store credit removed' };
   }
 
   /** Restores each item's pre-gift-card price/totalPrice in place — a no-op
    *  for items that never had a gift card applied. Mirrors
    *  revertCouponFromItems below. */
   private revertGiftCardFromItems(items: any[]) {
+    this.revertStoreCreditFromItems(items); // store credit sits on top of a gift card — peel it first
     for (const item of items) {
       if (item.totalPriceBeforeGiftCard != null) {
         item.price = item.priceBeforeGiftCard;
@@ -1629,12 +1687,17 @@ export class CheckoutService {
       // platform-scope Coupon.
       this.distributeCouponDiscount(eligibleItems, totalDiscount);
 
+      // Store credit is the outermost layer: re-applied on top of whatever the other discounts just produced.
+
+      const sc = await this.settleStoreCredit(checkout, items);
+
       const newSubtotal = this.convertedSubtotal(items, checkout.currency, checkout.fxSnapshots as any);
-      const newTotal = this.round(newSubtotal + (checkout.shippingFee || 0));
+      const newTotal = this.checkoutTotal(newSubtotal, checkout);
 
       await checkoutModel.findByIdAndUpdate(checkout._id, {
         items: items.map((i: any) => (i.toObject ? i.toObject() : i)),
         subtotal: newSubtotal,
+        storeCreditDiscountTotalUSD: sc.applied,
         totalAmount: newTotal,
         couponCode: normalizedCode,
         couponStoreId: voucher.storeId,
@@ -1652,6 +1715,7 @@ export class CheckoutService {
           subtotal: newSubtotal,
           shippingFee: checkout.shippingFee || 0,
           totalAmount: newTotal,
+          storeCreditDiscountUSD: sc.applied,
           ...this.splitSubtotalsByType(items),
         },
       };
@@ -1676,12 +1740,17 @@ export class CheckoutService {
     targetItem.totalPrice = this.round(targetItem.totalPrice - freeAmount);
     targetItem.price = targetItem.quantity > 0 ? this.round(targetItem.totalPrice / targetItem.quantity) : targetItem.totalPrice;
 
+    // Store credit is the outermost layer: re-applied on top of whatever the other discounts just produced.
+
+    const sc = await this.settleStoreCredit(checkout, items);
+
     const newSubtotal = this.convertedSubtotal(items, checkout.currency, checkout.fxSnapshots as any);
-    const newTotal = this.round(newSubtotal + (checkout.shippingFee || 0));
+    const newTotal = this.checkoutTotal(newSubtotal, checkout);
 
     await checkoutModel.findByIdAndUpdate(checkout._id, {
       items: items.map((i: any) => (i.toObject ? i.toObject() : i)),
       subtotal: newSubtotal,
+      storeCreditDiscountTotalUSD: sc.applied,
       totalAmount: newTotal,
       couponCode: normalizedCode,
       couponStoreId: voucher.storeId,
@@ -1699,6 +1768,7 @@ export class CheckoutService {
         subtotal: newSubtotal,
         shippingFee: checkout.shippingFee || 0,
         totalAmount: newTotal,
+        storeCreditDiscountUSD: sc.applied,
         ...this.splitSubtotalsByType(items),
       },
     };
@@ -1707,6 +1777,7 @@ export class CheckoutService {
   /** Restores each item's pre-coupon price/totalPrice in place (mutates the
    *  passed array) — a no-op for items that never had a coupon applied. */
   private revertCouponFromItems(items: any[]) {
+    this.revertStoreCreditFromItems(items); // store credit sits on top of a coupon — peel it first
     for (const item of items) {
       if (item.totalPriceBeforeCoupon != null) {
         item.price = item.priceBeforeCoupon;

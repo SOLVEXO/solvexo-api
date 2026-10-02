@@ -31,6 +31,12 @@ export class AdminFinanceController {
     return this.adminFinanceService.getOverview(query);
   }
 
+  /** What sellers pay Solvexo: plan revenue + collected third-party transaction fees (USD). */
+  @Get('platform-revenue')
+  getPlatformRevenue(@Query() query: AdminAnalyticsQueryDto) {
+    return this.adminFinanceService.getPlatformRevenue(query);
+  }
+
   @Get('revenue-over-time')
   getRevenueOverTime(@Query() query: AdminAnalyticsQueryDto) {
     return this.adminFinanceService.getRevenueOverTime(query);

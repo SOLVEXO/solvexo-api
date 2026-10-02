@@ -192,6 +192,22 @@ export class CheckoutController {
 
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('user')
+  @Post('apply-store-credit')
+  async applyStoreCredit(@Req() req: any, @Body() body: any) {
+    const { userId } = req.user;
+    return this.checkoutService.applyStoreCredit(userId, body);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('user')
+  @Delete('remove-store-credit/:checkoutId')
+  async removeStoreCredit(@Req() req: any, @Param('checkoutId') checkoutId: string) {
+    const { userId } = req.user;
+    return this.checkoutService.removeStoreCredit(userId, { checkoutId });
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('user')
   @Delete('remove-gift-card/:checkoutId')
   async removeGiftCard(@Req() req: any, @Param('checkoutId') checkoutId: string) {
     const { userId } = req.user;

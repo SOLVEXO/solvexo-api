@@ -44,13 +44,6 @@ export class CheckoutPaymentMethodsService {
     return { checkout, storeId: storeIds.length === 1 ? (storeIds[0] as string) : null };
   }
 
-  /** Same-store items only, in that store's own bound currency — see initiatePayment's own comment for why no FX applies here. */
-  private storeAmount(checkout: any, storeId: string): number {
-    return (checkout.items ?? [])
-      .filter((item: any) => item.storeId === storeId)
-      .reduce((sum: number, item: any) => sum + item.totalPrice, 0);
-  }
-
   async listPaymentMethods(checkoutId: string, userId: string) {
     const { storeId } = await this.resolveSingleStoreCheckout(checkoutId, userId);
     if (!storeId) return { success: true, data: { currency: null, methods: [] } };
@@ -90,6 +83,16 @@ export class CheckoutPaymentMethodsService {
     if (!storeId) {
       throw new BadRequestException('This checkout spans multiple stores — use the existing checkout payment flow instead.');
     }
+    await this.paymentService.assertStoreCreditStillCovers(checkout as any);
+    // Only an open checkout can be paid: a completed/cancelled/expired one
+    // must never get a fresh gateway session (it would charge the buyer for
+    // an order that can no longer be created).
+    if (['completed', 'cancelled', 'expired'].includes((checkout as any).status)) {
+      throw new BadRequestException(`This checkout is ${(checkout as any).status} and can no longer be paid`);
+    }
+    if ((checkout as any).expiredAt && new Date((checkout as any).expiredAt) < new Date()) {
+      throw new BadRequestException('This checkout has expired');
+    }
 
     const [integration, store] = await Promise.all([
       this.repos.storeIntegrationModel.findOne({
@@ -99,20 +102,31 @@ export class CheckoutPaymentMethodsService {
         status: 'connected',
         isEnabledForCheckout: true,
       }),
-      this.repos.storeModel.findById(storeId).select('baseCurrency'),
+      this.repos.storeModel.findById(storeId).select('baseCurrency status'),
     ]);
     if (!integration || !this.registry.isSupported(integration.provider)) {
       throw new BadRequestException(`"${providerKey}" is not an available payment method for this store`);
     }
+    if ((store as any)?.status && (store as any).status !== 'active') {
+      throw new BadRequestException('This store is not currently accepting payments');
+    }
 
     const provider = this.registry.resolve(integration.provider);
     const config = toDecryptedPaymentConfig(integration);
-    const amount = this.storeAmount(checkout, storeId);
     // Local gateways (safepay/jazzcash/easypaisa/payfast) are genuinely
     // PKR-only by design — 'PKR' there is correct, not a collapse. Stripe
     // settles in the seller's own real store currency, never hardcoded USD
     // (same bug class as listPaymentMethods above).
     const currency = integration.provider === 'stripe' ? (store?.baseCurrency ?? 'USD') : 'PKR';
+
+    // The checkout's FINAL payable total (items − discounts + shipping + tax)
+    // converted into the gateway currency with the checkout's frozen FX
+    // snapshots — NOT just the sum of item prices, which left shipping and
+    // tax uncharged while the order and the seller's ledger counted them.
+    const { amount, fxSnapshots } = await this.paymentService.computeGatewayCharge(checkout as any, currency);
+    if (!(amount > 0)) {
+      throw new BadRequestException('Nothing to pay for this checkout');
+    }
 
     const session = await provider.initiatePayment(
       { orderId: checkoutId, amount, currency, storeId, returnUrl, cancelUrl },
@@ -132,7 +146,7 @@ export class CheckoutPaymentMethodsService {
       paymentType: integration.provider,
       amount,
       currency,
-      fxSnapshots: (checkout as any).fxSnapshots ?? [],
+      fxSnapshots,
       paymentScope: 'full',
       status: 'pending',
       providerSessionId: session.sessionId,
@@ -190,20 +204,31 @@ export class CheckoutPaymentMethodsService {
       return { success: true, data: { status: terminalStatus, orderIds: [] } };
     }
 
-    const expectedAmount = this.storeAmount(checkout, storeId);
-    if (typeof paymentStatus.amount === 'number' && Math.abs(paymentStatus.amount - expectedAmount) > 0.01) {
+    // Cross-check against the exact amount/currency we charged at initiate
+    // (stored on the PaymentTransaction row) and that this session belongs to
+    // THIS store's single-store checkout — never an order for a forged,
+    // cross-store or under-paid session.
+    try {
+      await this.paymentService.assertGatewayPaymentMatches({
+        providerSessionId: sessionId,
+        paymentType: integration.provider,
+        storeId,
+        paidAmount: paymentStatus.amount,
+        paidCurrency: paymentStatus.currency,
+      });
+    } catch (err: any) {
       await this.activityLogService.log({
         storeId,
         category: 'integrations',
         action: 'integration.payment_amount_mismatch',
-        description: `${integration.provider} confirmed ${paymentStatus.amount} ${paymentStatus.currency} but checkout ${checkoutId} expected ${expectedAmount} — order NOT created, needs manual review`,
+        description: `${integration.provider} session ${sessionId} for checkout ${checkoutId} failed verification (${err?.message}) — order NOT created, needs manual review`,
         actorId: 'system',
         actorRole: 'system',
         isSecurityAlert: true,
         targetId: checkoutId,
         targetType: 'checkout',
       });
-      throw new BadRequestException('Payment amount mismatch — this charge requires manual review');
+      throw err;
     }
 
     // Unified onto the same session-keyed finalize path the webhook uses

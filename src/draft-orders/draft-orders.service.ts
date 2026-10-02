@@ -428,12 +428,15 @@ export class DraftOrdersService {
     const amountCents = Math.round(draft.total * 100);
     if (amountCents < 50) throw new BadRequestException('Amount is too small to process');
 
+    // The buyer's money goes to the seller's own connected account — never to
+    // the platform's shared account (a store with no card provider can't take
+    // card payments; the seller can still mark the invoice paid manually).
     const connectAccountId = await this.stripeConnectService.getEligibleConnectAccountForStore(draft.storeId);
-    let applicationFeeAmountCents = 0;
-    if (connectAccountId) {
-      // Card-network cost passed through (+ a custom per-seller commission, if one was agreed) — no plan commission on this rail.
-      applicationFeeAmountCents = await this.commissionRulesService.cardApplicationFeeCents(draft.storeId, amountCents);
+    if (!connectAccountId) {
+      throw new BadRequestException("This store hasn't set up online card payments yet. Please contact the store to arrange payment.");
     }
+    // Card-network cost passed through (+ a custom per-seller commission, if one was agreed) — no plan commission on this rail.
+    const applicationFeeAmountCents = await this.commissionRulesService.cardApplicationFeeCents(draft.storeId, amountCents);
 
     const paymentIntent = await stripe.paymentIntents.create({
       amount: amountCents,
@@ -442,13 +445,12 @@ export class DraftOrdersService {
         purpose: 'draft_order_invoice',
         draftOrderId: draft._id.toString(),
         invoiceToken: token,
-        settledViaConnect: connectAccountId ? 'true' : 'false',
-        connectedAccountId: connectAccountId ?? '',
+        settledViaConnect: 'true',
+        connectedAccountId: connectAccountId,
       },
       automatic_payment_methods: { enabled: true, allow_redirects: 'never' },
-      ...(connectAccountId
-        ? { transfer_data: { destination: connectAccountId }, application_fee_amount: applicationFeeAmountCents }
-        : {}),
+      transfer_data: { destination: connectAccountId },
+      application_fee_amount: applicationFeeAmountCents,
     });
 
     return { clientSecret: paymentIntent.client_secret, amount: draft.total, currency: draft.currency };

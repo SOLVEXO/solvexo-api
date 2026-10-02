@@ -12,7 +12,6 @@ import { isValidObjectId } from 'mongoose';
 import { DatabaseService } from '@/database/databaseservice';
 import { ProductType as StoreProductType } from '@/store/schemas/store.schema';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
-import { SubscriptionBenefitsService } from '@/subscriptions/subscription-benefits.service';
 import { EntitlementsService } from '@/platform-plans/entitlements.service';
 import { MarketingService } from '@/marketing/marketing.service';
 import { pickPrimaryCampaignForBadge } from '@/marketing/campaign-pricing.util';
@@ -36,7 +35,6 @@ export class ProductsService {
   constructor(
     private databaseService: DatabaseService,
     private activityLogService: ActivityLogService,
-    private subscriptionBenefits: SubscriptionBenefitsService,
     private entitlementsService: EntitlementsService,
     private educationLevelService: EducationLevelService,
     private marketingService: MarketingService,
@@ -74,59 +72,6 @@ export class ProductsService {
               endDate: primary.endDate,
             }
           : null,
-      };
-    });
-  }
-
-  /** Stamps a fresh product with an early-access window if the store has any active plan configuring one — non-subscribers can't see it until this passes. */
-  private async applyEarlyAccessWindow(product: any) {
-    const hours = await this.subscriptionBenefits.getStoreEarlyAccessHours(
-      product.storeId,
-    );
-    if (!hours) return;
-    product.earlyAccessUntil = new Date(Date.now() + hours * 60 * 60 * 1000);
-    await product.save();
-  }
-
-  /** True if this product should stay hidden from this requester right now (still in its early-access window and the requester isn't a subscriber with early_access). */
-  private async isHiddenByEarlyAccess(
-    product: any,
-    customerId?: string | null,
-  ): Promise<boolean> {
-    if (!product.earlyAccessUntil || product.earlyAccessUntil <= new Date())
-      return false;
-    if (!customerId) return true;
-    const entry = await this.subscriptionBenefits.getActiveBenefits(
-      customerId,
-      product.storeId,
-    );
-    return !entry || !this.subscriptionBenefits.hasEarlyAccess(entry.benefits);
-  }
-
-  // Attaches subscriberPrice/youSaveUSD/discountPercent/planName to each
-  // variant when the requester has an active, discount-granting subscription
-  // to the product's store. Never hides or restricts the product itself —
-  // this only ever adds optional pricing metadata.
-  private applySubscriberPricing(
-    variants: any[],
-    product: { _id: any; categoryId?: string; subCategoryId?: string | null },
-    benefitsEntry: { benefits: any[]; planName: string } | undefined,
-  ) {
-    if (!benefitsEntry) return variants;
-    return variants.map((v: any) => {
-      const discount = this.subscriptionBenefits.resolveProductDiscount(
-        benefitsEntry.benefits,
-        product as any,
-        v.price,
-      );
-      if (!discount) return v;
-      return {
-        ...v,
-        subscriberPrice: discount.subscriberPrice,
-        youSaveUSD: discount.savingsUSD,
-        discountPercent: discount.discountPercent,
-        subscriberPlanName: benefitsEntry.planName,
-        minOrderValueUSD: discount.minOrderValueUSD,
       };
     });
   }
@@ -600,19 +545,8 @@ export class ProductsService {
       variantMap[v.productId].push(v);
     }
 
-    // Batch-resolve subscriber pricing across every distinct store present in
-    // this page of results — one query instead of N.
-    const storeIds = [
-      ...new Set(products.map((p) => p.storeId).filter(Boolean)),
-    ];
-    const benefitsMap = await this.subscriptionBenefits.getActiveBenefitsBatch(
-      customerId,
-      storeIds,
-    );
-
     // Batch-resolve seller name + verification badge across every distinct
-    // seller present in this page — same one-query-instead-of-N pattern as
-    // the subscriber-benefits batch above.
+    // seller present in this page — one query instead of N.
     const sellerIds = [
       ...new Set(products.map((p) => p.sellerId).filter(Boolean)),
     ];
@@ -631,11 +565,7 @@ export class ProductsService {
           ...p,
           sellerName: seller ? seller.name : null,
           sellerVerified: seller ? !!seller.isVerified : false,
-          variants: this.applySubscriberPricing(
-            variantMap[p._id.toString()] || [],
-            p,
-            benefitsMap.get(p.storeId),
-          ),
+          variants: variantMap[p._id.toString()] || [],
         });
       }),
     );
@@ -677,14 +607,6 @@ export class ProductsService {
       variantMap[v.productId].push(v);
     }
 
-    const storeIds = [
-      ...new Set(products.map((p) => p.storeId).filter(Boolean)),
-    ];
-    const benefitsMap = await this.subscriptionBenefits.getActiveBenefitsBatch(
-      customerId ?? null,
-      storeIds as string[],
-    );
-
     // Batch-resolve seller name + verification badge across every distinct
     // seller present in this batch — same one-query-instead-of-N pattern as
     // getProductsByCategoryId, so search results and getShapedProductsByIds
@@ -705,11 +627,7 @@ export class ProductsService {
           ...p,
           sellerName: seller ? seller.name : null,
           sellerVerified: seller ? !!seller.isVerified : false,
-          variants: this.applySubscriberPricing(
-            variantMap[p._id.toString()] || [],
-            p,
-            benefitsMap.get(p.storeId),
-          ),
+          variants: variantMap[p._id.toString()] || [],
         });
       }),
     );
@@ -875,10 +793,6 @@ export class ProductsService {
         .lean();
     }
 
-    if (product && (await this.isHiddenByEarlyAccess(product, customerId))) {
-      return { message: 'Product not found', success: false, data: null };
-    }
-
     if (!product) {
       return {
         message: 'Product not found',
@@ -950,15 +864,7 @@ export class ProductsService {
       })
       .lean();
 
-    const benefitsEntry = await this.subscriptionBenefits.getActiveBenefits(
-      customerId,
-      product.storeId,
-    );
-    const variants = this.applySubscriberPricing(
-      rawVariants,
-      product,
-      benefitsEntry ?? undefined,
-    );
+    const variants = rawVariants;
 
     const defaultVariant =
       variants.length > 0

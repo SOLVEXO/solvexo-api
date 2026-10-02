@@ -72,7 +72,7 @@ export const PLAN_CATALOG: CatalogPlan[] = [
       customDomainAllowed: true, emailCampaignsAllowed: true, advancedSeoToolsAllowed: true,
       abandonedCartRecoveryAllowed: false, loyaltyProgramAllowed: false, customRedirectsAllowed: false,
       seoAiSuggestionsAllowed: false, prioritySupport: false,
-      whiteLabelAllowed: false, subscriptionProductsAllowed: false, searchConsoleIntegrationAllowed: false,
+      whiteLabelAllowed: false, searchConsoleIntegrationAllowed: false,
       calculatedShippingRatesAllowed: false, dedicatedAccountManager: false,
       ...NOT_OFFERED,
     },
@@ -90,7 +90,7 @@ export const PLAN_CATALOG: CatalogPlan[] = [
       customDomainAllowed: true, emailCampaignsAllowed: true, advancedSeoToolsAllowed: true,
       abandonedCartRecoveryAllowed: true, loyaltyProgramAllowed: true, customRedirectsAllowed: true,
       seoAiSuggestionsAllowed: true, prioritySupport: true,
-      whiteLabelAllowed: false, subscriptionProductsAllowed: false, searchConsoleIntegrationAllowed: false,
+      whiteLabelAllowed: false, searchConsoleIntegrationAllowed: false,
       calculatedShippingRatesAllowed: false, dedicatedAccountManager: false,
       ...NOT_OFFERED,
     },
@@ -108,7 +108,7 @@ export const PLAN_CATALOG: CatalogPlan[] = [
       customDomainAllowed: true, emailCampaignsAllowed: true, advancedSeoToolsAllowed: true,
       abandonedCartRecoveryAllowed: true, loyaltyProgramAllowed: true, customRedirectsAllowed: true,
       seoAiSuggestionsAllowed: true, prioritySupport: true,
-      whiteLabelAllowed: true, subscriptionProductsAllowed: true, searchConsoleIntegrationAllowed: true,
+      whiteLabelAllowed: true, searchConsoleIntegrationAllowed: true,
       calculatedShippingRatesAllowed: true, dedicatedAccountManager: false,
       ...NOT_OFFERED,
     },
@@ -125,7 +125,7 @@ export const PLAN_CATALOG: CatalogPlan[] = [
       customDomainAllowed: true, emailCampaignsAllowed: true, advancedSeoToolsAllowed: true,
       abandonedCartRecoveryAllowed: true, loyaltyProgramAllowed: true, customRedirectsAllowed: true,
       seoAiSuggestionsAllowed: true, prioritySupport: true,
-      whiteLabelAllowed: true, subscriptionProductsAllowed: true, searchConsoleIntegrationAllowed: true,
+      whiteLabelAllowed: true, searchConsoleIntegrationAllowed: true,
       calculatedShippingRatesAllowed: true, dedicatedAccountManager: true,
       ...NOT_OFFERED,
     },
@@ -141,7 +141,7 @@ type FlagKey =
   | 'customDomainAllowed' | 'emailCampaignsAllowed' | 'advancedSeoToolsAllowed'
   | 'abandonedCartRecoveryAllowed' | 'loyaltyProgramAllowed' | 'customRedirectsAllowed'
   | 'seoAiSuggestionsAllowed' | 'prioritySupport' | 'whiteLabelAllowed'
-  | 'subscriptionProductsAllowed' | 'searchConsoleIntegrationAllowed'
+  | 'searchConsoleIntegrationAllowed'
   | 'calculatedShippingRatesAllowed' | 'dedicatedAccountManager';
 
 /** `min` = lowest legal non-unlimited value; `unlimited` = whether -1 means unlimited
@@ -166,7 +166,6 @@ export const FLAG_FEATURES: { key: FlagKey; label: string }[] = [
   { key: 'customRedirectsAllowed', label: 'Custom redirects & canonical rules' },
   { key: 'seoAiSuggestionsAllowed', label: 'AI SEO suggestions' },
   { key: 'whiteLabelAllowed', label: 'White-label branding' },
-  { key: 'subscriptionProductsAllowed', label: 'Customer subscriptions & memberships' },
   { key: 'searchConsoleIntegrationAllowed', label: 'Google Search Console integration' },
   { key: 'calculatedShippingRatesAllowed', label: 'Live carrier shipping rates at checkout' },
   { key: 'prioritySupport', label: 'Priority support' },

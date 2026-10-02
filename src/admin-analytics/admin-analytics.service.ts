@@ -153,7 +153,7 @@ export class AdminAnalyticsService {
    * status — clearing is about payout timing, not whether the commission was earned.
    */
   private async getPlatformEarnings(from: Date, to: Date, scope?: Record<string, any>) {
-    return getPlatformEarningsUtil(this.r.transactionModel, this.r.subscriptionInvoiceModel, from, to, {
+    return getPlatformEarningsUtil(this.r.transactionModel, from, to, {
       storeId: scope?.['sellerOrders.storeId'],
       sellerId: scope?.['sellerOrders.sellerId'],
     });
@@ -171,8 +171,6 @@ export class AdminAnalyticsService {
    * already) is the real source of truth; this extracts the USD entry as
    * Solvexo's own reporting-currency figure and separately DISCLOSES any
    * non-USD commission rather than blending it in or silently dropping it.
-   * `subscriptionRevenue` needs no such split — SubscriptionInvoice has no
-   * multi-currency support, it's always USD.
    */
   private earningsInUSD(earnings: PlatformEarnings) {
     const usd = earnings.byCurrency.find((e) => e.currency === 'USD');
@@ -182,7 +180,6 @@ export class AdminAnalyticsService {
     return {
       commission: usd?.commission ?? 0,
       processingFees: usd?.processingFees ?? 0,
-      subscriptionRevenue: earnings.subscriptionRevenue,
       nonUsdCommissionByCurrency,
     };
   }
@@ -216,11 +213,10 @@ export class AdminAnalyticsService {
       // Phase 1 — reuses PlatformPlansService.adminGetRevenue (the EXISTING
       // MRR/ARR/churn computation over SellerPlatformSubscription — sellers
       // paying Solvexo for their store plan) rather than re-deriving it here.
-      // Platform-wide ONLY, same reasoning as getPlatformEarnings' own
-      // subscriptionRevenue above (a seller's platform plan isn't a
-      // per-store concept — attributing it to one drilled-down store would
-      // misrepresent it), so this is omitted (not zero-filled) whenever a
-      // storeId/sellerId drill-down scope is active.
+      // Platform-wide ONLY (a seller's platform plan isn't a per-store
+      // concept — attributing it to one drilled-down store would misrepresent
+      // it), so this is omitted (not zero-filled) whenever a storeId/sellerId
+      // drill-down scope is active.
       const platformPlanMetrics = scope ? null : await this.platformPlansService.adminGetRevenue({ from, to });
 
       const data: Record<string, any> = {
@@ -231,9 +227,8 @@ export class AdminAnalyticsService {
         // Phase 2 — USD-only (Solvexo's reporting currency), not the
         // deprecated blended-across-settlement-currencies fields. See
         // earningsInUSD's doc comment.
-        platformEarnings: round(earningsUSD.commission + earningsUSD.subscriptionRevenue),
+        platformEarnings: earningsUSD.commission,
         platformCommission: earningsUSD.commission,
-        subscriptionRevenue: earningsUSD.subscriptionRevenue,
         ...(earningsUSD.nonUsdCommissionByCurrency.length > 0
           ? { nonUsdCommissionByCurrency: earningsUSD.nonUsdCommissionByCurrency }
           : {}),
@@ -407,26 +402,24 @@ export class AdminAnalyticsService {
       const data: Record<string, any> = {
         period: { from, to },
         oneTimeOrderRevenue: orderTotals.netRevenue,
-        recurringSubscriptionRevenue: earningsUSD.subscriptionRevenue,
         platformCommissionRevenue: earningsUSD.commission,
         paymentProcessingFees: earningsUSD.processingFees,
-        totalPlatformRevenue: round(earningsUSD.commission + earningsUSD.subscriptionRevenue),
-        totalMarketplaceRevenue: round(orderTotals.netRevenue + earningsUSD.subscriptionRevenue),
+        totalPlatformRevenue: earningsUSD.commission,
+        totalMarketplaceRevenue: orderTotals.netRevenue,
         ...(earningsUSD.nonUsdCommissionByCurrency.length > 0
           ? { nonUsdCommissionByCurrency: earningsUSD.nonUsdCommissionByCurrency }
           : {}),
-        note: 'oneTimeOrderRevenue is net seller order revenue (does not belong to the platform); platformCommissionRevenue + recurringSubscriptionRevenue is what Solvexo itself earns. Commission is recognized at sale time regardless of payout-clearing status. platformCommissionRevenue/paymentProcessingFees are USD-only (Solvexo\'s reporting currency) — a seller settled in another currency is disclosed separately in "nonUsdCommissionByCurrency" (present only when non-zero), never blended in.',
+        note: 'oneTimeOrderRevenue is net seller order revenue (does not belong to the platform); platformCommissionRevenue is the commission Solvexo itself earned at sale time (seller plan and transaction-fee revenue are reported by the finance "platform-revenue" endpoint). Commission is recognized at sale time regardless of payout-clearing status. platformCommissionRevenue/paymentProcessingFees are USD-only (Solvexo\'s reporting currency) — a seller settled in another currency is disclosed separately in "nonUsdCommissionByCurrency" (present only when non-zero), never blended in.',
       };
 
       if (compare && previousOrderTotals && previousEarningsUSD) {
         data.previousPeriod = {
           period: { from: previousFrom, to: previousTo },
           oneTimeOrderRevenue: previousOrderTotals.netRevenue,
-          recurringSubscriptionRevenue: previousEarningsUSD.subscriptionRevenue,
           platformCommissionRevenue: previousEarningsUSD.commission,
           paymentProcessingFees: previousEarningsUSD.processingFees,
-          totalPlatformRevenue: round(previousEarningsUSD.commission + previousEarningsUSD.subscriptionRevenue),
-          totalMarketplaceRevenue: round(previousOrderTotals.netRevenue + previousEarningsUSD.subscriptionRevenue),
+          totalPlatformRevenue: previousEarningsUSD.commission,
+          totalMarketplaceRevenue: previousOrderTotals.netRevenue,
         };
       }
 

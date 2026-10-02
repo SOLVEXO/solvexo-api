@@ -6,7 +6,6 @@ export class UpdateIdentityBannerDto {
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() showFollowButton?: boolean;
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() showMessageButton?: boolean;
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() showLoyaltyButton?: boolean;
-  @ApiProperty({ required: false }) @IsOptional() @IsBoolean() showMembershipButton?: boolean;
 
   @ApiProperty({ required: false, enum: ['standard', 'compact', 'immersive'] })
   @IsOptional() @IsIn(['standard', 'compact', 'immersive']) layout?: 'standard' | 'compact' | 'immersive';

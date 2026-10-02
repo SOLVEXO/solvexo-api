@@ -24,9 +24,10 @@ import { ExchangeRateModule } from '@/exchange-rate/exchange-rate.module';
 import { GiftCardsModule } from '@/gift-cards/gift-cards.module';
 import { DiscountsModule } from '@/discounts/discounts.module';
 import { IntegrationsModule } from '@/integrations/integrations.module';
+import { StripeConnectModule } from '@/stripe-connect/stripe-connect.module';
 
 @Module({
-  imports: [AuthModule, RedisModule, MarketingModule, AdminConfigModule, ExchangeRateModule, GiftCardsModule, DiscountsModule, IntegrationsModule],
+  imports: [AuthModule, RedisModule, MarketingModule, AdminConfigModule, ExchangeRateModule, GiftCardsModule, DiscountsModule, IntegrationsModule, StripeConnectModule],
   controllers: [CheckoutController],
   providers: [CheckoutService],
   exports: [CheckoutService],

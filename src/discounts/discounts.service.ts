@@ -123,7 +123,19 @@ export class DiscountsService {
       throw new BadRequestException('Percentage discount cannot exceed 100');
     }
 
-    const patch: any = { ...dto };
+    // Only the fields UpdateAutomaticDiscountDto declares — `dto` is the raw
+    // request body (this controller's DTO is type-only, never whitelisted), so
+    // `{ ...dto }` let a seller `$set` arbitrary fields such as `storeId`,
+    // `isDelete` or usage counters on a discount.
+    const allowedFields = [
+      'name', 'discountType', 'discountValue', 'buyQuantity', 'getQuantity',
+      'getDiscountPercent', 'target', 'categoryIds', 'productIds',
+      'minOrderAmount', 'startsAt', 'endsAt', 'isActive',
+    ] as const;
+    const patch: any = {};
+    for (const key of allowedFields) {
+      if ((dto as any)[key] !== undefined) patch[key] = (dto as any)[key];
+    }
     if (dto.startsAt !== undefined) patch.startsAt = dto.startsAt ? new Date(dto.startsAt) : null;
     if (dto.endsAt !== undefined) patch.endsAt = dto.endsAt ? new Date(dto.endsAt) : null;
 

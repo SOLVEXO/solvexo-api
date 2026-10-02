@@ -5,6 +5,7 @@ import { AuthModule } from '../auth/auth.module';
 import { RedisModule } from '../redis/redis.module';
 import { ExchangeRateModule } from '../exchange-rate/exchange-rate.module';
 import { EmailService } from '../otp/services/email.service';
+import { StripeConnectModule } from '../stripe-connect/stripe-connect.module';
 
 // `RedisModule` alongside `AuthModule` is required by every module whose
 // controller uses `JwtAuthGuard` — the guard injects `RedisService` for its
@@ -15,7 +16,8 @@ import { EmailService } from '../otp/services/email.service';
 // route — same bug class already fixed once for `MetafieldsModule`/
 // `MenusModule` (see those modules' own doc comments).
 @Module({
-  imports: [AuthModule, RedisModule, ExchangeRateModule],
+  // StripeConnectModule — gift-card purchases route to the seller's own connected account (CommissionRulesService is @Global()).
+  imports: [AuthModule, RedisModule, ExchangeRateModule, StripeConnectModule],
   controllers: [GiftCardsController],
   providers: [GiftCardsService, EmailService],
   exports: [GiftCardsService],

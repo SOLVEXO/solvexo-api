@@ -3,13 +3,15 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { DatabaseService } from '@/database/databaseservice';
 import { LoyaltyService } from '@/loyalty/loyalty.service';
-import { SubscriptionsService } from '@/subscriptions/subscriptions.service';
+import { StoreCreditService } from '@/store-credit/store-credit.service';
+import { BuyerSubscriptionWindDownService } from '@/subscriptions/buyer-subscription-wind-down.service';
 import { PlatformSubscriptionsService } from '@/platform-subscriptions/platform-subscriptions.service';
 import { FinanceService } from '@/finance/finance.service';
 import { RedisService } from '@/redis/redis.service';
 import { SellerPlatformSubscriptionsService } from '@/platform-plans/seller-platform-subscriptions.service';
 import { AiCreditsService } from '@/platform-plans/ai-credits.service';
 import { PlatformAddonsService } from '@/platform-plans/platform-addons.service';
+import { TransactionFeeBillingService } from '@/platform-plans/transaction-fee-billing.service';
 import { SeoSitemapService } from '@/seo/services/seo-sitemap.service';
 import { SeoMonitoringService } from '@/seo/services/seo-monitoring.service';
 import { SeoAuditService } from '@/seo/services/seo-audit.service';
@@ -37,7 +39,8 @@ export class SchedulerService {
   constructor(
     private readonly databaseService: DatabaseService,
     private readonly loyaltyService: LoyaltyService,
-    private readonly subscriptionsService: SubscriptionsService,
+    private readonly buyerSubscriptionWindDownService: BuyerSubscriptionWindDownService,
+    private readonly storeCreditService: StoreCreditService,
     private readonly platformSubscriptionsService: PlatformSubscriptionsService,
     private readonly financeService: FinanceService,
     private readonly redis: RedisService,
@@ -62,6 +65,7 @@ export class SchedulerService {
     private readonly ordersService: OrdersService,
     private readonly marketingAutomationsService: MarketingAutomationsService,
     private readonly adminAnnouncementsService: AdminAnnouncementsService,
+    private readonly transactionFeeBillingService: TransactionFeeBillingService,
   ) {}
 
   /**
@@ -122,6 +126,17 @@ export class SchedulerService {
     await this.runLocked('automation-price-drop', 50 * 60_000, async () => {
       const result = await this.marketingAutomationsService.processPriceDrops();
       if (result.notified > 0) this.logger.log(`Price drop: ${result.notified} alert(s) sent`);
+    });
+  }
+
+  /** 1st of every month, 04:00 UTC — bills last month's accrued third-party transaction fees
+   *  on each seller's platform bill (Shopify-style; see TransactionFeeBillingService). Safe to
+   *  re-run: each store+month is billed once, failures/under-$0.50 totals roll forward. */
+  @Cron('0 4 1 * *')
+  async billTransactionFees() {
+    await this.runLocked('transaction-fee-billing', 30 * 60_000, async () => {
+      const r = await this.transactionFeeBillingService.billAccruedFees();
+      this.logger.log(`billTransactionFees: ${r.billed} billed, ${r.carried} carried over, ${r.skipped} skipped, ${r.failed} failed (${r.stores} store(s))`);
     });
   }
 
@@ -195,49 +210,32 @@ export class SchedulerService {
     });
   }
 
-  // Runs hourly — charges every MANUAL-provider subscription whose billing
-  // period has ended, and drives the dunning/auto-cancel state machine on
-  // failure. Stripe-backed subscriptions are billed by Stripe itself and are
-  // reconciled via webhook instead (see StripeWebhookProcessor).
-  @Cron('0 * * * *')
-  async runSubscriptionRenewals() {
-    await this.runLocked('subscription-renewals', 45 * 60_000, async () => {
-      const result = await this.subscriptionsService.processRenewals();
-      if (result.processed > 0) {
-        this.logger.log(
-          `Subscription renewals: ${result.processed} processed, ${result.succeeded} succeeded, ${result.failed} failed, ${result.canceled} auto-canceled`,
-        );
+  // Daily — winds down the buyers who were still subscribed to a store's (now removed) VIP /
+  // membership plan: paid-up subscriptions are set to end with their current period (no further
+  // charge), unpaid/paused ones are cancelled, ended ones are marked canceled, and each buyer is
+  // notified once. Idempotent; a no-op once no live subscription is left (see
+  // BuyerSubscriptionWindDownService).
+  @Cron('15 5 * * *')
+  async windDownBuyerSubscriptions() {
+    await this.runLocked('buyer-subscription-wind-down', 20 * 60_000, async () => {
+      const r = await this.buyerSubscriptionWindDownService.windDown();
+      if (r.scheduledToEnd + r.cancelledNow + r.finalized + r.failed > 0) {
+        this.logger.log(`Buyer-subscription wind-down: ${r.scheduledToEnd} set to end, ${r.cancelledNow} cancelled now, ${r.finalized} finalized, ${r.failed} failed`);
       }
     });
   }
 
-  // Runs daily — finalizes subscriptions whose "cancel at period end" date has arrived.
-  @Cron('30 2 * * *')
-  async finalizeSubscriptionCancellations() {
-    await this.runLocked('finalize-subscription-cancellations', 10 * 60_000, async () => {
-      const result = await this.subscriptionsService.finalizeEndOfPeriodCancellations();
-      if (result.canceled > 0) {
-        this.logger.log(`Finalized ${result.canceled} end-of-period subscription cancellation(s)`);
-      }
+  // Hourly — expires store-credit lots whose expiry date has passed (writes the ledger 'expire' row
+  // and notifies nothing; the balance query already ignores expired lots, this just keeps the history honest).
+  @Cron('30 * * * *')
+  async expireStoreCredit() {
+    await this.runLocked('expire-store-credit', 10 * 60_000, async () => {
+      const r: any = await this.storeCreditService.expireDueLots();
+      if (r && (r.expired ?? r) > 0) this.logger.log(`Store credit: ${r.expired ?? r} lot(s) expired`);
     });
   }
 
-  // Runs every 6 hours — sends "renews in N days" reminder emails and
-  // "your card was charged N days ago, update payment info" nudges for
-  // subscriptions stuck in past_due.
-  @Cron('0 */6 * * *')
-  async sendSubscriptionReminders() {
-    await this.runLocked('subscription-reminders', 20 * 60_000, async () => {
-      const result = await this.subscriptionsService.sendRenewalReminders();
-      if (result.sent > 0) {
-        this.logger.log(`Subscription reminders: ${result.sent} renewal reminder email(s) queued`);
-      }
-    });
-  }
-
-  // Runs hourly — same dunning pattern as runSubscriptionRenewals, but for
-  // sellers' own platform-tier plans (and their POS add-on) rather than
-  // buyer subscriptions to a seller's store.
+  // Runs hourly — dunning for sellers' own platform-tier plans (and their POS add-on).
   @Cron('0 * * * *')
   async runPlatformSubscriptionRenewals() {
     await this.runLocked('platform-subscription-renewals', 45 * 60_000, async () => {

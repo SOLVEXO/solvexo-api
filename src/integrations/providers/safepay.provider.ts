@@ -141,7 +141,10 @@ export class SafepayPaymentProvider implements PaymentProvider {
     const status = this.mapTrackerState(tracker?.state);
 
     return {
-      type: status === 'paid' ? 'payment_succeeded' : status === 'failed' ? 'payment_failed' : 'payment_succeeded',
+      // Only a terminal state may finalize an order. A non-terminal tracker
+      // state (e.g. TRACKER_STARTED) maps to `pending` and must NEVER be
+      // treated as a successful payment.
+      type: status === 'paid' ? 'payment_succeeded' : status === 'failed' ? 'payment_failed' : 'payment_pending',
       externalEventId: String(eventId),
       sessionId: tracker?.token,
       status: { status, providerReference: tracker?.token, currency: 'PKR', raw: payload },

@@ -19,15 +19,30 @@ export class CartService {
       const variantModel =
         this.databaseService.repositories.productVariantModel;
 
-      // 1️⃣ Get product
-      const product = await productModel.findById(dto.productId).lean();
-      if (!product) {
+      const quantity = dto.quantity ?? 1;
+      if (!Number.isInteger(quantity) || quantity < 1) {
+        throw new BadRequestException('Quantity must be a positive whole number');
+      }
+
+      // 1️⃣ Get product — must be live and belong to THIS store, otherwise a
+      // buyer could put another store's (or a draft/deleted) product in this
+      // store's cart.
+      const product = await productModel
+        .findOne({ _id: dto.productId, isDelete: false })
+        .lean();
+      if (!product || product.status !== 'active' || product.storeId !== storeId) {
         throw new BadRequestException('Product not found');
       }
 
-      // 2️⃣ Get variant
-      const variant = await variantModel.findById(dto.productVariantId).lean();
-      if (!variant) {
+      // 2️⃣ Get variant — must be an active variant of that product
+      const variant = await variantModel
+        .findOne({ _id: dto.productVariantId, isDelete: false })
+        .lean();
+      if (
+        !variant ||
+        variant.status !== 'active' ||
+        String(variant.productId) !== String(product._id)
+      ) {
         throw new BadRequestException('Product variant not found');
       }
 
@@ -47,7 +62,7 @@ export class CartService {
         productId: dto.productId,
         productVariantId: dto.productVariantId,
         name: product.name,
-        quantity: dto.quantity || 1,
+        quantity,
         price: variant.price,
         currency: variant.currency ?? null,
         images: itemImages,
@@ -76,7 +91,7 @@ export class CartService {
       );
 
       if (existingIndex > -1) {
-        cart.items[existingIndex].quantity += dto.quantity || 1;
+        cart.items[existingIndex].quantity += quantity;
       } else {
         cart.items.push(newItem as any);
       }
@@ -123,6 +138,9 @@ export class CartService {
 
       // 1️⃣ update quantity
       if (action === 'increase') {
+        if (cart.items[itemIndex].quantity >= 999) {
+          throw new BadRequestException('Maximum quantity reached');
+        }
         cart.items[itemIndex].quantity += 1;
       } else if (action === 'decrease') {
         if (cart.items[itemIndex].quantity === 1) {
@@ -330,6 +348,23 @@ export class CartService {
   async addToWishlist(userId: string, storeId: string, body: any) {
     try {
       const { productId, productVariantId } = body;
+
+      // Product + variant must be live and belong to THIS store — same rule
+      // as addToCart, so a wishlist can't hold another store's products.
+      const wlProduct = await this.databaseService.repositories.productModel
+        .findOne({ _id: productId, isDelete: false })
+        .select('storeId status')
+        .lean();
+      if (!wlProduct || wlProduct.status !== 'active' || wlProduct.storeId !== storeId) {
+        throw new BadRequestException('Product not found');
+      }
+      const wlVariant = await this.databaseService.repositories.productVariantModel
+        .findOne({ _id: productVariantId, isDelete: false })
+        .select('productId')
+        .lean();
+      if (!wlVariant || String(wlVariant.productId) !== String(wlProduct._id)) {
+        throw new BadRequestException('Product variant not found');
+      }
 
       // 1. check duplicate
       const wishlistItem =

@@ -78,9 +78,21 @@ export class AddressService {
 
     async updateAddress(userId: string, addressId: string, body: any) {
     try {
+      // Explicit field list — `body` is the raw request body (minus addressId),
+      // so `$set: body` let a caller overwrite `userId`, `isDelete`, `status`
+      // etc. on their own address document (e.g. re-parent it to another user).
+      const allowed = [
+        'label', 'recipientName', 'phoneNumber', 'addressLine1', 'addressLine2',
+        'state', 'city', 'zipCode', 'country', 'latitude', 'longitude', 'isDefault',
+      ] as const;
+      const patch: Record<string, any> = {};
+      for (const key of allowed) {
+        if (body?.[key] !== undefined) patch[key] = body[key];
+      }
+
       const updated = await this.databaseService.repositories.addressModel.findOneAndUpdate(
-        { _id: addressId, userId },
-        { $set: body },
+        { _id: addressId, userId, isDelete: false },
+        { $set: patch },
         { new: true },
       );
 

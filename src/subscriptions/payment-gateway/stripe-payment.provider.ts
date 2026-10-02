@@ -32,7 +32,16 @@ export class StripePaymentProvider implements IPaymentGateway {
   private readonly logger = new Logger(StripePaymentProvider.name);
 
   constructor(secretKey: string) {
-    this.stripe = new Stripe(secretKey, { typescript: true });
+    // Pinned to the LAST pre-Basil API version. This client creates/updates
+    // subscriptions and reads `latest_invoice.payment_intent` (expand +
+    // client_secret) — Stripe removed `invoice.payment_intent` /
+    // `invoice.subscription` in `2025-03-31.basil`, so neither the SDK's
+    // default (a much newer version) nor the `2025-04-30.basil` used by the
+    // other (PaymentIntent/Checkout-only) modules keeps this flow working.
+    // The webhook handlers read invoices through `common/stripe-invoice.util`,
+    // which accepts both shapes, so a later migration to Basil+ only needs
+    // this pin and `readClientSecret` below revisited.
+    this.stripe = new Stripe(secretKey, { apiVersion: '2025-02-24.acacia' as any, typescript: true });
   }
 
   /** Exposed so the webhook handler can verify signatures using the exact same client/config. */
@@ -163,11 +172,14 @@ export class StripePaymentProvider implements IPaymentGateway {
     // `expand: ['latest_invoice.payment_intent']` above isn't reflected in the
     // SDK's static return type, so the nested PaymentIntent is read via `any`.
     const latestInvoice = subscription.latest_invoice as any;
-    const paymentIntent = latestInvoice?.payment_intent;
+    // Pre-Basil: nested PaymentIntent. Basil+ (if the pin is ever raised):
+    // `confirmation_secret` on the invoice.
+    const clientSecret: string | undefined =
+      latestInvoice?.payment_intent?.client_secret ?? latestInvoice?.confirmation_secret?.client_secret ?? undefined;
 
     return {
       providerSubscriptionId: subscription.id,
-      clientSecret: paymentIntent?.client_secret ?? undefined,
+      clientSecret,
       status: subscription.status,
     };
   }
@@ -250,6 +262,13 @@ export class StripePaymentProvider implements IPaymentGateway {
           off_session: true,
           confirm: true,
           metadata: { internalReferenceId: referenceId, ...(context.metadata ?? {}) },
+          // Destination charge: the buyer's payment lands in the seller's own connected account.
+          ...(context.connectAccountId
+            ? {
+                transfer_data: { destination: context.connectAccountId },
+                ...(context.applicationFeeAmountCents != null ? { application_fee_amount: context.applicationFeeAmountCents } : {}),
+              }
+            : {}),
         },
         { idempotencyKey: context.idempotencyKey ?? `onetime_charge_${referenceId}_${Date.now()}` },
       );

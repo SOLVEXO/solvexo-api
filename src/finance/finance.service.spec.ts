@@ -37,6 +37,8 @@ function makeConstructableModelMock() {
   Model.created = created;
   Model.findOne = jest.fn();
   Model.findById = jest.fn();
+  // recordSale's idempotency probe: `txModel.exists({...}).session(session)` — default "no prior sale".
+  Model.exists = jest.fn().mockImplementation(() => ({ session: () => Promise.resolve(null) }));
   Model.find = jest.fn().mockReturnValue(makeChainableFind([]));
   Model.updateOne = jest.fn().mockResolvedValue({});
   Model.countDocuments = jest.fn().mockResolvedValue(0);
@@ -150,19 +152,26 @@ describe('FinanceService', () => {
       expect(balance.flaggedReason).toBeNull();
     });
 
-    it('does not charge a card-processing fee for a COD sale — only the platform commission was ever actually incurred', async () => {
+    it('COD sale: the platform never held the cash, so NOTHING is credited — an (override) commission only ACCRUES for the monthly bill, no card fee', async () => {
       const balance = makeBalance();
       balanceModel.findOne.mockResolvedValue(balance);
       commissionRulesService.resolveRate = jest.fn().mockResolvedValue({ rate: 0.05, source: 'seller_override' });
 
-      // saleAmount=100, platformFee=5 (5%), processingFee=0 (no card network involved in COD) → net=95
+      // saleAmount=100, platformFee=5 (5% override), processingFee=0 → seller owes 5 (billed later), receives no balance credit
       await service.recordSale(STORE_ID, SELLER_ID, 'order-cod', 100, 'desc', 0, null, 'USD', 'cash_on_delivery');
 
-      expect(balance.pendingBalance).toBe(95);
+      expect(balance.pendingBalance).toBe(0);
+      expect(balance.availableBalance).toBe(0); // the fee is NOT taken out of a sales balance (Shopify bills it on the plan invoice)
+      expect(balance.totalRevenue).toBe(100);
       expect(balance.totalFees).toBe(5);
+      const saleTx = txModel.created.find((t: any) => t.referenceId === 'order-cod' && t.type === 'sale');
+      expect(saleTx.status).toBe('completed'); // informational: nothing for the clearing cron to release
+      expect(saleTx.metadata.settledDirectly).toBe(true);
+      expect(saleTx.metadata.netAmount).toBe(0);
       const feeTx = txModel.created.find((t: any) => t.referenceId === 'order-cod' && t.type === 'fee');
       expect(feeTx.amount).toBe(-5);
       expect(feeTx.metadata.processingFee).toBe(0);
+      expect(feeTx.metadata.billing).toEqual({ status: 'pending_invoice' }); // waits for TransactionFeeBillingService
     });
 
     // Shopify-style fee model: the plan's transaction fee is a THIRD-PARTY gateway fee only.
@@ -173,8 +182,13 @@ describe('FinanceService', () => {
 
       await service.recordSale(STORE_ID, SELLER_ID, 'order-mbt', 27800, 'desc', 0, null, 'PKR', 'manual_bank_transfer');
 
-      expect(balance.pendingBalance).toBe(27800); // nothing deducted: manual payments are fee-free
+      // fee-free AND not credited: the buyer paid the seller directly, the platform holds nothing
+      expect(balance.pendingBalance).toBe(0);
+      expect(balance.availableBalance).toBe(0);
       expect(balance.totalFees).toBe(0);
+      expect(balance.totalRevenue).toBe(27800);
+      const mbtFee = txModel.created.find((t: any) => t.referenceId === 'order-mbt' && t.type === 'fee');
+      expect(mbtFee.metadata.billing).toBeUndefined(); // zero fee → nothing to bill
     });
 
     it('charges the plan\'s third-party gateway fee on a SafePay sale (and no card-network fee)', async () => {
@@ -185,7 +199,13 @@ describe('FinanceService', () => {
       await service.recordSale(STORE_ID, SELLER_ID, 'order-safepay', 27800, 'desc', 0, null, 'PKR', 'safepay');
 
       expect(balance.totalFees).toBeCloseTo(556, 2); // 2% of 27800 — the third-party fee
-      expect(balance.pendingBalance).toBeCloseTo(27244, 2);
+      // The seller's OWN Safepay account already received the money: no second credit,
+      // and the plan's third-party fee accrues for the monthly platform bill — it is NOT debited from a balance.
+      expect(balance.pendingBalance).toBe(0);
+      expect(balance.availableBalance).toBe(0);
+      const feeTx = txModel.created.find((t: any) => t.referenceId === 'order-safepay' && t.type === 'fee');
+      expect(feeTx.amount).toBeCloseTo(-556, 2);
+      expect(feeTx.metadata.billing).toEqual({ status: 'pending_invoice' });
     });
 
     it('charges only the card-processing cost (no plan commission) on a Stripe sale through Solvexo Payments', async () => {
@@ -211,7 +231,67 @@ describe('FinanceService', () => {
     });
   });
 
+  describe('recordSale — idempotency and direct-settled rails', () => {
+    it('REGRESSION: a second recordSale for the same order is a no-op (no double credit)', async () => {
+      const balance = makeBalance();
+      balanceModel.findOne.mockResolvedValue(balance);
+      txModel.exists.mockImplementation(() => ({ session: () => Promise.resolve({ _id: 'existing-sale' }) }));
+
+      await service.recordSale(STORE_ID, SELLER_ID, 'order-dup', 100, 'desc', 0, null, 'USD', 'stripe');
+
+      expect(balance.pendingBalance).toBe(0);
+      expect(balance.totalRevenue).toBe(0);
+      expect(txModel.created).toHaveLength(0);
+      expect(txModel.exists).toHaveBeenCalledWith(expect.objectContaining({ storeId: STORE_ID, referenceId: 'order-dup', type: 'sale' }));
+    });
+
+    it('a platform-held Stripe sale\'s fee is netted from the credit (never queued for the monthly bill)', async () => {
+      const balance = makeBalance();
+      balanceModel.findOne.mockResolvedValue(balance);
+      commissionRulesService.resolveRate = jest.fn().mockResolvedValue({ rate: 0.05, source: 'seller_override' });
+
+      await service.recordSale(STORE_ID, SELLER_ID, 'order-net', 100, 'desc', 0, null, 'USD', 'stripe');
+
+      const feeTx = txModel.created.find((t: any) => t.referenceId === 'order-net' && t.type === 'fee');
+      expect(feeTx.metadata.billing).toBeUndefined();
+    });
+
+    it('a Stripe (platform-held) sale is still credited to pending and stays "pending" for the clearing cron', async () => {
+      const balance = makeBalance();
+      balanceModel.findOne.mockResolvedValue(balance);
+      commissionRulesService.resolveRate = jest.fn().mockResolvedValue({ rate: 0.02, source: 'platform_plan' });
+
+      await service.recordSale(STORE_ID, SELLER_ID, 'order-card2', 100, 'desc', 0, null, 'USD', 'stripe');
+
+      const saleTx = txModel.created.find((t: any) => t.type === 'sale');
+      expect(saleTx.status).toBe('pending');
+      expect(saleTx.metadata.settledDirectly).toBe(false);
+      expect(balance.availableBalance).toBe(0);
+    });
+
+    it('on a direct-settled rail the platform-sponsored discount (which the platform really owes the seller) is still credited', async () => {
+      const balance = makeBalance();
+      balanceModel.findOne.mockResolvedValue(balance);
+      commissionRulesService.resolveRate = jest.fn().mockResolvedValue({ rate: 0.02, source: 'platform_plan' });
+
+      // COD: no fee (manual rail), sponsored 7 → only the 7 is credited
+      await service.recordSale(STORE_ID, SELLER_ID, 'order-sponsored', 100, 'desc', 7, 'camp-1', 'USD', 'cash_on_delivery');
+
+      expect(balance.pendingBalance).toBe(7);
+      expect(balance.availableBalance).toBe(0);
+      const saleTx = txModel.created.find((t: any) => t.type === 'sale');
+      expect(saleTx.status).toBe('pending');
+      expect(saleTx.metadata.netAmount).toBe(7);
+    });
+  });
+
   describe('recordRefund', () => {
+    /** An order refund only claws back money the seller was actually credited — give it a sale to find. */
+    const givenSale = (amount = 1000, metadata: any = { settledDirectly: false }) => {
+      txModel.findOne = jest.fn().mockReturnValue({ lean: () => Promise.resolve({ amount, metadata }) });
+    };
+    beforeEach(() => givenSale());
+
     it('deducts fully from availableBalance when it covers the refund', async () => {
       const balance = makeBalance({ availableBalance: 100, pendingBalance: 0 });
       balanceModel.findOne.mockResolvedValue(balance);
@@ -262,6 +342,68 @@ describe('FinanceService', () => {
       expect(activityLogService.log).not.toHaveBeenCalledWith(
         expect.objectContaining({ action: 'seller_balance_negative' }),
       );
+    });
+
+    it('REGRESSION: an order whose sale was never credited (e.g. cancelled before completion / Connect-settled) debits NOTHING and never flags the seller', async () => {
+      const balance = makeBalance({ availableBalance: 0, pendingBalance: 0 });
+      balanceModel.findOne.mockResolvedValue(balance);
+      txModel.findOne = jest.fn().mockReturnValue({ lean: () => Promise.resolve(null) }); // no sale tx
+
+      const result: any = await service.recordRefund(STORE_ID, SELLER_ID, 'order-uncredited', 40);
+
+      expect(result.skipped).toBe('no_sale_credited');
+      expect(balance.availableBalance).toBe(0);
+      expect(balance.pendingBalance).toBe(0);
+      expect(balance.isFlaggedForReview).toBe(false);
+      expect(txModel.created.filter((t: any) => t.type === 'refund')).toHaveLength(0);
+    });
+
+    it('REGRESSION: a refund on a direct-settled (COD / seller-gateway) sale never touches the platform balance', async () => {
+      const balance = makeBalance({ availableBalance: 80, pendingBalance: 0 });
+      balanceModel.findOne.mockResolvedValue(balance);
+      givenSale(100, { settledDirectly: true });
+
+      const result: any = await service.recordRefund(STORE_ID, SELLER_ID, 'order-cod-refund', 100);
+
+      expect(result.skipped).toBe('settled_directly');
+      expect(balance.availableBalance).toBe(80);
+    });
+
+    it('caps the refund at what was credited for the order (e.g. shipping was never credited) — never claws back more', async () => {
+      const balance = makeBalance({ availableBalance: 500 });
+      balanceModel.findOne.mockResolvedValue(balance);
+      givenSale(100); // seller was credited 100 for this order
+
+      await service.recordRefund(STORE_ID, SELLER_ID, 'order-capped', 120); // 100 items + 20 shipping
+
+      expect(balance.availableBalance).toBe(400); // only 100 clawed back
+      expect(txModel.created.find((t: any) => t.type === 'refund').amount).toBe(-100);
+    });
+
+    it('caps cumulative refunds: a second refund only claws back the remainder, and a third is skipped', async () => {
+      const balance = makeBalance({ availableBalance: 500 });
+      balanceModel.findOne.mockResolvedValue(balance);
+      givenSale(100);
+      txModel.find = jest.fn().mockReturnValue(makeChainableFind([{ amount: -70 }])); // 70 already refunded
+
+      await service.recordRefund(STORE_ID, SELLER_ID, 'order-partial', 50);
+      expect(balance.availableBalance).toBe(470); // 100 - 70 = 30 remaining
+
+      txModel.find = jest.fn().mockReturnValue(makeChainableFind([{ amount: -100 }]));
+      const result: any = await service.recordRefund(STORE_ID, SELLER_ID, 'order-partial', 10);
+      expect(result.skipped).toBe('already_fully_refunded');
+      expect(balance.availableBalance).toBe(470);
+    });
+
+    it('non-order references (subscription / plan invoices) skip the order-sale guard entirely', async () => {
+      const balance = makeBalance({ availableBalance: 100 });
+      balanceModel.findOne.mockResolvedValue(balance);
+      txModel.findOne = jest.fn(); // would throw if consulted
+
+      await service.recordRefund(STORE_ID, SELLER_ID, 'inv-1', 30, undefined, undefined, { referenceType: 'subscription_invoice' });
+
+      expect(balance.availableBalance).toBe(70);
+      expect(txModel.findOne).not.toHaveBeenCalled();
     });
   });
 

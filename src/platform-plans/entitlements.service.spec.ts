@@ -11,7 +11,7 @@ const PAID_PLAN = {
   limits: {
     maxProducts: 10, maxStaffAccounts: 2, maxPosLocations: 1, aiCreditsPerMonth: 500,
     transactionFeeRate: 0.03, customDomainAllowed: false, whiteLabelAllowed: false,
-    loyaltyProgramAllowed: false, subscriptionProductsAllowed: false, advancedAnalyticsAllowed: false,
+    loyaltyProgramAllowed: false, advancedAnalyticsAllowed: false,
     abandonedCartRecoveryAllowed: false, emailCampaignsAllowed: false, apiWebhooksAllowed: false,
     dedicatedAccountManager: false, prioritySupport: false, marketplaceFeaturedBadge: false, slaUptimePercent: null,
     advancedSeoToolsAllowed: false, seoAiSuggestionsAllowed: false, searchConsoleIntegrationAllowed: false,
@@ -76,7 +76,6 @@ describe('EntitlementsService — trial vs. paid limits', () => {
     expect(limits.customDomainAllowed).toBe(false);
     expect(limits.whiteLabelAllowed).toBe(true);
     expect(limits.loyaltyProgramAllowed).toBe(true);
-    expect(limits.subscriptionProductsAllowed).toBe(true);
     expect(limits.advancedAnalyticsAllowed).toBe(true);
     expect(limits.abandonedCartRecoveryAllowed).toBe(true);
     expect(limits.emailCampaignsAllowed).toBe(true);
@@ -114,6 +113,19 @@ describe('EntitlementsService — trial vs. paid limits', () => {
 
     expect(limits.maxProducts).toBe(10); // FALLBACK_LIMITS value, not -1
     expect(limits.customDomainAllowed).toBe(false);
+  });
+
+  it('REGRESSION: a store with no resolvable plan pays NO transaction fee (no invented 8% fallback)', async () => {
+    setup(null);
+    planModel.findOne = leanFindOne(null);
+
+    await expect(service.getTransactionFeeRate(STORE_ID)).resolves.toBe(0);
+  });
+
+  it('a store on a plan pays exactly that plan\'s transaction-fee rate', async () => {
+    setup({ storeId: STORE_ID, status: 'active', platformPlanId: 'plan-1' });
+
+    await expect(service.getTransactionFeeRate(STORE_ID)).resolves.toBe(0.03);
   });
 
   it('assertCanCreateProduct does NOT throw for a trialing store even when the real product count already exceeds the assigned plan\'s cap', async () => {

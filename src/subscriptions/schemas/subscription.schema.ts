@@ -57,6 +57,10 @@ export class Subscription {
   @Prop({ type: String, default: null }) providerSubscriptionId: string | null;
   // Stripe customer ID (`cus_...`) — one per buyer, reused across every plan they subscribe to
   @Prop({ type: String, default: null }) stripeCustomerId: string | null;
+  /** True when every invoice of this subscription is charged straight into the seller's own Stripe Connect account
+   *  (destination charge) — the platform never holds that money, so no ledger credit/refund applies. */
+  @Prop({ type: Boolean, default: false }) settledViaConnect: boolean;
+  @Prop({ type: String, default: null }) stripeConnectedAccountId: string | null;
   // Snapshot of the payment method type used for the most recent successful charge
   // (card, manual, etc.) — powers "revenue by payment method" analytics.
   @Prop({ type: String, default: null }) lastPaymentMethodType: string | null;

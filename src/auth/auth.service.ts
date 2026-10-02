@@ -50,7 +50,17 @@ export class AuthService {
     // "User not found", indistinguishable from a genuine typo. Normalizing
     // here fixes every caller at once, since every email-based account
     // lookup in this service goes through emailScope.
-    const normalizedEmail = email?.trim().toLowerCase();
+    // Several auth routes take `email`/`storeId` as untyped body fields (no
+    // DTO), so a client could send an object like {"$ne":null} that would be
+    // spliced straight into the Mongo filter below (NoSQL operator injection,
+    // e.g. matching "any store"). Both must be plain strings.
+    if (typeof email !== 'string') {
+      throw new BadRequestException('A valid email is required');
+    }
+    if (storeId !== undefined && storeId !== null && typeof storeId !== 'string') {
+      throw new BadRequestException('Invalid storeId');
+    }
+    const normalizedEmail = email.trim().toLowerCase();
     return role === 'user' ? { email: normalizedEmail, storeId: storeId ?? null } : { email: normalizedEmail };
   }
 
@@ -829,10 +839,20 @@ export class AuthService {
         throw new BadRequestException('Invalid role');
       }
 
+      // Explicit field list — `dto` arrives as the raw request body (this
+      // controller had no whitelisting pipe), so `$set: dto` let a caller
+      // overwrite privileged fields (status, isVerified, tokenVersion,
+      // password, Stripe ids, storeId, ...). Only profile fields pass.
+      const allowed = ['name', 'phone', 'address', 'profileImage', 'fcmToken', 'currencyPreference'] as const;
+      const update: Record<string, any> = {};
+      for (const key of allowed) {
+        if ((dto as any)?.[key] !== undefined) update[key] = (dto as any)[key];
+      }
+
       const user = await userModel
         .findByIdAndUpdate(
           userId,
-          { $set: dto },
+          { $set: update },
           { new: true, runValidators: true },
         )
         .select('-password -otp -otpExpiresAt');

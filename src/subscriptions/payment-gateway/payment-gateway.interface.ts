@@ -56,6 +56,10 @@ export interface ChargeContext {
   idempotencyKey?: string;
   /** Free-form metadata attached to the provider-side object for support/reconciliation. */
   metadata?: Record<string, string>;
+  /** Seller's own connected account: the charge is a destination charge paid straight to it (the platform never holds the funds). */
+  connectAccountId?: string | null;
+  /** Fixed platform fee in cents for a ONE-TIME destination charge (used with `connectAccountId` by chargeOneTime). */
+  applicationFeeAmountCents?: number;
   /** Only meaningful for `createProviderSubscription` — a Stripe-native `trial_end` (Unix seconds). When set, the provider must NOT charge anything until this timestamp; the manual provider ignores it (it has no real trial concept). */
   trialEndUnixSeconds?: number;
   /** Only meaningful for `createProviderSubscription` — a provider-native discount (e.g. Stripe Coupon id) applied on top of the price, for a plan's intro offer (see `getOrCreateCoupon`). */

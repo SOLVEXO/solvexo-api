@@ -92,6 +92,25 @@ describe('SafepayPaymentProvider', () => {
       expect(event.sessionId).toBe('track_1');
     });
 
+    it.each(['TRACKER_STARTED', 'TRACKER_INITIATED', 'TRACKER_AUTHORIZED', undefined])(
+      'REGRESSION: a signed non-terminal tracker state (%s) is payment_pending, never payment_succeeded',
+      async (state) => {
+        const payload = { id: `evt_${String(state)}`, data: { tracker: { token: 'track_1', ...(state ? { state } : {}) } } };
+        const { raw, signature } = signedBody(payload);
+
+        const event = await provider.handleWebhook(raw, { 'x-sfpy-signature': signature }, CONFIG);
+
+        expect(event.type).toBe('payment_pending');
+        expect(event.status?.status).toBe('pending');
+      },
+    );
+
+    it.each(['TRACKER_ABANDONED', 'TRACKER_ERROR'])('reports payment_failed for terminal failure state %s', async (state) => {
+      const { raw, signature } = signedBody({ id: `evt_${state}`, data: { tracker: { token: 'track_1', state } } });
+      const event = await provider.handleWebhook(raw, { 'x-sfpy-signature': signature }, CONFIG);
+      expect(event.type).toBe('payment_failed');
+    });
+
     it('rejects a payload with no signature header', async () => {
       const { raw } = signedBody({ data: { tracker: { token: 't' } } });
       await expect(provider.handleWebhook(raw, {}, CONFIG)).rejects.toThrow('Missing X-SFPY-SIGNATURE');

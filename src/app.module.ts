@@ -38,6 +38,7 @@ import { ActivityLogModule } from './activity-log/activity-log.module';
 import { MarketingModule } from './marketing/marketing.module';
 import { LoyaltyModule } from './loyalty/loyalty.module';
 import { GiftCardsModule } from './gift-cards/gift-cards.module';
+import { StoreCreditModule } from './store-credit/store-credit.module';
 import { AbandonedCartModule } from './abandoned-cart/abandoned-cart.module';
 import { EmailCampaignsModule } from './email-campaigns/email-campaigns.module';
 import { AffiliateModule } from './affiliate/affiliate.module';
@@ -147,6 +148,7 @@ import { StockCountsModule } from './stock-counts/stock-counts.module';
     MarketingModule,
     LoyaltyModule,
     GiftCardsModule,
+    StoreCreditModule,
     AbandonedCartModule,
     EmailCampaignsModule,
     AffiliateModule,

@@ -149,6 +149,9 @@ export class DatabaseService {
     @InjectModel(schema.PlatformPlanInvoice.name)
     private platformPlanInvoiceModel: Model<schema.PlatformPlanInvoiceDocument>,
 
+    @InjectModel(schema.TransactionFeeBill.name)
+    private transactionFeeBillModel: Model<schema.TransactionFeeBillDocument>,
+
     @InjectModel(schema.PlatformPlanPaymentAttempt.name)
     private platformPlanPaymentAttemptModel: Model<schema.PlatformPlanPaymentAttemptDocument>,
 
@@ -202,6 +205,9 @@ export class DatabaseService {
 
     @InjectModel(schema.GiftCardTransaction.name)
     private giftCardTransactionModel: Model<schema.GiftCardTransactionDocument>,
+
+    @InjectModel(schema.StoreCreditTransaction.name)
+    private storeCreditTransactionModel: Model<schema.StoreCreditTransactionDocument>,
 
     @InjectModel(schema.GiftCardSettings.name)
     private giftCardSettingsModel: Model<schema.GiftCardSettingsDocument>,
@@ -514,6 +520,7 @@ export class DatabaseService {
       platformTrialSettingsModel: this.platformTrialSettingsModel,
       sellerPlatformSubscriptionModel: this.sellerPlatformSubscriptionModel,
       platformPlanInvoiceModel: this.platformPlanInvoiceModel,
+      transactionFeeBillModel: this.transactionFeeBillModel,
       platformPlanPaymentAttemptModel: this.platformPlanPaymentAttemptModel,
       aiCreditsWalletModel: this.aiCreditsWalletModel,
       platformAddonPurchaseModel: this.platformAddonPurchaseModel,
@@ -532,6 +539,7 @@ export class DatabaseService {
       rewardVoucherModel: this.rewardVoucherModel,
       giftCardModel: this.giftCardModel,
       giftCardTransactionModel: this.giftCardTransactionModel,
+      storeCreditTransactionModel: this.storeCreditTransactionModel,
       giftCardSettingsModel: this.giftCardSettingsModel,
       abandonedCartSettingsModel: this.abandonedCartSettingsModel,
       emailCampaignModel: this.emailCampaignModel,

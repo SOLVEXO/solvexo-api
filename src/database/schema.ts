@@ -67,6 +67,7 @@ export { IdempotencyRecord, IdempotencyRecordDocument, IdempotencyRecordSchema }
 export { PlatformPlan, PlatformPlanDocument, PlatformPlanSchema } from '../platform-plans/schemas/platform-plan.schema';
 export { SellerPlatformSubscription, SellerPlatformSubscriptionDocument, SellerPlatformSubscriptionSchema } from '../platform-plans/schemas/seller-platform-subscription.schema';
 export { PlatformPlanInvoice, PlatformPlanInvoiceDocument, PlatformPlanInvoiceSchema } from '../platform-plans/schemas/platform-plan-invoice.schema';
+export { TransactionFeeBill, TransactionFeeBillDocument, TransactionFeeBillSchema } from '../platform-plans/schemas/transaction-fee-bill.schema';
 export { PlatformPlanPaymentAttempt, PlatformPlanPaymentAttemptDocument, PlatformPlanPaymentAttemptSchema } from '../platform-plans/schemas/platform-plan-payment-attempt.schema';
 export { AiCreditsWallet, AiCreditsWalletDocument, AiCreditsWalletSchema } from '../platform-plans/schemas/ai-credits-wallet.schema';
 export { PlatformAddonPurchase, PlatformAddonPurchaseDocument, PlatformAddonPurchaseSchema } from '../platform-plans/schemas/platform-addon-purchase.schema';
@@ -100,6 +101,7 @@ export { Reward, RewardDocument, RewardSchema } from '../loyalty/schemas/reward.
 export { RewardVoucher, RewardVoucherDocument, RewardVoucherSchema } from '../loyalty/schemas/reward-voucher.schema';
 export { GiftCard, GiftCardDocument, GiftCardSchema } from '../gift-cards/schemas/gift-card.schema';
 export { GiftCardTransaction, GiftCardTransactionDocument, GiftCardTransactionSchema } from '../gift-cards/schemas/gift-card-transaction.schema';
+export { StoreCreditTransaction, StoreCreditTransactionDocument, StoreCreditTransactionSchema } from '../store-credit/schemas/store-credit-transaction.schema';
 export { GiftCardSettings, GiftCardSettingsDocument, GiftCardSettingsSchema } from '../gift-cards/schemas/gift-card-settings.schema';
 export { AbandonedCartSettings, AbandonedCartSettingsDocument, AbandonedCartSettingsSchema } from '../abandoned-cart/schemas/abandoned-cart-settings.schema';
 export { EmailCampaign, EmailCampaignDocument, EmailCampaignSchema } from '../email-campaigns/schemas/email-campaign.schema';

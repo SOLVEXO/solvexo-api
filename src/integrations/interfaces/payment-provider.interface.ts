@@ -13,7 +13,8 @@ export interface PaymentSession {
   sessionId: string;
 }
 
-export type PaymentEventType = 'payment_succeeded' | 'payment_failed' | 'refund_succeeded' | 'refund_failed';
+/** `payment_pending` = a signed, legitimate event for a non-terminal state (e.g. a gateway tracker that just started) — the webhook handler must acknowledge it and do nothing. */
+export type PaymentEventType = 'payment_succeeded' | 'payment_failed' | 'payment_pending' | 'refund_succeeded' | 'refund_failed';
 
 export interface PaymentStatus {
   status: 'pending' | 'paid' | 'failed' | 'refunded';

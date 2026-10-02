@@ -11,7 +11,6 @@ export interface PlatformPlanLimits {
   customDomainAllowed: boolean;
   whiteLabelAllowed: boolean;
   loyaltyProgramAllowed: boolean;
-  subscriptionProductsAllowed: boolean;
   advancedAnalyticsAllowed: boolean;
   abandonedCartRecoveryAllowed: boolean;
   emailCampaignsAllowed: boolean;
@@ -59,8 +58,11 @@ export function trimToMarketsLimit(allowed: string[], baseCurrency: string | nul
 // nothing breaks for existing stores during the rollout window.
 const FALLBACK_LIMITS: PlatformPlanLimits = {
   maxProducts: 10, maxStaffAccounts: 0, maxPosLocations: 1, aiCreditsPerMonth: 0,
-  transactionFeeRate: 0.08, customDomainAllowed: false, whiteLabelAllowed: false,
-  loyaltyProgramAllowed: false, subscriptionProductsAllowed: false, advancedAnalyticsAllowed: false,
+  // 0, not a made-up rate: Shopify only charges a third-party transaction fee
+  // that the merchant's PLAN defines. A store with no resolvable plan used to be
+  // billed a hardcoded 8% here, which exists nowhere in Shopify.
+  transactionFeeRate: 0, customDomainAllowed: false, whiteLabelAllowed: false,
+  loyaltyProgramAllowed: false, advancedAnalyticsAllowed: false,
   abandonedCartRecoveryAllowed: false, emailCampaignsAllowed: false, apiWebhooksAllowed: false,
   dedicatedAccountManager: false, prioritySupport: false, marketplaceFeaturedBadge: false, slaUptimePercent: null,
   advancedSeoToolsAllowed: false, seoAiSuggestionsAllowed: false, searchConsoleIntegrationAllowed: false, customRedirectsAllowed: false,
@@ -72,7 +74,6 @@ const BOOLEAN_FEATURES: Array<{ key: keyof PlatformPlanLimits; label: string }> 
   { key: 'customDomainAllowed', label: 'Custom domain' },
   { key: 'whiteLabelAllowed', label: 'White-label branding' },
   { key: 'loyaltyProgramAllowed', label: 'Loyalty & rewards program' },
-  { key: 'subscriptionProductsAllowed', label: 'Buyer subscription/membership plans' },
   { key: 'advancedAnalyticsAllowed', label: 'Advanced analytics' },
   { key: 'abandonedCartRecoveryAllowed', label: 'Abandoned cart recovery' },
   { key: 'emailCampaignsAllowed', label: 'Email campaigns' },
@@ -166,7 +167,6 @@ export class EntitlementsService {
       customDomainAllowed: false,
       whiteLabelAllowed: true,
       loyaltyProgramAllowed: true,
-      subscriptionProductsAllowed: true,
       advancedAnalyticsAllowed: true,
       abandonedCartRecoveryAllowed: true,
       emailCampaignsAllowed: true,

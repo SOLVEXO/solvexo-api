@@ -10,6 +10,9 @@ import { EntitlementsService } from './entitlements.service';
 import { AiCreditsService } from './ai-credits.service';
 import { PlatformAddonsService } from './platform-addons.service';
 import { PlatformPlanNotificationsService } from './platform-plan-notifications.service';
+import { TransactionFeeBillingService } from './transaction-fee-billing.service';
+import { TransactionFeesController } from './transaction-fees.controller';
+import { ExchangeRateModule } from '../exchange-rate/exchange-rate.module';
 import { BillingAccessGuard } from './guards/billing-access.guard';
 import { AuthModule } from '../auth/auth.module';
 import { RedisModule } from '../redis/redis.module';
@@ -24,7 +27,7 @@ import { CriticalAlertService } from '../common/critical-alert.service';
 // reasoning to why SubscriptionsModule/ActivityLogModule are global.
 @Global()
 @Module({
-  imports: [AuthModule, RedisModule, SubscriptionsModule],
+  imports: [AuthModule, RedisModule, SubscriptionsModule, ExchangeRateModule],
   // Controller order matters here — Express/Nest routing is first-match, in
   // controller-then-method declaration order (same "static-before-dynamic"
   // convention used throughout this codebase's other controllers):
@@ -32,7 +35,7 @@ import { CriticalAlertService } from '../common/critical-alert.service';
   //      PlatformPlansController's parameterized "admin/:id".
   //   2. PlatformPlansController's static "public"/"admin/*" routes must come
   //      before SellerPlatformSubscriptionsController's catch-all ":storeId".
-  controllers: [PlatformAddonsController, PlatformPlansController, SellerPlatformSubscriptionsController],
+  controllers: [PlatformAddonsController, PlatformPlansController, SellerPlatformSubscriptionsController, TransactionFeesController],
   providers: [
     PlatformPlansService,
     PlatformPlanCatalogService,
@@ -41,10 +44,11 @@ import { CriticalAlertService } from '../common/critical-alert.service';
     AiCreditsService,
     PlatformAddonsService,
     PlatformPlanNotificationsService,
+    TransactionFeeBillingService,
     EmailService,
     CriticalAlertService,
     BillingAccessGuard,
   ],
-  exports: [PlatformPlansService, PlatformPlanCatalogService, SellerPlatformSubscriptionsService, EntitlementsService, AiCreditsService, PlatformAddonsService, BillingAccessGuard],
+  exports: [PlatformPlansService, PlatformPlanCatalogService, SellerPlatformSubscriptionsService, EntitlementsService, AiCreditsService, PlatformAddonsService, BillingAccessGuard, TransactionFeeBillingService],
 })
 export class PlatformPlansModule {}

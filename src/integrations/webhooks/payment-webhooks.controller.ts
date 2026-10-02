@@ -71,6 +71,13 @@ export class PaymentWebhooksController {
       throw new BadRequestException(`Webhook rejected: ${err?.message ?? 'verification failed'}`);
     }
 
+    // Non-terminal state: acknowledge so the gateway stops retrying, but do
+    // not record it for dedup (the same tracker will later send its terminal
+    // event) and do not finalize anything.
+    if (event.type === 'payment_pending') {
+      return { received: true, ignored: 'pending' };
+    }
+
     const isNew = await this.webhookEvents.recordOnce(provider, event.externalEventId, integration.storeId);
     if (!isNew) {
       return { received: true, duplicate: true };
@@ -83,10 +90,33 @@ export class PaymentWebhooksController {
     // reversal path exists for a Connect-less generic gateway today) —
     // deliberately left as dedup-only, same as before, rather than silently
     // pretending to handle a case nothing downstream can act on.
-    if (event.type === 'payment_succeeded') {
-      await this.paymentService.finalizeGatewayPayment(event.sessionId, integration.provider);
-    } else if (event.type === 'payment_failed') {
-      await this.paymentService.failGatewayPayment(event.sessionId, integration.provider, JSON.stringify(event.status?.raw ?? {}).slice(0, 300));
+    try {
+      if (event.type === 'payment_succeeded') {
+        // Never trust the (signed) event body alone for money: re-ask the
+        // gateway for the session's real state + amount, and cross-check it
+        // against the amount we charged at initiate and against THIS store
+        // (a seller could otherwise sign an event with their OWN secret for
+        // another store's session id).
+        const verified = await providerImpl.verifyPayment(event.sessionId, config);
+        if (verified.status !== 'paid') {
+          throw new BadRequestException('Gateway does not confirm this payment as paid');
+        }
+        await this.paymentService.assertGatewayPaymentMatches({
+          providerSessionId: event.sessionId,
+          paymentType: integration.provider,
+          storeId: integration.storeId,
+          paidAmount: verified.amount,
+          paidCurrency: verified.currency,
+        });
+        await this.paymentService.finalizeGatewayPayment(event.sessionId, integration.provider);
+      } else if (event.type === 'payment_failed') {
+        await this.paymentService.failGatewayPayment(event.sessionId, integration.provider, JSON.stringify(event.status?.raw ?? {}).slice(0, 300));
+      }
+    } catch (err) {
+      // Processing failed AFTER the event was recorded — un-record it so the
+      // gateway's retry is processed instead of being dropped as a duplicate.
+      await this.webhookEvents.forget(provider, event.externalEventId).catch(() => undefined);
+      throw err;
     }
 
     return { received: true };

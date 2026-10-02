@@ -33,7 +33,6 @@ const PRESET_ROLES: { name: string; description: string; permissions: string[] }
       // financial/ownership-level access).
       'messaging.view', 'messaging.manage',
       'loyalty.view', 'loyalty.manage', 'loyalty.points.award',
-      'subscriptions.view', 'subscriptions.manage', 'subscriptions.subscribers.manage',
       'seo.view', 'seo.manage',
       'aistudio.view', 'aistudio.use',
     ],

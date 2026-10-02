@@ -3,6 +3,7 @@ import {
   BadRequestException,
   NotFoundException,
   ForbiddenException,
+  ConflictException,
 } from '@nestjs/common';
 import { isValidObjectId } from 'mongoose';
 import { DatabaseService } from '@/database/databaseservice';
@@ -14,14 +15,14 @@ import { PaymentService } from '@/payment/payment.service';
 import { ExchangeRateService } from '@/exchange-rate/exchange-rate.service';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { LoyaltyService } from '@/loyalty/loyalty.service';
-import { SubscriptionBenefitsService } from '@/subscriptions/subscription-benefits.service';
 import { NotificationsService } from '@/notifications/notifications.service';
 import { ShippingRatesService } from '@/shipping-rates/shipping-rates.service';
+import { StoreCreditService } from '@/store-credit/store-credit.service';
 import { GiftCardsService } from '@/gift-cards/gift-cards.service';
 import { NOTIFICATION_TYPES } from '@/notifications/notification.types';
 import { round } from '@/common/number.util';
 import { buildDiffMetadata } from '@/common/activity-diff.util';
-import { deriveRollupStatus } from './order-status.util';
+import { deriveRollupStatus , isAllowedSellerOrderTransition } from './order-status.util';
 import { toCsv } from '@/analytics/utils/csv.util';
 
 /** A sellerOrder's true payout basis for FinanceService.recordSale, in the
@@ -54,33 +55,20 @@ export class OrdersService {
     private readonly exchangeRateService: ExchangeRateService,
     private readonly activityLogService: ActivityLogService,
     private readonly loyaltyService: LoyaltyService,
-    private readonly subscriptionBenefits: SubscriptionBenefitsService,
     private readonly notificationsService: NotificationsService,
     private readonly shippingRatesService: ShippingRatesService,
     private readonly giftCardsService: GiftCardsService,
+    private readonly storeCreditService: StoreCreditService,
   ) {}
 
-  /** Subscribers earn points at their plan's configured multiplier (default 1x). */
-  private async awardLoyaltyPointsWithMultiplier(
+  /** Awards loyalty points for a completed order (the store's own loyalty program rate). */
+  private async awardLoyaltyPoints(
     storeId: string,
     userId: string,
     orderId: string,
     subtotal: number,
   ) {
-    const benefitsEntry = await this.subscriptionBenefits.getActiveBenefits(
-      userId,
-      storeId,
-    );
-    const multiplier = benefitsEntry
-      ? this.subscriptionBenefits.getLoyaltyMultiplier(benefitsEntry.benefits)
-      : 1;
-    return this.loyaltyService.awardPurchasePoints(
-      storeId,
-      userId,
-      orderId,
-      subtotal,
-      multiplier,
-    );
+    return this.loyaltyService.awardPurchasePoints(storeId, userId, orderId, subtotal);
   }
 
   async getOrdersByUserId(userId: string, query: any, storeId: string) {
@@ -956,6 +944,15 @@ export class OrdersService {
     const wasAlreadyCompleted =
       order.sellerOrders[sellerOrderIndex].status === 'completed';
 
+    // Forward-only state machine — a cancelled/refunded sub-order is final and
+    // a fulfilled one never moves backwards (see isAllowedSellerOrderTransition).
+    const currentSellerStatus: string = order.sellerOrders[sellerOrderIndex].status;
+    if (!isAllowedSellerOrderTransition(currentSellerStatus, status)) {
+      throw new BadRequestException(
+        `Cannot change an order from "${currentSellerStatus}" to "${status}".`,
+      );
+    }
+
     if (status === 'shipped' && !tracking) {
       throw new BadRequestException(
         'tracking info required when status is shipped',
@@ -1007,6 +1004,19 @@ export class OrdersService {
     // than a strict atomic guard — a seller manually adjusting stock down
     // (e.g. "damaged") between order-placement and shipment shouldn't
     // block a shipment that's already contractually committed to the buyer.
+    // Atomic claim of this transition BEFORE any stock/ledger side effect:
+    // the update only applies if the sub-order is STILL in the status we read.
+    // Two concurrent requests (double-click, two tabs) can no longer both pass
+    // the guards above and both decrement stock / credit the seller.
+    const claimed = await orderModel.findOneAndUpdate(
+      { _id: orderId, isDelete: false, [`sellerOrders.${sellerOrderIndex}.status`]: currentSellerStatus },
+      { $set: updateData },
+    );
+    if (!claimed) {
+      throw new ConflictException('This order was just updated by someone else — refresh and try again.');
+    }
+    const cogsUpdate: Record<string, any> = {};
+
     const FULFILLED_STATES = ['shipped', 'delivered', 'completed'];
     const wasAlreadyFulfilled = FULFILLED_STATES.includes(
       order.sellerOrders[sellerOrderIndex].status,
@@ -1035,13 +1045,15 @@ export class OrdersService {
         if ((variant as any).trackLots) {
           const cogs = await this.consumeLotsFifo(item.variantId, item.quantity);
           if (cogs != null) {
-            updateData[`sellerOrders.${sellerOrderIndex}.items.${itemIndex}.costOfGoodsSold`] = cogs;
+            cogsUpdate[`sellerOrders.${sellerOrderIndex}.items.${itemIndex}.costOfGoodsSold`] = cogs;
           }
         }
       }
     }
 
-    await orderModel.findByIdAndUpdate(orderId, { $set: updateData });
+    if (Object.keys(cogsUpdate).length > 0) {
+      await orderModel.updateOne({ _id: orderId }, { $set: cogsUpdate });
+    }
 
     // Record sale in finance ledger when seller marks their order completed — only on the
     // transition into `completed`, never again if it was already completed (see guard above).
@@ -1074,7 +1086,7 @@ export class OrdersService {
         }
       }
 
-      this.awardLoyaltyPointsWithMultiplier(
+      this.awardLoyaltyPoints(
         so.storeId,
         order.userId,
         orderId,
@@ -1194,7 +1206,7 @@ export class OrdersService {
         console.error('Finance recordSale failed:', e?.message);
       }
 
-      this.awardLoyaltyPointsWithMultiplier(
+      this.awardLoyaltyPoints(
         so.storeId,
         order.userId,
         orderId,
@@ -1221,24 +1233,45 @@ export class OrdersService {
    *  `OrderPaymentRecord` row for the full amount, so the payment ledger
    *  `recordOrderPayment`/the frontend payment-history list reads from
    *  stays complete regardless of which action a seller used. */
-  async markPaid(orderId: string) {
-    const { orderModel, orderPaymentRecordModel } = this.databaseService.repositories;
+  async markPaid(
+    sellerId: string,
+    storeId: string,
+    orderId: string,
+    actor: { actorId: string; actorRole: 'seller' | 'staff' | 'admin' },
+  ) {
+    const { orderModel, storeModel, orderPaymentRecordModel } = this.databaseService.repositories;
+
+    // Ownership: the caller's seller must own this store, and the order must
+    // actually contain a sub-order for it.
+    const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false }).select('_id').lean();
+    if (!store) throw new ForbiddenException('Store not found or unauthorized');
 
     const order = await orderModel.findOne({ _id: orderId, isDelete: false });
     if (!order) throw new NotFoundException('Order not found');
+
+    const mySo = (order.sellerOrders as any[]).find((so: any) => so.storeId === storeId);
+    if (!mySo) throw new ForbiddenException('This order does not belong to your store');
+
     if (order.isPaid) throw new BadRequestException('Order is already paid');
+
+    // A cancelled/refunded order must never be revived into a paid+completed
+    // one (finalizeOrderPayment completes every sub-order and credits the ledger).
+    const deadStatuses = ['cancelled', 'refunded'];
+    if (
+      deadStatuses.includes(order.orderStatus) ||
+      (order.sellerOrders as any[]).some((so: any) => deadStatuses.includes(so.status))
+    ) {
+      throw new BadRequestException('A cancelled or refunded order cannot be marked as paid');
+    }
 
     await this.finalizeOrderPayment(order, orderId);
 
-    const firstSo = order.sellerOrders[0];
-    if (firstSo) {
-      await orderPaymentRecordModel.create({
-        orderId, storeId: firstSo.storeId, sellerId: firstSo.sellerId,
-        amount: order.totalAmount, currency: order.currency || 'USD',
-        method: 'other', reference: null, note: 'Marked as paid (quick action)',
-        recordedBy: firstSo.sellerId, recordedByRole: 'seller',
-      });
-    }
+    await orderPaymentRecordModel.create({
+      orderId, storeId, sellerId,
+      amount: order.totalAmount, currency: order.currency || 'USD',
+      method: 'other', reference: null, note: 'Marked as paid (quick action)',
+      recordedBy: actor.actorId, recordedByRole: actor.actorRole,
+    });
 
     return { success: true, message: 'Order marked as paid' };
   }
@@ -1274,6 +1307,9 @@ export class OrdersService {
 
     const belongsToStore = (order.sellerOrders as any[]).some((so: any) => so.storeId === storeId);
     if (!belongsToStore) throw new ForbiddenException('This order does not belong to your store');
+    if (['cancelled', 'refunded'].includes(order.orderStatus) || (order.sellerOrders as any[]).some((so: any) => ['cancelled', 'refunded'].includes(so.status))) {
+      throw new BadRequestException('A cancelled or refunded order cannot receive payments');
+    }
 
     const existingTotal = await orderPaymentRecordModel.aggregate([
       { $match: { orderId } },
@@ -1845,6 +1881,30 @@ export class OrdersService {
       }
     }
 
+    // ── Store-credit reversal — credit is spent at order placement (see PaymentService.createOrder),
+    // so cancelled items give back exactly the credit they consumed (idempotent per cancellation).
+    {
+      const storeCreditReverseAmount = targetItems.reduce(
+        (sum, { item }) => sum + (item.storeCreditDiscountUSD || 0),
+        0,
+      );
+      if (storeCreditReverseAmount > 0) {
+        const scSellerOrder = order.sellerOrders.find((so: any) =>
+          so.items.some((i: any) => i.storeCreditDiscountUSD > 0),
+        );
+        if (scSellerOrder) {
+          await this.storeCreditService.restoreOnRefund(
+            scSellerOrder.storeId,
+            order.userId,
+            storeCreditReverseAmount,
+            orderId,
+            `cancel:${orderId}:${targetItems.map((t) => t.item._id.toString()).sort().join(',')}`,
+            `Order #${order.orderNumber} cancelled`,
+          ).catch((e: any) => console.error('Store credit reversal failed (order cancellation):', e?.message));
+        }
+      }
+    }
+
     // Optimistic lock — this method now has TWO independent entry points
     // (`cancelOrder` for the buyer, `cancelOrderAsSeller` for the seller),
     // both computing `updateData` from the SAME `order` snapshot read at the
@@ -1929,10 +1989,11 @@ export class OrdersService {
     sellerId: string,
     storeId: string,
     orderId: string,
-    body: { amount: number; reason?: string },
+    body: { amount: number; reason?: string; refundTo?: 'original' | 'store_credit' },
   ) {
     const amount = Number(body?.amount);
     if (!amount || amount <= 0) throw new BadRequestException('A positive refund amount is required');
+    const toStoreCredit = body?.refundTo === 'store_credit';
     const reason = (body?.reason ?? '').trim() || 'Refund issued by seller';
 
     const { orderModel, storeModel } = this.databaseService.repositories;
@@ -1960,6 +2021,41 @@ export class OrdersService {
     }
 
     const buyerCurrency = order.currency || 'USD';
+
+    // Shopify "Refund to store credit": the money stays with the merchant and comes back to the
+    // buyer as spendable credit in THIS store — so there is no card refund and no ledger debit
+    // (the sale proceeds are simply never paid out twice: the credit later reduces what the buyer
+    // pays on a new order). Idempotency key carries the amount-so-far so two refunds are two lots.
+    if (toStoreCredit) {
+      const storeCurrency = (store as any).baseCurrency ?? buyerCurrency;
+      const creditAmount = round(
+        this.exchangeRateService.convertWithSnapshots(amount, buyerCurrency, storeCurrency, order.fxSnapshots ?? []),
+      );
+      await this.storeCreditService.creditFromRefund(
+        storeId,
+        order.userId,
+        creditAmount,
+        orderId,
+        `refund:${orderId}:${round(alreadyRefunded)}`,
+        `Order #${order.orderNumber} — ${reason}`,
+        { actorId: sellerId, actorRole: 'seller' } as any,
+      );
+      await orderModel.updateOne(
+        { _id: orderId },
+        { $inc: { [`sellerOrders.${soIndex}.manualRefundedAmount`]: amount } },
+      );
+      await this.activityLogService.log({
+        storeId, category: 'orders', action: 'order_refunded_to_store_credit',
+        description: `Refunded ${amount} ${buyerCurrency} to store credit on order #${order.orderNumber} — ${reason}`,
+        actorId: sellerId, actorRole: 'seller', targetId: orderId, targetType: 'order',
+      });
+      return {
+        success: true,
+        message: 'Refunded to store credit',
+        data: { orderId, amount, refundedTo: 'store_credit', stripeRefundId: null },
+      };
+    }
+
     const settlementCurrency = so.settlementCurrency ?? buyerCurrency;
     const sellerDebitAmount = this.exchangeRateService.convertWithSnapshots(
       amount,
@@ -2517,6 +2613,24 @@ export class OrdersService {
             `return:${orderId}:${targetItems.map((t) => t.item._id.toString()).sort().join(',')}`,
             `Order #${order.orderNumber} — return approved`,
           ).catch((e: any) => console.error('Gift card reversal failed (return approval):', e?.message));
+        }
+      }
+
+      // Store-credit reversal — same reasoning as the gift card above.
+      {
+        const storeCreditReverseAmount = targetItems.reduce(
+          (sum, t) => sum + (t.item.storeCreditDiscountUSD || 0),
+          0,
+        );
+        if (storeCreditReverseAmount > 0) {
+          await this.storeCreditService.restoreOnRefund(
+            storeId,
+            order.userId,
+            storeCreditReverseAmount,
+            orderId,
+            `return:${orderId}:${targetItems.map((t) => t.item._id.toString()).sort().join(',')}`,
+            `Order #${order.orderNumber} — return approved`,
+          ).catch((e: any) => console.error('Store credit reversal failed (return approval):', e?.message));
         }
       }
 

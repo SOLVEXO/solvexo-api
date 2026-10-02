@@ -90,13 +90,6 @@ export const STAFF_PERMISSIONS = [
   // (same class of split as `inventory.adjust` vs `.view`), kept apart from
   // general program/reward management.
   'loyalty.view', 'loyalty.manage', 'loyalty.points.award',
-  // Subscriptions — the store's OWN buyer-facing recurring-order feature
-  // (`subscriptions/subscriptions.controller.ts`), NOT Solvexo's own
-  // seller-pays-Solvexo platform-plan billing (`platform-plans/`, which
-  // stays seller-only — see `settings.billing.*` above for that one).
-  // `.subscribers.manage` (pause/resume/cancel/refund) is kept apart from
-  // plan CRUD since it touches customer accounts and money directly.
-  'subscriptions.view', 'subscriptions.manage', 'subscriptions.subscribers.manage',
   // SEO — a clean view/write split holds across all 10 seller-facing SEO
   // controllers; no third genuinely independent capability tier exists.
   'seo.view', 'seo.manage',

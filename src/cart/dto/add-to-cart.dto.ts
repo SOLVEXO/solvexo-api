@@ -1,4 +1,4 @@
-import { IsOptional, IsString, IsNumber, IsNotEmpty } from 'class-validator';
+import { IsOptional, IsString, IsInt, IsNotEmpty, Min, Max } from 'class-validator';
 
 export class AddToCartDto {
   // Which store's storefront this cart belongs to — a buyer's cart is
@@ -15,7 +15,11 @@ export class AddToCartDto {
   @IsString()
   productVariantId?: string;
 
+  // Positive whole number only — a zero/negative/fractional quantity would
+  // produce a negative or free line total at checkout.
   @IsOptional()
-  @IsNumber()
+  @IsInt()
+  @Min(1)
+  @Max(999)
   quantity?: number;
 }

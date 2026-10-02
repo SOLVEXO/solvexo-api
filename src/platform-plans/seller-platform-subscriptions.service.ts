@@ -13,6 +13,7 @@ import { SubscribePlatformPlanDto, ChangePlatformPlanDto } from './dto/subscribe
 import { NotificationsService } from '@/notifications/notifications.service';
 import { NOTIFICATION_TYPES } from '@/notifications/notification.types';
 import { CriticalAlertService } from '@/common/critical-alert.service';
+import { getInvoiceSubscriptionId, getInvoicePaymentIntentId } from '@/common/stripe-invoice.util';
 
 const MAX_RENEWAL_ATTEMPTS = 3;
 const RETRY_INTERVAL_DAYS = 1;
@@ -1649,7 +1650,7 @@ export class SellerPlatformSubscriptionsService {
 
   @OnEvent('stripe.invoice.payment_succeeded')
   async handleInvoicePaymentSucceeded(invoice: any): Promise<void> {
-    const providerSubscriptionId: string | undefined = typeof invoice.subscription === 'string' ? invoice.subscription : invoice.subscription?.id;
+    const providerSubscriptionId: string | undefined = getInvoiceSubscriptionId(invoice);
     if (!providerSubscriptionId) return;
     const sub = await this.subModel.findOne({ providerSubscriptionId, isDelete: false });
     if (!sub) return; // not one of ours — belongs to the buyer-VIP-plan system instead
@@ -1658,7 +1659,7 @@ export class SellerPlatformSubscriptionsService {
     const amountUSD = this.round((invoice.amount_paid ?? 0) / 100);
     const line = invoice.lines?.data?.[0];
     const periodEnd = line?.period?.end ? new Date(line.period.end * 1000) : this.addPeriod(new Date(), sub.billingInterval as any);
-    const providerChargeId = typeof invoice.payment_intent === 'string' ? invoice.payment_intent : invoice.payment_intent?.id ?? null;
+    const providerChargeId = getInvoicePaymentIntentId(invoice);
 
     // A generated invoiceNumber must be reserved BEFORE the transaction opens
     // (this counter update is its own atomic $inc, unrelated to the
@@ -1706,7 +1707,7 @@ export class SellerPlatformSubscriptionsService {
 
   @OnEvent('stripe.invoice.payment_failed')
   async handleInvoicePaymentFailed(invoice: any): Promise<void> {
-    const providerSubscriptionId: string | undefined = typeof invoice.subscription === 'string' ? invoice.subscription : invoice.subscription?.id;
+    const providerSubscriptionId: string | undefined = getInvoiceSubscriptionId(invoice);
     if (!providerSubscriptionId) return;
     const sub = await this.subModel.findOne({ providerSubscriptionId, isDelete: false });
     if (!sub) return; // not one of ours

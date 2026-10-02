@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
@@ -17,6 +17,34 @@ export class StripeWebhookService {
     private readonly db: DatabaseService,
     @InjectQueue(QUEUE_NAMES.STRIPE_WEBHOOKS) private readonly webhookQueue: Queue,
   ) {}
+
+  /** Dead-letter / audit view of every Stripe webhook event received, including permanently-failed jobs. */
+  async adminHistory(query: any) {
+    const page = Math.max(1, parseInt(query.page) || 1);
+    const limit = Math.min(100, parseInt(query.limit) || 20);
+    const skip = (page - 1) * limit;
+
+    const filter: any = {};
+    if (query.status) filter.status = query.status;
+    if (query.type) filter.type = query.type;
+
+    const model = this.db.repositories.webhookEventModel;
+    const [events, total] = await Promise.all([
+      model.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+      model.countDocuments(filter),
+    ]);
+    return { success: true, data: { pagination: { page, limit, total, pages: Math.ceil(total / limit) }, events } };
+  }
+
+  /** Manually re-queues a webhook event stuck in 'failed' — the dead-letter "replay" action. */
+  async adminRetry(id: string) {
+    const model = this.db.repositories.webhookEventModel;
+    const event = await model.findById(id);
+    if (!event) throw new NotFoundException('Webhook event not found');
+    await model.updateOne({ _id: id }, { $set: { status: 'received' } });
+    await this.webhookQueue.add(STRIPE_WEBHOOK_JOB, { eventId: event.providerEventId, type: event.type });
+    return { success: true, message: 'Webhook event re-queued for processing' };
+  }
 
   /**
    * Verifies the Stripe signature, records the event for idempotency/replay

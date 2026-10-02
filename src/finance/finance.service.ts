@@ -21,9 +21,10 @@ import { StripeConnectService } from '@/stripe-connect/stripe-connect.service';
 import { PdfReportBuilder } from '@/analytics/utils/pdf-report.util';
 
 // ── Platform fee constants ───────────────────────────────────────────────────
-export const PLATFORM_FEE_RATE       = 0.08;   // 8% per sale — last-resort fallback, see CommissionRulesService
+/** @deprecated NOT used anywhere — Solvexo follows Shopify: only the store's PLAN defines a (third-party gateway) transaction fee; there is no flat/hardcoded sale commission. Kept only so old imports keep compiling. */
+export const PLATFORM_FEE_RATE       = 0;
 import { PAYMENT_PROCESSING_RATE, PAYMENT_PROCESSING_FIXED } from '../common/payment-fees.const';
-import { rateForPaymentRail } from '../commission-rules/payment-rail';
+import { rateForPaymentRail, classifyPaymentRail } from '../commission-rules/payment-rail';
 export { PAYMENT_PROCESSING_RATE, PAYMENT_PROCESSING_FIXED };
 export const CLEARING_DAYS           = 3;      // default — non-card rails (manual bank transfer, COD)
 // Card-funded (Stripe) sales carry real chargeback exposure that can
@@ -1804,6 +1805,22 @@ export class FinanceService {
     storeId: string, sellerId: string, orderId: string, saleAmount: number, description: string,
     platformSponsoredUSD = 0, campaignId?: string | null, currency = 'USD', paymentMethodType = 'stripe',
   ) {
+    // Who actually HOLDS the buyer's money decides whether the seller's
+    // withdrawable balance may be credited:
+    //  - 'solvexo_card' (the platform's own Stripe, no Connect): the platform
+    //    collected the funds, so the net sale is credited (pending → available).
+    //  - 'manual' (COD / bank transfer / cash) and 'third_party' (the seller's
+    //    OWN connected gateway, e.g. Safepay): the buyer paid the seller
+    //    DIRECTLY — the platform never held that money. Crediting it would let
+    //    the seller withdraw cash the platform never received (and, for a
+    //    seller gateway, be paid twice). Those sales are recorded for the
+    //    ledger/history but credit nothing; the plan's third-party transaction
+    //    fee (if any) ACCRUES on the fee ledger row and is collected on the
+    //    seller's monthly platform bill (Shopify bills it on the merchant's
+    //    invoice — it is NOT taken out of a sales balance); only the
+    //    platform-sponsored discount (which the platform genuinely owes the
+    //    seller) is credited.
+    const platformHoldsFunds = classifyPaymentRail(paymentMethodType) === 'solvexo_card';
     const chargesProcessingFee = paymentMethodType === 'stripe';
     // Shopify-style: the plan's transaction fee applies only to third-party gateways — card sales through
     // Solvexo Payments and manual payments (COD / bank transfer) carry no commission (a custom per-seller
@@ -1814,11 +1831,18 @@ export class FinanceService {
     const netAmount     = this.round(saleAmount - platformFee - processingFee);
 
     await this.withTransaction(async (session) => {
+      // Idempotency: exactly one sale credit per (store, order). A double
+      // click, a retried request or the completed→delivered→completed status
+      // dance must never credit the same order twice.
+      const alreadyRecorded = await this.txModel.exists({ storeId, referenceId: orderId, referenceType: 'order', type: 'sale' }).session(session);
+      if (alreadyRecorded) return;
+
       const balance = await this.getOrCreateBalance(storeId, sellerId, currency, session);
       const balanceBefore = balance.availableBalance;
 
-      // Sale credit goes to pending for CLEARING_DAYS days
-      balance.pendingBalance  = this.round(balance.pendingBalance + netAmount);
+      // Amount that actually becomes the seller's (pending) money.
+      const heldCredit = platformHoldsFunds ? netAmount : Math.max(0, this.round(platformSponsoredUSD));
+      balance.pendingBalance  = this.round(balance.pendingBalance + heldCredit);
       balance.totalRevenue    = this.round(balance.totalRevenue + saleAmount);
       balance.totalFees       = this.round(balance.totalFees + platformFee + processingFee);
       // A credit can pay down a prior debt (see recordRefund) — re-check
@@ -1836,8 +1860,14 @@ export class FinanceService {
         description: description || `Sale — Order #${orderId}`,
         referenceId: orderId,
         referenceType: 'order',
-        status: 'pending',
-        metadata: { platformFee, processingFee, netAmount, clearingDays: clearingDaysForRail(paymentMethodType), feeRate: platformFeeRate, feeRateSource },
+        // Only money the platform actually holds clears into the available
+        // balance later; an informational direct-settled entry is final.
+        status: heldCredit > 0 ? 'pending' : 'completed',
+        metadata: {
+          platformFee, processingFee, netAmount: heldCredit, clearingDays: clearingDaysForRail(paymentMethodType),
+          feeRate: platformFeeRate, feeRateSource,
+          settledDirectly: !platformHoldsFunds, paymentRail: classifyPaymentRail(paymentMethodType),
+        },
       });
       await saleTx.save({ session });
 
@@ -1854,7 +1884,12 @@ export class FinanceService {
         referenceId: orderId,
         referenceType: 'order',
         status: 'completed',
-        metadata: { platformFee, processingFee, paymentMethodType },
+        metadata: {
+          platformFee, processingFee, paymentMethodType,
+          // Direct-settled sale with a fee owed: waits to be collected by the
+          // monthly transaction-fee bill (TransactionFeeBillingService).
+          ...(!platformHoldsFunds && platformFee > 0 ? { billing: { status: 'pending_invoice' } } : {}),
+        },
       });
       await feeTx.save({ session });
 
@@ -1890,69 +1925,10 @@ export class FinanceService {
   }
 
   /**
-   * Credits a seller's balance with their share of subscription revenue
-   * collected from their own store's subscribers. Mirrors `recordSale`'s
-   * ledger shape (pending → available after CLEARING_DAYS via the same
-   * clearing cron) so subscription and order revenue behave identically
-   * from the seller's point of view. `platformCommissionUSD` is passed in
-   * already computed by the caller (SubscriptionsService), since the
-   * commission rate for subscription revenue is configured independently
-   * of the order-sale PLATFORM_FEE_RATE.
-   */
-  async recordSubscriptionRevenue(
-    storeId: string, sellerId: string, invoiceId: string,
-    sellerPayoutUSD: number, platformCommissionUSD: number, description: string,
-  ) {
-    await this.withTransaction(async (session) => {
-      const balance = await this.getOrCreateBalance(storeId, sellerId, 'USD', session);
-      const balanceBefore = balance.availableBalance;
-
-      balance.pendingBalance = this.round(balance.pendingBalance + sellerPayoutUSD);
-      balance.totalRevenue   = this.round(balance.totalRevenue + sellerPayoutUSD + platformCommissionUSD);
-      balance.totalFees      = this.round(balance.totalFees + platformCommissionUSD);
-      this.reevaluateDebtFlag(balance);
-      await balance.save({ session });
-
-      const saleTx = new this.txModel({
-        storeId, sellerId, currency: 'USD',
-        type: 'sale',
-        amount: this.round(sellerPayoutUSD + platformCommissionUSD),
-        balanceBefore,
-        balanceAfter: balance.availableBalance,
-        description,
-        referenceId: invoiceId,
-        referenceType: 'subscription_invoice',
-        status: 'pending',
-        metadata: { platformCommissionUSD, sellerPayoutUSD, clearingDays: CLEARING_DAYS, revenueType: 'subscription' },
-      });
-      await saleTx.save({ session });
-
-      const feeTx = new this.txModel({
-        storeId, sellerId, currency: 'USD',
-        type: 'fee',
-        amount: -platformCommissionUSD,
-        balanceBefore,
-        balanceAfter: balance.availableBalance,
-        description: `Platform subscription commission — invoice reference ${invoiceId}`,
-        referenceId: invoiceId,
-        referenceType: 'subscription_invoice',
-        status: 'completed',
-      });
-      await feeTx.save({ session });
-    });
-  }
-
-  /**
    * Records revenue from the Bookings module — a paid appointment or a
-   * package purchase. Mirrors `recordSubscriptionRevenue`'s ledger shape
-   * (pending → available after CLEARING_DAYS via the same clearing cron) so
-   * booking revenue behaves identically to sale/subscription revenue from
-   * the seller's point of view. Unlike `recordSubscriptionRevenue`, there is
-   * no separate platform-commission split parameter here — the Bookings spec
-   * doesn't define a platform cut for this revenue stream yet, so the full
-   * `amountUSD` is credited to the seller (no `fee` ledger row is written).
-   * If/when a booking-specific commission is introduced, split it the same
-   * way `recordSubscriptionRevenue` does before crediting the balance.
+   * package purchase. Same ledger shape as `recordSale` (pending → available after
+   * CLEARING_DAYS via the same clearing cron). There is no platform-commission split
+   * here — the full `amountUSD` is credited to the seller (no `fee` ledger row).
    */
   async recordBookingRevenue(
     storeId: string, sellerId: string, amountUSD: number, referenceId: string,
@@ -2000,6 +1976,32 @@ export class FinanceService {
   ) {
     const referenceType = opts?.referenceType ?? 'order';
     const currency = opts?.currency ?? 'USD';
+
+    // An ORDER refund may only claw back money the seller was actually
+    // credited. Without this, cancelling/refunding a paid order whose sale was
+    // never credited (still pre-shipment, Connect-settled, or settled directly
+    // via COD/bank transfer/the seller's own gateway) pushed the balance
+    // negative and flagged the seller as in debt for money they never got.
+    if (referenceType === 'order') {
+      const saleTx: any = await this.txModel.findOne({ storeId, referenceId, referenceType: 'order', type: 'sale' }).lean();
+      if (!saleTx) {
+        const current = await this.getOrCreateBalance(storeId, sellerId, currency);
+        return { balanceAfter: current.availableBalance, skipped: 'no_sale_credited' as const };
+      }
+      if (saleTx.metadata?.settledDirectly) {
+        const current = await this.getOrCreateBalance(storeId, sellerId, currency);
+        return { balanceAfter: current.availableBalance, skipped: 'settled_directly' as const };
+      }
+      // Never refund more than was credited for this order, cumulatively.
+      const prior: any[] = await this.txModel.find({ storeId, referenceId, referenceType: 'order', type: 'refund' }).select('amount').lean();
+      const alreadyRefunded = prior.reduce((sum, t) => sum + Math.abs(t.amount ?? 0), 0);
+      const remaining = this.round((saleTx.amount ?? 0) - alreadyRefunded);
+      if (remaining <= 0.005) {
+        const current = await this.getOrCreateBalance(storeId, sellerId, currency);
+        return { balanceAfter: current.availableBalance, skipped: 'already_fully_refunded' as const };
+      }
+      refundAmount = Math.min(refundAmount, remaining);
+    }
 
     const { balanceAfter, justFlagged } = await this.withTransaction(async (session) => {
       const balance = await this.getOrCreateBalance(storeId, sellerId, currency, session);

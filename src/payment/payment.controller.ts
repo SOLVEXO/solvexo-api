@@ -40,6 +40,15 @@ export class PaymentController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('user')
   @UseInterceptors(IdempotencyInterceptor)
+  @Post('store-credit-payment')
+  async storeCreditPayment(@Req() req: any, @Body() body: any) {
+    const { userId } = req.user;
+    return this.paymentService.storeCreditPayment(userId, body);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('user')
+  @UseInterceptors(IdempotencyInterceptor)
   @Post('initiate-payment')
   async initiatePayment(@Req() req: any, @Body() body: any) {
     const { userId } = req.user;

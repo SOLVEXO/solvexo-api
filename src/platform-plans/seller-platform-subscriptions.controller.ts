@@ -12,7 +12,7 @@ import { RequirePermission } from '../auth/decorators/require-permission.decorat
 import { actingSellerId } from '../common/acting-seller-id.util';
 import { IdempotencyInterceptor } from '../common/idempotency.interceptor';
 import { ChangePlatformPlanDto, CancelPlatformPlanDto, BillingPortalDto, ConfirmOnboardingPaymentMethodDto, SaveOnboardingDraftDto, AdminExtendSubscriptionDto, AdminAssignPlanDto, AdminUnlockOrLockDto } from './dto/subscribe-platform-plan.dto';
-import { RefundInvoiceDto } from '../subscriptions/dto/refund-invoice.dto';
+import { RefundInvoiceDto } from './dto/refund-invoice.dto';
 
 @ApiTags('Platform Plans — Seller')
 @Controller('api/platform-plans')

@@ -1,11 +1,11 @@
 /* eslint-disable prettier/prettier */
 import { ApiProperty } from '@nestjs/swagger';
-import { IsEnum, IsOptional, IsNumber, IsBoolean, IsString, Min, Max } from 'class-validator';
+import { IsEnum, IsOptional, IsNumber, IsBoolean, IsString, Matches, Min, Max } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class UpdatePayoutScheduleDto {
-  @ApiProperty({ required: false, enum: ['USD', 'PKR'], description: 'Which of the store\'s per-currency schedules this update applies to — defaults to USD' })
-  @IsOptional() @IsEnum(['USD', 'PKR'])
+  @ApiProperty({ required: false, example: 'USD', description: 'Which of the store\'s per-currency schedules this update applies to (ISO-4217) — defaults to USD' })
+  @IsOptional() @Matches(/^[A-Z]{3}$/, { message: 'currency must be a 3-letter ISO currency code' })
   currency?: string;
 
   @ApiProperty({ required: false, enum: ['daily', 'weekly', 'biweekly', 'monthly', 'manual'] })

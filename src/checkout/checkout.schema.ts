@@ -109,6 +109,18 @@ export class CheckoutItem {
   @Prop({ type: Number, default: null })
   totalPriceBeforeGiftCard: number | null;
 
+  // Same "before" pattern again, for STORE CREDIT (the outermost layer: applied after any
+  // coupon / gift card, peeled off first whenever those change, then re-applied — see
+  // CheckoutService.settleStoreCredit). Amounts are in the selling store's own currency.
+  @Prop({ type: Number, default: 0 })
+  storeCreditDiscountUSD: number;
+
+  @Prop({ type: Number, default: null })
+  priceBeforeStoreCredit: number | null;
+
+  @Prop({ type: Number, default: null })
+  totalPriceBeforeStoreCredit: number | null;
+
   // Automatic platform-campaign discount (see MarketingService's active-campaign
   // lookup) — resolved once at checkout-creation time from the item's store's
   // active campaign, same "computed server-side, never client-supplied" rule as
@@ -200,7 +212,7 @@ export class Checkout {
   @Prop({ type: String, default: null })
   liveShippingService: string | null;
 
-  @Prop({ type: String, enum: ['cash_on_delivery', 'stripe', 'manual_bank_transfer'], default: null })
+  @Prop({ type: String, enum: ['cash_on_delivery', 'stripe', 'manual_bank_transfer', 'store_credit'], default: null })
   paymentType: string | null;
 
   @Prop({ type: String, default: null })
@@ -257,6 +269,18 @@ export class Checkout {
 
   @Prop({ default: 0 })
   giftCardDiscountTotalUSD: number;
+
+  // Store credit (Shopify-style): the buyer toggles it on and it is applied automatically, up to
+  // their balance, whenever the checkout changes. `storeCreditDiscountTotalUSD` is the amount
+  // currently applied (store currency). Spent for real at order placement.
+  @Prop({ type: Boolean, default: false })
+  storeCreditApplied: boolean;
+
+  @Prop({ type: String, default: null })
+  storeCreditStoreId: string | null;
+
+  @Prop({ default: 0 })
+  storeCreditDiscountTotalUSD: number;
 
   // Sum of every item's campaignDiscountUSD — a multi-store cart can have a
   // different active campaign per store, so (unlike couponCode/couponStoreId)

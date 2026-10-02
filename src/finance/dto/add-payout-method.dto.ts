@@ -1,14 +1,17 @@
 /* eslint-disable prettier/prettier */
 import { ApiProperty } from '@nestjs/swagger';
-import { IsString, IsNotEmpty, IsEnum, IsOptional, IsBoolean, Length } from 'class-validator';
+import { IsString, IsNotEmpty, IsEnum, IsOptional, IsBoolean, Length, Matches } from 'class-validator';
 
 export class AddPayoutMethodDto {
   @ApiProperty({ enum: ['bank_transfer', 'jazzcash', 'easypaisa', 'paypal', 'stripe'] })
   @IsEnum(['bank_transfer', 'jazzcash', 'easypaisa', 'paypal', 'stripe'])
   type: string;
 
-  @ApiProperty({ required: false, enum: ['USD', 'PKR'], description: 'Defaults to PKR for jazzcash/easypaisa, USD otherwise' })
-  @IsOptional() @IsEnum(['USD', 'PKR']) currency?: string;
+  // Any ISO-4217 code, not just USD/PKR: a store can hold balances in every
+  // currency its markets support (see SellerBalance.currency, which has no
+  // enum), so a USD/PKR-only check would reject legitimate wallets.
+  @ApiProperty({ required: false, example: 'USD', description: 'ISO-4217 code. Defaults to PKR for jazzcash/easypaisa, USD otherwise' })
+  @IsOptional() @Matches(/^[A-Z]{3}$/, { message: 'currency must be a 3-letter ISO currency code' }) currency?: string;
 
   // Bank transfer fields
   @ApiProperty({ required: false, example: 'Chase Bank' })

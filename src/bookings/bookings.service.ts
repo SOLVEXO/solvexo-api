@@ -5,6 +5,8 @@ import { PaymentGatewayService } from '../subscriptions/payment-gateway/payment-
 import { FinanceService } from '../finance/finance.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { NOTIFICATION_TYPES } from '../notifications/notification.types';
+import { StripeConnectService } from '../stripe-connect/stripe-connect.service';
+import { CommissionRulesService } from '../commission-rules/commission-rules.service';
 import { verifyStoreOwnershipOrForbidden } from '../common/store-ownership.util';
 import { computeAvailableSlots } from './utils/slot-calculator.util';
 import { BookAppointmentDto } from './dto/book-appointment.dto';
@@ -26,7 +28,26 @@ export class BookingsService {
     private readonly gateway: PaymentGatewayService,
     private readonly financeService: FinanceService,
     private readonly notificationsService: NotificationsService,
+    private readonly stripeConnectService: StripeConnectService,
+    private readonly commissionRulesService: CommissionRulesService,
   ) {}
+
+  /**
+   * Buyer payments for appointments/packages go straight to the seller's own connected Stripe
+   * account (destination charge) — never to the platform account, and never through the platform
+   * ledger. A store with no card provider can't sell bookable services online. Resolved BEFORE any
+   * local row is created so a refusal leaves nothing behind. Returns null only when the gateway
+   * isn't Stripe-driven (the dev "manual" provider), which keeps the legacy ledger path.
+   */
+  private async resolveConnectForCharge(storeId: string, amountUSD: number): Promise<{ connectAccountId: string; applicationFeeAmountCents: number } | null> {
+    if (!this.gateway.isProviderDrivenBilling) return null;
+    const connectAccountId = await this.stripeConnectService.getEligibleConnectAccountForStore(String(storeId));
+    if (!connectAccountId) {
+      throw new BadRequestException("This store hasn't set up online card payments yet, so it can't take paid bookings right now.");
+    }
+    const applicationFeeAmountCents = await this.commissionRulesService.cardApplicationFeeCents(String(storeId), Math.round(amountUSD * 100));
+    return { connectAccountId, applicationFeeAmountCents };
+  }
 
   // ── Shorthand getters ────────────────────────────────────────────────────
   private get bookingModel()      { return this.db.repositories.bookingModel; }
@@ -145,6 +166,8 @@ export class BookingsService {
       price = 0;
     }
 
+    const connectRoute = dto.packagePurchaseId ? null : await this.resolveConnectForCharge(String(service.storeId), price);
+
     let booking: any;
     try {
       booking = await this.bookingModel.create({
@@ -194,7 +217,7 @@ export class BookingsService {
 
     // ── Direct charge path ───────────────────────────────────────────────────
     const providerCustomerId = await this.ensureProviderCustomerId(buyerId);
-    const charge = await this.gateway.chargeOneTime(String(booking._id), price, { providerCustomerId, idempotencyKey });
+    const charge = await this.gateway.chargeOneTime(String(booking._id), price, { providerCustomerId, idempotencyKey, ...(connectRoute ?? {}) });
 
     if (!charge.success) {
       // Release the slot — a failed charge must not hold a phantom pending booking.
@@ -206,10 +229,13 @@ export class BookingsService {
     booking.providerChargeId = charge.providerChargeId;
     await booking.save();
 
-    await this.financeService.recordBookingRevenue(
-      service.storeId, service.sellerId, price, String(booking._id), 'booking',
-      `Booking revenue — "${service.name}" on ${date.toDateString()}`,
-    );
+    // Connect-settled: the money is already in the seller's own account — a ledger credit would let them withdraw it twice.
+    if (!connectRoute) {
+      await this.financeService.recordBookingRevenue(
+        service.storeId, service.sellerId, price, String(booking._id), 'booking',
+        `Booking revenue — "${service.name}" on ${date.toDateString()}`,
+      );
+    }
 
     await notifyConfirmed();
     return { success: true, data: { booking } };
@@ -224,6 +250,8 @@ export class BookingsService {
 
     const service = await this.serviceModel.findById(pkg.serviceId);
     if (!service || service.isDelete) throw new NotFoundException('Service not found');
+
+    const connectRoute = await this.resolveConnectForCharge(String(pkg.storeId), pkg.price);
 
     const now = new Date();
     const expiresAt = new Date(now.getTime() + pkg.validityDays * 24 * 60 * 60 * 1000);
@@ -248,7 +276,7 @@ export class BookingsService {
     });
 
     const providerCustomerId = await this.ensureProviderCustomerId(buyerId);
-    const charge = await this.gateway.chargeOneTime(String(purchase._id), pkg.price, { providerCustomerId, idempotencyKey });
+    const charge = await this.gateway.chargeOneTime(String(purchase._id), pkg.price, { providerCustomerId, idempotencyKey, ...(connectRoute ?? {}) });
 
     if (!charge.success) {
       await this.purchaseModel.deleteOne({ _id: purchase._id });
@@ -258,10 +286,12 @@ export class BookingsService {
     purchase.providerChargeId = charge.providerChargeId;
     await purchase.save();
 
-    await this.financeService.recordBookingRevenue(
-      pkg.storeId, pkg.sellerId, pkg.price, String(purchase._id), 'package_purchase',
-      `Package purchase revenue — "${pkg.name}"`,
-    );
+    if (!connectRoute) {
+      await this.financeService.recordBookingRevenue(
+        pkg.storeId, pkg.sellerId, pkg.price, String(purchase._id), 'package_purchase',
+        `Package purchase revenue — "${pkg.name}"`,
+      );
+    }
 
     this.notificationsService.notify({
       recipientId: buyerId,

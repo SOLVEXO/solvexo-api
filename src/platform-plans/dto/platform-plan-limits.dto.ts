@@ -27,7 +27,6 @@ export class PlatformPlanLimitsDto {
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() customDomainAllowed?: boolean;
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() whiteLabelAllowed?: boolean;
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() loyaltyProgramAllowed?: boolean;
-  @ApiProperty({ required: false }) @IsOptional() @IsBoolean() subscriptionProductsAllowed?: boolean;
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() advancedAnalyticsAllowed?: boolean;
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() abandonedCartRecoveryAllowed?: boolean;
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() emailCampaignsAllowed?: boolean;

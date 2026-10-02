@@ -53,6 +53,8 @@ export class SubscriptionInvoice {
   @Prop({ type: Number, default: 0 }) platformCommissionUSD: number;
   @Prop({ type: Number, default: 0 }) sellerPayoutUSD: number;
   @Prop({ type: Boolean, default: false }) payoutCredited: boolean;
+  /** Paid straight into the seller's connected account — a refund must reverse that transfer. */
+  @Prop({ type: Boolean, default: false }) settledViaConnect: boolean;
 
   @Prop({ default: false }) isDelete: boolean;
 }

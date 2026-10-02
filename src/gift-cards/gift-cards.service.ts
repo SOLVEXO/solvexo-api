@@ -4,6 +4,8 @@ import { ConfigService } from '@nestjs/config';
 import { DatabaseService } from '@/database/databaseservice';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { ExchangeRateService } from '@/exchange-rate/exchange-rate.service';
+import { StripeConnectService } from '../stripe-connect/stripe-connect.service';
+import { CommissionRulesService } from '../commission-rules/commission-rules.service';
 import { EmailService } from '@/otp/services/email.service';
 import { UpdateGiftCardSettingsDto } from './dto/update-gift-card-settings.dto';
 import { IssueManualGiftCardDto } from './dto/issue-manual-gift-card.dto';
@@ -28,6 +30,8 @@ export class GiftCardsService {
     private readonly exchangeRateService: ExchangeRateService,
     private readonly emailService: EmailService,
     private readonly configService: ConfigService,
+    private readonly stripeConnectService: StripeConnectService,
+    private readonly commissionRulesService: CommissionRulesService,
   ) {
     const secretKey = this.configService.get<string>('STRIPE_SECRET_KEY')?.trim();
     if (secretKey) {
@@ -223,11 +227,23 @@ export class GiftCardsService {
     const amountCents = Math.round(this.round(dto.amount) * 100);
     if (amountCents < 50) throw new BadRequestException('Amount is too small to process');
 
+    // The buyer's payment goes straight to the seller's own connected account
+    // — previously it landed on the platform's shared account and the seller
+    // was never credited for gift-card sales at all.
+    const connectAccountId = await this.stripeConnectService.getEligibleConnectAccountForStore(storeId);
+    if (!connectAccountId) {
+      throw new BadRequestException("This store hasn't set up online card payments yet, so gift cards can't be purchased right now.");
+    }
+    const applicationFeeAmountCents = await this.commissionRulesService.cardApplicationFeeCents(storeId, amountCents);
+
     const paymentIntent = await stripe.paymentIntents.create({
       amount: amountCents,
       currency: currency.toLowerCase(),
+      transfer_data: { destination: connectAccountId },
+      application_fee_amount: applicationFeeAmountCents,
       metadata: {
         purpose: 'gift_card_purchase',
+        connectedAccountId: connectAccountId,
         storeId,
         userId,
         amount: String(dto.amount),

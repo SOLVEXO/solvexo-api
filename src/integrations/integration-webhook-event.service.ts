@@ -25,4 +25,14 @@ export class IntegrationWebhookEventService {
       throw err;
     }
   }
+
+  /**
+   * Un-records a (provider, externalEventId) pair. Called when processing
+   * an event FAILED after `recordOnce` already inserted it — otherwise the
+   * gateway's retry of that same event is answered as a "duplicate" and
+   * silently dropped, leaving a paid checkout with no order forever.
+   */
+  async forget(provider: string, externalEventId: string): Promise<void> {
+    await this.model.deleteOne({ provider, externalEventId });
+  }
 }

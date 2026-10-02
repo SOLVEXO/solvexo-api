@@ -14,6 +14,7 @@ import { AdminConfigService } from '@/admin-config/admin-config.service';
 import { ExchangeRateService } from '@/exchange-rate/exchange-rate.service';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { GiftCardsService } from '@/gift-cards/gift-cards.service';
+import { StoreCreditService } from '@/store-credit/store-credit.service';
 import { StripeConnectService } from '@/stripe-connect/stripe-connect.service';
 import { CommissionRulesService } from '@/commission-rules/commission-rules.service';
 import { AbandonedCartService } from '@/abandoned-cart/abandoned-cart.service';
@@ -23,6 +24,20 @@ import { EmailService } from '@/otp/services/email.service';
 import { verifyStoreOwnershipStrict } from '@/common/store-ownership.util';
 import { deriveRollupStatus } from '@/orders/order-status.util';
 import Stripe from 'stripe';
+
+/**
+ * Whether an order's money went straight to the seller's connected account. Only an order actually
+ * PAID THROUGH STRIPE in this checkout is Connect-settled — in a 'split' checkout the digital part is
+ * paid online (to the seller) while the physical part is COD, and that one must not be flagged
+ * (it would wrongly route a refund to Stripe and skip its own ledger handling).
+ */
+export function isSellerOrderConnectSettled(
+  paidViaStripe: boolean,
+  connectInfo: { storeId: string; accountId: string } | null | undefined,
+  sellerStoreId: string,
+): boolean {
+  return paidViaStripe && connectInfo?.storeId === sellerStoreId;
+}
 
 @Injectable()
 export class PaymentService {
@@ -48,6 +63,7 @@ export class PaymentService {
     private readonly affiliateService: AffiliateService,
     private readonly draftOrdersService: DraftOrdersService,
     private readonly emailService: EmailService,
+    private readonly storeCreditService: StoreCreditService,
   ) {
     const secretKey = this.configService
       .get<string>('STRIPE_SECRET_KEY')
@@ -169,6 +185,8 @@ export class PaymentService {
       throw new BadRequestException('Checkout has expired');
     }
 
+    await this.assertStoreCreditStillCovers(checkout);
+
     const physicalItems = checkout.items.filter(
       (i: any) => i.type === 'physical',
     );
@@ -223,7 +241,10 @@ export class PaymentService {
             (s: number, i: any) =>
               s +
               this.exchangeRateService.convertWithSnapshots(
-                i.totalPrice,
+                // + taxUSD (stamped in the item's own native currency): the
+                // digital order created from this charge counts its items'
+                // tax in its totalAmount, so the charge must include it too.
+                i.totalPrice + (i.taxUSD ?? 0),
                 i.currency ?? checkout.currency,
                 checkout.currency,
                 (checkout.fxSnapshots as any) ?? [],
@@ -306,12 +327,25 @@ export class PaymentService {
     // multi-store cart spanning stores with different capture preferences
     // has no single correct answer and always falls back to 'automatic'.
     let manualCapture = false;
-    if (!useSplit && checkoutStoreIds.length === 1) {
-      connectAccountId = await this.stripeConnectService.getEligibleConnectAccountForStore(checkoutStoreIds[0]);
-      if (connectAccountId) {
-        // Card-network cost passed through (+ a custom per-seller commission, if one was agreed) — no plan commission on this rail.
-        applicationFeeAmountCents = await this.commissionRulesService.cardApplicationFeeCents(checkoutStoreIds[0], amountCents);
-      }
+    // Shopify rule: a store with no payment provider cannot take cards at
+    // checkout. Online card payments go ONLY to the seller's own connected
+    // account (the "Solvexo Payments" rail) — the buyer's money never lands on
+    // the platform's shared Stripe account any more (that fallback made the
+    // platform hold buyer funds and run a ledger/payout for them).
+    if (checkoutStoreIds.length !== 1) {
+      throw new BadRequestException(
+        'Online card payment is only available when checking out from a single store. Please check out one store at a time.',
+      );
+    }
+    connectAccountId = await this.stripeConnectService.getEligibleConnectAccountForStore(checkoutStoreIds[0]);
+    if (!connectAccountId) {
+      throw new BadRequestException(
+        "This store hasn't set up online card payments yet. Please choose Cash on Delivery or another available payment method.",
+      );
+    }
+    // Card-network cost passed through (+ a custom per-seller commission, if one was agreed) — no plan commission on this rail.
+    applicationFeeAmountCents = await this.commissionRulesService.cardApplicationFeeCents(checkoutStoreIds[0], amountCents);
+    if (!useSplit) {
       const store = await this.databaseService.repositories.storeModel
         .findById(checkoutStoreIds[0]).select('paymentCaptureMethod').lean();
       manualCapture = (store as any)?.paymentCaptureMethod === 'manual';
@@ -1324,6 +1358,71 @@ export class PaymentService {
    *  handleWebhook` doesn't surface a confirmed charged amount in its event
    *  payload today (only `currency`, not `amount`) — nothing to compare
    *  against. Revisit if a future provider's webhook does carry one. */
+  /**
+   * The amount a per-store gateway (Safepay/Stripe-integration/…) must
+   * charge for a checkout, in `targetCurrency`: the checkout's FINAL payable
+   * total (items − discounts + shipping + tax — `checkout.totalAmount`, the
+   * same figure the order will record), converted from the checkout currency
+   * with the checkout's own frozen FX snapshots. Previously the gateway
+   * charged only the sum of item prices (no shipping, no tax) while the order
+   * and the seller's ledger counted the full total. Returns the (possibly
+   * extended) snapshot set so the caller can persist it with the transaction.
+   */
+  async computeGatewayCharge(
+    checkout: { totalAmount: number; currency: string; fxSnapshots?: any[] },
+    targetCurrency: string,
+  ): Promise<{ amount: number; fxSnapshots: any[] }> {
+    const fxSnapshots = await this.exchangeRateService.ensureCurrencyInSnapshots(
+      (checkout.fxSnapshots as any) ?? [],
+      targetCurrency,
+    );
+    const amount = this.exchangeRateService.convertWithSnapshots(
+      checkout.totalAmount,
+      checkout.currency,
+      targetCurrency,
+      fxSnapshots,
+    );
+    return { amount: this.round(amount), fxSnapshots };
+  }
+
+  /**
+   * Cross-checks a gateway-reported successful payment against what we
+   * expected to receive: the pending PaymentTransaction (created at initiate
+   * with the exact charged amount/currency) must exist, belong to a checkout
+   * that is single-store AND that store, and — when the gateway reports an
+   * amount/currency — match. Throws BadRequestException on any mismatch so
+   * the caller never finalizes an order for a forged, cross-store or
+   * under-paid event.
+   */
+  async assertGatewayPaymentMatches(params: {
+    providerSessionId: string;
+    paymentType: string;
+    storeId: string;
+    paidAmount?: number;
+    paidCurrency?: string;
+  }): Promise<void> {
+    const { paymentTransactionModel, checkoutModel } = this.databaseService.repositories;
+    const txn = await paymentTransactionModel.findOne({
+      providerSessionId: params.providerSessionId,
+      paymentType: params.paymentType,
+      isDelete: false,
+    });
+    if (!txn) throw new BadRequestException('Unknown payment session');
+
+    const checkout = await checkoutModel.findOne({ _id: txn.checkoutId, isDelete: false }).select('items').lean();
+    const storeIds = [...new Set(((checkout as any)?.items ?? []).map((i: any) => i.storeId))];
+    if (storeIds.length !== 1 || storeIds[0] !== params.storeId) {
+      throw new BadRequestException('Payment session does not belong to this store');
+    }
+
+    if (typeof params.paidAmount === 'number' && Math.abs(params.paidAmount - txn.amount) > 0.01) {
+      throw new BadRequestException(`Payment amount mismatch (paid ${params.paidAmount}, expected ${txn.amount})`);
+    }
+    if (params.paidCurrency && txn.currency && params.paidCurrency.toUpperCase() !== String(txn.currency).toUpperCase()) {
+      throw new BadRequestException(`Payment currency mismatch (paid ${params.paidCurrency}, expected ${txn.currency})`);
+    }
+  }
+
   async finalizeGatewayPayment(providerSessionId: string, paymentType: string): Promise<{ orderIds: string[] } | null> {
     const { checkoutModel, paymentTransactionModel, orderModel, addressModel, cartModel } =
       this.databaseService.repositories;
@@ -1463,6 +1562,85 @@ export class PaymentService {
     );
   }
 
+  /**
+   * Called right before ANY payment is taken for a checkout that has store credit applied: the
+   * credit is only really spent when the order is placed, so make sure the buyer still has it —
+   * otherwise they'd be charged for the discounted total while the credit silently failed to apply.
+   */
+  async assertStoreCreditStillCovers(checkout: { userId: any; storeCreditApplied?: boolean; storeCreditStoreId?: string | null; storeCreditDiscountTotalUSD?: number }) {
+    if (!checkout?.storeCreditApplied || !checkout.storeCreditStoreId || !((checkout.storeCreditDiscountTotalUSD ?? 0) > 0)) return;
+    await this.storeCreditService.assertCovers(checkout.storeCreditStoreId, String(checkout.userId), checkout.storeCreditDiscountTotalUSD!);
+  }
+
+  /**
+   * Places an order that store credit pays for IN FULL (nothing left to charge) — Shopify just
+   * completes the checkout when the credit covers the total. Anything still owed (shipping/tax
+   * not covered by the credit) goes through the normal Stripe/COD/bank-transfer paths instead.
+   */
+  async storeCreditPayment(userId: string, body: any) {
+    const { checkoutId } = body ?? {};
+    if (!checkoutId) throw new BadRequestException('checkoutId is required');
+
+    const { checkoutModel, paymentTransactionModel, orderModel, addressModel, productVariantModel, cartModel } =
+      this.databaseService.repositories;
+
+    const checkout = await checkoutModel.findOne({ _id: checkoutId, userId, isDelete: false });
+    if (!checkout) throw new NotFoundException('Checkout not found');
+    if (checkout.status === 'completed') throw new BadRequestException('Checkout already completed');
+    if (checkout.status === 'cancelled') throw new BadRequestException('Checkout is cancelled');
+    if (checkout.status === 'expired') throw new BadRequestException('Checkout has expired');
+    if (checkout.expiredAt && checkout.expiredAt < new Date()) {
+      await checkoutModel.findByIdAndUpdate(checkout._id, { status: 'expired' });
+      throw new BadRequestException('Checkout has expired');
+    }
+
+    if (!checkout.storeCreditApplied || !((checkout.storeCreditDiscountTotalUSD ?? 0) > 0)) {
+      throw new BadRequestException('Apply your store credit first.');
+    }
+    if (checkout.totalAmount > 0.005) {
+      throw new BadRequestException('Your store credit does not cover the full amount — choose a payment method for the rest.');
+    }
+    await this.assertStoreCreditStillCovers(checkout);
+
+    for (const item of checkout.items) {
+      if (item.type !== 'physical') continue;
+      const variant = await productVariantModel.findOne({ _id: item.variantId, isDelete: false });
+      if (!variant) throw new BadRequestException(`Item not available: ${item.name}`);
+      const availablePreCheck = variant.stock - (variant.committedStock || 0);
+      if (!variant.unlimitedStock && !(variant as any).allowBackorder && availablePreCheck < item.quantity) {
+        throw new BadRequestException(`Insufficient stock for ${item.name}. Available: ${availablePreCheck}, required: ${item.quantity}`);
+      }
+    }
+
+    await checkoutModel.findByIdAndUpdate(checkoutId, { paymentType: 'store_credit', status: 'payment_pending' });
+
+    const info = { paymentType: 'store_credit', isPaid: true, paymentStatus: 'paid' };
+    const orders = await this.createOrder(userId, checkout, orderModel, addressModel, info, info);
+
+    await paymentTransactionModel.create({
+      userId,
+      checkoutId: checkout._id.toString(),
+      orderIds: orders.map((o: any) => o._id.toString()),
+      paymentType: 'store_credit',
+      amount: 0,
+      currency: checkout.currency,
+      fxSnapshots: checkout.fxSnapshots,
+      status: 'completed',
+      stripePaymentIntentId: null,
+      stripeClientSecret: null,
+      paidAt: new Date(),
+    });
+
+    await checkoutModel.findByIdAndUpdate(checkoutId, { status: 'completed' });
+    await this.removeCheckedOutItemsFromCart(userId, checkout, cartModel);
+
+    return {
+      success: true,
+      message: 'Order placed successfully (paid with store credit)',
+      data: { orders: orders.map((o: any) => this.formatOrder(o)) },
+    };
+  }
+
   async codPayment(userId: string, body: any) {
     const { checkoutId } = body;
     if (!checkoutId) throw new BadRequestException('checkoutId is required');
@@ -1494,6 +1672,8 @@ export class PaymentService {
       });
       throw new BadRequestException('Checkout has expired');
     }
+
+    await this.assertStoreCreditStillCovers(checkout);
 
     const hasDigital = checkout.items.some((i: any) => i.type === 'digital');
     if (hasDigital)
@@ -1607,6 +1787,8 @@ export class PaymentService {
       await checkoutModel.findByIdAndUpdate(checkout._id, { status: 'expired' });
       throw new BadRequestException('Checkout has expired');
     }
+
+    await this.assertStoreCreditStillCovers(checkout);
 
     // Bank transfer settles into ONE seller's own bank account (see
     // StoreIntegrationsService — 'bank_transfer' provider), so a cart that
@@ -1911,7 +2093,7 @@ export class PaymentService {
     );
 
     // --- helper: ek type ke items ko store-wise sellerOrders me ---
-    const buildSellerOrders = (items: any[]) => {
+    const buildSellerOrders = (items: any[], paidViaStripe = true) => {
       const storeMap: Record<string, any[]> = {};
       for (const item of items) {
         const key = item.storeId || item.sellerId;
@@ -1951,7 +2133,11 @@ export class PaymentService {
         // compounding rounding error from converting native→orderCurrency
         // and back again just to arrive at the same number.
         const settlementAmount = this.round(subtotalNative + platformSponsoredDiscountUSDNative + taxAmountNative);
-        const isConnectSettled = connectInfo?.storeId === sellerStoreId;
+        // Only an order actually paid through Stripe is Connect-settled: in a
+        // 'split' checkout the digital part is paid online (to the seller's
+        // account) while the physical part is COD — that one must not be
+        // flagged as settled (it would wrongly route a refund to Stripe).
+        const isConnectSettled = isSellerOrderConnectSettled(paidViaStripe, connectInfo, sellerStoreId);
         return {
           sellerId: storeItems[0].sellerId,
           storeId: storeItems[0].storeId,
@@ -1977,6 +2163,7 @@ export class PaymentService {
             subscriberDiscountUSD: convFrom(i.subscriberDiscountUSD ?? 0, storeCurrency),
             couponDiscountUSD: convFrom(i.couponDiscountUSD ?? 0, storeCurrency),
             giftCardDiscountUSD: convFrom(i.giftCardDiscountUSD ?? 0, storeCurrency),
+            storeCreditDiscountUSD: convFrom(i.storeCreditDiscountUSD ?? 0, storeCurrency),
             campaignId: i.campaignId ?? null,
             campaignDiscountUSD: convFrom(i.campaignDiscountUSD ?? 0, storeCurrency),
             campaignSponsorType: i.campaignSponsorType ?? null,
@@ -2013,7 +2200,7 @@ export class PaymentService {
 
     // === PHYSICAL ORDER ===
     if (physicalItems.length > 0) {
-      const sellerOrders = buildSellerOrders(physicalItems);
+      const sellerOrders = buildSellerOrders(physicalItems, physicalPayment.paymentType === 'stripe' && physicalPayment.isPaid);
       // Spans potentially multiple sellers/currencies — each item is
       // converted from its OWN native currency into orderCurrency before
       // summing (convertedSum), never summed raw across mixed currencies.
@@ -2026,6 +2213,7 @@ export class PaymentService {
       const subscriberDiscountTotal = convertedSum(physicalItems, 'subscriberDiscountUSD');
       const couponDiscountTotal = convertedSum(physicalItems, 'couponDiscountUSD');
       const giftCardDiscountTotal = convertedSum(physicalItems, 'giftCardDiscountUSD');
+      const storeCreditDiscountTotal = convertedSum(physicalItems, 'storeCreditDiscountUSD');
       const autoDiscountTotal = convertedSum(physicalItems, 'autoDiscountUSD');
       const campaignDiscountTotal = convertedSum(physicalItems, 'campaignDiscountUSD');
       const platformSponsoredDiscountTotal = convertedSum(
@@ -2054,6 +2242,7 @@ export class PaymentService {
         couponDiscountTotal,
         giftCardCode: giftCardDiscountTotal > 0 ? checkout.giftCardCode : null,
         giftCardDiscountTotal,
+        storeCreditDiscountTotal,
         campaignDiscountTotal,
         autoDiscountTotal,
         platformSponsoredDiscountTotal,
@@ -2073,11 +2262,12 @@ export class PaymentService {
 
     // === DIGITAL ORDER ===
     if (digitalItems.length > 0) {
-      const sellerOrders = buildSellerOrders(digitalItems);
+      const sellerOrders = buildSellerOrders(digitalItems, digitalPayment.paymentType === 'stripe' && digitalPayment.isPaid);
       const subtotal = convertedSum(digitalItems, 'totalPrice');
       const subscriberDiscountTotal = convertedSum(digitalItems, 'subscriberDiscountUSD');
       const couponDiscountTotal = convertedSum(digitalItems, 'couponDiscountUSD');
       const giftCardDiscountTotal = convertedSum(digitalItems, 'giftCardDiscountUSD');
+      const storeCreditDiscountTotal = convertedSum(digitalItems, 'storeCreditDiscountUSD');
       const autoDiscountTotal = convertedSum(digitalItems, 'autoDiscountUSD');
       const campaignDiscountTotal = convertedSum(digitalItems, 'campaignDiscountUSD');
       const platformSponsoredDiscountTotal = convertedSum(
@@ -2102,6 +2292,7 @@ export class PaymentService {
         couponDiscountTotal,
         giftCardCode: giftCardDiscountTotal > 0 ? checkout.giftCardCode : null,
         giftCardDiscountTotal,
+        storeCreditDiscountTotal,
         campaignDiscountTotal,
         autoDiscountTotal,
         platformSponsoredDiscountTotal,
@@ -2179,6 +2370,19 @@ export class PaymentService {
         checkout.giftCardStoreId,
         checkout.giftCardCode,
         checkout.giftCardDiscountTotalUSD,
+        String(checkout._id),
+        String(createdOrders[0]?._id ?? ''),
+      );
+    }
+
+    // Store credit is likewise spent only now that the order is really placed (an abandoned
+    // checkout must not burn the buyer's credit). Idempotent per checkout; initiation already
+    // asserted the balance covers it (see assertStoreCreditStillCovers).
+    if (checkout.storeCreditApplied && checkout.storeCreditStoreId && checkout.storeCreditDiscountTotalUSD > 0) {
+      await this.storeCreditService.redeemAtOrderPlacement(
+        checkout.storeCreditStoreId,
+        String(userId),
+        checkout.storeCreditDiscountTotalUSD,
         String(checkout._id),
         String(createdOrders[0]?._id ?? ''),
       );
