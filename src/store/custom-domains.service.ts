@@ -2,6 +2,7 @@
 import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
 import { promises as dns } from 'dns';
 import * as tls from 'tls';
+import { domainToASCII } from 'url';
 import { DatabaseService } from '@/database/databaseservice';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { EntitlementsService } from '@/platform-plans/entitlements.service';
@@ -78,7 +79,10 @@ export class CustomDomainsService implements OnModuleInit {
 
   // ── helpers ──
   static normalize(raw: string): string {
-    return String(raw ?? '').trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '').replace(/\.$/, '');
+    const cleaned = String(raw ?? '').trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '').replace(/\.$/, '');
+    // An internationalised domain (Unicode letters) is stored in its ASCII "punycode" form (xn--…): that is what DNS, TLS
+    // certificates and Vercel actually use. domainToASCII returns '' for something that is not a valid hostname.
+    return /[^\x00-\x7f]/.test(cleaned) ? domainToASCII(cleaned) : cleaned;
   }
 
   private async loadOwned(sellerId: string, storeId: string) {
@@ -113,8 +117,22 @@ export class CustomDomainsService implements OnModuleInit {
     this.hostCache = null;
   }
 
-  private response(store: any) {
+  /** The A record a bare (apex) domain should use: configured value, else what the platform target resolves to, else Vercel's
+   *  documented anycast IP. Cached for 10 minutes. */
+  private aRecordCache: { value: string; at: number } | null = null;
+  private async aRecordValue(): Promise<string> {
+    const env = process.env.CUSTOM_DOMAIN_A_RECORD?.trim();
+    if (env) return env.split(',')[0].trim();
+    if (this.aRecordCache && Date.now() - this.aRecordCache.at < 600_000) return this.aRecordCache.value;
+    let value = '76.76.21.21';
+    try { const ips = await dns.resolve4(CUSTOM_DOMAIN_CNAME_TARGET); if (ips[0]) value = ips[0]; } catch { /* keep the fallback */ }
+    this.aRecordCache = { value, at: Date.now() };
+    return value;
+  }
+
+  private async response(store: any) {
     const primary: string | null = store.primaryDomain ?? null;
+    const aRecord = await this.aRecordValue();
     return {
       success: true,
       data: {
@@ -123,7 +141,7 @@ export class CustomDomainsService implements OnModuleInit {
         // What customers are sent to: the primary custom domain when set, else the free address.
         canonicalHost: primary ?? this.defaultHost(store),
         domains: (store.customDomains ?? []).map((d: CustomDomainEntry) => this.pub(d, primary)),
-        dns: { cnameTarget: CUSTOM_DOMAIN_CNAME_TARGET, aRecord: process.env.CUSTOM_DOMAIN_A_RECORD?.trim() || null },
+        dns: { cnameTarget: CUSTOM_DOMAIN_CNAME_TARGET, aRecord },
         httpsAutomation: this.vercel.isConfigured(),
         maxDomains: MAX_DOMAINS_PER_STORE,
       },
@@ -137,6 +155,7 @@ export class CustomDomainsService implements OnModuleInit {
     const env = process.env.CUSTOM_DOMAIN_A_RECORD?.trim();
     if (env) env.split(',').map((s) => s.trim()).filter(Boolean).forEach((i) => ips.add(i));
     try { (await dns.resolve4(CUSTOM_DOMAIN_CNAME_TARGET)).forEach((i) => ips.add(i)); } catch { /* target not resolvable from here */ }
+    ips.add(await this.aRecordValue()); // exactly the value the seller is shown, so what we display always verifies
     return ips;
   }
 
@@ -244,7 +263,7 @@ export class CustomDomainsService implements OnModuleInit {
       description: entry.status === 'verified' ? `Domain ${domain} verified` : `Domain ${domain} not verified: ${entry.dnsError}`,
       actorId: actor.actorId, actorRole: actor.actorRole,
     });
-    return { ...this.response(store), verified: entry.status === 'verified', reason: entry.dnsError };
+    return { ...(await this.response(store)), verified: entry.status === 'verified', reason: entry.dnsError };
   }
 
   /** `domain === null` makes the free `<slug>.solvexo.store` address the primary. */
