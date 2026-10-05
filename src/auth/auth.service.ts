@@ -397,6 +397,21 @@ export class AuthService {
   /** Social login resolves against the buyer (User) or seller (Seller) collection based on dto.role (default 'user') — same role-picks-the-model pattern as login()/signup(). */
   async socialLogin(dto: SocialLoginDto) {
     try {
+      const verifiedEmail = await this.verifySocialToken(dto.authProvider, dto.socialId, dto.token);
+      return await this.finishSocialLogin(dto, verifiedEmail);
+    } catch (error) {
+      throw new UnauthorizedException(error.message || 'Social login failed');
+    }
+  }
+
+  /**
+   * Second half of social login, after the provider identity has ALREADY been verified by the caller
+   * (`socialLogin` above for the platform's own Google app; the store-level OAuth code flow in
+   * customer-social-login/ for a store's own Google/Facebook app). `verifiedEmail` must come from the
+   * provider, never from the client.
+   */
+  async finishSocialLogin(dto: SocialLoginDto, verifiedEmail: string | null) {
+    try {
       const {
         authProvider,
         socialId,
@@ -404,7 +419,6 @@ export class AuthService {
         name,
         image,
         fcmToken,
-        token,
         role,
         storeId,
       } = dto;
@@ -414,7 +428,6 @@ export class AuthService {
       // stored as "jane@example.com" for the same person.
       const claimedEmail = dto.email?.trim().toLowerCase();
 
-      const verifiedEmail = await this.verifySocialToken(authProvider, socialId, token);
       // Identity comes from the PROVIDER-verified email, never the client-sent one: a client can't claim
       // someone else's address to land in (or take over) their account.
       if (verifiedEmail && claimedEmail && verifiedEmail !== claimedEmail) {

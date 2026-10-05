@@ -4,7 +4,7 @@ import { Document } from 'mongoose';
 
 export type StoreIntegrationDocument = StoreIntegration & Document;
 
-export const STORE_INTEGRATION_TYPES = ['payment', 'whatsapp', 'tax', 'shipping'] as const;
+export const STORE_INTEGRATION_TYPES = ['payment', 'whatsapp', 'tax', 'shipping', 'customer_login'] as const;
 export type StoreIntegrationType = (typeof STORE_INTEGRATION_TYPES)[number];
 
 export const STORE_INTEGRATION_PROVIDERS = [
@@ -30,6 +30,11 @@ export const STORE_INTEGRATION_PROVIDERS = [
   // carriers (DHL/FedEx/UPS/USPS/etc.) behind one API, which is why this is
   // one provider entry, not one per carrier.
   'shippo',
+  // Shopify-style "Customer accounts → Authentication → Google/Facebook": the STORE's own OAuth app, so its
+  // buyers sign in through the store's brand. Handled by customer-social-login/, never by the generic
+  // seller-integrations controller (which only lists payment/whatsapp/tax/shipping).
+  'google_login',
+  'facebook_login',
 ] as const;
 export type StoreIntegrationProvider = (typeof STORE_INTEGRATION_PROVIDERS)[number];
 
