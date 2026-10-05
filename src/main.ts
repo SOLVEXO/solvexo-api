@@ -5,6 +5,7 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
+import { CustomDomainsService } from './store/custom-domains.service';
 import { AdminConfigService } from './admin-config/admin-config.service';
 import { createMaintenanceMiddleware } from './admin-config/maintenance.middleware';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
@@ -95,12 +96,17 @@ async function bootstrap() {
     );
   };
 
+  const customDomains = app.get(CustomDomainsService);
   app.enableCors({
     origin: (origin, cb) => {
       if (!origin) return cb(null, true);
       if (isAllowedOrigin(origin)) return cb(null, true);
-      console.log('Blocked Origin:', origin);
-      return cb(new Error('Not allowed by CORS'), false);
+      // A store's VERIFIED custom domain is a legitimate storefront origin (cached lookup, refreshed every minute).
+      customDomains.isVerifiedOrigin(origin).then((ok) => {
+        if (ok) return cb(null, true);
+        console.log('Blocked Origin:', origin);
+        return cb(new Error('Not allowed by CORS'), false);
+      }).catch(() => cb(new Error('Not allowed by CORS'), false));
     },
     credentials: true,
     methods: ['GET','HEAD','PUT','PATCH','POST','DELETE','OPTIONS'],

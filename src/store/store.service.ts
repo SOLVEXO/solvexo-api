@@ -62,14 +62,8 @@ const RESERVED_STORE_SLUGS = new Set([
   'forgot-password', 'verify-otp', 'new-password', 'seller', 'admin', 'store',
 ]);
 
-// The CNAME target every seller's custom domain must point at — the ONE
-// source of truth for this string, shown verbatim in the seller-facing DNS
-// instructions (`DomainWhiteLabelCard`, kept in sync by hand since the
-// frontend can't import a backend constant) and checked against in
-// `verifyCustomDomain`. Changing this value requires actually re-pointing
-// the platform's real infrastructure at it too (see that method's docblock
-// for the ops step this does NOT automate).
-export const CUSTOM_DOMAIN_CNAME_TARGET = 'stores.solvexo.store';
+// The CNAME target every seller's domain points at — defined with the rest of the domain logic in custom-domains.service.ts.
+export { CUSTOM_DOMAIN_CNAME_TARGET } from './custom-domains.service';
 
 @Injectable()
 export class StoreService {
@@ -544,102 +538,6 @@ export class StoreService {
   }
 
   /** Platform-plan-gated: only stores on a plan with `customDomainAllowed` may set a custom domain. */
-  async setCustomDomain(sellerId: string, storeId: string, domain: string | null) {
-    const store = await this.databaseService.repositories.storeModel.findOne({ _id: storeId, isDelete: false });
-    if (!store) throw new NotFoundException('Store not found');
-    if (store.sellerId !== sellerId) throw new UnauthorizedException('Unauthorized');
-
-    const normalized = domain ? domain.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/$/, '') : null;
-    if (normalized) {
-      await this.entitlementsService.assertFeatureAllowed(storeId, 'customDomainAllowed', 'Custom domain');
-      if (!/^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/.test(normalized)) {
-        throw new BadRequestException('Enter a valid domain, e.g. shop.yourbrand.com');
-      }
-      // The platform's own hosts can never be claimed as a store's custom domain.
-      if (normalized === 'solvexo.store' || normalized.endsWith('.solvexo.store')) {
-        throw new BadRequestException('This domain belongs to the platform and cannot be used as a custom domain');
-      }
-      const clash = await this.databaseService.repositories.storeModel.findOne({
-        customDomain: normalized, _id: { $ne: storeId }, isDelete: false,
-      }).lean();
-      if (clash) throw new BadRequestException('This domain is already connected to another store');
-    }
-
-    // Any change to the domain string invalidates whatever verification
-    // already existed — a seller changing the value must re-prove control
-    // of the NEW domain before it can serve as a live storefront.
-    if (normalized !== store.customDomain) store.customDomainStatus = 'unverified';
-    store.customDomain = normalized;
-    try {
-      await store.save();
-    } catch (err: any) {
-      // Two stores racing for the same domain: the check above is read-then-write, the unique index is the real guard.
-      if (err?.code === 11000) throw new BadRequestException('This domain is already connected to another store');
-      throw err;
-    }
-
-    this.activityLogService.log({
-      storeId, category: 'settings', action: 'custom_domain_updated',
-      description: normalized ? `Custom domain set to ${normalized}` : 'Custom domain removed',
-      actorId: sellerId, actorRole: 'seller',
-    });
-
-    return {
-      success: true, message: 'Custom domain updated',
-      data: { customDomain: store.customDomain, customDomainStatus: store.customDomainStatus, cnameTarget: CUSTOM_DOMAIN_CNAME_TARGET },
-    };
-  }
-
-  /**
-   * Confirms the seller actually controls the domain they entered by
-   * checking its real DNS — the domain's CNAME chain must resolve to
-   * `CUSTOM_DOMAIN_CNAME_TARGET`. Only a 'verified' domain is ever matched
-   * by the public `getPublicStoreByDomain` lookup, so an unproven domain
-   * claim can never serve as a live storefront.
-   *
-   * **Deliberately out of scope here (real infra/ops work, not application
-   * logic):** this method only checks DNS — it does NOT provision anything.
-   * For a verified custom domain to actually SERVE the storefront over
-   * HTTPS, the platform's edge/reverse-proxy (whatever that is in
-   * production — a CDN's custom-hostname feature, an nginx/Caddy config
-   * with on-demand TLS, etc.) must separately be configured to (a) accept
-   * traffic for arbitrary incoming Host headers pointed at
-   * `CUSTOM_DOMAIN_CNAME_TARGET`, and (b) obtain a TLS certificate for each
-   * one (e.g. via ACME DNS-01/HTTP-01 automation). That step depends on
-   * whichever hosting provider is actually used and isn't something this
-   * application code can wire up blindly.
-   */
-  async verifyCustomDomain(sellerId: string, storeId: string) {
-    const store = await this.databaseService.repositories.storeModel.findOne({ _id: storeId, isDelete: false });
-    if (!store) throw new NotFoundException('Store not found');
-    if (store.sellerId !== sellerId) throw new UnauthorizedException('Unauthorized');
-    if (!store.customDomain) throw new BadRequestException('No custom domain is set for this store yet');
-
-    let verified = false;
-    let reason = '';
-    try {
-      const cnames = await dns.resolveCname(store.customDomain);
-      verified = cnames.some(c => c.toLowerCase().replace(/\.$/, '') === CUSTOM_DOMAIN_CNAME_TARGET);
-      if (!verified) reason = `Found a CNAME, but it doesn't point to ${CUSTOM_DOMAIN_CNAME_TARGET} yet.`;
-    } catch {
-      reason = `No CNAME record found for ${store.customDomain} yet — DNS changes can take a few minutes to a few hours to propagate.`;
-    }
-
-    store.customDomainStatus = verified ? 'verified' : 'unverified';
-    await store.save();
-
-    this.activityLogService.log({
-      storeId, category: 'settings', action: 'custom_domain_verify_attempted',
-      description: verified ? `Custom domain ${store.customDomain} verified` : `Custom domain verification failed: ${reason}`,
-      actorId: sellerId, actorRole: 'seller',
-    });
-
-    return {
-      success: true,
-      data: { customDomainStatus: store.customDomainStatus, verified, reason: verified ? null : reason, cnameTarget: CUSTOM_DOMAIN_CNAME_TARGET },
-    };
-  }
-
   /** Seller-facing: switch the storefront gate mode and (only when moving
    *  into 'password' mode with a new password typed) set a fresh bcrypt
    *  hash. An empty/omitted `password` while already in 'password' mode
@@ -1345,9 +1243,13 @@ export class StoreService {
   async getPublicStoreByDomain(host: string, visitorIp?: string) {
     if (!host) throw new BadRequestException('host is required');
 
+    const h = host.trim().toLowerCase();
+    // ANY verified domain of a store resolves it (the storefront then redirects to the store's primary domain).
     const store = await this.databaseService.repositories.storeModel.findOne({
-      customDomain: host.trim().toLowerCase(),
-      customDomainStatus: 'verified',
+      $or: [
+        { customDomains: { $elemMatch: { domain: h, status: 'verified' } } },
+        { customDomain: h, customDomainStatus: 'verified' },
+      ],
       isDelete: false,
       status: 'active',
     }).lean();
@@ -1426,6 +1328,10 @@ export class StoreService {
         cookieBannerEnabled: !!store.cookieBannerEnabled
           && (store.cookieBannerRegionMode !== 'eu_uk_only' || isEuOrUkCountry(resolveCountryFromIp(visitorIp))),
         cookieBannerMessage: store.cookieBannerMessage ?? null,
+        // The one address customers belong on (Shopify's primary domain): the primary custom domain when set, else the free
+        // <slug>.solvexo.store. The storefront redirects every other host (other domains, the free address) to it.
+        primaryDomain: store.primaryDomain ?? null,
+        canonicalHost: store.primaryDomain ?? (store.slug ? `${store.slug}.solvexo.store` : null),
         // Shopify "Customer accounts": whether a visitor may check out as a guest.
         guestCheckoutEnabled: store.customerAccounts !== 'required',
         // Purely cosmetic — no effect on consent/enforcement, just how the

@@ -1,6 +1,9 @@
 import { Module } from '@nestjs/common';
 import { StoreController } from './store.controller';
 import { StoreService } from './store.service';
+import { CustomDomainsController } from './custom-domains.controller';
+import { CustomDomainsService } from './custom-domains.service';
+import { VercelDomainsService } from './vercel-domains.service';
 import { AuthModule } from '@/auth/auth.module';
 import { RedisModule } from '@/redis/redis.module';
 import { AdminConfigModule } from '@/admin-config/admin-config.module';
@@ -12,8 +15,8 @@ import { CollectionsModule } from '../collections/collections.module';
 
 @Module({
   imports: [AuthModule, RedisModule, AdminConfigModule, MarketingModule, UploadModule, StoreThemeModule, StorePagesModule, CollectionsModule],
-  controllers: [StoreController],
-  providers: [StoreService],
-  exports: [StoreService],
+  controllers: [StoreController, CustomDomainsController],
+  providers: [StoreService, CustomDomainsService, VercelDomainsService],
+  exports: [StoreService, CustomDomainsService],
 })
 export class StoreModule {}

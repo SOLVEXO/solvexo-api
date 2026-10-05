@@ -477,6 +477,19 @@ export class Store {
   @Prop({ type: String, enum: ['unverified', 'verified'], default: 'unverified' })
   customDomainStatus: 'unverified' | 'verified';
 
+  // Shopify "Domains": every domain connected to this store (see CustomDomainsService). `customDomain` /
+  // `customDomainStatus` above are a MIRROR of the primary custom domain.
+  @Prop({ type: [Object], default: [] })
+  customDomains: Array<{
+    domain: string; status: 'unverified' | 'verified'; sslStatus: 'none' | 'pending' | 'active' | 'failed';
+    addedAt: Date; verifiedAt: Date | null; lastCheckedAt: Date | null; dnsError: string | null;
+  }>;
+
+  // The domain customers are sent to (a verified entry of `customDomains`); null = the free <slug>.solvexo.store.
+  // Every other domain redirects to it.
+  @Prop({ type: String, default: null })
+  primaryDomain: string | null;
+
   @Prop({ type: Boolean, default: false })
   whiteLabelEnabled: boolean;
 
@@ -713,3 +726,5 @@ StoreSchema.index({ followersCount: -1 });
 // StoreService.setCustomDomain races; this unique partial index is the real guard). NOTE: if two live stores already
 // share a domain the index cannot build — de-duplicate them first.
 StoreSchema.index({ customDomain: 1 }, { unique: true, partialFilterExpression: { customDomain: { $type: 'string' }, isDelete: false } });
+// Same guarantee for every domain in the multi-domain list (multikey unique across stores).
+StoreSchema.index({ 'customDomains.domain': 1 }, { unique: true, partialFilterExpression: { isDelete: false, 'customDomains.domain': { $type: 'string' } } });

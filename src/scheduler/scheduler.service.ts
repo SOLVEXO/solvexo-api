@@ -5,6 +5,7 @@ import { DatabaseService } from '@/database/databaseservice';
 import { LoyaltyService } from '@/loyalty/loyalty.service';
 import { StoreCreditService } from '@/store-credit/store-credit.service';
 import { GuestSessionService } from '@/auth/guest-session.service';
+import { CustomDomainsService } from '@/store/custom-domains.service';
 import { BuyerSubscriptionWindDownService } from '@/subscriptions/buyer-subscription-wind-down.service';
 import { PlatformSubscriptionsService } from '@/platform-subscriptions/platform-subscriptions.service';
 import { FinanceService } from '@/finance/finance.service';
@@ -43,6 +44,7 @@ export class SchedulerService {
     private readonly buyerSubscriptionWindDownService: BuyerSubscriptionWindDownService,
     private readonly storeCreditService: StoreCreditService,
     private readonly guestSessionService: GuestSessionService,
+    private readonly customDomainsService: CustomDomainsService,
     private readonly platformSubscriptionsService: PlatformSubscriptionsService,
     private readonly financeService: FinanceService,
     private readonly redis: RedisService,
@@ -224,6 +226,16 @@ export class SchedulerService {
       if (r.scheduledToEnd + r.cancelledNow + r.finalized + r.failed > 0) {
         this.logger.log(`Buyer-subscription wind-down: ${r.scheduledToEnd} set to end, ${r.cancelledNow} cancelled now, ${r.finalized} finalized, ${r.failed} failed`);
       }
+    });
+  }
+
+  // Every 10 minutes — re-checks custom domains that are not verified yet (so a seller's DNS change is picked up by
+  // itself, like Shopify) and verified ones whose HTTPS certificate is still being issued.
+  @Cron('*/10 * * * *')
+  async recheckCustomDomains() {
+    await this.runLocked('recheck-custom-domains', 8 * 60_000, async () => {
+      const n = await this.customDomainsService.recheckPending();
+      if (n > 0) this.logger.log(`Custom domains: ${n} store(s) had a domain status change`);
     });
   }
 

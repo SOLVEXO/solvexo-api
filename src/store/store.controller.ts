@@ -73,22 +73,6 @@ export class StoreController {
     return this.storeService.getStoreById(storeId, u?.userId ?? null, privileged);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
-  @Roles('seller', 'staff')
-  @RequirePermission('settings.domains.manage')
-  @Patch(':storeId/custom-domain')
-  async setCustomDomain(@Req() req: any, @Param('storeId') storeId: string, @Body() body: { domain: string | null }) {
-    return this.storeService.setCustomDomain(actingSellerId(req.user), storeId, body.domain ?? null);
-  }
-
-  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
-  @Roles('seller', 'staff')
-  @RequirePermission('settings.domains.manage')
-  @Post(':storeId/custom-domain/verify')
-  async verifyCustomDomain(@Req() req: any, @Param('storeId') storeId: string) {
-    return this.storeService.verifyCustomDomain(actingSellerId(req.user), storeId);
-  }
-
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('seller')
   @Patch(':storeId/privacy')
