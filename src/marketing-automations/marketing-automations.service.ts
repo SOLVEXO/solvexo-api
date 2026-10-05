@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { availableStock, AVAILABLE_STOCK_EXPR } from '@/common/stock-availability.util';
 import { isEmail } from 'class-validator';
 import { isValidObjectId } from 'mongoose';
 import { DatabaseService } from '@/database/databaseservice';
@@ -324,7 +325,7 @@ export class MarketingAutomationsService {
   private isSellable(v: any): boolean {
     if (!v || v.isDelete || (v.status && v.status !== 'active')) return false;
     if (v.unlimitedStock || v.allowBackorder) return true;
-    return (Number(v.stock) || 0) - (Number(v.committedStock) || 0) > 0;
+    return availableStock(v) > 0;
   }
 
   async publicConfig(storeId: string) {

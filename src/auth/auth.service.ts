@@ -355,7 +355,7 @@ export class AuthService {
     authProvider: string,
     socialId: string,
     token?: string,
-  ) {
+  ): Promise<string | null> {
     if (!token) {
       throw new UnauthorizedException(
         'Missing provider token for verification',
@@ -371,14 +371,16 @@ export class AuthService {
       if (!payload || payload.sub !== socialId) {
         throw new UnauthorizedException('Invalid Google token');
       }
+      return payload.email_verified && payload.email ? String(payload.email).toLowerCase() : null;
     } else if (authProvider === 'facebook') {
       const resp = await fetch(
-        `https://graph.facebook.com/me?fields=id&access_token=${encodeURIComponent(token)}`,
+        `https://graph.facebook.com/me?fields=id,email&access_token=${encodeURIComponent(token)}`,
       );
       const data: any = await resp.json();
       if (!data?.id || data.id !== socialId) {
         throw new UnauthorizedException('Invalid Facebook token');
       }
+      return data.email ? String(data.email).toLowerCase() : null;
     } else if (authProvider === 'apple') {
       const payload = await appleSignin.verifyIdToken(token, {
         audience: process.env.APPLE_CLIENT_ID,
@@ -386,6 +388,7 @@ export class AuthService {
       if (!payload || payload.sub !== socialId) {
         throw new UnauthorizedException('Invalid Apple token');
       }
+      return (payload as any).email ? String((payload as any).email).toLowerCase() : null;
     } else {
       throw new UnauthorizedException('Unsupported auth provider');
     }
@@ -409,9 +412,15 @@ export class AuthService {
       // account emailing as "Jane@Example.com" could silently create a
       // second row instead of matching an existing password-signup account
       // stored as "jane@example.com" for the same person.
-      const email = dto.email?.trim().toLowerCase();
+      const claimedEmail = dto.email?.trim().toLowerCase();
 
-      await this.verifySocialToken(authProvider, socialId, token);
+      const verifiedEmail = await this.verifySocialToken(authProvider, socialId, token);
+      // Identity comes from the PROVIDER-verified email, never the client-sent one: a client can't claim
+      // someone else's address to land in (or take over) their account.
+      if (verifiedEmail && claimedEmail && verifiedEmail !== claimedEmail) {
+        throw new UnauthorizedException('Email does not match the verified provider account');
+      }
+      const email = verifiedEmail ?? claimedEmail;
 
       const targetRole: 'user' | 'seller' = role === 'seller' ? 'seller' : 'user';
       let accountModel;
@@ -426,12 +435,11 @@ export class AuthService {
       // created by password signup at Store B (or the legacy global one)
       // for the same email, defeating per-store identity separation.
       const storeScope = targetRole === 'user' ? { storeId: storeId ?? null } : {};
-      let account = await accountModel.findOne({
-        $or: [
-          { email, ...storeScope },
-          { providerId: socialId, authProvider, ...storeScope },
-        ],
-      });
+      // No provider-verified email (e.g. Facebook without email permission, Apple relay) → match ONLY by the
+      // verified provider id; never link an existing password account through an unverified, client-sent email.
+      const matchers: any[] = [{ providerId: socialId, authProvider, ...storeScope }];
+      if (verifiedEmail) matchers.unshift({ email: verifiedEmail, ...storeScope });
+      let account = await accountModel.findOne({ $or: matchers });
 
       if (!account) {
         if (targetRole === 'user') {

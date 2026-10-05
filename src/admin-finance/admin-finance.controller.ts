@@ -51,7 +51,7 @@ export class AdminFinanceController {
 
   @Get('reconciliation')
   getReconciliation(@Query('days') days?: string) {
-    return this.adminFinanceService.getReconciliation(days ? Number(days) : 1);
+    return this.adminFinanceService.getReconciliationUsd(days ? Number(days) : 1);
   }
 
   @Get('reconciliation/history')

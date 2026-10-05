@@ -8,5 +8,6 @@ import { RedisModule } from '../redis/redis.module';
   imports: [AuthModule, RedisModule],
   controllers: [ProductVariantsController],
   providers: [ProductVariantsService],
+  exports: [ProductVariantsService],
 })
 export class ProductVariantsModule {}

@@ -15,10 +15,35 @@ export class AdminPosPlansService {
     return this.databaseService.repositories;
   }
 
-  /** Active + inactive — admin needs to see retired plans too. */
+  /** Latest accepted rate per currency (units per 1 USD); USD is always 1. Same source as AdminFinanceService. */
+  private async getUsdRates(): Promise<Map<string, number>> {
+    const rates = await this.r.exchangeRateModel.aggregate([
+      { $match: { isRejected: false } },
+      { $sort: { effectiveFrom: -1 } },
+      { $group: { _id: '$currency', ratePerUSD: { $first: '$ratePerUSD' } } },
+    ]);
+    const map = new Map<string, number>(rates.map((r: any) => [r._id, r.ratePerUSD]));
+    map.set('USD', 1);
+    return map;
+  }
+
+  /** USD value of a native amount, or null when no FX rate exists (never the native number). */
+  private toUsd(amount: number, currency: string, rates: Map<string, number>): number | null {
+    const rate = rates.get(currency || 'USD');
+    return rate && rate > 0 ? Math.round((amount / rate) * 100) / 100 : null;
+  }
+
+  /** Active + inactive — admin needs to see retired plans too. Adds priceUSD (null = no FX rate set). */
   async listPlans() {
-    const plans = await this.r.posPlanModel.find().sort({ createdAt: -1 });
-    return { success: true, data: plans };
+    const [plans, rates] = await Promise.all([
+      this.r.posPlanModel.find().sort({ createdAt: -1 }),
+      this.getUsdRates(),
+    ]);
+    const data = plans.map((p) => ({
+      ...((p as any).toObject?.() ?? p),
+      priceUSD: this.toUsd(p.price, p.currency, rates),
+    }));
+    return { success: true, data };
   }
 
   async createPlan(dto: CreatePosPlanDto) {
@@ -95,6 +120,7 @@ export class AdminPosPlansService {
     const storeNameById = new Map(stores.map((s) => [String(s._id), s.name]));
     const sellerNameById = new Map(sellers.map((s) => [String(s._id), s.name]));
 
+    const rates = await this.getUsdRates();
     const now = Date.now();
     const items = purchases.map((p) => {
       const isActive = p.expiresAt.getTime() > now;
@@ -103,8 +129,8 @@ export class AdminPosPlansService {
         sellerName: sellerNameById.get(p.sellerId) ?? 'Unknown seller',
         storeName: storeNameById.get(p.storeId) ?? 'Unknown store',
         planNameSnapshot: p.planNameSnapshot,
-        priceSnapshot: p.priceSnapshot,
-        currencySnapshot: p.currencySnapshot,
+        // Admin sees USD only (converted at the latest rate; null = no FX rate set for that currency).
+        priceUSD: this.toUsd(p.priceSnapshot, p.currencySnapshot, rates),
         purchasedAt: p.purchasedAt,
         expiresAt: p.expiresAt,
         daysRemaining: isActive ? Math.ceil((p.expiresAt.getTime() - now) / DAY_MS) : 0,

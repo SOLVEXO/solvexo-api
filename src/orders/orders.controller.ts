@@ -34,6 +34,7 @@ import {
   Get,
   Put,
   Post,
+  Patch,
   Param,
   Query,
   Body,
@@ -41,19 +42,40 @@ import {
   Res,
   UseGuards,
 } from '@nestjs/common';
+import { OrderEditingService } from './order-editing.service';
+import { EditOrderDto, OrderCommentDto, OrderNoteDto, OrderShippingAddressDto } from './dto/order-editing.dto';
+const editActor = (req: any) => ({ actorId: String(req.user.userId), actorRole: (req.user.role === 'staff' ? 'staff' : 'seller') as 'seller' | 'staff' });
 import { Response } from 'express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { RequirePermission } from '../auth/decorators/require-permission.decorator';
+import { StaffStorePinned } from '../auth/decorators/staff-store-pinned.decorator';
 import { OrdersService } from './orders.service';
 import { resolveBuyerStoreScope } from '../common/store-scope.util';
 import { actingSellerId } from '../common/acting-seller-id.util';
 
 @Controller('api/orders')
 export class OrdersController {
-  constructor(private readonly ordersService: OrdersService) {}
+  constructor(
+    private readonly ordersService: OrdersService,
+    private readonly orderEditing: OrderEditingService,
+  ) {}
+
+  // Shopify order-status page: opens ONE order from a signed link, no login (how a guest tracks an order).
+  @Get('status/:token')
+  async getOrderByStatusToken(@Param('token') token: string) {
+    return this.ordersService.getOrderByStatusToken(token);
+  }
+
+  // The signed status-page link for an order the caller owns (used by the post-purchase page).
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('user')
+  @Get('status-link/:orderId')
+  async getOrderStatusLink(@Req() req: any, @Param('orderId') orderId: string) {
+    return this.ordersService.getOrderStatusToken(req.user.userId, orderId);
+  }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('user')
@@ -157,7 +179,9 @@ export class OrdersController {
   @RequirePermission('orders.view')
   @Get('seller-orders/my')
   async getMySellerOrders(@Req() req: any, @Query() query: any) {
-    return this.ordersService.getSellerOrders(actingSellerId(req.user), null, query);
+    // A staff login is bound to ONE store — never the owning seller's other stores.
+    const storeScope = req.user.role === 'staff' ? req.user.storeId : null;
+    return this.ordersService.getSellerOrders(actingSellerId(req.user), storeScope, query);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
@@ -287,6 +311,7 @@ export class OrdersController {
   @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('seller', 'admin', 'staff')
   @RequirePermission('orders.return')
+  @StaffStorePinned()
   @Get('returns')
   async getSellerReturns(@Req() req: any, @Query() query: any) {
     return this.ordersService.getSellerReturns(actingSellerId(req.user), query);
@@ -403,6 +428,39 @@ export class OrdersController {
     });
 
     res.end(buffer);
+  }
+
+  // ── Shopify order editing: Edit order, timeline comments, notes, shipping address ──
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('orders.edit')
+  @Post('edit/:storeId/:orderId')
+  async editOrder(@Req() req: any, @Param('storeId') storeId: string, @Param('orderId') orderId: string, @Body() dto: EditOrderDto) {
+    return this.orderEditing.editOrder(actingSellerId(req.user), storeId, orderId, editActor(req), dto);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('orders.view')
+  @Post('timeline/:storeId/:orderId')
+  async addOrderComment(@Req() req: any, @Param('storeId') storeId: string, @Param('orderId') orderId: string, @Body() dto: OrderCommentDto) {
+    return this.orderEditing.addComment(actingSellerId(req.user), storeId, orderId, editActor(req), dto.message);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('orders.edit')
+  @Patch('note/:storeId/:orderId')
+  async updateOrderNote(@Req() req: any, @Param('storeId') storeId: string, @Param('orderId') orderId: string, @Body() dto: OrderNoteDto) {
+    return this.orderEditing.updateNote(actingSellerId(req.user), storeId, orderId, editActor(req), dto.note);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('orders.edit')
+  @Patch('shipping-address/:storeId/:orderId')
+  async updateOrderShippingAddress(@Req() req: any, @Param('storeId') storeId: string, @Param('orderId') orderId: string, @Body() dto: OrderShippingAddressDto) {
+    return this.orderEditing.updateShippingAddress(actingSellerId(req.user), storeId, orderId, editActor(req), dto);
   }
 
   // must be last — catches any GET /:orderId after all static routes

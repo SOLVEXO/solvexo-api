@@ -136,7 +136,7 @@ export async function periodTotals(orderModel: Model<any>, from: Date, to: Date,
         grossRevenue: { $sum: { $cond: [notCancelledCond(), { $ifNull: [toUSD('$sellerOrders.subtotal'), 0] }, 0] } },
         refundAmount: { $sum: { $cond: [notCancelledCond(), { $ifNull: [toUSD('$itemRefund'), 0] }, 0] } },
         unconvertibleOrderCount: { $sum: { $cond: [{ $and: [notCancelledCond(), { $or: [{ $eq: ['$ratePerUSD', null] }, { $lte: ['$ratePerUSD', 0] }] }] }, 1, 0] } },
-        buyerIds: { $addToSet: { $cond: [notCancelledCond(), '$userId', '$$REMOVE'] } },
+        buyerIds: { $addToSet: { $cond: [notCancelledCond(), { $ifNull: ['$customerId', '$userId'] }, '$$REMOVE'] } },
       },
     },
   ]);
@@ -163,7 +163,7 @@ export async function repeatBuyerPercent(orderModel: Model<any>, from: Date, to:
   const rows = await orderModel.aggregate([
     ...sellerOrderMatchStage(from, to, scopeMatch),
     { $match: { 'sellerOrders.status': { $ne: 'cancelled' } } },
-    { $group: { _id: '$userId', orders: { $sum: 1 } } },
+    { $group: { _id: { $ifNull: ['$customerId', '$userId'] }, orders: { $sum: 1 } } },
     {
       $group: {
         _id: null,
@@ -181,10 +181,10 @@ export async function repeatBuyerPercent(orderModel: Model<any>, from: Date, to:
 export async function returningBuyerSet(orderModel: Model<any>, buyerIds: string[], from: Date, scopeMatch?: Record<string, any>): Promise<Set<string>> {
   if (buyerIds.length === 0) return new Set();
   const rows = await orderModel.aggregate([
-    { $match: { isDelete: false, userId: { $in: buyerIds }, createdAt: { $lt: from } } },
+    { $match: { isDelete: false, $or: [{ userId: { $in: buyerIds } }, { customerId: { $in: buyerIds } }], createdAt: { $lt: from } } },
     { $unwind: '$sellerOrders' },
     { $match: { 'sellerOrders.status': { $ne: 'cancelled' }, ...scopeMatch } },
-    { $group: { _id: '$userId' } },
+    { $group: { _id: { $ifNull: ['$customerId', '$userId'] } } },
   ]);
   return new Set(rows.map((r: any) => r._id));
 }
@@ -245,7 +245,7 @@ export async function allTimeCustomerAggregate(orderModel: Model<any>, scopeMatc
     { $addFields: { itemRefund: itemRefundSumField() } },
     {
       $group: {
-        _id: '$userId',
+        _id: { $ifNull: ['$customerId', '$userId'] },
         firstOrderAt: { $min: '$createdAt' },
         lastOrderAt: { $max: '$createdAt' },
         totalOrders: { $sum: 1 },

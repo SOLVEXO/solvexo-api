@@ -51,7 +51,7 @@ export const STAFF_PERMISSIONS = [
   'home.view',
   // Orders
   'orders.view', 'orders.export', 'orders.fulfill', 'orders.capture_payment',
-  'orders.buy_shipping_label', 'orders.return', 'orders.abandoned_checkouts', 'orders.cancel',
+  'orders.buy_shipping_label', 'orders.return', 'orders.abandoned_checkouts', 'orders.cancel', 'orders.edit',
   'orders.refund', 'orders.record_payment', 'orders.disputes_manage',
   // Draft Orders
   'draft_orders.view', 'draft_orders.mark_paid',

@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { Model } from 'mongoose';
+import { buyerEmail } from '../../common/buyer-email.util';
 
 /**
  * Shared buyer-identity resolution for every analytics surface that lists
@@ -32,7 +33,7 @@ export async function resolveCustomerIdentities(
   const result = new Map<string, CustomerIdentity>();
   if (uniqueIds.length === 0) return result;
 
-  const users = await userModel.find({ _id: { $in: uniqueIds } }).select('name email').lean();
+  const users = await userModel.find({ _id: { $in: uniqueIds } }).select('name email contactEmail isGuest').lean();
   const userMap = new Map(users.map((u: any) => [u._id.toString(), u]));
 
   const unresolvedIds = uniqueIds.filter((id) => !userMap.has(id));
@@ -50,7 +51,7 @@ export async function resolveCustomerIdentities(
     const user: any = userMap.get(id);
     result.set(id, {
       name: user?.name ?? fallbackNameMap.get(id) ?? 'Deleted account',
-      email: user?.email ?? '',
+      email: buyerEmail(user) ?? '',
     });
   }
   return result;

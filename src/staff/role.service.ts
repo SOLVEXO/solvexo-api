@@ -15,7 +15,7 @@ const PRESET_ROLES: { name: string; description: string; permissions: string[] }
     description: 'Near-full operational access — orders, products, inventory, marketing, and customers.',
     permissions: [
       'home.view', 'orders.view', 'orders.export', 'orders.fulfill', 'orders.capture_payment',
-      'orders.buy_shipping_label', 'orders.return', 'orders.abandoned_checkouts', 'orders.cancel',
+      'orders.buy_shipping_label', 'orders.return', 'orders.abandoned_checkouts', 'orders.cancel', 'orders.edit',
       'orders.refund', 'orders.record_payment', 'orders.disputes_manage', 'draft_orders.view', 'draft_orders.mark_paid',
       'products.view', 'products.export', 'products.delete', 'products.edit', 'products.edit_price',
       'inventory.view', 'inventory.adjust', 'inventory.receive', 'inventory.transfer', 'inventory.count', 'inventory.approve',

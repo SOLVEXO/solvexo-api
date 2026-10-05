@@ -5,6 +5,8 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { DatabaseService } from '@/database/databaseservice';
+import { availableStock, AVAILABLE_STOCK_EXPR } from '@/common/stock-availability.util';
+import { buildStoreProductFilter, productSort } from '../products/product-list-filter.util';
 import { toCsv, parseCsv } from '@/analytics/utils/csv.util';
 import { RedisService } from '@/redis/redis.service';
 import { NotificationsService } from '@/notifications/notifications.service';
@@ -35,13 +37,12 @@ export class InventoryService {
     if (!store) throw new ForbiddenException('Store not found or unauthorized');
     const lowStockThreshold = store.lowStockThreshold ?? 10;
 
-    // filters
-    const filter: any = { storeId, sellerId, isDelete: false };
-    if (query.type && query.type !== 'all') filter.type = query.type;
-    if (query.status && query.status !== 'all') filter.status = query.status;
+    // filters — shared with the bulk actions so "select all matching" applies to exactly what is listed
+    const filter = await buildStoreProductFilter({ productVariantModel }, storeId, sellerId, query);
 
     const page = parseInt(query.page) || 1;
-    const limit = 10;
+    // Callers (pickers, search, sort) ask for 100–1000 rows; default stays 10. Capped to protect the server.
+    const limit = Math.min(Math.max(parseInt(query.limit) || 10, 1), 1000);
     const skip = (page - 1) * limit;
 
     const totalProducts = await productModel.countDocuments(filter);
@@ -49,7 +50,7 @@ export class InventoryService {
 
     const products = await productModel
       .find(filter)
-      .sort({ createdAt: -1 })
+      .sort(productSort(query.sort))
       .skip(skip)
       .limit(limit)
       .lean();
@@ -411,7 +412,7 @@ export class InventoryService {
     const available = {
       $max: [0, {
         $subtract: [
-          { $subtract: [{ $subtract: ['$stock', { $ifNull: ['$committedStock', 0] }] }, { $ifNull: ['$damagedStock', 0] }] },
+          AVAILABLE_STOCK_EXPR,
           { $ifNull: ['$inTransitStock', 0] },
         ],
       }],
@@ -1516,7 +1517,7 @@ export class InventoryService {
           available: {
             $max: [0, {
               $subtract: [
-                { $subtract: [{ $subtract: ['$stock', { $ifNull: ['$committedStock', 0] }] }, { $ifNull: ['$damagedStock', 0] }] },
+                AVAILABLE_STOCK_EXPR,
                 { $ifNull: ['$inTransitStock', 0] },
               ],
             }],

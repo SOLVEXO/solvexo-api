@@ -13,6 +13,9 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
       console.error('Redis Client Error', err);
       this._isConnected = false;
     });
+    // node-redis reconnects on its own — the flag must follow, or every cron / JWT check stays disabled forever.
+    this.client.on('ready', () => { this._isConnected = true; });
+    this.client.on('end', () => { this._isConnected = false; });
   }
 
   async onModuleInit() {

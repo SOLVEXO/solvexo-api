@@ -4,6 +4,9 @@ import { ValidationPipe } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
 import cookieParser from 'cookie-parser';
+import helmet from 'helmet';
+import { AdminConfigService } from './admin-config/admin-config.service';
+import { createMaintenanceMiddleware } from './admin-config/maintenance.middleware';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 
 async function bootstrap() {
@@ -19,7 +22,18 @@ async function bootstrap() {
   // useBodyParser keeps the rawBody capture above working.
   app.useBodyParser('json', { limit: '1mb' });
 
+  // Behind Railway/Vercel/any reverse proxy: trust the first hop so req.ip (throttler, login limits, logs)
+  // is the real client IP instead of the proxy's.
+  app.set('trust proxy', 1);
+
+  // Security headers (nosniff, frameguard, HSTS, no X-Powered-By…). CSP is off: this is a JSON API and Swagger's UI
+  // needs inline scripts. CORP is cross-origin because the web app (another origin) loads files/images from the API.
+  app.use(helmet({ contentSecurityPolicy: false, crossOriginResourcePolicy: { policy: 'cross-origin' } }));
+
   app.use(cookieParser());
+
+  // Platform maintenance mode (admin switch) — 503 for everything except health, webhooks, auth and the admin API.
+  app.use(createMaintenanceMiddleware(app.get(AdminConfigService)));
 
   // Global validation: every `@Body()/@Query()/@Param()` typed with a
   // class-validator DTO is now actually checked (previously only the ~36

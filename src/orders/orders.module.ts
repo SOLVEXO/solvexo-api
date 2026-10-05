@@ -9,6 +9,7 @@
 // export class OrdersModule {}
 
 import { Module } from '@nestjs/common';
+import { OrderEditingService } from './order-editing.service';
 import { OrdersController } from './orders.controller';
 import { OrdersService } from './orders.service';
 import { AuthModule } from '@/auth/auth.module';
@@ -42,7 +43,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
     }),
   ],
   controllers: [OrdersController],
-  providers: [OrdersService],
-  exports: [OrdersService],
+  providers: [OrdersService, OrderEditingService],
+  exports: [OrdersService, OrderEditingService],
 })
 export class OrdersModule {}

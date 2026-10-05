@@ -31,6 +31,7 @@ describe('AdminAnalyticsService', () => {
   let paymentTransactionModel: any;
   let transactionModel: any;
   let subscriptionInvoiceModel: any;
+  let exchangeRateModel: any;
   let db: DatabaseService;
   let redis: RedisService;
   let platformPlansService: PlatformPlansService;
@@ -60,11 +61,12 @@ describe('AdminAnalyticsService', () => {
     paymentTransactionModel = { aggregate: jest.fn().mockResolvedValue([]) };
     transactionModel = { aggregate: jest.fn().mockResolvedValue([]) };
     subscriptionInvoiceModel = { aggregate: jest.fn().mockResolvedValue([]) };
+    exchangeRateModel = { aggregate: jest.fn().mockResolvedValue([]) };
 
     db = {
       repositories: {
         orderModel, sellerModel, storeModel, userModel, productModel, productVariantModel, productViewModel,
-        paymentTransactionModel, transactionModel, subscriptionInvoiceModel,
+        paymentTransactionModel, transactionModel, subscriptionInvoiceModel, exchangeRateModel,
       },
     } as any;
 
@@ -219,10 +221,25 @@ describe('AdminAnalyticsService', () => {
   });
 
   describe('Phase 2 — USD-only platform commission, non-USD disclosed separately', () => {
-    it('reports platformCommission as the USD entry only, and surfaces other currencies via nonUsdCommissionByCurrency rather than blending them in', async () => {
-      // getPlatformEarningsUtil's own call order: [blended commissionRows, commissionByCurrencyRows] via transactionModel.aggregate, then subRows via subscriptionInvoiceModel.aggregate.
+    it('converts non-USD commission to USD at the latest rate instead of dropping it', async () => {
       transactionModel.aggregate = jest.fn()
-        .mockResolvedValueOnce([{ commission: 130, processingFees: 3 }]) // deprecated blended total — must NOT be what platformCommission reports
+        .mockResolvedValueOnce([{ commission: 130, processingFees: 3 }])
+        .mockResolvedValueOnce([
+          { _id: 'USD', commission: 100, processingFees: 2 },
+          { _id: 'PKR', commission: 30, processingFees: 3 },
+        ]);
+      subscriptionInvoiceModel.aggregate.mockResolvedValue([{ total: 0 }]);
+      exchangeRateModel.aggregate.mockResolvedValue([{ _id: 'PKR', ratePerUSD: 300 }]);
+
+      const result = await service.getOverview({});
+
+      expect(result.data.platformCommission).toBe(100.1); // 100 + 30/300
+      expect(result.data.unconvertedCommissionCurrencies).toBeUndefined();
+    });
+
+    it('excludes a currency with no FX rate from the USD total and discloses only its code (never the native amount)', async () => {
+      transactionModel.aggregate = jest.fn()
+        .mockResolvedValueOnce([{ commission: 130, processingFees: 3 }])
         .mockResolvedValueOnce([
           { _id: 'USD', commission: 100, processingFees: 2 },
           { _id: 'PKR', commission: 30, processingFees: 1 },
@@ -231,18 +248,18 @@ describe('AdminAnalyticsService', () => {
 
       const result = await service.getOverview({});
 
-      expect(result.data.platformCommission).toBe(100); // USD entry only, not the blended 130
-      expect(result.data.nonUsdCommissionByCurrency).toEqual([{ currency: 'PKR', commission: 30, processingFees: 1 }]);
+      expect(result.data.platformCommission).toBe(100);
+      expect(result.data.unconvertedCommissionCurrencies).toEqual(['PKR']);
     });
 
-    it('omits nonUsdCommissionByCurrency entirely when every seller settles in USD', async () => {
+    it('omits unconvertedCommissionCurrencies entirely when every seller settles in USD', async () => {
       transactionModel.aggregate = jest.fn()
         .mockResolvedValueOnce([{ commission: 100, processingFees: 2 }])
         .mockResolvedValueOnce([{ _id: 'USD', commission: 100, processingFees: 2 }]);
       subscriptionInvoiceModel.aggregate.mockResolvedValue([{ total: 0 }]);
 
       const result = await service.getOverview({});
-      expect(result.data.nonUsdCommissionByCurrency).toBeUndefined();
+      expect(result.data.unconvertedCommissionCurrencies).toBeUndefined();
     });
   });
 

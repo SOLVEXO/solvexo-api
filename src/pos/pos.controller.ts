@@ -32,9 +32,13 @@ import { UpdateSaleItemsDto } from './dto/update-sale-items.dto';
 import { UpdatePosSettingsDto } from './dto/update-pos-settings.dto';
 import { CreateStoreLocationDto } from './dto/create-store-location.dto';
 import { UpdateStoreLocationDto } from './dto/update-store-location.dto';
+import { FeatureFlagGuard } from '../admin-config/guards/feature-flag.guard';
+import { RequireFeature } from '../admin-config/decorators/require-feature.decorator';
 
 @ApiTags('POS')
 @ApiBearerAuth()
+@UseGuards(FeatureFlagGuard)
+@RequireFeature('posMode')
 @Controller('api/pos')
 export class PosController {
   constructor(

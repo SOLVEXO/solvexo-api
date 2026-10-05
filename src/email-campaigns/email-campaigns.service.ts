@@ -129,15 +129,19 @@ export class EmailCampaignsService {
 
     // Accounts behind the subscribers' emails — for the {{customerName}}
     // merge tag, the deleted-account check, and the buyers/abandoned filter.
+    // Guest-checkout rows have a synthetic login email — they match a subscriber by their real `contactEmail`.
+    const subscriberEmails = subscribers.map((s) => s.email);
     const users = await userModel
-      .find({ email: { $in: subscribers.map((s) => s.email) } })
-      .select('name email isDelete')
+      .find({ $or: [{ email: { $in: subscriberEmails } }, { isGuest: true, storeId, contactEmail: { $in: subscriberEmails } }] })
+      .select('name email contactEmail isGuest isDelete')
       .lean();
     const usersByEmail = new Map<string, any[]>();
     for (const u of users as any[]) {
-      const list = usersByEmail.get(u.email) ?? [];
+      const key = u.isGuest ? u.contactEmail : u.email;
+      if (!key) continue;
+      const list = usersByEmail.get(key) ?? [];
       list.push(u);
-      usersByEmail.set(u.email, list);
+      usersByEmail.set(key, list);
     }
 
     const recipients: { userId: string | null; accountIds: string[]; email: string; name: string; unsubscribeToken: string }[] = [];
@@ -298,6 +302,11 @@ export class EmailCampaignsService {
         unsubscribeUrl: newsletterUnsubscribeUrl(rcpt.unsubscribeToken),
         subject: campaign.subject,
         message: campaign.message,
+      }, {
+        // Shopify-Email-style retry of transient SMTP failures: 4 tries total,
+        // waiting 2 / 4 / 8 minutes in between.
+        attempts: 4,
+        backoff: { type: 'exponential', delay: 120_000 },
       });
     }
 
@@ -354,15 +363,23 @@ export class EmailCampaignsService {
 
   // ── Processor callbacks (see EmailCampaignsProcessor) ────────────────────
 
+  async getSendState(sendId: string) {
+    return this.r.emailCampaignSendModel.findById(sendId).select('sentAt failedAt').lean() as Promise<{ sentAt?: Date | null; failedAt?: Date | null } | null>;
+  }
+
+  /** Idempotent: a send resolves exactly once (sent XOR failed), so a BullMQ
+   *  redelivery can never double-count or flip a sent recipient to failed. */
   async markSendResult(sendId: string, campaignId: string, success: boolean, error?: string) {
-    await this.r.emailCampaignSendModel.updateOne(
-      { _id: sendId },
-      success ? { $set: { sentAt: new Date() } } : { $set: { error: error ?? 'send failed' } },
+    const res = await this.r.emailCampaignSendModel.updateOne(
+      { _id: sendId, sentAt: null, failedAt: null },
+      success ? { $set: { sentAt: new Date(), error: null } } : { $set: { failedAt: new Date(), error: error ?? 'send failed' } },
     );
-    await this.r.emailCampaignModel.updateOne(
-      { _id: campaignId },
-      success ? { $inc: { sentCount: 1 } } : { $inc: { failedCount: 1 } },
-    );
+    if (res.modifiedCount > 0) {
+      await this.r.emailCampaignModel.updateOne(
+        { _id: campaignId },
+        success ? { $inc: { sentCount: 1 } } : { $inc: { failedCount: 1 } },
+      );
+    }
     await this.maybeFinalizeCampaign(campaignId);
   }
 

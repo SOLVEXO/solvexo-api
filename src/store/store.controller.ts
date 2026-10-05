@@ -68,7 +68,9 @@ export class StoreController {
   @UseGuards(OptionalJwtAuthGuard)
   @Get('getStoreById/:storeId')
   async getStoreById(@Req() req: any, @Param('storeId') storeId: string) {
-    return this.storeService.getStoreById(storeId, req.user?.userId ?? null);
+    const u = req.user;
+    const privileged = !!u && (u.role === 'admin' || (u.role === 'staff' && u.storeId === storeId));
+    return this.storeService.getStoreById(storeId, u?.userId ?? null, privileged);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)

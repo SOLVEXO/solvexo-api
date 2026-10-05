@@ -50,7 +50,7 @@ export class PaymentTransaction {
   // `payment_intent.succeeded` on capture, handled by the same
   // `finalizePaymentIntent` every automatic-capture charge already uses).
   @Prop({
-    enum: ['pending', 'authorized', 'completed', 'failed'],
+    enum: ['pending', 'authorized', 'completed', 'failed', 'refunded'],
     default: 'pending',
     index: true,
   })

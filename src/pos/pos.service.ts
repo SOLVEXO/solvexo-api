@@ -5,6 +5,7 @@ import {
   NotFoundException,
   ForbiddenException,
 } from '@nestjs/common';
+import { availableStock, AVAILABLE_STOCK_EXPR } from '@/common/stock-availability.util';
 import * as bcrypt from 'bcrypt';
 import * as jwt from 'jsonwebtoken';
 import { DatabaseService } from '@/database/databaseservice';
@@ -640,7 +641,7 @@ export class PosService {
       // Checked against `stock - committedStock` (real availability), not
       // raw `stock` — some of it may already be reserved by a paid-but-
       // unshipped online order (see ProductVariant.committedStock).
-      const availableForPos = variant.stock - (variant.committedStock || 0);
+      const availableForPos = availableStock(variant as any);
       if (!isHeld && !variant.unlimitedStock && availableForPos < item.qty) {
         throw new BadRequestException(`Insufficient stock for "${variant.sku}" — available: ${availableForPos}`);
       }
@@ -728,7 +729,7 @@ export class PosService {
           {
             _id: item.variantId,
             unlimitedStock: { $ne: true },
-            $expr: { $gte: [{ $subtract: ['$stock', '$committedStock'] }, item.qty] },
+            $expr: { $gte: [AVAILABLE_STOCK_EXPR, item.qty] },
           },
           { $inc: { stock: -item.qty } },
         );
@@ -775,7 +776,7 @@ export class PosService {
     for (const item of (sale as any).items) {
       const variant = await this.r.productVariantModel.findOne({ _id: item.variantId, isDelete: false });
       if (!variant) throw new BadRequestException(`Variant no longer available: ${item.sku}`);
-      const availableForPos = variant.stock - (variant.committedStock || 0);
+      const availableForPos = availableStock(variant as any);
       if (!variant.unlimitedStock && availableForPos < item.qty) {
         throw new BadRequestException(`Insufficient stock for "${item.sku}" — available: ${availableForPos}`);
       }
@@ -806,7 +807,7 @@ export class PosService {
         {
           _id: item.variantId,
           unlimitedStock: { $ne: true },
-          $expr: { $gte: [{ $subtract: ['$stock', '$committedStock'] }, item.qty] },
+          $expr: { $gte: [AVAILABLE_STOCK_EXPR, item.qty] },
         },
         { $inc: { stock: -item.qty } },
       );

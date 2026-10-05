@@ -4,6 +4,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { DatabaseService } from '@/database/databaseservice';
+import { availableStock, AVAILABLE_STOCK_EXPR } from '@/common/stock-availability.util';
 import { MarketingService } from '@/marketing/marketing.service';
 import { pickBestCampaign } from '@/marketing/campaign-pricing.util';
 import { AdminConfigService } from '@/admin-config/admin-config.service';
@@ -323,7 +324,7 @@ export class CheckoutService {
         // Checked against real availability (`stock - committedStock`) —
         // some of `stock` may already be reserved by another pending,
         // paid-but-unshipped order. See ProductVariant.committedStock.
-        const available = variant.stock - ((variant as any).committedStock || 0);
+        const available = availableStock(variant as any);
         // A variant with allowBackorder:true (Shopify's "continue selling
         // when out of stock") never fails this pre-flight check — the real
         // atomic reserve at order-placement time (PaymentService.createOrder)

@@ -5,6 +5,7 @@ import {
   Logger,
   OnModuleInit,
 } from '@nestjs/common';
+import { buyerEmail } from '../common/buyer-email.util';
 import { DatabaseService } from '../database/databaseservice';
 import { EmailService } from '../otp/services/email.service';
 import {
@@ -303,11 +304,13 @@ export class NewsletterService implements OnModuleInit {
   ) {
     const user = await this.r.userModel
       .findById(userId)
-      .select('email')
+      .select('email contactEmail isGuest')
       .lean()
       .catch(() => null);
-    if (!user?.email) throw new BadRequestException('Account email not found');
-    return this.subscribe(user.email, { storeId, source, userId });
+    // A guest-checkout session has a synthetic login address — subscribe the email they actually entered at checkout.
+    const email = buyerEmail(user as any);
+    if (!email) throw new BadRequestException(user?.isGuest ? 'Enter your email address first' : 'Account email not found');
+    return this.subscribe(email, { storeId, source, userId });
   }
 
   async unsubscribeByToken(token: string): Promise<string> {

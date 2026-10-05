@@ -233,6 +233,17 @@ export class SellerOrder {
   @Prop({ type: String, default: null })
   stripeConnectedAccountId: string | null;
 
+  // Running total refunded on this sub-order through EVERY mechanism (cancel, standalone refund, return, refund request,
+  // order edit) — the single shared refund budget, capped at subtotal + tax (see common/refund-cap.util.ts). Absent on
+  // older orders (derived on first use).
+  @Prop({ type: Number })
+  refundedTotal: number;
+
+  // True when real `stock` was already decremented when this sub-order was created (Draft Orders complete
+  // against real stock directly, with no checkout reservation) — shipping/completing it must NOT decrement again.
+  @Prop({ type: Boolean, default: false })
+  stockAlreadyDeducted: boolean;
+
   // Cumulative total of standalone "Refund $X" actions issued against this
   // sellerOrder (OrdersService.refundOrderAsSeller) — in the BUYER's
   // checkout currency (Order.currency), same denomination `item.totalPrice`/
@@ -508,6 +519,21 @@ export class Order {
   @Prop({ type: Date, default: null })
   overdueReminderSentAt: Date | null;
 
+  // Stable customer identity for counting / customer lists (see resolveCustomerId) — differs from `userId` only for
+  // guest checkouts, where repeat purchases by the same email collapse into one customer. Null on older orders
+  // (readers fall back to `userId`).
+  @Prop({ type: String, default: null })
+  customerId: string | null;
+
+  // Shopify order TIMELINE: system events (edited, shipped, cancelled, refunded, paid…) and the merchant's own comments.
+  // Never shown to the buyer.
+  @Prop({ type: [Object], default: [] })
+  timeline: Array<{ type: string; message: string; actorId: string | null; actorRole: string | null; createdAt: Date }>;
+
+  // Shopify Notes card — merchant-only internal note about this order.
+  @Prop({ type: String, default: '' })
+  note: string;
+
   // Overall derived status — see `order-status.util.ts#deriveOrderStatus`,
   // the ONE function that computes this value from `sellerOrders[].status`;
   // never hand-set independently. Shares its exact enum with
@@ -572,6 +598,7 @@ OrderSchema.index({ 'sellerOrders.sellerId': 1, 'sellerOrders.status': 1 });
 OrderSchema.index({ 'sellerOrders.storeId': 1 });
 OrderSchema.index({ 'sellerOrders.items.status': 1 });
 OrderSchema.index({ paymentStatus: 1 });
+OrderSchema.index({ customerId: 1 });
 OrderSchema.index({ createdAt: -1 });
 // Every analytics aggregation (order-aggregation.util.ts#sellerOrderMatchStage,
 // and every direct orderModel.aggregate() call in admin-analytics/analytics)

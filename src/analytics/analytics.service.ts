@@ -610,7 +610,7 @@ export class AnalyticsService {
         ...this.matchStage(scope, from, to),
         { $match: { 'sellerOrders.status': { $ne: 'cancelled' } } },
         { $addFields: { bucket: { $dateTrunc: { date: '$createdAt', unit: granularity, timezone: 'UTC' } } } },
-        { $group: { _id: { bucket: '$bucket', userId: '$userId' } } },
+        { $group: { _id: { bucket: '$bucket', userId: { $ifNull: ['$customerId', '$userId'] } } } },
       ]);
 
       const bucketTotals = new Map<number, { newCustomers: number; returningCustomers: number }>();

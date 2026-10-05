@@ -118,7 +118,7 @@ export class StoreIntegrationsService {
     const payment = await Promise.all(
       availableProviders.map(async (provider) => {
         if (provider === 'stripe') {
-          const { data } = await this.stripeConnectService.getStatus(sellerId);
+          const { data } = await this.stripeConnectService.getStatus(sellerId, storeId);
           return {
             id: null,
             type: 'payment' as const,

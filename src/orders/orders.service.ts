@@ -6,6 +6,10 @@ import {
   ConflictException,
 } from '@nestjs/common';
 import { isValidObjectId } from 'mongoose';
+import { reserveRefundCapacity, releaseRefundCapacity } from '@/common/refund-cap.util';
+import { buyerEmail } from '@/common/buyer-email.util';
+import { toBuyerSafeOrder } from '@/common/buyer-safe-order.util';
+import { signOrderStatusToken, verifyOrderStatusToken } from '@/common/order-status-token.util';
 import { DatabaseService } from '@/database/databaseservice';
 import { UploadService } from '@/upload/upload.service';
 import { JwtService } from '@nestjs/jwt';
@@ -17,6 +21,7 @@ import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { LoyaltyService } from '@/loyalty/loyalty.service';
 import { NotificationsService } from '@/notifications/notifications.service';
 import { ShippingRatesService } from '@/shipping-rates/shipping-rates.service';
+import { fulfilStockForSellerOrders } from '@/common/fulfil-stock.util';
 import { StoreCreditService } from '@/store-credit/store-credit.service';
 import { GiftCardsService } from '@/gift-cards/gift-cards.service';
 import { NOTIFICATION_TYPES } from '@/notifications/notification.types';
@@ -69,6 +74,16 @@ export class OrdersService {
     subtotal: number,
   ) {
     return this.loyaltyService.awardPurchasePoints(storeId, userId, orderId, subtotal);
+  }
+
+  /** Appends an event to the order's merchant timeline (best-effort, never blocks the action). */
+  private async pushTimeline(orderId: string, type: string, message: string, actorId: string | null, actorRole: string | null) {
+    try {
+      await this.databaseService.repositories.orderModel.updateOne(
+        { _id: orderId },
+        { $push: { timeline: { type, message, actorId, actorRole: actorRole ?? 'system', createdAt: new Date() } } },
+      );
+    } catch { /* informational */ }
   }
 
   async getOrdersByUserId(userId: string, query: any, storeId: string) {
@@ -248,8 +263,30 @@ export class OrdersService {
 
     return {
       success: true,
-      data: enrichedOrder,
+      data: toBuyerSafeOrder(enrichedOrder),
     };
+  }
+
+  /** Shopify order-status page: opens ONE order from a signed link, no login (how a guest tracks an order). */
+  async getOrderByStatusToken(token: string) {
+    const orderId = verifyOrderStatusToken(token);
+    if (!orderId || !isValidObjectId(orderId)) throw new NotFoundException('Order not found');
+    const { orderModel, sellerModel } = this.databaseService.repositories;
+    const order: any = await orderModel.findOne({ _id: orderId, isDelete: false }).lean();
+    if (!order) throw new NotFoundException('Order not found');
+    const sellerIds = [...new Set((order.sellerOrders ?? []).map((so: any) => String(so.sellerId)))].filter(Boolean) as string[];
+    const sellers = sellerIds.length ? await sellerModel.find({ _id: { $in: sellerIds } }).select('name').lean() : [];
+    const nameById = new Map(sellers.map((x: any) => [String(x._id), x.name]));
+    const enriched = { ...order, sellerOrders: (order.sellerOrders ?? []).map((so: any) => ({ ...so, sellerName: nameById.get(String(so.sellerId)) ?? null })) };
+    return { success: true, data: toBuyerSafeOrder(enriched) };
+  }
+
+  /** A signed status-page link token for an order the caller owns. */
+  async getOrderStatusToken(userId: string, orderId: string) {
+    const { orderModel } = this.databaseService.repositories;
+    const order: any = await orderModel.findOne({ _id: orderId, userId, isDelete: false }).select('_id').lean();
+    if (!order) throw new NotFoundException('Order not found');
+    return { success: true, data: { token: signOrderStatusToken(String(order._id)) } };
   }
 
   /** `storeId` omitted (null) means "every store this seller owns" — used by the
@@ -289,15 +326,18 @@ export class OrdersService {
     // Scope to one buyer's own order history within this store — reuses the
     // exact same aggregation/pagination/stats logic below rather than a
     // separate customer-order-history endpoint.
+    // (`userId` here is the CUSTOMER id — for guests that is the canonical customer, so all of their sessions show.)
+    const andClauses: any[] = [];
     if (query.userId) {
-      matchFilter.userId = query.userId;
+      andClauses.push({ $or: [{ userId: String(query.userId) }, { customerId: String(query.userId) }] });
     }
-    if (query.type && query.type !== 'all') {
-      matchFilter['sellerOrders.fulfillmentType'] = query.type;
-    }
-    if (query.status && query.status !== 'all') {
-      matchFilter['sellerOrders.status'] = query.status;
-    }
+
+    // status / type must hold on THIS store's sub-order (one element), not on any element of a multi-store order.
+    const subFilter: any = { storeId: { $in: storeIds } };
+    if (query.type && query.type !== 'all') subFilter.fulfillmentType = String(query.type);
+    if (query.status && query.status !== 'all') subFilter.status = String(query.status);
+    if (Object.keys(subFilter).length > 1) matchFilter.sellerOrders = { $elemMatch: subFilter };
+
     if (query.time && query.time !== 'all') {
       const now = new Date();
       if (query.time === 'today') {
@@ -313,6 +353,25 @@ export class OrdersService {
       }
     }
 
+    // Server-side search over the WHOLE order history: order number, product name, customer name/email.
+    const q = typeof query.q === 'string' ? query.q.trim().slice(0, 100) : '';
+    if (q) {
+      const re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+      const users = await userModel
+        .find({ $or: [{ name: re }, { email: re }], storeId: { $in: [...storeIds, null] } })
+        .select('_id')
+        .limit(200)
+        .lean();
+      andClauses.push({
+        $or: [
+          { orderNumber: re },
+          { 'sellerOrders.items.name': re },
+          ...(users.length ? [{ userId: { $in: users.map((u: any) => String(u._id)) } }] : []),
+        ],
+      });
+    }
+    if (andClauses.length) matchFilter.$and = andClauses;
+
     const totalOrders = await orderModel.countDocuments(matchFilter);
     const totalPages = Math.ceil(totalOrders / limit);
 
@@ -323,28 +382,24 @@ export class OrdersService {
       .limit(limit)
       .lean();
 
-    // stats — all orders across the scoped store(s) (no pagination)
-    const allOrders = await orderModel
-      .find({ 'sellerOrders.storeId': { $in: storeIds }, isDelete: false })
-      .lean();
-
-    let totalRevenue = 0;
-    let pendingCount = 0;
-
-    for (const order of allOrders) {
-      const so = (order.sellerOrders as any[]).find((s: any) =>
-        storeIds.includes(s.storeId),
-      );
-      if (!so) continue;
-      if (['completed', 'delivered'].includes(so.status)) {
-        totalRevenue += so.subtotal || 0;
-      }
-      if (['pending', 'processing'].includes(so.status)) {
-        pendingCount++;
-      }
-    }
-
-    const avgOrder = allOrders.length > 0 ? totalRevenue / allOrders.length : 0;
+    // stats — all orders across the scoped store(s), unfiltered and unpaginated, computed in the database
+    // (no longer loads every order document into memory just to add up three numbers).
+    const [statRow]: any[] = await orderModel.aggregate([
+      { $match: { 'sellerOrders.storeId': { $in: storeIds }, isDelete: false } },
+      { $addFields: { so: { $first: { $filter: { input: '$sellerOrders', as: 's', cond: { $in: ['$$s.storeId', storeIds] } } } } } },
+      {
+        $group: {
+          _id: null,
+          count: { $sum: 1 },
+          revenue: { $sum: { $cond: [{ $in: ['$so.status', ['completed', 'delivered']] }, { $ifNull: ['$so.subtotal', 0] }, 0] } },
+          pending: { $sum: { $cond: [{ $in: ['$so.status', ['pending', 'processing']] }, 1, 0] }, },
+        },
+      },
+    ]);
+    const totalRevenue: number = statRow?.revenue ?? 0;
+    const pendingCount: number = statRow?.pending ?? 0;
+    const allOrdersCount: number = statRow?.count ?? 0;
+    const avgOrder = allOrdersCount > 0 ? totalRevenue / allOrdersCount : 0;
 
     // order rows format
     const rows = await Promise.all(
@@ -356,7 +411,7 @@ export class OrdersService {
 
         const user = await userModel
           .findOne({ _id: order.userId })
-          .select('name email')
+          .select('name email contactEmail isGuest')
           .lean();
         const firstItem = so.items?.[0];
 
@@ -365,7 +420,7 @@ export class OrdersService {
           orderNumber: order.orderNumber,
           customer: {
             name: (user as any)?.name || 'Unknown',
-            email: (user as any)?.email || '',
+            email: buyerEmail(user as any) || '',
           },
           product: firstItem?.name || '',
           type: so.fulfillmentType,
@@ -465,6 +520,9 @@ export class OrdersService {
         // fulfillment timestamps, return status. `subtotal` here is already
         // scoped to this seller, unlike `order.subtotal` (the whole order).
         sellerOrder,
+        // Merchant-only: the Shopify order timeline (events + comments) and the internal note.
+        timeline: [...((order as any).timeline ?? [])].sort((a: any, b: any) => +new Date(b.createdAt) - +new Date(a.createdAt)),
+        note: (order as any).note ?? '',
       },
     };
   }
@@ -592,7 +650,7 @@ export class OrdersService {
     const userIds = [...new Set(orders.map((o: any) => o.userId))];
     const users = await userModel
       .find({ _id: { $in: userIds } })
-      .select('name email')
+      .select('name email contactEmail isGuest')
       .lean();
     const userMap = new Map(users.map((u: any) => [String(u._id), u]));
 
@@ -1021,7 +1079,7 @@ export class OrdersService {
     const wasAlreadyFulfilled = FULFILLED_STATES.includes(
       order.sellerOrders[sellerOrderIndex].status,
     );
-    if (!wasAlreadyFulfilled && FULFILLED_STATES.includes(status)) {
+    if (!wasAlreadyFulfilled && FULFILLED_STATES.includes(status) && !order.sellerOrders[sellerOrderIndex].stockAlreadyDeducted) {
       for (let itemIndex = 0; itemIndex < soItems.length; itemIndex++) {
         const item = soItems[itemIndex];
         if (item.type !== 'physical' || !item.variantId) continue;
@@ -1150,6 +1208,7 @@ export class OrdersService {
         .catch(() => {});
     }
 
+    await this.pushTimeline(orderId, 'status', `Order marked as ${status}${status === 'shipped' && tracking?.trackingNumber ? ` (tracking ${tracking.carrier ? tracking.carrier + ' ' : ''}${tracking.trackingNumber})` : ''}`, sellerId, 'seller');
     return { success: true, message: `Order status updated to ${status}` };
   }
 
@@ -1161,7 +1220,10 @@ export class OrdersService {
    *  `recordOrderPayment()` once its cumulative recorded total reaches the
    *  order's full amount. */
   private async finalizeOrderPayment(order: any, orderId: string) {
-    const { orderModel } = this.databaseService.repositories;
+    const { orderModel, productVariantModel } = this.databaseService.repositories;
+    await this.pushTimeline(orderId, 'payment', 'Payment received — order completed', null, 'system');
+    // Jumping straight to completed: release the reservation + drop real stock for not-yet-fulfilled sub-orders.
+    await fulfilStockForSellerOrders(productVariantModel, order.sellerOrders);
     const now = new Date();
     const updateData: any = {
       isPaid: true,
@@ -1727,19 +1789,6 @@ export class OrdersService {
           `sellerOrders.${soIndex}.items.${itemIndex}.refundedAmount`
         ] = item.totalPrice;
       }
-
-      // physical item — release the reservation (never a real `stock`
-      // restore here): `BLOCKED` above already guarantees this item is
-      // still 'pending'/'processing', meaning it was only ever reserved
-      // via `committedStock` at checkout, never actually shipped/decremented
-      // from real `stock` — see ProductVariant.committedStock's doc comment.
-      if (item.type === 'physical' && item.variantId) {
-        await productVariantModel.updateOne(
-          { _id: item.variantId, unlimitedStock: { $ne: true } },
-          [{ $set: { committedStock: { $max: [0, { $subtract: ['$committedStock', item.quantity] }] } } }],
-          { updatePipeline: true } as any,
-        );
-      }
     }
 
     // sellerOrder status recalculate — unconditional now (see
@@ -1766,26 +1815,63 @@ export class OrdersService {
         updateData[`sellerOrders.${soIndex}.status`] ?? so.status,
     );
     updateData.orderStatus = deriveRollupStatus(updatedSOStatuses);
+    if (order.isPaid) updateData.paymentStatus = 'refunded';
+
+    // What the buyer is owed back per sub-order: each cancelled item's price PLUS its own tax share (the buyer was charged
+    // tax on it and the seller was credited it — see SellerOrder.taxAmount).
+    const amountBySoIndex = new Map<number, number>();
+    if (order.isPaid) {
+      for (const { soIndex, item } of targetItems) {
+        amountBySoIndex.set(soIndex, (amountBySoIndex.get(soIndex) ?? 0) + item.totalPrice + (item.taxUSD ?? 0));
+      }
+    }
+    // Take the money out of the ONE shared refund budget (clamped to what is still left — e.g. part of it may already have
+    // been refunded through a standalone refund / approved return) BEFORE claiming, so a lost race can give it back.
+    const grantedBySoIndex = new Map<number, number>();
+    for (const [soIndex, amount] of amountBySoIndex) {
+      grantedBySoIndex.set(soIndex, await reserveRefundCapacity(orderModel, orderId, soIndex, amount, { clamp: true }));
+    }
+    const releaseGrants = async () => { for (const [i, g] of grantedBySoIndex) await releaseRefundCapacity(orderModel, orderId, i, g).catch(() => undefined); };
+
+    // Optimistic lock FIRST — this method has TWO independent entry points (`cancelOrder` for the buyer,
+    // `cancelOrderAsSeller` for the seller), both computing `updateData` from the SAME `order` snapshot. The
+    // claim only applies if the order is still exactly as that snapshot (matching `updatedAt`), so a buyer and
+    // a seller cancelling at nearly the same moment can no longer BOTH pass and BOTH release stock / refund the
+    // card / reverse the ledger — the loser gets a clear, retryable error and nothing has been touched yet.
+    // (Previously the stock/ledger/Stripe side effects ran before this check, so a lost race had already
+    // double-refunded by the time it was detected.)
+    const claimed = await orderModel.findOneAndUpdate(
+      { _id: orderId, updatedAt: order.updatedAt },
+      { $set: updateData },
+    );
+    if (!claimed) {
+      await releaseGrants();
+      throw new BadRequestException(
+        'This order was just modified by someone else — please refresh and try again.',
+      );
+    }
+
+    // physical items — release the reservation (never a real `stock` restore here): `BLOCKED` above already
+    // guarantees these items were still 'pending'/'processing', i.e. only ever reserved via `committedStock`
+    // at checkout, never shipped/decremented from real `stock` — see ProductVariant.committedStock's doc comment.
+    for (const { item } of targetItems) {
+      if (item.type === 'physical' && item.variantId) {
+        await productVariantModel.updateOne(
+          { _id: item.variantId, unlimitedStock: { $ne: true } },
+          [{ $set: { committedStock: { $max: [0, { $subtract: ['$committedStock', item.quantity] }] } } }],
+          { updatePipeline: true } as any,
+        );
+      }
+    }
 
     // ── Real money movement (paid orders only) ──────────────────────────
     let totalBuyerRefund = 0;
     if (order.isPaid) {
-      updateData.paymentStatus = 'refunded';
-
-      const amountBySoIndex = new Map<number, number>();
-      for (const { soIndex, item } of targetItems) {
-        // Includes this item's own taxUSD share — the buyer was charged tax
-        // on this item too, and the seller was credited it (see
-        // SellerOrder.taxAmount), so cancelling it must refund/claw both
-        // back together, not just the item price.
-        amountBySoIndex.set(
-          soIndex,
-          (amountBySoIndex.get(soIndex) ?? 0) + item.totalPrice + (item.taxUSD ?? 0),
-        );
-      }
       const buyerCurrency = order.currency || 'USD';
 
-      for (const [soIndex, amount] of amountBySoIndex) {
+      for (const [soIndex] of amountBySoIndex) {
+        const amount = grantedBySoIndex.get(soIndex) ?? 0; // never more than the shared budget still allowed
+        if (!(amount > 0)) continue;
         const so = order.sellerOrders[soIndex];
         const settlementCurrency = so.settlementCurrency ?? buyerCurrency;
         const sellerDebitAmount = this.exchangeRateService.convertWithSnapshots(
@@ -1831,7 +1917,7 @@ export class OrdersService {
             await this.paymentService.refundStripePaymentIntent(
               transaction.stripePaymentIntentId,
               totalBuyerRefund,
-              `order_cancel_${orderId}_${now.getTime()}`,
+              `order_cancel_${orderId}_${targetItems.map((t) => t.item._id.toString()).sort().join(",")}`,
             );
           } catch (e: any) {
             // Ledger already reversed above — same disclosed failure mode as
@@ -1905,27 +1991,8 @@ export class OrdersService {
       }
     }
 
-    // Optimistic lock — this method now has TWO independent entry points
-    // (`cancelOrder` for the buyer, `cancelOrderAsSeller` for the seller),
-    // both computing `updateData` from the SAME `order` snapshot read at the
-    // top of this function. Without this guard, a buyer and seller
-    // cancelling different items on the same order at nearly the same
-    // moment would race: the second write's `$set` (still built from its
-    // own stale read) would silently clobber the first's already-applied
-    // item/status/refund changes — a real correctness gap a plain
-    // `findByIdAndUpdate` can't detect. Matching on the snapshot's own
-    // `updatedAt` makes the write a no-op (rather than a silent overwrite)
-    // if the order changed underneath it; the caller gets a clear,
-    // retryable error instead of quietly losing the other actor's changes.
-    const updated = await orderModel.findOneAndUpdate(
-      { _id: orderId, updatedAt: order.updatedAt },
-      { $set: updateData },
-    );
-    if (!updated) {
-      throw new BadRequestException(
-        'This order was just modified by someone else — please refresh and try again.',
-      );
-    }
+
+    await this.pushTimeline(orderId, 'cancel', `${targetItems.length} item(s) cancelled — ${reason}`, actor.actorId, actor.actorRole);
 
     if (actor.notifyRecipientRole === 'seller') {
       const affectedSellerOrders = new Map<string, { sellerId: string; storeId: string }>();
@@ -2013,12 +2080,9 @@ export class OrdersService {
     const alreadyRefunded =
       (so.items as any[]).reduce((sum, i: any) => sum + (i.refundedAmount || 0), 0) +
       (so.manualRefundedAmount || 0);
-    const maxRefundable = round(so.subtotal - alreadyRefunded);
-    if (amount > maxRefundable) {
-      throw new BadRequestException(
-        `Refund amount exceeds what's left to refund for this order (max ${maxRefundable}).`,
-      );
-    }
+    // The ONE shared refund budget (cancel / return / refund request / edit all draw from it) — atomic.
+    await reserveRefundCapacity(orderModel, orderId, soIndex, amount);
+    const giveBack = () => releaseRefundCapacity(orderModel, orderId, soIndex, amount).catch(() => undefined);
 
     const buyerCurrency = order.currency || 'USD';
 
@@ -2031,15 +2095,20 @@ export class OrdersService {
       const creditAmount = round(
         this.exchangeRateService.convertWithSnapshots(amount, buyerCurrency, storeCurrency, order.fxSnapshots ?? []),
       );
-      await this.storeCreditService.creditFromRefund(
-        storeId,
-        order.userId,
-        creditAmount,
-        orderId,
-        `refund:${orderId}:${round(alreadyRefunded)}`,
-        `Order #${order.orderNumber} — ${reason}`,
-        { actorId: sellerId, actorRole: 'seller' } as any,
-      );
+      try {
+        await this.storeCreditService.creditFromRefund(
+          storeId,
+          order.userId,
+          creditAmount,
+          orderId,
+          `refund:${orderId}:${round(alreadyRefunded)}`,
+          `Order #${order.orderNumber} — ${reason}`,
+          { actorId: sellerId, actorRole: 'seller' } as any,
+        );
+      } catch (err) {
+        await giveBack();
+        throw err;
+      }
       await orderModel.updateOne(
         { _id: orderId },
         { $inc: { [`sellerOrders.${soIndex}.manualRefundedAmount`]: amount } },
@@ -2080,6 +2149,7 @@ export class OrdersService {
       );
     } catch (e: any) {
       console.error('Finance recordRefund failed (standalone seller refund):', e?.message);
+      await giveBack();
       throw new BadRequestException('Failed to record the refund against your balance — please try again.');
     }
 
@@ -2113,6 +2183,7 @@ export class OrdersService {
       { $inc: { [`sellerOrders.${soIndex}.manualRefundedAmount`]: amount } },
     );
 
+    await this.pushTimeline(orderId, 'refund', `Refunded ${amount} ${buyerCurrency} to the original payment method — ${reason}`, sellerId, 'seller');
     await this.activityLogService.log({
       storeId, category: 'orders', action: 'order_manual_refund_issued',
       description: `Refunded ${amount} ${buyerCurrency} on order #${order.orderNumber} — ${reason}`,
@@ -2221,7 +2292,7 @@ export class OrdersService {
       paginated.map(async ({ order, so, item }) => {
         const user = await userModel
           .findById(order.userId)
-          .select('name email')
+          .select('name email contactEmail isGuest')
           .lean();
         return {
           orderId: order._id,
@@ -2229,7 +2300,7 @@ export class OrdersService {
           itemId: item._id,
           customer: {
             name: (user as any)?.name || 'Unknown',
-            email: (user as any)?.email || null,
+            email: buyerEmail(user as any),
           },
           storeId: so.storeId,
           productName: item.name,
@@ -2503,7 +2574,19 @@ export class OrdersService {
       updateData.hasReturnApproved = true;
     }
 
-    await orderModel.findByIdAndUpdate(orderId, { $set: updateData });
+    // Money first comes out of the ONE shared refund budget (clamped to what is left — part of these items may already have
+    // been refunded another way), then the order is claimed with an optimistic lock so a double-click / two reviewers can't
+    // both approve (and both refund) the same return.
+    let grantedRefund = 0;
+    if (action === 'approve' && order.isPaid) {
+      const wanted = targetItems.reduce((sum, t) => sum + (t.item.totalPrice || 0) + (t.item.taxUSD || 0), 0);
+      grantedRefund = await reserveRefundCapacity(orderModel, orderId, soIndex, wanted, { clamp: true });
+    }
+    const claimedReturn = await orderModel.findOneAndUpdate({ _id: orderId, updatedAt: (order as any).updatedAt }, { $set: updateData });
+    if (!claimedReturn) {
+      await releaseRefundCapacity(orderModel, orderId, soIndex, grantedRefund).catch(() => undefined);
+      throw new BadRequestException('This order was just modified by someone else — please refresh and try again.');
+    }
 
     let refundProcessed = false;
     if (action === 'approve' && order.isPaid) {
@@ -2516,10 +2599,7 @@ export class OrdersService {
       // Includes each item's own taxUSD share — see the cancellation path's
       // identical fix above for why (item price + its tax must be refunded
       // and clawed back from the seller together).
-      const buyerRefundAmount = targetItems.reduce(
-        (sum, t) => sum + (t.item.totalPrice || 0) + (t.item.taxUSD || 0),
-        0,
-      );
+      const buyerRefundAmount = grantedRefund;
       if (buyerRefundAmount > 0) {
         const buyerCurrency = order.currency || 'USD';
         const settlementCurrency =

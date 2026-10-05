@@ -29,6 +29,10 @@ export class EmailCampaignSend {
   @Prop({ type: Date, default: null })
   sentAt: Date | null;
 
+  /** Set once every retry attempt is exhausted (permanent failure). */
+  @Prop({ type: Date, default: null })
+  failedAt: Date | null;
+
   @Prop({ type: Date, default: null })
   openedAt: Date | null;
 

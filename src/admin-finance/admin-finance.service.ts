@@ -148,7 +148,7 @@ export class AdminFinanceService {
   async getOverview(query: any) {
     const { from, to } = resolveDateRange(query);
 
-    return this.cached(this.key('overview-v2', { from, to }), async () => {
+    return this.cached(this.key('overview-v3', { from, to }), async () => {
       const [byTypeRows, balanceTotalsRows, payoutStatusRows, sellersWithBalance, earnings, flaggedSellersCount, pendingVerificationMethodsCount, pendingManualPaymentsCount] = await Promise.all([
         // `currency` is included in the group key — PKR and USD transactions
         // must never be summed into one blended gmv/refunds/netRevenue figure.
@@ -274,13 +274,17 @@ export class AdminFinanceService {
           consolidatedUSD,
           fxRates: Object.fromEntries([...rates.entries()].filter(([code]) => byCurrency.some((c) => c.currency === code))),
           unconvertibleCurrencies: unconvertible,
-          byCurrency,
+          byCurrency: byCurrency.map((c) => this.convertRowToUsd(c, c.currency, [
+            'gmv', 'netRevenue', 'refunds', 'platformEarnings', 'platformCommission', 'paymentProcessingFees',
+            'sellerBalances.totalAvailable', 'sellerBalances.totalPending',
+            'lifetimeTotals.totalRevenue', 'lifetimeTotals.totalFees', 'lifetimeTotals.totalRefunds', 'lifetimeTotals.totalPayouts',
+          ], rates)),
           sellersWithBalance,
           flaggedSellersCount,
           pendingVerificationMethodsCount,
           pendingManualPaymentsCount,
-          payoutQueue,
-          note: 'All figures are in USD (non-USD stores converted at the latest FX rate). byCurrency keeps the native-currency rows for reference. gmv/netRevenue/refunds/totalOrders are scoped to the selected period; sellerBalances are current, all-time snapshots regardless of the date filter.',
+          payoutQueue: Object.fromEntries(Object.entries(payoutQueue).map(([k, v]) => [k, { ...v, byCurrency: v.byCurrency.map((c) => this.convertRowToUsd(c, c.currency, ['amount'], rates)) }])),
+          note: 'All figures are in USD (non-USD stores converted at the latest FX rate). byCurrency rows are per settlement currency, also in USD (null = no FX rate set). gmv/netRevenue/refunds/totalOrders are scoped to the selected period; sellerBalances are current, all-time snapshots regardless of the date filter.',
         },
       };
     });
@@ -293,43 +297,46 @@ export class AdminFinanceService {
   async getRevenueOverTime(query: any) {
     const { from, to, granularity } = resolveDateRange(query);
 
-    return this.cached(this.key('revenue-over-time-v2', { from, to, granularity }), async () => {
-      // `currency` is part of the group key — a PKR seller's sale and a USD
-      // seller's sale must never be added together into one grossRevenue point.
+    return this.cached(this.key('revenue-over-time-v4', { from, to, granularity }), async () => {
+      // Each ledger entry carries the USD value frozen when it was written (see Transaction.amountUSD). Entries that
+      // predate it (no frozen value) are converted at the latest rate — and a currency with no rate stays out of the
+      // USD figures (never shown as USD). `currency` stays in the group key: native sums must never mix currencies.
       const rows = await this.r.transactionModel.aggregate([
         { $match: { type: { $in: ['sale', 'refund'] }, status: { $ne: 'failed' }, createdAt: { $gte: from, $lte: to } } },
         { $addFields: { bucket: { $dateTrunc: { date: '$createdAt', unit: granularity, timezone: 'UTC' } } } },
-        { $group: { _id: { bucket: '$bucket', type: '$type', currency: '$currency' }, total: { $sum: { $abs: '$amount' } } } },
+        {
+          $group: {
+            _id: { bucket: '$bucket', type: '$type', currency: '$currency' },
+            legacyNative: { $sum: { $cond: [{ $isNumber: '$amountUSD' }, 0, { $abs: '$amount' }] } },
+            frozenUsd: { $sum: { $cond: [{ $isNumber: '$amountUSD' }, { $abs: '$amountUSD' }, 0] } },
+          },
+        },
       ]);
 
-      const currencies = new Set<string>((await this.adminConfigService.getEnabledCurrencies()).map((c) => c.code));
-      for (const row of rows) currencies.add(row._id.currency ?? 'USD');
-
-      const byBucket = new Map<number, Map<string, { gross: number; refunds: number }>>();
+      const rates = await this.getUsdRates();
+      // per bucket → per currency: USD gross / refunds (null-rate legacy amounts excluded)
+      type E = { gross: number; refunds: number; noRate: boolean };
+      const byBucket = new Map<number, Map<string, E>>();
       for (const row of rows) {
         const t = row._id.bucket.getTime();
         const currency = row._id.currency ?? 'USD';
-        const perCurrency = byBucket.get(t) ?? new Map<string, { gross: number; refunds: number }>();
-        const entry = perCurrency.get(currency) ?? { gross: 0, refunds: 0 };
-        if (row._id.type === 'sale') entry.gross = row.total; else entry.refunds = row.total;
+        const perCurrency = byBucket.get(t) ?? new Map<string, E>();
+        const entry = perCurrency.get(currency) ?? { gross: 0, refunds: 0, noRate: false };
+        const legacyUsd = row.legacyNative ? this.toUsd(row.legacyNative, currency, rates) : 0;
+        if (legacyUsd === null) entry.noRate = true;
+        const usd = (row.frozenUsd ?? 0) + (legacyUsd ?? 0);
+        if (row._id.type === 'sale') entry.gross += usd; else entry.refunds += usd;
         perCurrency.set(currency, entry);
         byBucket.set(t, perCurrency);
       }
 
-      const rates = await this.getUsdRates();
       const series = enumerateBuckets(from, to, granularity).map((bucket) => {
         const perCurrency = byBucket.get(bucket.getTime());
-        const byCurrency = [...currencies].map((currency) => {
-          const e = perCurrency?.get(currency) ?? { gross: 0, refunds: 0 };
-          return { currency, grossRevenue: round(e.gross), netRevenue: round(e.gross - e.refunds) };
-        }).filter((c) => c.grossRevenue !== 0 || c.netRevenue !== 0);
-        // USD roll-up for the platform owner (latest rate; unknown-rate currencies skipped).
         let usdGross = 0; let usdNet = 0;
-        for (const c of byCurrency) {
-          const g = this.toUsd(c.grossRevenue, c.currency, rates);
-          const n = this.toUsd(c.netRevenue, c.currency, rates);
-          if (g !== null && n !== null) { usdGross += g; usdNet += n; }
-        }
+        const byCurrency = [...(perCurrency?.entries() ?? [])].map(([currency, e]) => {
+          usdGross += e.gross; usdNet += e.gross - e.refunds;
+          return { currency, grossRevenue: round(e.gross), netRevenue: round(e.gross - e.refunds), amountsIn: 'USD' as const, ...(e.noRate ? { note: 'some entries have no FX rate' } : {}) };
+        }).filter((c) => c.grossRevenue !== 0 || c.netRevenue !== 0);
         return { date: bucket, byCurrency, usd: { grossRevenue: round(usdGross), netRevenue: round(usdNet) } };
       });
 
@@ -340,37 +347,45 @@ export class AdminFinanceService {
   async getCommissionOverTime(query: any) {
     const { from, to, granularity } = resolveDateRange(query);
 
-    return this.cached(this.key('commission-over-time-v2', { from, to, granularity }), async () => {
+    return this.cached(this.key('commission-over-time-v4', { from, to, granularity }), async () => {
       const rows = await this.r.transactionModel.aggregate([
         { $match: { type: 'sale', status: { $ne: 'failed' }, createdAt: { $gte: from, $lte: to } } },
         { $addFields: { bucket: { $dateTrunc: { date: '$createdAt', unit: granularity, timezone: 'UTC' } } } },
-        { $group: { _id: { bucket: '$bucket', currency: '$currency' }, commission: { $sum: '$metadata.platformFee' }, processingFees: { $sum: '$metadata.processingFee' } } },
+        {
+          $group: {
+            _id: { bucket: '$bucket', currency: '$currency' },
+            // frozen: the fee's USD at the sale's own rate; legacy: native fee on rows that predate the frozen rate
+            commissionUsd: { $sum: { $cond: [{ $gt: ['$ratePerUSD', 0] }, { $divide: [{ $ifNull: ['$metadata.platformFee', 0] }, '$ratePerUSD'] }, 0] } },
+            processingUsd: { $sum: { $cond: [{ $gt: ['$ratePerUSD', 0] }, { $divide: [{ $ifNull: ['$metadata.processingFee', 0] }, '$ratePerUSD'] }, 0] } },
+            commissionLegacy: { $sum: { $cond: [{ $gt: ['$ratePerUSD', 0] }, 0, { $ifNull: ['$metadata.platformFee', 0] }] } },
+            processingLegacy: { $sum: { $cond: [{ $gt: ['$ratePerUSD', 0] }, 0, { $ifNull: ['$metadata.processingFee', 0] }] } },
+          },
+        },
       ]);
 
-      const currencies = new Set<string>((await this.adminConfigService.getEnabledCurrencies()).map((c) => c.code));
-      for (const row of rows) currencies.add(row._id.currency ?? 'USD');
-
-      const byBucket = new Map<number, Map<string, any>>();
+      const rates = await this.getUsdRates();
+      const byBucket = new Map<number, Map<string, { commission: number; processingFees: number; noRate: boolean }>>();
       for (const row of rows) {
         const t = row._id.bucket.getTime();
-        const perCurrency = byBucket.get(t) ?? new Map<string, any>();
-        perCurrency.set(row._id.currency ?? 'USD', row);
+        const currency = row._id.currency ?? 'USD';
+        const perCurrency = byBucket.get(t) ?? new Map();
+        const cl = row.commissionLegacy ? this.toUsd(row.commissionLegacy, currency, rates) : 0;
+        const pl = row.processingLegacy ? this.toUsd(row.processingLegacy, currency, rates) : 0;
+        perCurrency.set(currency, {
+          commission: (row.commissionUsd ?? 0) + (cl ?? 0),
+          processingFees: (row.processingUsd ?? 0) + (pl ?? 0),
+          noRate: cl === null || pl === null,
+        });
         byBucket.set(t, perCurrency);
       }
 
-      const rates = await this.getUsdRates();
       const series = enumerateBuckets(from, to, granularity).map((bucket) => {
         const perCurrency = byBucket.get(bucket.getTime());
-        const byCurrency = [...currencies].map((currency) => {
-          const row = perCurrency?.get(currency);
-          return { currency, commission: round(row?.commission ?? 0), processingFees: round(row?.processingFees ?? 0) };
-        }).filter((c) => c.commission !== 0 || c.processingFees !== 0);
         let usdCommission = 0; let usdFees = 0;
-        for (const c of byCurrency) {
-          const cm = this.toUsd(c.commission, c.currency, rates);
-          const pf = this.toUsd(c.processingFees, c.currency, rates);
-          if (cm !== null && pf !== null) { usdCommission += cm; usdFees += pf; }
-        }
+        const byCurrency = [...(perCurrency?.entries() ?? [])].map(([currency, e]) => {
+          usdCommission += e.commission; usdFees += e.processingFees;
+          return { currency, commission: round(e.commission), processingFees: round(e.processingFees), amountsIn: 'USD' as const, ...(e.noRate ? { note: 'some entries have no FX rate' } : {}) };
+        }).filter((c) => c.commission !== 0 || c.processingFees !== 0);
         return { date: bucket, byCurrency, usd: { commission: round(usdCommission), processingFees: round(usdFees) } };
       });
 
@@ -388,7 +403,7 @@ export class AdminFinanceService {
     const sort = ['availableBalance', 'pendingBalance', 'totalRevenue', 'totalPayouts'].includes(query.sort) ? query.sort : 'availableBalance';
     const order = query.order === 'asc' ? 1 : -1;
 
-    return this.cached(this.key('seller-balances-v2', { page, limit, sort, order, search: query.search ?? '', flaggedOnly: query.flaggedOnly ?? '' }), async () => {
+    return this.cached(this.key('seller-balances-v3', { page, limit, sort, order, search: query.search ?? '', flaggedOnly: query.flaggedOnly ?? '' }), async () => {
       const balances = await this.r.sellerBalanceModel.find({}).lean();
       const sellerIds = [...new Set(balances.map((b: any) => b.sellerId))];
       const storeIds = balances.map((b: any) => b.storeId);
@@ -408,13 +423,14 @@ export class AdminFinanceService {
         sellerId: b.sellerId,
         sellerName: sellerMap.get(b.sellerId)?.name ?? 'Unknown seller',
         sellerEmail: sellerMap.get(b.sellerId)?.email ?? '',
-        availableBalance: b.availableBalance,
-        pendingBalance: b.pendingBalance,
-        totalRevenue: b.totalRevenue,
-        totalFees: b.totalFees,
-        totalRefunds: b.totalRefunds,
-        totalPayouts: b.totalPayouts,
-        currency: b.currency,
+        // Admin sees USD only: the native fields carry the USD value (null = no FX rate set).
+        availableBalance: usd(b.availableBalance, b.currency),
+        pendingBalance: usd(b.pendingBalance, b.currency),
+        totalRevenue: usd(b.totalRevenue, b.currency),
+        totalFees: usd(b.totalFees, b.currency),
+        totalRefunds: usd(b.totalRefunds, b.currency),
+        totalPayouts: usd(b.totalPayouts, b.currency),
+        currency: 'USD',
         availableBalanceUSD: usd(b.availableBalance, b.currency),
         pendingBalanceUSD: usd(b.pendingBalance, b.currency),
         totalRevenueUSD: usd(b.totalRevenue, b.currency),
@@ -462,10 +478,35 @@ export class AdminFinanceService {
   private withUsd<T extends Record<string, any>>(row: T, currency: string | undefined, fields: string[], rates: Map<string, number>): T & Record<string, any> {
     const out: Record<string, any> = { ...row };
     for (const f of fields) {
+      // A ledger entry's own frozen USD (Transaction.amountUSD, stamped when it happened) wins over today's rate.
+      if (f === 'amount' && typeof row.amountUSD === 'number') { out.amountUSD = round(row.amountUSD); continue; }
       const v = typeof row[f] === 'number' ? this.toUsd(row[f], currency || 'USD', rates) : null;
       out[`${f}USD`] = v === null ? null : round(v);
     }
     return out as T & Record<string, any>;
+  }
+
+  /**
+   * Admin sees USD only: returns a copy of `row` with each listed numeric field (dotted paths allowed,
+   * one level) converted to USD at the latest rate (null when the currency has no rate - never the native
+   * number). `currency` stays as the settlement-currency LABEL; amounts are USD (`amountsIn: 'USD'`).
+   */
+  private convertRowToUsd<T extends Record<string, any>>(row: T, currency: string | undefined, paths: string[], rates: Map<string, number>): T & { amountsIn: 'USD' } {
+    const out: any = { ...row, amountsIn: 'USD' };
+    for (const path of paths) {
+      const [head, tail] = path.split('.');
+      const conv = (n: any) => { const v = typeof n === 'number' ? this.toUsd(n, currency || 'USD', rates) : null; return v === null ? null : round(v); };
+      if (tail) { out[head] = { ...out[head], [tail]: conv(row[head]?.[tail]) }; } else { out[head] = conv(row[head]); }
+    }
+    return out;
+  }
+
+  /** For rows already carrying `<field>USD` siblings (see withUsd): replaces the native fields by their USD value and relabels currency USD. */
+  private usdOnly<T extends Record<string, any>>(row: T, fields: string[]): T {
+    const out: any = { ...row };
+    for (const f of fields) if (`${f}USD` in out) out[f] = out[`${f}USD`];
+    out.currency = 'USD';
+    return out;
   }
 
   /** Sums the `<field>USD` values of several balance rows into one USD summary (skips rows with no rate). */
@@ -482,7 +523,10 @@ export class AdminFinanceService {
     const storeDoc: any = await this.r.storeModel.findById(storeId).select('baseCurrency').lean();
     const baseCurrency: string | null = storeDoc?.baseCurrency ?? null;
     const balanceFields = ['availableBalance', 'pendingBalance', 'totalRevenue', 'totalFees', 'totalRefunds', 'totalPayouts'];
-    const balances = (data.balances as any[]).map((b) => this.withUsd(b, b.currency, balanceFields, rates));
+    const converted = (data.balances as any[]).map((b) => this.withUsd(b, b.currency, balanceFields, rates));
+    // A manual payout debits the store's own wallet (Store.baseCurrency) - shown here in USD.
+    const manualPayoutAvailableUSD = round(converted.find((b) => (b.currency || 'USD') === (baseCurrency || 'USD'))?.availableBalanceUSD ?? 0);
+    const balances = converted.map((b) => this.usdOnly(b, balanceFields));
     return {
       success: true,
       data: {
@@ -490,16 +534,15 @@ export class AdminFinanceService {
         balances,
         // Single USD summary the admin UI shows - every currency the store holds, converted.
         balance: this.sumBalancesUsd(balances),
-        // A manual payout debits the store's own wallet (Store.baseCurrency) - shown here in USD.
-        manualPayoutAvailableUSD: round(balances.find((b) => (b.currency || 'USD') === (baseCurrency || 'USD'))?.availableBalanceUSD ?? 0),
-        recentPayouts: (data.recentPayouts as any[]).map((p) => this.withUsd(p, p.currency, ['amount'], rates)),
+        manualPayoutAvailableUSD,
+        recentPayouts: (data.recentPayouts as any[]).map((p) => this.usdOnly(this.withUsd(p, p.currency, ['amount'], rates), ['amount'])),
       },
     };
   }
 
   private async withTransactionsUsd(data: any) {
     const rates = await this.getUsdRates();
-    return { ...data, transactions: (data.transactions as any[]).map((t) => this.withUsd(t, t.currency, ['amount'], rates)) };
+    return { ...data, transactions: (data.transactions as any[]).map((t) => this.usdOnly(this.withUsd(t, t.currency, ['amount'], rates), ['amount'])) };
   }
 
   async getSellerTransactions(storeId: string, query: any) {
@@ -512,14 +555,14 @@ export class AdminFinanceService {
     const data: any = await this.financeService.adminGetSellerFinancialRollup(sellerId);
     const rates = await this.getUsdRates();
     const balanceFields = ['availableBalance', 'pendingBalance', 'totalRevenue', 'totalFees', 'totalRefunds', 'totalPayouts'];
-    const balances = (data.balances as any[]).map((b) => this.withUsd(b, b.currency, balanceFields, rates));
+    const balances = (data.balances as any[]).map((b) => this.usdOnly(this.withUsd(b, b.currency, balanceFields, rates), balanceFields));
     return {
       success: true,
       data: {
         ...data,
         balances,
         totalsUSD: this.sumBalancesUsd(balances),
-        recentPayouts: (data.recentPayouts as any[]).map((p) => this.withUsd(p, p.currency, ['amount'], rates)),
+        recentPayouts: (data.recentPayouts as any[]).map((p) => this.usdOnly(this.withUsd(p, p.currency, ['amount'], rates), ['amount'])),
       },
     };
   }
@@ -548,7 +591,8 @@ export class AdminFinanceService {
     const named = await this.attachStoreNames(data.transactions as any[]);
     const transactions = named.map((t: any) => {
       const v = this.toUsd(t.amount, t.currency || 'USD', rates);
-      return { ...t, amountUSD: v === null ? null : round(v) };
+      const amountUSD = v === null ? null : round(v);
+      return { ...t, amount: amountUSD, currency: 'USD', amountUSD };
     });
     return { success: true, data: { ...data, transactions } };
   }
@@ -563,7 +607,8 @@ export class AdminFinanceService {
     const named = await this.attachStoreNames(data.payouts as any[]);
     const payouts = named.map((p: any) => {
       const v = this.toUsd(p.amount, p.currency || 'USD', rates);
-      return { ...p, amountUSD: v === null ? null : round(v) };
+      const amountUSD = v === null ? null : round(v);
+      return { ...p, amount: amountUSD, currency: 'USD', amountUSD };
     });
     // FinanceService's statusCounts sums PKR and USD amounts together -
     // recompute here per status in USD so the figure is meaningful.
@@ -630,7 +675,9 @@ export class AdminFinanceService {
     const data = await this.financeService.processClearingBalances();
     const rates = await this.getUsdRates();
     const totalUSD = round(data.byCurrency.reduce((t, c) => t + (this.toUsd(c.amount, c.currency, rates) ?? 0), 0));
-    return { success: true, data: { ...data, totalUSD } };
+    // Admin sees USD only: totalAmount/byCurrency amounts are the USD values (null = no FX rate set).
+    const byCurrency = data.byCurrency.map((c) => this.convertRowToUsd(c, c.currency, ['amount'], rates));
+    return { success: true, data: { ...data, totalAmount: totalUSD, totalUSD, byCurrency } };
   }
 
   async triggerScheduledPayouts() {
@@ -663,7 +710,7 @@ export class AdminFinanceService {
   async getRefundReport(query: any) {
     const { from, to } = resolveDateRange(query);
 
-    return this.cached(this.key('refunds-v2', { from, to }), async () => {
+    return this.cached(this.key('refunds-v3', { from, to }), async () => {
       // Grouped by {storeId, currency} — a store's own settlement currency is
       // stable in practice, but reading it off the ledger row itself (rather
       // than assuming) is what lets the top-level total be broken down
@@ -682,8 +729,9 @@ export class AdminFinanceService {
         .map((r) => ({
           storeId: r._id.storeId,
           storeName: storeMap.get(r._id.storeId)?.name ?? 'Unknown store',
-          currency: r._id.currency ?? 'USD',
-          totalRefunded: round(r.totalRefunded),
+          currency: 'USD',
+          nativeCurrency: r._id.currency ?? 'USD',
+          totalRefunded: (() => { const v = this.toUsd(r.totalRefunded, r._id.currency ?? 'USD', rates); return v === null ? null : round(v); })(),
           totalRefundedUSD: (() => { const v = this.toUsd(r.totalRefunded, r._id.currency ?? 'USD', rates); return v === null ? null : round(v); })(),
           count: r.count,
         }))
@@ -691,12 +739,14 @@ export class AdminFinanceService {
 
       const byCurrencyMap = new Map<string, { totalRefunded: number; count: number }>();
       for (const row of byStore) {
-        const entry = byCurrencyMap.get(row.currency) ?? { totalRefunded: 0, count: 0 };
-        entry.totalRefunded = round(entry.totalRefunded + row.totalRefunded);
+        // Per settlement currency, amounts in USD (stores with no FX rate contribute 0 here and null in byStore).
+        const entry = byCurrencyMap.get(row.nativeCurrency) ?? { totalRefunded: 0, count: 0 };
+        entry.totalRefunded = round(entry.totalRefunded + (row.totalRefundedUSD ?? 0));
         entry.count += row.count;
-        byCurrencyMap.set(row.currency, entry);
+        byCurrencyMap.set(row.nativeCurrency, entry);
       }
-      const byCurrency = [...byCurrencyMap.entries()].map(([currency, v]) => ({ currency, ...v }));
+      const byCurrency = [...byCurrencyMap.entries()].map(([currency, v]) => ({ currency, amountsIn: 'USD' as const, ...v }));
+      for (const r of byStore) delete (r as any).nativeCurrency;
 
       return {
         success: true,
@@ -706,7 +756,7 @@ export class AdminFinanceService {
           totalRefundCount: byStore.reduce((t, r) => t + r.count, 0),
           byCurrency,
           byStore,
-          note: 'Platform commission is not clawed back when a refund is issued (see finance.service.ts#recordRefund — only the seller\'s balance is debited) — the platform keeps its original commission on refunded sales. This report shows refund volume only, not a commission adjustment. Headline total is in USD (non-USD stores converted at the latest rate); native-currency rows are kept in byCurrency/byStore.',
+          note: 'Platform commission is not clawed back when a refund is issued (see finance.service.ts#recordRefund — only the seller\'s balance is debited) — the platform keeps its original commission on refunded sales. This report shows refund volume only, not a commission adjustment. Headline total is in USD (non-USD stores converted at the latest rate); byCurrency rows are per settlement currency, also in USD (null = no FX rate set).',
         },
       };
     });
@@ -722,16 +772,23 @@ export class AdminFinanceService {
     const stores = await this.r.storeModel.find({ _id: { $in: storeIds } }).select('name').lean();
     const storeMap = new Map(stores.map((s: any) => [s._id.toString(), s]));
 
+    // Admin sees USD only: each report's amounts (stored in the report's own currency) are converted at the
+    // latest FX rate; null = no rate set for that currency (never the native number).
+    const rates = await this.getUsdRates();
+    const fields = ['totalRevenue', 'totalFees', 'totalRefunds', 'totalPayouts', 'netRevenue', 'estimatedTax'];
     return {
       success: true,
-      data: reports.map((r: any) => ({ ...r, storeName: storeMap.get(r.storeId)?.name ?? 'Unknown store' })),
+      data: reports.map((r: any) => {
+        const { amountsIn: _amountsIn, ...usd } = this.convertRowToUsd(r, r.currency, fields, rates);
+        return { ...usd, currency: 'USD', storeName: storeMap.get(r.storeId)?.name ?? 'Unknown store' };
+      }),
     };
   }
 
   async getSettlementReport(query: any) {
     const { from, to } = resolveDateRange(query);
 
-    return this.cached(this.key('settlement-v2', { from, to }), async () => {
+    return this.cached(this.key('settlement-v3', { from, to }), async () => {
       const [byTypeRows, balanceTotalsRows] = await Promise.all([
         this.r.transactionModel.aggregate([
           { $match: { status: { $ne: 'failed' }, createdAt: { $gte: from, $lte: to } } },
@@ -790,8 +847,11 @@ export class AdminFinanceService {
           period: { from, to },
           consolidatedUSD,
           unconvertibleCurrencies,
-          byCurrency,
-          note: '"outstandingObligation" is a current snapshot (not scoped to the selected period) — it answers "if every seller withdrew today, how much would leave the platform", Headline figures are USD (non-USD converted at the latest rate); native-currency rows are kept per settlement currency.',
+          byCurrency: byCurrency.map((c) => this.convertRowToUsd(c, c.currency, [
+            'grossSales', 'platformFeesCollected', 'refundsIssued', 'payoutsDisbursed', 'adjustments',
+            'outstandingObligation.availableBalance', 'outstandingObligation.pendingBalance', 'outstandingObligation.totalOwedToSellers',
+          ], rates)),
+          note: '"outstandingObligation" is a current snapshot (not scoped to the selected period) — it answers "if every seller withdrew today, how much would leave the platform", Headline figures are USD (non-USD converted at the latest rate); byCurrency rows are per settlement currency, also in USD (null = no FX rate set).',
         },
       };
     });
@@ -801,7 +861,7 @@ export class AdminFinanceService {
     const months = Math.min(12, Number(query.months) || 6);
     const now = new Date();
 
-    return this.cached(this.key('monthly-v2', { months }), async () => {
+    return this.cached(this.key('monthly-v3', { months }), async () => {
       const monthly: Array<Record<string, any>> = [];
       const rates = await this.getUsdRates();
 
@@ -844,7 +904,7 @@ export class AdminFinanceService {
 
         monthly.push({
           month: from.toLocaleDateString('en-US', { month: 'short', year: 'numeric' }),
-          byCurrency,
+          byCurrency: byCurrency.map((c) => this.convertRowToUsd(c, c.currency, ['gmv', 'refunds', 'payouts', 'platformCommission', 'platformEarnings'], rates)),
           usd,
         });
       }
@@ -891,8 +951,8 @@ export class AdminFinanceService {
       case 'tax': {
         const reports = await this.getTaxReports(query);
         return toCsv(
-          ['Store', 'Year', 'Period', 'Revenue', 'Fees', 'Refunds', 'Net', 'Estimated Tax'],
-          reports.data.map((r: any) => [r.storeName, r.year, r.period, r.totalRevenue.toFixed(2), r.totalFees.toFixed(2), r.totalRefunds.toFixed(2), r.netRevenue.toFixed(2), r.estimatedTax.toFixed(2)]),
+          ['Store', 'Year', 'Period', 'Revenue (USD)', 'Fees (USD)', 'Refunds (USD)', 'Net (USD)', 'Estimated Tax (USD)'],
+          reports.data.map((r: any) => [r.storeName, r.year, r.period, r.totalRevenue?.toFixed(2) ?? '', r.totalFees?.toFixed(2) ?? '', r.totalRefunds?.toFixed(2) ?? '', r.netRevenue?.toFixed(2) ?? '', r.estimatedTax?.toFixed(2) ?? '']),
         );
       }
       case 'settlement': {
@@ -1031,6 +1091,14 @@ export class AdminFinanceService {
     };
   }
 
+  /** Admin-facing reconciliation (USD only): the same comparison as `getReconciliation`, amounts converted at the latest rate (null = no FX rate set). */
+  async getReconciliationUsd(days = 1) {
+    const { data } = await this.getReconciliation(days);
+    const rates = await this.getUsdRates();
+    const fields = ['buyerCollected', 'ledgerNet', 'fees', 'refunds', 'expectedFromLedger', 'drift'];
+    return { success: true, data: { ...data, byCurrency: data.byCurrency.map((c: any) => this.convertRowToUsd(c, c.currency, fields, rates)) } };
+  }
+
   /**
    * Runs `getReconciliation`, PERSISTS the result (previously this was
    * read-only/on-demand only — nothing was ever recorded, so a discrepancy
@@ -1078,8 +1146,9 @@ export class AdminFinanceService {
     const rates = await this.getUsdRates();
     const data = (runs as any[]).map((run) => {
       const results = (run.results ?? []).map((c: any) => {
-        const v = this.toUsd(c.drift, c.currency || 'USD', rates);
-        return { ...c, driftUSD: v === null ? null : round(v) };
+        const fields = ['buyerCollected', 'ledgerNet', 'fees', 'refunds', 'expectedFromLedger', 'drift'];
+        const conv = this.convertRowToUsd(c, c.currency || 'USD', fields, rates);
+        return { ...conv, driftUSD: conv.drift };
       });
       return { ...run, results, totalDriftUSD: round(results.reduce((t: number, c: any) => t + (c.driftUSD ?? 0), 0)) };
     });
@@ -1109,7 +1178,8 @@ export class AdminFinanceService {
       const currency = p._id || 'USD';
       const ratePerUSD = currency === 'USD' ? 1 : (rateByCurrency.get(currency) ?? null);
       const pendingUSDEquivalent = ratePerUSD ? round(p.pendingAmount / ratePerUSD) : null;
-      return { currency, pendingAmount: round(p.pendingAmount), count: p.count, pendingUSDEquivalent };
+      // Admin sees USD only: pendingAmount carries the USD value (null = no FX rate set).
+      return { currency, pendingAmount: pendingUSDEquivalent, count: p.count, pendingUSDEquivalent };
     });
 
     const totalUSDEquivalent = round(byCurrency.reduce((s, b) => s + (b.pendingUSDEquivalent ?? 0), 0));

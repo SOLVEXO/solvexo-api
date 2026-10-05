@@ -14,6 +14,7 @@ import { User, UserSchema } from '../users/schemas/user.schema';
 import { RedisModule } from '@/redis/redis.module';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { PermissionsGuard } from './guards/permissions.guard';
+import { GuestSessionService } from './guest-session.service';
 import { AuthVisualService } from '../common/auth-visual.service';
 
 @Module({
@@ -38,7 +39,7 @@ import { AuthVisualService } from '../common/auth-visual.service';
     MongooseModule.forFeature([{ name: User.name, schema: UserSchema }]),
   ],
   controllers: [AuthController],
-  providers: [AuthService, JwtStrategy, JwtAuthGuard, PermissionsGuard, AuthVisualService],
-  exports: [AuthService, JwtAuthGuard, PermissionsGuard],
+  providers: [AuthService, GuestSessionService, JwtStrategy, JwtAuthGuard, PermissionsGuard, AuthVisualService],
+  exports: [AuthService, GuestSessionService, JwtAuthGuard, PermissionsGuard],
 })
 export class AuthModule {}

@@ -10,6 +10,8 @@ import { IdempotencyInterceptor } from '../common/idempotency.interceptor';
 import { PromotionsService } from './promotions.service';
 import { CreatePromotionRequestDto } from './dto/create-promotion-request.dto';
 import { PromotionPlacement } from '../common/promotion-placements.const';
+import { FeatureFlagGuard } from '../admin-config/guards/feature-flag.guard';
+import { RequireFeature } from '../admin-config/decorators/require-feature.decorator';
 
 const CREATIVE_UPLOAD = FileFieldsInterceptor(
   [
@@ -21,7 +23,8 @@ const CREATIVE_UPLOAD = FileFieldsInterceptor(
 
 @ApiTags('Promotions')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(FeatureFlagGuard, JwtAuthGuard, RolesGuard)
+@RequireFeature('promotions')
 @Roles('seller')
 @Controller('api/promotions')
 export class PromotionsController {

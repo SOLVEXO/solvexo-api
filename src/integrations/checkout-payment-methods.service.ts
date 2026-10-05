@@ -83,7 +83,7 @@ export class CheckoutPaymentMethodsService {
     if (!storeId) {
       throw new BadRequestException('This checkout spans multiple stores — use the existing checkout payment flow instead.');
     }
-    await this.paymentService.assertStoreCreditStillCovers(checkout as any);
+    await this.paymentService.assertDiscountsStillValid(checkout as any);
     // Only an open checkout can be paid: a completed/cancelled/expired one
     // must never get a fresh gateway session (it would charge the buyer for
     // an order that can no longer be created).

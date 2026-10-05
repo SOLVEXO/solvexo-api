@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Controller, Get, Post, Body, Req, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Body, Param, Req, UseGuards } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { StripeConnectService } from './stripe-connect.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -20,14 +20,9 @@ import { CreateOnboardingLinkDto } from './dto/create-onboarding-link.dto';
 // surface on the same seller-facing Integrations page, so managing Stripe
 // there fully needs both permissions granted together.
 //
-// Disclosed limitation: Stripe Connect is a per-SELLER account (not
-// per-store — no `:storeId` route param exists here at all), so
-// `PermissionsGuard`'s storeId-pinning check is a no-op for this
-// controller. A staff member granted `finance.payments.manage` at ANY one
-// store can see/manage the seller's single Connect account, which may also
-// power other stores that same seller owns — a pre-existing architectural
-// property of Stripe Connect in this codebase (see CLAUDE.md), not
-// something introduced by staff-permission gating.
+// Stripe Connect is PER STORE (like each Shopify store's own payments account): every route carries the
+// `:storeId`, the service checks the store belongs to the seller, and PermissionsGuard pins a staff caller to
+// their own store — so staff can only ever touch their own store's account.
 @ApiTags('Stripe Connect')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
@@ -37,18 +32,18 @@ import { CreateOnboardingLinkDto } from './dto/create-onboarding-link.dto';
 export class StripeConnectController {
   constructor(private readonly stripeConnectService: StripeConnectService) {}
 
-  @Get('status')
-  getStatus(@Req() req: any) {
-    return this.stripeConnectService.getStatus(actingSellerId(req.user));
+  @Get(':storeId/status')
+  getStatus(@Req() req: any, @Param('storeId') storeId: string) {
+    return this.stripeConnectService.getStatus(actingSellerId(req.user), storeId);
   }
 
-  @Post('onboarding-link')
-  createOnboardingLink(@Req() req: any, @Body() dto: CreateOnboardingLinkDto) {
-    return this.stripeConnectService.createOnboardingLink(actingSellerId(req.user), dto.refreshUrl, dto.returnUrl);
+  @Post(':storeId/onboarding-link')
+  createOnboardingLink(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: CreateOnboardingLinkDto) {
+    return this.stripeConnectService.createOnboardingLink(actingSellerId(req.user), storeId, dto.refreshUrl, dto.returnUrl);
   }
 
-  @Post('sync')
-  sync(@Req() req: any) {
-    return this.stripeConnectService.syncAccountStatus(actingSellerId(req.user));
+  @Post(':storeId/sync')
+  sync(@Req() req: any, @Param('storeId') storeId: string) {
+    return this.stripeConnectService.syncAccountStatus(actingSellerId(req.user), storeId);
   }
 }

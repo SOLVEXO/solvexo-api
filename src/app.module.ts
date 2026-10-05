@@ -11,6 +11,7 @@ import { AuthModule } from './auth/auth.module';
 import { categoryModule } from './categories/categories.module';
 import { ProductsModule } from './products/product.module';
 import { ProductVariantsModule } from './product-variants/product-variants.module';
+import { ProductsBulkModule } from './products-bulk/products-bulk.module';
 import { CartModule } from './cart/cart.module';
 import { AddressModule } from './address/address.module';
 import { UsersModule } from './users/users.module';
@@ -113,6 +114,7 @@ import { StockCountsModule } from './stock-counts/stock-counts.module';
     categoryModule,
     ProductsModule,
     ProductVariantsModule,
+    ProductsBulkModule,
     CartModule,
     AddressModule,
     UsersModule,

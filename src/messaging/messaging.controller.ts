@@ -13,6 +13,7 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { RequirePermission } from '../auth/decorators/require-permission.decorator';
+import { StaffStorePinned } from '../auth/decorators/staff-store-pinned.decorator';
 import { StartConversationDto } from './dto/start-conversation.dto';
 import { SendMessageDto } from './dto/send-message.dto';
 import { EditMessageDto } from './dto/edit-message.dto';
@@ -64,6 +65,7 @@ export class MessagingController {
   @UseGuards(RolesGuard, PermissionsGuard)
   @Roles('user', 'seller', 'admin', 'staff')
   @RequirePermission(...STAFF_VIEW)
+  @StaffStorePinned()
   @Get('conversations')
   getConversations(@Req() req: any, @Query() query: any) {
     return this.messagingService.getConversations(actingSellerId(req.user), req.user.role, query, req.user.storeId);
@@ -74,6 +76,7 @@ export class MessagingController {
   @UseGuards(RolesGuard, PermissionsGuard)
   @Roles('user', 'seller', 'admin', 'staff')
   @RequirePermission(...STAFF_VIEW)
+  @StaffStorePinned()
   @Get('conversations/search')
   searchConversations(@Req() req: any, @Query('q') q: string, @Query('storeId') storeId?: string) {
     return this.messagingService.searchConversations(actingSellerId(req.user), req.user.role, q, storeId, req.user.storeId);

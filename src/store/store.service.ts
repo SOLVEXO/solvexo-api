@@ -5,6 +5,7 @@ import {
   NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
+import { availableStock, AVAILABLE_STOCK_EXPR } from '@/common/stock-availability.util';
 import { ConfigService } from '@nestjs/config';
 import { promises as dns } from 'dns';
 import * as bcrypt from 'bcrypt';
@@ -554,6 +555,10 @@ export class StoreService {
       if (!/^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/.test(normalized)) {
         throw new BadRequestException('Enter a valid domain, e.g. shop.yourbrand.com');
       }
+      // The platform's own hosts can never be claimed as a store's custom domain.
+      if (normalized === 'solvexo.store' || normalized.endsWith('.solvexo.store')) {
+        throw new BadRequestException('This domain belongs to the platform and cannot be used as a custom domain');
+      }
       const clash = await this.databaseService.repositories.storeModel.findOne({
         customDomain: normalized, _id: { $ne: storeId }, isDelete: false,
       }).lean();
@@ -565,7 +570,13 @@ export class StoreService {
     // of the NEW domain before it can serve as a live storefront.
     if (normalized !== store.customDomain) store.customDomainStatus = 'unverified';
     store.customDomain = normalized;
-    await store.save();
+    try {
+      await store.save();
+    } catch (err: any) {
+      // Two stores racing for the same domain: the check above is read-then-write, the unique index is the real guard.
+      if (err?.code === 11000) throw new BadRequestException('This domain is already connected to another store');
+      throw err;
+    }
 
     this.activityLogService.log({
       storeId, category: 'settings', action: 'custom_domain_updated',
@@ -970,7 +981,7 @@ export class StoreService {
   // the seller-only contact/stat fields below must stay opt-in and
   // ownership-checked rather than always included, or they'd leak a seller's
   // email/phone to anyone who knows a storeId.
-  async getStoreById(storeId: string, requestingUserId?: string | null) {
+  async getStoreById(storeId: string, requestingUserId?: string | null, privileged = false) {
     if (!storeId) throw new BadRequestException('storeId is required');
 
     const store = await this.databaseService.repositories.storeModel.findOne({
@@ -981,7 +992,12 @@ export class StoreService {
     if (!store) throw new NotFoundException('Store not found');
 
     if (!requestingUserId || store.sellerId !== requestingUserId) {
-      return { success: true, data: store };
+      if (privileged) return { success: true, data: store };
+      // Anonymous / other users get a public projection only — never the raw document
+      // (privacyRequests = customer emails, rejectionReason, tax config, builder/internal fields).
+      const pub: any = typeof (store as any).toObject === 'function' ? (store as any).toObject() : { ...(store as any) };
+      for (const k of ['privacyRequests', 'rejectionReason', 'taxRegions', 'builderConfig', 'sellerId', 'stripeConnectedAccountId']) delete pub[k];
+      return { success: true, data: pub };
     }
 
     const { sellerModel, productModel, orderModel, sellerPlatformSubscriptionModel, platformPlanModel } = this.databaseService.repositories;
@@ -1060,7 +1076,7 @@ export class StoreService {
   // body would let a seller un-suspend their own store (see
   // usersService.deleteSellerAccount, which suspends stores on delete).
   async updateStore(sellerId: string, storeId: string, body: any) {
-    const { name, logo, coverImage, faviconUrl, description, tagline, contactEmail, contactPhone, sellerType, productTypes, codEnabled, paymentCaptureMethod, dashboardMetrics, reviewModerationEnabled, lowStockThreshold, taxRate, taxRegions, enabledCurrencies, cookieBannerEnabled, cookieBannerMessage, showDoNotSellLink, cookieBannerRegionMode, cookieBannerPosition, cookieBannerColorMode } = body;
+    const { name, logo, coverImage, faviconUrl, description, tagline, contactEmail, contactPhone, sellerType, productTypes, codEnabled, paymentCaptureMethod, dashboardMetrics, reviewModerationEnabled, lowStockThreshold, taxRate, taxRegions, enabledCurrencies, cookieBannerEnabled, cookieBannerMessage, showDoNotSellLink, cookieBannerRegionMode, cookieBannerPosition, cookieBannerColorMode, customerAccounts } = body;
 
     if (!storeId) throw new BadRequestException('storeId is required');
 
@@ -1212,6 +1228,10 @@ export class StoreService {
       }
     }
 
+    if (customerAccounts !== undefined) {
+      if (customerAccounts !== 'optional' && customerAccounts !== 'required') throw new BadRequestException("customerAccounts must be 'optional' or 'required'");
+      updateData.customerAccounts = customerAccounts;
+    }
     if (cookieBannerEnabled !== undefined) updateData.cookieBannerEnabled = !!cookieBannerEnabled;
     if (cookieBannerMessage !== undefined) updateData.cookieBannerMessage = cookieBannerMessage || null;
     if (showDoNotSellLink !== undefined) updateData.showDoNotSellLink = !!showDoNotSellLink;
@@ -1406,6 +1426,8 @@ export class StoreService {
         cookieBannerEnabled: !!store.cookieBannerEnabled
           && (store.cookieBannerRegionMode !== 'eu_uk_only' || isEuOrUkCountry(resolveCountryFromIp(visitorIp))),
         cookieBannerMessage: store.cookieBannerMessage ?? null,
+        // Shopify "Customer accounts": whether a visitor may check out as a guest.
+        guestCheckoutEnabled: store.customerAccounts !== 'required',
         // Purely cosmetic — no effect on consent/enforcement, just how the
         // banner looks/where it sits (see `CookieConsentBanner.tsx`).
         cookieBannerPosition: store.cookieBannerPosition ?? 'bottom_bar',
@@ -1677,7 +1699,7 @@ export class StoreService {
           $group: {
             _id: '$productId',
             minPrice: { $min: '$price' },
-            inStock: { $max: { $cond: [{ $or: ['$unlimitedStock', { $gt: ['$stock', 0] }] }, 1, 0] } },
+            inStock: { $max: { $cond: [{ $or: ['$unlimitedStock', '$allowBackorder', { $gt: [AVAILABLE_STOCK_EXPR, 0] }] }, 1, 0] } },
           },
         },
       ]);
@@ -1772,7 +1794,7 @@ export class StoreService {
         variantId:           variant?._id ?? null,
         stock:               variant?.stock ?? null,
         compareAtPrice:      variant?.compareAtPrice ?? null,
-        inStock:             (variantsByProduct.get(p._id.toString()) ?? []).some((v: any) => v.unlimitedStock || v.stock > 0),
+        inStock:             (variantsByProduct.get(p._id.toString()) ?? []).some((v: any) => v.unlimitedStock || v.allowBackorder || availableStock(v) > 0),
         activeCampaign:      activeCampaignBadge,
       };
       return base;
@@ -1853,16 +1875,27 @@ export class StoreService {
    *  `$group`), so a zero-order customer could never produce a row at any
    *  stage no matter how the input id set was widened — this is what
    *  actually fixes that, not just a broader `$in` filter. */
+  /** Distinct customer identities (`customerId ?? userId`) that have an order in this store — optionally limited to `only`. */
+  private async storeCustomerIdsFromOrders(storeId: string, only?: string[]): Promise<string[]> {
+    const rows = await this.databaseService.repositories.orderModel.aggregate([
+      { $match: { 'sellerOrders.storeId': storeId, isDelete: false } },
+      { $group: { _id: { $ifNull: ['$customerId', '$userId'] } } },
+      ...(only ? [{ $match: { _id: { $in: only } } }] : []),
+    ]);
+    return rows.map((r: any) => String(r._id));
+  }
+
   private buildStoreCustomersPipeline(storeId: string, customerIds: string[], query: any) {
     const { userModel, storeCustomerMetaModel, newsletterSubscriberModel } = this.databaseService.repositories;
 
     const pipeline: any[] = [
-      { $match: { userId: { $in: customerIds }, isDelete: false, 'sellerOrders.storeId': storeId } },
+      { $match: { $or: [{ userId: { $in: customerIds } }, { customerId: { $in: customerIds } }], isDelete: false, 'sellerOrders.storeId': storeId } },
       { $unwind: '$sellerOrders' },
       { $match: { 'sellerOrders.storeId': storeId } },
       {
         $group: {
-          _id: '$userId',
+          // one customer per email (Shopify) — see resolveCustomerId
+          _id: { $ifNull: ['$customerId', '$userId'] },
           orderCount: { $sum: 1 },
           totalSpent: { $sum: '$sellerOrders.subtotal' },
           lastOrderAt: { $max: '$createdAt' },
@@ -2097,7 +2130,7 @@ export class StoreService {
     const sortField = sortableFields[query.sortBy] || 'lastOrderAt';
     const sortDir = query.sortDir === 'asc' ? 1 : -1;
 
-    const customerIds = await orderModel.distinct('userId', { 'sellerOrders.storeId': storeId, isDelete: false });
+    const customerIds = await this.storeCustomerIdsFromOrders(storeId);
     const pipeline = this.buildStoreCustomersPipeline(storeId, customerIds, query);
 
     const [customers, [totals]] = await Promise.all([
@@ -2155,7 +2188,7 @@ export class StoreService {
     const sortField = sortableFields[query.sortBy] || 'lastOrderAt';
     const sortDir = query.sortDir === 'asc' ? 1 : -1;
 
-    const customerIds = await orderModel.distinct('userId', { 'sellerOrders.storeId': storeId, isDelete: false });
+    const customerIds = await this.storeCustomerIdsFromOrders(storeId);
     const pipeline = this.buildStoreCustomersPipeline(storeId, customerIds, query);
 
     const [customers, [totals]] = await Promise.all([
@@ -2257,7 +2290,7 @@ export class StoreService {
     if (!ids.length) throw new BadRequestException('customerIds is required');
     const { orderModel, storeCustomerMetaModel } = this.databaseService.repositories;
     const [orderIds, metaIds] = await Promise.all([
-      orderModel.distinct('userId', { userId: { $in: ids }, 'sellerOrders.storeId': storeId, isDelete: false }),
+      this.storeCustomerIdsFromOrders(storeId, ids),
       storeCustomerMetaModel.distinct('userId', { userId: { $in: ids }, storeId }),
     ]);
     const validIds = [...new Set([...orderIds, ...metaIds])];

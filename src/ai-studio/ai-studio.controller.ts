@@ -16,6 +16,8 @@ import {
   AcceptGenerationDto, GenerateEmailDto, GenerateImageEnhanceDto, GenerateListingDto,
   GeneratePriceDto, GenerateSeoDto, GenerateWorksheetDto,
 } from './dto/generate.dto';
+import { FeatureFlagGuard } from '../admin-config/guards/feature-flag.guard';
+import { RequireFeature } from '../admin-config/decorators/require-feature.decorator';
 
 /**
  * AI Studio — SELLER (and now staff, gated) only. Every route is behind
@@ -38,7 +40,8 @@ import {
  */
 @ApiTags('AI Studio')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+@UseGuards(FeatureFlagGuard, JwtAuthGuard, RolesGuard, PermissionsGuard)
+@RequireFeature('aiStudio')
 @Roles('seller', 'staff')
 @Controller('api/ai-studio')
 export class AiStudioController {

@@ -8,6 +8,7 @@ import {
   HttpStatus,
 } from '@nestjs/common';
 import { isValidObjectId } from 'mongoose';
+import { buildStoreProductFilter, productSort } from './product-list-filter.util';
 
 import { DatabaseService } from '@/database/databaseservice';
 import { ProductType as StoreProductType } from '@/store/schemas/store.schema';
@@ -1360,19 +1361,18 @@ export class ProductsService {
       throw new UnauthorizedException('Store not found or unauthorized');
 
     const page = parseInt(query.page) || 1;
-    const limit = 10;
+    // Default 10 per page; pickers/exports may ask for more (capped). Search + sort now run server-side.
+    const limit = Math.min(Math.max(parseInt(query.limit) || 10, 1), 1000);
     const skip = (page - 1) * limit;
 
-    const filter: any = { storeId, sellerId, isDelete: false };
-    if (query.type && query.type !== 'all') filter.type = query.type;
-    if (query.status && query.status !== 'all') filter.status = query.status;
+    const filter = await buildStoreProductFilter({ productVariantModel }, storeId, sellerId, query);
 
     const total = await productModel.countDocuments(filter);
     const totalPages = Math.ceil(total / limit);
 
     const products = await productModel
       .find(filter)
-      .sort({ createdAt: -1 })
+      .sort(productSort(query.sort))
       .skip(skip)
       .limit(limit)
       .lean();

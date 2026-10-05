@@ -10,6 +10,7 @@ import { NotificationsService } from '@/notifications/notifications.service';
 import { NOTIFICATION_TYPES } from '@/notifications/notification.types';
 import { verifyStoreOwnershipStrict } from '@/common/store-ownership.util';
 import { round } from '@/common/number.util';
+import { fulfilStockForSellerOrders } from '@/common/fulfil-stock.util';
 import { SubmitManualPaymentDto } from './dto/submit-manual-payment.dto';
 import { ReuploadManualPaymentDto } from './dto/reupload-manual-payment.dto';
 
@@ -218,6 +219,7 @@ export class ManualPaymentsService {
 
     const now = new Date();
     for (const order of orders as any[]) {
+      await fulfilStockForSellerOrders(this.db.repositories.productVariantModel, order.sellerOrders);
       const updateData: Record<string, any> = {
         isPaid: true,
         paymentStatus: 'paid',

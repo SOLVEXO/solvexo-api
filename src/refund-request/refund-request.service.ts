@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { DatabaseService } from '@/database/databaseservice';
+import { reserveRefundCapacity } from '../common/refund-cap.util';
 import { FinanceService } from '@/finance/finance.service';
 import { PaymentService } from '@/payment/payment.service';
 import { ExchangeRateService } from '@/exchange-rate/exchange-rate.service';
@@ -214,7 +215,30 @@ export class RefundRequestService {
     // Includes each item's own taxUSD share — see orders.service.ts's
     // identical fix in returnAction/executeCancellation for why (item price
     // + its tax must be refunded and clawed back from the seller together).
-    const buyerRefundAmount = this.round(items.reduce((s: number, i: any) => s + i.totalPrice + (i.taxUSD ?? 0), 0));
+    // Put the request back to pending when it cannot be approved, so the reviewer can reject or retry it.
+    const revertToPending = () => this.model.updateOne({ _id: requestId }, { status: 'pending', reviewedBy: null, reviewedAt: null });
+    // Items already cancelled / returned / refunded through another path can never be refunded again.
+    const alreadyRefundedItem = items.find((i: any) => i.status === 'cancelled' || i.status === 'refunded' || (i.refundedAmount ?? 0) > 0);
+    if (items.length === 0 || alreadyRefundedItem) {
+      await revertToPending();
+      throw new BadRequestException(
+        items.length === 0
+          ? 'The requested items are no longer on this order'
+          : `"${alreadyRefundedItem.name}" was already cancelled or refunded — reject this request instead.`,
+      );
+    }
+    const soIndexForCap = (order.sellerOrders as any[]).findIndex((so: any) => so._id.toString() === request.sellerOrderId);
+    // ONE shared refund budget across cancel / refund / return / refund-request / order edit (atomic, clamped to what is left).
+    let buyerRefundAmount: number;
+    try {
+      buyerRefundAmount = await reserveRefundCapacity(
+        this.databaseService.repositories.orderModel, order._id.toString(), soIndexForCap,
+        this.round(items.reduce((s: number, i: any) => s + i.totalPrice + (i.taxUSD ?? 0), 0)), { clamp: true },
+      );
+    } catch (err) {
+      await revertToPending();
+      throw err;
+    }
     const buyerRefundCurrency = order.currency || 'USD';
     const settlementCurrency = sellerOrder.settlementCurrency ?? buyerRefundCurrency;
     const sellerDebitAmount = this.exchangeRateService.convertWithSnapshots(

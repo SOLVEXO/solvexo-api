@@ -138,7 +138,7 @@ export class FinanceService {
    * platform/geography limitation, not something faked around here.
    */
   private async ensureStripeConnectPayoutMethod(storeId: string, sellerId: string): Promise<void> {
-    const info = await this.stripeConnectService.getPayoutEligibility(sellerId);
+    const info = await this.stripeConnectService.getPayoutEligibility(storeId);
     const existing = await this.methodModel.findOne({ storeId, type: 'stripe_connect' });
 
     if (!info) {
@@ -846,6 +846,14 @@ export class FinanceService {
         // if the seller finished Connect onboarding after last setting up
         // this schedule — otherwise a schedule pointed at a stale/inactive
         // method would silently skip every single run.
+        // A suspended/rejected/deleted store or a suspended/deleted seller is never paid out automatically.
+        const [payStore, paySeller]: any[] = await Promise.all([
+          this.db.repositories.storeModel.findById(schedule.storeId).select('status isDelete').lean(),
+          this.db.repositories.sellerModel.findById(schedule.sellerId).select('status isDelete').lean(),
+        ]);
+        if (!payStore || payStore.isDelete || ['suspended', 'rejected'].includes(payStore.status)
+          || !paySeller || paySeller.isDelete || ['suspended', 'deleted'].includes(paySeller.status)) { skipped++; continue; }
+
         await this.ensureStripeConnectPayoutMethod(schedule.storeId, schedule.sellerId);
 
         if (!schedule.defaultPayoutMethodId) { skipped++; continue; }

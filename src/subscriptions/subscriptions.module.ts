@@ -8,6 +8,7 @@ import { StripeWebhookProcessor } from './webhooks/stripe-webhook.processor';
 import { BuyerSubscriptionWindDownService } from './buyer-subscription-wind-down.service';
 import { BuyerSubscriptionWindDownController } from './buyer-subscription-wind-down.controller';
 import { CriticalAlertService } from '../common/critical-alert.service';
+import { EmailService } from '../otp/services/email.service';
 import { AuthModule } from '../auth/auth.module';
 import { RedisModule } from '../redis/redis.module';
 import { QueueModule } from '../queues/queue.module';
@@ -29,6 +30,9 @@ import { QueueModule } from '../queues/queue.module';
     StripeWebhookProcessor,
     BuyerSubscriptionWindDownService,
     CriticalAlertService,
+    // CriticalAlertService sends its ops emails through EmailService — it must be a provider of THIS module
+    // (the module used to get it indirectly from the old buyer-subscription code that was removed).
+    EmailService,
   ],
   exports: [PaymentGatewayService, BuyerSubscriptionWindDownService],
 })

@@ -394,3 +394,5 @@ CheckoutSchema.index({ 'items.sellerId': 1 });
 CheckoutSchema.index({ 'items.storeId': 1 });
 CheckoutSchema.index({ status: 1, abandonedEmailSentAt: 1, updatedAt: 1 });
 CheckoutSchema.index({ abandonedRecoveryToken: 1 }, { sparse: true });
+// Abandoned-cart cron: newest-first scan of not-yet-emailed, not-yet-suppressed checkouts (see AbandonedCartService).
+CheckoutSchema.index({ status: 1, isDelete: 1, abandonedEmailSentAt: 1, abandonedEmailSuppressedAt: 1, updatedAt: -1 });

@@ -4,6 +4,7 @@ import { Cron } from '@nestjs/schedule';
 import { DatabaseService } from '@/database/databaseservice';
 import { LoyaltyService } from '@/loyalty/loyalty.service';
 import { StoreCreditService } from '@/store-credit/store-credit.service';
+import { GuestSessionService } from '@/auth/guest-session.service';
 import { BuyerSubscriptionWindDownService } from '@/subscriptions/buyer-subscription-wind-down.service';
 import { PlatformSubscriptionsService } from '@/platform-subscriptions/platform-subscriptions.service';
 import { FinanceService } from '@/finance/finance.service';
@@ -41,6 +42,7 @@ export class SchedulerService {
     private readonly loyaltyService: LoyaltyService,
     private readonly buyerSubscriptionWindDownService: BuyerSubscriptionWindDownService,
     private readonly storeCreditService: StoreCreditService,
+    private readonly guestSessionService: GuestSessionService,
     private readonly platformSubscriptionsService: PlatformSubscriptionsService,
     private readonly financeService: FinanceService,
     private readonly redis: RedisService,
@@ -222,6 +224,15 @@ export class SchedulerService {
       if (r.scheduledToEnd + r.cancelledNow + r.finalized + r.failed > 0) {
         this.logger.log(`Buyer-subscription wind-down: ${r.scheduledToEnd} set to end, ${r.cancelledNow} cancelled now, ${r.finalized} finalized, ${r.failed} failed`);
       }
+    });
+  }
+
+  // Daily — deletes guest-checkout sessions (and their empty carts) that never placed an order within 30 days.
+  @Cron('40 5 * * *')
+  async cleanStaleGuestSessions() {
+    await this.runLocked('clean-stale-guests', 10 * 60_000, async () => {
+      const n = await this.guestSessionService.deleteStaleGuests(30);
+      if (n > 0) this.logger.log(`Guest checkout: removed ${n} stale guest session(s)`);
     });
   }
 

@@ -26,6 +26,8 @@ async validate(payload: any) {
     // seller/admin and for a legacy apex-wide buyer account. Required (and
     // authoritative — always this ONE store) for role:'staff'.
     storeId: payload.storeId ?? null,
+    // Guest-checkout session (see GuestSessionService) — a real session, but no account.
+    isGuest: payload.guest === true,
     // Only ever set for role:'staff' — see StaffMember/PermissionsGuard.
     // Embedded directly in the token (not re-read from the DB per request)
     // so a permission change only takes effect after re-login, exactly like

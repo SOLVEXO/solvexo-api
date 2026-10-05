@@ -7,6 +7,7 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { RequirePermission } from '../auth/decorators/require-permission.decorator';
+import { StaffStorePinned } from '../auth/decorators/staff-store-pinned.decorator';
 import { actingSellerId } from '../common/acting-seller-id.util';
 import { AnalyticsService } from './analytics.service';
 import { AnalyticsQueryDto } from './dto/analytics-query.dto';
@@ -24,6 +25,7 @@ import { ExportQueryDto } from './dto/export-query.dto';
 @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
 @Roles('seller', 'admin', 'staff')
 @RequirePermission('analytics.view')
+@StaffStorePinned()
 @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
 @Controller('api/seller/analytics')
 export class AnalyticsController {

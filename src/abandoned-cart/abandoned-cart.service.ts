@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { Injectable, Logger, ForbiddenException, NotFoundException } from '@nestjs/common';
+import { buyerEmail } from '../common/buyer-email.util';
 import { DatabaseService } from '@/database/databaseservice';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { EmailService } from '@/otp/services/email.service';
@@ -9,7 +10,10 @@ import { UpdateAbandonedCartSettingsDto } from './dto/update-abandoned-cart-sett
 
 import { API_PUBLIC_ORIGIN } from '@/common/api-origin';
 const DEFAULT_SETTINGS = { enabled: true, delayMinutes: 60, subject: 'You left something in your cart', message: "Hi {{customerName}}, you still have items waiting in your cart at {{storeName}}. Complete your order before they're gone: {{cartUrl}}" };
-const BATCH_SIZE = 200; // per cron tick — never let one runaway backlog block the lock for too long
+const BATCH_SIZE = 200; // max emails sent per cron tick — never let one runaway backlog block the lock for too long
+const SCAN_PAGE_SIZE = 200; // checkouts examined per page (newest first)
+const MAX_SCAN_PER_TICK = 2000; // hard cap on checkouts examined per tick
+const RECOVERY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000; // older abandoned checkouts are expired, never emailed
 
 /**
  * Abandoned Cart Recovery — the real end-to-end flow, not just a DB record:
@@ -102,7 +106,7 @@ export class AbandonedCartService {
     ]);
 
     const userIds = [...new Set(checkouts.map((c: any) => c.userId))];
-    const users = await this.r.userModel.find({ _id: { $in: userIds } }).select('name email').lean();
+    const users = await this.r.userModel.find({ _id: { $in: userIds } }).select('name email contactEmail isGuest').lean();
     const userMap = Object.fromEntries(users.map((u: any) => [u._id.toString(), u]));
 
     const items = checkouts.map((c: any) => {
@@ -110,7 +114,7 @@ export class AbandonedCartService {
       return {
         checkoutId: c._id.toString(),
         customerName: userMap[c.userId]?.name ?? 'Unknown',
-        customerEmail: userMap[c.userId]?.email ?? null,
+        customerEmail: buyerEmail(userMap[c.userId]) ?? null,
         itemCount: storeItems.reduce((s: number, i: any) => s + i.quantity, 0),
         cartValue: c.totalAmount,
         currency: c.currency,
@@ -178,31 +182,66 @@ export class AbandonedCartService {
    *  reminder email each, never a duplicate (guarded by `abandonedEmailSentAt`
    *  already being set being part of the query itself). */
   async processAbandonedCarts(): Promise<{ processed: number; sent: number }> {
-    const candidates = await this.r.checkoutModel
-      .find({
-        status: { $in: ['pending', 'payment_pending'] },
-        isDelete: false,
-        abandonedEmailSentAt: null,
-        abandonedEmailSuppressedAt: null,
-        'items.0': { $exists: true },
-      })
-      .sort({ updatedAt: 1 })
-      .limit(BATCH_SIZE)
-      .lean();
+    const now = new Date();
+    const windowStart = new Date(now.getTime() - RECOVERY_WINDOW_MS);
+    const baseFilter = {
+      status: { $in: ['pending', 'payment_pending'] },
+      isDelete: false,
+      abandonedEmailSentAt: null,
+      abandonedEmailSuppressedAt: null,
+      'items.0': { $exists: true },
+    };
+
+    // Expire old junk once so it is never selected (or scanned) again.
+    await this.r.checkoutModel.updateMany(
+      { ...baseFilter, updatedAt: { $lt: windowStart } },
+      { $set: { abandonedEmailSuppressedAt: now } },
+    );
 
     let sentCount = 0;
-    const now = new Date();
+    let scanned = 0;
+    let cursor: Date | null = null;
 
-    for (const checkout of candidates as any[]) {
+    // Newest first within the window, paged, so unsendable/not-yet-due rows
+    // can never starve the checkouts behind them.
+    while (sentCount < BATCH_SIZE && scanned < MAX_SCAN_PER_TICK) {
+      const page: any[] = await this.r.checkoutModel
+        .find({ ...baseFilter, updatedAt: cursor ? { $gte: windowStart, $lt: cursor } : { $gte: windowStart } })
+        .sort({ updatedAt: -1 })
+        .limit(SCAN_PAGE_SIZE)
+        .lean();
+      if (page.length === 0) break;
+      scanned += page.length;
+      cursor = new Date(page[page.length - 1].updatedAt);
+
+      for (const checkout of page) {
+        if (sentCount >= BATCH_SIZE) break;
+        sentCount += await this.processOneCheckout(checkout, now);
+      }
+      if (page.length < SCAN_PAGE_SIZE) break;
+    }
+
+    return { processed: scanned, sent: sentCount };
+  }
+
+  /** Returns 1 if a recovery email went out, else 0. Marks the checkout
+   *  permanently ineligible (abandonedEmailSuppressedAt) when it can never be
+   *  sent; leaves it untouched when it is merely not due yet / retryable. */
+  private async processOneCheckout(checkout: any, now: Date): Promise<number> {
+    const suppress = () => this.r.checkoutModel.updateOne({ _id: checkout._id }, { $set: { abandonedEmailSuppressedAt: now } });
+    {
       try {
         const ageMinutes = (now.getTime() - new Date(checkout.updatedAt).getTime()) / 60_000;
         const storeIds = [...new Set(checkout.items.map((i: any) => i.storeId))] as string[];
+        const liveStores = await this.r.storeModel.countDocuments({ _id: { $in: storeIds }, isDelete: false });
+        if (liveStores === 0) { await suppress(); return 0; } // no participating store left
         const trigger = await this.resolveTriggerSettings(storeIds, ageMinutes);
-        if (!trigger) continue; // no participating store's delay has elapsed yet
+        if (!trigger) return 0; // no participating store's delay has elapsed yet
 
-        const user = await this.r.userModel.findById(checkout.userId).select('name email').lean();
-        const email = (user as any)?.email;
-        if (!email) continue; // nothing to send to — leave it for the next tick in case the user record appears
+        const user = await this.r.userModel.findById(checkout.userId).select('name email contactEmail isGuest isDelete').lean();
+        if (!user || (user as any).isDelete === true) { await suppress(); return 0; } // deleted/missing account
+        const email = buyerEmail(user as any);
+        if (!email) { await suppress(); return 0; } // no deliverable address (e.g. guest without contact email)
 
         // Recovery emails go to any shopper by default (as on Shopify), but
         // an explicit unsubscribe from this store's emails is always honored.
@@ -210,8 +249,8 @@ export class AbandonedCartService {
           storeId: trigger.storeId, email: String(email).toLowerCase(), isActive: false,
         });
         if (optedOut) {
-          await this.r.checkoutModel.updateOne({ _id: checkout._id }, { $set: { abandonedEmailSuppressedAt: now } });
-          continue;
+          await suppress();
+          return 0;
         }
 
         const store = await this.r.storeModel.findById(trigger.storeId).select('name').lean();
@@ -233,13 +272,13 @@ export class AbandonedCartService {
             <p style="margin-top:24px"><a href="${cartUrl}" style="background:#141413;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;display:inline-block">Return to your cart</a></p>
           </div>`,
         );
-        if (!sent) continue; // don't mark abandonedEmailSentAt if the send itself failed — retry next tick
+        if (!sent) return 0; // don't mark abandonedEmailSentAt if the send itself failed — retry next tick (bounded by the 7-day window)
 
-        await this.r.checkoutModel.updateOne(
+        const marked = await this.r.checkoutModel.updateOne(
           { _id: checkout._id, abandonedEmailSentAt: null }, // still guards against a race with another tick/instance
           { $set: { abandonedEmailSentAt: now, abandonedRecoveryToken: token } },
         );
-        sentCount++;
+        if (marked.modifiedCount === 0) return 0; // another tick/instance already recorded this checkout
 
         for (const storeId of storeIds) {
           this.activityLogService.log({
@@ -250,10 +289,10 @@ export class AbandonedCartService {
         }
       } catch (e: any) {
         this.logger.error(`processAbandonedCarts: failed for checkout ${checkout._id}: ${e?.message}`);
+        return 0;
       }
     }
-
-    return { processed: candidates.length, sent: sentCount };
+    return 1;
   }
 
   /** Public — hit when the buyer clicks the link in the recovery email.

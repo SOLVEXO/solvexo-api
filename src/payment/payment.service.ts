@@ -5,6 +5,11 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { availableStock, AVAILABLE_STOCK_EXPR } from '@/common/stock-availability.util';
+import { resolveCustomerId } from '@/common/customer-identity-resolve.util';
+import { escapeHtml, storePublicUrl } from '@/newsletter/marketing-email.util';
+import { signOrderStatusToken } from '@/common/order-status-token.util';
+import { buyerEmail } from '@/common/buyer-email.util';
 import { DatabaseService } from '@/database/databaseservice';
 import { NotificationsService } from '@/notifications/notifications.service';
 import { NOTIFICATION_TYPES } from '@/notifications/notification.types';
@@ -24,6 +29,10 @@ import { EmailService } from '@/otp/services/email.service';
 import { verifyStoreOwnershipStrict } from '@/common/store-ownership.util';
 import { deriveRollupStatus } from '@/orders/order-status.util';
 import Stripe from 'stripe';
+
+/** Thrown by createOrder when the atomic stock reservation loses (the last unit was sold between the buyer paying
+ *  and the order being created). Distinct type so the payment-finalize paths can auto-refund instead of retrying forever. */
+export class StockUnavailableException extends BadRequestException {}
 
 /**
  * Whether an order's money went straight to the seller's connected account. Only an order actually
@@ -185,7 +194,7 @@ export class PaymentService {
       throw new BadRequestException('Checkout has expired');
     }
 
-    await this.assertStoreCreditStillCovers(checkout);
+    await this.assertDiscountsStillValid(checkout);
 
     const physicalItems = checkout.items.filter(
       (i: any) => i.type === 'physical',
@@ -199,7 +208,7 @@ export class PaymentService {
         throw new BadRequestException(`Item not available: ${item.name}`);
       // Same real-availability pre-check as the other pre-flight checks in
       // this file — see ProductVariant.committedStock.
-      const availablePreCheck = variant.stock - (variant.committedStock || 0);
+      const availablePreCheck = availableStock(variant as any);
       if (!variant.unlimitedStock && availablePreCheck < item.quantity) {
         throw new BadRequestException(`Insufficient stock for ${item.name}`);
       }
@@ -446,6 +455,8 @@ export class PaymentService {
       : this.configService.get<string>('STRIPE_WEBHOOK_SECRET_TEST') ||
         this.configService.get<string>('STRIPE_WEBHOOK_SECRET') ||
         '';
+
+    if (!webhookSecret) throw new BadRequestException('Stripe webhook secret is not configured');
 
     let event: any;
     try {
@@ -1027,6 +1038,11 @@ export class PaymentService {
     try {
       orders = await this.createOrder(transaction.userId, checkout, orderModel, addressModel, physicalPayment, digitalPayment, undefined, connectInfo);
     } catch (err: any) {
+      // The money is taken but the last unit is gone: retrying can never succeed, so refund the buyer in full
+      // (idempotent) instead of leaving a paid-but-no-order checkout and a webhook that Stripe retries forever.
+      if (err instanceof StockUnavailableException) {
+        return this.autoRefundUnfulfillable(transaction, checkout, paymentIntentId, err.message, false);
+      }
       await paymentTransactionModel.findByIdAndUpdate(transaction._id, {
         status: 'pending',
         paidAt: null,
@@ -1057,6 +1073,66 @@ export class PaymentService {
     // Seller notifications are already sent inside `createOrder()` above —
     // no need to duplicate that here.
     return { orderIds: orders.map((o: any) => o._id.toString()) };
+  }
+
+  /**
+   * A buyer's Stripe payment succeeded but the order can't be created because the stock ran out in the meantime
+   * (Shopify never leaves the buyer paid with no order). Gives the money back right away: a normal charge is
+   * refunded in full (stable idempotency key → a webhook redelivery can never refund twice); a manual-capture
+   * authorization is simply cancelled (nothing was captured). Marks the transaction 'refunded', cancels the
+   * checkout, tells the buyer and raises an alert for the platform. If the refund itself fails the transaction
+   * goes back to 'pending' and the error is rethrown, so Stripe's webhook retry tries the refund again.
+   */
+  private async autoRefundUnfulfillable(
+    transaction: any,
+    checkout: any,
+    paymentIntentId: string,
+    reason: string,
+    isAuthorizationOnly: boolean,
+  ): Promise<{ orderIds: string[] }> {
+    const { paymentTransactionModel, checkoutModel } = this.databaseService.repositories;
+    try {
+      if (isAuthorizationOnly) {
+        if (!this.stripe) throw new Error('Stripe is not configured');
+        await this.stripe.paymentIntents.cancel(paymentIntentId, { cancellation_reason: 'abandoned' }, { idempotencyKey: `auto-cancel-${transaction._id}` } as any);
+      } else {
+        const refund = await this.refundStripePaymentIntent(paymentIntentId, transaction.amount, `auto-refund-no-stock-${transaction._id}`);
+        if (!refund) throw new Error('Stripe is not configured');
+      }
+    } catch (err: any) {
+      await paymentTransactionModel.findByIdAndUpdate(transaction._id, { status: 'pending', paidAt: null });
+      await this.activityLogService.log({
+        storeId: 'platform',
+        category: 'finance',
+        action: 'payment_auto_refund_failed',
+        description: `Buyer paid but stock ran out (${reason}) AND the automatic refund failed for checkout ${checkout._id} / ${paymentIntentId}: ${err?.message} — will retry; refund manually if it keeps failing`,
+        actorId: 'system', actorRole: 'system', isSecurityAlert: true,
+        targetId: String(checkout._id), targetType: 'checkout',
+      });
+      throw new BadRequestException('Automatic refund failed, will retry');
+    }
+
+    await paymentTransactionModel.findByIdAndUpdate(transaction._id, { status: 'refunded' });
+    await checkoutModel.findByIdAndUpdate(checkout._id, { status: 'cancelled' });
+
+    await this.activityLogService.log({
+      storeId: String(checkout.items?.[0]?.storeId ?? 'platform'),
+      category: 'finance',
+      action: 'payment_auto_refunded_out_of_stock',
+      description: `An item sold out while a buyer was paying (${reason}); the payment of ${transaction.amount} ${checkout.currency} was automatically ${isAuthorizationOnly ? 'released' : 'refunded'} and no order was created`,
+      actorId: 'system', actorRole: 'system', isSecurityAlert: true,
+      targetId: String(checkout._id), targetType: 'checkout',
+    });
+    this.notificationsService.notify({
+      recipientId: String(transaction.userId),
+      recipientRole: 'user',
+      type: NOTIFICATION_TYPES.REFUND_ISSUED,
+      title: 'Item sold out — payment returned',
+      body: `Sorry, an item in your order sold out just as you paid. Your payment of ${transaction.amount} ${checkout.currency} has been ${isAuthorizationOnly ? 'released' : 'refunded in full'} and no order was placed.`,
+      data: { checkoutId: String(checkout._id) },
+    }).catch(() => undefined);
+
+    return { orderIds: [] };
   }
 
   /**
@@ -1129,6 +1205,10 @@ export class PaymentService {
     try {
       orders = await this.createOrder(transaction.userId, checkout, orderModel, addressModel, paymentInfo, paymentInfo);
     } catch (err: any) {
+      if (err instanceof StockUnavailableException) {
+        await this.autoRefundUnfulfillable(transaction, checkout, paymentIntentId, err.message, true);
+        return;
+      }
       await paymentTransactionModel.findByIdAndUpdate(transaction._id, { status: 'pending' });
       console.error('createOrder failed while authorizing payment:', err?.message, {
         checkoutId: checkout._id, paymentIntentId,
@@ -1510,6 +1590,10 @@ export class PaymentService {
       return { success: true, data: { status: 'completed', orders } };
     }
 
+    if (await paymentTransactionModel.exists({ checkoutId, status: 'refunded', isDelete: false })) {
+      return { success: true, data: { status: 'failed', orders: [], message: 'An item sold out as you paid — your payment has been refunded and no order was placed.' } };
+    }
+
     const pending = await paymentTransactionModel.findOne({
       checkoutId,
       status: 'pending',
@@ -1524,6 +1608,10 @@ export class PaymentService {
         );
         if (pi.status === 'succeeded') {
           const result = await this.finalizePaymentIntent(pi);
+          if (!result?.orderIds?.length) {
+            // Paid but the item sold out → already refunded automatically (see autoRefundUnfulfillable).
+            return { success: true, data: { status: 'failed', orders: [], message: 'An item sold out as you paid — your payment has been refunded and no order was placed.' } };
+          }
           const orders = await this.formatOrdersByIds(result?.orderIds ?? []);
           return { success: true, data: { status: 'completed', orders } };
         }
@@ -1560,6 +1648,34 @@ export class PaymentService {
       { userId, storeId, status: 'active', isDelete: false },
       { $pull: { items: { $or: purchasedLines } } },
     );
+  }
+
+  /**
+   * Re-checks, right before money is taken, that every discount applied earlier in the checkout is STILL usable: the
+   * coupon may have expired, been deactivated or been used up since it was applied (a limited coupon is only counted
+   * when an order is placed), and store credit may have been spent elsewhere. Throws a readable error so the buyer can
+   * remove the discount and continue — they are never charged a discounted total that can no longer be honored.
+   */
+  async assertDiscountsStillValid(checkout: any) {
+    await this.assertCouponStillUsable(checkout);
+    await this.assertDiscountsStillValid(checkout);
+  }
+
+  private async assertCouponStillUsable(checkout: any) {
+    if (!checkout?.couponCode || checkout.couponSourceType === 'reward_voucher') return;
+    const coupon: any = await this.databaseService.repositories.couponModel
+      .findOne(
+        checkout.couponStoreId
+          ? { storeId: checkout.couponStoreId, code: checkout.couponCode, scope: 'seller', isDelete: false }
+          : { code: checkout.couponCode, scope: 'platform', isDelete: false },
+      )
+      .lean();
+    const now = new Date();
+    if (!coupon || coupon.isActive === false) throw new BadRequestException('This coupon is no longer valid — remove it to continue.');
+    if (coupon.expiresAt && new Date(coupon.expiresAt) < now) throw new BadRequestException('This coupon has expired — remove it to continue.');
+    if (coupon.usageLimit != null && (coupon.usageCount ?? 0) >= coupon.usageLimit) {
+      throw new BadRequestException('This coupon has reached its usage limit — remove it to continue.');
+    }
   }
 
   /**
@@ -1600,13 +1716,13 @@ export class PaymentService {
     if (checkout.totalAmount > 0.005) {
       throw new BadRequestException('Your store credit does not cover the full amount — choose a payment method for the rest.');
     }
-    await this.assertStoreCreditStillCovers(checkout);
+    await this.assertDiscountsStillValid(checkout);
 
     for (const item of checkout.items) {
       if (item.type !== 'physical') continue;
       const variant = await productVariantModel.findOne({ _id: item.variantId, isDelete: false });
       if (!variant) throw new BadRequestException(`Item not available: ${item.name}`);
-      const availablePreCheck = variant.stock - (variant.committedStock || 0);
+      const availablePreCheck = availableStock(variant as any);
       if (!variant.unlimitedStock && !(variant as any).allowBackorder && availablePreCheck < item.quantity) {
         throw new BadRequestException(`Insufficient stock for ${item.name}. Available: ${availablePreCheck}, required: ${item.quantity}`);
       }
@@ -1673,7 +1789,7 @@ export class PaymentService {
       throw new BadRequestException('Checkout has expired');
     }
 
-    await this.assertStoreCreditStillCovers(checkout);
+    await this.assertDiscountsStillValid(checkout);
 
     const hasDigital = checkout.items.some((i: any) => i.type === 'digital');
     if (hasDigital)
@@ -1706,7 +1822,7 @@ export class PaymentService {
       // ProductVariant.committedStock). The actual atomic guard is
       // `createOrder`'s reserve step below; this is just a fast, friendly
       // fail before that.
-      const availablePreCheck = variant.stock - (variant.committedStock || 0);
+      const availablePreCheck = availableStock(variant as any);
       // See ProductVariant.allowBackorder — never fails this friendly
       // pre-check; the real gate is createOrder's atomic reserve below.
       if (!variant.unlimitedStock && !(variant as any).allowBackorder && availablePreCheck < item.quantity) {
@@ -1788,7 +1904,7 @@ export class PaymentService {
       throw new BadRequestException('Checkout has expired');
     }
 
-    await this.assertStoreCreditStillCovers(checkout);
+    await this.assertDiscountsStillValid(checkout);
 
     // Bank transfer settles into ONE seller's own bank account (see
     // StoreIntegrationsService — 'bank_transfer' provider), so a cart that
@@ -1814,7 +1930,7 @@ export class PaymentService {
       if (!variant) throw new BadRequestException(`Item not available: ${item.name}`);
       // Same real-availability pre-check as the COD path above — see
       // ProductVariant.allowBackorder for why it's skipped here too.
-      const availablePreCheck = variant.stock - (variant.committedStock || 0);
+      const availablePreCheck = availableStock(variant as any);
       if (!variant.unlimitedStock && !(variant as any).allowBackorder && availablePreCheck < item.quantity) {
         throw new BadRequestException(`Insufficient stock for ${item.name}. Available: ${availablePreCheck}, required: ${item.quantity}`);
       }
@@ -2018,7 +2134,7 @@ export class PaymentService {
     for (const item of physicalItems) {
       const variant = await productVariantModel
         .findOne({ _id: item.variantId, isDelete: false })
-        .select('unlimitedStock allowBackorder stock committedStock')
+        .select('unlimitedStock allowBackorder stock committedStock damagedStock inTransitStock')
         .lean();
       if (!variant || (variant as any).unlimitedStock) continue;
 
@@ -2030,7 +2146,7 @@ export class PaymentService {
           { _id: item.variantId, isDelete: false },
           { $inc: { committedStock: item.quantity } },
         );
-        const availableBefore = ((variant as any).stock || 0) - ((variant as any).committedStock || 0);
+        const availableBefore = availableStock(variant as any);
         if (availableBefore < item.quantity) backorderedVariantIds.add(item.variantId);
         reserved.push({ variantId: item.variantId, quantity: item.quantity });
         continue;
@@ -2040,7 +2156,7 @@ export class PaymentService {
         {
           _id: item.variantId,
           isDelete: false,
-          $expr: { $gte: [{ $subtract: ['$stock', '$committedStock'] }, item.quantity] },
+          $expr: { $gte: [AVAILABLE_STOCK_EXPR, item.quantity] },
         },
         { $inc: { committedStock: item.quantity } },
       );
@@ -2052,7 +2168,7 @@ export class PaymentService {
             { $inc: { committedStock: -d.quantity } },
           );
         }
-        throw new BadRequestException(
+        throw new StockUnavailableException(
           `Stock not available for item: ${item.name}`,
         );
       }
@@ -2186,6 +2302,9 @@ export class PaymentService {
       });
     };
 
+    // Stable customer identity (repeat guest purchases by one email = one customer) — see resolveCustomerId.
+    const customerId = await resolveCustomerId(this.databaseService.repositories, userId);
+
     // unique orderNumber (counter se taaki same-ms collision na ho)
     let seq = 0;
     const genOrderNumber = () =>
@@ -2227,6 +2346,8 @@ export class PaymentService {
 
       const physicalOrder = await orderModel.create({
         orderNumber: genOrderNumber(),
+        customerId,
+        timeline: [{ type: 'placed', message: 'Order placed', actorId: null, actorRole: 'system', createdAt: new Date() }],
         userId,
         checkoutId: checkout._id.toString(),
         currency: orderCurrency,
@@ -2277,6 +2398,8 @@ export class PaymentService {
 
       const digitalOrder = await orderModel.create({
         orderNumber: genOrderNumber(),
+        timeline: [{ type: 'placed', message: 'Order placed', actorId: null, actorRole: 'system', createdAt: new Date() }],
+        customerId,
         userId,
         checkoutId: checkout._id.toString(),
         currency: orderCurrency,
@@ -2353,12 +2476,26 @@ export class PaymentService {
           { status: 'used', usedAt: new Date(), checkoutId: String(checkout._id), orderId: String(createdOrders[0]?._id ?? '') },
         );
       } else {
-        await this.databaseService.repositories.couponModel.updateOne(
-          checkout.couponStoreId
-            ? { storeId: checkout.couponStoreId, code: checkout.couponCode, scope: 'seller' }
-            : { code: checkout.couponCode, scope: 'platform' },
+        const couponScope = checkout.couponStoreId
+          ? { storeId: checkout.couponStoreId, code: checkout.couponCode, scope: 'seller' }
+          : { code: checkout.couponCode, scope: 'platform' };
+        // Atomic: count the use ONLY while the limit still has room, so two orders racing for the last use can
+        // never both be counted past `usageLimit` (Shopify: a limited coupon stops working the moment it is used up).
+        const counted: any = await this.databaseService.repositories.couponModel.updateOne(
+          { ...couponScope, $or: [{ usageLimit: null }, { $expr: { $lt: ['$usageCount', '$usageLimit'] } }] },
           { $inc: { usageCount: 1 } },
         );
+        if ((counted.modifiedCount ?? counted.nModified ?? 0) === 0) {
+          // The buyer had already paid the discounted price (the limit was re-checked at payment start; this is only
+          // the narrow race of two payments finishing together). The order stands — surface it for the merchant.
+          await this.activityLogService.log({
+            storeId: String(checkout.couponStoreId ?? checkout.items?.[0]?.storeId ?? 'platform'),
+            category: 'marketing', action: 'coupon_usage_limit_exceeded',
+            description: `Coupon ${checkout.couponCode} was used past its usage limit by concurrent orders (order #${createdOrders[0]?.orderNumber ?? ''})`,
+            actorId: 'system', actorRole: 'system', isSecurityAlert: true,
+            targetId: String(createdOrders[0]?._id ?? ''), targetType: 'order',
+          }).catch(() => undefined);
+        }
       }
     }
 
@@ -2432,14 +2569,15 @@ export class PaymentService {
   ) {
     const buyer = await this.databaseService.repositories.userModel
       .findById(userId)
-      .select('email')
+      .select('email contactEmail isGuest')
       .lean();
-    if (!buyer?.email) return;
+    const buyerTo = buyerEmail(buyer as any); // a guest's real (contact) email — never the synthetic login address
+    if (!buyerTo) return;
 
-    const byStore = new Map<string, { items: any[]; subtotal: number; orderNumbers: Set<string> }>();
+    const byStore = new Map<string, { items: any[]; subtotal: number; orderNumbers: Set<string>; firstOrderId: string }>();
     for (const createdOrder of createdOrders) {
       for (const so of createdOrder.sellerOrders) {
-        const entry = byStore.get(so.storeId) ?? { items: [], subtotal: 0, orderNumbers: new Set<string>() };
+        const entry = byStore.get(so.storeId) ?? { items: [], subtotal: 0, orderNumbers: new Set<string>(), firstOrderId: String(createdOrder._id) };
         entry.items.push(...so.items);
         entry.subtotal += so.subtotal ?? 0;
         entry.orderNumbers.add(createdOrder.orderNumber);
@@ -2450,17 +2588,20 @@ export class PaymentService {
 
     const stores = await storeModel
       .find({ _id: { $in: [...byStore.keys()] } })
-      .select('name contactEmail')
+      .select('name contactEmail slug customDomain customDomainStatus')
       .lean();
     const storeById = new Map(stores.map((s: any) => [String(s._id), s]));
 
     for (const [storeId, entry] of byStore) {
-      const store = storeById.get(storeId) as { name?: string; contactEmail?: string } | undefined;
-      const storeName = store?.name ?? 'your order';
+      const store = storeById.get(storeId) as { name?: string; contactEmail?: string; slug?: string; customDomain?: string | null; customDomainStatus?: string } | undefined;
+      const storeName = escapeHtml(store?.name ?? 'your order');
+      // Shopify's "View your order" status page — a signed link, works without logging in (how a guest tracks it).
+      const base = storePublicUrl(store as any);
+      const statusUrl = base ? `${base}/order-status/${signOrderStatusToken(entry.firstOrderId)}` : null;
       const itemRows = entry.items
         .map(
           (i: any) =>
-            `<tr><td style="padding:6px 0;">${i.name} &times; ${i.quantity}</td><td style="padding:6px 0; text-align:right;">${(i.totalPrice ?? 0).toFixed(2)} ${orderCurrency}</td></tr>`,
+            `<tr><td style="padding:6px 0;">${escapeHtml(String(i.name ?? ''))} &times; ${i.quantity}</td><td style="padding:6px 0; text-align:right;">${(i.totalPrice ?? 0).toFixed(2)} ${orderCurrency}</td></tr>`,
         )
         .join('');
       const html = `
@@ -2469,10 +2610,11 @@ export class PaymentService {
           <p style="color:#555;">Order ${[...entry.orderNumbers].join(', ')} from <strong>${storeName}</strong> is confirmed.</p>
           <table style="width:100%; border-collapse:collapse; margin:16px 0;">${itemRows}</table>
           <p style="font-weight:bold; text-align:right;">Total: ${entry.subtotal.toFixed(2)} ${orderCurrency}</p>
+          ${statusUrl ? `<p style="text-align:center;margin:20px 0;"><a href="${statusUrl}" style="background:#111;color:#fff;padding:10px 18px;border-radius:6px;text-decoration:none;">View your order</a></p>` : ''}
           <p style="color:#888; font-size:13px;">Questions about this order? Just reply to this email.</p>
         </div>`;
       this.emailService
-        .sendMail(buyer.email, `Your order from ${storeName} is confirmed`, html, store?.contactEmail ?? null)
+        .sendMail(buyerTo, `Your order from ${store?.name ?? 'your order'} is confirmed`, html, store?.contactEmail ?? null)
         .catch(() => {});
     }
   }

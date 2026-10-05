@@ -529,6 +529,27 @@ export class Store {
   @Prop({ enum: ['pending', 'active', 'rejected', 'suspended'], default: 'pending' })
   status: string;
 
+  // Shopify "Customer accounts": 'optional' = guests can check out without an account (default, like Shopify),
+  // 'required' = buyers must sign in / register before checking out.
+  @Prop({ type: String, enum: ['optional', 'required'], default: 'optional' })
+  customerAccounts: 'optional' | 'required';
+
+  // Stripe Connect (Express) account that receives THIS store's card payments — one per store, like each
+  // Shopify store's own Shopify Payments account. Replaces the old per-seller account (Seller.stripeConnect*,
+  // kept only as the migration source). The id is `select: false` so no public store read can ever leak it —
+  // StripeConnectService reads it with an explicit `+stripeConnectedAccountId`.
+  @Prop({ type: String, default: null, select: false })
+  stripeConnectedAccountId: string | null;
+
+  @Prop({ type: String, enum: ['not_connected', 'pending', 'active', 'restricted'], default: 'not_connected' })
+  stripeConnectStatus: 'not_connected' | 'pending' | 'active' | 'restricted';
+
+  @Prop({ type: Boolean, default: false })
+  stripeConnectChargesEnabled: boolean;
+
+  @Prop({ type: Boolean, default: false })
+  stripeConnectPayoutsEnabled: boolean;
+
   // Set by AdminMarketplaceService.rejectLead — shown back to the seller so
   // a rejection isn't a silent dead end.
   @Prop({ type: String, default: null })
@@ -687,3 +708,8 @@ StoreSchema.index({ name: 1 });
 StoreSchema.index({ sellerType: 1 });
 StoreSchema.index({ averageRating: -1 });
 StoreSchema.index({ followersCount: -1 });
+
+// One verified-or-pending custom domain can only ever belong to ONE live store (the read-then-write check in
+// StoreService.setCustomDomain races; this unique partial index is the real guard). NOTE: if two live stores already
+// share a domain the index cannot build — de-duplicate them first.
+StoreSchema.index({ customDomain: 1 }, { unique: true, partialFilterExpression: { customDomain: { $type: 'string' }, isDelete: false } });

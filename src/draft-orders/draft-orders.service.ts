@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { Injectable, BadRequestException, NotFoundException, ForbiddenException } from '@nestjs/common';
+import { availableStock, AVAILABLE_STOCK_EXPR } from '@/common/stock-availability.util';
 import { ConfigService } from '@nestjs/config';
 import { randomBytes } from 'crypto';
 import Stripe from 'stripe';
@@ -552,7 +553,7 @@ export class DraftOrdersService {
         {
           _id: item.variantId,
           isDelete: false,
-          $expr: { $gte: [{ $subtract: ['$stock', '$committedStock'] }, item.quantity] },
+          $expr: { $gte: [AVAILABLE_STOCK_EXPR, item.quantity] },
         },
         { $inc: { stock: -item.quantity } },
       );
@@ -586,6 +587,7 @@ export class DraftOrdersService {
       // since the money already landed directly in the seller's own account.
       settledViaConnect: connectInfo?.settledViaConnect ?? false,
       stripeConnectedAccountId: connectInfo?.connectedAccountId ?? null,
+      stockAlreadyDeducted: true, // stock was decremented above — the ship step must not do it again
     };
 
     // The resulting Order's payment state is derived from whether the

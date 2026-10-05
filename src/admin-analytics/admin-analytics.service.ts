@@ -116,7 +116,7 @@ export class AdminAnalyticsService {
           grossRevenue: sumUSD('$sellerOrders.subtotal'),
           refundedAmount: sumUSD('$itemRefund'),
           unconvertibleOrderCount: unconvertibleCountField(),
-          buyerIds: { $addToSet: '$userId' },
+          buyerIds: { $addToSet: { $ifNull: ['$customerId', '$userId'] } },
         },
       },
     ]);
@@ -159,29 +159,38 @@ export class AdminAnalyticsService {
     });
   }
 
+  /** Latest accepted rate per currency (units per 1 USD); USD is always 1. Same source as AdminFinanceService. */
+  private async getUsdRates(): Promise<Map<string, number>> {
+    const rows = await this.r.exchangeRateModel.aggregate([
+      { $match: { isRejected: false } },
+      { $sort: { effectiveFrom: -1 } },
+      { $group: { _id: '$currency', ratePerUSD: { $first: '$ratePerUSD' } } },
+    ]);
+    const map = new Map<string, number>((rows ?? []).map((r: any) => [r._id, r.ratePerUSD]));
+    map.set('USD', 1);
+    return map;
+  }
+
   /**
-   * Phase 2 — `PlatformEarnings.commission`/`.processingFees`/`.total` are
-   * explicitly `@deprecated` on `platform-earnings.util.ts` (its own comment
-   * names THIS service as the caller that needs to migrate): they blend
-   * every seller's own settlement currency (`Transaction.currency`) into one
-   * meaningless number, the exact same class of bug `Order.ratePerUSD` fixed
-   * for buyer-currency revenue in Phase 0 — just a different currency
-   * (seller settlement currency, not buyer checkout currency), so it isn't
-   * fixable with `toUSD`/`ratePerUSD`. `byCurrency` (computed correctly
-   * already) is the real source of truth; this extracts the USD entry as
-   * Solvexo's own reporting-currency figure and separately DISCLOSES any
-   * non-USD commission rather than blending it in or silently dropping it.
+   * USD roll-up of platform earnings (Solvexo reports in USD): each settlement currency's
+   * commission/fees is converted at the latest accepted rate. A currency with NO rate is never
+   * guessed or shown natively - it is excluded from the totals and only its code is disclosed in
+   * unconvertedCurrencies (empty when every currency converted).
    */
-  private earningsInUSD(earnings: PlatformEarnings) {
-    const usd = earnings.byCurrency.find((e) => e.currency === 'USD');
-    const nonUsdCommissionByCurrency = earnings.byCurrency
-      .filter((e) => e.currency !== 'USD' && (e.commission > 0 || e.processingFees > 0))
-      .map((e) => ({ currency: e.currency, commission: e.commission, processingFees: e.processingFees }));
-    return {
-      commission: usd?.commission ?? 0,
-      processingFees: usd?.processingFees ?? 0,
-      nonUsdCommissionByCurrency,
-    };
+  private earningsInUSD(earnings: PlatformEarnings, rates: Map<string, number>) {
+    let commission = 0;
+    let processingFees = 0;
+    const unconvertedCurrencies: string[] = [];
+    for (const e of earnings.byCurrency) {
+      const rate = rates.get(e.currency || 'USD');
+      if (rate && rate > 0) {
+        commission += e.commission / rate;
+        processingFees += e.processingFees / rate;
+      } else if (e.commission > 0 || e.processingFees > 0) {
+        unconvertedCurrencies.push(e.currency);
+      }
+    }
+    return { commission: round(commission), processingFees: round(processingFees), unconvertedCurrencies };
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -208,7 +217,7 @@ export class AdminAnalyticsService {
       ]);
 
       const refundRatePercent = current.grossRevenue > 0 ? round((current.refundAmount / current.grossRevenue) * 100) : 0;
-      const earningsUSD = this.earningsInUSD(platformEarnings);
+      const earningsUSD = this.earningsInUSD(platformEarnings, await this.getUsdRates());
 
       // Phase 1 — reuses PlatformPlansService.adminGetRevenue (the EXISTING
       // MRR/ARR/churn computation over SellerPlatformSubscription — sellers
@@ -229,8 +238,8 @@ export class AdminAnalyticsService {
         // earningsInUSD's doc comment.
         platformEarnings: earningsUSD.commission,
         platformCommission: earningsUSD.commission,
-        ...(earningsUSD.nonUsdCommissionByCurrency.length > 0
-          ? { nonUsdCommissionByCurrency: earningsUSD.nonUsdCommissionByCurrency }
+        ...(earningsUSD.unconvertedCurrencies.length > 0
+          ? { unconvertedCommissionCurrencies: earningsUSD.unconvertedCurrencies }
           : {}),
         totalOrders: current.orderCount,
         totalOrdersChange: absoluteChange(current.orderCount, previous.orderCount),
@@ -252,7 +261,7 @@ export class AdminAnalyticsService {
               sellerChurnRatePercent: platformPlanMetrics.data.churnRatePercent,
             }
           : {}),
-        note: '"totalRevenue" is net order revenue platform-wide (GMV minus refunds) — it is the money that flowed through the marketplace. "platformEarnings" is Solvexo\'s own cut of that (commission + subscription revenue, i.e. BUYER-VIP-plan revenue) and is a separate figure, not a component already subtracted from totalRevenue. "platformCommission" is USD-only (Solvexo\'s reporting currency) — a seller settled in another currency\'s commission is disclosed separately in "nonUsdCommissionByCurrency" (present only when non-zero) rather than blended in or dropped. "sellerPlatformMRR"/"sellerPlatformARR" are a THIRD, distinct revenue stream — Solvexo\'s recurring revenue from SELLERS paying for their own store plan (PlatformPlan) — not the same as "subscriptionRevenue" above. "sellerPlatformMRR"/ARR/activePlatformSubscribers/sellerChurnRatePercent are platform-wide only and omitted when a storeId/sellerId drill-down is active.',
+        note: '"totalRevenue" is net order revenue platform-wide (GMV minus refunds) — it is the money that flowed through the marketplace. "platformEarnings" is Solvexo\'s own cut of that (commission + subscription revenue, i.e. BUYER-VIP-plan revenue) and is a separate figure, not a component already subtracted from totalRevenue. "platformCommission" is USD-only (Solvexo\'s reporting currency) — commission from sellers settled in other currencies is converted to USD at the latest FX rate; a currency with no rate is excluded and listed in "unconvertedCommissionCurrencies" (present only when non-empty). "sellerPlatformMRR"/"sellerPlatformARR" are a THIRD, distinct revenue stream — Solvexo\'s recurring revenue from SELLERS paying for their own store plan (PlatformPlan) — not the same as "subscriptionRevenue" above. "sellerPlatformMRR"/ARR/activePlatformSubscribers/sellerChurnRatePercent are platform-wide only and omitted when a storeId/sellerId drill-down is active.',
       };
 
       if (compare) {
@@ -396,8 +405,9 @@ export class AdminAnalyticsService {
       // non-USD seller-settlement-currency commission is disclosed
       // separately, never blended into these platform-reporting-currency
       // totals.
-      const earningsUSD = this.earningsInUSD(platformEarnings);
-      const previousEarningsUSD = previousPlatformEarnings ? this.earningsInUSD(previousPlatformEarnings) : null;
+      const usdRates = await this.getUsdRates();
+      const earningsUSD = this.earningsInUSD(platformEarnings, usdRates);
+      const previousEarningsUSD = previousPlatformEarnings ? this.earningsInUSD(previousPlatformEarnings, usdRates) : null;
 
       const data: Record<string, any> = {
         period: { from, to },
@@ -406,10 +416,10 @@ export class AdminAnalyticsService {
         paymentProcessingFees: earningsUSD.processingFees,
         totalPlatformRevenue: earningsUSD.commission,
         totalMarketplaceRevenue: orderTotals.netRevenue,
-        ...(earningsUSD.nonUsdCommissionByCurrency.length > 0
-          ? { nonUsdCommissionByCurrency: earningsUSD.nonUsdCommissionByCurrency }
+        ...(earningsUSD.unconvertedCurrencies.length > 0
+          ? { unconvertedCommissionCurrencies: earningsUSD.unconvertedCurrencies }
           : {}),
-        note: 'oneTimeOrderRevenue is net seller order revenue (does not belong to the platform); platformCommissionRevenue is the commission Solvexo itself earned at sale time (seller plan and transaction-fee revenue are reported by the finance "platform-revenue" endpoint). Commission is recognized at sale time regardless of payout-clearing status. platformCommissionRevenue/paymentProcessingFees are USD-only (Solvexo\'s reporting currency) — a seller settled in another currency is disclosed separately in "nonUsdCommissionByCurrency" (present only when non-zero), never blended in.',
+        note: 'oneTimeOrderRevenue is net seller order revenue (does not belong to the platform); platformCommissionRevenue is the commission Solvexo itself earned at sale time (seller plan and transaction-fee revenue are reported by the finance "platform-revenue" endpoint). Commission is recognized at sale time regardless of payout-clearing status. platformCommissionRevenue/paymentProcessingFees are USD-only (Solvexo\'s reporting currency) — commission from sellers settled in other currencies is converted to USD at the latest FX rate; a currency with no rate is excluded and listed in "unconvertedCommissionCurrencies" (present only when non-empty).',
       };
 
       if (compare && previousOrderTotals && previousEarningsUSD) {
@@ -579,7 +589,7 @@ export class AdminAnalyticsService {
         ...sellerOrderMatchStage(from, to, scope),
         { $match: { 'sellerOrders.status': { $ne: 'cancelled' } } },
         { $addFields: { bucket: { $dateTrunc: { date: '$createdAt', unit: granularity, timezone: 'UTC' } } } },
-        { $group: { _id: { bucket: '$bucket', userId: '$userId' } } },
+        { $group: { _id: { bucket: '$bucket', userId: { $ifNull: ['$customerId', '$userId'] } } } },
       ]);
 
       const activeBuyerIds = new Set<string>();
@@ -1186,10 +1196,10 @@ export class AdminAnalyticsService {
       let newUsersWhoOrdered = 0;
       if (newUserIds.length > 0) {
         const converted = await this.r.orderModel.aggregate([
-          { $match: { isDelete: false, userId: { $in: newUserIds } } },
+          { $match: { isDelete: false, $or: [{ userId: { $in: newUserIds } }, { customerId: { $in: newUserIds } }] } },
           { $unwind: '$sellerOrders' },
           { $match: { 'sellerOrders.status': { $ne: 'cancelled' } } },
-          { $group: { _id: '$userId' } },
+          { $group: { _id: { $ifNull: ['$customerId', '$userId'] } } },
         ]);
         newUsersWhoOrdered = converted.length;
       }

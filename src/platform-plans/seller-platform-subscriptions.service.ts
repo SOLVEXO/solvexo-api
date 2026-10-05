@@ -429,7 +429,11 @@ export class SellerPlatformSubscriptionsService {
     // `changePlan`'s own `isFreeMoveIn`/plan-assignment steps work.
     if (desiredPlanId) {
       const plan = await this.planModel.findOne({ _id: desiredPlanId, status: 'active', isDelete: false });
-      if (plan) {
+      // A paid plan is never granted here — it would start the store on that plan with no payment. Paid plans
+      // go through the normal upgrade/charge flow after the trial/free start below.
+      if (plan && !plan.isFree && (plan.monthlyPriceUSD ?? 0) > 0) {
+        this.logger.warn(`desiredPlanId ${desiredPlanId} is a paid plan — ignored at store creation (no payment); starting the normal trial`);
+      } else if (plan) {
         return this.subModel.create({
           storeId, sellerId, platformPlanId: (plan as any)._id.toString(),
           billingInterval: 'monthly', amountUSD: plan.isFree ? 0 : (plan.monthlyPriceUSD ?? 0),

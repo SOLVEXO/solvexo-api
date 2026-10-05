@@ -114,6 +114,11 @@ export class Seller {
     @Prop({ type: String, enum: ['not_connected', 'pending', 'active', 'restricted'], default: 'not_connected' })
     stripeConnectStatus: 'not_connected' | 'pending' | 'active' | 'restricted';
 
+    // Set once the legacy per-seller account above has been copied onto each of the seller's stores
+    // (StripeConnectService.migrateLegacySellerAccounts). Stores created afterwards connect their OWN account.
+    @Prop({ type: Date, default: null })
+    stripeConnectMigratedToStoresAt: Date | null;
+
     @Prop({ type: Boolean, default: false })
     stripeConnectChargesEnabled: boolean;
 

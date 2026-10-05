@@ -41,6 +41,13 @@ export class EmailCampaignsProcessor extends WorkerHost {
   async process(job: Job<EmailCampaignSendJob>): Promise<void> {
     const { sendId, campaignId, email, customerName, storeName, subject, message, storeContactEmail, unsubscribeUrl, designed } = job.data;
 
+    const maxAttempts = job.opts.attempts ?? 1;
+    const isLastAttempt = job.attemptsMade + 1 >= maxAttempts;
+
+    // Redelivery guard: a recipient already sent must never be emailed twice.
+    const existing = await this.emailCampaignsService.getSendState(sendId);
+    if (!existing || existing.sentAt || existing.failedAt) return;
+
     try {
       // Every click routes through the tracking redirect first (the redirect
       // only honours targets that are really in this campaign); a real open
@@ -55,11 +62,21 @@ export class EmailCampaignsProcessor extends WorkerHost {
         unsubscribeUrl: unsubscribeUrl ?? null,
       });
       const sent = await this.emailService.sendMail(email, rendered.subject, rendered.html, storeContactEmail ?? null, unsubscribeHeaders(unsubscribeUrl));
-      await this.emailCampaignsService.markSendResult(sendId, campaignId, sent, sent ? undefined : 'sendMail returned false');
+      if (sent) {
+        await this.emailCampaignsService.markSendResult(sendId, campaignId, true);
+        return;
+      }
+      // sendMail swallows SMTP errors and returns false (it cannot tell an
+      // invalid address from a transient outage), so retry with backoff and
+      // only record a permanent failure once attempts are exhausted.
+      throw new Error('sendMail returned false');
     } catch (e: any) {
-      this.logger.error(`EmailCampaignsProcessor: failed for send ${sendId}: ${e?.message}`);
-      await this.emailCampaignsService.markSendResult(sendId, campaignId, false, e?.message ?? 'unknown error');
-      throw e; // let BullMQ's own retry/backoff apply
+      this.logger.warn(`EmailCampaignsProcessor: send ${sendId} attempt ${job.attemptsMade + 1}/${maxAttempts} failed: ${e?.message}`);
+      if (isLastAttempt) {
+        await this.emailCampaignsService.markSendResult(sendId, campaignId, false, e?.message ?? 'unknown error');
+        return; // resolved as failed — don't leave the job in a failed state
+      }
+      throw e; // let BullMQ's retry/backoff apply; recipient stays pending
     }
   }
 }

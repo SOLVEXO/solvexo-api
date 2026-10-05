@@ -90,6 +90,15 @@ export class User {
     // match this current DB value.
     @Prop({ default: 0 })
     tokenVersion: number;
+
+  /** Guest checkout session (no account, no password) — see GuestSessionService. */
+  @Prop({ type: Boolean, default: false })
+  isGuest: boolean;
+
+  /** A guest's real email (entered at checkout) — used for confirmation emails and to attach their orders to an
+   *  account created later with the same email. `email` itself is synthetic for guests. */
+  @Prop({ type: String, default: null })
+  contactEmail: string | null;
 }
 
 
@@ -101,3 +110,6 @@ export const UserSchema = SchemaFactory.createForClass(User);
 // against any pre-existing database before this is enforced there (a fresh
 // database gets this correctly via autoIndex with no migration needed).
 UserSchema.index({ storeId: 1, email: 1 }, { unique: true });
+// Guest checkout (see GuestSessionService): a password-less session row; `email` is a synthetic un-guessable address,
+// the buyer's real email lives in `contactEmail`.
+UserSchema.index({ storeId: 1, isGuest: 1, contactEmail: 1 });

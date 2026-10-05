@@ -1,5 +1,7 @@
 /* eslint-disable prettier/prettier */
-import { Body, Controller, Post, Req, Get, Patch, Query } from '@nestjs/common';
+import { Body, Controller, Post, Req, Get, Patch, Query, ForbiddenException } from '@nestjs/common';
+import { GuestSessionService } from './guest-session.service';
+import { GuestSessionDto, GuestContactDto } from './dto/guest-session.dto';
 import { Throttle } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
@@ -25,6 +27,7 @@ export class AuthController {
   constructor(
     private readonly authService: AuthService,
     private readonly authVisualService: AuthVisualService,
+    private readonly guestSessions: GuestSessionService,
   ) {}
 
   // Real IP-based country detection — powers two independent frontend
@@ -73,13 +76,34 @@ export class AuthController {
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Post('login')
   async login(@Req() req: any, @Body() loginDto: LoginDto) {
-    return this.authService.login(loginDto, req.ip, req.headers['user-agent']);
+    const result = await this.authService.login(loginDto, req.ip, req.headers['user-agent']);
+    if (loginDto.role === 'user') await this.guestSessions.mergeFromAuthResult(result, loginDto.storeId);
+    return result;
+  }
+
+  // Shopify-style guest checkout: starts a password-less buyer session for this store (no account needed), unless the
+  // store's "Customer accounts" setting is 'required'. Throttled per IP — it creates a row.
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  @Post('guest')
+  async startGuestSession(@Body() dto: GuestSessionDto) {
+    return this.guestSessions.createSession(dto.storeId);
+  }
+
+  // The email a guest checks out with (confirmation emails + attaching orders to a later account).
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('user')
+  @Patch('guest/contact')
+  async setGuestContact(@Req() req: any, @Body() dto: GuestContactDto) {
+    if (!req.user.isGuest) throw new ForbiddenException('Only a guest checkout session can do this');
+    return this.guestSessions.setContact(req.user.userId, dto);
   }
 
   // ✅ Social login (Google / Facebook / Apple) — resolves to buyer or seller per dto.role (default 'user')
   @Post('social-login')
   async socialLogin(@Body() socialLoginDto: SocialLoginDto) {
-    return this.authService.socialLogin(socialLoginDto);
+    const result = await this.authService.socialLogin(socialLoginDto);
+    if ((socialLoginDto.role ?? 'user') === 'user') await this.guestSessions.mergeFromAuthResult(result, socialLoginDto.storeId);
+    return result;
   }
 
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
@@ -95,7 +119,9 @@ export class AuthController {
   @Post('verifyOtp')
   async verifyOtp(@Body() body: { email: string; role: string, otp: string; storeId?: string }) {
     const { email, role, otp, storeId } = body;
-    return this.authService.verifyOtp(email, role, otp, storeId);
+    const result = await this.authService.verifyOtp(email, role, otp, storeId);
+    if (role === 'user') await this.guestSessions.mergeFromAuthResult(result, storeId);
+    return result;
   }
 
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
