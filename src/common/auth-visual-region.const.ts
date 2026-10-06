@@ -52,9 +52,25 @@ export type AuthVisualRegion =
   | 'central_asia'
   | 'default';
 
-export type AuthPageContext = 'register' | 'login' | 'onboarding' | 'forgot_password' | 'otp' | 'new_password';
+export type AuthPageContext =
+  | 'register' | 'login' | 'onboarding' | 'forgot_password' | 'otp' | 'new_password'
+  // Per-step onboarding contexts (live photo only; curated fallback uses `onboarding`)
+  | 'onboarding_store' | 'onboarding_seller_type' | 'onboarding_products';
 
-export const AUTH_PAGE_CONTEXTS: AuthPageContext[] = ['register', 'login', 'onboarding', 'forgot_password', 'otp', 'new_password'];
+export const AUTH_PAGE_CONTEXTS: AuthPageContext[] = [
+  'register', 'login', 'onboarding', 'forgot_password', 'otp', 'new_password',
+  'onboarding_store', 'onboarding_seller_type', 'onboarding_products',
+];
+
+/** What the seller picked on the onboarding "kind of seller" step — steers the
+ *  photo on the "What will you sell?" step. */
+export type AuthVisualTopic = 'creator' | 'educator' | 'retailer' | 'brand_business' | 'freelancer' | 'mix';
+export const AUTH_VISUAL_TOPICS: AuthVisualTopic[] = ['creator', 'educator', 'retailer', 'brand_business', 'freelancer', 'mix'];
+
+type CuratedContext = 'register' | 'login' | 'onboarding' | 'forgot_password' | 'otp' | 'new_password';
+function curatedContext(ctx: AuthPageContext): CuratedContext {
+  return ctx.startsWith('onboarding') ? 'onboarding' : (ctx as CuratedContext);
+}
 
 /** ISO-3166 alpha-2 → region. Every one of the 195 UN member states is
  *  mapped below (verified region-by-region against each region's real
@@ -141,7 +157,7 @@ export const COUNTRY_TO_AUTH_REGION: Record<string, AuthVisualRegion> = {
 /** Stable, real Unsplash CDN URLs (no API key needed to keep loading — the
  *  key was only used once, at curation time, to search/select these). Each
  *  region has 6 distinct photos, keyed by `AuthPageContext`. */
-export const AUTH_REGION_IMAGE_URL: Record<AuthVisualRegion, Record<AuthPageContext, string>> = {
+export const AUTH_REGION_IMAGE_URL: Record<AuthVisualRegion, Record<CuratedContext, string>> = {
   south_asia: {
     register:   'https://images.unsplash.com/photo-1674502754814-de8b0acb7e22?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
     login:      'https://images.unsplash.com/photo-1706043197156-eb4b075b3108?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
@@ -261,6 +277,23 @@ export const AUTH_REGION_IMAGE_URL: Record<AuthVisualRegion, Record<AuthPageCont
   },
 };
 
+/** Muslim-majority countries (ISO-3166 alpha-2). A visitor's religion can't be
+ *  detected, so the country's majority culture is the signal. These get ONLY
+ *  the hand-reviewed curated photos (markets, shopfronts, architecture) — never
+ *  a live Unsplash search, whose results can't be vetted for modest imagery
+ *  (e.g. fashion models in revealing outfits). */
+export const MODEST_CULTURE_COUNTRIES = new Set<string>([
+  'PK', 'AF', 'BD', 'MV',
+  'AE', 'SA', 'QA', 'KW', 'BH', 'OM', 'IQ', 'IR', 'JO', 'SY', 'YE', 'TR', 'PS', 'AZ',
+  'KZ', 'UZ', 'TM', 'TJ', 'KG',
+  'EG', 'MA', 'DZ', 'TN', 'LY', 'SD', 'SO', 'DJ', 'KM', 'MR', 'NE', 'SN', 'GM', 'ML', 'GN', 'SL', 'BF', 'TD',
+  'ID', 'MY', 'BN', 'AL', 'XK',
+]);
+
+export function isModestCultureCountry(country: string | null): boolean {
+  return !!country && MODEST_CULTURE_COUNTRIES.has(country);
+}
+
 export function resolveAuthVisualRegion(country: string | null): AuthVisualRegion {
   if (!country) return 'default';
   return COUNTRY_TO_AUTH_REGION[country] ?? 'default';
@@ -268,5 +301,5 @@ export function resolveAuthVisualRegion(country: string | null): AuthVisualRegio
 
 export function resolveAuthVisualImageUrl(region: AuthVisualRegion, context: string | undefined): string {
   const ctx: AuthPageContext = AUTH_PAGE_CONTEXTS.includes(context as AuthPageContext) ? (context as AuthPageContext) : 'register';
-  return AUTH_REGION_IMAGE_URL[region][ctx];
+  return AUTH_REGION_IMAGE_URL[region][curatedContext(ctx)];
 }

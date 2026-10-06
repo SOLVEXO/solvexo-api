@@ -2,6 +2,10 @@
 // import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 // import { RolesGuard } from '../auth/guards/roles.guard';
 // import { OrdersService } from './orders.service';
+import { PurchaseShippingLabelDto } from './dto/purchase-label.dto';
+import { FulfilOrderDto } from './dto/fulfil-order.dto';
+import { PurchaseReturnLabelDto, UpdateTrackingDto } from './dto/purchase-label.dto';
+import { parseLabelItemsQuery } from './shipments.util';
 
 // @Controller('api/orders')
 // export class OrdersController {
@@ -43,6 +47,8 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { OrderEditingService } from './order-editing.service';
+import { OrderExchangeService } from './order-exchange.service';
+import { CreateExchangeDto } from './dto/order-exchange.dto';
 import { EditOrderDto, OrderCommentDto, OrderNoteDto, OrderShippingAddressDto } from './dto/order-editing.dto';
 const editActor = (req: any) => ({ actorId: String(req.user.userId), actorRole: (req.user.role === 'staff' ? 'staff' : 'seller') as 'seller' | 'staff' });
 import { Response } from 'express';
@@ -61,6 +67,7 @@ export class OrdersController {
   constructor(
     private readonly ordersService: OrdersService,
     private readonly orderEditing: OrderEditingService,
+    private readonly orderExchange: OrderExchangeService,
   ) {}
 
   // Shopify order-status page: opens ONE order from a signed link, no login (how a guest tracks an order).
@@ -162,14 +169,111 @@ export class OrdersController {
     );
   }
 
+  /** Shopify "Fulfil items": ship a subset/quantity of the unfulfilled lines as one shipment. */
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('orders.fulfill')
+  @Post('fulfil/:storeId/:orderId')
+  async fulfilItems(
+    @Req() req: any,
+    @Param('storeId') storeId: string,
+    @Param('orderId') orderId: string,
+    @Body() dto: FulfilOrderDto,
+  ) {
+    return this.ordersService.fulfilItems(actingSellerId(req.user), storeId, orderId, dto, req.ip, req.headers['user-agent']);
+  }
+
+  /** Marks ONE shipment delivered; the sub-order becomes 'delivered' once every shipment is. */
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('orders.fulfill')
+  @Put('shipment-delivered/:storeId/:orderId/:shipmentId')
+  async markShipmentDelivered(
+    @Req() req: any,
+    @Param('storeId') storeId: string,
+    @Param('orderId') orderId: string,
+    @Param('shipmentId') shipmentId: string,
+  ) {
+    return this.ordersService.markShipmentDelivered(actingSellerId(req.user), storeId, orderId, shipmentId, req.ip, req.headers['user-agent']);
+  }
+
   /** Real one-click "mark as shipped" via a live-purchased carrier label —
    *  see OrdersService.purchaseShippingLabel's own doc comment. */
   @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('seller', 'staff')
   @RequirePermission('orders.buy_shipping_label')
   @Put('purchase-shipping-label')
-  async purchaseShippingLabel(@Req() req: any, @Body() body: { orderId: string; storeId: string }) {
-    return this.ordersService.purchaseShippingLabel(actingSellerId(req.user), body.orderId, body.storeId, req.ip, req.headers['user-agent']);
+  async purchaseShippingLabel(@Req() req: any, @Body() body: PurchaseShippingLabelDto) {
+    return this.ordersService.purchaseShippingLabel(
+      actingSellerId(req.user), body.orderId, body.storeId, req.ip, req.headers['user-agent'],
+      { rateId: body.rateId, packageId: body.packageId, items: body.items, notifyCustomer: body.notifyCustomer },
+    );
+  }
+
+  /** Shopify "Buy shipping label" step 1 — real carrier rates for this order (optional ?packageId=). */
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('orders.buy_shipping_label')
+  @Get('label-rates/:storeId/:orderId')
+  async listShippingLabelRates(
+    @Req() req: any,
+    @Param('storeId') storeId: string,
+    @Param('orderId') orderId: string,
+    @Query('packageId') packageId?: string,
+    @Query('items') items?: string,
+  ) {
+    return this.ordersService.listShippingLabelRates(
+      actingSellerId(req.user), orderId, storeId,
+      typeof packageId === 'string' && /^[\w-]{1,40}$/.test(packageId) ? packageId : undefined,
+      // Partial shipment: "itemId:qty,itemId:qty" — weigh only those lines (malformed = ignored = whole order).
+      parseLabelItemsQuery(items) ?? undefined,
+    );
+  }
+
+  /** Return label step 1 — carrier rates buyer -> store for approved returned lines (?itemIds=a,b&packageId=). */
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('orders.buy_shipping_label')
+  @Get('return-label-rates/:storeId/:orderId')
+  async listReturnLabelRates(
+    @Req() req: any,
+    @Param('storeId') storeId: string,
+    @Param('orderId') orderId: string,
+    @Query('itemIds') itemIds?: string,
+    @Query('packageId') packageId?: string,
+  ) {
+    const ids = typeof itemIds === 'string' ? itemIds.split(',').map((s) => s.trim()).filter((s) => /^[a-f\d]{24}$/i.test(s)).slice(0, 100) : [];
+    return this.ordersService.listReturnLabelRates(
+      actingSellerId(req.user), orderId, storeId, ids,
+      typeof packageId === 'string' && /^[\w-]{1,40}$/.test(packageId) ? packageId : undefined,
+    );
+  }
+
+  /** Return label step 2 — buys the label, saves it on the returned lines and emails the buyer. */
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('orders.buy_shipping_label')
+  @Put('purchase-return-label')
+  async purchaseReturnLabel(@Req() req: any, @Body() body: PurchaseReturnLabelDto) {
+    return this.ordersService.purchaseReturnLabel(
+      actingSellerId(req.user), body.storeId, body.orderId, body.itemIds,
+      { rateId: body.rateId, packageId: body.packageId, notifyCustomer: body.notifyCustomer },
+      editActor(req),
+    );
+  }
+
+  /** Edit the tracking of an old shipped order that predates per-shipment tracking. */
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('orders.fulfill')
+  @Put('tracking/:storeId/:orderId')
+  async updateLegacyTracking(
+    @Req() req: any,
+    @Param('storeId') storeId: string,
+    @Param('orderId') orderId: string,
+    @Body() dto: UpdateTrackingDto,
+  ) {
+    return this.ordersService.updateLegacyTracking(actingSellerId(req.user), storeId, orderId, dto, editActor(req));
   }
 
   // Static path — must be declared before `seller-orders/:storeId` below, otherwise
@@ -428,6 +532,16 @@ export class OrdersController {
     });
 
     res.end(buffer);
+  }
+
+  // Shopify exchange: resolve a pending return as an EXCHANGE — replacement items become a new linked order; only the
+  // price difference moves money. See OrderExchangeService's doc comment.
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('orders.return')
+  @Post('exchange/:storeId/:orderId')
+  async createExchange(@Req() req: any, @Param('storeId') storeId: string, @Param('orderId') orderId: string, @Body() dto: CreateExchangeDto) {
+    return this.orderExchange.createExchange(actingSellerId(req.user), storeId, orderId, editActor(req), dto);
   }
 
   // ── Shopify order editing: Edit order, timeline comments, notes, shipping address ──

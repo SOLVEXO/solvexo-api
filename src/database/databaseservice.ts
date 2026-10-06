@@ -53,6 +53,9 @@ export class DatabaseService {
     @InjectModel(schema.ShippingZone.name)
     private shippingZoneModel: Model<schema.ShippingZoneDocument>,  
 
+    @InjectModel(schema.ShippingProfile.name)
+    private shippingProfileModel: Model<schema.ShippingProfileDocument>,
+
     @InjectModel(schema.Checkout.name)
     private checkoutModel: Model<schema.CheckoutDocument>,
     
@@ -488,6 +491,7 @@ export class DatabaseService {
       addressModel: this.addressModel,
       userPaymentMethodModel: this.userPaymentMethodModel,
       shippingZoneModel: this.shippingZoneModel,
+      shippingProfileModel: this.shippingProfileModel,
       checkoutModel: this.checkoutModel,
       orderModel: this.orderModel,
       paymentTransactionModel: this.paymentTransactionModel,

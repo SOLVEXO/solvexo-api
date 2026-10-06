@@ -28,6 +28,8 @@ import {
   PREVIEW_RATE_LIMIT_WINDOW_SECONDS,
 } from './constants/preview.constants';
 import { optionNameSet, optionsKey, validateOptions } from './variant-options.util';
+import { toDimensionCm } from '@/shipping-rates/shipping-math.util';
+import { parseCustomsInput } from '@/shipping-rates/customs.util';
 
 const EDUCATION_LEVEL_VALUES: string[] = Object.values(EducationLevel);
 
@@ -1015,6 +1017,21 @@ export class ProductsService {
     return categoryId;
   }
 
+  /**
+   * Shipping profile a product is assigned to. Empty / the General profile / unknown-or-foreign id => null
+   * (= General). A real custom profile of THIS store => its id.
+   */
+  private async resolveShippingProfileId(storeId: string, raw: unknown): Promise<string | null> {
+    if (raw === undefined || raw === null || raw === '') return null;
+    if (typeof raw !== 'string' || !isValidObjectId(raw)) throw new BadRequestException('Invalid shipping profile');
+    const profile: any = await this.databaseService.repositories.shippingProfileModel
+      .findOne({ _id: raw, storeId, isDelete: false })
+      .select('isGeneral')
+      .lean();
+    if (!profile) throw new BadRequestException('Shipping profile not found');
+    return profile.isGeneral ? null : String(profile._id);
+  }
+
   async addPhysicalProduct(sellerId: string, body: any) {
     const { storeModel, sellerModel, productModel, productVariantModel } =
       this.databaseService.repositories;
@@ -1038,6 +1055,7 @@ export class ProductsService {
       status,
       scheduledAt,
       variants,
+      shippingProfileId: requestedShippingProfileId,
     } = body;
 
     if (!storeId) throw new BadRequestException('storeId is required');
@@ -1088,6 +1106,8 @@ export class ProductsService {
       } catch (e: any) {
         throw new BadRequestException(e.message);
       }
+      const customsCheck = parseCustomsInput(v);
+      if (customsCheck.error) throw new BadRequestException(customsCheck.error);
     }
     const nameSets = new Set(variants.map((v: any) => optionNameSet(v.options ?? [])));
     if (nameSets.size > 1) {
@@ -1113,6 +1133,7 @@ export class ProductsService {
     const categoryId = await this.resolveProductCategoryId(storeId, store.categoryId, requestedCategoryId);
 
     const slug = await generateUniqueSlug(productModel, name, { scope: { storeId } });
+    const shippingProfileId = await this.resolveShippingProfileId(storeId, requestedShippingProfileId);
 
     const product = await productModel.create({
       sellerId,
@@ -1120,6 +1141,7 @@ export class ProductsService {
       name,
       slug,
       description: description ?? null,
+      shippingProfileId,
       productType: 'physical',
       type: 'physical',
       categoryId,
@@ -1133,6 +1155,7 @@ export class ProductsService {
     });
 
     const defaultIndex = variants.findIndex((v: any) => v.isDefault === true);
+    const customsFor = (v: any) => ({ countryOfOrigin: null, hsCode: null, customsDescription: null, ...parseCustomsInput(v).value });
     const createdVariants = await Promise.all(
       variants.map((v: any, index: number) => {
         const sku =
@@ -1153,6 +1176,10 @@ export class ProductsService {
           unlimitedStock: !!v.unlimitedStock,
           allowBackorder: !!v.allowBackorder,
           shippingWeight: v.shippingWeight ?? null,
+          length: toDimensionCm(v.length),
+          width: toDimensionCm(v.width),
+          height: toDimensionCm(v.height),
+          ...customsFor(v),
           images: v.images ?? [],
           isDefault: defaultIndex === -1 ? index === 0 : index === defaultIndex,
         });
@@ -1423,6 +1450,7 @@ export class ProductsService {
       price,
       compareAtPrice,
       templateKey,
+      shippingProfileId: requestedShippingProfileId,
     } = body;
 
     if (!productId) throw new BadRequestException('productId is required');
@@ -1467,6 +1495,9 @@ export class ProductsService {
     if (isListedOnSolvexo !== undefined)
       productUpdate.isListedOnSolvexo = isListedOnSolvexo;
     if (templateKey !== undefined) productUpdate.templateKey = templateKey;
+    if (requestedShippingProfileId !== undefined && product.type === 'physical') {
+      productUpdate.shippingProfileId = await this.resolveShippingProfileId(String(product.storeId), requestedShippingProfileId);
+    }
     if (status !== undefined) {
       if (status === 'scheduled' && !scheduledAt) {
         throw new BadRequestException(

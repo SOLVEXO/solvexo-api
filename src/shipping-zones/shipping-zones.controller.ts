@@ -26,8 +26,8 @@ export class StoreShippingZonesController {
   constructor(private readonly shippingZonesService: ShippingZonesService) {}
 
   @Get()
-  list(@Req() req: any, @Param('storeId') storeId: string, @Query('zoneType') zoneType?: 'shipping' | 'local_delivery') {
-    return this.shippingZonesService.listForSeller(storeId, actingSellerId(req.user), zoneType);
+  list(@Req() req: any, @Param('storeId') storeId: string, @Query('zoneType') zoneType?: 'shipping' | 'local_delivery' | 'pickup', @Query('profileId') profileId?: string) {
+    return this.shippingZonesService.listForSeller(storeId, actingSellerId(req.user), zoneType, profileId);
   }
 
   @Post()

@@ -160,6 +160,11 @@ export class CheckoutItem {
   // checkout's own aggregate `taxAmount` to read from.
   @Prop({ type: Number, default: 0 })
   taxUSD: number;
+
+  // Part of `taxUSD` that is tax on the SHIPPING fee (Store.taxShipping), in this item's native currency.
+  // Tracked separately so re-picking a shipping option can replace it without touching the item tax.
+  @Prop({ type: Number, default: 0 })
+  shippingTaxUSD: number;
 }
 
 export const CheckoutItemSchema = SchemaFactory.createForClass(CheckoutItem);
@@ -197,6 +202,14 @@ export class Checkout {
   @Prop({ type: String, default: null })
   shippingZoneId: string | null;
 
+  // One selected rate per shipping-profile group (Shopify). `shippingZoneId` above mirrors the first entry for
+  // legacy readers. Empty on checkouts that never picked a flat zone.
+  @Prop({
+    type: [{ _id: false, profileId: { type: String, default: null }, shippingZoneId: { type: String, required: true }, fee: { type: Number, default: 0 } }],
+    default: [],
+  })
+  shippingSelections: { profileId: string | null; shippingZoneId: string; fee: number }[];
+
   // Set INSTEAD of shippingZoneId when the buyer picked a real live carrier
   // rate (Shippo) rather than the store's flat per-zone price — see
   // CheckoutService.addShippingInCheckout's live-rate branch. Never both at
@@ -226,6 +239,17 @@ export class Checkout {
 
   @Prop({ default: 0 })
   taxAmount: number;
+
+  // Part of `taxAmount` that is tax on the shipping fee (checkout currency); 0 unless Store.taxShipping.
+  @Prop({ default: 0 })
+  shippingTaxAmount: number;
+
+  // 'pickup' when the chosen shipping zone is local pickup — no delivery address is needed then.
+  @Prop({ type: String, enum: ['ship', 'pickup'], default: 'ship' })
+  fulfillmentMethod: 'ship' | 'pickup';
+
+  @Prop({ type: { _id: false, name: { type: String, default: null }, address: { type: String, default: null }, instructions: { type: String, default: null } }, default: null })
+  pickupLocation: { name: string | null; address: string | null; instructions: string | null } | null;
 
   // Total subscriber-benefit savings applied server-side (line-item discounts
   // + shipping waiver). Shown to the buyer as "you saved $X with your membership".

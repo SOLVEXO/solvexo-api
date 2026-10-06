@@ -1,3 +1,5 @@
+import { Optional } from '@nestjs/common';
+import { ShippingProfilesService } from '@/shipping-zones/shipping-profiles.service';
 import {
   Injectable,
   BadRequestException,
@@ -5,10 +7,10 @@ import {
   ForbiddenException,
   ConflictException,
 } from '@nestjs/common';
-import { isValidObjectId } from 'mongoose';
+import { isValidObjectId, Types } from 'mongoose';
 import { reserveRefundCapacity, releaseRefundCapacity } from '@/common/refund-cap.util';
 import { buyerEmail } from '@/common/buyer-email.util';
-import { toBuyerSafeOrder } from '@/common/buyer-safe-order.util';
+import { toBuyerReturnLabel, toBuyerSafeOrder, toBuyerTracking } from '@/common/buyer-safe-order.util';
 import { signOrderStatusToken, verifyOrderStatusToken } from '@/common/order-status-token.util';
 import { DatabaseService } from '@/database/databaseservice';
 import { UploadService } from '@/upload/upload.service';
@@ -21,6 +23,7 @@ import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { LoyaltyService } from '@/loyalty/loyalty.service';
 import { NotificationsService } from '@/notifications/notifications.service';
 import { ShippingRatesService } from '@/shipping-rates/shipping-rates.service';
+import type { CustomsLine } from '@/shipping-rates/customs.util';
 import { fulfilStockForSellerOrders } from '@/common/fulfil-stock.util';
 import { StoreCreditService } from '@/store-credit/store-credit.service';
 import { GiftCardsService } from '@/gift-cards/gift-cards.service';
@@ -29,6 +32,11 @@ import { round } from '@/common/number.util';
 import { buildDiffMetadata } from '@/common/activity-diff.util';
 import { deriveRollupStatus , isAllowedSellerOrderTransition } from './order-status.util';
 import { toCsv } from '@/analytics/utils/csv.util';
+import { FulfilOrderDto } from './dto/fulfil-order.dto';
+import {
+  cleanTrackingInput, isFullyShipped, isShippableItem, shippedQtyByItem, unshippedLines, validateFulfilRequest, validateReturnLabelItems, FulfilLine,
+} from './shipments.util';
+import { buildDeliveredEmail, buildReadyForPickupEmail, buildReturnLabelEmail, buildShippedEmail } from './shipping-email.util';
 
 /** A sellerOrder's true payout basis for FinanceService.recordSale, in the
  *  SELLER'S OWN currency (so.settlementCurrency) — independent of what
@@ -64,6 +72,8 @@ export class OrdersService {
     private readonly shippingRatesService: ShippingRatesService,
     private readonly giftCardsService: GiftCardsService,
     private readonly storeCreditService: StoreCreditService,
+    // Optional: only used to ship labels from the product's shipping-profile origin location.
+    @Optional() private readonly shippingProfilesService?: ShippingProfilesService,
   ) {}
 
   /** Awards loyalty points for a completed order (the store's own loyalty program rate). */
@@ -170,6 +180,9 @@ export class OrdersService {
       totalAmount: order.totalAmount,
       currency: order.currency,
       shippingAddress: order.shippingAddress,
+      fulfillmentMethod: order.fulfillmentMethod ?? 'ship',
+      pickupLocation: order.pickupLocation ?? null,
+      exchangeOf: order.exchangeOf ?? null,
       stores: (order.sellerOrders ?? [])
         .filter((so: any) => so.storeId === storeId)
         .map((so: any) => {
@@ -198,9 +211,20 @@ export class OrdersService {
             originalPrice: item.originalPrice ?? null,
             subscriberDiscountUSD: item.subscriberDiscountUSD ?? 0,
             status: item.status,
+            returnStatus: item.returnStatus ?? 'none', exchangeOrderId: item.exchangeOrderId ?? null, exchangeOrderNumber: item.exchangeOrderNumber ?? null,
+            // Prepaid return label (link + tracking only, never its cost) — this buyer's own order only.
+            returnLabel: toBuyerReturnLabel(item.returnLabel),
             isReviewed: reviewedProductIds.has(item.productId),
           })),
-          tracking: so.tracking,
+          tracking: toBuyerTracking(so.tracking),
+          shipments: (so.shipments ?? []).map((sh: any) => ({
+            _id: sh._id,
+            items: sh.items ?? [],
+            tracking: toBuyerTracking(sh.tracking),
+            shippedAt: sh.shippedAt ?? null,
+            deliveredAt: sh.deliveredAt ?? null,
+          })),
+          pickupReadyAt: so.pickupReadyAt ?? null,
           shippedAt: so.shippedAt,
           deliveredAt: so.deliveredAt,
         };
@@ -511,6 +535,10 @@ export class OrdersService {
         isPaid: order.isPaid,
         paidAt: order.paidAt,
         shippingAddress: order.shippingAddress ?? null,
+        fulfillmentMethod: (order as any).fulfillmentMethod ?? 'ship',
+        pickupLocation: (order as any).pickupLocation ?? null,
+        // Set when this order is the replacement order of an exchange (link back to the original).
+        exchangeOf: (order as any).exchangeOf ?? null,
         buyer: {
           name: (buyer as any)?.name ?? 'Unknown',
           email: (buyer as any)?.email ?? '',
@@ -812,22 +840,28 @@ export class OrdersService {
     };
   }
 
-  /**
-   * Real, one-click "mark as shipped" — for a store that's connected Shippo
-   * (see ShippingRatesService/the Integrations page), fetches a fresh live
-   * rate quote for this exact order's destination + real item weight, buys
-   * the CHEAPEST option's label immediately, and marks the sellerOrder
-   * shipped with the real carrier/tracking number/label Shippo just issued —
-   * no manual tracking-number typing. Falls back with a clear error (not a
-   * silent no-op) whenever a live label genuinely can't be purchased: store
-   * hasn't connected Shippo, this order predates the `country` field on its
-   * address snapshot (see OrderShippingAddress), or Shippo itself is
-   * unreachable — the seller still has the existing manual
-   * `updateSellerOrderStatus({status:'shipped', tracking})` path for those
-   * cases, this is strictly an additional convenience.
-   */
-  async purchaseShippingLabel(sellerId: string, orderId: string, storeId: string, ip?: string, userAgent?: string) {
-    const { orderModel, storeModel, productVariantModel } = this.databaseService.repositories;
+  /** Total kg of the given lines, from each variant's saved shippingWeight (unparseable/missing = the 0.5 kg default). */
+  private async weightKgForLines(lines: { variantId?: string | null; quantity: number }[]): Promise<number> {
+    const { productVariantModel } = this.databaseService.repositories;
+    const variantIds = [...new Set(lines.map((l) => l.variantId).filter(Boolean) as string[])];
+    const variants = variantIds.length ? await productVariantModel.find({ _id: { $in: variantIds } }).select('shippingWeight').lean() : [];
+    const weightByVariant = new Map(variants.map((v: any) => [String(v._id), v.shippingWeight]));
+    return this.shippingRatesService.computeTotalWeightKg(
+      lines.map((l) => ({
+        shippingWeight: l.variantId ? weightByVariant.get(l.variantId) ?? null : null,
+        quantity: l.quantity ?? 1,
+      })),
+    );
+  }
+
+  /** Shared by label-rate listing + purchase: ownership checks, destination, and real goods weight. */
+  private async prepareLabelContext(
+    sellerId: string,
+    orderId: string,
+    storeId: string,
+    partialItems?: { itemId: string; quantity: number }[],
+  ) {
+    const { orderModel, storeModel } = this.databaseService.repositories;
 
     const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
     if (!store) throw new ForbiddenException('Store not found or unauthorized');
@@ -849,19 +883,35 @@ export class OrdersService {
     }
 
     const sellerOrder = order.sellerOrders[sellerOrderIndex] as any;
-    const variantIds = [...new Set(sellerOrder.items.map((i: any) => i.variantId).filter(Boolean) as string[])];
-    const variants = await productVariantModel.find({ _id: { $in: variantIds } }).select('shippingWeight').lean();
-    const weightByVariant = new Map(variants.map((v: any) => [String(v._id), v.shippingWeight]));
-    const totalWeightKg = this.shippingRatesService.computeTotalWeightKg(
-      sellerOrder.items.map((item: any) => ({
-        shippingWeight: item.variantId ? weightByVariant.get(item.variantId) ?? null : null,
-        quantity: item.quantity ?? 1,
-      })),
+
+    // Partial shipment: weigh (and later fulfil) ONLY the selected lines/quantities.
+    let partial: { lines: FulfilLine[]; allShipped: boolean } | null = null;
+    if (partialItems && partialItems.length > 0) {
+      if ((order as any).fulfillmentMethod === 'pickup') {
+        throw new BadRequestException('This is a pickup order — mark it ready for pickup instead of shipping it.');
+      }
+      if (!OrdersService.FULFILLABLE_STATUSES.includes(sellerOrder.status)) {
+        throw new BadRequestException(`Cannot buy a label for an order that is "${sellerOrder.status}".`);
+      }
+      const check = validateFulfilRequest(sellerOrder.items, sellerOrder.shipments ?? [], partialItems);
+      if (!check.ok) throw new BadRequestException(check.error);
+      partial = { lines: check.lines, allShipped: check.allShipped };
+    }
+
+    const totalWeightKg = await this.weightKgForLines(
+      partial
+        ? partial.lines.map((l) => ({ variantId: sellerOrder.items[l.itemIndex]?.variantId, quantity: l.quantity }))
+        : sellerOrder.items.map((item: any) => ({ variantId: item.variantId, quantity: item.quantity ?? 1 })),
     );
 
-    const rates = await this.shippingRatesService.getLiveRates(
-      storeId,
-      {
+    return {
+      sellerOrder,
+      sellerOrderIndex,
+      totalWeightKg,
+      partial,
+      orderCurrency: ((order as any).currency as string | undefined) || 'USD',
+      signerName: ((store as any).name as string | undefined) || 'Seller',
+      destination: {
         name: addr.recipientName,
         street1: addr.addressLine1,
         street2: addr.addressLine2 ?? undefined,
@@ -871,29 +921,181 @@ export class OrdersService {
         country: addr.country,
         phone: addr.phoneNumber ?? undefined,
       },
-      totalWeightKg,
-    );
-    if (!rates || rates.length === 0) {
-      throw new BadRequestException('No live carrier rate is available for this order — connect Shippo in Integrations, or use the manual tracking-number entry instead.');
-    }
-    const cheapest = rates.reduce((best, r) => (r.amount < best.amount ? r : best), rates[0]);
+    };
+  }
 
-    const label = await this.shippingRatesService.purchaseLabel(storeId, cheapest.rateId);
+  /** Ship-from address for a label: the shipping profile (of the order's first product that has one) -> its
+   *  origin location; null = fall back to the Shippo integration's own origin (unchanged behaviour). */
+  private async labelOriginOverride(storeId: string, sellerOrder: any) {
+    if (!this.shippingProfilesService) return undefined;
+    try {
+      const productIds = [...new Set((sellerOrder.items ?? []).map((i: any) => i.productId).filter(Boolean))] as string[];
+      let profileId: string | null = null;
+      if (productIds.length > 0) {
+        const products: any[] = await this.databaseService.repositories.productModel
+          .find({ _id: { $in: productIds }, storeId }).select('shippingProfileId').lean();
+        profileId = products.find((p) => p.shippingProfileId)?.shippingProfileId ?? null;
+      }
+      const origin = await this.shippingProfilesService.resolveOrigin(storeId, profileId);
+      if (!origin) return undefined;
+      const { latitude: _lat, longitude: _lng, locationId: _loc, ...address } = origin as any;
+      return address;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** International label only: customs declaration id built from the shipped lines' customs info (country of
+   *  origin + HS code per variant). undefined for domestic orders / no Shippo; 400 when a product lacks customs data. */
+  private async customsDeclarationForLabel(storeId: string, ctx: any, originOverride: any): Promise<string | undefined> {
+    const items: any[] = ctx.partial
+      ? ctx.partial.lines.map((l: any) => ({ item: ctx.sellerOrder.items[l.itemIndex], quantity: l.quantity }))
+      : (ctx.sellerOrder.items ?? []).map((item: any) => ({ item, quantity: item.quantity ?? 1 }));
+    const physical = items.filter((x) => x.item && x.item.type !== 'digital');
+    const variantIds = [...new Set(physical.map((x) => x.item.variantId).filter(Boolean))] as string[];
+    const variants: any[] = variantIds.length
+      ? await this.databaseService.repositories.productVariantModel
+        .find({ _id: { $in: variantIds } }).select('shippingWeight countryOfOrigin hsCode customsDescription').lean()
+      : [];
+    const byId = new Map(variants.map((v: any) => [String(v._id), v]));
+    const lines: CustomsLine[] = physical.map((x) => {
+      const v: any = x.item.variantId ? byId.get(String(x.item.variantId)) : null;
+      const perUnitKg = this.shippingRatesService.computeTotalWeightKg([{ shippingWeight: v?.shippingWeight ?? null, quantity: 1 }]);
+      return {
+        name: x.item.name,
+        quantity: x.quantity,
+        value: (Number(x.item.price) || 0) * x.quantity,
+        netWeightKg: perUnitKg * x.quantity,
+        countryOfOrigin: v?.countryOfOrigin ?? null,
+        hsCode: v?.hsCode ?? null,
+        customsDescription: v?.customsDescription ?? null,
+      };
+    });
+    const id = await this.shippingRatesService.prepareCustomsDeclaration(storeId, {
+      originOverride, destinationCountry: ctx.destination.country, lines, currency: ctx.orderCurrency, signerName: ctx.signerName,
+    });
+    return id ?? undefined;
+  }
+
+  /**
+   * Shopify "Buy shipping label" step 1 — real carrier rates for THIS order
+   * (destination + real item weight + chosen/default package). Raw carrier
+   * prices: the buyer-facing handling fee is not added to a label the seller buys.
+   */
+  async listShippingLabelRates(sellerId: string, orderId: string, storeId: string, packageId?: string, items?: { itemId: string; quantity: number }[]) {
+    const ctx = await this.prepareLabelContext(sellerId, orderId, storeId, items);
+    const originOverride = await this.labelOriginOverride(storeId, ctx.sellerOrder);
+    const rates = await this.shippingRatesService.getLiveRates(storeId, ctx.destination, ctx.totalWeightKg, {
+      packageId: packageId || undefined,
+      forLabel: true,
+      originOverride,
+      customsDeclarationId: await this.customsDeclarationForLabel(storeId, ctx, originOverride),
+    });
+    const sorted = [...(rates ?? [])].sort((a, b) => a.amount - b.amount);
+    return { success: true, data: { rates: sorted } };
+  }
+
+  /**
+   * Shopify "Buy shipping label" step 2 — buys the label for the chosen
+   * `rateId` (from listShippingLabelRates) — or, with no rateId, the CHEAPEST
+   * live option — and marks the sellerOrder shipped with the real carrier /
+   * tracking number Shippo issued. The label PDF URL, rate id, cost and time
+   * are saved on `sellerOrder.tracking` (merchant-only; stripped for buyers).
+   * Falls back with a clear error (not a silent no-op) whenever a live label
+   * genuinely can't be purchased: store hasn't connected Shippo, this order
+   * predates the `country` field on its address snapshot, or Shippo itself is
+   * unreachable — the seller still has the manual
+   * `updateSellerOrderStatus({status:'shipped', tracking})` path.
+   */
+  async purchaseShippingLabel(
+    sellerId: string,
+    orderId: string,
+    storeId: string,
+    ip?: string,
+    userAgent?: string,
+    opts: { rateId?: string; packageId?: string; items?: { itemId: string; quantity: number }[]; notifyCustomer?: boolean } = {},
+  ) {
+    const ctx = await this.prepareLabelContext(sellerId, orderId, storeId, opts.items);
+
+    // Refuse BEFORE spending money on a label for an order that can't be shipped.
+    if (!ctx.partial && !isAllowedSellerOrderTransition(ctx.sellerOrder.status, 'shipped')) {
+      throw new BadRequestException(`Cannot buy a label for an order that is "${ctx.sellerOrder.status}".`);
+    }
+
+    let chosen: { rateId: string; carrier: string; amount: number; currency: string };
+    if (opts.rateId) {
+      const verified = await this.shippingRatesService.verifyRate(storeId, opts.rateId, { forLabel: true });
+      if (!verified) {
+        throw new BadRequestException('That shipping rate is no longer available — reload the rates and pick again.');
+      }
+      chosen = verified;
+    } else {
+      const originOverride = await this.labelOriginOverride(storeId, ctx.sellerOrder);
+      const rates = await this.shippingRatesService.getLiveRates(storeId, ctx.destination, ctx.totalWeightKg, {
+        packageId: opts.packageId || undefined,
+        forLabel: true,
+        originOverride,
+        customsDeclarationId: await this.customsDeclarationForLabel(storeId, ctx, originOverride),
+      });
+      if (!rates || rates.length === 0) {
+        throw new BadRequestException('No live carrier rate is available for this order — connect Shippo in Integrations, or use the manual tracking-number entry instead.');
+      }
+      chosen = rates.reduce((best, r) => (r.amount < best.amount ? r : best), rates[0]);
+    }
+
+    const label = await this.shippingRatesService.purchaseLabel(storeId, chosen.rateId);
     if (!label) {
       throw new BadRequestException('The label purchase failed — try again, or use the manual tracking-number entry instead.');
     }
 
-    return this.updateSellerOrderStatus(
-      sellerId,
-      {
-        orderId,
-        storeId,
-        status: 'shipped',
-        tracking: { carrier: cheapest.carrier, trackingNumber: label.trackingNumber, trackingUrl: label.trackingUrlProvider },
-      },
-      ip,
-      userAgent,
-    );
+    const tracking = {
+      carrier: chosen.carrier,
+      trackingNumber: label.trackingNumber,
+      trackingUrl: label.trackingUrlProvider,
+      labelUrl: label.labelUrl ?? null,
+      labelRateId: chosen.rateId,
+      labelCost: chosen.amount,
+      labelCurrency: chosen.currency,
+      labelPurchasedAt: new Date(),
+    };
+
+    // Partial shipment: the label becomes ONE shipment through the normal fulfil path (stock, status, buyer email, timeline);
+    // the label fields live on that shipment's tracking (seller-only — buyer views only get carrier/number/url).
+    if (ctx.partial) {
+      try {
+        return await this.fulfilItems(
+          sellerId, storeId, orderId,
+          { items: opts.items!, notifyCustomer: opts.notifyCustomer } as FulfilOrderDto,
+          ip, userAgent, tracking,
+        );
+      } catch (err) {
+        // The label is already paid for — keep its link on the merchant timeline so it is never lost.
+        await this.pushTimeline(
+          orderId, 'status',
+          `Shipping label bought (${chosen.carrier} ${label.trackingNumber}) but the shipment could not be created: ${label.labelUrl ?? 'no label url'}`,
+          sellerId, 'seller',
+        );
+        throw err;
+      }
+    }
+
+    try {
+      return await this.updateSellerOrderStatus(
+        sellerId,
+        { orderId, storeId, status: 'shipped' },
+        ip,
+        userAgent,
+        tracking,
+      );
+    } catch (err) {
+      // The label is already paid for — never lose it because the status
+      // change lost a race / failed. Keep it on the order so the seller can print it.
+      await this.databaseService.repositories.orderModel.updateOne(
+        { _id: orderId, [`sellerOrders.${ctx.sellerOrderIndex}.storeId`]: storeId },
+        { $set: { [`sellerOrders.${ctx.sellerOrderIndex}.tracking`]: tracking } },
+      );
+      throw err;
+    }
   }
 
   /** Real FIFO/FEFO consumption for a lot-tracked variant (see StockLot
@@ -948,8 +1150,17 @@ export class OrdersService {
     body: any,
     ip?: string,
     userAgent?: string,
+    trustedTracking?: any,
   ) {
-    const { orderId, storeId, status, tracking } = body;
+    const { orderId, storeId, status } = body;
+    // Client-supplied tracking is limited to carrier/number/url — label fields are
+    // only ever written by purchaseShippingLabel (trustedTracking).
+    const rawTracking = body.tracking;
+    const tracking =
+      trustedTracking ??
+      (rawTracking && typeof rawTracking === 'object'
+        ? { carrier: rawTracking.carrier ?? null, trackingNumber: rawTracking.trackingNumber ?? null, trackingUrl: rawTracking.trackingUrl ?? null }
+        : rawTracking);
 
     if (!orderId) throw new BadRequestException('orderId is required');
     if (!storeId) throw new BadRequestException('storeId is required');
@@ -962,7 +1173,7 @@ export class OrdersService {
       );
     }
 
-    const { orderModel, storeModel, productVariantModel } = this.databaseService.repositories;
+    const { orderModel, storeModel } = this.databaseService.repositories;
 
     // store ownership check
     const store = await storeModel.findOne({
@@ -1011,31 +1222,57 @@ export class OrdersService {
       );
     }
 
-    if (status === 'shipped' && !tracking) {
+    // Local pickup: "shipped" means READY FOR PICKUP — no carrier, no tracking.
+    const isPickup = order.fulfillmentMethod === 'pickup';
+    if (status === 'shipped' && !tracking && !isPickup) {
       throw new BadRequestException(
         'tracking info required when status is shipped',
       );
     }
 
     const updateData: any = {};
+    const soBase = `sellerOrders.${sellerOrderIndex}`;
+    const priorShipments: any[] = order.sellerOrders[sellerOrderIndex].shipments ?? [];
+    const statusNow = new Date();
 
     // sellerOrder status
-    updateData[`sellerOrders.${sellerOrderIndex}.status`] = status;
+    updateData[`${soBase}.status`] = status;
 
-    // saare items same status
+    // saare items same status — except cancelled/refunded lines, which are final
     const soItems = order.sellerOrders[sellerOrderIndex].items;
-    soItems.forEach((_: any, itemIndex: number) => {
-      updateData[`sellerOrders.${sellerOrderIndex}.items.${itemIndex}.status`] =
-        status;
+    soItems.forEach((item: any, itemIndex: number) => {
+      if (item.status === 'cancelled' || item.status === 'refunded') return;
+      updateData[`${soBase}.items.${itemIndex}.status`] = status;
     });
 
     // status-specific fields
+    let shipmentToPush: any = null;
     if (status === 'shipped') {
-      updateData[`sellerOrders.${sellerOrderIndex}.shippedAt`] = new Date();
-      updateData[`sellerOrders.${sellerOrderIndex}.tracking`] = tracking;
+      updateData[`${soBase}.shippedAt`] = statusNow;
+      if (isPickup) {
+        updateData[`${soBase}.pickupReadyAt`] = statusNow;
+      } else {
+        updateData[`${soBase}.tracking`] = tracking;
+        // Whole-order "Mark shipped" = ONE shipment covering every still-unshipped unit, so the
+        // shipments list stays consistent with the legacy single `tracking`.
+        const remaining = unshippedLines(soItems, priorShipments);
+        if (remaining.length > 0 && tracking && typeof tracking === 'object') {
+          shipmentToPush = {
+            _id: new Types.ObjectId(),
+            items: remaining.map((l) => ({ itemId: l.itemId, quantity: l.quantity })),
+            tracking,
+            shippedAt: statusNow,
+            deliveredAt: null,
+            createdAt: statusNow,
+          };
+        }
+      }
     }
-    if (status === 'delivered') {
-      updateData[`sellerOrders.${sellerOrderIndex}.deliveredAt`] = new Date();
+    if (status === 'delivered' || status === 'completed') {
+      if (status === 'delivered') updateData[`${soBase}.deliveredAt`] = statusNow;
+      priorShipments.forEach((sh: any, shIdx: number) => {
+        if (!sh.deliveredAt) updateData[`${soBase}.shipments.${shIdx}.deliveredAt`] = statusNow;
+      });
     }
 
     // overall orderStatus derive — single source of truth, see
@@ -1066,47 +1303,30 @@ export class OrdersService {
     // the update only applies if the sub-order is STILL in the status we read.
     // Two concurrent requests (double-click, two tabs) can no longer both pass
     // the guards above and both decrement stock / credit the seller.
+    // The shipments-count guard also loses the race against a concurrent partial "Fulfil items".
+    const shipmentsPath = `${soBase}.shipments`;
+    const shipmentsGuard =
+      priorShipments.length === 0
+        ? { $or: [{ [shipmentsPath]: { $exists: false } }, { [shipmentsPath]: { $size: 0 } }] }
+        : { [shipmentsPath]: { $size: priorShipments.length } };
+    const claimUpdate: any = { $set: updateData };
+    if (shipmentToPush) claimUpdate.$push = { [shipmentsPath]: shipmentToPush };
     const claimed = await orderModel.findOneAndUpdate(
-      { _id: orderId, isDelete: false, [`sellerOrders.${sellerOrderIndex}.status`]: currentSellerStatus },
-      { $set: updateData },
+      { _id: orderId, isDelete: false, [`${soBase}.status`]: currentSellerStatus, ...shipmentsGuard },
+      claimUpdate,
     );
     if (!claimed) {
       throw new ConflictException('This order was just updated by someone else — refresh and try again.');
     }
-    const cogsUpdate: Record<string, any> = {};
+    let cogsUpdate: Record<string, any> = {};
 
     const FULFILLED_STATES = ['shipped', 'delivered', 'completed'];
     const wasAlreadyFulfilled = FULFILLED_STATES.includes(
       order.sellerOrders[sellerOrderIndex].status,
     );
     if (!wasAlreadyFulfilled && FULFILLED_STATES.includes(status) && !order.sellerOrders[sellerOrderIndex].stockAlreadyDeducted) {
-      for (let itemIndex = 0; itemIndex < soItems.length; itemIndex++) {
-        const item = soItems[itemIndex];
-        if (item.type !== 'physical' || !item.variantId) continue;
-        const variant = await productVariantModel
-          .findOne({ _id: item.variantId })
-          .select('unlimitedStock stock committedStock trackLots')
-          .lean();
-        if (!variant || (variant as any).unlimitedStock) continue;
-        const newStock = Math.max(0, (variant as any).stock - item.quantity);
-        const newCommitted = Math.max(0, (variant as any).committedStock - item.quantity);
-        await productVariantModel.updateOne(
-          { _id: item.variantId },
-          { $set: { stock: newStock, committedStock: newCommitted } },
-        );
-
-        // Real FIFO/FEFO cost-of-goods-sold — only for a lot-tracked
-        // variant (see StockLot schema / consumeLotsFifo's own doc
-        // comment). This is the ACTUAL fulfillment moment a physical unit
-        // leaves the building, so it's the correct point to decide which
-        // lot(s) it came from — never at checkout/reservation time.
-        if ((variant as any).trackLots) {
-          const cogs = await this.consumeLotsFifo(item.variantId, item.quantity);
-          if (cogs != null) {
-            cogsUpdate[`sellerOrders.${sellerOrderIndex}.items.${itemIndex}.costOfGoodsSold`] = cogs;
-          }
-        }
-      }
+      // Only the units NOT already shipped through a partial shipment (their stock moved at that time).
+      cogsUpdate = await this.deductShippedStock(order.sellerOrders[sellerOrderIndex], sellerOrderIndex, unshippedLines(soItems, priorShipments));
     }
 
     if (Object.keys(cogsUpdate).length > 0) {
@@ -1157,7 +1377,7 @@ export class OrdersService {
       storeId: so.storeId,
       category: 'orders',
       action: status === 'shipped' ? 'order_fulfilled' : `order_${status}`,
-      description: tracking
+      description: tracking && !isPickup
         ? `Order #${orderId} — shipped via ${tracking.carrier ?? tracking}`
         : `Order #${orderId} — status changed to ${status}`,
       actorId: sellerId,
@@ -1168,24 +1388,42 @@ export class OrdersService {
       userAgent,
     });
 
-    if (status === 'shipped' || status === 'delivered') {
+    if ((status === 'shipped' || status === 'delivered') && body.notifyCustomer !== false) {
+      const orderNo = String(order.orderNumber ?? orderId);
+      const storeName = (store as any).name ?? 'the store';
+      const pickupInfo = order.pickupLocation ?? null;
+      const pickupText = pickupInfo
+        ? [pickupInfo.name, pickupInfo.address, pickupInfo.instructions].filter(Boolean).join(' — ')
+        : '';
+      let notifTitle: string;
+      let notifBody: string;
+      let notifEmail: { subject: string; html: string };
+      if (status === 'shipped' && isPickup) {
+        notifTitle = 'Your order is ready for pickup';
+        notifBody = `Order #${orderNo} is ready for pickup${pickupText ? `: ${pickupText}` : ''}.`;
+        notifEmail = buildReadyForPickupEmail({ storeName, orderNumber: orderNo, pickup: pickupInfo });
+      } else if (status === 'shipped') {
+        notifTitle = 'Your order has shipped';
+        notifBody = `Order #${orderNo} is on its way${tracking?.carrier ? ` via ${tracking.carrier}` : ''}.`;
+        notifEmail = buildShippedEmail({ storeName, orderNumber: orderNo, tracking });
+      } else {
+        notifTitle = isPickup ? 'Your order was picked up' : 'Your order was delivered';
+        notifBody = isPickup ? `Order #${orderNo} has been picked up.` : `Order #${orderNo} has been delivered.`;
+        notifEmail = buildDeliveredEmail({ storeName, orderNumber: orderNo, pickedUp: isPickup });
+      }
       this.notificationsService
         .notify({
           recipientId: order.userId,
           recipientRole: 'user',
+          storeId: so.storeId,
           type:
             status === 'shipped'
               ? NOTIFICATION_TYPES.ORDER_SHIPPED
               : NOTIFICATION_TYPES.ORDER_DELIVERED,
-          title:
-            status === 'shipped'
-              ? 'Your order has shipped'
-              : 'Your order was delivered',
-          body:
-            status === 'shipped'
-              ? `Order #${orderId} is on its way${tracking?.carrier ? ` via ${tracking.carrier}` : ''}.`
-              : `Order #${orderId} has been delivered.`,
-          data: { orderId, status },
+          title: notifTitle,
+          body: notifBody,
+          email: notifEmail,
+          data: { orderId, status, fulfillmentMethod: isPickup ? 'pickup' : 'ship' },
           // Silently no-ops if `so.storeId` hasn't connected WhatsApp — see
           // NotifyParams.whatsapp. Template names below must already be
           // approved in that store's Meta Business Manager; if they aren't,
@@ -1208,8 +1446,410 @@ export class OrdersService {
         .catch(() => {});
     }
 
-    await this.pushTimeline(orderId, 'status', `Order marked as ${status}${status === 'shipped' && tracking?.trackingNumber ? ` (tracking ${tracking.carrier ? tracking.carrier + ' ' : ''}${tracking.trackingNumber})` : ''}`, sellerId, 'seller');
+    const timelineMessage =
+      isPickup && status === 'shipped' ? 'Ready for pickup'
+      : isPickup && status === 'delivered' ? 'Marked as picked up'
+      : `Order marked as ${status}${status === 'shipped' && tracking?.trackingNumber ? ` (tracking ${tracking.carrier ? tracking.carrier + ' ' : ''}${tracking.trackingNumber})` : ''}`;
+    await this.pushTimeline(orderId, 'status', timelineMessage, sellerId, 'seller');
     return { success: true, message: `Order status updated to ${status}` };
+  }
+
+  /** Real stock hand-off for units that physically leave: drops on-hand `stock`, releases the checkout
+   *  reservation (`committedStock`) and (lot-tracked variants) consumes lots FIFO/FEFO for real COGS.
+   *  Shared by the whole-order status change and by each partial shipment. Returns the `$set` map of
+   *  per-line cost-of-goods (accumulated onto any COGS a previous shipment already wrote). */
+  private async deductShippedStock(so: any, soIndex: number, lines: FulfilLine[]): Promise<Record<string, any>> {
+    const { productVariantModel } = this.databaseService.repositories;
+    const cogsUpdate: Record<string, any> = {};
+    for (const line of lines) {
+      const item = so.items[line.itemIndex];
+      if (!item || item.type !== 'physical' || !item.variantId) continue;
+      const variant = await productVariantModel
+        .findOne({ _id: item.variantId })
+        .select('unlimitedStock stock committedStock trackLots')
+        .lean();
+      if (!variant || (variant as any).unlimitedStock) continue;
+      const newStock = Math.max(0, (variant as any).stock - line.quantity);
+      const newCommitted = Math.max(0, (variant as any).committedStock - line.quantity);
+      await productVariantModel.updateOne(
+        { _id: item.variantId },
+        { $set: { stock: newStock, committedStock: newCommitted } },
+      );
+
+      // Real FIFO/FEFO cost-of-goods-sold — only for a lot-tracked variant (see StockLot schema /
+      // consumeLotsFifo). This is the ACTUAL moment the unit leaves the building.
+      if ((variant as any).trackLots) {
+        const cogs = await this.consumeLotsFifo(item.variantId, line.quantity);
+        if (cogs != null) {
+          cogsUpdate[`sellerOrders.${soIndex}.items.${line.itemIndex}.costOfGoodsSold`] =
+            Math.round(((Number(item.costOfGoodsSold) || 0) + cogs) * 100) / 100;
+        }
+      }
+    }
+    return cogsUpdate;
+  }
+
+  private static readonly FULFILLABLE_STATUSES = ['pending', 'processing', 'partially_shipped', 'partially_cancelled', 'partially_refunded'];
+
+  /** Shopify "Fulfil items": creates ONE shipment for a subset/quantity of the still-unshipped lines.
+   *  Every unit is validated against already-shipped quantities and the write is a conditional claim
+   *  (status + shipments count), so concurrent fulfilments can never ship the same unit twice.
+   *  When the last unit ships the sub-order moves to 'shipped' (same stock/COGS hand-off as the
+   *  whole-order status change); until then it stays open and only the fully-shipped lines flip to 'shipped'. */
+  async fulfilItems(sellerId: string, storeId: string, orderId: string, dto: FulfilOrderDto, ip?: string, userAgent?: string, trustedTracking?: any) {
+    const { orderModel, storeModel } = this.databaseService.repositories;
+    if (!isValidObjectId(orderId)) throw new BadRequestException('Invalid order id');
+    const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
+    if (!store) throw new ForbiddenException('Store not found or unauthorized');
+
+    const order: any = await orderModel.findOne({ _id: orderId, isDelete: false });
+    if (!order) throw new NotFoundException('Order not found');
+    const soIndex = order.sellerOrders.findIndex((so: any) => so.storeId === storeId && so.sellerId === sellerId);
+    if (soIndex === -1) throw new ForbiddenException('Unauthorized');
+    if (order.fulfillmentMethod === 'pickup') {
+      throw new BadRequestException('This is a pickup order — mark it ready for pickup instead of shipping it.');
+    }
+
+    const so = order.sellerOrders[soIndex];
+    const current: string = so.status;
+    if (!OrdersService.FULFILLABLE_STATUSES.includes(current)) {
+      throw new BadRequestException(`Cannot fulfil an order that is "${current}".`);
+    }
+    const priorShipments: any[] = so.shipments ?? [];
+    const check = validateFulfilRequest(so.items, priorShipments, dto.items);
+    if (!check.ok) throw new BadRequestException(check.error);
+
+    // Same safety net as the whole-order path: an authorized-only card payment is captured when the seller commits to ship.
+    if (order.paymentStatus === 'authorized') {
+      await this.paymentService.captureOrderPayment(sellerId, orderId);
+    }
+
+    // Label fields are only ever written by purchaseShippingLabel (trustedTracking), never from the request body.
+    const tracking = trustedTracking ?? cleanTrackingInput({ carrier: dto.carrier, trackingNumber: dto.trackingNumber, trackingUrl: dto.trackingUrl });
+    const now = new Date();
+    const base = `sellerOrders.${soIndex}`;
+    const shipment = {
+      _id: new Types.ObjectId(),
+      items: check.lines.map((l) => ({ itemId: l.itemId, quantity: l.quantity })),
+      tracking,
+      shippedAt: now,
+      deliveredAt: null,
+      createdAt: now,
+    };
+
+    const after = shippedQtyByItem(priorShipments);
+    for (const l of check.lines) after.set(l.itemId, (after.get(l.itemId) ?? 0) + l.quantity);
+    const set: Record<string, any> = {};
+    so.items.forEach((item: any, idx: number) => {
+      if (item.status === 'cancelled' || item.status === 'refunded') return;
+      if (check.allShipped) {
+        set[`${base}.items.${idx}.status`] = 'shipped';
+      } else if (isShippableItem(item)) {
+        if ((after.get(String(item._id)) ?? 0) >= item.quantity) set[`${base}.items.${idx}.status`] = 'shipped';
+        else if (item.status === 'pending') set[`${base}.items.${idx}.status`] = 'processing';
+      }
+    });
+
+    let newStatus = current;
+    if (check.allShipped) newStatus = 'shipped';
+    else if (current === 'pending') newStatus = 'processing';
+    if (newStatus !== current) set[`${base}.status`] = newStatus;
+    if (!so.shippedAt) set[`${base}.shippedAt`] = now;
+    if (tracking) set[`${base}.tracking`] = tracking; // legacy mirror = latest shipment
+    set.orderStatus = deriveRollupStatus(order.sellerOrders.map((s: any, i: number) => (i === soIndex ? newStatus : s.status)));
+
+    const shipmentsPath = `${base}.shipments`;
+    const shipmentsGuard =
+      priorShipments.length === 0
+        ? { $or: [{ [shipmentsPath]: { $exists: false } }, { [shipmentsPath]: { $size: 0 } }] }
+        : { [shipmentsPath]: { $size: priorShipments.length } };
+    const claimed = await orderModel.findOneAndUpdate(
+      { _id: orderId, isDelete: false, [`${base}.status`]: current, ...shipmentsGuard },
+      { $set: set, $push: { [shipmentsPath]: shipment } },
+    );
+    if (!claimed) {
+      throw new ConflictException('This order was just updated by someone else — refresh and try again.');
+    }
+
+    if (!so.stockAlreadyDeducted) {
+      const cogsUpdate = await this.deductShippedStock(so, soIndex, check.lines);
+      if (Object.keys(cogsUpdate).length > 0) await orderModel.updateOne({ _id: orderId }, { $set: cogsUpdate });
+    }
+
+    const lineSummary = check.lines.map((l) => `${l.quantity} × ${so.items[l.itemIndex]?.name ?? 'item'}`);
+    this.activityLogService.log({
+      storeId,
+      category: 'orders',
+      action: check.allShipped ? 'order_fulfilled' : 'order_partially_fulfilled',
+      description: `Order #${orderId} — fulfilled ${lineSummary.join(', ')}${tracking?.carrier ? ` via ${tracking.carrier}` : ''}`,
+      actorId: sellerId,
+      actorRole: 'seller',
+      targetId: orderId,
+      targetType: 'order',
+      ip,
+      userAgent,
+    });
+
+    if (dto.notifyCustomer !== false) {
+      const orderNo = String(order.orderNumber ?? orderId);
+      const partial = !check.allShipped;
+      this.notificationsService
+        .notify({
+          recipientId: order.userId,
+          recipientRole: 'user',
+          storeId,
+          type: NOTIFICATION_TYPES.ORDER_SHIPPED,
+          title: partial ? 'Part of your order has shipped' : 'Your order has shipped',
+          body: `Order #${orderNo} is on its way${tracking?.carrier ? ` via ${tracking.carrier}` : ''}.`,
+          data: { orderId, status: newStatus, shipmentId: String(shipment._id) },
+          email: buildShippedEmail({ storeName: (store as any).name ?? 'the store', orderNumber: orderNo, tracking, partial, items: lineSummary }),
+          whatsapp: order.shippingAddress?.phoneNumber
+            ? {
+                storeId,
+                to: order.shippingAddress.phoneNumber,
+                templateName: 'order_shipped',
+                languageCode: 'en_US',
+                bodyParams: [orderId, tracking?.carrier ?? ''],
+              }
+            : undefined,
+        })
+        .catch(() => {});
+    }
+
+    await this.pushTimeline(
+      orderId,
+      'status',
+      `Fulfilled ${lineSummary.join(', ')}${tracking?.trackingNumber ? ` (tracking ${tracking.carrier ? tracking.carrier + ' ' : ''}${tracking.trackingNumber})` : ''}${check.allShipped ? ' — order fully shipped' : ''}`,
+      sellerId,
+      'seller',
+    );
+    return {
+      success: true,
+      message: check.allShipped ? 'Order fully fulfilled' : 'Items fulfilled',
+      data: { shipmentId: String(shipment._id), status: newStatus, fullyShipped: check.allShipped },
+    };
+  }
+
+  /** Edits the carrier / number / link of the LEGACY (pre-shipments) tracking of an already-shipped order.
+   *  Orders that have shipments[] edit nothing here (their tracking belongs to each shipment). Label fields are never touched. */
+  async updateLegacyTracking(
+    sellerId: string, storeId: string, orderId: string,
+    dto: { carrier?: string; trackingNumber?: string; trackingUrl?: string },
+    actor: { actorId: string; actorRole: string },
+  ) {
+    const { orderModel, storeModel } = this.databaseService.repositories;
+    if (!isValidObjectId(orderId)) throw new BadRequestException('Invalid order id');
+    const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
+    if (!store) throw new ForbiddenException('Store not found or unauthorized');
+    const order: any = await orderModel.findOne({ _id: orderId, isDelete: false });
+    if (!order) throw new NotFoundException('Order not found');
+    const soIndex = order.sellerOrders.findIndex((so: any) => so.storeId === storeId && so.sellerId === sellerId);
+    if (soIndex === -1) throw new ForbiddenException('Unauthorized');
+    const so = order.sellerOrders[soIndex];
+    if (Array.isArray(so.shipments) && so.shipments.length > 0) {
+      throw new BadRequestException('This order was fulfilled with shipments — it has no single tracking to edit.');
+    }
+    if (!['shipped', 'delivered', 'completed'].includes(so.status)) {
+      throw new BadRequestException('Tracking can only be edited on an order that has already shipped.');
+    }
+    const clean = cleanTrackingInput(dto as any);
+    if (!clean) throw new BadRequestException('Enter a carrier, tracking number or tracking link.');
+
+    const base = `sellerOrders.${soIndex}.tracking`;
+    const set: Record<string, any> = so.tracking && typeof so.tracking === 'object'
+      ? { [`${base}.carrier`]: clean.carrier, [`${base}.trackingNumber`]: clean.trackingNumber, [`${base}.trackingUrl`]: clean.trackingUrl }
+      : { [base]: clean };
+    await orderModel.updateOne({ _id: orderId, [`sellerOrders.${soIndex}.storeId`]: storeId }, { $set: set });
+
+    this.activityLogService.log({
+      storeId, category: 'orders', action: 'order_tracking_updated',
+      description: `Order #${orderId} — tracking updated`,
+      actorId: actor.actorId, actorRole: actor.actorRole as any, targetId: orderId, targetType: 'order',
+    });
+    await this.pushTimeline(
+      orderId, 'status',
+      `Tracking updated: ${[clean.carrier, clean.trackingNumber].filter(Boolean).join(' ') || 'link changed'}`,
+      actor.actorId, actor.actorRole,
+    );
+    // Tell the buyer the tracking changed (never blocks the edit).
+    this.notificationsService
+      .notify({
+        recipientId: order.userId,
+        recipientRole: 'user',
+        storeId,
+        type: NOTIFICATION_TYPES.ORDER_SHIPPED,
+        title: 'Tracking updated',
+        body: `Order #${order.orderNumber ?? orderId} tracking: ${[clean.carrier, clean.trackingNumber].filter(Boolean).join(' ') || 'see link'}.`,
+        data: { orderId },
+        email: buildShippedEmail({ storeName: (store as any).name ?? 'the store', orderNumber: String(order.orderNumber ?? orderId), tracking: clean as any }),
+      })
+      .catch(() => {});
+    return { success: true, message: 'Tracking updated', data: { tracking: clean } };
+  }
+
+  /** Shared by return-label rates + purchase: ownership, the BUYER's address as the ship-from, and the weight of the returned lines. */
+  private async prepareReturnLabelContext(sellerId: string, orderId: string, storeId: string, itemIds: string[]) {
+    const { orderModel, storeModel } = this.databaseService.repositories;
+    if (!isValidObjectId(orderId)) throw new BadRequestException('Invalid order id');
+    const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
+    if (!store) throw new ForbiddenException('Store not found or unauthorized');
+    const order: any = await orderModel.findOne({ _id: orderId, isDelete: false });
+    if (!order) throw new NotFoundException('Order not found');
+    const soIndex = order.sellerOrders.findIndex((so: any) => so.storeId === storeId && so.sellerId === sellerId);
+    if (soIndex === -1) throw new ForbiddenException('Unauthorized');
+    const so = order.sellerOrders[soIndex];
+
+    const addr = order.shippingAddress as any;
+    if (!addr || !addr.country) {
+      throw new BadRequestException("This order's address has no country on file — arrange the return manually.");
+    }
+    const check = validateReturnLabelItems(so.items ?? [], itemIds);
+    if (!check.ok) throw new BadRequestException(check.error);
+
+    const totalWeightKg = await this.weightKgForLines(
+      check.indexes.map((i) => ({ variantId: so.items[i]?.variantId, quantity: so.items[i]?.quantity ?? 1 })),
+    );
+    return {
+      order, so, soIndex, store, indexes: check.indexes, totalWeightKg,
+      buyerAddress: {
+        name: addr.recipientName,
+        street1: addr.addressLine1,
+        street2: addr.addressLine2 ?? undefined,
+        city: addr.city,
+        state: addr.state,
+        zip: addr.zipCode,
+        country: addr.country,
+        phone: addr.phoneNumber ?? undefined,
+      },
+    };
+  }
+
+  /** Real carrier rates for a RETURN label (buyer's address -> the store's ship-from address) for approved returned lines. */
+  async listReturnLabelRates(sellerId: string, orderId: string, storeId: string, itemIds: string[], packageId?: string) {
+    const ctx = await this.prepareReturnLabelContext(sellerId, orderId, storeId, itemIds);
+    const rates = await this.shippingRatesService.getReturnLabelRates(storeId, ctx.buyerAddress, ctx.totalWeightKg, { packageId: packageId || undefined, originOverride: await this.labelOriginOverride(storeId, ctx.so) });
+    return { success: true, data: { rates: [...(rates ?? [])].sort((a, b) => a.amount - b.amount) } };
+  }
+
+  /** Buys the Shippo return label for approved returned lines (chosen rate, else cheapest), stores it on each of those lines
+   *  (seller-only cost; the buyer sees only the label link + tracking) and notifies the buyer. One label per line. */
+  async purchaseReturnLabel(
+    sellerId: string, storeId: string, orderId: string, itemIds: string[],
+    opts: { rateId?: string; packageId?: string; notifyCustomer?: boolean } = {},
+    actor: { actorId: string; actorRole: string },
+  ) {
+    const { orderModel } = this.databaseService.repositories;
+    const ctx = await this.prepareReturnLabelContext(sellerId, orderId, storeId, itemIds);
+
+    let chosen: { rateId: string; carrier: string; amount: number; currency: string };
+    if (opts.rateId) {
+      const verified = await this.shippingRatesService.verifyRate(storeId, opts.rateId, { forLabel: true });
+      if (!verified) throw new BadRequestException('That shipping rate is no longer available — reload the rates and pick again.');
+      chosen = verified;
+    } else {
+      const rates = await this.shippingRatesService.getReturnLabelRates(storeId, ctx.buyerAddress, ctx.totalWeightKg, { packageId: opts.packageId || undefined, originOverride: await this.labelOriginOverride(storeId, ctx.so) });
+      if (!rates || rates.length === 0) {
+        throw new BadRequestException('No live carrier rate is available for this return — connect Shippo in Integrations.');
+      }
+      chosen = rates.reduce((best, x) => (x.amount < best.amount ? x : best), rates[0]);
+    }
+
+    const bought = await this.shippingRatesService.purchaseLabel(storeId, chosen.rateId);
+    if (!bought) throw new BadRequestException('The return label purchase failed — try again.');
+
+    const returnLabel = {
+      labelUrl: bought.labelUrl ?? null,
+      trackingNumber: bought.trackingNumber ?? null,
+      trackingUrl: bought.trackingUrlProvider ?? null,
+      carrier: chosen.carrier,
+      cost: chosen.amount,
+      currency: chosen.currency,
+      rateId: chosen.rateId,
+      purchasedAt: new Date(),
+    };
+
+    const guard: Record<string, any> = { _id: orderId, isDelete: false };
+    const set: Record<string, any> = {};
+    for (const idx of ctx.indexes) {
+      const p = `sellerOrders.${ctx.soIndex}.items.${idx}.returnLabel`;
+      guard[p] = null; // matches "never issued" (absent or null) — a second click cannot overwrite the first label
+      set[p] = returnLabel;
+    }
+    const names = ctx.indexes.map((i) => ctx.so.items[i]?.name ?? 'item');
+    const claimed = await orderModel.findOneAndUpdate(guard, { $set: set });
+    if (!claimed) {
+      await this.pushTimeline(
+        orderId, 'status',
+        `Return label bought (${chosen.carrier} ${bought.trackingNumber}) but could not be saved: ${bought.labelUrl ?? 'no label url'}`,
+        actor.actorId, actor.actorRole,
+      );
+      throw new ConflictException('A return label was just issued for these items by someone else — refresh.');
+    }
+
+    this.activityLogService.log({
+      storeId, category: 'orders', action: 'return_label_purchased',
+      description: `Order #${orderId} — return label (${chosen.carrier}) for ${names.join(', ')}`,
+      actorId: actor.actorId, actorRole: actor.actorRole as any, targetId: orderId, targetType: 'order',
+    });
+    await this.pushTimeline(
+      orderId, 'status',
+      `Return label issued for ${names.join(', ')} (${chosen.carrier} ${bought.trackingNumber ?? ''})`.trim(),
+      actor.actorId, actor.actorRole,
+    );
+
+    if (opts.notifyCustomer !== false) {
+      const orderNo = String(ctx.order.orderNumber ?? orderId);
+      this.notificationsService
+        .notify({
+          recipientId: ctx.order.userId,
+          recipientRole: 'user',
+          storeId,
+          type: NOTIFICATION_TYPES.ORDER_UPDATED,
+          title: 'Your return label is ready',
+          body: `Download the prepaid return label for order #${orderNo}.`,
+          data: { orderId, returnLabel: true },
+          email: buildReturnLabelEmail({
+            storeName: (ctx.store as any).name ?? 'the store', orderNumber: orderNo,
+            labelUrl: returnLabel.labelUrl, carrier: returnLabel.carrier, trackingNumber: returnLabel.trackingNumber, items: names,
+          }),
+        })
+        .catch(() => {});
+    }
+
+    return { success: true, message: 'Return label purchased', data: { returnLabel } };
+  }
+
+  /** Marks ONE shipment delivered. When every shipment of a fully-shipped sub-order is delivered, the
+   *  sub-order itself becomes 'delivered' through the normal status path (buyer notification, forward-only rules). */
+  async markShipmentDelivered(sellerId: string, storeId: string, orderId: string, shipmentId: string, ip?: string, userAgent?: string) {
+    const { orderModel, storeModel } = this.databaseService.repositories;
+    if (!isValidObjectId(orderId) || !isValidObjectId(shipmentId)) throw new BadRequestException('Invalid id');
+    const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
+    if (!store) throw new ForbiddenException('Store not found or unauthorized');
+    const order: any = await orderModel.findOne({ _id: orderId, isDelete: false });
+    if (!order) throw new NotFoundException('Order not found');
+    const soIndex = order.sellerOrders.findIndex((so: any) => so.storeId === storeId && so.sellerId === sellerId);
+    if (soIndex === -1) throw new ForbiddenException('Unauthorized');
+    const so = order.sellerOrders[soIndex];
+    if (so.status === 'cancelled' || so.status === 'refunded') throw new BadRequestException(`This order is ${so.status}.`);
+    const shipments: any[] = so.shipments ?? [];
+    const shIdx = shipments.findIndex((sh: any) => String(sh._id) === shipmentId);
+    if (shIdx === -1) throw new NotFoundException('Shipment not found');
+
+    if (!shipments[shIdx].deliveredAt) {
+      const path = `sellerOrders.${soIndex}.shipments.${shIdx}`;
+      const claimed = await orderModel.findOneAndUpdate(
+        { _id: orderId, isDelete: false, [`${path}._id`]: shipments[shIdx]._id, [`${path}.deliveredAt`]: null },
+        { $set: { [`${path}.deliveredAt`]: new Date() } },
+      );
+      if (claimed) await this.pushTimeline(orderId, 'status', 'Shipment marked as delivered', sellerId, 'seller');
+    }
+
+    const allDelivered = shipments.every((sh: any, i: number) => i === shIdx || !!sh.deliveredAt);
+    if (allDelivered && so.status === 'shipped' && isFullyShipped(so.items, shipments)) {
+      return this.updateSellerOrderStatus(sellerId, { orderId, storeId, status: 'delivered' }, ip, userAgent);
+    }
+    return { success: true, message: 'Shipment marked as delivered' };
   }
 
   /** Shared "this order is now fully paid" completion — sets isPaid/paidAt/
@@ -2310,6 +2950,10 @@ export class OrdersService {
           refundedAmount: item.refundedAmount || 0,
           returnStatus: item.returnStatus,
           returnRejectReason: item.returnRejectReason || null,
+          exchangeOrderId: item.exchangeOrderId ?? null,
+          exchangeOrderNumber: item.exchangeOrderNumber ?? null,
+          quantity: item.quantity,
+          variantId: item.variantId ?? null,
           returnRequestedAt: item.returnRequestedAt,
         };
       }),

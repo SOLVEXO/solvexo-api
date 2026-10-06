@@ -55,6 +55,7 @@ export class UsersController {
       req.user.userId,
       req.user.role,
       dto,
+      req.headers?.authorization?.split(' ')[1],
     );
   }
 }

@@ -974,7 +974,7 @@ export class StoreService {
   // body would let a seller un-suspend their own store (see
   // usersService.deleteSellerAccount, which suspends stores on delete).
   async updateStore(sellerId: string, storeId: string, body: any) {
-    const { name, logo, coverImage, faviconUrl, description, tagline, contactEmail, contactPhone, sellerType, productTypes, codEnabled, paymentCaptureMethod, dashboardMetrics, reviewModerationEnabled, lowStockThreshold, taxRate, taxRegions, enabledCurrencies, cookieBannerEnabled, cookieBannerMessage, showDoNotSellLink, cookieBannerRegionMode, cookieBannerPosition, cookieBannerColorMode, customerAccounts } = body;
+    const { name, logo, coverImage, faviconUrl, description, tagline, contactEmail, contactPhone, sellerType, productTypes, codEnabled, paymentCaptureMethod, dashboardMetrics, reviewModerationEnabled, lowStockThreshold, taxRate, taxRegions, taxShipping, showDutiesNotice, enabledCurrencies, cookieBannerEnabled, cookieBannerMessage, showDoNotSellLink, cookieBannerRegionMode, cookieBannerPosition, cookieBannerColorMode, customerAccounts } = body;
 
     if (!storeId) throw new BadRequestException('storeId is required');
 
@@ -1056,6 +1056,14 @@ export class StoreService {
         throw new BadRequestException('taxRate must be between 0 and 100');
       }
       updateData.taxRate = parsed;
+    }
+    if (taxShipping !== undefined) {
+      if (typeof taxShipping !== 'boolean') throw new BadRequestException('taxShipping must be a boolean');
+      updateData.taxShipping = taxShipping;
+    }
+    if (showDutiesNotice !== undefined) {
+      if (typeof showDutiesNotice !== 'boolean') throw new BadRequestException('showDutiesNotice must be a boolean');
+      updateData.showDutiesNotice = showDutiesNotice;
     }
     if (taxRegions !== undefined) {
       if (!Array.isArray(taxRegions)) throw new BadRequestException('taxRegions must be an array');
@@ -1296,6 +1304,8 @@ export class StoreService {
         contactPhone: store.contactPhone ?? null,
         lowStockThreshold: store.lowStockThreshold ?? 10,
         taxRate: store.taxRate ?? 0,
+        taxShipping: store.taxShipping ?? false,
+        showDutiesNotice: store.showDutiesNotice ?? true,
         categoryId: store.categoryId ?? null,
         followersCount: store.followersCount ?? 0,
         averageRating: store.averageRating ?? 0,

@@ -10,6 +10,7 @@
 
 import { Module } from '@nestjs/common';
 import { OrderEditingService } from './order-editing.service';
+import { OrderExchangeService } from './order-exchange.service';
 import { OrdersController } from './orders.controller';
 import { OrdersService } from './orders.service';
 import { AuthModule } from '@/auth/auth.module';
@@ -20,6 +21,7 @@ import { PaymentModule } from '@/payment/payment.module';
 import { ExchangeRateModule } from '@/exchange-rate/exchange-rate.module';
 import { IntegrationsModule } from '@/integrations/integrations.module';
 import { GiftCardsModule } from '@/gift-cards/gift-cards.module';
+import { ShippingZonesModule } from '@/shipping-zones/shipping-zones.module';
 import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 
@@ -33,6 +35,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
     ExchangeRateModule,
     IntegrationsModule,
     GiftCardsModule,
+    ShippingZonesModule,
     ConfigModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
@@ -43,7 +46,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
     }),
   ],
   controllers: [OrdersController],
-  providers: [OrdersService, OrderEditingService],
-  exports: [OrdersService, OrderEditingService],
+  providers: [OrdersService, OrderEditingService, OrderExchangeService],
+  exports: [OrdersService, OrderEditingService, OrderExchangeService],
 })
 export class OrdersModule {}

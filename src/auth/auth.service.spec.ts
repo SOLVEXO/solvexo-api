@@ -41,6 +41,23 @@ function makeFakeModel(seedDocs: any[] = []) {
     };
   });
 
+  // Minimal support for the atomic OTP-attempt helper (common/otp.util.ts):
+  // only `$inc` / `$set` on a single `_id` match.
+  function applyUpdate(doc: any, update: any) {
+    for (const [k, v] of Object.entries(update.$inc ?? {})) doc[k] = (doc[k] ?? 0) + (v as number);
+    Object.assign(doc, update.$set ?? {});
+  }
+  (FakeModel as any).findOneAndUpdate = jest.fn((query: Record<string, unknown>, update: any) => {
+    const found = docs.find((d) => matches(d, query)) ?? null;
+    if (found) applyUpdate(found, update);
+    return { select: () => ({ lean: async () => found }) };
+  });
+  (FakeModel as any).updateOne = jest.fn(async (query: Record<string, unknown>, update: any) => {
+    const found = docs.find((d) => matches(d, query));
+    if (found) applyUpdate(found, update);
+    return { modifiedCount: found ? 1 : 0 };
+  });
+
   return { model: FakeModel as any, docs };
 }
 
@@ -227,6 +244,66 @@ describe('AuthService — per-store buyer identity', () => {
       expect(accountA.password).not.toEqual(originalPasswordA);
       // storeB's password must be unaffected by storeA's reset
       expect(accountB.password).toEqual(originalPasswordB);
+      // reset revokes existing sessions (tokenVersion bump); other store untouched
+      expect(accountA.tokenVersion).toBe(1);
+      expect(accountB.tokenVersion).toBeUndefined();
+    });
+  });
+
+  describe('OTP attempt limit', () => {
+    async function signedUpUnverified() {
+      const ctx = makeService();
+      await ctx.service.signup({
+        name: 'A', role: 'user', email: 'otp@example.com', password: 'password123', storeId: 'storeA',
+      } as any);
+      const account = await ctx.userModel.findOne({ email: 'otp@example.com', storeId: 'storeA' });
+      return { ...ctx, account };
+    }
+
+    it('generates a 6-digit numeric code', async () => {
+      const { account } = await signedUpUnverified();
+      expect(account.otp).toMatch(/^\d{6}$/);
+    });
+
+    it('accepts the right code within the budget', async () => {
+      const { service, account } = await signedUpUnverified();
+      await expect(service.verifyOtp('otp@example.com', 'user', account.otp, 'storeA')).resolves.toMatchObject({ success: true });
+      expect(account.isVerified).toBe(true);
+    });
+
+    it('invalidates the code after 5 wrong guesses, even if the right code is then supplied', async () => {
+      const { service, account } = await signedUpUnverified();
+      const real = account.otp;
+      const wrong = real === '111111' ? '222222' : '111111';
+
+      for (let i = 0; i < 4; i++) {
+        await expect(service.verifyOtp('otp@example.com', 'user', wrong, 'storeA')).rejects.toThrow('Invalid OTP');
+      }
+      await expect(service.verifyOtp('otp@example.com', 'user', wrong, 'storeA')).rejects.toThrow(/Too many incorrect attempts/);
+      expect(account.otp).toBeNull();
+
+      await expect(service.verifyOtp('otp@example.com', 'user', real, 'storeA')).rejects.toThrow('Invalid OTP');
+      expect(account.isVerified).toBeFalsy();
+    });
+
+    it('resend issues a fresh code and resets the counter', async () => {
+      const { service, account } = await signedUpUnverified();
+      for (let i = 0; i < 5; i++) {
+        await expect(service.verifyOtp('otp@example.com', 'user', '000000', 'storeA')).rejects.toThrow();
+      }
+      await service.resendOtp('otp@example.com', 'user', 'storeA');
+      expect(account.otpAttempts).toBe(0);
+      await expect(service.verifyOtp('otp@example.com', 'user', account.otp, 'storeA')).resolves.toMatchObject({ success: true });
+    });
+
+    it('applies the same cap to verify-reset-otp', async () => {
+      const { service, account } = await signedUpUnverified();
+      await service.forgotPassword('otp@example.com', 'user', 'storeA');
+      const real = account.otp;
+      for (let i = 0; i < 5; i++) {
+        await expect(service.verifyResetOtp('otp@example.com', 'user', '000000', 'storeA')).rejects.toThrow();
+      }
+      await expect(service.verifyResetOtp('otp@example.com', 'user', real, 'storeA')).rejects.toThrow('Invalid OTP');
     });
   });
 });

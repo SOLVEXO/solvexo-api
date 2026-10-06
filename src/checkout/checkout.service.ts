@@ -1,3 +1,9 @@
+import { isValidObjectId } from 'mongoose';
+import { resolveZoneShippingPrice } from '@/shipping-zones/shipping-rate.util';
+import { meetsMinOrderAmount, postcodeMatch } from '@/shipping-zones/shipping-zone-match.util';
+import { GENERAL_GROUP_KEY, ShippingSelection, addressRequired, groupItemsByProfile, normalizeSelections, radiusMatch, zoneInGroup } from '@/shipping-zones/shipping-profile.util';
+import { ShippingProfilesService } from '@/shipping-zones/shipping-profiles.service';
+import { resolveRegionRate as resolveTaxRegionRate, shippingTaxFromRate } from '@/tax/shipping-tax.util';
 import {
   Injectable,
   BadRequestException,
@@ -18,6 +24,7 @@ import { ShippingRatesService } from '@/shipping-rates/shipping-rates.service';
 import { EntitlementsService, trimToMarketsLimit } from '@/platform-plans/entitlements.service';
 import { StripeConnectService } from '@/stripe-connect/stripe-connect.service';
 import { StoreCreditService } from '@/store-credit/store-credit.service';
+import { shouldShowDutiesNotice } from '@/shipping-rates/customs.util';
 
 // Fallback currency for the rare case a store's own `baseCurrency` can't be
 // resolved (e.g. store doc missing at read time). Every real `ShippingZone`
@@ -49,6 +56,7 @@ export class CheckoutService {
     private readonly entitlementsService: EntitlementsService,
     private readonly stripeConnectService: StripeConnectService,
     private readonly storeCreditService: StoreCreditService,
+    private readonly profilesService: ShippingProfilesService,
   ) {}
 
   private round(n: number) {
@@ -74,6 +82,17 @@ export class CheckoutService {
    *  `storeBaseCurrency` is the caller's already-fetched store doc's
    *  currency (or null if unknown), passed in rather than re-queried per
    *  zone; falls back to SHIPPING_ZONE_CURRENCY only if that's missing. */
+  /** Total shipping weight (kg) of checkout/cart lines; lines are matched to variants by `variantKey`. */
+  private async totalWeightKgForLines(lines: { variantId?: string | null; quantity?: number }[]): Promise<number> {
+    const ids = [...new Set(lines.map((l) => l.variantId).filter(Boolean) as string[])];
+    if (ids.length === 0) return 0;
+    const variants = await this.databaseService.repositories.productVariantModel.find({ _id: { $in: ids } }).select('shippingWeight').lean();
+    const byId = new Map(variants.map((v: any) => [String(v._id), v.shippingWeight]));
+    return this.shippingRatesService.computeTotalWeightKg(
+      lines.map((l) => ({ shippingWeight: l.variantId ? byId.get(l.variantId) ?? null : null, quantity: l.quantity ?? 1 })),
+    );
+  }
+
   private resolveZoneSourceCurrency(zone: { storeId?: unknown }, storeBaseCurrency: string | null | undefined): string {
     return zone.storeId && storeBaseCurrency ? storeBaseCurrency : SHIPPING_ZONE_CURRENCY;
   }
@@ -520,8 +539,27 @@ export class CheckoutService {
     // not just its id.
     let resolvedAddress: any = null;
 
-    if (hasPhysical) {
-      let defaultAddress = await addressModel.findOne({ userId, isDefault: true, isDelete: false });
+    // Shopify local pickup: a physical cart whose chosen zone (body.shippingZoneId) is an active PICKUP zone
+    // of one of its stores needs no delivery address at all.
+    let pickupChosen = false;
+    // Several delivery groups send `selections[]`; address is skipped only when EVERY chosen zone is a pickup zone.
+    const pickIds = [...new Set(
+      (Array.isArray(body.selections) ? body.selections.map((s: any) => s?.shippingZoneId) : [body.shippingZoneId])
+        .filter((v: unknown): v is string => typeof v === 'string' && isValidObjectId(v)),
+    )] as string[];
+    if (hasPhysical && pickIds.length > 0) {
+      const physicalIds = [...new Set(checkoutItems.filter((i) => i.type === 'physical').map((i) => i.storeId))];
+      pickupChosen = (await shippingZoneModel
+        .countDocuments({ _id: { $in: pickIds }, storeId: { $in: physicalIds }, zoneType: 'pickup', status: 'active', isDelete: false })) === pickIds.length;
+    }
+
+    if (hasPhysical && !pickupChosen) {
+      // The buyer's explicitly chosen address (must be theirs) wins over the default one.
+      let defaultAddress = body.addressId
+        ? await addressModel.findOne({ _id: String(body.addressId), userId, isDelete: false })
+        : null;
+      if (body.addressId && !defaultAddress) throw new BadRequestException('Delivery address not found');
+      if (!defaultAddress) defaultAddress = await addressModel.findOne({ userId, isDefault: true, isDelete: false });
 
       // Buyers aren't required to flag an address as default when saving
       // one, so a buyer with addresses but no explicit default would
@@ -745,7 +783,14 @@ export class CheckoutService {
     // substitute — it's offered alongside 'stripe' whenever an admin has it
     // enabled, regardless of digital/physical mix. Admin-config-gated so it
     // can be turned off platform-wide without a deploy.
-    const manualTransferEnabled = await this.adminConfigService.isManualPaymentEnabled();
+    // Also requires EVERY store in the cart to have its own bank-transfer integration connected AND enabled
+    // (same condition ManualPaymentsService.getBankDetails enforces) — otherwise the buyer is offered a dead option.
+    const bankStoreIds = [...new Set(checkoutItems.map((i) => i.storeId))];
+    const bankEnabledCount = await this.databaseService.repositories.storeIntegrationModel.countDocuments({
+      storeId: { $in: bankStoreIds }, type: 'payment', provider: 'bank_transfer', isEnabledForCheckout: true,
+    });
+    const manualTransferEnabled =
+      (await this.adminConfigService.isManualPaymentEnabled()) && bankEnabledCount === bankStoreIds.length;
     const withManualTransfer = (methods: string[]) =>
       manualTransferEnabled ? [...methods, 'manual_bank_transfer'] : methods;
 
@@ -802,6 +847,7 @@ export class CheckoutService {
           shippingFee: 0,
           taxAmount,
           totalAmount,
+          internationalDutiesNotice: hasPhysical ? await this.internationalDutiesNotice(cardStoreIds, resolvedAddress?.country) : false,
           campaignDiscountUSD: campaignSavingsUSD,
           autoDiscountUSD: autoDiscountSavingsUSD,
           ...this.splitSubtotalsByType(checkoutItems),
@@ -811,11 +857,50 @@ export class CheckoutService {
     };
   }
 
+  /**
+   * Shopify delivery groups: the physical lines of a checkout/cart split by the product's shipping profile
+   * (unset / deleted / foreign profile => General). A store that never created a profile always has ONE group.
+   * Lines without `type` (cart lines) get it from the product.
+   */
+  private async buildDeliveryGroups<T extends { productId: string; type?: string | null }>(
+    lines: T[],
+  ): Promise<{ groups: Map<string, T[]>; names: Map<string, string> }> {
+    const { productModel, shippingProfileModel } = this.databaseService.repositories;
+    const ids = [...new Set(lines.map((l) => String(l.productId)).filter((id) => isValidObjectId(id)))];
+    const products: any[] = ids.length
+      ? await productModel.find({ _id: { $in: ids } }).select('type storeId shippingProfileId').lean()
+      : [];
+    const profileIds = [...new Set(products.map((p) => p.shippingProfileId).filter((v) => !!v && isValidObjectId(String(v))).map(String))];
+    const live: any[] = profileIds.length
+      ? await shippingProfileModel.find({ _id: { $in: profileIds }, isDelete: false, isGeneral: false }).select('storeId name').lean()
+      : [];
+    const liveById = new Map(live.map((p) => [String(p._id), p]));
+    const typeByProduct = new Map<string, string>();
+    const profileByProduct = new Map<string, string | null>();
+    const liveIds = new Set<string>();
+    for (const p of products) {
+      typeByProduct.set(String(p._id), p.type);
+      const prof = p.shippingProfileId ? liveById.get(String(p.shippingProfileId)) : null;
+      // A profile only applies to products of its own store.
+      if (prof && String(prof.storeId) === String(p.storeId)) {
+        profileByProduct.set(String(p._id), String(prof._id));
+        liveIds.add(String(prof._id));
+      }
+    }
+    const typed = lines.map((l) => ({ ...l, type: l.type ?? typeByProduct.get(String(l.productId)) ?? 'physical' }));
+    const groups = groupItemsByProfile(typed, profileByProduct, liveIds) as Map<string, T[]>;
+    const names = new Map<string, string>();
+    for (const id of liveIds) names.set(id, liveById.get(id)?.name ?? 'Shipping profile');
+    return { groups, names };
+  }
+
   async addShippingInCheckout(userId: string, body: any) {
     const { checkoutId, shippingZoneId, liveRateId } = body;
+    // New (Shopify delivery groups): one selected rate per shipping-profile group.
+    const rawSelections: ShippingSelection[] | null = Array.isArray(body.selections) ? body.selections : null;
 
     if (!checkoutId) throw new BadRequestException('checkoutId is required');
-    if (!shippingZoneId && !liveRateId)
+    if (!shippingZoneId && !liveRateId && !(rawSelections && rawSelections.length))
       throw new BadRequestException('shippingZoneId is required');
 
     const { checkoutModel, shippingZoneModel } =
@@ -842,16 +927,25 @@ export class CheckoutService {
       ...new Set((checkout.items as any[]).map((i) => i.storeId)),
     ];
 
+    // Delivery groups by shipping profile. One group (the common case, and every store without custom profiles)
+    // behaves exactly like the original single-pick flow; several groups need one pick each.
+    const { groups } = await this.buildDeliveryGroups((checkout.items as any[]).map((i) => (i.toObject ? i.toObject() : { ...i })));
+    const groupKeys = groups.size === 0 ? [GENERAL_GROUP_KEY] : [...groups.keys()];
+    const multiGroup = groupKeys.length > 1;
+
     // ── Real live carrier rate (Shippo) — a completely separate path from
     // the flat-zone one below. Only ever reachable for a single-store cart
     // (a live rate is quoted from one store's own ship-from address — see
-    // ShippingRatesService.getLiveRates). The rate is ALWAYS re-verified
+    // ShippingRatesService.getLiveRates) with a single delivery group. The rate is ALWAYS re-verified
     // directly against Shippo here, never trusted from the client — a
     // buyer's browser could otherwise submit any amount it wants.
     let liveRate: { amount: number; currency: string; carrier: string; service: string } | null = null;
     if (liveRateId) {
       if (storeIdsInCheckout.length !== 1) {
         throw new BadRequestException('Live carrier rates are only available for a single-store checkout.');
+      }
+      if (multiGroup) {
+        throw new BadRequestException('Live carrier rates are not available when the cart has several shipping profiles — pick one of the listed options for each group.');
       }
       if (!(await this.shippingRatesService.isLiveCheckoutRatesAllowed(storeIdsInCheckout[0]))) {
         throw new BadRequestException('Live carrier rates are not available for this store — please pick another shipping option.');
@@ -861,60 +955,121 @@ export class CheckoutService {
       liveRate = verified;
     }
 
-    let shippingZone: any = null;
+    // One selected zone per delivery group.
+    const selectedZones: { groupKey: string; profileId: string | null; zone: any }[] = [];
     if (!liveRate) {
-      shippingZone = await shippingZoneModel.findOne({
-        _id: shippingZoneId,
-        isDelete: false,
-      });
-      if (!shippingZone) throw new NotFoundException('Shipping zone not found');
+      const norm = normalizeSelections(groupKeys, { selections: rawSelections, shippingZoneId });
+      if ('error' in norm) throw new BadRequestException(norm.error);
+      for (const key of groupKeys) {
+        const zoneId = norm.byGroup.get(key)!;
+        if (!isValidObjectId(zoneId)) throw new NotFoundException('Shipping zone not found');
+        const zone = await shippingZoneModel.findOne({
+          _id: zoneId,
+          isDelete: false,
+        });
+        if (!zone) throw new NotFoundException('Shipping zone not found');
 
-      // A zone can only ever be picked for its OWN store's checkout —
-      // otherwise a buyer could cherry-pick a cheaper rate belonging to a
-      // completely unrelated store. There is no admin-level fallback zone
-      // anymore: a zone with no store (leftover legacy data, if any) is
-      // never valid to pick, same as one belonging to a different store —
-      // a store with none of its own zones simply has no shipping option,
-      // same as real Shopify.
-      if (
-        !shippingZone.storeId ||
-        !storeIdsInCheckout.includes(String(shippingZone.storeId))
-      ) {
-        throw new BadRequestException('This shipping option is not available for your cart.');
+        // A zone can only ever be picked for its OWN store's checkout —
+        // otherwise a buyer could cherry-pick a cheaper rate belonging to a
+        // completely unrelated store. There is no admin-level fallback zone
+        // anymore: a zone with no store (leftover legacy data, if any) is
+        // never valid to pick, same as one belonging to a different store —
+        // a store with none of its own zones simply has no shipping option,
+        // same as real Shopify. A zone also only belongs to ITS shipping
+        // profile's group, and an inactive zone is never chargeable.
+        if (
+          !zone.storeId ||
+          !storeIdsInCheckout.includes(String(zone.storeId)) ||
+          !zoneInGroup(zone as any, key) ||
+          zone.status !== 'active'
+        ) {
+          throw new BadRequestException('This shipping option is not available for your cart.');
+        }
+        selectedZones.push({ groupKey: key, profileId: key === GENERAL_GROUP_KEY ? null : key, zone });
+      }
+    }
+
+    // Shopify local pickup needs no delivery address — only when EVERY group chose a pickup zone; every other option does.
+    const isPickup = selectedZones.length > 0 && !addressRequired(selectedZones.map((s) => s.zone.zoneType));
+    const hasPhysicalLines = (checkout.items as any[]).some((i) => i.type === 'physical');
+    let deliveryAddress: any = null;
+    if (!isPickup && hasPhysicalLines) {
+      const { addressModel } = this.databaseService.repositories;
+      deliveryAddress = checkout.addressId
+        ? await addressModel.findOne({ _id: checkout.addressId, userId, isDelete: false })
+        : (await addressModel.findOne({ userId, isDefault: true, isDelete: false }))
+          ?? (await addressModel.findOne({ userId, isDelete: false }).sort({ createdAt: 1 }));
+      if (!deliveryAddress) throw new BadRequestException('Please add a delivery address, or choose local pickup.');
+      for (const s of selectedZones) {
+        if (s.zone.zoneType !== 'local_delivery') continue;
+        // Local delivery: a radius around the profile's ship-from location when it can be evaluated (both the
+        // location and the buyer's address carry coordinates), else the postcode list (Shopify), else city/area.
+        const radius = radiusMatch(
+          s.zone,
+          s.zone.radiusKm != null ? await this.profilesService.resolveOriginCoords(String(s.zone.storeId), s.profileId) : null,
+          deliveryAddress,
+        );
+        if (radius === false) throw new BadRequestException('This local delivery option does not cover your address.');
+        if (radius === null && postcodeMatch(s.zone, deliveryAddress.zipCode) === false) {
+          throw new BadRequestException('This local delivery option does not cover your postcode.');
+        }
       }
     }
 
     // A seller-owned zone's price is denominated in THAT store's own
     // baseCurrency — see `resolveZoneSourceCurrency`. A live rate's currency
     // comes straight from Shippo's own verified response instead.
-    let zoneStoreCurrency: string | null = null;
-    if (shippingZone?.storeId) {
-      const zoneStore = await this.databaseService.repositories.storeModel
-        .findById(shippingZone.storeId)
-        .select('baseCurrency')
-        .lean();
-      zoneStoreCurrency = (zoneStore as any)?.baseCurrency ?? null;
-    }
-    const zoneSourceCurrency = liveRate ? liveRate.currency : this.resolveZoneSourceCurrency(shippingZone, zoneStoreCurrency);
-    const zonePrice = liveRate ? liveRate.amount : (shippingZone.shippingPrice || 0);
-
     // Converted into this checkout's own currency using its already-frozen
     // fxSnapshots, never a fresh live rate — `ensureCurrencyInSnapshots`
-    // extends the checkout's snapshot set on the fly if this zone's source
+    // extends the checkout's snapshot set on the fly if a zone's source
     // currency wasn't anticipated when the checkout was first created (e.g.
     // a store's own currency differing from every cart item's currency,
     // which can't happen today since items are already store-native, but is
     // a safe guard regardless of that).
-    const shippingFxSnapshots = await this.exchangeRateService.ensureCurrencyInSnapshots(
-      (checkout.fxSnapshots as any) ?? [],
-      zoneSourceCurrency,
-    );
-    let shippingFee = this.exchangeRateService.convertWithSnapshots(
-      zonePrice,
-      zoneSourceCurrency,
-      checkout.currency,
-      shippingFxSnapshots,
-    );
+    let shippingFxSnapshots: FxSnapshot[] = (checkout.fxSnapshots as any) ?? [];
+    const storeCurrencyCache = new Map<string, string | null>();
+    const feeByStore = new Map<string, number>();
+    const selections: { profileId: string | null; shippingZoneId: string; fee: number; storeId: string }[] = [];
+
+    if (liveRate) {
+      shippingFxSnapshots = await this.exchangeRateService.ensureCurrencyInSnapshots(shippingFxSnapshots, liveRate.currency);
+      feeByStore.set(
+        storeIdsInCheckout[0],
+        this.exchangeRateService.convertWithSnapshots(liveRate.amount, liveRate.currency, checkout.currency, shippingFxSnapshots),
+      );
+    } else {
+      for (const s of selectedZones) {
+        const zone = s.zone;
+        const zoneStoreId = String(zone.storeId);
+        if (!storeCurrencyCache.has(zoneStoreId)) {
+          const zoneStore = await this.databaseService.repositories.storeModel.findById(zoneStoreId).select('baseCurrency').lean();
+          storeCurrencyCache.set(zoneStoreId, (zoneStore as any)?.baseCurrency ?? null);
+        }
+        const zoneSourceCurrency = this.resolveZoneSourceCurrency(zone, storeCurrencyCache.get(zoneStoreId));
+        shippingFxSnapshots = await this.exchangeRateService.ensureCurrencyInSnapshots(shippingFxSnapshots, zoneSourceCurrency);
+
+        // Flat / by-weight / by-price tier / local pickup / free-over-threshold — worked out in the zone's own
+        // (store) currency from this checkout's frozen FX snapshots, never from a client-sent amount.
+        // One group: the whole checkout (unchanged). Several groups: only that group's own lines.
+        const groupLines: any[] = multiGroup ? (groups.get(s.groupKey) ?? []) : (checkout.items as any[]);
+        const subtotalInZoneCurrency = multiGroup
+          ? groupLines.reduce(
+              (sum, i) => sum + this.exchangeRateService.convertWithSnapshots(i.totalPrice, i.currency ?? zoneSourceCurrency, zoneSourceCurrency, shippingFxSnapshots),
+              0,
+            )
+          : this.exchangeRateService.convertWithSnapshots(checkout.subtotal, checkout.currency, zoneSourceCurrency, shippingFxSnapshots);
+        const weightKg = await this.totalWeightKgForLines(groupLines.map((i) => ({ variantId: i.variantId, quantity: i.quantity })));
+        if (!meetsMinOrderAmount(zone, subtotalInZoneCurrency)) {
+          throw new BadRequestException('Your order does not reach the minimum amount for this delivery option.');
+        }
+        const resolved = resolveZoneShippingPrice(zone, { subtotal: subtotalInZoneCurrency, weightKg });
+        if (resolved == null) throw new BadRequestException('This shipping option is not available for your cart.');
+        const fee = this.exchangeRateService.convertWithSnapshots(resolved, zoneSourceCurrency, checkout.currency, shippingFxSnapshots);
+        feeByStore.set(zoneStoreId, (feeByStore.get(zoneStoreId) ?? 0) + fee);
+        selections.push({ profileId: s.profileId, shippingZoneId: String(zone._id), fee, storeId: zoneStoreId });
+      }
+    }
+
     // A seller's own 'free_shipping' automatic discount (DiscountsService) —
     // always target:'store' (enforced at creation), so eligibility only
     // ever needs minOrderAmount checked against the whole checkout's
@@ -926,17 +1081,66 @@ export class CheckoutService {
         (d: any) => d.discountType === 'free_shipping' && (d.minOrderAmount == null || checkout.subtotal >= d.minOrderAmount),
       );
       if (freeShippingDiscount) {
-        shippingFee = 0;
+        for (const k of feeByStore.keys()) feeByStore.set(k, 0);
+        for (const sel of selections) sel.fee = 0;
       }
     }
-    const totalAmount = this.checkoutTotal(checkout.subtotal, { shippingFee, taxAmount: checkout.taxAmount });
+    let shippingFee = 0;
+    for (const f of feeByStore.values()) shippingFee += f;
+    if (feeByStore.size > 1 || selections.length > 1) shippingFee = this.round(shippingFee);
+
+    // Tax on the shipping fee (Store.taxShipping). Replaces whatever shipping tax an earlier pick left behind;
+    // it is folded into the owning store's items' taxUSD so the order + ledger carry it like any item tax.
+    const items = (checkout.items as any[]).map((i) => (i.toObject ? i.toObject() : { ...i }));
+    for (const it of items) { it.taxUSD = this.round((it.taxUSD ?? 0) - (it.shippingTaxUSD ?? 0)); it.shippingTaxUSD = 0; }
+    let shippingTax = 0;
+    for (const [shipStoreId, storeFee] of feeByStore) {
+      if (!(storeFee > 0) || !shipStoreId) continue;
+      const storeTax = await this.quoteShippingTax(shipStoreId, storeFee, checkout, items, deliveryAddress, shippingFxSnapshots);
+      const storeItems = items.filter((i) => i.storeId === shipStoreId);
+      const storeSubtotalNative = storeItems.reduce((a, i) => a + i.totalPrice, 0);
+      if (storeTax > 0 && storeSubtotalNative > 0) {
+        const taxNative = this.exchangeRateService.convertWithSnapshots(
+          storeTax, checkout.currency, storeItems[0].currency ?? checkout.currency, shippingFxSnapshots,
+        );
+        for (const it of storeItems) {
+          const share = this.round((it.totalPrice / storeSubtotalNative) * taxNative);
+          it.shippingTaxUSD = share;
+          it.taxUSD = this.round((it.taxUSD ?? 0) + share);
+        }
+        shippingTax += storeTax;
+      }
+    }
+    const taxAmount = this.round((checkout.taxAmount || 0) - (checkout.shippingTaxAmount || 0) + shippingTax);
+    const totalAmount = this.checkoutTotal(checkout.subtotal, { shippingFee, taxAmount });
+
+    let pickupLocation: { name: string | null; address: string | null; instructions: string | null } | null = null;
+    if (isPickup) {
+      const pickupZone = selectedZones[0].zone;
+      pickupLocation = {
+        name: pickupZone.name ?? 'Local pickup',
+        address: pickupZone.pickupAddress ?? null,
+        instructions: pickupZone.pickupInstructions ?? null,
+      };
+    }
+
+    const legacyZoneId = liveRate ? null : selections[0].shippingZoneId;
+    const savedSelections = liveRate ? [] : selections.map((s) => ({ profileId: s.profileId, shippingZoneId: s.shippingZoneId, fee: s.fee }));
 
     await checkoutModel.findByIdAndUpdate(checkoutId, {
+      items,
+      taxAmount,
+      shippingTaxAmount: shippingTax,
+      fulfillmentMethod: isPickup ? 'pickup' : 'ship',
+      pickupLocation,
+      addressId: isPickup ? null : (deliveryAddress ? String(deliveryAddress._id) : checkout.addressId ?? null),
       // A live rate and a flat zone are mutually exclusive on one checkout —
       // whichever wasn't chosen is explicitly nulled out, so a buyer who
       // reselects a flat zone after trying a live rate (or vice versa) never
-      // leaves a stale id from the other path behind.
-      shippingZoneId: liveRate ? null : shippingZoneId,
+      // leaves a stale id from the other path behind. `shippingZoneId` mirrors the first group's pick for
+      // legacy readers; `shippingSelections` carries one pick per delivery group.
+      shippingZoneId: legacyZoneId,
+      shippingSelections: savedSelections,
       liveShippingRateId: liveRate ? liveRateId : null,
       liveShippingCarrier: liveRate ? liveRate.carrier : null,
       liveShippingService: liveRate ? liveRate.service : null,
@@ -955,14 +1159,59 @@ export class CheckoutService {
       message: 'Shipping added to checkout',
       data: {
         checkoutId,
-        shippingZoneId: liveRate ? null : shippingZoneId,
+        shippingZoneId: legacyZoneId,
+        shippingSelections: savedSelections,
         liveShippingRateId: liveRate ? liveRateId : null,
         shippingFee,
+        taxAmount,
+        shippingTaxAmount: shippingTax,
+        fulfillmentMethod: isPickup ? 'pickup' : 'ship',
+        pickupLocation,
         subtotal: checkout.subtotal,
         totalAmount,
-        ...this.splitSubtotalsByType(checkout.items as any[]),
+        internationalDutiesNotice: isPickup || !hasPhysicalLines ? false : await this.internationalDutiesNotice(storeIdsInCheckout, deliveryAddress?.country),
+        ...this.splitSubtotalsByType(items),
       },
     };
+  }
+
+  /** Shopify international checkout notice (DDU): true when the physical cart ships to a country other than a
+   *  store's own country and that store has not hidden the notice (Store.showDutiesNotice, default true). */
+  private async internationalDutiesNotice(storeIds: string[], destinationCountry: unknown): Promise<boolean> {
+    if (!destinationCountry || storeIds.length === 0) return false;
+    const stores: any[] = await this.databaseService.repositories.storeModel
+      .find({ _id: { $in: storeIds } }).select('country showDutiesNotice').lean();
+    return stores.some((s) => shouldShowDutiesNotice(s.country, destinationCountry, s.showDutiesNotice));
+  }
+
+  /**
+   * Tax on a shipping fee (checkout currency) for the store that owns the chosen option. 0 unless the store
+   * enabled `taxShipping`. Uses TaxJar's live quote delta when connected, else the region/flat store rate.
+   */
+  private async quoteShippingTax(
+    storeId: string,
+    shippingFee: number,
+    checkout: any,
+    items: any[],
+    address: any,
+    fx: FxSnapshot[],
+  ): Promise<number> {
+    const store: any = await this.databaseService.repositories.storeModel
+      .findById(storeId)
+      .select('taxRate taxRegions taxShipping')
+      .lean();
+    if (!store?.taxShipping) return 0;
+    if (address?.country) {
+      const storeSubtotal = items
+        .filter((i) => i.storeId === storeId)
+        .reduce((sum, i) => sum + this.exchangeRateService.convertWithSnapshots(i.totalPrice, i.currency ?? checkout.currency, checkout.currency, fx), 0);
+      const base = { amount: storeSubtotal, toCountry: address.country ?? null, toState: address.state ?? null, toZip: address.zipCode ?? null, toCity: address.city ?? null };
+      const withShip = await this.taxService.calculateLiveTax(storeId, { ...base, shipping: shippingFee });
+      const without = withShip ? await this.taxService.calculateLiveTax(storeId, { ...base, shipping: 0 }) : null;
+      if (withShip && without) return this.round(Math.max(0, withShip.taxAmount - without.taxAmount));
+    }
+    const rate = resolveTaxRegionRate(store.taxRegions, address) ?? store.taxRate ?? 0;
+    return shippingTaxFromRate(shippingFee, rate, true);
   }
 
   // Buyer-facing (checkout zone picker) — only ever `status:'active'` zones,
@@ -993,10 +1242,10 @@ export class CheckoutService {
   // loose, already-existing shape (already spreads `.toObject()` results and
   // casts through `any` internally) — not a behavior change, just tells the
   // compiler what to expect instead of inferring it from the branches.
-  async getShippingZones(storeId?: string, displayCurrency?: string): Promise<{ message: string; data: any[] }> {
+  async getShippingZones(storeId?: string, displayCurrency?: string, userId?: string | null): Promise<{ message: string; data: any[]; groups: { groupKey: string; profileId: string | null; name: string }[] }> {
     try {
       if (!storeId) {
-        return { message: 'Shipping zones fetched successfully', data: [] };
+        return { message: 'Shipping zones fetched successfully', data: [], groups: [] };
       }
 
       const shippingZoneModel =
@@ -1006,7 +1255,7 @@ export class CheckoutService {
         .find({ storeId, isDelete: false, status: 'active' })
         .sort({ createdAt: -1 });
       if (ownZones.length === 0) {
-        return { message: 'Shipping zones fetched successfully', data: [] };
+        return { message: 'Shipping zones fetched successfully', data: [], groups: [] };
       }
 
       const store = await this.databaseService.repositories.storeModel
@@ -1015,19 +1264,74 @@ export class CheckoutService {
         .lean();
       const sourceCurrency = (store as any)?.baseCurrency || SHIPPING_ZONE_CURRENCY;
 
-      if (!displayCurrency || displayCurrency === sourceCurrency) {
-        return { message: 'Shipping zones fetched successfully', data: ownZones };
-      }
-      const data = await Promise.all(ownZones.map(async (z) => {
-        const plain = z.toObject ? z.toObject() : z;
-        try {
-          const shippingPrice = await this.exchangeRateService.convert(plain.shippingPrice || 0, sourceCurrency, displayCurrency);
-          return { ...plain, shippingPrice };
-        } catch {
-          return plain;
+      // Cart context (store currency) so weight/price-tier zones quote the tier that really applies.
+      // One delivery group (the usual case): the whole cart, exactly as before. Several shipping-profile
+      // groups: each group's own subtotal/weight, and only that group's profile zones are offered for it.
+      let ctx = { subtotal: 0, weightKg: 0 };
+      let cartGroupKeys: string[] | null = null;
+      const ctxByGroup = new Map<string, { subtotal: number; weightKg: number }>();
+      let groupNames = new Map<string, string>();
+      if (userId) {
+        const cart: any = await this.databaseService.repositories.cartModel
+          .findOne({ userId, storeId, status: 'active', isDelete: false }).lean();
+        if (cart?.items?.length) {
+          ctx = {
+            subtotal: cart.items.reduce((s: number, i: any) => s + (i.price ?? 0) * (i.quantity ?? 1), 0),
+            weightKg: await this.totalWeightKgForLines(cart.items.map((i: any) => ({ variantId: i.productVariantId, quantity: i.quantity }))),
+          };
+          const built = await this.buildDeliveryGroups<any>(cart.items);
+          groupNames = built.names;
+          cartGroupKeys = built.groups.size === 0 ? [GENERAL_GROUP_KEY] : [...built.groups.keys()];
+          if (built.groups.size > 1) {
+            for (const [key, lines] of built.groups) {
+              ctxByGroup.set(key, {
+                subtotal: lines.reduce((s: number, i: any) => s + (i.price ?? 0) * (i.quantity ?? 1), 0),
+                weightKg: await this.totalWeightKgForLines(lines.map((i: any) => ({ variantId: i.productVariantId, quantity: i.quantity }))),
+              });
+            }
+          }
         }
+      }
+      const originCoords = new Map<string, { latitude: number; longitude: number } | null>();
+      const data = (await Promise.all(ownZones.map(async (z) => {
+        const plain: any = z.toObject ? z.toObject() : z;
+        const groupKey = plain.profileId ? String(plain.profileId) : GENERAL_GROUP_KEY;
+        if (cartGroupKeys && !cartGroupKeys.includes(groupKey)) return null; // another profile's rate — not for this cart
+        const zoneCtx = ctxByGroup.get(groupKey) ?? ctx;
+        const price = resolveZoneShippingPrice(plain, zoneCtx);
+        if (userId && !meetsMinOrderAmount(plain, zoneCtx.subtotal)) return null; // below this option's minimum order
+        if (price == null) return null; // weight/price zone with no tier covering this cart — not offered
+        const extra: Record<string, unknown> = { profileId: plain.profileId ?? null, groupKey };
+        if (plain.zoneType === 'local_delivery' && plain.radiusKm != null) {
+          if (!originCoords.has(groupKey)) {
+            originCoords.set(groupKey, await this.profilesService.resolveOriginCoords(storeId, groupKey === GENERAL_GROUP_KEY ? null : groupKey));
+          }
+          const c = originCoords.get(groupKey);
+          extra.originLatitude = c?.latitude ?? null;
+          extra.originLongitude = c?.longitude ?? null;
+        }
+        if (!displayCurrency || displayCurrency === sourceCurrency) return { ...plain, ...extra, shippingPrice: price };
+        try {
+          return { ...plain, ...extra, shippingPrice: await this.exchangeRateService.convert(price, sourceCurrency, displayCurrency) };
+        } catch {
+          return { ...plain, ...extra, shippingPrice: price };
+        }
+      }))).filter(Boolean) as any[];
+
+      // Delivery groups of this request: the cart's groups, or (no cart) the groups that have zones.
+      const keys = cartGroupKeys ?? [...new Set(data.map((z: any) => z.groupKey as string))];
+      const missingNames = keys.filter((k) => k !== GENERAL_GROUP_KEY && !groupNames.has(k));
+      if (missingNames.length > 0) {
+        const rows: any[] = await this.databaseService.repositories.shippingProfileModel
+          .find({ _id: { $in: missingNames.filter((k) => isValidObjectId(k)) }, storeId, isDelete: false }).select('name').lean();
+        for (const r of rows) groupNames.set(String(r._id), r.name);
+      }
+      const groups = keys.map((k) => ({
+        groupKey: k,
+        profileId: k === GENERAL_GROUP_KEY ? null : k,
+        name: k === GENERAL_GROUP_KEY ? 'General' : groupNames.get(k) ?? 'Shipping',
       }));
-      return { message: 'Shipping zones fetched successfully', data };
+      return { message: 'Shipping zones fetched successfully', data, groups };
     } catch (error) {
       throw error;
     }
@@ -1061,6 +1365,13 @@ export class CheckoutService {
     const cart = await cartModel.findOne({ userId, storeId, status: 'active', isDelete: false }).lean();
     if (!cart || !(cart as any).items?.length) return { success: true, data: null };
 
+    // Live carrier quotes are single-group only; the quote ships from the profile's first origin location
+    // (falling back to the Shippo integration's own origin address, unchanged).
+    const { groups } = await this.buildDeliveryGroups<any>((cart as any).items);
+    if (groups.size > 1) return { success: true, data: null };
+    const groupKey = groups.size === 1 ? [...groups.keys()][0] : GENERAL_GROUP_KEY;
+    const profileOrigin = await this.profilesService.resolveOrigin(storeId, groupKey === GENERAL_GROUP_KEY ? null : groupKey);
+
     const variantIds: string[] = [...new Set((cart as any).items.map((i: any) => i.productVariantId).filter(Boolean) as string[])];
     const variants = await productVariantModel.find({ _id: { $in: variantIds } }).select('shippingWeight').lean();
     const weightByVariant = new Map(variants.map((v: any) => [String(v._id), v.shippingWeight]));
@@ -1085,6 +1396,14 @@ export class CheckoutService {
         phone: (address as any).phoneNumber ?? undefined,
       },
       totalWeightKg,
+      profileOrigin
+        ? {
+            originOverride: {
+              name: profileOrigin.name, street1: profileOrigin.street1, street2: profileOrigin.street2, city: profileOrigin.city,
+              state: profileOrigin.state, zip: profileOrigin.zip, country: profileOrigin.country, phone: profileOrigin.phone,
+            },
+          }
+        : {},
     );
 
     return { success: true, data: rates };

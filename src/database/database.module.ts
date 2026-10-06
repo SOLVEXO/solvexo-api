@@ -38,6 +38,7 @@ import { DatabaseService } from './databaseservice';
         schema: schema.UserPaymentMethodSchema,
       },
       { name: schema.ShippingZone.name, schema: schema.ShippingZoneSchema },
+      { name: schema.ShippingProfile.name, schema: schema.ShippingProfileSchema },
       { name: schema.Checkout.name, schema: schema.CheckoutSchema },
       { name: schema.Order.name, schema: schema.OrderSchema },
       {

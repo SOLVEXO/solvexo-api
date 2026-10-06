@@ -49,6 +49,10 @@ export class User {
    @Prop()
    otpExpiresAt: Date;
 
+  // Wrong-guess counter for the current OTP (see common/otp.util.ts); reset when a code is issued.
+  @Prop({ default: 0 })
+  otpAttempts: number;
+
   @Prop({ default: false })
   isVerified: boolean;
 

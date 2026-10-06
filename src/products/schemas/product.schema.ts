@@ -164,6 +164,10 @@ export class Product {
   @Prop({ type: [String], default: [] })
   tags: string[];
 
+  // Shopify shipping profile (ShippingProfile._id). null/absent = the store's implicit General profile.
+  @Prop({ type: String, default: null })
+  shippingProfileId: string | null;
+
   // digital/educational config — physical pe null rahega
   @Prop({ type: DigitalConfigSchema, default: null })
   digital: DigitalConfig | null;
@@ -239,6 +243,7 @@ export const ProductSchema = SchemaFactory.createForClass(Product);
 
 ProductSchema.index({ sellerId: 1 });
 ProductSchema.index({ storeId: 1 });
+ProductSchema.index({ storeId: 1, shippingProfileId: 1 });
 // Real per-store uniqueness — replaces the old bare `slug: { unique: true }`
 // field-level index (see that field's own doc comment). Partial-filtered on
 // isDelete so a deleted product never permanently squats its slug.

@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Put, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -8,6 +8,7 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { RequirePermission } from '../auth/decorators/require-permission.decorator';
 import { actingSellerId } from '../common/acting-seller-id.util';
 import { StoreIntegrationsService } from './store-integrations.service';
+import { ShippingSettingsDto } from '../shipping-rates/dto/shipping-settings.dto';
 import { STORE_INTEGRATION_PROVIDERS, STORE_INTEGRATION_TYPES, StoreIntegrationProvider, StoreIntegrationType } from './schemas/store-integration.schema';
 
 /**
@@ -58,6 +59,12 @@ export class SellerIntegrationsController {
       throw new BadRequestException(`Unknown provider "${provider}"`);
     }
     return this.service.connect(storeId, actingSellerId(req.user), type as StoreIntegrationType, provider as StoreIntegrationProvider, body ?? {});
+  }
+
+  /** Shopify "Packages" + live-rate handling fee for the connected Shippo account. */
+  @Put('shipping/settings')
+  updateShippingSettings(@Param('storeId') storeId: string, @Body() body: ShippingSettingsDto, @Req() req: any) {
+    return this.service.updateShippingSettings(storeId, actingSellerId(req.user), body);
   }
 
   @Post(':id/test')

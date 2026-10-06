@@ -28,4 +28,7 @@ export class CreateDefinitionDto {
 
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean()
   required?: boolean;
+
+  @ApiProperty({ required: false }) @IsOptional() @IsBoolean()
+  storefrontAccess?: boolean;
 }

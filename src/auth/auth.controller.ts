@@ -16,7 +16,7 @@ import { Roles } from '../auth/decorators/roles.decorator'
 import { RolesGuard } from '../auth/guards/roles.guard'; ;
 import { resolveCountryFromIp } from '../common/geo-locate.util';
 import { AuthVisualService } from '../common/auth-visual.service';
-import { AUTH_PAGE_CONTEXTS, type AuthPageContext } from '../common/auth-visual-region.const';
+import { AUTH_PAGE_CONTEXTS, AUTH_VISUAL_TOPICS, type AuthPageContext, type AuthVisualTopic } from '../common/auth-visual-region.const';
 
 
 
@@ -43,9 +43,10 @@ export class AuthController {
   // screen they're on; an invalid or missing context safely falls back to
   // `'register'`. `imageUrl` is resolved by `AuthVisualService` — a real,
   // per-request Unsplash Random Photo API lookup keyed off the visitor's
-  // actual detected country name (not a bucket of ~15-50 countries), with
-  // a 30-day Redis cache per country+screen so the same country/screen
-  // pair isn't re-fetched from Unsplash on every visitor. `region` is only
+  // actual detected country name, fetched live on every request (no cache),
+  // steered by the screen/onboarding step (`context`) and, on the last
+  // onboarding step, the chosen seller type (`topic`), with culturally
+  // unsuitable photos filtered out. `region` is only
   // still returned for backward compatibility with the earlier curated-map
   // version of this endpoint. Fail-open at every layer (see
   // `AuthVisualService`'s own header comment) — no Unsplash key
@@ -53,10 +54,11 @@ export class AuthController {
   // silently fall back to the curated 10-region map in
   // `auth-visual-region.const.ts`, never an error or a broken image.
   @Get('detect-country')
-  async detectCountry(@Req() req: any, @Query('context') context?: string) {
+  async detectCountry(@Req() req: any, @Query('context') context?: string, @Query('topic') topic?: string) {
     const country = resolveCountryFromIp(req.ip);
     const ctx = AUTH_PAGE_CONTEXTS.includes(context as AuthPageContext) ? (context as AuthPageContext) : 'register';
-    const { region, imageUrl, attribution } = await this.authVisualService.resolve(country, ctx);
+    const safeTopic = AUTH_VISUAL_TOPICS.includes(topic as AuthVisualTopic) ? (topic as AuthVisualTopic) : undefined;
+    const { region, imageUrl, attribution } = await this.authVisualService.resolve(country, ctx, safeTopic);
     return { success: true, data: { country, region, imageUrl, attribution } };
   }
 

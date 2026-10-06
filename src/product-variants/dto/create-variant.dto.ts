@@ -6,6 +6,7 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  Matches,
   MaxLength,
   Min,
   ValidateNested,
@@ -50,6 +51,36 @@ export class CreateVariantDto {
   @IsOptional()
   @IsString()
   shippingWeight?: string;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  length?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  width?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  height?: number;
+
+  @IsOptional()
+  @IsString()
+  @Matches(/^[A-Za-z]{2}$/, { message: 'countryOfOrigin must be a 2-letter ISO country code' })
+  countryOfOrigin?: string;
+
+  @IsOptional()
+  @IsString()
+  @Matches(/^\d{6,10}$|^\d[\d.]{4,12}\d$/, { message: 'hsCode must be 6 to 10 digits (dots allowed)' })
+  hsCode?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  customsDescription?: string;
 
   @IsOptional()
   @IsArray()

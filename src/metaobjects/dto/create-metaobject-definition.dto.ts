@@ -1,7 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { ApiProperty } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { ArrayMaxSize, IsArray, IsOptional, IsString, Matches, MaxLength, ValidateNested } from 'class-validator';
+import { ArrayMaxSize, IsArray, IsBoolean, IsOptional, IsString, Matches, MaxLength, ValidateNested } from 'class-validator';
 import { FieldDefinitionInputDto } from './field-definition-input.dto';
 
 export class CreateMetaobjectDefinitionDto {
@@ -19,4 +19,7 @@ export class CreateMetaobjectDefinitionDto {
   @ApiProperty({ type: [FieldDefinitionInputDto] })
   @IsArray() @ArrayMaxSize(30) @ValidateNested({ each: true }) @Type(() => FieldDefinitionInputDto)
   fieldDefinitions: FieldDefinitionInputDto[];
+
+  @ApiProperty({ required: false }) @IsOptional() @IsBoolean()
+  storefrontAccess?: boolean;
 }

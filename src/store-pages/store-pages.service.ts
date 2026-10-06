@@ -34,6 +34,12 @@ function validateSections(sections: { type: SectionType; settings: Record<string
   }
 }
 
+/** Public (anonymous) reads must never expose unpublished work: `draft` and `versions` hold unreleased edits and history. */
+export function stripUnpublished<T extends Record<string, any>>(page: T): Omit<T, 'draft' | 'versions'> {
+  const { draft: _draft, versions: _versions, ...rest } = page as any;
+  return rest;
+}
+
 function starterHomeSections() {
   return [
     { type: 'hero' as SectionType, settings: { heightPreset: 'medium' }, blocks: [] },
@@ -289,7 +295,7 @@ export class StorePagesService {
 
   async getPublicHome(storeId: string) {
     const page = await this.storePageModel.findOne({ storeId, type: 'home', status: 'published', isDelete: false }).lean();
-    if (page) return { success: true, data: page };
+    if (page) return { success: true, data: stripUnpublished(page) };
     // Defense-in-depth for stores created BEFORE the `ensureHomePage` fix
     // above (when new stores were seeded at status: 'draft'): rather than a
     // hard 404 that leaves the storefront blank forever, fall back to
@@ -301,14 +307,14 @@ export class StorePagesService {
     // for every page going forward.
     const anyHome = await this.storePageModel.findOne({ storeId, type: 'home', isDelete: false }).lean();
     const fallbackSections = anyHome?.sections?.length ? anyHome.sections : anyHome?.draft?.sections?.length ? anyHome.draft.sections : starterHomeSections();
-    if (anyHome) return { success: true, data: { ...anyHome, sections: fallbackSections } };
+    if (anyHome) return { success: true, data: stripUnpublished({ ...anyHome, sections: fallbackSections }) };
     throw new NotFoundException('This store has no home page yet');
   }
 
   async getPublicPage(storeId: string, slug: string) {
     const page = await this.storePageModel.findOne({ storeId, slug, type: 'custom', status: 'published', isDelete: false }).lean();
     if (!page) throw new NotFoundException('Page not found');
-    return { success: true, data: page };
+    return { success: true, data: stripUnpublished(page) };
   }
 
   async listPublicPages(storeId: string) {

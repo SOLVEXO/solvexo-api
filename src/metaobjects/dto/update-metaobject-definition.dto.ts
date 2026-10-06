@@ -1,7 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { ApiProperty } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { ArrayMaxSize, IsArray, IsOptional, IsString, MaxLength, ValidateNested } from 'class-validator';
+import { ArrayMaxSize, IsArray, IsBoolean, IsOptional, IsString, MaxLength, ValidateNested } from 'class-validator';
 import { FieldDefinitionInputDto } from './field-definition-input.dto';
 
 // `type` is immutable once created (see the schema's own comment) — not
@@ -19,4 +19,7 @@ export class UpdateMetaobjectDefinitionDto {
   @ApiProperty({ required: false, type: [FieldDefinitionInputDto] })
   @IsOptional() @IsArray() @ArrayMaxSize(30) @ValidateNested({ each: true }) @Type(() => FieldDefinitionInputDto)
   fieldDefinitions?: FieldDefinitionInputDto[];
+
+  @ApiProperty({ required: false }) @IsOptional() @IsBoolean()
+  storefrontAccess?: boolean;
 }

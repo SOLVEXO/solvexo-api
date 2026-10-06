@@ -101,6 +101,7 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { OptionalJwtAuthGuard } from '@/auth/guards/optional-jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { IdempotencyInterceptor } from '../common/idempotency.interceptor';
@@ -141,9 +142,12 @@ export class CheckoutController {
     return this.checkoutService.deleteCheckout(userId, checkoutId);
   }
 
+  // Optional login: a logged-in buyer's active cart (weight / subtotal) decides which weight- or price-based
+  // rate tier applies; an anonymous caller just gets the zones priced for an empty cart.
+  @UseGuards(OptionalJwtAuthGuard)
   @Get('getShippingZones')
-  async getShippingZones(@Query('storeId') storeId?: string, @Query('currency') currency?: string) {
-    return this.checkoutService.getShippingZones(storeId, currency);
+  async getShippingZones(@Req() req: any, @Query('storeId') storeId?: string, @Query('currency') currency?: string) {
+    return this.checkoutService.getShippingZones(storeId, currency, req.user?.userId ?? null);
   }
 
   /** Real live carrier rates (see CheckoutService.getLiveShippingRates's own

@@ -60,6 +60,13 @@ export class MetaobjectDefinition {
   @Prop({ type: [MetaobjectFieldDefinitionSchema], default: [] })
   fieldDefinitions: MetaobjectFieldDefinition[];
 
+  // Shopify's per-definition "Storefronts" access: ON by default for
+  // metaobjects. Docs created before this field existed have no value and
+  // are treated as ON (the Shopify default; existing storefront sections
+  // already rely on them) — only an explicit false hides a definition.
+  @Prop({ type: Boolean, default: true })
+  storefrontAccess: boolean;
+
   createdAt?: Date;
   updatedAt?: Date;
 }

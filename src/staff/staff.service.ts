@@ -64,6 +64,13 @@ export class StaffService {
       .select('+passwordHash');
     if (!staff) throw new UnauthorizedException('Invalid email or password');
     if (staff.status !== 'active') throw new UnauthorizedException('This staff account is inactive');
+    // Staff act under the owning seller's account — a suspended/deleted
+    // seller's staff must not be able to sign in (JwtAuthGuard enforces the
+    // same for sessions that already exist).
+    const owner: any = await this.repos.sellerModel.findById((staff as any).sellerId).select('status isDelete').lean();
+    if (!owner || owner.isDelete || (owner.status && owner.status !== 'active')) {
+      throw new UnauthorizedException('This staff account is inactive');
+    }
     if (!(staff as any).passwordHash) {
       throw new UnauthorizedException("This invite hasn't been accepted yet — check the invite email for the setup link.");
     }

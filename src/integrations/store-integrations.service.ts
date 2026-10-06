@@ -5,7 +5,7 @@ import { DatabaseService } from '../database/databaseservice';
 import { ActivityLogService } from '../activity-log/activity-log.service';
 import { StripeConnectService } from '../stripe-connect/stripe-connect.service';
 import { TaxService } from '../tax/tax.service';
-import { ShippingRatesService } from '../shipping-rates/shipping-rates.service';
+import { ShippingRatesService, ShippingSettingsInput } from '../shipping-rates/shipping-rates.service';
 import { verifyStoreOwnershipStrict } from '../common/store-ownership.util';
 import { encryptCredential, decryptCredential, maskSecret } from '../common/credential-encryption.util';
 import { PaymentProviderRegistry } from './payment-provider.registry';
@@ -216,6 +216,11 @@ export class StoreIntegrationsService {
       return this.shippingRatesService.connect(storeId, sellerId, body.apiToken, body.originAddress);
     }
     throw new BadRequestException(`"${provider}" does not support type "${type}"`);
+  }
+
+  async updateShippingSettings(storeId: string, sellerId: string, dto: ShippingSettingsInput) {
+    await this.assertOwnedStore(storeId, sellerId);
+    return this.shippingRatesService.updateSettings(storeId, sellerId, dto);
   }
 
   private async connectPayment(storeId: string, sellerId: string, provider: StoreIntegrationProvider, body: Record<string, any>) {

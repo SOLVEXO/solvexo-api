@@ -110,12 +110,14 @@ export class MetafieldsService {
 
   /** Same shape as `getValues`, no auth — for the public storefront (a future "show this metafield on the product page" consumer; not yet wired into any theme section, a disclosed follow-up). */
   async getPublicValues(storeId: string, ownerResource: MetafieldOwnerResource, ownerId: string) {
-    return this.resolveValues(storeId, ownerResource, ownerId);
+    return this.resolveValues(storeId, ownerResource, ownerId, true);
   }
 
-  private async resolveValues(storeId: string, ownerResource: MetafieldOwnerResource, ownerId: string) {
+  private async resolveValues(storeId: string, ownerResource: MetafieldOwnerResource, ownerId: string, publicOnly = false) {
+    // Public reads only expose definitions with Storefronts access enabled
+    // (strict true: legacy docs without the field stay private).
     const [definitions, values] = await Promise.all([
-      this.definitionModel.find({ storeId, ownerResource }).lean(),
+      this.definitionModel.find({ storeId, ownerResource, ...(publicOnly ? { storefrontAccess: true } : {}) }).lean(),
       this.valueModel.find({ storeId, ownerResource, ownerId }).lean(),
     ]);
     const valueByKey = new Map(values.map(v => [`${v.namespace}:${v.key}`, v.value]));
@@ -126,6 +128,7 @@ export class MetafieldsService {
       name: def.name,
       type: def.type,
       required: def.required,
+      storefrontAccess: def.storefrontAccess === true,
       value: valueByKey.get(`${def.namespace}:${def.key}`) ?? '',
     }));
     return { success: true, data };

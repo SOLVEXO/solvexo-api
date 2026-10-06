@@ -27,6 +27,14 @@ export class StoreLocation {
   @Prop({ type: String, required: true }) name: string; // "North Karachi"
   @Prop({ type: String, default: null }) addressLine1: string | null;
   @Prop({ type: String, default: null }) city: string | null;
+  // Ship-from address parts (Shopify location address). All optional — used as the shipping origin of a
+  // shipping profile (Shippo rates/labels) and as the centre of a local-delivery radius.
+  @Prop({ type: String, default: null }) addressLine2: string | null;
+  @Prop({ type: String, default: null }) state: string | null;
+  @Prop({ type: String, default: null }) zipCode: string | null;
+  @Prop({ type: String, default: null }) country: string | null;
+  @Prop({ type: Number, default: null }) latitude: number | null;
+  @Prop({ type: Number, default: null }) longitude: number | null;
   @Prop({ type: String, default: null }) phone: string | null;
 
   // 'store' (retail floor / POS-facing) vs 'warehouse' (fulfillment-only,

@@ -36,6 +36,10 @@ import { UpdatePosSettingsDto } from './dto/update-pos-settings.dto';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { EntitlementsService } from '@/platform-plans/entitlements.service';
 
+/** Consecutive wrong PINs before an employee is locked out of PIN login, and for how long. */
+const POS_PIN_MAX_ATTEMPTS = 5;
+const POS_PIN_LOCK_MS = 15 * 60 * 1000;
+
 @Injectable()
 export class PosService {
   constructor(
@@ -168,7 +172,11 @@ export class PosService {
     if (dto.locationId !== undefined) await this.assertLocationBelongsToStore(employee.storeId, dto.locationId);
 
     const updateData: any = { ...dto };
-    if (dto.pin) updateData.pin = await bcrypt.hash(dto.pin, 10);
+    if (dto.pin) {
+      updateData.pin = await bcrypt.hash(dto.pin, 10);
+      updateData.pinFailedAttempts = 0;
+      updateData.pinLockedUntil = null;
+    }
 
     const updated = await this.r.employeeModel
       .findByIdAndUpdate(employeeId, { $set: updateData }, { new: true })
@@ -190,16 +198,54 @@ export class PosService {
 
   // ── PIN LOGIN ─────────────────────────────────────────────────────────────
 
-  async pinLogin(dto: PinLoginDto) {
+  async pinLogin(
+    dto: PinLoginDto,
+    caller: { userId: string; role: string; storeId?: string | null; sellerId?: string | null },
+  ) {
+    // The terminal's own session (seller or staff) must belong to the store
+    // whose employee PIN it is trying — otherwise any token could brute-force
+    // another store's 4-digit PINs.
+    if (caller.role === 'staff') {
+      if (!caller.storeId || caller.storeId !== dto.storeId) throw new ForbiddenException('Store not found or unauthorized');
+    } else if (caller.role === 'seller') {
+      await this.verifyStoreOwnership(dto.storeId, caller.userId);
+    } else {
+      throw new ForbiddenException('Store not found or unauthorized');
+    }
+
     const employee = await this.r.employeeModel
       .findOne({ storeId: dto.storeId, email: dto.email, isDelete: false })
-      .select('+pin');
+      .select('+pin +pinFailedAttempts +pinLockedUntil');
 
     if (!employee) throw new BadRequestException('Invalid credentials');
     if (employee.status === 'inactive') throw new BadRequestException('Employee account is inactive');
 
+    const lockedUntil: Date | null = (employee as any).pinLockedUntil ?? null;
+    if (lockedUntil && lockedUntil.getTime() > Date.now()) {
+      const minutes = Math.ceil((lockedUntil.getTime() - Date.now()) / 60000);
+      throw new BadRequestException(`Too many failed PIN attempts. Try again in ${minutes} minute(s), or ask the store owner to reset the PIN.`);
+    }
+
     const isPinValid = await bcrypt.compare(dto.pin, employee.pin);
-    if (!isPinValid) throw new BadRequestException('Invalid credentials');
+    if (!isPinValid) {
+      // Atomic so parallel guesses can't slip past the counter.
+      const after: any = await this.r.employeeModel
+        .findOneAndUpdate({ _id: employee._id }, { $inc: { pinFailedAttempts: 1 } }, { new: true })
+        .select('+pinFailedAttempts')
+        .lean();
+      if ((after?.pinFailedAttempts ?? 0) >= POS_PIN_MAX_ATTEMPTS) {
+        await this.r.employeeModel.updateOne(
+          { _id: employee._id },
+          { $set: { pinFailedAttempts: 0, pinLockedUntil: new Date(Date.now() + POS_PIN_LOCK_MS) } },
+        );
+        this.writeAuditLog({ storeId: dto.storeId, employeeId: String(employee._id), action: 'pin_locked', targetId: String(employee._id), targetType: 'employee' }).catch(() => {});
+      }
+      throw new BadRequestException('Invalid credentials');
+    }
+
+    if (((employee as any).pinFailedAttempts ?? 0) > 0 || lockedUntil) {
+      await this.r.employeeModel.updateOne({ _id: employee._id }, { $set: { pinFailedAttempts: 0, pinLockedUntil: null } });
+    }
 
     const activeSession = await this.r.registerSessionModel
       .findOne({ storeId: dto.storeId, employeeId: String(employee._id), status: 'open' })
@@ -1199,7 +1245,11 @@ export class PosService {
     if (dto.locationId !== undefined) await this.assertLocationBelongsToStore(storeId, dto.locationId);
 
     const updateData: any = { ...dto };
-    if (dto.pin) updateData.pin = await bcrypt.hash(dto.pin, 10);
+    if (dto.pin) {
+      updateData.pin = await bcrypt.hash(dto.pin, 10);
+      updateData.pinFailedAttempts = 0;
+      updateData.pinLockedUntil = null;
+    }
 
     const updated = await this.r.employeeModel
       .findByIdAndUpdate(employeeId, { $set: updateData }, { new: true })
@@ -1230,7 +1280,7 @@ export class PosService {
     if (!employee) throw new NotFoundException('Employee not found');
 
     const hashedPin = await bcrypt.hash(dto.newPin, 10);
-    await this.r.employeeModel.findByIdAndUpdate(employeeId, { pin: hashedPin });
+    await this.r.employeeModel.findByIdAndUpdate(employeeId, { pin: hashedPin, pinFailedAttempts: 0, pinLockedUntil: null });
 
     this.writeAuditLog({ storeId, employeeId: null, action: 'employee_pin_reset', targetId: employeeId, targetType: 'employee' }).catch(() => {});
     return { success: true, message: 'PIN reset successfully' };

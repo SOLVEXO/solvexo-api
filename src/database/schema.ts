@@ -13,7 +13,7 @@ export { wishList, wishListDocument, wishListSchema } from '../cart/schemas/wish
 export { Rating, RatingDocument, RatingSchema } from '../rating/schema/rating.schema';
 export { Address, AddressDocument, AddressSchema } from '../address/adress.schema';
 export { UserPaymentMethod, UserPaymentMethodDocument, UserPaymentMethodSchema } from '../payment/UserPaymentMethod.schema';
-export { ShippingZone, ShippingZoneDocument, ShippingZoneSchema } from '../checkout/shipping.schema';   
+export { ShippingZone, ShippingZoneDocument, ShippingZoneSchema, ShippingProfile, ShippingProfileDocument, ShippingProfileSchema } from '../checkout/shipping.schema';   
 export { Checkout, CheckoutDocument, CheckoutSchema } from '../checkout/checkout.schema';
 export { Order, OrderDocument, OrderSchema } from '../orders/schemas/order.schema';
 export { OrderPaymentRecord, OrderPaymentRecordDocument, OrderPaymentRecordSchema } from '../orders/schemas/order-payment-record.schema';

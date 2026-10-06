@@ -121,6 +121,7 @@ export class OrderEditingService {
     const plain: any = order.toObject();
     const so = plain.sellerOrders[soIndex];
     if (!EDITABLE.includes(so.status)) throw new BadRequestException('Only unfulfilled orders can be edited');
+    if (Array.isArray(so.shipments) && so.shipments.length > 0) throw new BadRequestException('Part of this order has already shipped, so it can no longer be edited.');
 
     const increases = additions.length > 0 || changes.some((c) => {
       const it = so.items.find((i: any) => String(i._id) === c.itemId);

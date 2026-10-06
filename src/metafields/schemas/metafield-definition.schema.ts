@@ -81,6 +81,11 @@ export class MetafieldDefinition {
   @Prop({ type: Boolean, default: false })
   required: boolean;
 
+  // Shopify's per-definition "Storefronts" access. Custom definitions are
+  // private by default; a missing field (legacy docs) is also private.
+  @Prop({ type: Boolean, default: false })
+  storefrontAccess: boolean;
+
   createdAt?: Date;
   updatedAt?: Date;
 }

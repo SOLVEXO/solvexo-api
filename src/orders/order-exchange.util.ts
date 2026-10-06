@@ -1,0 +1,86 @@
+/* eslint-disable prettier/prettier */
+import { round } from '../common/number.util';
+
+export interface ExchangeReplacementInput {
+  /** Unit price in the ORDER's currency. */
+  unitPrice: number;
+  quantity: number;
+}
+
+export interface ExchangeLineQuote {
+  /** Full replacement price (unit * qty), before the exchange credit. */
+  gross: number;
+  /** What the customer still owes for this line after the returned-items credit (0 when fully covered). */
+  netTotal: number;
+  netTax: number;
+}
+
+export interface ExchangeQuote {
+  replacementSubtotal: number;
+  replacementTax: number;
+  /** replacement subtotal + tax. */
+  replacementValue: number;
+  /** Value of the returned lines (price + tax share) that is credited against the replacement. */
+  credit: number;
+  /** replacementValue - credit: > 0 the customer pays, < 0 the store refunds, 0 even exchange. */
+  difference: number;
+  amountDue: number;
+  refundDue: number;
+  lines: ExchangeLineQuote[];
+}
+
+/**
+ * Shopify-style exchange maths, in the order's own currency.
+ *
+ * The returned items' value (`credit`) is set against the replacement items' value (price + tax at the original order's
+ * effective tax rate). The exchange order only carries the NEW money: each replacement line is scaled down by the same
+ * factor so that  sum(netTotal + netTax) == amountDue  (0 when the credit covers everything). That keeps revenue,
+ * the ledger and later cancel/refund caps on the exchange order honest — the part covered by the credit was already paid
+ * on the original order and is not counted twice.
+ */
+export function quoteExchange(lines: ExchangeReplacementInput[], effTaxRate: number, credit: number): ExchangeQuote {
+  const rate = effTaxRate > 0 ? effTaxRate : 0;
+  const grossLines = lines.map((l) => round(l.unitPrice * l.quantity));
+  const replacementSubtotal = round(grossLines.reduce((s, g) => s + g, 0));
+  const replacementTax = round(replacementSubtotal * rate);
+  const replacementValue = round(replacementSubtotal + replacementTax);
+  const safeCredit = round(Math.max(0, credit));
+  const difference = round(replacementValue - safeCredit);
+  const factor = difference > 0 && replacementValue > 0 ? difference / replacementValue : 0;
+  const quoted: ExchangeLineQuote[] = grossLines.map((gross) => ({
+    gross,
+    netTotal: round(gross * factor),
+    netTax: round(gross * rate * factor),
+  }));
+  const amountDue = difference > 0 ? round(quoted.reduce((s, l) => s + l.netTotal + l.netTax, 0)) : 0;
+  return {
+    replacementSubtotal, replacementTax, replacementValue, credit: safeCredit, difference,
+    amountDue, refundDue: difference < 0 ? round(-difference) : 0, lines: quoted,
+  };
+}
+
+/** Same roll-up `returnAction` applies to a sub-order's return status, for a set of per-item return statuses. */
+export function deriveSellerReturnStatus(itemStatuses: string[]): string {
+  if (itemStatuses.length === 0) return 'none';
+  const allApproved = itemStatuses.every((s) => s === 'approved');
+  const anyApproved = itemStatuses.some((s) => s === 'approved');
+  const allRequested = itemStatuses.every((s) => s === 'requested');
+  const anyRequested = itemStatuses.some((s) => s === 'requested');
+  const allRejected = itemStatuses.filter((s) => s !== 'none').every((s) => s === 'rejected');
+  if (allApproved) return 'approved';
+  if (anyApproved) return 'partial_approved';
+  if (allRequested) return 'requested';
+  if (anyRequested) return 'partial_requested';
+  if (allRejected) return 'rejected';
+  return 'none';
+}
+
+/** A return line may be resolved by an exchange only while it is still waiting for a decision and was not already exchanged. */
+export function isExchangeableReturnLine(item: { type?: string; returnStatus?: string; exchangeOrderId?: string | null; status?: string }): { ok: boolean; reason?: string } {
+  if (item.type !== 'physical') return { ok: false, reason: 'Only physical items can be exchanged' };
+  if (item.exchangeOrderId) return { ok: false, reason: 'This item was already exchanged' };
+  if (item.returnStatus === 'approved') return { ok: false, reason: 'This return was already approved and refunded — create a new order for the replacement instead' };
+  if (item.returnStatus !== 'requested') return { ok: false, reason: 'This item has no pending return request' };
+  if (item.status === 'cancelled' || item.status === 'refunded') return { ok: false, reason: 'This item was already cancelled or refunded' };
+  return { ok: true };
+}

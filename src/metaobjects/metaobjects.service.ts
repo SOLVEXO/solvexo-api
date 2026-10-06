@@ -12,6 +12,12 @@ import { SetEntryFieldsDto } from './dto/set-entry-fields.dto';
 // used as a real type name.
 const RESERVED_METAOBJECT_TYPES = new Set(['definitions', 'entry']);
 
+// Storefronts access is ON by default for metaobjects (Shopify); a legacy
+// definition without the field counts as ON, only an explicit false hides it.
+const STOREFRONT_ACCESSIBLE = { storefrontAccess: { $ne: false } };
+// Explicit public projection for entries (no audit/internal fields).
+const PUBLIC_ENTRY_FIELDS = 'storeId type displayName fields';
+
 @Injectable()
 export class MetaobjectsService {
   constructor(private readonly databaseService: DatabaseService) {}
@@ -193,14 +199,21 @@ export class MetaobjectsService {
    *  every "team_member" entry). No auth; a store's metaobject content is
    *  public storefront data, same visibility level as its products. */
   async getPublicEntriesByType(storeId: string, type: string) {
-    const entries = await this.entryModel.find({ storeId, type }).sort({ createdAt: -1 }).lean();
+    // Only when the type's definition has Storefronts access on.
+    const definition = await this.definitionModel.findOne({ storeId, type, ...STOREFRONT_ACCESSIBLE }).select('_id').lean();
+    if (!definition) return { success: true, data: [] };
+    const entries = await this.entryModel.find({ storeId, type }).select(PUBLIC_ENTRY_FIELDS).sort({ createdAt: -1 }).lean();
     return { success: true, data: entries };
   }
 
   async getPublicEntry(storeId: string, entryId: string) {
-    const entry = await this.entryModel.findOne({ _id: entryId, storeId }).lean();
+    const entry = await this.entryModel.findOne({ _id: entryId, storeId }).select(PUBLIC_ENTRY_FIELDS + ' definitionId').lean();
     if (!entry) throw new NotFoundException('Entry not found');
-    return { success: true, data: entry };
+    const definition = await this.definitionModel.findOne({ _id: entry.definitionId, storeId, ...STOREFRONT_ACCESSIBLE }).select('_id').lean();
+    // Same 404 as a missing entry — don't reveal that a private entry exists.
+    if (!definition) throw new NotFoundException('Entry not found');
+    const { definitionId: _definitionId, ...data } = entry as any;
+    return { success: true, data };
   }
 
   /** The store's own list of defined types (id/type/name only, no field
@@ -208,7 +221,7 @@ export class MetaobjectsService {
    *  should this list show?" picker, the same way `apiListCollections`
    *  feeds a collection picker. */
   async getPublicDefinitions(storeId: string) {
-    const definitions = await this.definitionModel.find({ storeId }).select('type name').sort({ createdAt: 1 }).lean();
+    const definitions = await this.definitionModel.find({ storeId, ...STOREFRONT_ACCESSIBLE }).select('type name').sort({ createdAt: 1 }).lean();
     return { success: true, data: definitions };
   }
 }

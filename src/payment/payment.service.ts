@@ -2355,6 +2355,8 @@ export class PaymentService {
         ratePerUSD,
         sellerOrders,
         shippingAddress,
+        fulfillmentMethod: checkout.fulfillmentMethod === 'pickup' ? 'pickup' : 'ship',
+        pickupLocation: checkout.fulfillmentMethod === 'pickup' ? (checkout.pickupLocation ?? null) : null,
         subtotal,
         shippingFee,
         taxAmount: taxTotal,

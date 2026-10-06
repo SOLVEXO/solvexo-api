@@ -37,6 +37,8 @@ export class StoreLocationService {
     const location = await this.locationModel.create({
       storeId, sellerId, name: dto.name,
       addressLine1: dto.addressLine1 ?? null, city: dto.city ?? null, phone: dto.phone ?? null,
+      addressLine2: dto.addressLine2 ?? null, state: dto.state ?? null, zipCode: dto.zipCode ?? null,
+      country: dto.country ?? null, latitude: dto.latitude ?? null, longitude: dto.longitude ?? null,
       type: dto.type ?? 'store',
       isDefault: existingCount === 0,
       status: 'active',
@@ -74,6 +76,12 @@ export class StoreLocationService {
     if (dto.addressLine1 !== undefined) location.addressLine1 = dto.addressLine1 ?? null;
     if (dto.city !== undefined) location.city = dto.city ?? null;
     if (dto.phone !== undefined) location.phone = dto.phone ?? null;
+    if (dto.addressLine2 !== undefined) location.addressLine2 = dto.addressLine2 ?? null;
+    if (dto.state !== undefined) location.state = dto.state ?? null;
+    if (dto.zipCode !== undefined) location.zipCode = dto.zipCode ?? null;
+    if (dto.country !== undefined) location.country = dto.country ?? null;
+    if (dto.latitude !== undefined) location.latitude = dto.latitude ?? null;
+    if (dto.longitude !== undefined) location.longitude = dto.longitude ?? null;
     if (dto.type !== undefined) location.type = dto.type;
     if (dto.status !== undefined) location.status = dto.status;
 

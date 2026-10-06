@@ -4,6 +4,21 @@ import { FxSnapshot, FxSnapshotSchema } from '../../exchange-rate/schemas/exchan
 
 export type OrderDocument = HydratedDocument<Order>;
 
+/** Shippo RETURN label bought by the seller for an approved return (buyer -> store). Cost/rate id are seller-only. */
+@Schema({ _id: false })
+export class ReturnLabel {
+  @Prop({ type: String, default: null }) labelUrl: string | null;
+  @Prop({ type: String, default: null }) trackingNumber: string | null;
+  @Prop({ type: String, default: null }) trackingUrl: string | null;
+  @Prop({ type: String, default: null }) carrier: string | null;
+  @Prop({ type: Number, default: null }) cost: number | null;
+  @Prop({ type: String, default: null }) currency: string | null;
+  @Prop({ type: String, default: null }) rateId: string | null;
+  @Prop({ type: Date, default: null }) purchasedAt: Date | null;
+}
+
+export const ReturnLabelSchema = SchemaFactory.createForClass(ReturnLabel);
+
 @Schema({ _id: true })
 export class OrderItem {
   @Prop({ type: String, required: true })
@@ -149,6 +164,16 @@ export class OrderItem {
 
   @Prop({ type: String, default: null })
   returnRejectReason!: string | null;
+
+  @Prop({ type: ReturnLabelSchema, default: null })
+  returnLabel!: ReturnLabel | null;
+
+  // Shopify exchange: set when this return line was resolved by an EXCHANGE (the replacement order's id / number).
+  @Prop({ type: String, default: null })
+  exchangeOrderId!: string | null;
+
+  @Prop({ type: String, default: null })
+  exchangeOrderNumber!: string | null;
 }
 
 export const OrderItemSchema = SchemaFactory.createForClass(OrderItem);
@@ -163,9 +188,59 @@ export class OrderTracking {
 
   @Prop({ type: String, default: null })
   trackingUrl: string | null;
+
+  // Merchant-only shipping-label details (Shippo purchase). Stripped from every
+  // buyer-facing order response (see toBuyerSafeOrder). Absent on older orders.
+  @Prop({ type: String, default: null })
+  labelUrl?: string | null;
+
+  @Prop({ type: String, default: null })
+  labelRateId?: string | null;
+
+  @Prop({ type: Number, default: null })
+  labelCost?: number | null;
+
+  @Prop({ type: String, default: null })
+  labelCurrency?: string | null;
+
+  @Prop({ type: Date, default: null })
+  labelPurchasedAt?: Date | null;
 }
 
 export const OrderTrackingSchema = SchemaFactory.createForClass(OrderTracking);
+
+/** One line of a shipment: which order line (OrderItem._id) and how many units of it. */
+@Schema({ _id: false })
+export class ShipmentItem {
+  @Prop({ type: String, required: true })
+  itemId: string;
+
+  @Prop({ type: Number, required: true, min: 1 })
+  quantity: number;
+}
+
+export const ShipmentItemSchema = SchemaFactory.createForClass(ShipmentItem);
+
+/** Shopify "fulfillment": a subset (or all) of a sub-order's unit quantities leaving together with one tracking record. */
+@Schema({ _id: true })
+export class Shipment {
+  @Prop({ type: [ShipmentItemSchema], default: [] })
+  items: ShipmentItem[];
+
+  @Prop({ type: OrderTrackingSchema, default: null })
+  tracking: OrderTracking | null;
+
+  @Prop({ type: Date, default: null })
+  shippedAt: Date | null;
+
+  @Prop({ type: Date, default: null })
+  deliveredAt: Date | null;
+
+  @Prop({ type: Date, default: null })
+  createdAt: Date | null;
+}
+
+export const ShipmentSchema = SchemaFactory.createForClass(Shipment);
 
 // ek store ka hissa — status items se derive hota hai
 @Schema({ _id: true })
@@ -281,8 +356,17 @@ export class SellerOrder {
   })
   status: string;
 
+  // Legacy single tracking — always mirrors the LATEST shipment's tracking so older readers keep working.
   @Prop({ type: OrderTrackingSchema, default: null })
   tracking: OrderTracking | null;
+
+  // Shopify "fulfillments" — empty/absent on orders that never used the shipment flow (use `tracking` then).
+  @Prop({ type: [ShipmentSchema], default: [] })
+  shipments: Shipment[];
+
+  // Local-pickup orders: when the seller marked the order "ready for pickup" (status 'shipped' semantics, no tracking).
+  @Prop({ type: Date, default: null })
+  pickupReadyAt: Date | null;
 
   @Prop({ type: Date, default: null })
   shippedAt: Date | null;
@@ -400,6 +484,13 @@ export class Order {
   // digital-only order me null
   @Prop({ type: OrderShippingAddressSchema, default: null })
   shippingAddress: OrderShippingAddress | null;
+
+  // Shopify local pickup: 'pickup' orders have no shippingAddress; the pickup point is snapshotted here.
+  @Prop({ type: String, enum: ['ship', 'pickup'], default: 'ship' })
+  fulfillmentMethod: 'ship' | 'pickup';
+
+  @Prop({ type: { _id: false, name: { type: String, default: null }, address: { type: String, default: null }, instructions: { type: String, default: null } }, default: null })
+  pickupLocation: { name: string | null; address: string | null; instructions: string | null } | null;
 
   @Prop({ required: true, default: 0 })
   subtotal: number;
@@ -533,6 +624,10 @@ export class Order {
   // Shopify Notes card — merchant-only internal note about this order.
   @Prop({ type: String, default: '' })
   note: string;
+
+  // Set on an EXCHANGE order (Shopify): the original order and the return lines this order replaces.
+  @Prop({ type: Object, default: null })
+  exchangeOf: { orderId: string; orderNumber: string; itemIds: string[] } | null;
 
   // Overall derived status — see `order-status.util.ts#deriveOrderStatus`,
   // the ONE function that computes this value from `sellerOrders[].status`;

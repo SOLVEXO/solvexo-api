@@ -408,6 +408,16 @@ export class Store {
   })
   taxRegions: { country: string; state: string | null; rate: number }[];
 
+  // Shopify "Charge tax on shipping rates": when true, the shipping fee is part of the taxable
+  // base (same rate that applies to the items). Default false = prior behaviour (shipping untaxed).
+  @Prop({ type: Boolean, default: false })
+  taxShipping!: boolean;
+
+  // Shopify international checkout notice: "Duties and import taxes are not included — you may be charged on
+  // delivery" shown to buyers whose shipping country differs from the store country. Default on.
+  @Prop({ type: Boolean, default: true })
+  showDutiesNotice!: boolean;
+
   @Prop({
     type: String,
     enum: Object.values(SellerType),

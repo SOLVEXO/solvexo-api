@@ -20,6 +20,7 @@ import * as appleSignin from 'apple-signin-auth';
 import { stat } from 'fs';
 import { RedisService } from '../redis/redis.service';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
+import { generateOtp, assertOtpAttempt } from '@/common/otp.util';
 
 @Injectable()
 export class AuthService {
@@ -161,7 +162,7 @@ export class AuthService {
         await this.assertValidStoreId(storeId);
       }
 
-      const otp = Math.floor(100000 + Math.random() * 900000).toString();
+      const otp = generateOtp();
       const otpExpiresAt = new Date(Date.now() + 5 * 60 * 1000);
 
       const hashedPassword = await bcrypt.hash(password, 10);
@@ -573,10 +574,11 @@ export class AuthService {
         throw new UnauthorizedException('User already verified');
       }
 
-      const newOtp = Math.floor(100000 + Math.random() * 900000).toString();
+      const newOtp = generateOtp();
       const otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
       user.otp = newOtp;
+      user.otpAttempts = 0;
       user.otpExpiresAt = otpExpiresAt;
       await user.save();
 
@@ -620,9 +622,7 @@ export class AuthService {
         throw new UnauthorizedException('User already verified');
       }
 
-      if (user.otp !== otp) {
-        throw new UnauthorizedException('Invalid OTP');
-      }
+      await assertOtpAttempt(userModel, user._id, otp);
 
       if (user.otpExpiresAt && new Date() > user.otpExpiresAt) {
         throw new UnauthorizedException('OTP has expired');
@@ -714,10 +714,11 @@ export class AuthService {
       // no-ops but still reports success, exactly as a real user's request
       // would look from the outside.
       if (user) {
-        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        const otp = generateOtp();
         const otpExpiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
 
         user.otp = otp;
+        user.otpAttempts = 0;
         user.otpExpiresAt = otpExpiresAt;
         await user.save();
 
@@ -761,9 +762,7 @@ export class AuthService {
         throw new UnauthorizedException('User not found');
       }
 
-      if (user.otp !== otp) {
-        throw new UnauthorizedException('Invalid OTP');
-      }
+      await assertOtpAttempt(userModel, user._id, otp);
 
       const now = new Date();
       if (!user.otpExpiresAt || now > user.otpExpiresAt) {
@@ -775,6 +774,10 @@ export class AuthService {
       user.password = hashedPassword;
       user.otp = null;
       user.otpExpiresAt = null;
+      // A reset must kill every session issued with the old password:
+      // JwtAuthGuard rejects any token whose tokenVersion claim is stale
+      // (Redis sessions are keyed by token, so they can't be enumerated).
+      user.tokenVersion = (user.tokenVersion ?? 0) + 1;
       await user.save();
 
       return {
@@ -813,9 +816,7 @@ export class AuthService {
         throw new UnauthorizedException('User not found');
       }
 
-      if (user.otp !== otp) {
-        throw new UnauthorizedException('Invalid OTP');
-      }
+      await assertOtpAttempt(userModel, user._id, otp);
 
       if (!user.otpExpiresAt || new Date() > user.otpExpiresAt) {
         throw new UnauthorizedException('OTP has expired');

@@ -14,7 +14,7 @@ import { UploadService } from './upload.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
-import { publicUploadFileFilter, privateUploadFileFilter } from './upload-file-validation';
+import { publicUploadFileFilter, privateUploadFileFilter, assertFileSignature } from './upload-file-validation';
 
 @Controller('api/upload')
 @UseGuards(JwtAuthGuard)
@@ -30,6 +30,7 @@ export class UploadController {
   }))
   async uploadFile(@UploadedFile() file: Express.Multer.File) {
     if (!file) throw new BadRequestException('No file uploaded');
+    assertFileSignature(file);
     const result = await this.uploadService.uploadFile(file);
     return { success: true, message: 'File uploaded successfully', data: result };
   }
@@ -55,6 +56,7 @@ export class UploadController {
   }))
   async uploadPrivateFile(@UploadedFile() file: Express.Multer.File, @Body('purpose') purpose?: string) {
     if (!file) throw new BadRequestException('No file uploaded');
+    assertFileSignature(file);
     // Only a known purpose gets its own folder — anything else (including
     // omitted) keeps the original digital-products default so that flow is
     // never affected by this addition.

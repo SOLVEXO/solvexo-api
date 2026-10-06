@@ -51,11 +51,23 @@ export class JwtAuthGuard extends AuthGuard('jwt') {
       if (model) {
         const account = await model
           .findById(user.userId)
-          .select('tokenVersion')
+          .select(user.role === 'staff' ? 'tokenVersion sellerId status' : 'tokenVersion')
           .lean();
         const currentTokenVersion = (account as any)?.tokenVersion ?? 0;
         if (!account || currentTokenVersion !== (user.tokenVersion ?? 0)) {
           throw new UnauthorizedException('Session revoked, please login again');
+        }
+        // Staff sessions live and die with the owning seller: suspending or
+        // deleting the seller does not touch StaffMember.tokenVersion, so
+        // check the owner's status here.
+        if (user.role === 'staff') {
+          const owner: any = await this.databaseService.repositories.sellerModel
+            .findById((account as any).sellerId)
+            .select('status isDelete')
+            .lean();
+          if (!owner || owner.isDelete || (owner.status && owner.status !== 'active')) {
+            throw new UnauthorizedException('Session revoked, please login again');
+          }
         }
       }
     }

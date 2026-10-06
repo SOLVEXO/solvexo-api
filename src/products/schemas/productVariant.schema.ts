@@ -135,6 +135,27 @@ export class ProductVariant {
   @Prop({ type: String, default: null })
   shippingWeight!: string | null;
 
+  // Package dimensions in cm (optional) — Shopify variant "Package dimensions".
+  @Prop({ type: Number, default: null })
+  length!: number | null;
+
+  @Prop({ type: Number, default: null })
+  width!: number | null;
+
+  @Prop({ type: Number, default: null })
+  height!: number | null;
+
+  // Shopify "Customs information" (optional) — used to build the customs declaration of an
+  // international shipping label. ISO-3166 alpha-2 origin + HS code (6-10 digits, dots allowed).
+  @Prop({ type: String, default: null })
+  countryOfOrigin!: string | null;
+
+  @Prop({ type: String, default: null })
+  hsCode!: string | null;
+
+  @Prop({ type: String, default: null })
+  customsDescription!: string | null;
+
   @Prop({ type: [String], default: [] })
   images: string[];
 

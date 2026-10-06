@@ -8,6 +8,7 @@ import { DatabaseService } from '@/database/databaseservice';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { buildDiffMetadata } from '@/common/activity-diff.util';
 import { CreateVariantDto } from './dto/create-variant.dto';
+import { parseCustomsInput } from '@/shipping-rates/customs.util';
 import { UpdateVariantDto } from './dto/update-variant.dto';
 import {
   optionNameSet,
@@ -113,6 +114,10 @@ export class ProductVariantsService {
       dto.sku ||
       `SKU-${product._id.toString().slice(-6).toUpperCase()}-${Date.now().toString().slice(-4)}`;
 
+    const customsParsed = parseCustomsInput(dto);
+    if (customsParsed.error) throw new BadRequestException(customsParsed.error);
+    const customsForCreate = { countryOfOrigin: null, hsCode: null, customsDescription: null, ...customsParsed.value };
+
     const variant = await productVariantModel.create({
       productId,
       sku,
@@ -125,6 +130,10 @@ export class ProductVariantsService {
       unlimitedStock: !!dto.unlimitedStock,
       allowBackorder: !!dto.allowBackorder,
       shippingWeight: dto.shippingWeight ?? null,
+      length: dto.length ?? null,
+      width: dto.width ?? null,
+      height: dto.height ?? null,
+      ...customsForCreate,
       images: dto.images ?? [],
       isDefault: existing.length === 0,
     });
@@ -179,6 +188,14 @@ export class ProductVariantsService {
       update.unlimitedStock = !!dto.unlimitedStock;
     if (dto.shippingWeight !== undefined)
       update.shippingWeight = dto.shippingWeight;
+    if (dto.length !== undefined) update.length = dto.length;
+    if (dto.width !== undefined) update.width = dto.width;
+    if (dto.height !== undefined) update.height = dto.height;
+    {
+      const customs = parseCustomsInput(dto);
+      if (customs.error) throw new BadRequestException(customs.error);
+      Object.assign(update, customs.value);
+    }
     if (dto.images !== undefined) update.images = dto.images;
     if (dto.sku !== undefined) update.sku = dto.sku;
     if (dto.barcode !== undefined) update.barcode = dto.barcode;

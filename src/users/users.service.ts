@@ -6,12 +6,16 @@ import {
 } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
 import { DatabaseService } from '@/database/databaseservice';
+import { RedisService } from '@/redis/redis.service';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
 
 @Injectable()
 export class UsersService {
-  constructor(private readonly db: DatabaseService) {}
+  constructor(
+    private readonly db: DatabaseService,
+    private readonly redisService: RedisService,
+  ) {}
 
   private get userModel() {
     return this.db.repositories.userModel;
@@ -81,7 +85,7 @@ export class UsersService {
   // Buyers and sellers are separate Mongoose collections (see
   // auth.service.ts's login/editProfile/etc.) — change-password must branch
   // on role the same way, or it 404s for every seller/admin caller.
-  async changePassword(userId: string, role: string, dto: ChangePasswordDto) {
+  async changePassword(userId: string, role: string, dto: ChangePasswordDto, currentToken?: string) {
     const { currentPassword, newPassword } = dto;
 
     let model;
@@ -109,7 +113,12 @@ export class UsersService {
       throw new UnauthorizedException('Current password is incorrect');
 
     user.password = await bcrypt.hash(newPassword, 10);
+    // Revoke every session issued under the old password (JwtAuthGuard
+    // rejects a stale tokenVersion claim), and drop this request's own
+    // Redis session key right away — the caller must sign in again.
+    user.tokenVersion = (user.tokenVersion ?? 0) + 1;
     await user.save();
+    if (currentToken) await this.redisService.del(currentToken);
 
     return {
       success: true,

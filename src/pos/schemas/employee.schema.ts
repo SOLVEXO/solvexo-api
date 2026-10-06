@@ -26,6 +26,14 @@ export class Employee {
   @Prop({ select: false })
   pin: string;                  // 4-digit POS login PIN (hashed)
 
+  // PIN brute-force lockout (4-digit PIN = 10k combos): consecutive wrong
+  // PINs; at the limit the employee is locked until pinLockedUntil.
+  @Prop({ default: 0, select: false })
+  pinFailedAttempts: number;
+
+  @Prop({ type: Date, default: null, select: false })
+  pinLockedUntil: Date | null;
+
   @Prop({ enum: Object.values(EmployeeRole), default: EmployeeRole.CASHIER })
   role: string;
 

@@ -186,7 +186,7 @@ export class StoreController {
     // fused into this same general-settings endpoint (Store has no
     // dedicated tax route), so the split is enforced imperatively here,
     // same pattern as products' price/cost split.
-    if (req.user.role === 'staff' && updateData.taxRate !== undefined) {
+    if (req.user.role === 'staff' && (updateData.taxRate !== undefined || updateData.taxShipping !== undefined)) {
       const permissions: string[] = Array.isArray(req.user.permissions) ? req.user.permissions : [];
       if (!permissions.includes('settings.taxes.manage')) {
         throw new ForbiddenException("Your staff account doesn't have permission to manage tax settings.");

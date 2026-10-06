@@ -6,6 +6,8 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  Matches,
+  MaxLength,
   Min,
   ValidateNested,
 } from 'class-validator';
@@ -41,6 +43,36 @@ export class UpdateVariantDto {
   @IsOptional()
   @IsString()
   shippingWeight?: string;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  length?: number | null;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  width?: number | null;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  height?: number | null;
+
+  @IsOptional()
+  @IsString()
+  @Matches(/^([A-Za-z]{2})?$/, { message: 'countryOfOrigin must be a 2-letter ISO country code' })
+  countryOfOrigin?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @Matches(/^(\d{6,10}|\d[\d.]{4,12}\d)?$/, { message: 'hsCode must be 6 to 10 digits (dots allowed)' })
+  hsCode?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  customsDescription?: string | null;
 
   @IsOptional()
   @IsArray()

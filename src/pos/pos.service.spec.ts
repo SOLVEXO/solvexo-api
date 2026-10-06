@@ -87,3 +87,76 @@ describe('PosService — employee token verification', () => {
     });
   });
 });
+
+describe('PosService — pinLogin lockout and caller pinning', () => {
+  const ORIGINAL_ENV = process.env;
+  const bcrypt = require('bcrypt');
+
+  beforeEach(() => {
+    process.env = { ...ORIGINAL_ENV, JWT_SECRET: 'test-secret' };
+  });
+  afterEach(() => {
+    process.env = ORIGINAL_ENV;
+  });
+
+  async function makeService(overrides: Record<string, any> = {}) {
+    const employee: any = {
+      _id: 'emp1',
+      sellerId: 'seller1',
+      role: 'cashier',
+      status: 'active',
+      pin: await bcrypt.hash('1234', 4),
+      pinFailedAttempts: 0,
+      pinLockedUntil: null,
+      toObject() { return { ...this }; },
+      ...overrides,
+    };
+    const employeeModel: any = {
+      findOne: jest.fn(() => ({ select: async () => employee })),
+      findOneAndUpdate: jest.fn(() => ({
+        select: () => ({ lean: async () => { employee.pinFailedAttempts += 1; return employee; } }),
+      })),
+      updateOne: jest.fn(async (_q: any, u: any) => { Object.assign(employee, u.$set); }),
+    };
+    const repos: any = {
+      employeeModel,
+      storeModel: { findOne: jest.fn(async (q: any) => (q.sellerId === 'seller1' ? { _id: q._id } : null)) },
+      registerSessionModel: { findOne: () => ({ lean: async () => null }) },
+      posAuditLogModel: { create: jest.fn(async () => undefined) },
+    };
+    const service = new PosService({ repositories: repos } as any, { log: jest.fn() } as any, {} as any);
+    return { service, employee, employeeModel };
+  }
+
+  const seller = { userId: 'seller1', role: 'seller' };
+  const dto = (pin: string) => ({ storeId: 'store1', email: 'e@x.com', pin }) as any;
+
+  it('locks the employee after 5 wrong PINs and then rejects even the right PIN', async () => {
+    const { service, employee } = await makeService();
+    for (let i = 0; i < 5; i++) {
+      await expect(service.pinLogin(dto('0000'), seller)).rejects.toThrow('Invalid credentials');
+    }
+    expect(employee.pinLockedUntil).toBeInstanceOf(Date);
+    await expect(service.pinLogin(dto('1234'), seller)).rejects.toThrow(/Too many failed PIN attempts/);
+  });
+
+  it('succeeds with the right PIN and clears the failure counter', async () => {
+    const { service, employee } = await makeService({ pinFailedAttempts: 3 });
+    const res = await service.pinLogin(dto('1234'), seller);
+    expect(res.success).toBe(true);
+    expect(employee.pinFailedAttempts).toBe(0);
+  });
+
+  it('allows login again once the lock has expired', async () => {
+    const { service } = await makeService({ pinLockedUntil: new Date(Date.now() - 1000) });
+    await expect(service.pinLogin(dto('1234'), seller)).resolves.toMatchObject({ success: true });
+  });
+
+  it('rejects a buyer/admin caller, a seller of another store, and staff of another store', async () => {
+    const { service } = await makeService();
+    await expect(service.pinLogin(dto('1234'), { userId: 'u', role: 'user' })).rejects.toThrow(ForbiddenException);
+    await expect(service.pinLogin(dto('1234'), { userId: 'other', role: 'seller' })).rejects.toThrow(ForbiddenException);
+    await expect(service.pinLogin(dto('1234'), { userId: 's', role: 'staff', storeId: 'store2' })).rejects.toThrow(ForbiddenException);
+    await expect(service.pinLogin(dto('1234'), { userId: 's', role: 'staff', storeId: 'store1' })).resolves.toMatchObject({ success: true });
+  });
+});

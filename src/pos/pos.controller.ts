@@ -135,10 +135,14 @@ export class PosController {
   // PIN LOGIN  (any authenticated user — POS terminal uses seller JWT)
   // ═══════════════════════════════════════════════════════════════════════════
 
-  @UseGuards(JwtAuthGuard)
+  // Seller (owner) or staff of that store only — a buyer/admin token has no
+  // business minting POS employee sessions; the service additionally pins the
+  // caller to the target store.
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller', 'staff')
   @Post('pin-login')
-  pinLogin(@Body() dto: PinLoginDto) {
-    return this.posService.pinLogin(dto);
+  pinLogin(@Req() req: any, @Body() dto: PinLoginDto) {
+    return this.posService.pinLogin(dto, { userId: req.user.userId, role: req.user.role, storeId: req.user.storeId, sellerId: req.user.sellerId });
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)

@@ -50,7 +50,6 @@ const MAX_CUSTOM_CSS_LENGTH = 20_000;
 // URL inside `url(...)`, and the long-deprecated IE-only `expression()`
 // dynamic-property mechanism) — blocked outright rather than left as a
 // theoretical gap.
-const CSS_INJECTION_PATTERNS = [/javascript\s*:/i, /expression\s*\(/i];
 
 /** Real validation, not just a free-text field: length-capped, scanned for
  *  the known CSS-level injection vectors above. Returns the trimmed value
@@ -64,10 +63,10 @@ function validateCustomCss(customCss: string | null | undefined): string | null 
   if (trimmed.length > MAX_CUSTOM_CSS_LENGTH) {
     throw new BadRequestException(`Custom CSS cannot exceed ${MAX_CUSTOM_CSS_LENGTH.toLocaleString()} characters`);
   }
-  for (const pattern of CSS_INJECTION_PATTERNS) {
-    if (pattern.test(trimmed)) {
-      throw new BadRequestException('Custom CSS contains a disallowed pattern (javascript: URLs and expression() are not permitted)');
-    }
+  // Shopify theme CSS may use url() and @import (background images, web
+  // fonts), so only block what can break out of the <style> tag or run script.
+  if (/<\s*\/?\s*(script|style|iframe)/i.test(trimmed) || /javascript\s*:/i.test(trimmed) || /expression\s*\(/i.test(trimmed)) {
+    throw new BadRequestException('Invalid CSS: script or HTML tags are not allowed');
   }
   return trimmed;
 }
@@ -444,7 +443,7 @@ export class StoreThemeService {
    *  storefront does — a follow-up, not a correctness risk. */
   async getPublic(storeId: string) {
     const theme = await this.storeThemeModel
-      .findOne({ storeId, status: 'active' }, { draft: 0, versions: 0 })
+      .findOne({ storeId, status: 'active' }, { draft: 0, versions: 0, previewToken: 0 })
       .lean();
     if (theme?.header) {
       theme.header = await this.resolveHeaderMenu(storeId, theme.header) as any;

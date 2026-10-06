@@ -121,7 +121,9 @@ export class AdminUsersService {
     // so the union call is widened to `any` here rather than fighting Mongoose's
     // overload resolution for two structurally different models.
     const model: any = role === 'buyer' ? this.r.userModel : this.r.sellerModel;
-    const doc = await model.findOne({ _id: id, isDelete: false });
+    // Credentials/OTP state never leave this service (the doc is returned
+    // as-is by getById) — kept off the query itself rather than stripped later.
+    const doc = await model.findOne({ _id: id, isDelete: false }).select('-password -otp -otpExpiresAt -otpAttempts');
     if (!doc) throw new NotFoundException(`${role} not found`);
     return doc;
   }
@@ -135,10 +137,12 @@ export class AdminUsersService {
       const stores = await this.r.storeModel
         .find({ sellerId: id, isDelete: false }, { name: 1, slug: 1, status: 1, plan: 1 })
         .lean();
-      return { success: true, data: { ...(doc as any).toObject(), stores } };
+      const { password: _p, otp: _o, otpExpiresAt: _e, otpAttempts: _a, ...safe } = (doc as any).toObject();
+      return { success: true, data: { ...safe, stores } };
     }
 
-    return { success: true, data: doc };
+    const { password: _p, otp: _o, otpExpiresAt: _e, otpAttempts: _a, ...safe } = (doc as any).toObject();
+    return { success: true, data: safe };
   }
 
   async suspend(role: 'buyer' | 'seller', id: string, meta: AuditMeta) {
