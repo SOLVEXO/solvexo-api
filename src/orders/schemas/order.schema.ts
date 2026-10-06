@@ -151,10 +151,32 @@ export class OrderItem {
   // return fields
   @Prop({
     type: String,
-    enum: ['none', 'requested', 'approved', 'rejected'],
+    // Shopify flow: requested -> approved -> received -> refunded | exchanged (rejected / closed end it early).
+    // Pre-flow data: `approved` + refundedAmount>0 (or exchangeOrderId) = already refunded (see common/return-status.util.ts).
+    enum: ['none', 'requested', 'approved', 'rejected', 'received', 'refunded', 'exchanged', 'closed'],
     default: 'none',
   })
   returnStatus!: string;
+
+  @Prop({ type: Date, default: null })
+  returnApprovedAt!: Date | null;
+
+  @Prop({ type: Date, default: null })
+  returnReceivedAt!: Date | null;
+
+  // What the seller did with the returned units when marking them received.
+  @Prop({ type: String, enum: ['restock', 'damaged', 'none', null], default: null })
+  returnRestock!: string | null;
+
+  @Prop({ type: Date, default: null })
+  returnResolvedAt!: Date | null;
+
+  @Prop({ type: String, enum: ['refund', 'exchange', 'closed', null], default: null })
+  returnResolution!: string | null;
+
+  // Where a refund went: 'original' payment method or 'store_credit'.
+  @Prop({ type: String, default: null })
+  returnRefundTo!: string | null;
 
   @Prop({ type: String, default: null })
   returnReason!: string | null;
@@ -388,6 +410,9 @@ export class SellerOrder {
       'requested',
       'partial_approved',
       'approved',
+      'partial_received',
+      'received',
+      'resolved',
       'rejected',
     ],
     default: 'none',

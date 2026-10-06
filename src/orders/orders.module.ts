@@ -11,6 +11,7 @@
 import { Module } from '@nestjs/common';
 import { OrderEditingService } from './order-editing.service';
 import { OrderExchangeService } from './order-exchange.service';
+import { OrderReturnsService } from './order-returns.service';
 import { OrdersController } from './orders.controller';
 import { OrdersService } from './orders.service';
 import { AuthModule } from '@/auth/auth.module';
@@ -46,7 +47,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
     }),
   ],
   controllers: [OrdersController],
-  providers: [OrdersService, OrderEditingService, OrderExchangeService],
-  exports: [OrdersService, OrderEditingService, OrderExchangeService],
+  providers: [OrdersService, OrderEditingService, OrderExchangeService, OrderReturnsService],
+  exports: [OrdersService, OrderEditingService, OrderExchangeService, OrderReturnsService],
 })
 export class OrdersModule {}

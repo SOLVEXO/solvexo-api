@@ -10,6 +10,7 @@ import {
 import { isValidObjectId, Types } from 'mongoose';
 import { reserveRefundCapacity, releaseRefundCapacity } from '@/common/refund-cap.util';
 import { buyerEmail } from '@/common/buyer-email.util';
+import { effectiveReturnStatus, withEffectiveReturnStatus } from '@/common/return-status.util';
 import { toBuyerReturnLabel, toBuyerSafeOrder, toBuyerTracking } from '@/common/buyer-safe-order.util';
 import { signOrderStatusToken, verifyOrderStatusToken } from '@/common/order-status-token.util';
 import { DatabaseService } from '@/database/databaseservice';
@@ -211,7 +212,7 @@ export class OrdersService {
             originalPrice: item.originalPrice ?? null,
             subscriberDiscountUSD: item.subscriberDiscountUSD ?? 0,
             status: item.status,
-            returnStatus: item.returnStatus ?? 'none', exchangeOrderId: item.exchangeOrderId ?? null, exchangeOrderNumber: item.exchangeOrderNumber ?? null,
+            returnStatus: effectiveReturnStatus(item), returnApprovedAt: item.returnApprovedAt ?? null, returnReceivedAt: item.returnReceivedAt ?? null, returnResolvedAt: item.returnResolvedAt ?? null, returnResolution: item.returnResolution ?? null, returnRefundTo: item.returnRefundTo ?? null, returnRejectReason: item.returnRejectReason ?? null, exchangeOrderId: item.exchangeOrderId ?? null, exchangeOrderNumber: item.exchangeOrderNumber ?? null,
             // Prepaid return label (link + tracking only, never its cost) — this buyer's own order only.
             returnLabel: toBuyerReturnLabel(item.returnLabel),
             isReviewed: reviewedProductIds.has(item.productId),
@@ -547,7 +548,7 @@ export class OrdersService {
         // This store's own portion only — items, rollup status, tracking,
         // fulfillment timestamps, return status. `subtotal` here is already
         // scoped to this seller, unlike `order.subtotal` (the whole order).
-        sellerOrder,
+        sellerOrder: { ...sellerOrder, items: ((sellerOrder as any).items ?? []).map((it: any) => withEffectiveReturnStatus(it)) },
         // Merchant-only: the Shopify order timeline (events + comments) and the internal note.
         timeline: [...((order as any).timeline ?? [])].sort((a: any, b: any) => +new Date(b.createdAt) - +new Date(a.createdAt)),
         note: (order as any).note ?? '',
@@ -2896,18 +2897,18 @@ export class OrdersService {
         if (!storeIds.includes(so.storeId)) continue;
         totalOrderItems += so.items.length;
         for (const item of so.items) {
-          if (!item.returnStatus || item.returnStatus === 'none') continue;
-          if (status && status !== 'all' && item.returnStatus !== status)
+          const effStatus = effectiveReturnStatus(item);
+          if (effStatus === 'none') continue;
+          if (status && status !== 'all' && effStatus !== status)
             continue;
-          returnItems.push({ order, so, item });
+          returnItems.push({ order, so, item: withEffectiveReturnStatus(item) });
         }
       }
     }
 
     // stats
-    const openRequests = returnItems.filter(
-      ({ item }) => item.returnStatus === 'requested',
-    ).length;
+    // Open = still needs the seller (new request, waiting for the goods, or received and waiting for a refund/exchange).
+    const openRequests = returnItems.filter(({ item }) => ['requested', 'approved', 'received'].includes(item.returnStatus)).length;
     const returnRate =
       totalOrderItems > 0
         ? parseFloat(((returnItems.length / totalOrderItems) * 100).toFixed(1))
@@ -2917,9 +2918,9 @@ export class OrdersService {
     const totalRefunded = returnItems
       .filter(
         ({ item }) =>
-          item.returnStatus === 'approved' &&
-          item.returnRequestedAt &&
-          new Date(item.returnRequestedAt) >= thirtyDaysAgo,
+          item.returnStatus === 'refunded' &&
+          (item.returnResolvedAt || item.returnRequestedAt) &&
+          new Date(item.returnResolvedAt || item.returnRequestedAt) >= thirtyDaysAgo,
       )
       .reduce((sum, { item }) => sum + (item.refundedAmount || 0), 0);
 
@@ -2950,6 +2951,14 @@ export class OrdersService {
           refundedAmount: item.refundedAmount || 0,
           returnStatus: item.returnStatus,
           returnRejectReason: item.returnRejectReason || null,
+          returnApprovedAt: item.returnApprovedAt ?? null,
+          returnReceivedAt: item.returnReceivedAt ?? null,
+          returnResolvedAt: item.returnResolvedAt ?? null,
+          returnResolution: item.returnResolution ?? null,
+          returnRefundTo: item.returnRefundTo ?? null,
+          returnRestock: item.returnRestock ?? null,
+          returnLabel: item.returnLabel ?? null,
+          itemType: item.type ?? 'physical',
           exchangeOrderId: item.exchangeOrderId ?? null,
           exchangeOrderNumber: item.exchangeOrderNumber ?? null,
           quantity: item.quantity,
@@ -3109,323 +3118,7 @@ export class OrdersService {
     };
   }
 
-  async returnAction(
-    sellerId: string,
-    orderId: string,
-    body: any,
-    ip?: string,
-    userAgent?: string,
-  ) {
-    const { storeId, itemIds, action, rejectReason, restockDecisions } = body;
-    if (!storeId) throw new BadRequestException('storeId is required');
-    if (!itemIds || !Array.isArray(itemIds) || itemIds.length === 0)
-      throw new BadRequestException('itemIds are required');
-    if (!action || !['approve', 'reject'].includes(action))
-      throw new BadRequestException('action must be approve or reject');
-
-    const { orderModel, storeModel } = this.databaseService.repositories;
-
-    const order = await orderModel.findOne({ _id: orderId, isDelete: false });
-    if (!order) throw new NotFoundException('Order not found');
-
-    const store = await storeModel.findOne({
-      _id: storeId,
-      sellerId,
-      isDelete: false,
-    });
-    if (!store) throw new ForbiddenException('Store not found or unauthorized');
-
-    const soIndex = order.sellerOrders.findIndex(
-      (so: any) => so.storeId === storeId,
-    );
-    if (soIndex === -1)
-      throw new BadRequestException('No orders found for this store');
-
-    const sellerOrder = order.sellerOrders[soIndex];
-    const updateData: any = {};
-    const targetItems: { itemIndex: number; item: any }[] = [];
-
-    for (const itemId of itemIds) {
-      const itemIndex = sellerOrder.items.findIndex(
-        (i: any) => i._id.toString() === itemId,
-      );
-      if (itemIndex === -1)
-        throw new BadRequestException(`Item not found: ${itemId}`);
-      const item = sellerOrder.items[itemIndex];
-      if (item.returnStatus !== 'requested')
-        throw new BadRequestException(
-          `"${item.name}" has no pending return request`,
-        );
-      targetItems.push({ itemIndex, item });
-    }
-
-    for (const { itemIndex, item } of targetItems) {
-      if (action === 'approve') {
-        updateData[`sellerOrders.${soIndex}.items.${itemIndex}.returnStatus`] =
-          'approved';
-        updateData[
-          `sellerOrders.${soIndex}.items.${itemIndex}.refundedAmount`
-        ] = item.totalPrice;
-      } else {
-        updateData[`sellerOrders.${soIndex}.items.${itemIndex}.returnStatus`] =
-          'rejected';
-        if (rejectReason) {
-          updateData[
-            `sellerOrders.${soIndex}.items.${itemIndex}.returnRejectReason`
-          ] = rejectReason;
-        }
-      }
-    }
-
-    // sellerOrder returnStatus recalculate
-    const physicalActive = sellerOrder.items.filter(
-      (item: any) => item.type === 'physical' && item.status !== 'cancelled',
-    );
-
-    const effectiveStatuses = physicalActive.map((item: any) => {
-      const globalIdx = sellerOrder.items.indexOf(item);
-      const wasUpdated = targetItems.find((t) => t.itemIndex === globalIdx);
-      if (!wasUpdated) return item.returnStatus || 'none';
-      return action === 'approve' ? 'approved' : 'rejected';
-    });
-
-    const allApproved = effectiveStatuses.every(
-      (s: string) => s === 'approved',
-    );
-    const anyApproved = effectiveStatuses.some((s: string) => s === 'approved');
-    const allRequested = effectiveStatuses.every(
-      (s: string) => s === 'requested',
-    );
-    const anyRequested = effectiveStatuses.some(
-      (s: string) => s === 'requested',
-    );
-    const allRejected = effectiveStatuses
-      .filter((s: string) => s !== 'none')
-      .every((s: string) => s === 'rejected');
-
-    let newSellerReturnStatus: string;
-    if (allApproved) newSellerReturnStatus = 'approved';
-    else if (anyApproved)
-      newSellerReturnStatus = 'partial_approved'; // approved wins even if kuch rejected
-    else if (allRequested) newSellerReturnStatus = 'requested';
-    else if (anyRequested) newSellerReturnStatus = 'partial_requested';
-    else if (allRejected) newSellerReturnStatus = 'rejected';
-    else newSellerReturnStatus = 'none';
-
-    updateData[`sellerOrders.${soIndex}.returnStatus`] = newSellerReturnStatus;
-
-    if (action === 'approve') {
-      updateData.hasReturnApproved = true;
-    }
-
-    // Money first comes out of the ONE shared refund budget (clamped to what is left — part of these items may already have
-    // been refunded another way), then the order is claimed with an optimistic lock so a double-click / two reviewers can't
-    // both approve (and both refund) the same return.
-    let grantedRefund = 0;
-    if (action === 'approve' && order.isPaid) {
-      const wanted = targetItems.reduce((sum, t) => sum + (t.item.totalPrice || 0) + (t.item.taxUSD || 0), 0);
-      grantedRefund = await reserveRefundCapacity(orderModel, orderId, soIndex, wanted, { clamp: true });
-    }
-    const claimedReturn = await orderModel.findOneAndUpdate({ _id: orderId, updatedAt: (order as any).updatedAt }, { $set: updateData });
-    if (!claimedReturn) {
-      await releaseRefundCapacity(orderModel, orderId, soIndex, grantedRefund).catch(() => undefined);
-      throw new BadRequestException('This order was just modified by someone else — please refresh and try again.');
-    }
-
-    let refundProcessed = false;
-    if (action === 'approve' && order.isPaid) {
-      // buyerRefundAmount is in the order's own charge currency; the
-      // seller's wallet must be debited in THEIR settlement currency (same
-      // conversion refund-request.service.ts's approve() already does) —
-      // previously this passed the raw order-currency amount straight into
-      // recordRefund with zero conversion, silently mis-debiting any seller
-      // whose settlement currency differs from the buyer's charge currency.
-      // Includes each item's own taxUSD share — see the cancellation path's
-      // identical fix above for why (item price + its tax must be refunded
-      // and clawed back from the seller together).
-      const buyerRefundAmount = grantedRefund;
-      if (buyerRefundAmount > 0) {
-        const buyerCurrency = order.currency || 'USD';
-        const settlementCurrency =
-          sellerOrder.settlementCurrency ?? buyerCurrency;
-        const sellerDebitAmount = this.exchangeRateService.convertWithSnapshots(
-          buyerRefundAmount,
-          buyerCurrency,
-          settlementCurrency,
-          order.fxSnapshots ?? [],
-        );
-        try {
-          await this.financeService.recordRefund(
-            storeId,
-            sellerId,
-            orderId,
-            sellerDebitAmount,
-            sellerId,
-            'seller',
-            {
-              description: `Return approved — Order #${order.orderNumber}`,
-              targetType: 'order',
-              currency: settlementCurrency,
-            },
-          );
-          refundProcessed = true;
-        } catch (e: any) {
-          console.error('Finance recordRefund failed:', e?.message);
-        }
-
-        // Real buyer-facing Stripe refund — previously this ONLY debited the
-        // seller's wallet and never refunded the buyer's card at all, a
-        // genuine money-leak: the seller paid for a return the buyer never
-        // actually got their money back for. Mirrors
-        // refund-request.service.ts's approve() exactly.
-        if (order.paymentType === 'stripe') {
-          const transaction =
-            await this.databaseService.repositories.paymentTransactionModel.findOne(
-              {
-                orderIds: orderId,
-                status: 'completed',
-                isDelete: false,
-              },
-            );
-          if (transaction?.stripePaymentIntentId) {
-            try {
-              await this.paymentService.refundStripePaymentIntent(
-                transaction.stripePaymentIntentId,
-                buyerRefundAmount,
-                `return_action_${orderId}_${Date.now()}`,
-              );
-            } catch (e: any) {
-              await this.activityLogService.log({
-                storeId: 'platform',
-                category: 'finance',
-                action: 'stripe_refund_failed_after_ledger_reversal',
-                description: `Stripe refund failed for order #${order.orderNumber} after seller ledger was already reversed (return approval): ${e?.message}`,
-                actorId: sellerId,
-                actorRole: 'seller',
-                isSecurityAlert: true,
-                targetId: orderId,
-                targetType: 'order',
-              });
-            }
-          }
-        }
-
-        this.loyaltyService
-          .clawbackPurchasePoints(
-            storeId,
-            order.userId,
-            orderId,
-            buyerRefundAmount,
-          )
-          .catch(() => {});
-      }
-
-      // Gift-card balance reversal — mirrors executeCancellation's own
-      // reversal; a return is a refund too, so a gift card applied at
-      // checkout must come back the same way.
-      if (order.giftCardCode) {
-        const giftCardReverseAmount = targetItems.reduce(
-          (sum, t) => sum + (t.item.giftCardDiscountUSD || 0),
-          0,
-        );
-        if (giftCardReverseAmount > 0) {
-          await this.giftCardsService.restoreOnRefund(
-            storeId,
-            order.giftCardCode,
-            giftCardReverseAmount,
-            orderId,
-            `return:${orderId}:${targetItems.map((t) => t.item._id.toString()).sort().join(',')}`,
-            `Order #${order.orderNumber} — return approved`,
-          ).catch((e: any) => console.error('Gift card reversal failed (return approval):', e?.message));
-        }
-      }
-
-      // Store-credit reversal — same reasoning as the gift card above.
-      {
-        const storeCreditReverseAmount = targetItems.reduce(
-          (sum, t) => sum + (t.item.storeCreditDiscountUSD || 0),
-          0,
-        );
-        if (storeCreditReverseAmount > 0) {
-          await this.storeCreditService.restoreOnRefund(
-            storeId,
-            order.userId,
-            storeCreditReverseAmount,
-            orderId,
-            `return:${orderId}:${targetItems.map((t) => t.item._id.toString()).sort().join(',')}`,
-            `Order #${order.orderNumber} — return approved`,
-          ).catch((e: any) => console.error('Store credit reversal failed (return approval):', e?.message));
-        }
-      }
-
-      // Reverse Inventory link — every item reaching this point was already
-      // delivered/shipped (a return can only be requested after that), so
-      // real `stock` was already decremented for good at fulfillment time
-      // (see ProductVariant.committedStock's doc comment) — restocking here
-      // is a genuine physical-goods-coming-back credit, never touching the
-      // reservation math a pre-shipment cancellation uses instead.
-      // `restockDecisions` (an optional `{ [itemId]: 'restock'|'damaged' }`
-      // map on the request body, keyed by the same OrderItem ids as
-      // `itemIds`) is entirely opt-in — omit it and stock is left exactly
-      // as untouched as before this existed, matching the seller's Returns
-      // page not sending it yet unless updated to do so. 'restock' credits
-      // real sellable `stock` back; 'damaged' credits `damagedStock`
-      // instead — still genuinely on-hand, never sellable (see that
-      // field's own doc comment) — mirroring PurchaseOrdersService's
-      // identical bucket for damaged-on-arrival PO receipts.
-      if (restockDecisions && typeof restockDecisions === 'object') {
-        const { productVariantModel, stockAdjustmentModel, sellerModel } = this.databaseService.repositories;
-        const seller = await sellerModel.findOne({ _id: sellerId }).select('name');
-        for (const { item } of targetItems) {
-          const decision = restockDecisions[item._id.toString()];
-          if (item.type !== 'physical' || !item.variantId || (decision !== 'restock' && decision !== 'damaged')) continue;
-          const variant = await productVariantModel.findOne({ _id: item.variantId, isDelete: false });
-          if (!variant || variant.unlimitedStock) continue;
-          const qty = item.quantity;
-          const previousStock = variant.stock;
-          await productVariantModel.updateOne(
-            { _id: item.variantId },
-            decision === 'restock' ? { $inc: { stock: qty } } : { $inc: { stock: qty, damagedStock: qty } },
-          );
-          await stockAdjustmentModel.create({
-            storeId, productId: item.productId, variantId: item.variantId, locationId: null,
-            productName: item.name, sku: item.sku ?? null,
-            previousStock, newStock: previousStock + qty, delta: qty,
-            reason: decision === 'restock' ? 'return' : 'damaged',
-            note: `Return for order #${order.orderNumber}`,
-            adjustedBy: sellerId, adjustedByName: seller?.name ?? null,
-          });
-        }
-      }
-    }
-
-    this.activityLogService.log({
-      storeId,
-      category: 'orders',
-      action: action === 'approve' ? 'return_approved' : 'return_rejected',
-      description: `Order #${orderId} — ${targetItems.length} item(s) return ${action === 'approve' ? 'approved' : 'rejected'}`,
-      actorId: sellerId,
-      actorRole: 'seller',
-      targetId: orderId,
-      targetType: 'order',
-      ip,
-      userAgent,
-    });
-
-    return {
-      success: true,
-      message:
-        action === 'approve'
-          ? `Return approved for ${targetItems.length} item(s)`
-          : `Return rejected for ${targetItems.length} item(s)`,
-      data: {
-        orderId,
-        action,
-        processedItems: targetItems.length,
-        refundProcessed,
-      },
-    };
-  }
+  // Seller return actions (approve / decline / close / mark received / refund) live in OrderReturnsService.
 
   async downloadByToken(token: string) {
     let payload: any;

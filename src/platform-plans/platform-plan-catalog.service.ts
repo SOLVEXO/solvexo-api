@@ -2,7 +2,7 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { DatabaseService } from '@/database/databaseservice';
 import {
-  CATALOG_VERSION, PLAN_CATALOG, assertCatalogValid, buildFeatureBullets, validatePlanPricing,
+  CATALOG_VERSION, PLAN_CATALOG, YEARLY_ALIGN_FROM_VERSION, assertCatalogValid, buildFeatureBullets, validatePlanPricing,
   type CatalogPlan,
 } from './platform-plan.catalog';
 
@@ -109,7 +109,8 @@ export class PlatformPlanCatalogService implements OnModuleInit {
         monthlyPriceUSD: doc.monthlyPriceUSD, yearlyPriceUSD: doc.yearlyPriceUSD ?? null,
         introOfferEnabled: !!doc.introOfferEnabled, introPriceUSD: doc.introPriceUSD ?? null, introDurationCycles: doc.introDurationCycles ?? null,
       });
-      if (doc.yearlyPriceUSD == null || pricingProblems.some(p => p.startsWith('Yearly'))) doc.yearlyPriceUSD = plan.yearlyPriceUSD;
+      // Yearly prices were inconsistent before catalog v4 (no uniform discount) — replaced once; afterwards the admin owns them.
+      if (doc.yearlyPriceUSD == null || (doc.catalogVersion ?? 0) < YEARLY_ALIGN_FROM_VERSION || pricingProblems.some(p => p.startsWith('Yearly'))) doc.yearlyPriceUSD = plan.yearlyPriceUSD;
       if (pricingProblems.some(p => p.toLowerCase().includes('intro'))) {
         doc.introOfferEnabled = !!plan.intro;
         doc.introPriceUSD = plan.intro?.priceUSD ?? null;

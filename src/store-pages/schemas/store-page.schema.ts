@@ -74,6 +74,28 @@ export class StorePageVersion {
 }
 export const StorePageVersionSchema = SchemaFactory.createForClass(StorePageVersion);
 
+/** A page's layout belongs to an installed theme. Page metadata and its URL
+ *  remain store-scoped, while these template arrays are isolated per theme
+ *  instance just like Shopify theme templates. */
+@Schema({ _id: false })
+export class StorePageThemeTemplate {
+  @Prop({ type: String, required: true })
+  installedThemeId: string;
+
+  @Prop({ type: [SectionSchema], default: [] })
+  sections: Section[];
+
+  @Prop({ type: [SectionSchema], default: [] })
+  draftSections: Section[];
+
+  @Prop({ type: Date, default: null })
+  lastPublishedAt: Date | null;
+
+  @Prop({ type: [StorePageVersionSchema], default: [] })
+  versions: StorePageVersion[];
+}
+export const StorePageThemeTemplateSchema = SchemaFactory.createForClass(StorePageThemeTemplate);
+
 // A seller-composed page (the storefront home page, or an arbitrary custom
 // page like "About Us"). Exactly one `type:'home'` doc exists per store, with
 // a fixed empty-string slug, served at the bare `/:slug` route. Custom pages
@@ -116,6 +138,11 @@ export class StorePage {
 
   @Prop({ type: [StorePageVersionSchema], default: [] })
   versions: StorePageVersion[];
+
+  // Legacy `sections`/`draft.sections` remain as the migration source for
+  // existing stores. All new page-layout reads and writes use this array.
+  @Prop({ type: [StorePageThemeTemplateSchema], default: [] })
+  themeTemplates: StorePageThemeTemplate[];
 
   @Prop({ type: StorePageSeoSchema, default: () => ({}) })
   seo: StorePageSeo;

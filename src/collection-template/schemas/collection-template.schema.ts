@@ -38,7 +38,7 @@ export type ResourceTemplateType = (typeof RESOURCE_TEMPLATE_TYPES)[number];
  * Product — Page already has its own per-page `StorePage.sections`, so
  * `'page'` here only ever holds re-usable *starter* templates a seller can
  * assign a new custom page from, see `store-pages` for the assignment side).
- * One store can have several named templates per `resourceType` — e.g.
+ * Each installed theme has its own templates; within that theme a store can have several named templates per `resourceType` — e.g.
  * `collection.default` + `collection.sale`, `product.default` +
  * `product.minimal` — the exact Shopify-class "alternate templates"
  * capability. `{storeId, resourceType, templateKey}` is the unique key
@@ -62,6 +62,9 @@ export class CollectionTemplate {
 
   @Prop({ required: true, index: true })
   storeId: string;
+
+  @Prop({ type: String, default: null, index: true })
+  installedThemeId: string | null;
 
   @Prop({ type: String, enum: RESOURCE_TEMPLATE_TYPES, default: 'collection', index: true })
   resourceType: ResourceTemplateType;
@@ -108,4 +111,4 @@ export const CollectionTemplateSchema = SchemaFactory.createForClass(CollectionT
 // migration note (a real deployment needs the old index dropped once; run
 // the equivalent one-off backfill for this collection before relying on
 // multiple templates per store).
-CollectionTemplateSchema.index({ storeId: 1, resourceType: 1, templateKey: 1 }, { unique: true });
+CollectionTemplateSchema.index({ storeId: 1, installedThemeId: 1, resourceType: 1, templateKey: 1 }, { unique: true });

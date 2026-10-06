@@ -10,6 +10,7 @@ import { PaymentService } from '../payment/payment.service';
 import { FinanceService } from '../finance/finance.service';
 import { StoreCreditService } from '../store-credit/store-credit.service';
 import { round } from '../common/number.util';
+import { effectiveReturnStatus } from '../common/return-status.util';
 import { availableStock, AVAILABLE_STOCK_EXPR } from '../common/stock-availability.util';
 import { releaseRefundCapacity, remainingRefundable, reserveRefundCapacity } from '../common/refund-cap.util';
 import { CreateExchangeDto } from './dto/order-exchange.dto';
@@ -179,13 +180,16 @@ export class OrderExchangeService {
     const prefix = `sellerOrders.${soIndex}.items`;
     const filter: any = { _id: order._id };
     const set: any = {};
-    const prevItems = lineIdx.map((i) => ({ i, refundedAmount: so.items[i].refundedAmount ?? 0 }));
+    const prevItems = lineIdx.map((i) => ({ i, refundedAmount: so.items[i].refundedAmount ?? 0, returnStatus: so.items[i].returnStatus as string }));
     for (const i of lineIdx) {
       const it = so.items[i];
       const share = wanted > 0 ? round(granted * (((it.totalPrice ?? 0) + (it.taxUSD ?? 0)) / wanted)) : 0;
-      filter[`${prefix}.${i}.returnStatus`] = 'requested';
+      // Open return lines only (requested / approved / received); the claim fails if someone else resolved it meanwhile.
+      filter[`${prefix}.${i}.returnStatus`] = { $in: ['requested', 'approved', 'received'] };
       filter[`${prefix}.${i}.exchangeOrderId`] = { $in: [null] };
-      set[`${prefix}.${i}.returnStatus`] = 'approved';
+      set[`${prefix}.${i}.returnStatus`] = 'exchanged';
+      set[`${prefix}.${i}.returnResolvedAt`] = new Date();
+      set[`${prefix}.${i}.returnResolution`] = 'exchange';
       set[`${prefix}.${i}.exchangeOrderId`] = String(newId);
       set[`${prefix}.${i}.exchangeOrderNumber`] = newNumber;
       set[`${prefix}.${i}.refundedAmount`] = share;
@@ -193,7 +197,7 @@ export class OrderExchangeService {
     const prevSoReturnStatus = so.returnStatus ?? 'none';
     const statuses = (so.items as any[])
       .filter((it: any) => it.type === 'physical' && it.status !== 'cancelled')
-      .map((it: any) => (lineIdx.includes(so.items.indexOf(it)) ? 'approved' : (it.returnStatus || 'none')));
+      .map((it: any) => (lineIdx.includes(so.items.indexOf(it)) ? 'exchanged' : effectiveReturnStatus(it)));
     set[`sellerOrders.${soIndex}.returnStatus`] = deriveSellerReturnStatus(statuses);
     set.hasReturnApproved = true;
     const claimed: any = await this.r.orderModel.updateOne(filter, { $set: set });
@@ -205,7 +209,9 @@ export class OrderExchangeService {
     const unclaim = async () => {
       const undo: any = {};
       for (const p of prevItems) {
-        undo[`${prefix}.${p.i}.returnStatus`] = 'requested';
+        undo[`${prefix}.${p.i}.returnStatus`] = p.returnStatus;
+        undo[`${prefix}.${p.i}.returnResolvedAt`] = null;
+        undo[`${prefix}.${p.i}.returnResolution`] = null;
         undo[`${prefix}.${p.i}.exchangeOrderId`] = null;
         undo[`${prefix}.${p.i}.exchangeOrderNumber`] = null;
         undo[`${prefix}.${p.i}.refundedAmount`] = p.refundedAmount;
@@ -324,7 +330,7 @@ export class OrderExchangeService {
         const seller: any = await this.r.sellerModel.findOne({ _id: sellerId }).select('name');
         for (const i of lineIdx) {
           const it = so.items[i];
-          if (!it.variantId) continue;
+          if (!it.variantId || it.returnStatus === 'received') continue; // received lines were restocked (or not) when marked received
           const variant: any = await this.r.productVariantModel.findOne({ _id: it.variantId, isDelete: false });
           if (!variant || variant.unlimitedStock) continue;
           await this.r.productVariantModel.updateOne({ _id: it.variantId }, dto.restock === 'restock' ? { $inc: { stock: it.quantity } } : { $inc: { stock: it.quantity, damagedStock: it.quantity } });

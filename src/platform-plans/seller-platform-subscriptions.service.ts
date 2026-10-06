@@ -15,8 +15,9 @@ import { NOTIFICATION_TYPES } from '@/notifications/notification.types';
 import { CriticalAlertService } from '@/common/critical-alert.service';
 import { getInvoiceSubscriptionId, getInvoicePaymentIntentId } from '@/common/stripe-invoice.util';
 
-const MAX_RENEWAL_ATTEMPTS = 3;
-const RETRY_INTERVAL_DAYS = 1;
+// Shopify retries a failed subscription bill about every 4 days, 8 times over ~28 days, and only then freezes the store.
+const MAX_RENEWAL_ATTEMPTS = 8;
+const RETRY_INTERVAL_DAYS = 4;
 // Fallback grace period (days a locked/trial-ended store's storefront stays
 // browsable before Store.privacyMode gates it — see expireGracePeriods())
 // for the one case with no PlatformPlan to read gracePeriodDays from: a
@@ -137,6 +138,99 @@ export class SellerPlatformSubscriptionsService {
   }
 
   /**
+   * Shopify plans are pre-paid: a move to a cheaper plan (or yearly → monthly) takes effect at the end of the
+   * current billing cycle — no refund, no credit, current features until then. Only a paid, active, non-cancelling
+   * subscription with time left can defer; anything else (trial, locked, past due, free) switches immediately.
+   * Shared by `changePlan` and `previewChangePlan` so the preview can never disagree with what happens.
+   */
+  private isDeferredDowngrade(sub: any, newPlan: any, newAmountUSD: number): boolean {
+    if (sub.status !== 'active' || !sub.platformPlanId || sub.cancelAtPeriodEnd) return false;
+    if ((sub.amountUSD ?? 0) <= 0 || newPlan.isFree || newAmountUSD <= 0) return false;
+    if (!sub.currentPeriodEnd || new Date(sub.currentPeriodEnd).getTime() <= Date.now()) return false;
+    return newAmountUSD < (sub.amountUSD ?? 0);
+  }
+
+  /** Points the live Stripe subscription at `plan`/`interval` with NO proration and no billing-anchor move — the new price first applies at the next renewal. */
+  private async setProviderPriceForNextCycle(sub: any, plan: any, interval: 'monthly' | 'yearly', amountUSD: number): Promise<void> {
+    if (!this.gateway.isProviderDrivenBilling || !sub.providerSubscriptionId) return;
+    const key = interval === 'yearly' ? 'stripeYearlyPriceId' : 'stripeMonthlyPriceId';
+    if (!plan[key]) {
+      const { providerProductId, providerPriceId } = await this.gateway.getOrCreatePrice({
+        planId: plan._id.toString(), planName: `Platform: ${plan.name}`, storeId: sub.storeId,
+        amountUSD, interval, existingProductId: plan.stripeProductId,
+      });
+      plan.stripeProductId = providerProductId;
+      plan[key] = providerPriceId;
+      if (typeof plan.save === 'function') await plan.save();
+    }
+    await this.gateway.updateProviderSubscriptionPrice(sub.providerSubscriptionId, plan[key], 'none');
+  }
+
+  /**
+   * Applies a scheduled downgrade to the in-memory subscription when its cycle rolls over (the caller saves).
+   * Returns true when a change was applied. A target plan that was archived in the meantime drops the change.
+   */
+  private async applyScheduledPlanChange(sub: any): Promise<boolean> {
+    const pending = sub.scheduledPlanChange;
+    if (!pending) return false;
+    sub.scheduledPlanChange = null;
+    const [oldPlan, newPlan] = await Promise.all([
+      sub.platformPlanId ? this.planModel.findById(sub.platformPlanId).select('name').lean() : null,
+      this.planModel.findOne({ _id: pending.planId, isDelete: false, status: 'active' }),
+    ]);
+    if (!newPlan) {
+      this.logger.warn(`Scheduled plan change for store ${sub.storeId} dropped — target plan ${pending.planId} is gone`);
+      return false;
+    }
+    const amount = pending.interval === 'yearly'
+      ? ((newPlan as any).yearlyPriceUSD ?? this.round(((newPlan as any).monthlyPriceUSD ?? 0) * 12))
+      : ((newPlan as any).monthlyPriceUSD ?? 0);
+    sub.planHistory = [...(sub.planHistory ?? []), {
+      fromPlanId: sub.platformPlanId, fromPlanName: (oldPlan as any)?.name ?? 'Unknown',
+      toPlanId: pending.planId, toPlanName: (newPlan as any).name, proratedAmountUSD: 0, changedAt: new Date(),
+    }];
+    sub.platformPlanId = pending.planId;
+    sub.billingInterval = pending.interval;
+    sub.amountUSD = this.round(amount);
+    await this.syncFeaturedBadge(sub.storeId, newPlan);
+    this.activityLogService.log({
+      storeId: sub.storeId, category: 'platform_plans', action: 'scheduled_plan_change_applied',
+      description: `Scheduled plan change applied at renewal — now on "${(newPlan as any).name}" (${pending.interval})`,
+      actorRole: 'system', targetId: String(sub._id), targetType: 'seller_platform_subscription',
+    });
+    return true;
+  }
+
+  /** Puts the Stripe subscription back on the CURRENT plan's price (used when a scheduled downgrade is cancelled or superseded by a cancellation). */
+  private async restoreProviderPrice(sub: any): Promise<void> {
+    if (!this.gateway.isProviderDrivenBilling || !sub.providerSubscriptionId || !sub.platformPlanId) return;
+    try {
+      const plan: any = await this.planModel.findById(sub.platformPlanId);
+      if (!plan) return;
+      await this.setProviderPriceForNextCycle(sub, plan, sub.billingInterval, sub.amountUSD);
+    } catch (err: any) {
+      this.logger.warn(`Failed to restore Stripe price for store ${sub.storeId}: ${err?.message}`);
+    }
+  }
+
+  /** Seller changed their mind: drop the pending downgrade, the current plan simply keeps renewing. */
+  async cancelScheduledPlanChange(sellerId: string, storeId: string) {
+    await this.verifyStoreOwnership(storeId, sellerId);
+    const sub = await this.subModel.findOne({ storeId, isDelete: false });
+    if (!sub) throw new NotFoundException('This store has no platform-plan record yet');
+    if (!sub.scheduledPlanChange) throw new BadRequestException('There is no scheduled plan change to cancel');
+    sub.scheduledPlanChange = null;
+    await sub.save();
+    await this.restoreProviderPrice(sub);
+    this.activityLogService.log({
+      storeId, category: 'platform_plans', action: 'scheduled_plan_change_cancelled',
+      description: 'Scheduled plan change cancelled — current plan continues', actorId: sellerId, actorRole: 'seller',
+      targetId: sub._id.toString(), targetType: 'seller_platform_subscription',
+    });
+    return { success: true, message: 'Your scheduled plan change was cancelled.', data: { subscription: sub } };
+  }
+
+  /**
    * Shopify-style automatic "private mode": a brand-new trialing store's
    * storefront is set to `coming_soon` the moment its trial starts (see
    * `ensureDefaultSubscription`) — real visitors can't browse it until the
@@ -183,6 +277,7 @@ export class SellerPlatformSubscriptionsService {
     if (!freePlan) return null;
     sub.platformPlanId = (freePlan as any)._id.toString();
     sub.amountUSD = 0;
+    sub.scheduledPlanChange = null;
     sub.status = 'active';
     sub.failedPaymentAttempts = 0;
     sub.cancelAtPeriodEnd = false;
@@ -216,6 +311,7 @@ export class SellerPlatformSubscriptionsService {
    */
   private async lockStore(sub: any): Promise<void> {
     sub.status = 'locked';
+    sub.scheduledPlanChange = null;
     sub.failedPaymentAttempts = 0;
     sub.cancelAtPeriodEnd = false;
     sub.canceledAt = null;
@@ -761,6 +857,7 @@ export class SellerPlatformSubscriptionsService {
     sub.amountUSD = plan.isFree ? 0 : (plan.monthlyPriceUSD ?? 0);
     sub.billingInterval = 'monthly';
     sub.paymentProvider = 'manual';
+    sub.scheduledPlanChange = null;
     sub.status = 'active';
     sub.failedPaymentAttempts = 0;
     sub.cancelAtPeriodEnd = false;
@@ -851,12 +948,37 @@ export class SellerPlatformSubscriptionsService {
     if (!newPlan) throw new NotFoundException('Target platform plan not found or inactive');
     if (newPlan.isCustomPricing) throw new BadRequestException('This plan requires contacting sales — it has no self-serve checkout');
     if (String(sub.platformPlanId) === String(newPlanId) && sub.billingInterval === newInterval) {
+      // Choosing the plan you're already on while a downgrade is pending simply cancels that downgrade.
+      if (sub.scheduledPlanChange) return this.cancelScheduledPlanChange(sellerId, storeId);
       throw new BadRequestException('This is already your current plan');
     }
 
     const now = new Date();
     const { newAmountUSD, totalCreditAvailable, netDue, isFreeMoveIn } = this.computeProration(sub, newPlan, newInterval);
     void totalCreditAvailable; // surfaced via previewChangePlan; changePlan itself only needs netDue
+
+    // Shopify: moving to a cheaper plan takes effect at the end of the billing cycle — nothing is charged,
+    // credited or refunded now, and the current plan's features stay until then.
+    if (this.isDeferredDowngrade(sub, newPlan, newAmountUSD)) {
+      const effectiveAt: Date = sub.currentPeriodEnd;
+      await this.setProviderPriceForNextCycle(sub, newPlan, newInterval, newAmountUSD);
+      sub.scheduledPlanChange = {
+        planId: String(newPlanId), planName: newPlan.name, interval: newInterval,
+        amountUSD: this.round(newAmountUSD), scheduledAt: now,
+      };
+      await sub.save();
+      this.activityLogService.log({
+        storeId, category: 'platform_plans', action: 'plan_change_scheduled',
+        description: `Plan change to "${newPlan.name}" (${newInterval}) scheduled for ${effectiveAt.toDateString()} — current plan stays until then`,
+        actorId: sellerId, actorRole: 'seller', targetId: sub._id.toString(), targetType: 'seller_platform_subscription',
+        metadata: { fromPlanName: oldPlan?.name ?? 'Unknown', toPlanName: newPlan.name, interval: newInterval, effectiveAt },
+      });
+      return {
+        success: true,
+        message: `Your plan will change to "${newPlan.name}" on ${effectiveAt.toDateString()}. You keep your current plan until then.`,
+        data: { subscription: sub, scheduled: true, effectiveAt },
+      };
+    }
 
     const historyEntry = {
       fromPlanId: sub.platformPlanId, fromPlanName: oldPlan?.name ?? 'Unknown',
@@ -1044,6 +1166,7 @@ export class SellerPlatformSubscriptionsService {
     const hadPendingCancellation = sub.cancelAtPeriodEnd;
     sub.cancelAtPeriodEnd = false;
     sub.cancelReason = null;
+    sub.scheduledPlanChange = null; // an immediate change supersedes any pending downgrade
     sub.status = 'active';
     sub.planHistory = [...(sub.planHistory ?? []), historyEntry];
     await sub.save();
@@ -1165,6 +1288,9 @@ export class SellerPlatformSubscriptionsService {
         .map(c => ({ label: c.label, used: c.used, newLimit: c.limit }));
     }
 
+    // Shopify: a cheaper plan starts at the end of the current cycle, with nothing charged or credited now.
+    const deferred = this.isDeferredDowngrade(sub, newPlan, proration.newAmountUSD);
+
     return {
       success: true,
       data: {
@@ -1175,12 +1301,13 @@ export class SellerPlatformSubscriptionsService {
         newAmountUSD: proration.newAmountUSD,
         newBillingInterval: newInterval,
         remainingDaysInCurrentPeriod: Math.max(0, Math.ceil((new Date((sub as any).currentPeriodEnd).getTime() - Date.now()) / (24 * 60 * 60 * 1000))),
-        unusedCreditFromCurrentPlanUSD: proration.unusedCredit,
-        existingCreditBalanceUSD: proration.existingCreditBalanceUSD,
-        totalCreditAppliedUSD: proration.totalCreditAvailable,
-        amountDueTodayUSD: proration.willChargeUSD,
-        creditAppliedToBalanceUSD: proration.willCreditUSD,
-        effectiveImmediately: true,
+        unusedCreditFromCurrentPlanUSD: deferred ? 0 : proration.unusedCredit,
+        existingCreditBalanceUSD: deferred ? 0 : proration.existingCreditBalanceUSD,
+        totalCreditAppliedUSD: deferred ? 0 : proration.totalCreditAvailable,
+        amountDueTodayUSD: deferred ? 0 : proration.willChargeUSD,
+        creditAppliedToBalanceUSD: deferred ? 0 : proration.willCreditUSD,
+        effectiveImmediately: !deferred,
+        effectiveAt: deferred ? (sub as any).currentPeriodEnd : null,
         usageWarnings,
       },
     };
@@ -1200,10 +1327,14 @@ export class SellerPlatformSubscriptionsService {
     if ((sub.amountUSD ?? 0) === 0) throw new BadRequestException('You are already on the free plan — there is nothing to cancel');
     if (sub.cancelAtPeriodEnd) throw new BadRequestException(`Cancellation is already scheduled for ${sub.currentPeriodEnd.toDateString()}`);
 
+    // A pending downgrade is moot once the plan is cancelled; put Stripe back on the current price so a later "reactivate" is consistent.
+    const hadScheduledChange = !!sub.scheduledPlanChange;
+    sub.scheduledPlanChange = null;
     sub.cancelAtPeriodEnd = true;
     sub.canceledAt = new Date();
     sub.cancelReason = reason?.trim() || null;
     await sub.save();
+    if (hadScheduledChange) await this.restoreProviderPrice(sub);
 
     if (this.gateway.isProviderDrivenBilling && sub.providerSubscriptionId) {
       await this.gateway.scheduleProviderCancellation(sub.providerSubscriptionId);
@@ -1301,6 +1432,8 @@ export class SellerPlatformSubscriptionsService {
     let succeeded = 0, failed = 0;
     for (const sub of due) {
       try {
+        // A downgrade the seller scheduled for this cycle's end takes effect now, so this renewal bills the new price.
+        await this.applyScheduledPlanChange(sub);
         const creditToApply = this.round(Math.min(sub.creditBalanceUSD ?? 0, sub.amountUSD));
         const chargeAmount = this.round(sub.amountUSD - creditToApply);
         const charge = chargeAmount > 0
@@ -1659,6 +1792,9 @@ export class SellerPlatformSubscriptionsService {
     const sub = await this.subModel.findOne({ providerSubscriptionId, isDelete: false });
     if (!sub) return; // not one of ours — belongs to the buyer-VIP-plan system instead
     if (await this.invoiceModel.exists({ stripeInvoiceId: invoice.id })) return; // duplicate webhook delivery
+
+    // Stripe already moved the subscription to the scheduled price for this cycle — mirror it locally (see changePlan).
+    if (invoice.billing_reason === 'subscription_cycle') await this.applyScheduledPlanChange(sub);
 
     const amountUSD = this.round((invoice.amount_paid ?? 0) / 100);
     const line = invoice.lines?.data?.[0];

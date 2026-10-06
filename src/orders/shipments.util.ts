@@ -1,4 +1,6 @@
 /* eslint-disable prettier/prettier */
+import { isLegacyResolvedReturn } from '../common/return-status.util';
+
 /**
  * Pure helpers for Shopify-style partial fulfilment (SellerOrder.shipments[]).
  * No DB access — the service validates through these and then does the atomic write.
@@ -100,7 +102,7 @@ export function parseLabelItemsQuery(raw: unknown): { itemId: string; quantity: 
   return out.length > 0 && out.length <= 100 ? out : null;
 }
 
-export interface ReturnLineLike extends LineLike { returnStatus?: string; returnLabel?: unknown }
+export interface ReturnLineLike extends LineLike { returnStatus?: string; returnLabel?: unknown; refundedAmount?: number; exchangeOrderId?: string | null }
 
 export type ValidatedReturnLabelItems = { ok: true; indexes: number[] } | { ok: false; error: string };
 
@@ -117,7 +119,7 @@ export function validateReturnLabelItems(items: ReturnLineLike[], itemIds: strin
     if (idx === -1) return { ok: false, error: 'An item does not belong to this order.' };
     const it = items[idx];
     if (it.type !== 'physical') return { ok: false, error: 'Only physical items can be returned by post.' };
-    if (it.returnStatus !== 'approved') return { ok: false, error: 'A return label can be bought only for an approved return.' };
+    if (it.returnStatus !== 'approved' || isLegacyResolvedReturn(it)) return { ok: false, error: 'A return label can be bought only for an approved return.' };
     if (it.returnLabel) return { ok: false, error: 'A return label was already issued for an item.' };
     indexes.push(idx);
   }

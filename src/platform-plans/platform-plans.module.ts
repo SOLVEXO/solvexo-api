@@ -11,6 +11,7 @@ import { AiCreditsService } from './ai-credits.service';
 import { PlatformAddonsService } from './platform-addons.service';
 import { PlatformPlanNotificationsService } from './platform-plan-notifications.service';
 import { TransactionFeeBillingService } from './transaction-fee-billing.service';
+import { LegacyPlatformSubscriptionBackfillService } from './legacy-platform-subscription-backfill.service';
 import { TransactionFeesController } from './transaction-fees.controller';
 import { ExchangeRateModule } from '../exchange-rate/exchange-rate.module';
 import { BillingAccessGuard } from './guards/billing-access.guard';
@@ -40,6 +41,7 @@ import { CriticalAlertService } from '../common/critical-alert.service';
     PlatformPlansService,
     PlatformPlanCatalogService,
     SellerPlatformSubscriptionsService,
+    LegacyPlatformSubscriptionBackfillService,
     EntitlementsService,
     AiCreditsService,
     PlatformAddonsService,

@@ -15,6 +15,7 @@ import { InstallThemeDto } from './dto/install-theme.dto';
 import { CreateColorSchemeDto } from './dto/color-scheme.dto';
 import { MenusService } from '../menus/menus.service';
 import { ThemeCatalogService } from '../theme-catalog/theme-catalog.service';
+import { assertThemeSupportsSections, filterSectionsToTheme } from '../common/store-content/theme-section-capabilities';
 
 const MAX_HEADER_LINKS = 10;
 const MAX_FOOTER_BLOCKS = 20;
@@ -131,6 +132,9 @@ export class StoreThemeService {
   private get storePageModel() {
     return this.databaseService.repositories.storePageModel;
   }
+  private get collectionTemplateModel() {
+    return this.databaseService.repositories.collectionTemplateModel;
+  }
 
   // ── Theme Definition ⟷ Installed Theme Instance ─────────────────────────
   // A `themeDefinitionId` names a code-shipped theme package (frontend
@@ -244,6 +248,7 @@ export class StoreThemeService {
     await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
     const source = await this.storeThemeModel.findOne({ _id: installedThemeId, storeId }).lean();
     if (!source) throw new NotFoundException('Installed theme not found');
+    if (!source.themeDefinitionId) throw new BadRequestException('The installed theme has no registered section capabilities');
     const duplicate = await this.storeThemeModel.create({
       storeId,
       themeDefinitionId: source.themeDefinitionId,
@@ -257,6 +262,60 @@ export class StoreThemeService {
       customCss: source.customCss,
       draft: source.draft,
     });
+    const duplicateId = String(duplicate._id);
+    try {
+      // Shopify duplicates a theme's page templates along with its settings.
+      // Clone this installed instance's layouts so editing the copy starts
+      // from the exact same storefront design, without sharing later edits.
+      const pages = await this.storePageModel.find({ storeId }).lean();
+      for (const page of pages) {
+        let sourceTemplate = page.themeTemplates?.find((entry: any) => String(entry.installedThemeId) === String(source._id));
+        if (!sourceTemplate) {
+          const live = filterSectionsToTheme(page.sections ?? [], source.themeDefinitionId);
+          const draft = filterSectionsToTheme(page.draft?.sections ?? page.sections ?? [], source.themeDefinitionId);
+          sourceTemplate = {
+            installedThemeId: String(source._id), sections: live, draftSections: draft,
+            lastPublishedAt: page.lastPublishedAt ?? null, versions: page.versions ?? [],
+          } as any;
+          await this.storePageModel.updateOne(
+            { _id: page._id, storeId, 'themeTemplates.installedThemeId': { $ne: String(source._id) } },
+            { $push: { themeTemplates: sourceTemplate } },
+          );
+        }
+        await this.storePageModel.updateOne(
+          { _id: page._id, storeId, 'themeTemplates.installedThemeId': { $ne: duplicateId } },
+          { $push: { themeTemplates: {
+            ...sourceTemplate,
+            installedThemeId: duplicateId,
+            versions: [],
+          } } },
+        );
+      }
+
+      const sourceTemplates = await this.collectionTemplateModel.find({ storeId, installedThemeId: String(source._id) }).lean();
+      if (sourceTemplates.length) {
+        await this.collectionTemplateModel.insertMany(sourceTemplates.map((template: any) => ({
+          storeId,
+          installedThemeId: duplicateId,
+          resourceType: template.resourceType,
+          templateKey: template.templateKey,
+          name: template.name,
+          isDefault: template.isDefault,
+          sections: template.sections,
+          draft: template.draft,
+          lastPublishedAt: template.lastPublishedAt,
+          status: template.status,
+          versions: [],
+        })));
+      }
+    } catch (error) {
+      await Promise.all([
+        this.storePageModel.updateMany({ storeId }, { $pull: { themeTemplates: { installedThemeId: duplicateId } } }),
+        this.collectionTemplateModel.deleteMany({ storeId, installedThemeId: duplicateId }),
+        this.storeThemeModel.deleteOne({ _id: duplicateId, storeId }),
+      ]);
+      throw error;
+    }
     return { success: true, message: 'Theme duplicated', data: duplicate };
   }
 
@@ -293,10 +352,11 @@ export class StoreThemeService {
   }
 
   /** Theme Marketplace "Use Theme" — copies a catalog `ThemeDefinition`'s colors/header/footer/identityBanner into this store's active installed row's DRAFT (never live), and stages its home-page composition in `draft.pendingHomeSections` for `publishTheme` to commit into the home `StorePage` on the seller's next explicit publish. Never mutates the catalog document beyond its own apply counter. */
-  async applyThemeDefinition(storeId: string, sellerId: string, themeDefinitionId: string) {
+  async applyThemeDefinition(storeId: string, sellerId: string, themeDefinitionId: string, installedThemeId?: string) {
     await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
-    const instance = await this.resolveInstance(storeId);
+    const instance = await this.resolveInstance(storeId, installedThemeId);
     const themeDef = await this.themeCatalogService.getPublishedForApply(themeDefinitionId);
+    assertThemeSupportsSections(themeDef.homePageSections ?? [], instance.themeDefinitionId);
 
     // A theme definition's header/footer often only sets style/alignment and
     // ships with NO nav-link/footer blocks of its own — falling back to the
@@ -500,8 +560,41 @@ export class StoreThemeService {
     // alone can't carry it there) and clear the pending marker so a later
     // publish never silently reapplies stale sections.
     const pendingHomeSections = (instance.draft as any)?.pendingHomeSections;
-    if (pendingHomeSections) {
-      await this.storePageModel.updateOne({ storeId, type: 'home' }, { $set: { sections: pendingHomeSections } });
+    if (pendingHomeSections !== null && pendingHomeSections !== undefined) {
+      const installedThemeId = String(instance._id);
+      const home = await this.storePageModel.findOne({ storeId, type: 'home' });
+      if (home) {
+        const existingTemplate = (home as any).themeTemplates?.find((entry: any) => String(entry.installedThemeId) === installedThemeId);
+        if (existingTemplate) {
+          await this.storePageModel.updateOne(
+            { _id: home._id, storeId, 'themeTemplates.installedThemeId': installedThemeId },
+            {
+              $set: {
+                'themeTemplates.$.sections': pendingHomeSections,
+                'themeTemplates.$.draftSections': pendingHomeSections,
+                'themeTemplates.$.lastPublishedAt': publishedAt,
+              },
+              $push: {
+                'themeTemplates.$.versions': {
+                  $each: [{ sections: pendingHomeSections, publishedAt }],
+                  $slice: -20,
+                },
+              },
+            },
+          );
+        } else {
+          await this.storePageModel.updateOne(
+            { _id: home._id, storeId, 'themeTemplates.installedThemeId': { $ne: installedThemeId } },
+            { $push: { themeTemplates: {
+              installedThemeId,
+              sections: pendingHomeSections,
+              draftSections: pendingHomeSections,
+              lastPublishedAt: publishedAt,
+              versions: [{ sections: pendingHomeSections, publishedAt }],
+            } } },
+          );
+        }
+      }
       await this.storeThemeModel.updateOne({ _id: instance._id }, { $set: { 'draft.pendingHomeSections': null } });
     }
 

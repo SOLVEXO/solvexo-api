@@ -1,4 +1,9 @@
 /* eslint-disable prettier/prettier */
+/**
+ * @deprecated RETIRED (Option A / Shopify parity: ONE billing system = src/platform-plans). This file is no longer
+ * mounted (not imported by AppModule/SchedulerModule); kept only so the schema/model stays registered and the
+ * historical data remains readable. Do not extend; do not re-import.
+ */
 import { Global, Module } from '@nestjs/common';
 import { PlatformSubscriptionsController } from './platform-subscriptions.controller';
 import { PlatformSubscriptionsService } from './platform-subscriptions.service';

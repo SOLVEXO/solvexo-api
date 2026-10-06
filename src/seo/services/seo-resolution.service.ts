@@ -112,7 +112,10 @@ export class SeoResolutionService {
       ?? truncate(product.description, 160);
 
     const ogImage = seo.ogImage ?? product.images?.[0] ?? storeSeo.ogImage ?? null;
-    const canonicalUrl = seo.canonicalUrlOverride ?? `${PLATFORM_ORIGIN}/product/${product.slug}`;
+    // Product pages belong to the merchant storefront domain, not the
+    // platform marketplace host. This is also the URL crawlers must index.
+    const storefrontOrigin = getStorefrontOrigin(store as any);
+    const canonicalUrl = seo.canonicalUrlOverride ?? `${storefrontOrigin}/product/${product.slug}`;
 
     const jsonLd = [
       this.schemaGenerator.buildProductSchema({
@@ -126,10 +129,11 @@ export class SeoResolutionService {
         storeName,
         averageRating: product.averageRating,
         ratingCount: product.ratingSum,
+        url: canonicalUrl,
       }),
       this.schemaGenerator.buildBreadcrumbSchema([
-        { name: 'Marketplace', url: `${PLATFORM_ORIGIN}/marketplace` },
-        ...(category ? [{ name: (category as any).name, url: `${PLATFORM_ORIGIN}/marketplace?category=${(category as any)._id}` }] : []),
+        { name: storeName || 'Home', url: storefrontOrigin },
+        ...(category ? [{ name: (category as any).name, url: `${storefrontOrigin}/category/${(category as any).slug ?? (category as any)._id}` }] : []),
         { name: product.name, url: canonicalUrl },
       ]),
     ];
@@ -201,7 +205,7 @@ export class SeoResolutionService {
     const description = seo.metaDescription
       ?? renderTemplate(template?.descriptionTemplate, { storeName: store.name })
       ?? truncate(store.description ?? `Shop ${store.name} on Solvexo.`, 160);
-    const canonicalUrl = seo.canonicalUrlOverride ?? `${PLATFORM_ORIGIN}/${store.slug}`;
+    const canonicalUrl = seo.canonicalUrlOverride ?? getStorefrontOrigin(store as any);
 
     return {
       entityType: 'store',
@@ -221,6 +225,7 @@ export class SeoResolutionService {
         slug: store.slug,
         description: store.description,
         logo: store.logo,
+        url: canonicalUrl,
       })],
     };
   }
@@ -243,4 +248,10 @@ function renderTemplate(template: string | undefined | null, tokens: Record<stri
 function truncate(text: string | null | undefined, maxLength: number): string {
   if (!text) return '';
   return text.length <= maxLength ? text : `${text.slice(0, maxLength - 1).trimEnd()}…`;
+}
+
+function getStorefrontOrigin(store: { primaryDomain?: string | null; slug?: string | null }): string {
+  const domain = store.primaryDomain?.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/$/, '');
+  if (domain && /^[a-z0-9.-]+(?::\d+)?$/.test(domain)) return `https://${domain}`;
+  return store.slug ? `https://${store.slug}.solvexo.store` : PLATFORM_ORIGIN;
 }

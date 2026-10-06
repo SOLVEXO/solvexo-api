@@ -110,6 +110,33 @@ describe('CollectionTemplateService — core sections (Phase 4)', () => {
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
+  it('stores resource templates under the selected installed theme instance', async () => {
+    const themeQuery = {
+      select: jest.fn().mockReturnThis(),
+      lean: jest.fn().mockResolvedValue({ _id: 'theme-row-2' }),
+    };
+    (db.repositories as any).storeThemeModel = { findOne: jest.fn().mockReturnValue(themeQuery) };
+    const doc: any = { _id: 'tpl-nova', storeId: STORE_ID, installedThemeId: 'theme-row-2', resourceType: 'product', templateKey: 'default', sections: [], draft: { sections: [] } };
+    collectionTemplateModel = {
+      findOne: jest.fn().mockResolvedValue(null),
+      findOneAndUpdate: jest.fn().mockImplementation((filter: any, update: any) => {
+        if (filter.installedThemeId?.$exists === false) return Promise.resolve(null);
+        return Promise.resolve({ ...doc, ...update.$setOnInsert });
+      }),
+    };
+    (db.repositories as any).collectionTemplateModel = collectionTemplateModel;
+
+    const result = await service.ensureTemplate(STORE_ID, 'product', 'default', 'theme-row-2');
+
+    expect((db.repositories as any).storeThemeModel.findOne).toHaveBeenCalledWith({ _id: 'theme-row-2', storeId: STORE_ID });
+    expect(collectionTemplateModel.findOneAndUpdate).toHaveBeenCalledWith(
+      { storeId: STORE_ID, resourceType: 'product', templateKey: 'default', installedThemeId: 'theme-row-2' },
+      expect.objectContaining({ $setOnInsert: expect.objectContaining({ installedThemeId: 'theme-row-2' }) }),
+      { upsert: true, new: true, setDefaultsOnInsert: true },
+    );
+    expect(result.installedThemeId).toBe('theme-row-2');
+  });
+
   it('rejects saving a product_main section that is missing one of its 7 required blocks', async () => {
     const doc = {
       _id: 'tpl-1', storeId: STORE_ID, resourceType: 'product', templateKey: 'default',

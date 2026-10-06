@@ -3,7 +3,6 @@ import { Module } from '@nestjs/common';
 import { ScheduleModule } from '@nestjs/schedule';
 import { SchedulerService } from './scheduler.service';
 import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
-import { PlatformSubscriptionsModule } from '../platform-subscriptions/platform-subscriptions.module';
 import { FinanceModule } from '../finance/finance.module';
 import { RedisModule } from '../redis/redis.module';
 import { SeoModule } from '../seo/seo.module';
@@ -25,7 +24,7 @@ import { AuthModule } from '../auth/auth.module';
 import { StoreModule } from '../store/store.module';
 
 @Module({
-  imports: [ScheduleModule.forRoot(), SubscriptionsModule, PlatformSubscriptionsModule, FinanceModule, RedisModule, SeoModule, AdminMarketingModule, PromotionsModule, ExchangeRateModule, AdminFinanceModule, BookingsModule, IntegrationsModule, AbandonedCartModule, EmailCampaignsModule, InventoryModule, PurchaseOrdersModule, DraftOrdersModule, OrdersModule, MarketingAutomationsModule, AdminAnnouncementsModule, AuthModule, StoreModule],
+  imports: [ScheduleModule.forRoot(), SubscriptionsModule, FinanceModule, RedisModule, SeoModule, AdminMarketingModule, PromotionsModule, ExchangeRateModule, AdminFinanceModule, BookingsModule, IntegrationsModule, AbandonedCartModule, EmailCampaignsModule, InventoryModule, PurchaseOrdersModule, DraftOrdersModule, OrdersModule, MarketingAutomationsModule, AdminAnnouncementsModule, AuthModule, StoreModule],
   providers: [SchedulerService],
 })
 export class SchedulerModule {}

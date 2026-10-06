@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
+import { syncStorePlanCache } from '../store-plan-sync.util';
 import { Document } from 'mongoose';
 
 export type SellerPlatformSubscriptionDocument = SellerPlatformSubscription & Document;
@@ -103,6 +104,13 @@ export class SellerPlatformSubscription {
   // seller could have manually changed for an unrelated reason.
   @Prop({ type: Date, default: null }) storefrontGatedAt: Date | null;
 
+  // Shopify's plans are pre-paid: a move to a CHEAPER plan (or yearly → monthly) takes effect at the end of
+  // the current billing cycle, with no refund or credit, and the current plan's features stay until then.
+  // Set by changePlan() for such a downgrade; applied by applyScheduledPlanChange() at renewal.
+  @Prop({ type: Object, default: null }) scheduledPlanChange: {
+    planId: string; planName: string; interval: 'monthly' | 'yearly'; amountUSD: number; scheduledAt: Date;
+  } | null;
+
   @Prop({ type: [Object], default: [] }) planHistory: Array<{
     // Null for the very first plan a store ever buys — moving FROM the
     // trial (no plan attached) TO a real one.
@@ -123,3 +131,16 @@ SellerPlatformSubscriptionSchema.index({ sellerId: 1 });
 SellerPlatformSubscriptionSchema.index({ platformPlanId: 1 });
 SellerPlatformSubscriptionSchema.index({ nextBillingDate: 1, status: 1 });
 SellerPlatformSubscriptionSchema.index({ providerSubscriptionId: 1 });
+
+// Keep the denormalised `Store.plan` cache aligned with this (the ONLY) platform-billing system on every
+// save (create included, incl. transactional saves). Idempotent; never throws. Raw `updateOne` paths in the
+// service do not change the plan, so they need no hook.
+SellerPlatformSubscriptionSchema.post('save', async function (doc: any) {
+  try {
+    await syncStorePlanCache(
+      { storeModel: doc.model('Store'), planModel: doc.model('PlatformPlan') },
+      doc,
+      typeof doc.$session === 'function' ? doc.$session() : undefined,
+    );
+  } catch { /* cache only */ }
+});

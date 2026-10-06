@@ -32,7 +32,16 @@ export type PlanKey = 'basic' | 'grow' | 'advanced' | 'enterprise';
 
 /** Bump when the limits/features in `PLAN_CATALOG` change — existing plan documents
  *  are re-aligned to the catalog once per bump (see PlatformPlanCatalogService). */
-export const CATALOG_VERSION = 3; // v2: Enterprise became fixed-price · v3: transactionFeeRate now means the Shopify-style third-party gateway fee
+export const CATALOG_VERSION = 4; // v2: Enterprise became fixed-price · v3: transactionFeeRate now means the Shopify-style third-party gateway fee · v4: one uniform yearly discount (25%), yearly prices re-aligned once
+
+/** Shopify bills a year up front at 25% off the monthly rate on every plan ($25→$19, $65→$49, $399→$299 a month).
+ *  Solvexo applies the same discount to every plan so the catalog is internally consistent. */
+export const YEARLY_DISCOUNT = 0.25;
+export const yearlyPriceFor = (monthlyPriceUSD: number): number => Math.round(monthlyPriceUSD * 12 * (1 - YEARLY_DISCOUNT));
+
+/** Plans aligned before this catalog version get their yearly price replaced once (earlier values were
+ *  inconsistent, e.g. Grow billed $66/mo yearly vs $49 monthly); after that the admin owns the yearly price. */
+export const YEARLY_ALIGN_FROM_VERSION = 4;
 
 export interface CatalogPlan {
   key: PlanKey;
@@ -62,7 +71,7 @@ export const PLAN_CATALOG: CatalogPlan[] = [
   {
     key: 'basic', name: 'Basic', sortOrder: 1, badge: null, isCustomPricing: false,
     description: 'Everything you need to launch your store and make your first sales.',
-    monthlyPriceUSD: 10, yearlyPriceUSD: 96,
+    monthlyPriceUSD: 10, yearlyPriceUSD: yearlyPriceFor(10),
     intro: { priceUSD: 1, durationCycles: 3 },
     gracePeriodDays: 3,
     limits: {
@@ -80,7 +89,7 @@ export const PLAN_CATALOG: CatalogPlan[] = [
   {
     key: 'grow', name: 'Grow', sortOrder: 2, badge: 'Most Popular', isCustomPricing: false,
     description: 'For growing sellers who want more reach, more staff and marketing tools.',
-    monthlyPriceUSD: 49, yearlyPriceUSD: 470,
+    monthlyPriceUSD: 49, yearlyPriceUSD: yearlyPriceFor(49),
     intro: { priceUSD: 1, durationCycles: 3 },
     gracePeriodDays: 3,
     limits: {
@@ -98,7 +107,7 @@ export const PLAN_CATALOG: CatalogPlan[] = [
   {
     key: 'advanced', name: 'Advanced', sortOrder: 3, badge: null, isCustomPricing: false,
     description: 'For scaling businesses that need advanced selling and brand controls.',
-    monthlyPriceUSD: 99, yearlyPriceUSD: 950,
+    monthlyPriceUSD: 99, yearlyPriceUSD: yearlyPriceFor(99),
     intro: { priceUSD: 1, durationCycles: 3 },
     gracePeriodDays: 3,
     limits: {
@@ -116,7 +125,7 @@ export const PLAN_CATALOG: CatalogPlan[] = [
   {
     key: 'enterprise', name: 'Enterprise', sortOrder: 4, badge: null, isCustomPricing: false,
     description: 'For large and complex businesses — unlimited everything with a dedicated account manager.',
-    monthlyPriceUSD: 299, yearlyPriceUSD: 2870, intro: null,
+    monthlyPriceUSD: 299, yearlyPriceUSD: yearlyPriceFor(299), intro: null,
     gracePeriodDays: 7,
     limits: {
       maxProducts: -1, maxStaffAccounts: -1, maxPosLocations: -1, aiCreditsPerMonth: 10000,
@@ -255,6 +264,11 @@ export function assertCatalogValid(catalog: CatalogPlan[] = PLAN_CATALOG): void 
     }).map(m => `${plan.name}: ${m}`));
   }
   for (let i = 1; i < sorted.length; i++) problems.push(...validateTierOrder(sorted[i - 1], sorted[i]));
+  for (const plan of sorted) {
+    if (!plan.isCustomPricing && plan.monthlyPriceUSD != null && plan.yearlyPriceUSD !== yearlyPriceFor(plan.monthlyPriceUSD)) {
+      problems.push(`${plan.name}: yearly price must apply the uniform ${YEARLY_DISCOUNT * 100}% yearly discount ($${yearlyPriceFor(plan.monthlyPriceUSD)}).`);
+    }
+  }
   if (sorted.filter(p => !p.isCustomPricing).length < 1) problems.push('At least one self-serve plan is required.');
   if (problems.length) throw new Error(`Invalid platform plan catalog:\n - ${problems.join('\n - ')}`);
 }

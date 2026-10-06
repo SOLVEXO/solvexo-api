@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Controller, Get, Post, Patch, Param, Body, Req, Query, UseGuards, UseInterceptors } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, Param, Body, Req, Query, UseGuards, UseInterceptors } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { SellerPlatformSubscriptionsService } from './seller-platform-subscriptions.service';
@@ -193,6 +193,17 @@ export class SellerPlatformSubscriptionsController {
   @Post(':storeId/preview-change-plan')
   previewChangePlan(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: ChangePlatformPlanDto) {
     return this.sellerPlatformSubscriptionsService.previewChangePlan(actingSellerId(req.user), storeId, dto);
+  }
+
+  /** Drops a pending (end-of-cycle) downgrade — the current plan keeps renewing. */
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('settings.billing.manage')
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @Delete(':storeId/scheduled-change')
+  cancelScheduledPlanChange(@Req() req: any, @Param('storeId') storeId: string) {
+    return this.sellerPlatformSubscriptionsService.cancelScheduledPlanChange(actingSellerId(req.user), storeId);
   }
 
   @ApiBearerAuth()

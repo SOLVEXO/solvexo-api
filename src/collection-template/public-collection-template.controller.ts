@@ -15,6 +15,9 @@ export class PublicCollectionTemplateController {
 
   @Get(':storeId')
   get(@Param('storeId') storeId: string, @Query('resourceType') resourceType?: string, @Query('templateKey') templateKey?: string) {
+    // The public storefront always resolves the active theme. Accepting an
+    // installed-theme ID here would expose published templates from private,
+    // inactive theme drafts through an unauthenticated endpoint.
     return this.collectionTemplateService.getPublic(storeId, (resourceType as ResourceTemplateType) ?? 'collection', templateKey);
   }
 }

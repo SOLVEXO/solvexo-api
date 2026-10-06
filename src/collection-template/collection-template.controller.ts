@@ -28,8 +28,8 @@ export class CollectionTemplateController {
   }
 
   @Get(':storeId/templates')
-  listTemplates(@Req() req: any, @Param('storeId') storeId: string, @Query('resourceType') resourceType?: string) {
-    return this.collectionTemplateService.listTemplates(storeId, req.user.userId, this.resourceType(resourceType));
+  listTemplates(@Req() req: any, @Param('storeId') storeId: string, @Query('resourceType') resourceType?: string, @Query('instance') instance?: string) {
+    return this.collectionTemplateService.listTemplates(storeId, req.user.userId, this.resourceType(resourceType), instance);
   }
 
   @Post(':storeId/templates')
@@ -38,8 +38,9 @@ export class CollectionTemplateController {
     @Param('storeId') storeId: string,
     @Body() dto: CreateResourceTemplateDto,
     @Query('resourceType') resourceType?: string,
+    @Query('instance') instance?: string,
   ) {
-    return this.collectionTemplateService.createTemplate(storeId, req.user.userId, this.resourceType(resourceType), dto);
+    return this.collectionTemplateService.createTemplate(storeId, req.user.userId, this.resourceType(resourceType), dto, instance);
   }
 
   @Delete(':storeId/templates/:templateKey')
@@ -48,18 +49,19 @@ export class CollectionTemplateController {
     @Param('storeId') storeId: string,
     @Param('templateKey') templateKey: string,
     @Query('resourceType') resourceType?: string,
+    @Query('instance') instance?: string,
   ) {
-    return this.collectionTemplateService.deleteTemplate(storeId, req.user.userId, this.resourceType(resourceType), templateKey);
+    return this.collectionTemplateService.deleteTemplate(storeId, req.user.userId, this.resourceType(resourceType), templateKey, instance);
   }
 
   @Get(':storeId')
-  get(@Req() req: any, @Param('storeId') storeId: string, @Query('resourceType') resourceType?: string, @Query('templateKey') templateKey?: string) {
-    return this.collectionTemplateService.getForSeller(storeId, req.user.userId, this.resourceType(resourceType), templateKey);
+  get(@Req() req: any, @Param('storeId') storeId: string, @Query('resourceType') resourceType?: string, @Query('templateKey') templateKey?: string, @Query('instance') instance?: string) {
+    return this.collectionTemplateService.getForSeller(storeId, req.user.userId, this.resourceType(resourceType), templateKey, instance);
   }
 
   @Get(':storeId/draft')
-  getDraft(@Req() req: any, @Param('storeId') storeId: string, @Query('resourceType') resourceType?: string, @Query('templateKey') templateKey?: string) {
-    return this.collectionTemplateService.getDraft(storeId, req.user.userId, this.resourceType(resourceType), templateKey);
+  getDraft(@Req() req: any, @Param('storeId') storeId: string, @Query('resourceType') resourceType?: string, @Query('templateKey') templateKey?: string, @Query('instance') instance?: string) {
+    return this.collectionTemplateService.getDraft(storeId, req.user.userId, this.resourceType(resourceType), templateKey, instance);
   }
 
   @Patch(':storeId/sections')
@@ -69,23 +71,24 @@ export class CollectionTemplateController {
     @Body() dto: UpdateSectionsDto,
     @Query('resourceType') resourceType?: string,
     @Query('templateKey') templateKey?: string,
+    @Query('instance') instance?: string,
   ) {
-    return this.collectionTemplateService.updateSections(storeId, req.user.userId, dto, this.resourceType(resourceType), templateKey);
+    return this.collectionTemplateService.updateSections(storeId, req.user.userId, dto, this.resourceType(resourceType), templateKey, instance);
   }
 
   @Patch(':storeId/publish')
-  publish(@Req() req: any, @Param('storeId') storeId: string, @Query('resourceType') resourceType?: string, @Query('templateKey') templateKey?: string) {
-    return this.collectionTemplateService.publish(storeId, req.user.userId, this.resourceType(resourceType), templateKey);
+  publish(@Req() req: any, @Param('storeId') storeId: string, @Query('resourceType') resourceType?: string, @Query('templateKey') templateKey?: string, @Query('instance') instance?: string) {
+    return this.collectionTemplateService.publish(storeId, req.user.userId, this.resourceType(resourceType), templateKey, instance);
   }
 
   @Patch(':storeId/revert-draft')
-  revertDraft(@Req() req: any, @Param('storeId') storeId: string, @Query('resourceType') resourceType?: string, @Query('templateKey') templateKey?: string) {
-    return this.collectionTemplateService.revertDraft(storeId, req.user.userId, this.resourceType(resourceType), templateKey);
+  revertDraft(@Req() req: any, @Param('storeId') storeId: string, @Query('resourceType') resourceType?: string, @Query('templateKey') templateKey?: string, @Query('instance') instance?: string) {
+    return this.collectionTemplateService.revertDraft(storeId, req.user.userId, this.resourceType(resourceType), templateKey, instance);
   }
 
   @Get(':storeId/versions')
-  listVersions(@Req() req: any, @Param('storeId') storeId: string, @Query('resourceType') resourceType?: string, @Query('templateKey') templateKey?: string) {
-    return this.collectionTemplateService.listVersions(storeId, req.user.userId, this.resourceType(resourceType), templateKey);
+  listVersions(@Req() req: any, @Param('storeId') storeId: string, @Query('resourceType') resourceType?: string, @Query('templateKey') templateKey?: string, @Query('instance') instance?: string) {
+    return this.collectionTemplateService.listVersions(storeId, req.user.userId, this.resourceType(resourceType), templateKey, instance);
   }
 
   @Post(':storeId/versions/:versionId/restore')
@@ -95,7 +98,8 @@ export class CollectionTemplateController {
     @Param('versionId') versionId: string,
     @Query('resourceType') resourceType?: string,
     @Query('templateKey') templateKey?: string,
+    @Query('instance') instance?: string,
   ) {
-    return this.collectionTemplateService.restoreVersion(storeId, req.user.userId, versionId, this.resourceType(resourceType), templateKey);
+    return this.collectionTemplateService.restoreVersion(storeId, req.user.userId, versionId, this.resourceType(resourceType), templateKey, instance);
   }
 }

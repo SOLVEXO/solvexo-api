@@ -63,7 +63,7 @@ describe('StoreThemeService', () => {
       // the mock derives a stable, per-store `_id` instead of leaving it
       // undefined.
       findOne: jest.fn().mockImplementation((query: any) =>
-        Promise.resolve({ _id: `instance-${query.storeId}`, storeId: query.storeId, draft: existingDraft() }),
+        Promise.resolve({ _id: query._id ?? `instance-${query.storeId}`, storeId: query.storeId, draft: existingDraft() }),
       ),
     };
     storeModel = {
@@ -73,7 +73,10 @@ describe('StoreThemeService', () => {
         Promise.resolve(id === STORE_ID ? { _id: STORE_ID, isDelete: false, sellerId: SELLER_ID } : null),
       ),
     };
-    storePageModel = { updateOne: jest.fn().mockResolvedValue({}) };
+    storePageModel = {
+      findOne: jest.fn().mockResolvedValue({ _id: 'home-1', themeTemplates: [{ installedThemeId: `instance-${STORE_ID}`, sections: [], draftSections: [] }] }),
+      updateOne: jest.fn().mockResolvedValue({}),
+    };
 
     db = { repositories: { storeThemeModel, storeModel, storePageModel } } as any;
     themeCatalogService = {
@@ -116,6 +119,15 @@ describe('StoreThemeService', () => {
       expect(update.$set['draft.identityBanner']).toEqual({ showFollowButton: false });
       expect(update.$set['draft.baseThemeId']).toBe(THEME_DEF_ID);
       expect(update.$set['draft.pendingHomeSections']).toEqual([{ type: 'hero', settings: {}, blocks: [] }]);
+    });
+
+    it('applies a catalog design to the requested installed theme instance, not whichever theme is active', async () => {
+      await service.applyThemeDefinition(STORE_ID, SELLER_ID, THEME_DEF_ID, 'instance-copy');
+
+      const applyCall = storeThemeModel.findOneAndUpdate.mock.calls.find(
+        ([, update]: any[]) => update?.$set?.['draft.theme'] !== undefined,
+      );
+      expect(applyCall[0]).toEqual({ _id: 'instance-copy' });
     });
 
     it('preserves the seller\'s own nav-link/footer blocks when the theme definition has none of its own', async () => {
@@ -174,9 +186,13 @@ describe('StoreThemeService', () => {
 
       await service.publishTheme(STORE_ID, SELLER_ID);
 
+      expect(storePageModel.findOne).toHaveBeenCalledWith({ storeId: STORE_ID, type: 'home' });
       expect(storePageModel.updateOne).toHaveBeenCalledWith(
-        { storeId: STORE_ID, type: 'home' },
-        { $set: { sections: [{ type: 'hero', settings: {}, blocks: [] }] } },
+        { _id: 'home-1', storeId: STORE_ID, 'themeTemplates.installedThemeId': `instance-${STORE_ID}` },
+        expect.objectContaining({
+          $set: expect.objectContaining({ 'themeTemplates.$.sections': [{ type: 'hero', settings: {}, blocks: [] }] }),
+          $push: expect.any(Object),
+        }),
       );
       expect(storeThemeModel.updateOne).toHaveBeenCalledWith(
         { _id: `instance-${STORE_ID}` },

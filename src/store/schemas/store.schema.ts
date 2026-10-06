@@ -441,10 +441,12 @@ export class Store {
 
   @Prop({
     type: String,
-    enum: Object.values(StorePlan),
+    // Denormalised cache kept in sync from SellerPlatformSubscription (see platform-plans/store-plan-sync.util.ts).
+    // Includes the current catalog keys ('grow'/'advanced') besides the legacy StorePlan values.
+    enum: [...Object.values(StorePlan), 'grow', 'advanced'],
     default: StorePlan.STARTER,
   })
-  plan!: StorePlan;
+  plan!: StorePlan | 'grow' | 'advanced';
 
   @Prop({ type: Number, default: 100 })
   aiCredits!: number;

@@ -12,10 +12,12 @@ import { CreateResourceTemplateDto } from './dto/create-resource-template.dto';
 import { buildCoreSections, findMissingCoreParts } from './core-sections.util';
 import { AppsService } from '../apps/apps.service';
 import { MetafieldsService } from '../metafields/metafields.service';
+import { assertThemeSupportsSections } from '../common/store-content/theme-section-capabilities';
 import type { MetafieldOwnerResource } from '../metafields/schemas/metafield-definition.schema';
 
 const MAX_SECTIONS_PER_TEMPLATE = 40;
 const DEFAULT_TEMPLATE_KEY = 'default';
+
 
 /** The one section (or two, for Cart) a template of each resource type can't
  *  meaningfully ship without. `collection` keeps its own pre-existing
@@ -65,6 +67,7 @@ function validateSections(sections: { type: SectionType; settings: Record<string
   }
 }
 
+
 @Injectable()
 export class CollectionTemplateService {
   constructor(
@@ -81,14 +84,41 @@ export class CollectionTemplateService {
     return this.databaseService.repositories.storeModel;
   }
 
+  private get storeThemeModel() {
+    return this.databaseService.repositories.storeThemeModel;
+  }
+
+  private async resolveInstalledThemeId(storeId: string, installedThemeId?: string): Promise<string | undefined> {
+    if (installedThemeId) {
+      const theme = await this.storeThemeModel?.findOne({ _id: installedThemeId, storeId }).select('_id').lean();
+      if (!theme) throw new NotFoundException('Installed theme not found');
+      return String(theme._id);
+    }
+    const active = await this.storeThemeModel?.findOne({ storeId, status: 'active' }).select('_id').lean();
+    return active?._id ? String(active._id) : undefined;
+  }
+
   /** Idempotent getOrCreate for one (resourceType, templateKey) pair — same shape as `StorePagesService#ensureHomePage`. A brand-new template starts as a usable draft with its starter content already in it. Every pre-existing caller omits both params and gets exactly today's single collection-layout document back. Also lazily backfills a required core section (see `backfillCoreSections`) onto a template that already existed before Phase 4 — so a store that never re-opens the editor still gets it the first time anything touches this template again, without ever duplicating it on a later call. */
-  async ensureTemplate(storeId: string, resourceType: ResourceTemplateType = 'collection', templateKey = DEFAULT_TEMPLATE_KEY) {
+  async ensureTemplate(storeId: string, resourceType: ResourceTemplateType = 'collection', templateKey = DEFAULT_TEMPLATE_KEY, installedThemeId?: string) {
+    const resolvedThemeId = await this.resolveInstalledThemeId(storeId, installedThemeId);
+    const filter = { storeId, resourceType, templateKey, ...(resolvedThemeId ? { installedThemeId: resolvedThemeId } : {}) };
     const seed = starterSections(resourceType, templateKey);
-    const doc = await this.collectionTemplateModel.findOneAndUpdate(
-      { storeId, resourceType, templateKey },
+    let doc = resolvedThemeId ? await this.collectionTemplateModel.findOne(filter) : null;
+    // Older installations have a single shared record. Assign it to the
+    // active theme on first access, preserving its existing content.
+    if (!doc && resolvedThemeId) {
+      doc = await this.collectionTemplateModel.findOneAndUpdate(
+        { storeId, resourceType, templateKey, installedThemeId: null },
+        { $set: { installedThemeId: resolvedThemeId } },
+        { new: true },
+      );
+    }
+    if (!doc) doc = await this.collectionTemplateModel.findOneAndUpdate(
+      filter,
       {
         $setOnInsert: {
           storeId,
+          ...(resolvedThemeId ? { installedThemeId: resolvedThemeId } : {}),
           resourceType,
           templateKey,
           name: templateKey === DEFAULT_TEMPLATE_KEY ? 'Default' : templateKey,
@@ -151,10 +181,11 @@ export class CollectionTemplateService {
     });
   }
 
-  private async findOwnedTemplate(storeId: string, sellerId: string, resourceType: ResourceTemplateType, templateKey: string) {
+  private async findOwnedTemplate(storeId: string, sellerId: string, resourceType: ResourceTemplateType, templateKey: string, installedThemeId?: string) {
     await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
-    await this.ensureTemplate(storeId, resourceType, templateKey);
-    const filter = { storeId, resourceType, templateKey };
+    const resolvedThemeId = await this.resolveInstalledThemeId(storeId, installedThemeId);
+    await this.ensureTemplate(storeId, resourceType, templateKey, resolvedThemeId);
+    const filter = { storeId, resourceType, templateKey, ...(resolvedThemeId ? { installedThemeId: resolvedThemeId } : {}) };
     await this.backfillDraft(filter);
     const template = await this.collectionTemplateModel.findOne(filter);
     if (!template) throw new NotFoundException('Template not found');
@@ -163,26 +194,30 @@ export class CollectionTemplateService {
 
   // ── Template management (Theme Library "alternate templates") ──────────
 
-  async listTemplates(storeId: string, sellerId: string, resourceType: ResourceTemplateType) {
+  async listTemplates(storeId: string, sellerId: string, resourceType: ResourceTemplateType, installedThemeId?: string) {
     await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
-    await this.ensureTemplate(storeId, resourceType, DEFAULT_TEMPLATE_KEY);
-    const templates = await this.collectionTemplateModel.find({ storeId, resourceType }).sort({ isDefault: -1, name: 1 }).lean();
+    const resolvedThemeId = await this.resolveInstalledThemeId(storeId, installedThemeId);
+    await this.ensureTemplate(storeId, resourceType, DEFAULT_TEMPLATE_KEY, resolvedThemeId);
+    const templates = await this.collectionTemplateModel.find({ storeId, resourceType, ...(resolvedThemeId ? { installedThemeId: resolvedThemeId } : {}) }).sort({ isDefault: -1, name: 1 }).lean();
     return { success: true, data: templates };
   }
 
-  async createTemplate(storeId: string, sellerId: string, resourceType: ResourceTemplateType, dto: CreateResourceTemplateDto) {
+  async createTemplate(storeId: string, sellerId: string, resourceType: ResourceTemplateType, dto: CreateResourceTemplateDto, installedThemeId?: string) {
     await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
+    const resolvedThemeId = await this.resolveInstalledThemeId(storeId, installedThemeId);
+    const themeFilter = resolvedThemeId ? { installedThemeId: resolvedThemeId } : {};
     const templateKey = dto.templateKey.trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-');
     if (!templateKey) throw new BadRequestException('templateKey is required');
-    const existing = await this.collectionTemplateModel.findOne({ storeId, resourceType, templateKey });
+    const existing = await this.collectionTemplateModel.findOne({ storeId, resourceType, templateKey, ...themeFilter });
     if (existing) throw new BadRequestException(`A ${resourceType} template with key "${templateKey}" already exists`);
 
     const seed = dto.cloneFromTemplateKey
-      ? (await this.collectionTemplateModel.findOne({ storeId, resourceType, templateKey: dto.cloneFromTemplateKey }))?.sections ?? starterSections(resourceType, templateKey)
+      ? (await this.collectionTemplateModel.findOne({ storeId, resourceType, templateKey: dto.cloneFromTemplateKey, ...themeFilter }))?.sections ?? starterSections(resourceType, templateKey)
       : starterSections(resourceType, templateKey);
 
     const created = await this.collectionTemplateModel.create({
       storeId,
+      ...(resolvedThemeId ? { installedThemeId: resolvedThemeId } : {}),
       resourceType,
       templateKey,
       name: dto.name,
@@ -194,10 +229,11 @@ export class CollectionTemplateService {
     return { success: true, message: 'Template created', data: created };
   }
 
-  async deleteTemplate(storeId: string, sellerId: string, resourceType: ResourceTemplateType, templateKey: string) {
+  async deleteTemplate(storeId: string, sellerId: string, resourceType: ResourceTemplateType, templateKey: string, installedThemeId?: string) {
     await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
+    const resolvedThemeId = await this.resolveInstalledThemeId(storeId, installedThemeId);
     if (templateKey === DEFAULT_TEMPLATE_KEY) throw new ForbiddenException('Cannot remove the default template');
-    const deleted = await this.collectionTemplateModel.findOneAndDelete({ storeId, resourceType, templateKey });
+    const deleted = await this.collectionTemplateModel.findOneAndDelete({ storeId, resourceType, templateKey, ...(resolvedThemeId ? { installedThemeId: resolvedThemeId } : {}) });
     if (!deleted) throw new NotFoundException('Template not found');
     return { success: true, message: 'Template removed' };
   }
@@ -206,14 +242,14 @@ export class CollectionTemplateService {
   // compatible defaults so the pre-existing Collection Template caller
   // (which never passes either) is completely unaffected. ────────────────
 
-  async getForSeller(storeId: string, sellerId: string, resourceType: ResourceTemplateType = 'collection', templateKey = DEFAULT_TEMPLATE_KEY) {
-    const template = await this.findOwnedTemplate(storeId, sellerId, resourceType, templateKey);
+  async getForSeller(storeId: string, sellerId: string, resourceType: ResourceTemplateType = 'collection', templateKey = DEFAULT_TEMPLATE_KEY, installedThemeId?: string) {
+    const template = await this.findOwnedTemplate(storeId, sellerId, resourceType, templateKey, installedThemeId);
     return { success: true, data: template };
   }
 
   /** The builder's actual working copy — mirrors `StorePagesService#getDraft`'s shape/purpose. */
-  async getDraft(storeId: string, sellerId: string, resourceType: ResourceTemplateType = 'collection', templateKey = DEFAULT_TEMPLATE_KEY) {
-    const template = await this.findOwnedTemplate(storeId, sellerId, resourceType, templateKey);
+  async getDraft(storeId: string, sellerId: string, resourceType: ResourceTemplateType = 'collection', templateKey = DEFAULT_TEMPLATE_KEY, installedThemeId?: string) {
+    const template = await this.findOwnedTemplate(storeId, sellerId, resourceType, templateKey, installedThemeId);
     return {
       success: true,
       data: {
@@ -224,8 +260,8 @@ export class CollectionTemplateService {
   }
 
   /** Writes to `draft.sections` only — a buyer never sees this until `publish()` is called. */
-  async updateSections(storeId: string, sellerId: string, dto: UpdateSectionsDto, resourceType: ResourceTemplateType = 'collection', templateKey = DEFAULT_TEMPLATE_KEY) {
-    const template = await this.findOwnedTemplate(storeId, sellerId, resourceType, templateKey);
+  async updateSections(storeId: string, sellerId: string, dto: UpdateSectionsDto, resourceType: ResourceTemplateType = 'collection', templateKey = DEFAULT_TEMPLATE_KEY, installedThemeId?: string) {
+    const template = await this.findOwnedTemplate(storeId, sellerId, resourceType, templateKey, installedThemeId);
     validateSections(dto.sections);
     // Defense in depth beyond the editor UI (which already hides the Remove
     // control for a core section/its required blocks) — a direct API call
@@ -233,6 +269,10 @@ export class CollectionTemplateService {
     const missingCore = findMissingCoreParts(resourceType, templateKey, dto.sections);
     if (missingCore.length > 0) {
       throw new BadRequestException(`This template's required content cannot be removed: ${missingCore.join(', ')}`);
+    }
+    if (template.installedThemeId) {
+      const theme = await this.storeThemeModel.findOne({ _id: template.installedThemeId, storeId }).select('themeDefinitionId').lean();
+      assertThemeSupportsSections(dto.sections, theme?.themeDefinitionId);
     }
     // Phase 8 — the second, DB-aware half of app-block validation.
     await this.appsService.assertBlocksAllowed(storeId, dto.sections);
@@ -247,8 +287,8 @@ export class CollectionTemplateService {
   }
 
   /** Copies `draft.sections` → the live `sections` field atomically via the shared ContentVersioningService, and appends a real version snapshot of what just went live. */
-  async publish(storeId: string, sellerId: string, resourceType: ResourceTemplateType = 'collection', templateKey = DEFAULT_TEMPLATE_KEY) {
-    const template = await this.findOwnedTemplate(storeId, sellerId, resourceType, templateKey);
+  async publish(storeId: string, sellerId: string, resourceType: ResourceTemplateType = 'collection', templateKey = DEFAULT_TEMPLATE_KEY, installedThemeId?: string) {
+    const template = await this.findOwnedTemplate(storeId, sellerId, resourceType, templateKey, installedThemeId);
     const filter = { _id: template._id };
     const updated = await this.contentVersioningService.publishDraft(
       this.collectionTemplateModel,
@@ -264,14 +304,14 @@ export class CollectionTemplateService {
     return { success: true, message: 'Template published', data: withVersion ?? updated };
   }
 
-  async listVersions(storeId: string, sellerId: string, resourceType: ResourceTemplateType = 'collection', templateKey = DEFAULT_TEMPLATE_KEY) {
-    const template = await this.findOwnedTemplate(storeId, sellerId, resourceType, templateKey);
+  async listVersions(storeId: string, sellerId: string, resourceType: ResourceTemplateType = 'collection', templateKey = DEFAULT_TEMPLATE_KEY, installedThemeId?: string) {
+    const template = await this.findOwnedTemplate(storeId, sellerId, resourceType, templateKey, installedThemeId);
     const versions = await this.contentVersioningService.listVersions(this.collectionTemplateModel, { _id: template._id });
     return { success: true, data: versions };
   }
 
-  async restoreVersion(storeId: string, sellerId: string, versionId: string, resourceType: ResourceTemplateType = 'collection', templateKey = DEFAULT_TEMPLATE_KEY) {
-    const template = await this.findOwnedTemplate(storeId, sellerId, resourceType, templateKey);
+  async restoreVersion(storeId: string, sellerId: string, versionId: string, resourceType: ResourceTemplateType = 'collection', templateKey = DEFAULT_TEMPLATE_KEY, installedThemeId?: string) {
+    const template = await this.findOwnedTemplate(storeId, sellerId, resourceType, templateKey, installedThemeId);
     const filter = { _id: template._id };
     const version = await this.contentVersioningService.findVersion(this.collectionTemplateModel, filter, versionId);
     if (!version) throw new BadRequestException('Version not found');
@@ -282,8 +322,8 @@ export class CollectionTemplateService {
   }
 
   /** Safety-net "discard unsaved changes" — mirror image of `publish()`'s copy direction. */
-  async revertDraft(storeId: string, sellerId: string, resourceType: ResourceTemplateType = 'collection', templateKey = DEFAULT_TEMPLATE_KEY) {
-    const template = await this.findOwnedTemplate(storeId, sellerId, resourceType, templateKey);
+  async revertDraft(storeId: string, sellerId: string, resourceType: ResourceTemplateType = 'collection', templateKey = DEFAULT_TEMPLATE_KEY, installedThemeId?: string) {
+    const template = await this.findOwnedTemplate(storeId, sellerId, resourceType, templateKey, installedThemeId);
     const updated = await this.contentVersioningService.revertDraft(this.collectionTemplateModel, { _id: template._id }, {
       'draft.sections': '$sections',
     });
@@ -297,8 +337,9 @@ export class CollectionTemplateService {
    *  `versions` (full publish history) to a public visitor, same reasoning
    *  as `StoreThemeService.getPublic`. */
   async getPublic(storeId: string, resourceType: ResourceTemplateType = 'collection', templateKey = DEFAULT_TEMPLATE_KEY) {
+    const resolvedThemeId = await this.resolveInstalledThemeId(storeId);
     const template = await this.collectionTemplateModel
-      .findOne({ storeId, resourceType, templateKey, status: 'published' }, { draft: 0, versions: 0 })
+      .findOne({ storeId, resourceType, templateKey, ...(resolvedThemeId ? { installedThemeId: resolvedThemeId } : {}), status: 'published' }, { draft: 0, versions: 0 })
       .lean();
     if (template) return { success: true, data: template };
     return { success: true, data: { sections: starterSections(resourceType, templateKey) } };

@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { withEffectiveReturnStatus } from './return-status.util';
 
 const INTERNAL_ORDER_FIELDS = ['fxSnapshots', 'platformSponsoredDiscountTotal', 'attributedBannerId', 'attributedStoreBannerId', 'attributionSource', 'overdueReminderSentAt', 'checkoutId', 'isDelete', 'ratePerUSD', 'timeline', 'note'];
 const INTERNAL_SELLER_ORDER_FIELDS = ['platformSponsoredDiscountUSD', 'settlementCurrency', 'settlementAmount', 'settledViaConnect', 'stripeConnectedAccountId', 'stockAlreadyDeducted'];
@@ -33,7 +34,7 @@ export function toBuyerSafeOrder(order: any): any {
     if (Array.isArray(out.shipments)) {
       out.shipments = out.shipments.map((sh: any) => ({ ...sh, tracking: toBuyerTracking(sh.tracking) }));
     }
-    out.items = (so.items ?? []).map((it: any) => { const i: any = { ...it }; for (const k of INTERNAL_ITEM_FIELDS) delete i[k]; if (i.returnLabel) i.returnLabel = toBuyerReturnLabel(i.returnLabel); return i; });
+    out.items = (so.items ?? []).map((it: any) => { const i: any = { ...withEffectiveReturnStatus(it) }; for (const k of INTERNAL_ITEM_FIELDS) delete i[k]; if (i.returnLabel) i.returnLabel = toBuyerReturnLabel(i.returnLabel); return i; });
     return out;
   });
   return safe;

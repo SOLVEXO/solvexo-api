@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Body, Controller, Delete, Get, Param, Patch, Post, Req, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -28,18 +28,18 @@ export class StorePagesController {
   constructor(private readonly storePagesService: StorePagesService) {}
 
   @Get(':storeId')
-  list(@Req() req: any, @Param('storeId') storeId: string) {
-    return this.storePagesService.listForSeller(storeId, actingSellerId(req.user));
+  list(@Req() req: any, @Param('storeId') storeId: string, @Query('instance') instance?: string) {
+    return this.storePagesService.listForSeller(storeId, actingSellerId(req.user), instance);
   }
 
   @Get(':storeId/:pageId')
-  get(@Req() req: any, @Param('storeId') storeId: string, @Param('pageId') pageId: string) {
-    return this.storePagesService.getForSeller(storeId, actingSellerId(req.user), pageId);
+  get(@Req() req: any, @Param('storeId') storeId: string, @Param('pageId') pageId: string, @Query('instance') instance?: string) {
+    return this.storePagesService.getForSeller(storeId, actingSellerId(req.user), pageId, instance);
   }
 
   @Get(':storeId/:pageId/draft')
-  getDraft(@Req() req: any, @Param('storeId') storeId: string, @Param('pageId') pageId: string) {
-    return this.storePagesService.getDraft(storeId, actingSellerId(req.user), pageId);
+  getDraft(@Req() req: any, @Param('storeId') storeId: string, @Param('pageId') pageId: string, @Query('instance') instance?: string) {
+    return this.storePagesService.getDraft(storeId, actingSellerId(req.user), pageId, instance);
   }
 
   @Post(':storeId')
@@ -53,13 +53,13 @@ export class StorePagesController {
   }
 
   @Patch(':storeId/:pageId/sections')
-  updateSections(@Req() req: any, @Param('storeId') storeId: string, @Param('pageId') pageId: string, @Body() dto: UpdateSectionsDto) {
-    return this.storePagesService.updateSections(storeId, actingSellerId(req.user), pageId, dto);
+  updateSections(@Req() req: any, @Param('storeId') storeId: string, @Param('pageId') pageId: string, @Body() dto: UpdateSectionsDto, @Query('instance') instance?: string) {
+    return this.storePagesService.updateSections(storeId, actingSellerId(req.user), pageId, dto, instance);
   }
 
   @Patch(':storeId/:pageId/publish')
-  publish(@Req() req: any, @Param('storeId') storeId: string, @Param('pageId') pageId: string) {
-    return this.storePagesService.publish(storeId, actingSellerId(req.user), pageId);
+  publish(@Req() req: any, @Param('storeId') storeId: string, @Param('pageId') pageId: string, @Query('instance') instance?: string) {
+    return this.storePagesService.publish(storeId, actingSellerId(req.user), pageId, instance);
   }
 
   @Patch(':storeId/:pageId/unpublish')
@@ -68,18 +68,18 @@ export class StorePagesController {
   }
 
   @Patch(':storeId/:pageId/revert-draft')
-  revertDraft(@Req() req: any, @Param('storeId') storeId: string, @Param('pageId') pageId: string) {
-    return this.storePagesService.revertDraft(storeId, actingSellerId(req.user), pageId);
+  revertDraft(@Req() req: any, @Param('storeId') storeId: string, @Param('pageId') pageId: string, @Query('instance') instance?: string) {
+    return this.storePagesService.revertDraft(storeId, actingSellerId(req.user), pageId, instance);
   }
 
   @Get(':storeId/:pageId/versions')
-  listVersions(@Req() req: any, @Param('storeId') storeId: string, @Param('pageId') pageId: string) {
-    return this.storePagesService.listVersions(storeId, actingSellerId(req.user), pageId);
+  listVersions(@Req() req: any, @Param('storeId') storeId: string, @Param('pageId') pageId: string, @Query('instance') instance?: string) {
+    return this.storePagesService.listVersions(storeId, actingSellerId(req.user), pageId, instance);
   }
 
   @Post(':storeId/:pageId/versions/:versionId/restore')
-  restoreVersion(@Req() req: any, @Param('storeId') storeId: string, @Param('pageId') pageId: string, @Param('versionId') versionId: string) {
-    return this.storePagesService.restoreVersion(storeId, actingSellerId(req.user), pageId, versionId);
+  restoreVersion(@Req() req: any, @Param('storeId') storeId: string, @Param('pageId') pageId: string, @Param('versionId') versionId: string, @Query('instance') instance?: string) {
+    return this.storePagesService.restoreVersion(storeId, actingSellerId(req.user), pageId, versionId, instance);
   }
 
   @Delete(':storeId/:pageId')

@@ -25,11 +25,13 @@ export class SeoSchemaGeneratorService {
     storeName?: string;
     averageRating?: number;
     ratingCount?: number;
+    url?: string;
   }): Record<string, any> {
+    const productUrl = input.url ?? `${PLATFORM_ORIGIN}/product/${input.slug}`;
     const schema: Record<string, any> = {
       '@context': 'https://schema.org',
       '@type': 'Product',
-      '@id': `${PLATFORM_ORIGIN}/product/${input.slug}`,
+      '@id': productUrl,
       name: input.name,
       description: input.description,
       image: input.images,
@@ -40,7 +42,7 @@ export class SeoSchemaGeneratorService {
         price: input.price,
         priceCurrency: input.currency ?? 'USD',
         availability: `https://schema.org/${input.availability ?? 'InStock'}`,
-        url: `${PLATFORM_ORIGIN}/product/${input.slug}`,
+        url: productUrl,
       };
     }
     if (input.storeName) {
@@ -56,15 +58,16 @@ export class SeoSchemaGeneratorService {
     return schema;
   }
 
-  buildStoreSchema(input: { storeId: string; name: string; slug: string; description?: string | null; logo?: string | null }): Record<string, any> {
+  buildStoreSchema(input: { storeId: string; name: string; slug: string; description?: string | null; logo?: string | null; url?: string }): Record<string, any> {
+    const storeUrl = input.url ?? `${PLATFORM_ORIGIN}/${input.slug}`;
     return {
       '@context': 'https://schema.org',
       '@type': 'Store',
-      '@id': `${PLATFORM_ORIGIN}/${input.slug}`,
+      '@id': storeUrl,
       name: input.name,
       description: input.description ?? undefined,
       logo: input.logo ?? undefined,
-      url: `${PLATFORM_ORIGIN}/${input.slug}`,
+      url: storeUrl,
     };
   }
 

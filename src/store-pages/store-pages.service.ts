@@ -11,6 +11,7 @@ import { MetafieldsService } from '../metafields/metafields.service';
 import { CreatePageDto } from './dto/create-page.dto';
 import { UpdatePageDto } from './dto/update-page.dto';
 import { UpdateSectionsDto } from './dto/update-sections.dto';
+import { assertThemeSupportsSections, filterSectionsToTheme } from '../common/store-content/theme-section-capabilities';
 
 const MAX_SECTIONS_PER_PAGE = 40;
 // Custom pages are served at the bare `/:slug/:pageSlug` (no `/pages/`
@@ -35,8 +36,8 @@ function validateSections(sections: { type: SectionType; settings: Record<string
 }
 
 /** Public (anonymous) reads must never expose unpublished work: `draft` and `versions` hold unreleased edits and history. */
-export function stripUnpublished<T extends Record<string, any>>(page: T): Omit<T, 'draft' | 'versions'> {
-  const { draft: _draft, versions: _versions, ...rest } = page as any;
+export function stripUnpublished<T extends Record<string, any>>(page: T): Omit<T, 'draft' | 'versions' | 'themeTemplates'> {
+  const { draft: _draft, versions: _versions, themeTemplates: _themeTemplates, ...rest } = page as any;
   return rest;
 }
 
@@ -61,6 +62,57 @@ export class StorePagesService {
   }
   private get storeModel() {
     return this.databaseService.repositories.storeModel;
+  }
+  private get storeThemeModel() {
+    return this.databaseService.repositories.storeThemeModel;
+  }
+
+  private async resolveInstalledThemeId(storeId: string, installedThemeId?: string): Promise<string | undefined> {
+    if (!this.storeThemeModel) return undefined;
+    const query = installedThemeId
+      ? { _id: installedThemeId, storeId }
+      : { storeId, status: 'active' };
+    const theme = await this.storeThemeModel.findOne(query).select('_id themeDefinitionId').lean();
+    if (!theme && installedThemeId) throw new NotFoundException('Installed theme not found');
+    return theme?._id ? String(theme._id) : undefined;
+  }
+
+  private async ensurePageThemeTemplate(page: any, installedThemeId?: string) {
+    if (!installedThemeId) return page;
+    if (page.themeTemplates?.some((template: any) => String(template.installedThemeId) === installedThemeId)) return page;
+
+    const theme = await this.storeThemeModel.findOne({ _id: installedThemeId, storeId: page.storeId }).select('themeDefinitionId').lean();
+    if (!theme) throw new NotFoundException('Installed theme not found');
+    if (!theme.themeDefinitionId) throw new BadRequestException('The installed theme has no registered section capabilities');
+    const liveSections = filterSectionsToTheme(page.sections ?? [], theme.themeDefinitionId);
+    const draftSections = filterSectionsToTheme(page.draft?.sections ?? page.sections ?? [], theme.themeDefinitionId);
+    await this.storePageModel.updateOne(
+      { _id: page._id, storeId: page.storeId, 'themeTemplates.installedThemeId': { $ne: installedThemeId } },
+      { $push: { themeTemplates: {
+        installedThemeId,
+        sections: liveSections,
+        draftSections,
+        lastPublishedAt: page.lastPublishedAt ?? null,
+        versions: Array.isArray(page.versions) ? page.versions : [],
+      } } },
+    );
+    return this.storePageModel.findOne({ _id: page._id, storeId: page.storeId, isDelete: false });
+  }
+
+  private async presentPageForTheme(page: any, installedThemeId?: string) {
+    const themed = await this.ensurePageThemeTemplate(page, installedThemeId);
+    if (!installedThemeId) return themed;
+    const plain = typeof themed?.toObject === 'function' ? themed.toObject() : { ...themed };
+    const template = plain.themeTemplates?.find((entry: any) => String(entry.installedThemeId) === installedThemeId);
+    const { themeTemplates: _themeTemplates, ...safePage } = plain;
+    return {
+      ...safePage,
+      installedThemeId,
+      sections: template?.sections ?? plain.sections,
+      draft: { ...(plain.draft ?? {}), sections: template?.draftSections ?? plain.draft?.sections ?? plain.sections },
+      lastPublishedAt: template?.lastPublishedAt ?? plain.lastPublishedAt,
+      versions: template?.versions ?? plain.versions,
+    };
   }
 
   /** Idempotent — called from `StoreService.createStore()` right after creation, and from the one-off backfill script for pre-existing stores. A brand-new home page starts as a usable draft with a hero + product catalog, not empty — its `draft.sections` starts identical to `sections`, since there's nothing yet to diverge. */
@@ -112,27 +164,33 @@ export class StorePagesService {
 
   // ── Seller ───────────────────────────────────────────────────────────────
 
-  async listForSeller(storeId: string, sellerId: string) {
+  async listForSeller(storeId: string, sellerId: string, requestedThemeId?: string) {
     await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
     await this.ensureHomePage(storeId);
     await this.backfillPageDrafts({ storeId });
-    const pages = await this.storePageModel.find({ storeId, isDelete: false }).sort({ type: -1, createdAt: 1 }).lean();
-    return { success: true, data: pages };
+    const [pages, installedThemeId] = await Promise.all([
+      this.storePageModel.find({ storeId, isDelete: false }).sort({ type: -1, createdAt: 1 }).lean(),
+      this.resolveInstalledThemeId(storeId, requestedThemeId),
+    ]);
+    return { success: true, data: await Promise.all(pages.map(page => this.presentPageForTheme(page, installedThemeId))) };
   }
 
-  async getForSeller(storeId: string, sellerId: string, pageId: string) {
+  async getForSeller(storeId: string, sellerId: string, pageId: string, installedThemeId?: string) {
     const page = await this.findOwnedPage(storeId, sellerId, pageId);
-    return { success: true, data: page };
+    const themeId = await this.resolveInstalledThemeId(storeId, installedThemeId);
+    return { success: true, data: await this.presentPageForTheme(page, themeId) };
   }
 
   /** The seller editor's actual working copy — `draft.sections` plus enough context (`lastPublishedAt`) to show a "you have unpublished changes" state. Mirrors `StoreThemeService#getDraft`'s shape/purpose. */
-  async getDraft(storeId: string, sellerId: string, pageId: string) {
+  async getDraft(storeId: string, sellerId: string, pageId: string, installedThemeId?: string) {
     const page = await this.findOwnedPage(storeId, sellerId, pageId);
+    const themeId = await this.resolveInstalledThemeId(storeId, installedThemeId);
+    const current = await this.presentPageForTheme(page, themeId);
     return {
       success: true,
       data: {
-        sections: page.draft.sections,
-        lastPublishedAt: page.lastPublishedAt,
+        sections: current.draft.sections,
+        lastPublishedAt: current.lastPublishedAt,
       },
     };
   }
@@ -213,9 +271,18 @@ export class StorePagesService {
    * bug where editing an already-published page changed what was live
    * immediately. A buyer never sees this until `publish()` is called.
    */
-  async updateSections(storeId: string, sellerId: string, pageId: string, dto: UpdateSectionsDto) {
+  async updateSections(storeId: string, sellerId: string, pageId: string, dto: UpdateSectionsDto, requestedThemeId?: string) {
     const page = await this.findOwnedPage(storeId, sellerId, pageId);
     validateSections(dto.sections);
+    const installedThemeId = await this.resolveInstalledThemeId(storeId, requestedThemeId);
+    const templatePage = await this.ensurePageThemeTemplate(page, installedThemeId);
+    if (installedThemeId) {
+      const theme = await this.storeThemeModel.findOne({ _id: installedThemeId, storeId }).select('themeDefinitionId').lean();
+      assertThemeSupportsSections(dto.sections, theme?.themeDefinitionId);
+    } else {
+      const activeTheme = await this.storeThemeModel.findOne({ storeId, status: 'active' }).select('themeDefinitionId').lean();
+      assertThemeSupportsSections(dto.sections, activeTheme?.themeDefinitionId);
+    }
     // Phase 8 — the second, DB-aware half of app-block validation (is the
     // app installed for THIS store, is the section type actually
     // supported, do settings match the app's own schema).
@@ -226,40 +293,103 @@ export class StorePagesService {
     // already have on the CollectionTemplate side — see
     // CollectionTemplateService's own resolveOwnerResource).
     await this.metafieldsService.assertDynamicSourceBindingsValid(storeId, page.type === 'custom' ? 'page' : null, dto.sections);
-    const updated = await this.storePageModel.findOneAndUpdate(
-      { _id: pageId, storeId },
-      { $set: { 'draft.sections': dto.sections } },
-      { new: true },
-    );
-    return { success: true, message: 'Draft saved', data: updated };
+    const updated = installedThemeId
+      ? await this.storePageModel.findOneAndUpdate(
+          { _id: pageId, storeId, 'themeTemplates.installedThemeId': installedThemeId },
+          { $set: { 'themeTemplates.$.draftSections': dto.sections } },
+          { new: true },
+        )
+      : await this.storePageModel.findOneAndUpdate(
+          { _id: pageId, storeId },
+          { $set: { 'draft.sections': dto.sections } },
+          { new: true },
+        );
+    return { success: true, message: 'Draft saved', data: await this.presentPageForTheme(updated ?? templatePage, installedThemeId) };
   }
 
   /** Copies `draft.sections` → the live `sections` field in one atomic $set via the shared ContentVersioningService, marks the page published, and appends a real version snapshot of what just went live. Safe to call whether this is the page's first publish or the Nth — either way, whatever's in the draft right now is what goes live. */
-  async publish(storeId: string, sellerId: string, pageId: string) {
-    await this.findOwnedPage(storeId, sellerId, pageId);
-    const updated = await this.contentVersioningService.publishDraft(
-      this.storePageModel,
-      { _id: pageId, storeId },
-      { sections: '$draft.sections' },
-      { status: 'published', lastPublishedAt: '$$NOW' },
+  async publish(storeId: string, sellerId: string, pageId: string, requestedThemeId?: string) {
+    const page = await this.findOwnedPage(storeId, sellerId, pageId);
+    const installedThemeId = await this.resolveInstalledThemeId(storeId, requestedThemeId);
+    if (!installedThemeId) {
+      const updated = await this.contentVersioningService.publishDraft(
+        this.storePageModel,
+        { _id: pageId, storeId },
+        { sections: '$draft.sections' },
+        { status: 'published', lastPublishedAt: '$$NOW' },
+      );
+      const withVersion = await this.contentVersioningService.appendVersion(
+        this.storePageModel,
+        { _id: pageId, storeId },
+        { sections: (updated as any)?.sections ?? [], publishedAt: (updated as any)?.lastPublishedAt ?? new Date() },
+      );
+      return { success: true, message: 'Page published', data: withVersion ?? updated };
+    }
+
+    await this.ensurePageThemeTemplate(page, installedThemeId);
+    const theme = await this.storeThemeModel.findOne({ _id: installedThemeId, storeId }).select('status').lean();
+    const updated = await this.storePageModel.findOneAndUpdate(
+      { _id: pageId, storeId, 'themeTemplates.installedThemeId': installedThemeId },
+      [{ $set: {
+        themeTemplates: { $map: {
+          input: '$themeTemplates', as: 'template',
+          in: { $cond: [
+            { $eq: ['$$template.installedThemeId', installedThemeId] },
+            { $mergeObjects: ['$$template', { sections: '$$template.draftSections', lastPublishedAt: '$$NOW' }] },
+            '$$template',
+          ] },
+        } },
+        ...(theme?.status === 'active' ? { status: 'published' } : {}),
+      } }],
+      { new: true, updatePipeline: true },
     );
-    const withVersion = await this.contentVersioningService.appendVersion(
-      this.storePageModel,
-      { _id: pageId, storeId },
-      { sections: (updated as any)?.sections ?? [], publishedAt: (updated as any)?.lastPublishedAt ?? new Date() },
-    );
-    return { success: true, message: 'Page published', data: withVersion ?? updated };
+    const template = (updated as any)?.themeTemplates?.find((entry: any) => String(entry.installedThemeId) === installedThemeId);
+    if (template) {
+      await this.storePageModel.updateOne(
+        { _id: pageId, storeId, 'themeTemplates.installedThemeId': installedThemeId },
+        {
+          $push: {
+            'themeTemplates.$.versions': {
+              $each: [{ sections: template.sections, publishedAt: template.lastPublishedAt ?? new Date() }],
+              $slice: -20,
+            },
+          },
+        },
+      );
+    }
+    const refreshed = await this.storePageModel.findOne({ _id: pageId, storeId, isDelete: false });
+    return { success: true, message: 'Theme page template published', data: await this.presentPageForTheme(refreshed, installedThemeId) };
   }
 
-  async listVersions(storeId: string, sellerId: string, pageId: string) {
-    await this.findOwnedPage(storeId, sellerId, pageId);
+  async listVersions(storeId: string, sellerId: string, pageId: string, requestedThemeId?: string) {
+    const page = await this.findOwnedPage(storeId, sellerId, pageId);
+    const installedThemeId = await this.resolveInstalledThemeId(storeId, requestedThemeId);
+    if (installedThemeId) {
+      const themed = await this.ensurePageThemeTemplate(page, installedThemeId);
+      const plain = typeof themed?.toObject === 'function' ? themed.toObject() : themed;
+      const versions = (plain.themeTemplates?.find((entry: any) => String(entry.installedThemeId) === installedThemeId)?.versions ?? []).slice().reverse();
+      return { success: true, data: versions };
+    }
     const versions = await this.contentVersioningService.listVersions(this.storePageModel, { _id: pageId, storeId });
     return { success: true, data: versions };
   }
 
   /** Restores a past version into the DRAFT slot only — the seller still has to explicitly Publish afterward, same as every other draft edit. */
-  async restoreVersion(storeId: string, sellerId: string, pageId: string, versionId: string) {
-    await this.findOwnedPage(storeId, sellerId, pageId);
+  async restoreVersion(storeId: string, sellerId: string, pageId: string, versionId: string, requestedThemeId?: string) {
+    const page = await this.findOwnedPage(storeId, sellerId, pageId);
+    const installedThemeId = await this.resolveInstalledThemeId(storeId, requestedThemeId);
+    if (installedThemeId) {
+      const themed = await this.ensurePageThemeTemplate(page, installedThemeId);
+      const plain = typeof themed?.toObject === 'function' ? themed.toObject() : themed;
+      const version = plain.themeTemplates?.find((entry: any) => String(entry.installedThemeId) === installedThemeId)?.versions?.find((entry: any) => String(entry._id) === versionId);
+      if (!version) throw new BadRequestException('Version not found');
+      const updated = await this.storePageModel.findOneAndUpdate(
+        { _id: pageId, storeId, 'themeTemplates.installedThemeId': installedThemeId },
+        { $set: { 'themeTemplates.$.draftSections': version.sections } },
+        { new: true },
+      );
+      return { success: true, message: 'Version restored to draft — review and publish to make it live.', data: await this.presentPageForTheme(updated, installedThemeId) };
+    }
     const version = await this.contentVersioningService.findVersion(this.storePageModel, { _id: pageId, storeId }, versionId);
     if (!version) throw new BadRequestException('Version not found');
     const updated = await this.contentVersioningService.restoreVersionToDraft(this.storePageModel, { _id: pageId, storeId }, {
@@ -276,8 +406,25 @@ export class StorePagesService {
   }
 
   /** Safety-net "discard unsaved changes" — copies the live `sections` back over `draft.sections`, the mirror image of `publish()`'s copy direction. Never touches `status`. */
-  async revertDraft(storeId: string, sellerId: string, pageId: string) {
-    await this.findOwnedPage(storeId, sellerId, pageId);
+  async revertDraft(storeId: string, sellerId: string, pageId: string, requestedThemeId?: string) {
+    const page = await this.findOwnedPage(storeId, sellerId, pageId);
+    const installedThemeId = await this.resolveInstalledThemeId(storeId, requestedThemeId);
+    if (installedThemeId) {
+      await this.ensurePageThemeTemplate(page, installedThemeId);
+      const updated = await this.storePageModel.findOneAndUpdate(
+        { _id: pageId, storeId, 'themeTemplates.installedThemeId': installedThemeId },
+        [{ $set: { themeTemplates: { $map: {
+          input: '$themeTemplates', as: 'template',
+          in: { $cond: [
+            { $eq: ['$$template.installedThemeId', installedThemeId] },
+            { $mergeObjects: ['$$template', { draftSections: '$$template.sections' }] },
+            '$$template',
+          ] },
+        } } } }],
+        { new: true, updatePipeline: true },
+      );
+      return { success: true, message: 'Draft reverted to the published version', data: await this.presentPageForTheme(updated, installedThemeId) };
+    }
     const updated = await this.contentVersioningService.revertDraft(this.storePageModel, { _id: pageId, storeId }, {
       'draft.sections': '$sections',
     });
@@ -294,8 +441,13 @@ export class StorePagesService {
   // ── Public ───────────────────────────────────────────────────────────────
 
   async getPublicHome(storeId: string) {
-    const page = await this.storePageModel.findOne({ storeId, type: 'home', status: 'published', isDelete: false }).lean();
-    if (page) return { success: true, data: stripUnpublished(page) };
+    const installedThemeId = await this.resolveInstalledThemeId(storeId);
+    const page = await this.storePageModel.findOne({ storeId, type: 'home', status: 'published', isDelete: false });
+    if (page) {
+      const themed = await this.presentPageForTheme(page, installedThemeId);
+      const { installedThemeId: _installedThemeId, ...publicPage } = themed as any;
+      return { success: true, data: stripUnpublished(publicPage) };
+    }
     // Defense-in-depth for stores created BEFORE the `ensureHomePage` fix
     // above (when new stores were seeded at status: 'draft'): rather than a
     // hard 404 that leaves the storefront blank forever, fall back to
@@ -307,14 +459,23 @@ export class StorePagesService {
     // for every page going forward.
     const anyHome = await this.storePageModel.findOne({ storeId, type: 'home', isDelete: false }).lean();
     const fallbackSections = anyHome?.sections?.length ? anyHome.sections : anyHome?.draft?.sections?.length ? anyHome.draft.sections : starterHomeSections();
-    if (anyHome) return { success: true, data: stripUnpublished({ ...anyHome, sections: fallbackSections }) };
+    if (anyHome) {
+      const themed = await this.presentPageForTheme({ ...anyHome, sections: fallbackSections }, installedThemeId);
+      const { installedThemeId: _installedThemeId, ...publicPage } = themed as any;
+      return { success: true, data: stripUnpublished(publicPage) };
+    }
     throw new NotFoundException('This store has no home page yet');
   }
 
   async getPublicPage(storeId: string, slug: string) {
-    const page = await this.storePageModel.findOne({ storeId, slug, type: 'custom', status: 'published', isDelete: false }).lean();
+    const [page, installedThemeId] = await Promise.all([
+      this.storePageModel.findOne({ storeId, slug, type: 'custom', status: 'published', isDelete: false }),
+      this.resolveInstalledThemeId(storeId),
+    ]);
     if (!page) throw new NotFoundException('Page not found');
-    return { success: true, data: stripUnpublished(page) };
+    const themed = await this.presentPageForTheme(page, installedThemeId);
+    const { installedThemeId: _installedThemeId, ...publicPage } = themed as any;
+    return { success: true, data: stripUnpublished(publicPage) };
   }
 
   async listPublicPages(storeId: string) {

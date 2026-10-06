@@ -128,8 +128,13 @@ export class StoreThemeController {
   // retrying this must never double-apply/double-count `applyCount`.
   @Post(':storeId/apply/:themeDefinitionId')
   @UseInterceptors(IdempotencyInterceptor)
-  applyTheme(@Req() req: any, @Param('storeId') storeId: string, @Param('themeDefinitionId') themeDefinitionId: string) {
-    return this.storeThemeService.applyThemeDefinition(storeId, actingSellerId(req.user), themeDefinitionId);
+  applyTheme(
+    @Req() req: any,
+    @Param('storeId') storeId: string,
+    @Param('themeDefinitionId') themeDefinitionId: string,
+    @Query('instance') instance?: string,
+  ) {
+    return this.storeThemeService.applyThemeDefinition(storeId, actingSellerId(req.user), themeDefinitionId, instance);
   }
 
   @Patch(':storeId/theme')

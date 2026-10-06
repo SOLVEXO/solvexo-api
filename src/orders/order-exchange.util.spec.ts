@@ -46,6 +46,10 @@ describe('deriveSellerReturnStatus', () => {
     expect(deriveSellerReturnStatus(['approved', 'none'])).toBe('partial_approved');
     expect(deriveSellerReturnStatus(['requested', 'none'])).toBe('partial_requested');
     expect(deriveSellerReturnStatus([])).toBe('none');
+    expect(deriveSellerReturnStatus(['received', 'received'])).toBe('received');
+    expect(deriveSellerReturnStatus(['received', 'refunded'])).toBe('partial_received');
+    expect(deriveSellerReturnStatus(['refunded', 'exchanged', 'none'])).toBe('resolved');
+    expect(deriveSellerReturnStatus(['rejected', 'none'])).toBe('rejected');
   });
 });
 
@@ -53,8 +57,13 @@ describe('isExchangeableReturnLine', () => {
   it('accepts a pending physical return', () => {
     expect(isExchangeableReturnLine({ type: 'physical', returnStatus: 'requested' }).ok).toBe(true);
   });
-  it('rejects approved, rejected, none, digital and already exchanged lines', () => {
-    expect(isExchangeableReturnLine({ type: 'physical', returnStatus: 'approved' }).ok).toBe(false);
+  it('accepts an approved or received (not yet resolved) physical return', () => {
+    expect(isExchangeableReturnLine({ type: 'physical', returnStatus: 'approved' }).ok).toBe(true);
+    expect(isExchangeableReturnLine({ type: 'physical', returnStatus: 'received' }).ok).toBe(true);
+  });
+  it('rejects legacy approved+refunded, refunded, rejected, none, digital and already exchanged lines', () => {
+    expect(isExchangeableReturnLine({ type: 'physical', returnStatus: 'approved', refundedAmount: 20 }).ok).toBe(false);
+    expect(isExchangeableReturnLine({ type: 'physical', returnStatus: 'refunded' }).ok).toBe(false);
     expect(isExchangeableReturnLine({ type: 'physical', returnStatus: 'rejected' }).ok).toBe(false);
     expect(isExchangeableReturnLine({ type: 'physical', returnStatus: 'none' }).ok).toBe(false);
     expect(isExchangeableReturnLine({ type: 'digital', returnStatus: 'requested' }).ok).toBe(false);

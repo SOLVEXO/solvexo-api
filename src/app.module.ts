@@ -48,7 +48,6 @@ import { DiscountsModule } from './discounts/discounts.module';
 import { CollectionsModule } from './collections/collections.module';
 import { StripeConnectModule } from './stripe-connect/stripe-connect.module';
 import { AnalyticsModule } from './analytics/analytics.module';
-import { PlatformSubscriptionsModule } from './platform-subscriptions/platform-subscriptions.module';
 import { AdminAnalyticsModule } from './admin-analytics/admin-analytics.module';
 // Phase 11 — Alerts & Insights. A separate top-level module (not folded
 // into AdminAnalyticsModule) purely to avoid a circular import — see
@@ -160,7 +159,6 @@ import { StockCountsModule } from './stock-counts/stock-counts.module';
     CollectionsModule,
     StripeConnectModule,
     AnalyticsModule,
-    PlatformSubscriptionsModule,
     AdminAnalyticsModule,
     PlatformAlertsModule,
     AdminFinanceModule,

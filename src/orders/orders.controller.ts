@@ -48,6 +48,8 @@ import {
 } from '@nestjs/common';
 import { OrderEditingService } from './order-editing.service';
 import { OrderExchangeService } from './order-exchange.service';
+import { OrderReturnsService } from './order-returns.service';
+import { ReceiveReturnDto, RefundReturnDto } from './dto/order-returns.dto';
 import { CreateExchangeDto } from './dto/order-exchange.dto';
 import { EditOrderDto, OrderCommentDto, OrderNoteDto, OrderShippingAddressDto } from './dto/order-editing.dto';
 const editActor = (req: any) => ({ actorId: String(req.user.userId), actorRole: (req.user.role === 'staff' ? 'staff' : 'seller') as 'seller' | 'staff' });
@@ -68,6 +70,7 @@ export class OrdersController {
     private readonly ordersService: OrdersService,
     private readonly orderEditing: OrderEditingService,
     private readonly orderExchange: OrderExchangeService,
+    private readonly orderReturns: OrderReturnsService,
   ) {}
 
   // Shopify order-status page: opens ONE order from a signed link, no login (how a guest tracks an order).
@@ -443,13 +446,32 @@ export class OrdersController {
     @Param('orderId') orderId: string,
     @Body() body: any,
   ) {
-    return this.ordersService.returnAction(
+    return this.orderReturns.action(
       actingSellerId(req.user),
       orderId,
       body,
+      editActor(req),
       req.ip,
       req.headers['user-agent'],
     );
+  }
+
+  // Shopify "Mark as received" (+ restock choice) for approved return lines — stock moves here, not at approval.
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('orders.return')
+  @Post('return-receive/:storeId/:orderId')
+  async receiveReturn(@Req() req: any, @Param('storeId') storeId: string, @Param('orderId') orderId: string, @Body() dto: ReceiveReturnDto) {
+    return this.orderReturns.receive(actingSellerId(req.user), storeId, orderId, editActor(req), dto);
+  }
+
+  // Resolve received return lines as a REFUND (original payment method or store credit) — money moves here, not at approval.
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('orders.return')
+  @Post('return-refund/:storeId/:orderId')
+  async refundReturn(@Req() req: any, @Param('storeId') storeId: string, @Param('orderId') orderId: string, @Body() dto: RefundReturnDto) {
+    return this.orderReturns.refund(actingSellerId(req.user), storeId, orderId, editActor(req), dto);
   }
 
   // Step 1: JWT se download link lo (10 min valid)

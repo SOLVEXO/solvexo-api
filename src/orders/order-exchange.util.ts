@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { round } from '../common/number.util';
+import { isLegacyResolvedReturn } from '../common/return-status.util';
 
 export interface ExchangeReplacementInput {
   /** Unit price in the ORDER's currency. */
@@ -59,28 +60,39 @@ export function quoteExchange(lines: ExchangeReplacementInput[], effTaxRate: num
   };
 }
 
-/** Same roll-up `returnAction` applies to a sub-order's return status, for a set of per-item return statuses. */
+/**
+ * Roll-up of a sub-order's return status from its per-item statuses (pass EFFECTIVE statuses — see `effectiveReturnStatus`).
+ * Open work wins: approved (waiting for the goods) / received (waiting for a refund or exchange) / requested; once every
+ * return line is finished the roll-up is `resolved` (all declined = `rejected`).
+ */
 export function deriveSellerReturnStatus(itemStatuses: string[]): string {
   if (itemStatuses.length === 0) return 'none';
   const allApproved = itemStatuses.every((s) => s === 'approved');
   const anyApproved = itemStatuses.some((s) => s === 'approved');
+  const allReceived = itemStatuses.every((s) => s === 'received');
+  const anyReceived = itemStatuses.some((s) => s === 'received');
   const allRequested = itemStatuses.every((s) => s === 'requested');
   const anyRequested = itemStatuses.some((s) => s === 'requested');
-  const allRejected = itemStatuses.filter((s) => s !== 'none').every((s) => s === 'rejected');
+  const used = itemStatuses.filter((s) => s !== 'none');
+  const allRejected = used.every((s) => s === 'rejected');
+  const allFinished = used.length > 0 && used.every((s) => ['rejected', 'refunded', 'exchanged', 'closed'].includes(s));
   if (allApproved) return 'approved';
   if (anyApproved) return 'partial_approved';
+  if (allReceived) return 'received';
+  if (anyReceived) return 'partial_received';
   if (allRequested) return 'requested';
   if (anyRequested) return 'partial_requested';
   if (allRejected) return 'rejected';
+  if (allFinished) return 'resolved';
   return 'none';
 }
 
-/** A return line may be resolved by an exchange only while it is still waiting for a decision and was not already exchanged. */
-export function isExchangeableReturnLine(item: { type?: string; returnStatus?: string; exchangeOrderId?: string | null; status?: string }): { ok: boolean; reason?: string } {
+/** A return line may be resolved by an exchange while it is requested, approved or received (not once refunded/exchanged/closed). */
+export function isExchangeableReturnLine(item: { type?: string; returnStatus?: string; exchangeOrderId?: string | null; status?: string; refundedAmount?: number | null }): { ok: boolean; reason?: string } {
   if (item.type !== 'physical') return { ok: false, reason: 'Only physical items can be exchanged' };
   if (item.exchangeOrderId) return { ok: false, reason: 'This item was already exchanged' };
-  if (item.returnStatus === 'approved') return { ok: false, reason: 'This return was already approved and refunded — create a new order for the replacement instead' };
-  if (item.returnStatus !== 'requested') return { ok: false, reason: 'This item has no pending return request' };
+  if (isLegacyResolvedReturn(item)) return { ok: false, reason: 'This return was already approved and refunded — create a new order for the replacement instead' };
+  if (!['requested', 'approved', 'received'].includes(item.returnStatus ?? '')) return { ok: false, reason: 'This item has no open return request' };
   if (item.status === 'cancelled' || item.status === 'refunded') return { ok: false, reason: 'This item was already cancelled or refunded' };
   return { ok: true };
 }

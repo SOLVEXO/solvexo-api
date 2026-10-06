@@ -115,7 +115,7 @@ export class PlatformPlanNotificationsService {
         <strong>Attempt ${data.attemptNumber} of ${data.maxAttempts} failed</strong> for ${money(data.amountUSD)}.
       </div>
       <p>We'll automatically retry on <strong>${data.nextRetryDate.toDateString()}</strong>. To avoid your store being
-      moved to the free plan, please make sure your payment method is up to date before then.</p>
+      locked (selling paused), please make sure your payment method is up to date before then.</p>
     `);
     await this.send(to, `Action needed: payment failed for ${data.storeName}`, html);
   }

@@ -28,6 +28,7 @@ import { SeoAuditProcessor } from './seo-audit.processor';
 import { SeoMetaController, SeoRenderHtmlController } from './public/seo-render.controller';
 import { RobotsController } from './public/robots.controller';
 import { SitemapController } from './public/sitemap.controller';
+import { StorefrontSeoController } from './public/storefront-seo.controller';
 import { PlatformSeoController } from './admin/platform-seo.controller';
 import { SeoLandingPagesController } from './admin/seo-landing-pages.controller';
 import { AdminSeoCategoryController } from './admin/seo-category.controller';
@@ -71,6 +72,7 @@ import { SellerSeoAnalyticsController } from './seller/seller-seo-analytics.cont
     SeoRenderHtmlController,
     RobotsController,
     SitemapController,
+    StorefrontSeoController,
     // Admin — Phase 2, 3 & 4
     PlatformSeoController,
     SeoLandingPagesController,
