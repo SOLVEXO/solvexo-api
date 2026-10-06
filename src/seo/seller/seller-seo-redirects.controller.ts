@@ -1,5 +1,9 @@
 /* eslint-disable prettier/prettier */
-import { Controller, Get, Post, Patch, Delete, Param, Body, Query, Req, UseGuards, UseInterceptors } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, Param, Body, Query, Req, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
+import { buildTemplatePayload, readUploadedCsv } from '@/common/bulk-import/bulk-import.util';
+import { SEO_REDIRECT_IMPORT_COLUMNS, importSeoRedirectsCsv } from '../services/seo-redirects-bulk-import';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from '@/auth/guards/jwt-auth.guard';
 import { RolesGuard } from '@/auth/guards/roles.guard';
@@ -13,7 +17,7 @@ import { actingSellerId } from '@/common/acting-seller-id.util';
 import { SeoRedirectsService } from '../services/seo-redirects.service';
 import { CreateRedirectDto } from '../dto/create-redirect.dto';
 import { UpdateRedirectDto } from '../dto/update-redirect.dto';
-import { SeoResponseInterceptor } from '../seo-response.interceptor';
+import { SeoResponseInterceptor, alreadyEnveloped } from '../seo-response.interceptor';
 
 @ApiTags('Seller SEO — Redirects')
 @ApiBearerAuth()
@@ -31,6 +35,23 @@ export class SellerSeoRedirectsController {
   private async assertAccess(storeId: string, sellerId: string) {
     await verifyStoreOwnershipStrict(this.db.repositories.storeModel, storeId, sellerId);
     await this.entitlements.assertFeatureAllowed(storeId, 'customRedirectsAllowed', 'Custom redirects');
+  }
+
+  @RequirePermission('seo.manage')
+  @Get('import-template')
+  async importTemplate(@Req() req: any, @Param('storeId') storeId: string) {
+    await this.assertAccess(storeId, actingSellerId(req.user));
+    return alreadyEnveloped(buildTemplatePayload('seo-redirects-import-template.csv', SEO_REDIRECT_IMPORT_COLUMNS));
+  }
+
+  @RequirePermission('seo.manage')
+  @Post('import')
+  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }))
+  async importCsv(@Req() req: any, @Param('storeId') storeId: string, @UploadedFile() file: any) {
+    await this.assertAccess(storeId, actingSellerId(req.user));
+    const actor = { id: req.user.userId, role: req.user.role };
+    const res = await importSeoRedirectsCsv({ create: (dto) => this.redirects.create(storeId, dto, actor) }, readUploadedCsv(file));
+    return alreadyEnveloped(res);
   }
 
   @RequirePermission('seo.manage')

@@ -3,6 +3,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { DatabaseService } from '../database/databaseservice';
 import { verifyStoreOwnershipStrict } from '../common/store-ownership.util';
 import { CreateStoreFaqDto, UpdateStoreFaqDto } from './dto/create-store-faq.dto';
+import { importStoreFaqsCsv } from './store-faq-bulk-import';
 
 @Injectable()
 export class StoreFaqService {
@@ -40,6 +41,12 @@ export class StoreFaqService {
       isActive: dto.isActive ?? true,
     });
     return { success: true, message: 'FAQ created', data: faq };
+  }
+
+  /** Bulk CSV import — every row goes through create(). */
+  async importCsv(storeId: string, sellerId: string, text: string) {
+    await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
+    return importStoreFaqsCsv({ storeFaqModel: this.storeFaqModel, storeFaqService: this }, sellerId, storeId, text);
   }
 
   async update(storeId: string, sellerId: string, faqId: string, dto: UpdateStoreFaqDto) {

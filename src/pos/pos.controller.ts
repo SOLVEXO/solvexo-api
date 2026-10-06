@@ -1,8 +1,12 @@
 /* eslint-disable prettier/prettier */
 import {
   Controller, Get, Post, Patch, Delete,
-  Body, Param, Query, Req, Res, UseGuards, Headers,
+  Body, Param, Query, Req, Res, UseGuards, Headers, UseInterceptors, UploadedFile,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
+import { buildTemplatePayload, readUploadedCsv } from '../common/bulk-import/bulk-import.util';
+import { LOCATION_IMPORT_COLUMNS } from './store-locations-bulk-import';
 import { Response } from 'express';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { PosService } from './pos.service';
@@ -56,6 +60,24 @@ export class PosController {
   @Post('locations/:storeId')
   createLocation(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: CreateStoreLocationDto) {
     return this.storeLocationService.createLocation(actingSellerId(req.user), storeId, dto);
+  }
+
+  // CSV import — static segments, declared before `locations/:storeId/:locationId`.
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('settings.locations.manage')
+  @Get('locations/:storeId/import-template')
+  importLocationsTemplate() {
+    return buildTemplatePayload('locations-import-template.csv', LOCATION_IMPORT_COLUMNS);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('settings.locations.manage')
+  @Post('locations/:storeId/import')
+  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }))
+  importLocations(@Req() req: any, @Param('storeId') storeId: string, @UploadedFile() file: any) {
+    return this.storeLocationService.importLocationsCsv(actingSellerId(req.user), storeId, readUploadedCsv(file));
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)

@@ -1,5 +1,9 @@
 /* eslint-disable prettier/prettier */
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UseGuards, UseInterceptors, UploadedFile } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
+import { buildTemplatePayload, readUploadedCsv } from '../common/bulk-import/bulk-import.util';
+import { BLOG_POST_IMPORT_COLUMNS } from './blog-posts-bulk-import';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -45,6 +49,19 @@ export class StoreBlogController {
   @Delete(':storeId/blogs/:blogId')
   removeBlog(@Req() req: any, @Param('storeId') storeId: string, @Param('blogId') blogId: string) {
     return this.storeBlogService.deleteBlog(storeId, actingSellerId(req.user), blogId);
+  }
+
+  // ── CSV import of posts — static segments, declared before dynamic ones. ──
+
+  @Get(':storeId/posts/import-template')
+  importPostsTemplate() {
+    return buildTemplatePayload('blog-posts-import-template.csv', BLOG_POST_IMPORT_COLUMNS);
+  }
+
+  @Post(':storeId/posts/import')
+  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }))
+  importPosts(@Req() req: any, @Param('storeId') storeId: string, @UploadedFile() file: any) {
+    return this.storeBlogService.importPostsCsv(storeId, actingSellerId(req.user), readUploadedCsv(file));
   }
 
   // ── Comments — same static-before-dynamic ordering requirement. ─────────

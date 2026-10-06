@@ -1,4 +1,8 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Put, Query, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Put, Query, Req, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
+import { buildTemplatePayload, readUploadedCsv, runBulkImport } from '../common/bulk-import/bulk-import.util';
+import { TESTIMONIAL_COLUMNS, makeTestimonialRowHandler, testimonialFileDedupeKey } from './testimonials-bulk-import';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -41,6 +45,34 @@ export class TestimonialsController {
   @ApiBearerAuth()
   getAll() {
     return this.testimonialsService.findAll();
+  }
+
+  // CSV import (static routes; no `:id` GET/POST exists to swallow them).
+  @Get('import-template')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('admin')
+  @ApiBearerAuth()
+  importTemplate() {
+    return buildTemplatePayload('testimonials-import-template.csv', TESTIMONIAL_COLUMNS);
+  }
+
+  @Post('import')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('admin')
+  @ApiBearerAuth()
+  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }))
+  importTestimonials(@UploadedFile() file: any) {
+    return runBulkImport({
+      text: readUploadedCsv(file),
+      columns: TESTIMONIAL_COLUMNS,
+      maxRows: 1000,
+      label: 'testimonial',
+      fileDedupeKey: testimonialFileDedupeKey,
+      handler: makeTestimonialRowHandler({
+        exists: (n, t) => this.testimonialsService.existsByNameAndText(n, t),
+        create: (dto) => this.testimonialsService.create(dto as CreateTestimonialDto),
+      }),
+    });
   }
 
   @Post()

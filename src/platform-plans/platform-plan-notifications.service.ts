@@ -51,17 +51,21 @@ export class PlatformPlanNotificationsService {
 
   constructor(private readonly emailService: EmailService) {}
 
-  private async send(to: string, subject: string, html: string) {
-    try {
-      const ok = await this.emailService.sendMail(to, subject, html);
-      if (!ok) this.logger.warn(`Platform-plan email not sent (provider returned false): ${subject} -> ${to}`);
-    } catch (err: any) {
-      // Never let a notification failure break the billing flow that triggered it.
-      this.logger.error(`Failed to send platform-plan email "${subject}" to ${to}: ${err?.message}`);
+  /** `to` may be one address or the owner + billing-staff list; each recipient is sent separately so one bad address never blocks the rest. */
+  private async send(to: string | string[], subject: string, html: string) {
+    const recipients = Array.from(new Set((Array.isArray(to) ? to : [to]).filter((e) => typeof e === 'string' && e.trim())));
+    for (const addr of recipients) {
+      try {
+        const ok = await this.emailService.sendMail(addr, subject, html);
+        if (!ok) this.logger.warn(`Platform-plan email not sent (provider returned false): ${subject} -> ${addr}`);
+      } catch (err: any) {
+        // Never let a notification failure break the billing flow that triggered it.
+        this.logger.error(`Failed to send platform-plan email "${subject}" to ${addr}: ${err?.message}`);
+      }
     }
   }
 
-  async sendPlanUpgraded(to: string, data: {
+  async sendPlanUpgraded(to: string | string[], data: {
     sellerName: string; storeName: string; fromPlanName: string; toPlanName: string; amountUSD: number;
   }) {
     const html = shell('Your platform plan was changed', `
@@ -77,7 +81,7 @@ export class PlatformPlanNotificationsService {
     await this.send(to, `Your platform plan was changed — ${money(data.amountUSD)} charged`, html);
   }
 
-  async sendPlanChangeCredited(to: string, data: {
+  async sendPlanChangeCredited(to: string | string[], data: {
     sellerName: string; storeName: string; fromPlanName: string; toPlanName: string; creditUSD: number;
   }) {
     const html = shell('Your platform plan was changed', `
@@ -95,7 +99,7 @@ export class PlatformPlanNotificationsService {
     await this.send(to, `Your platform plan was changed — ${money(data.creditUSD)} credited to your account`, html);
   }
 
-  async sendMovedToFreePlan(to: string, data: { sellerName: string; storeName: string; planName: string }) {
+  async sendMovedToFreePlan(to: string | string[], data: { sellerName: string; storeName: string; planName: string }) {
     const html = shell('Your plan is now free', `
       <p>Hi ${data.sellerName},</p>
       <p>Your store <strong>${data.storeName}</strong> is now on the free "${data.planName}" plan.</p>
@@ -104,7 +108,7 @@ export class PlatformPlanNotificationsService {
     await this.send(to, `${data.storeName} moved to the free plan`, html);
   }
 
-  async sendPaymentFailed(to: string, data: {
+  async sendPaymentFailed(to: string | string[], data: {
     sellerName: string; storeName: string; planName: string; amountUSD: number;
     attemptNumber: number; maxAttempts: number; nextRetryDate: Date;
   }) {
@@ -120,7 +124,7 @@ export class PlatformPlanNotificationsService {
     await this.send(to, `Action needed: payment failed for ${data.storeName}`, html);
   }
 
-  async sendDowngradedDueToFailedPayments(to: string, data: { sellerName: string; storeName: string; planName: string; maxAttempts: number }) {
+  async sendDowngradedDueToFailedPayments(to: string | string[], data: { sellerName: string; storeName: string; planName: string; maxAttempts: number }) {
     const html = shell('Your store was downgraded', `
       <p>Hi ${data.sellerName},</p>
       <p>Your store <strong>${data.storeName}</strong> has been moved to the free "${data.planName}" plan after
@@ -132,7 +136,7 @@ export class PlatformPlanNotificationsService {
   }
 
   /** Trial-based-model equivalent of sendDowngradedDueToFailedPayments — there's no free plan to fall back to, so the store is locked (selling restricted) instead, never deleted/hidden. */
-  async sendStoreLocked(to: string, data: { sellerName: string; storeName: string; reason: 'trial_ended' | 'payment_failed' | 'subscription_ended' }) {
+  async sendStoreLocked(to: string | string[], data: { sellerName: string; storeName: string; reason: 'trial_ended' | 'payment_failed' | 'subscription_ended' }) {
     const reasonText = {
       trial_ended: 'your free trial ended without an active paid plan',
       payment_failed: 'repeated payment attempts failed',
@@ -160,7 +164,7 @@ export class PlatformPlanNotificationsService {
    *  charged $X in N days" reminder before this — only a trial's own end
    *  date had one (sendTrialEndingSoon). See
    *  SellerPlatformSubscriptionsService.sendUpcomingRenewalReminders. */
-  async sendUpcomingRenewalReminder(to: string, data: { sellerName: string; storeName: string; planName: string; amountUSD: number; renewalDate: Date }) {
+  async sendUpcomingRenewalReminder(to: string | string[], data: { sellerName: string; storeName: string; planName: string; amountUSD: number; renewalDate: Date }) {
     const html = shell('Upcoming renewal', `
       <p>Hi ${data.sellerName},</p>
       <p>${data.storeName}'s <strong>${data.planName}</strong> plan will renew on <strong>${data.renewalDate.toDateString()}</strong>.</p>
@@ -170,7 +174,7 @@ export class PlatformPlanNotificationsService {
     await this.send(to, `${data.storeName}'s plan renews on ${data.renewalDate.toDateString()} — ${money(data.amountUSD)}`, html);
   }
 
-  async sendStorefrontHidden(to: string, data: { sellerName: string; storeName: string }) {
+  async sendStorefrontHidden(to: string | string[], data: { sellerName: string; storeName: string }) {
     const html = shell('Your storefront is now hidden from buyers', `
       <p>Hi ${data.sellerName},</p>
       <p>Your store <strong>${data.storeName}</strong>'s grace period has ended — your storefront is no longer visible to buyers, on top of selling already being paused.</p>
@@ -189,7 +193,7 @@ export class PlatformPlanNotificationsService {
    * today. Kept optional (rather than removed) so this email still renders
    * correctly for that path if it's ever driven directly via the API.
    */
-  async sendTrialEndingSoon(to: string, data: {
+  async sendTrialEndingSoon(to: string | string[], data: {
     sellerName: string; storeName: string; daysLeft: number; trialEndsAt: Date;
     committedPlan?: { name: string; amountUSD: number };
   }) {

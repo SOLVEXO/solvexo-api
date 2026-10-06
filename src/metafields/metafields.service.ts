@@ -6,6 +6,7 @@ import { collectDynamicSourceBindings } from '../common/store-content/section-se
 import { CreateDefinitionDto } from './dto/create-definition.dto';
 import { UpdateDefinitionDto } from './dto/update-definition.dto';
 import { SetValuesDto } from './dto/set-values.dto';
+import { importMetafieldDefinitionsCsv } from './metafield-definitions-bulk-import';
 import { MetafieldOwnerResource, MetafieldType } from './schemas/metafield-definition.schema';
 
 /** Dynamic Sources — a metafield type incompatible with a plain-text-
@@ -79,6 +80,12 @@ export class MetafieldsService {
     if (existing) throw new ConflictException(`A "${dto.key}" field already exists for ${dto.ownerResource}s`);
     const created = await this.definitionModel.create({ ...dto, storeId, namespace: 'custom' });
     return { success: true, message: 'Metafield definition created', data: created };
+  }
+
+  /** Bulk CSV import — every row goes through createDefinition (same rules). */
+  async importDefinitionsCsv(storeId: string, sellerId: string, text: string) {
+    await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
+    return importMetafieldDefinitionsCsv({ definitionModel: this.definitionModel, metafieldsService: this }, sellerId, storeId, text);
   }
 
   async updateDefinition(storeId: string, sellerId: string, definitionId: string, dto: UpdateDefinitionDto) {

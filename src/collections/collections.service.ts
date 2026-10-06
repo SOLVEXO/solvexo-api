@@ -8,6 +8,7 @@ import { slugify } from '../common/slug.util';
 import { CreateCollectionDto } from './dto/create-collection.dto';
 import { UpdateCollectionDto } from './dto/update-collection.dto';
 import { UpdateCollectionProductsDto } from './dto/update-collection-products.dto';
+import { importCollectionsCsv } from './collections-bulk-import';
 
 // Real cap on how many products an `automatic` collection resolves to at
 // read time — same "bounded, not unlimited" spirit as other placement caps
@@ -82,6 +83,21 @@ export class CollectionsService {
     });
 
     return { success: true, message: 'Collection created', data: collection };
+  }
+
+  async importCsv(storeId: string, sellerId: string, text: string) {
+    await verifyStoreOwnershipStrict(this.r.storeModel, storeId, sellerId);
+    return importCollectionsCsv(
+      {
+        collectionModel: this.r.collectionModel,
+        productModel: this.r.productModel,
+        productVariantModel: this.r.productVariantModel,
+        collectionsService: this,
+      },
+      sellerId,
+      storeId,
+      text,
+    );
   }
 
   async listForSeller(storeId: string, sellerId: string) {

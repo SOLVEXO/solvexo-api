@@ -1,8 +1,12 @@
 /* eslint-disable prettier/prettier */
 import {
   Body, Controller, Delete, Get, Param, Patch, Post, Query, Req,
-  UseGuards, UseInterceptors, UsePipes, ValidationPipe,
+  UploadedFile, UseGuards, UseInterceptors, UsePipes, ValidationPipe,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
+import { buildTemplatePayload, readUploadedCsv } from '../common/bulk-import/bulk-import.util';
+import { SUPPLIER_IMPORT_COLUMNS } from './supplier-bulk-import';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -34,6 +38,17 @@ export class PurchaseOrdersController {
   async createSupplier(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: CreateSupplierDto) {
     const supplier = await this.service.createSupplier(storeId, actingSellerId(req.user), dto);
     return { success: true, data: supplier };
+  }
+
+  @Get(':storeId/suppliers/import-template')
+  async suppliersImportTemplate() {
+    return buildTemplatePayload('suppliers-import-template.csv', SUPPLIER_IMPORT_COLUMNS);
+  }
+
+  @Post(':storeId/suppliers/import')
+  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }))
+  async importSuppliers(@Req() req: any, @Param('storeId') storeId: string, @UploadedFile() file: any) {
+    return this.service.importSuppliers(storeId, actingSellerId(req.user), readUploadedCsv(file));
   }
 
   @Get(':storeId/suppliers')

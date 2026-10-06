@@ -6,6 +6,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { availableStock, AVAILABLE_STOCK_EXPR } from '@/common/stock-availability.util';
+import { importCustomersCsv } from './customer-bulk-import';
 import { ConfigService } from '@nestjs/config';
 import { promises as dns } from 'dns';
 import * as bcrypt from 'bcrypt';
@@ -2026,6 +2027,22 @@ export class StoreService {
       message: created ? 'Customer created' : 'Customer added — an existing account with this email was linked',
       data: { _id: userId, name: user.name, email: user.email, phone: user.phone ?? null, createdAt: (user as any).createdAt },
     };
+  }
+
+  /** CSV bulk import — every row goes through createStoreCustomer (same
+   *  store scoping, activity log, no password); an existing account of THIS
+   *  store with the same email is skipped, never duplicated. */
+  async importStoreCustomers(sellerId: string, storeId: string, text: string, ip?: string, userAgent?: string) {
+    const store = await this.databaseService.repositories.storeModel.findOne({ _id: storeId, sellerId, isDelete: false }).select('_id').lean();
+    if (!store) throw new UnauthorizedException('Store not found or unauthorized');
+    const { userModel } = this.databaseService.repositories;
+    return importCustomersCsv(
+      {
+        exists: async (email) => !!(await userModel.exists({ storeId, email: String(email), isDelete: { $ne: true } })),
+        create: (dto) => this.createStoreCustomer(sellerId, storeId, dto, ip, userAgent),
+      },
+      text,
+    );
   }
 
   async getStoreCustomers(sellerId: string, storeId: string, query: any) {

@@ -1,5 +1,9 @@
 /* eslint-disable prettier/prettier */
-import { Body, Controller, Delete, Get, Param, Patch, Post, Req, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Req, UploadedFile, UseGuards, UseInterceptors, UsePipes, ValidationPipe } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
+import { buildTemplatePayload, readUploadedCsv, runBulkImport } from '../common/bulk-import/bulk-import.util';
+import { assertImportable, buildEntryColumns, entryFileDedupeKey, makeEntryRowHandler, unsupportedGuideColumns } from './metaobject-entries-bulk-import';
 import { ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -44,6 +48,36 @@ export class MetaobjectsController {
   @Delete(':storeId/definitions/:definitionId')
   deleteDefinition(@Req() req: any, @Param('storeId') storeId: string, @Param('definitionId') definitionId: string) {
     return this.metaobjectsService.deleteDefinition(storeId, actingSellerId(req.user), definitionId);
+  }
+
+  // CSV import (static routes declared before the dynamic entries routes).
+  @Get(':storeId/definitions/:definitionId/entries/import-template')
+  async entriesImportTemplate(@Req() req: any, @Param('storeId') storeId: string, @Param('definitionId') definitionId: string) {
+    const { data: definition } = await this.metaobjectsService.getDefinition(storeId, actingSellerId(req.user), definitionId);
+    const payload = buildTemplatePayload(`${definition.type}-entries-import-template.csv`, buildEntryColumns(definition.fieldDefinitions));
+    payload.data.columns.push(...unsupportedGuideColumns(definition.fieldDefinitions));
+    return payload;
+  }
+
+  @Post(':storeId/definitions/:definitionId/entries/import')
+  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }))
+  async importEntries(@Req() req: any, @Param('storeId') storeId: string, @Param('definitionId') definitionId: string, @UploadedFile() file: any) {
+    const sellerId = actingSellerId(req.user);
+    const text = readUploadedCsv(file);
+    const { data: definition } = await this.metaobjectsService.getDefinition(storeId, sellerId, definitionId);
+    assertImportable(definition.fieldDefinitions);
+    return runBulkImport({
+      text,
+      columns: buildEntryColumns(definition.fieldDefinitions),
+      maxRows: 1000,
+      label: 'entry',
+      fileDedupeKey: entryFileDedupeKey,
+      handler: makeEntryRowHandler({
+        storeId, sellerId, definitionId, fieldDefinitions: definition.fieldDefinitions,
+        entryNameExists: (name) => this.metaobjectsService.entryNameExists(storeId, definitionId, name),
+        createEntry: (dto) => this.metaobjectsService.createEntry(storeId, sellerId, definitionId, dto),
+      }),
+    });
   }
 
   @Get(':storeId/definitions/:definitionId/entries')

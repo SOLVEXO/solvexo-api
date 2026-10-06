@@ -48,6 +48,19 @@ export class TestimonialsService {
     return { success: true, count: testimonials.length, stats: { active, inactive }, data: testimonials };
   }
 
+  /** CSV import helper: same seller name + text (case-insensitive) already present. */
+  async existsByNameAndText(sellerName: string, text: string): Promise<boolean> {
+    const esc = (s: string) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const hit = await this.testimonialModel
+      .findOne({
+        sellerName: { $regex: `^${esc(sellerName.trim())}$`, $options: 'i' },
+        text: { $regex: `^${esc(text.trim())}$`, $options: 'i' },
+      })
+      .select('_id')
+      .lean();
+    return !!hit;
+  }
+
   async create(dto: CreateTestimonialDto) {
     const testimonial = await this.testimonialModel.create(dto);
     return { success: true, message: 'Testimonial created successfully', data: testimonial };

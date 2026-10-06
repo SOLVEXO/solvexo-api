@@ -8,6 +8,7 @@ import { ThemeCatalogModule } from '../theme-catalog/theme-catalog.module';
 import { StoreThemeController } from './store-theme.controller';
 import { PublicStoreThemeController } from './public-store-theme.controller';
 import { StoreThemeService } from './store-theme.service';
+import { ThemePackageService } from './theme-package.service';
 
 @Module({
   imports: [
@@ -19,7 +20,7 @@ import { StoreThemeService } from './store-theme.service';
     ThemeCatalogModule,
   ],
   controllers: [StoreThemeController, PublicStoreThemeController],
-  providers: [StoreThemeService],
+  providers: [StoreThemeService, ThemePackageService],
   exports: [StoreThemeService],
 })
 export class StoreThemeModule {}

@@ -17,7 +17,8 @@ import { EntitlementsService } from '@/platform-plans/entitlements.service';
 import { MarketingService } from '@/marketing/marketing.service';
 import { pickPrimaryCampaignForBadge } from '@/marketing/campaign-pricing.util';
 import { EducationLevel } from './schemas/product.schema';
-import { toCsv, parseCsv } from '@/analytics/utils/csv.util';
+import { toCsv } from '@/analytics/utils/csv.util';
+import { importProductsCsv as importProductsCsvRows } from './product-bulk-import';
 import { EducationLevelService } from './education-level.service';
 import { UploadService } from '@/upload/upload.service';
 import { generateUniqueSlug } from '@/common/slug.util';
@@ -1725,184 +1726,28 @@ export class ProductsService {
     );
   }
 
-  /** POST /api/products/store-products/:storeId/import — bulk-create simple,
-   *  single-variant PHYSICAL products from an uploaded CSV (columns: Name*,
-   *  Price*, Description, SKU, Compare-at Price, Stock, Tags (`;`-separated),
-   *  Status (active/draft), Category (matched by case-insensitive name
-   *  against the store's own category tree) — the same shape `exportProductsCsv`
-   *  produces, so "export as a starting template, edit, re-upload" works).
-   *  Every row is created through the real `addPhysicalProduct` path (same
-   *  validation/entitlement/slug logic a manually-created product goes
-   *  through — never a raw shortcut `productModel.create`), so an imported
-   *  product is indistinguishable from a hand-built one. Deliberately scoped
-   *  to physical products only — a digital product's files can't come from a
-   *  CSV row. Partial-success: every row is attempted independently and
-   *  collected into `{created, failed}` rather than one all-or-nothing
-   *  transaction, matching how real bulk-import tools report results. */
-  async importProductsCsv(sellerId: string, storeId: string, csvText: string) {
-    const { storeModel, categoryModel } = this.databaseService.repositories;
-    const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
-    if (!store) throw new UnauthorizedException('Store not found or unauthorized');
-
-    const rows = parseCsv(csvText);
-    if (rows.length === 0) {
-      throw new BadRequestException('The CSV file has no data rows.');
-    }
-    if (rows.length > 500) {
-      throw new BadRequestException(
-        'A single import is capped at 500 rows — split larger catalogs into multiple files.',
-      );
-    }
-
-    const storeCategories = await categoryModel
-      .find({ storeId, isDelete: false, status: 'active' })
-      .lean();
-    const categoryIdByName = new Map<string, string>();
-    for (const c of storeCategories as any[]) {
-      categoryIdByName.set(String(c.name).trim().toLowerCase(), c._id.toString());
-    }
-
-    const created: { row: number; name: string }[] = [];
-    const failed: { row: number; name: string; error: string }[] = [];
-
-    const jobs: { rowNumber: number; name: string; body: any }[] = [];
-
-    for (let i = 0; i < rows.length; i++) {
-      const r = rows[i];
-      const rowNumber = i + 2; // +1 for the header row, +1 for 1-based counting
-      const name = (r['Name'] ?? '').trim();
-      const priceRaw = (r['Price'] ?? '').trim();
-      const price = parseFloat(priceRaw);
-
-      if (!name) {
-        failed.push({ row: rowNumber, name: '(blank)', error: 'Name is required' });
-        continue;
-      }
-      if (!Number.isFinite(price) || price < 0) {
-        failed.push({ row: rowNumber, name, error: 'Price must be a real, non-negative number' });
-        continue;
-      }
-
-      let categoryId: string | undefined;
-      const categoryName = (r['Category'] ?? '').trim();
-      if (categoryName) {
-        categoryId = categoryIdByName.get(categoryName.toLowerCase());
-        if (!categoryId) {
-          failed.push({
-            row: rowNumber,
-            name,
-            error: `Category "${categoryName}" not found — create it first from the store's Categories page`,
-          });
-          continue;
-        }
-      } else if (!store.categoryId) {
-        // A product must have a category. Blank Category cell + no legacy store
-        // category → use the store's first category instead of failing the row.
-        categoryId = (storeCategories as any[])[0]?._id?.toString();
-        if (!categoryId) {
-          failed.push({
-            row: rowNumber,
-            name,
-            error: 'No category available — create one from the store\'s Categories page first',
-          });
-          continue;
-        }
-      }
-
-      const compareAtRaw = (r['Compare-at Price'] ?? '').trim();
-      const compareAtPrice = compareAtRaw ? parseFloat(compareAtRaw) : null;
-      const stockRaw = (r['Stock'] ?? '').trim();
-      const stock = stockRaw ? parseInt(stockRaw, 10) : 0;
-      const statusRaw = (r['Status'] ?? '').trim().toLowerCase();
-      const status = statusRaw === 'active' ? 'active' : 'draft';
-      const tags = (r['Tags'] ?? '')
-        .split(';')
-        .map((t) => t.trim())
-        .filter(Boolean);
-
-      jobs.push({
-        rowNumber,
-        name,
-        body: {
-          storeId,
-          name,
-          // The product schema requires a non-empty description; fall back to the name.
-          description: (r['Description'] ?? '').trim() || name,
-          categoryId,
-          images: [],
-          tags,
-          status,
-          variants: [
-            {
-              price,
-              compareAtPrice: Number.isFinite(compareAtPrice as number) ? compareAtPrice : null,
-              sku: (r['SKU'] ?? '').trim() || undefined,
-              stock: Number.isFinite(stock) ? stock : 0,
-              unlimitedStock: false,
-              isDefault: true,
-            },
-          ],
-        },
-      });
-    }
-
-    // Create in small parallel batches (rows are independent, so this is much
-    // faster than one-by-one). A batch never holds two rows with the same
-    // name/slug, so concurrent slug generation can't collide.
-    const slugKey = (n: string) => n.toLowerCase().replace(/[^a-z0-9]+/g, '');
-    const batches: (typeof jobs)[] = [];
-    let current: typeof jobs = [];
-    let currentKeys = new Set<string>();
-    for (const job of jobs) {
-      const key = slugKey(job.name);
-      if (current.length >= 5 || currentKeys.has(key)) {
-        batches.push(current);
-        current = [];
-        currentKeys = new Set();
-      }
-      current.push(job);
-      currentKeys.add(key);
-    }
-    if (current.length) batches.push(current);
-
-    // Honour the plan's product limit exactly, even with parallel creates.
-    const limits = await this.entitlementsService.getLimits(storeId);
-    let remaining =
-      limits.maxProducts === -1
-        ? Infinity
-        : limits.maxProducts -
-          (await this.databaseService.repositories.productModel.countDocuments({ storeId, isDelete: false }));
-
-    for (const batch of batches) {
-      await Promise.all(
-        batch.map(async (job) => {
-          if (remaining <= 0) {
-            failed.push({
-              row: job.rowNumber,
-              name: job.name,
-              error: `Product limit reached (${limits.maxProducts}) for your current plan — upgrade your platform plan to add more products.`,
-            });
-            return;
-          }
-          remaining--;
-          try {
-            await this.addPhysicalProduct(sellerId, job.body);
-            created.push({ row: job.rowNumber, name: job.name });
-          } catch (err: any) {
-            remaining++;
-            failed.push({ row: job.rowNumber, name: job.name, error: err?.message ?? 'Failed to create product' });
-          }
-        }),
-      );
-    }
-    created.sort((a, b) => a.row - b.row);
-    failed.sort((a, b) => a.row - b.row);
-
-    return {
-      success: true,
-      message: `Imported ${created.length} of ${rows.length} product(s).`,
-      data: { createdCount: created.length, totalRows: rows.length, created, failed },
-    };
+  /** POST api/products/store-products/:storeId/import — shared bulk-import
+   *  engine (see `product-bulk-import.ts`). Rows go through the real
+   *  `addPhysicalProduct` / `editProduct` paths; `updateVariant` is passed in
+   *  by the controller (ProductVariantsService) to avoid a constructor change. */
+  async importProductsCsv(
+    sellerId: string,
+    storeId: string,
+    csvText: string,
+    updateVariant: (sellerId: string, productId: string, variantId: string, dto: any) => Promise<any>,
+  ) {
+    const { storeModel, categoryModel, productModel, productVariantModel } = this.databaseService.repositories;
+    return importProductsCsvRows(
+      {
+        repos: { storeModel, categoryModel, productModel, productVariantModel },
+        addPhysicalProduct: (s, body) => this.addPhysicalProduct(s, body),
+        editProduct: (s, body) => this.editProduct(s, body),
+        updateVariant,
+      },
+      sellerId,
+      storeId,
+      csvText,
+    );
   }
 
   /** GET /api/products/education/facets — public, backs the Education marketplace's dynamic filter chips. */

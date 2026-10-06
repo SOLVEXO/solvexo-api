@@ -328,6 +328,9 @@ export class DatabaseService {
     @InjectModel(schema.StoreTheme.name)
     private storeThemeModel: Model<schema.StoreThemeDocument>,
 
+    @InjectModel(schema.ThemePackage.name)
+    private themePackageModel: Model<schema.ThemePackageDocument>,
+
     @InjectModel(schema.ThemeDefinition.name)
     private themeDefinitionModel: Model<schema.ThemeDefinitionDocument>,
 
@@ -583,6 +586,7 @@ export class DatabaseService {
       appInstallationModel: this.appInstallationModel,
       storeBannerModel: this.storeBannerModel,
       storeThemeModel: this.storeThemeModel,
+      themePackageModel: this.themePackageModel,
       themeDefinitionModel: this.themeDefinitionModel,
       storePageModel: this.storePageModel,
       storeFaqModel: this.storeFaqModel,

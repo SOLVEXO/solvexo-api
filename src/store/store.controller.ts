@@ -1,5 +1,9 @@
 /* eslint-disable prettier/prettier */
-import { Controller, Post, Get, Patch, Body, Req, Res, Param, Query, UseGuards, ForbiddenException } from '@nestjs/common';
+import { Controller, Post, Get, Patch, Body, Req, Res, Param, Query, UseGuards, UseInterceptors, UploadedFile, ForbiddenException } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
+import { buildTemplatePayload, readUploadedCsv } from '../common/bulk-import/bulk-import.util';
+import { CUSTOMER_IMPORT_COLUMNS } from './customer-bulk-import';
 import { Throttle, SkipThrottle } from '@nestjs/throttler';
 import type { Response } from 'express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -342,6 +346,24 @@ export class StoreController {
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="customers-${storeId}.csv"`);
     res.send(csv);
+  }
+
+  // Bulk CSV import (literal segments, declared before the ':customerId' routes).
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('customers.edit')
+  @Get(':storeId/customers/import-template')
+  async customersImportTemplate() {
+    return buildTemplatePayload('customers-import-template.csv', CUSTOMER_IMPORT_COLUMNS);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('customers.edit')
+  @Post(':storeId/customers/import')
+  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }))
+  async importStoreCustomers(@Req() req: any, @Param('storeId') storeId: string, @UploadedFile() file: any) {
+    return this.storeService.importStoreCustomers(actingSellerId(req.user), storeId, readUploadedCsv(file), req.ip, req.headers['user-agent']);
   }
 
   // Real "Create customer profile" — the Tier-2 audit's disclosed gap

@@ -9,8 +9,9 @@ import { NEWSLETTER_BROADCAST_SEND_JOB, QUEUE_NAMES } from '../queues/queue.cons
 import { normalizeEmail, setMarketingConsent } from './newsletter-consent.util';
 import { renderMarketingEmail, renderMergeTags, textToHtml } from './marketing-email.util';
 
+import { importSubscribersCsv } from './subscriber-bulk-import';
+
 const APP_NAME = process.env.APP_NAME || 'Solvexo';
-const MAX_IMPORT_ROWS = 5000;
 const MAX_EXPORT_ROWS = 50_000;
 
 export interface SubscriberListQuery {
@@ -146,46 +147,23 @@ export class SubscriberListsService {
     return { success: true, message: result.wasActive ? 'Already subscribed' : 'Subscriber added' };
   }
 
-  /** CSV (or one-email-per-line) import. Picks the `email` column when there's
-   *  a header, else the first cell that looks like an email. */
-  async importCsv(storeId: string | null, csv: string, source: string) {
-    if (!csv || typeof csv !== 'string') throw new BadRequestException('CSV content is required');
-    const lines = csv.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-    if (lines.length === 0) throw new BadRequestException('The file is empty');
-
-    const split = (line: string) => line.split(/[,;\t]/).map((c) => c.trim().replace(/^"|"$/g, ''));
-    const headerCells = split(lines[0]).map((c) => c.toLowerCase());
-    const emailCol = headerCells.findIndex((c) => c === 'email' || c === 'email address' || c === 'e-mail');
-    const dataLines = emailCol >= 0 ? lines.slice(1) : lines;
-    if (dataLines.length > MAX_IMPORT_ROWS) throw new BadRequestException(`Import at most ${MAX_IMPORT_ROWS} rows at a time`);
-
-    const emails = new Set<string>();
-    let invalid = 0;
-    for (const line of dataLines) {
-      const cells = split(line);
-      const raw = emailCol >= 0 ? cells[emailCol] : cells.find((c) => c.includes('@'));
-      const email = normalizeEmail(raw ?? '');
-      if (email && isEmail(email)) emails.add(email);
-      else invalid++;
-    }
-
+  /** Shared-engine CSV import for a STORE's list (seller-attested consent is
+   *  enforced by the controller). Active → skipped, opted-out → skipped
+   *  (compliance), pending double opt-in → activated by the attested import. */
+  importCsv(storeId: string, text: string, source: string) {
     const model = this.r.newsletterSubscriberModel;
-    const existing = await model.find({ storeId, email: { $in: [...emails] } }).select('email isActive pendingConfirmation').lean();
-    // true = subscribed, false = opted out; a pending double opt-in counts as
-    // neither, so an import (seller-attested consent) activates it.
-    const existingByEmail = new Map(existing.filter((e: any) => !(!e.isActive && e.pendingConfirmation)).map((e: any) => [e.email, e.isActive]));
-
-    let added = 0;
-    let alreadySubscribed = 0;
-    let skippedUnsubscribed = 0;
-    for (const email of emails) {
-      const state = existingByEmail.get(email);
-      if (state === true) { alreadySubscribed++; continue; }
-      if (state === false) { skippedUnsubscribed++; continue; }
-      await setMarketingConsent(model, { storeId, email, subscribed: true, source });
-      added++;
-    }
-    return { success: true, message: `Imported ${added} subscriber(s)`, data: { added, alreadySubscribed, skippedUnsubscribed, invalid } };
+    return importSubscribersCsv(
+      {
+        getState: async (email) => {
+          const row: any = await model.findOne({ storeId: String(storeId), email: String(email) }).select('isActive pendingConfirmation').lean();
+          if (!row) return 'none';
+          if (row.isActive) return 'active';
+          return row.pendingConfirmation ? 'none' : 'unsubscribed';
+        },
+        subscribe: (email) => setMarketingConsent(model, { storeId, email, subscribed: true, source }),
+      },
+      text,
+    );
   }
 
   async setStatus(storeId: string | null, subscriberId: string, subscribed: boolean) {

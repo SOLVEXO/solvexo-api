@@ -10,7 +10,13 @@ import {
   UseGuards,
   HttpCode,
   HttpStatus,
+  UploadedFile,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
+import { buildTemplatePayload, readUploadedCsv } from '../common/bulk-import/bulk-import.util';
+import { FAQ_IMPORT_COLUMNS, importFaqsCsv } from './faq-bulk-import';
 import {
   ApiTags,
   ApiOperation,
@@ -130,6 +136,32 @@ export class FaqController {
   @ApiResponse({ status: 401, description: 'Unauthorized' })
   getAll() {
     return this.faqService.findAll();
+  }
+
+  @Get('import-template')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('admin')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Bulk-import CSV template (admin)' })
+  importTemplate() {
+    return buildTemplatePayload('faqs-import-template.csv', FAQ_IMPORT_COLUMNS);
+  }
+
+  @Post('import')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('admin')
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Bulk-import FAQs from CSV (admin)' })
+  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }))
+  async importCsv(@UploadedFile() file: any) {
+    return importFaqsCsv(
+      {
+        listQuestions: async () => ((await this.faqService.findAll()).data as any[]).map((f) => f.question),
+        create: (dto) => this.faqService.create(dto),
+      },
+      readUploadedCsv(file),
+    );
   }
 
   @Post()

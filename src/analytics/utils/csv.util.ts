@@ -26,12 +26,14 @@ export function toCsv(headers: string[], rows: (string | number)[][]): string {
  * names — a caller doesn't need to know column ORDER, only names, so a
  * seller re-arranging columns in Excel before re-uploading still works.
  */
-export function parseCsv(text: string): Record<string, string>[] {
+export function parseCsv(text: string, delimiter: string = ','): Record<string, string>[] {
   const rows: string[][] = [];
   let row: string[] = [];
   let field = '';
   let inQuotes = false;
-  const clean = text.replace(/\r\n/g, '\n');
+  // Strip a UTF-8 BOM (Excel's "CSV UTF-8" adds one and it would otherwise
+  // glue itself onto the first header name).
+  const clean = text.replace(/^﻿/, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 
   for (let i = 0; i < clean.length; i++) {
     const ch = clean[i];
@@ -44,7 +46,7 @@ export function parseCsv(text: string): Record<string, string>[] {
       }
     } else if (ch === '"') {
       inQuotes = true;
-    } else if (ch === ',') {
+    } else if (ch === delimiter) {
       row.push(field);
       field = '';
     } else if (ch === '\n') {

@@ -13,6 +13,7 @@ import { actingSellerId } from '../common/acting-seller-id.util';
 import { IdempotencyInterceptor } from '../common/idempotency.interceptor';
 import { ChangePlatformPlanDto, CancelPlatformPlanDto, BillingPortalDto, ConfirmOnboardingPaymentMethodDto, SaveOnboardingDraftDto, AdminExtendSubscriptionDto, AdminAssignPlanDto, AdminUnlockOrLockDto } from './dto/subscribe-platform-plan.dto';
 import { RefundInvoiceDto } from './dto/refund-invoice.dto';
+import { ListInvoicesQueryDto } from './dto/list-invoices.dto';
 
 @ApiTags('Platform Plans — Seller')
 @Controller('api/platform-plans')
@@ -91,7 +92,7 @@ export class SellerPlatformSubscriptionsController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('admin')
   @Get('admin/stores/:storeId/invoices')
-  adminListInvoices(@Param('storeId') storeId: string, @Query() query: any) {
+  adminListInvoices(@Param('storeId') storeId: string, @Query() query: ListInvoicesQueryDto) {
     return this.sellerPlatformSubscriptionsService.adminListInvoices(storeId, query);
   }
 
@@ -165,7 +166,7 @@ export class SellerPlatformSubscriptionsController {
   @Roles('seller', 'staff')
   @RequirePermission('settings.billing.view', 'settings.billing.manage')
   @Get(':storeId/invoices')
-  listInvoices(@Req() req: any, @Param('storeId') storeId: string, @Query() query: any) {
+  listInvoices(@Req() req: any, @Param('storeId') storeId: string, @Query() query: ListInvoicesQueryDto) {
     return this.sellerPlatformSubscriptionsService.listInvoices(actingSellerId(req.user), storeId, query);
   }
 

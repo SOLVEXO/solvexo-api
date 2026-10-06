@@ -1,5 +1,9 @@
 /* eslint-disable prettier/prettier */
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UploadedFile, UseGuards, UseInterceptors, UsePipes, ValidationPipe } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
+import { buildTemplatePayload, readUploadedCsv } from '../common/bulk-import/bulk-import.util';
+import { SHIPPING_ZONE_IMPORT_COLUMNS, importShippingZonesCsv } from './shipping-zones-bulk-import';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -28,6 +32,24 @@ export class StoreShippingZonesController {
   @Get()
   list(@Req() req: any, @Param('storeId') storeId: string, @Query('zoneType') zoneType?: 'shipping' | 'local_delivery' | 'pickup', @Query('profileId') profileId?: string) {
     return this.shippingZonesService.listForSeller(storeId, actingSellerId(req.user), zoneType, profileId);
+  }
+
+  @Get('import-template')
+  importTemplate() {
+    return buildTemplatePayload('shipping-zones-import-template.csv', SHIPPING_ZONE_IMPORT_COLUMNS);
+  }
+
+  @Post('import')
+  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }))
+  importCsv(@Req() req: any, @Param('storeId') storeId: string, @UploadedFile() file: any) {
+    const sellerId = actingSellerId(req.user);
+    return importShippingZonesCsv(
+      {
+        listExisting: async () => (await this.shippingZonesService.listForSeller(storeId, sellerId)).data as any[],
+        create: (dto) => this.shippingZonesService.createForSeller(storeId, sellerId, dto),
+      },
+      readUploadedCsv(file),
+    );
   }
 
   @Post()

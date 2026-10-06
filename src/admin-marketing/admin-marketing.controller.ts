@@ -1,5 +1,9 @@
 /* eslint-disable prettier/prettier */
-import { Body, Controller, Delete, Get, Param, Patch, Post, Put, Query, Req, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Put, Query, Req, UploadedFile, UseGuards, UseInterceptors, UsePipes, ValidationPipe } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
+import { buildTemplatePayload, readUploadedCsv } from '../common/bulk-import/bulk-import.util';
+import { PLATFORM_COUPON_IMPORT_COLUMNS, importPlatformCouponsCsv } from './platform-coupons-bulk-import';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -52,6 +56,21 @@ export class AdminMarketingController {
   }
 
   // ─── Platform-wide coupons ───────────────────────────────────────────────
+
+  @Get('coupons/import-template')
+  platformCouponsImportTemplate() {
+    return buildTemplatePayload('platform-coupons-import-template.csv', PLATFORM_COUPON_IMPORT_COLUMNS);
+  }
+
+  @Post('coupons/import')
+  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }))
+  importPlatformCoupons(@Req() req: any, @UploadedFile() file: any) {
+    const meta = this.meta(req);
+    return importPlatformCouponsCsv(
+      { create: (dto) => this.adminMarketingService.createPlatformCoupon(dto, meta) },
+      readUploadedCsv(file),
+    );
+  }
 
   @Post('coupons')
   createPlatformCoupon(@Req() req: any, @Body() dto: CreatePlatformCouponDto) {

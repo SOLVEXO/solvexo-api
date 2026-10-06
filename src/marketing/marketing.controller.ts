@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Controller, Get, Post, Patch, Delete, Param, Body, Query, Req, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, Param, Body, Query, Req, UseGuards, UseInterceptors, UploadedFile } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { MarketingService } from './marketing.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -10,6 +10,10 @@ import { RequirePermission } from '../auth/decorators/require-permission.decorat
 import { actingSellerId } from '../common/acting-seller-id.util';
 import { CreateCouponDto } from './dto/create-coupon.dto';
 import { UpdateCouponDto } from './dto/update-coupon.dto';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
+import { buildTemplatePayload, readUploadedCsv } from '../common/bulk-import/bulk-import.util';
+import { COUPON_IMPORT_COLUMNS } from './coupons-bulk-import';
 
 @ApiTags('Marketing')
 @ApiBearerAuth()
@@ -18,6 +22,19 @@ import { UpdateCouponDto } from './dto/update-coupon.dto';
 @Controller('api/marketing')
 export class MarketingController {
   constructor(private readonly marketingService: MarketingService) {}
+
+  @RequirePermission('discounts.manage')
+  @Get(':storeId/coupons/import-template')
+  couponsImportTemplate() {
+    return buildTemplatePayload('coupons-import-template.csv', COUPON_IMPORT_COLUMNS);
+  }
+
+  @RequirePermission('discounts.manage')
+  @Post(':storeId/coupons/import')
+  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }))
+  importCoupons(@Req() req: any, @Param('storeId') storeId: string, @UploadedFile() file: any) {
+    return this.marketingService.importCouponsCsv(actingSellerId(req.user), storeId, readUploadedCsv(file), req.ip, req.headers['user-agent']);
+  }
 
   @RequirePermission('discounts.manage')
   @Post(':storeId/coupons')

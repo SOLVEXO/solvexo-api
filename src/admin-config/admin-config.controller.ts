@@ -1,5 +1,9 @@
 /* eslint-disable prettier/prettier */
-import { Body, Controller, Delete, Get, Param, Put, Patch, Post, Req, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Put, Patch, Post, Req, UploadedFile, UseGuards, UseInterceptors, UsePipes, ValidationPipe } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
+import { buildTemplatePayload, readUploadedCsv, runBulkImport } from '../common/bulk-import/bulk-import.util';
+import { CURRENCY_COLUMNS, currencyFileDedupeKey, makeCurrencyRowHandler } from './currencies-bulk-import';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -108,6 +112,29 @@ export class AdminConfigController {
   @Get('currencies')
   listCurrencies() {
     return this.adminConfigService.getEnabledCurrencies();
+  }
+
+  // CSV import (fixed literals, declared before the `currencies/:code` routes).
+  @Get('currencies/import-template')
+  currenciesImportTemplate() {
+    return buildTemplatePayload('currencies-import-template.csv', CURRENCY_COLUMNS);
+  }
+
+  @Post('currencies/import')
+  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }))
+  importCurrencies(@Req() req: any, @UploadedFile() file: any) {
+    const meta = { adminId: req.user.userId, ip: req.ip, userAgent: req.headers['user-agent'] };
+    return runBulkImport({
+      text: readUploadedCsv(file),
+      columns: CURRENCY_COLUMNS,
+      maxRows: 300,
+      label: 'currency',
+      fileDedupeKey: currencyFileDedupeKey,
+      handler: makeCurrencyRowHandler({
+        listEnabledCodes: async () => (await this.adminConfigService.getEnabledCurrencies()).map((c) => c.code),
+        addCurrency: (code, min, max) => this.adminConfigService.addCurrency(code, min, max, meta),
+      }),
+    });
   }
 
   @Post('currencies')

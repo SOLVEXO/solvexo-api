@@ -5,6 +5,7 @@ import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { EntitlementsService } from '@/platform-plans/entitlements.service';
 import { CreateStoreLocationDto } from './dto/create-store-location.dto';
 import { UpdateStoreLocationDto } from './dto/update-store-location.dto';
+import { importLocationsCsv } from './store-locations-bulk-import';
 
 /** Multi-location POS — physical branches under one Store (see StoreLocation schema docs). */
 @Injectable()
@@ -52,6 +53,11 @@ export class StoreLocationService {
     });
 
     return { success: true, data: location };
+  }
+
+  async importLocationsCsv(sellerId: string, storeId: string, text: string) {
+    await this.verifyStoreOwnership(storeId, sellerId);
+    return importLocationsCsv({ locationModel: this.locationModel, locationService: this }, sellerId, storeId, text);
   }
 
   async listLocations(sellerId: string, storeId: string) {

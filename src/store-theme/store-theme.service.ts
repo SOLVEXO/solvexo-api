@@ -308,10 +308,27 @@ export class StoreThemeService {
           versions: [],
         })));
       }
+      // An installed theme's source package belongs to that installed row.
+      // Duplicate the recent immutable source history alongside the JSON
+      // templates so both the seller's configuration and code snapshot fork.
+      const sourcePackages = await this.databaseService.repositories.themePackageModel
+        .find({ storeId, installedThemeId: String(source._id) }).sort({ version: 1 }).lean();
+      if (sourcePackages.length) {
+        await this.databaseService.repositories.themePackageModel.insertMany(sourcePackages.map((pkg: any) => ({
+          storeId,
+          installedThemeId: duplicateId,
+          version: pkg.version,
+          createdBy: sellerId,
+          changeType: 'upload',
+          restoredFromVersion: null,
+          files: pkg.files,
+        })));
+      }
     } catch (error) {
       await Promise.all([
         this.storePageModel.updateMany({ storeId }, { $pull: { themeTemplates: { installedThemeId: duplicateId } } }),
         this.collectionTemplateModel.deleteMany({ storeId, installedThemeId: duplicateId }),
+        this.databaseService.repositories.themePackageModel.deleteMany({ storeId, installedThemeId: duplicateId }),
         this.storeThemeModel.deleteOne({ _id: duplicateId, storeId }),
       ]);
       throw error;
@@ -348,6 +365,7 @@ export class StoreThemeService {
     if (!target) throw new NotFoundException('Installed theme not found');
     if (target.status === 'active') throw new ForbiddenException('Cannot remove the active theme — activate a different theme first');
     await target.deleteOne();
+    await this.databaseService.repositories.themePackageModel.deleteMany({ storeId, installedThemeId: String(target._id) });
     return { success: true, message: 'Theme removed' };
   }
 

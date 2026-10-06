@@ -7,6 +7,7 @@ import { RedisModule } from '@/redis/redis.module';
 import { AdminConfigModule } from '@/admin-config/admin-config.module';
 import { MarketingModule } from '@/marketing/marketing.module';
 import { UploadModule } from '@/upload/upload.module';
+import { ProductVariantsModule } from '@/product-variants/product-variants.module';
 
 @Module({
   imports: [
@@ -15,6 +16,7 @@ import { UploadModule } from '@/upload/upload.module';
     AdminConfigModule,
     MarketingModule,
     UploadModule,
+    ProductVariantsModule,
   ],
   controllers: [productController],
   providers: [ProductsService, EducationLevelService],

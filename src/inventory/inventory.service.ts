@@ -7,7 +7,8 @@ import {
 import { DatabaseService } from '@/database/databaseservice';
 import { availableStock, AVAILABLE_STOCK_EXPR } from '@/common/stock-availability.util';
 import { buildStoreProductFilter, productSort } from '../products/product-list-filter.util';
-import { toCsv, parseCsv } from '@/analytics/utils/csv.util';
+import { toCsv } from '@/analytics/utils/csv.util';
+import { importStockCsv as importStockCsvRows } from './stock-bulk-import';
 import { RedisService } from '@/redis/redis.service';
 import { NotificationsService } from '@/notifications/notifications.service';
 import { NOTIFICATION_TYPES } from '@/notifications/notification.types';
@@ -231,73 +232,22 @@ export class InventoryService {
     );
   }
 
-  /** POST api/inventory/:storeId/import-stock-csv — real bulk stock
-   *  RECONCILIATION, deliberately separate from `ProductsService.
-   *  importProductsCsv` (which only ever CREATES new products — re-
-   *  uploading a CSV of existing SKUs there would create duplicates, not
-   *  update their stock, a real gap found in this pass). Columns: `SKU,
-   *  Quantity` — an ABSOLUTE count (matches a real physical stock-take
-   *  export/re-import workflow), matched against this store's existing
-   *  SKUs. Same `created[]`/`failed[]` report shape `importProductsCsv`
-   *  already returns, so the frontend result-summary UI is identical. */
+  /** POST api/inventory/:storeId/stock/import — shared bulk-import engine
+   *  (see `stock-bulk-import.ts`). Absolute counts by SKU; each change goes
+   *  through the real `applyStockAdjustment` path (reason 'correction'). */
   async importStockCsv(sellerId: string, storeId: string, csvText: string) {
     if (!storeId) throw new BadRequestException('storeId is required');
-    const { productModel, productVariantModel, storeModel, stockAdjustmentModel, sellerModel } = this.databaseService.repositories;
-
-    const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
-    if (!store) throw new ForbiddenException('Store not found or unauthorized');
-
-    const rows = parseCsv(csvText);
-    if (rows.length === 0) throw new BadRequestException('The CSV file has no data rows.');
-    if (rows.length > 1000) {
-      throw new BadRequestException('A single import is capped at 1000 rows — split larger reconciliations into multiple files.');
-    }
-
-    const products = await productModel.find({ storeId, sellerId, isDelete: false }).select('name').lean();
-    const productIds = products.map((p: any) => p._id.toString());
-    const productById = new Map<string, any>(products.map((p: any) => [p._id.toString(), p]));
-    const variants = productIds.length
-      ? await productVariantModel.find({ productId: { $in: productIds }, isDelete: false })
-      : [];
-    const variantBySku = new Map(variants.map((v: any) => [v.sku, v]));
-
-    const seller = await sellerModel.findOne({ _id: sellerId }).select('name');
-    const updated: { row: number; sku: string }[] = [];
-    const failed: { row: number; sku: string; error: string }[] = [];
-
-    for (let i = 0; i < rows.length; i++) {
-      const r = rows[i];
-      const rowNumber = i + 2;
-      const sku = (r['SKU'] ?? '').trim();
-      const qtyRaw = (r['Quantity'] ?? '').trim();
-      const qty = parseInt(qtyRaw, 10);
-
-      if (!sku) { failed.push({ row: rowNumber, sku: '(blank)', error: 'SKU is required' }); continue; }
-      if (!Number.isFinite(qty) || qty < 0) { failed.push({ row: rowNumber, sku, error: 'Quantity must be a non-negative number' }); continue; }
-
-      const variant: any = variantBySku.get(sku);
-      if (!variant) { failed.push({ row: rowNumber, sku, error: 'No SKU matches this in your store' }); continue; }
-      if (variant.unlimitedStock) { failed.push({ row: rowNumber, sku, error: 'This SKU has unlimited stock — skipped' }); continue; }
-      if (qty === variant.stock) { updated.push({ row: rowNumber, sku }); continue; } // no real change — still counts as a success, not a failure
-
-      const previousStock = variant.stock;
-      const delta = qty - previousStock;
-      await productVariantModel.updateOne({ _id: variant._id }, { $set: { stock: qty } });
-      await stockAdjustmentModel.create({
-        storeId, productId: variant.productId, variantId: variant._id.toString(), locationId: null,
-        productName: productById.get(variant.productId)?.name ?? '(deleted product)', sku: variant.sku,
-        previousStock, newStock: qty, delta,
-        reason: 'correction', note: 'Bulk CSV reconciliation',
-        adjustedBy: sellerId, adjustedByName: seller?.name ?? null,
-      });
-      updated.push({ row: rowNumber, sku });
-    }
-
-    return {
-      success: true,
-      message: `Reconciled ${updated.length} of ${rows.length} SKU(s).`,
-      data: { updatedCount: updated.length, totalRows: rows.length, updated, failed },
-    };
+    const { storeModel, productModel, productVariantModel } = this.databaseService.repositories;
+    return importStockCsvRows(
+      {
+        repos: { storeModel, productModel, productVariantModel },
+        adjust: (variantId, delta, reason, note) =>
+          this.applyStockAdjustment(sellerId, storeId, variantId, delta, reason, note),
+      },
+      sellerId,
+      storeId,
+      csvText,
+    );
   }
 
   // Store-wide low-stock summary for the seller dashboard's alert card —

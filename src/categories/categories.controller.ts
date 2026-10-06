@@ -8,7 +8,13 @@ import {
   Param,
   Req,
   Query,
+  UploadedFile,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
+import { buildTemplatePayload, readUploadedCsv } from '../common/bulk-import/bulk-import.util';
+import { CATEGORY_IMPORT_COLUMNS } from './categories-bulk-import';
 
 import { CategoriesService } from './categories.service';
 import { CreateCategoryDto } from './dto/create-category.dto';
@@ -32,6 +38,21 @@ export class CategoriesController {
   ) {
     const { userId, role } = req.user;
     return this.categoriesService.addCategory(userId, role, createCategoryDto);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Get('store/:storeId/import-template')
+  importTemplate() {
+    return buildTemplatePayload('categories-import-template.csv', CATEGORY_IMPORT_COLUMNS);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Post('store/:storeId/import')
+  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }))
+  importCategories(@Req() req: any, @Param('storeId') storeId: string, @UploadedFile() file: any) {
+    return this.categoriesService.importCsv(req.user.userId, storeId, readUploadedCsv(file));
   }
 
   @Get('category-tree')

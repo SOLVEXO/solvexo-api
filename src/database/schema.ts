@@ -150,6 +150,7 @@ export { MediaAsset, MediaAssetDocument, MediaAssetSchema } from '../media-libra
 export { AppInstallation, AppInstallationDocument, AppInstallationSchema } from '../apps/schemas/app-installation.schema';
 export { StoreBanner, StoreBannerDocument, StoreBannerSchema } from '../store-banner/schemas/store-banner.schema';
 export { StoreTheme, StoreThemeDocument, StoreThemeSchema } from '../store-theme/schemas/store-theme.schema';
+export { ThemePackage, ThemePackageDocument, ThemePackageSchema } from '../store-theme/schemas/theme-package.schema';
 export { ThemeDefinition, ThemeDefinitionDocument, ThemeDefinitionSchema } from '../theme-catalog/schemas/theme-definition.schema';
 export { StorePage, StorePageDocument, StorePageSchema } from '../store-pages/schemas/store-page.schema';
 export { StoreFaq, StoreFaqDocument, StoreFaqSchema } from '../store-faq/schemas/store-faq.schema';

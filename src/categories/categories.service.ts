@@ -14,6 +14,7 @@ import { CreateCategoryDto } from './dto/create-category.dto';
 import { UpdateCategoryDto } from './dto/update-category.dto';
 import { generateUniqueSlug } from '@/common/slug.util';
 import { verifyStoreOwnershipStrict } from '@/common/store-ownership.util';
+import { importCategoriesCsv } from './categories-bulk-import';
 
 @Injectable()
 export class CategoriesService {
@@ -547,6 +548,17 @@ export class CategoriesService {
       success: true,
       message: 'Category deleted successfully',
     };
+  }
+
+  /** Bulk CSV import for a seller's own store (rows go through addCategory/updateCategory). */
+  async importCsv(userId: string, storeId: string, text: string) {
+    await verifyStoreOwnershipStrict(this.databaseService.repositories.storeModel, storeId, userId);
+    return importCategoriesCsv(
+      { categoryModel: this.databaseService.repositories.categoryModel, categoriesService: this },
+      userId,
+      storeId,
+      text,
+    );
   }
 
   async getAllCategories(): Promise<any> {

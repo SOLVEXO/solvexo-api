@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Body, Controller, Delete, Get, Param, Patch, Post, Put, Query, Req, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Put, Query, Req, UploadedFile, UseGuards, UseInterceptors, UsePipes, ValidationPipe } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -12,6 +12,10 @@ import { CreateDefinitionDto } from './dto/create-definition.dto';
 import { UpdateDefinitionDto } from './dto/update-definition.dto';
 import { SetValuesDto } from './dto/set-values.dto';
 import type { MetafieldOwnerResource } from './schemas/metafield-definition.schema';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
+import { buildTemplatePayload, readUploadedCsv } from '../common/bulk-import/bulk-import.util';
+import { METAFIELD_DEFINITION_IMPORT_COLUMNS } from './metafield-definitions-bulk-import';
 
 // Grouped with Metaobjects under the same `content.metaobjects.manage`
 // permission — Solvexo has no separate route-level way to distinguish
@@ -29,6 +33,17 @@ export class MetafieldsController {
   @Get(':storeId/definitions')
   listDefinitions(@Req() req: any, @Param('storeId') storeId: string, @Query('ownerResource') ownerResource?: MetafieldOwnerResource) {
     return this.metafieldsService.listDefinitions(storeId, actingSellerId(req.user), ownerResource);
+  }
+
+  @Get(':storeId/definitions/import-template')
+  definitionsImportTemplate() {
+    return buildTemplatePayload('metafield-definitions-import-template.csv', METAFIELD_DEFINITION_IMPORT_COLUMNS);
+  }
+
+  @Post(':storeId/definitions/import')
+  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }))
+  importDefinitions(@Req() req: any, @Param('storeId') storeId: string, @UploadedFile() file: any) {
+    return this.metafieldsService.importDefinitionsCsv(storeId, actingSellerId(req.user), readUploadedCsv(file));
   }
 
   @Post(':storeId/definitions')

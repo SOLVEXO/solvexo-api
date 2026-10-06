@@ -10,6 +10,7 @@ import { buildDiffMetadata } from '@/common/activity-diff.util';
 import { CreateVariantDto } from './dto/create-variant.dto';
 import { parseCustomsInput } from '@/shipping-rates/customs.util';
 import { UpdateVariantDto } from './dto/update-variant.dto';
+import { importVariantsCsv as importVariantsCsvRows } from './variant-bulk-import';
 import {
   optionNameSet,
   optionsKey,
@@ -314,5 +315,22 @@ export class ProductVariantsService {
       message: 'Variants fetched successfully',
       data: await this.getActiveVariants(productId),
     };
+  }
+
+  /** POST api/products/store-products/:storeId/variants/import — shared
+   *  bulk-import engine (see `variant-bulk-import.ts`); every row goes through
+   *  addVariant/updateVariant above. */
+  async importVariantsCsv(sellerId: string, storeId: string, csvText: string) {
+    const { storeModel, productModel, productVariantModel } = this.databaseService.repositories;
+    return importVariantsCsvRows(
+      {
+        repos: { storeModel, productModel, productVariantModel },
+        addVariant: (s, productId, dto) => this.addVariant(s, productId, dto),
+        updateVariant: (s, productId, variantId, dto) => this.updateVariant(s, productId, variantId, dto),
+      },
+      sellerId,
+      storeId,
+      csvText,
+    );
   }
 }

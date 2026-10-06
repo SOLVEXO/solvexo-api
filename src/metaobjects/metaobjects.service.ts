@@ -135,6 +135,16 @@ export class MetaobjectsService {
     return { success: true, data: entries };
   }
 
+  /** CSV import helper: case-insensitive "does this display name already exist on this type". */
+  async entryNameExists(storeId: string, definitionId: string, displayName: string): Promise<boolean> {
+    const escaped = String(displayName).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const hit = await this.entryModel
+      .findOne({ storeId: String(storeId), definitionId: String(definitionId), displayName: { $regex: `^${escaped}$`, $options: 'i' } })
+      .select('_id')
+      .lean();
+    return !!hit;
+  }
+
   async getEntry(storeId: string, sellerId: string, entryId: string) {
     await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
     const entry = await this.entryModel.findOne({ _id: entryId, storeId }).lean();

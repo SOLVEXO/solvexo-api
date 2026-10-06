@@ -1,5 +1,9 @@
 /* eslint-disable prettier/prettier */
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, Res, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, Res, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
+import { buildTemplatePayload, readUploadedCsv } from '../common/bulk-import/bulk-import.util';
+import { SUBSCRIBER_IMPORT_COLUMNS } from './subscriber-bulk-import';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Response } from 'express';
 import { IsBoolean, IsEmail, IsNotEmpty, IsOptional, IsString, MaxLength } from 'class-validator';
@@ -13,13 +17,6 @@ import { SubscriberListQuery, SubscriberListsService } from './subscriber-lists.
 
 class AddSubscriberDto {
   @IsEmail() email: string;
-}
-
-class ImportSubscribersDto {
-  @IsString() @IsNotEmpty() @MaxLength(2_000_000) csv: string;
-  // The seller attests every imported address agreed to receive marketing
-  // email — required, same as Shopify's import checkbox.
-  @IsBoolean() consentConfirmed: boolean;
 }
 
 class SetSubscriberStatusDto {
@@ -69,13 +66,22 @@ export class StoreSubscribersController {
   }
 
   @RequirePermission('customers.edit')
+  @Get('import-template')
+  async importTemplate() {
+    return buildTemplatePayload('subscribers-import-template.csv', SUBSCRIBER_IMPORT_COLUMNS);
+  }
+
+  @RequirePermission('customers.edit')
   @Post('import')
-  async import(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: ImportSubscribersDto) {
+  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }))
+  async import(@Req() req: any, @Param('storeId') storeId: string, @UploadedFile() file: any, @Body() body: any) {
     await this.lists.assertStoreOwner(storeId, actingSellerId(req.user));
-    if (!dto.consentConfirmed) {
-      return { success: false, message: 'Please confirm these customers agreed to receive marketing emails' };
+    // The seller attests every imported address agreed to receive marketing
+    // email — required, same as Shopify's import checkbox (multipart field).
+    if (String(body?.consentConfirmed) !== 'true') {
+      throw new BadRequestException('Please confirm these customers agreed to receive marketing emails');
     }
-    return this.lists.importCsv(storeId, dto.csv, 'import');
+    return this.lists.importCsv(storeId, readUploadedCsv(file), 'import');
   }
 
   @RequirePermission('customers.edit')

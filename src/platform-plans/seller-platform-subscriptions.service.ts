@@ -10,6 +10,7 @@ import { PaymentGatewayService } from '@/subscriptions/payment-gateway/payment-g
 import { ensureSellerCustomerId, resolveSubCustomerId } from './stripe-customer.util';
 import { verifyStoreOwnershipStrict } from '@/common/store-ownership.util';
 import { SubscribePlatformPlanDto, ChangePlatformPlanDto } from './dto/subscribe-platform-plan.dto';
+import { ListInvoicesQueryDto } from './dto/list-invoices.dto';
 import { NotificationsService } from '@/notifications/notifications.service';
 import { NOTIFICATION_TYPES } from '@/notifications/notification.types';
 import { CriticalAlertService } from '@/common/critical-alert.service';
@@ -354,11 +355,43 @@ export class SellerPlatformSubscriptionsService {
       this.db.repositories.sellerModel.findById(sellerId).select('name email').lean(),
       this.storeModel.findById(storeId).select('name').lean(),
     ]);
+    const sellerEmail: string | null = (seller as any)?.email ?? null;
     return {
       sellerName: (seller as any)?.name ?? 'there',
-      sellerEmail: (seller as any)?.email ?? null,
+      sellerEmail,
+      // Shopify: billing emails go to the owner AND to staff who hold "View billing and receive billing emails".
+      billingRecipients: await this.resolveBillingRecipients(storeId, sellerEmail),
       storeName: (store as any)?.name ?? 'your store',
     };
+  }
+
+  /** Owner email first, then active staff of THIS store whose role holds `settings.billing.view` (or `.manage`), de-duplicated case-insensitively. Never throws — falls back to the owner only. */
+  async resolveBillingRecipients(storeId: string, ownerEmail: string | null): Promise<string[]> {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    const add = (e?: string | null) => {
+      const v = typeof e === 'string' ? e.trim() : '';
+      if (v && !seen.has(v.toLowerCase())) { seen.add(v.toLowerCase()); out.push(v); }
+    };
+    add(ownerEmail);
+    try {
+      const repos: any = this.db.repositories;
+      if (!repos.staffMemberModel || !repos.roleModel) return out;
+      const roles = await repos.roleModel
+        .find({ storeId, isDelete: false, permissions: { $in: ['settings.billing.view', 'settings.billing.manage'] } })
+        .select('_id')
+        .lean();
+      const roleIds = (roles as any[]).map((r) => String(r._id));
+      if (!roleIds.length) return out;
+      const staff = await repos.staffMemberModel
+        .find({ storeId, roleId: { $in: roleIds }, status: 'active', isDelete: false, inviteAcceptedAt: { $ne: null } })
+        .select('email')
+        .lean();
+      for (const s of staff as any[]) add(s.email);
+    } catch (err: any) {
+      this.logger.warn(`Could not resolve billing staff recipients for store ${storeId}: ${err?.message}`);
+    }
+    return out;
   }
 
   private async recordAttempt(params: {
@@ -376,7 +409,7 @@ export class SellerPlatformSubscriptionsService {
 
   private async applyDunningFailure(sub: any, chargeAmount?: number) {
     sub.failedPaymentAttempts = (sub.failedPaymentAttempts ?? 0) + 1;
-    const { sellerName, sellerEmail, storeName } = await this.getSellerAndStoreNames(sub.sellerId, sub.storeId);
+    const { sellerName, sellerEmail, billingRecipients, storeName } = await this.getSellerAndStoreNames(sub.sellerId, sub.storeId);
 
     if (sub.failedPaymentAttempts >= MAX_RENEWAL_ATTEMPTS) {
       // Legacy (pre-trial-model) grandfathered stores keep landing on the
@@ -387,7 +420,7 @@ export class SellerPlatformSubscriptionsService {
         const freePlan = await this.downgradeToFree(sub);
         if (freePlan) {
           if (sellerEmail) {
-            await this.notifications.sendDowngradedDueToFailedPayments(sellerEmail, {
+            await this.notifications.sendDowngradedDueToFailedPayments(billingRecipients, {
               sellerName, storeName, planName: freePlan.name, maxAttempts: MAX_RENEWAL_ATTEMPTS,
             });
           }
@@ -410,7 +443,7 @@ export class SellerPlatformSubscriptionsService {
       } else {
         await this.lockStore(sub);
         if (sellerEmail) {
-          await this.notifications.sendStoreLocked(sellerEmail, { sellerName, storeName, reason: 'payment_failed' }).catch(() => {});
+          await this.notifications.sendStoreLocked(billingRecipients, { sellerName, storeName, reason: 'payment_failed' }).catch(() => {});
         }
         this.notificationsService.notify({
           recipientId: sub.sellerId,
@@ -437,7 +470,7 @@ export class SellerPlatformSubscriptionsService {
 
     if (sellerEmail) {
       const plan = await this.planModel.findById(sub.platformPlanId).select('name').lean();
-      await this.notifications.sendPaymentFailed(sellerEmail, {
+      await this.notifications.sendPaymentFailed(billingRecipients, {
         sellerName, storeName, planName: (plan as any)?.name ?? 'your plan',
         amountUSD: chargeAmount ?? sub.amountUSD, attemptNumber: sub.failedPaymentAttempts,
         maxAttempts: MAX_RENEWAL_ATTEMPTS, nextRetryDate: retryAt,
@@ -681,7 +714,7 @@ export class SellerPlatformSubscriptionsService {
   }
 
   /** Seller's own platform-plan billing history for one store — invoice list + download links. */
-  async listInvoices(sellerId: string, storeId: string, query: any) {
+  async listInvoices(sellerId: string, storeId: string, query: ListInvoicesQueryDto) {
     await this.verifyStoreOwnership(storeId, sellerId);
     return this.queryInvoices(storeId, query);
   }
@@ -694,23 +727,23 @@ export class SellerPlatformSubscriptionsService {
    * resolve-the-real-id-server-side pattern as `getSellerOverview`, not a
    * bypass flag threaded through the shared, security-sensitive method.
    */
-  async adminListInvoices(storeId: string, query: any) {
+  async adminListInvoices(storeId: string, query: ListInvoicesQueryDto) {
     if (!isValidObjectId(storeId)) throw new BadRequestException('A valid storeId is required');
     const store = await this.storeModel.findById(storeId).select('_id').lean();
     if (!store) throw new NotFoundException('Store not found');
     return this.queryInvoices(storeId, query);
   }
 
-  private async queryInvoices(storeId: string, query: any) {
-    const page = Math.max(1, parseInt(query.page) || 1);
-    const limit = Math.min(50, parseInt(query.limit) || 20);
+  private async queryInvoices(storeId: string, query: ListInvoicesQueryDto) {
+    const page = Math.max(1, parseInt(String(query.page)) || 1);
+    const limit = Math.min(50, parseInt(String(query.limit)) || 20);
     const skip = (page - 1) * limit;
 
     const filter: any = { storeId, isDelete: false };
     if (query.status) filter.status = query.status;
 
     const [invoices, total] = await Promise.all([
-      this.invoiceModel.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+      this.invoiceModel.find(filter).sort({ createdAt: -1, _id: -1 }).skip(skip).limit(limit).lean(),
       this.invoiceModel.countDocuments(filter),
     ]);
 
@@ -917,9 +950,9 @@ export class SellerPlatformSubscriptionsService {
       description: `Admin manually locked this store's subscription${reason ? ` (reason: ${reason})` : ''}`,
       actorId: adminId, actorRole: 'admin', targetId: sub._id.toString(), targetType: 'seller_platform_subscription',
     });
-    const { sellerName, sellerEmail, storeName } = await this.getSellerAndStoreNames(sub.sellerId, storeId);
+    const { sellerName, sellerEmail, billingRecipients, storeName } = await this.getSellerAndStoreNames(sub.sellerId, storeId);
     if (sellerEmail) {
-      await this.notifications.sendStoreLocked(sellerEmail, { sellerName, storeName, reason: 'subscription_ended' }).catch(() => {});
+      await this.notifications.sendStoreLocked(billingRecipients, { sellerName, storeName, reason: 'subscription_ended' }).catch(() => {});
     }
 
     return { success: true, message: 'Store locked', data: { subscription: sub } };
@@ -1204,18 +1237,18 @@ export class SellerPlatformSubscriptionsService {
       targetId: sub._id.toString(), targetType: 'seller_platform_subscription', metadata: historyEntry,
     });
 
-    const { sellerName, sellerEmail, storeName } = await this.getSellerAndStoreNames(sellerId, storeId);
+    const { sellerName, sellerEmail, billingRecipients, storeName } = await this.getSellerAndStoreNames(sellerId, storeId);
     if (sellerEmail) {
       // Fire-and-forget: the plan change (and any charge) is already done, so a slow or
       // failing mail server must never hold the seller's request open — it used to,
       // and with SMTP down the checkout request just hung until the client timed out.
       const confirmation = isFreeMoveIn
-        ? this.notifications.sendMovedToFreePlan(sellerEmail, { sellerName, storeName, planName: newPlan.name })
+        ? this.notifications.sendMovedToFreePlan(billingRecipients, { sellerName, storeName, planName: newPlan.name })
         : netDue > 0
-          ? this.notifications.sendPlanUpgraded(sellerEmail, {
+          ? this.notifications.sendPlanUpgraded(billingRecipients, {
               sellerName, storeName, fromPlanName: historyEntry.fromPlanName, toPlanName: newPlan.name, amountUSD: netDue,
             })
-          : this.notifications.sendPlanChangeCredited(sellerEmail, {
+          : this.notifications.sendPlanChangeCredited(billingRecipients, {
               sellerName, storeName, fromPlanName: historyEntry.fromPlanName, toPlanName: newPlan.name, creditUSD: sub.creditBalanceUSD,
             });
       void Promise.resolve(confirmation).catch((err: any) => {
@@ -1550,9 +1583,9 @@ export class SellerPlatformSubscriptionsService {
         sub.trialEndsAt = null;
       } else {
         await this.markTrialEnded(sub);
-        const { sellerName, sellerEmail, storeName } = await this.getSellerAndStoreNames(sub.sellerId, sub.storeId);
+        const { sellerName, sellerEmail, billingRecipients, storeName } = await this.getSellerAndStoreNames(sub.sellerId, sub.storeId);
         if (sellerEmail) {
-          await this.notifications.sendStoreLocked(sellerEmail, { sellerName, storeName, reason: 'trial_ended' }).catch(() => {});
+          await this.notifications.sendStoreLocked(billingRecipients, { sellerName, storeName, reason: 'trial_ended' }).catch(() => {});
         }
         this.notificationsService.notify({
           recipientId: sub.sellerId, recipientRole: 'seller', storeId: sub.storeId,
@@ -1611,9 +1644,9 @@ export class SellerPlatformSubscriptionsService {
         await sub.save();
         if (result.modifiedCount > 0) gated++;
 
-        const { sellerName, sellerEmail, storeName } = await this.getSellerAndStoreNames(sub.sellerId, sub.storeId);
+        const { sellerName, sellerEmail, billingRecipients, storeName } = await this.getSellerAndStoreNames(sub.sellerId, sub.storeId);
         if (sellerEmail) {
-          await this.notifications.sendStorefrontHidden(sellerEmail, { sellerName, storeName }).catch(() => {});
+          await this.notifications.sendStorefrontHidden(billingRecipients, { sellerName, storeName }).catch(() => {});
         }
         this.notificationsService.notify({
           recipientId: sub.sellerId, recipientRole: 'seller', storeId: sub.storeId,
@@ -1670,9 +1703,9 @@ export class SellerPlatformSubscriptionsService {
         await this.lockStore(sub);
         await sub.save();
         downgraded++;
-        const { sellerName, sellerEmail, storeName } = await this.getSellerAndStoreNames(sub.sellerId, sub.storeId);
+        const { sellerName, sellerEmail, billingRecipients, storeName } = await this.getSellerAndStoreNames(sub.sellerId, sub.storeId);
         if (sellerEmail) {
-          await this.notifications.sendStoreLocked(sellerEmail, { sellerName, storeName, reason: 'subscription_ended' }).catch(() => {});
+          await this.notifications.sendStoreLocked(billingRecipients, { sellerName, storeName, reason: 'subscription_ended' }).catch(() => {});
         }
         this.activityLogService.log({
           storeId: sub.storeId, category: 'platform_plans', action: 'plan_locked_cancellation',
@@ -1701,14 +1734,14 @@ export class SellerPlatformSubscriptionsService {
       // `billImmediately: false` mid-trial-commit path (see
       // sendTrialEndingSoon's doc comment) — normally `platformPlanId` is
       // still null this whole time, since trial has no plan attached by design.
-      const [{ sellerName, sellerEmail, storeName }, plan] = await Promise.all([
+      const [{ sellerName, sellerEmail, billingRecipients, storeName }, plan] = await Promise.all([
         this.getSellerAndStoreNames(sub.sellerId, sub.storeId),
         sub.platformPlanId ? this.planModel.findById(sub.platformPlanId).select('name').lean() : null,
       ]);
       const trialEndsAt: Date = sub.trialEndsAt ?? now;
       const daysLeft = Math.max(0, Math.round((trialEndsAt.getTime() - now.getTime()) / (24 * 60 * 60 * 1000)));
       if (sellerEmail) {
-        await this.notifications.sendTrialEndingSoon(sellerEmail, {
+        await this.notifications.sendTrialEndingSoon(billingRecipients, {
           sellerName, storeName, daysLeft, trialEndsAt,
           committedPlan: plan ? { name: (plan as any).name, amountUSD: sub.amountUSD } : undefined,
         });
@@ -1757,12 +1790,12 @@ export class SellerPlatformSubscriptionsService {
       // real once-per-cycle dedup, not a one-time-ever flag.
       if (sub.renewalReminderSentForDate && sub.renewalReminderSentForDate.getTime() === sub.nextBillingDate.getTime()) continue;
 
-      const [{ sellerName, sellerEmail, storeName }, plan] = await Promise.all([
+      const [{ sellerName, sellerEmail, billingRecipients, storeName }, plan] = await Promise.all([
         this.getSellerAndStoreNames(sub.sellerId, sub.storeId),
         sub.platformPlanId ? this.planModel.findById(sub.platformPlanId).select('name').lean() : null,
       ]);
       if (sellerEmail) {
-        await this.notifications.sendUpcomingRenewalReminder(sellerEmail, {
+        await this.notifications.sendUpcomingRenewalReminder(billingRecipients, {
           sellerName, storeName, planName: (plan as any)?.name ?? 'your plan',
           amountUSD: sub.amountUSD, renewalDate: sub.nextBillingDate,
         }).catch(() => {});
@@ -1912,9 +1945,9 @@ export class SellerPlatformSubscriptionsService {
       await this.downgradeToFree(sub);
     } else {
       await this.lockStore(sub);
-      const { sellerName, sellerEmail, storeName } = await this.getSellerAndStoreNames(sub.sellerId, sub.storeId);
+      const { sellerName, sellerEmail, billingRecipients, storeName } = await this.getSellerAndStoreNames(sub.sellerId, sub.storeId);
       if (sellerEmail) {
-        await this.notifications.sendStoreLocked(sellerEmail, { sellerName, storeName, reason: 'subscription_ended' }).catch(() => {});
+        await this.notifications.sendStoreLocked(billingRecipients, { sellerName, storeName, reason: 'subscription_ended' }).catch(() => {});
       }
       this.activityLogService.log({
         storeId: sub.storeId, category: 'platform_plans', action: 'plan_locked_subscription_deleted',

@@ -4,7 +4,10 @@ import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { PlatformAddonsService } from './platform-addons.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
+import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { RequirePermission } from '../auth/decorators/require-permission.decorator';
+import { actingSellerId } from '../common/acting-seller-id.util';
 import { IdempotencyInterceptor } from '../common/idempotency.interceptor';
 import { PurchaseAddonDto } from './dto/purchase-addon.dto';
 
@@ -42,11 +45,13 @@ export class PlatformAddonsController {
   }
 
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  // Read-only: staff holding billing view may see add-on purchases (PermissionsGuard pins staff to their own :storeId).
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('settings.billing.view', 'settings.billing.manage')
   @Get(':storeId/addons')
   listAddons(@Req() req: any, @Param('storeId') storeId: string) {
-    return this.addonsService.listAddons(req.user.userId, storeId);
+    return this.addonsService.listAddons(actingSellerId(req.user), storeId);
   }
 
   @ApiBearerAuth()

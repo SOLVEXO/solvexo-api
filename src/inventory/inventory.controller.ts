@@ -10,6 +10,8 @@ import { RequirePermission } from '../auth/decorators/require-permission.decorat
 import { IdempotencyInterceptor } from '../common/idempotency.interceptor';
 import { actingSellerId } from '../common/acting-seller-id.util';
 import { InventoryService } from './inventory.service';
+import { buildTemplatePayload, readUploadedCsv } from '../common/bulk-import/bulk-import.util';
+import { STOCK_IMPORT_COLUMNS } from './stock-bulk-import';
 import type { StockAdjustmentReason } from './schemas/stock-adjustment.schema';
 
 @Controller('api/inventory')
@@ -34,11 +36,16 @@ export class InventoryController {
   }
 
   @RequirePermission('inventory.adjust')
-  @Post(':storeId/import-stock-csv')
+  @Get(':storeId/stock/import-template')
+  getStockImportTemplate() {
+    return buildTemplatePayload('stock-import-template.csv', STOCK_IMPORT_COLUMNS);
+  }
+
+  @RequirePermission('inventory.adjust')
+  @Post(':storeId/stock/import')
   @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }))
   async importStockCsv(@Req() req: any, @Param('storeId') storeId: string, @UploadedFile() file: Express.Multer.File) {
-    if (!file) throw new BadRequestException('No CSV file uploaded');
-    return this.inventoryService.importStockCsv(actingSellerId(req.user), storeId, file.buffer.toString('utf-8'));
+    return this.inventoryService.importStockCsv(actingSellerId(req.user), storeId, readUploadedCsv(file));
   }
 
   @RequirePermission('inventory.view')

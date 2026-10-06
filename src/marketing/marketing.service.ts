@@ -6,6 +6,7 @@ import { CreateCouponDto } from './dto/create-coupon.dto';
 import { UpdateCouponDto } from './dto/update-coupon.dto';
 import { ActiveCampaignForStore } from './campaign-pricing.util';
 import { generateUniqueSlug } from '@/common/slug.util';
+import { importCouponsCsv } from './coupons-bulk-import';
 
 @Injectable()
 export class MarketingService {
@@ -64,6 +65,12 @@ export class MarketingService {
     });
 
     return { success: true, message: 'Coupon created', data: coupon };
+  }
+
+  /** Bulk CSV import — every row goes through createCoupon (same rules + activity log). */
+  async importCouponsCsv(sellerId: string, storeId: string, text: string, ip?: string, userAgent?: string) {
+    await this.verifyStoreOwnership(storeId, sellerId);
+    return importCouponsCsv({ couponModel: this.r.couponModel, marketingService: this }, sellerId, storeId, text, ip, userAgent);
   }
 
   async getCoupons(sellerId: string, storeId: string, query: any) {

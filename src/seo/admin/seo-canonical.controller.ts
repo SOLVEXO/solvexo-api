@@ -8,6 +8,11 @@ import { SeoCanonicalService } from '../services/seo-canonical.service';
 import { CreateCanonicalRuleDto } from '../dto/create-canonical-rule.dto';
 import { UpdateCanonicalRuleDto } from '../dto/update-canonical-rule.dto';
 import { SeoResponseInterceptor } from '../seo-response.interceptor';
+import { Res, UploadedFile } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
+import { buildTemplatePayload, readUploadedCsv, runBulkImport } from '../../common/bulk-import/bulk-import.util';
+import { CANONICAL_COLUMNS, canonicalFileDedupeKey, makeCanonicalRowHandler } from '../canonical-rules-bulk-import';
 
 @ApiTags('Admin SEO — Canonical Rules')
 @ApiBearerAuth()
@@ -17,6 +22,28 @@ import { SeoResponseInterceptor } from '../seo-response.interceptor';
 @Controller('api/admin/seo/canonical-rules')
 export class AdminSeoCanonicalController {
   constructor(private readonly canonical: SeoCanonicalService) {}
+
+  // CSV import. `@Res()` sends the engine's own response shape (the class-level
+  // SeoResponseInterceptor would otherwise wrap it a second time).
+  @Get('import-template')
+  importTemplate(@Res() res: any) {
+    return res.json(buildTemplatePayload('canonical-rules-import-template.csv', CANONICAL_COLUMNS));
+  }
+
+  @Post('import')
+  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }))
+  async importRules(@Req() req: any, @UploadedFile() file: any, @Res() res: any) {
+    const actor = { id: req.user.userId, role: req.user.role };
+    const result = await runBulkImport({
+      text: readUploadedCsv(file),
+      columns: CANONICAL_COLUMNS,
+      maxRows: 1000,
+      label: 'canonical rule',
+      fileDedupeKey: canonicalFileDedupeKey,
+      handler: makeCanonicalRowHandler((dto) => this.canonical.create(null, dto as any, actor)),
+    });
+    return res.json(result);
+  }
 
   @Post()
   create(@Req() req: any, @Body() dto: CreateCanonicalRuleDto) {

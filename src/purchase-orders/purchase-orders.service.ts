@@ -11,6 +11,7 @@ import { UpdatePurchaseOrderDto } from './dto/update-purchase-order.dto';
 import { ReceivePurchaseOrderDto } from './dto/receive-purchase-order.dto';
 import { CreateSupplierDto } from './dto/create-supplier.dto';
 import { UpdateSupplierDto } from './dto/update-supplier.dto';
+import { importSuppliersCsv } from './supplier-bulk-import';
 
 function round(n: number) {
   return Math.round(n * 100) / 100;
@@ -40,6 +41,19 @@ export class PurchaseOrdersService {
       status: 'active',
     });
     return supplier.toObject();
+  }
+
+  /** CSV bulk import — rows go through createSupplier (ownership check,
+   *  same fields); a name/email already used in this store is skipped. */
+  async importSuppliers(storeId: string, sellerId: string, text: string) {
+    await verifyStoreOwnershipOrForbidden(this.repos.storeModel, storeId, sellerId);
+    return importSuppliersCsv(
+      {
+        listExisting: () => this.repos.supplierModel.find({ storeId: String(storeId), isDelete: false }).select('name email').lean() as any,
+        create: (dto) => this.createSupplier(storeId, sellerId, dto),
+      },
+      text,
+    );
   }
 
   async listSuppliers(storeId: string, sellerId: string) {

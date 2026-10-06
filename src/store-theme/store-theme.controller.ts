@@ -1,5 +1,7 @@
 /* eslint-disable prettier/prettier */
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UseGuards, UseInterceptors, UsePipes, ValidationPipe } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UploadedFile, UseGuards, UseInterceptors, UsePipes, ValidationPipe } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -16,6 +18,7 @@ import { UpdateIdentityBannerDto } from './dto/update-identity-banner.dto';
 import { UpdateCustomCssDto } from './dto/update-custom-css.dto';
 import { InstallThemeDto } from './dto/install-theme.dto';
 import { CreateColorSchemeDto } from './dto/color-scheme.dto';
+import { ThemePackageService } from './theme-package.service';
 
 @ApiTags('Store Theme')
 @ApiBearerAuth()
@@ -25,7 +28,36 @@ import { CreateColorSchemeDto } from './dto/color-scheme.dto';
 @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
 @Controller('api/store-theme')
 export class StoreThemeController {
-  constructor(private readonly storeThemeService: StoreThemeService) {}
+  constructor(private readonly storeThemeService: StoreThemeService, private readonly themePackageService: ThemePackageService) {}
+
+  // Shopify-compatible source-package lifecycle. ZIP parsing is bounded and
+  // validated before any immutable source revision is persisted.
+  @Post(':storeId/installed/:installedThemeId/package')
+  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 8 * 1024 * 1024 } }))
+  uploadThemePackage(@Req() req: any, @Param('storeId') storeId: string, @Param('installedThemeId') installedThemeId: string, @UploadedFile() file: Express.Multer.File) {
+    if (!file) throw new BadRequestException('Theme ZIP file is required');
+    return this.themePackageService.upload(storeId, actingSellerId(req.user), installedThemeId, file.buffer);
+  }
+
+  @Get(':storeId/installed/:installedThemeId/package')
+  listThemePackageVersions(@Req() req: any, @Param('storeId') storeId: string, @Param('installedThemeId') installedThemeId: string) {
+    return this.themePackageService.list(storeId, actingSellerId(req.user), installedThemeId);
+  }
+
+  @Get(':storeId/installed/:installedThemeId/package/:version')
+  getThemePackageVersion(@Req() req: any, @Param('storeId') storeId: string, @Param('installedThemeId') installedThemeId: string, @Param('version') version: string) {
+    return this.themePackageService.getRevision(storeId, actingSellerId(req.user), installedThemeId, Number(version));
+  }
+
+  @Patch(':storeId/installed/:installedThemeId/package/file')
+  editThemePackageFile(@Req() req: any, @Param('storeId') storeId: string, @Param('installedThemeId') installedThemeId: string, @Body() body: { path: string; content: string }) {
+    return this.themePackageService.editFile(storeId, actingSellerId(req.user), installedThemeId, body?.path, body?.content);
+  }
+
+  @Post(':storeId/installed/:installedThemeId/package/:version/rollback')
+  rollbackThemePackage(@Req() req: any, @Param('storeId') storeId: string, @Param('installedThemeId') installedThemeId: string, @Param('version') version: string) {
+    return this.themePackageService.rollback(storeId, actingSellerId(req.user), installedThemeId, Number(version));
+  }
 
   // ── Theme Library (installed theme instances) — declared as static
   // segments ahead of the `:storeId/theme` etc. dynamic routes below is not

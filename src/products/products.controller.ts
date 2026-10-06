@@ -11,7 +11,6 @@ import {
   UseGuards,
   UseInterceptors,
   UploadedFile,
-  BadRequestException,
   ForbiddenException,
 } from '@nestjs/common';
 import type { Response } from 'express';
@@ -19,6 +18,10 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
 
 import { ProductsService } from './products.service';
+import { ProductVariantsService } from '../product-variants/product-variants.service';
+import { buildTemplatePayload, readUploadedCsv } from '../common/bulk-import/bulk-import.util';
+import { PRODUCT_IMPORT_COLUMNS } from './product-bulk-import';
+import { VARIANT_IMPORT_COLUMNS } from '../product-variants/variant-bulk-import';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { OptionalJwtAuthGuard } from '../auth/guards/optional-jwt-auth.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -32,7 +35,10 @@ import { RequireActiveBilling } from '../platform-plans/decorators/require-activ
 
 @Controller('api/products')
 export class productController {
-  constructor(private readonly ProductsService: ProductsService) {}
+  constructor(
+    private readonly ProductsService: ProductsService,
+    private readonly productVariantsService: ProductVariantsService,
+  ) {}
 
   @UseGuards(OptionalJwtAuthGuard)
   @Get('products-by-category')
@@ -229,8 +235,44 @@ export class productController {
     @UploadedFile() file: Express.Multer.File,
   ) {
     const { userId: sellerId } = req.user;
-    if (!file) throw new BadRequestException('No CSV file uploaded');
-    return this.ProductsService.importProductsCsv(sellerId, storeId, file.buffer.toString('utf-8'));
+    return this.ProductsService.importProductsCsv(
+      sellerId,
+      storeId,
+      readUploadedCsv(file),
+      (s, productId, variantId, dto) => this.productVariantsService.updateVariant(s, productId, variantId, dto),
+    );
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard, BillingAccessGuard)
+  @Roles('seller')
+  @RequireActiveBilling()
+  @Get('store-products/:storeId/import-template')
+  getProductsImportTemplate() {
+    return buildTemplatePayload('products-import-template.csv', PRODUCT_IMPORT_COLUMNS);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard, BillingAccessGuard)
+  @Roles('seller')
+  @RequireActiveBilling()
+  @Get('store-products/:storeId/variants/import-template')
+  getVariantsImportTemplate() {
+    return buildTemplatePayload('variants-import-template.csv', VARIANT_IMPORT_COLUMNS);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard, BillingAccessGuard)
+  @Roles('seller')
+  @RequireActiveBilling()
+  @Post('store-products/:storeId/variants/import')
+  @UseInterceptors(
+    FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }),
+  )
+  async importVariantsCsv(
+    @Req() req: any,
+    @Param('storeId') storeId: string,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    const { userId: sellerId } = req.user;
+    return this.productVariantsService.importVariantsCsv(sellerId, storeId, readUploadedCsv(file));
   }
 
   // Gated the same as add-physical-product/add-digital-product — the

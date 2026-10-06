@@ -10,6 +10,7 @@ import { UpdateBlogContentDto } from './dto/update-blog-content.dto';
 import { CreateBlogDto } from './dto/create-blog.dto';
 import { UpdateBlogDto } from './dto/update-blog.dto';
 import { SubmitCommentDto } from './dto/submit-comment.dto';
+import { importBlogPostsCsv } from './blog-posts-bulk-import';
 
 const CONTENT_BLOCK_TYPES = ['paragraph', 'heading', 'image', 'quote', 'list', 'divider'];
 const MAX_CONTENT_BLOCKS = 60;
@@ -110,6 +111,16 @@ export class StoreBlogService {
   }
 
   // ── Seller ───────────────────────────────────────────────────────────────
+
+  async importPostsCsv(storeId: string, sellerId: string, text: string) {
+    await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
+    return importBlogPostsCsv(
+      { blogModel: this.blogModel, blogPostModel: this.blogPostModel, blogService: this },
+      sellerId,
+      storeId,
+      text,
+    );
+  }
 
   async listForSeller(storeId: string, sellerId: string, blogId?: string) {
     await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);

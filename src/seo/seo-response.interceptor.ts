@@ -20,6 +20,13 @@ import { map } from 'rxjs/operators';
 @Injectable()
 export class SeoResponseInterceptor implements NestInterceptor {
   intercept(_context: ExecutionContext, next: CallHandler): Observable<unknown> {
-    return next.handle().pipe(map((data) => ({ success: true, data })));
+    return next.handle().pipe(map((data) => (data && (data as any)[ALREADY_ENVELOPED] ? data : { success: true, data })));
   }
+}
+
+/** Marks a result that already carries the `{ success, data }` envelope (bulk-import responses) so it is not wrapped twice. */
+export const ALREADY_ENVELOPED = Symbol('seoAlreadyEnveloped');
+export function alreadyEnveloped<T extends object>(res: T): T {
+  Object.defineProperty(res, ALREADY_ENVELOPED, { value: true, enumerable: false });
+  return res;
 }
