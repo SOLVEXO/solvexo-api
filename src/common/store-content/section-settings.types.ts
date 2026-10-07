@@ -25,6 +25,10 @@ import type { SectionType } from '../schemas/section.schema';
 
 export interface BaseSectionSettings {
   heading?: string;
+  /** Optional section-level spacing, in CSS pixels. Omitted values preserve
+   *  each theme's existing layout; accepted range is 0–160. */
+  spacingTop?: number;
+  spacingBottom?: number;
 }
 
 /** Shared by any block/section CTA — a nav link, footer link, or hero/image-with-text button. */
@@ -57,6 +61,7 @@ export interface FeaturedProductsSectionSettings extends BaseSectionSettings {
   productIds?: string[];
   /** 1-24. */
   limit?: number;
+  columns?: 2 | 3 | 4;
 }
 export interface ProductCatalogSectionSettings extends BaseSectionSettings {
   defaultSort?: 'newest' | 'price_asc' | 'price_desc' | 'best_rated';
@@ -64,6 +69,7 @@ export interface ProductCatalogSectionSettings extends BaseSectionSettings {
   /** At most one of categoryId/collectionId may be set. */
   categoryId?: string;
   collectionId?: string;
+  showFilters?: boolean;
 }
 // eslint-disable-next-line @typescript-eslint/no-empty-object-pattern, @typescript-eslint/no-empty-interface
 export interface ImageWithTextSectionSettings extends BaseSectionSettings {}
@@ -81,6 +87,7 @@ export interface VideoSectionSettings extends BaseSectionSettings {
 export interface FeaturedCategoryGridSectionSettings extends BaseSectionSettings {
   /** Required, 1-12 items. */
   categoryIds: string[];
+  columns?: 2 | 3 | 4;
 }
 // eslint-disable-next-line @typescript-eslint/no-empty-interface
 export interface TrustBadgesSectionSettings extends BaseSectionSettings {}
@@ -199,21 +206,16 @@ export type SectionSettingsMap = RequireAllKeys<SectionType, {
 // (header vs. footer vs. hero vs. rich_text, etc.) — `BLOCK_TYPES` here is
 // the full catalog across every context, for validator typing only.
 
-/** One level of dropdown children only — deliberately typed as `LinkTarget &
- *  {label}` rather than `NavLinkBlockSettings` itself, so a child link can
- *  never carry a `children` field of its own at the type level (grandchild
- *  dropdowns are out of scope — matches every real storefront nav pattern
- *  this app needs). The validator (section-settings.validator.ts) re-checks
- *  this at runtime too, since `settings` arrives as untrusted network JSON. */
+/** Nested dropdown link. Runtime validation caps navigation at three levels
+ *  (Shopify-style) and eight items per dropdown. */
 export interface NavLinkChildSettings extends LinkTarget {
   label: string;
+  children?: NavLinkChildSettings[];
 }
 export interface NavLinkBlockSettings extends LinkTarget {
   label: string;
   highlight?: boolean;
-  /** Real dropdown support — was previously 100% flat (a header nav link
-   *  could never have a submenu). Omitted/empty = a plain link, unchanged
-   *  from before. */
+  /** Nested dropdown support, capped at three levels by the runtime validator. */
   children?: NavLinkChildSettings[];
 }
 export interface FooterColumnBlockSettings {

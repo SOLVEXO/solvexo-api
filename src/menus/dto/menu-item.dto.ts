@@ -14,6 +14,9 @@ export class MenuItemChildDto {
   @ApiProperty({ required: false }) @IsOptional() @IsString() collectionId?: string | null;
   @ApiProperty({ required: false }) @IsOptional() @IsString() productId?: string | null;
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() highlight?: boolean;
+  @ApiProperty({ type: [MenuItemChildDto], required: false })
+  @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => MenuItemChildDto)
+  children?: MenuItemChildDto[];
 }
 
 export class MenuItemDto {

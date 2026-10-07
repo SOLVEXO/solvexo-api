@@ -23,12 +23,13 @@ export class MenuItemChild {
   @Prop({ type: String, default: null }) collectionId: string | null;
   @Prop({ type: String, default: null }) productId: string | null;
   @Prop({ type: Boolean, default: false }) highlight: boolean;
+  children?: MenuItemChild[];
 }
 export const MenuItemChildSchema = SchemaFactory.createForClass(MenuItemChild);
+MenuItemChildSchema.add({ children: { type: [MenuItemChildSchema], default: [] } });
 
-// Single level of nesting only — same constraint `nav_link.children` already
-// enforces (both at the TS type level here and at runtime in the service),
-// matching this codebase's established "one level of dropdown" convention.
+// Three levels are represented as MenuItem -> MenuItemChild -> MenuItemChild;
+// service validation caps the depth so nested schemas cannot grow unbounded.
 @Schema({ _id: false })
 export class MenuItem {
   @Prop({ required: true }) id: string;

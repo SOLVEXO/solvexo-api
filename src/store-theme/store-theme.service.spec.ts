@@ -177,6 +177,39 @@ describe('StoreThemeService', () => {
     });
   });
 
+  describe('getPreviewByToken', () => {
+    it('returns the store slug and draft sections scoped to the previewed installed theme', async () => {
+      const installedThemeId = 'instance-preview';
+      storeThemeModel.findOne.mockReturnValue({
+        lean: jest.fn().mockResolvedValue({
+          _id: installedThemeId,
+          previewToken: { token: 'share-token', expiresAt: new Date(Date.now() + 60_000) },
+          themeDefinitionId: 'theme-02-nova',
+          draft: { theme: {}, header: { blocks: [] }, footer: {}, identityBanner: {}, customCss: null },
+        }),
+      });
+      storeModel.findById.mockReturnValue({ lean: jest.fn().mockResolvedValue({ slug: 'my-store' }) });
+      const draftSections = [{ type: 'hero', settings: { title: 'Draft only' }, blocks: [] }];
+      storePageModel.findOne.mockReturnValue({
+        lean: jest.fn().mockResolvedValue({
+          themeTemplates: [
+            { installedThemeId: 'another-theme', draftSections: [{ type: 'hero', settings: { title: 'Other' }, blocks: [] }] },
+            { installedThemeId, draftSections },
+          ],
+        }),
+      });
+
+      const result = await service.getPreviewByToken(STORE_ID, 'share-token');
+
+      expect(result.data.storeSlug).toBe('my-store');
+      expect(result.data.homeSections).toEqual(draftSections);
+      expect(storePageModel.findOne).toHaveBeenCalledWith(
+        { storeId: STORE_ID, type: 'home' },
+        { themeTemplates: 1, sections: 1, draft: 1 },
+      );
+    });
+  });
+
   describe('publishTheme', () => {
     it('writes a pending theme-application\'s home sections into the home StorePage and clears the pending field', async () => {
       storeThemeModel.findOne = jest.fn().mockResolvedValue({

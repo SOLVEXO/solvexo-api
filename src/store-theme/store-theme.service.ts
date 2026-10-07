@@ -496,6 +496,11 @@ export class StoreThemeService {
     }
     const draft = doc.draft as StoreThemeDraft;
     const header = await this.resolveHeaderMenu(storeId, draft.header) as any;
+    const [store, home] = await Promise.all([
+      this.storeModel.findById(storeId, { slug: 1 }).lean(),
+      this.storePageModel.findOne({ storeId, type: 'home' }, { themeTemplates: 1, sections: 1, draft: 1 }).lean(),
+    ]);
+    const themeTemplate = home?.themeTemplates?.find((entry: any) => String(entry.installedThemeId) === String(doc._id));
     return {
       success: true,
       data: {
@@ -505,6 +510,10 @@ export class StoreThemeService {
         identityBanner: draft.identityBanner,
         themeDefinitionId: draft.themeDefinitionId ?? doc.themeDefinitionId,
         customCss: draft.customCss,
+        storeSlug: store?.slug ?? null,
+        // Theme layouts are isolated per installed instance. Falling back to
+        // the store-wide legacy sections here could show another theme's draft.
+        homeSections: themeTemplate?.draftSections ?? [],
       },
     };
   }

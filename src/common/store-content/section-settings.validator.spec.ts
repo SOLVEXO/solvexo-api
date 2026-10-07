@@ -9,6 +9,20 @@ import {
 import { SECTION_TYPES } from '../schemas/section.schema';
 
 describe('section-settings.validator', () => {
+  it('accepts optional section spacing within the supported range', () => {
+    expect(() => validateSectionSettings('rich_text', { spacingTop: 0, spacingBottom: 160 })).not.toThrow();
+  });
+
+  it.each([-1, 161, Number.NaN, '24'])('rejects invalid section spacing: %s', spacing => {
+    expect(() => validateSectionSettings('rich_text', { spacingTop: spacing })).toThrow();
+  });
+  it('validates configurable grid columns and filter visibility', () => {
+    expect(() => validateSectionSettings('featured_products', { source: 'bestsellers', columns: 4 })).not.toThrow();
+    expect(() => validateSectionSettings('featured_category_grid', { categoryIds: ['c1'], columns: 2 })).not.toThrow();
+    expect(() => validateSectionSettings('product_catalog', { columns: 3, showFilters: false })).not.toThrow();
+    expect(() => validateSectionSettings('featured_products', { source: 'bestsellers', columns: 5 })).toThrow();
+    expect(() => validateSectionSettings('product_catalog', { showFilters: 'no' })).toThrow();
+  });
   describe('validateSectionSettings — behavior preserved through the typed-cast refactor', () => {
     it('accepts every real SectionType with a minimally-valid settings object (exhaustiveness guard never fires for a real type)', () => {
       const minimalSettings: Record<string, Record<string, any>> = {
@@ -107,6 +121,21 @@ describe('section-settings.validator', () => {
       expect(() =>
         validateBlockSettings('nav_link', { label: 'Docs', linkType: 'external', url: 'https://example.com' }),
       ).not.toThrow();
+    });
+
+    it('nav_link: accepts three navigation levels and rejects a fourth', () => {
+      const levelThree = {
+        label: 'Shop', linkType: 'home', children: [{
+          label: 'Clothing', linkType: 'home', children: [{ label: 'Shirts', linkType: 'home' }],
+        }],
+      };
+      expect(() => validateBlockSettings('nav_link', levelThree)).not.toThrow();
+      expect(() => validateBlockSettings('nav_link', {
+        ...levelThree,
+        children: [{ label: 'Clothing', linkType: 'home', children: [{
+          label: 'Shirts', linkType: 'home', children: [{ label: 'T-shirts', linkType: 'home' }],
+        }] }],
+      })).toThrow(BadRequestException);
     });
 
     it('footer_column: validates each nested link recursively as a nav_link', () => {

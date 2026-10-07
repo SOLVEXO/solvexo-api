@@ -133,6 +133,12 @@ function assertLinkTarget(link: unknown, field: string): void {
 
 export function validateSectionSettings(type: SectionType, settings: Record<string, any>): void {
   maxLen(settings.heading, 120, 'settings.heading');
+  for (const key of ['spacingTop', 'spacingBottom'] as const) {
+    const value = settings[key];
+    if (value !== undefined && (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 160)) {
+      throw new BadRequestException(`settings.${key} must be a number between 0 and 160`);
+    }
+  }
 
   switch (type) {
     case 'hero': {
@@ -166,6 +172,9 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
       if (s.limit !== undefined && (typeof s.limit !== 'number' || s.limit < 1 || s.limit > 24)) {
         throw new BadRequestException('settings.limit must be between 1 and 24');
       }
+      if (s.columns !== undefined && ![2, 3, 4].includes(s.columns)) {
+        throw new BadRequestException('settings.columns must be 2, 3, or 4');
+      }
       break;
     }
     case 'product_catalog': {
@@ -173,6 +182,9 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
       oneOf(s.defaultSort, ['newest', 'price_asc', 'price_desc', 'best_rated'] as const, 'settings.defaultSort');
       if (s.columns !== undefined && ![2, 3, 4].includes(s.columns)) {
         throw new BadRequestException('settings.columns must be 2, 3, or 4');
+      }
+      if (s.showFilters !== undefined && typeof s.showFilters !== 'boolean') {
+        throw new BadRequestException('settings.showFilters must be a boolean');
       }
       // Optional merchandising filter — at most one of the two (a catalog
       // scoped to both a category AND a collection at once isn't a
@@ -195,6 +207,9 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
         throw new BadRequestException('settings.categoryIds is required');
       }
       if (s.categoryIds.length > 12) throw new BadRequestException('settings.categoryIds cannot exceed 12 categories');
+      if (s.columns !== undefined && ![2, 3, 4].includes(s.columns)) {
+        throw new BadRequestException('settings.columns must be 2, 3, or 4');
+      }
       break;
     }
     case 'trust_badges':
@@ -306,30 +321,7 @@ export function validateBlockSettings(blockType: string, settings: Record<string
       if (settings.highlight !== undefined && typeof settings.highlight !== 'boolean') {
         throw new BadRequestException('highlight must be a boolean');
       }
-      // Real dropdown support (was previously 100% flat). One level only —
-      // a child is validated with the exact same rules as a top-level
-      // nav_link, but is explicitly forbidden from carrying a `children` key
-      // of its own, enforcing the single-level limit at runtime too (not
-      // just at the TypeScript layer, since `settings` arrives as untrusted
-      // network JSON that never goes through that type).
-      if (settings.children !== undefined) {
-        if (!Array.isArray(settings.children)) throw new BadRequestException('children must be an array');
-        if (settings.children.length > 8) throw new BadRequestException('A dropdown cannot have more than 8 items');
-        for (const child of settings.children) {
-          if (child && typeof child === 'object' && 'children' in child) {
-            throw new BadRequestException('Dropdown items cannot themselves have a submenu');
-          }
-          required(child?.label, 'children[].label');
-          maxLen(child?.label, 40, 'children[].label');
-          required(child?.linkType, 'children[].linkType');
-          oneOf(child?.linkType, LINK_TYPES, 'children[].linkType');
-          if (child?.linkType === 'page') required(child?.pageSlug, 'children[].pageSlug');
-          if (child?.linkType === 'external') assertHttpsUrl(child?.url, 'children[].url');
-          if (child?.linkType === 'category') required(child?.categoryId, 'children[].categoryId');
-          if (child?.linkType === 'collection') required(child?.collectionId, 'children[].collectionId');
-          if (child?.linkType === 'product') required(child?.productId, 'children[].productId');
-        }
-      }
+      validateNavChildren(settings, 1);
       break;
     case 'footer_column':
       required(settings.heading, 'heading');
@@ -514,6 +506,25 @@ export function validateBlockSettings(blockType: string, settings: Record<string
 
     default:
       throw new BadRequestException(`Unknown block type: ${blockType}`);
+  }
+}
+
+function validateNavChildren(item: Record<string, any>, depth: number): void {
+  if (item.children === undefined) return;
+  if (!Array.isArray(item.children)) throw new BadRequestException('children must be an array');
+  if (item.children.length > 8) throw new BadRequestException('A dropdown cannot have more than 8 items');
+  if (depth >= 3 && item.children.length) throw new BadRequestException('Navigation menus cannot exceed 3 levels');
+  for (const child of item.children) {
+    required(child?.label, 'children[].label');
+    maxLen(child?.label, 40, 'children[].label');
+    required(child?.linkType, 'children[].linkType');
+    oneOf(child?.linkType, LINK_TYPES, 'children[].linkType');
+    if (child?.linkType === 'page') required(child?.pageSlug, 'children[].pageSlug');
+    if (child?.linkType === 'external') assertHttpsUrl(child?.url, 'children[].url');
+    if (child?.linkType === 'category') required(child?.categoryId, 'children[].categoryId');
+    if (child?.linkType === 'collection') required(child?.collectionId, 'children[].collectionId');
+    if (child?.linkType === 'product') required(child?.productId, 'children[].productId');
+    if (child?.children !== undefined) validateNavChildren(child, depth + 1);
   }
 }
 

@@ -103,24 +103,41 @@ export class SeoSitemapService {
 
   /** Seller-authored storefront content — custom `StorePage`s and `BlogPost`s, scoped to `status:'active'` stores only (a suspended/rejected store's pages/posts shouldn't be indexed even if individually marked published). */
   private async regenerateStorefrontContent() {
-    const { storeModel, storePageModel, blogPostModel } = this.db.repositories;
+    const { storeModel, storePageModel, blogPostModel, blogModel, categoryModel } = this.db.repositories;
     const stores = await storeModel.find({ status: 'active', isDelete: false, privacyMode: { $nin: ['password', 'coming_soon'] } }).select('_id slug').lean();
     const slugById = new Map(stores.map((s: any) => [s._id.toString(), s.slug]));
     const storeIds = stores.map((s: any) => s._id.toString());
     if (storeIds.length === 0) { await this.writeChunks('storefront_content', null, []); return; }
 
-    const [pages, posts] = await Promise.all([
+    const [pages, posts, blogs, categories] = await Promise.all([
       storePageModel.find({ storeId: { $in: storeIds }, type: 'custom', status: 'published', isDelete: false }).select('storeId slug updatedAt').lean(),
-      blogPostModel.find({ storeId: { $in: storeIds }, status: 'published', isDelete: false }).select('storeId slug updatedAt').lean(),
+      blogPostModel.find({ storeId: { $in: storeIds }, status: 'published', isDelete: false }).select('storeId blogId slug updatedAt').lean(),
+      blogModel.find({ storeId: { $in: storeIds }, isDelete: false }).sort({ createdAt: 1 }).select('_id storeId slug').lean(),
+      categoryModel.find({ storeId: { $in: storeIds }, status: 'active', isDelete: false, slug: { $exists: true, $ne: null } }).select('storeId slug updatedAt').lean(),
     ]);
 
+    const blogById = new Map(blogs.map((blog: any) => [blog._id.toString(), blog]));
+    const defaultBlogByStore = new Map<string, string>();
+    for (const blog of blogs as any[]) {
+      if (!defaultBlogByStore.has(blog.storeId)) defaultBlogByStore.set(blog.storeId, blog._id.toString());
+    }
+
     const urls = [
+      ...blogs
+        .filter((b: any) => slugById.has(b.storeId))
+        .map((b: any) => ({ loc: `${PLATFORM_ORIGIN}/${slugById.get(b.storeId)}/${defaultBlogByStore.get(b.storeId) === b._id.toString() ? 'blog' : `blogs/${b.slug}`}`, lastmod: undefined })),
       ...pages
         .filter((p: any) => slugById.has(p.storeId))
         .map((p: any) => ({ loc: `${PLATFORM_ORIGIN}/${slugById.get(p.storeId)}/${p.slug}`, lastmod: p.updatedAt })),
+      ...categories
+        .filter((c: any) => slugById.has(c.storeId))
+        .map((c: any) => ({ loc: `${PLATFORM_ORIGIN}/${slugById.get(c.storeId)}/category/${c.slug}`, lastmod: c.updatedAt })),
       ...posts
-        .filter((p: any) => slugById.has(p.storeId))
+        .filter((p: any) => slugById.has(p.storeId) && (!p.blogId || String(p.blogId) === defaultBlogByStore.get(p.storeId)))
         .map((p: any) => ({ loc: `${PLATFORM_ORIGIN}/${slugById.get(p.storeId)}/blog/${p.slug}`, lastmod: p.updatedAt })),
+      ...posts
+        .filter((p: any) => slugById.has(p.storeId) && p.blogId && String(p.blogId) !== defaultBlogByStore.get(p.storeId) && blogById.has(String(p.blogId)))
+        .map((p: any) => ({ loc: `${PLATFORM_ORIGIN}/${slugById.get(p.storeId)}/blogs/${(blogById.get(String(p.blogId)) as any).slug}/${p.slug}`, lastmod: p.updatedAt })),
     ];
     await this.writeChunks('storefront_content', null, urls);
   }

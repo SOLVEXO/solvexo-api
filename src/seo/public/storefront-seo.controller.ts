@@ -30,6 +30,13 @@ export class StorefrontSeoController {
     if (redirect) return { redirect: redirect.destination, statusCode: redirect.statusCode };
     if (routePath === '/') return this.seo.resolve('store', storeId);
 
+    if (routePath === '/blog') {
+      const blog = await this.db.repositories.blogModel.findOne({ storeId, isDelete: false }).sort({ createdAt: 1 }).select('title slug').lean() as any;
+      const title = blog?.title || 'Blog';
+      const url = `${getCanonicalOrigin(store)}/blog`;
+      return { title, description: '', canonicalUrl: url, url, ogTitle: title, ogDescription: '', ogImage: null, noindex: false, jsonLd: [] };
+    }
+
     const productMatch = routePath.match(/^\/product\/([^/]+)$/);
     if (productMatch) {
       const slug = productMatch[1];
@@ -40,9 +47,26 @@ export class StorefrontSeoController {
 
     const blogMatch = routePath.match(/^\/blog\/([^/]+)$/);
     if (blogMatch) {
-      const post = await this.db.repositories.blogPostModel.findOne({ storeId, slug: blogMatch[1], status: 'published', isDelete: false }).select('title excerpt seoTitle seoDescription coverImage slug').lean() as any;
+      const blog = await this.db.repositories.blogModel.findOne({ storeId, isDelete: false }).sort({ createdAt: 1 }).select('_id title slug').lean() as any;
+      const post = await this.db.repositories.blogPostModel.findOne({ storeId, blogId: blog?._id?.toString(), slug: blogMatch[1], status: 'published', isDelete: false }).select('title excerpt seoTitle seoDescription coverImage slug').lean() as any;
       if (!post) throw new NotFoundException('Blog article not found');
       const url = `${getCanonicalOrigin(store)}/blog/${encodeURIComponent(post.slug)}`;
+      const title = post.seoTitle || post.title;
+      const description = post.seoDescription || post.excerpt || '';
+      return { title, description, canonicalUrl: url, url, ogTitle: title, ogDescription: description, ogImage: post.coverImage ?? null, noindex: false, jsonLd: [] };
+    }
+
+    const namedBlogMatch = routePath.match(/^\/blogs\/([^/]+)(?:\/([^/]+))?$/);
+    if (namedBlogMatch) {
+      const blog = await this.db.repositories.blogModel.findOne({ storeId, slug: namedBlogMatch[1], isDelete: false }).select('_id title slug').lean() as any;
+      if (!blog) throw new NotFoundException('Blog not found');
+      if (!namedBlogMatch[2]) {
+        const url = `${getCanonicalOrigin(store)}/blogs/${encodeURIComponent(blog.slug)}`;
+        return { title: blog.title, description: '', canonicalUrl: url, url, ogTitle: blog.title, ogDescription: '', ogImage: null, noindex: false, jsonLd: [] };
+      }
+      const post = await this.db.repositories.blogPostModel.findOne({ storeId, blogId: blog._id.toString(), slug: namedBlogMatch[2], status: 'published', isDelete: false }).select('title excerpt seoTitle seoDescription coverImage slug').lean() as any;
+      if (!post) throw new NotFoundException('Blog article not found');
+      const url = `${getCanonicalOrigin(store)}/blogs/${encodeURIComponent(blog.slug)}/${encodeURIComponent(post.slug)}`;
       const title = post.seoTitle || post.title;
       const description = post.seoDescription || post.excerpt || '';
       return { title, description, canonicalUrl: url, url, ogTitle: title, ogDescription: description, ogImage: post.coverImage ?? null, noindex: false, jsonLd: [] };
@@ -58,6 +82,19 @@ export class StorefrontSeoController {
       const title = collection.name || (store as any).name;
       const description = collection.description || '';
       return { title, description, canonicalUrl: url, url, ogTitle: title, ogDescription: description, ogImage: null, noindex: false, jsonLd: [] };
+    }
+
+    const categoryMatch = routePath.match(/^\/category\/([^/]+)$/);
+    if (categoryMatch) {
+      const segment = categoryMatch[1];
+      const idOrSlug = /^[a-f0-9]{24}$/i.test(segment) ? [{ slug: segment }, { _id: segment }] : [{ slug: segment }];
+      const category = await this.db.repositories.categoryModel.findOne({ storeId, status: 'active', isDelete: false, $or: idOrSlug }).select('name description image slug seo').lean() as any;
+      if (!category) throw new NotFoundException('Category not found');
+      const seo = category.seo ?? {};
+      const url = seo.canonicalUrlOverride || `${getCanonicalOrigin(store)}/category/${encodeURIComponent(category.slug || category._id.toString())}`;
+      const title = seo.metaTitle || category.name || (store as any).name;
+      const description = seo.metaDescription || seo.metaDesc || category.description || '';
+      return { title, description, canonicalUrl: url, url, ogTitle: seo.ogTitle || title, ogDescription: seo.ogDescription || description, ogImage: seo.ogImage ?? category.image ?? null, noindex: !!seo.noindex, jsonLd: [] };
     }
 
     const pageSlug = routePath.slice(1);
@@ -102,19 +139,27 @@ export class StorefrontSeoController {
     const store = await this.resolveStore(explicitHost || req.headers['x-forwarded-host'] || req.headers.host);
     if (isLockedStore(store)) throw new NotFoundException('Sitemap not available');
     const origin = getCanonicalOrigin(store);
-    const { productModel, storePageModel, blogPostModel, collectionModel } = this.db.repositories;
+    const { productModel, storePageModel, blogPostModel, collectionModel, blogModel, categoryModel } = this.db.repositories;
     const storeId = String((store as any)._id);
-    const [products, pages, posts, collections] = await Promise.all([
+    const [products, pages, posts, collections, blogs, categories] = await Promise.all([
       productModel.find({ storeId, status: 'active', isDelete: false }).select('slug updatedAt').lean(),
       storePageModel.find({ storeId, type: 'custom', status: 'published', isDelete: false }).select('slug updatedAt').lean(),
-      blogPostModel.find({ storeId, status: 'published', isDelete: false }).select('slug updatedAt').lean(),
+      blogPostModel.find({ storeId, status: 'published', isDelete: false }).select('slug blogId updatedAt').lean(),
       collectionModel.find({ storeId, status: 'active', isDelete: false }).select('slug updatedAt').lean(),
+      blogModel.find({ storeId, isDelete: false }).sort({ createdAt: 1 }).select('_id slug updatedAt').lean(),
+      categoryModel.find({ storeId, status: 'active', isDelete: false, slug: { $exists: true, $ne: null } }).select('slug updatedAt').lean(),
     ]);
+    const blogSlugById = new Map(blogs.map((blog: any) => [blog._id.toString(), blog.slug]));
+    const defaultBlogId = blogs[0]?._id?.toString();
     const urls = [
       { loc: `${origin}/`, lastmod: (store as any).updatedAt },
+      ...(blogs[0] ? [{ loc: `${origin}/blog`, lastmod: blogs[0].updatedAt }] : []),
       ...products.map((item: any) => ({ loc: `${origin}/product/${encodeURIComponent(item.slug)}`, lastmod: item.updatedAt })),
+      ...categories.map((item: any) => ({ loc: `${origin}/category/${encodeURIComponent(item.slug)}`, lastmod: item.updatedAt })),
       ...pages.map((item: any) => ({ loc: `${origin}/${encodeURIComponent(item.slug)}`, lastmod: item.updatedAt })),
-      ...posts.map((item: any) => ({ loc: `${origin}/blog/${encodeURIComponent(item.slug)}`, lastmod: item.updatedAt })),
+      ...blogs.slice(1).map((blog: any) => ({ loc: `${origin}/blogs/${encodeURIComponent(blog.slug)}`, lastmod: blog.updatedAt })),
+      ...posts.filter((item: any) => String(item.blogId) === defaultBlogId || !item.blogId).map((item: any) => ({ loc: `${origin}/blog/${encodeURIComponent(item.slug)}`, lastmod: item.updatedAt })),
+      ...posts.filter((item: any) => item.blogId && blogSlugById.get(String(item.blogId)) && String(item.blogId) !== defaultBlogId).map((item: any) => ({ loc: `${origin}/blogs/${encodeURIComponent(String(blogSlugById.get(String(item.blogId))))}/${encodeURIComponent(item.slug)}`, lastmod: item.updatedAt })),
       ...collections.map((item: any) => ({ loc: `${origin}/collections/${encodeURIComponent(item.slug)}`, lastmod: item.updatedAt })),
     ];
     const chunkCount = Math.max(1, Math.ceil(urls.length / MAX_URLS_PER_SITEMAP));
@@ -139,19 +184,27 @@ export class StorefrontSeoController {
     const store = await this.resolveStore(rawHost);
     if (isLockedStore(store)) throw new NotFoundException('Sitemap not available');
     const origin = getCanonicalOrigin(store);
-    const { productModel, storePageModel, blogPostModel, collectionModel } = this.db.repositories;
+    const { productModel, storePageModel, blogPostModel, collectionModel, blogModel, categoryModel } = this.db.repositories;
     const storeId = String((store as any)._id);
-    const [products, pages, posts, collections] = await Promise.all([
+    const [products, pages, posts, collections, blogs, categories] = await Promise.all([
       productModel.find({ storeId, status: 'active', isDelete: false }).select('slug updatedAt').sort({ _id: 1 }).lean(),
       storePageModel.find({ storeId, type: 'custom', status: 'published', isDelete: false }).select('slug updatedAt').sort({ _id: 1 }).lean(),
-      blogPostModel.find({ storeId, status: 'published', isDelete: false }).select('slug updatedAt').sort({ _id: 1 }).lean(),
+      blogPostModel.find({ storeId, status: 'published', isDelete: false }).select('slug blogId updatedAt').sort({ _id: 1 }).lean(),
       collectionModel.find({ storeId, status: 'active', isDelete: false }).select('slug updatedAt').sort({ _id: 1 }).lean(),
+      blogModel.find({ storeId, isDelete: false }).sort({ createdAt: 1 }).select('_id slug updatedAt').lean(),
+      categoryModel.find({ storeId, status: 'active', isDelete: false, slug: { $exists: true, $ne: null } }).select('slug updatedAt').sort({ _id: 1 }).lean(),
     ]);
+    const blogSlugById = new Map(blogs.map((blog: any) => [blog._id.toString(), blog.slug]));
+    const defaultBlogId = blogs[0]?._id?.toString();
     const urls = [
       { loc: `${origin}/`, lastmod: (store as any).updatedAt },
+      ...(blogs[0] ? [{ loc: `${origin}/blog`, lastmod: blogs[0].updatedAt }] : []),
       ...products.map((item: any) => ({ loc: `${origin}/product/${encodeURIComponent(item.slug)}`, lastmod: item.updatedAt })),
+      ...categories.map((item: any) => ({ loc: `${origin}/category/${encodeURIComponent(item.slug)}`, lastmod: item.updatedAt })),
       ...pages.map((item: any) => ({ loc: `${origin}/${encodeURIComponent(item.slug)}`, lastmod: item.updatedAt })),
-      ...posts.map((item: any) => ({ loc: `${origin}/blog/${encodeURIComponent(item.slug)}`, lastmod: item.updatedAt })),
+      ...blogs.slice(1).map((blog: any) => ({ loc: `${origin}/blogs/${encodeURIComponent(blog.slug)}`, lastmod: blog.updatedAt })),
+      ...posts.filter((item: any) => String(item.blogId) === defaultBlogId || !item.blogId).map((item: any) => ({ loc: `${origin}/blog/${encodeURIComponent(item.slug)}`, lastmod: item.updatedAt })),
+      ...posts.filter((item: any) => item.blogId && blogSlugById.get(String(item.blogId)) && String(item.blogId) !== defaultBlogId).map((item: any) => ({ loc: `${origin}/blogs/${encodeURIComponent(String(blogSlugById.get(String(item.blogId))))}/${encodeURIComponent(item.slug)}`, lastmod: item.updatedAt })),
       ...collections.map((item: any) => ({ loc: `${origin}/collections/${encodeURIComponent(item.slug)}`, lastmod: item.updatedAt })),
     ];
     const slice = urls.slice((page - 1) * MAX_URLS_PER_SITEMAP, page * MAX_URLS_PER_SITEMAP);
