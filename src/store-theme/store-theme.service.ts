@@ -484,8 +484,8 @@ export class StoreThemeService {
   }
 
   /** Unauthenticated — the whole point of a preview link. Validates the
-   *  token belongs to `storeId` and hasn't expired, then returns the exact
-   *  same shape `getDraft` does (this row's DRAFT theme tokens) — never the
+   *  token belongs to `storeId` and hasn't expired, then returns this row's
+   *  DRAFT theme tokens plus the attached header menu's links — never the
    *  full document (no `versions`, no other rows' data, no way to enumerate
    *  anything about the store beyond what this one token was minted for). */
   async getPreviewByToken(storeId: string, token: string) {
@@ -495,11 +495,12 @@ export class StoreThemeService {
       throw new NotFoundException('Preview link not found or has expired');
     }
     const draft = doc.draft as StoreThemeDraft;
+    const header = await this.resolveHeaderMenu(storeId, draft.header) as any;
     return {
       success: true,
       data: {
         theme: draft.theme,
-        header: draft.header,
+        header,
         footer: draft.footer,
         identityBanner: draft.identityBanner,
         themeDefinitionId: draft.themeDefinitionId ?? doc.themeDefinitionId,
