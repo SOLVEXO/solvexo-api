@@ -37,6 +37,11 @@ export class StripeConnectController {
     return this.stripeConnectService.getStatus(actingSellerId(req.user), storeId);
   }
 
+  @Get(':storeId/payouts')
+  getPayouts(@Req() req: any, @Param('storeId') storeId: string) {
+    return this.stripeConnectService.getPayoutOverview(actingSellerId(req.user), storeId);
+  }
+
   @Post(':storeId/onboarding-link')
   createOnboardingLink(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: CreateOnboardingLinkDto) {
     return this.stripeConnectService.createOnboardingLink(actingSellerId(req.user), storeId, dto.refreshUrl, dto.returnUrl);

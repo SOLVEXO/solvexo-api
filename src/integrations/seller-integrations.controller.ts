@@ -65,6 +65,32 @@ export class SellerIntegrationsController {
     return this.service.deleteManualMethod(storeId, actingSellerId(req.user), methodId);
   }
 
+  // WhatsApp order messages: per-event switches + template manager (Meta message templates of the connected WABA).
+  @Get('whatsapp/notifications')
+  whatsAppNotifications(@Param('storeId') storeId: string, @Req() req: any) {
+    return this.service.getWhatsAppNotifications(storeId, actingSellerId(req.user));
+  }
+
+  @Put('whatsapp/notifications')
+  updateWhatsAppNotification(@Param('storeId') storeId: string, @Body() body: any, @Req() req: any) {
+    return this.service.updateWhatsAppNotification(storeId, actingSellerId(req.user), body);
+  }
+
+  @Get('whatsapp/templates')
+  whatsAppTemplates(@Param('storeId') storeId: string, @Req() req: any) {
+    return this.service.listWhatsAppTemplates(storeId, actingSellerId(req.user));
+  }
+
+  @Post('whatsapp/templates')
+  createWhatsAppTemplate(@Param('storeId') storeId: string, @Body() body: any, @Req() req: any) {
+    return this.service.createWhatsAppTemplate(storeId, actingSellerId(req.user), body);
+  }
+
+  @Delete('whatsapp/templates/:name')
+  deleteWhatsAppTemplate(@Param('storeId') storeId: string, @Param('name') name: string, @Req() req: any) {
+    return this.service.deleteWhatsAppTemplate(storeId, actingSellerId(req.user), name);
+  }
+
   @Post(':type/:provider/connect')
   connect(
     @Param('storeId') storeId: string,

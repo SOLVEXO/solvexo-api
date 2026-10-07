@@ -11,6 +11,7 @@ import { encryptCredential, decryptCredential, maskSecret } from '../common/cred
 import { PaymentProviderRegistry } from './payment-provider.registry';
 import { WhatsAppCloudProvider } from './providers/whatsapp-cloud.provider';
 import { toDecryptedPaymentConfig } from './integration-credentials.helper';
+import { WHATSAPP_EVENTS, WHATSAPP_PARAM_TOKENS, isWhatsAppEvent, resolveWhatsAppEventSettings } from './whatsapp-events';
 import {
   STORE_INTEGRATION_PROVIDERS,
   StoreIntegrationDocument,
@@ -131,6 +132,88 @@ export class StoreIntegrationsService {
     await this.assertOwnedStore(storeId, sellerId);
     const res = await this.repos.manualPaymentMethodModel.updateOne({ _id: methodId, storeId, isDelete: false }, { $set: { isDelete: true, isActive: false } });
     if (!res.matchedCount) throw new NotFoundException('Payment method not found');
+    return { success: true };
+  }
+
+  // ── WhatsApp: per-event switches + template manager ──
+  private async loadWhatsApp(storeId: string, sellerId: string) {
+    await this.assertOwnedStore(storeId, sellerId);
+    const integration = await this.repos.storeIntegrationModel.findOne({ storeId, type: 'whatsapp', provider: 'whatsapp_cloud' });
+    if (!integration || integration.status === 'not_connected' || !integration.credentialsEncrypted) {
+      throw new BadRequestException('Connect WhatsApp first');
+    }
+    const accessToken: string = JSON.parse(decryptCredential(integration.credentialsEncrypted, 'INTEGRATIONS')).accessToken;
+    return { integration, accessToken, wabaId: integration.config?.wabaId as string | undefined };
+  }
+
+  async getWhatsAppNotifications(storeId: string, sellerId: string) {
+    await this.assertOwnedStore(storeId, sellerId);
+    const integration = await this.repos.storeIntegrationModel.findOne({ storeId, type: 'whatsapp', provider: 'whatsapp_cloud' });
+    const events = WHATSAPP_EVENTS.map((event) => ({ event, ...resolveWhatsAppEventSettings(integration?.config, event) }));
+    return { success: true, data: { events, paramTokens: WHATSAPP_PARAM_TOKENS } };
+  }
+
+  async updateWhatsAppNotification(storeId: string, sellerId: string, body: Record<string, any>) {
+    const { integration } = await this.loadWhatsApp(storeId, sellerId);
+    if (!isWhatsAppEvent(body?.event)) throw new BadRequestException('Unknown WhatsApp event');
+    const event = body.event;
+    const $set: Record<string, any> = {};
+    if (typeof body.enabled === 'boolean') $set[`config.notifications.${event}.enabled`] = body.enabled;
+    if (body.templateName !== undefined) {
+      if (typeof body.templateName !== 'string' || !/^[a-z0-9_]{1,512}$/.test(body.templateName)) throw new BadRequestException('Template name must be lowercase letters, numbers and underscores');
+      $set[`config.notifications.${event}.templateName`] = body.templateName;
+    }
+    if (body.languageCode !== undefined) {
+      if (typeof body.languageCode !== 'string' || !/^[a-z]{2}(_[A-Z]{2})?$/.test(body.languageCode)) throw new BadRequestException('Invalid language code (e.g. en_US)');
+      $set[`config.notifications.${event}.languageCode`] = body.languageCode;
+    }
+    if (body.params !== undefined) {
+      if (!Array.isArray(body.params) || body.params.length > 10 || body.params.some((p: unknown) => !(WHATSAPP_PARAM_TOKENS as readonly string[]).includes(p as string))) {
+        throw new BadRequestException('Invalid template variable mapping');
+      }
+      $set[`config.notifications.${event}.params`] = body.params;
+    }
+    if (!Object.keys($set).length) throw new BadRequestException('Nothing to update');
+    // The template must be unusable only if the seller picks one that does not exist — Meta rejects it at send time; we do not block.
+    await this.repos.storeIntegrationModel.updateOne({ _id: integration._id }, { $set });
+    return this.getWhatsAppNotifications(storeId, sellerId);
+  }
+
+  async listWhatsAppTemplates(storeId: string, sellerId: string) {
+    const { accessToken, wabaId } = await this.loadWhatsApp(storeId, sellerId);
+    if (!wabaId) throw new BadRequestException('No WhatsApp Business Account is linked to this connection');
+    const res = await this.whatsAppProvider.listTemplates(accessToken, wabaId);
+    if (!res.ok) throw new BadRequestException(`Meta rejected the request: ${res.error}`);
+    return { success: true, data: res.templates };
+  }
+
+  async createWhatsAppTemplate(storeId: string, sellerId: string, body: Record<string, any>) {
+    const { accessToken, wabaId } = await this.loadWhatsApp(storeId, sellerId);
+    if (!wabaId) throw new BadRequestException('No WhatsApp Business Account is linked to this connection');
+    const name = String(body?.name ?? '');
+    const language = String(body?.language ?? 'en_US');
+    const category = String(body?.category ?? 'UTILITY').toUpperCase();
+    const bodyText = String(body?.bodyText ?? '').trim();
+    const examples: string[] = Array.isArray(body?.examples) ? body.examples.map((e: unknown) => String(e)) : [];
+    if (!/^[a-z0-9_]{1,512}$/.test(name)) throw new BadRequestException('Template name must be lowercase letters, numbers and underscores');
+    if (!/^[a-z]{2}(_[A-Z]{2})?$/.test(language)) throw new BadRequestException('Invalid language code (e.g. en_US)');
+    if (!['UTILITY', 'MARKETING', 'AUTHENTICATION'].includes(category)) throw new BadRequestException('Invalid category');
+    if (!bodyText || bodyText.length > 1024) throw new BadRequestException('Body text is required (max 1024 characters)');
+    const placeholders = new Set((bodyText.match(/\{\{\d+\}\}/g) ?? []));
+    if (examples.length < placeholders.size) throw new BadRequestException(`Provide an example value for each of the ${placeholders.size} variable(s)`);
+    const res = await this.whatsAppProvider.createTemplate(accessToken, wabaId, {
+      name, language, category: category as 'UTILITY' | 'MARKETING' | 'AUTHENTICATION', bodyText, examples: examples.slice(0, placeholders.size),
+    });
+    if (!res.ok) throw new BadRequestException(`Meta rejected the template: ${res.error}`);
+    return { success: true, data: { id: res.id, status: res.status ?? 'PENDING' } };
+  }
+
+  async deleteWhatsAppTemplate(storeId: string, sellerId: string, name: string) {
+    const { accessToken, wabaId } = await this.loadWhatsApp(storeId, sellerId);
+    if (!wabaId) throw new BadRequestException('No WhatsApp Business Account is linked to this connection');
+    if (!/^[a-z0-9_]{1,512}$/.test(name)) throw new BadRequestException('Invalid template name');
+    const res = await this.whatsAppProvider.deleteTemplate(accessToken, wabaId, name);
+    if (!res.ok) throw new BadRequestException(`Meta rejected the request: ${res.error}`);
     return { success: true };
   }
 

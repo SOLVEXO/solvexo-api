@@ -86,6 +86,52 @@ export class StripeConnectService implements OnModuleInit {
         status: store.stripeConnectStatus,
         chargesEnabled: store.stripeConnectChargesEnabled,
         payoutsEnabled: store.stripeConnectPayoutsEnabled,
+        testMode: this.isTestMode(),
+      },
+    };
+  }
+
+  /**
+   * Read-only payout view straight from THIS store's connected account (Shopify "Payouts"): balance, the account's
+   * payout schedule and recent payouts. Money is paid out by Stripe itself — nothing here moves money.
+   * `testMode` tells the seller these are Stripe TEST objects (platform test key).
+   */
+  async getPayoutOverview(sellerId: string, storeId: string) {
+    const stripe = this.assertStripeConfigured();
+    const store = await this.loadOwnedStore(sellerId, storeId);
+    const accountId = store.stripeConnectedAccountId;
+    if (!accountId) throw new BadRequestException('Connect Stripe first to see payouts');
+    const opts = { stripeAccount: accountId };
+    const [account, balance, payouts] = await Promise.all([
+      stripe.accounts.retrieve(accountId),
+      stripe.balance.retrieve({}, opts),
+      stripe.payouts.list({ limit: 20 }, opts),
+    ]);
+    const schedule: any = (account as any).settings?.payouts?.schedule ?? {};
+    return {
+      success: true,
+      data: {
+        testMode: this.isTestMode(),
+        schedule: {
+          interval: schedule.interval ?? null, // manual | daily | weekly | monthly
+          delayDays: schedule.delay_days ?? null,
+          weeklyAnchor: schedule.weekly_anchor ?? null,
+          monthlyAnchor: schedule.monthly_anchor ?? null,
+        },
+        balance: {
+          available: (balance.available ?? []).map((b: any) => ({ amount: b.amount / 100, currency: String(b.currency).toUpperCase() })),
+          pending: (balance.pending ?? []).map((b: any) => ({ amount: b.amount / 100, currency: String(b.currency).toUpperCase() })),
+        },
+        payouts: payouts.data.map((p: any) => ({
+          id: p.id,
+          amount: p.amount / 100,
+          currency: String(p.currency).toUpperCase(),
+          status: p.status,
+          arrivalDate: p.arrival_date ? new Date(p.arrival_date * 1000).toISOString() : null,
+          created: new Date(p.created * 1000).toISOString(),
+          method: p.method,
+          failureMessage: p.failure_message ?? null,
+        })),
       },
     };
   }
