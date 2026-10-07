@@ -148,6 +148,13 @@ export class ProductsBulkService {
           if (v.compareAtPrice !== undefined && v.compareAtPrice !== null) patch.compareAtPrice = v.compareAtPrice;
           if (v.sku !== undefined) patch.sku = v.sku;
           if (v.stock !== undefined) patch.stock = v.stock;
+          if (v.taxable !== undefined) patch.taxable = v.taxable;
+          if (product.type === 'physical') {
+            // Shipping / customs data only exists on physical variants.
+            for (const k of ['length', 'width', 'height', 'countryOfOrigin', 'hsCode', 'customsDescription'] as const) {
+              if (v[k] !== undefined) patch[k] = v[k];
+            }
+          }
           if (Object.keys(patch).length) {
             if (product.type === 'physical') {
               await this.variants.updateVariant(sellerId, u.productId, v.variantId, patch as any);

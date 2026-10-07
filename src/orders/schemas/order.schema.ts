@@ -113,6 +113,10 @@ export class OrderItem {
   @Prop({ type: Number, default: 0 })
   taxUSD: number;
 
+  // Tax already CONTAINED in this line's price (tax-inclusive store) — see CheckoutItem.includedTaxUSD. Not added to totals.
+  @Prop({ type: Number, default: 0 })
+  includedTaxUSD: number;
+
   // Who bears campaignDiscountUSD — see Campaign.sponsorType /
   // CheckoutItem.campaignSponsorType. 'platform' means this line's discount
   // was reimbursed to the seller (see SellerOrder.platformSponsoredDiscountUSD),
@@ -302,6 +306,10 @@ export class SellerOrder {
   // seller receives it and is responsible for remitting it themselves.
   @Prop({ type: Number, default: 0 })
   taxAmount: number;
+
+  // Sum of this store's items' includedTaxUSD (+ shipping share is on the Order) — informational, already in subtotal.
+  @Prop({ type: Number, default: 0 })
+  includedTaxAmount: number;
 
   // What this specific seller is actually credited, in THEIR OWN
   // Store.baseCurrency — independent of the buyer's checkout currency
@@ -527,6 +535,10 @@ export class Order {
   @Prop({ required: true, default: 0 })
   taxAmount: number;
 
+  // Tax already inside the item prices + shipping fee (tax-inclusive store) — informational, NOT added to totalAmount.
+  @Prop({ default: 0 })
+  includedTaxAmount: number;
+
   // Total subscriber-benefit savings across all items in this order —
   // powers seller analytics ("revenue from subscribers", "benefit usage").
   @Prop({ default: 0 })
@@ -599,10 +611,16 @@ export class Order {
       'jazzcash',
       'easypaisa',
       'payfast',
+      'manual',
     ],
     required: true,
   })
   paymentType: string;
+
+  // Seller-defined custom manual payment method (paymentType 'manual'): the name the buyer picked at checkout
+  // ("Easypaisa transfer", "Pay at pickup"...). Null for every other payment type.
+  @Prop({ type: String, default: null })
+  paymentMethodName: string | null;
 
   // 'pending_verification' — manual bank-transfer order awaiting an admin to
   // review the buyer's uploaded proof (see manual-payments module). Never
@@ -652,7 +670,12 @@ export class Order {
 
   // Set on an EXCHANGE order (Shopify): the original order and the return lines this order replaces.
   @Prop({ type: Object, default: null })
-  exchangeOf: { orderId: string; orderNumber: string; itemIds: string[] } | null;
+  // `lines`/`credit`/`refundedOut` let a cancelled exchange order reopen the return (order-exchange-reopen.util.ts).
+  exchangeOf: {
+    orderId: string; orderNumber: string; itemIds: string[];
+    credit?: number; refundedOut?: number;
+    lines?: Array<{ itemId: string; prevReturnStatus: string; prevRefundedAmount: number; restocked?: boolean; restockChoice?: 'restock' | 'damaged' | null }>;
+  } | null;
 
   // Overall derived status — see `order-status.util.ts#deriveOrderStatus`,
   // the ONE function that computes this value from `sellerOrders[].status`;

@@ -273,6 +273,7 @@ export class StorePagesService {
    */
   async updateSections(storeId: string, sellerId: string, pageId: string, dto: UpdateSectionsDto, requestedThemeId?: string) {
     const page = await this.findOwnedPage(storeId, sellerId, pageId);
+    this.contentVersioningService.assertDraftNotStale((page as any).updatedAt, dto.baseUpdatedAt);
     validateSections(dto.sections);
     const installedThemeId = await this.resolveInstalledThemeId(storeId, requestedThemeId);
     const templatePage = await this.ensurePageThemeTemplate(page, installedThemeId);

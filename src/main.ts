@@ -8,6 +8,7 @@ import helmet from 'helmet';
 import { CustomDomainsService } from './store/custom-domains.service';
 import { AdminConfigService } from './admin-config/admin-config.service';
 import { createMaintenanceMiddleware } from './admin-config/maintenance.middleware';
+import { StorefrontAccessService, createStorefrontAccessMiddleware } from './store/storefront-access.service';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 
 async function bootstrap() {
@@ -35,6 +36,9 @@ async function bootstrap() {
 
   // Platform maintenance mode (admin switch) — 503 for everything except health, webhooks, auth and the admin API.
   app.use(createMaintenanceMiddleware(app.get(AdminConfigService)));
+
+  // Shopify password page, enforced server-side for buyer-facing storefront routes.
+  app.use(createStorefrontAccessMiddleware(app.get(StorefrontAccessService)));
 
   // Global validation: every `@Body()/@Query()/@Param()` typed with a
   // class-validator DTO is now actually checked (previously only the ~36

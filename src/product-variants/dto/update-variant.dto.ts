@@ -75,6 +75,10 @@ export class UpdateVariantDto {
   customsDescription?: string | null;
 
   @IsOptional()
+  @IsBoolean()
+  taxable?: boolean;
+
+  @IsOptional()
   @IsArray()
   @IsString({ each: true })
   images?: string[];

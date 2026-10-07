@@ -13,6 +13,27 @@ describe('ContentVersioningService', () => {
     service = new ContentVersioningService();
   });
 
+  describe('assertDraftNotStale', () => {
+    const stored = new Date('2026-10-07T10:00:00.000Z');
+    it('no-ops when baseUpdatedAt is omitted or invalid', () => {
+      expect(() => service.assertDraftNotStale(stored, undefined)).not.toThrow();
+      expect(() => service.assertDraftNotStale(stored, 'nope')).not.toThrow();
+    });
+    it('passes when base equals or is newer than the stored updatedAt', () => {
+      expect(() => service.assertDraftNotStale(stored, stored.toISOString())).not.toThrow();
+      expect(() => service.assertDraftNotStale(stored, '2026-10-07T11:00:00.000Z')).not.toThrow();
+    });
+    it('throws 409 DRAFT_CONFLICT with latestUpdatedAt when stored is newer', () => {
+      try {
+        service.assertDraftNotStale(stored, '2026-10-07T09:00:00.000Z');
+        throw new Error('should have thrown');
+      } catch (e: any) {
+        expect(e.getStatus()).toBe(409);
+        expect(e.getResponse()).toMatchObject({ code: 'DRAFT_CONFLICT', latestUpdatedAt: stored.toISOString() });
+      }
+    });
+  });
+
   describe('publishDraft', () => {
     it('runs a single aggregation-pipeline findOneAndUpdate with { new: true } — never a two-step read-then-write', async () => {
       await service.publishDraft(model, { storeId: 's1' }, { sections: '$draft.sections' }, { status: 'published' });

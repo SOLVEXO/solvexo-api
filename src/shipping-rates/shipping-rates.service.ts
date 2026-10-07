@@ -6,8 +6,8 @@ import { encryptCredential, decryptCredential, maskSecret } from '@/common/crede
 import { EntitlementsService } from '@/platform-plans/entitlements.service';
 import { randomBytes } from 'crypto';
 import {
-  applyHandlingFee, buildParcel, pickPackage,
-  HandlingFeeType, PackageUnit, ShippingPackage,
+  applyHandlingFee, buildParcel, pickPackage, packItems,
+  HandlingFeeType, PackageUnit, ShippingPackage, PackItem,
 } from './shipping-math.util';
 import { CustomsLine, buildShippoCustomsItem, findMissingCustoms, isInternationalDestination, missingCustomsMessage } from './customs.util';
 
@@ -54,6 +54,8 @@ export interface LiveRateOptions {
   originOverride?: ShippingOriginAddress;
   /** Shippo customs declaration id (international label quotes only) — attached to the shipment. */
   customsDeclarationId?: string;
+  /** Items to pack by their own dimensions (smallest fitting saved package). Ignored when `packageId` is set. */
+  packItems?: PackItem[];
 }
 
 export interface LiveShippingRate {
@@ -225,6 +227,19 @@ export class ShippingRatesService {
     return { success: true, data: { handlingFeeType: feeType, handlingFeeValue: feeValue, packages } };
   }
 
+  /** Shippo parcels: explicit package -> one parcel; packable items -> Shopify-style packing; else the default package. */
+  private parcelsFor(packages: ShippingPackage[], totalWeightKg: number, opts: { packageId?: string; packItems?: PackItem[] }) {
+    if (!opts.packageId && opts.packItems && opts.packItems.length > 0) {
+      return packItems(opts.packItems, packages).map((p) => buildParcel(p.pkg, p.goodsWeightKg));
+    }
+    return [buildParcel(pickPackage(packages, opts.packageId), totalWeightKg)];
+  }
+
+  /** Per-unit kg for a free-text weight (same parser as the cart total). */
+  unitWeightKg(shippingWeight: string | null | undefined): number {
+    return this.computeTotalWeightKg([{ shippingWeight, quantity: 1 }]);
+  }
+
   /** Parses this codebase's free-text `shippingWeight` field ("0.5", "0.5kg",
    *  "1.2 lb") into a real numeric weight Shippo can use. Returns a safe 0.5kg
    *  default for anything unparseable — a missing/malformed weight must never
@@ -280,7 +295,7 @@ export class ShippingRatesService {
         body: JSON.stringify({
           address_from: opts.originOverride ?? creds.origin,
           address_to: destination,
-          parcels: [buildParcel(pickPackage(creds.settings.packages, opts.packageId), totalWeightKg)],
+          parcels: this.parcelsFor(creds.settings.packages, totalWeightKg, opts),
           ...(opts.customsDeclarationId ? { customs_declaration: opts.customsDeclarationId } : {}),
           async: false,
         }),

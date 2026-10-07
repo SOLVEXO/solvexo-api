@@ -2,11 +2,13 @@
 import {
   BulkColumn,
   BulkRowError,
+  parseBoolCell,
   parseNumberCell,
   runBulkImport,
 } from '../common/bulk-import/bulk-import.util';
 import { verifyStoreOwnershipOrForbidden } from '../common/store-ownership.util';
 import { validateOptions } from '../products/variant-options.util';
+import { parseCustomsInput } from '../shipping-rates/customs.util';
 
 /** Variant import: adds variants to EXISTING physical products (or updates the
  *  price of an existing variant). Unique key = variant SKU (case-insensitive,
@@ -28,6 +30,13 @@ export const VARIANT_IMPORT_COLUMNS: BulkColumn[] = [
   { key: 'Compare-at Price', description: 'Original price shown struck through.', example: '29.99' },
   { key: 'Stock', description: 'Opening stock for NEW variants (whole number).', example: '20' },
   { key: 'Weight', description: 'Shipping weight as text, e.g. "0.5 kg". New variants only.', example: '0.5 kg' },
+  { key: 'Length (cm)', description: 'Package length in cm (packing for live shipping rates).', example: '30' },
+  { key: 'Width (cm)', description: 'Package width in cm.', example: '20' },
+  { key: 'Height (cm)', description: 'Package height in cm.', example: '5' },
+  { key: 'Country of Origin', description: '2-letter ISO country code (customs information).', example: 'PK' },
+  { key: 'HS Code', description: 'Harmonized System code, 6 to 10 digits (dots allowed).', example: '6109.10' },
+  { key: 'Customs Description', description: 'Short goods description for customs forms.', example: 'Cotton t-shirt' },
+  { key: 'Charge Tax', description: 'yes / no — "Charge tax on this product". Blank = unchanged (new variants are taxable).', example: 'yes' },
 ];
 
 export interface VariantImportDeps {
@@ -83,6 +92,16 @@ export async function importVariantsCsv(deps: VariantImportDeps, sellerId: strin
     const price = parseNumberCell(r['Price'], 'Price', { min: 0 });
     const compareAt = parseNumberCell(r['Compare-at Price'], 'Compare-at Price', { min: 0 });
     const stock = parseNumberCell(r['Stock'], 'Stock', { min: 0, integer: true });
+    const length = parseNumberCell(r['Length (cm)'], 'Length (cm)', { min: 0 });
+    const width = parseNumberCell(r['Width (cm)'], 'Width (cm)', { min: 0 });
+    const height = parseNumberCell(r['Height (cm)'], 'Height (cm)', { min: 0 });
+    const taxable = parseBoolCell(r['Charge Tax'], 'Charge Tax');
+    const customsBody: Record<string, string> = {};
+    if (r['Country of Origin'].trim()) customsBody.countryOfOrigin = r['Country of Origin'];
+    if (r['HS Code'].trim()) customsBody.hsCode = r['HS Code'];
+    if (r['Customs Description'].trim()) customsBody.customsDescription = r['Customs Description'];
+    const customs = parseCustomsInput(customsBody);
+    if (customs.error) throw new BulkRowError(customs.error);
     const existing = variantBySku.get(sku.toLowerCase());
 
     if (existing) {
@@ -96,6 +115,12 @@ export async function importVariantsCsv(deps: VariantImportDeps, sellerId: strin
       const patch: Record<string, unknown> = {};
       if (price !== undefined && price !== existing.price) patch.price = price;
       if (compareAt !== undefined && compareAt !== existing.compareAtPrice) patch.compareAtPrice = compareAt;
+      // Dimensions / customs / taxable: non-blank cells are applied (the updateVariant call is idempotent).
+      if (length !== undefined) patch.length = length;
+      if (width !== undefined) patch.width = width;
+      if (height !== undefined) patch.height = height;
+      Object.assign(patch, customs.value);
+      if (taxable !== undefined) patch.taxable = taxable;
       if (Object.keys(patch).length === 0) return { outcome: 'skipped' as const, note: `No changes (SKU ${sku})` };
       await deps.updateVariant(sellerId, existing.productId, existing.id, patch);
       if (patch.price !== undefined) existing.price = patch.price as number;
@@ -131,6 +156,9 @@ export async function importVariantsCsv(deps: VariantImportDeps, sellerId: strin
       options,
       stock: stock ?? 0,
       shippingWeight: r['Weight'] || undefined,
+      length, width, height,
+      ...customs.value,
+      ...(taxable !== undefined ? { taxable } : {}),
     });
     const created = res?.data;
     variantBySku.set(sku.toLowerCase(), {

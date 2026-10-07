@@ -135,6 +135,7 @@ export class ProductVariantsService {
       width: dto.width ?? null,
       height: dto.height ?? null,
       ...customsForCreate,
+      taxable: dto.taxable !== false,
       images: dto.images ?? [],
       isDefault: existing.length === 0,
     });
@@ -197,6 +198,7 @@ export class ProductVariantsService {
       if (customs.error) throw new BadRequestException(customs.error);
       Object.assign(update, customs.value);
     }
+    if (dto.taxable !== undefined) update.taxable = !!dto.taxable;
     if (dto.images !== undefined) update.images = dto.images;
     if (dto.sku !== undefined) update.sku = dto.sku;
     if (dto.barcode !== undefined) update.barcode = dto.barcode;

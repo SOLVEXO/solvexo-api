@@ -8,6 +8,7 @@ import {
   WhatsAppIncomingEvent,
   WhatsAppProvider,
   WhatsAppSendResult,
+  WhatsAppTemplateInfo,
   WhatsAppTemplateMessage,
   WhatsAppTokenValidity,
 } from '../interfaces/whatsapp-provider.interface';
@@ -115,6 +116,58 @@ export class WhatsAppCloudProvider implements WhatsAppProvider {
     }
     const data = await res.json();
     return { success: true, messageId: data?.messages?.[0]?.id };
+  }
+
+
+  /** Message templates of this WhatsApp Business Account (Graph: GET /{waba-id}/message_templates). */
+  async listTemplates(accessToken: string, wabaId: string): Promise<{ ok: boolean; templates: WhatsAppTemplateInfo[]; error?: string }> {
+    const url = new URL(`${GRAPH_API_BASE}/${wabaId}/message_templates`);
+    url.searchParams.set('fields', 'name,language,status,category,components,rejected_reason');
+    url.searchParams.set('limit', '100');
+    const res = await fetch(url.toString(), { headers: { Authorization: `Bearer ${accessToken}` } });
+    if (!res.ok) return { ok: false, templates: [], error: (await res.text()).slice(0, 300) };
+    const data = await res.json();
+    return {
+      ok: true,
+      templates: (data?.data ?? []).map((t: any) => ({
+        id: t.id, name: t.name, language: t.language, status: t.status, category: t.category,
+        rejectedReason: t.rejected_reason && t.rejected_reason !== 'NONE' ? t.rejected_reason : null,
+        bodyText: (t.components ?? []).find((c: any) => c.type === 'BODY')?.text ?? '',
+      })),
+    };
+  }
+
+  /** Submits a template for Meta review (Graph: POST /{waba-id}/message_templates). It is unusable until Meta approves it. */
+  async createTemplate(
+    accessToken: string,
+    wabaId: string,
+    t: { name: string; language: string; category: 'UTILITY' | 'MARKETING' | 'AUTHENTICATION'; bodyText: string; examples: string[] },
+  ): Promise<{ ok: boolean; id?: string; status?: string; error?: string }> {
+    const res = await fetch(`${GRAPH_API_BASE}/${wabaId}/message_templates`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: t.name,
+        language: t.language,
+        category: t.category,
+        components: [{ type: 'BODY', text: t.bodyText, ...(t.examples.length ? { example: { body_text: [t.examples] } } : {}) }],
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return { ok: false, error: data?.error?.error_user_msg ?? data?.error?.message ?? `HTTP ${res.status}` };
+    return { ok: true, id: data?.id, status: data?.status };
+  }
+
+  /** Deletes every language variant of a template by name (Graph: DELETE /{waba-id}/message_templates?name=). */
+  async deleteTemplate(accessToken: string, wabaId: string, name: string): Promise<{ ok: boolean; error?: string }> {
+    const url = new URL(`${GRAPH_API_BASE}/${wabaId}/message_templates`);
+    url.searchParams.set('name', name);
+    const res = await fetch(url.toString(), { method: 'DELETE', headers: { Authorization: `Bearer ${accessToken}` } });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      return { ok: false, error: data?.error?.message ?? `HTTP ${res.status}` };
+    }
+    return { ok: true };
   }
 
   /** `X-Hub-Signature-256: sha256=<hex>`, HMAC-SHA256 over the raw body, keyed by the platform App Secret (shared across all stores — see class doc). */

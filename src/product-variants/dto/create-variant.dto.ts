@@ -83,6 +83,10 @@ export class CreateVariantDto {
   customsDescription?: string;
 
   @IsOptional()
+  @IsBoolean()
+  taxable?: boolean;
+
+  @IsOptional()
   @IsArray()
   @IsString({ each: true })
   images?: string[];

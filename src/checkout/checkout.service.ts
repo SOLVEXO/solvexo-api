@@ -4,6 +4,8 @@ import { meetsMinOrderAmount, postcodeMatch } from '@/shipping-zones/shipping-zo
 import { GENERAL_GROUP_KEY, ShippingSelection, addressRequired, groupItemsByProfile, normalizeSelections, radiusMatch, zoneInGroup } from '@/shipping-zones/shipping-profile.util';
 import { ShippingProfilesService } from '@/shipping-zones/shipping-profiles.service';
 import { resolveRegionRate as resolveTaxRegionRate, shippingTaxFromRate } from '@/tax/shipping-tax.util';
+import { geocodeAddress } from '@/common/geocoding/geocoding.util';
+import { StoreTaxConfig, TaxItemContext, collectionIdsForProduct, pricesIncludeTaxFor, resolveItemTaxRate, splitLineTax } from '@/tax/tax-rules.util';
 import {
   Injectable,
   BadRequestException,
@@ -71,11 +73,87 @@ export class CheckoutService {
    * recompute — shipping, coupon, gift card, reward voucher, and their
    * removals — MUST include it, otherwise the buyer is charged without tax
    * while the order/ledger count it (the platform would fund the tax).
-   * Known simplification: tax is not re-quoted after a coupon/voucher lowers
-   * item prices (it stays the amount computed at checkout creation).
+   * Coupon / reward-voucher changes re-quote item tax first (`requoteItemTax`),
+   * so tax follows the discounted price; gift card / store credit never touch it.
    */
   checkoutTotal(subtotal: number, parts: { shippingFee?: number | null; taxAmount?: number | null }): number {
     return this.round((subtotal || 0) + (parts.shippingFee || 0) + (parts.taxAmount || 0));
+  }
+
+  /**
+   * Shopify taxes the DISCOUNTED price: rescales each item's item-tax (`taxUSD` minus `shippingTaxUSD`)
+   * by (price after coupon) / (price before coupon) and moves `checkout.taxAmount` by the same delta.
+   * Gift card / store credit are payment-like, so they are added back into both sides and never change tax.
+   * Layer-order independent (uses the per-item discount fields, not the "before" snapshots). Idempotent:
+   * always derived from the stamped `itemTaxBeforeDiscountUSD`. Call after any coupon/voucher distribute or
+   * revert, BEFORE `checkoutTotal`, and persist `taxAmount` + items. Shipping tax is untouched.
+   * Mutates items + checkout.taxAmount in place; returns the new taxAmount.
+   */
+  requoteItemTax(items: any[], checkout: any): number {
+    let delta = 0;
+    let includedDelta = 0;
+    for (const item of items) {
+      const shipTax = item.shippingTaxUSD ?? 0;
+      const oldTax = item.taxUSD ?? 0;
+      const base = item.itemTaxBeforeDiscountUSD ?? this.round(oldTax - shipTax);
+      item.itemTaxBeforeDiscountUSD = base;
+      const coupon = item.couponDiscountUSD ?? 0;
+      const gross = (item.totalPrice ?? 0) + coupon + (item.giftCardDiscountUSD ?? 0) + (item.storeCreditDiscountUSD ?? 0);
+      const net = Math.max(0, gross - coupon);
+      const itemTax = gross > 0 ? this.round(base * (net / gross)) : base;
+      const newTax = this.round(itemTax + shipTax);
+      if (newTax !== oldTax) {
+        item.taxUSD = newTax;
+        delta += this.exchangeRateService.convertWithSnapshots(
+          newTax - oldTax, item.currency ?? checkout.currency, checkout.currency, (checkout.fxSnapshots as any) ?? [],
+        );
+      }
+      // Tax-inclusive lines: the tax inside the price shrinks with the discounted price too (display only —
+      // never part of checkoutTotal).
+      const shipInc = item.shippingIncludedTaxUSD ?? 0;
+      const oldInc = item.includedTaxUSD ?? 0;
+      const baseInc = item.includedTaxBeforeDiscountUSD ?? this.round(oldInc - shipInc);
+      item.includedTaxBeforeDiscountUSD = baseInc;
+      const newInc = this.round((gross > 0 ? this.round(baseInc * (net / gross)) : baseInc) + shipInc);
+      if (newInc !== oldInc) {
+        item.includedTaxUSD = newInc;
+        includedDelta += this.exchangeRateService.convertWithSnapshots(
+          newInc - oldInc, item.currency ?? checkout.currency, checkout.currency, (checkout.fxSnapshots as any) ?? [],
+        );
+      }
+    }
+    checkout.includedTaxAmount = Math.max(0, this.round((checkout.includedTaxAmount || 0) + includedDelta));
+    checkout.taxAmount = Math.max(0, this.round((checkout.taxAmount || 0) + delta));
+    return checkout.taxAmount;
+  }
+
+  /** Tax context per checkout item (identity-keyed): variant `taxable` flag, product category and the collections
+   *  the product belongs to (manual list or automatic rules) — only queried for what the stores' overrides need. */
+  private async buildTaxItemContexts(items: any[], cfgByStore: Map<string, StoreTaxConfig>): Promise<Map<any, TaxItemContext>> {
+    const { productVariantModel, productModel, collectionModel } = this.databaseService.repositories;
+    const out = new Map<any, TaxItemContext>();
+    const variantIds = [...new Set(items.map((i) => i.variantId).filter(Boolean))] as string[];
+    const variants: any[] = variantIds.length ? await productVariantModel.find({ _id: { $in: variantIds } }).select('taxable').lean() : [];
+    const nonTaxable = new Set(variants.filter((v) => v.taxable === false).map((v) => String(v._id)));
+    const storesWithOverrides = [...cfgByStore.entries()].filter(([, c]) => (c.taxOverrides ?? []).length > 0).map(([id]) => id);
+    const productInfo = new Map<string, { categoryId: string | null; tags: string[] }>();
+    const collectionsByStore = new Map<string, any[]>();
+    if (storesWithOverrides.length > 0) {
+      const productIds = [...new Set(items.filter((i) => storesWithOverrides.includes(i.storeId)).map((i) => i.productId).filter(Boolean))] as string[];
+      const products: any[] = productIds.length ? await productModel.find({ _id: { $in: productIds } }).select('categoryId tags').lean() : [];
+      for (const p of products) productInfo.set(String(p._id), { categoryId: p.categoryId ? String(p.categoryId) : null, tags: p.tags ?? [] });
+      const cols: any[] = await collectionModel.find({ storeId: { $in: storesWithOverrides }, isDelete: false }).select('storeId productIds type rules').lean();
+      for (const c of cols) collectionsByStore.set(c.storeId, [...(collectionsByStore.get(c.storeId) ?? []), c]);
+    }
+    for (const item of items) {
+      const info = productInfo.get(String(item.productId));
+      out.set(item, {
+        taxable: !(item.variantId && nonTaxable.has(String(item.variantId))),
+        categoryId: info?.categoryId ?? null,
+        collectionIds: info ? collectionIdsForProduct({ id: String(item.productId), categoryId: info.categoryId, tags: info.tags }, collectionsByStore.get(item.storeId) ?? []) : [],
+      });
+    }
+    return out;
   }
 
   /** A seller-owned zone is priced in that store's own `baseCurrency`.
@@ -642,37 +720,32 @@ export class CheckoutService {
     const taxRateStoreIds = [...new Set(checkoutItems.map((i) => i.storeId))];
     const taxRateStores = await this.databaseService.repositories.storeModel
       .find({ _id: { $in: taxRateStoreIds } })
-      .select('taxRate taxRegions')
+      .select('taxRate taxRegions taxPricesIncludeTax taxOverrides')
       .lean();
-    const taxRateByStore = new Map(taxRateStores.map((s: any) => [String(s._id), s.taxRate ?? 0]));
-    const taxRegionsByStore = new Map(taxRateStores.map((s: any) => [String(s._id), (s.taxRegions ?? []) as { country: string; state: string | null; rate: number }[]]));
-    // Country+state match wins over a country-only ('state: null') entry,
-    // which wins over the flat `Store.taxRate` fallback.
-    const resolveRegionRate = (regions: { country: string; state: string | null; rate: number }[]): number | null => {
-      if (!resolvedAddress?.country || regions.length === 0) return null;
-      const country = resolvedAddress.country.trim().toLowerCase();
-      const state = resolvedAddress.state?.trim().toLowerCase() ?? null;
-      const exact = regions.find((r) => r.country.trim().toLowerCase() === country && r.state && r.state.trim().toLowerCase() === state);
-      if (exact) return exact.rate;
-      const countryOnly = regions.find((r) => r.country.trim().toLowerCase() === country && !r.state);
-      return countryOnly ? countryOnly.rate : null;
-    };
+    const taxCfgByStore = new Map<string, StoreTaxConfig>(taxRateStores.map((s: any) => [String(s._id), s as StoreTaxConfig]));
+    // Per-item tax context: variant "charge tax" flag + category / collections (for Shopify-style tax overrides).
+    const taxCtx = await this.buildTaxItemContexts(checkoutItems, taxCfgByStore);
 
+    // `taxAmount` = tax ADDED on top of the prices (what checkoutTotal adds); `includedTaxAmount` = tax already
+    // INSIDE tax-inclusive prices (extracted, never added). Rate per item: not taxable -> 0, else matching tax
+    // override, else region rate, else flat Store.taxRate (see tax/tax-rules.util.ts). A live TaxJar quote is always
+    // added on top and ignores overrides/inclusive mode (TaxJar owns the jurisdiction rules), but still skips
+    // non-taxable items.
     let taxAmount = 0;
+    let includedTaxAmount = 0;
+    const toCheckoutCcy = (amount: number, item: any) => this.exchangeRateService.convertWithSnapshots(
+      amount, item.currency ?? checkoutCurrency, checkoutCurrency, fxSnapshots ?? [],
+    );
     for (const sid of taxRateStoreIds) {
+      const cfg = taxCfgByStore.get(sid) ?? {};
       const storeItems = checkoutItems.filter((item: any) => item.storeId === sid);
-      const storeSubtotal = storeItems.reduce((sum: number, item: any) => {
-        return sum + this.exchangeRateService.convertWithSnapshots(
-          item.totalPrice,
-          item.currency ?? checkoutCurrency,
-          checkoutCurrency,
-          fxSnapshots ?? [],
-        );
-      }, 0);
+      const included = pricesIncludeTaxFor(cfg, resolvedAddress);
+      const taxableItems = storeItems.filter((i: any) => taxCtx.get(i)?.taxable !== false);
+      const taxableSubtotal = taxableItems.reduce((sum: number, i: any) => sum + toCheckoutCcy(i.totalPrice, i), 0);
 
-      const live = resolvedAddress
+      const live = resolvedAddress && taxableSubtotal > 0
         ? await this.taxService.calculateLiveTax(sid, {
-            amount: storeSubtotal,
+            amount: taxableSubtotal,
             shipping: 0,
             toCountry: resolvedAddress.country ?? null,
             toState: resolvedAddress.state ?? null,
@@ -681,39 +754,32 @@ export class CheckoutService {
           })
         : null;
 
-      // In checkoutCurrency — this store's own share of the buyer's total tax.
-      let storeTax = 0;
+      for (const item of storeItems) { item.taxUSD = 0; item.includedTaxUSD = 0; }
       if (live) {
-        storeTax = live.taxAmount;
-      } else {
-        const rate = resolveRegionRate(taxRegionsByStore.get(sid) ?? []) ?? taxRateByStore.get(sid) ?? 0;
-        if (rate > 0) storeTax = storeSubtotal * (rate / 100);
-      }
-      taxAmount += storeTax;
-
-      // Distribute this store's tax across ITS OWN items (proportional to
-      // each item's share of the store's native-currency subtotal), stamped
-      // in the item's own native currency — the same convention every other
-      // per-item charge (campaignDiscountUSD, autoDiscountUSD, ...) already
-      // follows. This is what lets the tax survive past this checkout
-      // document into the placed Order/SellerOrder — without it, the tax
-      // the buyer is charged here has nowhere to go once this checkout is
-      // gone (see CheckoutItem.taxUSD's own doc comment).
-      if (storeTax > 0) {
+        // This store's tax (checkoutCurrency) spread across ITS taxable items by price share, stamped in the
+        // item's own native currency — what lets the tax reach the placed Order/SellerOrder (CheckoutItem.taxUSD).
+        const storeTax = live.taxAmount;
+        taxAmount += storeTax;
         const storeCurrency = storeItems[0].currency ?? checkoutCurrency;
-        const storeTaxNative = this.exchangeRateService.convertWithSnapshots(
-          storeTax, checkoutCurrency, storeCurrency, fxSnapshots ?? [],
-        );
-        const storeSubtotalNative = storeItems.reduce((s: number, i: any) => s + i.totalPrice, 0);
-        if (storeSubtotalNative > 0) {
-          for (const item of storeItems) {
-            item.taxUSD = this.round((item.totalPrice / storeSubtotalNative) * storeTaxNative);
-          }
+        const storeTaxNative = this.exchangeRateService.convertWithSnapshots(storeTax, checkoutCurrency, storeCurrency, fxSnapshots ?? []);
+        const taxableNative = taxableItems.reduce((sum: number, i: any) => sum + i.totalPrice, 0);
+        if (storeTax > 0 && taxableNative > 0) {
+          for (const item of taxableItems) item.taxUSD = this.round((item.totalPrice / taxableNative) * storeTaxNative);
         }
+        continue;
+      }
+      for (const item of storeItems) {
+        const rate = resolveItemTaxRate(cfg, resolvedAddress, taxCtx.get(item) ?? {});
+        const split = splitLineTax(item.totalPrice, rate, included);
+        item.taxUSD = split.added;
+        item.includedTaxUSD = split.included;
+        taxAmount += toCheckoutCcy(split.added, item);
+        includedTaxAmount += toCheckoutCcy(split.included, item);
       }
     }
     taxAmount = this.round(taxAmount);
-    const totalAmount = this.round(subtotal + taxAmount);
+    includedTaxAmount = this.round(includedTaxAmount);
+    const totalAmount = this.checkoutTotal(subtotal, { taxAmount });
 
     // Client-reported attribution — a mobile app has no meaningful
     // Referer/UTM headers, so this can only ever be as good as what the app
@@ -744,6 +810,7 @@ export class CheckoutService {
       subtotal,
       shippingFee: 0,
       taxAmount,
+      includedTaxAmount,
       campaignDiscountTotalUSD: campaignSavingsUSD,
       autoDiscountTotalUSD: autoDiscountSavingsUSD,
       totalAmount,
@@ -846,6 +913,7 @@ export class CheckoutService {
           subtotal,
           shippingFee: 0,
           taxAmount,
+          includedTaxAmount,
           totalAmount,
           internationalDutiesNotice: hasPhysical ? await this.internationalDutiesNotice(cardStoreIds, resolvedAddress?.country) : false,
           campaignDiscountUSD: campaignSavingsUSD,
@@ -1004,6 +1072,15 @@ export class CheckoutService {
         if (s.zone.zoneType !== 'local_delivery') continue;
         // Local delivery: a radius around the profile's ship-from location when it can be evaluated (both the
         // location and the buyer's address carry coordinates), else the postcode list (Shopify), else city/area.
+        // The buyer's address is geocoded once (free geocoder, best effort) and saved on the address.
+        if (s.zone.radiusKm != null && !(typeof deliveryAddress.latitude === 'number' && typeof deliveryAddress.longitude === 'number')) {
+          const g = await geocodeAddress(deliveryAddress);
+          if (g) {
+            deliveryAddress.latitude = g.latitude;
+            deliveryAddress.longitude = g.longitude;
+            await this.databaseService.repositories.addressModel.updateOne({ _id: deliveryAddress._id }, { $set: { latitude: g.latitude, longitude: g.longitude } });
+          }
+        }
         const radius = radiusMatch(
           s.zone,
           s.zone.radiusKm != null ? await this.profilesService.resolveOriginCoords(String(s.zone.storeId), s.profileId) : null,
@@ -1092,26 +1169,39 @@ export class CheckoutService {
     // Tax on the shipping fee (Store.taxShipping). Replaces whatever shipping tax an earlier pick left behind;
     // it is folded into the owning store's items' taxUSD so the order + ledger carry it like any item tax.
     const items = (checkout.items as any[]).map((i) => (i.toObject ? i.toObject() : { ...i }));
-    for (const it of items) { it.taxUSD = this.round((it.taxUSD ?? 0) - (it.shippingTaxUSD ?? 0)); it.shippingTaxUSD = 0; }
+    for (const it of items) {
+      it.taxUSD = this.round((it.taxUSD ?? 0) - (it.shippingTaxUSD ?? 0)); it.shippingTaxUSD = 0;
+      it.includedTaxUSD = this.round((it.includedTaxUSD ?? 0) - (it.shippingIncludedTaxUSD ?? 0)); it.shippingIncludedTaxUSD = 0;
+    }
     let shippingTax = 0;
+    let shippingIncludedTax = 0;
     for (const [shipStoreId, storeFee] of feeByStore) {
       if (!(storeFee > 0) || !shipStoreId) continue;
-      const storeTax = await this.quoteShippingTax(shipStoreId, storeFee, checkout, items, deliveryAddress, shippingFxSnapshots);
+      // Tax-inclusive store: the shipping fee already contains the tax, so it is EXTRACTED (not added to the total).
+      const quote = await this.quoteShippingTax(shipStoreId, storeFee, checkout, items, deliveryAddress, shippingFxSnapshots);
       const storeItems = items.filter((i) => i.storeId === shipStoreId);
       const storeSubtotalNative = storeItems.reduce((a, i) => a + i.totalPrice, 0);
-      if (storeTax > 0 && storeSubtotalNative > 0) {
-        const taxNative = this.exchangeRateService.convertWithSnapshots(
-          storeTax, checkout.currency, storeItems[0].currency ?? checkout.currency, shippingFxSnapshots,
+      if ((quote.added > 0 || quote.included > 0) && storeSubtotalNative > 0) {
+        const toNative = (amt: number) => this.exchangeRateService.convertWithSnapshots(
+          amt, checkout.currency, storeItems[0].currency ?? checkout.currency, shippingFxSnapshots,
         );
+        const addedNative = toNative(quote.added);
+        const includedNative = toNative(quote.included);
         for (const it of storeItems) {
-          const share = this.round((it.totalPrice / storeSubtotalNative) * taxNative);
+          const weight = it.totalPrice / storeSubtotalNative;
+          const share = this.round(weight * addedNative);
           it.shippingTaxUSD = share;
           it.taxUSD = this.round((it.taxUSD ?? 0) + share);
+          const incShare = this.round(weight * includedNative);
+          it.shippingIncludedTaxUSD = incShare;
+          it.includedTaxUSD = this.round((it.includedTaxUSD ?? 0) + incShare);
         }
-        shippingTax += storeTax;
+        shippingTax += quote.added;
+        shippingIncludedTax += quote.included;
       }
     }
     const taxAmount = this.round((checkout.taxAmount || 0) - (checkout.shippingTaxAmount || 0) + shippingTax);
+    const includedTaxAmount = this.round((checkout.includedTaxAmount || 0) - (checkout.shippingIncludedTaxAmount || 0) + shippingIncludedTax);
     const totalAmount = this.checkoutTotal(checkout.subtotal, { shippingFee, taxAmount });
 
     let pickupLocation: { name: string | null; address: string | null; instructions: string | null } | null = null;
@@ -1131,6 +1221,8 @@ export class CheckoutService {
       items,
       taxAmount,
       shippingTaxAmount: shippingTax,
+      includedTaxAmount,
+      shippingIncludedTaxAmount: shippingIncludedTax,
       fulfillmentMethod: isPickup ? 'pickup' : 'ship',
       pickupLocation,
       addressId: isPickup ? null : (deliveryAddress ? String(deliveryAddress._id) : checkout.addressId ?? null),
@@ -1165,6 +1257,7 @@ export class CheckoutService {
         shippingFee,
         taxAmount,
         shippingTaxAmount: shippingTax,
+        includedTaxAmount,
         fulfillmentMethod: isPickup ? 'pickup' : 'ship',
         pickupLocation,
         subtotal: checkout.subtotal,
@@ -1195,12 +1288,12 @@ export class CheckoutService {
     items: any[],
     address: any,
     fx: FxSnapshot[],
-  ): Promise<number> {
+  ): Promise<{ added: number; included: number }> {
     const store: any = await this.databaseService.repositories.storeModel
       .findById(storeId)
-      .select('taxRate taxRegions taxShipping')
+      .select('taxRate taxRegions taxShipping taxPricesIncludeTax')
       .lean();
-    if (!store?.taxShipping) return 0;
+    if (!store?.taxShipping) return { added: 0, included: 0 };
     if (address?.country) {
       const storeSubtotal = items
         .filter((i) => i.storeId === storeId)
@@ -1208,10 +1301,12 @@ export class CheckoutService {
       const base = { amount: storeSubtotal, toCountry: address.country ?? null, toState: address.state ?? null, toZip: address.zipCode ?? null, toCity: address.city ?? null };
       const withShip = await this.taxService.calculateLiveTax(storeId, { ...base, shipping: shippingFee });
       const without = withShip ? await this.taxService.calculateLiveTax(storeId, { ...base, shipping: 0 }) : null;
-      if (withShip && without) return this.round(Math.max(0, withShip.taxAmount - without.taxAmount));
+      // TaxJar quotes are always added on top (see createCheckout's tax block).
+      if (withShip && without) return { added: this.round(Math.max(0, withShip.taxAmount - without.taxAmount)), included: 0 };
     }
     const rate = resolveTaxRegionRate(store.taxRegions, address) ?? store.taxRate ?? 0;
-    return shippingTaxFromRate(shippingFee, rate, true);
+    if (pricesIncludeTaxFor(store, address)) return { added: 0, included: splitLineTax(shippingFee, rate, true).included };
+    return { added: shippingTaxFromRate(shippingFee, rate, true), included: 0 };
   }
 
   // Buyer-facing (checkout zone picker) — only ever `status:'active'` zones,
@@ -1373,8 +1468,18 @@ export class CheckoutService {
     const profileOrigin = await this.profilesService.resolveOrigin(storeId, groupKey === GENERAL_GROUP_KEY ? null : groupKey);
 
     const variantIds: string[] = [...new Set((cart as any).items.map((i: any) => i.productVariantId).filter(Boolean) as string[])];
-    const variants = await productVariantModel.find({ _id: { $in: variantIds } }).select('shippingWeight').lean();
+    const variants = await productVariantModel.find({ _id: { $in: variantIds } }).select('shippingWeight length width height').lean();
     const weightByVariant = new Map(variants.map((v: any) => [String(v._id), v.shippingWeight]));
+    // Shopify packs by each item's own dimensions into the smallest saved package that holds the cart.
+    const dimsByVariant = new Map(variants.map((v: any) => [String(v._id), v]));
+    const packItems = (cart as any).items.map((item: any) => {
+      const v: any = dimsByVariant.get(item.productVariantId);
+      return {
+        lengthCm: v?.length ?? null, widthCm: v?.width ?? null, heightCm: v?.height ?? null,
+        weightKg: this.shippingRatesService.unitWeightKg(v?.shippingWeight ?? null),
+        quantity: item.quantity ?? 1,
+      };
+    });
 
     const totalWeightKg = this.shippingRatesService.computeTotalWeightKg(
       (cart as any).items.map((item: any) => ({
@@ -1396,14 +1501,17 @@ export class CheckoutService {
         phone: (address as any).phoneNumber ?? undefined,
       },
       totalWeightKg,
-      profileOrigin
-        ? {
-            originOverride: {
-              name: profileOrigin.name, street1: profileOrigin.street1, street2: profileOrigin.street2, city: profileOrigin.city,
-              state: profileOrigin.state, zip: profileOrigin.zip, country: profileOrigin.country, phone: profileOrigin.phone,
-            },
-          }
-        : {},
+      {
+        packItems,
+        ...(profileOrigin
+          ? {
+              originOverride: {
+                name: profileOrigin.name, street1: profileOrigin.street1, street2: profileOrigin.street2, city: profileOrigin.city,
+                state: profileOrigin.state, zip: profileOrigin.zip, country: profileOrigin.country, phone: profileOrigin.phone,
+              },
+            }
+          : {}),
+      },
     );
 
     return { success: true, data: rates };
@@ -1580,6 +1688,7 @@ export class CheckoutService {
     const sc = await this.settleStoreCredit(checkout, items);
 
     const newSubtotal = this.convertedSubtotal(items, checkout.currency, checkout.fxSnapshots as any);
+    this.requoteItemTax(items, checkout);
     const newTotal = this.checkoutTotal(newSubtotal, checkout);
 
     await checkoutModel.findByIdAndUpdate(checkoutId, {
@@ -1587,6 +1696,8 @@ export class CheckoutService {
       subtotal: newSubtotal,
       storeCreditDiscountTotalUSD: sc.applied,
       totalAmount: newTotal,
+      taxAmount: checkout.taxAmount,
+      includedTaxAmount: checkout.includedTaxAmount ?? 0,
       couponCode: normalizedCode,
       couponStoreId: coupon.storeId,
       couponSourceType: 'coupon',
@@ -1651,6 +1762,7 @@ export class CheckoutService {
     const sc = await this.settleStoreCredit(checkout, items);
 
     const newSubtotal = this.convertedSubtotal(items, checkout.currency, checkout.fxSnapshots as any);
+    this.requoteItemTax(items, checkout);
     const newTotal = this.checkoutTotal(newSubtotal, checkout);
 
     await checkoutModel.findByIdAndUpdate(checkoutId, {
@@ -1658,6 +1770,8 @@ export class CheckoutService {
       subtotal: newSubtotal,
       storeCreditDiscountTotalUSD: sc.applied,
       totalAmount: newTotal,
+      taxAmount: checkout.taxAmount,
+      includedTaxAmount: checkout.includedTaxAmount ?? 0,
       couponCode: null,
       couponStoreId: null,
       couponSourceType: 'coupon',
@@ -1785,6 +1899,7 @@ export class CheckoutService {
     const sc = await this.settleStoreCredit(checkout, items);
 
     const newSubtotal = this.convertedSubtotal(items, checkout.currency, checkout.fxSnapshots as any);
+    this.requoteItemTax(items, checkout);
     const newTotal = this.checkoutTotal(newSubtotal, checkout);
 
     await checkoutModel.findByIdAndUpdate(checkoutId, {
@@ -1792,6 +1907,8 @@ export class CheckoutService {
       subtotal: newSubtotal,
       storeCreditDiscountTotalUSD: sc.applied,
       totalAmount: newTotal,
+      taxAmount: checkout.taxAmount,
+      includedTaxAmount: checkout.includedTaxAmount ?? 0,
       giftCardCode: null,
       giftCardStoreId: null,
       giftCardDiscountTotalUSD: 0,
@@ -2012,6 +2129,7 @@ export class CheckoutService {
       const sc = await this.settleStoreCredit(checkout, items);
 
       const newSubtotal = this.convertedSubtotal(items, checkout.currency, checkout.fxSnapshots as any);
+      this.requoteItemTax(items, checkout);
       const newTotal = this.checkoutTotal(newSubtotal, checkout);
 
       await checkoutModel.findByIdAndUpdate(checkout._id, {
@@ -2019,6 +2137,8 @@ export class CheckoutService {
         subtotal: newSubtotal,
         storeCreditDiscountTotalUSD: sc.applied,
         totalAmount: newTotal,
+        taxAmount: checkout.taxAmount,
+        includedTaxAmount: checkout.includedTaxAmount ?? 0,
         couponCode: normalizedCode,
         couponStoreId: voucher.storeId,
         couponSourceType: 'reward_voucher',
@@ -2065,6 +2185,7 @@ export class CheckoutService {
     const sc = await this.settleStoreCredit(checkout, items);
 
     const newSubtotal = this.convertedSubtotal(items, checkout.currency, checkout.fxSnapshots as any);
+    this.requoteItemTax(items, checkout);
     const newTotal = this.checkoutTotal(newSubtotal, checkout);
 
     await checkoutModel.findByIdAndUpdate(checkout._id, {
@@ -2072,6 +2193,8 @@ export class CheckoutService {
       subtotal: newSubtotal,
       storeCreditDiscountTotalUSD: sc.applied,
       totalAmount: newTotal,
+      taxAmount: checkout.taxAmount,
+      includedTaxAmount: checkout.includedTaxAmount ?? 0,
       couponCode: normalizedCode,
       couponStoreId: voucher.storeId,
       couponSourceType: 'reward_voucher',

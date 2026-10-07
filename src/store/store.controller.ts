@@ -190,7 +190,7 @@ export class StoreController {
     // fused into this same general-settings endpoint (Store has no
     // dedicated tax route), so the split is enforced imperatively here,
     // same pattern as products' price/cost split.
-    if (req.user.role === 'staff' && (updateData.taxRate !== undefined || updateData.taxShipping !== undefined)) {
+    if (req.user.role === 'staff' && (updateData.taxRate !== undefined || updateData.taxShipping !== undefined || updateData.taxPricesIncludeTax !== undefined || updateData.taxOverrides !== undefined || updateData.taxRegions !== undefined)) {
       const permissions: string[] = Array.isArray(req.user.permissions) ? req.user.permissions : [];
       if (!permissions.includes('settings.taxes.manage')) {
         throw new ForbiddenException("Your staff account doesn't have permission to manage tax settings.");
@@ -288,8 +288,8 @@ export class StoreController {
   // comment), so this only needs the same lightweight rate limiting every
   // other unauthenticated write in this codebase uses, not a full lockout
   // mechanism.
-  @Throttle({ default: { limit: 10, ttl: 60_000 } })
-  @Post('public/:storeId/verify-password')
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @Post(['public/:storeId/verify-password', ':storeId/storefront-password/verify'])
   async verifyStorePassword(@Param('storeId') storeId: string, @Body() body: { password: string }) {
     return this.storeService.verifyStorePassword(storeId, body?.password ?? '');
   }

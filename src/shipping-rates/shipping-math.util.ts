@@ -54,3 +54,95 @@ export function buildParcel(pkg: ShippingPackage | null, goodsWeightKg: number) 
     weight: String(Math.round(total * 1000) / 1000), mass_unit: 'kg',
   };
 }
+
+// ---------------------------------------------------------------------------
+// Shopify-style packing: items are packed by their own dimensions into the
+// smallest saved package that holds them all; if no single package fits, the
+// default package is filled box by box (first-fit-decreasing). Items with no
+// dimensions add weight only. No saved packages -> legacy single fallback parcel.
+// ---------------------------------------------------------------------------
+
+export interface PackItem {
+  /** Per-unit package dimensions in cm (null = not entered). */
+  lengthCm: number | null;
+  widthCm: number | null;
+  heightCm: number | null;
+  /** Per-unit weight in kg. */
+  weightKg: number;
+  quantity: number;
+}
+
+export interface PackedParcel {
+  /** Saved package used (or a synthetic box sized to an oversize item); null = legacy fallback parcel. */
+  pkg: ShippingPackage | null;
+  /** Weight of the goods only (kg); the package's empty weight is added by `buildParcel`. */
+  goodsWeightKg: number;
+}
+
+const IN_TO_CM = 2.54;
+const MAX_UNITS = 500; // safety cap on expanded units (very large carts)
+
+function pkgDimsCm(p: ShippingPackage): [number, number, number] {
+  const k = p.unit === 'in' ? IN_TO_CM : 1;
+  return [p.length * k, p.width * k, p.height * k];
+}
+const sortDesc = (d: number[]) => [...d].sort((a, b) => b - a);
+const volume = (d: number[]) => d[0] * d[1] * d[2];
+function fitsInside(item: number[], box: number[]): boolean {
+  const a = sortDesc(item), b = sortDesc(box);
+  return a[0] <= b[0] + 1e-9 && a[1] <= b[1] + 1e-9 && a[2] <= b[2] + 1e-9;
+}
+
+export function packItems(items: PackItem[], packages: ShippingPackage[] | null | undefined): PackedParcel[] {
+  const list = (Array.isArray(packages) ? packages : []).filter((p) => p.length > 0 && p.width > 0 && p.height > 0);
+  const units: { dims: number[] | null; weightKg: number }[] = [];
+  for (const it of items) {
+    const q = Math.min(Math.max(Math.floor(it.quantity) || 1, 1), MAX_UNITS);
+    const w = Number.isFinite(it.weightKg) && it.weightKg > 0 ? it.weightKg : 0;
+    const hasDims = [it.lengthCm, it.widthCm, it.heightCm].every((x) => x != null && Number.isFinite(x) && (x as number) > 0);
+    for (let i = 0; i < q && units.length < MAX_UNITS * 4; i++) {
+      units.push({ dims: hasDims ? [it.lengthCm as number, it.widthCm as number, it.heightCm as number] : null, weightKg: w });
+    }
+  }
+  const totalWeight = units.reduce((s, u) => s + u.weightKg, 0);
+  const defaultPkg = pickPackage(list, null);
+  if (list.length === 0) return [{ pkg: null, goodsWeightKg: totalWeight }];
+
+  const dimmed = units.filter((u) => u.dims);
+  if (dimmed.length === 0) return [{ pkg: defaultPkg, goodsWeightKg: totalWeight }];
+
+  // 1) Smallest single saved package holding every item (each fits alone + combined volume fits).
+  const totalVol = dimmed.reduce((s, u) => s + volume(u.dims as number[]), 0);
+  const single = list
+    .filter((p) => {
+      const d = pkgDimsCm(p);
+      return totalVol <= volume(d) + 1e-9 && dimmed.every((u) => fitsInside(u.dims as number[], d));
+    })
+    .sort((a, b) => volume(pkgDimsCm(a)) - volume(pkgDimsCm(b)))[0];
+  if (single) return [{ pkg: single, goodsWeightKg: totalWeight }];
+
+  // 2) Several boxes of the default package (largest one if it cannot hold an item); oversize items get their own box.
+  const boxPkg = defaultPkg as ShippingPackage;
+  const boxDims = pkgDimsCm(boxPkg);
+  const bins: { pkg: ShippingPackage; cap: number; weight: number }[] = [];
+  const sorted = [...dimmed].sort((a, b) => volume(b.dims as number[]) - volume(a.dims as number[]));
+  const oversize: PackedParcel[] = [];
+  for (const u of sorted) {
+    const d = u.dims as number[];
+    if (!fitsInside(d, boxDims)) {
+      const [l, w, h] = sortDesc(d);
+      oversize.push({
+        pkg: { id: 'oversize', name: 'Oversize item', length: l, width: w, height: h, unit: 'cm', emptyWeight: 0, isDefault: false },
+        goodsWeightKg: u.weightKg,
+      });
+      continue;
+    }
+    const bin = bins.find((b) => b.cap + 1e-9 >= volume(d));
+    if (bin) { bin.cap -= volume(d); bin.weight += u.weightKg; }
+    else bins.push({ pkg: boxPkg, cap: volume(boxDims) - volume(d), weight: u.weightKg });
+  }
+  const parcels: PackedParcel[] = [...bins.map((b) => ({ pkg: b.pkg, goodsWeightKg: b.weight })), ...oversize];
+  const loose = units.filter((u) => !u.dims).reduce((s, u) => s + u.weightKg, 0);
+  parcels[0].goodsWeightKg += loose;
+  return parcels;
+}

@@ -263,6 +263,9 @@ export class DatabaseService {
     @InjectModel(schema.SeoIntegration.name)
     private seoIntegrationModel: Model<schema.SeoIntegrationDocument>,
 
+    @InjectModel(schema.ManualPaymentMethod.name)
+    private manualPaymentMethodModel: Model<schema.ManualPaymentMethodDocument>,
+
     @InjectModel(schema.StoreIntegration.name)
     private storeIntegrationModel: Model<schema.StoreIntegrationDocument>,
 
@@ -565,6 +568,7 @@ export class DatabaseService {
       seoSitemapCacheModel: this.seoSitemapCacheModel,
       seoIntegrationModel: this.seoIntegrationModel,
       storeIntegrationModel: this.storeIntegrationModel,
+      manualPaymentMethodModel: this.manualPaymentMethodModel,
       integrationWebhookEventModel: this.integrationWebhookEventModel,
       seoCrawlLogModel: this.seoCrawlLogModel,
       seoIndexSnapshotModel: this.seoIndexSnapshotModel,

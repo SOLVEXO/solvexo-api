@@ -262,6 +262,7 @@ export class CollectionTemplateService {
   /** Writes to `draft.sections` only — a buyer never sees this until `publish()` is called. */
   async updateSections(storeId: string, sellerId: string, dto: UpdateSectionsDto, resourceType: ResourceTemplateType = 'collection', templateKey = DEFAULT_TEMPLATE_KEY, installedThemeId?: string) {
     const template = await this.findOwnedTemplate(storeId, sellerId, resourceType, templateKey, installedThemeId);
+    this.contentVersioningService.assertDraftNotStale((template as any).updatedAt, dto.baseUpdatedAt);
     validateSections(dto.sections);
     // Defense in depth beyond the editor UI (which already hides the Remove
     // control for a core section/its required blocks) — a direct API call

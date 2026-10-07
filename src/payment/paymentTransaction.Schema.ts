@@ -16,7 +16,7 @@ export class PaymentTransaction {
   @Prop({ type: [String], default: [] })
   orderIds: string[];
 
-  @Prop({ enum: ['cash_on_delivery', 'stripe', 'manual_bank_transfer', 'safepay', 'store_credit'], required: true })
+  @Prop({ enum: ['cash_on_delivery', 'stripe', 'manual_bank_transfer', 'safepay', 'jazzcash', 'easypaisa', 'payfast', 'manual', 'store_credit'], required: true })
   paymentType: string;
 
   @Prop({ required: true })
@@ -67,6 +67,15 @@ export class PaymentTransaction {
   // gateway's webhook reports the outcome (see PaymentWebhooksController).
   @Prop({ type: String, default: null, index: true })
   providerSessionId: string | null;
+
+  // Storefront page the buyer is sent back to after a gateway that POSTs the result to OUR return route
+  // (JazzCash). Set by CheckoutPaymentMethodsService.initiatePayment; read only by the return redirect.
+  @Prop({ type: String, default: null })
+  returnUrl: string | null;
+
+  // Custom manual payment method name (paymentType 'manual').
+  @Prop({ type: String, default: null })
+  paymentMethodName: string | null;
 
   // Set only when this charge was routed directly to a seller's own
   // connected Stripe account (StripeConnectService) instead of the

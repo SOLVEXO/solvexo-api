@@ -180,6 +180,10 @@ import { DatabaseService } from './databaseservice';
         schema: schema.SeoAnalyticsSnapshotSchema,
       },
       {
+        name: schema.ManualPaymentMethod.name,
+        schema: schema.ManualPaymentMethodSchema,
+      },
+      {
         name: schema.StoreIntegration.name,
         schema: schema.StoreIntegrationSchema,
       },

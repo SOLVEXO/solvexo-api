@@ -74,8 +74,24 @@ export interface PaymentOrderContext {
   cancelUrl: string;
 }
 
+/** Result of a real call to the gateway with the seller's own credentials (Settings > Payments "Test connection"). */
+export interface ConnectionTestResult {
+  ok: boolean;
+  message: string;
+}
+
 export interface PaymentProvider {
   readonly providerKey: StoreIntegrationProvider;
+
+  /**
+   * True when the gateway offers no status inquiry we can rely on and the signed callback itself is the proof
+   * of payment (JazzCash signs amount+status; PayFast signs basket+status only). The webhook handler then
+   * trusts the verified event (`event.status.amount/currency` when present) instead of re-asking the gateway.
+   */
+  readonly callbackIsAuthoritative?: boolean;
+
+  /** Real round-trip to the gateway with these credentials in `config.mode` — never just "credentials decrypt". */
+  testConnection(config: DecryptedPaymentConfig): Promise<ConnectionTestResult>;
 
   initiatePayment(order: PaymentOrderContext, config: DecryptedPaymentConfig): Promise<PaymentSession>;
   verifyPayment(reference: string, config: DecryptedPaymentConfig): Promise<PaymentStatus>;

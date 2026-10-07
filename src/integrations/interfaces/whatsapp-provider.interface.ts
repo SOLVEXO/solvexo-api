@@ -33,6 +33,16 @@ export interface WhatsAppSendResult {
   error?: string;
 }
 
+export interface WhatsAppTemplateInfo {
+  id?: string;
+  name: string;
+  language: string;
+  status: string;
+  category: string;
+  rejectedReason: string | null;
+  bodyText: string;
+}
+
 export interface WhatsAppIncomingEvent {
   type: 'message_status' | 'inbound_message' | 'unknown';
   phoneNumberId: string | null;

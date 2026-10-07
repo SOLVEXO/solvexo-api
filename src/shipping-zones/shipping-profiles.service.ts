@@ -4,6 +4,7 @@ import { isValidObjectId } from 'mongoose';
 import { DatabaseService } from '@/database/databaseservice';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { verifyStoreOwnershipStrict } from '@/common/store-ownership.util';
+import { geocodeAddress } from '@/common/geocoding/geocoding.util';
 import { CreateShippingProfileDto, UpdateShippingProfileDto } from './dto/shipping-profile.dto';
 
 const MAX_PROFILES_PER_STORE = 100;
@@ -250,11 +251,22 @@ export class ShippingProfilesService {
       : await this.repos.shippingProfileModel.findOne({ storeId, isGeneral: true, isDelete: false }).select('originLocationIds').lean();
     const ids: string[] = profile?.originLocationIds ?? [];
     if (ids.length === 0) return null;
-    const locations: any[] = await this.repos.storeLocationModel.find({ _id: { $in: ids }, storeId, isDelete: false, status: 'active' }).select('latitude longitude').lean();
+    const locations: any[] = await this.repos.storeLocationModel.find({ _id: { $in: ids }, storeId, isDelete: false, status: 'active' }).select('latitude longitude addressLine1 addressLine2 city state zipCode country').lean();
     const byId = new Map(locations.map((l) => [String(l._id), l]));
     for (const id of ids) {
       const l = byId.get(id);
       if (l && typeof l.latitude === 'number' && typeof l.longitude === 'number') return { latitude: l.latitude, longitude: l.longitude };
+    }
+    // No coordinates on file: look the location's address up once (free geocoder, cached) and save the result so
+    // the seller never has to hand-enter latitude / longitude.
+    for (const id of ids) {
+      const l = byId.get(id);
+      if (!l) continue;
+      const g = await geocodeAddress(l);
+      if (g) {
+        await this.repos.storeLocationModel.updateOne({ _id: id, storeId, latitude: null }, { $set: { latitude: g.latitude, longitude: g.longitude, coordsSource: 'geocoded' } });
+        return g;
+      }
     }
     return null;
   }

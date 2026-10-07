@@ -165,6 +165,26 @@ export class CheckoutItem {
   // Tracked separately so re-picking a shipping option can replace it without touching the item tax.
   @Prop({ type: Number, default: 0 })
   shippingTaxUSD: number;
+
+  // This line's item tax (EXCLUDING shippingTaxUSD) before any coupon/voucher lowered its price; stamped
+  // lazily by CheckoutService.requoteItemTax so removing the coupon restores it. null = not stamped yet
+  // (falls back to taxUSD - shippingTaxUSD). Native item currency.
+  @Prop({ type: Number, default: null })
+  itemTaxBeforeDiscountUSD: number | null;
+
+  // TAX-INCLUSIVE pricing (Store.taxPricesIncludeTax / region override): tax already CONTAINED in this line's price
+  // (and in its share of the shipping fee), native item currency. NEVER added to the total — display / receipts /
+  // tax reports only; `taxUSD` stays "tax added on top" (0 for an inclusive line).
+  @Prop({ type: Number, default: 0 })
+  includedTaxUSD: number;
+
+  // Part of `includedTaxUSD` that sits inside the SHIPPING fee (replaced whenever the shipping option changes).
+  @Prop({ type: Number, default: 0 })
+  shippingIncludedTaxUSD: number;
+
+  // Item part (excl. shipping) of `includedTaxUSD` before any coupon/voucher; same lazy stamp as itemTaxBeforeDiscountUSD.
+  @Prop({ type: Number, default: null })
+  includedTaxBeforeDiscountUSD: number | null;
 }
 
 export const CheckoutItemSchema = SchemaFactory.createForClass(CheckoutItem);
@@ -225,7 +245,7 @@ export class Checkout {
   @Prop({ type: String, default: null })
   liveShippingService: string | null;
 
-  @Prop({ type: String, enum: ['cash_on_delivery', 'stripe', 'manual_bank_transfer', 'store_credit'], default: null })
+  @Prop({ type: String, enum: ['cash_on_delivery', 'stripe', 'manual_bank_transfer', 'store_credit', 'manual'], default: null })
   paymentType: string | null;
 
   @Prop({ type: String, default: null })
@@ -243,6 +263,15 @@ export class Checkout {
   // Part of `taxAmount` that is tax on the shipping fee (checkout currency); 0 unless Store.taxShipping.
   @Prop({ default: 0 })
   shippingTaxAmount: number;
+
+  // Tax already inside the prices/shipping fee (tax-inclusive stores) in checkout currency — informational,
+  // NOT part of totalAmount (checkoutTotal only adds `taxAmount`).
+  @Prop({ default: 0 })
+  includedTaxAmount: number;
+
+  // Part of `includedTaxAmount` that sits inside the shipping fee.
+  @Prop({ default: 0 })
+  shippingIncludedTaxAmount: number;
 
   // 'pickup' when the chosen shipping zone is local pickup — no delivery address is needed then.
   @Prop({ type: String, enum: ['ship', 'pickup'], default: 'ship' })

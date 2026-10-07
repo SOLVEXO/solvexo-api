@@ -35,6 +35,9 @@ export class StoreLocation {
   @Prop({ type: String, default: null }) country: string | null;
   @Prop({ type: Number, default: null }) latitude: number | null;
   @Prop({ type: Number, default: null }) longitude: number | null;
+  // Where latitude/longitude came from: 'manual' (seller typed them — never overwritten by the geocoder) or
+  // 'geocoded' (looked up from the address, re-done when the address changes). null = no coordinates.
+  @Prop({ type: String, enum: ['manual', 'geocoded', null], default: null }) coordsSource: 'manual' | 'geocoded' | null;
   @Prop({ type: String, default: null }) phone: string | null;
 
   // 'store' (retail floor / POS-facing) vs 'warehouse' (fulfillment-only,

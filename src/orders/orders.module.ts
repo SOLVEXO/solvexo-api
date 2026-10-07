@@ -23,6 +23,7 @@ import { ExchangeRateModule } from '@/exchange-rate/exchange-rate.module';
 import { IntegrationsModule } from '@/integrations/integrations.module';
 import { GiftCardsModule } from '@/gift-cards/gift-cards.module';
 import { ShippingZonesModule } from '@/shipping-zones/shipping-zones.module';
+import { InventoryModule } from '@/inventory/inventory.module';
 import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 
@@ -37,6 +38,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
     IntegrationsModule,
     GiftCardsModule,
     ShippingZonesModule,
+    InventoryModule,
     ConfigModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],

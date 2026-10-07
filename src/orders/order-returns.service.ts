@@ -12,6 +12,7 @@ import { FinanceService } from '../finance/finance.service';
 import { StoreCreditService } from '../store-credit/store-credit.service';
 import { GiftCardsService } from '../gift-cards/gift-cards.service';
 import { LoyaltyService } from '../loyalty/loyalty.service';
+import { InventoryService } from '../inventory/inventory.service';
 import { round } from '../common/number.util';
 import { releaseRefundCapacity, reserveRefundCapacity } from '../common/refund-cap.util';
 import { effectiveReturnStatus } from '../common/return-status.util';
@@ -50,6 +51,7 @@ export class OrderReturnsService {
     private readonly storeCredit: StoreCreditService,
     private readonly giftCards: GiftCardsService,
     private readonly loyalty: LoyaltyService,
+    private readonly inventory: InventoryService,
   ) {}
 
   private get r() { return this.db.repositories; }
@@ -106,6 +108,49 @@ export class OrderReturnsService {
     if (!so) return;
     const statuses = (so.items as any[]).filter((it) => it.type === 'physical' && it.status !== 'cancelled').map((it) => effectiveReturnStatus(it));
     await this.r.orderModel.updateOne({ _id: orderId }, { $set: { [`sellerOrders.${soIndex}.returnStatus`]: deriveSellerReturnStatus(statuses) } }).catch(() => undefined);
+  }
+
+  /**
+   * Puts returned units back on the shelf and keeps BOTH stock sources consistent (`ProductVariant.stock` = sum of
+   * `VariantLocationStock` rows + in-transit): when the store runs several locations (or the variant already has location
+   * rows) the units land on the default location, seeding the first-ever location split exactly like PO receiving does
+   * (`InventoryService.ensureLocationStockSeeded`) BEFORE the aggregate moves. `damaged` also bumps `damagedStock`
+   * (not sellable; `common/stock-availability.util.ts` subtracts it). Returns false when nothing was moved (unlimited stock).
+   * Shared by "mark received" and by exchanges that restock at creation.
+   */
+  async restockReturnedUnits(storeId: string, item: any, choice: 'restock' | 'damaged', note: string, adjustedBy: string, adjustedByName: string | null): Promise<boolean> {
+    const variant: any = await this.r.productVariantModel.findOne({ _id: item.variantId, isDelete: false });
+    if (!variant || variant.unlimitedStock) return false;
+    const qty = item.quantity;
+    const previousStock = variant.stock;
+
+    let locationId: string | null = null;
+    const [locCount, hasRows] = await Promise.all([
+      this.r.storeLocationModel.countDocuments({ storeId, isDelete: false }),
+      this.r.variantLocationStockModel.countDocuments({ variantId: String(variant._id) }),
+    ]);
+    if (locCount >= 2 || hasRows > 0) {
+      await this.inventory.ensureLocationStockSeeded(storeId, String(variant._id), variant); // seeds from the PRE-restock stock
+      const loc: any = await this.r.storeLocationModel.findOne({ storeId, isDelete: false, isDefault: true })
+        ?? await this.r.storeLocationModel.findOne({ storeId, isDelete: false }).sort({ createdAt: 1 });
+      if (loc) {
+        locationId = String(loc._id);
+        await this.r.variantLocationStockModel.updateOne(
+          { variantId: String(variant._id), locationId, binId: null },
+          { $inc: { stock: qty }, $setOnInsert: { storeId, productId: variant.productId } },
+          { upsert: true },
+        );
+      }
+    }
+    await this.r.productVariantModel.updateOne({ _id: variant._id }, choice === 'restock' ? { $inc: { stock: qty } } : { $inc: { stock: qty, damagedStock: qty } });
+    await this.r.stockAdjustmentModel.create({
+      storeId, productId: item.productId, variantId: item.variantId, locationId,
+      productName: item.name, sku: item.sku ?? null,
+      previousStock, newStock: previousStock + qty, delta: qty,
+      reason: choice === 'restock' ? 'return' : 'damaged',
+      note, adjustedBy, adjustedByName,
+    });
+    return true;
   }
 
   private notifyBuyer(order: any, storeId: string, storeName: string, title: string, body: string) {
@@ -185,19 +230,7 @@ export class OrderReturnsService {
       const choice = choices[k];
       if (choice === 'none' || item.type !== 'physical' || !item.variantId) continue;
       try {
-        const variant: any = await this.r.productVariantModel.findOne({ _id: item.variantId, isDelete: false });
-        if (!variant || variant.unlimitedStock) continue;
-        const qty = item.quantity;
-        const previousStock = variant.stock;
-        await this.r.productVariantModel.updateOne({ _id: item.variantId }, choice === 'restock' ? { $inc: { stock: qty } } : { $inc: { stock: qty, damagedStock: qty } });
-        await this.r.stockAdjustmentModel.create({
-          storeId, productId: item.productId, variantId: item.variantId, locationId: null,
-          productName: item.name, sku: item.sku ?? null,
-          previousStock, newStock: previousStock + qty, delta: qty,
-          reason: choice === 'restock' ? 'return' : 'damaged',
-          note: `Return received for order #${order.orderNumber}`,
-          adjustedBy: actor.actorId, adjustedByName: seller?.name ?? null,
-        });
+        await this.restockReturnedUnits(storeId, item, choice, `Return received for order #${order.orderNumber}`, actor.actorId, seller?.name ?? null);
       } catch (e: any) {
         stockProblems.push(item.name);
         await this.activityLog.log({
@@ -348,6 +381,13 @@ export class OrderReturnsService {
         recipientId: String(order.userId), recipientRole: 'user', type: NOTIFICATION_TYPES.REFUND_ISSUED, storeId,
         title: 'Refund issued', body: `You've been refunded ${granted.toFixed(2)} ${buyerCurrency}${toStoreCredit ? ' as store credit' : ''} for your return on order #${order.orderNumber}.`,
         data: { orderId },
+        whatsapp: order.shippingAddress?.phoneNumber
+          ? {
+              storeId, to: order.shippingAddress.phoneNumber, templateName: 'order_refunded', languageCode: 'en_US',
+              event: 'order_refunded',
+              vars: { order_id: orderId, order_number: order.orderNumber, refund_amount: `${granted.toFixed(2)} ${buyerCurrency}`, currency: buyerCurrency },
+            }
+          : undefined,
       } as any).catch(() => undefined);
     }
     return {

@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Injectable } from '@nestjs/common';
+import { ConflictException, Injectable } from '@nestjs/common';
 import type { Model } from 'mongoose';
 
 /**
@@ -42,6 +42,28 @@ export type FieldExpressionMap = Record<string, FieldExpressionValue>;
  */
 @Injectable()
 export class ContentVersioningService {
+  /**
+   * Optimistic-concurrency guard for draft saves. `baseUpdatedAt` is the
+   * document `updatedAt` the client last saw; if the stored document is newer,
+   * someone else (another tab/user) changed it and a blind save would
+   * overwrite their work -> 409 `DRAFT_CONFLICT`. Omitted/blank/unparseable
+   * base = legacy behaviour (no check).
+   */
+  assertDraftNotStale(currentUpdatedAt: Date | string | null | undefined, baseUpdatedAt?: string | null): void {
+    if (!baseUpdatedAt || !currentUpdatedAt) return;
+    const base = new Date(baseUpdatedAt).getTime();
+    const current = new Date(currentUpdatedAt).getTime();
+    if (Number.isNaN(base) || Number.isNaN(current)) return;
+    if (current > base) {
+      throw new ConflictException({
+        statusCode: 409,
+        code: 'DRAFT_CONFLICT',
+        message: 'This draft was changed elsewhere. Reload to see the latest version.',
+        latestUpdatedAt: new Date(current).toISOString(),
+      });
+    }
+  }
+
   /** Copies draft field(s) into their live counterparts. `extraSet` is for fields that aren't a draft→live copy but should land in the same atomic write (e.g. `lastPublishedAt: '$$NOW'`, `status: 'published'`). */
   async publishDraft<T = any>(
     model: Model<T>,

@@ -6,6 +6,8 @@ import { AuthModule } from '../auth/auth.module';
 import { RedisModule } from '../redis/redis.module';
 import { SafepayPaymentProvider } from './providers/safepay.provider';
 import { StripePaymentProvider } from './providers/stripe-integration.provider';
+import { JazzCashPaymentProvider } from './providers/jazzcash.provider';
+import { PayFastPaymentProvider } from './providers/payfast.provider';
 import { WhatsAppCloudProvider } from './providers/whatsapp-cloud.provider';
 import { PaymentProviderRegistry } from './payment-provider.registry';
 import { IntegrationWebhookEventService } from './integration-webhook-event.service';
@@ -32,6 +34,8 @@ import { ShippingRatesService } from '../shipping-rates/shipping-rates.service';
   ],
   providers: [
     SafepayPaymentProvider,
+    JazzCashPaymentProvider,
+    PayFastPaymentProvider,
     StripePaymentProvider,
     WhatsAppCloudProvider,
     PaymentProviderRegistry,

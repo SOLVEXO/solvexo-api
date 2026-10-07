@@ -9,6 +9,7 @@ import {
 } from '@nestjs/common';
 import { isValidObjectId, Types } from 'mongoose';
 import { reserveRefundCapacity, releaseRefundCapacity } from '@/common/refund-cap.util';
+import { reopenReturnsForCancelledExchange } from './order-exchange-reopen.util';
 import { buyerEmail } from '@/common/buyer-email.util';
 import { effectiveReturnStatus, withEffectiveReturnStatus } from '@/common/return-status.util';
 import { toBuyerReturnLabel, toBuyerSafeOrder, toBuyerTracking } from '@/common/buyer-safe-order.util';
@@ -855,6 +856,23 @@ export class OrdersService {
     );
   }
 
+  /** Shopify packs a label's parcels by each item's own dimensions (smallest fitting saved package). */
+  private async packItemsForLines(lines: { variantId?: string | null; quantity: number }[]) {
+    const ids = [...new Set(lines.map((l) => l.variantId).filter(Boolean) as string[])];
+    const variants: any[] = ids.length
+      ? await this.databaseService.repositories.productVariantModel.find({ _id: { $in: ids } }).select('shippingWeight length width height').lean()
+      : [];
+    const byId = new Map(variants.map((v: any) => [String(v._id), v]));
+    return lines.map((l) => {
+      const v: any = l.variantId ? byId.get(String(l.variantId)) : null;
+      return {
+        lengthCm: v?.length ?? null, widthCm: v?.width ?? null, heightCm: v?.height ?? null,
+        weightKg: this.shippingRatesService.unitWeightKg(v?.shippingWeight ?? null),
+        quantity: l.quantity ?? 1,
+      };
+    });
+  }
+
   /** Shared by label-rate listing + purchase: ownership checks, destination, and real goods weight. */
   private async prepareLabelContext(
     sellerId: string,
@@ -899,16 +917,17 @@ export class OrdersService {
       partial = { lines: check.lines, allShipped: check.allShipped };
     }
 
-    const totalWeightKg = await this.weightKgForLines(
-      partial
-        ? partial.lines.map((l) => ({ variantId: sellerOrder.items[l.itemIndex]?.variantId, quantity: l.quantity }))
-        : sellerOrder.items.map((item: any) => ({ variantId: item.variantId, quantity: item.quantity ?? 1 })),
-    );
+    const labelLines = partial
+      ? partial.lines.map((l) => ({ variantId: sellerOrder.items[l.itemIndex]?.variantId, quantity: l.quantity }))
+      : sellerOrder.items.map((item: any) => ({ variantId: item.variantId, quantity: item.quantity ?? 1 }));
+    const totalWeightKg = await this.weightKgForLines(labelLines);
+    const packItems = await this.packItemsForLines(labelLines);
 
     return {
       sellerOrder,
       sellerOrderIndex,
       totalWeightKg,
+      packItems,
       partial,
       orderCurrency: ((order as any).currency as string | undefined) || 'USD',
       signerName: ((store as any).name as string | undefined) || 'Seller',
@@ -988,6 +1007,7 @@ export class OrdersService {
     const originOverride = await this.labelOriginOverride(storeId, ctx.sellerOrder);
     const rates = await this.shippingRatesService.getLiveRates(storeId, ctx.destination, ctx.totalWeightKg, {
       packageId: packageId || undefined,
+      packItems: ctx.packItems,
       forLabel: true,
       originOverride,
       customsDeclarationId: await this.customsDeclarationForLabel(storeId, ctx, originOverride),
@@ -1034,6 +1054,7 @@ export class OrdersService {
       const originOverride = await this.labelOriginOverride(storeId, ctx.sellerOrder);
       const rates = await this.shippingRatesService.getLiveRates(storeId, ctx.destination, ctx.totalWeightKg, {
         packageId: opts.packageId || undefined,
+        packItems: ctx.packItems,
         forLabel: true,
         originOverride,
         customsDeclarationId: await this.customsDeclarationForLabel(storeId, ctx, originOverride),
@@ -1441,6 +1462,9 @@ export class OrdersService {
                   status === 'shipped'
                     ? [orderId, tracking?.carrier ?? '']
                     : [orderId],
+                // The store's own switch/template/variables for this event decide what is really sent.
+                event: status === 'shipped' ? 'order_shipped' : 'order_delivered',
+                vars: { order_id: orderId, order_number: orderNo, store_name: storeName, carrier: tracking?.carrier, tracking_number: tracking?.trackingNumber },
               }
             : undefined,
         })
@@ -1611,6 +1635,8 @@ export class OrdersService {
                 templateName: 'order_shipped',
                 languageCode: 'en_US',
                 bodyParams: [orderId, tracking?.carrier ?? ''],
+                event: 'order_shipped',
+                vars: { order_id: orderId, order_number: orderNo, store_name: (store as any).name, carrier: tracking?.carrier, tracking_number: tracking?.trackingNumber },
               }
             : undefined,
         })
@@ -2492,6 +2518,15 @@ export class OrdersService {
       );
     }
 
+    // Shopify: cancelling an EXCHANGE order (every line) reopens the return it resolved on the original order.
+    if (order.exchangeOf?.orderId) {
+      const stillOpen = order.sellerOrders.some((so: any, si: number) => so.items.some((it: any, ii: number) =>
+        it.status !== 'cancelled' && !targetItems.some((t) => t.soIndex === si && t.itemIndex === ii)));
+      if (!stillOpen) {
+        await reopenReturnsForCancelledExchange(orderModel, order).catch((e: any) => console.error('Reopen return after exchange cancel failed:', e?.message));
+      }
+    }
+
     // physical items — release the reservation (never a real `stock` restore here): `BLOCKED` above already
     // guarantees these items were still 'pending'/'processing', i.e. only ever reserved via `committedStock`
     // at checkout, never shipped/decremented from real `stock` — see ProductVariant.committedStock's doc comment.
@@ -2634,6 +2669,18 @@ export class OrdersService {
 
 
     await this.pushTimeline(orderId, 'cancel', `${targetItems.length} item(s) cancelled — ${reason}`, actor.actorId, actor.actorRole);
+
+    // WhatsApp "order cancelled" to the customer, once per store touched (the store's own switch decides).
+    for (const sid of new Set(targetItems.map(({ soIndex }) => String(order.sellerOrders[soIndex].storeId)))) {
+      this.notificationsService
+        .sendWhatsAppEvent({
+          storeId: sid,
+          to: order.shippingAddress?.phoneNumber,
+          event: 'order_cancelled',
+          vars: { order_id: orderId, order_number: order.orderNumber, currency: order.currency },
+        })
+        .catch(() => {});
+    }
 
     if (actor.notifyRecipientRole === 'seller') {
       const affectedSellerOrders = new Map<string, { sellerId: string; storeId: string }>();
@@ -2841,9 +2888,17 @@ export class OrdersService {
         recipientId: order.userId,
         recipientRole: 'user',
         type: NOTIFICATION_TYPES.REFUND_ISSUED,
+        storeId,
         title: 'Refund issued',
         body: `You've been refunded ${amount} ${buyerCurrency} for order #${order.orderNumber}.`,
         data: { orderId },
+        whatsapp: order.shippingAddress?.phoneNumber
+          ? {
+              storeId, to: order.shippingAddress.phoneNumber, templateName: 'order_refunded', languageCode: 'en_US',
+              event: 'order_refunded' as const,
+              vars: { order_id: orderId, order_number: order.orderNumber, refund_amount: `${amount} ${buyerCurrency}`, currency: buyerCurrency },
+            }
+          : undefined,
       })
       .catch(() => {});
 

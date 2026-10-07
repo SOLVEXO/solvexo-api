@@ -23,6 +23,7 @@ export const PAYMENT_METHOD_LABELS: Record<string, string> = {
   jazzcash: 'JazzCash',
   easypaisa: 'Easypaisa',
   payfast: 'PayFast',
+  manual: 'Custom manual payment',
 };
 
 /** Falls back to the raw enum value for a payment method added to the schema but not yet mapped above, rather than throwing. */

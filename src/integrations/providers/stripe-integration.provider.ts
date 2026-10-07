@@ -59,6 +59,12 @@ export class StripePaymentProvider implements PaymentProvider {
     }
   }
 
+  /** Stripe has no StoreIntegration row; its status is read from the store's Connect account (see StripeConnectService). */
+  // eslint-disable-next-line @typescript-eslint/require-await -- shared interface
+  async testConnection(): Promise<{ ok: boolean; message: string }> {
+    return { ok: !!this.stripe, message: this.stripe ? 'Stripe is configured — use Sync on the Stripe Connect card.' : 'Stripe is not configured on this platform' };
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- `config` is part of the shared PaymentProvider signature; unused here since this provider never reads StoreIntegration.credentials (see class doc).
   async initiatePayment(order: PaymentOrderContext, config: DecryptedPaymentConfig): Promise<PaymentSession> {
     if (!this.stripe) throw new Error('Stripe is not configured on this platform.');

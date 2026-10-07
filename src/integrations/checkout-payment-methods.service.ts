@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { isValidObjectId } from 'mongoose';
 import { DatabaseService } from '../database/databaseservice';
 import { ActivityLogService } from '../activity-log/activity-log.service';
 import { PaymentService } from '../payment/payment.service';
@@ -72,7 +73,33 @@ export class CheckoutPaymentMethodsService {
         return { provider: integration.provider, ...provider.getPublicConfig(integration.config ?? {}) };
       });
 
-    return { success: true, data: { currency, methods } };
+    // Seller-defined custom manual methods (Shopify "Custom payment method"): shown as extra choices; the order is
+    // placed unpaid and stays pending until the seller marks it paid.
+    const manual = await this.repos.manualPaymentMethodModel
+      .find({ storeId, isActive: true, isDelete: false })
+      .sort({ sortOrder: 1, createdAt: 1 })
+      .lean();
+    const manualViews = (manual as any[]).map((m) => ({
+      provider: 'manual' as const,
+      methodId: String(m._id),
+      displayName: m.name,
+      instructions: m.instructions ?? '',
+      currency,
+    }));
+
+    return { success: true, data: { currency, methods: [...methods, ...manualViews] } };
+  }
+
+  /** Places the order(s) for a seller-defined custom manual payment method — unpaid until the seller marks it paid. */
+  async placeManualMethodOrder(checkoutId: string, userId: string, methodId: string) {
+    const { storeId } = await this.resolveSingleStoreCheckout(checkoutId, userId);
+    if (!storeId) {
+      throw new BadRequestException('This checkout spans multiple stores — manual payment methods are not available for it.');
+    }
+    if (!isValidObjectId(methodId)) throw new NotFoundException('Payment method not found');
+    const method: any = await this.repos.manualPaymentMethodModel.findOne({ _id: methodId, storeId, isActive: true, isDelete: false }).lean();
+    if (!method) throw new NotFoundException('Payment method not found');
+    return this.paymentService.customManualPayment(userId, checkoutId, { name: method.name });
   }
 
   async initiatePayment(checkoutId: string, userId: string, providerKey: string, returnUrl: string, cancelUrl: string) {
@@ -113,6 +140,11 @@ export class CheckoutPaymentMethodsService {
 
     const provider = this.registry.resolve(integration.provider);
     const config = toDecryptedPaymentConfig(integration);
+    // Contact details some gateways require up front (PayFast wants the buyer's mobile number).
+    const [buyer, address] = await Promise.all([
+      this.repos.userModel.findById(userId).select('email contactEmail phone').lean(),
+      (checkout as any).addressId ? this.repos.addressModel.findById((checkout as any).addressId).select('phoneNumber').lean() : null,
+    ]);
     // Local gateways (safepay/jazzcash/easypaisa/payfast) are genuinely
     // PKR-only by design — 'PKR' there is correct, not a collapse. Stripe
     // settles in the seller's own real store currency, never hardcoded USD
@@ -129,7 +161,11 @@ export class CheckoutPaymentMethodsService {
     }
 
     const session = await provider.initiatePayment(
-      { orderId: checkoutId, amount, currency, storeId, returnUrl, cancelUrl },
+      {
+        orderId: checkoutId, amount, currency, storeId, returnUrl, cancelUrl,
+        buyerEmail: (buyer as any)?.contactEmail ?? (buyer as any)?.email,
+        buyerPhone: (address as any)?.phoneNumber ?? (buyer as any)?.phone,
+      },
       config,
     );
 
@@ -150,6 +186,7 @@ export class CheckoutPaymentMethodsService {
       paymentScope: 'full',
       status: 'pending',
       providerSessionId: session.sessionId,
+      returnUrl,
     });
 
     return { success: true, data: session };

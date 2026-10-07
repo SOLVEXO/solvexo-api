@@ -10,6 +10,7 @@ import { importCustomersCsv } from './customer-bulk-import';
 import { ConfigService } from '@nestjs/config';
 import { promises as dns } from 'dns';
 import * as bcrypt from 'bcrypt';
+import { StorefrontAccessService } from './storefront-access.service';
 import { DatabaseService } from '@/database/databaseservice';
 import {
   SellerType, ProductType, resolveTools,
@@ -38,6 +39,7 @@ import { StorePagesService } from '../store-pages/store-pages.service';
 import { CollectionsService } from '../collections/collections.service';
 import { DASHBOARD_METRIC_IDS } from './store-dashboard-metrics.const';
 import { setMarketingConsent } from '../newsletter/newsletter-consent.util';
+import { parseTaxOverrides } from '../tax/tax-rules.util';
 
 // Real EU member states + UK (retains UK GDPR post-Brexit, same as Shopify's
 // own "regions with consent laws" cookie-banner scoping) — a plain, explicit
@@ -81,6 +83,7 @@ export class StoreService {
     private readonly uploadService: UploadService,
     private readonly storeThemeService: StoreThemeService,
     private readonly storePagesService: StorePagesService,
+    private readonly storefrontAccess: StorefrontAccessService,
     private readonly collectionsService: CollectionsService,
     private readonly configService: ConfigService,
   ) {}
@@ -569,6 +572,7 @@ export class StoreService {
 
     store.privacyMode = privacyMode;
     await store.save();
+    this.storefrontAccess.invalidate(storeId);
 
     this.activityLogService.log({
       storeId, category: 'settings', action: 'store_privacy_updated',
@@ -590,10 +594,12 @@ export class StoreService {
       .findOne({ _id: storeId, isDelete: false }).select('+storePasswordHash').lean();
     if (!store) throw new NotFoundException('Store not found');
     if (store.privacyMode !== 'password' || !store.storePasswordHash) {
-      return { success: true, data: { valid: true } };
+      return { success: true, data: { valid: true, token: null } };
     }
-    const valid = await bcrypt.compare(password || '', store.storePasswordHash);
-    return { success: true, data: { valid } };
+    const valid = typeof password === 'string' && password.length > 0 && password.length <= 200
+      && await bcrypt.compare(password, store.storePasswordHash);
+    // On success: short-lived signed token the storefront sends as `x-storefront-token` (see StorefrontAccessService).
+    return { success: true, data: { valid, token: valid ? this.storefrontAccess.signToken(storeId) : null } };
   }
 
   /** Public — the real submit action behind the storefront's "Do Not Sell My
@@ -975,7 +981,7 @@ export class StoreService {
   // body would let a seller un-suspend their own store (see
   // usersService.deleteSellerAccount, which suspends stores on delete).
   async updateStore(sellerId: string, storeId: string, body: any) {
-    const { name, logo, coverImage, faviconUrl, description, tagline, contactEmail, contactPhone, sellerType, productTypes, codEnabled, paymentCaptureMethod, dashboardMetrics, reviewModerationEnabled, lowStockThreshold, taxRate, taxRegions, taxShipping, showDutiesNotice, enabledCurrencies, cookieBannerEnabled, cookieBannerMessage, showDoNotSellLink, cookieBannerRegionMode, cookieBannerPosition, cookieBannerColorMode, customerAccounts } = body;
+    const { name, logo, coverImage, faviconUrl, description, tagline, contactEmail, contactPhone, sellerType, productTypes, codEnabled, paymentCaptureMethod, dashboardMetrics, reviewModerationEnabled, lowStockThreshold, taxRate, taxRegions, taxShipping, taxPricesIncludeTax, taxOverrides, showDutiesNotice, enabledCurrencies, cookieBannerEnabled, cookieBannerMessage, showDoNotSellLink, cookieBannerRegionMode, cookieBannerPosition, cookieBannerColorMode, customerAccounts } = body;
 
     if (!storeId) throw new BadRequestException('storeId is required');
 
@@ -1062,6 +1068,13 @@ export class StoreService {
       if (typeof taxShipping !== 'boolean') throw new BadRequestException('taxShipping must be a boolean');
       updateData.taxShipping = taxShipping;
     }
+    if (taxPricesIncludeTax !== undefined) {
+      if (typeof taxPricesIncludeTax !== 'boolean') throw new BadRequestException('taxPricesIncludeTax must be a boolean');
+      updateData.taxPricesIncludeTax = taxPricesIncludeTax;
+    }
+    if (taxOverrides !== undefined) {
+      updateData.taxOverrides = parseTaxOverrides(taxOverrides);
+    }
     if (showDutiesNotice !== undefined) {
       if (typeof showDutiesNotice !== 'boolean') throw new BadRequestException('showDutiesNotice must be a boolean');
       updateData.showDutiesNotice = showDutiesNotice;
@@ -1076,7 +1089,8 @@ export class StoreService {
           throw new BadRequestException(`Tax region rate for ${country} must be between 0 and 100`);
         }
         const state = r?.state ? String(r.state).trim() : null;
-        return { country, state: state || null, rate };
+        const pricesIncludeTax = typeof r?.pricesIncludeTax === 'boolean' ? r.pricesIncludeTax : null;
+        return { country, state: state || null, rate, pricesIncludeTax };
       });
     }
 
@@ -1306,6 +1320,11 @@ export class StoreService {
         lowStockThreshold: store.lowStockThreshold ?? 10,
         taxRate: store.taxRate ?? 0,
         taxShipping: store.taxShipping ?? false,
+        taxPricesIncludeTax: store.taxPricesIncludeTax ?? false,
+        // Countries whose buyers see tax-inclusive prices even when the store default is exclusive (and vice versa
+        // is covered by the store flag): lets the storefront label "Tax included" without exposing rates.
+        taxIncludedCountries: (store.taxRegions ?? []).filter((r: any) => r.pricesIncludeTax === true && !r.state).map((r: any) => String(r.country).trim().toUpperCase()),
+        taxExcludedCountries: (store.taxRegions ?? []).filter((r: any) => r.pricesIncludeTax === false && !r.state).map((r: any) => String(r.country).trim().toUpperCase()),
         showDutiesNotice: store.showDutiesNotice ?? true,
         categoryId: store.categoryId ?? null,
         followersCount: store.followersCount ?? 0,
@@ -1327,6 +1346,7 @@ export class StoreService {
         // Not sensitive (never the hash) — the storefront needs it up front
         // to decide whether to render the real site or the gate page.
         privacyMode: store.privacyMode ?? 'public',
+        passwordProtected: store.privacyMode === 'password',
         // Customer Privacy — cookie consent + CCPA disclosure. The storefront
         // gates tracking-pixel script injection on this resolved boolean
         // (see StorefrontLayout.tsx) — already region-scoped here (real
@@ -1403,7 +1423,7 @@ export class StoreService {
     const limit = Math.min(50, parseInt(query.limit) || 20);
     const skip = (page - 1) * limit;
 
-    const filter: any = { status: 'active', isDelete: false };
+    const filter: any = { status: 'active', isDelete: false, privacyMode: { $nin: ['password', 'coming_soon'] } };
     if (query.categoryId && query.categoryId !== 'all') filter.categoryId = query.categoryId;
 
     const term = (query.q || '').trim();
@@ -1457,7 +1477,7 @@ export class StoreService {
 
     const { storeModel, productModel } = this.databaseService.repositories;
     const stores = await storeModel
-      .find({ status: 'active', isDelete: false })
+      .find({ status: 'active', isDelete: false, privacyMode: { $nin: ['password', 'coming_soon'] } })
       .sort({ averageRating: -1, followersCount: -1 })
       .limit(limit)
       .lean();
@@ -1599,16 +1619,33 @@ export class StoreService {
     const priceSort = query.sort === 'price_asc' || query.sort === 'price_desc';
     const hasMin = minPrice !== null && Number.isFinite(minPrice);
     const hasMax = maxPrice !== null && Number.isFinite(maxPrice);
+    // Multi-value filters (comma separated): `tags=a,b`, `productType=physical,digital`,
+    // and one `option.<Name>=v1,v2` key per variant option (Colour, Size, ...).
+    const csv = (v: unknown): string[] =>
+      (Array.isArray(v) ? v : [v]).flatMap((x) => String(x ?? '').split(',')).map((x) => x.trim()).filter(Boolean).slice(0, 50);
+    const tagsFilter = csv(query.tags);
+    const productTypeFilter = csv(query.productType).filter((x) => ['physical', 'digital', 'educational'].includes(x));
+    const optionFilters: Record<string, string[]> = {};
+    for (const key of Object.keys(query ?? {})) {
+      if (!key.startsWith('option.')) continue;
+      const name = key.slice(7).trim();
+      const values = csv(query[key]);
+      if (name && values.length) optionFilters[name] = values;
+    }
+    const wantFacets = query.facets === true || query.facets === 'true' || query.facets === '1';
+    const needsVariantInfo = priceSort || hasMin || hasMax || !!availability || tagsFilter.length > 0
+      || productTypeFilter.length > 0 || Object.keys(optionFilters).length > 0 || wantFacets;
 
     let total: number;
     let products: any[];
+    let facets: any = undefined;
 
-    if (priceSort || hasMin || hasMax || availability) {
-      // Price and stock live on ProductVariant (not Product), so these are
+    if (needsVariantInfo) {
+      // Price, stock and options live on ProductVariant (not Product), so these are
       // resolved per product up front — before pagination — so that
       // `total`/skip/limit agree with what's actually returned. A product's
       // price is its cheapest active variant's, same as the card shows.
-      const candidates = await productModel.find(filter).select('_id').lean();
+      const candidates: any[] = await productModel.find(filter).select('_id tags productType').limit(5000).lean();
       const candidateIds = candidates.map((p: any) => p._id.toString());
       const agg = await productVariantModel.aggregate([
         { $match: { productId: { $in: candidateIds }, status: 'active', isDelete: false } },
@@ -1617,21 +1654,50 @@ export class StoreService {
             _id: '$productId',
             minPrice: { $min: '$price' },
             inStock: { $max: { $cond: [{ $or: ['$unlimitedStock', '$allowBackorder', { $gt: [AVAILABLE_STOCK_EXPR, 0] }] }, 1, 0] } },
+            options: { $push: '$options' },
           },
         },
       ]);
-      const info = new Map<string, { minPrice: number; inStock: boolean }>(
-        agg.map((a: any) => [a._id, { minPrice: a.minPrice, inStock: a.inStock === 1 }]),
-      );
-      let ids = candidateIds.filter((id) => {
+      const info = new Map<string, { minPrice: number; inStock: boolean; options: Map<string, Set<string>> }>();
+      for (const a of agg as any[]) {
+        const opts = new Map<string, Set<string>>();
+        for (const list of a.options ?? []) {
+          for (const o of list ?? []) {
+            if (!o?.name || o.value == null || o.value === '') continue;
+            if (!opts.has(o.name)) opts.set(o.name, new Set());
+            opts.get(o.name)!.add(String(o.value));
+          }
+        }
+        info.set(a._id, { minPrice: a.minPrice, inStock: a.inStock === 1, options: opts });
+      }
+      type Group = 'tags' | 'productType' | 'availability' | 'price' | 'options';
+      const byId = new Map<string, any>(candidates.map((p: any) => [p._id.toString(), p]));
+      // `skip` leaves one facet group out so its own counts stay disjunctive
+      // (selecting "Red" still shows the other colours' counts, like Shopify).
+      const matches = (id: string, skipGroup?: Group, skipOption?: string): boolean => {
+        const p = byId.get(id);
         const i = info.get(id);
-        if (!i) return availability === 'out_of_stock'; // no active variant → can't be bought
-        if (hasMin && i.minPrice < (minPrice as number)) return false;
-        if (hasMax && i.minPrice > (maxPrice as number)) return false;
-        if (availability === 'in_stock' && !i.inStock) return false;
-        if (availability === 'out_of_stock' && i.inStock) return false;
+        if (skipGroup !== 'tags' && tagsFilter.length && !(p.tags ?? []).some((t: string) => tagsFilter.includes(t))) return false;
+        if (skipGroup !== 'productType' && productTypeFilter.length && !productTypeFilter.includes(p.productType)) return false;
+        if (skipGroup !== 'availability' && availability) {
+          if (!i) return availability === 'out_of_stock'; // no active variant → can't be bought
+          if (availability === 'in_stock' && !i.inStock) return false;
+          if (availability === 'out_of_stock' && i.inStock) return false;
+        }
+        if (skipGroup !== 'price' && (hasMin || hasMax)) {
+          if (!i) return false;
+          if (hasMin && i.minPrice < (minPrice as number)) return false;
+          if (hasMax && i.minPrice > (maxPrice as number)) return false;
+        }
+        for (const [name, values] of Object.entries(optionFilters)) {
+          if (skipGroup === 'options' && skipOption === name) continue;
+          const have = i?.options.get(name);
+          if (!have || !values.some((v) => have.has(v))) return false;
+        }
         return true;
-      });
+      };
+
+      let ids = candidateIds.filter((id) => matches(id));
       if (priceSort) {
         const dir = query.sort === 'price_asc' ? 1 : -1;
         ids.sort((a, b) => ((info.get(a)?.minPrice ?? 0) - (info.get(b)?.minPrice ?? 0)) * dir);
@@ -1646,8 +1712,40 @@ export class StoreService {
       total = ids.length;
       const pageIds = ids.slice(skip, skip + limit);
       const docs = await productModel.find({ _id: { $in: pageIds } }).lean();
-      const byId = new Map(docs.map((d: any) => [d._id.toString(), d]));
-      products = pageIds.map((id) => byId.get(id)).filter(Boolean);
+      const docById = new Map(docs.map((d: any) => [d._id.toString(), d]));
+      products = pageIds.map((id) => docById.get(id)).filter(Boolean);
+
+      if (wantFacets) {
+        const tally = (skipGroup: Group, read: (id: string) => string[], skipOption?: string) => {
+          const counts = new Map<string, number>();
+          for (const id of candidateIds) {
+            if (!matches(id, skipGroup, skipOption)) continue;
+            for (const v of new Set(read(id))) counts.set(v, (counts.get(v) ?? 0) + 1);
+          }
+          return counts;
+        };
+        const toList = (m: Map<string, number>) =>
+          [...m.entries()].map(([value, count]) => ({ value, count })).sort((a, b) => b.count - a.count || a.value.localeCompare(b.value));
+        const optionNames = new Set<string>(Object.keys(optionFilters));
+        for (const i of info.values()) for (const n of i.options.keys()) optionNames.add(n);
+        const priceIds = candidateIds.filter((id) => matches(id, 'price') && info.get(id));
+        const prices = priceIds.map((id) => info.get(id)!.minPrice);
+        const availCounts = { in_stock: 0, out_of_stock: 0 };
+        for (const id of candidateIds) {
+          if (!matches(id, 'availability')) continue;
+          if (info.get(id)?.inStock) availCounts.in_stock++; else availCounts.out_of_stock++;
+        }
+        facets = {
+          availability: availCounts,
+          price: { min: prices.length ? Math.min(...prices) : null, max: prices.length ? Math.max(...prices) : null, currency: (store as any).baseCurrency ?? null },
+          productTypes: toList(tally('productType', (id) => [byId.get(id).productType])),
+          tags: toList(tally('tags', (id) => byId.get(id).tags ?? [])).slice(0, 100),
+          options: [...optionNames].sort().slice(0, 10).map((name) => ({
+            name,
+            values: toList(tally('options', (id) => [...(info.get(id)?.options.get(name) ?? [])], name)).slice(0, 100),
+          })).filter((o) => o.values.length > 0),
+        };
+      }
     } else {
       total = await productModel.countDocuments(filter);
       products = await productModel
@@ -1722,6 +1820,7 @@ export class StoreService {
       data: {
         pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
         products: enrichedProducts,
+        ...(facets ? { facets } : {}),
       },
     };
   }

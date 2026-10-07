@@ -6,6 +6,7 @@ import { DatabaseService } from '@/database/databaseservice';
 import { FirebaseAdminService } from '@/firebase/firebase.config';
 import { EmailService } from '@/otp/services/email.service';
 import { WhatsAppSenderService } from '@/integrations/whatsapp-sender.service';
+import type { WhatsAppEvent, WhatsAppEventVars } from '@/integrations/whatsapp-events';
 import { NotificationsGateway } from './notifications.gateway';
 import { QUEUE_NAMES, NOTIFICATION_PUSH_JOB, NOTIFICATION_EMAIL_JOB, NOTIFICATION_WHATSAPP_JOB } from '@/queues/queue.constants';
 import { NOTIFICATION_CATEGORY } from './notification.types';
@@ -29,7 +30,7 @@ export interface NotifyParams {
    * recipient's own preferences. `templateName` must already be approved in
    * that store's Meta Business Manager.
    */
-  whatsapp?: { storeId: string; to: string; templateName: string; languageCode: string; bodyParams?: string[] };
+  whatsapp?: { storeId: string; to: string; templateName: string; languageCode: string; bodyParams?: string[]; event?: WhatsAppEvent; vars?: WhatsAppEventVars };
 }
 
 @Injectable()
@@ -101,6 +102,8 @@ export class NotificationsService {
           templateName: whatsapp.templateName,
           languageCode: whatsapp.languageCode,
           bodyParams: whatsapp.bodyParams,
+          event: whatsapp.event,
+          vars: whatsapp.vars,
         });
       }
     } catch (err: any) {
@@ -175,6 +178,26 @@ export class NotificationsService {
     return this.databaseService.repositories.userModel.findById(recipientId).select('email').lean();
   }
 
+  /**
+   * WhatsApp-only order message (no in-app/push/email): used for events that already notify the customer another
+   * way or not at all. The store's per-event switch decides whether anything is actually sent. Never throws.
+   */
+  async sendWhatsAppEvent(params: { storeId: string; to?: string | null; event: WhatsAppEvent; vars: WhatsAppEventVars }): Promise<void> {
+    try {
+      if (!params.to) return;
+      await this.enqueue(NOTIFICATION_WHATSAPP_JOB, {
+        storeId: params.storeId,
+        to: params.to,
+        templateName: params.event,
+        languageCode: 'en_US',
+        event: params.event,
+        vars: params.vars,
+      });
+    } catch (err: any) {
+      this.logger.error(`sendWhatsAppEvent() failed: ${err?.message}`);
+    }
+  }
+
   private async enqueue(jobName: string, data: Record<string, any>) {
     try {
       await this.queue.add(jobName, data);
@@ -186,7 +209,7 @@ export class NotificationsService {
       } else if (jobName === NOTIFICATION_EMAIL_JOB) {
         await this.emailService.sendMail(data.to, data.subject, data.html);
       } else if (jobName === NOTIFICATION_WHATSAPP_JOB) {
-        await this.whatsAppSenderService.sendOrderTemplate(data.storeId, data.to, data.templateName, data.languageCode, data.bodyParams);
+        await this.whatsAppSenderService.sendOrderTemplate(data.storeId, data.to, data.templateName, data.languageCode, data.bodyParams, data.event, data.vars);
       }
     }
   }

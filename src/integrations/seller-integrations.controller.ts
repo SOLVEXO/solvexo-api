@@ -44,6 +44,27 @@ export class SellerIntegrationsController {
     return this.service.list(storeId, actingSellerId(req.user));
   }
 
+  @Get('manual-methods')
+  async listManual(@Param('storeId') storeId: string, @Req() req: any) {
+    await this.service.assertStoreAccess(storeId, actingSellerId(req.user));
+    return { success: true, data: await this.service.listManualMethods(storeId) };
+  }
+
+  @Post('manual-methods')
+  createManual(@Param('storeId') storeId: string, @Body() body: any, @Req() req: any) {
+    return this.service.createManualMethod(storeId, actingSellerId(req.user), body);
+  }
+
+  @Patch('manual-methods/:methodId')
+  updateManual(@Param('storeId') storeId: string, @Param('methodId') methodId: string, @Body() body: any, @Req() req: any) {
+    return this.service.updateManualMethod(storeId, actingSellerId(req.user), methodId, body);
+  }
+
+  @Delete('manual-methods/:methodId')
+  deleteManual(@Param('storeId') storeId: string, @Param('methodId') methodId: string, @Req() req: any) {
+    return this.service.deleteManualMethod(storeId, actingSellerId(req.user), methodId);
+  }
+
   @Post(':type/:provider/connect')
   connect(
     @Param('storeId') storeId: string,

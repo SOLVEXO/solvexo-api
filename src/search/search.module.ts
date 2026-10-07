@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { SearchController } from './search.controller';
+import { PublicSearchController } from './public-search.controller';
 import { SearchService } from './search.service';
 import { AuthModule } from '@/auth/auth.module';
 import { RedisModule } from '@/redis/redis.module';
@@ -10,7 +11,7 @@ import { StoreModule } from '@/store/store.module';
   // RedisModule is required by JwtAuthGuard/OptionalJwtAuthGuard (session
   // check) — guards resolve DI from the consuming module's context.
   imports: [AuthModule, RedisModule, ProductsModule, StoreModule],
-  controllers: [SearchController],
+  controllers: [SearchController, PublicSearchController],
   providers: [SearchService],
   exports: [SearchService],
 })

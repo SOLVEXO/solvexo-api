@@ -24,6 +24,13 @@ export class BuyerCheckoutPaymentsController {
     return this.service.listPaymentMethods(checkoutId, req.user.userId);
   }
 
+  /** Place the order with a seller-defined custom manual payment method (unpaid until the seller marks it paid). */
+  @UseInterceptors(IdempotencyInterceptor)
+  @Post('manual/:methodId/place')
+  placeManual(@Param('checkoutId') checkoutId: string, @Param('methodId') methodId: string, @Req() req: any) {
+    return this.service.placeManualMethodOrder(checkoutId, req.user.userId, methodId);
+  }
+
   @UseInterceptors(IdempotencyInterceptor)
   @Post(':provider/initiate')
   initiate(

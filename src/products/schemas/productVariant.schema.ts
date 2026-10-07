@@ -156,6 +156,10 @@ export class ProductVariant {
   @Prop({ type: String, default: null })
   customsDescription!: string | null;
 
+  // Shopify "Charge tax on this product": false = never taxed at checkout (no added and no extracted tax).
+  @Prop({ type: Boolean, default: true })
+  taxable!: boolean;
+
   @Prop({ type: [String], default: [] })
   images: string[];
 

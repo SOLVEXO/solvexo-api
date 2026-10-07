@@ -14,10 +14,12 @@ import { StoreThemeModule } from '../store-theme/store-theme.module';
 import { StorePagesModule } from '../store-pages/store-pages.module';
 import { CollectionsModule } from '../collections/collections.module';
 
+import { StorefrontAccessService } from './storefront-access.service';
+
 @Module({
   imports: [AuthModule, RedisModule, AdminConfigModule, MarketingModule, UploadModule, StoreThemeModule, StorePagesModule, CollectionsModule],
   controllers: [StoreController, CustomDomainsController, StoreTaxRegionsImportController],
-  providers: [StoreService, CustomDomainsService, VercelDomainsService],
-  exports: [StoreService, CustomDomainsService],
+  providers: [StoreService, StorefrontAccessService, CustomDomainsService, VercelDomainsService],
+  exports: [StoreService, StorefrontAccessService, CustomDomainsService],
 })
 export class StoreModule {}

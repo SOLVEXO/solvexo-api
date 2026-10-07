@@ -2,12 +2,14 @@
 import {
   BulkColumn,
   BulkRowError,
+  parseBoolCell,
   parseEnumCell,
   parseListCell,
   parseNumberCell,
   runBulkImport,
 } from '../common/bulk-import/bulk-import.util';
 import { verifyStoreOwnershipOrForbidden } from '../common/store-ownership.util';
+import { parseCustomsInput } from '../shipping-rates/customs.util';
 
 /** Product import (Shopify-style "Import products"): CSV template + per-row
  *  create/update through the real ProductsService/ProductVariantsService
@@ -26,6 +28,13 @@ export const PRODUCT_IMPORT_COLUMNS: BulkColumn[] = [
   { key: 'Tags', description: 'Separate tags with a semicolon (;).', example: 'summer;cotton' },
   { key: 'Status', description: 'active or draft. New products default to draft.', example: 'draft' },
   { key: 'Category', description: "Name of one of your store's active categories (case-insensitive). Blank uses the store's default/first category.", example: 'Clothing' },
+  { key: 'Length (cm)', description: 'Package length in cm (used to pack the item into a shipping package for live rates). Blank = unchanged.', example: '30' },
+  { key: 'Width (cm)', description: 'Package width in cm.', example: '20' },
+  { key: 'Height (cm)', description: 'Package height in cm.', example: '5' },
+  { key: 'Country of Origin', description: '2-letter ISO country code (customs information), e.g. PK. Blank = unchanged.', example: 'PK' },
+  { key: 'HS Code', description: 'Harmonized System code, 6 to 10 digits (dots allowed), e.g. 6109.10. Blank = unchanged.', example: '6109.10' },
+  { key: 'Customs Description', description: 'Short goods description for customs forms (max 200 chars).', example: 'Cotton t-shirt' },
+  { key: 'Charge Tax', description: 'yes / no — "Charge tax on this product". Blank = unchanged (new products are taxable).', example: 'yes' },
 ];
 
 export interface ProductImportDeps {
@@ -81,6 +90,18 @@ export async function importProductsCsv(
     const stock = parseNumberCell(r['Stock'], 'Stock', { min: 0, integer: true });
     const status = parseEnumCell(r['Status'], 'Status', STATUSES);
     const tags = parseListCell(r['Tags']);
+    const length = parseNumberCell(r['Length (cm)'], 'Length (cm)', { min: 0 });
+    const width = parseNumberCell(r['Width (cm)'], 'Width (cm)', { min: 0 });
+    const height = parseNumberCell(r['Height (cm)'], 'Height (cm)', { min: 0 });
+    const taxable = parseBoolCell(r['Charge Tax'], 'Charge Tax');
+    // Customs info: only NON-blank cells are applied (blank = leave unchanged), normalised + validated by the
+    // same parser the variant form uses.
+    const customsBody: Record<string, string> = {};
+    if (r['Country of Origin'].trim()) customsBody.countryOfOrigin = r['Country of Origin'];
+    if (r['HS Code'].trim()) customsBody.hsCode = r['HS Code'];
+    if (r['Customs Description'].trim()) customsBody.customsDescription = r['Customs Description'];
+    const customs = parseCustomsInput(customsBody);
+    if (customs.error) throw new BulkRowError(customs.error);
     const categoryName = r['Category'].trim();
     let categoryId: string | undefined;
     if (categoryName) {
@@ -114,6 +135,13 @@ export async function importProductsCsv(
       const variantPatch: Record<string, unknown> = {};
       if (price !== undefined && price !== v.price) variantPatch.price = price;
       if (compareAt !== undefined && compareAt !== v.compareAtPrice) variantPatch.compareAtPrice = compareAt;
+      if (length !== undefined && length !== v.length) variantPatch.length = length;
+      if (width !== undefined && width !== v.width) variantPatch.width = width;
+      if (height !== undefined && height !== v.height) variantPatch.height = height;
+      for (const [k, val] of Object.entries(customs.value)) {
+        if (val !== undefined && val !== (v[k] ?? null)) variantPatch[k] = val;
+      }
+      if (taxable !== undefined && taxable !== (v.taxable !== false)) variantPatch.taxable = taxable;
 
       if (Object.keys(productPatch).length === 0 && Object.keys(variantPatch).length === 0) {
         return { outcome: 'skipped' as const, note: `No changes (SKU ${sku})` };
@@ -154,6 +182,11 @@ export async function importProductsCsv(
           sku: sku || undefined,
           stock: stock ?? 0,
           shippingWeight: r['Weight'] || null,
+          length: length ?? null,
+          width: width ?? null,
+          height: height ?? null,
+          ...customs.value,
+          taxable: taxable ?? true,
           unlimitedStock: false,
           isDefault: true,
         },

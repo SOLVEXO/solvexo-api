@@ -10,6 +10,7 @@ import { resolveCustomerId } from '@/common/customer-identity-resolve.util';
 import { escapeHtml, storePublicUrl } from '@/newsletter/marketing-email.util';
 import { signOrderStatusToken } from '@/common/order-status-token.util';
 import { buyerEmail } from '@/common/buyer-email.util';
+import { buildStoreEmailTotals } from '@/common/order-email-total.util';
 import { DatabaseService } from '@/database/databaseservice';
 import { NotificationsService } from '@/notifications/notifications.service';
 import { NOTIFICATION_TYPES } from '@/notifications/notification.types';
@@ -1865,6 +1866,56 @@ export class PaymentService {
   }
 
   /**
+   * Shopify "custom payment method" (manual payment): the seller named it, the buyer picked it at checkout, the
+   * platform never touches the money. Same "place the order now, settle later" shape as COD — the order is created
+   * UNPAID (paymentType 'manual', rail `manual`: no fee, no ledger credit) and stays pending until the seller
+   * marks it paid (`orders/mark-paid` / record-payment). Digital items are allowed; they are delivered like any other unpaid order.
+   */
+  async customManualPayment(userId: string, checkoutId: string, method: { name: string }) {
+    if (!checkoutId) throw new BadRequestException('checkoutId is required');
+    const { checkoutModel, paymentTransactionModel, orderModel, addressModel, cartModel } = this.databaseService.repositories;
+
+    const checkout = await checkoutModel.findOne({ _id: checkoutId, userId, isDelete: false });
+    if (!checkout) throw new NotFoundException('Checkout not found');
+    if (checkout.status === 'completed') throw new BadRequestException('Checkout already completed');
+    if (checkout.status === 'cancelled') throw new BadRequestException('Checkout is cancelled');
+    if (checkout.status === 'expired') throw new BadRequestException('Checkout has expired');
+    if (checkout.expiredAt && checkout.expiredAt < new Date()) {
+      await checkoutModel.findByIdAndUpdate(checkout._id, { status: 'expired' });
+      throw new BadRequestException('Checkout has expired');
+    }
+    await this.assertDiscountsStillValid(checkout);
+
+    await checkoutModel.findByIdAndUpdate(checkoutId, { paymentType: 'manual', status: 'payment_pending' });
+    const info = { paymentType: 'manual', isPaid: false, paymentStatus: 'unpaid', paymentMethodName: method.name };
+    const orders = await this.createOrder(userId, checkout, orderModel, addressModel, info, info);
+
+    await paymentTransactionModel.create({
+      userId,
+      checkoutId: checkout._id.toString(),
+      orderIds: orders.map((o: any) => o._id.toString()),
+      paymentType: 'manual',
+      paymentMethodName: method.name,
+      amount: checkout.totalAmount,
+      currency: checkout.currency,
+      fxSnapshots: checkout.fxSnapshots,
+      status: 'completed',
+      stripePaymentIntentId: null,
+      stripeClientSecret: null,
+      paidAt: null,
+    });
+
+    await checkoutModel.findByIdAndUpdate(checkoutId, { status: 'completed' });
+    await this.removeCheckedOutItemsFromCart(userId, checkout, cartModel);
+
+    return {
+      success: true,
+      message: `Order placed (${method.name})`,
+      data: { orders: orders.map((o: any) => this.formatOrder(o)) },
+    };
+  }
+
+  /**
    * The Pakistan "pay into the platform's own bank account" track — same
    * "place the order now, settle payment status later" shape as COD, except
    * the buyer has already sent money (just not yet admin-confirmed) rather
@@ -2053,8 +2104,8 @@ export class PaymentService {
     checkout: any,
     orderModel: any,
     addressModel: any,
-    physicalPayment: { paymentType: string; isPaid: boolean; paymentStatus?: string } = { paymentType: 'stripe', isPaid: true },
-    digitalPayment: { paymentType: string; isPaid: boolean; paymentStatus?: string } = { paymentType: 'stripe', isPaid: true },
+    physicalPayment: { paymentType: string; isPaid: boolean; paymentStatus?: string; paymentMethodName?: string } = { paymentType: 'stripe', isPaid: true },
+    digitalPayment: { paymentType: string; isPaid: boolean; paymentStatus?: string; paymentMethodName?: string } = { paymentType: 'stripe', isPaid: true },
     // Set only for the Pakistan manual-bank-transfer track — every USD figure
     // computed below (subtotal, fees, item prices, discounts) is converted to
     // the buyer-facing currency at `rate` before being stored, so the placed
@@ -2286,12 +2337,14 @@ export class PaymentService {
             autoDiscountId: i.autoDiscountId ?? null,
             autoDiscountUSD: convFrom(i.autoDiscountUSD ?? 0, storeCurrency),
             taxUSD: convFrom(i.taxUSD ?? 0, storeCurrency),
+            includedTaxUSD: convFrom(i.includedTaxUSD ?? 0, storeCurrency),
             isBackordered: i.variantId ? backorderedVariantIds.has(i.variantId) : false,
             status: 'pending',
           })),
           subtotal: convFrom(subtotalNative, storeCurrency),
           platformSponsoredDiscountUSD: convFrom(platformSponsoredDiscountUSDNative, storeCurrency),
           taxAmount: convFrom(taxAmountNative, storeCurrency),
+          includedTaxAmount: convFrom(storeItems.reduce((s, i) => s + (i.includedTaxUSD ?? 0), 0), storeCurrency),
           status: 'pending',
           tracking: null,
           shippedAt: null,
@@ -2343,6 +2396,7 @@ export class PaymentService {
       // `checkout.totalAmount` at checkout time. Must be added into this
       // order's own `totalAmount` too, or the two would silently disagree.
       const taxTotal = convertedSum(physicalItems, 'taxUSD');
+      const includedTaxTotal = convertedSum(physicalItems, 'includedTaxUSD');
 
       const physicalOrder = await orderModel.create({
         orderNumber: genOrderNumber(),
@@ -2360,6 +2414,7 @@ export class PaymentService {
         subtotal,
         shippingFee,
         taxAmount: taxTotal,
+        includedTaxAmount: includedTaxTotal,
         subscriberDiscountTotal,
         couponCode: couponDiscountTotal > 0 ? checkout.couponCode : null,
         couponDiscountTotal,
@@ -2371,6 +2426,7 @@ export class PaymentService {
         platformSponsoredDiscountTotal,
         totalAmount: this.round(subtotal + shippingFee + taxTotal),
         paymentType: physicalPayment.paymentType,
+        paymentMethodName: physicalPayment.paymentMethodName ?? null,
         paymentStatus: physicalPayment.paymentStatus ?? (physicalPayment.isPaid ? 'paid' : 'unpaid'),
         isPaid: physicalPayment.isPaid,
         paidAt: physicalPayment.isPaid ? new Date() : null,
@@ -2397,6 +2453,7 @@ export class PaymentService {
         digitalItems, 'campaignDiscountUSD', (i) => i.campaignSponsorType === 'platform',
       );
       const taxTotal = convertedSum(digitalItems, 'taxUSD');
+      const includedTaxTotal = convertedSum(digitalItems, 'includedTaxUSD');
 
       const digitalOrder = await orderModel.create({
         orderNumber: genOrderNumber(),
@@ -2412,6 +2469,7 @@ export class PaymentService {
         subtotal,
         shippingFee: 0,
         taxAmount: taxTotal,
+        includedTaxAmount: includedTaxTotal,
         subscriberDiscountTotal,
         couponCode: couponDiscountTotal > 0 ? checkout.couponCode : null,
         couponDiscountTotal,
@@ -2423,6 +2481,7 @@ export class PaymentService {
         platformSponsoredDiscountTotal,
         totalAmount: this.round(subtotal + taxTotal),
         paymentType: digitalPayment.paymentType,
+        paymentMethodName: digitalPayment.paymentMethodName ?? null,
         paymentStatus: digitalPayment.paymentStatus ?? (digitalPayment.isPaid ? 'paid' : 'unpaid'),
         isPaid: digitalPayment.isPaid,
         paidAt: digitalPayment.isPaid ? new Date() : null,
@@ -2560,6 +2619,32 @@ export class PaymentService {
     // order placement.
     this.sendOrderConfirmationEmails(userId, createdOrders, orderCurrency, storeModel).catch(() => {});
 
+    // WhatsApp "order confirmed" to the customer, one per store in the order (the store's own switch decides;
+    // switched off by default). Fire-and-forget like everything above.
+    const confirmStoreIds = [...new Set<string>(createdOrders.flatMap((o: any) => (o.sellerOrders ?? []).map((so: any) => String(so.storeId))))];
+    const confirmStoreNames = new Map<string, string>(
+      ((await storeModel.find({ _id: { $in: confirmStoreIds } }).select('name').lean().catch(() => [])) as any[]).map((s) => [String(s._id), s.name]),
+    );
+    for (const createdOrder of createdOrders) {
+      const sids = new Set<string>((createdOrder.sellerOrders ?? []).map((so: any) => String(so.storeId)));
+      for (const sid of sids) {
+        this.notificationsService
+          .sendWhatsAppEvent({
+            storeId: sid,
+            to: createdOrder.shippingAddress?.phoneNumber,
+            event: 'order_confirmed',
+            vars: {
+              order_id: String(createdOrder._id),
+              order_number: createdOrder.orderNumber,
+              total: Number(createdOrder.totalAmount ?? 0).toFixed(2),
+              currency: orderCurrency,
+              store_name: confirmStoreNames.get(sid),
+            },
+          })
+          .catch(() => {});
+      }
+    }
+
     return createdOrders;
   }
 
@@ -2576,16 +2661,8 @@ export class PaymentService {
     const buyerTo = buyerEmail(buyer as any); // a guest's real (contact) email — never the synthetic login address
     if (!buyerTo) return;
 
-    const byStore = new Map<string, { items: any[]; subtotal: number; orderNumbers: Set<string>; firstOrderId: string }>();
-    for (const createdOrder of createdOrders) {
-      for (const so of createdOrder.sellerOrders) {
-        const entry = byStore.get(so.storeId) ?? { items: [], subtotal: 0, orderNumbers: new Set<string>(), firstOrderId: String(createdOrder._id) };
-        entry.items.push(...so.items);
-        entry.subtotal += so.subtotal ?? 0;
-        entry.orderNumbers.add(createdOrder.orderNumber);
-        byStore.set(so.storeId, entry);
-      }
-    }
+    // Totals = items (net of discounts) + shipping + tax, in the order's own currency (see order-email-total.util).
+    const byStore = buildStoreEmailTotals(createdOrders);
     if (byStore.size === 0) return;
 
     const stores = await storeModel
@@ -2611,7 +2688,10 @@ export class PaymentService {
           <h2 style="margin-bottom: 4px;">Thanks for your order!</h2>
           <p style="color:#555;">Order ${[...entry.orderNumbers].join(', ')} from <strong>${storeName}</strong> is confirmed.</p>
           <table style="width:100%; border-collapse:collapse; margin:16px 0;">${itemRows}</table>
-          <p style="font-weight:bold; text-align:right;">Total: ${entry.subtotal.toFixed(2)} ${orderCurrency}</p>
+          <p style="text-align:right; margin:2px 0;">Subtotal: ${entry.subtotal.toFixed(2)} ${orderCurrency}</p>
+          ${entry.shipping > 0 ? `<p style="text-align:right; margin:2px 0;">Shipping: ${entry.shipping.toFixed(2)} ${orderCurrency}</p>` : ''}
+          ${entry.tax > 0 ? `<p style="text-align:right; margin:2px 0;">Tax: ${entry.tax.toFixed(2)} ${orderCurrency}</p>` : ''}
+          <p style="font-weight:bold; text-align:right;">Total: ${entry.total.toFixed(2)} ${orderCurrency}</p>
           ${statusUrl ? `<p style="text-align:center;margin:20px 0;"><a href="${statusUrl}" style="background:#111;color:#fff;padding:10px 18px;border-radius:6px;text-decoration:none;">View your order</a></p>` : ''}
           <p style="color:#888; font-size:13px;">Questions about this order? Just reply to this email.</p>
         </div>`;

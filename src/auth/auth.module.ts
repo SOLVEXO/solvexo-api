@@ -40,6 +40,6 @@ import { AuthVisualService } from '../common/auth-visual.service';
   ],
   controllers: [AuthController],
   providers: [AuthService, GuestSessionService, JwtStrategy, JwtAuthGuard, PermissionsGuard, AuthVisualService],
-  exports: [AuthService, GuestSessionService, JwtAuthGuard, PermissionsGuard],
+  exports: [JwtModule, AuthService, GuestSessionService, JwtAuthGuard, PermissionsGuard],
 })
 export class AuthModule {}

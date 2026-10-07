@@ -36,6 +36,16 @@ export class BulkVariantEditDto {
   @IsOptional() @IsNumber() @Min(0) @Max(100_000_000) compareAtPrice?: number | null;
   @IsOptional() @IsString() @MaxLength(64) sku?: string;
   @IsOptional() @IsNumber() @Min(0) @Max(1_000_000) stock?: number;
+  /** Package dimensions in cm (physical products); null clears. */
+  @IsOptional() @IsNumber() @Min(0) @Max(10_000) length?: number | null;
+  @IsOptional() @IsNumber() @Min(0) @Max(10_000) width?: number | null;
+  @IsOptional() @IsNumber() @Min(0) @Max(10_000) height?: number | null;
+  /** Customs information (physical products); '' / null clears. Validated by parseCustomsInput. */
+  @IsOptional() @IsString() @MaxLength(2) countryOfOrigin?: string | null;
+  @IsOptional() @IsString() @MaxLength(14) hsCode?: string | null;
+  @IsOptional() @IsString() @MaxLength(200) customsDescription?: string | null;
+  /** "Charge tax on this product". */
+  @IsOptional() @IsBoolean() taxable?: boolean;
 }
 
 export class BulkProductEditDto {

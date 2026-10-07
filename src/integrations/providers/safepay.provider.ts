@@ -51,6 +51,42 @@ export class SafepayPaymentProvider implements PaymentProvider {
     };
   }
 
+  /**
+   * Real test: creates a throw-away tracker (PKR 1, never paid, never redirected to) with the seller's own
+   * credentials in the selected mode, then reads it back. 401/403 = wrong keys for this mode.
+   */
+  async testConnection(config: DecryptedPaymentConfig) {
+    if (!config.credentials?.secretKey || !config.credentials?.clientId) {
+      return { ok: false, message: 'Safepay secret key / client id are missing' };
+    }
+    try {
+      const res = await fetch(`${this.apiBase(config.mode)}/order/payments/v3/`, {
+        method: 'POST',
+        headers: this.authHeaders(config),
+        body: JSON.stringify({
+          client: config.credentials.clientId,
+          amount: 1,
+          currency: 'PKR',
+          environment: config.mode,
+          order_id: `solvexo-connection-test-${Date.now()}`,
+        }),
+      });
+      if (res.status === 401 || res.status === 403) {
+        return { ok: false, message: `Safepay rejected these credentials in ${config.mode} mode (HTTP ${res.status}) — check the keys belong to ${config.mode}` };
+      }
+      if (!res.ok) {
+        return { ok: false, message: `Safepay returned HTTP ${res.status}: ${(await res.text()).slice(0, 200)}` };
+      }
+      const data = await res.json();
+      const token: string | undefined = (data?.data?.tracker ?? data?.data ?? data)?.token;
+      if (!token) return { ok: false, message: 'Safepay answered but did not return a tracker token' };
+      const check = await this.verifyPayment(token, config);
+      return { ok: true, message: `Safepay ${config.mode} credentials accepted (test tracker ${token.slice(0, 8)}…, state ${check.status})` };
+    } catch (err: any) {
+      return { ok: false, message: `Could not reach Safepay: ${err?.message ?? 'network error'}` };
+    }
+  }
+
   async initiatePayment(order: PaymentOrderContext, config: DecryptedPaymentConfig): Promise<PaymentSession> {
     const res = await fetch(`${this.apiBase(config.mode)}/order/payments/v3/`, {
       method: 'POST',

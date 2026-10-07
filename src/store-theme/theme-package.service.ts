@@ -2,6 +2,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { createHash } from 'crypto';
 import * as yauzl from 'yauzl';
+import { Liquid } from 'liquidjs';
 import { DatabaseService } from '../database/databaseservice';
 import { verifyStoreOwnershipStrict } from '../common/store-ownership.util';
 
@@ -68,6 +69,17 @@ export class ThemePackageService {
     const target = await this.packages.findOne({ storeId, installedThemeId, version }).lean();
     if (!target) throw new NotFoundException('Theme source revision not found');
     return this.createRevision(storeId, installedThemeId, sellerId, target.files as any, 'rollback', version);
+  }
+
+  async preview(storeId: string, sellerId: string, installedThemeId: string, version?: number) {
+    await verifyStoreOwnershipStrict(this.stores, storeId, sellerId);
+    await this.assertInstalledTheme(storeId, installedThemeId);
+    const revision = version === undefined
+      ? await this.latest(storeId, installedThemeId)
+      : await this.packages.findOne({ storeId, installedThemeId, version });
+    if (!revision) throw new NotFoundException('Upload a theme package before previewing it');
+    const html = await renderThemePreview(revision.files as any[]);
+    return { success: true, data: { version: revision.version, html } };
   }
 
   private async assertInstalledTheme(storeId: string, installedThemeId: string) {
@@ -185,4 +197,108 @@ function stripCommonRoot(files: PackageFile[]): PackageFile[] {
 function extension(path: string): string { return path.slice(path.lastIndexOf('.')).toLowerCase(); }
 function makeFile(path: string, data: Buffer, encoding: 'utf8' | 'base64'): PackageFile {
   return { path, encoding, content: data.toString(encoding), size: data.length, sha256: createHash('sha256').update(data).digest('hex') };
+}
+
+async function renderThemePreview(files: PackageFile[]): Promise<string> {
+  const byPath = new Map(files.map((file) => [file.path, file]));
+  const textTemplates = Object.fromEntries(files.filter((file) => file.encoding === 'utf8').map((file) => [file.path, file.content]));
+  let settings: Record<string, any> = {};
+  try { settings = JSON.parse(byPath.get('config/settings_data.json')?.content ?? '{}').current ?? {}; } catch { /* optional settings data */ }
+  const engine = new Liquid({ templates: textTemplates, extname: '.liquid', strictFilters: false, strictVariables: false, ownPropertyOnly: true, renderLimit: 2500, memoryLimit: 4 * 1024 * 1024 });
+  engine.registerFilter('asset_url', (name: string) => {
+    const file = byPath.get(`assets/${String(name).replace(/^\//, '')}`);
+    if (!file) return '';
+    if (file.encoding === 'utf8') return `data:${mimeType(file.path)};base64,${Buffer.from(file.content).toString('base64')}`;
+    return `data:${mimeType(file.path)};base64,${file.content}`;
+  });
+  engine.registerFilter('stylesheet_tag', (url: string) => `<link rel="stylesheet" href="${escapeAttribute(url)}">`);
+  engine.registerFilter('script_tag', (url: string) => `<script src="${escapeAttribute(url)}"></script>`);
+  engine.registerFilter('money', (value: unknown) => formatMoney(value));
+  engine.registerFilter('money_with_currency', (value: unknown) => `${formatMoney(value)} USD`);
+  engine.registerFilter('image_url', (value: any) => typeof value === 'string' ? value : value?.src ?? value?.url ?? '');
+  engine.registerFilter('image_tag', (url: string, alt = '') => `<img src="${escapeAttribute(url)}" alt="${escapeAttribute(alt)}">`);
+
+  const context = {
+    shop: { name: 'Store preview', currency: 'USD', money_format: '${{amount}}' },
+    settings,
+    request: { page_type: 'index', origin: '' },
+    page: { title: 'Home' },
+    cart: { item_count: 0, total_price: 0, items: [] },
+    routes: { root_url: '/', cart_url: '/cart', search_url: '/search', account_url: '/account' },
+    products: { featured: { id: 1, title: 'Featured product', price: 0, available: true, url: '/product/featured', featured_image: null, images: [], variants: [] } },
+    content_for_header: '',
+  };
+  const renderLiquid = async (source: string, scope: Record<string, any> = {}) => engine.parseAndRender(preprocessShopifyTags(source), { ...context, ...scope });
+  const renderSection = async (key: string, section: any) => {
+    const type = String(section?.type ?? '');
+    if (!/^[a-z0-9_-]+$/i.test(type)) return '';
+    const file = byPath.get(`sections/${type}.liquid`);
+    if (!file) return '';
+    const markup = await renderLiquid(file.content, { section: { id: key, type, settings: section.settings ?? {}, blocks: section.blocks ?? [], block_order: section.block_order ?? [] } });
+    return `<div data-shopify-section="${escapeAttribute(key)}">${markup}</div>`;
+  };
+  const renderJsonTemplate = async (path: string) => {
+    const file = byPath.get(path);
+    if (!file) return null;
+    const definition = JSON.parse(file.content);
+    const parts: string[] = [];
+    for (const key of definition.order ?? []) parts.push(await renderSection(key, definition.sections?.[key]));
+    return parts.join('\n');
+  };
+
+  let content = await renderJsonTemplate('templates/index.json');
+  if (content === null && byPath.has('templates/index.liquid')) content = await renderLiquid(byPath.get('templates/index.liquid')!.content);
+  if (content === null) content = '<main><h1>Theme preview</h1><p>This theme has no home page template.</p></main>';
+  const layoutFile = byPath.get('layout/theme.liquid');
+  if (layoutFile) {
+    let layout = preprocessShopifyTags(layoutFile.content).replace(/\{\%[-+]?\s*content_for_header\s*[-+]?\%\}/g, '');
+    layout = layout.replace(/\{\{[-+]?\s*content_for_layout\s*[-+]?\}\}/g, '<!-- SHOPIFY_CONTENT_FOR_LAYOUT -->');
+    layout = await replaceAsync(layout, /\{%[-+]?\s*section\s+['"]([^'"]+)['"]\s*[-+]?%\}/g, async (_match, sectionName) => renderSection(sectionName, { type: sectionName }));
+    layout = await replaceAsync(layout, /\{%[-+]?\s*sections\s+['"]([^'"]+)['"]\s*[-+]?%\}/g, async (_match, groupName) => {
+      const group = byPath.get(`sections/${groupName}.json`);
+      if (!group) return '';
+      const definition = JSON.parse(group.content);
+      const blocks: string[] = [];
+      for (const key of definition.order ?? []) blocks.push(await renderSection(key, definition.sections?.[key]));
+      return blocks.join('\n');
+    });
+    let rendered = await renderLiquid(layout);
+    rendered = rendered.replace('<!-- SHOPIFY_CONTENT_FOR_LAYOUT -->', content);
+    if (!/<html[\s>]/i.test(rendered)) rendered = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head><body>${rendered}</body></html>`;
+    rendered = applyPreviewCsp(rendered);
+    return rendered;
+  }
+  return applyPreviewCsp(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Theme preview</title></head><body>${content}</body></html>`);
+}
+
+function stripSchemaTags(source: string): string { return source.replace(/\{%\s*schema\s*%\}[\s\S]*?\{%\s*endschema\s*%\}/g, ''); }
+function preprocessShopifyTags(source: string): string {
+  return stripSchemaTags(source)
+    .replace(/\{%[-+]?\s*(?:style|endstyle|javascript|endjavascript)\s*[-+]?%\}/g, '')
+    .replace(/\{%[-+]?\s*content_for\s+['"]blocks['"][^%]*[-+]?%\}/g, '')
+    .replace(/\{%[-+]?\s*form\s+['"]([^'"]+)['"][^%]*[-+]?%\}/g, (_match, formType) => `<form method="post" action="${formType === 'product' ? '/cart/add' : formType === 'customer' ? '/account' : formType === 'contact' ? '/contact' : '/search'}" data-shopify-form="${formType}">`)
+    .replace(/\{%[-+]?\s*endform\s*[-+]?%\}/g, '</form>')
+    .replace(/\{%[-+]?\s*paginate\s+(.+?)\s+by\s+([\w.]+|\d+)[^%]*[-+]?%\}/g, (_match, collection, limit) => `{% for product in ${collection} limit: ${limit} %}`)
+    .replace(/\{%[-+]?\s*endpaginate\s*[-+]?%\}/g, '{% endfor %}');
+}
+async function replaceAsync(source: string, pattern: RegExp, replacer: (...args: any[]) => Promise<string>): Promise<string> {
+  const matches = [...source.matchAll(pattern)];
+  const rendered = await Promise.all(matches.map((match) => replacer(...match)));
+  let result = source;
+  for (let i = matches.length - 1; i >= 0; i--) {
+    const match = matches[i];
+    result = `${result.slice(0, match.index)}${rendered[i]}${result.slice(match.index! + match[0].length)}`;
+  }
+  return result;
+}
+function mimeType(path: string): string {
+  const ext = extension(path);
+  return ({ '.css': 'text/css', '.js': 'text/javascript', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.avif': 'image/avif', '.gif': 'image/gif', '.woff': 'font/woff', '.woff2': 'font/woff2', '.ttf': 'font/ttf', '.otf': 'font/otf' } as Record<string, string>)[ext] ?? 'application/octet-stream';
+}
+function escapeAttribute(value: unknown): string { return String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] ?? c); }
+function formatMoney(value: unknown): string { const numeric = Number(value ?? 0); return Number.isFinite(numeric) ? new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(numeric / 100) : '$0.00'; }
+function applyPreviewCsp(html: string): string {
+  const policy = "default-src 'none'; img-src data: blob:; style-src 'unsafe-inline' data:; font-src data:; script-src 'unsafe-inline' data:; connect-src 'none'; form-action 'none'; frame-src 'none'; base-uri 'none'";
+  const tag = `<meta http-equiv="Content-Security-Policy" content="${policy}">`;
+  return /<head(?:\s[^>]*)?>/i.test(html) ? html.replace(/<head(?:\s[^>]*)?>/i, (head) => `${head}${tag}`) : html;
 }

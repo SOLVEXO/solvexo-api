@@ -6,6 +6,7 @@ import { EntitlementsService } from '@/platform-plans/entitlements.service';
 import { CreateStoreLocationDto } from './dto/create-store-location.dto';
 import { UpdateStoreLocationDto } from './dto/update-store-location.dto';
 import { importLocationsCsv } from './store-locations-bulk-import';
+import { geocodeAddress } from '@/common/geocoding/geocoding.util';
 
 /** Multi-location POS — physical branches under one Store (see StoreLocation schema docs). */
 @Injectable()
@@ -35,11 +36,19 @@ export class StoreLocationService {
     // InventoryService.getVariantLocations).
     const existingCount = await this.locationModel.countDocuments({ storeId, isDelete: false });
 
+    // Local-delivery radius needs coordinates: the seller's own (manual) win, otherwise look them up from the
+    // address (free OpenStreetMap geocoder, best effort — null just means "enter them by hand / use postcodes").
+    const manualCoords = typeof dto.latitude === 'number' && typeof dto.longitude === 'number';
+    const geocoded = manualCoords ? null : await geocodeAddress(dto);
+
     const location = await this.locationModel.create({
       storeId, sellerId, name: dto.name,
       addressLine1: dto.addressLine1 ?? null, city: dto.city ?? null, phone: dto.phone ?? null,
       addressLine2: dto.addressLine2 ?? null, state: dto.state ?? null, zipCode: dto.zipCode ?? null,
-      country: dto.country ?? null, latitude: dto.latitude ?? null, longitude: dto.longitude ?? null,
+      country: dto.country ?? null,
+      latitude: manualCoords ? dto.latitude : geocoded?.latitude ?? null,
+      longitude: manualCoords ? dto.longitude : geocoded?.longitude ?? null,
+      coordsSource: manualCoords ? 'manual' : geocoded ? 'geocoded' : null,
       type: dto.type ?? 'store',
       isDefault: existingCount === 0,
       status: 'active',
@@ -88,6 +97,19 @@ export class StoreLocationService {
     if (dto.country !== undefined) location.country = dto.country ?? null;
     if (dto.latitude !== undefined) location.latitude = dto.latitude ?? null;
     if (dto.longitude !== undefined) location.longitude = dto.longitude ?? null;
+    if (dto.latitude !== undefined || dto.longitude !== undefined) {
+      location.coordsSource = typeof location.latitude === 'number' && typeof location.longitude === 'number' ? 'manual' : null;
+    }
+    // Address changed (or never had coordinates) and the seller did not type coordinates now: re-geocode,
+    // unless the current coordinates are the seller's own manual ones.
+    const addressChanged = ['addressLine1', 'addressLine2', 'city', 'state', 'zipCode', 'country'].some((k) => (dto as any)[k] !== undefined);
+    const hasCoords = typeof location.latitude === 'number' && typeof location.longitude === 'number';
+    if (dto.latitude === undefined && dto.longitude === undefined && location.coordsSource !== 'manual' && (addressChanged || !hasCoords)) {
+      const g = await geocodeAddress(location);
+      location.latitude = g?.latitude ?? null;
+      location.longitude = g?.longitude ?? null;
+      location.coordsSource = g ? 'geocoded' : null;
+    }
     if (dto.type !== undefined) location.type = dto.type;
     if (dto.status !== undefined) location.status = dto.status;
 

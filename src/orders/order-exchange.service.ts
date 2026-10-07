@@ -9,6 +9,8 @@ import { ExchangeRateService } from '../exchange-rate/exchange-rate.service';
 import { PaymentService } from '../payment/payment.service';
 import { FinanceService } from '../finance/finance.service';
 import { StoreCreditService } from '../store-credit/store-credit.service';
+import { LoyaltyService } from '../loyalty/loyalty.service';
+import { OrderReturnsService } from './order-returns.service';
 import { round } from '../common/number.util';
 import { effectiveReturnStatus } from '../common/return-status.util';
 import { availableStock, AVAILABLE_STOCK_EXPR } from '../common/stock-availability.util';
@@ -49,6 +51,8 @@ export class OrderExchangeService {
     private readonly paymentService: PaymentService,
     private readonly finance: FinanceService,
     private readonly storeCredit: StoreCreditService,
+    private readonly loyalty: LoyaltyService,
+    private readonly returns: OrderReturnsService,
   ) {}
 
   private get r() { return this.db.repositories; }
@@ -239,7 +243,11 @@ export class OrderExchangeService {
     const taxAmount = round(items.reduce((s, it) => s + it.taxUSD, 0));
     const totalAmount = round(subtotal + taxAmount);
     const owes = totalAmount > 0;
-    const exchangeOf = { orderId: String(order._id), orderNumber: order.orderNumber, itemIds: returnIds };
+    const exchangeOf = {
+      orderId: String(order._id), orderNumber: order.orderNumber, itemIds: returnIds,
+      credit: granted, refundedOut: 0,
+      lines: prevItems.map((p) => ({ itemId: String(so.items[p.i]._id), prevReturnStatus: p.returnStatus, prevRefundedAmount: p.refundedAmount })),
+    };
     try {
       await this.r.orderModel.create({
         _id: newId,
@@ -279,6 +287,9 @@ export class OrderExchangeService {
     for (const x of repl) {
       await this.r.productModel.updateOne({ _id: x.product._id }, { $inc: { purchaseCount: x.quantity } }).catch(() => undefined);
     }
+    // Loyalty: the points earned on the returned items are clawed back exactly like a refund does. Runs once - only the
+    // caller that won the atomic line claim above gets here.
+    if (granted > 0) this.loyalty.clawbackPurchasePoints(storeId, order.userId, String(order._id), granted).catch(() => undefined);
 
     // ── 6) money: refund the difference when the replacement is cheaper ──
     let refundNote = '';
@@ -289,6 +300,7 @@ export class OrderExchangeService {
           const credit = round(this.exchangeRate.convertWithSnapshots(refundDue, order.currency, store.baseCurrency, order.fxSnapshots ?? []));
           await this.storeCredit.creditFromRefund(storeId, order.userId, credit, String(order._id), `exchange:${String(newId)}`, `Order #${order.orderNumber} — exchange difference`, { actorId: actor.actorId, actorRole: 'seller' } as any);
           refundNote = `Exchange difference of ${refundDue.toFixed(2)} ${order.currency} refunded to store credit`;
+          await this.r.orderModel.updateOne({ _id: newId }, { $set: { 'exchangeOf.refundedOut': refundDue } }).catch(() => undefined);
         } else {
           const settlementCurrency = so.settlementCurrency ?? order.currency ?? 'USD';
           try {
@@ -310,8 +322,10 @@ export class OrderExchangeService {
             if (!txn?.stripePaymentIntentId) throw new Error('No completed Stripe payment found for this order');
             await this.paymentService.refundStripePaymentIntent(txn.stripePaymentIntentId, refundDue, `exchange_${String(newId)}`);
             refundNote = `Exchange difference of ${refundDue.toFixed(2)} ${order.currency} refunded to the original payment method`;
+            await this.r.orderModel.updateOne({ _id: newId }, { $set: { 'exchangeOf.refundedOut': refundDue } }).catch(() => undefined);
           } else {
             refundNote = `Exchange difference of ${refundDue.toFixed(2)} ${order.currency} was paid outside the platform — refund it to the customer manually`;
+            await this.r.orderModel.updateOne({ _id: newId }, { $set: { 'exchangeOf.refundedOut': refundDue } }).catch(() => undefined);
           }
         }
       } catch (err: any) {
@@ -326,22 +340,24 @@ export class OrderExchangeService {
 
     // ── 7) returned units back on the shelf (opt-in, like return approval) ──
     if (dto.restock === 'restock' || dto.restock === 'damaged') {
+      const restockedSnaps: Array<{ itemId: string; choice: 'restock' | 'damaged' }> = [];
       try {
         const seller: any = await this.r.sellerModel.findOne({ _id: sellerId }).select('name');
         for (const i of lineIdx) {
           const it = so.items[i];
           if (!it.variantId || it.returnStatus === 'received') continue; // received lines were restocked (or not) when marked received
-          const variant: any = await this.r.productVariantModel.findOne({ _id: it.variantId, isDelete: false });
-          if (!variant || variant.unlimitedStock) continue;
-          await this.r.productVariantModel.updateOne({ _id: it.variantId }, dto.restock === 'restock' ? { $inc: { stock: it.quantity } } : { $inc: { stock: it.quantity, damagedStock: it.quantity } });
-          await this.r.stockAdjustmentModel.create({
-            storeId, productId: it.productId, variantId: it.variantId, locationId: null,
-            productName: it.name, sku: it.sku ?? null,
-            previousStock: variant.stock, newStock: variant.stock + it.quantity, delta: it.quantity,
-            reason: dto.restock === 'restock' ? 'return' : 'damaged',
-            note: `Exchange return for order #${order.orderNumber}`,
-            adjustedBy: sellerId, adjustedByName: seller?.name ?? null,
+          // Shared helper: moves variant stock AND the default location's VariantLocationStock row together.
+          const moved = await this.returns.restockReturnedUnits(storeId, it, dto.restock, `Exchange return for order #${order.orderNumber}`, sellerId, seller?.name ?? null);
+          if (moved) restockedSnaps.push({ itemId: String(it._id), choice: dto.restock });
+        }
+        if (restockedSnaps.length) {
+          const upd: any = {};
+          const lines = exchangeOf.lines.map((l) => {
+            const s = restockedSnaps.find((x) => x.itemId === l.itemId);
+            return s ? { ...l, restocked: true, restockChoice: s.choice } : l;
           });
+          upd['exchangeOf.lines'] = lines;
+          await this.r.orderModel.updateOne({ _id: newId }, { $set: upd });
         }
       } catch { /* stock bookkeeping must not undo a completed exchange */ }
     }

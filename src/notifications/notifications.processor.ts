@@ -44,6 +44,8 @@ export class NotificationsProcessor extends WorkerHost {
           job.data.templateName,
           job.data.languageCode,
           job.data.bodyParams,
+          job.data.event,
+          job.data.vars,
         );
         return;
       default:

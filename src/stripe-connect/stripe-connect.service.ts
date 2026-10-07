@@ -25,6 +25,12 @@ export class StripeConnectService implements OnModuleInit {
     return this.databaseService.repositories;
   }
 
+  /** True when the platform Stripe key is a test key (`sk_test_` / `rk_test_`) — every card payment is then a Stripe TEST payment. */
+  isTestMode(): boolean {
+    const key = this.configService.get<string>('STRIPE_SECRET_KEY')?.trim() ?? '';
+    return /^(sk|rk)_test_/.test(key);
+  }
+
   private assertStripeConfigured() {
     if (!this.stripe) throw new BadRequestException('Online payments are not configured');
     return this.stripe;

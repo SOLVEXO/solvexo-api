@@ -60,6 +60,11 @@ export class SeoSitemapService {
     const { productModel } = this.db.repositories;
     const filter: Record<string, any> = { status: 'active', isDelete: false };
     if (storeId) filter.storeId = storeId;
+    else {
+      // Locked (password / coming_soon) stores never appear in the platform sitemap.
+      const locked = await this.db.repositories.storeModel.find({ privacyMode: { $in: ['password', 'coming_soon'] }, isDelete: false }, { _id: 1 }).lean();
+      if (locked.length) filter.storeId = { $nin: locked.map((x: any) => String(x._id)) };
+    }
 
     const cursor = productModel.find(filter).select('slug updatedAt').lean().cursor();
     const urls: Array<{ loc: string; lastmod?: Date }> = [];
@@ -71,7 +76,7 @@ export class SeoSitemapService {
 
   private async regenerateStores() {
     const { storeModel } = this.db.repositories;
-    const stores = await storeModel.find({ status: 'active', isDelete: false }).select('slug updatedAt').lean();
+    const stores = await storeModel.find({ status: 'active', isDelete: false, privacyMode: { $nin: ['password', 'coming_soon'] } }).select('slug updatedAt').lean();
     const urls = stores.map((s: any) => ({ loc: `${PLATFORM_ORIGIN}/${s.slug}`, lastmod: s.updatedAt }));
     await this.writeChunks('stores', null, urls);
   }
@@ -99,7 +104,7 @@ export class SeoSitemapService {
   /** Seller-authored storefront content — custom `StorePage`s and `BlogPost`s, scoped to `status:'active'` stores only (a suspended/rejected store's pages/posts shouldn't be indexed even if individually marked published). */
   private async regenerateStorefrontContent() {
     const { storeModel, storePageModel, blogPostModel } = this.db.repositories;
-    const stores = await storeModel.find({ status: 'active', isDelete: false }).select('_id slug').lean();
+    const stores = await storeModel.find({ status: 'active', isDelete: false, privacyMode: { $nin: ['password', 'coming_soon'] } }).select('_id slug').lean();
     const slugById = new Map(stores.map((s: any) => [s._id.toString(), s.slug]));
     const storeIds = stores.map((s: any) => s._id.toString());
     if (storeIds.length === 0) { await this.writeChunks('storefront_content', null, []); return; }

@@ -402,11 +402,31 @@ export class Store {
   // checkout, in country+state → country-only → `taxRate` priority order.
   // `country` is the same ISO-3166 alpha-2 code `Address.country` stores
   // (e.g. 'US', 'PK', 'GB') — matched case-insensitively.
+  // `pricesIncludeTax` (Shopify "Include sales tax in product price and shipping rate", per country): true/false
+  // overrides the store-wide `taxPricesIncludeTax` for buyers in this region; null/absent = follow the store setting.
   @Prop({
-    type: [{ country: { type: String, required: true }, state: { type: String, default: null }, rate: { type: Number, required: true, min: 0, max: 100 } }],
+    type: [{ country: { type: String, required: true }, state: { type: String, default: null }, rate: { type: Number, required: true, min: 0, max: 100 }, pricesIncludeTax: { type: Boolean, default: null }, _id: false }],
     default: [],
   })
-  taxRegions: { country: string; state: string | null; rate: number }[];
+  taxRegions: { country: string; state: string | null; rate: number; pricesIncludeTax?: boolean | null }[];
+
+  // Shopify "Include tax in all prices": product prices (and shipping rates) already contain tax, so checkout
+  // EXTRACTS the tax from the price instead of adding it on top. Default false (prices exclude tax).
+  @Prop({ type: Boolean, default: false })
+  taxPricesIncludeTax!: boolean;
+
+  // Shopify "Tax overrides": a different rate for products in given collections / categories (optionally only
+  // for one country/state). Most specific override wins; an override beats the region/flat rate.
+  @Prop({
+    type: [{
+      id: { type: String, required: true }, name: { type: String, default: '' },
+      country: { type: String, default: null }, state: { type: String, default: null },
+      rate: { type: Number, required: true, min: 0, max: 100 },
+      collectionIds: { type: [String], default: [] }, categoryIds: { type: [String], default: [] }, _id: false,
+    }],
+    default: [],
+  })
+  taxOverrides: { id: string; name: string; country: string | null; state: string | null; rate: number; collectionIds: string[]; categoryIds: string[] }[];
 
   // Shopify "Charge tax on shipping rates": when true, the shipping fee is part of the taxable
   // base (same rate that applies to the items). Default false = prior behaviour (shipping untaxed).

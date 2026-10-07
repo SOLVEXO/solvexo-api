@@ -30,6 +30,11 @@ const PROVIDERS_BY_CURRENCY: Record<'PKR' | 'USD', StoreIntegrationProvider[]> =
 // currency-gated list, same as 'stripe' is unconditionally appended.
 const REGISTRY_EXEMPT_PROVIDERS: StoreIntegrationProvider[] = ['bank_transfer'];
 
+/** Seller-chosen test/live mode; falls back to `fallback` when absent/invalid. */
+function resolveMode(requested: unknown, fallback: 'sandbox' | 'live'): 'sandbox' | 'live' {
+  return requested === 'live' || requested === 'sandbox' ? requested : fallback;
+}
+
 function maskCredentials(credentials: Record<string, any>): Record<string, string> {
   const masked: Record<string, string> = {};
   for (const [key, value] of Object.entries(credentials)) {
@@ -56,6 +61,77 @@ export class StoreIntegrationsService {
 
   private async assertOwnedStore(storeId: string, sellerId: string) {
     return verifyStoreOwnershipStrict(this.repos.storeModel, storeId, sellerId);
+  }
+
+  async assertStoreAccess(storeId: string, sellerId: string) {
+    await this.assertOwnedStore(storeId, sellerId);
+  }
+
+  // ── Seller-defined custom manual payment methods (Shopify "Custom payment method") ──
+  private manualView(m: any) {
+    return { id: String(m._id), name: m.name, instructions: m.instructions ?? '', isActive: !!m.isActive, sortOrder: m.sortOrder ?? 0 };
+  }
+
+  /** Active + inactive methods for the seller's integrations page (callers already verified the store). */
+  async listManualMethods(storeId: string) {
+    const rows = await this.repos.manualPaymentMethodModel.find({ storeId, isDelete: false }).sort({ sortOrder: 1, createdAt: 1 }).lean();
+    return (rows as any[]).map((m) => this.manualView(m));
+  }
+
+  private parseManualBody(body: Record<string, any>, partial: boolean) {
+    const out: Record<string, any> = {};
+    if (!partial || body.name !== undefined) {
+      const name = typeof body.name === 'string' ? body.name.trim() : '';
+      if (!name || name.length > 60) throw new BadRequestException('Name is required (max 60 characters)');
+      out.name = name;
+    }
+    if (body.instructions !== undefined) {
+      if (typeof body.instructions !== 'string' || body.instructions.length > 2000) throw new BadRequestException('Instructions must be text up to 2000 characters');
+      out.instructions = body.instructions;
+    }
+    if (body.isActive !== undefined) out.isActive = body.isActive === true;
+    if (body.sortOrder !== undefined) {
+      const n = Number(body.sortOrder);
+      if (!Number.isFinite(n)) throw new BadRequestException('sortOrder must be a number');
+      out.sortOrder = Math.trunc(n);
+    }
+    return out;
+  }
+
+  async createManualMethod(storeId: string, sellerId: string, body: Record<string, any>) {
+    await this.assertOwnedStore(storeId, sellerId);
+    const data = this.parseManualBody(body ?? {}, false);
+    const count = await this.repos.manualPaymentMethodModel.countDocuments({ storeId, isDelete: false });
+    if (count >= 20) throw new BadRequestException('You can add up to 20 custom payment methods');
+    try {
+      const doc = await this.repos.manualPaymentMethodModel.create({ storeId, isActive: true, sortOrder: count, ...data });
+      return { success: true, data: this.manualView(doc.toObject()) };
+    } catch (e: any) {
+      if (e?.code === 11000) throw new BadRequestException('A payment method with this name already exists');
+      throw e;
+    }
+  }
+
+  async updateManualMethod(storeId: string, sellerId: string, methodId: string, body: Record<string, any>) {
+    await this.assertOwnedStore(storeId, sellerId);
+    const data = this.parseManualBody(body ?? {}, true);
+    try {
+      const doc: any = await this.repos.manualPaymentMethodModel
+        .findOneAndUpdate({ _id: methodId, storeId, isDelete: false }, { $set: data }, { new: true })
+        .lean();
+      if (!doc) throw new NotFoundException('Payment method not found');
+      return { success: true, data: this.manualView(doc) };
+    } catch (e: any) {
+      if (e?.code === 11000) throw new BadRequestException('A payment method with this name already exists');
+      throw e;
+    }
+  }
+
+  async deleteManualMethod(storeId: string, sellerId: string, methodId: string) {
+    await this.assertOwnedStore(storeId, sellerId);
+    const res = await this.repos.manualPaymentMethodModel.updateOne({ _id: methodId, storeId, isDelete: false }, { $set: { isDelete: true, isActive: false } });
+    if (!res.matchedCount) throw new NotFoundException('Payment method not found');
+    return { success: true };
   }
 
   private toPublicView(integration: StoreIntegrationDocument) {
@@ -123,7 +199,8 @@ export class StoreIntegrationsService {
             id: null,
             type: 'payment' as const,
             provider: 'stripe' as const,
-            mode: 'live' as const,
+            // The platform Stripe key decides: an sk_test_ key means every card payment is a Stripe TEST payment.
+            mode: (this.stripeConnectService.isTestMode() ? 'sandbox' : 'live') as 'sandbox' | 'live',
             status: data.connected && data.chargesEnabled && data.payoutsEnabled ? 'connected' : data.connected ? 'error' : 'not_connected',
             isEnabledForCheckout: data.connected && data.chargesEnabled && data.payoutsEnabled,
             lastVerifiedAt: null,
@@ -156,6 +233,7 @@ export class StoreIntegrationsService {
       }),
     );
 
+    const manualMethods = await this.listManualMethods(storeId);
     const whatsapp = await this.repos.storeIntegrationModel.findOne({ storeId, type: 'whatsapp', provider: 'whatsapp_cloud' });
     const tax = await this.repos.storeIntegrationModel.findOne({ storeId, type: 'tax', provider: 'taxjar' });
     const shipping = await this.repos.storeIntegrationModel.findOne({ storeId, type: 'shipping', provider: 'shippo' });
@@ -170,6 +248,7 @@ export class StoreIntegrationsService {
       success: true,
       data: {
         payment,
+        manualMethods,
         whatsapp: whatsapp ? this.toPublicView(whatsapp) : notConnected('whatsapp', 'whatsapp_cloud'),
         // Real live tax (TaxJar) and shipping-rate (Shippo) connections — see
         // TaxService/ShippingRatesService for what "connected" actually
@@ -240,7 +319,8 @@ export class StoreIntegrationsService {
       // simply can't compute a valid HMAC against a null secret.
       const credentials = { secretKey, clientId, webhookSecret: webhookSecret ?? null };
       const credentialsEncrypted = encryptCredential(JSON.stringify(credentials), 'INTEGRATIONS');
-      const mode = String(secretKey).includes('_live_') ? 'live' : 'sandbox';
+      // Test mode toggle: an explicit `mode` wins; otherwise inferred from the key (Safepay live keys contain "_live_").
+      const mode = resolveMode(body.mode, String(secretKey).includes('_live_') ? 'live' : 'sandbox');
 
       const doc = await this.repos.storeIntegrationModel.findOneAndUpdate(
         { storeId, type: 'payment', provider },
@@ -254,12 +334,50 @@ export class StoreIntegrationsService {
             'config.currency': 'PKR',
             'config.maskedHints': maskCredentials(credentials),
             lastError: null,
+            // New credentials / mode have never been tested.
+            lastVerifiedAt: null,
           },
           $setOnInsert: { webhookToken: randomBytes(32).toString('hex'), isEnabledForCheckout: false },
         },
         { new: true, upsert: true },
       );
 
+      await this.logChange(storeId, sellerId, 'integration.connect', doc, { provider, mode });
+      return { success: true, data: this.toPublicView(doc) };
+    }
+
+    if (provider === 'jazzcash' || provider === 'payfast') {
+      const required = provider === 'jazzcash' ? ['merchantId', 'password', 'integritySalt'] : ['merchantId', 'securedKey'];
+      const missing = required.filter((k) => !String(body[k] ?? '').trim());
+      if (missing.length) throw new BadRequestException(`${missing.join(', ')} ${missing.length > 1 ? 'are' : 'is'} required`);
+      const credentials: Record<string, string> = {};
+      for (const k of required) credentials[k] = String(body[k]).trim();
+      const credentialsEncrypted = encryptCredential(JSON.stringify(credentials), 'INTEGRATIONS');
+      const mode = resolveMode(body.mode, 'sandbox');
+      const label = provider === 'jazzcash' ? 'JazzCash' : 'PayFast';
+
+      const doc = await this.repos.storeIntegrationModel.findOneAndUpdate(
+        { storeId, type: 'payment', provider },
+        {
+          $set: {
+            sellerId,
+            mode,
+            status: 'connected',
+            credentialsEncrypted,
+            'config.displayName': body.displayName ?? label,
+            'config.currency': 'PKR',
+            // PayFast shows the merchant name on its hosted page; JazzCash bank/product ids are optional overrides.
+            ...(body.merchantName ? { 'config.merchantName': String(body.merchantName).slice(0, 60) } : {}),
+            ...(provider === 'jazzcash' && body.bankId ? { 'config.bankId': String(body.bankId).slice(0, 20) } : {}),
+            ...(provider === 'jazzcash' && body.productId ? { 'config.productId': String(body.productId).slice(0, 20) } : {}),
+            'config.maskedHints': maskCredentials(credentials),
+            lastError: null,
+            lastVerifiedAt: null,
+          },
+          $setOnInsert: { webhookToken: randomBytes(32).toString('hex'), isEnabledForCheckout: false },
+        },
+        { new: true, upsert: true },
+      );
       await this.logChange(storeId, sellerId, 'integration.connect', doc, { provider, mode });
       return { success: true, data: this.toPublicView(doc) };
     }
@@ -298,9 +416,8 @@ export class StoreIntegrationsService {
       return { success: true, data: this.toPublicView(doc) };
     }
 
-    // JazzCash/Easypaisa/PayFast follow the same shape once their provider
-    // classes are implemented (see PaymentProviderRegistry) — not built yet.
-    throw new BadRequestException(`"${provider}" is not implemented yet`);
+    // Easypaisa has no provider implementation (see providers/easypaisa.provider.ts for why).
+    throw new BadRequestException(`"${provider}" is not available yet`);
   }
 
   private async connectWhatsApp(storeId: string, sellerId: string, body: Record<string, any>) {
@@ -358,13 +475,9 @@ export class StoreIntegrationsService {
   }
 
   /**
-   * Confirms the stored credentials still work, without going live.
-   * WhatsApp: a real check against Meta's `debug_token` endpoint. Payment
-   * gateways: validates the credentials are present and well-formed only —
-   * NOT a live sandbox transaction, since that would require confirming
-   * each gateway's own no-op verification endpoint against a real sandbox
-   * account first (flagged in SafepayPaymentProvider's own file doc; do not
-   * extend this to a live call without that confirmation).
+   * Confirms the stored credentials really work. WhatsApp: Meta's `debug_token`. Payment gateways: a real
+   * round-trip to the gateway in the integration's own mode (each provider's `testConnection` — Safepay creates a
+   * throw-away tracker, PayFast requests an access token, JazzCash sends a signed inquiry).
    */
   async test(storeId: string, sellerId: string, id: string) {
     await this.assertOwnedStore(storeId, sellerId);
@@ -378,6 +491,16 @@ export class StoreIntegrationsService {
       const { isValid } = await this.whatsAppProvider.checkTokenValidity(config.credentials.accessToken);
       ok = isValid;
       message = isValid ? 'WhatsApp access token is valid' : 'WhatsApp access token is invalid or expired';
+    } else if (integration.type === 'payment' && this.registry.isSupported(integration.provider)) {
+      // A REAL call to the gateway with the seller's own credentials in the integration's current mode.
+      try {
+        const result = await this.registry.resolve(integration.provider).testConnection(toDecryptedPaymentConfig(integration));
+        ok = result.ok;
+        message = result.message;
+      } catch (err: any) {
+        ok = false;
+        message = `Stored credentials could not be used: ${err?.message ?? 'decryption failed'}`;
+      }
     } else {
       ok = !!integration.credentialsEncrypted;
       message = ok ? 'Credentials are present and decrypt correctly' : 'No credentials stored';
@@ -406,19 +529,30 @@ export class StoreIntegrationsService {
     storeId: string,
     sellerId: string,
     id: string,
-    patch: { isEnabledForCheckout?: boolean; displayName?: string; webhookSecret?: string },
+    patch: { isEnabledForCheckout?: boolean; displayName?: string; webhookSecret?: string; mode?: 'sandbox' | 'live' },
   ) {
     await this.assertOwnedStore(storeId, sellerId);
     const integration = await this.repos.storeIntegrationModel.findOne({ _id: id, storeId });
     if (!integration) throw new NotFoundException('Integration not found');
 
-    if (patch.isEnabledForCheckout && integration.mode === 'live' && !integration.lastVerifiedAt) {
+    const modeChange = (patch.mode === 'live' || patch.mode === 'sandbox') && patch.mode !== integration.mode ? patch.mode : null;
+    if (modeChange && integration.type !== 'payment') throw new BadRequestException('Only payment integrations have a test mode');
+    const effectiveMode = modeChange ?? integration.mode;
+    if (patch.isEnabledForCheckout && effectiveMode === 'live' && (modeChange || !integration.lastVerifiedAt)) {
       throw new BadRequestException('Run a successful test before enabling a live-mode integration for checkout');
     }
 
     const $set: Record<string, any> = {};
     if (typeof patch.isEnabledForCheckout === 'boolean') $set.isEnabledForCheckout = patch.isEnabledForCheckout;
     if (patch.displayName) $set['config.displayName'] = patch.displayName;
+    if (modeChange) {
+      // Test <-> live switch (Shopify "Test mode"): sandbox and live credentials differ, so the new mode is untested
+      // and is taken out of checkout until the seller tests it.
+      $set.mode = modeChange;
+      $set.lastVerifiedAt = null;
+      $set.lastError = null;
+      $set.isEnabledForCheckout = false;
+    }
 
     // Step 2 of the connect flow's own doc comment: the seller only gets a
     // real webhookSecret from the gateway's dashboard AFTER registering the

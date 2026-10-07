@@ -293,10 +293,13 @@ export class ProductsService {
    *  relying on product-creation-time gating alone. Intersects with any
    *  `storeId.$in` the query already has (e.g. a campaign's participating
    *  stores) instead of overwriting it. */
-  private async restrictToActiveStores(query: any): Promise<void> {
+  private async restrictToActiveStores(query: any, excludeLocked = true): Promise<void> {
+    // Marketplace-wide listings (no single storeId) also drop password-protected / coming_soon stores so a locked store never
+    // leaks via search/category browse. A single exact storeId is left to the storefront-access middleware (owner/token bypass).
+    const wide = excludeLocked && typeof query.storeId !== 'string';
     const activeIds: string[] = (
       await this.databaseService.repositories.storeModel
-        .find({ status: 'active', isDelete: false }, { _id: 1 })
+        .find({ status: 'active', isDelete: false, ...(wide ? { privacyMode: { $nin: ['password', 'coming_soon'] } } : {}) }, { _id: 1 })
         .lean()
     ).map((s: any) => s._id.toString());
 
@@ -714,7 +717,7 @@ export class ProductsService {
       status: 'active',
       isDelete: false,
     };
-    await this.restrictToActiveStores(query);
+    await this.restrictToActiveStores(query, false); // explicit id list (pinned/recently viewed); direct reads are gated by middleware
 
     const products = await productModel.find(query).lean();
 
@@ -1181,6 +1184,7 @@ export class ProductsService {
           width: toDimensionCm(v.width),
           height: toDimensionCm(v.height),
           ...customsFor(v),
+          taxable: v.taxable !== false,
           images: v.images ?? [],
           isDefault: defaultIndex === -1 ? index === 0 : index === defaultIndex,
         });
@@ -1717,11 +1721,18 @@ export class ProductsService {
         (product.tags ?? []).join('; '),
         product.purchaseCount || 0,
         categoryNameById[product.categoryId] ?? '',
+        defaultVariant?.length ?? '',
+        defaultVariant?.width ?? '',
+        defaultVariant?.height ?? '',
+        defaultVariant?.countryOfOrigin ?? '',
+        defaultVariant?.hsCode ?? '',
+        defaultVariant?.customsDescription ?? '',
+        defaultVariant && defaultVariant.taxable === false ? 'no' : 'yes',
       ]);
     }
 
     return toCsv(
-      ['Name', 'SKU', 'Type', 'Product Type', 'Status', 'Price', 'Compare-at Price', 'Stock', 'Variant Count', 'Tags', 'All-Time Sales', 'Category'],
+      ['Name', 'SKU', 'Type', 'Product Type', 'Status', 'Price', 'Compare-at Price', 'Stock', 'Variant Count', 'Tags', 'All-Time Sales', 'Category', 'Length (cm)', 'Width (cm)', 'Height (cm)', 'Country of Origin', 'HS Code', 'Customs Description', 'Charge Tax'],
       rows,
     );
   }

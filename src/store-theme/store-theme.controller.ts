@@ -39,6 +39,11 @@ export class StoreThemeController {
     return this.themePackageService.upload(storeId, actingSellerId(req.user), installedThemeId, file.buffer);
   }
 
+  @Post(':storeId/installed/:installedThemeId/package/preview')
+  previewThemePackage(@Req() req: any, @Param('storeId') storeId: string, @Param('installedThemeId') installedThemeId: string, @Body('version') version?: number) {
+    return this.themePackageService.preview(storeId, actingSellerId(req.user), installedThemeId, version);
+  }
+
   @Get(':storeId/installed/:installedThemeId/package')
   listThemePackageVersions(@Req() req: any, @Param('storeId') storeId: string, @Param('installedThemeId') installedThemeId: string) {
     return this.themePackageService.list(storeId, actingSellerId(req.user), installedThemeId);
