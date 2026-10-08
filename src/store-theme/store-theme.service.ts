@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Types } from 'mongoose';
 import { randomBytes } from 'crypto';
 import { DatabaseService } from '../database/databaseservice';
@@ -489,9 +489,15 @@ export class StoreThemeService {
    *  full document (no `versions`, no other rows' data, no way to enumerate
    *  anything about the store beyond what this one token was minted for). */
   async getPreviewByToken(storeId: string, token: string) {
-    const doc = await this.storeThemeModel.findOne({ storeId, 'previewToken.token': token }).lean();
-    if (!doc || !doc.previewToken) throw new NotFoundException('Preview link not found or has expired');
-    if (new Date(doc.previewToken.expiresAt).getTime() < Date.now()) {
+    // Treat the bearer token as valid only while its expiry is strictly in
+    // the future. Putting expiry in the query also closes the gap between a
+    // successful lookup and a separate JS-side clock check.
+    const doc = await this.storeThemeModel.findOne({
+      storeId,
+      'previewToken.token': token,
+      'previewToken.expiresAt': { $gt: new Date() },
+    }).lean();
+    if (!doc || !doc.previewToken) {
       throw new NotFoundException('Preview link not found or has expired');
     }
     const draft = doc.draft as StoreThemeDraft;
@@ -542,91 +548,109 @@ export class StoreThemeService {
     return { success: true, data: theme };
   }
 
-  /** Copies draft → the live root fields in one atomic $set via the shared ContentVersioningService (so it can't drift into a two-step read-then-write race), then appends a real version snapshot of what just went live. */
+  /** Copies draft → live fields and records the rollback snapshot in one atomic document update. */
   async publishTheme(storeId: string, sellerId: string, installedThemeId?: string) {
     await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
     const instance = await this.resolveInstance(storeId, installedThemeId);
     const filter = { _id: instance._id };
-    const updated = await this.contentVersioningService.publishDraft(
-      this.storeThemeModel,
-      filter,
-      {
-        theme: '$draft.theme',
-        header: '$draft.header',
-        footer: '$draft.footer',
-        identityBanner: '$draft.identityBanner',
-        baseThemeId: '$draft.baseThemeId',
-        themeDefinitionId: '$draft.themeDefinitionId',
-        customCss: '$draft.customCss',
-      },
-      { lastPublishedAt: '$$NOW' },
-    );
-
-    // Real version snapshot via the shared ContentVersioningService — a
-    // separate write from the $set above (a tiny, accepted race window on a
-    // low-frequency admin action) rather than forking the publish pipeline
-    // just for this one caller.
-    const publishedAt = (updated as any)?.lastPublishedAt ?? new Date();
-    const withVersion = await this.contentVersioningService.appendVersion(
-      this.storeThemeModel,
-      filter,
-      {
-        theme: (updated as any).theme,
-        header: (updated as any).header,
-        footer: (updated as any).footer,
-        identityBanner: (updated as any).identityBanner,
-        baseThemeId: (updated as any).baseThemeId,
-        themeDefinitionId: (updated as any).themeDefinitionId,
-        customCss: (updated as any).customCss,
-        publishedAt,
-      },
-    );
-
-    // If a theme-definition apply is pending, this is the moment it actually
-    // takes effect — commit its home-page sections into the store's home
-    // StorePage (a separate collection from StoreTheme, so draft/publish
-    // alone can't carry it there) and clear the pending marker so a later
-    // publish never silently reapplies stale sections.
     const pendingHomeSections = (instance.draft as any)?.pendingHomeSections;
-    if (pendingHomeSections !== null && pendingHomeSections !== undefined) {
-      const installedThemeId = String(instance._id);
-      const home = await this.storePageModel.findOne({ storeId, type: 'home' });
-      if (home) {
+    const publishAndCommit = async (session?: any) => {
+      const updated = await this.contentVersioningService.publishDraftWithVersion(
+        this.storeThemeModel,
+        filter,
+        {
+          theme: '$draft.theme',
+          header: '$draft.header',
+          footer: '$draft.footer',
+          identityBanner: '$draft.identityBanner',
+          baseThemeId: '$draft.baseThemeId',
+          themeDefinitionId: '$draft.themeDefinitionId',
+          customCss: '$draft.customCss',
+        },
+        { lastPublishedAt: '$$NOW' },
+        {
+          theme: '$draft.theme',
+          header: '$draft.header',
+          footer: '$draft.footer',
+          identityBanner: '$draft.identityBanner',
+          baseThemeId: '$draft.baseThemeId',
+          themeDefinitionId: '$draft.themeDefinitionId',
+          customCss: '$draft.customCss',
+          publishedAt: '$$NOW',
+        },
+        20,
+        session,
+      );
+      if (!updated) throw new NotFoundException('Theme could not be published because it no longer exists. Reload the theme library and try again.');
+      const publishedAt = (updated as any).lastPublishedAt ?? new Date();
+
+      if (pendingHomeSections !== null && pendingHomeSections !== undefined) {
+        const installedThemeId = String(instance._id);
+        const home = await this.storePageModel.findOne(
+          { storeId, type: 'home' },
+          null,
+          session ? { session } : undefined,
+        );
+        if (!home) throw new Error('Home page not found');
         const existingTemplate = (home as any).themeTemplates?.find((entry: any) => String(entry.installedThemeId) === installedThemeId);
-        if (existingTemplate) {
-          await this.storePageModel.updateOne(
-            { _id: home._id, storeId, 'themeTemplates.installedThemeId': installedThemeId },
-            {
-              $set: {
-                'themeTemplates.$.sections': pendingHomeSections,
-                'themeTemplates.$.draftSections': pendingHomeSections,
-                'themeTemplates.$.lastPublishedAt': publishedAt,
-              },
-              $push: {
-                'themeTemplates.$.versions': {
-                  $each: [{ sections: pendingHomeSections, publishedAt }],
-                  $slice: -20,
+        const result = existingTemplate
+          ? await this.storePageModel.updateOne(
+              { _id: home._id, storeId, 'themeTemplates.installedThemeId': installedThemeId },
+              {
+                $set: {
+                  'themeTemplates.$.sections': pendingHomeSections,
+                  'themeTemplates.$.draftSections': pendingHomeSections,
+                  'themeTemplates.$.lastPublishedAt': publishedAt,
+                },
+                $push: {
+                  'themeTemplates.$.versions': {
+                    $each: [{ sections: pendingHomeSections, publishedAt }],
+                    $slice: -20,
+                  },
                 },
               },
-            },
-          );
-        } else {
-          await this.storePageModel.updateOne(
-            { _id: home._id, storeId, 'themeTemplates.installedThemeId': { $ne: installedThemeId } },
-            { $push: { themeTemplates: {
-              installedThemeId,
-              sections: pendingHomeSections,
-              draftSections: pendingHomeSections,
-              lastPublishedAt: publishedAt,
-              versions: [{ sections: pendingHomeSections, publishedAt }],
-            } } },
-          );
-        }
+              session ? { session } : undefined,
+            )
+          : await this.storePageModel.updateOne(
+              { _id: home._id, storeId, 'themeTemplates.installedThemeId': { $ne: installedThemeId } },
+              { $push: { themeTemplates: {
+                installedThemeId,
+                sections: pendingHomeSections,
+                draftSections: pendingHomeSections,
+                lastPublishedAt: (updated as any).lastPublishedAt,
+                versions: [{ sections: pendingHomeSections, publishedAt: (updated as any).lastPublishedAt }],
+              } } },
+              session ? { session } : undefined,
+            );
+        if (result?.matchedCount === 0) throw new Error('Home page changed before the layout could be saved');
+        await this.storeThemeModel.updateOne(
+          { _id: instance._id },
+          { $set: { 'draft.pendingHomeSections': null } },
+          session ? { session } : undefined,
+        );
       }
-      await this.storeThemeModel.updateOne({ _id: instance._id }, { $set: { 'draft.pendingHomeSections': null } });
+      return updated;
+    };
+
+    let updated: any;
+    if (pendingHomeSections !== null && pendingHomeSections !== undefined) {
+      // Theme chrome, theme history, home layout, and the pending marker span
+      // two collections. Commit them together so failures leave the published
+      // storefront and its rollback history exactly as they were.
+      try {
+        updated = await this.storeThemeModel.db.transaction((session: any) => publishAndCommit(session));
+      } catch (error) {
+        if (error instanceof NotFoundException) throw error;
+        throw new ConflictException({
+          code: 'THEME_PUBLISH_FAILED',
+          message: 'Theme and homepage layout could not be published. No changes went live; reload and try again.',
+        });
+      }
+    } else {
+      updated = await publishAndCommit();
     }
 
-    return { success: true, message: 'Theme published', data: withVersion ?? updated };
+    return { success: true, message: 'Theme published', data: updated };
   }
 
   async listVersions(storeId: string, sellerId: string, installedThemeId?: string) {

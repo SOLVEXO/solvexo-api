@@ -40,6 +40,7 @@ export class StorefrontColors {
   @Prop({ type: String, default: '#2C2A28' }) textColor: string;
   @Prop({ type: String, default: '#B95A3A' }) accentColor: string;
   @Prop({ type: String, default: 'Poppins' }) font: string;
+  @Prop({ type: String, default: null }) headingFont: string | null;
   // How `ThemedButton` renders a primary CTA — filled / bordered / tinted.
   @Prop({ type: String, enum: ['solid', 'outline', 'soft'], default: 'solid' })
   buttonStyle: 'solid' | 'outline' | 'soft';

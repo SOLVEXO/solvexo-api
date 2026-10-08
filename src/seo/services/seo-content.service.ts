@@ -4,7 +4,7 @@ import { DatabaseService } from '@/database/databaseservice';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { SeoResolutionService } from './seo-resolution.service';
 import { UpdateSeoMetaDto } from '../dto/update-seo-meta.dto';
-import { assertSafeSeoDestination } from './seo-url-safety.util';
+import { assertSafeSeoDestination, storeSeoHosts } from './seo-url-safety.util';
 import { toCsv } from '@/analytics/utils/csv.util';
 
 /**
@@ -144,7 +144,7 @@ export class SeoContentService {
   }
 
   async updateProductSeo(storeId: string, productId: string, dto: UpdateSeoMetaDto, actor: { id: string; name?: string; role?: string }) {
-    if (dto.canonicalUrlOverride) assertSafeSeoDestination(dto.canonicalUrlOverride);
+    if (dto.canonicalUrlOverride) assertSafeSeoDestination(dto.canonicalUrlOverride, await storeSeoHosts(this.db, storeId));
 
     const product = await this.db.repositories.productModel.findOne({ _id: productId, storeId, isDelete: false });
     if (!product) throw new NotFoundException('Product not found.');

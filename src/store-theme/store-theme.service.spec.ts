@@ -20,6 +20,7 @@ describe('StoreThemeService', () => {
   let db: DatabaseService;
   let themeCatalogService: ThemeCatalogService;
   let menusService: MenusService;
+  let transactionSession: any;
 
   // The seller's own existing draft BEFORE any apply/publish/revert call —
   // used to assert that a theme's own (empty) header/footer blocks never
@@ -47,6 +48,7 @@ describe('StoreThemeService', () => {
   });
 
   beforeEach(() => {
+    transactionSession = { transactionId: 'theme-publish-test' };
     storeThemeModel = {
       findOneAndUpdate: jest.fn().mockResolvedValue({}),
       updateOne: jest.fn().mockResolvedValue({}),
@@ -65,6 +67,7 @@ describe('StoreThemeService', () => {
       findOne: jest.fn().mockImplementation((query: any) =>
         Promise.resolve({ _id: query._id ?? `instance-${query.storeId}`, storeId: query.storeId, draft: existingDraft() }),
       ),
+      db: { transaction: jest.fn((callback: (session: any) => Promise<any>) => callback(transactionSession)) },
     };
     storeModel = {
       // `verifyStoreOwnershipStrict` (real implementation, not mocked) reads
@@ -203,10 +206,20 @@ describe('StoreThemeService', () => {
 
       expect(result.data.storeSlug).toBe('my-store');
       expect(result.data.homeSections).toEqual(draftSections);
+      expect(storeThemeModel.findOne).toHaveBeenCalledWith(expect.objectContaining({
+        storeId: STORE_ID,
+        'previewToken.token': 'share-token',
+        'previewToken.expiresAt': expect.objectContaining({ $gt: expect.any(Date) }),
+      }));
       expect(storePageModel.findOne).toHaveBeenCalledWith(
         { storeId: STORE_ID, type: 'home' },
         { themeTemplates: 1, sections: 1, draft: 1 },
       );
+    });
+
+    it('rejects expired or missing preview tokens at the database lookup boundary', async () => {
+      storeThemeModel.findOne.mockReturnValue({ lean: jest.fn().mockResolvedValue(null) });
+      await expect(service.getPreviewByToken(STORE_ID, 'expired-token')).rejects.toThrow('Preview link not found or has expired');
     });
   });
 
@@ -219,18 +232,25 @@ describe('StoreThemeService', () => {
 
       await service.publishTheme(STORE_ID, SELLER_ID);
 
-      expect(storePageModel.findOne).toHaveBeenCalledWith({ storeId: STORE_ID, type: 'home' });
+      expect(storePageModel.findOne).toHaveBeenCalledWith(
+        { storeId: STORE_ID, type: 'home' },
+        null,
+        { session: transactionSession },
+      );
       expect(storePageModel.updateOne).toHaveBeenCalledWith(
         { _id: 'home-1', storeId: STORE_ID, 'themeTemplates.installedThemeId': `instance-${STORE_ID}` },
         expect.objectContaining({
           $set: expect.objectContaining({ 'themeTemplates.$.sections': [{ type: 'hero', settings: {}, blocks: [] }] }),
           $push: expect.any(Object),
         }),
+        { session: transactionSession },
       );
       expect(storeThemeModel.updateOne).toHaveBeenCalledWith(
         { _id: `instance-${STORE_ID}` },
         { $set: { 'draft.pendingHomeSections': null } },
+        { session: transactionSession },
       );
+      expect(storeThemeModel.db.transaction).toHaveBeenCalledTimes(1);
     });
 
     it('never touches the home StorePage when there is no pending theme application', async () => {

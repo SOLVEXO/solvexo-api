@@ -73,6 +73,30 @@ describe('ContentVersioningService', () => {
     });
   });
 
+  describe('publishDraftWithVersion', () => {
+    it('copies the draft and records the matching version in the same atomic pipeline', async () => {
+      await service.publishDraftWithVersion(
+        model,
+        { _id: 'page-1' },
+        { sections: '$draft.sections' },
+        { status: 'published', lastPublishedAt: '$$NOW' },
+        { sections: '$draft.sections', publishedAt: '$$NOW' },
+      );
+
+      const [filter, pipeline, options] = model.findOneAndUpdate.mock.calls[0];
+      expect(filter).toEqual({ _id: 'page-1' });
+      expect(pipeline).toHaveLength(2);
+      expect(pipeline[0]).toEqual({ $set: { sections: '$draft.sections', status: 'published', lastPublishedAt: '$$NOW' } });
+      expect(pipeline[1].$set.versions.$slice[1]).toBe(-20);
+      expect(pipeline[1].$set.versions.$slice[0].$concatArrays[1][0]).toMatchObject({
+        sections: '$draft.sections',
+        publishedAt: '$$NOW',
+      });
+      expect(pipeline[1].$set.versions.$slice[0].$concatArrays[1][0]._id).toBeDefined();
+      expect(options).toEqual({ new: true, updatePipeline: true });
+    });
+  });
+
   describe('revertDraft', () => {
     it('supports a nested-object expression value (e.g. rewriting a whole `draft` subdocument in one field), not just flat string references', async () => {
       await service.revertDraft(model, { storeId: 's1' }, {

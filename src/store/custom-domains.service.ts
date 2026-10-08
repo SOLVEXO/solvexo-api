@@ -1,6 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
 import { promises as dns } from 'dns';
+import { randomBytes } from 'crypto';
 import * as tls from 'tls';
 import { domainToASCII } from 'url';
 import { DatabaseService } from '@/database/databaseservice';
@@ -13,6 +14,12 @@ export const CUSTOM_DOMAIN_CNAME_TARGET = 'stores.solvexo.store';
 export const PLATFORM_ROOT_DOMAIN = 'solvexo.store';
 const MAX_DOMAINS_PER_STORE = 10;
 const DOMAIN_RE = /^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/;
+/** Ownership proof: a TXT record `_solvexo-challenge.<domain>` = `solvexo-verify=<per-claim token>`. DNS pointing at the platform alone
+ *  proves nothing (every store's domain points at the same CNAME), so without the token a stranger who claimed a domain first could
+ *  get it verified the moment its real owner pointed DNS at us. */
+export const TXT_CHALLENGE_PREFIX = '_solvexo-challenge';
+/** An UNVERIFIED claim blocks the same domain on other stores for this long; after that a new claim evicts it. */
+const UNVERIFIED_CLAIM_HOLD_MS = 60 * 60 * 1000;
 
 export type DomainSsl = 'none' | 'pending' | 'active' | 'failed';
 export interface CustomDomainEntry {
@@ -24,6 +31,11 @@ export interface CustomDomainEntry {
   lastCheckedAt: Date | null;
   /** Why the last check did not verify (shown to the seller). */
   dnsError: string | null;
+  /** Secret the seller proves ownership with (TXT record). Absent on domains verified before TXT proof existed (grandfathered). */
+  verificationToken?: string;
+  /** Set only when the domain was contested (another store's stale claim had to be evicted): then the TXT proof is required in
+   *  addition to DNS. A normal, uncontested domain needs just the CNAME/A record — same as Shopify/Vercel. */
+  requireTxt?: boolean;
 }
 
 /**
@@ -96,7 +108,33 @@ export class CustomDomainsService implements OnModuleInit {
     return {
       domain: e.domain, status: e.status, sslStatus: e.sslStatus, isPrimary: primary === e.domain,
       addedAt: e.addedAt, verifiedAt: e.verifiedAt, lastCheckedAt: e.lastCheckedAt, dnsError: e.dnsError,
+      // Only shown while the domain still has to be verified.
+      txt: e.status !== 'verified' && e.requireTxt && e.verificationToken
+        ? { host: `${TXT_CHALLENGE_PREFIX}.${e.domain}`, value: CustomDomainsService.txtValue(e.verificationToken) }
+        : null,
     };
+  }
+
+  static txtValue(token: string): string { return `solvexo-verify=${token}`; }
+  private static newToken(): string { return randomBytes(16).toString('hex'); }
+
+  /** Gives every still-unverified entry its ownership token (also covers entries created before TXT proof existed). */
+  private ensureTokens(store: any): boolean {
+    let changed = false;
+    for (const e of (store.customDomains ?? []) as CustomDomainEntry[]) {
+      if (e.status !== 'verified' && e.requireTxt && !e.verificationToken) { e.verificationToken = CustomDomainsService.newToken(); changed = true; }
+    }
+    return changed;
+  }
+
+  /** Does `_solvexo-challenge.<domain>` carry this claim's token? */
+  private async checkTxt(domain: string, token: string | undefined): Promise<boolean> {
+    if (!token) return false;
+    try {
+      const records = await dns.resolveTxt(`${TXT_CHALLENGE_PREFIX}.${domain}`);
+      const want = CustomDomainsService.txtValue(token);
+      return records.some((chunks) => chunks.join('').trim() === want);
+    } catch { return false; }
   }
 
   private defaultHost(store: any): string { return `${store.slug}.${PLATFORM_ROOT_DOMAIN}`; }
@@ -189,17 +227,27 @@ export class CustomDomainsService implements OnModuleInit {
 
   /** Re-evaluate one entry (DNS → Vercel → HTTPS) and update it in place. Returns true if anything changed. */
   private async evaluate(entry: CustomDomainEntry): Promise<boolean> {
-    const before = JSON.stringify([entry.status, entry.sslStatus, entry.dnsError]);
+    const snap = () => JSON.stringify([entry.status, entry.sslStatus, entry.dnsError, entry.verificationToken]);
+    const before = snap();
+    if (entry.status !== 'verified' && entry.requireTxt && !entry.verificationToken) entry.verificationToken = CustomDomainsService.newToken();
     const dnsRes = await this.checkDns(entry.domain);
     entry.lastCheckedAt = new Date();
 
     if (!dnsRes.ok) {
       entry.status = 'unverified'; entry.verifiedAt = null; entry.sslStatus = 'none'; entry.dnsError = dnsRes.reason;
-      return before !== JSON.stringify([entry.status, entry.sslStatus, entry.dnsError]);
+      return before !== snap();
     }
 
+    if (entry.status !== 'verified') {
+      // Contested domain only: DNS alone proves nothing (it points at the platform for every store) — the TXT record proves THIS claimant controls it.
+      if (entry.requireTxt && !(await this.checkTxt(entry.domain, entry.verificationToken))) {
+        entry.sslStatus = 'none';
+        entry.dnsError = `DNS points to ${CUSTOM_DOMAIN_CNAME_TARGET}, but the ownership TXT record (${TXT_CHALLENGE_PREFIX}.${entry.domain}) was not found yet. Add it as shown below.`;
+        return before !== snap();
+      }
+      entry.status = 'verified'; entry.verifiedAt = new Date();
+    }
     entry.dnsError = null;
-    if (entry.status !== 'verified') { entry.status = 'verified'; entry.verifiedAt = new Date(); }
 
     // HTTPS: Vercel issues the certificate once the domain is attached and its DNS points at Vercel.
     if (this.vercel.isConfigured()) {
@@ -213,12 +261,37 @@ export class CustomDomainsService implements OnModuleInit {
     } else {
       entry.sslStatus = (await this.tlsOk(entry.domain)) ? 'active' : 'pending';
     }
-    return before !== JSON.stringify([entry.status, entry.sslStatus, entry.dnsError]);
+    return before !== snap();
+  }
+
+  /** Another store already has this domain? A VERIFIED one keeps it. An unverified claim only holds it for a while (so a stranger
+   *  cannot squat a domain forever); a fresh claim after that evicts it — the claimant still has to pass DNS + the TXT proof. */
+  /** Returns true when a stale claim was evicted (the domain was contested). */
+  private async releaseStaleClaim(storeId: string, domain: string): Promise<boolean> {
+    const other: any = await this.stores
+      .findOne({ _id: { $ne: storeId }, isDelete: false, $or: [{ 'customDomains.domain': domain }, { customDomain: domain }] })
+      .select('customDomains customDomain customDomainStatus')
+      .lean();
+    if (!other) return false;
+    const theirs = (other.customDomains ?? []).find((d: any) => d.domain === domain);
+    const verified = theirs ? theirs.status === 'verified' : other.customDomainStatus === 'verified';
+    if (verified) throw new BadRequestException('This domain is already connected to another store');
+    const addedAt = theirs?.addedAt ? new Date(theirs.addedAt).getTime() : 0;
+    if (Date.now() - addedAt < UNVERIFIED_CLAIM_HOLD_MS) {
+      throw new BadRequestException('Another store recently started connecting this domain. If you own it, try again in about an hour.');
+    }
+    await this.stores.updateOne({ _id: other._id }, { $pull: { customDomains: { domain } } });
+    if (other.customDomain === domain) await this.stores.updateOne({ _id: other._id }, { $set: { customDomain: null, customDomainStatus: 'unverified' } });
+    this.hostCache = null;
+    this.logger.warn(`Evicted stale unverified claim on ${domain} from store ${String(other._id)}`);
+    return true;
   }
 
   // ── seller API ──
   async list(sellerId: string, storeId: string) {
-    return this.response(await this.loadOwned(sellerId, storeId));
+    const store = await this.loadOwned(sellerId, storeId);
+    if (this.ensureTokens(store)) await this.saveStore(store); // older unverified entries get their TXT token on first view
+    return this.response(store);
   }
 
   async add(sellerId: string, storeId: string, raw: string, actor: { actorId: string; actorRole: 'seller' | 'staff' }) {
@@ -232,20 +305,15 @@ export class CustomDomainsService implements OnModuleInit {
     }
     if ((store.customDomains ?? []).some((d: any) => d.domain === domain)) throw new BadRequestException('This domain is already connected to your store');
     if ((store.customDomains ?? []).length >= MAX_DOMAINS_PER_STORE) throw new BadRequestException(`You can connect up to ${MAX_DOMAINS_PER_STORE} domains`);
-    const clash = await this.stores.findOne({ _id: { $ne: storeId }, isDelete: false, $or: [{ 'customDomains.domain': domain }, { customDomain: domain }] }).select('_id').lean();
-    if (clash) throw new BadRequestException('This domain is already connected to another store');
+    const contested = await this.releaseStaleClaim(storeId, domain);
 
-    const entry: CustomDomainEntry = { domain, status: 'unverified', sslStatus: 'none', addedAt: new Date(), verifiedAt: null, lastCheckedAt: null, dnsError: null };
+    const entry: CustomDomainEntry = {
+      domain, status: 'unverified', sslStatus: 'none', addedAt: new Date(), verifiedAt: null, lastCheckedAt: null, dnsError: null,
+      ...(contested ? { requireTxt: true, verificationToken: CustomDomainsService.newToken() } : {}),
+    };
     store.customDomains = [...(store.customDomains ?? []), entry];
     await this.saveStore(store);
-
-    // Attach early (Vercel needs it before it can verify/issue HTTPS); the DNS check runs on "Verify" and on a schedule.
-    const att = await this.vercel.attach(domain);
-    if (!att.ok) {
-      store.customDomains = store.customDomains.filter((d: any) => d.domain !== domain);
-      await this.saveStore(store);
-      throw new BadRequestException(att.error ?? 'Could not connect this domain for HTTPS');
-    }
+    // The domain is attached to Vercel (HTTPS) only once DNS + the TXT proof pass — see evaluate(); an unproven claim never touches Vercel.
 
     this.activityLog.log({ storeId, category: 'settings', action: 'domain_added', description: `Domain ${domain} added`, actorId: actor.actorId, actorRole: actor.actorRole });
     return this.response(store);

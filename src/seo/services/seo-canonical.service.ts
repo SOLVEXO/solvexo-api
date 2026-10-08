@@ -4,7 +4,7 @@ import { DatabaseService } from '@/database/databaseservice';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { CreateCanonicalRuleDto } from '../dto/create-canonical-rule.dto';
 import { UpdateCanonicalRuleDto } from '../dto/update-canonical-rule.dto';
-import { assertSafeSeoDestination } from './seo-url-safety.util';
+import { assertSafeSeoDestination, storeSeoHosts } from './seo-url-safety.util';
 
 @Injectable()
 export class SeoCanonicalService {
@@ -18,7 +18,7 @@ export class SeoCanonicalService {
   }
 
   async create(storeId: string | null, dto: CreateCanonicalRuleDto, actor: { id: string; name?: string; role?: string }) {
-    assertSafeSeoDestination(dto.canonicalUrl);
+    assertSafeSeoDestination(dto.canonicalUrl, await storeSeoHosts(this.db, storeId));
 
     const existing = await this.model.findOne({ storeId, pathPattern: dto.pathPattern });
     if (existing) throw new ConflictException(`A canonical rule for "${dto.pathPattern}" already exists${storeId ? ' for this store' : ' at the platform level'}.`);
@@ -60,7 +60,7 @@ export class SeoCanonicalService {
 
   async update(storeId: string | null, ruleId: string, dto: UpdateCanonicalRuleDto, actor: { id: string; name?: string; role?: string }) {
     const rule = await this.findOwned(storeId, ruleId);
-    if (dto.canonicalUrl) assertSafeSeoDestination(dto.canonicalUrl);
+    if (dto.canonicalUrl) assertSafeSeoDestination(dto.canonicalUrl, await storeSeoHosts(this.db, storeId));
 
     Object.assign(rule, dto);
     await rule.save();

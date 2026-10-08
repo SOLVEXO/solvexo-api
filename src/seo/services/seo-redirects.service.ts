@@ -4,7 +4,7 @@ import { DatabaseService } from '@/database/databaseservice';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { CreateRedirectDto } from '../dto/create-redirect.dto';
 import { UpdateRedirectDto } from '../dto/update-redirect.dto';
-import { assertSafeSeoDestination } from './seo-url-safety.util';
+import { assertSafeSeoDestination, storeSeoHosts } from './seo-url-safety.util';
 
 /**
  * Shared between the admin (`storeId: null`, platform-wide) and seller
@@ -24,7 +24,7 @@ export class SeoRedirectsService {
   }
 
   async create(storeId: string | null, dto: CreateRedirectDto, actor: { id: string; name?: string; role?: string }) {
-    assertSafeSeoDestination(dto.destination);
+    assertSafeSeoDestination(dto.destination, await storeSeoHosts(this.db, storeId));
     const source = normalizeSource(dto.source);
 
     const existing = await this.model.findOne({ storeId, source });
@@ -69,7 +69,7 @@ export class SeoRedirectsService {
 
   async update(storeId: string | null, redirectId: string, dto: UpdateRedirectDto, actor: { id: string; name?: string; role?: string }) {
     const redirect = await this.findOwned(storeId, redirectId);
-    if (dto.destination) assertSafeSeoDestination(dto.destination);
+    if (dto.destination) assertSafeSeoDestination(dto.destination, await storeSeoHosts(this.db, storeId));
     if (dto.source) dto.source = normalizeSource(dto.source);
 
     Object.assign(redirect, dto);

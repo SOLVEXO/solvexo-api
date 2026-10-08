@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { Types } from 'mongoose';
 import { DatabaseService } from '../database/databaseservice';
 import { verifyStoreOwnershipStrict } from '../common/store-ownership.util';
 import { validateSectionSettings, validateBlocksOfType, SECTION_ALLOWED_BLOCK_TYPES } from '../common/store-content/section-settings.validator';
@@ -308,27 +309,25 @@ export class StorePagesService {
     return { success: true, message: 'Draft saved', data: await this.presentPageForTheme(updated ?? templatePage, installedThemeId) };
   }
 
-  /** Copies `draft.sections` → the live `sections` field in one atomic $set via the shared ContentVersioningService, marks the page published, and appends a real version snapshot of what just went live. Safe to call whether this is the page's first publish or the Nth — either way, whatever's in the draft right now is what goes live. */
+  /** Copies `draft.sections` to live and records its rollback snapshot in one atomic update. */
   async publish(storeId: string, sellerId: string, pageId: string, requestedThemeId?: string) {
     const page = await this.findOwnedPage(storeId, sellerId, pageId);
     const installedThemeId = await this.resolveInstalledThemeId(storeId, requestedThemeId);
     if (!installedThemeId) {
-      const updated = await this.contentVersioningService.publishDraft(
+      const updated = await this.contentVersioningService.publishDraftWithVersion(
         this.storePageModel,
         { _id: pageId, storeId },
         { sections: '$draft.sections' },
         { status: 'published', lastPublishedAt: '$$NOW' },
+        { sections: '$draft.sections', publishedAt: '$$NOW' },
       );
-      const withVersion = await this.contentVersioningService.appendVersion(
-        this.storePageModel,
-        { _id: pageId, storeId },
-        { sections: (updated as any)?.sections ?? [], publishedAt: (updated as any)?.lastPublishedAt ?? new Date() },
-      );
-      return { success: true, message: 'Page published', data: withVersion ?? updated };
+      if (!updated) throw new NotFoundException('Page could not be published because it no longer exists. Reload the page and try again.');
+      return { success: true, message: 'Page published', data: updated };
     }
 
     await this.ensurePageThemeTemplate(page, installedThemeId);
     const theme = await this.storeThemeModel.findOne({ _id: installedThemeId, storeId }).select('status').lean();
+    const versionId = new Types.ObjectId();
     const updated = await this.storePageModel.findOneAndUpdate(
       { _id: pageId, storeId, 'themeTemplates.installedThemeId': installedThemeId },
       [{ $set: {
@@ -336,7 +335,18 @@ export class StorePagesService {
           input: '$themeTemplates', as: 'template',
           in: { $cond: [
             { $eq: ['$$template.installedThemeId', installedThemeId] },
-            { $mergeObjects: ['$$template', { sections: '$$template.draftSections', lastPublishedAt: '$$NOW' }] },
+            { $mergeObjects: ['$$template', {
+              sections: '$$template.draftSections',
+              lastPublishedAt: '$$NOW',
+              versions: { $slice: [
+                { $concatArrays: [{ $ifNull: ['$$template.versions', []] }, [{
+                  _id: versionId,
+                  sections: '$$template.draftSections',
+                  publishedAt: '$$NOW',
+                }]] },
+                -20,
+              ] },
+            }] },
             '$$template',
           ] },
         } },
@@ -344,20 +354,7 @@ export class StorePagesService {
       } }],
       { new: true, updatePipeline: true },
     );
-    const template = (updated as any)?.themeTemplates?.find((entry: any) => String(entry.installedThemeId) === installedThemeId);
-    if (template) {
-      await this.storePageModel.updateOne(
-        { _id: pageId, storeId, 'themeTemplates.installedThemeId': installedThemeId },
-        {
-          $push: {
-            'themeTemplates.$.versions': {
-              $each: [{ sections: template.sections, publishedAt: template.lastPublishedAt ?? new Date() }],
-              $slice: -20,
-            },
-          },
-        },
-      );
-    }
+    if (!updated) throw new NotFoundException('Page template could not be published because it no longer exists. Reload the page and try again.');
     const refreshed = await this.storePageModel.findOne({ _id: pageId, storeId, isDelete: false });
     return { success: true, message: 'Theme page template published', data: await this.presentPageForTheme(refreshed, installedThemeId) };
   }
@@ -459,7 +456,10 @@ export class StorePagesService {
     // in the Theme/Page editor remains the real, intentional publish step
     // for every page going forward.
     const anyHome = await this.storePageModel.findOne({ storeId, type: 'home', isDelete: false }).lean();
-    const fallbackSections = anyHome?.sections?.length ? anyHome.sections : anyHome?.draft?.sections?.length ? anyHome.draft.sections : starterHomeSections();
+    // A home page without a published document must never render its draft to
+    // anonymous visitors. Keep the public fallback on live content only; a
+    // fresh starter layout is safer than exposing unpublished edits.
+    const fallbackSections = anyHome?.sections?.length ? anyHome.sections : starterHomeSections();
     if (anyHome) {
       const themed = await this.presentPageForTheme({ ...anyHome, sections: fallbackSections }, installedThemeId);
       const { installedThemeId: _installedThemeId, ...publicPage } = themed as any;

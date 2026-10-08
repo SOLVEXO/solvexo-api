@@ -14,7 +14,7 @@ const ALLOWED_ABSOLUTE_HOSTS = ['solvexo.store', 'staging.solvexo.store', 'api.e
  * own domains. Anything else is rejected outright — there is no legitimate
  * reason for this platform to redirect or canonicalize to a third-party host.
  */
-export function assertSafeSeoDestination(value: string): void {
+export function assertSafeSeoDestination(value: string, ownHosts: string[] = []): void {
   if (value.startsWith('/') && !value.startsWith('//')) return;
 
   let url: URL;
@@ -26,7 +26,20 @@ export function assertSafeSeoDestination(value: string): void {
   if (url.protocol !== 'https:') {
     throw new BadRequestException('Absolute destination URLs must use https.');
   }
-  if (!ALLOWED_ABSOLUTE_HOSTS.includes(url.hostname)) {
-    throw new BadRequestException(`Absolute destination URLs must point to a Solvexo domain (got "${url.hostname}").`);
+  const host = url.hostname.toLowerCase();
+  // `<slug>.solvexo.store` storefronts and the store's own connected domains are ours too.
+  if (!ALLOWED_ABSOLUTE_HOSTS.includes(host) && !host.endsWith('.solvexo.store') && !ownHosts.includes(host)) {
+    throw new BadRequestException(`Absolute destination URLs must point to a Solvexo domain or one of your connected domains (got "${url.hostname}").`);
   }
+}
+
+/** The store's own VERIFIED connected domains — absolute canonical/redirect targets may point at them. */
+export async function storeSeoHosts(db: { repositories: { storeModel: any } }, storeId: string | null): Promise<string[]> {
+  if (!storeId) return [];
+  const store: any = await db.repositories.storeModel.findOne({ _id: storeId, isDelete: false }).select('customDomains customDomain customDomainStatus').lean();
+  if (!store) return [];
+  const hosts = new Set<string>();
+  for (const d of store.customDomains ?? []) if (d?.status === 'verified' && d.domain) hosts.add(String(d.domain).toLowerCase());
+  if (store.customDomain && store.customDomainStatus === 'verified') hosts.add(String(store.customDomain).toLowerCase());
+  return [...hosts];
 }

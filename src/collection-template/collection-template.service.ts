@@ -287,22 +287,19 @@ export class CollectionTemplateService {
     return { success: true, message: 'Draft saved', data: updated };
   }
 
-  /** Copies `draft.sections` → the live `sections` field atomically via the shared ContentVersioningService, and appends a real version snapshot of what just went live. */
+  /** Copies `draft.sections` to live and records its rollback snapshot in one atomic update. */
   async publish(storeId: string, sellerId: string, resourceType: ResourceTemplateType = 'collection', templateKey = DEFAULT_TEMPLATE_KEY, installedThemeId?: string) {
     const template = await this.findOwnedTemplate(storeId, sellerId, resourceType, templateKey, installedThemeId);
     const filter = { _id: template._id };
-    const updated = await this.contentVersioningService.publishDraft(
+    const updated = await this.contentVersioningService.publishDraftWithVersion(
       this.collectionTemplateModel,
       filter,
       { sections: '$draft.sections' },
       { status: 'published', lastPublishedAt: '$$NOW' },
+      { sections: '$draft.sections', publishedAt: '$$NOW' },
     );
-    const withVersion = await this.contentVersioningService.appendVersion(
-      this.collectionTemplateModel,
-      filter,
-      { sections: (updated as any)?.sections ?? [], publishedAt: (updated as any)?.lastPublishedAt ?? new Date() },
-    );
-    return { success: true, message: 'Template published', data: withVersion ?? updated };
+    if (!updated) throw new NotFoundException('Template could not be published because it no longer exists. Reload the template and try again.');
+    return { success: true, message: 'Template published', data: updated };
   }
 
   async listVersions(storeId: string, sellerId: string, resourceType: ResourceTemplateType = 'collection', templateKey = DEFAULT_TEMPLATE_KEY, installedThemeId?: string) {

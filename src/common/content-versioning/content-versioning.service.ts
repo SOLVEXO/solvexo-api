@@ -1,6 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { ConflictException, Injectable } from '@nestjs/common';
-import type { Model } from 'mongoose';
+import { Types, type ClientSession, type Model } from 'mongoose';
 
 /**
  * A single Mongo aggregation-pipeline expression: a `$field.path` reference
@@ -83,6 +83,36 @@ export class ContentVersioningService {
       // the first live call site to actually exercise this after a Mongoose
       // version bump).
       { new: true, updatePipeline: true },
+    );
+  }
+
+  /** Publishes fields and appends the matching rollback snapshot in the same
+   *  Mongo document write. A publish can therefore never succeed without its
+   *  corresponding recovery point (or report a false failure after going live). */
+  async publishDraftWithVersion<T = any>(
+    model: Model<T>,
+    filter: Record<string, unknown>,
+    fieldMap: FieldExpressionMap,
+    extraSet: Record<string, unknown>,
+    versionMap: Record<string, unknown>,
+    cap = 20,
+    session?: ClientSession,
+  ): Promise<T | null> {
+    const snapshot = { _id: new Types.ObjectId(), ...versionMap };
+    return model.findOneAndUpdate(
+      filter,
+      [
+        { $set: { ...fieldMap, ...extraSet } },
+        { $set: {
+          versions: {
+            $slice: [
+              { $concatArrays: [{ $ifNull: ['$versions', []] }, [snapshot]] },
+              -cap,
+            ],
+          },
+        } },
+      ],
+      { new: true, updatePipeline: true, ...(session ? { session } : {}) },
     );
   }
 
