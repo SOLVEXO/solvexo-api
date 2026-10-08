@@ -43,7 +43,19 @@ export interface LinkTarget {
 // ── Section settings, one per `SectionType` ─────────────────────────────────
 
 export interface HeroSectionSettings extends BaseSectionSettings {
-  heightPreset?: 'small' | 'medium' | 'large';
+  /** `adapt` = every slide takes its image's own height (nothing is cropped). */
+  heightPreset?: 'small' | 'medium' | 'large' | 'adapt';
+  /** Height on phones; absent / `same` = follow `heightPreset`. */
+  mobileHeightPreset?: 'same' | 'small' | 'medium' | 'large' | 'adapt';
+  /** Phones: put the slide text over the image (default) or in its own area below it. */
+  mobileTextLayout?: 'overlay' | 'below';
+  /** Slideshow behaviour (Shopify parity). Absent = autoplay on, 5 s, no arrows, no pause button, dots, slide. */
+  autoplay?: boolean;
+  autoplaySeconds?: number;
+  showArrows?: boolean;
+  showPauseButton?: boolean;
+  pagination?: 'dots' | 'counter' | 'none';
+  transition?: 'slide' | 'fade';
 }
 /** Dynamic Sources — the section's own `heading` (inherited from
  *  `BaseSectionSettings`) can bind to a real metafield the same way a
@@ -88,6 +100,8 @@ export interface FeaturedCategoryGridSectionSettings extends BaseSectionSettings
   /** Required, 1-12 items. */
   categoryIds: string[];
   columns?: 2 | 3 | 4;
+  /** Absent / `default` = square tiles. */
+  imageRatio?: 'default' | 'adapt' | 'portrait' | 'square' | 'landscape';
 }
 // eslint-disable-next-line @typescript-eslint/no-empty-interface
 export interface TrustBadgesSectionSettings extends BaseSectionSettings {}
@@ -95,6 +109,8 @@ export interface TrustBadgesSectionSettings extends BaseSectionSettings {}
 export interface BlogPostsSectionSettings extends BaseSectionSettings {
   /** 1-12, default 3. */
   limit?: number;
+  /** Absent / `default` = 4:3 covers. */
+  imageRatio?: 'default' | 'adapt' | 'portrait' | 'square' | 'landscape';
 }
 export interface NewsletterSectionSettings extends BaseSectionSettings {
   subtext?: string;
@@ -235,6 +251,13 @@ export interface HeroSlideBlockSettings {
   subheading?: string;
   ctaText?: string;
   ctaLink?: LinkTarget;
+  /** Which part of the image stays visible when it is cropped. Absent = center. */
+  focalPoint?: 'top left' | 'top' | 'top right' | 'left' | 'center' | 'right' | 'bottom left' | 'bottom' | 'bottom right';
+  contentAlign?: 'left' | 'center' | 'right';
+  /** 0–80 (%). Absent = the theme's own default overlay. */
+  overlayOpacity?: number;
+  /** #RRGGBB; absent/empty = theme colour. */
+  textColor?: string;
 }
 /** Dynamic Sources — when both `dynamicSourceNamespace`/`dynamicSourceKey`
  *  are set, `text` is optional (the real value is resolved at render time
@@ -278,6 +301,9 @@ export interface ImageTextPairBlockSettings {
   ctaText?: string;
   ctaLink?: LinkTarget;
   imagePosition?: 'left' | 'right';
+  /** Absent / `default` = the theme's built-in 4:3; `adapt` = whole image, no crop. */
+  imageRatio?: 'default' | 'adapt' | 'portrait' | 'square' | 'landscape';
+  focalPoint?: HeroSlideBlockSettings['focalPoint'];
 }
 export interface TestimonialBlockSettings {
   quote: string;

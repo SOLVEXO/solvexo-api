@@ -89,8 +89,8 @@ export class StorefrontColors {
   @Prop({ type: String, enum: ['none', 'small', 'medium', 'large', 'full'], default: 'medium' })
   productCardRadius: 'none' | 'small' | 'medium' | 'large' | 'full';
 
-  @Prop({ type: String, enum: ['square', 'portrait'], default: 'square' })
-  productImageRatio: 'square' | 'portrait';
+  @Prop({ type: String, enum: ['square', 'portrait', 'landscape', 'adapt'], default: 'square' })
+  productImageRatio: 'square' | 'portrait' | 'landscape' | 'adapt';
 
   @Prop({ type: String, enum: ['none', 'zoom'], default: 'none' })
   productImageHover: 'none' | 'zoom';
@@ -356,6 +356,9 @@ export class StoreTheme {
   // `'warm-craft'` rather than crashing.
   @Prop({ type: String, default: null, index: true })
   themeDefinitionId: string | null;
+
+  @Prop({ type: Number, default: null })
+  sourcePackageVersion: number | null;
 
   // Exactly one row per store is `'active'` (enforced in
   // `StoreThemeService.activateTheme`, not by a schema constraint — Mongo

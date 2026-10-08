@@ -8,6 +8,7 @@ import { DatabaseService } from '@/database/databaseservice';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { EntitlementsService } from '@/platform-plans/entitlements.service';
 import { VercelDomainsService } from './vercel-domains.service';
+import { DomainDnsGuideService, splitDomain } from './domain-dns-guide.service';
 
 /** The CNAME target every seller's domain points at (see the DNS instructions the seller sees). */
 export const CUSTOM_DOMAIN_CNAME_TARGET = 'stores.solvexo.store';
@@ -57,6 +58,7 @@ export class CustomDomainsService implements OnModuleInit {
     private readonly activityLog: ActivityLogService,
     private readonly entitlements: EntitlementsService,
     private readonly vercel: VercelDomainsService,
+    private readonly guideSvc: DomainDnsGuideService,
   ) {}
 
   private get stores() { return this.db.repositories.storeModel; }
@@ -266,6 +268,16 @@ export class CustomDomainsService implements OnModuleInit {
 
   /** Another store already has this domain? A VERIFIED one keeps it. An unverified claim only holds it for a while (so a stranger
    *  cannot squat a domain forever); a fresh claim after that evicts it — the claimant still has to pass DNS + the TXT proof. */
+  /** evaluate() + Shopify-style "first connected domain becomes the address customers are sent to": when an entry turns verified
+   *  and the store still serves the free address, that domain becomes primary (otherwise a freshly connected domain would just
+   *  redirect to the free address and look broken). A seller who later picks another primary is never overridden. */
+  private async evaluateEntry(store: any, entry: CustomDomainEntry): Promise<boolean> {
+    const was = entry.status;
+    const changed = await this.evaluate(entry);
+    if (was !== 'verified' && entry.status === 'verified' && !store.primaryDomain) store.primaryDomain = entry.domain;
+    return changed;
+  }
+
   /** Returns true when a stale claim was evicted (the domain was contested). */
   private async releaseStaleClaim(storeId: string, domain: string): Promise<boolean> {
     const other: any = await this.stores
@@ -305,13 +317,16 @@ export class CustomDomainsService implements OnModuleInit {
     }
     if ((store.customDomains ?? []).some((d: any) => d.domain === domain)) throw new BadRequestException('This domain is already connected to your store');
     if ((store.customDomains ?? []).length >= MAX_DOMAINS_PER_STORE) throw new BadRequestException(`You can connect up to ${MAX_DOMAINS_PER_STORE} domains`);
-    const contested = await this.releaseStaleClaim(storeId, domain);
+    const entries: CustomDomainEntry[] = [await this.newEntry(storeId, domain)];
 
-    const entry: CustomDomainEntry = {
-      domain, status: 'unverified', sslStatus: 'none', addedAt: new Date(), verifiedAt: null, lastCheckedAt: null, dnsError: null,
-      ...(contested ? { requireTxt: true, verificationToken: CustomDomainsService.newToken() } : {}),
-    };
-    store.customDomains = [...(store.customDomains ?? []), entry];
+    // Shopify connects the bare domain AND its www twin together (customers type either, and the DNS guide shows both records).
+    const { registrable, sub } = splitDomain(domain);
+    const twin = sub === null ? `www.${registrable}` : sub === 'www' ? registrable : null;
+    if (twin && DOMAIN_RE.test(twin) && !(store.customDomains ?? []).some((d: any) => d.domain === twin)
+      && (store.customDomains ?? []).length + 2 <= MAX_DOMAINS_PER_STORE) {
+      try { entries.push(await this.newEntry(storeId, twin)); } catch { /* another store holds the twin: connect just the one asked for */ }
+    }
+    store.customDomains = [...(store.customDomains ?? []), ...entries];
     await this.saveStore(store);
     // The domain is attached to Vercel (HTTPS) only once DNS + the TXT proof pass — see evaluate(); an unproven claim never touches Vercel.
 
@@ -319,12 +334,31 @@ export class CustomDomainsService implements OnModuleInit {
     return this.response(store);
   }
 
+  /** A fresh unverified entry; a domain another store had claimed (stale) is contested, so it also needs the TXT proof. */
+  private async newEntry(storeId: string, domain: string): Promise<CustomDomainEntry> {
+    const contested = await this.releaseStaleClaim(storeId, domain);
+    return {
+      domain, status: 'unverified', sslStatus: 'none', addedAt: new Date(), verifiedAt: null, lastCheckedAt: null, dnsError: null,
+      ...(contested ? { requireTxt: true, verificationToken: CustomDomainsService.newToken() } : {}),
+    };
+  }
+
+  /** What to add / change / delete at the DNS host for one connected domain (read live from DNS, Shopify "Configure DNS records"). */
+  async guide(sellerId: string, storeId: string, rawDomain: string) {
+    const store = await this.loadOwned(sellerId, storeId);
+    const domain = CustomDomainsService.normalize(rawDomain);
+    if (!(store.customDomains ?? []).some((d: any) => d.domain === domain)) throw new NotFoundException('Domain not found on this store');
+    const platformIps = [...(await this.platformIps())];
+    const data = await this.guideSvc.build(domain, { cnameTarget: CUSTOM_DOMAIN_CNAME_TARGET, aRecord: await this.aRecordValue(), platformIps });
+    return { success: true, data };
+  }
+
   async verify(sellerId: string, storeId: string, rawDomain: string, actor: { actorId: string; actorRole: 'seller' | 'staff' }) {
     const store = await this.loadOwned(sellerId, storeId);
     const domain = CustomDomainsService.normalize(rawDomain);
     const entry: CustomDomainEntry | undefined = (store.customDomains ?? []).find((d: any) => d.domain === domain);
     if (!entry) throw new NotFoundException('Domain not found on this store');
-    await this.evaluate(entry);
+    await this.evaluateEntry(store, entry);
     await this.saveStore(store);
     this.activityLog.log({
       storeId, category: 'settings', action: 'domain_verify_attempted',
@@ -376,7 +410,7 @@ export class CustomDomainsService implements OnModuleInit {
         if (entry.status === 'unverified' && entry.lastCheckedAt && Date.now() - new Date(entry.addedAt).getTime() > 14 * 86_400_000
           && Date.now() - new Date(entry.lastCheckedAt).getTime() < 86_400_000) continue;
         if (entry.status === 'verified' && entry.sslStatus === 'active') continue;
-        try { if (await this.evaluate(entry)) dirty = true; } catch (err: any) { this.logger.warn(`recheck ${entry.domain}: ${err?.message}`); }
+        try { if (await this.evaluateEntry(store, entry)) dirty = true; } catch (err: any) { this.logger.warn(`recheck ${entry.domain}: ${err?.message}`); }
       }
       if (dirty) { await this.saveStore(store); changed++; }
     }

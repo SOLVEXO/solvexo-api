@@ -35,6 +35,11 @@ import type {
 
 const MAX_BLOCKS_PER_SECTION = 20;
 
+/** Where the important part of an image sits — used as CSS `object-position` when the image has to be cropped. */
+export const FOCAL_POINTS = ['top left', 'top', 'top right', 'left', 'center', 'right', 'bottom left', 'bottom', 'bottom right'] as const;
+/** `default` = the section's own built-in ratio; `adapt` = show the whole image, no cropping. */
+export const IMAGE_RATIOS = ['default', 'adapt', 'portrait', 'square', 'landscape'] as const;
+
 function required(value: unknown, field: string): void {
   if (value === undefined || value === null || value === '') {
     throw new BadRequestException(`${field} is required`);
@@ -143,7 +148,20 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
   switch (type) {
     case 'hero': {
       const s = settings as HeroSectionSettings;
-      oneOf(s.heightPreset, ['small', 'medium', 'large'] as const, 'settings.heightPreset');
+      oneOf(s.heightPreset, ['small', 'medium', 'large', 'adapt'] as const, 'settings.heightPreset');
+      oneOf(s.mobileHeightPreset, ['same', 'small', 'medium', 'large', 'adapt'] as const, 'settings.mobileHeightPreset');
+      oneOf(s.mobileTextLayout, ['overlay', 'below'] as const, 'settings.mobileTextLayout');
+      oneOf(s.pagination, ['dots', 'counter', 'none'] as const, 'settings.pagination');
+      oneOf(s.transition, ['slide', 'fade'] as const, 'settings.transition');
+      for (const key of ['autoplay', 'showArrows', 'showPauseButton'] as const) {
+        if (s[key] !== undefined && typeof s[key] !== 'boolean') {
+          throw new BadRequestException(`settings.${key} must be true or false`);
+        }
+      }
+      if (s.autoplaySeconds !== undefined
+        && (typeof s.autoplaySeconds !== 'number' || !Number.isFinite(s.autoplaySeconds) || s.autoplaySeconds < 3 || s.autoplaySeconds > 10)) {
+        throw new BadRequestException('settings.autoplaySeconds must be a number between 3 and 10');
+      }
       break;
     }
     case 'rich_text': {
@@ -210,6 +228,7 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
       if (s.columns !== undefined && ![2, 3, 4].includes(s.columns)) {
         throw new BadRequestException('settings.columns must be 2, 3, or 4');
       }
+      oneOf(s.imageRatio, IMAGE_RATIOS, 'settings.imageRatio');
       break;
     }
     case 'trust_badges':
@@ -219,6 +238,7 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
       if (s.limit !== undefined && (typeof s.limit !== 'number' || s.limit < 1 || s.limit > 12)) {
         throw new BadRequestException('settings.limit must be between 1 and 12');
       }
+      oneOf(s.imageRatio, IMAGE_RATIOS, 'settings.imageRatio');
       break;
     }
     case 'newsletter': {
@@ -347,6 +367,16 @@ export function validateBlockSettings(blockType: string, settings: Record<string
       maxLen(settings.subheading, 200, 'subheading');
       maxLen(settings.ctaText, 40, 'ctaText');
       assertLinkTarget(settings.ctaLink, 'ctaLink');
+      oneOf(settings.focalPoint, FOCAL_POINTS, 'focalPoint');
+      oneOf(settings.contentAlign, ['left', 'center', 'right'] as const, 'contentAlign');
+      if (settings.overlayOpacity !== undefined && settings.overlayOpacity !== null
+        && (typeof settings.overlayOpacity !== 'number' || !Number.isFinite(settings.overlayOpacity) || settings.overlayOpacity < 0 || settings.overlayOpacity > 80)) {
+        throw new BadRequestException('overlayOpacity must be a number between 0 and 80');
+      }
+      if (settings.textColor !== undefined && settings.textColor !== null && settings.textColor !== ''
+        && (typeof settings.textColor !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(settings.textColor))) {
+        throw new BadRequestException('textColor must be a #RRGGBB colour');
+      }
       break;
 
     // rich_text / blog content blocks
@@ -396,6 +426,8 @@ export function validateBlockSettings(blockType: string, settings: Record<string
       maxLen(settings.ctaText, 40, 'ctaText');
       assertLinkTarget(settings.ctaLink, 'ctaLink');
       oneOf(settings.imagePosition, ['left', 'right'] as const, 'imagePosition');
+      oneOf(settings.imageRatio, IMAGE_RATIOS, 'imageRatio');
+      oneOf(settings.focalPoint, FOCAL_POINTS, 'focalPoint');
       break;
 
     // testimonials section blocks

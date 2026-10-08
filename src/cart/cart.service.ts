@@ -114,7 +114,7 @@ export class CartService {
     try {
       const cartModel = this.databaseService.repositories.cartModel;
 
-      const { productId, productVariantId, action } = requestBody;
+      const { productId, productVariantId, action, quantity } = requestBody;
 
       const cart = await cartModel.findOne({
         userId,
@@ -137,7 +137,12 @@ export class CartService {
       }
 
       // 1️⃣ update quantity
-      if (action === 'increase') {
+      if (quantity !== undefined) {
+        if (!Number.isInteger(quantity) || quantity < 1 || quantity > 999) {
+          throw new BadRequestException('Quantity must be a positive whole number no greater than 999');
+        }
+        cart.items[itemIndex].quantity = quantity;
+      } else if (action === 'increase') {
         if (cart.items[itemIndex].quantity >= 999) {
           throw new BadRequestException('Maximum quantity reached');
         }

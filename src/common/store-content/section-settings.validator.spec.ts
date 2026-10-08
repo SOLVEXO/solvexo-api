@@ -79,6 +79,25 @@ describe('section-settings.validator', () => {
       expect(() => validateSectionSettings('featured_products', { source: 'collection' })).toThrow(BadRequestException);
     });
 
+    it('hero: accepts the image-fit / slideshow settings and rejects bad values', () => {
+      expect(() => validateSectionSettings('hero', {
+        heightPreset: 'adapt', mobileHeightPreset: 'same', mobileTextLayout: 'below',
+        autoplay: true, autoplaySeconds: 5, showArrows: false, showPauseButton: false, pagination: 'dots', transition: 'fade',
+      })).not.toThrow();
+      expect(() => validateSectionSettings('hero', { heightPreset: 'huge' })).toThrow(BadRequestException);
+      expect(() => validateSectionSettings('hero', { mobileHeightPreset: 'tiny' })).toThrow(BadRequestException);
+      expect(() => validateSectionSettings('hero', { mobileTextLayout: 'side' })).toThrow(BadRequestException);
+      expect(() => validateSectionSettings('hero', { showPauseButton: 'yes' })).toThrow(BadRequestException);
+      expect(() => validateSectionSettings('hero', { autoplaySeconds: 2 })).toThrow(BadRequestException);
+    });
+
+    it('featured_category_grid / blog_posts: validate imageRatio', () => {
+      expect(() => validateSectionSettings('featured_category_grid', { categoryIds: ['c1'], imageRatio: 'adapt' })).not.toThrow();
+      expect(() => validateSectionSettings('featured_category_grid', { categoryIds: ['c1'], imageRatio: 'wide' })).toThrow(BadRequestException);
+      expect(() => validateSectionSettings('blog_posts', { imageRatio: 'portrait' })).not.toThrow();
+      expect(() => validateSectionSettings('blog_posts', { imageRatio: 'banner' })).toThrow(BadRequestException);
+    });
+
     it('product_catalog: rejects setting both categoryId and collectionId at once', () => {
       expect(() =>
         validateSectionSettings('product_catalog', { categoryId: 'c1', collectionId: 'col1' }),
@@ -149,6 +168,16 @@ describe('section-settings.validator', () => {
 
     it('hero_slide: rejects a non-https imageUrl', () => {
       expect(() => validateBlockSettings('hero_slide', { imageUrl: 'http://insecure.example.com/a.png' })).toThrow(BadRequestException);
+    });
+
+    it('hero_slide / image_text_pair: validate focalPoint, imageRatio, overlay and text colour', () => {
+      const img = { imageUrl: 'https://example.com/a.png' };
+      expect(() => validateBlockSettings('hero_slide', { ...img, focalPoint: 'top left', contentAlign: 'center', overlayOpacity: 40, textColor: '#ffffff' })).not.toThrow();
+      expect(() => validateBlockSettings('hero_slide', { ...img, focalPoint: 'middle' })).toThrow(BadRequestException);
+      expect(() => validateBlockSettings('hero_slide', { ...img, overlayOpacity: 90 })).toThrow(BadRequestException);
+      expect(() => validateBlockSettings('hero_slide', { ...img, textColor: 'red' })).toThrow(BadRequestException);
+      expect(() => validateBlockSettings('image_text_pair', { ...img, imageRatio: 'adapt', focalPoint: 'bottom' })).not.toThrow();
+      expect(() => validateBlockSettings('image_text_pair', { ...img, imageRatio: 'tall' })).toThrow(BadRequestException);
     });
 
     it('testimonial: rejects a rating outside 1-5', () => {

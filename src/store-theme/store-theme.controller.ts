@@ -40,8 +40,13 @@ export class StoreThemeController {
   }
 
   @Post(':storeId/installed/:installedThemeId/package/preview')
-  previewThemePackage(@Req() req: any, @Param('storeId') storeId: string, @Param('installedThemeId') installedThemeId: string, @Body('version') version?: number) {
-    return this.themePackageService.preview(storeId, actingSellerId(req.user), installedThemeId, version);
+  previewThemePackage(@Req() req: any, @Param('storeId') storeId: string, @Param('installedThemeId') installedThemeId: string, @Body('version') version?: number, @Body('path') path?: string) {
+    return this.themePackageService.preview(storeId, actingSellerId(req.user), installedThemeId, version, path);
+  }
+
+  @Post(':storeId/installed/:installedThemeId/package/:version/publish')
+  publishThemePackage(@Req() req: any, @Param('storeId') storeId: string, @Param('installedThemeId') installedThemeId: string, @Param('version') version: string) {
+    return this.themePackageService.publish(storeId, actingSellerId(req.user), installedThemeId, Number(version));
   }
 
   @Get(':storeId/installed/:installedThemeId/package')
@@ -52,6 +57,11 @@ export class StoreThemeController {
   @Get(':storeId/installed/:installedThemeId/package/:version')
   getThemePackageVersion(@Req() req: any, @Param('storeId') storeId: string, @Param('installedThemeId') installedThemeId: string, @Param('version') version: string) {
     return this.themePackageService.getRevision(storeId, actingSellerId(req.user), installedThemeId, Number(version));
+  }
+
+  @Get(':storeId/installed/:installedThemeId/package/:version/structure')
+  getThemePackageStructure(@Req() req: any, @Param('storeId') storeId: string, @Param('installedThemeId') installedThemeId: string, @Param('version') version: string) {
+    return this.themePackageService.getStructure(storeId, actingSellerId(req.user), installedThemeId, Number(version));
   }
 
   @Patch(':storeId/installed/:installedThemeId/package/file')

@@ -41,6 +41,11 @@ export class CustomDomainsController {
     return this.domains.setPrimary(actingSellerId(req.user), storeId, dto.domain ?? null, actor(req));
   }
 
+  @Get(':domain/guide')
+  guide(@Req() req: any, @Param('storeId') storeId: string, @Param('domain') domain: string) {
+    return this.domains.guide(actingSellerId(req.user), storeId, domain);
+  }
+
   @Post(':domain/verify')
   verify(@Req() req: any, @Param('storeId') storeId: string, @Param('domain') domain: string) {
     return this.domains.verify(actingSellerId(req.user), storeId, domain, actor(req));

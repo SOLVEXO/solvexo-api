@@ -10,6 +10,7 @@ import {
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CartService } from './cart.service';
 import { AddToCartDto } from './dto/add-to-cart.dto';
+import { UpdateCartQuantityDto } from './dto/update-cart-quantity.dto';
 import { resolveBuyerStoreScope } from '../common/store-scope.util';
 
 @Controller('api/cart')
@@ -35,11 +36,11 @@ export class CartController {
 
   @UseGuards(JwtAuthGuard)
   @Post('update-cart-quantity')
-  async updateCartQuantity(@Req() req: any) {
+  async updateCartQuantity(@Req() req: any, @Body() dto: UpdateCartQuantityDto) {
     const { userId, storeId: userStoreId } = req.user;
-    const storeId = resolveBuyerStoreScope(userStoreId, req.body.storeId);
+    const storeId = resolveBuyerStoreScope(userStoreId, dto.storeId);
 
-    return this.cartService.updateCartQuantity(userId, storeId, req.body);
+    return this.cartService.updateCartQuantity(userId, storeId, dto);
   }
 
   @UseGuards(JwtAuthGuard)

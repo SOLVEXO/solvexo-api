@@ -1561,16 +1561,16 @@ export class StoreService {
 
     const filter: any = { storeId, isDelete: false, status: 'active' };
     if (query.type && query.type !== 'all') filter.type = query.type;
-    // `Product.categoryId` is the store's single fixed root category — every
-    // product in a store shares the exact same value there, so filtering on
-    // it within one store's own listing is meaningless (matches either
-    // everything or nothing). The only real per-product distinction inside
-    // one store is `subCategoryId` — this param is still named `categoryId`
-    // everywhere it's set (section settings, nav links, this query string)
-    // since a seller only ever picks from their store's subcategories, but
-    // it must be matched against `subCategoryId` here to actually filter
-    // anything (a real, previously-silent no-op bug, not a new behavior).
-    if (query.categoryId && query.categoryId !== 'all') filter.subCategoryId = query.categoryId;
+    // A seller builds this store's own category tree: main categories and one
+    // level of subcategories (see SubcategoryField / CategoriesService). A product
+    // carries its main category in `categoryId` and, optionally, a subcategory
+    // in `subCategoryId`. The id picked in a section / nav link / this query
+    // string can be EITHER kind, so match both — a main category then includes
+    // all its products (with or without a subcategory), a subcategory only its
+    // own. (Collection rules already match both fields the same way.)
+    if (query.categoryId && query.categoryId !== 'all') {
+      filter.$or = [{ categoryId: query.categoryId }, { subCategoryId: query.categoryId }];
+    }
     if (query.tag && query.tag !== 'all') filter.tags = query.tag;
     if (query.search && String(query.search).trim()) {
       filter.name = { $regex: String(query.search).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' };
@@ -1841,15 +1841,17 @@ export class StoreService {
       status: 'active',
     });
 
-    // Which subcategories this store's own active catalog actually uses —
+    // Which of this store's own categories its active catalog actually uses —
     // powers both `featured_category_grid` and a "shop by category" facet
-    // on the new /category browse route (Store Builder plan, Phase 11).
-    // Deliberately NOT admin-root categories (a store only ever belongs to
-    // one root — see assertValidRootCategory — so faceting by root would
-    // always return exactly one, useless, entry).
+    // on the /category browse route. A product counts once for its main
+    // category and once for its subcategory (if any), matching what the
+    // category filter in `getPublicStoreProducts` returns for each of them.
     const categoryAgg = await productModel.aggregate([
-      { $match: { storeId, isDelete: false, status: 'active', subCategoryId: { $ne: null } } },
-      { $group: { _id: '$subCategoryId', count: { $sum: 1 } } },
+      { $match: { storeId, isDelete: false, status: 'active' } },
+      { $project: { ids: ['$categoryId', '$subCategoryId'] } },
+      { $unwind: '$ids' },
+      { $match: { ids: { $nin: [null, ''] } } },
+      { $group: { _id: '$ids', count: { $sum: 1 } } },
     ]);
     const categoryIds = categoryAgg.map((c) => c._id).filter(Boolean);
     const categories = categoryIds.length

@@ -103,6 +103,42 @@ describe('AddToCartDto validation (what the global ValidationPipe enforces)', ()
     await expect(pipe.transform(body, meta)).resolves.toBe(body);
   });
 
+  describe('CartService.updateCartQuantity — absolute quantity updates', () => {
+    it('sets the requested cart-line quantity in one update', async () => {
+      const cart = {
+        items: [{ productId: PRODUCT_ID, productVariantId: VARIANT_ID, quantity: 2 }],
+        save: jest.fn().mockResolvedValue(undefined),
+      };
+      const db = {
+        repositories: { cartModel: { findOne: jest.fn().mockResolvedValue(cart) } },
+      } as unknown as DatabaseService;
+      const service = new CartService(db);
+
+      await service.updateCartQuantity(USER_ID, STORE_ID, {
+        productId: PRODUCT_ID, productVariantId: VARIANT_ID, quantity: 7,
+      });
+
+      expect(cart.items[0].quantity).toBe(7);
+      expect(cart.save).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([0, -1, 1.5, 1000])('rejects absolute quantity %p', async (quantity) => {
+      const cart = {
+        items: [{ productId: PRODUCT_ID, productVariantId: VARIANT_ID, quantity: 2 }],
+        save: jest.fn(),
+      };
+      const db = {
+        repositories: { cartModel: { findOne: jest.fn().mockResolvedValue(cart) } },
+      } as unknown as DatabaseService;
+      const service = new CartService(db);
+
+      await expect(service.updateCartQuantity(USER_ID, STORE_ID, {
+        productId: PRODUCT_ID, productVariantId: VARIANT_ID, quantity,
+      })).rejects.toBeInstanceOf(BadRequestException);
+      expect(cart.save).not.toHaveBeenCalled();
+    });
+  });
+
   it.each([0, -3, 1.5, 1000, '5'])('rejects quantity %p', async (quantity) => {
     await expect(pipe.transform({ ...base, quantity }, meta)).rejects.toBeInstanceOf(BadRequestException);
   });

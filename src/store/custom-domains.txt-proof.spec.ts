@@ -21,7 +21,7 @@ const txt = dns.resolveTxt as unknown as jest.Mock;
 function makeService(stores: any) {
   const vercel: any = { isConfigured: () => false, attach: jest.fn(), inspect: jest.fn(), verify: jest.fn(), detach: jest.fn() };
   const db: any = { repositories: { storeModel: stores } };
-  const svc = new CustomDomainsService(db, { log: jest.fn() } as any, { assertFeatureAllowed: jest.fn() } as any, vercel);
+  const svc = new CustomDomainsService(db, { log: jest.fn() } as any, { assertFeatureAllowed: jest.fn() } as any, vercel, {} as any);
   return { svc, vercel };
 }
 

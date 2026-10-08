@@ -5,6 +5,8 @@ import * as yauzl from 'yauzl';
 import { Liquid } from 'liquidjs';
 import { DatabaseService } from '../database/databaseservice';
 import { verifyStoreOwnershipStrict } from '../common/store-ownership.util';
+import { readThemePackageStructure } from './theme-package-schema.util';
+import type { LiquidRenderCartItemDto } from './dto/render-liquid-theme.dto';
 
 const MAX_ARCHIVE_BYTES = 8 * 1024 * 1024;
 const MAX_EXPANDED_BYTES = 8 * 1024 * 1024;
@@ -49,6 +51,18 @@ export class ThemePackageService {
     return { success: true, data: doc };
   }
 
+  async getStructure(storeId: string, sellerId: string, installedThemeId: string, version: number) {
+    await verifyStoreOwnershipStrict(this.stores, storeId, sellerId);
+    await this.assertInstalledTheme(storeId, installedThemeId);
+    const revision = await this.packages.findOne({ storeId, installedThemeId, version }).lean();
+    if (!revision) throw new NotFoundException('Theme source revision not found');
+    try {
+      return { success: true, data: { version, ...readThemePackageStructure(revision.files) } };
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : 'Theme package schema could not be read');
+    }
+  }
+
   async editFile(storeId: string, sellerId: string, installedThemeId: string, path: string, content: string) {
     await verifyStoreOwnershipStrict(this.stores, storeId, sellerId);
     await this.assertInstalledTheme(storeId, installedThemeId);
@@ -71,15 +85,545 @@ export class ThemePackageService {
     return this.createRevision(storeId, installedThemeId, sellerId, target.files as any, 'rollback', version);
   }
 
-  async preview(storeId: string, sellerId: string, installedThemeId: string, version?: number) {
+  async preview(storeId: string, sellerId: string, installedThemeId: string, version?: number, path = '/') {
     await verifyStoreOwnershipStrict(this.stores, storeId, sellerId);
     await this.assertInstalledTheme(storeId, installedThemeId);
     const revision = version === undefined
       ? await this.latest(storeId, installedThemeId)
       : await this.packages.findOne({ storeId, installedThemeId, version });
     if (!revision) throw new NotFoundException('Upload a theme package before previewing it');
-    const html = await renderThemePreview(revision.files as any[]);
+    const requestedPath = normalizeStorefrontPath(path);
+    const context = await this.getStorefrontContext(storeId, requestedPath, [], revision.files as PackageFile[]);
+    const html = await renderThemePreview(revision.files as any[], context, requestedPath);
     return { success: true, data: { version: revision.version, html } };
+  }
+
+  async publish(storeId: string, sellerId: string, installedThemeId: string, version: number) {
+    await verifyStoreOwnershipStrict(this.stores, storeId, sellerId);
+    await this.assertInstalledTheme(storeId, installedThemeId);
+    const revision = await this.packages.findOne({ storeId, installedThemeId, version }).select('_id version').lean();
+    if (!revision) throw new NotFoundException('Theme source revision not found');
+    await this.themes.updateMany({ storeId, _id: { $ne: installedThemeId } }, { $set: { status: 'installed' } });
+    const published = await this.themes.findOneAndUpdate(
+      { _id: installedThemeId, storeId },
+      { $set: { status: 'active', sourcePackageVersion: version, lastPublishedAt: new Date() } },
+      { new: true },
+    ).select('_id sourcePackageVersion status');
+    if (!published) throw new NotFoundException('Installed theme not found');
+    return {
+      success: true,
+      message: `Theme source revision ${version} published`,
+      data: { installedThemeId, version: published.sourcePackageVersion, status: published.status },
+    };
+  }
+
+  async renderPublished(storeId: string, path: string, cartItems: LiquidRenderCartItemDto[] = []) {
+    const requestedPath = normalizeStorefrontPath(path);
+    const theme = await this.themes.findOne({ storeId, status: 'active', sourcePackageVersion: { $ne: null } })
+      .select('_id sourcePackageVersion').lean();
+    if (!theme || theme.sourcePackageVersion === null || theme.sourcePackageVersion === undefined) {
+      throw new NotFoundException('This store does not have a published Liquid theme');
+    }
+    const revision = await this.packages.findOne({
+      storeId, installedThemeId: String(theme._id), version: theme.sourcePackageVersion,
+    }).lean();
+    if (!revision) throw new NotFoundException('Published Liquid theme source is unavailable');
+    const context = await this.getStorefrontContext(storeId, requestedPath, cartItems, revision.files as PackageFile[]);
+    const html = await renderThemePreview(revision.files as any[], context, requestedPath);
+    return { success: true, data: { html, version: theme.sourcePackageVersion } };
+  }
+
+  private async getStorefrontContext(
+    storeId: string,
+    path: string,
+    requestedCartItems: LiquidRenderCartItemDto[] = [],
+    themeFiles: PackageFile[] = [],
+  ) {
+    const {
+      storeModel, productModel, productVariantModel, collectionModel, blogModel,
+      blogPostModel, storePageModel,
+    } = this.db.repositories;
+    const store = await storeModel.findById(storeId)
+      .select('name slug logo baseCurrency description tagline contactEmail contactPhone primaryDomain')
+      .lean();
+    if (!store) throw new NotFoundException('Store not found');
+    const productFilter: Record<string, any> = { storeId, status: 'active', isDelete: false };
+    const pageType = getPageType(path);
+    const productSlug = routeSegment(path, 2);
+    const searchTerms = pageType === 'search'
+      ? new URLSearchParams(path.split('?')[1] ?? '').get('q')?.trim() ?? ''
+      : '';
+
+    const collections = await collectionModel.find({ storeId, status: 'active', isDelete: false })
+      .select('_id name slug description image type productIds rules sortOrder')
+      .sort({ sortOrder: 1, createdAt: -1 }).limit(100).lean();
+    const collectionSlug = pageType === 'collection' ? routeSegment(path, 2) : undefined;
+    const currentCollection = collectionSlug
+      ? collections.find((collection: any) => collection.slug === collectionSlug)
+      : undefined;
+    const collectionPageSize = findPaginatePageSize(themeFiles, 'collection.products');
+    let currentPage = getRequestedPage(path);
+    const isPaginatedCollection = collectionPageSize !== null && pageType === 'collection';
+    let collectionTotal = 0;
+    let collectionProductFilter = productFilter;
+    let manualCollectionIds: string[] | null = null;
+    if (isPaginatedCollection) {
+      if (collectionSlug === 'all') {
+        collectionTotal = await productModel.countDocuments(productFilter);
+      } else if (currentCollection?.type === 'manual') {
+        manualCollectionIds = (currentCollection.productIds ?? []).map(String);
+        const matchingIds = manualCollectionIds.length
+          ? await productModel.find({ ...productFilter, _id: { $in: manualCollectionIds } }).distinct('_id')
+          : [];
+        const activeIds = new Set(matchingIds.map(String));
+        manualCollectionIds = manualCollectionIds.filter((id) => activeIds.has(id));
+        collectionTotal = manualCollectionIds.length;
+      } else if (currentCollection) {
+        collectionProductFilter = { ...productFilter, ...buildCollectionProductFilter(currentCollection.rules) };
+        collectionTotal = await productModel.countDocuments(collectionProductFilter);
+      } else {
+        collectionProductFilter = { ...productFilter, _id: { $in: [] } };
+      }
+      currentPage = Math.min(currentPage, Math.max(1, Math.ceil(collectionTotal / collectionPageSize!)));
+    }
+    const isManualPaginatedCollection = isPaginatedCollection && currentCollection?.type === 'manual';
+    const pagedManualIds = isManualPaginatedCollection
+      ? (manualCollectionIds ?? []).slice((currentPage - 1) * collectionPageSize!, currentPage * collectionPageSize!)
+      : null;
+    let productQuery = productModel.find(isManualPaginatedCollection
+      ? { ...productFilter, _id: { $in: pagedManualIds } }
+      : isPaginatedCollection ? collectionProductFilter : productFilter)
+      .select('_id name slug description type templateKey images tags categoryId subCategoryId averageRating totalRatings')
+      .sort({ createdAt: -1 });
+    if (isPaginatedCollection) {
+      if (!isManualPaginatedCollection) productQuery = productQuery.skip((currentPage - 1) * collectionPageSize!).limit(collectionPageSize!);
+    } else {
+      productQuery = productQuery.limit(250);
+    }
+    let productRows = await productQuery.lean();
+    if (isPaginatedCollection && manualCollectionIds) {
+      const order = new Map(manualCollectionIds.map((id, index) => [id, index]));
+      productRows = productRows.sort((a: any, b: any) => (order.get(String(a._id)) ?? 0) - (order.get(String(b._id)) ?? 0));
+    }
+    const productIds = productRows.map((product: any) => String(product._id));
+    const variants = productIds.length
+      ? await productVariantModel.find({ productId: { $in: productIds }, isDelete: false })
+        .select('_id productId price compareAtPrice options sku stock committedStock damagedStock inTransitStock unlimitedStock allowBackorder')
+        .lean()
+      : [];
+    const variantsByProduct = new Map<string, any[]>();
+    for (const variant of variants as any[]) {
+      const key = String(variant.productId);
+      variantsByProduct.set(key, [...(variantsByProduct.get(key) ?? []), variant]);
+    }
+    const products = productRows.map((product: any) => {
+      const productVariants = variantsByProduct.get(String(product._id)) ?? [];
+      const firstVariant = productVariants[0];
+      const optionNames = [...new Set(productVariants.flatMap((variant: any) =>
+        (variant.options ?? []).map((option: any) => option.name)).filter(Boolean))];
+      const storefrontVariants = productVariants.map((variant: any) => ({
+        id: String(variant._id),
+        title: variant.options?.map((option: any) => option.value).join(' / ') || 'Default',
+        price: Math.round(Number(variant.price) * 100),
+        compare_at_price: variant.compareAtPrice == null ? null : Math.round(Number(variant.compareAtPrice) * 100),
+        sku: variant.sku,
+        available: variant.unlimitedStock || variant.allowBackorder || availableQuantity(variant) > 0,
+        inventory_quantity: availableQuantity(variant),
+        options: variant.options?.map((option: any) => option.value) ?? [],
+        option1: variant.options?.[0]?.value ?? null,
+        option2: variant.options?.[1]?.value ?? null,
+        option3: variant.options?.[2]?.value ?? null,
+      }));
+      const selectedVariant = storefrontVariants.find((variant: any) => variant.available) ?? storefrontVariants[0] ?? null;
+      const prices = productVariants.map((variant: any) => Number(variant.price)).filter(Number.isFinite);
+      const compareAtPrices = productVariants.map((variant: any) => Number(variant.compareAtPrice))
+        .filter((price: number) => Number.isFinite(price) && price > 0);
+      return {
+        id: String(product._id),
+        type: product.type,
+        templateKey: product.templateKey ?? 'default',
+        title: product.name,
+        handle: product.slug,
+        description: product.description,
+        description_html: product.description,
+        url: `/products/${encodeURIComponent(product.slug ?? '')}`,
+        options: optionNames,
+        options_with_values: optionNames.map((name, index) => ({
+          name, position: index + 1,
+          values: [...new Set(productVariants.flatMap((variant: any) =>
+            (variant.options ?? []).filter((option: any) => option.name === name).map((option: any) => option.value)))],
+        })),
+        has_only_default_variant: optionNames.length === 0,
+        selected_or_first_available_variant: selectedVariant,
+        first_available_variant: storefrontVariants.find((variant: any) => variant.available) ?? null,
+        available: productVariants.some((variant: any) => variant.unlimitedStock || variant.allowBackorder || availableQuantity(variant) > 0),
+        price: Math.round(Math.min(...(prices.length ? prices : [Number(firstVariant?.price ?? 0)])) * 100),
+        price_min: Math.round(Math.min(...(prices.length ? prices : [0])) * 100),
+        price_max: Math.round(Math.max(...(prices.length ? prices : [0])) * 100),
+        compare_at_price: compareAtPrices.length ? Math.round(Math.min(...compareAtPrices) * 100) : null,
+        featured_image: product.images?.[0] ? { src: product.images[0], alt: product.name } : null,
+        images: (product.images ?? []).map((src: string) => ({ src, alt: product.name })),
+        tags: product.tags ?? [],
+        variants: storefrontVariants,
+        rating: product.averageRating ?? 0,
+        rating_count: product.totalRatings ?? 0,
+      };
+    });
+    const currentProduct = pageType === 'product'
+      ? products.find((product) => product.handle === productSlug)
+      : undefined;
+    const collectionProducts = collections.map((collection: any) => {
+      const ids = collection.type === 'manual'
+        ? collection.productIds ?? []
+        : products.filter((product) => productMatchesCollection(product, collection.rules)).map((product) => product.id);
+      const matchingProducts = products.filter((product) => ids.includes(product.id));
+      if (collection.type === 'manual') {
+        const order = new Map<string, number>(ids.map((id: string, index: number) => [id, index]));
+        matchingProducts.sort((a, b) => (order.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (order.get(b.id) ?? Number.MAX_SAFE_INTEGER));
+      }
+      return {
+        id: String(collection._id), title: collection.name, handle: collection.slug,
+        description: collection.description ?? '', url: `/collections/${encodeURIComponent(collection.slug)}`,
+        image: collection.image ? { src: collection.image, alt: collection.name } : null,
+        products: matchingProducts,
+        products_count: isPaginatedCollection && collection.slug === collectionSlug ? collectionTotal : matchingProducts.length,
+        all_products_count: isPaginatedCollection && collection.slug === collectionSlug ? collectionTotal : matchingProducts.length,
+      };
+    });
+    const currentCollectionObject = currentCollection
+      ? collectionProducts.find((collection: any) => collection.handle === currentCollection.slug)
+      : undefined;
+    const allProductsCollection = collectionSlug === 'all' ? {
+      id: 'all', title: 'All products', handle: 'all', description: '',
+      url: '/collections/all', image: null, products,
+      products_count: isPaginatedCollection ? collectionTotal : products.length,
+      all_products_count: isPaginatedCollection ? collectionTotal : products.length,
+    } : undefined;
+    const searchResults = searchTerms
+      ? products.filter((product) => {
+        const query = searchTerms.toLocaleLowerCase();
+        return product.title.toLocaleLowerCase().includes(query)
+          || product.description.toLocaleLowerCase().includes(query)
+          || product.tags.some((tag: string) => tag.toLocaleLowerCase().includes(query));
+      })
+      : [];
+    const pageSlug = pageType === 'page' ? routeSegment(path, 2) : undefined;
+    const pageRow = pageSlug
+      ? await storePageModel.findOne({ storeId, slug: pageSlug, type: 'custom', status: 'published', isDelete: false })
+        .select('title slug sections').lean()
+      : null;
+    const blogs = await blogModel.find({ storeId, isDelete: false })
+      .select('_id title slug commentsEnabled createdAt').sort({ createdAt: 1 }).limit(100).lean();
+    const blogSlug = pageType === 'blog' || pageType === 'article'
+      ? (path.startsWith('/blog/') ? undefined : routeSegment(path, 2))
+      : undefined;
+    const currentBlog: any = blogSlug
+      ? blogs.find((blog: any) => blog.slug === blogSlug)
+      : blogs[0];
+    const articleSlug = pageType === 'article'
+      ? (path.startsWith('/blog/') ? routeSegment(path, 2) : routeSegment(path, 3))
+      : undefined;
+    const articleRow = articleSlug && currentBlog
+      ? await blogPostModel.findOne({
+        storeId, blogId: String(currentBlog._id), slug: articleSlug, status: 'published', isDelete: false,
+      }).select('title slug excerpt coverImage authorName tags publishedAt content').lean()
+      : null;
+    const articleContent = articleRow ? renderBlogContent(articleRow.content ?? []) : '';
+    const article = articleRow ? {
+      id: String(articleRow._id), title: articleRow.title, handle: articleRow.slug,
+      excerpt: articleRow.excerpt ?? '', content: articleContent,
+      content_html: articleContent,
+      image: articleRow.coverImage ? { src: articleRow.coverImage, alt: articleRow.title } : null,
+      author: articleRow.authorName ?? '', tags: articleRow.tags ?? [], published_at: articleRow.publishedAt,
+      url: `/blogs/${encodeURIComponent(currentBlog.slug)}/${encodeURIComponent(articleRow.slug)}`,
+      blog: { title: currentBlog.title, handle: currentBlog.slug, url: `/blogs/${encodeURIComponent(currentBlog.slug)}` },
+    } : null;
+    const blogPosts = pageType === 'blog' && currentBlog
+      ? await blogPostModel.find({
+        storeId, blogId: String(currentBlog._id), status: 'published', isDelete: false,
+      }).select('title slug excerpt coverImage authorName publishedAt').sort({ publishedAt: -1 }).limit(50).lean()
+      : [];
+    const page = pageRow ? {
+      id: String(pageRow._id), title: pageRow.title, handle: pageRow.slug,
+      url: `/pages/${encodeURIComponent(pageRow.slug)}`,
+      content: renderPageContent(pageRow.sections ?? []),
+      content_html: renderPageContent(pageRow.sections ?? []),
+    } : {
+      title: article?.title ?? currentCollectionObject?.title ?? currentProduct?.title ?? store.name,
+      url: path,
+    };
+    const resolvedCart = await this.resolveLiquidCart(storeId, requestedCartItems);
+    const currency = store.baseCurrency || 'USD';
+    const storeOrigin = `https://${store.primaryDomain || `${store.slug}.solvexo.store`}`;
+    return {
+      shop: {
+        name: store.name,
+        url: storeOrigin,
+        domain: store.primaryDomain || `${store.slug}.solvexo.store`,
+        currency,
+        description: store.description ?? store.tagline ?? '',
+        email: store.contactEmail ?? '',
+        phone: store.contactPhone ?? '',
+        money_format: `{{amount}} ${currency}`,
+      },
+      request: { page_type: pageType, origin: storeOrigin, path },
+      page,
+      product: currentProduct ?? null,
+      collection: currentCollectionObject ?? allProductsCollection ?? null,
+      blog: currentBlog ? {
+        id: String(currentBlog._id), title: currentBlog.title, handle: currentBlog.slug,
+        url: `/blogs/${encodeURIComponent(currentBlog.slug)}`, comments_enabled: currentBlog.commentsEnabled,
+        articles: blogPosts.map((post: any) => ({
+          id: String(post._id), title: post.title, handle: post.slug, excerpt: post.excerpt ?? '',
+          author: post.authorName ?? '', published_at: post.publishedAt,
+          image: post.coverImage ? { src: post.coverImage, alt: post.title } : null,
+          url: `/blogs/${encodeURIComponent(currentBlog.slug)}/${encodeURIComponent(post.slug)}`,
+        })),
+      } : null,
+      article,
+      products: { featured: products[0] ?? null, ...Object.fromEntries(products.map((product) => [product.handle, product])) },
+      collections: { all: collectionProducts },
+      search: {
+        terms: searchTerms,
+        performed: getPageType(path) === 'search' && searchTerms.length > 0,
+        results: { products: searchResults, count: searchResults.length },
+      },
+      cart: resolvedCart,
+      paginate: isPaginatedCollection
+        ? buildShopifyPagination(collectionTotal, collectionPageSize!, currentPage, path)
+        : {},
+      routes: {
+        root_url: '/', cart_url: '/cart', search_url: '/search', account_url: '/account',
+        products_url: '/products', collections_url: '/collections', all_products_collection_url: '/collections/all',
+        account_login_url: '/login', account_register_url: '/register', cart_add_url: '/cart/add',
+      },
+      __storefront: { storeId, path, products },
+      __resources: await this.getLiquidResources(storeId, themeFiles),
+      __storefrontOrigin: storeOrigin,
+    };
+  }
+
+  private async getLiquidResources(storeId: string, themeFiles: PackageFile[]) {
+    const ids = collectLiquidResourceIds(themeFiles);
+    if (!ids.length) return {};
+    const { productModel, productVariantModel, collectionModel, storePageModel, blogModel, blogPostModel, menuModel } = this.db.repositories;
+    const [products, collections, pages, blogs, articles, menus] = await Promise.all([
+      productModel.find({ _id: { $in: ids }, storeId, status: 'active', isDelete: false })
+        .select('_id name slug description type images tags').lean(),
+      collectionModel.find({ _id: { $in: ids }, storeId, status: 'active', isDelete: false })
+        .select('_id name slug description image productIds').lean(),
+      storePageModel.find({ _id: { $in: ids }, storeId, type: 'custom', status: 'published', isDelete: false })
+        .select('_id title slug sections').lean(),
+      blogModel.find({ _id: { $in: ids }, storeId, isDelete: false })
+        .select('_id title slug commentsEnabled').lean(),
+      blogPostModel.find({ _id: { $in: ids }, storeId, status: 'published', isDelete: false })
+        .select('_id blogId title slug excerpt coverImage authorName tags publishedAt content').lean(),
+      menuModel.find({ _id: { $in: ids }, storeId })
+        .select('_id name items').lean(),
+    ]);
+    const selectedArticleBlogIds = [...new Set((articles as any[]).map((article) => String(article.blogId)).filter(Boolean))];
+    const relatedBlogs = selectedArticleBlogIds.length
+      ? await blogModel.find({ _id: { $in: selectedArticleBlogIds }, storeId, isDelete: false })
+        .select('_id title slug commentsEnabled').lean()
+      : [];
+    const allBlogs = [...new Map([...blogs as any[], ...relatedBlogs as any[]].map((blog: any) => [String(blog._id), blog])).values()];
+    const blogIds = (allBlogs as any[]).map((blog) => String(blog._id));
+    const blogArticles = blogIds.length
+      ? await blogPostModel.find({ storeId, blogId: { $in: blogIds }, status: 'published', isDelete: false })
+        .select('_id blogId title slug excerpt coverImage authorName tags publishedAt content')
+        .sort({ publishedAt: -1 }).limit(100).lean()
+      : [];
+    const allArticles = [...new Map([...articles as any[], ...blogArticles as any[]].map((article: any) => [String(article._id), article])).values()];
+    const variants = products.length
+      ? await productVariantModel.find({ productId: { $in: products.map((product: any) => String(product._id)) }, isDelete: false, status: 'active' })
+        .select('_id productId price compareAtPrice options sku stock committedStock damagedStock inTransitStock unlimitedStock allowBackorder').lean()
+      : [];
+    const variantsByProduct = new Map<string, any[]>();
+    for (const variant of variants as any[]) {
+      const productId = String(variant.productId);
+      variantsByProduct.set(productId, [...(variantsByProduct.get(productId) ?? []), variant]);
+    }
+    const resourceMap: Record<string, any> = {};
+    for (const product of products as any[]) {
+      const productVariants = variantsByProduct.get(String(product._id)) ?? [];
+      const mappedVariants = productVariants.map((variant) => ({
+        id: String(variant._id), title: variant.options?.map((option: any) => option.value).join(' / ') || 'Default',
+        price: Math.round(Number(variant.price) * 100),
+        compare_at_price: variant.compareAtPrice == null ? null : Math.round(Number(variant.compareAtPrice) * 100),
+        sku: variant.sku,
+        available: variant.unlimitedStock || variant.allowBackorder || availableQuantity(variant) > 0,
+        inventory_quantity: availableQuantity(variant),
+        options: variant.options?.map((option: any) => option.value) ?? [],
+        option1: variant.options?.[0]?.value ?? null, option2: variant.options?.[1]?.value ?? null,
+        option3: variant.options?.[2]?.value ?? null,
+      }));
+      const prices = productVariants.map((variant) => Number(variant.price)).filter(Number.isFinite);
+      resourceMap[String(product._id)] = {
+        id: String(product._id), title: product.name, handle: product.slug,
+        description: product.description ?? '', description_html: product.description ?? '',
+        url: `/products/${encodeURIComponent(product.slug ?? '')}`,
+        price: Math.round(Math.min(...(prices.length ? prices : [0])) * 100),
+        price_min: Math.round(Math.min(...(prices.length ? prices : [0])) * 100),
+        price_max: Math.round(Math.max(...(prices.length ? prices : [0])) * 100),
+        available: mappedVariants.some((variant) => variant.available),
+        variants: mappedVariants,
+        selected_or_first_available_variant: mappedVariants.find((variant) => variant.available) ?? mappedVariants[0] ?? null,
+        first_available_variant: mappedVariants.find((variant) => variant.available) ?? null,
+        featured_image: product.images?.[0] ? { src: product.images[0], alt: product.name } : null,
+        images: (product.images ?? []).map((src: string) => ({ src, alt: product.name })),
+        tags: product.tags ?? [],
+      };
+    }
+    const linkedProductIds = [...new Set((collections as any[]).flatMap((collection) => collection.productIds ?? []).map(String))]
+      .filter((id) => /^[a-f\d]{24}$/i.test(id) && !products.some((product: any) => String(product._id) === id));
+    const [linkedProducts, automaticCollectionProducts] = await Promise.all([
+      linkedProductIds.length
+      ? await productModel.find({ _id: { $in: linkedProductIds }, storeId, status: 'active', isDelete: false })
+        .select('_id name slug description type images tags').lean()
+      : [],
+      Promise.all((collections as any[]).filter((collection) => collection.type === 'automatic').map((collection) =>
+        productModel.find({ storeId, status: 'active', isDelete: false, ...buildCollectionProductFilter(collection.rules) })
+          .select('_id name slug description type images tags').limit(250).lean(),
+      )),
+    ]);
+    const additionalProducts = [...new Map(
+      [...linkedProducts as any[], ...automaticCollectionProducts.flat()]
+        .filter((product: any) => !products.some((existing: any) => String(existing._id) === String(product._id)))
+        .map((product: any) => [String(product._id), product]),
+    ).values()];
+    if (additionalProducts.length) {
+      const linkedVariants = await productVariantModel.find({ productId: { $in: additionalProducts.map((product: any) => String(product._id)) }, isDelete: false, status: 'active' })
+        .select('_id productId price compareAtPrice options sku stock committedStock damagedStock inTransitStock unlimitedStock allowBackorder').lean();
+      for (const variant of linkedVariants as any[]) {
+        const productId = String(variant.productId);
+        variantsByProduct.set(productId, [...(variantsByProduct.get(productId) ?? []), variant]);
+      }
+      for (const product of additionalProducts as any[]) {
+        const productVariants = variantsByProduct.get(String(product._id)) ?? [];
+        const mappedVariants = productVariants.map((variant) => ({
+          id: String(variant._id), title: variant.options?.map((option: any) => option.value).join(' / ') || 'Default',
+          price: Math.round(Number(variant.price) * 100),
+          compare_at_price: variant.compareAtPrice == null ? null : Math.round(Number(variant.compareAtPrice) * 100),
+          sku: variant.sku, available: variant.unlimitedStock || variant.allowBackorder || availableQuantity(variant) > 0,
+          inventory_quantity: availableQuantity(variant), options: variant.options?.map((option: any) => option.value) ?? [],
+        }));
+        const prices = productVariants.map((variant) => Number(variant.price)).filter(Number.isFinite);
+        resourceMap[String(product._id)] = {
+          id: String(product._id), title: product.name, handle: product.slug,
+          description: product.description ?? '', description_html: product.description ?? '',
+          url: `/products/${encodeURIComponent(product.slug ?? '')}`,
+          price: Math.round(Math.min(...(prices.length ? prices : [0])) * 100),
+          price_min: Math.round(Math.min(...(prices.length ? prices : [0])) * 100),
+          price_max: Math.round(Math.max(...(prices.length ? prices : [0])) * 100),
+          available: mappedVariants.some((variant) => variant.available), variants: mappedVariants,
+          selected_or_first_available_variant: mappedVariants.find((variant) => variant.available) ?? mappedVariants[0] ?? null,
+          first_available_variant: mappedVariants.find((variant) => variant.available) ?? null,
+          featured_image: product.images?.[0] ? { src: product.images[0], alt: product.name } : null,
+          images: (product.images ?? []).map((src: string) => ({ src, alt: product.name })), tags: product.tags ?? [],
+        };
+      }
+    }
+    for (const collection of collections as any[]) {
+      const linkedProducts = (collection.productIds ?? [])
+        .map((id: string) => resourceMap[String(id)])
+        .filter(Boolean);
+      resourceMap[String(collection._id)] = {
+        id: String(collection._id), title: collection.name, handle: collection.slug,
+        description: collection.description ?? '', url: `/collections/${encodeURIComponent(collection.slug)}`,
+        image: collection.image ? { src: collection.image, alt: collection.name } : null,
+        products: linkedProducts, products_count: linkedProducts.length, all_products_count: linkedProducts.length,
+      };
+    }
+    for (const page of pages as any[]) {
+      const content = renderPageContent(page.sections ?? []);
+      resourceMap[String(page._id)] = { id: String(page._id), title: page.title, handle: page.slug, url: `/pages/${encodeURIComponent(page.slug)}`, content, content_html: content };
+    }
+    const articleBlogById = new Map((allBlogs as any[]).map((blog) => [String(blog._id), blog]));
+    const articlesByBlog = new Map<string, any[]>();
+    for (const article of allArticles as any[]) {
+      const blog = articleBlogById.get(String(article.blogId));
+      const articleResource = {
+        id: String(article._id), title: article.title, handle: article.slug,
+        excerpt: article.excerpt ?? '', content: renderBlogContent(article.content ?? []),
+        content_html: renderBlogContent(article.content ?? []),
+        image: article.coverImage ? { src: article.coverImage, alt: article.title } : null,
+        author: article.authorName ?? '', tags: article.tags ?? [], published_at: article.publishedAt,
+        url: `/blogs/${encodeURIComponent(blog?.slug ?? String(article.blogId))}/${encodeURIComponent(article.slug)}`,
+        blog: blog ? { id: String(blog._id), title: blog.title, handle: blog.slug, url: `/blogs/${encodeURIComponent(blog.slug)}` } : null,
+      };
+      resourceMap[String(article._id)] = articleResource;
+      const blogId = String(article.blogId);
+      articlesByBlog.set(blogId, [...(articlesByBlog.get(blogId) ?? []), articleResource]);
+    }
+    for (const blog of allBlogs as any[]) {
+      resourceMap[String(blog._id)] = {
+        id: String(blog._id), title: blog.title, handle: blog.slug,
+        url: `/blogs/${encodeURIComponent(blog.slug)}`, comments_enabled: blog.commentsEnabled,
+        articles: articlesByBlog.get(String(blog._id)) ?? [],
+      };
+    }
+    for (const menu of menus as any[]) {
+      resourceMap[String(menu._id)] = {
+        id: String(menu._id), title: menu.name, handle: String(menu.name ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''),
+        links: (menu.items ?? []).map((item: any) => toLiquidMenuLink(item, resourceMap)),
+      };
+    }
+    return resourceMap;
+  }
+
+  private async resolveLiquidCart(storeId: string, requestedItems: LiquidRenderCartItemDto[]) {
+    const distinctItems = [...new Map(
+      requestedItems.map((item) => [`${item.productId}:${item.productVariantId}`, item]),
+    ).values()];
+    if (!distinctItems.length) return { item_count: 0, total_price: 0, items: [] };
+
+    const productIds = [...new Set(distinctItems.map((item) => item.productId))];
+    const variantIds = distinctItems.map((item) => item.productVariantId);
+    const [products, variants] = await Promise.all([
+      this.db.repositories.productModel.find({ _id: { $in: productIds }, storeId, status: 'active', isDelete: false })
+        .select('_id name slug type images').lean(),
+      this.db.repositories.productVariantModel.find({
+        _id: { $in: variantIds }, productId: { $in: productIds }, isDelete: false, status: 'active',
+      }).select('_id productId price compareAtPrice options sku').lean(),
+    ]);
+    const productsById = new Map(products.map((product: any) => [String(product._id), product]));
+    const variantsById = new Map(variants.map((variant: any) => [String(variant._id), variant]));
+    const items = distinctItems.flatMap((requested) => {
+      const product: any = productsById.get(requested.productId);
+      const variant: any = variantsById.get(requested.productVariantId);
+      if (!product || !variant || String(variant.productId) !== requested.productId) return [];
+      const unitPrice = Math.round(Number(variant.price) * 100);
+      return [{
+        id: String(variant._id),
+        key: String(variant._id),
+        product_id: String(product._id),
+        variant_id: String(variant._id),
+        product: {
+          id: String(product._id), title: product.name, handle: product.slug,
+          url: `/product/${encodeURIComponent(product.slug ?? '')}`,
+          featured_image: product.images?.[0] ? { src: product.images[0], alt: product.name } : null,
+        },
+        variant: {
+          id: String(variant._id), title: variant.options?.map((option: any) => option.value).join(' / ') || 'Default',
+          sku: variant.sku, price: unitPrice,
+        },
+        title: product.name,
+        quantity: requested.quantity,
+        price: unitPrice,
+        original_price: unitPrice,
+        final_price: unitPrice,
+        line_price: unitPrice * requested.quantity,
+        final_line_price: unitPrice * requested.quantity,
+        image: product.images?.[0] ?? null,
+        url: `/product/${encodeURIComponent(product.slug ?? '')}`,
+        product_type: product.type,
+      }];
+    });
+    return {
+      item_count: items.reduce((count, item) => count + item.quantity, 0),
+      total_price: items.reduce((total, item) => total + item.final_line_price, 0),
+      items,
+    };
   }
 
   private async assertInstalledTheme(storeId: string, installedThemeId: string) {
@@ -178,6 +722,11 @@ function validateThemePackage(files: PackageFile[]) {
   if (indexTemplate.order.some((key: unknown) => typeof key !== 'string' || !(key in indexTemplate.sections))) {
     throw new BadRequestException('templates/index.json order contains a missing section key');
   }
+  try {
+    readThemePackageStructure(files);
+  } catch (error) {
+    throw new BadRequestException(error instanceof Error ? error.message : 'Theme package schema is invalid');
+  }
 }
 
 function normalizePath(input: string): string {
@@ -199,26 +748,39 @@ function makeFile(path: string, data: Buffer, encoding: 'utf8' | 'base64'): Pack
   return { path, encoding, content: data.toString(encoding), size: data.length, sha256: createHash('sha256').update(data).digest('hex') };
 }
 
-async function renderThemePreview(files: PackageFile[]): Promise<string> {
+export async function renderThemePreview(files: PackageFile[], contextOverrides: Record<string, any> = {}, requestedPath = '/'): Promise<string> {
   const byPath = new Map(files.map((file) => [file.path, file]));
   const textTemplates = Object.fromEntries(files.filter((file) => file.encoding === 'utf8').map((file) => [file.path, file.content]));
   let settings: Record<string, any> = {};
   try { settings = JSON.parse(byPath.get('config/settings_data.json')?.content ?? '{}').current ?? {}; } catch { /* optional settings data */ }
+  const moneyCurrency = String(contextOverrides.shop?.currency ?? 'USD');
   const engine = new Liquid({ templates: textTemplates, extname: '.liquid', strictFilters: false, strictVariables: false, ownPropertyOnly: true, renderLimit: 2500, memoryLimit: 4 * 1024 * 1024 });
-  engine.registerFilter('asset_url', (name: string) => {
-    const file = byPath.get(`assets/${String(name).replace(/^\//, '')}`);
+  const themeAssetUrl = (name: string) => {
+    const assetName = String(name ?? '').replace(/^\/?assets\//i, '').replace(/^\//, '');
+    const file = byPath.get(`assets/${assetName}`);
     if (!file) return '';
     if (file.encoding === 'utf8') return `data:${mimeType(file.path)};base64,${Buffer.from(file.content).toString('base64')}`;
     return `data:${mimeType(file.path)};base64,${file.content}`;
-  });
+  };
+  engine.registerFilter('asset_url', (name: string) => themeAssetUrl(name));
   engine.registerFilter('stylesheet_tag', (url: string) => `<link rel="stylesheet" href="${escapeAttribute(url)}">`);
   engine.registerFilter('script_tag', (url: string) => `<script src="${escapeAttribute(url)}"></script>`);
-  engine.registerFilter('money', (value: unknown) => formatMoney(value));
-  engine.registerFilter('money_with_currency', (value: unknown) => `${formatMoney(value)} USD`);
-  engine.registerFilter('image_url', (value: any) => typeof value === 'string' ? value : value?.src ?? value?.url ?? '');
-  engine.registerFilter('image_tag', (url: string, alt = '') => `<img src="${escapeAttribute(url)}" alt="${escapeAttribute(alt)}">`);
+  engine.registerFilter('money', (value: unknown) => formatMoney(value, moneyCurrency));
+  engine.registerFilter('money_with_currency', (value: unknown) => `${formatMoney(value, moneyCurrency)} ${moneyCurrency}`);
+  engine.registerFilter('money_without_currency', (value: unknown) => formatMoneyAmount(value));
+  engine.registerFilter('money_without_trailing_zeros', (value: unknown) => formatMoney(value, moneyCurrency, true));
+  engine.registerFilter('image_url', (value: any) => resolveThemeImageUrl(value, themeAssetUrl));
+  engine.registerFilter('image_tag', (url: string, alt = '') => `<img src="${escapeAttribute(resolveThemeImageUrl(url, themeAssetUrl))}" alt="${escapeAttribute(alt)}">`);
+  engine.registerFilter('img_url', (value: any) => resolveThemeImageUrl(value, themeAssetUrl));
+  engine.registerFilter('img_tag', (url: string, alt = '') => `<img src="${escapeAttribute(resolveThemeImageUrl(url, themeAssetUrl))}" alt="${escapeAttribute(alt)}">`);
+  engine.registerFilter('video_tag', (value: any) => {
+    const src = typeof value === 'string' && value.startsWith('assets/') ? themeAssetUrl(value) : String(value?.sources?.[0]?.url ?? value?.url ?? value ?? '');
+    return src ? `<video controls><source src="${escapeAttribute(src)}"></video>` : '';
+  });
+  engine.registerFilter('handleize', (value: unknown) => String(value ?? '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''));
+  engine.registerFilter('handle', (value: unknown) => String(value ?? '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''));
 
-  const context = {
+  const context: Record<string, any> = {
     shop: { name: 'Store preview', currency: 'USD', money_format: '${{amount}}' },
     settings,
     request: { page_type: 'index', origin: '' },
@@ -227,14 +789,26 @@ async function renderThemePreview(files: PackageFile[]): Promise<string> {
     routes: { root_url: '/', cart_url: '/cart', search_url: '/search', account_url: '/account' },
     products: { featured: { id: 1, title: 'Featured product', price: 0, available: true, url: '/product/featured', featured_image: null, images: [], variants: [] } },
     content_for_header: '',
+    ...contextOverrides,
   };
-  const renderLiquid = async (source: string, scope: Record<string, any> = {}) => engine.parseAndRender(preprocessShopifyTags(source), { ...context, ...scope });
+  const renderLiquid = async (source: string, scope: Record<string, any> = {}) => {
+    const productId = scope.product?.id ?? context.product?.id;
+    const productType = scope.product?.type ?? context.product?.type;
+    return engine.parseAndRender(preprocessShopifyTags(source, productId, productType), { ...context, ...scope });
+  };
   const renderSection = async (key: string, section: any) => {
     const type = String(section?.type ?? '');
     if (!/^[a-z0-9_-]+$/i.test(type)) return '';
     const file = byPath.get(`sections/${type}.liquid`);
     if (!file) return '';
-    const markup = await renderLiquid(file.content, { section: { id: key, type, settings: section.settings ?? {}, blocks: section.blocks ?? [], block_order: section.block_order ?? [] } });
+    const resolvedBlocks = Object.fromEntries(Object.entries(section.blocks ?? {}).map(([blockId, block]: [string, any]) => [
+      blockId, { ...block, settings: resolveLiquidResourceSettings(block.settings ?? {}, context.__resources) },
+    ]));
+    const sectionContext = { id: key, type, settings: resolveLiquidResourceSettings(section.settings ?? {}, context.__resources), blocks: resolvedBlocks, block_order: section.block_order ?? [] };
+    const blockMarkup = await renderSectionBlocks(section, sectionContext, byPath, renderLiquid, context.__resources);
+    const blockPlaceholder = `<!-- SOLVEXO_SECTION_BLOCKS_${escapeAttribute(key)} -->`;
+    const source = file.content.replace(/\{%[-+]?\s*content_for\s+['"]blocks['"][^%]*[-+]?%\}/g, blockPlaceholder);
+    const markup = (await renderLiquid(source, { section: sectionContext })).replace(blockPlaceholder, blockMarkup);
     return `<div data-shopify-section="${escapeAttribute(key)}">${markup}</div>`;
   };
   const renderJsonTemplate = async (path: string) => {
@@ -242,12 +816,17 @@ async function renderThemePreview(files: PackageFile[]): Promise<string> {
     if (!file) return null;
     const definition = JSON.parse(file.content);
     const parts: string[] = [];
-    for (const key of definition.order ?? []) parts.push(await renderSection(key, definition.sections?.[key]));
+    for (const key of definition.order ?? []) {
+      const section = definition.sections?.[key];
+      if (section?.disabled === true) continue;
+      parts.push(await renderSection(key, section));
+    }
     return parts.join('\n');
   };
 
-  let content = await renderJsonTemplate('templates/index.json');
-  if (content === null && byPath.has('templates/index.liquid')) content = await renderLiquid(byPath.get('templates/index.liquid')!.content);
+  const template = selectTemplatePath(byPath, requestedPath, context.product);
+  let content = await renderJsonTemplate(template.json);
+  if (content === null && byPath.has(template.liquid)) content = await renderLiquid(byPath.get(template.liquid)!.content);
   if (content === null) content = '<main><h1>Theme preview</h1><p>This theme has no home page template.</p></main>';
   const layoutFile = byPath.get('layout/theme.liquid');
   if (layoutFile) {
@@ -259,27 +838,184 @@ async function renderThemePreview(files: PackageFile[]): Promise<string> {
       if (!group) return '';
       const definition = JSON.parse(group.content);
       const blocks: string[] = [];
-      for (const key of definition.order ?? []) blocks.push(await renderSection(key, definition.sections?.[key]));
+      for (const key of definition.order ?? []) {
+        const section = definition.sections?.[key];
+        if (section?.disabled === true) continue;
+        blocks.push(await renderSection(key, section));
+      }
       return blocks.join('\n');
     });
     let rendered = await renderLiquid(layout);
     rendered = rendered.replace('<!-- SHOPIFY_CONTENT_FOR_LAYOUT -->', content);
     if (!/<html[\s>]/i.test(rendered)) rendered = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head><body>${rendered}</body></html>`;
-    rendered = applyPreviewCsp(rendered);
+    rendered = applyPreviewCsp(appendStorefrontBridge(rendered, String(context.__storefrontOrigin ?? '')));
     return rendered;
   }
-  return applyPreviewCsp(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Theme preview</title></head><body>${content}</body></html>`);
+  return applyPreviewCsp(appendStorefrontBridge(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Theme preview</title></head><body>${content}</body></html>`, String(context.__storefrontOrigin ?? '')));
 }
 
 function stripSchemaTags(source: string): string { return source.replace(/\{%\s*schema\s*%\}[\s\S]*?\{%\s*endschema\s*%\}/g, ''); }
-function preprocessShopifyTags(source: string): string {
+export function findPaginatePageSize(files: PackageFile[], expression: string): number | null {
+  const escapedExpression = expression.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = new RegExp(`\\{%[-+]?\\s*paginate\\s+${escapedExpression}\\s+by\\s+(\\d+)\\b[^%]*[-+]?%\\}`, 'i');
+  for (const file of files) {
+    if (file.encoding !== 'utf8' || !/\.(?:liquid|json)$/i.test(file.path)) continue;
+    const match = pattern.exec(file.content);
+    if (match) return Math.max(1, Math.min(Number(match[1]), 250));
+  }
+  return null;
+}
+function getRequestedPage(path: string): number {
+  const value = new URLSearchParams(path.split('?')[1] ?? '').get('page');
+  if (value === null || !/^\d+$/.test(value)) return 1;
+  const page = Number(value);
+  if (!Number.isSafeInteger(page) || page < 1 || page > 10000) throw new BadRequestException('Requested page is out of range');
+  return page;
+}
+function buildCollectionProductFilter(rules: any): Record<string, any> {
+  const clauses: Record<string, any>[] = [];
+  if (rules?.categoryId) clauses.push({ $or: [{ categoryId: rules.categoryId }, { subCategoryId: rules.categoryId }] });
+  if (rules?.tags?.length) clauses.push({ tags: { $in: rules.tags } });
+  if (!clauses.length) return {};
+  return rules?.matchType === 'all' ? { $and: clauses } : { $or: clauses };
+}
+export function buildShopifyPagination(totalItems: number, pageSize: number, currentPage: number, path: string) {
+  const pages = Math.ceil(totalItems / pageSize);
+  const query = new URLSearchParams(path.split('?')[1] ?? '');
+  const pageUrl = (page: number) => {
+    const params = new URLSearchParams(query);
+    params.set('page', String(page));
+    return `${path.split('?')[0]}?${params.toString()}`;
+  };
+  const visiblePages = new Set<number>([1, pages]);
+  for (let page = Math.max(1, currentPage - 2); page <= Math.min(pages, currentPage + 2); page++) visiblePages.add(page);
+  const sortedPages = [...visiblePages].filter((page) => page > 0).sort((a, b) => a - b);
+  const parts: Record<string, any>[] = [];
+  let previousPage = 0;
+  for (const page of sortedPages) {
+    if (previousPage && page - previousPage > 1) parts.push({ type: 'ellipsis', title: '…', is_link: false, is_current: false, url: null });
+    parts.push({ type: 'page', title: String(page), is_link: page !== currentPage, is_current: page === currentPage, url: pageUrl(page) });
+    previousPage = page;
+  }
+  const hasPrevious = currentPage > 1 && pages > 0;
+  const hasNext = currentPage < pages;
+  return {
+    page_size: pageSize,
+    current_page: currentPage,
+    current_offset: Math.min((currentPage - 1) * pageSize, totalItems),
+    items: Math.max(0, Math.min(pageSize, totalItems - (currentPage - 1) * pageSize)),
+    pages,
+    parts,
+    previous: hasPrevious ? { title: 'Previous', url: pageUrl(currentPage - 1) } : null,
+    next: hasNext ? { title: 'Next', url: pageUrl(currentPage + 1) } : null,
+  };
+}
+function preprocessShopifyTags(source: string, productId?: string, productType?: string): string {
   return stripSchemaTags(source)
-    .replace(/\{%[-+]?\s*(?:style|endstyle|javascript|endjavascript)\s*[-+]?%\}/g, '')
+    .replace(/\{%[-+]?\s*style\s*[-+]?%\}/g, '<style>')
+    .replace(/\{%[-+]?\s*endstyle\s*[-+]?%\}/g, '</style>')
+    .replace(/\{%[-+]?\s*javascript\s*[-+]?%\}/g, '<script>')
+    .replace(/\{%[-+]?\s*endjavascript\s*[-+]?%\}/g, '</script>')
     .replace(/\{%[-+]?\s*content_for\s+['"]blocks['"][^%]*[-+]?%\}/g, '')
-    .replace(/\{%[-+]?\s*form\s+['"]([^'"]+)['"][^%]*[-+]?%\}/g, (_match, formType) => `<form method="post" action="${formType === 'product' ? '/cart/add' : formType === 'customer' ? '/account' : formType === 'contact' ? '/contact' : '/search'}" data-shopify-form="${formType}">`)
+    .replace(/(\{%[-+]?\s*(?:render|include)\s+)(['"])([^'"]+)\2/g, (_match, prefix, quote, name) => {
+      const fileName = String(name).replace(/\.liquid$/i, '');
+      const withDirectory = fileName.includes('/') ? fileName : `snippets/${fileName}`;
+      return `${prefix}${quote}${withDirectory}${quote}`;
+    })
+    .replace(/\{%[-+]?\s*form\s+['"]([^'"]+)['"][^%]*[-+]?%\}/g, (_match, formType) => `<form method="post" action="${formType === 'product' ? '/cart/add' : formType === 'cart' ? '/cart' : formType === 'customer' ? '/account' : formType === 'contact' ? '/contact' : '/search'}" data-shopify-form="${formType}"${formType === 'product' && productId ? ` data-product-id="${escapeAttribute(productId)}" data-product-type="${productType === 'digital' ? 'digital' : 'physical'}"` : ''}>`)
     .replace(/\{%[-+]?\s*endform\s*[-+]?%\}/g, '</form>')
-    .replace(/\{%[-+]?\s*paginate\s+(.+?)\s+by\s+([\w.]+|\d+)[^%]*[-+]?%\}/g, (_match, collection, limit) => `{% for product in ${collection} limit: ${limit} %}`)
-    .replace(/\{%[-+]?\s*endpaginate\s*[-+]?%\}/g, '{% endfor %}');
+    .replace(/\{%[-+]?\s*paginate\b[^%]*[-+]?%\}/g, '')
+    .replace(/\{%[-+]?\s*endpaginate\s*[-+]?%\}/g, '');
+}
+async function renderSectionBlocks(
+  section: any,
+  sectionContext: Record<string, any>,
+  files: Map<string, { content: string }>,
+  renderLiquid: (source: string, scope?: Record<string, any>) => Promise<string>,
+  resources: Record<string, any> = {},
+): Promise<string> {
+  const definitions = section?.blocks ?? {};
+  const order: string[] = Array.isArray(section?.block_order) ? section.block_order : Object.keys(definitions);
+  const rendered = await Promise.all(order.map(async (id) => {
+    const definition = definitions[id];
+    if (definition?.disabled === true) return '';
+    const type = String(definition?.type ?? '');
+    if (!/^[a-z0-9_-]+$/i.test(type)) return '';
+    const file = files.get(`blocks/${type}.liquid`);
+    if (!file) return '';
+    const block = {
+      id,
+      type,
+      settings: resolveLiquidResourceSettings(definition.settings ?? {}, resources),
+      shopify_attributes: `data-shopify-editor-block="${escapeAttribute(id)}"`,
+    };
+    return renderLiquid(file.content, { section: sectionContext, block });
+  }));
+  return rendered.join('\n');
+}
+function collectLiquidResourceIds(files: PackageFile[]): string[] {
+  const ids = new Set<string>();
+  const addValues = (value: unknown) => {
+    if (ids.size >= 500 || value === null || typeof value !== 'object') return;
+    if (Array.isArray(value)) {
+      value.forEach(addValues);
+      return;
+    }
+    for (const [key, nested] of Object.entries(value)) {
+      if (key === 'settings' || key === 'current') addValues(nested);
+      else if (key === 'blocks' || key === 'sections' || key === 'presets') addValues(nested);
+      else if (typeof nested === 'string' && /^[a-f\d]{24}$/i.test(nested)) ids.add(nested);
+      else if (nested && typeof nested === 'object') addValues(nested);
+    }
+  };
+  for (const file of files) {
+    if (file.encoding !== 'utf8' || !file.path.endsWith('.json')) continue;
+    try {
+      addValues(JSON.parse(file.content));
+    } catch {
+      continue;
+    }
+  }
+  return [...ids];
+}
+function resolveLiquidResourceSettings(settings: Record<string, any>, resources: Record<string, any> = {}) {
+  const resolve = (value: any): any => {
+    if (Array.isArray(value)) return value.map(resolve);
+    if (typeof value === 'string' && Object.hasOwn(resources, value)) return resources[value];
+    return value;
+  };
+  return Object.fromEntries(Object.entries(settings).map(([key, value]) => [key, resolve(value)]));
+}
+function toLiquidMenuLink(item: any, resources: Record<string, any>) {
+  const collection = item.collectionId ? resources[String(item.collectionId)] : undefined;
+  const product = item.productId ? resources[String(item.productId)] : undefined;
+  const href = item.linkType === 'external' ? item.url
+    : item.linkType === 'page' ? `/pages/${encodeURIComponent(item.pageSlug ?? '')}`
+      : item.linkType === 'blog' ? `/blogs/${encodeURIComponent(item.pageSlug ?? '')}`
+        : item.linkType === 'collection' ? collection?.url ?? `/collections/${encodeURIComponent(item.collectionId ?? '')}`
+          : item.linkType === 'category' ? `/collections/${encodeURIComponent(item.categoryId ?? '')}`
+            : item.linkType === 'product' ? product?.url ?? `/products/${encodeURIComponent(item.productId ?? '')}`
+            : item.linkType === 'search' ? '/search' : '/';
+  return {
+    title: item.label ?? '',
+    url: href || '/',
+    object: null,
+    active: false,
+    current: false,
+    child_active: false,
+    levels: item.children?.length ? 1 : 0,
+    links: (item.children ?? []).map((child: any) => toLiquidMenuLink(child, resources)),
+  };
+}
+function appendStorefrontBridge(html: string, origin: string): string {
+  const safeOrigin = escapeAttribute(origin);
+  const base = `<base href="${safeOrigin}/">`;
+  const bridge = `<script>(function(){function send(data){parent.postMessage(data,'*');}function size(){send({type:'solvexo:resize',height:Math.max(document.documentElement.scrollHeight,document.body?document.body.scrollHeight:0)});}document.addEventListener('click',function(e){var a=e.target.closest('a[href]');if(!a)return;var u;try{u=new URL(a.getAttribute('href'),${JSON.stringify(origin)});}catch(_){return;}if(u.origin!==${JSON.stringify(origin)})return;if(u.pathname==='/cart/clear'){e.preventDefault();send({type:'solvexo:cart-clear'});return;}if(u.pathname==='/cart/change'){e.preventDefault();var variantId=u.searchParams.get('id');var line=Number(u.searchParams.get('line'));var quantity=Number(u.searchParams.get('quantity')||0);if(Number.isInteger(quantity)&&quantity>=0&&quantity<=999)send({type:'solvexo:cart-update',items:[variantId?{variantId:variantId,quantity:quantity}:{index:line-1,quantity:quantity}]});return;}e.preventDefault();send({type:'solvexo:navigate',path:u.pathname+u.search+u.hash});});document.addEventListener('submit',function(e){var f=e.target;if(!(f instanceof HTMLFormElement))return;var kind=f.dataset.shopifyForm;if(kind==='product'){e.preventDefault();var d=new FormData(f);send({type:'solvexo:add-to-cart',productId:f.dataset.productId,productType:f.dataset.productType,variantId:String(d.get('id')||''),quantity:Number(d.get('quantity')||1)});}else if(kind==='search'){e.preventDefault();var d=new FormData(f);send({type:'solvexo:navigate',path:'/search?q='+encodeURIComponent(String(d.get('q')||''))});}else if(kind==='cart'){e.preventDefault();if(f.action.indexOf('/cart/clear')!==-1){send({type:'solvexo:cart-clear'});return;}if(e.submitter&&e.submitter.name==='checkout'){send({type:'solvexo:checkout'});return;}var items=[];var index=0;new FormData(f).forEach(function(value,key){var match=/^updates\\[([^\\]]*)\\]$/.exec(key);if(!match)return;var quantity=Number(value);if(Number.isInteger(quantity)&&quantity>=0&&quantity<=999)items.push(match[1]?{variantId:match[1],quantity:quantity}:{index:index,quantity:quantity});index++;});send({type:'solvexo:cart-update',items:items});}else if(kind){e.preventDefault();send({type:'solvexo:navigate',path:f.getAttribute('action')||'/'});}},true);new MutationObserver(size).observe(document.documentElement,{childList:true,subtree:true,attributes:true});window.addEventListener('load',size);window.addEventListener('resize',size);size();})();</script>`;
+  let output = html;
+  if (/<head(?:\s[^>]*)?>/i.test(output)) output = output.replace(/<head(?:\s[^>]*)?>/i, (tag) => `${tag}${base}`);
+  else output = `${base}${output}`;
+  if (/<\/body>/i.test(output)) return output.replace(/<\/body>/i, `${bridge}</body>`);
+  return `${output}${bridge}`;
 }
 async function replaceAsync(source: string, pattern: RegExp, replacer: (...args: any[]) => Promise<string>): Promise<string> {
   const matches = [...source.matchAll(pattern)];
@@ -295,10 +1031,111 @@ function mimeType(path: string): string {
   const ext = extension(path);
   return ({ '.css': 'text/css', '.js': 'text/javascript', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.avif': 'image/avif', '.gif': 'image/gif', '.woff': 'font/woff', '.woff2': 'font/woff2', '.ttf': 'font/ttf', '.otf': 'font/otf' } as Record<string, string>)[ext] ?? 'application/octet-stream';
 }
+function normalizeStorefrontPath(input: string): string {
+  if (typeof input !== 'string' || !input.startsWith('/') || input.startsWith('//') || /[\r\n\\]/.test(input)) {
+    throw new BadRequestException('Storefront path must be a local absolute path');
+  }
+  const withoutHash = input.split('#', 1)[0];
+  const queryIndex = withoutHash.indexOf('?');
+  const pathname = (queryIndex < 0 ? withoutHash : withoutHash.slice(0, queryIndex)) || '/';
+  if (pathname.split('/').some((part) => part === '.' || part === '..')) throw new BadRequestException('Storefront path is invalid');
+  if (withoutHash.length > 2048) throw new BadRequestException('Storefront path is too long');
+  return pathname + (queryIndex < 0 ? '' : withoutHash.slice(queryIndex));
+}
+function getPageType(path: string): string {
+  const pathname = path.split(/[?#]/, 1)[0];
+  if (pathname === '/') return 'index';
+  if (pathname.startsWith('/products/') || pathname.startsWith('/product/')) return 'product';
+  if (pathname.startsWith('/collections/')) return 'collection';
+  if (pathname === '/blog') return 'blog';
+  if (pathname.startsWith('/blog/')) return 'article';
+  if (pathname.startsWith('/blogs/')) return routeSegment(pathname, 3) ? 'article' : 'blog';
+  if (pathname.startsWith('/pages/')) return 'page';
+  if (pathname === '/search') return 'search';
+  if (pathname === '/cart') return 'cart';
+  if (/^\/[^/]+$/.test(pathname) && ![
+    '/checkout', '/login', '/register', '/account', '/wishlist', '/messages',
+    '/notifications', '/returns', '/gift-cards', '/store-credit', '/orders',
+    '/addresses', '/reviews', '/faqs', '/search', '/cart', '/blog',
+  ].includes(pathname)) return 'page';
+  return '404';
+}
+function selectTemplatePath(byPath: Map<string, PackageFile>, path: string, product?: { templateKey?: string } | null) {
+  const pageType = getPageType(path);
+  const templateKey = pageType === 'product' ? product?.templateKey ?? 'default' : 'default';
+  const json = `templates/${pageType}.${templateKey}.json`;
+  if (byPath.has(json)) return { json, liquid: `templates/${pageType}.${templateKey}.liquid` };
+  const fallbackJson = `templates/${pageType}.json`;
+  if (byPath.has(fallbackJson)) return { json: fallbackJson, liquid: `templates/${pageType}.liquid` };
+  return { json: 'templates/index.json', liquid: 'templates/index.liquid' };
+}
+function routeSegment(path: string, index: number): string | undefined {
+  const segment = path.split(/[?#]/, 1)[0].split('/')[index];
+  if (!segment) return undefined;
+  try { return decodeURIComponent(segment); }
+  catch { throw new BadRequestException('Storefront path contains invalid URL encoding'); }
+}
+function availableQuantity(variant: any): number {
+  return Math.max(0, Number(variant.stock ?? 0) - Number(variant.committedStock ?? 0)
+    - Number(variant.damagedStock ?? 0) - Number(variant.inTransitStock ?? 0));
+}
+function productMatchesCollection(product: any, rules: any): boolean {
+  const clauses: boolean[] = [];
+  if (rules?.categoryId) clauses.push(product.categoryId === rules.categoryId || product.subCategoryId === rules.categoryId);
+  if (rules?.tags?.length) clauses.push((product.tags ?? []).some((tag: string) => rules.tags.includes(tag)));
+  if (!clauses.length) return true;
+  return rules?.matchType === 'all' ? clauses.every(Boolean) : clauses.some(Boolean);
+}
+function renderBlogContent(blocks: any[]): string {
+  if (!Array.isArray(blocks)) return '';
+  return blocks.filter((block) => block?.enabled !== false).map((block) => {
+    const settings = block.settings ?? {};
+    const text = escapeAttribute(settings.text ?? settings.content ?? '');
+    if (block.type === 'heading') return `<h2>${text}</h2>`;
+    if (block.type === 'image' && settings.url) return `<img src="${escapeAttribute(settings.url)}" alt="${escapeAttribute(settings.alt ?? '')}">`;
+    if (block.type === 'quote') return `<blockquote>${text}</blockquote>`;
+    if (block.type === 'divider') return '<hr>';
+    if (block.type === 'list') {
+      const items = String(settings.text ?? '').split(/\r?\n/).filter(Boolean)
+        .map((item) => `<li>${escapeAttribute(item)}</li>`).join('');
+      return `<ul>${items}</ul>`;
+    }
+    return `<p>${text}</p>`;
+  }).join('\n');
+}
+function renderPageContent(sections: any[]): string {
+  if (!Array.isArray(sections)) return '';
+  return sections.filter((section) => section?.enabled !== false).map((section) => {
+    const settings = section.settings ?? {};
+    const headingText = settings.heading ?? settings.title ?? '';
+    const heading = headingText ? `<h2>${escapeAttribute(headingText)}</h2>` : '';
+    const text = settings.text ?? settings.content ?? settings.body ?? '';
+    const body = text ? `<p>${escapeAttribute(text)}</p>` : '';
+    const blocks = renderBlogContent(section.blocks ?? []);
+    return heading || body || blocks ? `<section>${heading}${body}${blocks}</section>` : '';
+  }).join('\n');
+}
 function escapeAttribute(value: unknown): string { return String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] ?? c); }
-function formatMoney(value: unknown): string { const numeric = Number(value ?? 0); return Number.isFinite(numeric) ? new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(numeric / 100) : '$0.00'; }
+function formatMoney(value: unknown, currency: string, trimZeros = false): string {
+  const numeric = Number(value ?? 0);
+  const safeCurrency = /^[A-Z]{3}$/.test(currency) ? currency : 'USD';
+  return Number.isFinite(numeric)
+    ? new Intl.NumberFormat('en-US', { style: 'currency', currency: safeCurrency, maximumFractionDigits: 2, minimumFractionDigits: trimZeros ? 0 : 2 }).format(numeric / 100)
+    : new Intl.NumberFormat('en-US', { style: 'currency', currency: safeCurrency, maximumFractionDigits: 2, minimumFractionDigits: trimZeros ? 0 : 2 }).format(0);
+}
+function formatMoneyAmount(value: unknown): string {
+  const numeric = Number(value ?? 0) / 100;
+  if (!Number.isFinite(numeric)) return '0.00';
+  return numeric.toFixed(2);
+}
+function resolveThemeImageUrl(value: any, themeAssetUrl: (name: string) => string): string {
+  const source = typeof value === 'string' ? value : value?.src ?? value?.url ?? '';
+  if (typeof source !== 'string') return '';
+  if (/^\/?assets\//i.test(source)) return themeAssetUrl(source) || source;
+  return source;
+}
 function applyPreviewCsp(html: string): string {
-  const policy = "default-src 'none'; img-src data: blob:; style-src 'unsafe-inline' data:; font-src data:; script-src 'unsafe-inline' data:; connect-src 'none'; form-action 'none'; frame-src 'none'; base-uri 'none'";
+  const policy = "default-src 'none'; img-src data: blob: https:; style-src 'unsafe-inline' data:; font-src data:; script-src 'unsafe-inline' data:; connect-src 'none'; form-action 'none'; frame-src 'none'; base-uri https:";
   const tag = `<meta http-equiv="Content-Security-Policy" content="${policy}">`;
   return /<head(?:\s[^>]*)?>/i.test(html) ? html.replace(/<head(?:\s[^>]*)?>/i, (head) => `${head}${tag}`) : html;
 }
