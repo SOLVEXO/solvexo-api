@@ -12,6 +12,12 @@ export type MenuDocument = HydratedDocument<Menu>;
 export const MENU_LINK_TYPES = ['home', 'page', 'blog', 'search', 'external', 'category', 'collection', 'product'] as const;
 export type MenuLinkType = (typeof MENU_LINK_TYPES)[number];
 
+// How a TOP-LEVEL item's children are presented by the storefront theme:
+// a compact `dropdown` list or a full-width `mega` panel (columns, optional
+// images). Each theme renders both in its own visual language.
+export const MENU_STYLES = ['dropdown', 'mega'] as const;
+export type MenuStyle = (typeof MENU_STYLES)[number];
+
 @Schema({ _id: false })
 export class MenuItemChild {
   @Prop({ required: true }) id: string;
@@ -23,6 +29,8 @@ export class MenuItemChild {
   @Prop({ type: String, default: null }) collectionId: string | null;
   @Prop({ type: String, default: null }) productId: string | null;
   @Prop({ type: Boolean, default: false }) highlight: boolean;
+  /** Optional mega-panel tile image (the storefront falls back to the linked category/collection image). */
+  @Prop({ type: String, default: null }) imageUrl: string | null;
   children?: MenuItemChild[];
 }
 export const MenuItemChildSchema = SchemaFactory.createForClass(MenuItemChild);
@@ -41,6 +49,8 @@ export class MenuItem {
   @Prop({ type: String, default: null }) collectionId: string | null;
   @Prop({ type: String, default: null }) productId: string | null;
   @Prop({ type: Boolean, default: false }) highlight: boolean;
+  @Prop({ type: String, enum: MENU_STYLES, default: 'dropdown' }) menuStyle: MenuStyle;
+  @Prop({ type: String, default: null }) imageUrl: string | null;
   @Prop({ type: [MenuItemChildSchema], default: [] }) children: MenuItemChild[];
 }
 export const MenuItemSchema = SchemaFactory.createForClass(MenuItem);

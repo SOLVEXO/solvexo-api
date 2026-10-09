@@ -3,8 +3,9 @@ import { AdminFinanceService } from './admin-finance.service';
 import { getPlatformEarnings } from '../common/platform-earnings.util';
 
 function setup(opts: {
-  plan?: any[]; paid?: any[]; open?: any[]; accrued?: any[]; rates?: any[];
+  plan?: any[]; paid?: any[]; open?: any[]; accrued?: any[]; rates?: any[]; addons?: any[];
 } = {}) {
+  const addonAgg = jest.fn().mockResolvedValue(opts.addons ?? []);
   const planAgg = jest.fn().mockResolvedValue(opts.plan ?? []);
   // two aggregates on the bill model: paid first, then open (Promise.all call order)
   const billAgg = jest.fn()
@@ -18,10 +19,11 @@ function setup(opts: {
       transactionFeeBillModel: { aggregate: billAgg },
       transactionModel: { aggregate: txAgg },
       exchangeRateModel: { aggregate: rateAgg },
+      platformAddonPurchaseModel: { aggregate: addonAgg },
     },
   } as any;
   const service = new AdminFinanceService(db, { isConnected: false } as any, {} as any, {} as any, {} as any);
-  return { service, planAgg, billAgg, txAgg };
+  return { service, planAgg, billAgg, txAgg, addonAgg };
 }
 
 describe('AdminFinanceService.getPlatformRevenue (USD only; what sellers pay Solvexo)', () => {
@@ -40,6 +42,22 @@ describe('AdminFinanceService.getPlatformRevenue (USD only; what sellers pay Sol
     expect(data.transactionFees.collectedUSD).toBe(41.5);
     expect(data.transactionFees.billCount).toBe(3);
     expect(data.totalRevenueUSD).toBe(512.5);
+  });
+
+  it('counts add-on charges (purchases and renewals) in the range as platform revenue', async () => {
+    const { service, addonAgg } = setup({
+      plan: [{ _id: null, gross: 100, refunded: 0, count: 2 }],
+      addons: [{ _id: null, total: 35, count: 4 }],
+    });
+
+    const { data } = await service.getPlatformRevenue(query);
+
+    expect(data.addons).toEqual({ grossUSD: 35, chargeCount: 4 });
+    expect(data.totalRevenueUSD).toBe(135);
+    // per-charge dates, with a legacy fallback for purchases that predate the `charges` log
+    const pipeline = addonAgg.mock.calls[0][0];
+    expect(pipeline[0].$addFields._charges.$cond[2]).toEqual([{ amountUSD: '$priceUSD', chargedAt: '$createdAt' }]);
+    expect(pipeline[2].$match['_charges.chargedAt']).toEqual({ $gte: expect.any(Date), $lte: expect.any(Date) });
   });
 
   it('REGRESSION: invoiced-but-unpaid and accrued-but-unbilled fees are shown but NOT counted as revenue', async () => {

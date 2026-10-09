@@ -2,10 +2,18 @@
 import { BadRequestException } from '@nestjs/common';
 import {
   absoluteChange,
+  bucketExpr,
   enumerateBuckets,
+  enumerateDayKeys,
+  isValidTimeZone,
+  localDateKey,
+  nextBucket,
   percentChange,
+  rangeCacheKey,
   resolveDateRange,
   trendFor,
+  zonedMidnight,
+  zonedParts,
 } from './analytics-date.util';
 
 describe('percentChange', () => {
@@ -139,5 +147,68 @@ describe('enumerateBuckets', () => {
   it('produces monotonically increasing monthly buckets', () => {
     const buckets = enumerateBuckets(new Date('2026-01-15T00:00:00Z'), new Date('2026-04-01T00:00:00Z'), 'month');
     expect(buckets.map((b) => b.getUTCMonth())).toEqual([0, 1, 2, 3]);
+  });
+});
+
+describe('store time zone (Shopify reports in the store time zone)', () => {
+  it('a date-only custom range covers BOTH whole days, and a single day is valid', () => {
+    const r = resolveDateRange({ range: 'custom', from: '2026-03-10', to: '2026-03-10' }, 'Asia/Karachi');
+    // Karachi is UTC+5: local 00:00 = 19:00Z the day before.
+    expect(r.from.toISOString()).toBe('2026-03-09T19:00:00.000Z');
+    expect(r.to.toISOString()).toBe('2026-03-10T18:59:59.999Z');
+  });
+
+  it('REGRESSION: the last day of a custom range is no longer dropped (UTC)', () => {
+    const r = resolveDateRange({ range: 'custom', from: '2026-01-01', to: '2026-01-15' });
+    expect(r.to.toISOString()).toBe('2026-01-15T23:59:59.999Z');
+  });
+
+  it('presets start at local midnight', () => {
+    const r = resolveDateRange({ range: '7d' }, 'Asia/Karachi');
+    expect(zonedParts(r.from, 'Asia/Karachi')).toMatchObject({ hour: 0, minute: 0, second: 0 });
+  });
+
+  it('zonedMidnight is DST-safe (New York, spring-forward day)', () => {
+    expect(zonedMidnight(2026, 3, 8, 'America/New_York').toISOString()).toBe('2026-03-08T05:00:00.000Z');
+    expect(zonedMidnight(2026, 3, 9, 'America/New_York').toISOString()).toBe('2026-03-09T04:00:00.000Z');
+  });
+
+  it('day buckets are local midnights in the store zone', () => {
+    const b = enumerateBuckets(new Date('2026-03-09T19:00:00Z'), new Date('2026-03-11T18:00:00Z'), 'day', 'Asia/Karachi');
+    expect(b.map((d) => d.toISOString())).toEqual(['2026-03-09T19:00:00.000Z', '2026-03-10T19:00:00.000Z', '2026-03-11T19:00:00.000Z'].slice(0, b.length));
+    expect(b).toHaveLength(2);
+  });
+
+  it('week buckets start on Monday (same as bucketExpr startOfWeek monday)', () => {
+    const b = enumerateBuckets(new Date('2026-01-07T12:00:00Z'), new Date('2026-01-20T12:00:00Z'), 'week');
+    expect(b.map((d) => d.getUTCDay())).toEqual([1, 1, 1]);
+    expect(bucketExpr('$createdAt', 'week', 'UTC').$dateTrunc).toMatchObject({ startOfWeek: 'monday' });
+    expect(bucketExpr('$createdAt', 'day', 'UTC').$dateTrunc).not.toHaveProperty('startOfWeek');
+  });
+
+  it('nextBucket steps one local period', () => {
+    expect(nextBucket(new Date('2026-03-09T19:00:00Z'), 'day', 'Asia/Karachi').toISOString()).toBe('2026-03-10T19:00:00.000Z');
+  });
+
+  it('localDateKey and enumerateDayKeys follow the store zone', () => {
+    expect(localDateKey(new Date('2026-03-09T20:00:00Z'), 'Asia/Karachi')).toBe('2026-03-10');
+    expect(enumerateDayKeys(new Date('2026-03-09T19:00:00Z'), new Date('2026-03-11T18:59:59Z'), 'Asia/Karachi')).toEqual(['2026-03-10', '2026-03-11']);
+  });
+
+  it('validates IANA zones', () => {
+    expect(isValidTimeZone('Asia/Karachi')).toBe(true);
+    expect(isValidTimeZone('Mars/Base')).toBe(false);
+    expect(isValidTimeZone(42)).toBe(false);
+  });
+
+  it('honours an explicit granularity override', () => {
+    expect(resolveDateRange({ range: '7d', granularity: 'month' }).granularity).toBe('month');
+    expect(resolveDateRange({ range: '7d', granularity: 'year' }).granularity).toBe('day');
+  });
+
+  it('REGRESSION: the cache key is stable for a preset (no millisecond timestamps)', () => {
+    expect(rangeCacheKey({ range: '30d' }, 'Asia/Karachi')).toBe(rangeCacheKey({ range: '30d' }, 'Asia/Karachi'));
+    expect(rangeCacheKey({ range: '30d' }, 'UTC')).not.toBe(rangeCacheKey({ range: '30d' }, 'Asia/Karachi'));
+    expect(rangeCacheKey({ range: 'custom', from: '2026-01-01', to: '2026-01-02' })).toContain('2026-01-01~2026-01-02');
   });
 });

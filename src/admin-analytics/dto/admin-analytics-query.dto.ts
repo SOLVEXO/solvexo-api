@@ -1,6 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { ApiProperty } from '@nestjs/swagger';
-import { IsIn, IsOptional, IsString } from 'class-validator';
+import { IsOptional, IsString } from 'class-validator';
 import { BaseAnalyticsQueryDto, RANGE_PRESETS } from '../../analytics/dto/base-analytics-query.dto';
 
 export { RANGE_PRESETS };
@@ -23,9 +23,5 @@ export class AdminAnalyticsQueryDto extends BaseAnalyticsQueryDto {
   @IsOptional()
   @IsString()
   sellerId?: string;
-
-  @ApiProperty({ required: false, enum: GRANULARITY_OVERRIDES, description: 'Optional — force a bucket size on time-series endpoints instead of the auto-selected one (day ≤31d, week ≤90d, month beyond)' })
-  @IsOptional()
-  @IsIn(GRANULARITY_OVERRIDES)
-  granularity?: string;
+  // `granularity` (day/week/month override) is inherited from BaseAnalyticsQueryDto.
 }

@@ -1,6 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { ApiProperty } from '@nestjs/swagger';
-import { Type } from 'class-transformer';
+import { Transform } from 'class-transformer';
 import { IsBoolean, IsDateString, IsIn, IsOptional } from 'class-validator';
 
 export const RANGE_PRESETS = ['7d', '30d', '90d', '6m', '12m', 'custom'] as const;
@@ -27,9 +27,20 @@ export class BaseAnalyticsQueryDto {
   @IsDateString()
   to?: string;
 
+  // Query strings arrive as text: "false" must stay false (a plain Boolean cast turned it into true).
   @ApiProperty({ required: false, default: false })
   @IsOptional()
-  @Type(() => Boolean)
+  @Transform(({ value }) => value === true || value === 'true' || value === '1')
   @IsBoolean()
   compareToPreviousPeriod?: boolean;
+
+  @ApiProperty({ required: false, enum: ['day', 'week', 'month'], description: 'Chart bucket override (auto by range length when omitted)' })
+  @IsOptional()
+  @IsIn(['day', 'week', 'month'])
+  granularity?: string;
+
+  @ApiProperty({ required: false, enum: ['previous_period', 'previous_year'], default: 'previous_period' })
+  @IsOptional()
+  @IsIn(['previous_period', 'previous_year'])
+  compareTo?: string;
 }

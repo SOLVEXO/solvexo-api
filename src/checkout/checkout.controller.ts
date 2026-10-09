@@ -108,10 +108,15 @@ import { IdempotencyInterceptor } from '../common/idempotency.interceptor';
 import { CheckoutService } from './checkout.service';
 import { BillingAccessGuard } from '../platform-plans/guards/billing-access.guard';
 import { RequireActiveBilling } from '../platform-plans/decorators/require-active-billing.decorator';
+import { DatabaseService } from '../database/databaseservice';
+import { markStorefrontSession, readAnalyticsSessionId } from '../common/storefront-session.util';
 
 @Controller('api/checkout')
 export class CheckoutController {
-  constructor(private readonly checkoutService: CheckoutService) {}
+  constructor(
+    private readonly checkoutService: CheckoutService,
+    private readonly databaseService: DatabaseService,
+  ) {}
 
   // Idempotency-Key header (already-proven interceptor, used elsewhere in
   // this codebase) prevents a double-tap/retry from creating two separate
@@ -128,7 +133,17 @@ export class CheckoutController {
   @Post('create-checkout')
   async createCheckout(@Req() req: any, @Body() body: any) {
     const { userId, storeId } = req.user;
-    return this.checkoutService.createCheckout(userId, body, storeId);
+    const result: any = await this.checkoutService.createCheckout(userId, body, storeId);
+    // Online-store funnel: this visit reached checkout; remember it on the checkout so the order marks it converted.
+    const sessionId = readAnalyticsSessionId(body);
+    const checkout = result?.data?.checkout;
+    const checkoutStoreId = checkout?.items?.[0]?.storeId;
+    if (sessionId && checkout?._id && checkoutStoreId) {
+      const repos = this.databaseService.repositories;
+      void repos.checkoutModel.updateOne({ _id: checkout._id }, { analyticsSessionId: sessionId }).catch(() => undefined);
+      void markStorefrontSession(repos.storefrontSessionModel, String(checkoutStoreId), sessionId, { reachedCheckout: true, userId });
+    }
+    return result;
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)

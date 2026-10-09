@@ -739,6 +739,8 @@ OrderSchema.index({ attributionSource: 1 });
 OrderSchema.index({ checkoutId: 1 });
 OrderSchema.index({ 'sellerOrders.sellerId': 1, 'sellerOrders.status': 1 });
 OrderSchema.index({ 'sellerOrders.storeId': 1 });
+// Store analytics: one store's orders in a date window (sellerOrderMatchStage pre-matches sellerOrders.storeId).
+OrderSchema.index({ 'sellerOrders.storeId': 1, isDelete: 1, createdAt: -1 });
 OrderSchema.index({ 'sellerOrders.items.status': 1 });
 OrderSchema.index({ paymentStatus: 1 });
 OrderSchema.index({ customerId: 1 });

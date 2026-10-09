@@ -66,3 +66,5 @@ export const PayoutMethodSchema = SchemaFactory.createForClass(PayoutMethod);
 PayoutMethodSchema.index({ storeId: 1 });
 PayoutMethodSchema.index({ storeId: 1, isDefault: 1 });
 PayoutMethodSchema.index({ status: 1 });
+// One system-managed Stripe Connect method per store — two concurrent requests can no longer both create it.
+PayoutMethodSchema.index({ storeId: 1, type: 1 }, { unique: true, partialFilterExpression: { type: 'stripe_connect' } });

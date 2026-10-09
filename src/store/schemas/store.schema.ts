@@ -338,6 +338,11 @@ export class Store {
   @Prop({ type: String, default: null })
   baseCurrency: string | null;
 
+  // Store time zone (IANA, e.g. "Asia/Karachi") — Shopify's Settings > General > Time zone. Analytics days,
+  // "today" and chart buckets follow it. Null = derived from `country` (see resolveStoreTimeZone), else UTC.
+  @Prop({ type: String, default: null })
+  timezone: string | null;
+
   // "Markets" — which of the platform's `SUPPORTED_CURRENCIES` a buyer may
   // actually check out in on THIS store (real, seller-configurable, distinct
   // from `baseCurrency` which is what the seller is paid/priced in and

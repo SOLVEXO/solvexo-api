@@ -268,6 +268,7 @@ import { DatabaseService } from './databaseservice';
       { name: schema.OrderPaymentRecord.name, schema: schema.OrderPaymentRecordSchema },
       // Phase 5 — Product Tracking Foundation.
       { name: schema.ProductView.name, schema: schema.ProductViewSchema },
+      { name: schema.StorefrontSession.name, schema: schema.StorefrontSessionSchema },
       { name: schema.SavedReport.name, schema: schema.SavedReportSchema },
     ]),
   ],

@@ -12,10 +12,15 @@ import { CartService } from './cart.service';
 import { AddToCartDto } from './dto/add-to-cart.dto';
 import { UpdateCartQuantityDto } from './dto/update-cart-quantity.dto';
 import { resolveBuyerStoreScope } from '../common/store-scope.util';
+import { DatabaseService } from '../database/databaseservice';
+import { markStorefrontSession, readAnalyticsSessionId } from '../common/storefront-session.util';
 
 @Controller('api/cart')
 export class CartController {
-  constructor(private readonly cartService: CartService) {}
+  constructor(
+    private readonly cartService: CartService,
+    private readonly databaseService: DatabaseService,
+  ) {}
 
   @UseGuards(JwtAuthGuard)
   @Post('add-to-cart')
@@ -23,7 +28,10 @@ export class CartController {
     const { userId, storeId: userStoreId } = req.user;
     const storeId = resolveBuyerStoreScope(userStoreId, dto.storeId);
 
-    return this.cartService.addToCart(userId, storeId, dto);
+    const result = await this.cartService.addToCart(userId, storeId, dto);
+    // Online-store funnel: this visit added to cart (only after the real cart write succeeded).
+    void markStorefrontSession(this.databaseService.repositories.storefrontSessionModel, storeId, readAnalyticsSessionId(req.body), { addedToCart: true, userId });
+    return result;
   }
   @UseGuards(JwtAuthGuard)
   @Get('get-cart')

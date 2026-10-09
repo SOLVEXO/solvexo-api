@@ -49,6 +49,8 @@ import { buildDeliveredEmail, buildReadyForPickupEmail, buildReturnLabelEmail, b
  *  never reduces what the seller is credited. Falls back to the old
  *  order-currency-denominated calculation only for orders placed before
  *  settlementAmount/settlementCurrency existed. */
+import { sellerTaxShare } from '../common/seller-tax-share.util';
+
 function sellerPayoutBasis(so: any): number {
   if (so.settlementAmount != null) return so.settlementAmount;
   return round(so.subtotal + (so.platformSponsoredDiscountUSD ?? 0) + (so.taxAmount ?? 0));
@@ -1359,12 +1361,11 @@ export class OrdersService {
     // transition into `completed`, never again if it was already completed (see guard above).
     if (status === 'completed' && !wasAlreadyCompleted) {
       const so = order.sellerOrders[sellerOrderIndex];
-      // A Connect-settled sellerOrder's money already went straight to the
-      // seller's own Stripe-connected account at payment time — crediting
-      // the internal ledger here too would let them draw a second, duplicate
-      // payout through the platform's own payout-request flow. See
-      // PaymentService.initiatePayment/SellerOrder.settledViaConnect.
-      if (!so.settledViaConnect) {
+      // A Connect-settled sellerOrder's money already went straight to the seller's own Stripe account at
+      // payment time. The sale is still RECORDED (so revenue/reports/tax are complete) but `settledViaConnect`
+      // makes recordSale credit nothing — otherwise the seller could draw a second payout through the platform
+      // ledger. See PaymentService.initiatePayment/SellerOrder.settledViaConnect.
+      {
         const platformSponsoredUSD = so.platformSponsoredDiscountUSD ?? 0;
         const sponsoredCampaignId =
           so.items.find((i: any) => i.campaignSponsorType === 'platform')
@@ -1380,6 +1381,8 @@ export class OrdersService {
             sponsoredCampaignId,
             sellerPayoutCurrency(so, order),
             order.paymentType,
+            !!so.settledViaConnect,
+            sellerTaxShare(so, sellerPayoutBasis(so)),
           );
         } catch (e) {
           console.error('Finance recordSale failed:', e?.message);
@@ -1914,7 +1917,6 @@ export class OrdersService {
     // any that settled directly via Stripe Connect (see the same guard/
     // comment in the status-transition branch above).
     for (const so of order.sellerOrders) {
-      if (so.settledViaConnect) continue;
       const platformSponsoredUSD = so.platformSponsoredDiscountUSD ?? 0;
       const sponsoredCampaignId =
         so.items.find((i: any) => i.campaignSponsorType === 'platform')
@@ -1930,6 +1932,8 @@ export class OrdersService {
           sponsoredCampaignId,
           sellerPayoutCurrency(so, order),
           order.paymentType,
+          !!so.settledViaConnect,
+          sellerTaxShare(so, sellerPayoutBasis(so)),
         );
       } catch (e) {
         console.error('Finance recordSale failed:', e?.message);

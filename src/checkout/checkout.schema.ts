@@ -402,6 +402,11 @@ export class Checkout {
   })
   attributionSource: string;
 
+  // The online-store visit (StorefrontSession.sessionId) this checkout started in — marks the session converted
+  // when the order is placed (Shopify conversion funnel). Null when the storefront sent none.
+  @Prop({ type: String, default: null })
+  analyticsSessionId: string | null;
+
   @Prop({ default: false })
   isDelete: boolean;
 

@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Controller, Get, Post, Body, Param, Req, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Body, Param, Query, Req, UseGuards } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { StripeConnectService } from './stripe-connect.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -37,9 +37,27 @@ export class StripeConnectController {
     return this.stripeConnectService.getStatus(actingSellerId(req.user), storeId);
   }
 
+  // Read-only money views live on the Finance page, so they need the Finance "view payouts" permission
+  // (the method-level decorator overrides the class-level manage permission).
   @Get(':storeId/payouts')
+  @RequirePermission('finance.payouts.view')
   getPayouts(@Req() req: any, @Param('storeId') storeId: string) {
     return this.stripeConnectService.getPayoutOverview(actingSellerId(req.user), storeId);
+  }
+
+  @Get(':storeId/payouts/:payoutId')
+  @RequirePermission('finance.payouts.view')
+  getPayoutDetail(@Req() req: any, @Param('storeId') storeId: string, @Param('payoutId') payoutId: string) {
+    return this.stripeConnectService.getPayoutDetail(actingSellerId(req.user), storeId, payoutId);
+  }
+
+  @Get(':storeId/balance-transactions')
+  @RequirePermission('finance.payouts.view')
+  getBalanceTransactions(
+    @Req() req: any, @Param('storeId') storeId: string,
+    @Query('limit') limit?: string, @Query('startingAfter') startingAfter?: string, @Query('type') type?: string,
+  ) {
+    return this.stripeConnectService.getBalanceTransactions(actingSellerId(req.user), storeId, { limit: Number(limit) || undefined, startingAfter, type });
   }
 
   @Post(':storeId/onboarding-link')

@@ -7,6 +7,7 @@ import { PaymentService } from '../payment/payment.service';
 import { PaymentProviderRegistry } from './payment-provider.registry';
 import { toDecryptedPaymentConfig } from './integration-credentials.helper';
 import { StoreIntegrationProvider } from './schemas/store-integration.schema';
+import { StuckGatewayPaymentsService } from './stuck-gateway-payments.service';
 
 /**
  * Buyer-facing payment-method resolution for checkout — Phase 2 design doc
@@ -32,6 +33,7 @@ export class CheckoutPaymentMethodsService {
     private readonly registry: PaymentProviderRegistry,
     private readonly paymentService: PaymentService,
     private readonly activityLogService: ActivityLogService,
+    private readonly stuckPayments: StuckGatewayPaymentsService,
   ) {}
 
   private get repos() {
@@ -102,7 +104,7 @@ export class CheckoutPaymentMethodsService {
     return this.paymentService.customManualPayment(userId, checkoutId, { name: method.name });
   }
 
-  async initiatePayment(checkoutId: string, userId: string, providerKey: string, returnUrl: string, cancelUrl: string) {
+  async initiatePayment(checkoutId: string, userId: string, providerKey: string, returnUrl: string, cancelUrl: string, walletAccount?: string) {
     if (!returnUrl || !cancelUrl) {
       throw new BadRequestException('returnUrl and cancelUrl are required');
     }
@@ -160,14 +162,13 @@ export class CheckoutPaymentMethodsService {
       throw new BadRequestException('Nothing to pay for this checkout');
     }
 
-    const session = await provider.initiatePayment(
-      {
-        orderId: checkoutId, amount, currency, storeId, returnUrl, cancelUrl,
-        buyerEmail: (buyer as any)?.contactEmail ?? (buyer as any)?.email,
-        buyerPhone: (address as any)?.phoneNumber ?? (buyer as any)?.phone,
-      },
-      config,
-    );
+    const orderContext = {
+      orderId: checkoutId, amount, currency, storeId, returnUrl, cancelUrl,
+      buyerEmail: (buyer as any)?.contactEmail ?? (buyer as any)?.email,
+      buyerPhone: (address as any)?.phoneNumber ?? (buyer as any)?.phone,
+      walletAccount: typeof walletAccount === 'string' ? walletAccount.slice(0, 20) : undefined,
+    };
+    const session = await provider.initiatePayment(orderContext, config);
 
     // The linkage record `PaymentService.finalizeGatewayPayment`/
     // `failGatewayPayment` looks up by `providerSessionId` once this
@@ -188,6 +189,22 @@ export class CheckoutPaymentMethodsService {
       providerSessionId: session.sessionId,
       returnUrl,
     });
+
+    // Push-approval gateways (Easypaisa app): the approval request runs in the background while the buyer's return
+    // page polls the checkout; its result is then read from the gateway's inquiry API and finalized through the
+    // same checks as a webhook. If this process dies mid-way, the hourly stuck-payment check repeats the inquiry.
+    if (provider.startPushPayment) {
+      const sessionId = session.sessionId;
+      void provider
+        .startPushPayment(orderContext, sessionId, config)
+        .catch((err: any) => this.activityLogService.log({
+          storeId, category: 'integrations', action: 'integration.push_payment_error',
+          description: `${integration.provider} approval request for session ${sessionId} failed: ${err?.message ?? err}`,
+          actorId: 'system', actorRole: 'system', targetId: checkoutId, targetType: 'checkout',
+        }))
+        .then(() => this.stuckPayments.reconcileSession(storeId, integration.provider, sessionId, 'app approval'))
+        .catch(() => undefined);
+    }
 
     return { success: true, data: session };
   }

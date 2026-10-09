@@ -70,6 +70,8 @@ export interface PaymentOrderContext {
   storeId: string;
   buyerEmail?: string;
   buyerPhone?: string;
+  /** Buyer-entered wallet account (Easypaisa mobile account number) for push-approval gateways; falls back to buyerPhone. */
+  walletAccount?: string;
   returnUrl: string;
   cancelUrl: string;
 }
@@ -99,4 +101,11 @@ export interface PaymentProvider {
   refund(transactionId: string, amount: number, config: DecryptedPaymentConfig): Promise<RefundResult>;
   /** Fields safe to hand to buyer-side checkout — never credentials. */
   getPublicConfig(config: Record<string, any>): Omit<PublicPaymentMethodView, 'provider'>;
+
+  /**
+   * Push-approval gateways only (Easypaisa mobile account): asks the gateway to send the buyer an in-app approval
+   * request for the session `initiatePayment` just opened. Resolves once the gateway answers (approved, declined or
+   * timed out) — the caller then confirms the real result with `verifyPayment`; nothing returned here is proof of payment.
+   */
+  startPushPayment?(order: PaymentOrderContext, sessionId: string, config: DecryptedPaymentConfig): Promise<void>;
 }

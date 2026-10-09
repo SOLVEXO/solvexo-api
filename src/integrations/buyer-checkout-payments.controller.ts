@@ -36,10 +36,11 @@ export class BuyerCheckoutPaymentsController {
   initiate(
     @Param('checkoutId') checkoutId: string,
     @Param('provider') provider: string,
-    @Body() body: { returnUrl: string; cancelUrl: string },
+    @Body() body: { returnUrl: string; cancelUrl: string; walletAccount?: string },
     @Req() req: any,
   ) {
-    return this.service.initiatePayment(checkoutId, req.user.userId, provider, body?.returnUrl, body?.cancelUrl);
+    // walletAccount: the buyer's Easypaisa mobile account number (push-approval gateways only); type-checked in the service.
+    return this.service.initiatePayment(checkoutId, req.user.userId, provider, body?.returnUrl, body?.cancelUrl, body?.walletAccount);
   }
 
   // Idempotent by construction (see CheckoutPaymentMethodsService.confirmPayment's

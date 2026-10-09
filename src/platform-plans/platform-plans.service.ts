@@ -7,6 +7,7 @@ import { UpdatePlatformPlanDto } from './dto/update-platform-plan.dto';
 import { UpdateTrialSettingsDto } from './dto/update-trial-settings.dto';
 import { PlatformPlanCatalogService } from './platform-plan-catalog.service';
 import { validatePlanLimits, validatePlanPricing, validateTierOrder } from './platform-plan.catalog';
+import { resolveDateRange } from '../analytics/utils/analytics-date.util';
 
 /** Admin CRUD + public browse for PlatformPlan — the tiers on the pricing page. */
 @Injectable()
@@ -207,8 +208,18 @@ export class PlatformPlansService {
 
   /** Platform-plan revenue — a completely separate line item from buyer-VIP-plan subscription revenue and order commission. */
   async adminGetRevenue(query: any) {
-    const from = query.from ? new Date(query.from) : new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
-    const to = query.to ? new Date(query.to) : new Date();
+    // Internal callers pass resolved Dates; the admin UI sends a `range` preset (or custom from/to) that used to be
+    // ignored, so every range showed the 90-day default.
+    let from: Date;
+    let to: Date;
+    if (query.from instanceof Date && query.to instanceof Date) {
+      ({ from, to } = query);
+    } else if (query.range || (query.from && query.to)) {
+      ({ from, to } = resolveDateRange({ range: query.range, from: query.from, to: query.to }));
+    } else {
+      from = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+      to = new Date();
+    }
 
     const [totalAgg, byPlanRaw, activeByPlan, activeSubs] = await Promise.all([
       this.db.repositories.platformPlanInvoiceModel.aggregate([

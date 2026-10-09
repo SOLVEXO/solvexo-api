@@ -46,6 +46,12 @@ export const SECTION_TYPES = [
   'team_grid',
   'stats_counter',
   'gallery_grid',
+  // Shopify-parity section library (see `section-settings.types.ts`).
+  'multicolumn',
+  'logo_list',
+  'marquee',
+  'custom_html',
+  'image_banner',
   // Core/locked sections — Phase 4 of the Online Store theme-editor rebuild.
   // Every one of these is ALWAYS pre-seeded into its owning
   // `CollectionTemplate` (see `collection-template/core-sections.util.ts`)

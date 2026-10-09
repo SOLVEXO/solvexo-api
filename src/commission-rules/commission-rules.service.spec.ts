@@ -119,4 +119,34 @@ describe('CommissionRulesService', () => {
       expect(active.save).toHaveBeenCalled();
     });
   });
+
+  describe('cardApplicationFeeCents — fixed card fee follows the charge currency', () => {
+    const withRate = (row: any) => {
+      const rateModel = { findOne: jest.fn().mockReturnValue({ sort: jest.fn().mockReturnValue({ select: jest.fn().mockReturnValue({ lean: jest.fn().mockResolvedValue(row) }) }) }) };
+      (db as any).repositories.exchangeRateModel = rateModel;
+      return rateModel;
+    };
+
+    it('USD: 2.9% + $0.30 (30 cents)', async () => {
+      const fee = await service.cardApplicationFeeCents(STORE_ID, 10000); // $100.00
+      expect(fee).toBe(320); // 290 + 30
+    });
+
+    it('PKR: the $0.30 part becomes ~PKR 84 (280/USD), not 30 paisa', async () => {
+      withRate({ ratePerUSD: 280 });
+      const fee = await service.cardApplicationFeeCents(STORE_ID, 1_000_000, 'PKR'); // PKR 10,000.00
+      expect(fee).toBe(29_000 + 8_400); // 2.9% of 1,000,000 paisa + 0.30 * 280 * 100
+    });
+
+    it('a non-USD currency with no FX rate keeps only the percentage (never a guessed fixed part)', async () => {
+      withRate(null);
+      const fee = await service.cardApplicationFeeCents(STORE_ID, 1_000_000, 'XYZ');
+      expect(fee).toBe(29_000);
+    });
+
+    it('never exceeds the charge amount (Stripe rejects that)', async () => {
+      const fee = await service.cardApplicationFeeCents(STORE_ID, 20); // 20 cents
+      expect(fee).toBe(20);
+    });
+  });
 });

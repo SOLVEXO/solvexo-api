@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UploadedFile, UseGuards, UseInterceptors, UsePipes, ValidationPipe } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, Res, UploadedFile, UseGuards, UseInterceptors, UsePipes, ValidationPipe } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
@@ -33,15 +33,15 @@ export class StoreThemeController {
   // Shopify-compatible source-package lifecycle. ZIP parsing is bounded and
   // validated before any immutable source revision is persisted.
   @Post(':storeId/installed/:installedThemeId/package')
-  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 8 * 1024 * 1024 } }))
+  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } }))
   uploadThemePackage(@Req() req: any, @Param('storeId') storeId: string, @Param('installedThemeId') installedThemeId: string, @UploadedFile() file: Express.Multer.File) {
     if (!file) throw new BadRequestException('Theme ZIP file is required');
     return this.themePackageService.upload(storeId, actingSellerId(req.user), installedThemeId, file.buffer);
   }
 
   @Post(':storeId/installed/:installedThemeId/package/preview')
-  previewThemePackage(@Req() req: any, @Param('storeId') storeId: string, @Param('installedThemeId') installedThemeId: string, @Body('version') version?: number, @Body('path') path?: string) {
-    return this.themePackageService.preview(storeId, actingSellerId(req.user), installedThemeId, version, path);
+  previewThemePackage(@Req() req: any, @Param('storeId') storeId: string, @Param('installedThemeId') installedThemeId: string, @Body('version') version?: number, @Body('path') path?: string, @Body('draft') draft?: { path: string; content: string }) {
+    return this.themePackageService.preview(storeId, actingSellerId(req.user), installedThemeId, version, path, draft);
   }
 
   @Post(':storeId/installed/:installedThemeId/package/:version/publish')
@@ -67,6 +67,34 @@ export class StoreThemeController {
   @Patch(':storeId/installed/:installedThemeId/package/file')
   editThemePackageFile(@Req() req: any, @Param('storeId') storeId: string, @Param('installedThemeId') installedThemeId: string, @Body() body: { path: string; content: string }) {
     return this.themePackageService.editFile(storeId, actingSellerId(req.user), installedThemeId, body?.path, body?.content);
+  }
+
+  @Post(':storeId/installed/:installedThemeId/package/file')
+  addThemePackageFile(@Req() req: any, @Param('storeId') storeId: string, @Param('installedThemeId') installedThemeId: string, @Body() body: { path: string; content: string; encoding?: 'utf8' | 'base64' }) {
+    return this.themePackageService.addFile(storeId, actingSellerId(req.user), installedThemeId, body?.path, body?.content, body?.encoding);
+  }
+
+  @Delete(':storeId/installed/:installedThemeId/package/file')
+  deleteThemePackageFile(@Req() req: any, @Param('storeId') storeId: string, @Param('installedThemeId') installedThemeId: string, @Body() body: { path: string }) {
+    return this.themePackageService.deleteFile(storeId, actingSellerId(req.user), installedThemeId, body?.path);
+  }
+
+  @Post(':storeId/installed/:installedThemeId/package/file/rename')
+  renameThemePackageFile(@Req() req: any, @Param('storeId') storeId: string, @Param('installedThemeId') installedThemeId: string, @Body() body: { from: string; to: string }) {
+    return this.themePackageService.renameFile(storeId, actingSellerId(req.user), installedThemeId, body?.from, body?.to);
+  }
+
+  @Post(':storeId/installed/:installedThemeId/package/unpublish')
+  unpublishThemePackage(@Req() req: any, @Param('storeId') storeId: string, @Param('installedThemeId') installedThemeId: string) {
+    return this.themePackageService.unpublish(storeId, actingSellerId(req.user), installedThemeId);
+  }
+
+  @Get(':storeId/installed/:installedThemeId/package/export/zip')
+  async exportThemePackage(@Req() req: any, @Res() res: any, @Param('storeId') storeId: string, @Param('installedThemeId') installedThemeId: string, @Query('version') version?: string) {
+    const { filename, buffer } = await this.themePackageService.exportZip(storeId, actingSellerId(req.user), installedThemeId, version === undefined ? undefined : Number(version));
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(buffer);
   }
 
   @Post(':storeId/installed/:installedThemeId/package/:version/rollback')

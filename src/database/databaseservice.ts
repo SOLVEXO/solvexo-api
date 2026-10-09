@@ -471,6 +471,8 @@ export class DatabaseService {
     // Phase 5 — Product Tracking Foundation.
     @InjectModel(schema.ProductView.name)
     private productViewModel: Model<schema.ProductViewDocument>,
+    @InjectModel(schema.StorefrontSession.name)
+    private storefrontSessionModel: Model<schema.StorefrontSessionDocument>,
 
     @InjectModel(schema.SavedReport.name)
     private savedReportModel: Model<schema.SavedReportDocument>,
@@ -637,6 +639,7 @@ export class DatabaseService {
       stockUnitModel: this.stockUnitModel,
       orderPaymentRecordModel: this.orderPaymentRecordModel,
       productViewModel: this.productViewModel,
+      storefrontSessionModel: this.storefrontSessionModel,
       savedReportModel: this.savedReportModel,
     };
   }

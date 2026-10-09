@@ -151,6 +151,11 @@ export class PaymentTransaction {
   @Prop({ type: String, enum: ['normal', 'elevated', 'highest', null], default: null })
   riskLevel: string | null;
 
+  // Set once StuckGatewayPaymentsService has handled a gateway session whose result never arrived
+  // (seller notified, or nothing left to do) — so the hourly check never alerts twice.
+  @Prop({ type: Date, default: null })
+  stuckAlertSentAt: Date | null;
+
   @Prop({ default: false })
   isDelete: boolean;
 

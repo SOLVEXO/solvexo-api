@@ -136,6 +136,97 @@ export class StripeConnectService implements OnModuleInit {
     };
   }
 
+  private mapBalanceTransaction(t: any) {
+    return {
+      id: t.id,
+      type: t.type as string, // charge | refund | payment | payment_refund | adjustment | payout | stripe_fee | application_fee ...
+      description: t.description ?? null,
+      amount: t.amount / 100,   // gross
+      fee: t.fee / 100,         // Stripe + platform fees taken out of it
+      net: t.net / 100,
+      currency: String(t.currency).toUpperCase(),
+      created: new Date(t.created * 1000).toISOString(),
+      availableOn: t.available_on ? new Date(t.available_on * 1000).toISOString() : null,
+      status: t.status as string, // available | pending
+      sourceId: typeof t.source === 'string' ? t.source : t.source?.id ?? null,
+    };
+  }
+
+  /**
+   * One payout with the transactions it paid out (Shopify's payout detail page): read live from THIS store's
+   * connected account, so a payout id from another account simply 404s at Stripe. Totals are per currency.
+   */
+  async getPayoutDetail(sellerId: string, storeId: string, payoutId: string) {
+    if (!/^po_[A-Za-z0-9]+$/.test(payoutId)) throw new BadRequestException('Invalid payout id');
+    const stripe = this.assertStripeConfigured();
+    const store = await this.loadOwnedStore(sellerId, storeId);
+    const accountId = store.stripeConnectedAccountId;
+    if (!accountId) throw new BadRequestException('Connect Stripe first to see payouts');
+    const opts = { stripeAccount: accountId };
+    let payout: any;
+    try {
+      payout = await stripe.payouts.retrieve(payoutId, {}, opts);
+    } catch (err: any) {
+      if (err?.statusCode === 404 || err?.code === 'resource_missing') throw new BadRequestException('Payout not found');
+      throw err;
+    }
+    const txns = await stripe.balanceTransactions.list({ payout: payoutId, limit: 100 }, opts);
+    const rows = txns.data.map((t: any) => this.mapBalanceTransaction(t));
+    const totals = new Map<string, { gross: number; fees: number; net: number }>();
+    for (const r of rows) {
+      const cur = totals.get(r.currency) ?? { gross: 0, fees: 0, net: 0 };
+      cur.gross += r.amount; cur.fees += r.fee; cur.net += r.net;
+      totals.set(r.currency, cur);
+    }
+    return {
+      success: true,
+      data: {
+        testMode: this.isTestMode(),
+        payout: {
+          id: payout.id,
+          amount: payout.amount / 100,
+          currency: String(payout.currency).toUpperCase(),
+          status: payout.status,
+          method: payout.method,
+          arrivalDate: payout.arrival_date ? new Date(payout.arrival_date * 1000).toISOString() : null,
+          created: new Date(payout.created * 1000).toISOString(),
+          failureMessage: payout.failure_message ?? null,
+          statementDescriptor: payout.statement_descriptor ?? null,
+        },
+        transactions: rows,
+        hasMore: txns.has_more,
+        totals: [...totals.entries()].map(([currency, t]) => ({
+          currency,
+          gross: Math.round(t.gross * 100) / 100, fees: Math.round(t.fees * 100) / 100, net: Math.round(t.net * 100) / 100,
+        })),
+      },
+    };
+  }
+
+  /** Balance activity of THIS store's connected account (Shopify "Transactions"): charges, refunds, fees, payouts — paged by Stripe cursor. */
+  async getBalanceTransactions(sellerId: string, storeId: string, opts2: { limit?: number; startingAfter?: string; type?: string } = {}) {
+    const stripe = this.assertStripeConfigured();
+    const store = await this.loadOwnedStore(sellerId, storeId);
+    const accountId = store.stripeConnectedAccountId;
+    if (!accountId) throw new BadRequestException('Connect Stripe first to see transactions');
+    if (opts2.startingAfter && !/^txn_[A-Za-z0-9]+$/.test(opts2.startingAfter)) throw new BadRequestException('Invalid cursor');
+    if (opts2.type && !/^[a-z_]+$/.test(opts2.type)) throw new BadRequestException('Invalid type');
+    const limit = Math.min(100, Math.max(1, Math.floor(opts2.limit ?? 20) || 20));
+    const list = await stripe.balanceTransactions.list(
+      { limit, ...(opts2.startingAfter ? { starting_after: opts2.startingAfter } : {}), ...(opts2.type ? { type: opts2.type } : {}) } as any,
+      { stripeAccount: accountId },
+    );
+    return {
+      success: true,
+      data: {
+        testMode: this.isTestMode(),
+        transactions: list.data.map((t: any) => this.mapBalanceTransaction(t)),
+        hasMore: list.has_more,
+        nextCursor: list.has_more && list.data.length ? list.data[list.data.length - 1].id : null,
+      },
+    };
+  }
+
   private async getOrCreateAccount(sellerId: string, store: any): Promise<string> {
     if (store.stripeConnectedAccountId) return store.stripeConnectedAccountId;
 
@@ -143,16 +234,27 @@ export class StripeConnectService implements OnModuleInit {
     if (!seller) throw new ForbiddenException('Seller not found');
 
     const stripe = this.assertStripeConfigured();
-    const account = await stripe.accounts.create({
-      type: 'express',
-      email: seller.email ?? undefined,
-      capabilities: {
-        card_payments: { requested: true },
-        transfers: { requested: true },
-      },
-      business_type: 'individual',
-      metadata: { storeId: String(store._id) },
-    });
+    let account: Awaited<ReturnType<typeof stripe.accounts.create>>;
+    try {
+      account = await stripe.accounts.create({
+        type: 'express',
+        email: seller.email ?? undefined,
+        capabilities: {
+          card_payments: { requested: true },
+          transfers: { requested: true },
+        },
+        business_type: 'individual',
+        metadata: { storeId: String(store._id) },
+      });
+    } catch (err: any) {
+      // The PLATFORM's Stripe account has not signed up for Connect: no seller can onboard until its owner enables it
+      // (dashboard.stripe.com/connect). Tell the seller something actionable and tell the operator loudly.
+      if (/signed up for Connect/i.test(String(err?.message))) {
+        this.logger.error('Stripe Connect is NOT enabled on the platform Stripe account — no store can accept card payments. Enable it at https://dashboard.stripe.com/connect');
+        throw new BadRequestException('Online card payments are not available yet on this platform. Please try again later, or use Cash on Delivery / bank transfer in the meantime.');
+      }
+      throw err;
+    }
 
     // Conditional write: if two requests raced, only one account id sticks and the loser's is returned.
     const res = await this.r.storeModel.updateOne(

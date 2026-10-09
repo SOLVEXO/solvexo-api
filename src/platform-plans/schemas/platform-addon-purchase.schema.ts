@@ -25,6 +25,15 @@ export class PlatformAddonPurchase {
   @Prop({ type: Date, default: null }) nextBillingDate: Date | null; // only for recurring add-ons
 
   @Prop({ type: String, default: null }) providerChargeId: string | null;
+
+  // Every successful charge of this add-on (the purchase itself, then each monthly renewal) — what the admin's
+  // platform revenue is summed from. Purchases made before this field existed have none; readers fall back to
+  // one charge of `priceUSD` at `createdAt`.
+  @Prop({
+    type: [{ _id: false, amountUSD: Number, chargedAt: Date, providerChargeId: { type: String, default: null } }],
+    default: [],
+  })
+  charges: Array<{ amountUSD: number; chargedAt: Date; providerChargeId: string | null }>;
 }
 
 export const PlatformAddonPurchaseSchema = SchemaFactory.createForClass(PlatformAddonPurchase);

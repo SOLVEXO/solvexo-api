@@ -6,12 +6,16 @@ import { Liquid } from 'liquidjs';
 import { DatabaseService } from '../database/databaseservice';
 import { verifyStoreOwnershipStrict } from '../common/store-ownership.util';
 import { readThemePackageStructure } from './theme-package-schema.util';
+import { registerShopifyFilters, applyThemeSettingDefaults, applySectionSettingDefaults } from './liquid-shopify-filters.util';
 import type { LiquidRenderCartItemDto } from './dto/render-liquid-theme.dto';
 
-const MAX_ARCHIVE_BYTES = 8 * 1024 * 1024;
-const MAX_EXPANDED_BYTES = 8 * 1024 * 1024;
-const MAX_FILES = 300;
-const MAX_FILE_BYTES = 2 * 1024 * 1024;
+// Real-world Shopify themes (Dawn and premium themes) are several MiB with hundreds of files.
+const MAX_ARCHIVE_BYTES = 20 * 1024 * 1024;
+const MAX_EXPANDED_BYTES = 40 * 1024 * 1024;
+const MAX_FILES = 1500;
+const MAX_FILE_BYTES = 5 * 1024 * 1024;
+const THEME_FOLDERS = new Set(['assets', 'blocks', 'config', 'layout', 'locales', 'sections', 'snippets', 'templates']);
+const REQUIRED_FILES = new Set(['layout/theme.liquid', 'config/settings_schema.json', 'templates/index.json']);
 const MAX_REVISIONS = 20;
 const TEXT_EXTENSIONS = new Set(['.liquid', '.json', '.css', '.js', '.svg', '.txt', '.xml', '.html', '.map']);
 const BINARY_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.avif', '.gif', '.ico', '.woff', '.woff2', '.ttf', '.otf', '.eot', '.mp4', '.webm']);
@@ -29,7 +33,7 @@ export class ThemePackageService {
   async upload(storeId: string, sellerId: string, installedThemeId: string, archive: Buffer) {
     await verifyStoreOwnershipStrict(this.stores, storeId, sellerId);
     await this.assertInstalledTheme(storeId, installedThemeId);
-    if (!archive?.length || archive.length > MAX_ARCHIVE_BYTES) throw new BadRequestException('Theme ZIP must be between 1 byte and 8 MiB.');
+    if (!archive?.length || archive.length > MAX_ARCHIVE_BYTES) throw new BadRequestException('Theme ZIP must be between 1 byte and 20 MiB.');
     if (archive.length < 4 || archive[0] !== 0x50 || archive[1] !== 0x4b) throw new BadRequestException('Upload must be a ZIP archive.');
     const files = await readThemeZip(archive);
     validateThemePackage(files);
@@ -77,6 +81,82 @@ export class ThemePackageService {
     return this.createRevision(storeId, installedThemeId, sellerId, files, 'file_edit');
   }
 
+  /** Edit code → "Add a new file": text (utf8) or binary asset (base64), inside a standard theme folder. */
+  async addFile(storeId: string, sellerId: string, installedThemeId: string, path: string, content: string, encoding: 'utf8' | 'base64' = 'utf8') {
+    await verifyStoreOwnershipStrict(this.stores, storeId, sellerId);
+    await this.assertInstalledTheme(storeId, installedThemeId);
+    const latest = await this.latest(storeId, installedThemeId);
+    if (!latest) throw new NotFoundException('Upload a theme package before adding files');
+    const normalizedPath = normalizePath(String(path ?? ''));
+    const folder = normalizedPath.split('/')[0];
+    if (!THEME_FOLDERS.has(folder) || normalizedPath.split('/').length < 2) throw new BadRequestException(`Files must live in one of: ${[...THEME_FOLDERS].join(', ')}`);
+    const ext = extension(normalizedPath);
+    const isText = TEXT_EXTENSIONS.has(ext);
+    if (!isText && !BINARY_EXTENSIONS.has(ext)) throw new BadRequestException('This file type is not allowed in a theme');
+    if (!isText && encoding !== 'base64') throw new BadRequestException('Binary theme files must be sent base64-encoded');
+    if (typeof content !== 'string') throw new BadRequestException('File content is required');
+    const data = Buffer.from(content, isText ? 'utf8' : 'base64');
+    if (data.length > MAX_FILE_BYTES) throw new BadRequestException('Theme file exceeds 5 MiB');
+    const existing = latest.files.map((f: any) => f.toObject?.() ?? f) as PackageFile[];
+    if (existing.some((f) => f.path === normalizedPath)) throw new BadRequestException('A file with that name already exists');
+    if (existing.length + 1 > MAX_FILES) throw new BadRequestException('Theme has too many files');
+    const files = [...existing, makeFile(normalizedPath, data, isText ? 'utf8' : 'base64')];
+    validateThemePackage(files);
+    return this.createRevision(storeId, installedThemeId, sellerId, files, 'file_edit');
+  }
+
+  async deleteFile(storeId: string, sellerId: string, installedThemeId: string, path: string) {
+    await verifyStoreOwnershipStrict(this.stores, storeId, sellerId);
+    await this.assertInstalledTheme(storeId, installedThemeId);
+    const latest = await this.latest(storeId, installedThemeId);
+    if (!latest) throw new NotFoundException('Theme source not found');
+    const normalizedPath = normalizePath(String(path ?? ''));
+    if (REQUIRED_FILES.has(normalizedPath)) throw new BadRequestException(`${normalizedPath} is required by every theme and cannot be deleted`);
+    const existing = latest.files.map((f: any) => f.toObject?.() ?? f) as PackageFile[];
+    if (!existing.some((f) => f.path === normalizedPath)) throw new NotFoundException('Theme file not found');
+    const files = existing.filter((f) => f.path !== normalizedPath);
+    validateThemePackage(files);
+    return this.createRevision(storeId, installedThemeId, sellerId, files, 'file_edit');
+  }
+
+  async renameFile(storeId: string, sellerId: string, installedThemeId: string, from: string, to: string) {
+    await verifyStoreOwnershipStrict(this.stores, storeId, sellerId);
+    await this.assertInstalledTheme(storeId, installedThemeId);
+    const latest = await this.latest(storeId, installedThemeId);
+    if (!latest) throw new NotFoundException('Theme source not found');
+    const source = normalizePath(String(from ?? ''));
+    const target = normalizePath(String(to ?? ''));
+    if (REQUIRED_FILES.has(source)) throw new BadRequestException(`${source} is required by every theme and cannot be renamed`);
+    if (!THEME_FOLDERS.has(target.split('/')[0]) || target.split('/').length < 2) throw new BadRequestException(`Files must live in one of: ${[...THEME_FOLDERS].join(', ')}`);
+    if (extension(source) !== extension(target)) throw new BadRequestException('A file extension cannot be changed');
+    const existing = latest.files.map((f: any) => f.toObject?.() ?? f) as PackageFile[];
+    if (!existing.some((f) => f.path === source)) throw new NotFoundException('Theme file not found');
+    if (existing.some((f) => f.path === target)) throw new BadRequestException('A file with that name already exists');
+    const files = existing.map((f) => (f.path === source ? { ...f, path: target } : f));
+    validateThemePackage(files);
+    return this.createRevision(storeId, installedThemeId, sellerId, files, 'file_edit');
+  }
+
+  /** Back to the native (React) storefront: the active theme stops rendering from its Liquid source. Revisions are kept. */
+  async unpublish(storeId: string, sellerId: string, installedThemeId: string) {
+    await verifyStoreOwnershipStrict(this.stores, storeId, sellerId);
+    await this.assertInstalledTheme(storeId, installedThemeId);
+    await this.themes.updateOne({ _id: installedThemeId, storeId }, { $set: { sourcePackageVersion: null } });
+    return { success: true, message: 'Liquid source unpublished — the storefront uses the native theme again', data: { installedThemeId, version: null } };
+  }
+
+  /** Download a revision as a standard Shopify theme ZIP (no compression, hand-written — no extra dependency). */
+  async exportZip(storeId: string, sellerId: string, installedThemeId: string, version?: number): Promise<{ filename: string; buffer: Buffer }> {
+    await verifyStoreOwnershipStrict(this.stores, storeId, sellerId);
+    await this.assertInstalledTheme(storeId, installedThemeId);
+    const revision = version === undefined || Number.isNaN(version)
+      ? await this.latest(storeId, installedThemeId)
+      : await this.packages.findOne({ storeId, installedThemeId, version });
+    if (!revision) throw new NotFoundException('Theme source revision not found');
+    const files = (revision.files as any[]).map((f) => ({ path: String(f.path), data: Buffer.from(f.content, f.encoding === 'base64' ? 'base64' : 'utf8') }));
+    return { filename: `theme-v${revision.version}.zip`, buffer: buildStoredZip(files) };
+  }
+
   async rollback(storeId: string, sellerId: string, installedThemeId: string, version: number) {
     await verifyStoreOwnershipStrict(this.stores, storeId, sellerId);
     await this.assertInstalledTheme(storeId, installedThemeId);
@@ -85,7 +165,8 @@ export class ThemePackageService {
     return this.createRevision(storeId, installedThemeId, sellerId, target.files as any, 'rollback', version);
   }
 
-  async preview(storeId: string, sellerId: string, installedThemeId: string, version?: number, path = '/') {
+  /** `draft` lets the editor preview an UNSAVED edit: it replaces one text file in memory for this render only — nothing is persisted. */
+  async preview(storeId: string, sellerId: string, installedThemeId: string, version?: number, path = '/', draft?: { path: string; content: string }) {
     await verifyStoreOwnershipStrict(this.stores, storeId, sellerId);
     await this.assertInstalledTheme(storeId, installedThemeId);
     const revision = version === undefined
@@ -93,8 +174,16 @@ export class ThemePackageService {
       : await this.packages.findOne({ storeId, installedThemeId, version });
     if (!revision) throw new NotFoundException('Upload a theme package before previewing it');
     const requestedPath = normalizeStorefrontPath(path);
-    const context = await this.getStorefrontContext(storeId, requestedPath, [], revision.files as PackageFile[]);
-    const html = await renderThemePreview(revision.files as any[], context, requestedPath);
+    let files = revision.files as PackageFile[];
+    if (draft && typeof draft.path === 'string' && typeof draft.content === 'string') {
+      const draftPath = normalizePath(draft.path);
+      if (Buffer.byteLength(draft.content, 'utf8') > MAX_FILE_BYTES) throw new BadRequestException('Theme source file exceeds 5 MiB');
+      const target = files.find((f) => f.path === draftPath);
+      if (!target || target.encoding !== 'utf8') throw new NotFoundException('Editable theme source file not found');
+      files = files.map((f: any) => (f.path === draftPath ? makeFile(draftPath, Buffer.from(draft.content, 'utf8'), 'utf8') : (f.toObject?.() ?? f)));
+    }
+    const context = await this.getStorefrontContext(storeId, requestedPath, [], files);
+    const html = await renderThemePreview(files as any[], context, requestedPath);
     return { success: true, data: { version: revision.version, html } };
   }
 
@@ -151,11 +240,13 @@ export class ThemePackageService {
     const pageType = getPageType(path);
     const productSlug = routeSegment(path, 2);
     const searchTerms = pageType === 'search'
-      ? new URLSearchParams(path.split('?')[1] ?? '').get('q')?.trim() ?? ''
+      // Liquid output is not auto-escaped (like Shopify), so a theme that prints `search.terms` raw would reflect
+      // attacker HTML into the storefront frame — drop markup characters from the buyer-controlled query up front.
+      ? (new URLSearchParams(path.split('?')[1] ?? '').get('q') ?? '').replace(/[<>"'`\u0000-\u001f]/g, '').trim().slice(0, 200)
       : '';
 
     const collections = await collectionModel.find({ storeId, status: 'active', isDelete: false })
-      .select('_id name slug description image type productIds rules sortOrder')
+      .select('_id name slug description image type productIds rules sortOrder templateKey')
       .sort({ sortOrder: 1, createdAt: -1 }).limit(100).lean();
     const collectionSlug = pageType === 'collection' ? routeSegment(path, 2) : undefined;
     const currentCollection = collectionSlug
@@ -283,6 +374,8 @@ export class ThemePackageService {
       }
       return {
         id: String(collection._id), title: collection.name, handle: collection.slug,
+        template_suffix: collection.templateKey && collection.templateKey !== 'default' ? collection.templateKey : '',
+        templateKey: collection.templateKey ?? 'default',
         description: collection.description ?? '', url: `/collections/${encodeURIComponent(collection.slug)}`,
         image: collection.image ? { src: collection.image, alt: collection.name } : null,
         products: matchingProducts,
@@ -307,7 +400,7 @@ export class ThemePackageService {
           || product.tags.some((tag: string) => tag.toLocaleLowerCase().includes(query));
       })
       : [];
-    const pageSlug = pageType === 'page' ? routeSegment(path, 2) : undefined;
+    const pageSlug = pageType === 'page' ? routeSegment(path, path.startsWith('/pages/') ? 2 : 1) : undefined;
     const pageRow = pageSlug
       ? await storePageModel.findOne({ storeId, slug: pageSlug, type: 'custom', status: 'published', isDelete: false })
         .select('title slug sections').lean()
@@ -600,7 +693,7 @@ export class ThemePackageService {
         variant_id: String(variant._id),
         product: {
           id: String(product._id), title: product.name, handle: product.slug,
-          url: `/product/${encodeURIComponent(product.slug ?? '')}`,
+          url: `/products/${encodeURIComponent(product.slug ?? "")}`,
           featured_image: product.images?.[0] ? { src: product.images[0], alt: product.name } : null,
         },
         variant: {
@@ -615,7 +708,7 @@ export class ThemePackageService {
         line_price: unitPrice * requested.quantity,
         final_line_price: unitPrice * requested.quantity,
         image: product.images?.[0] ?? null,
-        url: `/product/${encodeURIComponent(product.slug ?? '')}`,
+        url: `/products/${encodeURIComponent(product.slug ?? "")}`,
         product_type: product.type,
       }];
     });
@@ -649,7 +742,11 @@ export class ThemePackageService {
       }
     }
     if (!doc) throw new BadRequestException('Could not create a unique source revision; please retry.');
-    await this.packages.deleteMany({ storeId, installedThemeId, version: { $lte: version - MAX_REVISIONS } });
+    // Never prune the revision the live storefront renders from — otherwise 20 edits after publishing take the store down.
+    const live = await this.themes.findOne({ _id: installedThemeId, storeId }).select('sourcePackageVersion').lean() as any;
+    const pruneFilter: Record<string, any> = { storeId, installedThemeId, version: { $lte: version - MAX_REVISIONS } };
+    if (typeof live?.sourcePackageVersion === 'number') pruneFilter.version.$ne = live.sourcePackageVersion;
+    await this.packages.deleteMany(pruneFilter);
     return { success: true, message: changeType === 'rollback' ? `Theme source restored as revision ${version}` : `Theme source saved as revision ${version}`, data: { version: doc.version, changeType: doc.changeType, restoredFromVersion: doc.restoredFromVersion, files: doc.files.map(({ path, size, sha256 }: any) => ({ path, size, sha256 })) } };
   }
 }
@@ -729,6 +826,44 @@ function validateThemePackage(files: PackageFile[]) {
   }
 }
 
+const CRC_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; table[n] = c >>> 0; }
+  return table;
+})();
+function crc32(data: Buffer): number {
+  let c = 0xffffffff;
+  for (let i = 0; i < data.length; i++) c = CRC_TABLE[(c ^ data[i]) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+/** Minimal ZIP writer (method 0 = stored). Themes are mostly already-compressed assets plus small text, so this is fine. */
+function buildStoredZip(entries: { path: string; data: Buffer }[]): Buffer {
+  const locals: Buffer[] = [];
+  const centrals: Buffer[] = [];
+  let offset = 0;
+  for (const { path, data } of entries) {
+    const name = Buffer.from(path, 'utf8');
+    const crc = crc32(data);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0); local.writeUInt16LE(20, 4); local.writeUInt16LE(0x0800, 6); local.writeUInt16LE(0, 8);
+    local.writeUInt16LE(0, 10); local.writeUInt16LE(0x21, 12); local.writeUInt32LE(crc, 14);
+    local.writeUInt32LE(data.length, 18); local.writeUInt32LE(data.length, 22); local.writeUInt16LE(name.length, 26); local.writeUInt16LE(0, 28);
+    locals.push(local, name, data);
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0); central.writeUInt16LE(20, 4); central.writeUInt16LE(20, 6); central.writeUInt16LE(0x0800, 8);
+    central.writeUInt16LE(0, 10); central.writeUInt16LE(0, 12); central.writeUInt16LE(0x21, 14); central.writeUInt32LE(crc, 16);
+    central.writeUInt32LE(data.length, 20); central.writeUInt32LE(data.length, 24); central.writeUInt16LE(name.length, 28);
+    central.writeUInt32LE(offset, 42);
+    centrals.push(central, name);
+    offset += 30 + name.length + data.length;
+  }
+  const centralBuf = Buffer.concat(centrals);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(entries.length, 8); end.writeUInt16LE(entries.length, 10);
+  end.writeUInt32LE(centralBuf.length, 12); end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...locals, centralBuf, end]);
+}
+
 function normalizePath(input: string): string {
   const path = input.replace(/\\/g, '/');
   if (!path || path.startsWith('/') || /^[a-z]:/i.test(path) || path.includes('\0') || path.split('/').some((part) => part === '..' || part === '.' || !part)) throw new BadRequestException('Theme file path is unsafe');
@@ -748,11 +883,22 @@ function makeFile(path: string, data: Buffer, encoding: 'utf8' | 'base64'): Pack
   return { path, encoding, content: data.toString(encoding), size: data.length, sha256: createHash('sha256').update(data).digest('hex') };
 }
 
+export { buildStoredZip };
+
 export async function renderThemePreview(files: PackageFile[], contextOverrides: Record<string, any> = {}, requestedPath = '/'): Promise<string> {
   const byPath = new Map(files.map((file) => [file.path, file]));
   const textTemplates = Object.fromEntries(files.filter((file) => file.encoding === 'utf8').map((file) => [file.path, file.content]));
   let settings: Record<string, any> = {};
-  try { settings = JSON.parse(byPath.get('config/settings_data.json')?.content ?? '{}').current ?? {}; } catch { /* optional settings data */ }
+  let staticSections: Record<string, any> = {};
+  try {
+    const data = JSON.parse(byPath.get('config/settings_data.json')?.content ?? '{}');
+    // `current` may be a preset NAME (string) pointing into `presets` — resolve it instead of exposing a string as `settings`.
+    const current = typeof data.current === 'string' ? data.presets?.[data.current] : data.current;
+    settings = current && typeof current === 'object' && !Array.isArray(current) ? current : {};
+    // Static `{% section 'x' %}` instances keep their saved settings under current.sections.
+    if (settings.sections && typeof settings.sections === 'object') staticSections = settings.sections;
+  } catch { /* optional settings data */ }
+  settings = applyThemeSettingDefaults(files, settings);
   const moneyCurrency = String(contextOverrides.shop?.currency ?? 'USD');
   const engine = new Liquid({ templates: textTemplates, extname: '.liquid', strictFilters: false, strictVariables: false, ownPropertyOnly: true, renderLimit: 2500, memoryLimit: 4 * 1024 * 1024 });
   const themeAssetUrl = (name: string) => {
@@ -777,6 +923,7 @@ export async function renderThemePreview(files: PackageFile[], contextOverrides:
     const src = typeof value === 'string' && value.startsWith('assets/') ? themeAssetUrl(value) : String(value?.sources?.[0]?.url ?? value?.url ?? value ?? '');
     return src ? `<video controls><source src="${escapeAttribute(src)}"></video>` : '';
   });
+  registerShopifyFilters(engine, files);
   engine.registerFilter('handleize', (value: unknown) => String(value ?? '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''));
   engine.registerFilter('handle', (value: unknown) => String(value ?? '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''));
 
@@ -801,6 +948,9 @@ export async function renderThemePreview(files: PackageFile[], contextOverrides:
     if (!/^[a-z0-9_-]+$/i.test(type)) return '';
     const file = byPath.get(`sections/${type}.liquid`);
     if (!file) return '';
+    section = { ...(staticSections[key] ?? {}), ...(section ?? {}), type };
+    const withDefaults = applySectionSettingDefaults(file.content, section);
+    section = { ...section, settings: withDefaults.settings, blocks: withDefaults.blocks };
     const resolvedBlocks = Object.fromEntries(Object.entries(section.blocks ?? {}).map(([blockId, block]: [string, any]) => [
       blockId, { ...block, settings: resolveLiquidResourceSettings(block.settings ?? {}, context.__resources) },
     ]));
@@ -814,7 +964,8 @@ export async function renderThemePreview(files: PackageFile[], contextOverrides:
   const renderJsonTemplate = async (path: string) => {
     const file = byPath.get(path);
     if (!file) return null;
-    const definition = JSON.parse(file.content);
+    const definition = safeJson(file.content);
+    if (!definition) return null;
     const parts: string[] = [];
     for (const key of definition.order ?? []) {
       const section = definition.sections?.[key];
@@ -824,7 +975,7 @@ export async function renderThemePreview(files: PackageFile[], contextOverrides:
     return parts.join('\n');
   };
 
-  const template = selectTemplatePath(byPath, requestedPath, context.product);
+  const template = selectTemplatePath(byPath, requestedPath, context.product, context.collection);
   let content = await renderJsonTemplate(template.json);
   if (content === null && byPath.has(template.liquid)) content = await renderLiquid(byPath.get(template.liquid)!.content);
   if (content === null) content = '<main><h1>Theme preview</h1><p>This theme has no home page template.</p></main>';
@@ -836,7 +987,8 @@ export async function renderThemePreview(files: PackageFile[], contextOverrides:
     layout = await replaceAsync(layout, /\{%[-+]?\s*sections\s+['"]([^'"]+)['"]\s*[-+]?%\}/g, async (_match, groupName) => {
       const group = byPath.get(`sections/${groupName}.json`);
       if (!group) return '';
-      const definition = JSON.parse(group.content);
+      const definition = safeJson(group.content);
+      if (!definition) return '';
       const blocks: string[] = [];
       for (const key of definition.order ?? []) {
         const section = definition.sections?.[key];
@@ -922,7 +1074,21 @@ function preprocessShopifyTags(source: string, productId?: string, productType?:
       const withDirectory = fileName.includes('/') ? fileName : `snippets/${fileName}`;
       return `${prefix}${quote}${withDirectory}${quote}`;
     })
-    .replace(/\{%[-+]?\s*form\s+['"]([^'"]+)['"][^%]*[-+]?%\}/g, (_match, formType) => `<form method="post" action="${formType === 'product' ? '/cart/add' : formType === 'cart' ? '/cart' : formType === 'customer' ? '/account' : formType === 'contact' ? '/contact' : '/search'}" data-shopify-form="${formType}"${formType === 'product' && productId ? ` data-product-id="${escapeAttribute(productId)}" data-product-type="${productType === 'digital' ? 'digital' : 'physical'}"` : ''}>`)
+    .replace(/\{%[-+]?\s*form\s+['"]([^'"]+)['"]([^%]*?)[-+]?%\}/g, (_match, formType: string, rest: string) => {
+      const action = formType === 'product' ? '/cart/add' : formType === 'cart' ? '/cart'
+        : formType === 'customer_login' ? '/login' : formType === 'create_customer' ? '/register'
+          : formType === 'recover_customer_password' ? '/forgot-password' : formType === 'customer' ? '/newsletter'
+            : formType === 'contact' ? '/contact' : '/search';
+      let productAttrs = '';
+      if (formType === 'product') {
+        // `{% form 'product', card_product %}` — the product expression is the form's second argument.
+        const expr = /^\s*,\s*([A-Za-z_][\w.\[\]'"-]*)/.exec(rest)?.[1];
+        productAttrs = expr
+          ? ` data-product-id="{{ ${expr}.id }}" data-product-type="{{ ${expr}.type | default: 'physical' }}"`
+          : productId ? ` data-product-id="${escapeAttribute(productId)}" data-product-type="${productType === 'digital' ? 'digital' : 'physical'}"` : '';
+      }
+      return `<form method="post" action="${action}" data-shopify-form="${formType}"${productAttrs}>`;
+    })
     .replace(/\{%[-+]?\s*endform\s*[-+]?%\}/g, '</form>')
     .replace(/\{%[-+]?\s*paginate\b[^%]*[-+]?%\}/g, '')
     .replace(/\{%[-+]?\s*endpaginate\s*[-+]?%\}/g, '');
@@ -1010,7 +1176,7 @@ function toLiquidMenuLink(item: any, resources: Record<string, any>) {
 function appendStorefrontBridge(html: string, origin: string): string {
   const safeOrigin = escapeAttribute(origin);
   const base = `<base href="${safeOrigin}/">`;
-  const bridge = `<script>(function(){function send(data){parent.postMessage(data,'*');}function size(){send({type:'solvexo:resize',height:Math.max(document.documentElement.scrollHeight,document.body?document.body.scrollHeight:0)});}document.addEventListener('click',function(e){var a=e.target.closest('a[href]');if(!a)return;var u;try{u=new URL(a.getAttribute('href'),${JSON.stringify(origin)});}catch(_){return;}if(u.origin!==${JSON.stringify(origin)})return;if(u.pathname==='/cart/clear'){e.preventDefault();send({type:'solvexo:cart-clear'});return;}if(u.pathname==='/cart/change'){e.preventDefault();var variantId=u.searchParams.get('id');var line=Number(u.searchParams.get('line'));var quantity=Number(u.searchParams.get('quantity')||0);if(Number.isInteger(quantity)&&quantity>=0&&quantity<=999)send({type:'solvexo:cart-update',items:[variantId?{variantId:variantId,quantity:quantity}:{index:line-1,quantity:quantity}]});return;}e.preventDefault();send({type:'solvexo:navigate',path:u.pathname+u.search+u.hash});});document.addEventListener('submit',function(e){var f=e.target;if(!(f instanceof HTMLFormElement))return;var kind=f.dataset.shopifyForm;if(kind==='product'){e.preventDefault();var d=new FormData(f);send({type:'solvexo:add-to-cart',productId:f.dataset.productId,productType:f.dataset.productType,variantId:String(d.get('id')||''),quantity:Number(d.get('quantity')||1)});}else if(kind==='search'){e.preventDefault();var d=new FormData(f);send({type:'solvexo:navigate',path:'/search?q='+encodeURIComponent(String(d.get('q')||''))});}else if(kind==='cart'){e.preventDefault();if(f.action.indexOf('/cart/clear')!==-1){send({type:'solvexo:cart-clear'});return;}if(e.submitter&&e.submitter.name==='checkout'){send({type:'solvexo:checkout'});return;}var items=[];var index=0;new FormData(f).forEach(function(value,key){var match=/^updates\\[([^\\]]*)\\]$/.exec(key);if(!match)return;var quantity=Number(value);if(Number.isInteger(quantity)&&quantity>=0&&quantity<=999)items.push(match[1]?{variantId:match[1],quantity:quantity}:{index:index,quantity:quantity});index++;});send({type:'solvexo:cart-update',items:items});}else if(kind){e.preventDefault();send({type:'solvexo:navigate',path:f.getAttribute('action')||'/'});}},true);new MutationObserver(size).observe(document.documentElement,{childList:true,subtree:true,attributes:true});window.addEventListener('load',size);window.addEventListener('resize',size);size();})();</script>`;
+  const bridge = `<script>(function(){function send(data){parent.postMessage(data,'*');}function size(){send({type:'solvexo:resize',height:Math.max(document.documentElement.scrollHeight,document.body?document.body.scrollHeight:0)});}document.addEventListener('click',function(e){var a=e.target.closest('a[href]');if(!a)return;var u;try{u=new URL(a.getAttribute('href'),${JSON.stringify(origin)});}catch(_){return;}if(u.origin!==${JSON.stringify(origin)})return;if(u.pathname==='/cart/clear'){e.preventDefault();send({type:'solvexo:cart-clear'});return;}if(u.pathname==='/cart/change'){e.preventDefault();var variantId=u.searchParams.get('id');var line=Number(u.searchParams.get('line'));var quantity=Number(u.searchParams.get('quantity')||0);if(Number.isInteger(quantity)&&quantity>=0&&quantity<=999)send({type:'solvexo:cart-update',items:[variantId?{variantId:variantId,quantity:quantity}:{index:line-1,quantity:quantity}]});return;}e.preventDefault();send({type:'solvexo:navigate',path:u.pathname+u.search+u.hash});});document.addEventListener('submit',function(e){var f=e.target;if(!(f instanceof HTMLFormElement))return;var kind=f.dataset.shopifyForm;if(kind==='product'){e.preventDefault();var d=new FormData(f);send({type:'solvexo:add-to-cart',productId:f.dataset.productId,productType:f.dataset.productType,variantId:String(d.get('id')||''),quantity:Number(d.get('quantity')||1)});}else if(kind==='search'){e.preventDefault();var d=new FormData(f);send({type:'solvexo:navigate',path:'/search?q='+encodeURIComponent(String(d.get('q')||''))});}else if(kind==='cart'){e.preventDefault();if(f.action.indexOf('/cart/clear')!==-1){send({type:'solvexo:cart-clear'});return;}if(e.submitter&&e.submitter.name==='checkout'){send({type:'solvexo:checkout'});return;}var items=[];var index=0;new FormData(f).forEach(function(value,key){var match=/^updates\\[([^\\]]*)\\]$/.exec(key);if(!match)return;var quantity=Number(value);if(Number.isInteger(quantity)&&quantity>=0&&quantity<=999)items.push(match[1]?{variantId:match[1],quantity:quantity}:{index:index,quantity:quantity});index++;});send({type:'solvexo:cart-update',items:items});}else if(kind==='customer'){e.preventDefault();var d=new FormData(f);send({type:'solvexo:subscribe',email:String(d.get('contact[email]')||d.get('email')||'')});window.__solvexoForm=f;}else if(kind==='contact'){e.preventDefault();note(f,'Contact messages are not available on this store yet.',false);}else if(kind){e.preventDefault();send({type:'solvexo:navigate',path:f.getAttribute('action')||'/'});}},true);function note(f,text,ok){var n=f.querySelector('[data-solvexo-note]');if(!n){n=document.createElement('p');n.setAttribute('data-solvexo-note','');n.setAttribute('role',ok?'status':'alert');f.appendChild(n);}n.textContent=text;}window.addEventListener('message',function(ev){var m=ev.data;if(ev.source!==parent||!m||m.type!=='solvexo:subscribed'||!window.__solvexoForm)return;note(window.__solvexoForm,String(m.message||''),!!m.ok);});new MutationObserver(size).observe(document.documentElement,{childList:true,subtree:true,attributes:true});window.addEventListener('load',size);window.addEventListener('resize',size);size();})();</script>`;
   let output = html;
   if (/<head(?:\s[^>]*)?>/i.test(output)) output = output.replace(/<head(?:\s[^>]*)?>/i, (tag) => `${tag}${base}`);
   else output = `${base}${output}`;
@@ -1060,14 +1226,19 @@ function getPageType(path: string): string {
   ].includes(pathname)) return 'page';
   return '404';
 }
-function selectTemplatePath(byPath: Map<string, PackageFile>, path: string, product?: { templateKey?: string } | null) {
+function selectTemplatePath(byPath: Map<string, PackageFile>, path: string, product?: { templateKey?: string } | null, collection?: { templateKey?: string } | null) {
   const pageType = getPageType(path);
-  const templateKey = pageType === 'product' ? product?.templateKey ?? 'default' : 'default';
+  // Shopify "alternate templates" (product.alt.json / collection.alt.json) assigned per resource.
+  const templateKey = pageType === 'product' ? product?.templateKey ?? 'default' : pageType === 'collection' ? collection?.templateKey ?? 'default' : 'default';
   const json = `templates/${pageType}.${templateKey}.json`;
   if (byPath.has(json)) return { json, liquid: `templates/${pageType}.${templateKey}.liquid` };
   const fallbackJson = `templates/${pageType}.json`;
   if (byPath.has(fallbackJson)) return { json: fallbackJson, liquid: `templates/${pageType}.liquid` };
   return { json: 'templates/index.json', liquid: 'templates/index.liquid' };
+}
+/** A theme file saved through Edit code can hold malformed JSON — never let that 500 a live page. */
+function safeJson(text: string): any | null {
+  try { const v = JSON.parse(text); return v && typeof v === 'object' ? v : null; } catch { return null; }
 }
 function routeSegment(path: string, index: number): string | undefined {
   const segment = path.split(/[?#]/, 1)[0].split('/')[index];

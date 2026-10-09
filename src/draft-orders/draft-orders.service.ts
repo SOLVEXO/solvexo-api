@@ -437,7 +437,7 @@ export class DraftOrdersService {
       throw new BadRequestException("This store hasn't set up online card payments yet. Please contact the store to arrange payment.");
     }
     // Card-network cost passed through (+ a custom per-seller commission, if one was agreed) — no plan commission on this rail.
-    const applicationFeeAmountCents = await this.commissionRulesService.cardApplicationFeeCents(draft.storeId, amountCents);
+    const applicationFeeAmountCents = await this.commissionRulesService.cardApplicationFeeCents(draft.storeId, amountCents, draft.currency);
 
     const paymentIntent = await stripe.paymentIntents.create({
       amount: amountCents,

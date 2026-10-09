@@ -1,12 +1,18 @@
 /* eslint-disable prettier/prettier */
-import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
+import { Injectable, BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
+import { isValidObjectId } from 'mongoose';
 import { DatabaseService } from '../database/databaseservice';
 import { RedisService } from '../redis/redis.service';
 import { verifyStoreOwnershipOrForbidden } from '../common/store-ownership.util';
 import {
   BucketGranularity,
   absoluteChange,
+  bucketExpr,
   enumerateBuckets,
+  enumerateDayKeys,
+  localDateKey,
+  rangeCacheKey,
+  zonedStartOfDay,
   nextBucket as nextBucketUtil,
   percentChange,
   resolveDateRange,
@@ -22,11 +28,14 @@ import {
   periodTotals as periodTotalsUtil,
   repeatBuyerPercent as repeatBuyerPercentUtil,
   returningBuyerSet as returningBuyerSetUtil,
+  ReportingCurrency,
   sellerOrderMatchStage,
   sumUSD,
-  toUSD,
+  toReporting,
+  unconvertibleCond,
   unconvertibleCountField,
 } from './utils/order-aggregation.util';
+import { resolveStoreTimeZone } from '../common/store-timezone.util';
 import { toCsv } from './utils/csv.util';
 import { PdfReportBuilder } from './utils/pdf-report.util';
 import { getPaymentMethodLabel } from './utils/payment-method-label.util';
@@ -78,20 +87,30 @@ export class AnalyticsService {
   }
 
   /**
-   * Phase 0 — currency normalization: every revenue/order-value figure below
-   * used to be a raw sum of each order's own `Order.currency` amount, which
-   * this function used to label — correctly for one store, but resolving to
-   * `null` ("don't label it") the moment a seller's stores spanned more than
-   * one currency, since a blended raw sum across currencies was genuinely
-   * meaningless. Every such figure is now normalized to USD instead (see
-   * `Order.ratePerUSD` and `order-aggregation.util.ts#toUSD` — Solvexo's own
-   * platform/reporting currency), so the result is always unambiguous and
-   * always `'USD'`, single-store or cross-store alike. Kept as a function
-   * (rather than inlining the literal at each call site) so the "why" stays
-   * documented in one place.
+   * Scope + the store's reporting settings, Shopify-style: a single store's analytics are shown in ITS currency
+   * (each order converted at the rate frozen on that order — see `toReporting`) and bucketed by ITS time zone. The
+   * legacy cross-store scope (no storeId) has no single currency/zone, so it stays USD/UTC.
    */
-  private async resolveScopeCurrency(_storeIds: string[]): Promise<string> {
-    return 'USD';
+  async resolveContext(sellerId: string, storeId?: string | null): Promise<{
+    scope: Record<string, any>; storeIds: string[]; store: any | null; rc: ReportingCurrency | null; tz: string; currency: string;
+  }> {
+    if (!storeId) {
+      const { scope, storeIds } = await this.resolveScope(sellerId, null);
+      return { scope, storeIds, store: null, rc: null, tz: 'UTC', currency: 'USD' };
+    }
+    if (!isValidObjectId(storeId)) throw new ForbiddenException('Store not found or unauthorized');
+    const store: any = await this.verifyStoreOwnership(storeId, sellerId);
+    const currency = String(store.baseCurrency ?? 'USD').toUpperCase();
+    let rc: ReportingCurrency | null = null;
+    if (currency !== 'USD') {
+      const latest: any = await this.r.exchangeRateModel
+        .findOne({ currency, isRejected: false })
+        .sort({ effectiveFrom: -1 })
+        .select('ratePerUSD')
+        .lean();
+      rc = { code: currency, fallbackRatePerUSD: latest?.ratePerUSD > 0 ? latest.ratePerUSD : null };
+    }
+    return { scope: { 'sellerOrders.storeId': storeId }, storeIds: [storeId], store, rc, tz: resolveStoreTimeZone(store), currency };
   }
 
   private async cached<T>(cacheKey: string, compute: () => Promise<T>): Promise<T> {
@@ -129,8 +148,8 @@ export class AnalyticsService {
     return itemRefundSumField();
   }
 
-  private async periodTotals(scope: Record<string, any>, from: Date, to: Date) {
-    return periodTotalsUtil(this.r.orderModel, from, to, scope);
+  private async periodTotals(scope: Record<string, any>, from: Date, to: Date, rc: ReportingCurrency | null) {
+    return periodTotalsUtil(this.r.orderModel, from, to, scope, rc);
   }
 
   private async repeatBuyerPercent(scope: Record<string, any>, from: Date, to: Date): Promise<number> {
@@ -159,24 +178,25 @@ export class AnalyticsService {
 
   async getTodaySummary(sellerId: string, storeIdInput: string | null | undefined) {
     const storeId = this.requireStoreId(storeIdInput);
-    await this.verifyStoreOwnership(storeId, sellerId);
-    const scope = { 'sellerOrders.storeId': storeId };
+    const { scope, rc, tz, currency } = await this.resolveContext(sellerId, storeId);
 
+    // "Today" is the store's local day (Shopify uses the store time zone), not the UTC day.
     const now = new Date();
-    const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    const todayStart = zonedStartOfDay(now, tz);
     const elapsedMs = now.getTime() - todayStart.getTime();
-    const yesterdayStart = new Date(todayStart.getTime() - 24 * 60 * 60 * 1000);
+    const yesterdayStart = zonedStartOfDay(now, tz, -1);
     const yesterdaySameTime = new Date(yesterdayStart.getTime() + elapsedMs);
 
-    return withAnalyticsCache(this.redis, this.key('today', storeId, {}), this.TODAY_CACHE_TTL_SECONDS, async () => {
+    return withAnalyticsCache(this.redis, this.key('today', storeId, { tz, currency }), this.TODAY_CACHE_TTL_SECONDS, async () => {
       const [today, yesterday] = await Promise.all([
-        this.periodTotals(scope, todayStart, now),
-        this.periodTotals(scope, yesterdayStart, yesterdaySameTime),
+        this.periodTotals(scope, todayStart, now, rc),
+        this.periodTotals(scope, yesterdayStart, yesterdaySameTime, rc),
       ]);
 
       return {
         success: true,
         data: {
+          currency,
           revenue: today.netRevenue,
           revenueChangePercent: percentChange(today.netRevenue, yesterday.netRevenue),
           ordersCount: today.orderCount,
@@ -191,17 +211,16 @@ export class AnalyticsService {
   // ═══════════════════════════════════════════════════════════════════════
 
   async getOverview(sellerId: string, storeId: string | null | undefined, query: any) {
-    const { scope, storeIds } = await this.resolveScope(sellerId, storeId);
-    const { from, to, previousFrom, previousTo } = resolveDateRange(query);
+    const { scope, storeIds, rc, tz, currency } = await this.resolveContext(sellerId, storeId);
+    const { from, to, previousFrom, previousTo } = resolveDateRange(query, tz);
     const compare = query.compareToPreviousPeriod === true || query.compareToPreviousPeriod === 'true';
 
-    return this.cached(this.key('overview', this.scopeLabel(sellerId, storeId), { from, to, compare }), async () => {
-      const [current, previous, repeatBuyerPct, prevRepeatBuyerPct, currency] = await Promise.all([
-        this.periodTotals(scope, from, to),
-        this.periodTotals(scope, previousFrom, previousTo),
+    return this.cached(this.key('overview', this.scopeLabel(sellerId, storeId), { r: rangeCacheKey(query, tz), currency, compare }), async () => {
+      const [current, previous, repeatBuyerPct, prevRepeatBuyerPct] = await Promise.all([
+        this.periodTotals(scope, from, to, rc),
+        this.periodTotals(scope, previousFrom, previousTo, rc),
         this.repeatBuyerPercent(scope, from, to),
         this.repeatBuyerPercent(scope, previousFrom, previousTo),
-        this.resolveScopeCurrency(storeIds),
       ]);
 
       const returningSet = await this.returningBuyerSet(scope, current.buyerIds, from);
@@ -252,32 +271,31 @@ export class AnalyticsService {
   // ═══════════════════════════════════════════════════════════════════════
 
   async getRevenueOverTime(sellerId: string, storeId: string | null | undefined, query: any) {
-    const { scope, storeIds } = await this.resolveScope(sellerId, storeId);
-    const { from, to, granularity } = resolveDateRange(query);
+    const { scope, storeIds, rc, tz, currency } = await this.resolveContext(sellerId, storeId);
+    const { from, to, granularity } = resolveDateRange(query, tz);
 
-    return this.cached(this.key('revenue-over-time', this.scopeLabel(sellerId, storeId), { from, to }), async () => {
-      const currency = await this.resolveScopeCurrency(storeIds);
+    return this.cached(this.key('revenue-over-time', this.scopeLabel(sellerId, storeId), { r: rangeCacheKey(query, tz), currency }), async () => {
       const rows = await this.r.orderModel.aggregate([
         ...this.matchStage(scope, from, to),
         {
           $addFields: {
             itemRefund: this.itemRefundField(),
-            bucket: { $dateTrunc: { date: '$createdAt', unit: granularity, timezone: 'UTC' } },
+            bucket: bucketExpr('$createdAt', granularity, tz),
           },
         },
         {
           $group: {
             _id: '$bucket',
-            grossRevenue: { $sum: { $cond: [this.notCancelled(), { $ifNull: [toUSD('$sellerOrders.subtotal'), 0] }, 0] } },
-            refundAmount: { $sum: { $cond: [this.notCancelled(), { $ifNull: [toUSD('$itemRefund'), 0] }, 0] } },
-            unconvertibleOrderCount: { $sum: { $cond: [{ $and: [this.notCancelled(), { $or: [{ $eq: ['$ratePerUSD', null] }, { $lte: ['$ratePerUSD', 0] }] }] }, 1, 0] } },
+            grossRevenue: { $sum: { $cond: [this.notCancelled(), { $ifNull: [toReporting('$sellerOrders.subtotal', rc), 0] }, 0] } },
+            refundAmount: { $sum: { $cond: [this.notCancelled(), { $ifNull: [toReporting('$itemRefund', rc), 0] }, 0] } },
+            unconvertibleOrderCount: { $sum: { $cond: [{ $and: [this.notCancelled(), unconvertibleCond(rc)] }, 1, 0] } },
           },
         },
       ]);
 
       const byBucket = new Map(rows.map((r: any) => [r._id.getTime(), r]));
       let totalUnconvertible = 0;
-      const series = enumerateBuckets(from, to, granularity).map((bucket) => {
+      const series = enumerateBuckets(from, to, granularity, tz).map((bucket) => {
         const row = byBucket.get(bucket.getTime());
         const gross = this.round(row?.grossRevenue ?? 0);
         const refund = this.round(row?.refundAmount ?? 0);
@@ -290,7 +308,7 @@ export class AnalyticsService {
         data: {
           granularity, currency, series,
           ...(totalUnconvertible > 0
-            ? { note: `${totalUnconvertible} order(s) in this period predate USD normalization (no ratePerUSD) and are excluded from these totals rather than guessed at.` }
+            ? { note: `${totalUnconvertible} order(s) in this period have no recorded exchange rate and are excluded from these totals rather than guessed at.` }
             : {}),
         },
       };
@@ -309,18 +327,17 @@ export class AnalyticsService {
   // ═══════════════════════════════════════════════════════════════════════
 
   async getSalesForecast(sellerId: string, storeId: string | null | undefined) {
-    const { scope } = await this.resolveScope(sellerId, storeId);
-    const from = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+    const { scope, rc, tz, currency } = await this.resolveContext(sellerId, storeId);
     const to = new Date();
+    const from = zonedStartOfDay(to, tz, -89);
 
-    return this.cached(this.key('sales-forecast', this.scopeLabel(sellerId, storeId), {}), async () => {
-      const currency = 'USD';
+    return this.cached(this.key('sales-forecast', this.scopeLabel(sellerId, storeId), { tz, currency }), async () => {
       const rows = await this.r.orderModel.aggregate([
         ...this.matchStage(scope, from, to),
         {
           $addFields: {
             itemRefund: this.itemRefundField(),
-            day: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt', timezone: 'UTC' } },
+            day: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt', timezone: tz } },
           },
         },
         {
@@ -328,7 +345,7 @@ export class AnalyticsService {
             _id: '$day',
             netRevenue: {
               $sum: {
-                $cond: [this.notCancelled(), { $ifNull: [{ $subtract: [toUSD('$sellerOrders.subtotal'), toUSD('$itemRefund')] }, 0] }, 0],
+                $cond: [this.notCancelled(), { $ifNull: [{ $subtract: [toReporting('$sellerOrders.subtotal', rc), toReporting('$itemRefund', rc)] }, 0] }, 0],
               },
             },
           },
@@ -337,7 +354,7 @@ export class AnalyticsService {
 
       const dailyRevenue = new Map<string, number>(rows.map((r: any) => [r._id, Math.max(0, this.round(r.netRevenue))]));
       const forecast = forecastDailyDemand(dailyRevenue);
-      const thirtyDayCutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+      const thirtyDayCutoff = localDateKey(zonedStartOfDay(to, tz, -29), tz);
       const thirtyDaySum = Array.from(dailyRevenue.entries()).reduce((sum, [day, rev]) => (day >= thirtyDayCutoff ? sum + rev : sum), 0);
       const simpleAvg = thirtyDaySum / 30;
       const forecastedDailyRevenue = this.round(forecast ?? simpleAvg);
@@ -373,18 +390,18 @@ export class AnalyticsService {
   private static readonly WEEKDAY_MIN_SALE_DAYS = 14;
 
   async getWeekdayPerformance(sellerId: string, storeId: string | null | undefined) {
-    const { scope } = await this.resolveScope(sellerId, storeId);
-    const from = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+    const { scope, rc, tz, currency } = await this.resolveContext(sellerId, storeId);
     const to = new Date();
+    const from = zonedStartOfDay(to, tz, -89);
 
-    return this.cached(this.key('weekday-performance', this.scopeLabel(sellerId, storeId), {}), async () => {
+    return this.cached(this.key('weekday-performance', this.scopeLabel(sellerId, storeId), { tz, currency }), async () => {
       const rows = await this.r.orderModel.aggregate([
         ...this.matchStage(scope, from, to),
         {
           $addFields: {
             itemRefund: this.itemRefundField(),
-            day: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt', timezone: 'UTC' } },
-            weekday: { $dayOfWeek: { date: '$createdAt', timezone: 'UTC' } }, // 1=Sunday..7=Saturday
+            day: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt', timezone: tz } },
+            weekday: { $dayOfWeek: { date: '$createdAt', timezone: tz } }, // 1=Sunday..7=Saturday
           },
         },
         {
@@ -392,7 +409,7 @@ export class AnalyticsService {
             _id: { day: '$day', weekday: '$weekday' },
             netRevenue: {
               $sum: {
-                $cond: [this.notCancelled(), { $ifNull: [{ $subtract: [toUSD('$sellerOrders.subtotal'), toUSD('$itemRefund')] }, 0] }, 0],
+                $cond: [this.notCancelled(), { $ifNull: [{ $subtract: [toReporting('$sellerOrders.subtotal', rc), toReporting('$itemRefund', rc)] }, 0] }, 0],
               },
             },
           },
@@ -403,12 +420,15 @@ export class AnalyticsService {
         return { success: true, data: null };
       }
 
+      // Average over EVERY calendar day of that weekday in the window (days with no sales count as 0) — averaging
+      // only the days that had sales hid a weekday's empty days and skewed which day looked slowest.
       const totals = Array(7).fill(0);
       const counts = Array(7).fill(0);
+      for (const day of enumerateDayKeys(from, to, tz)) {
+        counts[new Date(`${day}T12:00:00Z`).getUTCDay()] += 1;
+      }
       for (const row of rows as any[]) {
-        const idx = row._id.weekday - 1; // 1..7 -> 0..6
-        totals[idx] += Math.max(0, row.netRevenue);
-        counts[idx] += 1;
+        totals[row._id.weekday - 1] += Math.max(0, row.netRevenue); // 1..7 -> 0..6
       }
       const averages = totals.map((t, i) => (counts[i] > 0 ? t / counts[i] : 0));
       const overallAvg = averages.reduce((a, b) => a + b, 0) / 7;
@@ -435,13 +455,13 @@ export class AnalyticsService {
   // ═══════════════════════════════════════════════════════════════════════
 
   async getOrdersOverTime(sellerId: string, storeId: string | null | undefined, query: any) {
-    const { scope } = await this.resolveScope(sellerId, storeId);
-    const { from, to, granularity } = resolveDateRange(query);
+    const { scope, storeIds, rc, tz, currency } = await this.resolveContext(sellerId, storeId);
+    const { from, to, granularity } = resolveDateRange(query, tz);
 
-    return this.cached(this.key('orders-over-time', this.scopeLabel(sellerId, storeId), { from, to }), async () => {
+    return this.cached(this.key('orders-over-time', this.scopeLabel(sellerId, storeId), { r: rangeCacheKey(query, tz), currency }), async () => {
       const rows = await this.r.orderModel.aggregate([
         ...this.matchStage(scope, from, to),
-        { $addFields: { bucket: { $dateTrunc: { date: '$createdAt', unit: granularity, timezone: 'UTC' } } } },
+        { $addFields: { bucket: bucketExpr('$createdAt', granularity, tz) } },
         {
           $group: {
             _id: '$bucket',
@@ -453,7 +473,7 @@ export class AnalyticsService {
       ]);
 
       const byBucket = new Map(rows.map((r: any) => [r._id.getTime(), r]));
-      const series = enumerateBuckets(from, to, granularity).map((bucket) => {
+      const series = enumerateBuckets(from, to, granularity, tz).map((bucket) => {
         const row = byBucket.get(bucket.getTime());
         return {
           date: bucket,
@@ -472,10 +492,10 @@ export class AnalyticsService {
   // ═══════════════════════════════════════════════════════════════════════
 
   async getTrafficSources(sellerId: string, storeId: string | null | undefined, query: any) {
-    const { scope } = await this.resolveScope(sellerId, storeId);
-    const { from, to } = resolveDateRange(query);
+    const { scope, storeIds, rc, tz, currency } = await this.resolveContext(sellerId, storeId);
+    const { from, to } = resolveDateRange(query, tz);
 
-    return this.cached(this.key('traffic-sources', this.scopeLabel(sellerId, storeId), { from, to }), async () => {
+    return this.cached(this.key('traffic-sources', this.scopeLabel(sellerId, storeId), { r: rangeCacheKey(query, tz), currency }), async () => {
       const rows = await this.r.orderModel.aggregate([
         ...this.matchStage(scope, from, to),
         { $match: { 'sellerOrders.status': { $ne: 'cancelled' } } },
@@ -483,7 +503,7 @@ export class AnalyticsService {
           $group: {
             _id: { $ifNull: ['$attributionSource', 'other'] },
             count: { $sum: 1 },
-            revenue: sumUSD('$sellerOrders.subtotal'),
+            revenue: sumUSD('$sellerOrders.subtotal', rc),
           },
         },
       ]);
@@ -511,13 +531,13 @@ export class AnalyticsService {
   // ═══════════════════════════════════════════════════════════════════════
 
   async getTopProducts(sellerId: string, storeId: string | null | undefined, query: any) {
-    const { scope } = await this.resolveScope(sellerId, storeId);
-    const { from, to } = resolveDateRange(query);
+    const { scope, storeIds, rc, tz, currency } = await this.resolveContext(sellerId, storeId);
+    const { from, to } = resolveDateRange(query, tz);
     const limit = Number(query.limit) || 10;
     const sort = query.sort === 'units_sold' ? 'units_sold' : 'revenue';
 
-    return this.cached(this.key('top-products', this.scopeLabel(sellerId, storeId), { from, to, limit, sort }), async () => {
-      const rows = await this.aggregateProductSales(scope, from, to);
+    return this.cached(this.key('top-products', this.scopeLabel(sellerId, storeId), { r: rangeCacheKey(query, tz), currency, limit, sort }), async () => {
+      const rows = await this.aggregateProductSales(scope, from, to, rc);
       rows.sort((a, b) => (sort === 'units_sold' ? b.unitsSold - a.unitsSold : b.netRevenue - a.netRevenue));
 
       return {
@@ -534,8 +554,8 @@ export class AnalyticsService {
   }
 
   /** Shared item-level sales aggregation reused by top-products and product-performance (and by admin analytics, platform-wide). */
-  private async aggregateProductSales(scope: Record<string, any>, from: Date, to: Date) {
-    return aggregateProductSalesUtil(this.r.orderModel, from, to, scope);
+  private async aggregateProductSales(scope: Record<string, any>, from: Date, to: Date, rc: ReportingCurrency | null) {
+    return aggregateProductSalesUtil(this.r.orderModel, from, to, scope, rc);
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -554,15 +574,15 @@ export class AnalyticsService {
   private static readonly TRENDING_MIN_UNITS = 3;
 
   async getTrendingProducts(sellerId: string, storeId: string | null | undefined) {
-    const { scope } = await this.resolveScope(sellerId, storeId);
+    const { scope, storeIds, rc, tz, currency } = await this.resolveContext(sellerId, storeId);
     const now = new Date();
     const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
     const fourteenDaysAgo = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000);
 
-    return this.cached(this.key('trending-products', this.scopeLabel(sellerId, storeId), {}), async () => {
+    return this.cached(this.key('trending-products', this.scopeLabel(sellerId, storeId), { tz, currency }), async () => {
       const [recent, prior] = await Promise.all([
-        this.aggregateProductSales(scope, sevenDaysAgo, now),
-        this.aggregateProductSales(scope, fourteenDaysAgo, sevenDaysAgo),
+        this.aggregateProductSales(scope, sevenDaysAgo, now, rc),
+        this.aggregateProductSales(scope, fourteenDaysAgo, sevenDaysAgo, rc),
       ]);
       const priorByProduct = new Map(prior.map((r) => [r.productId, r.unitsSold]));
 
@@ -593,23 +613,23 @@ export class AnalyticsService {
   // ═══════════════════════════════════════════════════════════════════════
 
   /** All-time per-customer aggregate for this scope — the base for LTV, and for classifying new vs returning within any period. */
-  private async allTimeCustomerAggregate(scope: Record<string, any>) {
-    return allTimeCustomerAggregateUtil(this.r.orderModel, scope);
+  private async allTimeCustomerAggregate(scope: Record<string, any>, rc: ReportingCurrency | null) {
+    return allTimeCustomerAggregateUtil(this.r.orderModel, scope, rc);
   }
 
   async getCustomerAnalytics(sellerId: string, storeId: string | null | undefined, query: any) {
-    const { scope } = await this.resolveScope(sellerId, storeId);
-    const { from, to, granularity } = resolveDateRange(query);
+    const { scope, storeIds, rc, tz, currency } = await this.resolveContext(sellerId, storeId);
+    const { from, to, granularity } = resolveDateRange(query, tz);
 
-    return this.cached(this.key('customers', this.scopeLabel(sellerId, storeId), { from, to }), async () => {
-      const allTime = await this.allTimeCustomerAggregate(scope);
+    return this.cached(this.key('customers', this.scopeLabel(sellerId, storeId), { r: rangeCacheKey(query, tz), currency }), async () => {
+      const allTime = await this.allTimeCustomerAggregate(scope, rc);
       const firstOrderMap = new Map(allTime.map((c) => [c.userId, c.firstOrderAt]));
 
       // New vs returning per bucket, using each buyer's all-time first order date within this scope.
       const periodRows = await this.r.orderModel.aggregate([
         ...this.matchStage(scope, from, to),
         { $match: { 'sellerOrders.status': { $ne: 'cancelled' } } },
-        { $addFields: { bucket: { $dateTrunc: { date: '$createdAt', unit: granularity, timezone: 'UTC' } } } },
+        { $addFields: { bucket: bucketExpr('$createdAt', granularity, tz) } },
         { $group: { _id: { bucket: '$bucket', userId: { $ifNull: ['$customerId', '$userId'] } } } },
       ]);
 
@@ -618,13 +638,13 @@ export class AnalyticsService {
         const bucketTime = row._id.bucket.getTime();
         const firstOrderAt = firstOrderMap.get(row._id.userId);
         // "New" in this bucket = their all-time first order within this scope falls within it.
-        const isNew = !!firstOrderAt && firstOrderAt >= row._id.bucket && firstOrderAt < this.nextBucket(row._id.bucket, granularity);
+        const isNew = !!firstOrderAt && firstOrderAt >= row._id.bucket && firstOrderAt < this.nextBucket(row._id.bucket, granularity, tz);
         const entry = bucketTotals.get(bucketTime) ?? { newCustomers: 0, returningCustomers: 0 };
         if (isNew) entry.newCustomers += 1; else entry.returningCustomers += 1;
         bucketTotals.set(bucketTime, entry);
       }
 
-      const series = enumerateBuckets(from, to, granularity).map((bucket) => {
+      const series = enumerateBuckets(from, to, granularity, tz).map((bucket) => {
         const totals = bucketTotals.get(bucket.getTime()) ?? { newCustomers: 0, returningCustomers: 0 };
         return { date: bucket, ...totals };
       });
@@ -652,7 +672,7 @@ export class AnalyticsService {
       const geoRows = await this.r.orderModel.aggregate([
         ...this.matchStage(scope, from, to),
         { $match: { 'sellerOrders.status': { $ne: 'cancelled' }, shippingAddress: { $ne: null } } },
-        { $group: { _id: '$shippingAddress.state', orders: { $sum: 1 }, revenue: sumUSD('$sellerOrders.subtotal'), unconvertibleOrderCount: unconvertibleCountField() } },
+        { $group: { _id: { state: '$shippingAddress.state', country: '$shippingAddress.country' }, orders: { $sum: 1 }, revenue: sumUSD('$sellerOrders.subtotal', rc), unconvertibleOrderCount: unconvertibleCountField(rc) } },
         { $sort: { revenue: -1 } },
       ]);
 
@@ -664,7 +684,7 @@ export class AnalyticsService {
       const countryRows = await this.r.orderModel.aggregate([
         ...this.matchStage(scope, from, to),
         { $match: { 'sellerOrders.status': { $ne: 'cancelled' }, shippingAddress: { $ne: null } } },
-        { $group: { _id: '$shippingAddress.country', orders: { $sum: 1 }, revenue: sumUSD('$sellerOrders.subtotal'), unconvertibleOrderCount: unconvertibleCountField() } },
+        { $group: { _id: '$shippingAddress.country', orders: { $sum: 1 }, revenue: sumUSD('$sellerOrders.subtotal', rc), unconvertibleOrderCount: unconvertibleCountField(rc) } },
         { $sort: { revenue: -1 } },
       ]);
       const geoUnconvertibleTotal = geoRows.reduce((s: number, r: any) => s + (r.unconvertibleOrderCount ?? 0), 0)
@@ -678,7 +698,8 @@ export class AnalyticsService {
           averageLifetimeValue: avgLifetimeValue,
           topCustomersByLtv: topCustomers,
           geographicBreakdown: geoRows.map((r: any) => ({
-            state: r._id || NOT_RECORDED_LABEL,
+            state: r._id?.state || NOT_RECORDED_LABEL,
+            country: r._id?.country || NOT_RECORDED_LABEL,
             orders: r.orders,
             revenue: this.round(r.revenue),
           })),
@@ -688,15 +709,15 @@ export class AnalyticsService {
             revenue: this.round(r.revenue),
           })),
           ...(geoUnconvertibleTotal > 0
-            ? { note: `${geoUnconvertibleTotal} order(s) predate USD normalization (no ratePerUSD) and are excluded from these revenue figures rather than guessed at.` }
+            ? { note: `${geoUnconvertibleTotal} order(s) have no recorded exchange rate and are excluded from these revenue figures rather than guessed at.` }
             : {}),
         },
       };
     });
   }
 
-  private nextBucket(bucket: Date, granularity: BucketGranularity): Date {
-    return nextBucketUtil(bucket, granularity);
+  private nextBucket(bucket: Date, granularity: BucketGranularity, tz: string): Date {
+    return nextBucketUtil(bucket, granularity, tz);
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -704,14 +725,14 @@ export class AnalyticsService {
   // ═══════════════════════════════════════════════════════════════════════
 
   async getProductPerformance(sellerId: string, storeId: string | null | undefined, query: any) {
-    const { scope, storeIds } = await this.resolveScope(sellerId, storeId);
-    const { from, to } = resolveDateRange(query);
+    const { scope, storeIds, rc, tz, currency } = await this.resolveContext(sellerId, storeId);
+    const { from, to } = resolveDateRange(query, tz);
     const page = Number(query.page) || 1;
     const limit = Number(query.limit) || 20;
 
-    return this.cached(this.key('product-performance', this.scopeLabel(sellerId, storeId), { from, to, page, limit }), async () => {
+    return this.cached(this.key('product-performance', this.scopeLabel(sellerId, storeId), { r: rangeCacheKey(query, tz), currency, page, limit }), async () => {
       const [sales, products] = await Promise.all([
-        this.aggregateProductSales(scope, from, to),
+        this.aggregateProductSales(scope, from, to, rc),
         this.r.productModel.find({ storeId: { $in: storeIds }, isDelete: false }).select('name').lean(),
       ]);
 
@@ -762,9 +783,9 @@ export class AnalyticsService {
   // ═══════════════════════════════════════════════════════════════════════
 
   async getInventoryInsights(sellerId: string, storeId: string | null | undefined) {
-    const { scope, storeIds } = await this.resolveScope(sellerId, storeId);
+    const { scope, storeIds, rc, tz, currency } = await this.resolveContext(sellerId, storeId);
 
-    return this.cached(this.key('inventory-insights', this.scopeLabel(sellerId, storeId), {}), async () => {
+    return this.cached(this.key('inventory-insights', this.scopeLabel(sellerId, storeId), { tz, currency }), async () => {
       // Sell-through measured over the trailing 30 days — a fixed, well-understood window for a store-wide inventory snapshot (this endpoint has no range param).
       const to = new Date();
       const from = new Date();
@@ -772,7 +793,7 @@ export class AnalyticsService {
 
       const [products, sales30d] = await Promise.all([
         this.r.productModel.find({ storeId: { $in: storeIds }, isDelete: false, status: 'active' }).select('name').lean(),
-        this.aggregateProductSales(scope, from, to),
+        this.aggregateProductSales(scope, from, to, rc),
       ]);
 
       const productIds = products.map((p: any) => p._id.toString());
@@ -835,14 +856,14 @@ export class AnalyticsService {
   // ═══════════════════════════════════════════════════════════════════════
 
   async getPaymentMethods(sellerId: string, storeId: string | null | undefined, query: any) {
-    const { scope } = await this.resolveScope(sellerId, storeId);
-    const { from, to } = resolveDateRange(query);
+    const { scope, storeIds, rc, tz, currency } = await this.resolveContext(sellerId, storeId);
+    const { from, to } = resolveDateRange(query, tz);
 
-    return this.cached(this.key('payment-methods', this.scopeLabel(sellerId, storeId), { from, to }), async () => {
+    return this.cached(this.key('payment-methods', this.scopeLabel(sellerId, storeId), { r: rangeCacheKey(query, tz), currency }), async () => {
       const rows = await this.r.orderModel.aggregate([
         ...this.matchStage(scope, from, to),
         { $match: { 'sellerOrders.status': { $ne: 'cancelled' } } },
-        { $group: { _id: '$paymentType', count: { $sum: 1 }, revenue: sumUSD('$sellerOrders.subtotal') } },
+        { $group: { _id: '$paymentType', count: { $sum: 1 }, revenue: sumUSD('$sellerOrders.subtotal', rc) } },
       ]);
 
       return {
@@ -862,17 +883,185 @@ export class AnalyticsService {
   // ═══════════════════════════════════════════════════════════════════════
 
   async getRevenueBreakdown(sellerId: string, storeId: string | null | undefined, query: any) {
-    const { scope } = await this.resolveScope(sellerId, storeId);
-    const { from, to } = resolveDateRange(query);
+    const { scope, storeIds, rc, tz, currency } = await this.resolveContext(sellerId, storeId);
+    const { from, to } = resolveDateRange(query, tz);
 
-    return this.cached(this.key('revenue-breakdown', this.scopeLabel(sellerId, storeId), { from, to }), async () => {
-      const orderTotals = await this.periodTotals(scope, from, to);
+    return this.cached(this.key('revenue-breakdown', this.scopeLabel(sellerId, storeId), { r: rangeCacheKey(query, tz), currency }), async () => {
+      const orderTotals = await this.periodTotals(scope, from, to, rc);
 
       return {
         success: true,
         data: {
           oneTimeOrderRevenue: orderTotals.netRevenue,
           totalRevenue: orderTotals.netRevenue,
+        },
+      };
+    });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // F6. ONLINE STORE SESSIONS + CONVERSION (Shopify: Sessions, Conversion rate,
+  // conversion funnel, sessions by device / location / traffic source /
+  // referrer / landing page). Built on StorefrontSession — visits recorded from
+  // the tracking launch forward only; `trackingSince` tells the UI when that was.
+  // ═══════════════════════════════════════════════════════════════════════
+
+  private static sessionTotalsGroup() {
+    return {
+      _id: null,
+      sessions: { $sum: 1 },
+      pageViews: { $sum: '$pageViews' },
+      bounced: { $sum: { $cond: [{ $lte: ['$pageViews', 1] }, 1, 0] } },
+      returning: { $sum: { $cond: ['$returningVisitor', 1, 0] } },
+      addedToCart: { $sum: { $cond: ['$addedToCart', 1, 0] } },
+      reachedCheckout: { $sum: { $cond: ['$reachedCheckout', 1, 0] } },
+      converted: { $sum: { $cond: ['$converted', 1, 0] } },
+    };
+  }
+
+  private static pct(part: number, whole: number) {
+    return whole > 0 ? round((part / whole) * 100) : 0;
+  }
+
+  async getSessionsReport(sellerId: string, storeIdInput: string | null | undefined, query: any) {
+    const storeId = this.requireStoreId(storeIdInput);
+    const { tz, currency } = await this.resolveContext(sellerId, storeId);
+    const { from, to, previousFrom, previousTo, granularity } = resolveDateRange(query, tz);
+    const model = this.r.storefrontSessionModel;
+
+    return this.cached(this.key('sessions', storeId, { r: rangeCacheKey(query, tz), currency }), async () => {
+      const breakdown = (field: string, limit: number): any[] => [
+        { $group: { _id: { $ifNull: [field, null] }, sessions: { $sum: 1 }, converted: { $sum: { $cond: ['$converted', 1, 0] } } } },
+        { $sort: { sessions: -1 } },
+        { $limit: limit },
+      ];
+      const [facet] = await model.aggregate([
+        { $match: { storeId, startedAt: { $gte: from, $lte: to } } },
+        {
+          $facet: {
+            totals: [{ $group: AnalyticsService.sessionTotalsGroup() }],
+            visitors: [{ $group: { _id: '$visitorId' } }, { $count: 'n' }],
+            overTime: [
+              { $group: { _id: bucketExpr('$startedAt', granularity, tz), sessions: { $sum: 1 }, converted: { $sum: { $cond: ['$converted', 1, 0] } } } },
+            ],
+            byDevice: breakdown('$deviceType', 5),
+            byCountry: breakdown('$country', 15),
+            bySource: breakdown('$trafficSource', 10),
+            byReferrer: [{ $match: { referrerHost: { $ne: null } } }, ...breakdown('$referrerHost', 10)],
+            byLandingPage: breakdown('$landingPath', 10),
+          },
+        },
+      ]);
+      const [prevTotals, firstSession] = await Promise.all([
+        model.aggregate([{ $match: { storeId, startedAt: { $gte: previousFrom, $lt: previousTo } } }, { $group: AnalyticsService.sessionTotalsGroup() }]),
+        model.findOne({ storeId }).sort({ startedAt: 1 }).select('startedAt').lean(),
+      ]);
+
+      const t = facet?.totals?.[0] ?? { sessions: 0, pageViews: 0, bounced: 0, returning: 0, addedToCart: 0, reachedCheckout: 0, converted: 0 };
+      const p = prevTotals[0] ?? { sessions: 0, converted: 0 };
+      const conversionRate = AnalyticsService.pct(t.converted, t.sessions);
+      const prevConversionRate = AnalyticsService.pct(p.converted, p.sessions);
+      const byBucket = new Map<number, any>((facet?.overTime ?? []).map((r: any) => [new Date(r._id).getTime(), r]));
+      const rows = (list: any[] | undefined, key: string) => (list ?? []).map((r: any) => ({
+        [key]: r._id ?? null,
+        sessions: r.sessions,
+        conversionRate: AnalyticsService.pct(r.converted, r.sessions),
+      }));
+
+      return {
+        success: true,
+        data: {
+          granularity,
+          trackingSince: (firstSession as any)?.startedAt ?? null,
+          sessions: t.sessions,
+          sessionsChangePercent: percentChange(t.sessions, p.sessions),
+          visitors: facet?.visitors?.[0]?.n ?? 0,
+          returningVisitorRate: AnalyticsService.pct(t.returning, t.sessions),
+          pageViews: t.pageViews,
+          pagesPerSession: t.sessions > 0 ? round(t.pageViews / t.sessions) : 0,
+          bounceRate: AnalyticsService.pct(t.bounced, t.sessions),
+          conversionRate,
+          conversionRateChange: round(conversionRate - prevConversionRate),
+          funnel: {
+            sessions: t.sessions,
+            addedToCart: t.addedToCart,
+            addedToCartRate: AnalyticsService.pct(t.addedToCart, t.sessions),
+            reachedCheckout: t.reachedCheckout,
+            reachedCheckoutRate: AnalyticsService.pct(t.reachedCheckout, t.sessions),
+            converted: t.converted,
+            conversionRate,
+          },
+          series: enumerateBuckets(from, to, granularity, tz).map((bucket) => {
+            const row = byBucket.get(bucket.getTime());
+            return { date: bucket, sessions: row?.sessions ?? 0, conversionRate: AnalyticsService.pct(row?.converted ?? 0, row?.sessions ?? 0) };
+          }),
+          byDevice: rows(facet?.byDevice, 'deviceType'),
+          byCountry: rows(facet?.byCountry, 'country'),
+          byTrafficSource: rows(facet?.bySource, 'source'),
+          byReferrer: rows(facet?.byReferrer, 'referrer'),
+          byLandingPage: rows(facet?.byLandingPage, 'path'),
+        },
+      };
+    });
+  }
+
+  /** Shopify Live View: visitors active in the last 5 minutes + today's activity, refreshed every few seconds by the UI. */
+  private static readonly LIVE_WINDOW_MS = 5 * 60_000;
+
+  async getLiveView(sellerId: string, storeIdInput: string | null | undefined) {
+    const storeId = this.requireStoreId(storeIdInput);
+    const { scope, rc, tz, currency } = await this.resolveContext(sellerId, storeId);
+    const now = new Date();
+    const activeSince = new Date(now.getTime() - AnalyticsService.LIVE_WINDOW_MS);
+    const todayStart = zonedStartOfDay(now, tz);
+    const model = this.r.storefrontSessionModel;
+
+    return withAnalyticsCache(this.redis, this.key('live', storeId, { tz, currency }), 10, async () => {
+      const [[live], [today], todayOrders] = await Promise.all([
+        model.aggregate([
+          { $match: { storeId, lastSeenAt: { $gte: activeSince } } },
+          {
+            $facet: {
+              counts: [{
+                $group: {
+                  _id: null,
+                  visitorsNow: { $sum: 1 },
+                  activeCarts: { $sum: { $cond: [{ $and: ['$addedToCart', { $not: ['$reachedCheckout'] }, { $not: ['$converted'] }] }, 1, 0] } },
+                  checkingOut: { $sum: { $cond: [{ $and: ['$reachedCheckout', { $not: ['$converted'] }] }, 1, 0] } },
+                  purchased: { $sum: { $cond: ['$converted', 1, 0] } },
+                },
+              }],
+              pages: [{ $group: { _id: '$currentPath', visitors: { $sum: 1 } } }, { $sort: { visitors: -1 } }, { $limit: 8 }],
+              countries: [{ $group: { _id: '$country', visitors: { $sum: 1 } } }, { $sort: { visitors: -1 } }, { $limit: 8 }],
+              devices: [{ $group: { _id: '$deviceType', visitors: { $sum: 1 } } }, { $sort: { visitors: -1 } }],
+            },
+          },
+        ]),
+        model.aggregate([
+          { $match: { storeId, startedAt: { $gte: todayStart } } },
+          { $group: { _id: null, sessions: { $sum: 1 }, converted: { $sum: { $cond: ['$converted', 1, 0] } } } },
+        ]),
+        this.periodTotals(scope, todayStart, now, rc),
+      ]);
+      const c = live?.counts?.[0] ?? { visitorsNow: 0, activeCarts: 0, checkingOut: 0, purchased: 0 };
+      return {
+        success: true,
+        data: {
+          asOf: now,
+          currency,
+          visitorsNow: c.visitorsNow,
+          activeCarts: c.activeCarts,
+          checkingOut: c.checkingOut,
+          purchasedNow: c.purchased,
+          topPages: (live?.pages ?? []).map((r: any) => ({ path: r._id ?? '/', visitors: r.visitors })),
+          countries: (live?.countries ?? []).map((r: any) => ({ country: r._id ?? null, visitors: r.visitors })),
+          devices: (live?.devices ?? []).map((r: any) => ({ deviceType: r._id ?? 'desktop', visitors: r.visitors })),
+          today: {
+            sessions: today?.sessions ?? 0,
+            conversionRate: AnalyticsService.pct(today?.converted ?? 0, today?.sessions ?? 0),
+            orders: todayOrders.orderCount,
+            sales: todayOrders.netRevenue,
+          },
         },
       };
     });
@@ -892,7 +1081,7 @@ export class AnalyticsService {
     return { success: true, data: reports };
   }
 
-  async createSavedReport(sellerId: string, storeId: string, body: { name: string; config: Record<string, unknown> }) {
+  async createSavedReport(sellerId: string, storeId: string, body: { name: string; config?: Record<string, any> }) {
     await this.verifyStoreOwnership(storeId, sellerId);
     if (!body?.name?.trim()) throw new BadRequestException('A report name is required');
     const cfg = (body.config ?? {}) as Record<string, any>;
@@ -912,6 +1101,7 @@ export class AnalyticsService {
 
   async deleteSavedReport(sellerId: string, storeId: string, reportId: string) {
     await this.verifyStoreOwnership(storeId, sellerId);
+    if (!isValidObjectId(reportId)) throw new NotFoundException('Report not found');
     const result = await this.r.savedReportModel.deleteOne({ _id: reportId, storeId });
     if (result.deletedCount === 0) throw new NotFoundException('Report not found');
     return { success: true, message: 'Report deleted' };
@@ -922,15 +1112,14 @@ export class AnalyticsService {
   // ═══════════════════════════════════════════════════════════════════════
 
   private requireStoreId(storeId: string | null | undefined): string {
-    if (!storeId) throw new Error('storeId is required for export');
+    if (!storeId) throw new BadRequestException('storeId is required');
     return storeId;
   }
 
   async exportCsv(sellerId: string, storeIdInput: string | null | undefined, query: any): Promise<string> {
     const storeId = this.requireStoreId(storeIdInput);
-    await this.verifyStoreOwnership(storeId, sellerId);
-    const scope = { 'sellerOrders.storeId': storeId };
-    const { from, to } = resolveDateRange(query);
+    const { scope, rc, tz, currency } = await this.resolveContext(sellerId, storeId);
+    const { from, to } = resolveDateRange(query, tz);
     const section = query.section ?? 'revenue';
 
     switch (section) {
@@ -945,7 +1134,7 @@ export class AnalyticsService {
               // Additive — see admin-analytics.service.ts#exportCsv's same
               // column for why this sits alongside (never replaces) the raw
               // native-currency `subtotal` above.
-              subtotalUSD: toUSD('$sellerOrders.subtotal'),
+              subtotalReport: toReporting('$sellerOrders.subtotal', rc),
               paymentType: 1,
             },
           },
@@ -953,24 +1142,24 @@ export class AnalyticsService {
           { $limit: 5000 },
         ]);
         return toCsv(
-          ['Order Number', 'Date', 'Status', 'Currency', 'Subtotal', 'Subtotal (USD)', 'Payment Type'],
-          rows.map((r: any) => [r.orderNumber, new Date(r.createdAt).toISOString().split('T')[0], r.status, r.currency, r.subtotal.toFixed(2), r.subtotalUSD == null ? 'N/A' : r.subtotalUSD.toFixed(2), getPaymentMethodLabel(r.paymentType)]),
+          ['Order Number', 'Date', 'Status', 'Order Currency', 'Subtotal (order currency)', `Subtotal (${currency})`, 'Payment Type'],
+          rows.map((r: any) => [r.orderNumber, localDateKey(new Date(r.createdAt), tz), r.status, r.currency, Number(r.subtotal ?? 0).toFixed(2), r.subtotalReport == null ? 'N/A' : r.subtotalReport.toFixed(2), getPaymentMethodLabel(r.paymentType)]),
         );
       }
       case 'products': {
-        const rows = await this.aggregateProductSales(scope, from, to);
+        const rows = await this.aggregateProductSales(scope, from, to, rc);
         rows.sort((a, b) => b.netRevenue - a.netRevenue);
         return toCsv(
-          ['Product ID', 'Name', 'Order Count', 'Units Sold', 'Gross Revenue', 'Refunded', 'Net Revenue'],
+          ['Product ID', 'Name', 'Order Count', 'Units Sold', `Gross Revenue (${currency})`, `Refunded (${currency})`, `Net Revenue (${currency})`],
           rows.map((r) => [r.productId, r.name, r.orderCount, r.unitsSold, r.grossRevenue.toFixed(2), r.refundedAmount.toFixed(2), r.netRevenue.toFixed(2)]),
         );
       }
       case 'customers': {
-        const allTime = await this.allTimeCustomerAggregate(scope);
+        const allTime = await this.allTimeCustomerAggregate(scope, rc);
         allTime.sort((a, b) => b.lifetimeValue - a.lifetimeValue);
         const identityMap = await resolveCustomerIdentities(this.r.userModel, this.r.orderModel, allTime.map((c) => c.userId));
         return toCsv(
-          ['Customer', 'Email', 'Total Orders', 'Lifetime Value'],
+          ['Customer', 'Email', 'Total Orders', `Lifetime Value (${currency})`],
           allTime.map((c) => {
             const identity = identityMap.get(c.userId)!;
             return [identity.name, identity.email, c.totalOrders, c.lifetimeValue.toFixed(2)];
@@ -981,8 +1170,8 @@ export class AnalyticsService {
       default: {
         const revenueData = await this.getRevenueOverTime(sellerId, storeId, query);
         return toCsv(
-          ['Date', 'Gross Revenue', 'Net Revenue'],
-          revenueData.data.series.map((s: any) => [new Date(s.date).toISOString().split('T')[0], s.grossRevenue.toFixed(2), s.netRevenue.toFixed(2)]),
+          ['Date', `Gross Revenue (${currency})`, `Net Revenue (${currency})`],
+          revenueData.data.series.map((s: any) => [localDateKey(new Date(s.date), tz), s.grossRevenue.toFixed(2), s.netRevenue.toFixed(2)]),
         );
       }
     }
@@ -990,8 +1179,10 @@ export class AnalyticsService {
 
   async exportPdf(sellerId: string, storeIdInput: string | null | undefined, query: any): Promise<Buffer> {
     const storeId = this.requireStoreId(storeIdInput);
-    const store = await this.verifyStoreOwnership(storeId, sellerId);
-    const { from, to } = resolveDateRange(query);
+    const { store, tz, currency } = await this.resolveContext(sellerId, storeId);
+    const { from, to } = resolveDateRange(query, tz);
+    const money = (n: number) => `${currency} ${Number(n ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    const day = (d: Date | string) => localDateKey(new Date(d), tz);
 
     const [overview, revenue, traffic, topProducts] = await Promise.all([
       this.getOverview(sellerId, storeId, query),
@@ -1000,15 +1191,15 @@ export class AnalyticsService {
       this.getTopProducts(sellerId, storeId, { ...query, limit: 10 }),
     ]);
 
-    const rangeLabel = `${from.toISOString().split('T')[0]} to ${to.toISOString().split('T')[0]}`;
+    const rangeLabel = `${day(from)} to ${day(to)}`;
     const pdf = await PdfReportBuilder.create(`${store.name} — Analytics Report`, `Period: ${rangeLabel}`);
 
     pdf.addSectionHeading('Overview');
     pdf.addKeyValueGrid([
-      { label: 'Total Revenue (net)', value: `$${overview.data.totalRevenue.toFixed(2)}` },
-      { label: 'Gross Revenue', value: `$${overview.data.grossRevenue.toFixed(2)}` },
+      { label: 'Total Revenue (net)', value: money(overview.data.totalRevenue) },
+      { label: 'Gross Revenue', value: money(overview.data.grossRevenue) },
       { label: 'Total Orders', value: `${overview.data.totalOrders}` },
-      { label: 'Avg Order Value', value: `$${overview.data.avgOrderValue.toFixed(2)}` },
+      { label: 'Avg Order Value', value: money(overview.data.avgOrderValue) },
       { label: 'Repeat Buyers', value: `${overview.data.repeatBuyerPercent}%` },
       { label: 'Refund Rate', value: `${overview.data.refundRatePercent}%` },
     ]);
@@ -1017,7 +1208,7 @@ export class AnalyticsService {
     if (revenue.data.series.length > 0) {
       pdf.addTable(
         ['Date', 'Gross', 'Net'],
-        revenue.data.series.map((s: any) => [new Date(s.date).toISOString().split('T')[0], `$${s.grossRevenue.toFixed(2)}`, `$${s.netRevenue.toFixed(2)}`]),
+        revenue.data.series.map((s: any) => [day(s.date), money(s.grossRevenue), money(s.netRevenue)]),
       );
     } else {
       pdf.addEmptyNote('No revenue recorded in this period.');
@@ -1026,14 +1217,14 @@ export class AnalyticsService {
     pdf.addSectionHeading('Traffic Sources');
     pdf.addTable(
       ['Source', 'Orders', 'Revenue', '%'],
-      traffic.data.breakdown.map((b: any) => [b.source, b.count, `$${b.revenue.toFixed(2)}`, `${b.percent}%`]),
+      traffic.data.breakdown.map((b: any) => [b.source, b.count, money(b.revenue), `${b.percent}%`]),
     );
 
     pdf.addSectionHeading('Top Products by Revenue');
     if (topProducts.data.length > 0) {
       pdf.addTable(
         ['Product', 'Orders', 'Units', 'Revenue'],
-        topProducts.data.map((p: any) => [p.name, p.orderCount, p.unitsSold, `$${p.revenue.toFixed(2)}`]),
+        topProducts.data.map((p: any) => [p.name, p.orderCount, p.unitsSold, money(p.revenue)]),
       );
     } else {
       pdf.addEmptyNote('No product sales recorded in this period.');

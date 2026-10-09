@@ -30,6 +30,7 @@ import { EmailService } from '@/otp/services/email.service';
 import { verifyStoreOwnershipStrict } from '@/common/store-ownership.util';
 import { deriveRollupStatus } from '@/orders/order-status.util';
 import Stripe from 'stripe';
+import { markStorefrontSession } from '../common/storefront-session.util';
 
 /** Thrown by createOrder when the atomic stock reservation loses (the last unit was sold between the buyer paying
  *  and the order being created). Distinct type so the payment-finalize paths can auto-refund instead of retrying forever. */
@@ -354,7 +355,7 @@ export class PaymentService {
       );
     }
     // Card-network cost passed through (+ a custom per-seller commission, if one was agreed) — no plan commission on this rail.
-    applicationFeeAmountCents = await this.commissionRulesService.cardApplicationFeeCents(checkoutStoreIds[0], amountCents);
+    applicationFeeAmountCents = await this.commissionRulesService.cardApplicationFeeCents(checkoutStoreIds[0], amountCents, checkout.currency);
     if (!useSplit) {
       const store = await this.databaseService.repositories.storeModel
         .findById(checkoutStoreIds[0]).select('paymentCaptureMethod').lean();
@@ -1624,6 +1625,17 @@ export class PaymentService {
       }
     }
 
+    // Seller-gateway sessions (Safepay/JazzCash/PayFast/Easypaisa): when the buyer's latest attempt was reported
+    // failed by the gateway, say so instead of leaving the return page waiting until it times out.
+    const latest: any = await paymentTransactionModel
+      .findOne({ checkoutId, isDelete: false })
+      .sort({ createdAt: -1 })
+      .select('status paymentType')
+      .lean();
+    if (latest?.status === 'failed' && latest.paymentType !== 'stripe') {
+      return { success: true, data: { status: 'failed', orders: [], message: 'The payment was not approved, so no order was placed. You can try again or choose another payment method.' } };
+    }
+
     return { success: true, data: { status: 'pending', orders: [] } };
   }
 
@@ -2513,6 +2525,16 @@ export class PaymentService {
     // for how a multi-store cart only credits the referring store's portion).
     if (checkout.attributedAffiliateCode) {
       this.affiliateService.recordConversion(String(checkout._id), checkout.attributedAffiliateCode, createdOrders).catch(() => {});
+    }
+
+    // Online-store analytics: the visit this checkout started in converted (Shopify conversion funnel).
+    if (checkout.analyticsSessionId) {
+      void markStorefrontSession(
+        this.databaseService.repositories.storefrontSessionModel,
+        checkout.items?.[0]?.storeId,
+        checkout.analyticsSessionId,
+        { converted: true, orderIds: createdOrders.map((o: any) => String(o._id)), userId },
+      );
     }
 
     // purchaseCount increment — har item ke product pe

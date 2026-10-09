@@ -8,12 +8,14 @@ import { SafepayPaymentProvider } from './providers/safepay.provider';
 import { StripePaymentProvider } from './providers/stripe-integration.provider';
 import { JazzCashPaymentProvider } from './providers/jazzcash.provider';
 import { PayFastPaymentProvider } from './providers/payfast.provider';
+import { EasypaisaPaymentProvider } from './providers/easypaisa.provider';
 import { WhatsAppCloudProvider } from './providers/whatsapp-cloud.provider';
 import { PaymentProviderRegistry } from './payment-provider.registry';
 import { IntegrationWebhookEventService } from './integration-webhook-event.service';
 import { WhatsAppSenderService } from './whatsapp-sender.service';
 import { StoreIntegrationsService } from './store-integrations.service';
 import { CheckoutPaymentMethodsService } from './checkout-payment-methods.service';
+import { StuckGatewayPaymentsService } from './stuck-gateway-payments.service';
 import { PaymentWebhooksController } from './webhooks/payment-webhooks.controller';
 import { WhatsAppWebhookController } from './webhooks/whatsapp-webhook.controller';
 import { SellerIntegrationsController } from './seller-integrations.controller';
@@ -36,6 +38,7 @@ import { ShippingRatesService } from '../shipping-rates/shipping-rates.service';
     SafepayPaymentProvider,
     JazzCashPaymentProvider,
     PayFastPaymentProvider,
+    EasypaisaPaymentProvider,
     StripePaymentProvider,
     WhatsAppCloudProvider,
     PaymentProviderRegistry,
@@ -43,9 +46,10 @@ import { ShippingRatesService } from '../shipping-rates/shipping-rates.service';
     WhatsAppSenderService,
     StoreIntegrationsService,
     CheckoutPaymentMethodsService,
+    StuckGatewayPaymentsService,
     TaxService,
     ShippingRatesService,
   ],
-  exports: [PaymentProviderRegistry, IntegrationWebhookEventService, WhatsAppCloudProvider, WhatsAppSenderService, TaxService, ShippingRatesService],
+  exports: [PaymentProviderRegistry, StuckGatewayPaymentsService, IntegrationWebhookEventService, WhatsAppCloudProvider, WhatsAppSenderService, TaxService, ShippingRatesService],
 })
 export class IntegrationsModule {}

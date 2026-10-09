@@ -10,10 +10,13 @@ import { RequirePermission } from '../auth/decorators/require-permission.decorat
 import { StaffStorePinned } from '../auth/decorators/staff-store-pinned.decorator';
 import { actingSellerId } from '../common/acting-seller-id.util';
 import { AnalyticsService } from './analytics.service';
+import { AnalyticsReportsService, REPORT_EXPORT_SECTIONS } from './analytics-reports.service';
 import { AnalyticsQueryDto } from './dto/analytics-query.dto';
 import { TopProductsQueryDto } from './dto/top-products-query.dto';
 import { ProductPerformanceQueryDto } from './dto/product-performance-query.dto';
 import { ExportQueryDto } from './dto/export-query.dto';
+import { CreateSavedReportDto } from './dto/saved-report.dto';
+import { CohortsQueryDto, SalesByQueryDto } from './dto/report-query.dto';
 
 // Every route in this controller is a real-time VIEW of analytics data —
 // gated on one permission (`analytics.view`) at class level, matching
@@ -29,7 +32,10 @@ import { ExportQueryDto } from './dto/export-query.dto';
 @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
 @Controller('api/seller/analytics')
 export class AnalyticsController {
-  constructor(private readonly analyticsService: AnalyticsService) {}
+  constructor(
+    private readonly analyticsService: AnalyticsService,
+    private readonly reportsService: AnalyticsReportsService,
+  ) {}
 
   @Get('today')
   getTodaySummary(@Req() req: any, @Query() query: AnalyticsQueryDto) {
@@ -116,13 +122,44 @@ export class AnalyticsController {
   // permission (a natural extension of viewing/analyzing data, not the
   // seller-only `export` action below, which is unchanged). `storeId` stays
   // a query param, matching every sibling route in this controller.
+  @Get('sessions')
+  getSessions(@Req() req: any, @Query() query: AnalyticsQueryDto) {
+    return this.analyticsService.getSessionsReport(actingSellerId(req.user), query.storeId, query);
+  }
+
+  @Get('live')
+  getLiveView(@Req() req: any, @Query() query: AnalyticsQueryDto) {
+    return this.analyticsService.getLiveView(actingSellerId(req.user), query.storeId);
+  }
+
+  // ── Report library (Shopify Analytics > Reports) ──
+  @Get('reports/sales-summary')
+  getSalesSummary(@Req() req: any, @Query() query: AnalyticsQueryDto) {
+    return this.reportsService.getSalesSummary(actingSellerId(req.user), query.storeId, query);
+  }
+
+  @Get('reports/sales-by')
+  getSalesBy(@Req() req: any, @Query() query: SalesByQueryDto) {
+    return this.reportsService.getSalesBy(actingSellerId(req.user), query.storeId, query);
+  }
+
+  @Get('reports/cohorts')
+  getCohorts(@Req() req: any, @Query() query: CohortsQueryDto) {
+    return this.reportsService.getCohorts(actingSellerId(req.user), query.storeId, query);
+  }
+
+  @Get('reports/inventory-abc')
+  getInventoryAbc(@Req() req: any, @Query() query: AnalyticsQueryDto) {
+    return this.reportsService.getInventoryAbc(actingSellerId(req.user), query.storeId);
+  }
+
   @Get('saved-reports')
   listSavedReports(@Req() req: any, @Query('storeId') storeId: string) {
     return this.analyticsService.listSavedReports(actingSellerId(req.user), storeId);
   }
 
   @Post('saved-reports')
-  createSavedReport(@Req() req: any, @Query('storeId') storeId: string, @Body() body: { name: string; config: Record<string, unknown> }) {
+  createSavedReport(@Req() req: any, @Query('storeId') storeId: string, @Body() body: CreateSavedReportDto) {
     return this.analyticsService.createSavedReport(actingSellerId(req.user), storeId, body);
   }
 
@@ -131,10 +168,10 @@ export class AnalyticsController {
     return this.analyticsService.deleteSavedReport(actingSellerId(req.user), storeId, reportId);
   }
 
-  @Roles('seller', 'admin')
+  // Staff with analytics.view can export their own (pinned) store's reports too, like Shopify's Reports permission.
   @Get('export')
   async export(@Req() req: any, @Query() query: ExportQueryDto, @Res() res: Response) {
-    const sellerId = req.user.userId;
+    const sellerId = actingSellerId(req.user);
 
     if (query.format === 'pdf') {
       const pdf = await this.analyticsService.exportPdf(sellerId, query.storeId, query);
@@ -144,7 +181,9 @@ export class AnalyticsController {
       return;
     }
 
-    const csv = await this.analyticsService.exportCsv(sellerId, query.storeId, query);
+    const csv = (REPORT_EXPORT_SECTIONS as readonly string[]).includes(query.section ?? '')
+      ? await this.reportsService.exportCsv(sellerId, query.storeId, query)
+      : await this.analyticsService.exportCsv(sellerId, query.storeId, query);
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', `attachment; filename="analytics-${query.section ?? 'revenue'}.csv"`);
     res.send(csv);

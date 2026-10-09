@@ -50,7 +50,7 @@ describe('PaymentService.initiatePayment — buyer card payments go ONLY to the 
       expect.objectContaining({ amount: 12000, transfer_data: { destination: 'acct_seller' }, application_fee_amount: 468 }),
       expect.anything(),
     );
-    expect(commissionRules.cardApplicationFeeCents).toHaveBeenCalledWith(STORE, 12000);
+    expect(commissionRules.cardApplicationFeeCents).toHaveBeenCalledWith(STORE, 12000, 'USD');
     expect(paymentTransactionModel.create).toHaveBeenCalledWith(expect.objectContaining({ settledViaConnect: true, stripeConnectedAccountId: 'acct_seller' }));
     expect(res.data.clientSecret).toBe('secret_1');
   });

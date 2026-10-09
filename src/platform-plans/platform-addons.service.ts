@@ -110,6 +110,7 @@ export class PlatformAddonsService {
       status: 'active',
       nextBillingDate: pricing.recurring ? this.addMonth(new Date()) : null,
       providerChargeId: charge.providerChargeId,
+      charges: [{ amountUSD: totalPriceUSD, chargedAt: new Date(), providerChargeId: charge.providerChargeId ?? null }],
     });
 
     // Immediate effects
@@ -208,6 +209,7 @@ export class PlatformAddonsService {
 
         if (charge.success) {
           addon.nextBillingDate = this.addMonth(now);
+          addon.charges = [...(addon.charges ?? []), { amountUSD: addon.priceUSD, chargedAt: now, providerChargeId: charge.providerChargeId ?? null }];
           succeeded++;
         } else {
           addon.status = 'canceled';

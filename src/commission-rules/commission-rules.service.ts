@@ -71,10 +71,25 @@ export class CommissionRulesService {
    * agreed a custom per-seller rate. The plan's transaction fee does not apply to
    * this rail (see payment-rail.ts). Capped at the charge amount, as Stripe requires.
    */
-  async cardApplicationFeeCents(storeId: string, amountCents: number): Promise<number> {
+  async cardApplicationFeeCents(storeId: string, amountCents: number, currency = 'USD'): Promise<number> {
     const commission = rateForPaymentRail(await this.resolveRate(storeId), 'stripe').rate;
-    const fee = Math.round(amountCents * (commission + PAYMENT_PROCESSING_RATE)) + Math.round(PAYMENT_PROCESSING_FIXED * 100);
+    const fee = Math.round(amountCents * (commission + PAYMENT_PROCESSING_RATE)) + await this.fixedCardFeeMinorUnits(currency);
     return Math.min(amountCents, fee);
+  }
+
+  /**
+   * The card network's fixed part ($0.30) expressed in the CHARGE's currency (minor units). `amountCents` is in the
+   * store's currency, so adding a bare 30 would be 30 paisa on a PKR charge instead of $0.30. Converted at the latest
+   * FX rate; with no rate for a non-USD currency the fixed part is skipped (the percentage still applies) rather
+   * than guessed.
+   */
+  private async fixedCardFeeMinorUnits(currency: string): Promise<number> {
+    const cur = (currency || 'USD').toUpperCase();
+    if (cur === 'USD') return Math.round(PAYMENT_PROCESSING_FIXED * 100);
+    const row: any = await this.db.repositories.exchangeRateModel
+      .findOne({ currency: cur, isRejected: false, effectiveFrom: { $lte: new Date() } })
+      .sort({ effectiveFrom: -1 }).select('ratePerUSD').lean();
+    return row?.ratePerUSD > 0 ? Math.round(PAYMENT_PROCESSING_FIXED * row.ratePerUSD * 100) : 0;
   }
 
   // ── Global default ──────────────────────────────────────────────────────

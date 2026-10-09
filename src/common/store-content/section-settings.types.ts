@@ -158,6 +158,56 @@ export interface StatsCounterSectionSettings extends BaseSectionSettings {}
 // eslint-disable-next-line @typescript-eslint/no-empty-interface
 export interface GalleryGridSectionSettings extends BaseSectionSettings {}
 
+// ── Shopify-parity section library ──────────────────────────────────────────
+export interface MulticolumnSectionSettings extends BaseSectionSettings {
+  /** Columns per row on desktop (phones always stack). */
+  columns?: 1 | 2 | 3 | 4;
+  textAlign?: 'left' | 'center';
+  imageRatio?: 'default' | 'adapt' | 'portrait' | 'square' | 'landscape';
+}
+export interface LogoListSectionSettings extends BaseSectionSettings {
+  /** Logo height in px, 24-120. */
+  logoHeight?: number;
+  grayscale?: boolean;
+}
+export interface MarqueeSectionSettings extends BaseSectionSettings {
+  speed?: 'slow' | 'medium' | 'fast';
+  direction?: 'left' | 'right';
+  pauseOnHover?: boolean;
+}
+export interface CustomHtmlSectionSettings extends BaseSectionSettings {
+  /** Seller HTML, sanitized again at render time (no scripts, no event handlers, no javascript: URLs). */
+  html?: string;
+}
+export interface ImageBannerSectionSettings extends BaseSectionSettings {
+  imageUrl?: string;
+  focalPoint?: string;
+  subheading?: string;
+  ctaText?: string;
+  ctaLink?: LinkTarget;
+  heightPreset?: 'small' | 'medium' | 'large' | 'adapt';
+  contentAlign?: 'left' | 'center' | 'right';
+  contentPosition?: 'top' | 'middle' | 'bottom';
+  overlayOpacity?: number;
+  textColor?: string;
+}
+export interface MulticolumnColumnBlockSettings {
+  imageUrl?: string;
+  heading?: string;
+  body?: string;
+  ctaText?: string;
+  ctaLink?: LinkTarget;
+}
+export interface LogoItemBlockSettings {
+  imageUrl: string;
+  alt?: string;
+  link?: LinkTarget;
+}
+export interface MarqueeItemBlockSettings {
+  text: string;
+  link?: LinkTarget;
+}
+
 // ── Core/locked sections (Phase 4) — see `SECTION_TYPES`'s own comment.
 // No section-level settings for any of these; `product_main`'s real content
 // is entirely its 7 fixed blocks (below). ──────────────────────────────────
@@ -208,6 +258,11 @@ export type SectionSettingsMap = RequireAllKeys<SectionType, {
   team_grid: TeamGridSectionSettings;
   stats_counter: StatsCounterSectionSettings;
   gallery_grid: GalleryGridSectionSettings;
+  multicolumn: MulticolumnSectionSettings;
+  logo_list: LogoListSectionSettings;
+  marquee: MarqueeSectionSettings;
+  custom_html: CustomHtmlSectionSettings;
+  image_banner: ImageBannerSectionSettings;
   product_main: ProductMainSectionSettings;
   search_results: SearchResultsSectionSettings;
   cart_items: CartItemsSectionSettings;
@@ -226,11 +281,16 @@ export type SectionSettingsMap = RequireAllKeys<SectionType, {
  *  (Shopify-style) and eight items per dropdown. */
 export interface NavLinkChildSettings extends LinkTarget {
   label: string;
+  /** Optional mega-panel tile image (https). */
+  imageUrl?: string | null;
   children?: NavLinkChildSettings[];
 }
 export interface NavLinkBlockSettings extends LinkTarget {
   label: string;
   highlight?: boolean;
+  /** Top-level items only: how the children are presented. Defaults to `dropdown`. */
+  menuStyle?: 'dropdown' | 'mega';
+  imageUrl?: string | null;
   /** Nested dropdown support, capped at three levels by the runtime validator. */
   children?: NavLinkChildSettings[];
 }
@@ -410,6 +470,9 @@ export const BLOCK_TYPES = [
   'team_member',
   'stat_item',
   'gallery_image',
+  'multicolumn_column',
+  'logo_item',
+  'marquee_item',
   'product_media',
   'product_title',
   'product_price',
@@ -446,6 +509,9 @@ export type BlockSettingsMap = RequireAllKeys<BlockType, {
   team_member: TeamMemberBlockSettings;
   stat_item: StatItemBlockSettings;
   gallery_image: GalleryImageBlockSettings;
+  multicolumn_column: MulticolumnColumnBlockSettings;
+  logo_item: LogoItemBlockSettings;
+  marquee_item: MarqueeItemBlockSettings;
   product_media: ProductMediaBlockSettings;
   product_title: ProductTitleBlockSettings;
   product_price: ProductPriceBlockSettings;

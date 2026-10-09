@@ -4,7 +4,8 @@ import { IsIn, IsOptional } from 'class-validator';
 import { AdminAnalyticsQueryDto } from './admin-analytics-query.dto';
 
 export const EXPORT_FORMATS = ['pdf', 'csv'] as const;
-export const EXPORT_SECTIONS = ['revenue', 'orders', 'sellers', 'products', 'customers'] as const;
+// Must list every section the service exports (payments + platform were missing -> 400 from the UI).
+export const EXPORT_SECTIONS = ['revenue', 'orders', 'sellers', 'products', 'customers', 'payments', 'platform'] as const;
 
 export class AdminExportQueryDto extends AdminAnalyticsQueryDto {
   @ApiProperty({ enum: EXPORT_FORMATS })

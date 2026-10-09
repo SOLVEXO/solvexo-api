@@ -6,6 +6,7 @@ import { SafepayPaymentProvider } from './providers/safepay.provider';
 import { StripePaymentProvider } from './providers/stripe-integration.provider';
 import { JazzCashPaymentProvider } from './providers/jazzcash.provider';
 import { PayFastPaymentProvider } from './providers/payfast.provider';
+import { EasypaisaPaymentProvider } from './providers/easypaisa.provider';
 
 /**
  * Resolves a `StoreIntegration.provider` value to its concrete
@@ -23,11 +24,13 @@ export class PaymentProviderRegistry {
     stripeProvider: StripePaymentProvider,
     jazzcashProvider: JazzCashPaymentProvider,
     payfastProvider: PayFastPaymentProvider,
+    easypaisaProvider: EasypaisaPaymentProvider,
   ) {
     this.providers.set(safepayProvider.providerKey, safepayProvider);
     this.providers.set(stripeProvider.providerKey, stripeProvider);
     this.providers.set(jazzcashProvider.providerKey, jazzcashProvider);
     this.providers.set(payfastProvider.providerKey, payfastProvider);
+    this.providers.set(easypaisaProvider.providerKey, easypaisaProvider);
   }
 
   resolve(provider: StoreIntegrationProvider): PaymentProvider {

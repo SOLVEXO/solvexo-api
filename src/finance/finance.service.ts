@@ -1,7 +1,7 @@
 /* eslint-disable prettier/prettier */
 import {
   Injectable, NotFoundException, ForbiddenException,
-  BadRequestException, ConflictException,
+  BadRequestException, ConflictException, OnModuleInit,
 } from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
 import { Connection, ClientSession, isValidObjectId } from 'mongoose';
@@ -36,15 +36,14 @@ export const CLEARING_DAYS_CARD      = 14;
 function clearingDaysForRail(paymentMethodType: string): number {
   return paymentMethodType === 'stripe' ? CLEARING_DAYS_CARD : CLEARING_DAYS;
 }
-const ESTIMATED_TAX_RATE      = 0.15;   // 15% estimate shown in UI
 
 /** Currency-aware amount formatting for CSV export — every other currency-agnostic $-literal in this file was a latent multi-currency bug waiting to happen; this is the one shared spot so it can't drift per call site. */
 function amountFmt(n: number, currency: string): string {
-  return currency === 'PKR' ? `PKR ${n.toFixed(2)}` : `$${n.toFixed(2)}`;
+  return currency === 'USD' ? `$${n.toFixed(2)}` : `${currency} ${n.toFixed(2)}`;
 }
 
 @Injectable()
-export class FinanceService {
+export class FinanceService implements OnModuleInit {
   constructor(
     private readonly db: DatabaseService,
     private readonly activityLogService: ActivityLogService,
@@ -65,6 +64,32 @@ export class FinanceService {
   private get taxModel()       { return this.db.repositories.taxReportModel; }
   private get storeModel()     { return this.db.repositories.storeModel; }
   private get sellerModel()    { return this.db.repositories.sellerModel; }
+
+  /**
+   * One-time cleanup: the page used to load the dashboard and the payout-method list at the same
+   * moment, and both created the system-managed `stripe_connect` method — leaving two identical rows.
+   * Keep the oldest per store, repoint schedules that referenced a removed row, then (re)build the
+   * unique index that now makes a second row impossible. Never throws — boot must not depend on it.
+   */
+  async onModuleInit(): Promise<void> {
+    try {
+      const dupes: any[] = await this.methodModel.aggregate([
+        { $match: { type: 'stripe_connect' } },
+        { $sort: { createdAt: 1 } },
+        { $group: { _id: '$storeId', ids: { $push: '$_id' }, anyDefault: { $max: '$isDefault' }, n: { $sum: 1 } } },
+        { $match: { n: { $gt: 1 } } },
+      ]);
+      for (const d of dupes) {
+        const [keep, ...extra] = d.ids;
+        await this.scheduleModel.updateMany({ defaultPayoutMethodId: { $in: extra.map(String) } }, { $set: { defaultPayoutMethodId: String(keep) } });
+        await this.methodModel.deleteMany({ _id: { $in: extra } });
+        if (d.anyDefault) await this.methodModel.updateOne({ _id: keep }, { $set: { isDefault: true } });
+      }
+      if (dupes.length) await this.methodModel.createIndexes();
+    } catch (err: any) {
+      console.error('Stripe Connect payout-method dedupe failed:', err?.message);
+    }
+  }
 
   // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -156,16 +181,21 @@ export class FinanceService {
 
     if (!existing) {
       const isFirstUsdMethod = !(await this.methodModel.exists({ storeId, currency: 'USD' }));
-      await this.methodModel.create({
-        storeId,
-        sellerId,
-        type: 'stripe_connect',
-        currency: 'USD',
-        externalAccountId: info.accountId,
-        status: targetStatus,
-        isDefault: isFirstUsdMethod,
-        autoManaged: true,
-      });
+      try {
+        await this.methodModel.create({
+          storeId,
+          sellerId,
+          type: 'stripe_connect',
+          currency: 'USD',
+          externalAccountId: info.accountId,
+          status: targetStatus,
+          isDefault: isFirstUsdMethod,
+          autoManaged: true,
+        });
+      } catch (err: any) {
+        // A concurrent request created it first (unique index) — that row is the one.
+        if (err?.code !== 11000) throw err;
+      }
       return;
     }
 
@@ -197,7 +227,27 @@ export class FinanceService {
    * automated — normalize once, here, wherever a lean list of payouts is
    * returned to a caller.
    */
-  private readonly normalizeRailType = (p: any) => ({ ...p, railType: p.railType || 'manual' });
+  /**
+   * Atomic payout status transition: only succeeds if the payout is still in one of `from`.
+   * A lost race throws 409 with no side effects, so callers can safely move money afterwards.
+   * Mirrors the conditional claim used for order status changes.
+   */
+  private async claimPayoutStatus(
+    payout: any, from: string[], to: string, set: Record<string, any> = {}, session?: ClientSession,
+  ): Promise<void> {
+    const res: any = await this.payoutModel.updateOne(
+      { _id: payout._id, status: { $in: from } },
+      { $set: { status: to, ...set } },
+      { session },
+    );
+    if (!res?.modifiedCount) {
+      throw new ConflictException('This payout was just updated by someone else — refresh and try again.');
+    }
+    payout.status = to;
+    Object.assign(payout, set);
+  }
+
+  private readonly normalizeRailType =(p: any) => ({ ...p, railType: p.railType || 'manual' });
 
   private reevaluateDebtFlag(balance: any, reason?: string): { justFlagged: boolean; justCleared: boolean } {
     const isNegative = balance.availableBalance < 0 || balance.pendingBalance < 0;
@@ -226,19 +276,40 @@ export class FinanceService {
    * once per currency the store actually holds).
    */
   private async getPeriodStats(storeId: string, from: Date, to: Date, currency: string) {
-    const agg = await this.txModel.aggregate([
-      { $match: { storeId, currency, status: 'completed', createdAt: { $gte: from, $lte: to } } },
-      {
-        $group: {
-          _id: '$type',
-          total: { $sum: { $abs: '$amount' } },
-          count: { $sum: 1 },
+    const [agg, taxAgg] = await Promise.all([
+      this.txModel.aggregate([
+        { $match: { storeId, currency, status: 'completed', createdAt: { $gte: from, $lte: to } } },
+        {
+          $group: {
+            _id: '$type',
+            total: { $sum: { $abs: '$amount' } },
+            count: { $sum: 1 },
+          },
         },
-      },
+      ]),
+      // Sales tax actually collected from buyers (stamped on each sale row at completion) — never an estimate.
+      // `pending` sales (still clearing) count too: the buyer already paid that tax.
+      this.txModel.aggregate([
+        { $match: { storeId, currency, type: 'sale', status: { $ne: 'failed' }, createdAt: { $gte: from, $lte: to } } },
+        { $group: { _id: null, tax: { $sum: { $ifNull: ['$metadata.taxCollected', 0] } } } },
+      ]),
     ]);
-    const stats: Record<string, number> = { sale: 0, fee: 0, refund: 0, payout: 0 };
+    const stats: Record<string, number> = { sale: 0, fee: 0, refund: 0, payout: 0, tax: 0 };
     for (const row of agg) stats[row._id] = this.round(row.total);
+    stats.tax = this.round(taxAgg?.[0]?.tax ?? 0);
     return stats;
+  }
+
+  /** "2.9% + <fixed part in the store's currency>" — the fixed $0.30 converted at the latest rate (USD stays $0.30). */
+  private async processingFeeText(currency: string): Promise<string> {
+    const pct = `${+(PAYMENT_PROCESSING_RATE * 100).toFixed(2)}%`;
+    if (currency === 'USD') return `${pct} + $${PAYMENT_PROCESSING_FIXED.toFixed(2)}`;
+    const row: any = await this.db.repositories.exchangeRateModel
+      .findOne({ currency, isRejected: false, effectiveFrom: { $lte: new Date() } })
+      .sort({ effectiveFrom: -1 }).select('ratePerUSD').lean();
+    return row?.ratePerUSD > 0
+      ? `${pct} + ${currency} ${(PAYMENT_PROCESSING_FIXED * row.ratePerUSD).toFixed(2)}`
+      : `${pct} + $${PAYMENT_PROCESSING_FIXED.toFixed(2)}`;
   }
 
   /** Compute next scheduled payout date from current schedule */
@@ -297,7 +368,10 @@ export class FinanceService {
    * balance happens to live in a different currency document.
    */
   async getDashboard(sellerId: string, storeId: string) {
-    await this.verifyStoreOwnership(sellerId, storeId);
+    const store: any = await this.verifyStoreOwnership(sellerId, storeId);
+    // A store with no ledger activity yet (e.g. every sale is a card sale settled by Stripe) still shows its
+    // OWN currency, never a phantom USD wallet.
+    const storeCurrency: string = String(store?.baseCurrency || 'USD').toUpperCase();
     await this.ensureStripeConnectPayoutMethod(storeId, sellerId);
 
     const now = new Date();
@@ -327,7 +401,7 @@ export class FinanceService {
       ...(balances as any[]).map((b) => b.currency),
       ...(schedules as any[]).map((s) => s.currency),
     ])];
-    if (currencies.length === 0) currencies.push('USD');
+    if (currencies.length === 0) currencies.push(storeCurrency);
 
     const wallets = await Promise.all(currencies.map(async (currency) => {
       const balance = (balances as any[]).find((b) => b.currency === currency) ?? {
@@ -366,7 +440,8 @@ export class FinanceService {
           revenueGrowthPercent: revenueGrowth,
           platformFees: thisMonth.fee,
           totalPaidOut: balance.totalPayouts,
-          pendingTax: this.round(thisMonth.sale * ESTIMATED_TAX_RATE),
+          // Real sales tax collected this month (key kept for API compatibility; it used to be a flat 15% guess).
+          pendingTax: thisMonth.tax,
         },
         payoutSchedule: {
           frequency: schedule.frequency,
@@ -387,7 +462,7 @@ export class FinanceService {
           ? `${(commissionRate.rate * 100).toFixed(2)}% per sale (custom rate agreed with Solvexo)`
           : `0% on card sales (Solvexo Payments), COD and bank transfer — ${(commissionRate.rate * 100).toFixed(2)}% only on third-party payment gateways`,
         transactionFeeSource: commissionRate.source,
-        paymentProcessing: `${PAYMENT_PROCESSING_RATE * 100}% + $${PAYMENT_PROCESSING_FIXED} (card payments only — not charged for COD or bank transfer)`,
+        paymentProcessing: `${await this.processingFeeText(storeCurrency)} (card payments only — not charged for COD or bank transfer)`,
         digitalDelivery: 'Included',
         aiCredits: '750 / month',
       },
@@ -581,20 +656,24 @@ export class FinanceService {
     newStatus: 'failed' | 'reversed',
     reason: string,
     extraTxDescription?: string,
+    from: string[] = ['pending', 'processing'],
   ): Promise<void> {
     const currency = payout.currency || 'USD';
     await this.withTransaction(async (session) => {
+      // Claim the status change first: of two concurrent reversals (double click, webhook
+      // redelivery) only one gets past here, so the balance is credited back exactly once.
+      await this.claimPayoutStatus(
+        payout, from, newStatus,
+        { ...(newStatus === 'failed' ? { failureReason: reason } : {}), processedAt: new Date() },
+        session,
+      );
+
       const balance = await this.getOrCreateBalance(payout.storeId, payout.sellerId, currency, session);
       const balanceBefore = balance.availableBalance;
       balance.availableBalance = this.round(balance.availableBalance + payout.amount);
       balance.totalPayouts = this.round(balance.totalPayouts - payout.amount);
       this.reevaluateDebtFlag(balance);
       await balance.save({ session });
-
-      payout.status = newStatus;
-      if (newStatus === 'failed') payout.failureReason = reason;
-      payout.processedAt = new Date();
-      await payout.save({ session });
 
       const tx = new this.txModel({
         storeId: payout.storeId,
@@ -710,7 +789,7 @@ export class FinanceService {
    * though it's self-healing), logs, and notifies the seller.
    */
   private async applyPayoutReversed(payout: any, reason: string, actorId: string, actorRole: 'system' | 'admin'): Promise<void> {
-    await this.reverseLedgerForPayout(payout, 'reversed', reason, 'Payout reversed — funds returned');
+    await this.reverseLedgerForPayout(payout, 'reversed', reason, 'Payout reversed — funds returned', ['completed']);
 
     await this.balanceModel.updateOne(
       { storeId: payout.storeId, currency: payout.currency || 'USD' },
@@ -754,7 +833,12 @@ export class FinanceService {
   async handleConnectTransferReversed(transferId: string): Promise<void> {
     const payout = await this.payoutModel.findOne({ stripeTransferId: transferId, railType: 'stripe_connect' });
     if (!payout || payout.status !== 'completed') return; // already handled, or not one of ours
-    await this.applyPayoutReversed(payout, 'reversed by Stripe', 'system', 'system');
+    try {
+      await this.applyPayoutReversed(payout, 'reversed by Stripe', 'system', 'system');
+    } catch (err) {
+      if (err instanceof ConflictException) return; // a concurrent delivery/admin reversal already handled it
+      throw err;
+    }
   }
 
   /**
@@ -1101,14 +1185,19 @@ export class FinanceService {
   // PAYOUT SCHEDULE
   // ═══════════════════════════════════════════════════════════════════════════
 
-  async getPayoutSchedule(sellerId: string, storeId: string, currency = 'USD') {
-    await this.verifyStoreOwnership(sellerId, storeId);
-    return this.getOrCreateSchedule(storeId, sellerId, currency);
+  /** The store's own currency — the default wallet whenever a caller doesn't name one. */
+  private storeCurrency(store: any): string {
+    return String(store?.baseCurrency || 'USD').toUpperCase();
+  }
+
+  async getPayoutSchedule(sellerId: string, storeId: string, currency?: string) {
+    const store = await this.verifyStoreOwnership(sellerId, storeId);
+    return this.getOrCreateSchedule(storeId, sellerId, currency || this.storeCurrency(store));
   }
 
   async updatePayoutSchedule(sellerId: string, storeId: string, dto: UpdatePayoutScheduleDto, ip?: string, userAgent?: string) {
-    await this.verifyStoreOwnership(sellerId, storeId);
-    const currency = dto.currency ?? 'USD';
+    const store = await this.verifyStoreOwnership(sellerId, storeId);
+    const currency = dto.currency ?? this.storeCurrency(store);
     const schedule = await this.getOrCreateSchedule(storeId, sellerId, currency);
     const oldFrequency = schedule.frequency;
 
@@ -1151,8 +1240,10 @@ export class FinanceService {
     return this.taxModel.find({ storeId }).sort({ year: -1, period: 1 }).lean();
   }
 
-  async generateTaxReport(sellerId: string, storeId: string, year: number, period: string, currency = 'USD') {
-    await this.verifyStoreOwnership(sellerId, storeId);
+  async generateTaxReport(sellerId: string, storeId: string, year: number, period: string, currency?: string) {
+    const store: any = await this.verifyStoreOwnership(sellerId, storeId);
+    // No wallet picked → the store's own currency (a PKR store must not get an empty USD report).
+    currency = currency || String(store?.baseCurrency || 'USD').toUpperCase();
 
     const validPeriods = ['q1', 'q2', 'q3', 'q4', 'annual'];
     if (!validPeriods.includes(period)) throw new BadRequestException('Invalid period — use q1, q2, q3, q4, or annual');
@@ -1162,7 +1253,8 @@ export class FinanceService {
     const txCount = await this.txModel.countDocuments({ storeId, currency, status: 'completed', createdAt: { $gte: from, $lte: to } });
 
     const netRevenue = this.round(stats.sale - stats.fee - stats.refund);
-    const estimatedTax = this.round(netRevenue * ESTIMATED_TAX_RATE);
+    // Sales tax actually collected on the period's sales (field name kept for compatibility; no longer a flat guess).
+    const estimatedTax = stats.tax;
 
     const report = await this.taxModel.findOneAndUpdate(
       { storeId, year, period, currency },
@@ -1222,14 +1314,15 @@ export class FinanceService {
       { label: 'Transaction Count', value: String(report.transactionCount) },
     ]);
 
-    pdf.addSectionHeading('Estimated Tax');
+    pdf.addSectionHeading('Tax collected');
     pdf.addKeyValueGrid([
-      { label: `Estimated Tax (${(ESTIMATED_TAX_RATE * 100).toFixed(0)}% of net revenue)`, value: fmt(report.estimatedTax) },
+      { label: 'Sales tax collected from buyers', value: fmt(report.estimatedTax) },
     ]);
     pdf.addEmptyNote(
       'This is an internal financial summary generated from your store\'s own transaction records, not a certified '
-      + 'government tax filing document. The estimated tax figure is a flat-rate approximation only — consult a tax '
-      + 'professional for your actual filing obligations in your jurisdiction.',
+      + 'government tax filing document. Tax collected covers sales completed after tax tracking was added to the '
+      + 'ledger; earlier sales show no tax. Refunded tax is not deducted. Consult a tax professional for your actual '
+      + 'filing obligations in your jurisdiction.',
     );
 
     return pdf.build();
@@ -1240,10 +1333,10 @@ export class FinanceService {
   // ═══════════════════════════════════════════════════════════════════════════
 
   async getAnalytics(sellerId: string, storeId: string, query: any) {
-    await this.verifyStoreOwnership(sellerId, storeId);
+    const store = await this.verifyStoreOwnership(sellerId, storeId);
 
     const months = Math.min(12, parseInt(query.months) || 6);
-    const currency = (query.currency as string) || 'USD';
+    const currency = (query.currency as string) || this.storeCurrency(store);
     const now = new Date();
 
     // Build monthly revenue for last N months
@@ -1483,15 +1576,13 @@ export class FinanceService {
     }
 
     const oldStatus = payout.status;
-    payout.status = 'completed';
-    payout.processedAt = new Date();
-    await payout.save();
+    await this.claimPayoutStatus(payout, ['pending', 'processing'], 'completed', { processedAt: new Date() });
 
     this.activityLogService.log({
       storeId: payout.storeId,
       category: 'finance',
       action: 'payout_approved',
-      description: `Payout of $${payout.amount.toFixed(2)} approved and marked completed`,
+      description: `Payout of ${amountFmt(payout.amount, payout.currency || 'USD')} approved and marked completed`,
       actorId: adminId,
       actorRole: 'admin',
       targetId: payoutId,
@@ -1531,7 +1622,7 @@ export class FinanceService {
       storeId: payout.storeId,
       category: 'finance',
       action: 'payout_rejected',
-      description: `Payout of $${payout.amount.toFixed(2)} rejected — ${reason}`,
+      description: `Payout of ${amountFmt(payout.amount, payout.currency || 'USD')} rejected — ${reason}`,
       actorId: adminId,
       actorRole: 'admin',
       targetId: payoutId,
@@ -1573,6 +1664,9 @@ export class FinanceService {
     const currency = payout.currency || 'USD';
 
     await this.withTransaction(async (session) => {
+      // Claim failed → processing first: two simultaneous retries can no longer both debit the balance.
+      await this.claimPayoutStatus(payout, ['failed'], 'processing', { failureReason: null, processedAt: null }, session);
+
       const balance = await this.getOrCreateBalance(payout.storeId, payout.sellerId, currency, session);
       if (payout.amount > balance.availableBalance) {
         throw new BadRequestException(
@@ -1584,11 +1678,6 @@ export class FinanceService {
       balance.availableBalance = this.round(balance.availableBalance - payout.amount);
       balance.totalPayouts = this.round(balance.totalPayouts + payout.amount);
       await balance.save({ session });
-
-      payout.status = 'processing';
-      payout.failureReason = null;
-      payout.processedAt = null;
-      await payout.save({ session });
 
       const tx = new this.txModel({
         storeId: payout.storeId,
@@ -1629,7 +1718,7 @@ export class FinanceService {
       storeId: payout.storeId,
       category: 'finance',
       action: 'payout_retried',
-      description: `Payout of $${payout.amount.toFixed(2)} re-queued for processing`,
+      description: `Payout of ${amountFmt(payout.amount, payout.currency || 'USD')} re-queued for processing`,
       actorId: adminId,
       actorRole: 'admin',
       targetId: payoutId,
@@ -1718,7 +1807,7 @@ export class FinanceService {
       storeId,
       category: 'finance',
       action: 'manual_payout_issued',
-      description: `Admin issued a manual payout of $${amount.toFixed(2)}`,
+      description: `Admin issued a manual payout of ${amountFmt(amount, currency)}`,
       actorId: adminId,
       actorRole: 'admin',
       targetId: (payout as any)._id.toString(),
@@ -1812,7 +1901,13 @@ export class FinanceService {
   async recordSale(
     storeId: string, sellerId: string, orderId: string, saleAmount: number, description: string,
     platformSponsoredUSD = 0, campaignId?: string | null, currency = 'USD', paymentMethodType = 'stripe',
+    settledViaConnect = false,
+    taxCollected = 0,
   ) {
+    // `settledViaConnect`: the card payment already landed in the seller's OWN Stripe account (destination charge).
+    // The sale is recorded so revenue, reports and tax figures are complete, but nothing is credited or debited
+    // here and no fee is billed again — the card-network cost (and any custom commission) was already taken as the
+    // charge's `application_fee`.
     // Who actually HOLDS the buyer's money decides whether the seller's
     // withdrawable balance may be credited:
     //  - 'solvexo_card' (the platform's own Stripe, no Connect): the platform
@@ -1828,12 +1923,14 @@ export class FinanceService {
     //    invoice — it is NOT taken out of a sales balance); only the
     //    platform-sponsored discount (which the platform genuinely owes the
     //    seller) is credited.
-    const platformHoldsFunds = classifyPaymentRail(paymentMethodType) === 'solvexo_card';
-    const chargesProcessingFee = paymentMethodType === 'stripe';
+    const platformHoldsFunds = !settledViaConnect && classifyPaymentRail(paymentMethodType) === 'solvexo_card';
+    const chargesProcessingFee = !settledViaConnect && paymentMethodType === 'stripe';
     // Shopify-style: the plan's transaction fee applies only to third-party gateways — card sales through
     // Solvexo Payments and manual payments (COD / bank transfer) carry no commission (a custom per-seller
     // override still applies everywhere). See commission-rules/payment-rail.ts.
-    const { rate: platformFeeRate, source: feeRateSource } = rateForPaymentRail(await this.commissionRulesService.resolveRate(storeId), paymentMethodType);
+    const { rate: platformFeeRate, source: feeRateSource } = settledViaConnect
+      ? { rate: 0, source: 'settled_via_connect' as const }
+      : rateForPaymentRail(await this.commissionRulesService.resolveRate(storeId), paymentMethodType);
     const platformFee   = this.round(saleAmount * platformFeeRate);
     const processingFee = chargesProcessingFee ? this.round(saleAmount * PAYMENT_PROCESSING_RATE + PAYMENT_PROCESSING_FIXED) : 0;
     const netAmount     = this.round(saleAmount - platformFee - processingFee);
@@ -1875,12 +1972,15 @@ export class FinanceService {
           platformFee, processingFee, netAmount: heldCredit, clearingDays: clearingDaysForRail(paymentMethodType),
           feeRate: platformFeeRate, feeRateSource,
           settledDirectly: !platformHoldsFunds, paymentRail: classifyPaymentRail(paymentMethodType),
+          ...(settledViaConnect ? { settledViaConnect: true } : {}),
+          // Sales tax inside `saleAmount` (same currency) — what the seller owes the tax authority, never an estimate.
+          ...(taxCollected > 0 ? { taxCollected: this.round(taxCollected) } : {}),
         },
       });
       await saleTx.save({ session });
 
-      // Ledger: fee entry
-      const feeTx = new this.txModel({
+      // Ledger: fee entry — a Connect sale has no ledger fee at all (it was an application_fee on the charge).
+      const feeTx = settledViaConnect ? null : new this.txModel({
         storeId, sellerId, currency,
         type: 'fee',
         amount: -(platformFee + processingFee),
@@ -1899,7 +1999,7 @@ export class FinanceService {
           ...(!platformHoldsFunds && platformFee > 0 ? { billing: { status: 'pending_invoice' } } : {}),
         },
       });
-      await feeTx.save({ session });
+      if (feeTx) await feeTx.save({ session });
 
       // Ledger: platform-subsidy audit entry — informational only, doesn't move
       // the balance again (already folded into `saleAmount`/netAmount above);

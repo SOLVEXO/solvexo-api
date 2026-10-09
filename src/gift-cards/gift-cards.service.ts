@@ -234,7 +234,7 @@ export class GiftCardsService {
     if (!connectAccountId) {
       throw new BadRequestException("This store hasn't set up online card payments yet, so gift cards can't be purchased right now.");
     }
-    const applicationFeeAmountCents = await this.commissionRulesService.cardApplicationFeeCents(storeId, amountCents);
+    const applicationFeeAmountCents = await this.commissionRulesService.cardApplicationFeeCents(storeId, amountCents, currency);
 
     const paymentIntent = await stripe.paymentIntents.create({
       amount: amountCents,

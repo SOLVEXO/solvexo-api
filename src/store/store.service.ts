@@ -40,6 +40,7 @@ import { CollectionsService } from '../collections/collections.service';
 import { DASHBOARD_METRIC_IDS } from './store-dashboard-metrics.const';
 import { setMarketingConsent } from '../newsletter/newsletter-consent.util';
 import { parseTaxOverrides } from '../tax/tax-rules.util';
+import { isValidTimeZone } from '../analytics/utils/analytics-date.util';
 
 // Real EU member states + UK (retains UK GDPR post-Brexit, same as Shopify's
 // own "regions with consent laws" cookie-banner scoping) — a plain, explicit
@@ -981,7 +982,7 @@ export class StoreService {
   // body would let a seller un-suspend their own store (see
   // usersService.deleteSellerAccount, which suspends stores on delete).
   async updateStore(sellerId: string, storeId: string, body: any) {
-    const { name, logo, coverImage, faviconUrl, description, tagline, contactEmail, contactPhone, sellerType, productTypes, codEnabled, paymentCaptureMethod, dashboardMetrics, reviewModerationEnabled, lowStockThreshold, taxRate, taxRegions, taxShipping, taxPricesIncludeTax, taxOverrides, showDutiesNotice, enabledCurrencies, cookieBannerEnabled, cookieBannerMessage, showDoNotSellLink, cookieBannerRegionMode, cookieBannerPosition, cookieBannerColorMode, customerAccounts } = body;
+    const { name, logo, coverImage, faviconUrl, description, tagline, contactEmail, contactPhone, sellerType, productTypes, codEnabled, paymentCaptureMethod, dashboardMetrics, reviewModerationEnabled, lowStockThreshold, taxRate, taxRegions, taxShipping, taxPricesIncludeTax, taxOverrides, showDutiesNotice, enabledCurrencies, cookieBannerEnabled, cookieBannerMessage, showDoNotSellLink, cookieBannerRegionMode, cookieBannerPosition, cookieBannerColorMode, customerAccounts, timezone } = body;
 
     if (!storeId) throw new BadRequestException('storeId is required');
 
@@ -1063,6 +1064,10 @@ export class StoreService {
         throw new BadRequestException('taxRate must be between 0 and 100');
       }
       updateData.taxRate = parsed;
+    }
+    if (timezone !== undefined) {
+      if (timezone !== null && !isValidTimeZone(timezone)) throw new BadRequestException('timezone must be a valid IANA time zone (e.g. "Asia/Karachi")');
+      updateData.timezone = timezone;
     }
     if (taxShipping !== undefined) {
       if (typeof taxShipping !== 'boolean') throw new BadRequestException('taxShipping must be a boolean');

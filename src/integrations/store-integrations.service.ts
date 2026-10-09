@@ -263,7 +263,7 @@ export class StoreIntegrationsService {
     // always could from the old standalone "Payment Gateway" Settings card
     // this replaced (see the seller-integrations frontend's
     // `StripeConnectSection`). Only providers with a real implementation
-    // registered show up — jazzcash/easypaisa/payfast stay hidden from the
+    // registered show up — a gateway without a provider class stays hidden from the
     // seller dashboard until their provider classes exist.
     const localProviders = store.baseCurrency === 'PKR' ? PROVIDERS_BY_CURRENCY.PKR : [];
     const availableProviders: StoreIntegrationProvider[] = [
@@ -429,15 +429,21 @@ export class StoreIntegrationsService {
       return { success: true, data: this.toPublicView(doc) };
     }
 
-    if (provider === 'jazzcash' || provider === 'payfast') {
-      const required = provider === 'jazzcash' ? ['merchantId', 'password', 'integritySalt'] : ['merchantId', 'securedKey'];
+    if (provider === 'jazzcash' || provider === 'payfast' || provider === 'easypaisa') {
+      const REQUIRED: Record<string, string[]> = {
+        jazzcash: ['merchantId', 'password', 'integritySalt'],
+        payfast: ['merchantId', 'securedKey'],
+        // Easypaisa REST API: Easypay store id + merchant account number + API username/password.
+        easypaisa: ['easypaisaStoreId', 'accountNum', 'username', 'password'],
+      };
+      const required = REQUIRED[provider];
       const missing = required.filter((k) => !String(body[k] ?? '').trim());
       if (missing.length) throw new BadRequestException(`${missing.join(', ')} ${missing.length > 1 ? 'are' : 'is'} required`);
       const credentials: Record<string, string> = {};
       for (const k of required) credentials[k] = String(body[k]).trim();
       const credentialsEncrypted = encryptCredential(JSON.stringify(credentials), 'INTEGRATIONS');
       const mode = resolveMode(body.mode, 'sandbox');
-      const label = provider === 'jazzcash' ? 'JazzCash' : 'PayFast';
+      const label = provider === 'jazzcash' ? 'JazzCash' : provider === 'payfast' ? 'PayFast' : 'Easypaisa';
 
       const doc = await this.repos.storeIntegrationModel.findOneAndUpdate(
         { storeId, type: 'payment', provider },
@@ -499,7 +505,7 @@ export class StoreIntegrationsService {
       return { success: true, data: this.toPublicView(doc) };
     }
 
-    // Easypaisa has no provider implementation (see providers/easypaisa.provider.ts for why).
+    // Any other provider has no implementation yet.
     throw new BadRequestException(`"${provider}" is not available yet`);
   }
 

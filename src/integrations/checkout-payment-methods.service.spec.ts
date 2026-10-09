@@ -30,7 +30,12 @@ describe('CheckoutPaymentMethodsService', () => {
     paymentTransactionModel = { create: jest.fn().mockResolvedValue({}) };
     storeModel = { findById: jest.fn().mockReturnValue({ select: jest.fn().mockResolvedValue({ baseCurrency: 'PKR' }) }) };
     const db = {
-      repositories: { checkoutModel, storeIntegrationModel, orderModel, paymentTransactionModel, storeModel },
+      repositories: {
+        checkoutModel, storeIntegrationModel, orderModel, paymentTransactionModel, storeModel,
+        userModel: { findById: () => ({ select: () => ({ lean: () => Promise.resolve({ email: 'b@x.com', phone: '03001234567' }) }) }) },
+        manualPaymentMethodModel: { find: () => ({ sort: () => ({ lean: () => Promise.resolve([]) }) }) },
+        addressModel: { findById: () => ({ select: () => ({ lean: () => Promise.resolve(null) }) }) },
+      },
     } as unknown as DatabaseService;
 
     registry = {
@@ -43,10 +48,11 @@ describe('CheckoutPaymentMethodsService', () => {
       // The real helper converts checkout.totalAmount with frozen snapshots; here: identity on totalAmount.
       computeGatewayCharge: jest.fn().mockImplementation(async (c: any) => ({ amount: c.totalAmount ?? 0, fxSnapshots: [{ currency: 'PKR', ratePerUSD: 280 }] })),
       assertGatewayPaymentMatches: jest.fn().mockResolvedValue(undefined),
+      assertDiscountsStillValid: jest.fn().mockResolvedValue(undefined),
     } as any;
     activityLogService = { log: jest.fn() } as any;
 
-    service = new CheckoutPaymentMethodsService(db, registry, paymentService, activityLogService);
+    service = new CheckoutPaymentMethodsService(db, registry, paymentService, activityLogService, { reconcileSession: jest.fn().mockResolvedValue('pending') } as any);
   });
 
   describe('listPaymentMethods', () => {
@@ -161,6 +167,24 @@ describe('CheckoutPaymentMethodsService', () => {
           providerSessionId: 'track_1',
         }),
       );
+    });
+
+    it('push-approval gateway (Easypaisa): sends the approval request in the background, then confirms through the inquiry-based reconcile', async () => {
+      checkoutModel.findOne.mockResolvedValue(checkout([{ storeId: 'store-A', totalPrice: 1500 }]));
+      storeIntegrationModel.findOne.mockResolvedValue({ provider: 'easypaisa', credentialsEncrypted: null, config: {}, mode: 'sandbox', webhookToken: null });
+      const initiatePayment = jest.fn().mockResolvedValue({ redirectUrl: 'https://x.com/r?wallet=easypaisa', sessionId: 'SX1' });
+      const startPushPayment = jest.fn().mockResolvedValue(undefined);
+      (registry.resolve as jest.Mock).mockReturnValue({ initiatePayment, startPushPayment });
+      const reconcile = (service as any).stuckPayments.reconcileSession as jest.Mock;
+
+      const res = await service.initiatePayment('checkout-1', USER_ID, 'easypaisa', 'https://x.com/r', 'https://x.com/c', '03451112223');
+      await new Promise((r) => setImmediate(r));
+
+      expect(res.data).toEqual({ redirectUrl: 'https://x.com/r?wallet=easypaisa', sessionId: 'SX1' });
+      expect(initiatePayment).toHaveBeenCalledWith(expect.objectContaining({ walletAccount: '03451112223', amount: 1500 }), expect.anything());
+      expect(paymentTransactionModel.create).toHaveBeenCalledWith(expect.objectContaining({ paymentType: 'easypaisa', providerSessionId: 'SX1', status: 'pending' }));
+      expect(startPushPayment).toHaveBeenCalledWith(expect.objectContaining({ walletAccount: '03451112223' }), 'SX1', expect.anything());
+      expect(reconcile).toHaveBeenCalledWith('store-A', 'easypaisa', 'SX1', 'app approval');
     });
 
     it.each(['completed', 'cancelled', 'expired'])('REGRESSION: refuses to open a gateway session on a %s checkout', async (status) => {

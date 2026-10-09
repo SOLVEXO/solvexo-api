@@ -3,7 +3,7 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { DatabaseService } from '../database/databaseservice';
 import { RedisService } from '../redis/redis.service';
 import { FinanceService } from '../finance/finance.service';
-import { resolveDateRange, enumerateBuckets } from '../analytics/utils/analytics-date.util';
+import { resolveDateRange, enumerateBuckets, bucketExpr, rangeCacheKey } from '../analytics/utils/analytics-date.util';
 import { round } from '../common/number.util';
 import { buildAnalyticsCacheKey, withAnalyticsCache } from '../analytics/utils/analytics-cache.util';
 import { getPlatformEarnings } from '../common/platform-earnings.util';
@@ -84,8 +84,8 @@ export class AdminFinanceService {
   async getPlatformRevenue(query: any) {
     const { from, to } = resolveDateRange(query);
 
-    return this.cached(this.key('platform-revenue-v1', { from, to }), async () => {
-      const [planRows, paidBillRows, openBillRows, accruedRows, rates] = await Promise.all([
+    return this.cached(this.key('platform-revenue-v2', { r: rangeCacheKey(query) }), async () => {
+      const [planRows, paidBillRows, openBillRows, accruedRows, rates, addonRows] = await Promise.all([
         this.r.platformPlanInvoiceModel.aggregate([
           { $match: { status: { $in: ['paid', 'partially_refunded', 'refunded'] }, isDelete: false, paidAt: { $gte: from, $lte: to } } },
           { $group: { _id: null, gross: { $sum: '$amountUSD' }, refunded: { $sum: '$refundedAmountUSD' }, count: { $sum: 1 } } },
@@ -103,8 +103,17 @@ export class AdminFinanceService {
           { $group: { _id: '$currency', amount: { $sum: { $abs: '$amount' } } } },
         ]),
         this.getUsdRates(),
+        // Add-ons (extra AI credits, staff seats...): every successful charge in range — purchases made before
+        // `charges` existed count as one charge of `priceUSD` at `createdAt`.
+        this.r.platformAddonPurchaseModel.aggregate([
+          { $addFields: { _charges: { $cond: [{ $gt: [{ $size: { $ifNull: ['$charges', []] } }, 0] }, '$charges', [{ amountUSD: '$priceUSD', chargedAt: '$createdAt' }]] } } },
+          { $unwind: '$_charges' },
+          { $match: { '_charges.chargedAt': { $gte: from, $lte: to } } },
+          { $group: { _id: null, total: { $sum: '$_charges.amountUSD' }, count: { $sum: 1 } } },
+        ]),
       ]);
 
+      const addonGross = round(addonRows[0]?.total ?? 0);
       const planGross = round(planRows[0]?.gross ?? 0);
       const planRefunded = round(planRows[0]?.refunded ?? 0);
       const planNet = round(planGross - planRefunded);
@@ -134,8 +143,9 @@ export class AdminFinanceService {
             accruedUnbilledUSD: round(accruedUnbilled),
             ...(unconvertibleCurrencies.length ? { unconvertibleCurrencies } : {}),
           },
-          totalRevenueUSD: round(planNet + feesCollected),
-          note: 'Revenue = what sellers pay Solvexo: platform plans (net of refunds) + third-party transaction fees collected on their monthly bills. "invoicedUnpaidUSD" and "accruedUnbilledUSD" are NOT counted until collected. Buyer card payments settle directly into the seller\'s own connected account and are not platform revenue.',
+          addons: { grossUSD: addonGross, chargeCount: addonRows[0]?.count ?? 0 },
+          totalRevenueUSD: round(planNet + feesCollected + addonGross),
+          note: 'Revenue = what sellers pay Solvexo: platform plans (net of refunds) + add-ons + third-party transaction fees collected on their monthly bills. "invoicedUnpaidUSD" and "accruedUnbilledUSD" are NOT counted until collected. Buyer card payments settle directly into the seller\'s own connected account and are not platform revenue.',
         },
       };
     });
@@ -148,7 +158,7 @@ export class AdminFinanceService {
   async getOverview(query: any) {
     const { from, to } = resolveDateRange(query);
 
-    return this.cached(this.key('overview-v3', { from, to }), async () => {
+    return this.cached(this.key('overview-v3', { r: rangeCacheKey(query) }), async () => {
       const [byTypeRows, balanceTotalsRows, payoutStatusRows, sellersWithBalance, earnings, flaggedSellersCount, pendingVerificationMethodsCount, pendingManualPaymentsCount] = await Promise.all([
         // `currency` is included in the group key — PKR and USD transactions
         // must never be summed into one blended gmv/refunds/netRevenue figure.
@@ -297,13 +307,13 @@ export class AdminFinanceService {
   async getRevenueOverTime(query: any) {
     const { from, to, granularity } = resolveDateRange(query);
 
-    return this.cached(this.key('revenue-over-time-v4', { from, to, granularity }), async () => {
+    return this.cached(this.key('revenue-over-time-v4', { r: rangeCacheKey(query), granularity }), async () => {
       // Each ledger entry carries the USD value frozen when it was written (see Transaction.amountUSD). Entries that
       // predate it (no frozen value) are converted at the latest rate — and a currency with no rate stays out of the
       // USD figures (never shown as USD). `currency` stays in the group key: native sums must never mix currencies.
       const rows = await this.r.transactionModel.aggregate([
         { $match: { type: { $in: ['sale', 'refund'] }, status: { $ne: 'failed' }, createdAt: { $gte: from, $lte: to } } },
-        { $addFields: { bucket: { $dateTrunc: { date: '$createdAt', unit: granularity, timezone: 'UTC' } } } },
+        { $addFields: { bucket: bucketExpr('$createdAt', granularity) } },
         {
           $group: {
             _id: { bucket: '$bucket', type: '$type', currency: '$currency' },
@@ -347,10 +357,10 @@ export class AdminFinanceService {
   async getCommissionOverTime(query: any) {
     const { from, to, granularity } = resolveDateRange(query);
 
-    return this.cached(this.key('commission-over-time-v4', { from, to, granularity }), async () => {
+    return this.cached(this.key('commission-over-time-v4', { r: rangeCacheKey(query), granularity }), async () => {
       const rows = await this.r.transactionModel.aggregate([
         { $match: { type: 'sale', status: { $ne: 'failed' }, createdAt: { $gte: from, $lte: to } } },
-        { $addFields: { bucket: { $dateTrunc: { date: '$createdAt', unit: granularity, timezone: 'UTC' } } } },
+        { $addFields: { bucket: bucketExpr('$createdAt', granularity) } },
         {
           $group: {
             _id: { bucket: '$bucket', currency: '$currency' },
@@ -710,7 +720,7 @@ export class AdminFinanceService {
   async getRefundReport(query: any) {
     const { from, to } = resolveDateRange(query);
 
-    return this.cached(this.key('refunds-v3', { from, to }), async () => {
+    return this.cached(this.key('refunds-v3', { r: rangeCacheKey(query) }), async () => {
       // Grouped by {storeId, currency} — a store's own settlement currency is
       // stable in practice, but reading it off the ledger row itself (rather
       // than assuming) is what lets the top-level total be broken down
@@ -788,7 +798,7 @@ export class AdminFinanceService {
   async getSettlementReport(query: any) {
     const { from, to } = resolveDateRange(query);
 
-    return this.cached(this.key('settlement-v3', { from, to }), async () => {
+    return this.cached(this.key('settlement-v3', { r: rangeCacheKey(query) }), async () => {
       const [byTypeRows, balanceTotalsRows] = await Promise.all([
         this.r.transactionModel.aggregate([
           { $match: { status: { $ne: 'failed' }, createdAt: { $gte: from, $lte: to } } },
@@ -951,7 +961,7 @@ export class AdminFinanceService {
       case 'tax': {
         const reports = await this.getTaxReports(query);
         return toCsv(
-          ['Store', 'Year', 'Period', 'Revenue (USD)', 'Fees (USD)', 'Refunds (USD)', 'Net (USD)', 'Estimated Tax (USD)'],
+          ['Store', 'Year', 'Period', 'Revenue (USD)', 'Fees (USD)', 'Refunds (USD)', 'Net (USD)', 'Tax collected (USD)'],
           reports.data.map((r: any) => [r.storeName, r.year, r.period, r.totalRevenue?.toFixed(2) ?? '', r.totalFees?.toFixed(2) ?? '', r.totalRefunds?.toFixed(2) ?? '', r.netRevenue?.toFixed(2) ?? '', r.estimatedTax?.toFixed(2) ?? '']),
         );
       }

@@ -160,7 +160,7 @@ export class FinanceController {
   @RequirePermission('finance.payouts.view')
   @Get(':storeId/payout-schedule')
   getPayoutSchedule(@Req() req: any, @Param('storeId') storeId: string, @Query('currency') currency?: string) {
-    return this.financeService.getPayoutSchedule(actingSellerId(req.user), storeId, currency || 'USD');
+    return this.financeService.getPayoutSchedule(actingSellerId(req.user), storeId, currency);
   }
 
   @Patch(':storeId/payout-schedule')
@@ -192,7 +192,7 @@ export class FinanceController {
       actingSellerId(req.user), storeId,
       parseInt(year) || new Date().getFullYear(),
       period || 'q1',
-      currency || 'USD',
+      currency,
     );
   }
 

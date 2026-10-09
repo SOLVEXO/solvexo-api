@@ -71,19 +71,71 @@ export function toUSD(rawAmountExpr: any) {
   };
 }
 
-/** `$sum`-ready USD total — an unconvertible row (see `toUSD`) contributes 0
+/**
+ * The currency a report is shown in. Admin analytics: USD (omit it). A store's own analytics: the store currency,
+ * like Shopify's reports. Each order is converted at the rate frozen ON THAT ORDER (its `fxSnapshots` entry for the
+ * store currency) — never today's rate — and an order already placed in the store currency is used as-is.
+ * `fallbackRatePerUSD` (latest accepted rate) is used only for an old order whose snapshots lack that currency.
+ */
+export interface ReportingCurrency {
+  code: string;
+  fallbackRatePerUSD: number | null;
+}
+
+const isUsd = (rc?: ReportingCurrency | null) => !rc || rc.code === 'USD';
+
+/** Converts a same-currency-as-order raw amount expression to the report currency (USD when `rc` is omitted). Null when unconvertible. */
+export function toReporting(rawAmountExpr: any, rc?: ReportingCurrency | null) {
+  if (isUsd(rc)) return toUSD(rawAmountExpr);
+  const snapshot = {
+    $arrayElemAt: [{ $filter: { input: { $ifNull: ['$fxSnapshots', []] }, as: 's', cond: { $eq: ['$$s.currency', rc!.code] } } }, 0],
+  };
+  return {
+    $cond: [
+      { $eq: ['$currency', rc!.code] },
+      rawAmountExpr,
+      {
+        $let: {
+          vars: { usd: toUSD(rawAmountExpr), rate: { $ifNull: [{ $let: { vars: { s: snapshot }, in: '$$s.ratePerUSD' } }, rc!.fallbackRatePerUSD] } },
+          in: { $cond: [{ $or: [{ $eq: ['$$usd', null] }, { $eq: ['$$rate', null] }] }, null, { $multiply: ['$$usd', '$$rate'] }] },
+        },
+      },
+    ],
+  };
+}
+
+/** True when this order's amounts can't be converted to the report currency (see `toUSD`). */
+export function unconvertibleCond(rc?: ReportingCurrency | null) {
+  const noRate = { $or: [{ $eq: ['$ratePerUSD', null] }, { $lte: ['$ratePerUSD', 0] }] };
+  return isUsd(rc) ? noRate : { $and: [{ $ne: ['$currency', rc!.code] }, noRate] };
+}
+
+/** `$sum`-ready total in the report currency (USD by default) — an unconvertible row (see `toUSD`) contributes 0
  *  rather than being guessed at. Pair with `unconvertibleCountField()` in
  *  the same `$group` so the excluded amount is disclosed, not hidden. */
-export function sumUSD(rawAmountExpr: any) {
-  return { $sum: { $ifNull: [toUSD(rawAmountExpr), 0] } };
+export function sumUSD(rawAmountExpr: any, rc?: ReportingCurrency | null) {
+  return { $sum: { $ifNull: [toReporting(rawAmountExpr, rc), 0] } };
 }
 
 /** `$sum`-ready count of rows excluded from every `sumUSD` in the same
  *  `$group` because `ratePerUSD` is unknown on that order — surface this
  *  wherever a USD total is reported, the same way a "Not Recorded"
  *  geography label discloses a gap instead of hiding it. */
-export function unconvertibleCountField() {
-  return { $sum: { $cond: [{ $or: [{ $eq: ['$ratePerUSD', null] }, { $lte: ['$ratePerUSD', 0] }] }, 1, 0] } };
+export function unconvertibleCountField(rc?: ReportingCurrency | null) {
+  return { $sum: { $cond: [unconvertibleCond(rc), 1, 0] } };
+}
+
+/**
+ * Pre-`$unwind` copy of a `sellerOrders.*` scope: matching an array path before the unwind keeps only orders where
+ * SOME sellerOrder is in scope (a superset — the exact match still runs after the unwind), so the
+ * `sellerOrders.storeId` index is used instead of scanning every order on the platform in the window.
+ */
+function preUnwindScope(scopeMatch?: Record<string, any>): Record<string, any> {
+  const out: Record<string, any> = {};
+  for (const [k, v] of Object.entries(scopeMatch ?? {})) {
+    if (k.startsWith('sellerOrders.')) out[k] = v;
+  }
+  return out;
 }
 
 /**
@@ -99,7 +151,7 @@ export function unconvertibleCountField() {
  */
 export function sellerOrderMatchStage(from: Date, to: Date, scopeMatch?: Record<string, any>): any[] {
   const stages: any[] = [
-    { $match: { isDelete: false, createdAt: { $gte: from, $lte: to } } },
+    { $match: { isDelete: false, createdAt: { $gte: from, $lte: to }, ...preUnwindScope(scopeMatch) } },
     { $unwind: '$sellerOrders' },
   ];
   if (scopeMatch) stages.push({ $match: scopeMatch });
@@ -123,7 +175,7 @@ export interface PeriodTotals {
   unconvertibleOrderCount: number;
 }
 
-export async function periodTotals(orderModel: Model<any>, from: Date, to: Date, scopeMatch?: Record<string, any>): Promise<PeriodTotals> {
+export async function periodTotals(orderModel: Model<any>, from: Date, to: Date, scopeMatch?: Record<string, any>, rc?: ReportingCurrency | null): Promise<PeriodTotals> {
   const rows = await orderModel.aggregate([
     ...sellerOrderMatchStage(from, to, scopeMatch),
     { $addFields: { itemRefund: itemRefundSumField() } },
@@ -133,9 +185,9 @@ export async function periodTotals(orderModel: Model<any>, from: Date, to: Date,
         orderCount: { $sum: { $cond: [notCancelledCond(), 1, 0] } },
         cancelledCount: { $sum: { $cond: [notCancelledCond(), 0, 1] } },
         refundedCount: { $sum: { $cond: [{ $eq: ['$sellerOrders.status', 'refunded'] }, 1, 0] } },
-        grossRevenue: { $sum: { $cond: [notCancelledCond(), { $ifNull: [toUSD('$sellerOrders.subtotal'), 0] }, 0] } },
-        refundAmount: { $sum: { $cond: [notCancelledCond(), { $ifNull: [toUSD('$itemRefund'), 0] }, 0] } },
-        unconvertibleOrderCount: { $sum: { $cond: [{ $and: [notCancelledCond(), { $or: [{ $eq: ['$ratePerUSD', null] }, { $lte: ['$ratePerUSD', 0] }] }] }, 1, 0] } },
+        grossRevenue: { $sum: { $cond: [notCancelledCond(), { $ifNull: [toReporting('$sellerOrders.subtotal', rc), 0] }, 0] } },
+        refundAmount: { $sum: { $cond: [notCancelledCond(), { $ifNull: [toReporting('$itemRefund', rc), 0] }, 0] } },
+        unconvertibleOrderCount: { $sum: { $cond: [{ $and: [notCancelledCond(), unconvertibleCond(rc)] }, 1, 0] } },
         buyerIds: { $addToSet: { $cond: [notCancelledCond(), { $ifNull: ['$customerId', '$userId'] }, '$$REMOVE'] } },
       },
     },
@@ -181,7 +233,7 @@ export async function repeatBuyerPercent(orderModel: Model<any>, from: Date, to:
 export async function returningBuyerSet(orderModel: Model<any>, buyerIds: string[], from: Date, scopeMatch?: Record<string, any>): Promise<Set<string>> {
   if (buyerIds.length === 0) return new Set();
   const rows = await orderModel.aggregate([
-    { $match: { isDelete: false, $or: [{ userId: { $in: buyerIds } }, { customerId: { $in: buyerIds } }], createdAt: { $lt: from } } },
+    { $match: { isDelete: false, $or: [{ userId: { $in: buyerIds } }, { customerId: { $in: buyerIds } }], createdAt: { $lt: from }, ...preUnwindScope(scopeMatch) } },
     { $unwind: '$sellerOrders' },
     { $match: { 'sellerOrders.status': { $ne: 'cancelled' }, ...scopeMatch } },
     { $group: { _id: { $ifNull: ['$customerId', '$userId'] } } },
@@ -200,7 +252,7 @@ export interface ProductSaleAggregate {
 }
 
 /** Shared item-level sales aggregation reused by top-products/product-performance on both the seller and admin sides. */
-export async function aggregateProductSales(orderModel: Model<any>, from: Date, to: Date, scopeMatch?: Record<string, any>): Promise<ProductSaleAggregate[]> {
+export async function aggregateProductSales(orderModel: Model<any>, from: Date, to: Date, scopeMatch?: Record<string, any>, rc?: ReportingCurrency | null): Promise<ProductSaleAggregate[]> {
   const rows = await orderModel.aggregate([
     ...sellerOrderMatchStage(from, to, scopeMatch),
     { $match: { 'sellerOrders.status': { $ne: 'cancelled' } } },
@@ -211,8 +263,8 @@ export async function aggregateProductSales(orderModel: Model<any>, from: Date, 
         name: { $first: '$sellerOrders.items.name' },
         orderCount: { $sum: 1 },
         unitsSold: { $sum: '$sellerOrders.items.quantity' },
-        grossRevenue: sumUSD('$sellerOrders.items.totalPrice'),
-        refundedAmount: sumUSD('$sellerOrders.items.refundedAmount'),
+        grossRevenue: sumUSD('$sellerOrders.items.totalPrice', rc),
+        refundedAmount: sumUSD('$sellerOrders.items.refundedAmount', rc),
       },
     },
   ]);
@@ -237,9 +289,9 @@ export interface AllTimeCustomerAggregate {
 }
 
 /** All-time per-customer aggregate (within `scopeMatch`'s scope) — the base for LTV, and for classifying new vs returning within any period. */
-export async function allTimeCustomerAggregate(orderModel: Model<any>, scopeMatch?: Record<string, any>): Promise<AllTimeCustomerAggregate[]> {
+export async function allTimeCustomerAggregate(orderModel: Model<any>, scopeMatch?: Record<string, any>, rc?: ReportingCurrency | null): Promise<AllTimeCustomerAggregate[]> {
   const rows = await orderModel.aggregate([
-    { $match: { isDelete: false } },
+    { $match: { isDelete: false, ...preUnwindScope(scopeMatch) } },
     { $unwind: '$sellerOrders' },
     { $match: { 'sellerOrders.status': { $ne: 'cancelled' }, ...scopeMatch } },
     { $addFields: { itemRefund: itemRefundSumField() } },
@@ -249,8 +301,8 @@ export async function allTimeCustomerAggregate(orderModel: Model<any>, scopeMatc
         firstOrderAt: { $min: '$createdAt' },
         lastOrderAt: { $max: '$createdAt' },
         totalOrders: { $sum: 1 },
-        grossRevenue: sumUSD('$sellerOrders.subtotal'),
-        refundAmount: sumUSD('$itemRefund'),
+        grossRevenue: sumUSD('$sellerOrders.subtotal', rc),
+        refundAmount: sumUSD('$itemRefund', rc),
       },
     },
   ]);
@@ -279,7 +331,7 @@ export interface AllTimeSellerActivity {
  */
 export async function allTimeSellerActivity(orderModel: Model<any>, scopeMatch?: Record<string, any>): Promise<AllTimeSellerActivity[]> {
   const rows = await orderModel.aggregate([
-    { $match: { isDelete: false } },
+    { $match: { isDelete: false, ...preUnwindScope(scopeMatch) } },
     { $unwind: '$sellerOrders' },
     { $match: { 'sellerOrders.status': { $ne: 'cancelled' }, ...scopeMatch } },
     {

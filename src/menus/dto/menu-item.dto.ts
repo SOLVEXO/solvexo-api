@@ -2,7 +2,7 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { IsArray, IsBoolean, IsIn, IsOptional, IsString, MaxLength, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
-import { MENU_LINK_TYPES, type MenuLinkType } from '../schemas/menu.schema';
+import { MENU_LINK_TYPES, MENU_STYLES, type MenuLinkType, type MenuStyle } from '../schemas/menu.schema';
 
 export class MenuItemChildDto {
   @ApiProperty() @IsString() id: string;
@@ -14,6 +14,7 @@ export class MenuItemChildDto {
   @ApiProperty({ required: false }) @IsOptional() @IsString() collectionId?: string | null;
   @ApiProperty({ required: false }) @IsOptional() @IsString() productId?: string | null;
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() highlight?: boolean;
+  @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(2048) imageUrl?: string | null;
   @ApiProperty({ type: [MenuItemChildDto], required: false })
   @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => MenuItemChildDto)
   children?: MenuItemChildDto[];
@@ -21,6 +22,7 @@ export class MenuItemChildDto {
 
 export class MenuItemDto {
   @ApiProperty() @IsString() id: string;
+  @ApiProperty({ required: false, enum: MENU_STYLES }) @IsOptional() @IsIn(MENU_STYLES) menuStyle?: MenuStyle;
   @ApiProperty() @IsString() @MaxLength(40) label: string;
   @ApiProperty({ enum: MENU_LINK_TYPES }) @IsIn(MENU_LINK_TYPES) linkType: MenuLinkType;
   @ApiProperty({ required: false }) @IsOptional() @IsString() pageSlug?: string | null;
@@ -29,6 +31,7 @@ export class MenuItemDto {
   @ApiProperty({ required: false }) @IsOptional() @IsString() collectionId?: string | null;
   @ApiProperty({ required: false }) @IsOptional() @IsString() productId?: string | null;
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() highlight?: boolean;
+  @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(2048) imageUrl?: string | null;
   @ApiProperty({ type: [MenuItemChildDto], required: false })
   @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => MenuItemChildDto)
   children?: MenuItemChildDto[];

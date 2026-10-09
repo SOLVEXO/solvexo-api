@@ -177,3 +177,4 @@ export { PosPlan, PosPlanDocument, PosPlanSchema } from '../pos-plans/schemas/po
 export { PosPurchase, PosPurchaseDocument, PosPurchaseSchema } from '../pos-plans/schemas/pos-purchase.schema';
 // Phase 5 — Product Tracking Foundation (see product-view.schema.ts).
 export { ProductView, ProductViewDocument, ProductViewSchema } from '../product-views/schemas/product-view.schema';
+export { StorefrontSession, StorefrontSessionDocument, StorefrontSessionSchema } from '../storefront-analytics/schemas/storefront-session.schema';

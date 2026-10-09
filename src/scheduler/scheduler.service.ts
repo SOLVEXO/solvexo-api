@@ -24,6 +24,7 @@ import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { AdminFinanceService } from '@/admin-finance/admin-finance.service';
 import { BookingsService } from '@/bookings/bookings.service';
 import { WhatsAppCloudProvider } from '@/integrations/providers/whatsapp-cloud.provider';
+import { StuckGatewayPaymentsService } from '@/integrations/stuck-gateway-payments.service';
 import { decryptCredential } from '@/common/credential-encryption.util';
 import { AbandonedCartService } from '@/abandoned-cart/abandoned-cart.service';
 import { EmailCampaignsService } from '@/email-campaigns/email-campaigns.service';
@@ -69,6 +70,7 @@ export class SchedulerService {
     private readonly marketingAutomationsService: MarketingAutomationsService,
     private readonly adminAnnouncementsService: AdminAnnouncementsService,
     private readonly transactionFeeBillingService: TransactionFeeBillingService,
+    private readonly stuckGatewayPaymentsService: StuckGatewayPaymentsService,
   ) {}
 
   /**
@@ -129,6 +131,18 @@ export class SchedulerService {
     await this.runLocked('automation-price-drop', 50 * 60_000, async () => {
       const result = await this.marketingAutomationsService.processPriceDrops();
       if (result.notified > 0) this.logger.log(`Price drop: ${result.notified} alert(s) sent`);
+    });
+  }
+
+  /** Hourly — Safepay/JazzCash/PayFast sessions whose result never arrived (>1 h pending): re-ask the
+   *  gateway and create the order if it confirms paid, otherwise notify the seller once (StuckGatewayPaymentsService). */
+  @Cron('35 * * * *')
+  async processStuckGatewayPayments() {
+    await this.runLocked('stuck-gateway-payments', 50 * 60_000, async () => {
+      const result = await this.stuckGatewayPaymentsService.processStuckPayments();
+      if (result.recovered > 0 || result.alerted > 0) {
+        this.logger.log(`Stuck gateway payments: ${result.recovered} recovered, ${result.alerted} seller alert(s) of ${result.checked} checked`);
+      }
     });
   }
 

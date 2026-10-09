@@ -276,6 +276,61 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
     case 'stats_counter':
     case 'gallery_grid':
       break; // content lives entirely in blocks, no section-level settings beyond heading
+    case 'multicolumn': {
+      if (settings.columns !== undefined && ![1, 2, 3, 4].includes(settings.columns)) {
+        throw new BadRequestException('settings.columns must be 1, 2, 3, or 4');
+      }
+      oneOf(settings.textAlign, ['left', 'center'] as const, 'settings.textAlign');
+      oneOf(settings.imageRatio, IMAGE_RATIOS, 'settings.imageRatio');
+      break;
+    }
+    case 'logo_list': {
+      const h = settings.logoHeight;
+      if (h !== undefined && (typeof h !== 'number' || !Number.isFinite(h) || h < 24 || h > 120)) {
+        throw new BadRequestException('settings.logoHeight must be a number between 24 and 120');
+      }
+      if (settings.grayscale !== undefined && typeof settings.grayscale !== 'boolean') {
+        throw new BadRequestException('settings.grayscale must be true or false');
+      }
+      break;
+    }
+    case 'marquee': {
+      oneOf(settings.speed, ['slow', 'medium', 'fast'] as const, 'settings.speed');
+      oneOf(settings.direction, ['left', 'right'] as const, 'settings.direction');
+      if (settings.pauseOnHover !== undefined && typeof settings.pauseOnHover !== 'boolean') {
+        throw new BadRequestException('settings.pauseOnHover must be true or false');
+      }
+      break;
+    }
+    case 'custom_html': {
+      if (settings.html !== undefined && typeof settings.html !== 'string') {
+        throw new BadRequestException('settings.html must be text');
+      }
+      maxLen(settings.html, 20000, 'settings.html');
+      // Defence in depth — the storefront sanitizes again at render time.
+      if (typeof settings.html === 'string' && /<\s*(script|iframe|object|embed|link|meta|base|form)\b|\son[a-z]+\s*=|javascript\s*:/i.test(settings.html)) {
+        throw new BadRequestException('Custom HTML cannot contain scripts, iframes, forms, event handlers or javascript: links');
+      }
+      break;
+    }
+    case 'image_banner': {
+      if (settings.imageUrl) assertHttpsUrl(settings.imageUrl, 'settings.imageUrl');
+      oneOf(settings.focalPoint, FOCAL_POINTS, 'settings.focalPoint');
+      maxLen(settings.subheading, 200, 'settings.subheading');
+      maxLen(settings.ctaText, 40, 'settings.ctaText');
+      assertLinkTarget(settings.ctaLink, 'settings.ctaLink');
+      oneOf(settings.heightPreset, ['small', 'medium', 'large', 'adapt'] as const, 'settings.heightPreset');
+      oneOf(settings.contentAlign, ['left', 'center', 'right'] as const, 'settings.contentAlign');
+      oneOf(settings.contentPosition, ['top', 'middle', 'bottom'] as const, 'settings.contentPosition');
+      const o = settings.overlayOpacity;
+      if (o !== undefined && (typeof o !== 'number' || !Number.isFinite(o) || o < 0 || o > 80)) {
+        throw new BadRequestException('settings.overlayOpacity must be a number between 0 and 80');
+      }
+      if (settings.textColor !== undefined && settings.textColor !== '' && !/^#[0-9a-f]{3,8}$/i.test(settings.textColor)) {
+        throw new BadRequestException('settings.textColor must be a hex colour');
+      }
+      break;
+    }
     case 'collection_product_grid': {
       const s = settings as CollectionProductGridSectionSettings;
       oneOf(s.defaultSort, ['newest', 'price_asc', 'price_desc', 'best_rated'] as const, 'settings.defaultSort');
@@ -341,6 +396,8 @@ export function validateBlockSettings(blockType: string, settings: Record<string
       if (settings.highlight !== undefined && typeof settings.highlight !== 'boolean') {
         throw new BadRequestException('highlight must be a boolean');
       }
+      oneOf(settings.menuStyle, NAV_MENU_STYLES, 'menuStyle');
+      assertOptionalImageUrl(settings.imageUrl, 'imageUrl');
       validateNavChildren(settings, 1);
       break;
     case 'footer_column':
@@ -524,6 +581,29 @@ export function validateBlockSettings(blockType: string, settings: Record<string
       assertHttpsUrl(settings.imageUrl, 'imageUrl');
       break;
 
+    // multicolumn section blocks
+    case 'multicolumn_column':
+      if (settings.imageUrl) assertHttpsUrl(settings.imageUrl, 'imageUrl');
+      maxLen(settings.heading, 120, 'heading');
+      maxLen(settings.body, 1000, 'body');
+      maxLen(settings.ctaText, 40, 'ctaText');
+      assertLinkTarget(settings.ctaLink, 'ctaLink');
+      break;
+
+    // logo_list section blocks
+    case 'logo_item':
+      assertHttpsUrl(settings.imageUrl, 'imageUrl');
+      maxLen(settings.alt, 120, 'alt');
+      assertLinkTarget(settings.link, 'link');
+      break;
+
+    // marquee section blocks
+    case 'marquee_item':
+      required(settings.text, 'text');
+      maxLen(settings.text, 120, 'text');
+      assertLinkTarget(settings.link, 'link');
+      break;
+
     // product_main's 7 fixed blocks (Phase 4) — no settings, purely
     // enable/disable + reorder of an already-real, already-rendered piece
     // of the product page. See `core-sections.util.ts`.
@@ -541,6 +621,15 @@ export function validateBlockSettings(blockType: string, settings: Record<string
   }
 }
 
+const NAV_MENU_STYLES = ['dropdown', 'mega'] as const;
+
+/** Menu tile images are optional (the seller can clear one: '' / null) but, when present, must be a real https:// URL. */
+function assertOptionalImageUrl(value: unknown, field: string): void {
+  if (value === undefined || value === null || value === '') return;
+  assertHttpsUrl(value, field);
+  maxLen(value, 2048, field);
+}
+
 function validateNavChildren(item: Record<string, any>, depth: number): void {
   if (item.children === undefined) return;
   if (!Array.isArray(item.children)) throw new BadRequestException('children must be an array');
@@ -556,6 +645,7 @@ function validateNavChildren(item: Record<string, any>, depth: number): void {
     if (child?.linkType === 'category') required(child?.categoryId, 'children[].categoryId');
     if (child?.linkType === 'collection') required(child?.collectionId, 'children[].collectionId');
     if (child?.linkType === 'product') required(child?.productId, 'children[].productId');
+    assertOptionalImageUrl(child?.imageUrl, 'children[].imageUrl');
     if (child?.children !== undefined) validateNavChildren(child, depth + 1);
   }
 }
@@ -627,6 +717,11 @@ export const SECTION_ALLOWED_BLOCK_TYPES: AllowedBlockTypesMap = {
   team_grid: ['team_member'],
   stats_counter: ['stat_item'],
   gallery_grid: ['gallery_image'],
+  multicolumn: ['multicolumn_column'],
+  logo_list: ['logo_item'],
+  marquee: ['marquee_item'],
+  custom_html: [],
+  image_banner: [],
   product_main: ['product_media', 'product_title', 'product_price', 'product_variant_picker', 'product_quantity', 'product_buy_buttons', 'product_description'],
   search_results: [],
   cart_items: [],

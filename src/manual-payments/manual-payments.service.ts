@@ -22,6 +22,8 @@ import { ReuploadManualPaymentDto } from './dto/reupload-manual-payment.dto';
  *  PaymentService.manualBankTransferPayment). Falls back to the old
  *  order-currency-denominated calculation only for orders placed before
  *  settlementAmount/settlementCurrency existed. */
+import { sellerTaxShare } from '../common/seller-tax-share.util';
+
 function sellerPayoutBasis(so: any): number {
   if (so.settlementAmount != null) return so.settlementAmount;
   return round(so.subtotal + (so.platformSponsoredDiscountUSD ?? 0) + (so.taxAmount ?? 0));
@@ -244,6 +246,7 @@ export class ManualPaymentsService {
             `Sale — Order #${order._id} (manual bank transfer, verified)`,
             platformSponsoredUSD, sponsoredCampaignId, sellerPayoutCurrency(so, order),
             order.paymentType || 'manual_bank_transfer',
+            false, sellerTaxShare(so, sellerPayoutBasis(so)),
           );
         } catch (e: any) {
           console.error('Finance recordSale failed (manual payment approval):', e?.message);

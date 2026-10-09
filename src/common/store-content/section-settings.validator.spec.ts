@@ -16,6 +16,37 @@ describe('section-settings.validator', () => {
   it.each([-1, 161, Number.NaN, '24'])('rejects invalid section spacing: %s', spacing => {
     expect(() => validateSectionSettings('rich_text', { spacingTop: spacing })).toThrow();
   });
+  describe('Shopify-parity library sections', () => {
+    it('multicolumn / logo_list / marquee / image_banner accept valid settings and reject bad ones', () => {
+      expect(() => validateSectionSettings('multicolumn', { columns: 3, textAlign: 'center', imageRatio: 'square' })).not.toThrow();
+      expect(() => validateSectionSettings('multicolumn', { columns: 5 })).toThrow(BadRequestException);
+      expect(() => validateSectionSettings('logo_list', { logoHeight: 48, grayscale: true })).not.toThrow();
+      expect(() => validateSectionSettings('logo_list', { logoHeight: 10 })).toThrow(BadRequestException);
+      expect(() => validateSectionSettings('marquee', { speed: 'fast', direction: 'right' })).not.toThrow();
+      expect(() => validateSectionSettings('marquee', { speed: 'warp' })).toThrow(BadRequestException);
+      expect(() => validateSectionSettings('image_banner', { imageUrl: 'https://x.test/a.jpg', overlayOpacity: 30, textColor: '#fff' })).not.toThrow();
+      expect(() => validateSectionSettings('image_banner', { imageUrl: 'javascript:alert(1)' })).toThrow(BadRequestException);
+      expect(() => validateSectionSettings('image_banner', { overlayOpacity: 90 })).toThrow(BadRequestException);
+    });
+
+    it('custom_html rejects scripts, iframes, forms, event handlers and javascript: links', () => {
+      expect(() => validateSectionSettings('custom_html', { html: '<h2 style="color:red">Hi</h2><p>ok</p>' })).not.toThrow();
+      for (const html of ['<script>alert(1)</script>', '<iframe src="https://x"></iframe>', '<form></form>', '<img src=x onerror=alert(1)>', '<a href="javascript:alert(1)">x</a>']) {
+        expect(() => validateSectionSettings('custom_html', { html })).toThrow(BadRequestException);
+      }
+      expect(() => validateSectionSettings('custom_html', { html: 'x'.repeat(20001) })).toThrow(BadRequestException);
+    });
+
+    it('validates the new block types', () => {
+      expect(() => validateBlockSettings('multicolumn_column', { heading: 'Fast', body: 'text', ctaText: 'Go', ctaLink: { linkType: 'home' } })).not.toThrow();
+      expect(() => validateBlockSettings('multicolumn_column', { imageUrl: 'http://insecure' })).toThrow(BadRequestException);
+      expect(() => validateBlockSettings('logo_item', { imageUrl: 'https://x.test/l.png' })).not.toThrow();
+      expect(() => validateBlockSettings('logo_item', {})).toThrow(BadRequestException);
+      expect(() => validateBlockSettings('marquee_item', { text: 'Free shipping' })).not.toThrow();
+      expect(() => validateBlockSettings('marquee_item', { text: '' })).toThrow(BadRequestException);
+    });
+  });
+
   it('validates configurable grid columns and filter visibility', () => {
     expect(() => validateSectionSettings('featured_products', { source: 'bestsellers', columns: 4 })).not.toThrow();
     expect(() => validateSectionSettings('featured_category_grid', { categoryIds: ['c1'], columns: 2 })).not.toThrow();
@@ -154,6 +185,28 @@ describe('section-settings.validator', () => {
         children: [{ label: 'Clothing', linkType: 'home', children: [{
           label: 'Shirts', linkType: 'home', children: [{ label: 'T-shirts', linkType: 'home' }],
         }] }],
+      })).toThrow(BadRequestException);
+    });
+
+    it('nav_link: accepts menuStyle dropdown|mega and rejects anything else', () => {
+      const base = { label: 'Shop', linkType: 'home' };
+      expect(() => validateBlockSettings('nav_link', { ...base, menuStyle: 'mega' })).not.toThrow();
+      expect(() => validateBlockSettings('nav_link', { ...base, menuStyle: 'dropdown' })).not.toThrow();
+      expect(() => validateBlockSettings('nav_link', { ...base, menuStyle: 'fullscreen' })).toThrow(BadRequestException);
+    });
+
+    it('nav_link: mega tile imageUrl must be https (or empty) on every level', () => {
+      const withImage = (imageUrl: unknown) => ({
+        label: 'Shop', linkType: 'home', menuStyle: 'mega', imageUrl,
+        children: [{ label: 'Room', linkType: 'home', imageUrl, children: [{ label: 'Sofas', linkType: 'home', imageUrl }] }],
+      });
+      expect(() => validateBlockSettings('nav_link', withImage('https://cdn.example.com/a.jpg'))).not.toThrow();
+      expect(() => validateBlockSettings('nav_link', withImage(''))).not.toThrow();
+      expect(() => validateBlockSettings('nav_link', withImage(null))).not.toThrow();
+      expect(() => validateBlockSettings('nav_link', withImage('javascript:alert(1)'))).toThrow(BadRequestException);
+      expect(() => validateBlockSettings('nav_link', {
+        label: 'Shop', linkType: 'home',
+        children: [{ label: 'Room', linkType: 'home', children: [{ label: 'Sofas', linkType: 'home', imageUrl: 'http://insecure.example.com/a.jpg' }] }],
       })).toThrow(BadRequestException);
     });
 

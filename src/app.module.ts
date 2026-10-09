@@ -93,6 +93,7 @@ import { BookingsModule } from './bookings/bookings.module';
 import { StoreAppRequestsModule } from './store-app-requests/store-app-requests.module';
 import { PosPlansModule } from './pos-plans/pos-plans.module';
 import { ProductViewsModule } from './product-views/product-views.module';
+import { StorefrontAnalyticsModule } from './storefront-analytics/storefront-analytics.module';
 import { StaffModule } from './staff/staff.module';
 import { StockCountsModule } from './stock-counts/stock-counts.module';
 
@@ -192,6 +193,7 @@ import { StockCountsModule } from './stock-counts/stock-counts.module';
     StoreAppRequestsModule,
     PosPlansModule,
     ProductViewsModule,
+    StorefrontAnalyticsModule,
     StaffModule,
     StockCountsModule,
   ],

@@ -9,13 +9,7 @@ import { RedisService } from '../redis/redis.service';
 // (the EXISTING, already-correct MRR/ARR/churn computation) rather than
 // re-deriving it from SellerPlatformSubscription documents itself.
 import { PlatformPlansService } from '../platform-plans/platform-plans.service';
-import {
-  absoluteChange,
-  enumerateBuckets,
-  nextBucket,
-  percentChange,
-  resolveDateRange,
-} from '../analytics/utils/analytics-date.util';
+import { absoluteChange, enumerateBuckets, nextBucket, percentChange, resolveDateRange, bucketExpr, rangeCacheKey } from '../analytics/utils/analytics-date.util';
 import { round } from '../analytics/utils/analytics-number.util';
 import { buildAnalyticsCacheKey, withAnalyticsCache } from '../analytics/utils/analytics-cache.util';
 import {
@@ -202,7 +196,7 @@ export class AdminAnalyticsService {
     const compare = query.compareToPreviousPeriod === true || query.compareToPreviousPeriod === 'true';
     const scope = this.buildScope(query);
 
-    return this.cached(this.key('overview', this.scopeLabel(scope), { from, to, compare }), async () => {
+    return this.cached(this.key('overview', this.scopeLabel(scope), { r: rangeCacheKey(query), compare }), async () => {
       const [current, previous, sellersActiveThisMonth, prevSellersActiveThisMonth, platformEarnings, totalSellers, totalStores, activeStores, totalCustomers, newUsers] = await Promise.all([
         periodTotals(this.r.orderModel, from, to, scope),
         periodTotals(this.r.orderModel, previousFrom, previousTo, scope),
@@ -241,6 +235,7 @@ export class AdminAnalyticsService {
         ...(earningsUSD.unconvertedCurrencies.length > 0
           ? { unconvertedCommissionCurrencies: earningsUSD.unconvertedCurrencies }
           : {}),
+        totalGMVChangePercent: percentChange(current.grossRevenue, previous.grossRevenue),
         totalOrders: current.orderCount,
         totalOrdersChange: absoluteChange(current.orderCount, previous.orderCount),
         totalSellers,
@@ -261,7 +256,7 @@ export class AdminAnalyticsService {
               sellerChurnRatePercent: platformPlanMetrics.data.churnRatePercent,
             }
           : {}),
-        note: '"totalRevenue" is net order revenue platform-wide (GMV minus refunds) — it is the money that flowed through the marketplace. "platformEarnings" is Solvexo\'s own cut of that (commission + subscription revenue, i.e. BUYER-VIP-plan revenue) and is a separate figure, not a component already subtracted from totalRevenue. "platformCommission" is USD-only (Solvexo\'s reporting currency) — commission from sellers settled in other currencies is converted to USD at the latest FX rate; a currency with no rate is excluded and listed in "unconvertedCommissionCurrencies" (present only when non-empty). "sellerPlatformMRR"/"sellerPlatformARR" are a THIRD, distinct revenue stream — Solvexo\'s recurring revenue from SELLERS paying for their own store plan (PlatformPlan) — not the same as "subscriptionRevenue" above. "sellerPlatformMRR"/ARR/activePlatformSubscribers/sellerChurnRatePercent are platform-wide only and omitted when a storeId/sellerId drill-down is active.',
+        note: '"totalRevenue" is net order revenue platform-wide (GMV minus refunds) — it is the money that flowed through the marketplace. "platformEarnings" is Solvexo\'s sale-time commission (custom negotiated per-seller rates; buyer VIP plans were removed) and is a separate figure, not a component already subtracted from totalRevenue. "platformCommission" is USD-only (Solvexo\'s reporting currency) — commission from sellers settled in other currencies is converted to USD at the latest FX rate; a currency with no rate is excluded and listed in "unconvertedCommissionCurrencies" (present only when non-empty). "sellerPlatformMRR"/"sellerPlatformARR" are a THIRD, distinct revenue stream — Solvexo\'s recurring revenue from SELLERS paying for their own store plan (PlatformPlan). "sellerPlatformMRR"/ARR/activePlatformSubscribers/sellerChurnRatePercent are platform-wide only and omitted when a storeId/sellerId drill-down is active.',
       };
 
       if (compare) {
@@ -289,13 +284,13 @@ export class AdminAnalyticsService {
     const granularity = this.resolveGranularity(query, autoGranularity);
     const scope = this.buildScope(query);
 
-    return this.cached(this.key('revenue-over-time', this.scopeLabel(scope), { from, to, granularity }), async () => {
+    return this.cached(this.key('revenue-over-time', this.scopeLabel(scope), { r: rangeCacheKey(query), granularity }), async () => {
       const rows = await this.r.orderModel.aggregate([
         ...sellerOrderMatchStage(from, to, scope),
         {
           $addFields: {
             itemRefund: itemRefundSumField(),
-            bucket: { $dateTrunc: { date: '$createdAt', unit: granularity, timezone: 'UTC' } },
+            bucket: bucketExpr('$createdAt', granularity),
           },
         },
         {
@@ -393,7 +388,7 @@ export class AdminAnalyticsService {
     const compare = query.compareToPreviousPeriod === true || query.compareToPreviousPeriod === 'true';
     const scope = this.buildScope(query);
 
-    return this.cached(this.key('revenue-breakdown', this.scopeLabel(scope), { from, to, compare }), async () => {
+    return this.cached(this.key('revenue-breakdown', this.scopeLabel(scope), { r: rangeCacheKey(query), compare }), async () => {
       const [orderTotals, platformEarnings, previousOrderTotals, previousPlatformEarnings] = await Promise.all([
         periodTotals(this.r.orderModel, from, to, scope),
         this.getPlatformEarnings(from, to, scope),
@@ -448,7 +443,7 @@ export class AdminAnalyticsService {
     const sort = query.sort === 'orders' ? 'orders' : 'revenue';
     const order = query.order === 'asc' ? 'asc' : 'desc';
 
-    return this.cached(this.key('top-sellers', 'platform', { from, to, limit, sort, order }), async () => {
+    return this.cached(this.key('top-sellers', 'platform', { r: rangeCacheKey(query), limit, sort, order }), async () => {
       const rows = await this.aggregateSellerSales(from, to);
       rows.sort((a, b) => {
         const diff = sort === 'orders' ? b.orderCount - a.orderCount : b.netRevenue - a.netRevenue;
@@ -481,7 +476,7 @@ export class AdminAnalyticsService {
     const sort = query.sort === 'orders' ? 'orders' : 'revenue';
     const order = query.order === 'asc' ? 'asc' : 'desc';
 
-    return this.cached(this.key('seller-performance', 'platform', { from, to, page, limit, sort, order }), async () => {
+    return this.cached(this.key('seller-performance', 'platform', { r: rangeCacheKey(query), page, limit, sort, order }), async () => {
       const [sales, sellers, storeCounts, allTimeActivity] = await Promise.all([
         this.aggregateSellerSales(from, to),
         this.r.sellerModel.find({ isDelete: false }).select('name email createdAt').lean(),
@@ -548,11 +543,11 @@ export class AdminAnalyticsService {
     const { from, to, granularity: autoGranularity } = resolveDateRange(query);
     const granularity = this.resolveGranularity(query, autoGranularity);
 
-    return this.cached(this.key('seller-registration-trends', 'platform', { from, to, granularity }), async () => {
+    return this.cached(this.key('seller-registration-trends', 'platform', { r: rangeCacheKey(query), granularity }), async () => {
       const [rows, totalBefore] = await Promise.all([
         this.r.sellerModel.aggregate([
           { $match: { isDelete: false, createdAt: { $gte: from, $lte: to } } },
-          { $addFields: { bucket: { $dateTrunc: { date: '$createdAt', unit: granularity, timezone: 'UTC' } } } },
+          { $addFields: { bucket: bucketExpr('$createdAt', granularity) } },
           { $group: { _id: '$bucket', count: { $sum: 1 } } },
         ]),
         this.r.sellerModel.countDocuments({ isDelete: false, createdAt: { $lt: from } }),
@@ -578,7 +573,7 @@ export class AdminAnalyticsService {
     const { from, to, granularity } = resolveDateRange(query);
     const scope = this.buildScope(query);
 
-    return this.cached(this.key('customers', this.scopeLabel(scope), { from, to }), async () => {
+    return this.cached(this.key('customers', this.scopeLabel(scope), { r: rangeCacheKey(query) }), async () => {
       const [allTime, repeatCustomerPercent] = await Promise.all([
         allTimeCustomerAggregate(this.r.orderModel, scope),
         repeatBuyerPercent(this.r.orderModel, from, to, scope),
@@ -588,7 +583,7 @@ export class AdminAnalyticsService {
       const periodRows = await this.r.orderModel.aggregate([
         ...sellerOrderMatchStage(from, to, scope),
         { $match: { 'sellerOrders.status': { $ne: 'cancelled' } } },
-        { $addFields: { bucket: { $dateTrunc: { date: '$createdAt', unit: granularity, timezone: 'UTC' } } } },
+        { $addFields: { bucket: bucketExpr('$createdAt', granularity) } },
         { $group: { _id: { bucket: '$bucket', userId: { $ifNull: ['$customerId', '$userId'] } } } },
       ]);
 
@@ -678,7 +673,7 @@ export class AdminAnalyticsService {
     const sort = query.sort === 'units_sold' ? 'units_sold' : 'revenue';
     const scope = this.buildScope(query);
 
-    return this.cached(this.key('top-products', this.scopeLabel(scope), { from, to, limit, sort, categoryId: query.categoryId }), async () => {
+    return this.cached(this.key('top-products', this.scopeLabel(scope), { r: rangeCacheKey(query), limit, sort, categoryId: query.categoryId }), async () => {
       let rows = await aggregateProductSales(this.r.orderModel, from, to, scope);
 
       if (query.categoryId) {
@@ -722,7 +717,7 @@ export class AdminAnalyticsService {
     const sort = query.sort === 'units_sold' ? 'units_sold' : 'revenue';
     const scope = this.buildScope(query);
 
-    return this.cached(this.key('top-categories', this.scopeLabel(scope), { from, to, limit, sort }), async () => {
+    return this.cached(this.key('top-categories', this.scopeLabel(scope), { r: rangeCacheKey(query), limit, sort }), async () => {
       const productSales = await aggregateProductSales(this.r.orderModel, from, to, scope);
       if (productSales.length === 0) return { success: true, data: [] };
 
@@ -777,7 +772,7 @@ export class AdminAnalyticsService {
     const limit = Number(query.limit) || 20;
     const scope = this.buildScope(query);
 
-    return this.cached(this.key('product-performance', this.scopeLabel(scope), { from, to, page, limit, categoryId: query.categoryId }), async () => {
+    return this.cached(this.key('product-performance', this.scopeLabel(scope), { r: rangeCacheKey(query), page, limit, categoryId: query.categoryId }), async () => {
       const productFilter: Record<string, any> = { isDelete: false };
       if (query.storeId) productFilter.storeId = query.storeId;
       if (query.sellerId) productFilter.sellerId = query.sellerId;
@@ -917,10 +912,10 @@ export class AdminAnalyticsService {
     const granularity = this.resolveGranularity(query, autoGranularity);
     const scope = this.buildScope(query);
 
-    return this.cached(this.key('orders-over-time', this.scopeLabel(scope), { from, to, granularity }), async () => {
+    return this.cached(this.key('orders-over-time', this.scopeLabel(scope), { r: rangeCacheKey(query), granularity }), async () => {
       const rows = await this.r.orderModel.aggregate([
         ...sellerOrderMatchStage(from, to, scope),
-        { $addFields: { bucket: { $dateTrunc: { date: '$createdAt', unit: granularity, timezone: 'UTC' } } } },
+        { $addFields: { bucket: bucketExpr('$createdAt', granularity) } },
         {
           $group: {
             _id: '$bucket',
@@ -950,7 +945,7 @@ export class AdminAnalyticsService {
     const { from, to } = resolveDateRange(query);
     const scope = this.buildScope(query);
 
-    return this.cached(this.key('orders-status-breakdown', this.scopeLabel(scope), { from, to }), async () => {
+    return this.cached(this.key('orders-status-breakdown', this.scopeLabel(scope), { r: rangeCacheKey(query) }), async () => {
       const [totals, statusRows] = await Promise.all([
         periodTotals(this.r.orderModel, from, to, scope),
         this.r.orderModel.aggregate([
@@ -1002,7 +997,7 @@ export class AdminAnalyticsService {
     const skip = (page - 1) * limit;
     const status = typeof query.status === 'string' && query.status ? query.status : undefined;
 
-    return this.cached(this.key('orders-list', this.scopeLabel(scope), { from, to, page, limit, status }), async () => {
+    return this.cached(this.key('orders-list', this.scopeLabel(scope), { r: rangeCacheKey(query), page, limit, status }), async () => {
       const pipeline: any[] = [
         ...sellerOrderMatchStage(from, to, scope),
         ...(status ? [{ $match: { 'sellerOrders.status': status } }] : []),
@@ -1087,7 +1082,7 @@ export class AdminAnalyticsService {
     const { from, to } = resolveDateRange(query);
     const scope = this.buildScope(query);
 
-    return this.cached(this.key('payments-breakdown', this.scopeLabel(scope), { from, to }), async () => {
+    return this.cached(this.key('payments-breakdown', this.scopeLabel(scope), { r: rangeCacheKey(query) }), async () => {
       const methodRows = await this.r.orderModel.aggregate([
         ...sellerOrderMatchStage(from, to, scope),
         { $match: { 'sellerOrders.status': { $ne: 'cancelled' } } },
@@ -1157,21 +1152,21 @@ export class AdminAnalyticsService {
   async getPlatformMetrics(query: any) {
     const { from, to, granularity } = resolveDateRange(query);
 
-    return this.cached(this.key('platform-metrics', 'platform', { from, to, granularity }), async () => {
+    return this.cached(this.key('platform-metrics', 'platform', { r: rangeCacheKey(query), granularity }), async () => {
       const [newSellerRows, newStoreRows, newProductRows, newUsers] = await Promise.all([
         this.r.sellerModel.aggregate([
           { $match: { isDelete: false, createdAt: { $gte: from, $lte: to } } },
-          { $addFields: { bucket: { $dateTrunc: { date: '$createdAt', unit: granularity, timezone: 'UTC' } } } },
+          { $addFields: { bucket: bucketExpr('$createdAt', granularity) } },
           { $group: { _id: '$bucket', count: { $sum: 1 } } },
         ]),
         this.r.storeModel.aggregate([
           { $match: { isDelete: false, createdAt: { $gte: from, $lte: to } } },
-          { $addFields: { bucket: { $dateTrunc: { date: '$createdAt', unit: granularity, timezone: 'UTC' } } } },
+          { $addFields: { bucket: bucketExpr('$createdAt', granularity) } },
           { $group: { _id: '$bucket', count: { $sum: 1 } } },
         ]),
         this.r.productModel.aggregate([
           { $match: { isDelete: false, createdAt: { $gte: from, $lte: to } } },
-          { $addFields: { bucket: { $dateTrunc: { date: '$createdAt', unit: granularity, timezone: 'UTC' } } } },
+          { $addFields: { bucket: bucketExpr('$createdAt', granularity) } },
           { $group: { _id: '$bucket', count: { $sum: 1 } } },
         ]),
         this.r.userModel.find({ isDelete: false, createdAt: { $gte: from, $lte: to } }).select('_id').lean(),
@@ -1230,7 +1225,7 @@ export class AdminAnalyticsService {
   async getSellerAcquisitionBreakdown(query: any) {
     const { from, to } = resolveDateRange(query);
 
-    return this.cached(this.key('seller-acquisition', 'platform', { from, to }), async () => {
+    return this.cached(this.key('seller-acquisition', 'platform', { r: rangeCacheKey(query) }), async () => {
       const sellers = (await this.r.sellerModel
         .find({ isDelete: false, createdAt: { $gte: from, $lte: to } })
         .select('acquisitionSource acquisitionMedium acquisitionCampaign acquisitionCapturedAt')
@@ -1287,8 +1282,9 @@ export class AdminAnalyticsService {
           { $limit: CSV_ROW_LIMIT },
         ]);
         return toCsv(
-          ['Order Number', 'Date', 'Status', 'Store ID', 'Currency', 'Subtotal', 'Subtotal (USD)', 'Payment Type'],
-          (rows).map((r) => [r.orderNumber, new Date(r.createdAt).toISOString().split('T')[0], r.status, r.storeId, r.currency, r.subtotal.toFixed(2), r.subtotalUSD == null ? 'N/A' : r.subtotalUSD.toFixed(2), getPaymentMethodLabel(r.paymentType)]),
+          // Admin exports are USD-only (no native-currency columns); an order with no recorded rate shows N/A, never a guess.
+          ['Order Number', 'Date', 'Status', 'Store ID', 'Subtotal (USD)', 'Payment Type'],
+          (rows).map((r) => [r.orderNumber, new Date(r.createdAt).toISOString().split('T')[0], r.status, r.storeId, r.subtotalUSD == null ? 'N/A' : r.subtotalUSD.toFixed(2), getPaymentMethodLabel(r.paymentType)]),
         );
       }
       case 'sellers': {

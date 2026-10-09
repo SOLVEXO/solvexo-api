@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import { FinanceService } from './finance.service';
 import { DatabaseService } from '../database/databaseservice';
 import { ActivityLogService } from '../activity-log/activity-log.service';
@@ -80,13 +80,21 @@ describe('FinanceService', () => {
     txModel = makeConstructableModelMock();
     payoutModel = makeConstructableModelMock();
     payoutModel.exists = jest.fn().mockResolvedValue(false);
+    // Conditional status claim (claimPayoutStatus) — resolves "won the race" unless a test overrides it.
+    payoutModel.updateOne = jest.fn().mockResolvedValue({ modifiedCount: 1 });
     methodModel = {
       findById: jest.fn(), findOne: jest.fn(), find: jest.fn().mockReturnValue(makeChainableFind([])),
       exists: jest.fn().mockResolvedValue(true), updateMany: jest.fn(),
       create: jest.fn().mockImplementation(async (doc: any) => ({ _id: 'auto-method-1', save: jest.fn(), ...doc })),
     };
     scheduleModel = { findOne: jest.fn(), find: jest.fn().mockReturnValue(makeChainableFind([])), updateOne: jest.fn().mockResolvedValue({}) };
-    storeModel = { findById: jest.fn().mockResolvedValue({ _id: STORE_ID, sellerId: SELLER_ID, isDelete: false }) };
+    // `findById` is awaited directly (ownership checks) AND chained `.select().lean()` (scheduled-payout status checks).
+    const activeStore = { _id: STORE_ID, sellerId: SELLER_ID, isDelete: false, status: 'active' };
+    storeModel = {
+      findById: jest.fn().mockImplementation(() => Object.assign(Promise.resolve(activeStore), {
+        select: () => ({ lean: () => Promise.resolve(activeStore) }),
+      })),
+    };
     sellerModel = { findById: jest.fn().mockReturnValue({ select: jest.fn().mockReturnValue({ lean: jest.fn().mockResolvedValue({ name: 'Jane Seller' }) }) }) };
     orderModel = { find: jest.fn().mockReturnValue(makeChainableFind([])) };
 
@@ -96,6 +104,8 @@ describe('FinanceService', () => {
         payoutMethodModel: methodModel, payoutScheduleModel: scheduleModel,
         storeModel, sellerModel, taxReportModel: {}, campaignModel: { findByIdAndUpdate: jest.fn() },
         orderModel,
+        // latest FX rate lookup (fixed card-fee text) — "no rate" by default
+        exchangeRateModel: { findOne: jest.fn().mockReturnValue({ sort: () => ({ select: () => ({ lean: () => Promise.resolve(null) }) }) }) },
       },
     } as unknown as DatabaseService;
 
@@ -282,6 +292,46 @@ describe('FinanceService', () => {
       const saleTx = txModel.created.find((t: any) => t.type === 'sale');
       expect(saleTx.status).toBe('pending');
       expect(saleTx.metadata.netAmount).toBe(7);
+    });
+  });
+
+  describe('recordSale — Stripe Connect settled (money already in the seller\'s own Stripe account)', () => {
+    it('records the sale for revenue/reports but credits nothing, bills no fee and writes no fee row', async () => {
+      const balance = makeBalance();
+      balanceModel.findOne.mockResolvedValue(balance);
+      // even a custom per-seller rate must not be billed again: it was already taken as the charge's application_fee
+      commissionRulesService.resolveRate = jest.fn().mockResolvedValue({ rate: 0.05, source: 'seller_override' });
+
+      await service.recordSale(STORE_ID, SELLER_ID, 'order-connect', 5000, 'desc', 0, null, 'PKR', 'stripe', true);
+
+      expect(balance.pendingBalance).toBe(0);
+      expect(balance.availableBalance).toBe(0);
+      expect(balance.totalRevenue).toBe(5000);
+      expect(balance.totalFees).toBe(0);
+      const saleTx = txModel.created.find((t: any) => t.type === 'sale');
+      expect(saleTx).toMatchObject({ amount: 5000, currency: 'PKR', status: 'completed' });
+      expect(saleTx.metadata).toMatchObject({ settledDirectly: true, settledViaConnect: true, platformFee: 0, processingFee: 0 });
+      expect(txModel.created.find((t: any) => t.type === 'fee')).toBeUndefined();
+    });
+
+    it('a later refund of a Connect sale claws back nothing from the ledger (Stripe refunds the buyer from the seller\'s account)', async () => {
+      const balance = makeBalance({ availableBalance: 40 });
+      balanceModel.findOne.mockResolvedValue(balance);
+      txModel.findOne.mockReturnValue({ lean: jest.fn().mockResolvedValue({ amount: 100, metadata: { settledDirectly: true, settledViaConnect: true } }) });
+
+      const res: any = await service.recordRefund(STORE_ID, SELLER_ID, 'order-connect', 100);
+
+      expect(res.skipped).toBe('settled_directly');
+      expect(balance.availableBalance).toBe(40);
+    });
+
+    it('still credits a platform-sponsored discount the platform owes the seller', async () => {
+      const balance = makeBalance();
+      balanceModel.findOne.mockResolvedValue(balance);
+
+      await service.recordSale(STORE_ID, SELLER_ID, 'order-connect-sp', 100, 'desc', 7, 'camp-1', 'USD', 'stripe', true);
+
+      expect(balance.pendingBalance).toBe(7);
     });
   });
 
@@ -472,6 +522,75 @@ describe('FinanceService', () => {
       payoutModel.findById = jest.fn().mockResolvedValue(null);
       await expect(service.adminRejectPayout('missing', 'admin-1', 'reason')).rejects.toThrow(NotFoundException);
     });
+
+    it('a lost race (payout already moved by a concurrent request) gives 409 and credits nothing', async () => {
+      const payout = { _id: 'p1', storeId: STORE_ID, sellerId: SELLER_ID, amount: 40, currency: 'USD', status: 'processing', save: jest.fn() };
+      payoutModel.findById = jest.fn().mockResolvedValue(payout);
+      payoutModel.updateOne.mockResolvedValue({ modifiedCount: 0 });
+      const balance = makeBalance({ availableBalance: 60, totalPayouts: 40 });
+      balanceModel.findOne.mockResolvedValue(balance);
+
+      await expect(service.adminRejectPayout('p1', 'admin-1', 'reason')).rejects.toThrow(ConflictException);
+
+      expect(balance.availableBalance).toBe(60);
+      expect(balance.save).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('adminApprovePayout — concurrency', () => {
+    it('claims pending/processing → completed with a conditional update', async () => {
+      const payout = { _id: 'p1', storeId: STORE_ID, sellerId: SELLER_ID, amount: 40, currency: 'USD', railType: 'manual', status: 'processing' };
+      payoutModel.findById = jest.fn().mockResolvedValue(payout);
+
+      await service.adminApprovePayout('p1', 'admin-1');
+
+      expect(payoutModel.updateOne).toHaveBeenCalledWith(
+        { _id: 'p1', status: { $in: ['pending', 'processing'] } },
+        { $set: expect.objectContaining({ status: 'completed' }) },
+        expect.anything(),
+      );
+      expect(payout.status).toBe('completed');
+    });
+
+    it('a concurrent reject that already won gives 409 instead of overwriting it with completed', async () => {
+      payoutModel.findById = jest.fn().mockResolvedValue({ _id: 'p1', railType: 'manual', status: 'processing', amount: 40 });
+      payoutModel.updateOne.mockResolvedValue({ modifiedCount: 0 });
+      await expect(service.adminApprovePayout('p1', 'admin-1')).rejects.toThrow(ConflictException);
+    });
+  });
+
+  describe('adminRetryFailedPayout — concurrency', () => {
+    const failedPayout = () => ({
+      _id: 'p1', storeId: STORE_ID, sellerId: SELLER_ID, amount: 40, currency: 'USD',
+      railType: 'manual', status: 'failed', payoutMethodSnapshot: { type: 'bank' },
+    });
+
+    it('debits the balance only after winning the failed → processing claim', async () => {
+      payoutModel.findById = jest.fn().mockResolvedValue(failedPayout());
+      const balance = makeBalance({ availableBalance: 100 });
+      balanceModel.findOne.mockResolvedValue(balance);
+
+      await service.adminRetryFailedPayout('p1', 'admin-1');
+
+      expect(payoutModel.updateOne).toHaveBeenCalledWith(
+        { _id: 'p1', status: { $in: ['failed'] } },
+        { $set: expect.objectContaining({ status: 'processing' }) },
+        expect.anything(),
+      );
+      expect(balance.availableBalance).toBe(60);
+    });
+
+    it('a second simultaneous retry loses the claim: 409 and no second debit', async () => {
+      payoutModel.findById = jest.fn().mockResolvedValue(failedPayout());
+      payoutModel.updateOne.mockResolvedValue({ modifiedCount: 0 });
+      const balance = makeBalance({ availableBalance: 100 });
+      balanceModel.findOne.mockResolvedValue(balance);
+
+      await expect(service.adminRetryFailedPayout('p1', 'admin-1')).rejects.toThrow(ConflictException);
+
+      expect(balance.availableBalance).toBe(100);
+      expect(balance.save).not.toHaveBeenCalled();
+    });
   });
 
   describe('processScheduledPayouts', () => {
@@ -569,6 +688,35 @@ describe('FinanceService', () => {
       }));
     });
 
+    it('two concurrent loads create ONE method: the loser of the unique-index race is ignored, not an error', async () => {
+      stripeConnectService.getPayoutEligibility.mockResolvedValue({ accountId: 'acct_123', eligible: true, status: 'active' });
+      methodModel.findOne.mockResolvedValue(null);
+      methodModel.exists.mockResolvedValue(false);
+      methodModel.create.mockRejectedValue(Object.assign(new Error('E11000 duplicate key'), { code: 11000 }));
+
+      await expect(service.getPayoutMethods(SELLER_ID, STORE_ID)).resolves.toBeDefined();
+    });
+
+    it('onModuleInit removes duplicate stripe_connect rows, keeps the oldest and repoints schedules to it', async () => {
+      methodModel.aggregate = jest.fn().mockResolvedValue([{ _id: STORE_ID, ids: ['m1', 'm2'], anyDefault: true, n: 2 }]);
+      methodModel.deleteMany = jest.fn().mockResolvedValue({});
+      methodModel.updateOne = jest.fn().mockResolvedValue({});
+      methodModel.createIndexes = jest.fn().mockResolvedValue(undefined);
+      scheduleModel.updateMany = jest.fn().mockResolvedValue({});
+
+      await service.onModuleInit();
+
+      expect(scheduleModel.updateMany).toHaveBeenCalledWith({ defaultPayoutMethodId: { $in: ['m2'] } }, { $set: { defaultPayoutMethodId: 'm1' } });
+      expect(methodModel.deleteMany).toHaveBeenCalledWith({ _id: { $in: ['m2'] } });
+      expect(methodModel.updateOne).toHaveBeenCalledWith({ _id: 'm1' }, { $set: { isDefault: true } });
+      expect(methodModel.createIndexes).toHaveBeenCalled();
+    });
+
+    it('onModuleInit never throws (boot must not depend on the cleanup)', async () => {
+      methodModel.aggregate = jest.fn().mockRejectedValue(new Error('db down'));
+      await expect(service.onModuleInit()).resolves.toBeUndefined();
+    });
+
     it('deactivates a stale auto-managed method once the seller disconnects Stripe entirely', async () => {
       stripeConnectService.getPayoutEligibility.mockResolvedValue(null);
       const existing = { status: 'active', save: jest.fn() };
@@ -645,6 +793,20 @@ describe('FinanceService', () => {
       );
     });
 
+    it('handleConnectTransferReversed swallows a lost race (concurrent delivery already reversed it) without crediting twice', async () => {
+      const payout = {
+        _id: 'p1', storeId: STORE_ID, sellerId: SELLER_ID, amount: 40, currency: 'USD',
+        railType: 'stripe_connect', status: 'completed', stripeTransferId: 'tr_abc123', save: jest.fn(),
+      };
+      payoutModel.findOne = jest.fn().mockResolvedValue(payout);
+      payoutModel.updateOne.mockResolvedValue({ modifiedCount: 0 });
+      const balance = makeBalance({ availableBalance: 60, totalPayouts: 40 });
+      balanceModel.findOne.mockResolvedValue(balance);
+
+      await expect(service.handleConnectTransferReversed('tr_abc123')).resolves.toBeUndefined();
+      expect(balance.availableBalance).toBe(60);
+    });
+
     it('handleConnectTransferReversed is a no-op for an unknown transfer id (ignores an unrelated webhook safely)', async () => {
       payoutModel.findOne = jest.fn().mockResolvedValue(null);
       await expect(service.handleConnectTransferReversed('tr_not_ours')).resolves.toBeUndefined();
@@ -707,6 +869,39 @@ describe('FinanceService', () => {
 
       expect(result.wallets).toHaveLength(1);
       expect(result.wallets[0]).toEqual(expect.objectContaining({ currency: 'USD', availableBalance: 0, pendingBalance: 0 }));
+    });
+
+    it('a brand-new PKR store shows a PKR wallet (its own currency), never a phantom USD one', async () => {
+      storeModel.findById.mockResolvedValue({ _id: STORE_ID, sellerId: SELLER_ID, isDelete: false, baseCurrency: 'PKR' });
+
+      const result = await service.getDashboard(SELLER_ID, STORE_ID);
+
+      expect(result.wallets.map((w: any) => w.currency)).toEqual(['PKR']);
+    });
+
+    it('"tax collected" is the real tax stamped on this month\'s sales, not a flat percentage of revenue', async () => {
+      txModel.aggregate.mockImplementation(async (pipeline: any[]) => {
+        const group = pipeline.find((s) => s.$group)?.$group;
+        if (group?.tax) return [{ _id: null, tax: 37.5 }];
+        return [{ _id: 'sale', total: 1000, count: 4 }];
+      });
+
+      const result: any = await service.getDashboard(SELLER_ID, STORE_ID);
+
+      expect(result.wallets[0].summary.thisMonthRevenue).toBe(1000);
+      expect(result.wallets[0].summary.pendingTax).toBe(37.5); // would be 150 under the old 15% guess
+    });
+
+    it('the processing-fee text is clean and follows the store currency', async () => {
+      const usd: any = await service.getDashboard(SELLER_ID, STORE_ID);
+      expect(usd.feeBreakdown.paymentProcessing).toMatch(/^2\.9% \+ \$0\.30 /);
+
+      storeModel.findById.mockResolvedValue({ _id: STORE_ID, sellerId: SELLER_ID, isDelete: false, baseCurrency: 'PKR' });
+      (service as any).db.repositories.exchangeRateModel = {
+        findOne: jest.fn().mockReturnValue({ sort: () => ({ select: () => ({ lean: () => Promise.resolve({ ratePerUSD: 280 }) }) }) }),
+      };
+      const pkr: any = await service.getDashboard(SELLER_ID, STORE_ID);
+      expect(pkr.feeBreakdown.paymentProcessing).toMatch(/^2\.9% \+ PKR 84\.00 /);
     });
 
     it('returns one wallet per currency the store holds, each with its own balance, schedule, and default payout method', async () => {
