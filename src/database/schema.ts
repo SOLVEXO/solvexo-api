@@ -104,6 +104,8 @@ export { GiftCardTransaction, GiftCardTransactionDocument, GiftCardTransactionSc
 export { StoreCreditTransaction, StoreCreditTransactionDocument, StoreCreditTransactionSchema } from '../store-credit/schemas/store-credit-transaction.schema';
 export { GiftCardSettings, GiftCardSettingsDocument, GiftCardSettingsSchema } from '../gift-cards/schemas/gift-card-settings.schema';
 export { AbandonedCartSettings, AbandonedCartSettingsDocument, AbandonedCartSettingsSchema } from '../abandoned-cart/schemas/abandoned-cart-settings.schema';
+export { EmailDailyStat, EmailDailyStatDocument, EmailDailyStatSchema } from '../notifications/schemas/email-daily-stat.schema';
+export { StoreNotificationSettings, StoreNotificationSettingsDocument, StoreNotificationSettingsSchema } from '../notifications/schemas/store-notification-settings.schema';
 export { EmailCampaign, EmailCampaignDocument, EmailCampaignSchema } from '../email-campaigns/schemas/email-campaign.schema';
 export { EmailCampaignSend, EmailCampaignSendDocument, EmailCampaignSendSchema } from '../email-campaigns/schemas/email-campaign-send.schema';
 export { AffiliateProgram, AffiliateProgramDocument, AffiliateProgramSchema } from '../affiliate/schemas/affiliate-program.schema';

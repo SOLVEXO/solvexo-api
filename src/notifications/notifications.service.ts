@@ -9,19 +9,38 @@ import { WhatsAppSenderService } from '@/integrations/whatsapp-sender.service';
 import type { WhatsAppEvent, WhatsAppEventVars } from '@/integrations/whatsapp-events';
 import { NotificationsGateway } from './notifications.gateway';
 import { QUEUE_NAMES, NOTIFICATION_PUSH_JOB, NOTIFICATION_EMAIL_JOB, NOTIFICATION_WHATSAPP_JOB } from '@/queues/queue.constants';
-import { NOTIFICATION_CATEGORY } from './notification.types';
+import { NOTIFICATION_CATEGORY, NOTIFICATION_TYPES, SELLER_EMAIL_TYPES } from './notification.types';
+import { notificationEmailShell } from './templates/notification-email.template';
+import { escapeHtml } from '@/newsletter/marketing-email.util';
+import { CUSTOMER_EMAIL_CATALOG, type CustomerEmailEvent } from './customer-email-events';
+import { renderCustomerEmail, type TemplateVars } from './customer-email-template.util';
+import { buyerEmail } from '@/common/buyer-email.util';
+import { signOrderStatusToken } from '@/common/order-status-token.util';
+import { storePublicUrl } from '@/newsletter/marketing-email.util';
+
+export interface BuiltCustomerEmail {
+  /** false when the seller switched this email off for the store. */
+  send: boolean;
+  subject: string;
+  html: string;
+  fromName: string | null;
+  replyTo: string | null;
+}
 
 export interface NotifyParams {
   recipientId: string;
-  recipientRole: 'user' | 'seller';
+  recipientRole: 'user' | 'seller' | 'admin';
   /** The store this notification belongs to — omit for an account-wide event with no single store. */
   storeId?: string;
   type: string;
   title: string;
   body: string;
   data?: Record<string, any>;
-  /** Only set this when the event should also send an email — not every in-app notification warrants one. */
-  email?: { subject: string; html: string };
+  /** Only set this when the event should also send an email — not every in-app notification warrants one.
+   *  `event` (+ `vars`) marks a STORE's customer email: the store's own settings then decide whether it is sent,
+   *  its text, sender name and reply-to, and the order timeline records it. `subject`/`html` are the fallback
+   *  if the store's settings can't be loaded. */
+  email?: { subject: string; html: string; event?: CustomerEmailEvent; vars?: TemplateVars; trackingUrl?: string | null; cta?: { label: string; url: string } | null };
   /**
    * Only set this for order-lifecycle events a store might want on
    * WhatsApp too. `storeId` picks which store's connected WhatsApp
@@ -54,10 +73,15 @@ export class NotificationsService {
    */
   async notify(params: NotifyParams): Promise<void> {
     try {
-      const { recipientId, recipientRole, storeId, type, title, body, data, email, whatsapp } = params;
-      const prefs = await this.databaseService.repositories.notificationPreferenceModel
-        .findOne({ userId: recipientId })
-        .lean();
+      const { recipientId, recipientRole, storeId, type, title, body, data, whatsapp } = params;
+      // A seller/admin alert that has no email of its own but is email-worthy gets one built from its title/body.
+      const email: NotifyParams['email'] = params.email ?? this.autoAlertEmail(params) ?? undefined;
+      // Preferences are stored per store (+ one account-wide row, storeId null): use the store's own
+      // row when it exists, else the account-wide one.
+      const prefsModel = this.databaseService.repositories.notificationPreferenceModel;
+      const prefs =
+        (storeId ? await prefsModel.findOne({ userId: recipientId, storeId }).lean() : null) ??
+        (await prefsModel.findOne({ userId: recipientId, storeId: null }).lean());
 
       const category = NOTIFICATION_CATEGORY[type];
       const categoryAllowed = !category || !prefs || prefs.prefs?.[category] !== false;
@@ -91,7 +115,34 @@ export class NotificationsService {
       if (email && emailEnabled) {
         const user = await this.findRecipient(recipientId, recipientRole);
         if (user?.email) {
-          await this.enqueue(NOTIFICATION_EMAIL_JOB, { to: user.email, subject: email.subject, html: email.html });
+          let subject = email.subject;
+          let html = email.html;
+          // Customer-facing mails go out under the STORE's name with the store's contact email as
+          // reply-to (Shopify-style); seller/platform recipients keep the platform name.
+          let sender: { fromName: string | null; replyTo: string | null } | null = null;
+          let skip = false;
+          if (email.event && recipientRole === 'user' && storeId) {
+            try {
+              const built = await this.buildCustomerEmail({ storeId, event: email.event, vars: email.vars ?? {}, orderId: data?.orderId, trackingUrl: email.trackingUrl, cta: email.cta });
+              if (built) {
+                if (!built.send) skip = true;
+                else { subject = built.subject; html = built.html; sender = { fromName: built.fromName, replyTo: built.replyTo }; }
+              }
+            } catch (err: any) {
+              this.logger.warn(`Customer email template failed (${email.event}): ${err?.message} — sending the built-in email`);
+            }
+          }
+          if (!skip) {
+            if (!sender && recipientRole === 'user' && storeId) sender = await this.findStoreSender(storeId);
+            await this.enqueue(NOTIFICATION_EMAIL_JOB, {
+              to: user.email,
+              subject,
+              html,
+              ...(sender?.fromName ? { fromName: sender.fromName } : {}),
+              ...(sender?.replyTo ? { replyTo: sender.replyTo } : {}),
+              ...(email.event && storeId ? { timeline: { orderId: data?.orderId ? String(data.orderId) : null, event: email.event, storeId } } : {}),
+            });
+          }
         }
       }
 
@@ -171,11 +222,164 @@ export class NotificationsService {
     }
   }
 
-  private async findRecipient(recipientId: string, recipientRole: 'user' | 'seller') {
-    if (recipientRole === 'seller') {
-      return this.databaseService.repositories.sellerModel.findById(recipientId).select('email').lean();
+  private async findStoreSender(storeId: string): Promise<{ fromName: string | null; replyTo: string | null } | null> {
+    try {
+      const store: any = await this.databaseService.repositories.storeModel.findById(storeId).select('name contactEmail').lean();
+      if (!store) return null;
+      return { fromName: store.name ?? null, replyTo: store.contactEmail ?? null };
+    } catch {
+      return null;
     }
-    return this.databaseService.repositories.userModel.findById(recipientId).select('email').lean();
+  }
+
+  private async findRecipient(recipientId: string, recipientRole: 'user' | 'seller' | 'admin'): Promise<{ email: string | null } | null> {
+    if (recipientRole === 'admin') {
+      const admin: any = await this.databaseService.repositories.adminModel.findById(recipientId).select('email').lean();
+      return admin ? { email: admin.email ?? null } : null;
+    }
+    if (recipientRole === 'seller') {
+      const seller: any = await this.databaseService.repositories.sellerModel.findById(recipientId).select('email').lean();
+      return seller ? { email: seller.email ?? null } : null;
+    }
+    const buyer: any = await this.databaseService.repositories.userModel.findById(recipientId).select('email contactEmail isGuest').lean();
+    // A guest's login email is synthetic/undeliverable — their real address is `contactEmail`.
+    return buyer ? { email: buyerEmail(buyer) } : null;
+  }
+
+  /** Email for a seller/admin alert: title + message + a button into the dashboard. Null when the type isn't email-worthy. */
+  private autoAlertEmail(params: NotifyParams): { subject: string; html: string } | null {
+    const { recipientRole, type, title, body, storeId, data } = params;
+    const isAdminAlert = recipientRole === 'admin';
+    if (type === NOTIFICATION_TYPES.ADMIN_EMAIL_FAILURE) return null; // an email about broken email would just fail too
+    if (!isAdminAlert && !(recipientRole === 'seller' && SELLER_EMAIL_TYPES.has(type))) return null;
+    const base = (process.env.FRONTEND_URL || 'https://solvexo.store').replace(/\/+$/, '');
+    const link = typeof data?.link === 'string' && data.link.startsWith('/') ? data.link : isAdminAlert ? '/admin' : storeId ? `/store/${storeId}` : '/seller';
+    return {
+      subject: title,
+      html: notificationEmailShell(escapeHtml(title), `<p>${escapeHtml(body)}</p>`, { label: isAdminAlert ? 'Open admin panel' : 'Open dashboard', url: `${base}${link}` }),
+    };
+  }
+
+  /**
+   * Tells every platform admin (Solvexo operator): one in-app notification each (their bell) plus email/push
+   * according to each admin's own preferences. Never throws.
+   */
+  async notifyAdmins(params: { type: string; title: string; body: string; data?: Record<string, any> & { link?: string } }): Promise<number> {
+    try {
+      const admins: any[] = await this.databaseService.repositories.adminModel.find({}).select('_id').lean();
+      await Promise.all(admins.map((a) => this.notify({ recipientId: String(a._id), recipientRole: 'admin', ...params })));
+      return admins.length;
+    } catch (err: any) {
+      this.logger.error(`notifyAdmins() failed: ${err?.message}`);
+      return 0;
+    }
+  }
+
+  // ── Store customer emails (Shopify: Settings → Notifications → Customer notifications) ──
+
+  /**
+   * Resolves one customer email for a store: the store's on/off switch, its own subject/message (or the built-in
+   * default), sender name and reply-to. Never throws for "store has no settings" — that means all defaults.
+   * Returns null when the store doesn't exist.
+   */
+  async buildCustomerEmail(args: { storeId: string; event: CustomerEmailEvent; vars: TemplateVars; orderId?: string | null; trackingUrl?: string | null; cta?: { label: string; url: string } | null }): Promise<BuiltCustomerEmail | null> {
+    const repos = this.databaseService.repositories;
+    const [store, settings]: [any, any] = await Promise.all([
+      repos.storeModel.findById(args.storeId).select('name contactEmail slug customDomain customDomainStatus logo').lean(),
+      repos.storeNotificationSettingsModel.findOne({ storeId: args.storeId, isDelete: false }).lean(),
+    ]);
+    if (!store) return null;
+
+    const def = CUSTOMER_EMAIL_CATALOG[args.event];
+    const override = settings?.events?.[args.event] ?? {};
+    const storeName: string = store.name ?? 'the store';
+    const base = storePublicUrl(store);
+    const orderUrl = base && args.orderId ? `${base}/order-status/${signOrderStatusToken(String(args.orderId))}` : null;
+    const trackingUrl = args.trackingUrl && /^https?:\/\//i.test(args.trackingUrl) ? args.trackingUrl : null;
+    const vars: TemplateVars = { storeName, orderUrl, trackingUrl, ...args.vars, customerName: args.vars.customerName?.trim() || 'there' };
+    const ctaUrl = args.event === 'order_shipped' && trackingUrl ? trackingUrl : orderUrl;
+    const ctaLabel = args.event === 'order_shipped' && trackingUrl ? 'Track your package' : 'View your order';
+
+    const { subject, html } = renderCustomerEmail({
+      subjectTemplate: String(override.subject ?? '').trim() || def.defaultSubject,
+      bodyTemplate: String(override.body ?? '').trim() || def.defaultBody,
+      vars,
+      storeName,
+      brand: {
+        logoUrl: settings?.showLogo === false ? null : store.logo ?? null,
+        accent: settings?.accentColor ?? null,
+        footerText: settings?.footerText ?? null,
+      },
+      cta: args.cta?.url && /^https?:\/\//i.test(args.cta.url)
+        ? { label: args.cta.label, url: args.cta.url.replace(/"/g, '%22') }
+        : ctaUrl ? { label: ctaLabel, url: ctaUrl.replace(/"/g, '%22') } : null,
+    });
+
+    return {
+      // Emails the seller triggers by hand (invoice) or that carry the only copy of something (gift card code) can't be switched off.
+      send: def.canDisable === false ? true : override.enabled !== false,
+      subject,
+      html,
+      fromName: String(settings?.senderName ?? '').trim() || storeName,
+      replyTo: String(settings?.replyToEmail ?? '').trim() || store.contactEmail || null,
+    };
+  }
+
+  /**
+   * Sends one customer email straight away (order confirmation, "Resend" from the order page) and records the real
+   * outcome on the order timeline. `force` ignores the store's off-switch (a manual resend is the seller's decision).
+   */
+  async sendCustomerEmail(args: { to: string; storeId: string; event: CustomerEmailEvent; vars: TemplateVars; orderId?: string | null; trackingUrl?: string | null; cta?: { label: string; url: string } | null; force?: boolean }): Promise<'sent' | 'disabled' | 'failed'> {
+    try {
+      const built = await this.buildCustomerEmail(args);
+      if (!built) return 'failed';
+      if (!built.send && !args.force) return 'disabled';
+      const ok = await this.emailService.sendMail(args.to, built.subject, built.html, built.replyTo, undefined, undefined, built.fromName);
+      if (args.orderId) await this.recordEmailTimeline(String(args.orderId), args.event, args.to, ok, args.storeId);
+      else await this.recordDeliveryResult(args.storeId, ok);
+      return ok ? 'sent' : 'failed';
+    } catch (err: any) {
+      this.logger.error(`sendCustomerEmail(${args.event}) failed: ${err?.message}`);
+      return 'failed';
+    }
+  }
+
+  /** Delivery health per store: failures in a row since the last success (shown as a warning in Customer notifications). */
+  async recordDeliveryResult(storeId: string, ok: boolean): Promise<void> {
+    try {
+      const model = this.databaseService.repositories.storeNotificationSettingsModel;
+      if (ok) await model.updateOne({ storeId, consecutiveEmailFailures: { $gt: 0 } }, { $set: { consecutiveEmailFailures: 0 } });
+      else await model.updateOne({ storeId }, { $inc: { consecutiveEmailFailures: 1 }, $set: { lastEmailFailureAt: new Date() } }, { upsert: true });
+    } catch { /* informational */ }
+  }
+
+  /** Order timeline (merchant-only) line for a customer email — written with the REAL outcome of the send. */
+  async recordEmailTimeline(orderId: string, event: string, to: string, ok: boolean, storeId?: string): Promise<void> {
+    if (storeId) await this.recordDeliveryResult(storeId, ok);
+    try {
+      const label = (CUSTOMER_EMAIL_CATALOG as Record<string, { label: string }>)[event]?.label ?? 'Customer';
+      await this.databaseService.repositories.orderModel.updateOne(
+        { _id: orderId },
+        { $push: { timeline: { type: 'email', message: ok ? `${label} email sent to ${to}` : `${label} email to ${to} could not be delivered`, actorId: null, actorRole: 'system', createdAt: new Date() } } },
+      );
+    } catch { /* informational */ }
+  }
+
+  /** Extra "New order" recipients the seller configured (Shopify staff order notifications). Never throws. */
+  async sendStaffOrderEmails(storeId: string, subject: string, html: string, exclude: string[] = []): Promise<number> {
+    try {
+      const settings: any = await this.databaseService.repositories.storeNotificationSettingsModel.findOne({ storeId, isDelete: false }).select('staffOrderEmails').lean();
+      // The store owner already gets the same mail through notify() — never send it to them twice.
+      const store: any = await this.databaseService.repositories.storeModel.findById(storeId).select('sellerId').lean();
+      const owner: any = store?.sellerId ? await this.databaseService.repositories.sellerModel.findById(store.sellerId).select('email').lean() : null;
+      const skip = new Set([...exclude, owner?.email].filter(Boolean).map((e) => String(e).toLowerCase()));
+      const to = [...new Set<string>((settings?.staffOrderEmails ?? []).map((e: string) => String(e).toLowerCase()))].filter((e) => e && !skip.has(e));
+      const results = await Promise.all(to.map((addr) => this.emailService.sendMail(addr, subject, html)));
+      return results.filter(Boolean).length;
+    } catch (err: any) {
+      this.logger.error(`sendStaffOrderEmails() failed: ${err?.message}`);
+      return 0;
+    }
   }
 
   /**
@@ -207,7 +411,11 @@ export class NotificationsService {
       if (jobName === NOTIFICATION_PUSH_JOB) {
         await this.firebaseAdminService.sendToUser(data.userId, { title: data.title, body: data.body, data: data.data });
       } else if (jobName === NOTIFICATION_EMAIL_JOB) {
-        await this.emailService.sendMail(data.to, data.subject, data.html);
+        const ok = await this.emailService.sendMail(data.to, data.subject, data.html, data.replyTo ?? null, undefined, undefined, data.fromName ?? null);
+        if (data.timeline) {
+          if (data.timeline.orderId) await this.recordEmailTimeline(data.timeline.orderId, data.timeline.event, data.to, ok, data.timeline.storeId);
+          else if (data.timeline.storeId) await this.recordDeliveryResult(data.timeline.storeId, ok);
+        }
       } else if (jobName === NOTIFICATION_WHATSAPP_JOB) {
         await this.whatsAppSenderService.sendOrderTemplate(data.storeId, data.to, data.templateName, data.languageCode, data.bodyParams, data.event, data.vars);
       }

@@ -61,7 +61,7 @@ export class EmailCampaignsProcessor extends WorkerHost {
         openPixelUrl: `${API_PUBLIC_ORIGIN}/api/email-campaigns/track/open/${sendId}`,
         unsubscribeUrl: unsubscribeUrl ?? null,
       });
-      const sent = await this.emailService.sendMail(email, rendered.subject, rendered.html, storeContactEmail ?? null, unsubscribeHeaders(unsubscribeUrl));
+      const sent = await this.emailService.sendMail(email, rendered.subject, rendered.html, storeContactEmail ?? null, unsubscribeHeaders(unsubscribeUrl), undefined, storeName);
       if (sent) {
         await this.emailCampaignsService.markSendResult(sendId, campaignId, true);
         return;

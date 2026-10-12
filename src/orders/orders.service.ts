@@ -30,6 +30,7 @@ import { fulfilStockForSellerOrders } from '@/common/fulfil-stock.util';
 import { StoreCreditService } from '@/store-credit/store-credit.service';
 import { GiftCardsService } from '@/gift-cards/gift-cards.service';
 import { NOTIFICATION_TYPES } from '@/notifications/notification.types';
+import { CUSTOMER_EMAIL_CATALOG } from '@/notifications/customer-email-events';
 import { round } from '@/common/number.util';
 import { buildDiffMetadata } from '@/common/activity-diff.util';
 import { deriveRollupStatus , isAllowedSellerOrderTransition } from './order-status.util';
@@ -38,7 +39,7 @@ import { FulfilOrderDto } from './dto/fulfil-order.dto';
 import {
   cleanTrackingInput, isFullyShipped, isShippableItem, shippedQtyByItem, unshippedLines, validateFulfilRequest, validateReturnLabelItems, FulfilLine,
 } from './shipments.util';
-import { buildDeliveredEmail, buildReadyForPickupEmail, buildReturnLabelEmail, buildShippedEmail } from './shipping-email.util';
+import { buildDeliveredEmail, buildReadyForPickupEmail, buildReturnLabelEmail, buildShippedEmail, customerEmailExtras, orderCustomerName } from './shipping-email.util';
 
 /** A sellerOrder's true payout basis for FinanceService.recordSale, in the
  *  SELLER'S OWN currency (so.settlementCurrency) — independent of what
@@ -50,14 +51,17 @@ import { buildDeliveredEmail, buildReadyForPickupEmail, buildReturnLabelEmail, b
  *  order-currency-denominated calculation only for orders placed before
  *  settlementAmount/settlementCurrency existed. */
 import { sellerTaxShare } from '../common/seller-tax-share.util';
+import { sellerCashBasis, sellerGiftCreditShare, sellerPayoutBasis, sellerPayoutCurrency, refundGiftCreditShare } from '../common/seller-payout-basis.util';
 
-function sellerPayoutBasis(so: any): number {
-  if (so.settlementAmount != null) return so.settlementAmount;
-  return round(so.subtotal + (so.platformSponsoredDiscountUSD ?? 0) + (so.taxAmount ?? 0));
-}
-
-function sellerPayoutCurrency(so: any, order: any): string {
-  return so.settlementCurrency ?? order.currency ?? 'USD';
+/** "Name × qty" lines for the last shipment of a partly-fulfilled order; every item otherwise. */
+function lastShipmentLines(so: any, shipments: any[]): string[] {
+  const last = shipments.length ? shipments[shipments.length - 1] : null;
+  const items: any[] = so.items ?? [];
+  if (!last || !Array.isArray(last.items) || last.items.length === 0) return items.map((it) => `${it.name} × ${it.quantity}`);
+  return last.items
+    .map((l: any) => ({ it: items.find((i) => String(i._id) === String(l.itemId)), qty: l.quantity }))
+    .filter((x: any) => x.it)
+    .map((x: any) => `${x.it.name} × ${x.qty}`);
 }
 
 @Injectable()
@@ -1375,14 +1379,15 @@ export class OrdersService {
             so.storeId,
             so.sellerId,
             orderId,
-            sellerPayoutBasis(so),
+            sellerPayoutBasis(so, order),
             `Sale — Order #${orderId}`,
             platformSponsoredUSD,
             sponsoredCampaignId,
             sellerPayoutCurrency(so, order),
             order.paymentType,
             !!so.settledViaConnect,
-            sellerTaxShare(so, sellerPayoutBasis(so)),
+            sellerTaxShare(so, sellerCashBasis(so)),
+            false, 0, sellerGiftCreditShare(so, order),
           );
         } catch (e) {
           console.error('Finance recordSale failed:', e?.message);
@@ -1447,7 +1452,20 @@ export class OrdersService {
               : NOTIFICATION_TYPES.ORDER_DELIVERED,
           title: notifTitle,
           body: notifBody,
-          email: notifEmail,
+          email: {
+            ...notifEmail,
+            ...customerEmailExtras(
+              status === 'shipped' ? (isPickup ? 'order_ready_for_pickup' : 'order_shipped') : 'order_delivered',
+              {
+                order,
+                orderNumber: orderNo,
+                itemLines: (so.items ?? []).map((it: any) => `${it.name} × ${it.quantity}`),
+                tracking,
+                pickup: pickupInfo,
+                pickedUp: isPickup,
+              },
+            ),
+          },
           data: { orderId, status, fulfillmentMethod: isPickup ? 'pickup' : 'ship' },
           // Silently no-ops if `so.storeId` hasn't connected WhatsApp — see
           // NotifyParams.whatsapp. Template names below must already be
@@ -1630,7 +1648,10 @@ export class OrdersService {
           title: partial ? 'Part of your order has shipped' : 'Your order has shipped',
           body: `Order #${orderNo} is on its way${tracking?.carrier ? ` via ${tracking.carrier}` : ''}.`,
           data: { orderId, status: newStatus, shipmentId: String(shipment._id) },
-          email: buildShippedEmail({ storeName: (store as any).name ?? 'the store', orderNumber: orderNo, tracking, partial, items: lineSummary }),
+          email: {
+            ...buildShippedEmail({ storeName: (store as any).name ?? 'the store', orderNumber: orderNo, tracking, partial, items: lineSummary }),
+            ...customerEmailExtras('order_shipped', { order, orderNumber: orderNo, itemLines: lineSummary, tracking }),
+          },
           whatsapp: order.shippingAddress?.phoneNumber
             ? {
                 storeId,
@@ -1711,7 +1732,10 @@ export class OrdersService {
         title: 'Tracking updated',
         body: `Order #${order.orderNumber ?? orderId} tracking: ${[clean.carrier, clean.trackingNumber].filter(Boolean).join(' ') || 'see link'}.`,
         data: { orderId },
-        email: buildShippedEmail({ storeName: (store as any).name ?? 'the store', orderNumber: String(order.orderNumber ?? orderId), tracking: clean as any }),
+        email: {
+          ...buildShippedEmail({ storeName: (store as any).name ?? 'the store', orderNumber: String(order.orderNumber ?? orderId), tracking: clean as any }),
+          ...customerEmailExtras('order_shipped', { order, orderNumber: String(order.orderNumber ?? orderId), tracking: clean as any }),
+        },
       })
       .catch(() => {});
     return { success: true, message: 'Tracking updated', data: { tracking: clean } };
@@ -1926,14 +1950,15 @@ export class OrdersService {
           so.storeId,
           so.sellerId,
           orderId,
-          sellerPayoutBasis(so),
+          sellerPayoutBasis(so, order),
           `Sale — Order #${orderId}`,
           platformSponsoredUSD,
           sponsoredCampaignId,
           sellerPayoutCurrency(so, order),
           order.paymentType,
           !!so.settledViaConnect,
-          sellerTaxShare(so, sellerPayoutBasis(so)),
+          sellerTaxShare(so, sellerCashBasis(so)),
+          false, 0, sellerGiftCreditShare(so, order),
         );
       } catch (e) {
         console.error('Finance recordSale failed:', e?.message);
@@ -1966,6 +1991,130 @@ export class OrdersService {
    *  `OrderPaymentRecord` row for the full amount, so the payment ledger
    *  `recordOrderPayment`/the frontend payment-history list reads from
    *  stays complete regardless of which action a seller used. */
+  /**
+   * Shopify "Resend email" on the order page: sends the customer one of the store's emails again (confirmation,
+   * shipping, pickup, delivered), rebuilt from the order's CURRENT data, ignoring the store's off-switch (this is the
+   * seller's explicit action). The real outcome lands on the order timeline.
+   */
+  private static readonly resendLocks = new Map<string, number>();
+
+  async resendCustomerEmail(
+    sellerId: string,
+    storeId: string,
+    orderId: string,
+    event: string,
+    actor: { actorId: string; actorRole: string },
+  ) {
+    // One send per order+email in 30 s. Claimed synchronously (the timeline check inside is read-then-write, so two parallel
+    // requests could both pass it) and released again if the send did not happen.
+    const lockKey = `${orderId}:${event}`;
+    const now = Date.now();
+    for (const [k, t] of OrdersService.resendLocks) if (now - t > 30_000) OrdersService.resendLocks.delete(k);
+    if (OrdersService.resendLocks.has(lockKey)) throw new BadRequestException('That email was just sent — wait a moment before sending it again.');
+    OrdersService.resendLocks.set(lockKey, now);
+    try {
+      return await this.doResendCustomerEmail(sellerId, storeId, orderId, event, actor);
+    } catch (err) {
+      OrdersService.resendLocks.delete(lockKey);
+      throw err;
+    }
+  }
+
+  private async doResendCustomerEmail(
+    sellerId: string,
+    storeId: string,
+    orderId: string,
+    event: string,
+    actor: { actorId: string; actorRole: string },
+  ) {
+    const resendable = ['order_confirmation', 'order_shipped', 'order_ready_for_pickup', 'order_delivered', 'order_cancelled', 'order_refunded'] as const;
+    if (!(resendable as readonly string[]).includes(event)) throw new BadRequestException('This email cannot be resent');
+    const ev = event as (typeof resendable)[number];
+    const { orderModel, storeModel, userModel } = this.databaseService.repositories;
+    if (!isValidObjectId(orderId)) throw new BadRequestException('Invalid order id');
+
+    const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false }).select('_id').lean();
+    if (!store) throw new ForbiddenException('Store not found or unauthorized');
+    const order: any = await orderModel.findOne({ _id: orderId, isDelete: false });
+    if (!order) throw new NotFoundException('Order not found');
+    const so = (order.sellerOrders as any[]).find((s: any) => s.storeId === storeId);
+    if (!so) throw new ForbiddenException('This order does not belong to your store');
+
+    const label = ev.replace(/_/g, ' ');
+    // One send per email type per 30 s — stops a double-click / a script from mailing the customer repeatedly.
+    const recent = (order.timeline ?? []).some(
+      (t: any) => t.type === 'email' && new Date(t.createdAt).getTime() > Date.now() - 30_000 && String(t.message).toLowerCase().startsWith(CUSTOMER_EMAIL_CATALOG[ev].label.toLowerCase()),
+    );
+    if (recent) throw new BadRequestException('That email was just sent — wait a moment before sending it again.');
+
+    const isPickup = order.fulfillmentMethod === 'pickup';
+    let outcome: 'sent' | 'disabled' | 'failed' | 'no_email';
+    if (ev === 'order_confirmation') {
+      outcome = await this.paymentService.resendOrderConfirmationEmail(order, storeId);
+    } else if (ev === 'order_cancelled' || ev === 'order_refunded') {
+      const buyer: any = await userModel.findById(order.userId).select('email contactEmail isGuest').lean();
+      const to = buyerEmail(buyer);
+      if (!to) throw new BadRequestException('This customer has no email address on file.');
+      const base = { customerName: orderCustomerName(order), orderNumber: String(order.orderNumber ?? orderId) };
+      let vars: Record<string, string | null>;
+      if (ev === 'order_cancelled') {
+        const cancelled = (so.items ?? []).filter((it: any) => it.status === 'cancelled');
+        if (cancelled.length === 0) throw new BadRequestException('Nothing was canceled on this order.');
+        vars = { ...base, itemList: cancelled.map((it: any) => `${it.name} × ${it.quantity}`).join('\n') };
+      } else {
+        const refunded = Number(so.refundedTotal ?? 0);
+        if (!(refunded > 0)) throw new BadRequestException('Nothing has been refunded on this order yet.');
+        vars = { ...base, refundAmount: `${round(refunded).toFixed(2)} ${order.currency || 'USD'}`, refundMethod: order.paymentType === 'stripe' ? 'Original payment method' : null };
+      }
+      outcome = await this.notificationsService.sendCustomerEmail({ to, storeId, event: ev, orderId, vars, force: true });
+    } else {
+      const fulfilled = ['shipped', 'delivered', 'completed'].includes(so.status);
+      if (ev === 'order_delivered' && !['delivered', 'completed'].includes(so.status)) {
+        throw new BadRequestException('This order has not been delivered yet.');
+      }
+      if ((ev === 'order_shipped' || ev === 'order_ready_for_pickup') && !fulfilled) {
+        throw new BadRequestException('This order has not shipped yet.');
+      }
+      if (ev === 'order_shipped' && isPickup) throw new BadRequestException('This is a pickup order — resend "Ready for pickup" instead.');
+      if (ev === 'order_ready_for_pickup' && !isPickup) throw new BadRequestException('This is not a pickup order.');
+
+      const buyer: any = await userModel.findById(order.userId).select('email contactEmail isGuest').lean();
+      const to = buyerEmail(buyer);
+      if (!to) throw new BadRequestException('This customer has no email address on file.');
+      const shipments: any[] = Array.isArray(so.shipments) ? so.shipments : [];
+      const tracking = shipments.length ? shipments[shipments.length - 1]?.tracking : so.tracking && typeof so.tracking === 'object' ? so.tracking : null;
+      const extras = customerEmailExtras(ev, {
+        order,
+        orderNumber: String(order.orderNumber ?? orderId),
+        // With several shipments, list what the LAST shipment carried so the items and the tracking agree.
+        itemLines: lastShipmentLines(so, shipments),
+        tracking,
+        pickup: order.pickupLocation ?? null,
+        pickedUp: isPickup,
+      });
+      outcome = await this.notificationsService.sendCustomerEmail({
+        to,
+        storeId,
+        event: ev,
+        orderId,
+        vars: extras.vars,
+        trackingUrl: extras.trackingUrl,
+        force: true,
+      });
+    }
+
+    if (outcome === 'no_email') throw new BadRequestException('This customer has no email address on file.');
+    if (outcome !== 'sent') {
+      throw new BadRequestException('The email could not be sent. Check your email settings and try again.');
+    }
+    this.activityLogService.log({
+      storeId, category: 'orders', action: 'order_email_resent',
+      description: `Order #${order.orderNumber ?? orderId} — ${label} email resent to the customer`,
+      actorId: actor.actorId, actorRole: actor.actorRole as any, targetId: orderId, targetType: 'order',
+    });
+    return { success: true, message: 'Email sent' };
+  }
+
   async markPaid(
     sellerId: string,
     storeId: string,
@@ -2554,12 +2703,13 @@ export class OrdersService {
         if (!(amount > 0)) continue;
         const so = order.sellerOrders[soIndex];
         const settlementCurrency = so.settlementCurrency ?? buyerCurrency;
+        const cancelledItems = targetItems.filter((t) => t.soIndex === soIndex).map((t) => t.item);
         const sellerDebitAmount = this.exchangeRateService.convertWithSnapshots(
           amount,
           buyerCurrency,
           settlementCurrency,
           order.fxSnapshots ?? [],
-        );
+        ) + refundGiftCreditShare(so, order, cancelledItems, (amountBySoIndex.get(soIndex) ?? 0) > 0 ? amount / (amountBySoIndex.get(soIndex) as number) : 1);
         try {
           await this.financeService.recordRefund(
             so.storeId,
@@ -2617,6 +2767,29 @@ export class OrdersService {
               targetType: 'order',
             });
           }
+        }
+      }
+    }
+
+    // ── Unpaid order (COD / pending transfer): its sale was already recorded in the finance ledger when the order was
+    // placed, so the cancelled part is taken back out of it (informational refund row — no money moved). ──────────────
+    if (!order.isPaid) {
+      const cancelledBySo = new Map<number, number>();
+      for (const { soIndex, item } of targetItems) {
+        cancelledBySo.set(soIndex, (cancelledBySo.get(soIndex) ?? 0) + item.totalPrice + (item.taxUSD ?? 0));
+      }
+      for (const [soIndex, amount] of cancelledBySo) {
+        const so = order.sellerOrders[soIndex];
+        const settlementCurrency = so.settlementCurrency ?? order.currency ?? 'USD';
+        const sellerAmount = this.exchangeRateService.convertWithSnapshots(amount, order.currency || 'USD', settlementCurrency, order.fxSnapshots ?? [])
+          + refundGiftCreditShare(so, order, targetItems.filter((t) => t.soIndex === soIndex).map((t) => t.item));
+        try {
+          await this.financeService.recordRefund(
+            so.storeId, so.sellerId, orderId, sellerAmount, actor.actorId, actor.actorRole,
+            { description: `Order cancelled (unpaid) — Order #${order.orderNumber}`, targetType: 'order', currency: settlementCurrency },
+          );
+        } catch (e: any) {
+          console.error('Finance recordRefund failed (unpaid order cancellation):', e?.message);
         }
       }
     }
@@ -2706,16 +2879,59 @@ export class OrdersService {
           .catch(() => {});
       });
     } else {
-      this.notificationsService
-        .notify({
-          recipientId: order.userId,
-          recipientRole: 'user',
-          type: NOTIFICATION_TYPES.ORDER_CANCELLED,
-          title: actor.notifyTitle,
-          body: actor.notifyBody(orderId),
-          data: { orderId },
-        })
-        .catch(() => {});
+      // The store cancelled: tell the customer, one email per store involved (Shopify "Order canceled"), plus a
+      // "Refund" email when money really went back.
+      const cancelledByStore = new Map<string, { lines: string[]; refunded: number }>();
+      for (const { item, soIndex } of targetItems) {
+        const sid = String(order.sellerOrders[soIndex].storeId);
+        const entry = cancelledByStore.get(sid) ?? { lines: [], refunded: 0 };
+        entry.lines.push(`${item.name} × ${item.quantity}`);
+        cancelledByStore.set(sid, entry);
+      }
+      for (const [soIndex, granted] of grantedBySoIndex) {
+        const entry = cancelledByStore.get(String(order.sellerOrders[soIndex]?.storeId));
+        if (entry && order.isPaid) entry.refunded += Number(granted ?? 0);
+      }
+      const cancelCurrency = order.currency || 'USD';
+      for (const [sid, entry] of cancelledByStore) {
+        const base = { customerName: orderCustomerName(order), orderNumber: String(order.orderNumber ?? orderId) };
+        this.notificationsService
+          .notify({
+            recipientId: order.userId,
+            recipientRole: 'user',
+            storeId: sid,
+            type: NOTIFICATION_TYPES.ORDER_CANCELLED,
+            title: actor.notifyTitle,
+            body: actor.notifyBody(orderId),
+            data: { orderId, storeId: sid },
+            email: {
+              subject: `Your order #${base.orderNumber} was canceled`,
+              html: `<p>${actor.notifyTitle}</p>`,
+              event: 'order_cancelled',
+              vars: { ...base, itemList: entry.lines.join('\n') },
+            },
+          })
+          .catch(() => {});
+        if (entry.refunded > 0) {
+          this.notificationsService
+            .notify({
+              recipientId: order.userId,
+              recipientRole: 'user',
+              storeId: sid,
+              type: NOTIFICATION_TYPES.REFUND_ISSUED,
+              title: 'Refund issued',
+              body: `You've been refunded ${round(entry.refunded)} ${cancelCurrency} for order #${base.orderNumber}.`,
+              data: { orderId, storeId: sid },
+              email: {
+                subject: `Refund for order #${base.orderNumber}`,
+                html: `<p>You've been refunded ${round(entry.refunded)} ${cancelCurrency}.</p>`,
+                event: 'order_refunded',
+                vars: { ...base, refundAmount: `${round(entry.refunded).toFixed(2)} ${cancelCurrency}`, refundMethod: order.paymentType === 'stripe' ? 'Original payment method' : null },
+              },
+            })
+            .catch(() => {});
+        }
+      }
     }
 
     return {
@@ -2896,6 +3112,17 @@ export class OrdersService {
         title: 'Refund issued',
         body: `You've been refunded ${amount} ${buyerCurrency} for order #${order.orderNumber}.`,
         data: { orderId },
+        email: {
+          subject: `Refund for order #${order.orderNumber}`,
+          html: `<p>You've been refunded ${amount} ${buyerCurrency} for order #${order.orderNumber}.</p>`,
+          event: 'order_refunded',
+          vars: {
+            customerName: orderCustomerName(order),
+            orderNumber: String(order.orderNumber ?? orderId),
+            refundAmount: `${Number(amount).toFixed(2)} ${buyerCurrency}`,
+            refundMethod: 'Original payment method',
+          },
+        },
         whatsapp: order.shippingAddress?.phoneNumber
           ? {
               storeId, to: order.shippingAddress.phoneNumber, templateName: 'order_refunded', languageCode: 'en_US',

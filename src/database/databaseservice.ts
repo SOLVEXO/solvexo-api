@@ -218,6 +218,12 @@ export class DatabaseService {
     @InjectModel(schema.AbandonedCartSettings.name)
     private abandonedCartSettingsModel: Model<schema.AbandonedCartSettingsDocument>,
 
+    @InjectModel(schema.EmailDailyStat.name)
+    private emailDailyStatModel: Model<schema.EmailDailyStatDocument>,
+
+    @InjectModel(schema.StoreNotificationSettings.name)
+    private storeNotificationSettingsModel: Model<schema.StoreNotificationSettingsDocument>,
+
     @InjectModel(schema.EmailCampaign.name)
     private emailCampaignModel: Model<schema.EmailCampaignDocument>,
 
@@ -554,6 +560,8 @@ export class DatabaseService {
       storeCreditTransactionModel: this.storeCreditTransactionModel,
       giftCardSettingsModel: this.giftCardSettingsModel,
       abandonedCartSettingsModel: this.abandonedCartSettingsModel,
+      storeNotificationSettingsModel: this.storeNotificationSettingsModel,
+      emailDailyStatModel: this.emailDailyStatModel,
       emailCampaignModel: this.emailCampaignModel,
       emailCampaignSendModel: this.emailCampaignSendModel,
       affiliateProgramModel: this.affiliateProgramModel,

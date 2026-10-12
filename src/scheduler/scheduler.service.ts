@@ -34,6 +34,7 @@ import { DraftOrdersService } from '@/draft-orders/draft-orders.service';
 import { OrdersService } from '@/orders/orders.service';
 import { MarketingAutomationsService } from '@/marketing-automations/marketing-automations.service';
 import { AdminAnnouncementsService } from '@/admin-announcements/admin-announcements.service';
+import { ScheduledReportsService } from '@/analytics/scheduled-reports.service';
 
 @Injectable()
 export class SchedulerService {
@@ -71,6 +72,7 @@ export class SchedulerService {
     private readonly adminAnnouncementsService: AdminAnnouncementsService,
     private readonly transactionFeeBillingService: TransactionFeeBillingService,
     private readonly stuckGatewayPaymentsService: StuckGatewayPaymentsService,
+    private readonly scheduledReportsService: ScheduledReportsService,
   ) {}
 
   /**
@@ -94,6 +96,15 @@ export class SchedulerService {
     if (result === 'lock_not_acquired') {
       this.logger.debug(`Skipped "${jobName}" — another instance already holds the lock (or Redis is unavailable)`);
     }
+  }
+
+  /** 06:00 UTC daily — emails saved analytics reports whose schedule is due today (weekly = Monday, monthly = the 1st). */
+  @Cron('0 6 * * *')
+  async sendScheduledAnalyticsReports() {
+    await this.runLocked('scheduled-analytics-reports', 30 * 60_000, async () => {
+      const { sent, failed } = await this.scheduledReportsService.processDue();
+      if (sent > 0 || failed > 0) this.logger.log(`Scheduled analytics reports: ${sent} sent, ${failed} failed`);
+    });
   }
 
   /** Every 15 min — real cadence doesn't need to be tighter than that since

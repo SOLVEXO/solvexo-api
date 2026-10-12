@@ -65,7 +65,7 @@ describe('StoreThemeService', () => {
       // the mock derives a stable, per-store `_id` instead of leaving it
       // undefined.
       findOne: jest.fn().mockImplementation((query: any) =>
-        Promise.resolve({ _id: query._id ?? `instance-${query.storeId}`, storeId: query.storeId, draft: existingDraft() }),
+        Promise.resolve({ _id: query._id ?? `instance-${query.storeId}`, storeId: query.storeId, themeDefinitionId: 'theme-01-atelier', draft: existingDraft() }),
       ),
       db: { transaction: jest.fn((callback: (session: any) => Promise<any>) => callback(transactionSession)) },
     };

@@ -11,12 +11,14 @@ jest.mock('dns', () => ({
 jest.mock('tls', () => ({ connect: jest.fn() }));
 
 import { promises as dns } from 'dns';
+import * as tls from 'tls';
 import { CustomDomainsService, TXT_CHALLENGE_PREFIX } from './custom-domains.service';
 import { assertSafeSeoDestination } from '../seo/services/seo-url-safety.util';
 
 const cname = dns.resolveCname as unknown as jest.Mock;
 const resolve4 = dns.resolve4 as unknown as jest.Mock;
 const txt = dns.resolveTxt as unknown as jest.Mock;
+const tlsConnect = tls.connect as unknown as jest.Mock;
 
 function makeService(stores: any) {
   const vercel: any = { isConfigured: () => false, attach: jest.fn(), inspect: jest.fn(), verify: jest.fn(), detach: jest.fn() };
@@ -35,6 +37,12 @@ describe('custom domain TXT ownership proof', () => {
     jest.resetAllMocks();
     cname.mockResolvedValue(['stores.solvexo.store']);
     resolve4.mockRejectedValue(new Error('none'));
+    // The domain already serves a valid certificate: a fake TLS socket that completes the handshake as authorized.
+    tlsConnect.mockImplementation((_opts: any, onSecure: () => void) => {
+      const socket: any = { authorized: true, destroy: jest.fn(), on: jest.fn() };
+      setImmediate(onSecure);
+      return socket;
+    });
   });
 
   it('does NOT verify when DNS is right but the TXT record is missing', async () => {

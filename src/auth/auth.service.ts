@@ -1,5 +1,6 @@
 import {
   Injectable,
+  Optional,
   UnauthorizedException,
   BadRequestException,
 } from '@nestjs/common';
@@ -21,6 +22,8 @@ import { stat } from 'fs';
 import { RedisService } from '../redis/redis.service';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { generateOtp, assertOtpAttempt } from '@/common/otp.util';
+import { NotificationsService } from '@/notifications/notifications.service';
+import { NOTIFICATION_TYPES } from '@/notifications/notification.types';
 
 @Injectable()
 export class AuthService {
@@ -32,7 +35,19 @@ export class AuthService {
     private readonly activityLogService: ActivityLogService,
 
     private readonly jwtService: JwtService,
+    // Global module; optional so auth still boots if the notifications module is ever absent.
+    @Optional() private readonly notificationsService?: NotificationsService,
   ) {}
+
+  /** Tells the platform admins a new seller joined (in-app + email per their preferences). Never throws. */
+  private notifyAdminsNewSeller(name: string | undefined, email: string) {
+    this.notificationsService?.notifyAdmins({
+      type: NOTIFICATION_TYPES.ADMIN_NEW_SELLER,
+      title: 'New seller signed up',
+      body: `${name || email} (${email}) just created a seller account.`,
+      data: { link: '/admin/clients' },
+    }).catch(() => {});
+  }
 
   /** Only the buyer (`User`) collection has a `storeId` dimension — Seller/
    *  Admin accounts are never store-scoped. Building the same `{email}` (or
@@ -63,6 +78,21 @@ export class AuthService {
     }
     const normalizedEmail = email.trim().toLowerCase();
     return role === 'user' ? { email: normalizedEmail, storeId: storeId ?? null } : { email: normalizedEmail };
+  }
+
+  /** OTP mail: a store's buyer gets it under that store's name (reply-to = store contact email);
+   *  sellers/admins get the platform's own sender. */
+  private async sendOtpMail(email: string, otp: string, role: string, storeId?: string | null): Promise<void> {
+    let sender: { fromName?: string | null; replyTo?: string | null } | undefined;
+    if (role === 'user' && storeId) {
+      const store: any = await this.databaseService.repositories.storeModel
+        .findById(storeId)
+        .select('name contactEmail')
+        .lean()
+        .catch(() => null);
+      if (store) sender = { fromName: store.name ?? null, replyTo: store.contactEmail ?? null };
+    }
+    await this.otpService.sendOtp(email, otp, sender);
   }
 
   /** A buyer's storeId is a partition key baked into the account (and later
@@ -207,7 +237,7 @@ export class AuthService {
 
       await user.save();
 
-      await this.otpService.sendOtp(email, otp);
+      await this.sendOtpMail(email, otp, role, storeId);
 
       return {
         message: 'OTP sent successfully',
@@ -471,6 +501,7 @@ export class AuthService {
           ...(targetRole === 'user' ? { storeId: storeId ?? null } : {}),
         });
         await account.save();
+        if (targetRole === 'seller') this.notifyAdminsNewSeller(account.name, account.email);
       } else {
         if (account.isDelete || account.status === 'deleted') {
           throw new UnauthorizedException('This account has been deleted');
@@ -582,7 +613,7 @@ export class AuthService {
       user.otpExpiresAt = otpExpiresAt;
       await user.save();
 
-      await this.otpService.sendOtp(user.email, newOtp);
+      await this.sendOtpMail(user.email, newOtp, role, storeId);
 
       return {
         message: 'New OTP sent successfully to your email',
@@ -628,10 +659,12 @@ export class AuthService {
         throw new UnauthorizedException('OTP has expired');
       }
 
+      const wasVerified = !!user.isVerified;
       user.isVerified = true;
       user.otp = null as any;
       user.otpExpiresAt = null as any;
       await user.save();
+      if (role === 'seller' && !wasVerified) this.notifyAdminsNewSeller((user as any).name, user.email);
 
       const payload = {
         sub: user._id,
@@ -722,7 +755,7 @@ export class AuthService {
         user.otpExpiresAt = otpExpiresAt;
         await user.save();
 
-        await this.otpService.sendOtp(user.email, otp);
+        await this.sendOtpMail(user.email, otp, role, storeId);
       }
 
       return {

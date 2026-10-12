@@ -10,6 +10,8 @@ import { RequestPayoutDto } from './dto/request-payout.dto';
 import { AddPayoutMethodDto } from './dto/add-payout-method.dto';
 import { UpdatePayoutScheduleDto } from './dto/update-payout-schedule.dto';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
+import { zonedMidnight, zonedParts } from '../analytics/utils/analytics-date.util';
+import { resolveStoreTimeZone } from '../common/store-timezone.util';
 import { round } from '@/common/number.util';
 import { verifyStoreExists, verifyStoreOwnershipStrict } from '@/common/store-ownership.util';
 import { buildDiffMetadata } from '@/common/activity-diff.util';
@@ -276,7 +278,7 @@ export class FinanceService implements OnModuleInit {
    * once per currency the store actually holds).
    */
   private async getPeriodStats(storeId: string, from: Date, to: Date, currency: string) {
-    const [agg, taxAgg] = await Promise.all([
+    const [agg, taxAgg, taxRefundAgg] = await Promise.all([
       this.txModel.aggregate([
         { $match: { storeId, currency, status: 'completed', createdAt: { $gte: from, $lte: to } } },
         {
@@ -293,10 +295,16 @@ export class FinanceService implements OnModuleInit {
         { $match: { storeId, currency, type: 'sale', status: { $ne: 'failed' }, createdAt: { $gte: from, $lte: to } } },
         { $group: { _id: null, tax: { $sum: { $ifNull: ['$metadata.taxCollected', 0] } } } },
       ]),
+      // …minus the tax that went back to buyers with refunds (stamped on each refund row since refunds are recorded for
+      // directly-settled sales too).
+      this.txModel.aggregate([
+        { $match: { storeId, currency, type: 'refund', status: { $ne: 'failed' }, createdAt: { $gte: from, $lte: to } } },
+        { $group: { _id: null, tax: { $sum: { $ifNull: ['$metadata.taxRefunded', 0] } } } },
+      ]),
     ]);
     const stats: Record<string, number> = { sale: 0, fee: 0, refund: 0, payout: 0, tax: 0 };
     for (const row of agg) stats[row._id] = this.round(row.total);
-    stats.tax = this.round(taxAgg?.[0]?.tax ?? 0);
+    stats.tax = Math.max(0, this.round((taxAgg?.[0]?.tax ?? 0) - (taxRefundAgg?.[0]?.tax ?? 0)));
     return stats;
   }
 
@@ -374,10 +382,13 @@ export class FinanceService implements OnModuleInit {
     const storeCurrency: string = String(store?.baseCurrency || 'USD').toUpperCase();
     await this.ensureStripeConnectPayoutMethod(storeId, sellerId);
 
+    // "This month" / "last month" follow the STORE's time zone (like the analytics reports), not the server's.
+    const tz = resolveStoreTimeZone(store);
     const now = new Date();
-    const thisMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-    const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-    const lastMonthEnd   = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59);
+    const local = zonedParts(now, tz);
+    const thisMonthStart = zonedMidnight(local.year, local.month, 1, tz);
+    const lastMonthStart = zonedMidnight(local.year, local.month - 1, 1, tz);
+    const lastMonthEnd   = new Date(thisMonthStart.getTime() - 1);
 
     const [rawBalances, rawSchedules, rawMethods, rawPendingPayouts, commissionRate] = await Promise.all([
       this.balanceModel.find({ storeId }).lean(),
@@ -414,16 +425,23 @@ export class FinanceService implements OnModuleInit {
       const defaultMethod = (methods as any[]).find((m) => m.currency === currency && m.isDefault) ?? null;
       const pendingPayout = (pendingPayouts as any[]).find((p) => p.currency === currency) ?? null;
 
-      const [thisMonth, lastMonth] = await Promise.all([
+      const [thisMonth, lastMonth, hasPayoutHistory] = await Promise.all([
         this.getPeriodStats(storeId, thisMonthStart, now, currency),
         this.getPeriodStats(storeId, lastMonthStart, lastMonthEnd, currency),
+        this.payoutModel.exists({ storeId, currency }),
       ]);
+      // Option A: new sales never enter a platform-held balance (card -> the seller's own Stripe account, COD / transfer /
+      // own gateway -> the seller directly). The balance / withdraw / payout-schedule UI is only for stores that still
+      // hold money here (older platform-held sales) or have payout history.
+      const hasLegacyBalance = (balance.availableBalance ?? 0) !== 0 || (balance.pendingBalance ?? 0) !== 0
+        || (balance.totalPayouts ?? 0) > 0 || !!hasPayoutHistory || !!pendingPayout;
       const revenueGrowth = lastMonth.sale > 0
         ? this.round(((thisMonth.sale - lastMonth.sale) / lastMonth.sale) * 100)
         : 0;
 
       return {
         currency,
+        hasLegacyBalance,
         availableBalance: balance.availableBalance,
         pendingBalance: balance.pendingBalance,
         isFlaggedForReview: balance.isFlaggedForReview ?? false,
@@ -585,6 +603,13 @@ export class FinanceService implements OnModuleInit {
   ) {
     const balance = await this.getOrCreateBalance(storeId, sellerId, currency, session);
     if (amount > balance.availableBalance) {
+      // Option A: new sales never enter a platform-held balance. A store with no history here has nothing to withdraw — say so
+      // plainly instead of a confusing "insufficient balance".
+      if ((balance.availableBalance ?? 0) <= 0 && (balance.pendingBalance ?? 0) <= 0 && (balance.totalPayouts ?? 0) <= 0) {
+        throw new BadRequestException(
+          'This store has no platform-held balance to withdraw. Card payments are paid out by Stripe to your own account, and COD / bank-transfer money is already with you.',
+        );
+      }
       throw new BadRequestException(`Insufficient balance — available: ${currency} ${balance.availableBalance.toFixed(2)}`);
     }
 
@@ -890,6 +915,15 @@ export class FinanceService implements OnModuleInit {
 
     if (payout.railType === 'stripe_connect') {
       await this.runStripeConnectTransfer(payout, method);
+    } else {
+      // A manual payout waits for an admin to process it — tell the admins (no amount here: admin screens are USD-only).
+      const payoutStore: any = await this.storeModel.findById(storeId).select('name').lean().catch(() => null);
+      this.notificationsService.notifyAdmins({
+        type: NOTIFICATION_TYPES.ADMIN_PAYOUT_REQUEST,
+        title: 'Payout request waiting',
+        body: `${payoutStore?.name ?? 'A store'} requested a payout that needs to be processed.`,
+        data: { storeId, link: '/admin/finance' },
+      }).catch(() => {});
     }
 
     return payout;
@@ -1320,8 +1354,8 @@ export class FinanceService implements OnModuleInit {
     ]);
     pdf.addEmptyNote(
       'This is an internal financial summary generated from your store\'s own transaction records, not a certified '
-      + 'government tax filing document. Tax collected covers sales completed after tax tracking was added to the '
-      + 'ledger; earlier sales show no tax. Refunded tax is not deducted. Consult a tax professional for your actual '
+      + 'government tax filing document. Tax collected is net of the tax refunded to buyers (for refunds recorded after '
+      + 'refund tax tracking was added); earlier sales and refunds show no tax detail. Consult a tax professional for your actual '
       + 'filing obligations in your jurisdiction.',
     );
 
@@ -1903,6 +1937,12 @@ export class FinanceService implements OnModuleInit {
     platformSponsoredUSD = 0, campaignId?: string | null, currency = 'USD', paymentMethodType = 'stripe',
     settledViaConnect = false,
     taxCollected = 0,
+    /** True when recorded at order placement (not at completion) — reconciliation uses it to know which orders to expect. */
+    recordedAtPlacement = false,
+    /** Stripe application fee on a Connect charge, in the seller's settlement currency — recorded as an informational fee row. */
+    connectFee = 0,
+    /** Part of `saleAmount` paid with a gift card / store credit (direct sales only): it is a sale, but no gateway/card fee applies to it. */
+    giftCreditShare = 0,
   ) {
     // `settledViaConnect`: the card payment already landed in the seller's OWN Stripe account (destination charge).
     // The sale is recorded so revenue, reports and tax figures are complete, but nothing is credited or debited
@@ -1931,8 +1971,9 @@ export class FinanceService implements OnModuleInit {
     const { rate: platformFeeRate, source: feeRateSource } = settledViaConnect
       ? { rate: 0, source: 'settled_via_connect' as const }
       : rateForPaymentRail(await this.commissionRulesService.resolveRate(storeId), paymentMethodType);
-    const platformFee   = this.round(saleAmount * platformFeeRate);
-    const processingFee = chargesProcessingFee ? this.round(saleAmount * PAYMENT_PROCESSING_RATE + PAYMENT_PROCESSING_FIXED) : 0;
+    const feeBase       = Math.max(0, saleAmount - Math.max(0, giftCreditShare));
+    const platformFee   = this.round(feeBase * platformFeeRate);
+    const processingFee = chargesProcessingFee ? this.round(feeBase * PAYMENT_PROCESSING_RATE + PAYMENT_PROCESSING_FIXED) : 0;
     const netAmount     = this.round(saleAmount - platformFee - processingFee);
 
     await this.withTransaction(async (session) => {
@@ -1949,7 +1990,7 @@ export class FinanceService implements OnModuleInit {
       const heldCredit = platformHoldsFunds ? netAmount : Math.max(0, this.round(platformSponsoredUSD));
       balance.pendingBalance  = this.round(balance.pendingBalance + heldCredit);
       balance.totalRevenue    = this.round(balance.totalRevenue + saleAmount);
-      balance.totalFees       = this.round(balance.totalFees + platformFee + processingFee);
+      balance.totalFees       = this.round(balance.totalFees + platformFee + processingFee + (settledViaConnect ? Math.max(0, connectFee) : 0));
       // A credit can pay down a prior debt (see recordRefund) — re-check
       // whether the balance has climbed back to non-negative.
       this.reevaluateDebtFlag(balance);
@@ -1973,6 +2014,8 @@ export class FinanceService implements OnModuleInit {
           feeRate: platformFeeRate, feeRateSource,
           settledDirectly: !platformHoldsFunds, paymentRail: classifyPaymentRail(paymentMethodType),
           ...(settledViaConnect ? { settledViaConnect: true } : {}),
+          ...(recordedAtPlacement ? { recordedAt: 'placement' } : {}),
+          ...(giftCreditShare > 0 ? { giftCreditShare: this.round(giftCreditShare) } : {}),
           // Sales tax inside `saleAmount` (same currency) — what the seller owes the tax authority, never an estimate.
           ...(taxCollected > 0 ? { taxCollected: this.round(taxCollected) } : {}),
         },
@@ -2000,6 +2043,23 @@ export class FinanceService implements OnModuleInit {
         },
       });
       if (feeTx) await feeTx.save({ session });
+
+      // Connect card sale: the card cost was taken as the charge's application_fee (the platform never holds the money).
+      // Shown to the seller as an informational fee row (no balance movement) so "fees" matches what they really paid.
+      if (settledViaConnect && connectFee > 0) {
+        await new this.txModel({
+          storeId, sellerId, currency,
+          type: 'fee',
+          amount: -this.round(connectFee),
+          balanceBefore,
+          balanceAfter: balance.availableBalance,
+          description: `Card processing fee — Order #${orderId}`,
+          referenceId: orderId,
+          referenceType: 'order',
+          status: 'completed',
+          metadata: { applicationFee: true, settledViaConnect: true, originalFee: this.round(connectFee), paymentMethodType },
+        }).save({ session });
+      }
 
       // Ledger: platform-subsidy audit entry — informational only, doesn't move
       // the balance again (already folded into `saleAmount`/netAmount above);
@@ -2068,6 +2128,74 @@ export class FinanceService implements OnModuleInit {
   }
 
   /**
+   * Stripe returns a Connect charge's application fee in proportion to what is refunded (refund_application_fee). An order
+   * edit that refunds the difference to the card does the same, without a ledger refund row (the sale amount itself shrinks —
+   * see syncDirectSale) — so the informational card-fee row follows. `saleAmountBefore` is the sale amount BEFORE the edit.
+   */
+  async reverseConnectCardFee(storeId: string, orderId: string, refundAmount: number, saleAmountBefore: number): Promise<void> {
+    if (!(refundAmount > 0) || !(saleAmountBefore > 0)) return;
+    const feeRow: any = await this.txModel.findOne({ storeId, referenceId: orderId, referenceType: 'order', type: 'fee', 'metadata.applicationFee': true }).lean();
+    if (!feeRow?.metadata?.applicationFee) return;
+    const original = Number(feeRow.metadata.originalFee ?? Math.abs(feeRow.amount));
+    const give = Math.min(Math.abs(feeRow.amount), this.round((original * refundAmount) / saleAmountBefore));
+    if (!(give > 0)) return;
+    await this.withTransaction(async (session) => {
+      await this.txModel.updateOne(
+        { _id: feeRow._id },
+        { $set: { amount: -this.round(Math.abs(feeRow.amount) - give), 'metadata.refundedFee': this.round(Number(feeRow.metadata.refundedFee ?? 0) + give) } },
+        { session },
+      );
+      const balance = await this.getOrCreateBalance(storeId, feeRow.sellerId, feeRow.currency, session);
+      balance.totalFees = this.round(balance.totalFees - give);
+      await balance.save({ session });
+    });
+  }
+
+  /** The part of `amount` that is sales tax, in the same proportion the sale row collected it (0 when the sale had none). */
+  private taxShareOf(saleTx: any, amount: number): number {
+    const tax = Number(saleTx?.metadata?.taxCollected ?? 0);
+    const total = Number(saleTx?.amount ?? 0);
+    if (!(tax > 0) || !(total > 0)) return 0;
+    return this.round(Math.min(tax, (amount * tax) / total));
+  }
+
+  /**
+   * A directly-settled sale (see recordRefund) is recorded the moment the order is placed. If the order is then edited
+   * (items removed / quantity changed / added on an unpaid COD), the informational sale row follows the new amount,
+   * so revenue, tax and the not-yet-invoiced transaction fee always match the order. No-op for a platform-held sale
+   * (its balance credit is never rewritten) or when nothing was recorded.
+   */
+  async syncDirectSale(storeId: string, orderId: string, newAmount: number, newTax: number, newGiftCreditShare = 0): Promise<void> {
+    await this.withTransaction(async (session) => {
+      const saleTx: any = await this.txModel.findOne({ storeId, referenceId: orderId, referenceType: 'order', type: 'sale' }).session(session);
+      if (!saleTx || !saleTx.metadata?.settledDirectly) return;
+      const delta = this.round(newAmount - saleTx.amount);
+      if (Math.abs(delta) < 0.005) return;
+
+      const balance = await this.getOrCreateBalance(storeId, saleTx.sellerId, saleTx.currency, session);
+      balance.totalRevenue = this.round(balance.totalRevenue + delta);
+
+      const feeTx: any = await this.txModel.findOne({ storeId, referenceId: orderId, referenceType: 'order', type: 'fee' }).session(session);
+      const rate = Number(saleTx.metadata?.feeRate ?? 0);
+      if (feeTx && feeTx.metadata?.billing?.status === 'pending_invoice' && rate > 0) {
+        const newFee = this.round(Math.max(0, newAmount - Math.max(0, newGiftCreditShare)) * rate);
+        const oldFee = Math.abs(feeTx.amount);
+        feeTx.amount = -newFee;
+        feeTx.set('metadata.platformFee', newFee);
+        await feeTx.save({ session });
+        balance.totalFees = this.round(balance.totalFees + (newFee - oldFee));
+        saleTx.set('metadata.platformFee', newFee);
+      }
+      await balance.save({ session });
+
+      saleTx.amount = this.round(newAmount);
+      saleTx.set('metadata.taxCollected', newTax > 0 ? this.round(newTax) : 0);
+      saleTx.set('metadata.giftCreditShare', newGiftCreditShare > 0 ? this.round(newGiftCreditShare) : 0);
+      await saleTx.save({ session });
+    });
+  }
+
+  /**
    * Record a refund — reverses the net sale amount from available or pending
    * balance. Call this from OrdersService when a refund is issued, or from
    * the Stripe webhook handler on `charge.refunded`/`charge.dispute.created`.
@@ -2084,6 +2212,7 @@ export class FinanceService implements OnModuleInit {
   ) {
     const referenceType = opts?.referenceType ?? 'order';
     const currency = opts?.currency ?? 'USD';
+    let taxRefundedPlatform = 0;
 
     // An ORDER refund may only claw back money the seller was actually
     // credited. Without this, cancelling/refunding a paid order whose sale was
@@ -2096,10 +2225,6 @@ export class FinanceService implements OnModuleInit {
         const current = await this.getOrCreateBalance(storeId, sellerId, currency);
         return { balanceAfter: current.availableBalance, skipped: 'no_sale_credited' as const };
       }
-      if (saleTx.metadata?.settledDirectly) {
-        const current = await this.getOrCreateBalance(storeId, sellerId, currency);
-        return { balanceAfter: current.availableBalance, skipped: 'settled_directly' as const };
-      }
       // Never refund more than was credited for this order, cumulatively.
       const prior: any[] = await this.txModel.find({ storeId, referenceId, referenceType: 'order', type: 'refund' }).select('amount').lean();
       const alreadyRefunded = prior.reduce((sum, t) => sum + Math.abs(t.amount ?? 0), 0);
@@ -2109,6 +2234,58 @@ export class FinanceService implements OnModuleInit {
         return { balanceAfter: current.availableBalance, skipped: 'already_fully_refunded' as const };
       }
       refundAmount = Math.min(refundAmount, remaining);
+      taxRefundedPlatform = this.taxShareOf(saleTx, refundAmount);
+
+      // A sale the seller was paid for DIRECTLY (Connect card, COD, bank transfer, own gateway) never touched the
+      // platform balance, so its refund must not either — but it IS recorded, so revenue, refunds and tax reports
+      // match what really happened. Informational row: no balance movement, no debt flag.
+      if (saleTx.metadata?.settledDirectly) {
+        const taxRefunded = this.taxShareOf(saleTx, refundAmount);
+        // Connect refunds pass refund_application_fee, so Stripe gives the card fee back in proportion to the refund.
+        let feeReversal: { id: any; give: number; newAmount: number; refundedFee: number } | null = null;
+        if (saleTx.metadata?.settledViaConnect && saleTx.amount > 0) {
+          const feeRow: any = await this.txModel.findOne({ storeId, referenceId, referenceType: 'order', type: 'fee', 'metadata.applicationFee': true }).lean();
+          if (feeRow?.metadata?.applicationFee) {
+            const original = Number(feeRow.metadata.originalFee ?? Math.abs(feeRow.amount));
+            const give = Math.min(Math.abs(feeRow.amount), this.round((original * refundAmount) / saleTx.amount));
+            if (give > 0) {
+              feeReversal = {
+                id: feeRow._id, give,
+                newAmount: -this.round(Math.abs(feeRow.amount) - give),
+                refundedFee: this.round(Number(feeRow.metadata.refundedFee ?? 0) + give),
+              };
+            }
+          }
+        }
+        const balanceAfter = await this.withTransaction(async (session) => {
+          const balance = await this.getOrCreateBalance(storeId, sellerId, currency, session);
+          balance.totalRefunds = this.round(balance.totalRefunds + refundAmount);
+          if (feeReversal) {
+            await this.txModel.updateOne({ _id: feeReversal.id }, { $set: { amount: feeReversal.newAmount, 'metadata.refundedFee': feeReversal.refundedFee } }, { session });
+            balance.totalFees = this.round(balance.totalFees - feeReversal.give);
+          }
+          await balance.save({ session });
+          await new this.txModel({
+            storeId, sellerId, currency,
+            type: 'refund',
+            amount: -refundAmount,
+            balanceBefore: balance.availableBalance,
+            balanceAfter: balance.availableBalance,
+            description: opts?.description ?? `Refund — Order #${referenceId}`,
+            referenceId,
+            referenceType,
+            status: 'completed',
+            metadata: { settledDirectly: true, ...(taxRefunded > 0 ? { taxRefunded } : {}) },
+          }).save({ session });
+          return balance.availableBalance;
+        });
+        this.activityLogService.log({
+          storeId, category: 'finance', action: 'refund_issued',
+          description: opts?.description ?? `Order #${referenceId} — ${refundAmount.toFixed(2)} ${currency} refunded (settled directly)`,
+          actorId: actorId ?? sellerId, actorRole: actorRole ?? 'seller', targetId: referenceId, targetType: opts?.targetType ?? 'order',
+        });
+        return { balanceAfter };
+      }
     }
 
     const { balanceAfter, justFlagged } = await this.withTransaction(async (session) => {
@@ -2143,6 +2320,8 @@ export class FinanceService implements OnModuleInit {
         referenceId,
         referenceType,
         status: 'completed',
+        // Platform-held sale refund: remember the tax part so tax reports can net it out.
+        ...(taxRefundedPlatform > 0 ? { metadata: { taxRefunded: taxRefundedPlatform } } : {}),
       });
       await tx.save({ session });
 

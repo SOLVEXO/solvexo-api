@@ -8,7 +8,7 @@ export class Notification {
   @Prop({ required: true })
   recipientId: string;
 
-  @Prop({ required: true, enum: ['user', 'seller'] })
+  @Prop({ required: true, enum: ['user', 'seller', 'admin'] })
   recipientRole: string;
 
   /** Which store this notification belongs to — null for an account-wide event with no single store (e.g. a cross-store login/security notice). */

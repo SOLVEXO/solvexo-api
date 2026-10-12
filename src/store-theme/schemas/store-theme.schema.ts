@@ -92,8 +92,8 @@ export class StorefrontColors {
   @Prop({ type: String, enum: ['square', 'portrait', 'landscape', 'adapt'], default: 'square' })
   productImageRatio: 'square' | 'portrait' | 'landscape' | 'adapt';
 
-  @Prop({ type: String, enum: ['none', 'zoom'], default: 'none' })
-  productImageHover: 'none' | 'zoom';
+  @Prop({ type: String, enum: ['none', 'zoom', 'second-image'], default: 'none' })
+  productImageHover: 'none' | 'zoom' | 'second-image';
 
   @Prop({ type: String, enum: ['cozy', 'relaxed'], default: 'cozy' })
   productGridDensity: 'cozy' | 'relaxed';

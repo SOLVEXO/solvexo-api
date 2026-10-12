@@ -5,6 +5,9 @@ import { RedisService } from '../redis/redis.service';
 import { FinanceService } from '../finance/finance.service';
 import { resolveDateRange, enumerateBuckets, bucketExpr, rangeCacheKey } from '../analytics/utils/analytics-date.util';
 import { round } from '../common/number.util';
+import { periodTotals, sellerOrderMatchStage, sumUSD } from '../analytics/utils/order-aggregation.util';
+import { classifyPaymentRail } from '../commission-rules/payment-rail';
+import { sellerPayoutBasis, sellerPayoutCurrency } from '../common/seller-payout-basis.util';
 import { buildAnalyticsCacheKey, withAnalyticsCache } from '../analytics/utils/analytics-cache.util';
 import { getPlatformEarnings } from '../common/platform-earnings.util';
 import { toCsv } from '../analytics/utils/csv.util';
@@ -81,6 +84,61 @@ export class AdminFinanceService {
    * Card payments are NOT a revenue line: they settle straight into the seller's
    * connected account and the card-network cost is passed through.
    */
+  /**
+   * The monthly third-party transaction-fee bills sellers owe Solvexo (USD) — so the platform owner can see WHO has not
+   * paid, why, and open the Stripe invoice, instead of only a total. Newest first.
+   */
+  async getTransactionFeeBills(query: any) {
+    const page = Math.max(1, Number(query.page) || 1);
+    const limit = Math.min(100, Math.max(1, Number(query.limit) || 20));
+    const filter: Record<string, any> = { isDelete: false };
+    switch (query.status ?? 'open') {
+      case 'open': filter.status = { $in: ['invoiced', 'payment_failed', 'failed'] }; break;
+      case 'all': break;
+      default: filter.status = query.status;
+    }
+
+    const [bills, total, openAgg] = await Promise.all([
+      this.r.transactionFeeBillModel.find(filter).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit).lean(),
+      this.r.transactionFeeBillModel.countDocuments(filter),
+      this.r.transactionFeeBillModel.aggregate([
+        { $match: { isDelete: false, status: { $in: ['invoiced', 'payment_failed', 'failed'] } } },
+        { $group: { _id: null, amountUSD: { $sum: '$amountUSD' }, count: { $sum: 1 } } },
+      ]),
+    ]);
+
+    const [stores, sellers] = await Promise.all([
+      this.r.storeModel.find({ _id: { $in: (bills as any[]).map((b) => b.storeId) } }).select('name').lean(),
+      this.r.sellerModel.find({ _id: { $in: (bills as any[]).map((b) => b.sellerId) } }).select('name email').lean(),
+    ]);
+    const storeName = new Map((stores as any[]).map((s) => [String(s._id), s.name]));
+    const sellerMap = new Map((sellers as any[]).map((s) => [String(s._id), s]));
+
+    return {
+      success: true,
+      data: {
+        currency: 'USD',
+        pagination: { page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) },
+        outstanding: { count: openAgg[0]?.count ?? 0, amountUSD: round(openAgg[0]?.amountUSD ?? 0) },
+        bills: (bills as any[]).map((b) => ({
+          billId: String(b._id),
+          periodKey: b.periodKey,
+          storeId: b.storeId,
+          storeName: storeName.get(b.storeId) ?? 'Unknown',
+          sellerName: sellerMap.get(b.sellerId)?.name ?? 'Unknown',
+          sellerEmail: sellerMap.get(b.sellerId)?.email ?? '',
+          amountUSD: round(b.amountUSD ?? 0),
+          saleCount: b.saleCount ?? 0,
+          status: b.status,
+          failureReason: b.failureReason ?? null,
+          hostedInvoiceUrl: b.hostedInvoiceUrl ?? null,
+          paidAt: b.paidAt ?? null,
+          createdAt: b.createdAt,
+        })),
+      },
+    };
+  }
+
   async getPlatformRevenue(query: any) {
     const { from, to } = resolveDateRange(query);
 
@@ -270,6 +328,22 @@ export class AdminFinanceService {
           consolidatedUSD.pkrShare.platformEarnings += conv(c.platformEarnings)!;
         }
       }
+      // GMV / net revenue / refunds / order count are ORDER-based — exactly the figures Admin Analytics shows (items subtotal of
+      // non-cancelled orders on the order date, USD at each order's own frozen rate). The ledger only knows sales by when they
+      // were recorded, so it stays the source for balances and platform earnings, not for these headline numbers.
+      const [orderTotals, nonUsdRows] = await Promise.all([
+        periodTotals(this.r.orderModel, from, to),
+        this.r.orderModel.aggregate([
+          ...sellerOrderMatchStage(from, to),
+          { $match: { 'sellerOrders.status': { $ne: 'cancelled' }, currency: { $ne: 'USD' } } },
+          { $group: { _id: null, gmv: sumUSD('$sellerOrders.subtotal') } },
+        ]),
+      ]);
+      consolidatedUSD.gmv = orderTotals.grossRevenue;
+      consolidatedUSD.netRevenue = orderTotals.netRevenue;
+      consolidatedUSD.refunds = orderTotals.refundAmount;
+      consolidatedUSD.totalOrders = orderTotals.orderCount;
+      consolidatedUSD.pkrShare.gmv = nonUsdRows[0]?.gmv ?? 0;
       for (const k of ['gmv', 'netRevenue', 'refunds', 'platformEarnings', 'platformCommission', 'paymentProcessingFees'] as const) {
         consolidatedUSD[k] = round(consolidatedUSD[k]);
       }
@@ -294,7 +368,7 @@ export class AdminFinanceService {
           pendingVerificationMethodsCount,
           pendingManualPaymentsCount,
           payoutQueue: Object.fromEntries(Object.entries(payoutQueue).map(([k, v]) => [k, { ...v, byCurrency: v.byCurrency.map((c) => this.convertRowToUsd(c, c.currency, ['amount'], rates)) }])),
-          note: 'All figures are in USD (non-USD stores converted at the latest FX rate). byCurrency rows are per settlement currency, also in USD (null = no FX rate set). gmv/netRevenue/refunds/totalOrders are scoped to the selected period; sellerBalances are current, all-time snapshots regardless of the date filter.',
+          note: 'All figures are in USD (non-USD stores converted at the latest FX rate). consolidatedUSD gmv/netRevenue/refunds/totalOrders are order-based and identical to Admin Analytics (store orders; a cart from 2 stores counts as 2). byCurrency rows are per settlement currency from the finance ledger, also in USD (null = no FX rate set). sellerBalances are current, all-time snapshots regardless of the date filter.',
         },
       };
     });
@@ -1050,45 +1124,85 @@ export class AdminFinanceService {
    * never corrects them automatically.
    */
   async getReconciliation(days = 1) {
-    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+    const now = Date.now();
+    const since = new Date(now - days * 24 * 60 * 60 * 1000);
+    // Orders placed in the last few minutes may not be recorded yet — give them a grace period.
+    const until = new Date(now - 10 * 60 * 1000);
 
-    const [orders, saleTx, feeTx, refundTx] = await Promise.all([
-      this.r.orderModel.aggregate([
-        { $match: { createdAt: { $gte: since }, isDelete: false } },
-        { $group: { _id: '$currency', totalCollected: { $sum: '$totalAmount' }, count: { $sum: 1 } } },
-      ]),
-      this.r.transactionModel.aggregate([
-        { $match: { type: 'sale', createdAt: { $gte: since } } },
-        { $group: { _id: '$currency', total: { $sum: '$amount' } } },
-      ]),
-      this.r.transactionModel.aggregate([
-        { $match: { type: 'fee', createdAt: { $gte: since } } },
-        { $group: { _id: '$currency', total: { $sum: '$amount' } } }, // stored negative
-      ]),
-      this.r.transactionModel.aggregate([
-        { $match: { type: 'refund', createdAt: { $gte: since } } },
-        { $group: { _id: '$currency', total: { $sum: '$amount' } } }, // stored negative
-      ]),
-    ]);
+    // Orders only have a ledger sale at placement since the first sale stamped `recordedAt: 'placement'`; before that, a
+    // directly-settled order was recorded at completion, so reconciling it would raise a false alarm. No such sale yet
+    // (nothing deployed / no orders) -> nothing to reconcile.
+    const firstPlacement: any = await this.r.transactionModel
+      .findOne({ type: 'sale', 'metadata.recordedAt': 'placement' })
+      .sort({ createdAt: 1 })
+      .select('createdAt')
+      .lean();
+    const from = firstPlacement ? new Date(Math.max(since.getTime(), new Date(firstPlacement.createdAt).getTime() - 60_000)) : null;
 
     const byCurrency: Record<string, any> = {};
     const ensure = (currency: string) => {
       if (!byCurrency[currency]) {
-        byCurrency[currency] = { currency, buyerCollected: 0, orderCount: 0, ledgerNet: 0, fees: 0, refunds: 0 };
+        byCurrency[currency] = {
+          currency, orderCount: 0, expectedSales: 0, ledgerSales: 0, missingSaleCount: 0, mismatchedSaleCount: 0,
+          // legacy field names (kept so stored runs and the admin UI keep working)
+          buyerCollected: 0, ledgerNet: 0, fees: 0, refunds: 0, expectedFromLedger: 0,
+        };
       }
       return byCurrency[currency];
     };
-    for (const o of orders) { const b = ensure(o._id || 'USD'); b.buyerCollected = round(o.totalCollected); b.orderCount = o.count; }
-    for (const t of saleTx) { ensure(t._id || 'USD').ledgerNet += round(t.total); }
-    for (const t of feeTx) { ensure(t._id || 'USD').fees += round(t.total); }
-    for (const t of refundTx) { ensure(t._id || 'USD').refunds += round(t.total); }
 
-    const TOLERANCE = 0.01; // per-currency rounding tolerance, not a real discrepancy threshold
+    if (from && from < until) {
+      const orders: any[] = await this.r.orderModel
+        .find({ isDelete: false, createdAt: { $gte: from, $lte: until }, exchangeOf: null })
+        .select('sellerOrders currency paymentType')
+        .limit(20000)
+        .lean();
+
+      // What the ledger SHOULD hold: one sale per directly-settled sub-order (recorded at placement), and per completed
+      // platform-held / platform-sponsored sub-order (recorded at completion).
+      const expected: { storeId: string; orderId: string; amount: number; currency: string }[] = [];
+      for (const order of orders) {
+        for (const so of order.sellerOrders ?? []) {
+          const direct = !!so.settledViaConnect || classifyPaymentRail(order.paymentType) !== 'solvexo_card';
+          const placementRecorded = direct && !((so.platformSponsoredDiscountUSD ?? 0) > 0);
+          if (!placementRecorded && so.status !== 'completed') continue;
+          expected.push({
+            storeId: String(so.storeId), orderId: String(order._id),
+            amount: sellerPayoutBasis(so, order), currency: sellerPayoutCurrency(so, order),
+          });
+        }
+      }
+
+      const sales: any[] = expected.length === 0 ? [] : await this.r.transactionModel
+        .find({ type: 'sale', referenceType: 'order', referenceId: { $in: [...new Set(expected.map((e) => e.orderId))] } })
+        .select('storeId referenceId amount')
+        .lean();
+      const ledger = new Map<string, number>(sales.map((t) => [`${t.storeId}:${t.referenceId}`, Number(t.amount) || 0]));
+
+      for (const e of expected) {
+        const b = ensure(e.currency || 'USD');
+        const recorded = ledger.get(`${e.storeId}:${e.orderId}`);
+        b.orderCount += 1;
+        b.expectedSales = round(b.expectedSales + e.amount);
+        if (recorded === undefined) {
+          b.missingSaleCount += 1;
+        } else {
+          b.ledgerSales = round(b.ledgerSales + recorded);
+          if (Math.abs(recorded - e.amount) > 0.01) b.mismatchedSaleCount += 1;
+        }
+      }
+    }
+
+    const TOLERANCE = 0.01; // per-currency rounding tolerance
     const results = Object.values(byCurrency).map((b: any) => {
-      // ledgerNet is what sellers were actually credited net-of-fee; fees/refunds are stored as negative deltas already.
-      const expectedFromLedger = round(b.ledgerNet + Math.abs(b.fees) + b.refunds);
-      const drift = round(b.buyerCollected - expectedFromLedger);
-      return { ...b, expectedFromLedger, drift, hasDiscrepancy: Math.abs(drift) > TOLERANCE };
+      // drift = what the orders say the ledger should hold minus what it holds (missing sales count fully)
+      const drift = round(b.expectedSales - b.ledgerSales);
+      return {
+        ...b,
+        buyerCollected: b.expectedSales, ledgerNet: b.ledgerSales, expectedFromLedger: b.ledgerSales,
+        drift,
+        hasDiscrepancy: Math.abs(drift) > TOLERANCE || b.missingSaleCount > 0 || b.mismatchedSaleCount > 0,
+      };
     });
 
     return {
@@ -1105,7 +1219,7 @@ export class AdminFinanceService {
   async getReconciliationUsd(days = 1) {
     const { data } = await this.getReconciliation(days);
     const rates = await this.getUsdRates();
-    const fields = ['buyerCollected', 'ledgerNet', 'fees', 'refunds', 'expectedFromLedger', 'drift'];
+    const fields = ['buyerCollected', 'ledgerNet', 'fees', 'refunds', 'expectedFromLedger', 'drift', 'expectedSales', 'ledgerSales'];
     return { success: true, data: { ...data, byCurrency: data.byCurrency.map((c: any) => this.convertRowToUsd(c, c.currency, fields, rates)) } };
   }
 
@@ -1131,7 +1245,7 @@ export class AdminFinanceService {
           storeId: 'platform',
           category: 'finance',
           action: 'reconciliation_discrepancy_detected',
-          description: `Reconciliation drift of ${c.drift} ${c.currency} detected — buyer collected ${c.buyerCollected}, ledger expected ${c.expectedFromLedger}`,
+          description: `Reconciliation drift of ${c.drift} ${c.currency} detected — orders expect ${c.expectedSales} in sales, ledger holds ${c.ledgerSales} (${c.missingSaleCount} order(s) missing from the ledger, ${c.mismatchedSaleCount} with a different amount)`,
           actorId: 'system',
           actorRole: 'system',
           isSecurityAlert: true,

@@ -21,9 +21,61 @@ export function notCancelledCond() {
   return { $ne: ['$sellerOrders.status', 'cancelled'] };
 }
 
-/** Sum of item-level refunds for the current sellerOrder — `$sum` over an array field works as an array accumulator outside `$group`. */
+/**
+ * Gift cards and store credit are a way of PAYING, not a discount (Shopify): a sale paid with them is still a full sale. Item
+ * prices (and so `sellerOrders.subtotal`) are stored net of those shares, so sales figures add them back. A share whose item
+ * was cancelled is dropped, and a refunded item gives its share back in proportion (the refund goes to the gift card / credit).
+ * Same currency as `subtotal` (the order's). Pure read-side maths — no money is moved by it.
+ */
+export function giftCreditShareField() {
+  return {
+    $sum: {
+      $map: {
+        input: { $filter: { input: { $ifNull: ['$sellerOrders.items', []] }, as: 'it', cond: { $ne: ['$$it.status', 'cancelled'] } } },
+        as: 'i',
+        in: {
+          $multiply: [
+            { $add: [{ $ifNull: ['$$i.giftCardDiscountUSD', 0] }, { $ifNull: ['$$i.storeCreditDiscountUSD', 0] }] },
+            {
+              $subtract: [1, {
+                $cond: [
+                  { $gt: [{ $ifNull: ['$$i.totalPrice', 0] }, 0] },
+                  { $min: [1, { $divide: [{ $ifNull: ['$$i.refundedAmount', 0] }, '$$i.totalPrice'] }] },
+                  0,
+                ],
+              }],
+            },
+          ],
+        },
+      },
+    },
+  };
+}
+
+/** Item sales of the current sellerOrder INCLUDING the part paid with a gift card / store credit — what every sales figure sums. */
+export function saleSubtotalExpr() {
+  return { $add: [{ $ifNull: ['$sellerOrders.subtotal', 0] }, giftCreditShareField()] };
+}
+
+/** Everything refunded on the current sellerOrder (items incl. their tax share + standalone refunds). */
+export function rawRefundedField() {
+  return { $add: [{ $sum: '$sellerOrders.items.refundedAmount' }, { $ifNull: ['$sellerOrders.manualRefundedAmount', 0] }] };
+}
+
+/**
+ * Refunded amount for the current sellerOrder in REVENUE terms. Revenue is the item `subtotal` (no tax), but refunds are
+ * recorded with their tax share (and standalone "Refund $X" amounts live in `manualRefundedAmount`), so the total refunded
+ * is scaled by subtotal / (subtotal + tax) — otherwise net revenue would be understated by the refunded tax.
+ */
+/** subtotal / (subtotal + tax) of the current sellerOrder: the part of any refund that is item value rather than tax. */
+export function taxFreeShareExpr() {
+  const sub = { $ifNull: ['$sellerOrders.subtotal', 0] };
+  const tax = { $ifNull: ['$sellerOrders.taxAmount', 0] };
+  return { $cond: [{ $gt: [{ $add: [sub, tax] }, 0] }, { $divide: [sub, { $add: [sub, tax] }] }, 1] };
+}
+
 export function itemRefundSumField() {
-  return { $sum: '$sellerOrders.items.refundedAmount' };
+  return { $multiply: [rawRefundedField(), taxFreeShareExpr()] };
 }
 
 /**
@@ -185,7 +237,7 @@ export async function periodTotals(orderModel: Model<any>, from: Date, to: Date,
         orderCount: { $sum: { $cond: [notCancelledCond(), 1, 0] } },
         cancelledCount: { $sum: { $cond: [notCancelledCond(), 0, 1] } },
         refundedCount: { $sum: { $cond: [{ $eq: ['$sellerOrders.status', 'refunded'] }, 1, 0] } },
-        grossRevenue: { $sum: { $cond: [notCancelledCond(), { $ifNull: [toReporting('$sellerOrders.subtotal', rc), 0] }, 0] } },
+        grossRevenue: { $sum: { $cond: [notCancelledCond(), { $ifNull: [toReporting(saleSubtotalExpr(), rc), 0] }, 0] } },
         refundAmount: { $sum: { $cond: [notCancelledCond(), { $ifNull: [toReporting('$itemRefund', rc), 0] }, 0] } },
         unconvertibleOrderCount: { $sum: { $cond: [{ $and: [notCancelledCond(), unconvertibleCond(rc)] }, 1, 0] } },
         buyerIds: { $addToSet: { $cond: [notCancelledCond(), { $ifNull: ['$customerId', '$userId'] }, '$$REMOVE'] } },
@@ -257,14 +309,18 @@ export async function aggregateProductSales(orderModel: Model<any>, from: Date, 
     ...sellerOrderMatchStage(from, to, scopeMatch),
     { $match: { 'sellerOrders.status': { $ne: 'cancelled' } } },
     { $unwind: '$sellerOrders.items' },
+    // An item removed/cancelled on its own (order edit, partial cancel) is no sale.
+    { $match: { 'sellerOrders.items.status': { $ne: 'cancelled' } } },
     {
       $group: {
         _id: '$sellerOrders.items.productId',
         name: { $first: '$sellerOrders.items.name' },
         orderCount: { $sum: 1 },
         unitsSold: { $sum: '$sellerOrders.items.quantity' },
-        grossRevenue: sumUSD('$sellerOrders.items.totalPrice', rc),
-        refundedAmount: sumUSD('$sellerOrders.items.refundedAmount', rc),
+        // item price + the part paid with a gift card / store credit (still a sale — see giftCreditShareField)
+        grossRevenue: sumUSD({ $add: ['$sellerOrders.items.totalPrice', { $ifNull: ['$sellerOrders.items.giftCardDiscountUSD', 0] }, { $ifNull: ['$sellerOrders.items.storeCreditDiscountUSD', 0] }] }, rc),
+        // Item refunds carry their tax share, item revenue does not — scale to revenue terms.
+        refundedAmount: sumUSD({ $multiply: [{ $ifNull: ['$sellerOrders.items.refundedAmount', 0] }, taxFreeShareExpr()] }, rc),
       },
     },
   ]);
@@ -301,7 +357,7 @@ export async function allTimeCustomerAggregate(orderModel: Model<any>, scopeMatc
         firstOrderAt: { $min: '$createdAt' },
         lastOrderAt: { $max: '$createdAt' },
         totalOrders: { $sum: 1 },
-        grossRevenue: sumUSD('$sellerOrders.subtotal', rc),
+        grossRevenue: sumUSD(saleSubtotalExpr(), rc),
         refundAmount: sumUSD('$itemRefund', rc),
       },
     },

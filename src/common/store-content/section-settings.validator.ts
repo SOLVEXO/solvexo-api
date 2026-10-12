@@ -633,7 +633,6 @@ function assertOptionalImageUrl(value: unknown, field: string): void {
 function validateNavChildren(item: Record<string, any>, depth: number): void {
   if (item.children === undefined) return;
   if (!Array.isArray(item.children)) throw new BadRequestException('children must be an array');
-  if (item.children.length > 8) throw new BadRequestException('A dropdown cannot have more than 8 items');
   if (depth >= 3 && item.children.length) throw new BadRequestException('Navigation menus cannot exceed 3 levels');
   for (const child of item.children) {
     required(child?.label, 'children[].label');

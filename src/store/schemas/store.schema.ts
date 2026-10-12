@@ -485,15 +485,12 @@ export class Store {
   @Prop({ type: Object, default: null })
   builderConfig: Record<string, any> | null;
 
-  @Prop({ type: String, default: null })
-  coverImage: string | null;
-
   // Real, dedicated brand-asset override — a store's `logo` is often a wide
   // rectangular wordmark, which renders poorly shrunk into a 16-32px browser
   // tab icon. Null (the pre-existing-store-safe default) falls back to
   // `logo`, then to the platform default, exactly matching the storefront's
   // behavior before this field existed — see `StorefrontLayout.tsx`'s
-  // `useStorefrontFavicon`. Not the same concept as `logo`/`coverImage`
+  // `useStorefrontFavicon`. Not the same concept as `logo`
   // (storefront-visible brand imagery) — this is chrome-only, never rendered
   // inside the page itself.
   @Prop({ type: String, default: null })

@@ -14,6 +14,7 @@ import { RejectPayoutDto } from './dto/reject-payout.dto';
 import { ManualPayoutDto } from './dto/manual-payout.dto';
 import { AdminFinanceExportQueryDto } from './dto/admin-finance-export-query.dto';
 import { VerifyPayoutMethodDto } from './dto/verify-payout-method.dto';
+import { TransactionFeeBillsQueryDto } from './dto/transaction-fee-bills-query.dto';
 
 @ApiTags('Admin Finance')
 @ApiBearerAuth()
@@ -109,6 +110,11 @@ export class AdminFinanceController {
   }
 
   // ─── Payout queue & lifecycle ────────────────────────────────────────────
+
+  @Get('transaction-fee-bills')
+  getTransactionFeeBills(@Query() query: TransactionFeeBillsQueryDto) {
+    return this.adminFinanceService.getTransactionFeeBills(query);
+  }
 
   @Get('payouts')
   getPayoutQueue(@Query() query: PayoutQueueQueryDto) {

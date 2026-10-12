@@ -54,7 +54,7 @@ describe('SellerPlatformSubscriptionsService — grace period + admin overrides'
       sendStoreLocked: jest.fn().mockResolvedValue(undefined),
       sendMovedToFreePlan: jest.fn().mockResolvedValue(undefined),
     };
-    notificationsService = { notify: jest.fn().mockReturnValue({ catch: jest.fn() }) };
+    notificationsService = { notify: jest.fn().mockReturnValue({ catch: jest.fn() }), notifyAdmins: jest.fn().mockReturnValue({ catch: jest.fn() }) };
     criticalAlerts = { send: jest.fn().mockResolvedValue(undefined) };
 
     const db = {

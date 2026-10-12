@@ -130,6 +130,23 @@ export class OrdersController {
     });
   }
 
+  /** Shopify "Resend email" — see OrdersService.resendCustomerEmail. */
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('orders.edit')
+  @Post('resend-email/:storeId/:orderId')
+  async resendCustomerEmail(
+    @Req() req: any,
+    @Param('storeId') storeId: string,
+    @Param('orderId') orderId: string,
+    @Body() body: { event?: string },
+  ) {
+    return this.ordersService.resendCustomerEmail(actingSellerId(req.user), storeId, orderId, String(body?.event ?? ''), {
+      actorId: req.user.userId ?? req.user.sellerId,
+      actorRole: req.user.role,
+    });
+  }
+
   // Real "Record payments" — see OrdersService.recordOrderPayment's doc
   // comment. Distinct from the legacy `markPaid` above (kept untouched for
   // backward compatibility) — this one captures amount/method/reference and

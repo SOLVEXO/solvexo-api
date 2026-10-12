@@ -5,6 +5,7 @@ import { Job } from 'bullmq';
 import { FirebaseAdminService } from '@/firebase/firebase.config';
 import { EmailService } from '@/otp/services/email.service';
 import { WhatsAppSenderService } from '@/integrations/whatsapp-sender.service';
+import { NotificationsService } from './notifications.service';
 import { QUEUE_NAMES, NOTIFICATION_PUSH_JOB, NOTIFICATION_EMAIL_JOB, NOTIFICATION_WHATSAPP_JOB } from '@/queues/queue.constants';
 
 /**
@@ -21,6 +22,7 @@ export class NotificationsProcessor extends WorkerHost {
     private readonly firebaseAdminService: FirebaseAdminService,
     private readonly emailService: EmailService,
     private readonly whatsAppSenderService: WhatsAppSenderService,
+    private readonly notificationsService: NotificationsService,
   ) {
     super();
   }
@@ -35,7 +37,14 @@ export class NotificationsProcessor extends WorkerHost {
         });
         return;
       case NOTIFICATION_EMAIL_JOB:
-        await this.emailService.sendMail(job.data.to, job.data.subject, job.data.html);
+        {
+          const ok = await this.emailService.sendMail(job.data.to, job.data.subject, job.data.html, job.data.replyTo ?? null, undefined, undefined, job.data.fromName ?? null);
+          if (job.data.timeline?.orderId) {
+            await this.notificationsService.recordEmailTimeline(job.data.timeline.orderId, job.data.timeline.event, job.data.to, ok, job.data.timeline.storeId);
+          } else if (job.data.timeline?.storeId) {
+            await this.notificationsService.recordDeliveryResult(job.data.timeline.storeId, ok);
+          }
+        }
         return;
       case NOTIFICATION_WHATSAPP_JOB:
         await this.whatsAppSenderService.sendOrderTemplate(

@@ -47,7 +47,7 @@ describe('DraftOrdersService.createInvoicePaymentIntent — pays the seller, nev
     const commission = { cardApplicationFeeCents: jest.fn().mockResolvedValue(175) };
     const service = new DraftOrdersService(
       db, { log: jest.fn() } as any, {} as any, {} as any, { get: jest.fn().mockReturnValue('sk_test_dummy') } as any,
-      stripeConnect as any, commission as any, { notify: jest.fn() } as any,
+      stripeConnect as any, commission as any, { notify: jest.fn() } as any, { recordSale: jest.fn() } as any,
     );
     const create = jest.fn().mockResolvedValue({ id: 'pi_1', client_secret: 'cs_1' });
     (service as any).stripe.paymentIntents.create = create;

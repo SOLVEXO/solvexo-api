@@ -69,13 +69,9 @@ export class PromotionsService {
     this.activityLogService.log({ storeId, category: 'promotions', action, description, actorId, actorRole, targetId, targetType: 'promotion_request' });
   }
 
-  private async notifyAdmins(subject: string, html: string) {
-    try {
-      const admins = await this.adminModel.find({}).select('email').lean();
-      await Promise.allSettled(admins.map((a: any) => this.emailService.sendMail(a.email, subject, html)));
-    } catch (err: any) {
-      this.logger.error(`Failed to notify admins: ${err?.message}`);
-    }
+  /** In-app + email (per each admin's own preferences). Text only — the mail template escapes it. */
+  private notifyAdmins(title: string, body: string) {
+    this.notificationsService.notifyAdmins({ type: NOTIFICATION_TYPES.ADMIN_PROMOTION_REQUEST, title, body, data: { link: '/admin' } }).catch(() => {});
   }
 
   // ── Pricing preview ──────────────────────────────────────────────────────────
@@ -146,7 +142,7 @@ export class PromotionsService {
     }).catch(() => {});
     this.notifyAdmins(
       'New promotion request needs review',
-      `<p>A seller submitted a new promotion request for <strong>${dto.placement}</strong> (quoted $${breakdown.priceUSD}). Please review it in the admin Marketing → Promotions tab.</p>`,
+      `A seller submitted a new promotion request for ${dto.placement} (quoted ${breakdown.priceUSD}). Please review it in the admin Marketing → Promotions tab.`,
     );
 
     return { success: true, message: 'Promotion request submitted', data: request };

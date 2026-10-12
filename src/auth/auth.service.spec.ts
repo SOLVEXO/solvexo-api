@@ -41,6 +41,15 @@ function makeFakeModel(seedDocs: any[] = []) {
     };
   });
 
+  // Store lookups by id (signup resolves the store's settings): same await / .select().lean() shapes as findOne.
+  (FakeModel as any).findById = jest.fn((id: unknown) => {
+    const found = docs.find((d) => d._id === id) ?? null;
+    return {
+      then: (resolve: any) => resolve(found),
+      select: () => ({ lean: async () => found }),
+    };
+  });
+
   // Minimal support for the atomic OTP-attempt helper (common/otp.util.ts):
   // only `$inc` / `$set` on a single `_id` match.
   function applyUpdate(doc: any, update: any) {
@@ -305,5 +314,58 @@ describe('AuthService — per-store buyer identity', () => {
       }
       await expect(service.verifyResetOtp('otp@example.com', 'user', real, 'storeA')).rejects.toThrow('Invalid OTP');
     });
+  });
+});
+
+describe('AuthService — admin alert for a new seller', () => {
+  function build(over: Record<string, any> = {}) {
+    const seller: any = {
+      _id: 'seller-1', name: 'Sam <b>', email: 'sam@shop.test', role: 'seller', otp: '123456',
+      otpExpiresAt: new Date(Date.now() + 60_000), otpAttempts: 0, isVerified: false, tokenVersion: 0,
+      save: jest.fn().mockResolvedValue(undefined), ...over,
+    };
+    const { model: sellerModel } = makeFakeModel([seller]);
+    const notifications = { notifyAdmins: jest.fn().mockResolvedValue(2) };
+    const service = new AuthService(
+      { repositories: { userModel: makeFakeModel().model, sellerModel, adminModel: makeFakeModel().model, storeModel: makeFakeModel().model } } as any,
+      { sendOtp: jest.fn() } as any,
+      { set: jest.fn().mockResolvedValue(undefined), del: jest.fn() } as any,
+      { log: jest.fn().mockResolvedValue(undefined) } as any,
+      { sign: jest.fn(() => 'signed-jwt') } as any,
+      notifications as any,
+    );
+    return { service, seller, notifications };
+  }
+
+  it('tells the admins once when a seller verifies their email for the first time', async () => {
+    const { service, notifications } = build();
+    await service.verifyOtp('sam@shop.test', 'seller', '123456');
+    expect(notifications.notifyAdmins).toHaveBeenCalledTimes(1);
+    expect(notifications.notifyAdmins.mock.calls[0][0]).toMatchObject({ type: 'admin_new_seller', title: 'New seller signed up' });
+  });
+
+  it('does not alert again for a seller who was already verified', async () => {
+    const { service, notifications } = build({ isVerified: true });
+    await expect(service.verifyOtp('sam@shop.test', 'seller', '123456')).rejects.toThrow(/already verified/);
+    expect(notifications.notifyAdmins).not.toHaveBeenCalled();
+  });
+
+  it('never alerts for a store customer (role user)', async () => {
+    const { service, notifications } = build();
+    await expect(service.verifyOtp('sam@shop.test', 'user', '123456', 'storeA')).rejects.toBeDefined();
+    expect(notifications.notifyAdmins).not.toHaveBeenCalled();
+  });
+
+  it('still verifies the seller when the notifications module is missing', async () => {
+    const { seller } = build();
+    const { model: sellerModel } = makeFakeModel([seller]);
+    const service = new AuthService(
+      { repositories: { userModel: makeFakeModel().model, sellerModel, adminModel: makeFakeModel().model, storeModel: makeFakeModel().model } } as any,
+      { sendOtp: jest.fn() } as any,
+      { set: jest.fn().mockResolvedValue(undefined), del: jest.fn() } as any,
+      { log: jest.fn().mockResolvedValue(undefined) } as any,
+      { sign: jest.fn(() => 'signed-jwt') } as any,
+    );
+    await expect(service.verifyOtp('sam@shop.test', 'seller', '123456')).resolves.toMatchObject({ success: true });
   });
 });

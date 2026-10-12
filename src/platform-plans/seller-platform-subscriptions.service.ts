@@ -433,6 +433,12 @@ export class SellerPlatformSubscriptionsService {
             body: `${storeName} was moved to the ${freePlan.name} plan after ${MAX_RENEWAL_ATTEMPTS} failed payment attempts.`,
             data: { subscriptionId: String(sub._id) },
           }).catch(() => {});
+          this.notificationsService.notifyAdmins({
+            type: NOTIFICATION_TYPES.ADMIN_PLATFORM_BILLING_FAILED,
+            title: 'Store downgraded — payments failed',
+            body: `${storeName} was moved to the ${freePlan.name} plan after ${MAX_RENEWAL_ATTEMPTS} failed plan payments.`,
+            data: { storeId: sub.storeId, link: '/admin/billing' },
+          }).catch(() => {});
           this.activityLogService.log({
             storeId: sub.storeId, category: 'platform_plans', action: 'plan_downgraded_payment_failure',
             description: `Store auto-downgraded to free plan after ${MAX_RENEWAL_ATTEMPTS} failed payment attempts`,
@@ -453,6 +459,12 @@ export class SellerPlatformSubscriptionsService {
           title: 'Store locked',
           body: `${storeName} was locked after ${MAX_RENEWAL_ATTEMPTS} failed payment attempts — update your payment method to unlock it. Your data is safe.`,
           data: { subscriptionId: String(sub._id) },
+        }).catch(() => {});
+        this.notificationsService.notifyAdmins({
+          type: NOTIFICATION_TYPES.ADMIN_PLATFORM_BILLING_FAILED,
+          title: 'Store locked — payments failed',
+          body: `${storeName} was locked after ${MAX_RENEWAL_ATTEMPTS} failed plan payments.`,
+          data: { storeId: sub.storeId, link: '/admin/billing' },
         }).catch(() => {});
         this.activityLogService.log({
           storeId: sub.storeId, category: 'platform_plans', action: 'plan_locked_payment_failure',

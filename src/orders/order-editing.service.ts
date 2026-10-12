@@ -6,11 +6,15 @@ import { DatabaseService } from '../database/databaseservice';
 import { ActivityLogService } from '../activity-log/activity-log.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { NOTIFICATION_TYPES } from '../notifications/notification.types';
+import { orderCustomerName } from './shipping-email.util';
 import { ExchangeRateService } from '../exchange-rate/exchange-rate.service';
 import { PaymentService } from '../payment/payment.service';
 import { StoreCreditService } from '../store-credit/store-credit.service';
 import { round } from '../common/number.util';
 import { remainingRefundable } from '../common/refund-cap.util';
+import { FinanceService } from '../finance/finance.service';
+import { sellerCashBasis, sellerGiftCreditShare, sellerPayoutBasis } from '../common/seller-payout-basis.util';
+import { sellerTaxShare } from '../common/seller-tax-share.util';
 import { EditOrderDto, OrderShippingAddressDto } from './dto/order-editing.dto';
 
 type Actor = { actorId: string; actorRole: 'seller' | 'staff' };
@@ -42,6 +46,7 @@ export class OrderEditingService {
     private readonly exchangeRate: ExchangeRateService,
     private readonly paymentService: PaymentService,
     private readonly storeCredit: StoreCreditService,
+    private readonly financeService: FinanceService,
   ) {}
 
   private get r() { return this.db.repositories; }
@@ -270,6 +275,15 @@ export class OrderEditingService {
       throw err;
     }
 
+    // ── 4b) the ledger row of a directly-settled sale follows the edited amount (no-op for platform-held sales) ──
+    try {
+      await this.financeService.syncDirectSale(
+        storeId, String(order._id), sellerPayoutBasis(so, order), sellerTaxShare(so, sellerCashBasis(so)), sellerGiftCreditShare(so, order),
+      );
+    } catch (err: any) {
+      console.error('Finance syncDirectSale failed (order edit):', err?.message);
+    }
+
     // ── 5) money: refund the difference on a paid order ──
     let refundNote = '';
     if (refundAmount > 0) {
@@ -284,6 +298,14 @@ export class OrderEditingService {
           if (!txn?.stripePaymentIntentId) throw new Error('No completed Stripe payment found for this order');
           await this.paymentService.refundStripePaymentIntent(txn.stripePaymentIntentId, refundAmount, `order_edit_${order._id}_${newTotals.totalAmount}`);
           refundNote = `Refunded ${refundAmount.toFixed(2)} ${order.currency} to the original payment method`;
+          // Stripe returned the application fee in proportion — mirror that on the seller's card-fee row.
+          try {
+            const settleCurrency = so.settlementCurrency ?? order.currency;
+            const refundSettle = this.exchangeRate.convertWithSnapshots(refundAmount, order.currency, settleCurrency, order.fxSnapshots ?? []);
+            await this.financeService.reverseConnectCardFee(storeId, String(order._id), refundSettle, sellerPayoutBasis(so, order) + refundSettle);
+          } catch (feeErr: any) {
+            console.error('Finance reverseConnectCardFee failed (order edit):', feeErr?.message);
+          }
         } else {
           refundNote = `${refundAmount.toFixed(2)} ${order.currency} was paid outside the platform — refund it to the customer manually`;
         }
@@ -303,11 +325,24 @@ export class OrderEditingService {
       description: `Order #${order.orderNumber} edited: ${lines.join('; ')}`,
       actorId: actor.actorId, actorRole: actor.actorRole, targetId: String(order._id), targetType: 'order',
     });
+    // Only the refund lines that were really issued are customer-safe; "refund it manually" / "REFUND FAILED" are merchant-only instructions.
+    const customerRefundNote = refundNote.startsWith('Refunded ') ? refundNote : '';
     this.notifications.notify({
-      recipientId: String(order.userId), recipientRole: 'user', type: NOTIFICATION_TYPES.ORDER_UPDATED,
+      recipientId: String(order.userId), recipientRole: 'user', type: NOTIFICATION_TYPES.ORDER_UPDATED, storeId,
       title: 'Your order was updated',
-      body: `The store updated order #${order.orderNumber}. New total: ${newTotals.totalAmount.toFixed(2)} ${order.currency}.${refundNote && !refundNote.startsWith('REFUND FAILED') ? ' ' + refundNote + '.' : ''}`,
+      body: `The store updated order #${order.orderNumber}. New total: ${newTotals.totalAmount.toFixed(2)} ${order.currency}.${customerRefundNote ? ' ' + customerRefundNote + '.' : ''}`,
       data: { orderId: String(order._id) },
+      email: {
+        subject: `Your order #${order.orderNumber} was updated`,
+        html: `<p>Order #${order.orderNumber} was updated. New total: ${newTotals.totalAmount.toFixed(2)} ${order.currency}.</p>`,
+        event: 'order_edited',
+        vars: {
+          customerName: orderCustomerName(order),
+          orderNumber: String(order.orderNumber),
+          newTotal: `${newTotals.totalAmount.toFixed(2)} ${order.currency}`,
+          changeNote: customerRefundNote ? `${customerRefundNote}.` : null,
+        },
+      },
     }).catch(() => undefined);
 
     return { success: true, message: 'Order updated', data: { ...summary, refundNote } };

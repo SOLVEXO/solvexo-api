@@ -23,6 +23,10 @@ class PrefFlags {
 
   @Prop({ default: true })
   finance: boolean;
+
+  /** Platform alerts for admins (new seller, verification, refund/payout requests, email failures). */
+  @Prop({ default: true })
+  admin: boolean;
 }
 
 const PrefFlagsSchema = SchemaFactory.createForClass(PrefFlags);
@@ -32,7 +36,7 @@ export class NotificationPreference {
   @Prop({ required: true })
   userId: string;
 
-  @Prop({ required: true, enum: ['user', 'seller'] })
+  @Prop({ required: true, enum: ['user', 'seller', 'admin'] })
   role: string;
 
   // Store-scoped preferences — a seller with multiple stores gets a

@@ -92,6 +92,11 @@ export class PaymentTransaction {
   @Prop({ type: String, default: null })
   stripeConnectedAccountId: string | null;
 
+  // The Stripe application fee taken on this destination charge (card-network cost pass-through + any custom per-seller
+  // rate), in MAJOR units of `currency`. Shown to the seller as a card fee in their finance ledger.
+  @Prop({ type: Number, default: 0 })
+  applicationFeeAmount: number;
+
   @Prop({ type: String, default: null })
   stripeClientSecret: string | null;
 

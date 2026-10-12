@@ -143,6 +143,8 @@ import { DatabaseService } from './databaseservice';
       { name: schema.StoreCreditTransaction.name, schema: schema.StoreCreditTransactionSchema },
       { name: schema.GiftCardSettings.name, schema: schema.GiftCardSettingsSchema },
       { name: schema.AbandonedCartSettings.name, schema: schema.AbandonedCartSettingsSchema },
+      { name: schema.EmailDailyStat.name, schema: schema.EmailDailyStatSchema },
+      { name: schema.StoreNotificationSettings.name, schema: schema.StoreNotificationSettingsSchema },
       { name: schema.EmailCampaign.name, schema: schema.EmailCampaignSchema },
       { name: schema.EmailCampaignSend.name, schema: schema.EmailCampaignSendSchema },
       { name: schema.AffiliateProgram.name, schema: schema.AffiliateProgramSchema },

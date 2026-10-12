@@ -27,6 +27,10 @@ export class UpdatePreferencesDto {
 
   @IsOptional()
   @IsBoolean()
+  admin?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
   pushEnabled?: boolean;
 
   @IsOptional()

@@ -1,38 +1,31 @@
 import { Injectable, Logger } from '@nestjs/common';
-import * as nodemailer from 'nodemailer';
-import { ConfigService } from '@nestjs/config';
+import { EmailService } from './services/email.service';
 
 @Injectable()
 export class OtpService {
-  private transporter: nodemailer.Transporter;
   private readonly logger = new Logger(OtpService.name);
 
-  constructor(private configService: ConfigService) {
-    this.transporter = nodemailer.createTransport({
-      service: 'gmail',
-      auth: {
-        user: this.configService.get<string>('SMTP_USER'),
-        pass: this.configService.get<string>('SMTP_PASSWORD'),
-      },
-    });
-  }
+  // Goes through the shared EmailService so the OTP mail uses the same
+  // SMTP_* env vars and From address as every other platform mail.
+  constructor(private readonly emailService: EmailService) {}
 
-  async sendOtp(toEmail: string, otp: string): Promise<void> {
-    try {
-      const mailOptions = {
-        from: 'jamiraza359@gmail.com', // 🟢 same Gmail as above
-        to: toEmail,
-        subject: 'Your OTP Code',
-        text: `Your OTP code is: ${otp}`,
-        html: `<p>Your OTP code is: <b>${otp}</b></p>`,
-      };
-
-      const result = await this.transporter.sendMail(mailOptions);
-
-      this.logger.log(`OTP email sent to ${toEmail}: ${result.response}`);
-    } catch (error) {
-      this.logger.error(`Failed to send OTP to ${toEmail}`, error);
+  /** `sender` is only set for a STORE's buyer (sign-up / verify / password reset on a storefront): the
+   *  mail then goes out under the store's name with its contact email as reply-to. Sellers and admins
+   *  (no sender) get the platform's own name. */
+  async sendOtp(toEmail: string, otp: string, sender?: { fromName?: string | null; replyTo?: string | null }): Promise<void> {
+    const ok = await this.emailService.sendMail(
+      toEmail,
+      'Your OTP Code',
+      `<p>Your OTP code is: <b>${otp}</b></p>`,
+      sender?.replyTo ?? null,
+      undefined,
+      undefined,
+      sender?.fromName ?? null,
+    );
+    if (!ok) {
+      this.logger.error(`Failed to send OTP to ${toEmail}`);
       throw new Error('Failed to send OTP email');
     }
+    this.logger.log(`OTP email sent to ${toEmail}`);
   }
 }

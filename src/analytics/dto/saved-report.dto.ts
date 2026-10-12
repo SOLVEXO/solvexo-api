@@ -5,6 +5,8 @@ import { IsBoolean, IsDateString, IsIn, IsNotEmpty, IsOptional, IsString, MaxLen
 import { RANGE_PRESETS } from './base-analytics-query.dto';
 import { EXPORT_FORMATS, EXPORT_SECTIONS } from './export-query.dto';
 
+export const SAVED_REPORT_SCHEDULES = ['none', 'weekly', 'monthly'];
+
 export class SavedReportConfigDto {
   @IsOptional() @IsIn(RANGE_PRESETS) range?: string;
   @IsOptional() @IsDateString() from?: string;
@@ -27,4 +29,15 @@ export class CreateSavedReportDto {
   @ValidateNested()
   @Type(() => SavedReportConfigDto)
   config?: SavedReportConfigDto;
+
+  @ApiProperty({ required: false, enum: SAVED_REPORT_SCHEDULES })
+  @IsOptional()
+  @IsIn(SAVED_REPORT_SCHEDULES)
+  schedule?: string;
+}
+
+export class UpdateSavedReportScheduleDto {
+  @ApiProperty({ enum: SAVED_REPORT_SCHEDULES })
+  @IsIn(SAVED_REPORT_SCHEDULES)
+  schedule: string;
 }

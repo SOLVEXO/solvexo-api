@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Body, Controller, Delete, Get, Param, Post, Query, Req, Res, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, Res, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
 import { Response } from 'express';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -15,7 +15,7 @@ import { AnalyticsQueryDto } from './dto/analytics-query.dto';
 import { TopProductsQueryDto } from './dto/top-products-query.dto';
 import { ProductPerformanceQueryDto } from './dto/product-performance-query.dto';
 import { ExportQueryDto } from './dto/export-query.dto';
-import { CreateSavedReportDto } from './dto/saved-report.dto';
+import { CreateSavedReportDto, UpdateSavedReportScheduleDto } from './dto/saved-report.dto';
 import { CohortsQueryDto, SalesByQueryDto } from './dto/report-query.dto';
 
 // Every route in this controller is a real-time VIEW of analytics data —
@@ -47,8 +47,20 @@ export class AnalyticsController {
   // across every store the seller owns, powering the cross-store view.
 
   @Get('overview')
-  getOverview(@Req() req: any, @Query() query: AnalyticsQueryDto) {
-    return this.analyticsService.getOverview(actingSellerId(req.user), query.storeId, query);
+  async getOverview(@Req() req: any, @Query() query: AnalyticsQueryDto) {
+    const sellerId = actingSellerId(req.user);
+    const overview: any = await this.analyticsService.getOverview(sellerId, query.storeId, query);
+    // Shopify's headline "Total sales" = net sales + shipping + taxes. The sales summary report already computes it
+    // (store currency, same period), so the Overview reuses it instead of a second definition. Single-store only.
+    if (!query.storeId) return overview;
+    const summary: any = await this.reportsService.getSalesSummary(sellerId, query.storeId, query);
+    const { totals, previous, changePercent } = summary.data;
+    overview.data.shipping = totals.shipping;
+    overview.data.taxes = totals.taxes;
+    overview.data.totalSales = totals.totalSales;
+    overview.data.totalSalesChangePercent = changePercent.totalSales ?? null;
+    if (overview.data.previousPeriod) overview.data.previousPeriod.totalSales = previous.totalSales;
+    return overview;
   }
 
   @Get('revenue-over-time')
@@ -161,6 +173,11 @@ export class AnalyticsController {
   @Post('saved-reports')
   createSavedReport(@Req() req: any, @Query('storeId') storeId: string, @Body() body: CreateSavedReportDto) {
     return this.analyticsService.createSavedReport(actingSellerId(req.user), storeId, body);
+  }
+
+  @Patch('saved-reports/:reportId/schedule')
+  updateSavedReportSchedule(@Req() req: any, @Query('storeId') storeId: string, @Param('reportId') reportId: string, @Body() body: UpdateSavedReportScheduleDto) {
+    return this.analyticsService.updateSavedReportSchedule(actingSellerId(req.user), storeId, reportId, body.schedule);
   }
 
   @Delete('saved-reports/:reportId')

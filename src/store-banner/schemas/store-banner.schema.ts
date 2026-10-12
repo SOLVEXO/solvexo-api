@@ -37,6 +37,18 @@ export class StoreBanner {
   videoUrl: string | null;
 
   @Prop({ type: String, default: null })
+  heading: string | null;
+
+  @Prop({ type: String, default: null })
+  subheading: string | null;
+
+  @Prop({ type: String, enum: ['left', 'center', 'right'], default: 'left' })
+  contentAlignment: 'left' | 'center' | 'right';
+
+  @Prop({ type: Number, min: 0, max: 80, default: 35 })
+  overlayOpacity: number;
+
+  @Prop({ type: String, default: null })
   ctaLabel: string | null;
 
   @Prop({ type: String, enum: STORE_BANNER_LINK_TYPES, default: 'external' })

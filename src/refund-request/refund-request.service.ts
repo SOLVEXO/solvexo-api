@@ -13,6 +13,7 @@ import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { GiftCardsService } from '@/gift-cards/gift-cards.service';
 import { verifyStoreOwnershipOrForbidden } from '@/common/store-ownership.util';
 import { deriveRollupStatus } from '@/orders/order-status.util';
+import { refundGiftCreditShare } from '@/common/seller-payout-basis.util';
 import { CreateRefundRequestDto, type RestockDecision } from './dto/refund-request.dto';
 
 @Injectable()
@@ -246,7 +247,7 @@ export class RefundRequestService {
       buyerRefundCurrency,
       settlementCurrency,
       (order.fxSnapshots as any) ?? [],
-    );
+    ) + refundGiftCreditShare(sellerOrder, order, items);
 
     // Debit ONLY this seller's wallet — never the other sellerOrders on
     // this same order, and never proportional across them.

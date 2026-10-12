@@ -7,15 +7,11 @@ import { validateBlockSettings } from '../common/store-content/section-settings.
 import { CreateMenuDto, UpdateMenuDto } from './dto/menu-item.dto';
 
 const MAX_MENUS_PER_STORE = 20;
-const MAX_ITEMS_PER_MENU = 50;
 
 /** Reuses the exact same validation `nav_link` blocks already go through —
  *  a `MenuItem` is the identical shape, so there's no separate ruleset to
- *  keep in sync (max 8 children, no grandchildren, real link-type checks). */
+ *  keep in sync (3 levels max, real link-type checks). */
 function validateItems(items: Record<string, any>[]): void {
-  if (items.length > MAX_ITEMS_PER_MENU) {
-    throw new BadRequestException(`A menu cannot have more than ${MAX_ITEMS_PER_MENU} items`);
-  }
   for (const item of items) validateBlockSettings('nav_link', item);
 }
 

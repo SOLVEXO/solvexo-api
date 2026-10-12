@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { isValidObjectId } from 'mongoose';
 import { DatabaseService } from '../database/databaseservice';
 import { isAnalyticsId } from '../common/storefront-session.util';
@@ -38,13 +38,45 @@ const PLATFORM_HOST = 'solvexo.store';
  * Page views come from the storefront; funnel steps are marked server-side (see common/storefront-session.util).
  */
 @Injectable()
-export class StorefrontAnalyticsService {
+export class StorefrontAnalyticsService implements OnModuleInit {
+  private readonly logger = new Logger(StorefrontAnalyticsService.name);
   private readonly storeCache = new Map<string, { at: number; ok: boolean; hosts: string[] }>();
 
   constructor(private readonly databaseService: DatabaseService) {}
 
   private get r() {
     return this.databaseService.repositories;
+  }
+
+  /**
+   * One-off catch-up for orders converted BEFORE orders were stamped with their visit's traffic source: copies the source
+   * from the converting session onto orders that have none. Idempotent (only touches orders without a source), bounded per
+   * boot, never blocks startup.
+   */
+  onModuleInit() {
+    void this.backfillOrderTrafficSource().catch((err) => this.logger.warn(`Traffic-source backfill skipped: ${err?.message ?? err}`));
+  }
+
+  async backfillOrderTrafficSource(limit = 5000): Promise<number> {
+    const sessions: any[] = await this.r.storefrontSessionModel
+      .find({ converted: true, 'orderIds.0': { $exists: true } })
+      .sort({ startedAt: -1 })
+      .limit(limit)
+      .select('orderIds trafficSource')
+      .lean();
+    const ops = sessions
+      .filter((s) => s.trafficSource && s.orderIds?.length)
+      .map((s) => ({
+        updateMany: {
+          filter: { _id: { $in: s.orderIds }, trafficSource: null },
+          update: { $set: { trafficSource: s.trafficSource } },
+        },
+      }));
+    if (ops.length === 0) return 0;
+    const res: any = await this.r.orderModel.bulkWrite(ops as any, { ordered: false });
+    const updated = res?.modifiedCount ?? 0;
+    if (updated > 0) this.logger.log(`Traffic-source backfill: stamped ${updated} order(s)`);
+    return updated;
   }
 
   /** Only live, open stores collect sessions; the store's own hosts are internal referrers. Cached for a minute. */

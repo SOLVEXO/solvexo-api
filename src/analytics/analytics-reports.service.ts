@@ -6,7 +6,7 @@ import { AnalyticsService } from './analytics.service';
 import { bucketExpr, enumerateBuckets, localDateKey, percentChange, rangeCacheKey, resolveDateRange, zonedParts, zonedStartOfDay } from './utils/analytics-date.util';
 import { round } from './utils/analytics-number.util';
 import { buildAnalyticsCacheKey, withAnalyticsCache } from './utils/analytics-cache.util';
-import { itemRefundSumField, ReportingCurrency, sellerOrderMatchStage, sumUSD } from './utils/order-aggregation.util';
+import { itemRefundSumField, rawRefundedField, taxFreeShareExpr, ReportingCurrency, sellerOrderMatchStage, sumUSD } from './utils/order-aggregation.util';
 import { toCsv } from './utils/csv.util';
 import { availableStock } from '../common/stock-availability.util';
 
@@ -18,7 +18,9 @@ export type SalesByDimension = typeof SALES_BY_DIMENSIONS[number];
 export const REPORT_EXPORT_SECTIONS = ['sales-summary', 'sales-by-variant', 'sales-by-discount', 'sales-by-channel', 'cohorts', 'inventory-abc'] as const;
 
 /** Sum over a sellerOrder's line items of an expression on `$$i` (each line). */
-const sumItems = (inExpr: any) => ({ $sum: { $map: { input: '$sellerOrders.items', as: 'i', in: inExpr } } });
+// Items removed/cancelled on their own (order edit, partial cancel) are not sales — leave them out.
+const liveItems = { $filter: { input: { $ifNull: ['$sellerOrders.items', []] }, as: 'it', cond: { $ne: ['$it.status', 'cancelled'] } } };
+const sumItems = (inExpr: any) => ({ $sum: { $map: { input: liveItems, as: 'i', in: inExpr } } });
 const n = (field: string) => ({ $ifNull: [field, 0] });
 /** Discounts Shopify reports as "Discounts": codes, automatic discounts, campaigns, member pricing. */
 const LINE_DISCOUNTS = { $add: [n('$$i.couponDiscountUSD'), n('$$i.campaignDiscountUSD'), n('$$i.autoDiscountUSD'), n('$$i.subscriberDiscountUSD')] };
@@ -72,7 +74,8 @@ export class AnalyticsReportsService {
           { $cond: [{ $eq: [{ $size: { $ifNull: ['$sellerOrders', []] } }, 1] }, n('$shippingFee'), 0] },
         ],
       },
-      taxes: n('$sellerOrders.taxAmount'),
+      // Tax net of the tax share that was refunded with returns.
+      taxes: { $max: [0, { $subtract: [n('$sellerOrders.taxAmount'), { $subtract: [rawRefundedField(), itemRefundSumField()] }] }] },
     };
   }
 
@@ -143,7 +146,7 @@ export class AnalyticsReportsService {
           previous,
           changePercent: change,
           series: enumerateBuckets(from, to, granularity, tz).map((bucket) => ({ date: bucket, ...AnalyticsReportsService.finish(byBucket.get(bucket.getTime())) })),
-          note: 'Returns include the tax share refunded on each returned line. Gift cards and store credit are payment methods, so they are included in sales (not discounts).',
+          note: 'Returns are item value only; refunded tax is taken off Taxes. Gift cards and store credit are payment methods, so they are included in sales (not discounts).',
         },
       };
     });
@@ -172,12 +175,13 @@ export class AnalyticsReportsService {
       ...sellerOrderMatchStage(from, to, scope),
       { $match: { 'sellerOrders.status': { $ne: 'cancelled' } } },
       { $unwind: '$sellerOrders.items' },
+      { $match: { 'sellerOrders.items.status': { $ne: 'cancelled' } } },
       {
         $addFields: {
           li: {
             gross: { $let: { vars: { i: '$sellerOrders.items' }, in: LINE_GROSS } },
             discounts: { $let: { vars: { i: '$sellerOrders.items' }, in: LINE_DISCOUNTS } },
-            returns: n('$sellerOrders.items.refundedAmount'),
+            returns: { $multiply: [n('$sellerOrders.items.refundedAmount'), taxFreeShareExpr()] },
           },
         },
       },
@@ -220,6 +224,7 @@ export class AnalyticsReportsService {
       ...sellerOrderMatchStage(from, to, scope),
       { $match: { 'sellerOrders.status': { $ne: 'cancelled' } } },
       { $unwind: '$sellerOrders.items' },
+      { $match: { 'sellerOrders.items.status': { $ne: 'cancelled' } } },
     ];
     const lineSales = { $let: { vars: { i: '$sellerOrders.items' }, in: LINE_GROSS } };
     const group = (id: any, amountField: string) => ({
@@ -360,7 +365,8 @@ export class AnalyticsReportsService {
           ...sellerOrderMatchStage(from90, now, scope),
           { $match: { 'sellerOrders.status': { $ne: 'cancelled' } } },
           { $unwind: '$sellerOrders.items' },
-          { $addFields: { li: { $let: { vars: { i: '$sellerOrders.items' }, in: { $subtract: [n('$$i.totalPrice'), n('$$i.refundedAmount')] } } } } },
+          { $match: { 'sellerOrders.items.status': { $ne: 'cancelled' } } },
+          { $addFields: { li: { $let: { vars: { i: '$sellerOrders.items' }, in: { $subtract: [n('$i.totalPrice'), { $multiply: [n('$i.refundedAmount'), taxFreeShareExpr()] }] } } } } },
           {
             $group: {
               _id: '$sellerOrders.items.variantId',

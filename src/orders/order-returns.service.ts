@@ -6,6 +6,7 @@ import { DatabaseService } from '../database/databaseservice';
 import { ActivityLogService } from '../activity-log/activity-log.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { NOTIFICATION_TYPES } from '../notifications/notification.types';
+import { orderCustomerName } from './shipping-email.util';
 import { ExchangeRateService } from '../exchange-rate/exchange-rate.service';
 import { PaymentService } from '../payment/payment.service';
 import { FinanceService } from '../finance/finance.service';
@@ -16,6 +17,7 @@ import { InventoryService } from '../inventory/inventory.service';
 import { round } from '../common/number.util';
 import { releaseRefundCapacity, reserveRefundCapacity } from '../common/refund-cap.util';
 import { effectiveReturnStatus } from '../common/return-status.util';
+import { refundGiftCreditShare } from '../common/seller-payout-basis.util';
 import { deriveSellerReturnStatus } from './order-exchange.util';
 import {
   canApplyReturnAction, canReceiveReturnLine, canRefundReturnLine, pickRestockChoice, RETURN_ACTION_FROM, RETURN_ACTION_TO,
@@ -160,6 +162,8 @@ export class OrderReturnsService {
       email: {
         subject: `${title} - order #${order.orderNumber}`,
         html: `<div style="font-family:Arial,sans-serif;max-width:560px;margin:auto"><h2>${esc(title)}</h2><p>${esc(body)}</p><p style="color:#888;font-size:12px">${esc(storeName ?? '')}</p></div>`,
+        event: 'return_update',
+        vars: { customerName: orderCustomerName(order), orderNumber: String(order.orderNumber), updateTitle: title, updateMessage: body },
       },
     } as any).catch(() => undefined);
   }
@@ -320,7 +324,8 @@ export class OrderReturnsService {
         } else {
           // The amount is in the order's own charge currency; the seller's wallet is debited in THEIR settlement currency.
           const settlementCurrency = so.settlementCurrency ?? buyerCurrency;
-          const sellerDebitAmount = this.exchangeRate.convertWithSnapshots(granted, buyerCurrency, settlementCurrency, order.fxSnapshots ?? []);
+          const sellerDebitAmount = this.exchangeRate.convertWithSnapshots(granted, buyerCurrency, settlementCurrency, order.fxSnapshots ?? [])
+            + refundGiftCreditShare(so, order, lines.map((l) => l.item), wanted > 0 ? granted / wanted : 1);
           try {
             await this.finance.recordRefund(storeId, sellerId, orderId, sellerDebitAmount, sellerId, 'seller', {
               description: `Return refunded - Order #${order.orderNumber}`, targetType: 'order', currency: settlementCurrency,
@@ -381,6 +386,17 @@ export class OrderReturnsService {
         recipientId: String(order.userId), recipientRole: 'user', type: NOTIFICATION_TYPES.REFUND_ISSUED, storeId,
         title: 'Refund issued', body: `You've been refunded ${granted.toFixed(2)} ${buyerCurrency}${toStoreCredit ? ' as store credit' : ''} for your return on order #${order.orderNumber}.`,
         data: { orderId },
+        email: {
+          subject: `Refund for order #${order.orderNumber}`,
+          html: `<p>You've been refunded ${granted.toFixed(2)} ${buyerCurrency} for your return on order #${order.orderNumber}.</p>`,
+          event: 'order_refunded',
+          vars: {
+            customerName: orderCustomerName(order),
+            orderNumber: String(order.orderNumber ?? orderId),
+            refundAmount: `${granted.toFixed(2)} ${buyerCurrency}`,
+            refundMethod: toStoreCredit ? 'Store credit' : 'Original payment method',
+          },
+        },
         whatsapp: order.shippingAddress?.phoneNumber
           ? {
               storeId, to: order.shippingAddress.phoneNumber, templateName: 'order_refunded', languageCode: 'en_US',

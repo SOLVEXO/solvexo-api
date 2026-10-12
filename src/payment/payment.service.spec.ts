@@ -27,7 +27,7 @@ describe('PaymentService — COD enforcement', () => {
     storeModel = { find: jest.fn().mockReturnValue({ select: jest.fn().mockReturnValue({ lean: jest.fn().mockResolvedValue([]) }) }) };
 
     const db = { repositories: { checkoutModel, storeModel } } as unknown as DatabaseService;
-    const notificationsService = { notify: jest.fn() } as unknown as NotificationsService;
+    const notificationsService = { notify: jest.fn(), notifyAdmins: jest.fn().mockResolvedValue(0), sendStaffOrderEmails: jest.fn().mockResolvedValue(0), sendCustomerEmail: jest.fn().mockResolvedValue('sent') } as unknown as NotificationsService;
     const configService = { get: jest.fn().mockReturnValue(undefined) } as unknown as ConfigService;
     const promotionsService = {} as any;
     const financeService = {} as unknown as FinanceService;
@@ -115,7 +115,7 @@ describe('PaymentService — manual payment capture', () => {
     const db = {
       repositories: { orderModel, paymentTransactionModel, productVariantModel, checkoutModel, storeModel: { findById: jest.fn() } },
     } as unknown as DatabaseService;
-    const notificationsService = { notify } as unknown as NotificationsService;
+    const notificationsService = { notify, notifyAdmins: jest.fn().mockResolvedValue(0), sendStaffOrderEmails: jest.fn().mockResolvedValue(0), sendCustomerEmail: jest.fn().mockResolvedValue('sent') } as unknown as NotificationsService;
     // A real `sk_test_...`-shaped key makes `assertStripeConfigured()` return
     // a genuine Stripe SDK instance (never makes a network call in these
     // tests) — its `paymentIntents.capture` is then stubbed directly, same

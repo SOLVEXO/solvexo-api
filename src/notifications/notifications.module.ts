@@ -6,6 +6,11 @@ import { NotificationsController } from './notifications.controller';
 import { NotificationsService } from './notifications.service';
 import { NotificationsGateway } from './notifications.gateway';
 import { NotificationsProcessor } from './notifications.processor';
+import { StoreNotificationSettingsController } from './store-notification-settings.controller';
+import { AdminEmailHealthController } from './admin-email-health.controller';
+import { EmailHealthService } from './email-health.service';
+import { MemoryMonitorService } from '../common/memory-monitor.service';
+import { StoreNotificationSettingsService } from './store-notification-settings.service';
 import { FirebaseAdminService } from '../firebase/firebase.config';
 import { EmailService } from '../otp/services/email.service';
 import { QueueModule } from '../queues/queue.module';
@@ -39,8 +44,8 @@ import { IntegrationsModule } from '../integrations/integrations.module';
       }),
     }),
   ],
-  controllers: [NotificationsController],
-  providers: [NotificationsService, NotificationsGateway, NotificationsProcessor, FirebaseAdminService, EmailService],
+  controllers: [NotificationsController, StoreNotificationSettingsController, AdminEmailHealthController],
+  providers: [NotificationsService, StoreNotificationSettingsService, EmailHealthService, MemoryMonitorService, NotificationsGateway, NotificationsProcessor, FirebaseAdminService, EmailService],
   exports: [NotificationsService],
 })
 export class NotificationsModule {}

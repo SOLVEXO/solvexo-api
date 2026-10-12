@@ -724,6 +724,11 @@ export class Order {
   })
   attributionSource: string;
 
+  // Visit traffic type (direct/search/social/email/paid/referral) copied from the storefront session that converted
+  // into this order. Null for orders without a tracked visit (consent declined, older orders) — reported as "unknown".
+  @Prop({ type: String, default: null })
+  trafficSource: string | null;
+
   @Prop({ default: false })
   isDelete: boolean;
 

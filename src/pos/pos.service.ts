@@ -34,6 +34,7 @@ import { ResetPinDto } from './dto/reset-pin.dto';
 import { UpdateSaleItemsDto } from './dto/update-sale-items.dto';
 import { UpdatePosSettingsDto } from './dto/update-pos-settings.dto';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
+import { FinanceService } from '@/finance/finance.service';
 import { EntitlementsService } from '@/platform-plans/entitlements.service';
 
 /** Consecutive wrong PINs before an employee is locked out of PIN login, and for how long. */
@@ -46,10 +47,44 @@ export class PosService {
     private readonly databaseService: DatabaseService,
     private readonly activityLogService: ActivityLogService,
     private readonly entitlementsService: EntitlementsService,
+    private readonly financeService: FinanceService,
   ) {}
 
   private get r() {
     return this.databaseService.repositories;
+  }
+
+  /**
+   * In-person sales settle at the counter (cash / the seller's own card terminal) — the platform never holds that money, so
+   * they are recorded in the finance ledger as directly-settled sales ('pos' = manual rail: no fee, no balance credit).
+   * That puts POS revenue, refunds and tax in the seller's Finance page and tax reports. Never fails the sale.
+   */
+  private async recordPosSaleInLedger(sale: any): Promise<void> {
+    try {
+      const store: any = await this.r.storeModel.findById(sale.storeId).select('sellerId baseCurrency').lean();
+      if (!store || !(Number(sale.total) > 0)) return;
+      await this.financeService.recordSale(
+        String(sale.storeId), String(store.sellerId), String(sale._id), Number(sale.total),
+        `POS sale #${sale.saleNumber ?? sale._id}`, 0, null,
+        String(store.baseCurrency || 'USD').toUpperCase(), 'pos', false, Number(sale.tax) || 0, true,
+      );
+    } catch (e: any) {
+      console.error('Finance recordSale failed (POS sale):', e?.message);
+    }
+  }
+
+  private async recordPosRefundInLedger(sale: any, amount: number, reason: string): Promise<void> {
+    try {
+      if (!(amount > 0)) return;
+      const store: any = await this.r.storeModel.findById(sale.storeId).select('sellerId baseCurrency').lean();
+      if (!store) return;
+      await this.financeService.recordRefund(
+        String(sale.storeId), String(store.sellerId), String(sale._id), amount, undefined, 'seller',
+        { description: `POS ${reason} — Sale #${sale.saleNumber ?? sale._id}`, targetType: 'sale', currency: String(store.baseCurrency || 'USD').toUpperCase() },
+      );
+    } catch (e: any) {
+      console.error('Finance recordRefund failed (POS):', e?.message);
+    }
   }
 
   // ── HELPERS ───────────────────────────────────────────────────────────────
@@ -791,6 +826,7 @@ export class PosService {
         }
       }
       await this._incrementSessionTotals(dto.sessionId, total, dto.paymentMethod);
+      await this.recordPosSaleInLedger(sale);
     }
 
     this.writeAuditLog({
@@ -859,6 +895,7 @@ export class PosService {
       );
     }
     await this._incrementSessionTotals((sale as any).sessionId, total, dto.paymentMethod);
+    await this.recordPosSaleInLedger(updated);
 
     this.writeAuditLog({ storeId: (sale as any).storeId, employeeId: (sale as any).employeeId, action: 'sale_completed', targetId: saleId, targetType: 'sale', metadata: { total, discount } }).catch(() => {});
 
@@ -949,6 +986,7 @@ export class PosService {
       sessionUpdate.$inc.totalSales = -refundAmount;
       await this.r.registerSessionModel.findByIdAndUpdate((sale as any).sessionId, sessionUpdate);
 
+      await this.recordPosRefundInLedger(sale, refundAmount, 'refund');
       this.writeAuditLog({ storeId: (sale as any).storeId, employeeId: actor.employeeId, action: 'sale_refunded_full', targetId: saleId, targetType: 'sale' }).catch(() => {});
       return { success: true, message: 'Sale fully refunded and stock restored' };
     }
@@ -993,6 +1031,7 @@ export class PosService {
     const sessionUpdate: any = { $inc: { totalRefunds: partialTotal } };
     await this.r.registerSessionModel.findByIdAndUpdate((sale as any).sessionId, sessionUpdate);
 
+    await this.recordPosRefundInLedger(sale, partialTotal, 'partial refund');
     this.writeAuditLog({ storeId: (sale as any).storeId, employeeId: actor.employeeId, action: 'sale_refunded_partial', targetId: saleId, targetType: 'sale', metadata: { partialTotal, items: dto.items } }).catch(() => {});
     return { success: true, message: `Partial refund of ${partialTotal.toFixed(2)} processed`, data: { refundedAmount: partialTotal, newStatus } };
   }
@@ -1389,6 +1428,7 @@ export class PosService {
     else sessionUpdate.$inc.otherSales = -(sale as any).total;
     await this.r.registerSessionModel.findByIdAndUpdate((sale as any).sessionId, sessionUpdate);
 
+    await this.recordPosRefundInLedger(sale, (sale as any).total - ((sale as any).refundedAmount || 0), 'void');
     this.writeAuditLog({ storeId: (sale as any).storeId, employeeId: actor.employeeId, action: 'sale_voided', targetId: saleId, targetType: 'sale', metadata: { reason: dto.reason } }).catch(() => {});
     return { success: true, message: 'Sale voided and stock restored' };
   }

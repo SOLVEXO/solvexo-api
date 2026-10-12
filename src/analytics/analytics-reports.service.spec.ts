@@ -61,7 +61,7 @@ describe('AnalyticsReportsService (Shopify report library)', () => {
     saleModel.aggregate.mockResolvedValue([{ orders: 3, gross: 300, discounts: 30, returns: 0, taxes: 10 }]);
     const res = await service.getSalesBy(SELLER, STORE, { range: '30d', dimension: 'channel' });
     expect(res.data.rows.map((r: any) => r.label)).toEqual(['Online Store', 'Point of Sale', 'Draft orders']);
-    expect(res.data.rows.find((r: any) => r.channel === 'pos').totalSales).toBe(280);
+    expect((res.data.rows as any[]).find((r: any) => r.channel === 'pos').totalSales).toBe(280);
     expect(saleModel.aggregate.mock.calls[0][0][0].$match.storeId).toBe(STORE);
   });
 

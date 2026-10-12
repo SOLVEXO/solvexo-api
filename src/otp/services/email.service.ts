@@ -1,5 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import * as nodemailer from 'nodemailer';
+import { EventEmitter } from 'events';
+
+/** Every real send attempt, from every EmailService instance in the app — EmailHealthService records it for the admin Email health card and the "emails are failing" alert. */
+export const emailEvents = new EventEmitter();
+export interface EmailResultEvent { ok: boolean; error?: string }
 
 @Injectable()
 export class EmailService {
@@ -50,21 +55,29 @@ export class EmailService {
     html: string,
     replyTo?: string | null,
     headers?: Record<string, string>,
+    attachments?: { filename: string; content: Buffer | string; contentType?: string }[],
+    fromName?: string | null,
   ): Promise<boolean> {
     try {
+      // `fromName` = the store's name for customer-facing mails (the mailbox
+      // stays the platform's SMTP sender); omitted = the platform name.
+      const displayName = String(fromName || process.env.APP_NAME || 'Your App').replace(/["\r\n<>]/g, '').trim();
       const info = await this.transporter.sendMail({
-        from: `"${process.env.APP_NAME || 'Your App'}" <${process.env.SMTP_FROM || process.env.SMTP_USER}>`,
+        from: `"${displayName}" <${process.env.SMTP_FROM || process.env.SMTP_USER}>`,
         to,
         subject,
         html,
         ...(replyTo ? { replyTo } : {}),
         ...(headers ? { headers } : {}),
+        ...(attachments?.length ? { attachments } : {}),
       });
 
       console.log('✅ Email sent:', info.messageId);
+      emailEvents.emit('result', { ok: true } as EmailResultEvent);
       return true;
     } catch (error) {
       console.error('❌ Error sending email:', error);
+      emailEvents.emit('result', { ok: false, error: String((error as any)?.message ?? error).slice(0, 300) } as EmailResultEvent);
       return false;
     }
   }

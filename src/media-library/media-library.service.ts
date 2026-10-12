@@ -126,7 +126,7 @@ export class MediaLibraryService {
       repos.productModel.find({ storeId, images: url }).select('name').lean(),
       repos.categoryModel.find({ image: url }).select('name').lean(),
       repos.collectionModel.find({ storeId, image: url }).select('name').lean(),
-      repos.storeModel.findOne({ _id: storeId, $or: [{ logo: url }, { coverImage: url }] }).select('name').lean(),
+      repos.storeModel.findOne({ _id: storeId, logo: url }).select('name').lean(),
       repos.storeBannerModel.find({ storeId, imageUrl: url }).lean(),
       repos.storePageModel.find({ storeId }).select('title sections').lean(),
       repos.storeThemeModel.findOne({ storeId }).lean(),
@@ -135,7 +135,7 @@ export class MediaLibraryService {
     for (const p of products as any[]) usages.push({ type: 'product', label: p.name });
     for (const c of categories as any[]) usages.push({ type: 'category', label: c.name });
     for (const c of collections as any[]) usages.push({ type: 'collection', label: c.name });
-    if (store) usages.push({ type: 'store', label: 'Store profile (logo or cover image)' });
+    if (store) usages.push({ type: 'store', label: 'Store profile (logo)' });
     for (let i = 0; i < banners.length; i++) usages.push({ type: 'banner', label: 'A storefront hero banner' });
 
     for (const p of pages as any[]) {

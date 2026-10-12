@@ -5,6 +5,34 @@ import { notificationEmailShell } from '@/notifications/templates/notification-e
 export interface PickupInfo { name?: string | null; address?: string | null; instructions?: string | null }
 export interface TrackingInfo { carrier?: string | null; trackingNumber?: string | null; trackingUrl?: string | null }
 
+/** First name of whoever the order is for ('' when unknown — the template then says "there"). */
+export function orderCustomerName(order: any): string {
+  return String(order?.shippingAddress?.recipientName ?? '').trim().split(/\s+/)[0] ?? '';
+}
+
+/** The store-template side of a customer email: which event it is and the values for its {{tags}}
+ *  (see notifications/customer-email-events.ts). Spread next to the built-in `{ subject, html }`. */
+export function customerEmailExtras(
+  event: 'order_shipped' | 'order_ready_for_pickup' | 'order_delivered',
+  p: { order: any; orderNumber: string; itemLines?: string[]; tracking?: TrackingInfo | null; pickup?: PickupInfo | null; pickedUp?: boolean },
+) {
+  return {
+    event,
+    trackingUrl: p.tracking?.trackingUrl ?? null,
+    vars: {
+      customerName: orderCustomerName(p.order),
+      orderNumber: p.orderNumber,
+      itemList: (p.itemLines ?? []).join('\n'),
+      carrier: p.tracking?.carrier ?? null,
+      trackingNumber: p.tracking?.trackingNumber ?? null,
+      pickupLocation: p.pickup?.name ?? null,
+      pickupAddress: p.pickup?.address ?? null,
+      pickupInstructions: p.pickup?.instructions ?? null,
+      deliveryStatus: p.pickedUp ? 'picked up' : 'delivered',
+    },
+  } as const;
+}
+
 function detailRows(rows: [string, string | null | undefined][]): string {
   const body = rows
     .filter(([, v]) => v)
@@ -23,6 +51,7 @@ export function buildShippedEmail(p: { storeName: string; orderNumber: string; t
     `<h1>${escapeHtml(title)}</h1><p>Good news from ${escapeHtml(p.storeName)} — order #${escapeHtml(p.orderNumber)} is on its way.</p>${itemList}` +
       detailRows([['Carrier', p.tracking?.carrier], ['Tracking number', p.tracking?.trackingNumber]]),
     url ? { label: 'Track your package', url } : undefined,
+    p.storeName,
   );
   return { subject: `${title} — order #${p.orderNumber} from ${p.storeName}`, html };
 }
@@ -33,6 +62,8 @@ export function buildReadyForPickupEmail(p: { storeName: string; orderNumber: st
     'Your order is ready for pickup',
     `<h1>Your order is ready for pickup</h1><p>Order #${escapeHtml(p.orderNumber)} from ${escapeHtml(p.storeName)} is ready to collect.</p>` +
       detailRows([['Pickup location', p.pickup?.name], ['Address', p.pickup?.address], ['Instructions', p.pickup?.instructions]]),
+    undefined,
+    p.storeName,
   );
   return { subject: `Your order #${p.orderNumber} is ready for pickup — ${p.storeName}`, html };
 }
@@ -42,6 +73,8 @@ export function buildDeliveredEmail(p: { storeName: string; orderNumber: string;
   const html = notificationEmailShell(
     escapeHtml(title),
     `<h1>${escapeHtml(title)}</h1><p>Order #${escapeHtml(p.orderNumber)} from ${escapeHtml(p.storeName)} is complete. Thank you for shopping with us.</p>`,
+    undefined,
+    p.storeName,
   );
   return { subject: `${title} — order #${p.orderNumber}`, html };
 }
@@ -56,6 +89,7 @@ export function buildReturnLabelEmail(p: { storeName: string; orderNumber: strin
     `<h1>${escapeHtml(title)}</h1><p>${escapeHtml(p.storeName)} approved your return for order #${escapeHtml(p.orderNumber)}. Print the prepaid label, attach it to the package and drop it off with the carrier.</p>${itemList}` +
       detailRows([['Carrier', p.carrier], ['Tracking number', p.trackingNumber]]),
     url ? { label: 'Download return label', url } : undefined,
+    p.storeName,
   );
   return { subject: `${title} — order #${p.orderNumber} from ${p.storeName}`, html };
 }

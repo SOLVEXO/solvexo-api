@@ -112,7 +112,7 @@ describe('FinanceService', () => {
     activityLogService = { log: jest.fn() } as any;
     commissionRulesService = { resolveRate: jest.fn().mockResolvedValue({ rate: 0.08, source: 'hardcoded_fallback' }) } as any;
     adminConfigService = { getPayoutMinimum: jest.fn().mockResolvedValue(5) } as any;
-    notificationsService = { notify: jest.fn().mockResolvedValue(undefined) };
+    notificationsService = { notify: jest.fn().mockResolvedValue(undefined), notifyAdmins: jest.fn().mockResolvedValue(0) };
     // Stubbed as "seller has no Connect account" by default — the payout
     // automation tests that DO care about the Connect rail override
     // `getPayoutEligibility`/`createTransfer` per-test.
@@ -314,15 +314,62 @@ describe('FinanceService', () => {
       expect(txModel.created.find((t: any) => t.type === 'fee')).toBeUndefined();
     });
 
-    it('a later refund of a Connect sale claws back nothing from the ledger (Stripe refunds the buyer from the seller\'s account)', async () => {
+    it('charges the fee only on the part NOT paid with a gift card / store credit, and records the share on the sale', async () => {
+      const balance = makeBalance();
+      balanceModel.findOne.mockResolvedValue(balance);
+      commissionRulesService.resolveRate = jest.fn().mockResolvedValue({ rate: 0.05, source: 'seller_override' });
+
+      await service.recordSale(STORE_ID, SELLER_ID, 'order-gc', 1000, 'desc', 0, null, 'PKR', 'cash_on_delivery', false, 0, true, 0, 400);
+
+      const saleTx = txModel.created.find((t: any) => t.type === 'sale');
+      expect(saleTx.amount).toBe(1000); // the full sale
+      expect(saleTx.metadata).toMatchObject({ platformFee: 30, giftCreditShare: 400 }); // 5% of the 600 paid in cash
+      expect(balance.totalRevenue).toBe(1000);
+    });
+
+    it('shows the Stripe application fee to the seller as an informational card-fee row (no balance movement)', async () => {
+      const balance = makeBalance();
+      balanceModel.findOne.mockResolvedValue(balance);
+
+      await service.recordSale(STORE_ID, SELLER_ID, 'order-fee', 5000, 'desc', 0, null, 'PKR', 'stripe', true, 0, true, 175);
+
+      const feeTx = txModel.created.find((t: any) => t.type === 'fee');
+      expect(feeTx).toMatchObject({ amount: -175, status: 'completed' });
+      expect(feeTx.metadata).toMatchObject({ applicationFee: true, originalFee: 175 });
+      expect(balance.totalFees).toBe(175);
+      expect(balance.availableBalance).toBe(0);
+      expect(balance.pendingBalance).toBe(0);
+      expect(txModel.created.find((t: any) => t.type === 'sale').metadata.recordedAt).toBe('placement');
+    });
+
+    it('a refund gives the card fee back in proportion (Stripe refunds the application fee), without touching the balance', async () => {
+      const balance = makeBalance({ availableBalance: 0, totalFees: 100 });
+      balanceModel.findOne.mockResolvedValue(balance);
+      txModel.findOne = jest.fn()
+        .mockReturnValueOnce({ lean: () => Promise.resolve({ amount: 1000, metadata: { settledDirectly: true, settledViaConnect: true } }) })
+        .mockReturnValueOnce({ lean: () => Promise.resolve({ _id: 'fee-1', amount: -100, metadata: { applicationFee: true, originalFee: 100 } }) });
+
+      await service.recordRefund(STORE_ID, SELLER_ID, 'order-fee', 500);
+
+      expect(txModel.updateOne).toHaveBeenCalledWith({ _id: 'fee-1' }, { $set: { amount: -50, 'metadata.refundedFee': 50 } }, expect.anything());
+      expect(balance.totalFees).toBe(50);
+      expect(balance.availableBalance).toBe(0);
+    });
+
+    it('a later refund of a Connect sale is RECORDED but claws back nothing from the balance (Stripe refunds the buyer from the seller\'s account)', async () => {
       const balance = makeBalance({ availableBalance: 40 });
       balanceModel.findOne.mockResolvedValue(balance);
-      txModel.findOne.mockReturnValue({ lean: jest.fn().mockResolvedValue({ amount: 100, metadata: { settledDirectly: true, settledViaConnect: true } }) });
+      txModel.findOne.mockReturnValue({ lean: jest.fn().mockResolvedValue({ amount: 100, metadata: { settledDirectly: true, settledViaConnect: true, taxCollected: 10 } }) });
 
-      const res: any = await service.recordRefund(STORE_ID, SELLER_ID, 'order-connect', 100);
+      const res: any = await service.recordRefund(STORE_ID, SELLER_ID, 'order-connect', 50);
 
-      expect(res.skipped).toBe('settled_directly');
+      expect(res.skipped).toBeUndefined();
       expect(balance.availableBalance).toBe(40);
+      expect(balance.totalRefunds).toBe(50);
+      const refundTx = txModel.created.find((t: any) => t.type === 'refund');
+      expect(refundTx).toMatchObject({ amount: -50, balanceBefore: 40, balanceAfter: 40, status: 'completed' });
+      // half the sale is refunded -> half of its 10 tax went back to the buyer
+      expect(refundTx.metadata).toMatchObject({ settledDirectly: true, taxRefunded: 5 });
     });
 
     it('still credits a platform-sponsored discount the platform owes the seller', async () => {
@@ -415,8 +462,22 @@ describe('FinanceService', () => {
 
       const result: any = await service.recordRefund(STORE_ID, SELLER_ID, 'order-cod-refund', 100);
 
-      expect(result.skipped).toBe('settled_directly');
+      expect(result.skipped).toBeUndefined();
       expect(balance.availableBalance).toBe(80);
+      expect(balance.pendingBalance).toBe(0);
+      expect(balance.isFlaggedForReview).toBe(false);
+      expect(txModel.created.filter((t: any) => t.type === 'refund')).toHaveLength(1);
+    });
+
+    it('a direct-settled refund is capped at what the sale recorded, cumulatively', async () => {
+      const balance = makeBalance({ availableBalance: 0 });
+      balanceModel.findOne.mockResolvedValue(balance);
+      givenSale(100, { settledDirectly: true });
+      txModel.find = jest.fn().mockReturnValue(makeChainableFind([{ amount: -70 }])); // 70 already refunded
+
+      await service.recordRefund(STORE_ID, SELLER_ID, 'order-cod-cap', 100);
+
+      expect(txModel.created.find((t: any) => t.type === 'refund').amount).toBe(-30);
     });
 
     it('caps the refund at what was credited for the order (e.g. shipping was never credited) — never claws back more', async () => {
@@ -882,7 +943,8 @@ describe('FinanceService', () => {
     it('"tax collected" is the real tax stamped on this month\'s sales, not a flat percentage of revenue', async () => {
       txModel.aggregate.mockImplementation(async (pipeline: any[]) => {
         const group = pipeline.find((s) => s.$group)?.$group;
-        if (group?.tax) return [{ _id: null, tax: 37.5 }];
+        const match = pipeline.find((s) => s.$match)?.$match;
+        if (group?.tax) return match?.type === 'refund' ? [] : [{ _id: null, tax: 37.5 }];
         return [{ _id: 'sale', total: 1000, count: 4 }];
       });
 
@@ -890,6 +952,25 @@ describe('FinanceService', () => {
 
       expect(result.wallets[0].summary.thisMonthRevenue).toBe(1000);
       expect(result.wallets[0].summary.pendingTax).toBe(37.5); // would be 150 under the old 15% guess
+    });
+
+    it('"tax collected" is net of the tax that went back to buyers with refunds', async () => {
+      txModel.aggregate.mockImplementation(async (pipeline: any[]) => {
+        const group = pipeline.find((s) => s.$group)?.$group;
+        const match = pipeline.find((s) => s.$match)?.$match;
+        if (group?.tax) return match?.type === 'refund' ? [{ _id: null, tax: 10 }] : [{ _id: null, tax: 37.5 }];
+        return [{ _id: 'sale', total: 1000, count: 4 }];
+      });
+
+      const result: any = await service.getDashboard(SELLER_ID, STORE_ID);
+
+      expect(result.wallets[0].summary.pendingTax).toBe(27.5);
+    });
+
+    it('marks a store with no platform-held balance or payout history so the UI can hide the withdraw / payout section', async () => {
+      const result: any = await service.getDashboard(SELLER_ID, STORE_ID);
+
+      expect(result.wallets[0].hasLegacyBalance).toBe(false);
     });
 
     it('the processing-fee text is clean and follows the store currency', async () => {
@@ -1019,5 +1100,21 @@ describe('FinanceService', () => {
 
       expect(method.accountTitleMismatchFlagged).toBe(true);
     });
+  });
+});
+
+describe('FinanceService.requestPayout — store with no platform-held balance', () => {
+  it('says plainly there is nothing to withdraw (new stores are paid directly)', async () => {
+    const svc: any = Object.create(FinanceService.prototype);
+    svc.getOrCreateBalance = jest.fn().mockResolvedValue({ availableBalance: 0, pendingBalance: 0, totalPayouts: 0 });
+    await expect(svc.debitAndCreatePayout({}, STORE_ID, SELLER_ID, 'USD', 50, { _id: 'm1', type: 'bank_transfer' }, null, 'seller_manual'))
+      .rejects.toThrow('no platform-held balance');
+  });
+
+  it('keeps the plain insufficient-balance message for a store that does hold a balance', async () => {
+    const svc: any = Object.create(FinanceService.prototype);
+    svc.getOrCreateBalance = jest.fn().mockResolvedValue({ availableBalance: 20, pendingBalance: 0, totalPayouts: 0 });
+    await expect(svc.debitAndCreatePayout({}, STORE_ID, SELLER_ID, 'USD', 50, { _id: 'm1', type: 'bank_transfer' }, null, 'seller_manual'))
+      .rejects.toThrow('Insufficient balance');
   });
 });

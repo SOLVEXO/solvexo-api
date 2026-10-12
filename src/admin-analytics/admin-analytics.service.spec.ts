@@ -35,6 +35,7 @@ describe('AdminAnalyticsService', () => {
   let db: DatabaseService;
   let redis: RedisService;
   let platformPlansService: PlatformPlansService;
+  let adminFinanceService: any;
 
   beforeEach(() => {
     orderModel = { aggregate: jest.fn().mockResolvedValue([]) };
@@ -55,7 +56,7 @@ describe('AdminAnalyticsService', () => {
       aggregate: jest.fn().mockResolvedValue([]),
       find: jest.fn().mockReturnValue({ select: jest.fn().mockReturnValue({ lean: jest.fn().mockResolvedValue([]) }) }),
     };
-    productVariantModel = { aggregate: jest.fn().mockResolvedValue([]) };
+    productVariantModel = { aggregate: jest.fn().mockResolvedValue([]), find: jest.fn().mockReturnValue({ select: jest.fn().mockReturnValue({ lean: jest.fn().mockResolvedValue([]) }) }) };
     // Phase 6 — real view counts from the Phase 5 tracking foundation.
     productViewModel = { aggregate: jest.fn().mockResolvedValue([]) };
     paymentTransactionModel = { aggregate: jest.fn().mockResolvedValue([]) };
@@ -79,7 +80,8 @@ describe('AdminAnalyticsService', () => {
       }),
     } as any;
 
-    service = new AdminAnalyticsService(db, redis, platformPlansService);
+    adminFinanceService = { getPlatformRevenue: jest.fn().mockResolvedValue({ success: true, data: { planRevenue: { netUSD: 0 }, addons: { grossUSD: 0 }, transactionFees: { collectedUSD: 0 }, totalRevenueUSD: 0 } }) };
+    service = new AdminAnalyticsService(db, redis, platformPlansService, adminFinanceService);
   });
 
   describe('zero-data platform', () => {
@@ -263,6 +265,31 @@ describe('AdminAnalyticsService', () => {
     });
   });
 
+  describe('revenue breakdown — platform revenue matches Finance', () => {
+    const financeData = { planRevenue: { netUSD: 90 }, addons: { grossUSD: 10 }, transactionFees: { collectedUSD: 5 }, totalRevenueUSD: 105 };
+
+    it('platform-wide totalPlatformRevenue = plans + add-ons + collected transaction fees (not commission)', async () => {
+      adminFinanceService.getPlatformRevenue.mockResolvedValue({ success: true, data: financeData });
+      transactionModel.aggregate = jest.fn().mockResolvedValue([]);
+
+      const result = await service.getRevenueBreakdown({});
+
+      expect(result.data.totalPlatformRevenue).toBe(105);
+      expect(result.data.planRevenue).toBe(90);
+      expect(result.data.addonRevenue).toBe(10);
+      expect(result.data.transactionFeeRevenue).toBe(5);
+    });
+
+    it('does not call Finance for a store/seller drill-down (plan revenue is not a per-store concept)', async () => {
+      transactionModel.aggregate = jest.fn().mockResolvedValue([]);
+
+      const result = await service.getRevenueBreakdown({ storeId: 'store-1' });
+
+      expect(adminFinanceService.getPlatformRevenue).not.toHaveBeenCalled();
+      expect(result.data.planRevenue).toBeUndefined();
+    });
+  });
+
   describe('payment method breakdown', () => {
     it('maps raw paymentType enum values to human labels via the centralized utility', async () => {
       orderModel.aggregate = jest.fn().mockResolvedValue([
@@ -369,7 +396,7 @@ describe('AdminAnalyticsService', () => {
         { _id: 'p1', name: 'Widget', orderCount: 4, unitsSold: 6, grossRevenue: 300, refundedAmount: 0 },
       ]);
       productModel.find.mockReturnValue({ select: jest.fn().mockReturnValue({ lean: jest.fn().mockResolvedValue([{ _id: 'p1', name: 'Widget' }]) }) });
-      productVariantModel.aggregate = jest.fn().mockResolvedValue([{ _id: 'p1', stock: 20 }]);
+      productVariantModel.find = jest.fn().mockReturnValue({ select: jest.fn().mockReturnValue({ lean: jest.fn().mockResolvedValue([{ productId: 'p1', stock: 25, committedStock: 5, damagedStock: 0, inTransitStock: 0 }]) }) });
       productViewModel.aggregate = jest.fn().mockResolvedValue([{ _id: 'p1', views: 50 }]);
 
       const result = await service.getProductPerformance({});

@@ -253,7 +253,7 @@ export class AbandonedCartService {
           return 0;
         }
 
-        const store = await this.r.storeModel.findById(trigger.storeId).select('name').lean();
+        const store = await this.r.storeModel.findById(trigger.storeId).select('name contactEmail').lean();
         const token = randomBytes(16).toString('hex');
         const cartUrl = `${API_PUBLIC_ORIGIN}/api/abandoned-cart/click/${token}`;
 
@@ -271,6 +271,10 @@ export class AbandonedCartService {
             <p>${message}</p>
             <p style="margin-top:24px"><a href="${cartUrl}" style="background:#141413;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;display:inline-block">Return to your cart</a></p>
           </div>`,
+          (store as any)?.contactEmail ?? null,
+          undefined,
+          undefined,
+          (store as any)?.name ?? null,
         );
         if (!sent) return 0; // don't mark abandonedEmailSentAt if the send itself failed — retry next tick (bounded by the 7-day window)
 

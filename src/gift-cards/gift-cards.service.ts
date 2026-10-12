@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Injectable, BadRequestException, NotFoundException, ForbiddenException } from '@nestjs/common';
+import { Injectable, Optional, BadRequestException, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { DatabaseService } from '@/database/databaseservice';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
@@ -7,6 +7,7 @@ import { ExchangeRateService } from '@/exchange-rate/exchange-rate.service';
 import { StripeConnectService } from '../stripe-connect/stripe-connect.service';
 import { CommissionRulesService } from '../commission-rules/commission-rules.service';
 import { EmailService } from '@/otp/services/email.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { UpdateGiftCardSettingsDto } from './dto/update-gift-card-settings.dto';
 import { IssueManualGiftCardDto } from './dto/issue-manual-gift-card.dto';
 import { CreatePurchaseIntentDto } from './dto/create-purchase-intent.dto';
@@ -32,6 +33,8 @@ export class GiftCardsService {
     private readonly configService: ConfigService,
     private readonly stripeConnectService: StripeConnectService,
     private readonly commissionRulesService: CommissionRulesService,
+    // Global module; optional so the service still works if it is ever constructed without it.
+    @Optional() private readonly notificationsService?: NotificationsService,
   ) {
     const secretKey = this.configService.get<string>('STRIPE_SECRET_KEY')?.trim();
     if (secretKey) {
@@ -104,7 +107,7 @@ export class GiftCardsService {
     });
 
     if (dto.recipientEmail) {
-      this.sendGiftCardEmail(dto.recipientEmail, dto.recipientName ?? null, store.name, giftCard.code, currency, dto.value, dto.message ?? null).catch(() => {});
+      this.sendGiftCardEmail(storeId, dto.recipientEmail, dto.recipientName ?? null, store.name, giftCard.code, currency, dto.value, dto.message ?? null).catch(() => {});
     }
 
     return { success: true, message: 'Gift card issued', data: giftCard };
@@ -295,7 +298,7 @@ export class GiftCardsService {
 
     const deliverTo = recipientEmail || null;
     if (deliverTo) {
-      this.sendGiftCardEmail(deliverTo, recipientName || null, store.name, giftCard.code, currency || 'USD', value, message || null).catch(() => {});
+      this.sendGiftCardEmail(String(store._id), deliverTo, recipientName || null, store.name, giftCard.code, currency || 'USD', value, message || null).catch(() => {});
     }
   }
 
@@ -413,9 +416,17 @@ export class GiftCardsService {
   }
 
   private async sendGiftCardEmail(
-    to: string, recipientName: string | null, storeName: string, code: string,
+    storeId: string, to: string, recipientName: string | null, storeName: string, code: string,
     currency: string, value: number, message: string | null,
   ) {
+    if (this.notificationsService) {
+      // The store's Customer-notification settings decide on/off, text, sender and reply-to.
+      const result = await this.notificationsService.sendCustomerEmail({
+        to, storeId, event: 'gift_card',
+        vars: { customerName: recipientName, giftCardValue: `${currency} ${value}`, giftCardCode: code, giftCardMessage: message },
+      });
+      if (result !== 'failed') return;
+    }
     const greeting = recipientName ? `Hi ${recipientName},` : 'Hi,';
     const noteBlock = message ? `<p style="font-style:italic;color:#555">"${message}"</p>` : '';
     await this.emailService.sendMail(
@@ -428,6 +439,10 @@ export class GiftCardsService {
         <p style="font-size:24px;font-weight:bold;letter-spacing:1px;background:#f5f5f5;padding:16px;border-radius:8px;text-align:center">${code}</p>
         <p>Enter this code at checkout on ${storeName}'s store to redeem it.</p>
       </div>`,
+      null,
+      undefined,
+      undefined,
+      storeName,
     );
   }
 }

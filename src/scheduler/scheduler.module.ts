@@ -13,6 +13,7 @@ import { AdminFinanceModule } from '../admin-finance/admin-finance.module';
 import { BookingsModule } from '../bookings/bookings.module';
 import { IntegrationsModule } from '../integrations/integrations.module';
 import { AbandonedCartModule } from '../abandoned-cart/abandoned-cart.module';
+import { AnalyticsModule } from '../analytics/analytics.module';
 import { EmailCampaignsModule } from '../email-campaigns/email-campaigns.module';
 import { InventoryModule } from '../inventory/inventory.module';
 import { PurchaseOrdersModule } from '../purchase-orders/purchase-orders.module';
@@ -24,7 +25,7 @@ import { AuthModule } from '../auth/auth.module';
 import { StoreModule } from '../store/store.module';
 
 @Module({
-  imports: [ScheduleModule.forRoot(), SubscriptionsModule, FinanceModule, RedisModule, SeoModule, AdminMarketingModule, PromotionsModule, ExchangeRateModule, AdminFinanceModule, BookingsModule, IntegrationsModule, AbandonedCartModule, EmailCampaignsModule, InventoryModule, PurchaseOrdersModule, DraftOrdersModule, OrdersModule, MarketingAutomationsModule, AdminAnnouncementsModule, AuthModule, StoreModule],
+  imports: [ScheduleModule.forRoot(), SubscriptionsModule, FinanceModule, RedisModule, SeoModule, AdminMarketingModule, PromotionsModule, ExchangeRateModule, AdminFinanceModule, BookingsModule, IntegrationsModule, AbandonedCartModule, AnalyticsModule, EmailCampaignsModule, InventoryModule, PurchaseOrdersModule, DraftOrdersModule, OrdersModule, MarketingAutomationsModule, AdminAnnouncementsModule, AuthModule, StoreModule],
   providers: [SchedulerService],
 })
 export class SchedulerModule {}

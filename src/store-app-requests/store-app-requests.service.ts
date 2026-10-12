@@ -345,18 +345,23 @@ export class StoreAppRequestsService {
     }
   }
 
+  /** In-app + email to every admin (per their own preferences). Text only — the mail template escapes it. */
   private async notifyAdmins(storeName: string, requestId: string, appName: string) {
-    const admins = await this.adminModel.find({}).select('email').lean();
-    const subject = `New store app profile submitted — ${storeName}`;
-    const html = `<p><strong>${storeName}</strong> submitted a white-label app profile (no platform paid/requested yet).</p><p>App name: ${appName}</p><p>Request ID: ${requestId}</p>`;
-    await Promise.allSettled((admins as any[]).map((a) => this.emailService.sendMail(a.email, subject, html)));
+    await this.notificationsService.notifyAdmins({
+      type: NOTIFICATION_TYPES.ADMIN_STORE_APP_REQUEST,
+      title: `New store app profile submitted — ${storeName}`,
+      body: `${storeName} submitted a white-label app profile (no platform paid/requested yet). App name: ${appName}. Request ID: ${requestId}`,
+      data: { link: '/admin/store-app-requests' },
+    });
   }
 
   private async notifyAdminsPlatformAdded(storeName: string, requestId: string, appName: string, platform: 'android' | 'ios') {
     const platformLabel = platform === 'android' ? 'Android' : 'iOS';
-    const admins = await this.adminModel.find({}).select('email').lean();
-    const subject = `Store app platform paid — ${storeName} requested ${platformLabel}`;
-    const html = `<p><strong>${storeName}</strong> paid for and requested <strong>${platformLabel}</strong>.</p><p>App name: ${appName}</p><p>Request ID: ${requestId}</p>`;
-    await Promise.allSettled((admins as any[]).map((a) => this.emailService.sendMail(a.email, subject, html)));
+    await this.notificationsService.notifyAdmins({
+      type: NOTIFICATION_TYPES.ADMIN_STORE_APP_REQUEST,
+      title: `Store app platform paid — ${storeName} requested ${platformLabel}`,
+      body: `${storeName} paid for and requested ${platformLabel}. App name: ${appName}. Request ID: ${requestId}`,
+      data: { link: '/admin/store-app-requests' },
+    });
   }
 }

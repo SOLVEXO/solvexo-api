@@ -263,8 +263,15 @@ export class AuthVisualService {
   ): Promise<PoolItem[]> {
     const subject = context === 'onboarding_products' && topic ? TOPIC_QUERY_HINT[topic] : CONTEXT_QUERY_HINT[context];
     const pool: PoolItem[] = [];
+    // The same photo can come back for several queries of the ladder — vet and keep it once.
+    const seen = new Set<string>();
     for (const query of this.buildQueryLadder(countryName, context, topic)) {
-      const candidates = await this.fetchCandidates(query, modest);
+      const candidates = (await this.fetchCandidates(query, modest)).filter((p: any) => {
+        const key = String(p?.urls?.raw ?? p?.id ?? '');
+        if (!key || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
       for (let i = 0; i < candidates.length && pool.length < POOL_SIZE; i += VETTING_BATCH) {
         const batch = candidates.slice(i, i + VETTING_BATCH);
         const verdicts = await Promise.all(

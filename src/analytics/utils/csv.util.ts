@@ -1,16 +1,39 @@
 /* eslint-disable prettier/prettier */
 /**
+ * Spreadsheet formula injection guard: a text cell starting with = + - @ (or tab/CR) would be run as a formula when the
+ * CSV is opened in Excel/Sheets (product and customer names are user-supplied). Plain numbers written as text ("-5.00") are kept.
+ */
+function safeText(value: unknown): string {
+  const text = String(value ?? '');
+  return /^[=+\-@\t\r]/.test(text) && !/^-?\d+(\.\d+)?$/.test(text) ? `'${text}` : text;
+}
+
+/**
  * Minimal CSV builder matching the hand-rolled style already used in
  * `subscriptions.service.ts#exportCsv` / `finance.service.ts` (no CSV
  * library exists in this codebase) — header row + comma-joined rows,
  * string fields quoted, numbers left bare.
  */
+/** Most data rows an analytics CSV export contains; bigger result sets are cut and say so in the file (see `limitCsvRows`). */
+export const CSV_ROW_LIMIT = 20000;
+
+/**
+ * Cuts `rows` to CSV_ROW_LIMIT and, when something was cut, appends a visible last row so nobody mistakes a partial
+ * export for the full data. Query for CSV_ROW_LIMIT + 1 rows so truncation can be detected.
+ */
+export function limitCsvRows<T extends (string | number)[]>(rows: T[], width: number): (string | number)[][] {
+  if (rows.length <= CSV_ROW_LIMIT) return rows;
+  const note: (string | number)[] = [`NOTE: export limited to the first ${CSV_ROW_LIMIT} rows - narrow the date range for the rest`];
+  while (note.length < width) note.push('');
+  return [...rows.slice(0, CSV_ROW_LIMIT), note];
+}
+
 export function toCsv(headers: string[], rows: (string | number)[][]): string {
   const header = headers.join(',') + '\n';
   const body = rows
     .map((row) =>
       row
-        .map((cell) => (typeof cell === 'number' ? cell.toString() : `"${String(cell ?? '').replace(/"/g, '""')}"`))
+        .map((cell) => (typeof cell === 'number' ? cell.toString() : `"${safeText(cell).replace(/"/g, '""')}"`))
         .join(','),
     )
     .join('\n');

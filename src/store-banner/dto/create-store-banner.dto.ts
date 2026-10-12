@@ -1,7 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { ApiProperty } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsIn, IsNumber, IsOptional, IsString, IsDateString, Min } from 'class-validator';
+import { IsIn, IsNumber, IsOptional, IsString, IsDateString, Max, Min, MaxLength } from 'class-validator';
 import { STORE_BANNER_TYPES, StoreBannerType, STORE_BANNER_LINK_TYPES, StoreBannerLinkType } from '../schemas/store-banner.schema';
 
 export class CreateStoreBannerDto {
@@ -10,9 +10,35 @@ export class CreateStoreBannerDto {
   @IsIn(STORE_BANNER_TYPES)
   type?: StoreBannerType;
 
+  @ApiProperty({ required: false, maxLength: 120 })
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  heading?: string;
+
+  @ApiProperty({ required: false, maxLength: 240 })
+  @IsOptional()
+  @IsString()
+  @MaxLength(240)
+  subheading?: string;
+
+  @ApiProperty({ required: false, enum: ['left', 'center', 'right'], default: 'left' })
+  @IsOptional()
+  @IsIn(['left', 'center', 'right'])
+  contentAlignment?: 'left' | 'center' | 'right';
+
+  @ApiProperty({ required: false, minimum: 0, maximum: 80, default: 35 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  @Max(80)
+  overlayOpacity?: number;
+
   @ApiProperty({ required: false })
   @IsOptional()
   @IsString()
+  @MaxLength(80)
   ctaLabel?: string;
 
   @ApiProperty({ enum: STORE_BANNER_LINK_TYPES, default: 'external' })

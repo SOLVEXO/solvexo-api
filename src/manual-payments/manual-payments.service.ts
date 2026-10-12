@@ -23,15 +23,8 @@ import { ReuploadManualPaymentDto } from './dto/reupload-manual-payment.dto';
  *  order-currency-denominated calculation only for orders placed before
  *  settlementAmount/settlementCurrency existed. */
 import { sellerTaxShare } from '../common/seller-tax-share.util';
+import { sellerCashBasis, sellerGiftCreditShare, sellerPayoutBasis, sellerPayoutCurrency } from '../common/seller-payout-basis.util';
 
-function sellerPayoutBasis(so: any): number {
-  if (so.settlementAmount != null) return so.settlementAmount;
-  return round(so.subtotal + (so.platformSponsoredDiscountUSD ?? 0) + (so.taxAmount ?? 0));
-}
-
-function sellerPayoutCurrency(so: any, order: any): string {
-  return so.settlementCurrency ?? order.currency ?? 'USD';
-}
 
 @Injectable()
 export class ManualPaymentsService {
@@ -242,11 +235,11 @@ export class ManualPaymentsService {
         const sponsoredCampaignId = so.items.find((i: any) => i.campaignSponsorType === 'platform')?.campaignId ?? null;
         try {
           await this.financeService.recordSale(
-            so.storeId, so.sellerId, order._id.toString(), sellerPayoutBasis(so),
+            so.storeId, so.sellerId, order._id.toString(), sellerPayoutBasis(so, order),
             `Sale — Order #${order._id} (manual bank transfer, verified)`,
             platformSponsoredUSD, sponsoredCampaignId, sellerPayoutCurrency(so, order),
             order.paymentType || 'manual_bank_transfer',
-            false, sellerTaxShare(so, sellerPayoutBasis(so)),
+            false, sellerTaxShare(so, sellerCashBasis(so)), false, 0, sellerGiftCreditShare(so, order),
           );
         } catch (e: any) {
           console.error('Finance recordSale failed (manual payment approval):', e?.message);

@@ -27,8 +27,8 @@ describe('seo redirects bulk import', () => {
     expect(res.data.created).toBe(2);
     expect(res.data.failedCount).toBe(2);
     expect(res.data.failed[0].error).toContain('Status Code');
-    expect(res.data.failed[1].error).toContain('Solvexo');
-    expect(s.rows.has('/noslash')).toBe(false);
+    expect(res.data.failed[1].error).toContain('Destination');
+    expect(s.rows.has('/noslash')).toBe(true); // a missing leading slash is normalised, not rejected
   });
 
   it('normalises a missing leading slash on the source', async () => {

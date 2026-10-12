@@ -259,6 +259,13 @@ export class StoreService {
     await this.storeThemeService.ensureDefaultTheme(store._id.toString());
     await this.storePagesService.ensureHomePage(store._id.toString());
 
+    this.notificationsService.notifyAdmins({
+      type: NOTIFICATION_TYPES.ADMIN_NEW_STORE,
+      title: 'New store created',
+      body: `"${name}" was just created${selfServeActivation ? '' : ' and is waiting for review'}.`,
+      data: { storeId: store._id.toString(), link: '/admin/clients' },
+    }).catch(() => {});
+
     return {
       success: true,
       message: 'Store created successfully',
@@ -513,6 +520,13 @@ export class StoreService {
       },
       $push: { 'verification.history': historyEntry },
     });
+
+    this.notificationsService.notifyAdmins({
+      type: NOTIFICATION_TYPES.ADMIN_VERIFICATION_SUBMITTED,
+      title: wasRejected ? 'Store verification resubmitted' : 'Store verification submitted',
+      body: `"${(store as any).name ?? 'A store'}" ${wasRejected ? 'resubmitted' : 'submitted'} its business verification for review.`,
+      data: { storeId, link: '/admin/clients' },
+    }).catch(() => {});
 
     return { success: true, message: wasRejected ? 'Resubmitted for review' : 'Submitted for review' };
   }
@@ -982,7 +996,7 @@ export class StoreService {
   // body would let a seller un-suspend their own store (see
   // usersService.deleteSellerAccount, which suspends stores on delete).
   async updateStore(sellerId: string, storeId: string, body: any) {
-    const { name, logo, coverImage, faviconUrl, description, tagline, contactEmail, contactPhone, sellerType, productTypes, codEnabled, paymentCaptureMethod, dashboardMetrics, reviewModerationEnabled, lowStockThreshold, taxRate, taxRegions, taxShipping, taxPricesIncludeTax, taxOverrides, showDutiesNotice, enabledCurrencies, cookieBannerEnabled, cookieBannerMessage, showDoNotSellLink, cookieBannerRegionMode, cookieBannerPosition, cookieBannerColorMode, customerAccounts, timezone } = body;
+    const { name, logo, faviconUrl, description, tagline, contactEmail, contactPhone, sellerType, productTypes, codEnabled, paymentCaptureMethod, dashboardMetrics, reviewModerationEnabled, lowStockThreshold, taxRate, taxRegions, taxShipping, taxPricesIncludeTax, taxOverrides, showDutiesNotice, enabledCurrencies, cookieBannerEnabled, cookieBannerMessage, showDoNotSellLink, cookieBannerRegionMode, cookieBannerPosition, cookieBannerColorMode, customerAccounts, timezone } = body;
 
     if (!storeId) throw new BadRequestException('storeId is required');
 
@@ -1023,7 +1037,6 @@ export class StoreService {
     }
 
     if (logo !== undefined) updateData.logo = logo;
-    if (coverImage !== undefined) updateData.coverImage = coverImage;
     if (faviconUrl !== undefined) updateData.faviconUrl = faviconUrl;
     if (description !== undefined) updateData.description = description;
     if (tagline !== undefined) updateData.tagline = tagline;
@@ -1201,7 +1214,7 @@ export class StoreService {
 
   // ── 1. Save builder config ────────────────────────────────────────────────
   async saveBuilderConfig(sellerId: string, body: any) {
-    const { storeId, builderConfig, coverImage } = body;
+    const { storeId, builderConfig } = body;
 
     if (!storeId) throw new BadRequestException('storeId is required');
     if (!builderConfig) throw new BadRequestException('builderConfig is required');
@@ -1214,7 +1227,6 @@ export class StoreService {
     if (store.sellerId !== sellerId) throw new UnauthorizedException('Unauthorized');
 
     const updateData: any = { builderConfig };
-    if (coverImage !== undefined) updateData.coverImage = coverImage;
 
     const updated = await this.databaseService.repositories.storeModel.findByIdAndUpdate(
       storeId,
@@ -1240,7 +1252,6 @@ export class StoreService {
       success: true,
       data: {
         builderConfig: store.builderConfig ?? null,
-        coverImage: store.coverImage ?? null,
         storeName: store.name,
         description: store.description,
       },
@@ -1316,7 +1327,6 @@ export class StoreService {
         name: store.name,
         slug: store.slug,
         logo: store.logo,
-        coverImage: store.coverImage ?? null,
         faviconUrl: store.faviconUrl ?? null,
         description: store.description,
         tagline: store.tagline ?? null,
@@ -1398,7 +1408,6 @@ export class StoreService {
       name: store.name,
       slug: store.slug,
       logo: store.logo ?? null,
-      coverImage: store.coverImage ?? null,
       description: store.description ?? null,
       categoryId: store.categoryId ?? null,
       followersCount: store.followersCount ?? 0,

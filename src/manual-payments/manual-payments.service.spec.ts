@@ -141,7 +141,7 @@ describe('ManualPaymentsService', () => {
         $set: expect.objectContaining({ isPaid: true, paymentStatus: 'paid', orderStatus: 'completed' }),
       }));
       expect(financeService.recordSale).toHaveBeenCalledWith(
-        STORE_ID, SELLER_ID, 'order-1', 100, expect.any(String), 0, null, 'PKR', 'manual_bank_transfer',
+        STORE_ID, SELLER_ID, 'order-1', 100, expect.any(String), 0, null, 'PKR', 'manual_bank_transfer', false, expect.any(Number), false, 0, 0,
       );
       expect(activityLogService.log).toHaveBeenCalledWith(expect.objectContaining({ action: 'manual_payment_approved', storeId: STORE_ID }));
       expect(notificationsService.notify).toHaveBeenCalledWith(expect.objectContaining({ type: 'manual_payment_approved' }));

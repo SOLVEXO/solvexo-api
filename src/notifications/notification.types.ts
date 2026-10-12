@@ -74,12 +74,24 @@ export const NOTIFICATION_TYPES = {
   // Notification per STORE (so it surfaces in that store's own bell/list),
   // but at most one email per SELLER (see NotificationsService.notifyAllStores).
   PLATFORM_ANNOUNCEMENT: 'platform_announcement',
+  // ── Admin (platform operator) alerts — see NotificationsService.notifyAdmins ──
+  ADMIN_NEW_SELLER: 'admin_new_seller',
+  ADMIN_NEW_STORE: 'admin_new_store',
+  ADMIN_VERIFICATION_SUBMITTED: 'admin_verification_submitted',
+  ADMIN_REFUND_REQUEST: 'admin_refund_request',
+  ADMIN_PAYOUT_REQUEST: 'admin_payout_request',
+  ADMIN_PLATFORM_BILLING_FAILED: 'admin_platform_billing_failed',
+  ADMIN_PROMOTION_REQUEST: 'admin_promotion_request',
+  ADMIN_STORE_APP_REQUEST: 'admin_store_app_request',
+  ADMIN_CONTACT_MESSAGE: 'admin_contact_message',
+  ADMIN_EMAIL_FAILURE: 'admin_email_failure',
+  ADMIN_MEMORY_PRESSURE: 'admin_memory_pressure',
 } as const;
 
 export type NotificationType = (typeof NOTIFICATION_TYPES)[keyof typeof NOTIFICATION_TYPES];
 
 /** Maps a notification type to the NotificationPreference bucket that gates it. */
-export const NOTIFICATION_CATEGORY: Record<string, 'orders' | 'messages' | 'promotions' | 'loyalty' | 'subscriptions' | 'finance'> = {
+export const NOTIFICATION_CATEGORY: Record<string, 'orders' | 'messages' | 'promotions' | 'loyalty' | 'subscriptions' | 'finance' | 'admin'> = {
   [NOTIFICATION_TYPES.ORDER_PLACED]: 'orders',
   [NOTIFICATION_TYPES.ORDER_SHIPPED]: 'orders',
   [NOTIFICATION_TYPES.ORDER_DELIVERED]: 'orders',
@@ -135,4 +147,49 @@ export const NOTIFICATION_CATEGORY: Record<string, 'orders' | 'messages' | 'prom
   [NOTIFICATION_TYPES.BOOKING_RESCHEDULED]: 'orders',
   [NOTIFICATION_TYPES.BOOKING_REMINDER]: 'orders',
   [NOTIFICATION_TYPES.PACKAGE_PURCHASED]: 'orders',
+  [NOTIFICATION_TYPES.ADMIN_NEW_SELLER]: 'admin',
+  [NOTIFICATION_TYPES.ADMIN_NEW_STORE]: 'admin',
+  [NOTIFICATION_TYPES.ADMIN_VERIFICATION_SUBMITTED]: 'admin',
+  [NOTIFICATION_TYPES.ADMIN_REFUND_REQUEST]: 'admin',
+  [NOTIFICATION_TYPES.ADMIN_PAYOUT_REQUEST]: 'admin',
+  [NOTIFICATION_TYPES.ADMIN_PLATFORM_BILLING_FAILED]: 'admin',
+  [NOTIFICATION_TYPES.ADMIN_PROMOTION_REQUEST]: 'admin',
+  [NOTIFICATION_TYPES.ADMIN_STORE_APP_REQUEST]: 'admin',
+  [NOTIFICATION_TYPES.ADMIN_CONTACT_MESSAGE]: 'admin',
+  [NOTIFICATION_TYPES.ADMIN_EMAIL_FAILURE]: 'admin',
+  [NOTIFICATION_TYPES.ADMIN_MEMORY_PRESSURE]: 'admin',
 };
+
+/**
+ * Seller-facing notifications that also go out by EMAIL (Shopify staff notifications) even when the caller passed
+ * no email of its own: the in-app title/body become the mail, with a button into the dashboard. The seller's own
+ * preferences (email on/off + the topic switch) still apply. Deliberately NOT here: chat messages and loyalty
+ * (too noisy), low stock (per-variant spam), and the platform-plan/subscription notices (PlatformPlanNotifications
+ * already emails those itself).
+ */
+export const SELLER_EMAIL_TYPES = new Set<string>([
+  NOTIFICATION_TYPES.ORDER_CANCELLED,
+  NOTIFICATION_TYPES.REFUND_REQUESTED,
+  NOTIFICATION_TYPES.DISPUTE_OPENED,
+  NOTIFICATION_TYPES.DISPUTE_UPDATED,
+  NOTIFICATION_TYPES.PAYMENT_FAILED,
+  NOTIFICATION_TYPES.PURCHASE_ORDER_OVERDUE,
+  NOTIFICATION_TYPES.DRAFT_ORDER_INVOICE_OVERDUE,
+  NOTIFICATION_TYPES.ORDER_PAYMENT_OVERDUE,
+  NOTIFICATION_TYPES.MANUAL_PAYMENT_SUBMITTED,
+  NOTIFICATION_TYPES.PAYOUT_AUTO_INITIATED,
+  NOTIFICATION_TYPES.PAYOUT_COMPLETED,
+  NOTIFICATION_TYPES.PAYOUT_REJECTED,
+  NOTIFICATION_TYPES.PAYOUT_RETRIED,
+  NOTIFICATION_TYPES.STORE_APPROVED,
+  NOTIFICATION_TYPES.STORE_REJECTED,
+  NOTIFICATION_TYPES.VERIFICATION_UNDER_REVIEW,
+  NOTIFICATION_TYPES.PROMOTION_APPROVED,
+  NOTIFICATION_TYPES.PROMOTION_REJECTED,
+  NOTIFICATION_TYPES.PROMOTION_PAYMENT_FAILED,
+  NOTIFICATION_TYPES.PROMOTION_GOING_LIVE,
+  NOTIFICATION_TYPES.PROMOTION_EXPIRING_SOON,
+  NOTIFICATION_TYPES.STORE_APP_PUBLISHED,
+  NOTIFICATION_TYPES.STORE_APP_REJECTED,
+  NOTIFICATION_TYPES.STORE_APP_PLATFORM_UPDATED,
+]);

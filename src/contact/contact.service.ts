@@ -7,6 +7,9 @@ import {
 } from './schemas/contact-submission.schema';
 import { CreateContactSubmissionDto, UpdateContactStatusDto } from './dto/contact.dto';
 import { EmailService } from '../otp/services/email.service';
+import { NotificationsService } from '../notifications/notifications.service';
+import { escapeHtml } from '../newsletter/marketing-email.util';
+import { NOTIFICATION_TYPES } from '../notifications/notification.types';
 
 const APP_NAME = process.env.APP_NAME || 'Solvexo';
 
@@ -27,7 +30,7 @@ function acknowledgementEmailHtml(name: string): string {
 <body>
   <div class="container">
     <div class="header"><h1>We got your message</h1></div>
-    <div class="success">Hi ${name}, thanks for reaching out to ${APP_NAME} — our support team will get back to you soon, usually within 24 hours.</div>
+    <div class="success">Hi ${escapeHtml(name)}, thanks for reaching out to ${APP_NAME} — our support team will get back to you soon, usually within 24 hours.</div>
     <div class="footer"><p>© ${new Date().getFullYear()} ${APP_NAME}. All rights reserved.</p></div>
   </div>
 </body>
@@ -40,6 +43,7 @@ export class ContactService {
     @InjectModel(ContactSubmission.name)
     private readonly contactModel: Model<ContactSubmissionDocument>,
     private readonly emailService: EmailService,
+    private readonly notificationsService: NotificationsService,
   ) {}
 
   async submit(dto: CreateContactSubmissionDto) {
@@ -49,6 +53,13 @@ export class ContactService {
       topic: dto.topic,
       message: dto.message.trim(),
     });
+
+    this.notificationsService.notifyAdmins({
+      type: NOTIFICATION_TYPES.ADMIN_CONTACT_MESSAGE,
+      title: 'New contact message',
+      body: `${submission.name} (${submission.email}) wrote about "${submission.topic}".`,
+      data: { link: '/admin/content' },
+    }).catch(() => undefined);
 
     this.emailService
       .sendMail(

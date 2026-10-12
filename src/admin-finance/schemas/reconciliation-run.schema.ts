@@ -13,6 +13,11 @@ export class ReconciliationCurrencyResult {
   @Prop({ type: Number, default: 0 }) refunds: number;
   @Prop({ type: Number, default: 0 }) expectedFromLedger: number;
   @Prop({ type: Number, default: 0 }) drift: number;
+  // Order-vs-ledger reconciliation (see AdminFinanceService#getReconciliation).
+  @Prop({ type: Number, default: 0 }) expectedSales: number;
+  @Prop({ type: Number, default: 0 }) ledgerSales: number;
+  @Prop({ type: Number, default: 0 }) missingSaleCount: number;
+  @Prop({ type: Number, default: 0 }) mismatchedSaleCount: number;
   @Prop({ type: Boolean, default: false }) hasDiscrepancy: boolean;
 }
 export const ReconciliationCurrencyResultSchema = SchemaFactory.createForClass(ReconciliationCurrencyResult);

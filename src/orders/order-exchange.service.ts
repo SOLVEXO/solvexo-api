@@ -5,6 +5,7 @@ import { DatabaseService } from '../database/databaseservice';
 import { ActivityLogService } from '../activity-log/activity-log.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { NOTIFICATION_TYPES } from '../notifications/notification.types';
+import { orderCustomerName } from './shipping-email.util';
 import { ExchangeRateService } from '../exchange-rate/exchange-rate.service';
 import { PaymentService } from '../payment/payment.service';
 import { FinanceService } from '../finance/finance.service';
@@ -284,6 +285,20 @@ export class OrderExchangeService {
       await rollbackStock();
       throw err;
     }
+    // Finance ledger: the exchange order's sale is recorded when it is placed (direct rails only: COD for a difference owed,
+    // store credit when the returned items cover it) — same rule as a checkout order.
+    try {
+      const basis = settleCur ? round(this.exchangeRate.convertWithSnapshots(totalAmount, order.currency, settleCur, order.fxSnapshots ?? [])) : totalAmount;
+      if (basis > 0) {
+        await this.finance.recordSale(
+          storeId, sellerId, String(newId), basis, `Sale — Exchange order #${newNumber}`, 0, null,
+          settleCur ?? order.currency ?? 'USD', owes ? 'cash_on_delivery' : 'store_credit', false,
+          totalAmount > 0 ? round(basis * (taxAmount / totalAmount)) : 0, true,
+        );
+      }
+    } catch (e: any) {
+      console.error('Finance recordSale failed (exchange order):', e?.message);
+    }
     for (const x of repl) {
       await this.r.productModel.updateOne({ _id: x.product._id }, { $inc: { purchaseCount: x.quantity } }).catch(() => undefined);
     }
@@ -383,6 +398,8 @@ export class OrderExchangeService {
       email: {
         subject: `Your exchange for order #${order.orderNumber}`,
         html: `<div style="font-family:Arial,sans-serif;max-width:560px;margin:auto"><h2>Exchange approved</h2><p>${esc(buyerBody)}</p><p style="color:#888;font-size:12px">${esc(store.name ?? '')}</p></div>`,
+        event: 'return_update',
+        vars: { customerName: orderCustomerName(order), orderNumber: String(order.orderNumber), updateTitle: 'Your exchange was approved', updateMessage: buyerBody },
       },
     } as any).catch(() => undefined);
 

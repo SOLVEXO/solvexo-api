@@ -15,7 +15,7 @@ describe('PosService — employee token verification', () => {
 
   beforeEach(() => {
     process.env = { ...ORIGINAL_ENV, JWT_SECRET: 'test-secret' };
-    service = new PosService({} as any, { log: jest.fn() } as any, {} as any);
+    service = new PosService({} as any, { log: jest.fn() } as any, {} as any, { recordSale: jest.fn(), recordRefund: jest.fn() } as any);
   });
 
   afterEach(() => {
@@ -124,7 +124,7 @@ describe('PosService — pinLogin lockout and caller pinning', () => {
       registerSessionModel: { findOne: () => ({ lean: async () => null }) },
       posAuditLogModel: { create: jest.fn(async () => undefined) },
     };
-    const service = new PosService({ repositories: repos } as any, { log: jest.fn() } as any, {} as any);
+    const service = new PosService({ repositories: repos } as any, { log: jest.fn() } as any, {} as any, { recordSale: jest.fn(), recordRefund: jest.fn() } as any);
     return { service, employee, employeeModel };
   }
 

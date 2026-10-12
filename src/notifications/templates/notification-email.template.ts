@@ -8,11 +8,37 @@ const BRAND_COLOR = '#d97757';
  * `shell()` helper in subscription-notifications.service.ts /
  * platform-plan-notifications.service.ts, which is out of scope here.
  */
+/** How a STORE's customer email is branded. A plain string is just the store name. */
+export interface EmailStoreBrand {
+  name: string;
+  logoUrl?: string | null;
+  /** #rrggbb */
+  accent?: string | null;
+  footerText?: string | null;
+}
+
+const HEX = /^#[0-9a-fA-F]{6}$/;
+
 export function notificationEmailShell(
   title: string,
   bodyHtml: string,
   cta?: { label: string; url: string },
+  /** A STORE's name: customer-facing mails (shipped, delivered, ...) are branded as the store, not the platform. */
+  storeBrand?: string | EmailStoreBrand | null,
 ): string {
+  const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const b: EmailStoreBrand | null = typeof storeBrand === 'string' ? { name: storeBrand } : storeBrand ?? null;
+  const brand = b ? esc(b.name) : APP_NAME;
+  const accent = b?.accent && HEX.test(b.accent) ? b.accent : BRAND_COLOR;
+  const logo = b?.logoUrl && /^https:\/\//i.test(b.logoUrl) ? b.logoUrl.replace(/"/g, '%22') : null;
+  const wordmarkHtml = logo
+    ? `<img src="${logo}" alt="${brand}" style="max-height:56px;max-width:220px;">`
+    : `<span>${brand}</span>`;
+  const footerHtml = b
+    ? `${b.footerText ? `<p>${esc(b.footerText)}</p>` : ''}<p>&copy; ${new Date().getFullYear()} ${brand}. All rights reserved.</p>
+    <p>You're receiving this because of your order from ${brand}. Reply to this email to contact the store.</p>`
+    : `<p>&copy; ${new Date().getFullYear()} ${APP_NAME}. All rights reserved.</p>
+    <p>You're receiving this because of activity on your ${APP_NAME} account. Manage preferences in the app under Notifications.</p>`;
   return `
 <!DOCTYPE html>
 <html>
@@ -38,7 +64,7 @@ export function notificationEmailShell(
     font-weight: 800;
     font-size: 28px;
     letter-spacing: -0.5px;
-    color: ${BRAND_COLOR};
+    color: ${accent};
   }
   .card {
     background: #ffffff;
@@ -64,7 +90,7 @@ export function notificationEmailShell(
     display: inline-block;
     margin: 24px 0 8px;
     padding: 12px 28px;
-    background: ${BRAND_COLOR};
+    background: ${accent};
     color: #ffffff !important;
     text-decoration: none;
     border-radius: 999px;
@@ -80,15 +106,14 @@ export function notificationEmailShell(
 </style>
 </head>
 <body>
-  <div class="wordmark"><span>${APP_NAME}</span></div>
+  <div class="wordmark">${wordmarkHtml}</div>
   <div class="card">
     <h1>${title}</h1>
     ${bodyHtml}
     ${cta ? `<div style="text-align:center"><a class="cta" href="${cta.url}">${cta.label}</a></div>` : ''}
   </div>
   <div class="footer">
-    <p>&copy; ${new Date().getFullYear()} ${APP_NAME}. All rights reserved.</p>
-    <p>You're receiving this because of activity on your ${APP_NAME} account. Manage preferences in the app under Notifications.</p>
+    ${footerHtml}
   </div>
 </body>
 </html>`;

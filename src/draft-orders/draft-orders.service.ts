@@ -13,6 +13,7 @@ import { CommissionRulesService } from '../commission-rules/commission-rules.ser
 import { NotificationsService } from '../notifications/notifications.service';
 import { NOTIFICATION_TYPES } from '../notifications/notification.types';
 import { verifyStoreOwnershipStrict } from '../common/store-ownership.util';
+import { FinanceService } from '../finance/finance.service';
 import { CreateDraftOrderDto } from './dto/create-draft-order.dto';
 import { UpdateDraftOrderDto } from './dto/update-draft-order.dto';
 
@@ -49,6 +50,7 @@ export class DraftOrdersService {
     private readonly stripeConnectService: StripeConnectService,
     private readonly commissionRulesService: CommissionRulesService,
     private readonly notificationsService: NotificationsService,
+    private readonly financeService: FinanceService,
   ) {
     const secretKey = this.configService.get<string>('STRIPE_SECRET_KEY')?.trim();
     if (secretKey) {
@@ -306,7 +308,18 @@ export class DraftOrdersService {
         <p><a href="${invoiceUrl}" style="display:inline-block;background:#D97757;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:bold;">Pay Invoice</a></p>
         <p style="color:#888;font-size:12px;">If the button doesn't work, copy this link: ${invoiceUrl}</p>
       </div>`;
-    await this.emailService.sendMail(draft.customerEmail, `Invoice from ${(store as any).name} — ${symbol}${draft.total.toFixed(2)}`, html).catch(() => {});
+    const dueText = draft.paymentTerms === 'due_on_receipt' ? 'Payment is due on receipt.' : draft.dueDate ? `Payment is due by ${new Date(draft.dueDate).toLocaleDateString()}.` : '';
+    // The store's Customer-notification settings decide on/off, text, sender and reply-to (see NotificationsService).
+    const sent = await this.notificationsService.sendCustomerEmail({
+      to: draft.customerEmail, storeId, event: 'draft_order_invoice',
+      vars: { customerName: draft.customerName, invoiceTotal: `${symbol}${draft.total.toFixed(2)}`, dueText, invoiceUrl },
+      cta: { label: 'Pay invoice', url: invoiceUrl },
+      force: true,
+    });
+    if (sent === 'failed') {
+      // Template engine unavailable — fall back to the built-in mail so the invoice still goes out.
+      await this.emailService.sendMail(draft.customerEmail, `Invoice from ${(store as any).name} — ${symbol}${draft.total.toFixed(2)}`, html, (store as any).contactEmail ?? null, undefined, undefined, (store as any).name).catch(() => {});
+    }
 
     await this.activityLogService.log({
       storeId, category: 'orders', action: 'draft_order_invoice_sent',
@@ -360,7 +373,12 @@ export class DraftOrdersService {
           title: 'Overdue invoice',
           body: `Your invoice from ${storeName} for ${symbol}${draft.total.toFixed(2)} is overdue.`,
           data: { draftOrderId: draft._id.toString() },
-          email: { subject: `Overdue invoice from ${storeName} — ${symbol}${draft.total.toFixed(2)}`, html },
+          email: {
+            subject: `Overdue invoice from ${storeName} — ${symbol}${draft.total.toFixed(2)}`, html,
+            event: 'draft_order_overdue',
+            vars: { customerName: draft.customerName, invoiceTotal: `${symbol}${draft.total.toFixed(2)}`, dueDate: new Date(draft.dueDate!).toLocaleDateString(), invoiceUrl },
+            cta: { label: 'Pay invoice', url: invoiceUrl },
+          },
         });
       }
 
@@ -645,6 +663,19 @@ export class DraftOrdersService {
 
     for (const item of draft.items) {
       await this.repos.productModel.updateOne({ _id: item.productId }, { $inc: { purchaseCount: item.quantity } });
+    }
+
+    // Finance ledger: a draft order is paid to the seller directly (their own Stripe via Connect, or outside the platform),
+    // so — like a checkout order — its sale is recorded now, not when the seller later marks it completed.
+    try {
+      const draftTax = Number(draft.taxAmount) || 0;
+      await this.financeService.recordSale(
+        storeId, sellerId, order._id.toString(), round(draft.subtotal + draftTax),
+        `Sale — Order #${orderNumber}`, 0, null, String(draft.currency || 'USD').toUpperCase(),
+        paymentInfo.paymentType, !!sellerOrder.settledViaConnect, draftTax, true,
+      );
+    } catch (e: any) {
+      console.error('Finance recordSale failed (draft order):', e?.message);
     }
 
     await this.repos.draftOrderModel.updateOne(

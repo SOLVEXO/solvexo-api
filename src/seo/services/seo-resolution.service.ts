@@ -103,7 +103,7 @@ export class SeoResolutionService {
       ?? categorySeo.metaTitle
       ?? storeSeo.metaTitle
       ?? renderTemplate(template?.titleTemplate, { productName: product.name, storeName, categoryName: (category as any)?.name })
-      ?? `${product.name} | ${storeName || 'Solvexo'}`;
+      ?? (storeName ? `${product.name} – ${storeName}` : product.name);
 
     const description = seo.metaDescription
       ?? categorySeo.metaDescription
@@ -201,10 +201,10 @@ export class SeoResolutionService {
 
     const title = seo.metaTitle
       ?? renderTemplate(template?.titleTemplate, { storeName: store.name })
-      ?? `${store.name} | Solvexo`;
+      ?? store.name;
     const description = seo.metaDescription
       ?? renderTemplate(template?.descriptionTemplate, { storeName: store.name })
-      ?? truncate(store.description ?? `Shop ${store.name} on Solvexo.`, 160);
+      ?? truncate(store.description ?? '', 160);
     const canonicalUrl = seo.canonicalUrlOverride ?? getStorefrontOrigin(store as any);
 
     return {

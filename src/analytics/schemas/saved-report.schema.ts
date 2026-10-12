@@ -44,9 +44,17 @@ export class SavedReport {
     section: string | null;
   };
 
+  /** Emailed to the store owner automatically: weekly = every Monday, monthly = the 1st (UTC, 06:00 job). */
+  @Prop({ type: String, enum: ['none', 'weekly', 'monthly'], default: 'none' })
+  schedule: 'none' | 'weekly' | 'monthly';
+
+  @Prop({ type: Date, default: null })
+  lastSentAt: Date | null;
+
   createdAt?: Date;
   updatedAt?: Date;
 }
 
 export const SavedReportSchema = SchemaFactory.createForClass(SavedReport);
 SavedReportSchema.index({ storeId: 1, createdAt: -1 });
+SavedReportSchema.index({ schedule: 1 });

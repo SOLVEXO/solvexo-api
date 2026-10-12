@@ -219,7 +219,7 @@ export class MarketingAutomationsService {
         reason,
         unsubscribeUrl: '#',
       });
-    const sent = await this.emailService.sendMail(email, `[Test] ${subject}`, html, store.contactEmail ?? null);
+    const sent = await this.emailService.sendMail(email, `[Test] ${subject}`, html, store.contactEmail ?? null, undefined, undefined, store.name);
     if (!sent) throw new BadRequestException('The test email could not be sent. Check the email settings and try again.');
     return { success: true, message: `Test email sent to ${email}` };
   }
@@ -239,7 +239,7 @@ export class MarketingAutomationsService {
       cta: { url: confirmUrl, label: 'Confirm subscription' },
       reason: `You're receiving this because this address was entered to subscribe to ${store.name}.`,
     });
-    return this.emailService.sendMail(email, `Confirm your subscription to ${store.name}`, html, store.contactEmail ?? null);
+    return this.emailService.sendMail(email, `Confirm your subscription to ${store.name}`, html, store.contactEmail ?? null, undefined, undefined, store.name);
   }
 
   // ── Welcome (called by NewsletterService on a new store subscription) ──
@@ -266,7 +266,7 @@ export class MarketingAutomationsService {
       reason,
       unsubscribeUrl,
     });
-    const sent = await this.emailService.sendMail(email, renderMergeTags(settings.welcome.subject, vars), html, store.contactEmail ?? null, unsubscribeHeaders(unsubscribeUrl));
+    const sent = await this.emailService.sendMail(email, renderMergeTags(settings.welcome.subject, vars), html, store.contactEmail ?? null, unsubscribeHeaders(unsubscribeUrl), undefined, store.name);
     await this.log(storeId, 'welcome', email, `sub:${unsubscribeToken}`, sent);
     return sent;
   }
@@ -407,7 +407,7 @@ export class MarketingAutomationsService {
           cta: productUrl ? { url: productUrl, label: 'Shop now' } : null,
           reason,
         });
-        const sent = await this.emailService.sendMail(req.email, subject, html, store.contactEmail ?? null);
+        const sent = await this.emailService.sendMail(req.email, subject, html, store.contactEmail ?? null, undefined, undefined, store.name);
         if (!sent) {
           await this.r.backInStockRequestModel.updateOne({ _id: req._id }, { $set: { status: 'pending', notifiedAt: null } });
           continue;
@@ -531,7 +531,7 @@ export class MarketingAutomationsService {
         reason,
         unsubscribeUrl,
       });
-      const ok = await this.emailService.sendMail(email, subject, html, store.contactEmail ?? null, unsubscribeHeaders(unsubscribeUrl));
+      const ok = await this.emailService.sendMail(email, subject, html, store.contactEmail ?? null, unsubscribeHeaders(unsubscribeUrl), undefined, store.name);
       await this.markDelivered(logId, ok);
       if (ok) sent++;
     }
@@ -605,7 +605,7 @@ export class MarketingAutomationsService {
         reason,
         unsubscribeUrl,
       });
-      const ok = await this.emailService.sendMail(email, subject, html, store.contactEmail ?? null, unsubscribeHeaders(unsubscribeUrl));
+      const ok = await this.emailService.sendMail(email, subject, html, store.contactEmail ?? null, unsubscribeHeaders(unsubscribeUrl), undefined, store.name);
       await this.markDelivered(logId, ok);
       if (ok) sent++;
     }

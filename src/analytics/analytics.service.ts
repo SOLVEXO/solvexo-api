@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { sellableStockByProduct } from './utils/product-stock.util';
 import { Injectable, BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { isValidObjectId } from 'mongoose';
 import { DatabaseService } from '../database/databaseservice';
@@ -30,19 +31,20 @@ import {
   returningBuyerSet as returningBuyerSetUtil,
   ReportingCurrency,
   sellerOrderMatchStage,
+  saleSubtotalExpr,
   sumUSD,
   toReporting,
   unconvertibleCond,
   unconvertibleCountField,
 } from './utils/order-aggregation.util';
 import { resolveStoreTimeZone } from '../common/store-timezone.util';
-import { toCsv } from './utils/csv.util';
+import { toCsv, limitCsvRows, CSV_ROW_LIMIT } from './utils/csv.util';
 import { PdfReportBuilder } from './utils/pdf-report.util';
 import { getPaymentMethodLabel } from './utils/payment-method-label.util';
 import { resolveCustomerIdentities, NOT_RECORDED_LABEL } from './utils/customer-identity.util';
 import { forecastDailyDemand } from '../inventory/demand-forecast.util';
 
-const ATTRIBUTION_SOURCES = ['marketplace_search', 'direct_link', 'social_media', 'email', 'other'] as const;
+const TRAFFIC_SOURCES = ['direct', 'search', 'social', 'email', 'paid', 'referral', 'unknown'] as const;
 const CACHE_TTL_SECONDS = 600; // 10 minutes
 
 @Injectable()
@@ -165,12 +167,9 @@ export class AnalyticsService {
   // TODAY SUMMARY — store dashboard's "Today's Revenue" live card. Compares
   // today-so-far against the *same elapsed window* yesterday (not all of
   // yesterday) so the percent change is apples-to-apples regardless of what
-  // time of day it's checked. Deliberately omits "visitors"/"conversion
-  // rate" — there is no storefront visit/session tracking anywhere in this
-  // codebase to compute them from (see subscriptions.service.ts's identical
-  // disclaimer for subscriber conversion rate); inventing those numbers
-  // would violate the app's "no fake data" rule, so the app hides those
-  // stat cells instead of receiving placeholder values. Single-store only —
+  // time of day it's checked. Money only: visitors / conversion for today are
+  // served by the Live View (`getLiveView`) and the Sessions report, which read
+  // the first-party storefront sessions. Single-store only —
   // this is the per-store dashboard's widget, not the cross-store one.
   // ═══════════════════════════════════════════════════════════════════════
 
@@ -286,7 +285,7 @@ export class AnalyticsService {
         {
           $group: {
             _id: '$bucket',
-            grossRevenue: { $sum: { $cond: [this.notCancelled(), { $ifNull: [toReporting('$sellerOrders.subtotal', rc), 0] }, 0] } },
+            grossRevenue: { $sum: { $cond: [this.notCancelled(), { $ifNull: [toReporting(saleSubtotalExpr(), rc), 0] }, 0] } },
             refundAmount: { $sum: { $cond: [this.notCancelled(), { $ifNull: [toReporting('$itemRefund', rc), 0] }, 0] } },
             unconvertibleOrderCount: { $sum: { $cond: [{ $and: [this.notCancelled(), unconvertibleCond(rc)] }, 1, 0] } },
           },
@@ -345,7 +344,7 @@ export class AnalyticsService {
             _id: '$day',
             netRevenue: {
               $sum: {
-                $cond: [this.notCancelled(), { $ifNull: [{ $subtract: [toReporting('$sellerOrders.subtotal', rc), toReporting('$itemRefund', rc)] }, 0] }, 0],
+                $cond: [this.notCancelled(), { $ifNull: [{ $subtract: [toReporting(saleSubtotalExpr(), rc), toReporting('$itemRefund', rc)] }, 0] }, 0],
               },
             },
           },
@@ -409,7 +408,7 @@ export class AnalyticsService {
             _id: { day: '$day', weekday: '$weekday' },
             netRevenue: {
               $sum: {
-                $cond: [this.notCancelled(), { $ifNull: [{ $subtract: [toReporting('$sellerOrders.subtotal', rc), toReporting('$itemRefund', rc)] }, 0] }, 0],
+                $cond: [this.notCancelled(), { $ifNull: [{ $subtract: [toReporting(saleSubtotalExpr(), rc), toReporting('$itemRefund', rc)] }, 0] }, 0],
               },
             },
           },
@@ -501,9 +500,9 @@ export class AnalyticsService {
         { $match: { 'sellerOrders.status': { $ne: 'cancelled' } } },
         {
           $group: {
-            _id: { $ifNull: ['$attributionSource', 'other'] },
+            _id: { $ifNull: ['$trafficSource', 'unknown'] },
             count: { $sum: 1 },
-            revenue: sumUSD('$sellerOrders.subtotal', rc),
+            revenue: sumUSD(saleSubtotalExpr(), rc),
           },
         },
       ]);
@@ -511,7 +510,7 @@ export class AnalyticsService {
       const bysource = new Map(rows.map((r: any) => [r._id, r]));
       const totalCount = rows.reduce((sum: number, r: any) => sum + r.count, 0);
 
-      const breakdown = ATTRIBUTION_SOURCES.map((source) => {
+      const breakdown = TRAFFIC_SOURCES.map((source) => {
         const row = bysource.get(source);
         const count = row?.count ?? 0;
         return {
@@ -672,7 +671,7 @@ export class AnalyticsService {
       const geoRows = await this.r.orderModel.aggregate([
         ...this.matchStage(scope, from, to),
         { $match: { 'sellerOrders.status': { $ne: 'cancelled' }, shippingAddress: { $ne: null } } },
-        { $group: { _id: { state: '$shippingAddress.state', country: '$shippingAddress.country' }, orders: { $sum: 1 }, revenue: sumUSD('$sellerOrders.subtotal', rc), unconvertibleOrderCount: unconvertibleCountField(rc) } },
+        { $group: { _id: { state: '$shippingAddress.state', country: '$shippingAddress.country' }, orders: { $sum: 1 }, revenue: sumUSD(saleSubtotalExpr(), rc), unconvertibleOrderCount: unconvertibleCountField(rc) } },
         { $sort: { revenue: -1 } },
       ]);
 
@@ -684,7 +683,7 @@ export class AnalyticsService {
       const countryRows = await this.r.orderModel.aggregate([
         ...this.matchStage(scope, from, to),
         { $match: { 'sellerOrders.status': { $ne: 'cancelled' }, shippingAddress: { $ne: null } } },
-        { $group: { _id: '$shippingAddress.country', orders: { $sum: 1 }, revenue: sumUSD('$sellerOrders.subtotal', rc), unconvertibleOrderCount: unconvertibleCountField(rc) } },
+        { $group: { _id: '$shippingAddress.country', orders: { $sum: 1 }, revenue: sumUSD(saleSubtotalExpr(), rc), unconvertibleOrderCount: unconvertibleCountField(rc) } },
         { $sort: { revenue: -1 } },
       ]);
       const geoUnconvertibleTotal = geoRows.reduce((s: number, r: any) => s + (r.unconvertibleOrderCount ?? 0), 0)
@@ -739,16 +738,12 @@ export class AnalyticsService {
       const salesMap = new Map(sales.map((s) => [s.productId, s]));
       const productIds = products.map((p: any) => p._id.toString());
 
-      const stockRows = await this.r.productVariantModel.aggregate([
-        { $match: { productId: { $in: productIds }, isDelete: false } },
-        { $group: { _id: '$productId', stock: { $sum: '$stock' } } },
-      ]);
-      const stockMap = new Map(stockRows.map((r: any) => [r._id, r.stock]));
+      const stockMap = await sellableStockByProduct(this.r.productVariantModel, productIds);
 
       const merged = products.map((p: any) => {
         const id = p._id.toString();
         const sale = salesMap.get(id);
-        const stock = stockMap.get(id) ?? 0;
+        const stock = stockMap.get(id)?.available ?? 0;
         const unitsSold = sale?.unitsSold ?? 0;
         const revenue = sale?.netRevenue ?? 0;
         const refundedAmount = sale?.refundedAmount ?? 0;
@@ -799,14 +794,7 @@ export class AnalyticsService {
       const productIds = products.map((p: any) => p._id.toString());
       const salesMap = new Map(sales30d.map((s) => [s.productId, s.unitsSold]));
 
-      const variants = await this.r.productVariantModel
-        .find({ productId: { $in: productIds }, isDelete: false })
-        .select('productId stock')
-        .lean();
-      const stockByProduct = new Map<string, number>();
-      for (const v of variants as any[]) {
-        stockByProduct.set(v.productId, (stockByProduct.get(v.productId) ?? 0) + v.stock);
-      }
+      const stockByProduct = await sellableStockByProduct(this.r.productVariantModel, productIds);
 
       const outOfStock: any[] = [];
       const fastMoving: any[] = [];
@@ -815,7 +803,9 @@ export class AnalyticsService {
 
       for (const p of products as any[]) {
         const id = p._id.toString();
-        const stock = stockByProduct.get(id) ?? 0;
+        // Unlimited-stock products can't be "out of stock" and have no sell-through — leave them out of every list.
+        if (stockByProduct.get(id)?.unlimited) continue;
+        const stock = stockByProduct.get(id)?.available ?? 0;
         const unitsSold30d = salesMap.get(id) ?? 0;
         const sellThroughRate = unitsSold30d + stock > 0 ? this.round((unitsSold30d / (unitsSold30d + stock)) * 100) : 0;
 
@@ -863,7 +853,7 @@ export class AnalyticsService {
       const rows = await this.r.orderModel.aggregate([
         ...this.matchStage(scope, from, to),
         { $match: { 'sellerOrders.status': { $ne: 'cancelled' } } },
-        { $group: { _id: '$paymentType', count: { $sum: 1 }, revenue: sumUSD('$sellerOrders.subtotal', rc) } },
+        { $group: { _id: '$paymentType', count: { $sum: 1 }, revenue: sumUSD(saleSubtotalExpr(), rc) } },
       ]);
 
       return {
@@ -1081,12 +1071,13 @@ export class AnalyticsService {
     return { success: true, data: reports };
   }
 
-  async createSavedReport(sellerId: string, storeId: string, body: { name: string; config?: Record<string, any> }) {
+  async createSavedReport(sellerId: string, storeId: string, body: { name: string; config?: Record<string, any>; schedule?: string }) {
     await this.verifyStoreOwnership(storeId, sellerId);
     if (!body?.name?.trim()) throw new BadRequestException('A report name is required');
     const cfg = (body.config ?? {}) as Record<string, any>;
     const report = await this.r.savedReportModel.create({
       storeId, sellerId, name: body.name.trim(),
+      schedule: body.schedule === 'weekly' || body.schedule === 'monthly' ? body.schedule : 'none',
       config: {
         range: cfg.range ?? '30d',
         from: cfg.from ?? null,
@@ -1097,6 +1088,15 @@ export class AnalyticsService {
       },
     });
     return { success: true, message: 'Report saved', data: report };
+  }
+
+  async updateSavedReportSchedule(sellerId: string, storeId: string, reportId: string, schedule: string) {
+    await this.verifyStoreOwnership(storeId, sellerId);
+    if (!isValidObjectId(reportId)) throw new NotFoundException('Report not found');
+    if (!['none', 'weekly', 'monthly'].includes(schedule)) throw new BadRequestException('schedule must be none, weekly or monthly');
+    const report = await this.r.savedReportModel.findOneAndUpdate({ _id: reportId, storeId }, { $set: { schedule } }, { new: true }).lean();
+    if (!report) throw new NotFoundException('Report not found');
+    return { success: true, message: schedule === 'none' ? 'Email schedule turned off' : `Report will be emailed ${schedule}`, data: report };
   }
 
   async deleteSavedReport(sellerId: string, storeId: string, reportId: string) {
@@ -1130,20 +1130,20 @@ export class AnalyticsService {
             $project: {
               _id: 0, orderNumber: 1, createdAt: 1, status: '$sellerOrders.status',
               currency: { $ifNull: ['$currency', 'USD'] },
-              subtotal: '$sellerOrders.subtotal',
+              subtotal: saleSubtotalExpr(),
               // Additive — see admin-analytics.service.ts#exportCsv's same
               // column for why this sits alongside (never replaces) the raw
               // native-currency `subtotal` above.
-              subtotalReport: toReporting('$sellerOrders.subtotal', rc),
+              subtotalReport: toReporting(saleSubtotalExpr(), rc),
               paymentType: 1,
             },
           },
           { $sort: { createdAt: -1 } },
-          { $limit: 5000 },
+          { $limit: CSV_ROW_LIMIT + 1 },
         ]);
         return toCsv(
           ['Order Number', 'Date', 'Status', 'Order Currency', 'Subtotal (order currency)', `Subtotal (${currency})`, 'Payment Type'],
-          rows.map((r: any) => [r.orderNumber, localDateKey(new Date(r.createdAt), tz), r.status, r.currency, Number(r.subtotal ?? 0).toFixed(2), r.subtotalReport == null ? 'N/A' : r.subtotalReport.toFixed(2), getPaymentMethodLabel(r.paymentType)]),
+          limitCsvRows(rows.map((r: any) => [r.orderNumber, localDateKey(new Date(r.createdAt), tz), r.status, r.currency, Number(r.subtotal ?? 0).toFixed(2), r.subtotalReport == null ? 'N/A' : r.subtotalReport.toFixed(2), getPaymentMethodLabel(r.paymentType)]), 7),
         );
       }
       case 'products': {
@@ -1231,16 +1231,5 @@ export class AnalyticsService {
     }
 
     return pdf.build();
-  }
-
-  /**
-   * Report-generation entry point for a future scheduled email job — reuses
-   * the exact same aggregation as `exportPdf`. No cron/email wiring is added
-   * here; `SchedulerModule` (`@nestjs/schedule`) and an OTP-only
-   * `EmailService` already exist in this codebase but neither is wired to
-   * this yet — see the analytics report for what a follow-up needs to do.
-   */
-  async generateScheduledReport(sellerId: string, storeId: string, range: string): Promise<Buffer> {
-    return this.exportPdf(sellerId, storeId, { range });
   }
 }

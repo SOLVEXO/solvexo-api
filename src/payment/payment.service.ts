@@ -7,8 +7,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { availableStock, AVAILABLE_STOCK_EXPR } from '@/common/stock-availability.util';
 import { resolveCustomerId } from '@/common/customer-identity-resolve.util';
-import { escapeHtml, storePublicUrl } from '@/newsletter/marketing-email.util';
-import { signOrderStatusToken } from '@/common/order-status-token.util';
+import { escapeHtml } from '@/newsletter/marketing-email.util';
 import { buyerEmail } from '@/common/buyer-email.util';
 import { buildStoreEmailTotals } from '@/common/order-email-total.util';
 import { DatabaseService } from '@/database/databaseservice';
@@ -30,6 +29,9 @@ import { EmailService } from '@/otp/services/email.service';
 import { verifyStoreOwnershipStrict } from '@/common/store-ownership.util';
 import { deriveRollupStatus } from '@/orders/order-status.util';
 import Stripe from 'stripe';
+import { sellerCashBasis, sellerGiftCreditShare, sellerPayoutBasis, sellerPayoutCurrency } from '../common/seller-payout-basis.util';
+import { sellerTaxShare } from '../common/seller-tax-share.util';
+import { classifyPaymentRail } from '../commission-rules/payment-rail';
 import { markStorefrontSession } from '../common/storefront-session.util';
 
 /** Thrown by createOrder when the atomic stock reservation loses (the last unit was sold between the buyer paying
@@ -44,7 +46,7 @@ export class StockUnavailableException extends BadRequestException {}
  */
 export function isSellerOrderConnectSettled(
   paidViaStripe: boolean,
-  connectInfo: { storeId: string; accountId: string } | null | undefined,
+  connectInfo: { storeId: string; accountId: string; applicationFee?: number; feeCurrency?: string } | null | undefined,
   sellerStoreId: string,
 ): boolean {
   return paidViaStripe && connectInfo?.storeId === sellerStoreId;
@@ -418,6 +420,7 @@ export class PaymentService {
       stripeClientSecret: paymentIntent.client_secret,
       settledViaConnect: !!connectAccountId,
       stripeConnectedAccountId: connectAccountId,
+      applicationFeeAmount: connectAccountId ? applicationFeeAmountCents / 100 : 0,
     });
 
     await checkoutModel.findByIdAndUpdate(checkoutId, {
@@ -882,14 +885,9 @@ export class PaymentService {
 
     for (const order of orders as any[]) {
       for (const so of order.sellerOrders) {
-        // A Connect-settled sellerOrder was never credited to the internal
-        // ledger in the first place (OrdersService.recordSale skips it) —
-        // the real Stripe-side reversal already happened via
-        // refundStripePaymentIntent's reverse_transfer flag, so there is
-        // nothing here to reverse. Ledger-reversing it anyway would either
-        // no-op against a balance that was never incremented, or worse,
-        // push it negative.
-        if (so.settledViaConnect) continue;
+        // A Connect-settled sellerOrder never touched the internal balance (the Stripe-side reversal already happened via
+        // refundStripePaymentIntent's reverse_transfer). recordRefund still records it as an informational refund row —
+        // no balance movement — so finance revenue/refunds/tax match what really happened.
         const shareInOrderCurrency = this.round((so.subtotal / grandTotal) * refundAmountTotal);
         if (shareInOrderCurrency <= 0) continue;
         const settlementCurrency = so.settlementCurrency ?? order.currency ?? 'USD';
@@ -1033,7 +1031,12 @@ export class PaymentService {
     // item in `checkout.items` shares the same storeId, so the first item's
     // is safe to use here.
     const connectInfo = transaction.settledViaConnect && transaction.stripeConnectedAccountId
-      ? { storeId: checkout.items[0]?.storeId, accountId: transaction.stripeConnectedAccountId }
+      ? {
+          storeId: checkout.items[0]?.storeId,
+          accountId: transaction.stripeConnectedAccountId,
+          applicationFee: transaction.applicationFeeAmount ?? 0,
+          feeCurrency: transaction.currency ?? checkout.currency,
+        }
       : null;
 
     let orders: any[];
@@ -1671,7 +1674,7 @@ export class PaymentService {
    */
   async assertDiscountsStillValid(checkout: any) {
     await this.assertCouponStillUsable(checkout);
-    await this.assertDiscountsStillValid(checkout);
+    await this.assertStoreCreditStillCovers(checkout);
   }
 
   private async assertCouponStillUsable(checkout: any) {
@@ -2111,6 +2114,46 @@ export class PaymentService {
     };
   }
 
+  /**
+   * Records each placed sub-order in the finance ledger when its money does NOT sit with the platform. Idempotent per
+   * (store, order) inside FinanceService.recordSale, so the later "completed" call is a harmless no-op. Never throws —
+   * a ledger hiccup must not fail the order. Sub-orders carrying a platform-sponsored discount are left to the completion
+   * path (that credit is real platform money owed to the seller and must wait for fulfilment).
+   */
+  private async recordDirectSales(
+    orders: any[],
+    connectInfo?: { applicationFee?: number; feeCurrency?: string } | null,
+  ): Promise<void> {
+    // The Stripe application fee belongs to the ONE connect-settled charge: show it on the first such sub-order.
+    let feePending = connectInfo?.applicationFee ?? 0;
+    for (const order of orders) {
+      for (const so of order.sellerOrders ?? []) {
+        const direct = !!so.settledViaConnect || classifyPaymentRail(order.paymentType) !== 'solvexo_card';
+        if (!direct || (so.platformSponsoredDiscountUSD ?? 0) > 0) continue;
+        const basis = sellerPayoutBasis(so, order); // includes the part paid with a gift card / store credit (it is still a sale)
+        const settleCurrency = sellerPayoutCurrency(so, order);
+        let connectFee = 0;
+        if (so.settledViaConnect && feePending > 0) {
+          connectFee = this.round(this.exchangeRateService.convertWithSnapshots(
+            feePending, connectInfo?.feeCurrency ?? order.currency ?? 'USD', settleCurrency, (order.fxSnapshots as any) ?? [],
+          ));
+          feePending = 0;
+        }
+        try {
+          await this.financeService.recordSale(
+            so.storeId, so.sellerId, String(order._id), basis,
+            `Sale — Order #${order._id}`,
+            0, null, settleCurrency,
+            order.paymentType, !!so.settledViaConnect, sellerTaxShare(so, sellerCashBasis(so)), true, connectFee,
+            sellerGiftCreditShare(so, order),
+          );
+        } catch (e: any) {
+          console.error('Finance recordSale failed (order placed):', e?.message);
+        }
+      }
+    }
+  }
+
   private async createOrder(
     userId: string,
     checkout: any,
@@ -2130,7 +2173,7 @@ export class PaymentService {
     // seller's own connected account (see initiatePayment's single-store
     // gate) — COD/manual-bank-transfer callers never pass this, since
     // Connect only ever applies to the online-Stripe-'full' rail.
-    connectInfo?: { storeId: string; accountId: string } | null,
+    connectInfo?: { storeId: string; accountId: string; applicationFee?: number; feeCurrency?: string } | null,
   ) {
     const { productVariantModel, productModel, storeModel } =
       this.databaseService.repositories;
@@ -2527,6 +2570,11 @@ export class PaymentService {
       this.affiliateService.recordConversion(String(checkout._id), checkout.attributedAffiliateCode, createdOrders).catch(() => {});
     }
 
+    // Finance ledger: a sale the seller is paid for DIRECTLY (Connect card, COD, bank transfer, their own gateway) is
+    // recorded when the order is placed — like Shopify, a sale counts when it is made, not when the seller later marks
+    // it completed. Platform-held sales keep being credited at completion (the platform holds that money until then).
+    await this.recordDirectSales(createdOrders, connectInfo);
+
     // Online-store analytics: the visit this checkout started in converted (Shopify conversion funnel).
     if (checkout.analyticsSessionId) {
       void markStorefrontSession(
@@ -2535,6 +2583,20 @@ export class PaymentService {
         checkout.analyticsSessionId,
         { converted: true, orderIds: createdOrders.map((o: any) => String(o._id)), userId },
       );
+      // Stamp the visit's traffic type on the orders so "sales by traffic source" reports the real source.
+      void (async () => {
+        const repos = this.databaseService.repositories;
+        const session: any = await repos.storefrontSessionModel
+          .findOne({ storeId: String(checkout.items?.[0]?.storeId), sessionId: checkout.analyticsSessionId })
+          .select('trafficSource')
+          .lean();
+        if (session?.trafficSource) {
+          await repos.orderModel.updateMany(
+            { _id: { $in: createdOrders.map((o: any) => o._id) } },
+            { $set: { trafficSource: session.trafficSource } },
+          );
+        }
+      })().catch(() => undefined);
     }
 
     // purchaseCount increment — har item ke product pe
@@ -2614,19 +2676,43 @@ export class PaymentService {
     // miscounted as a "recovery".
     this.abandonedCartService.markRecovered(String(checkout._id)).catch(() => {});
 
+    // The owner is told once per order; each STORE's extra recipients once per store (one seller can own two stores in a cart).
     const notifiedSellers = new Set<string>();
+    const notifiedStores = new Set<string>();
     for (const createdOrder of createdOrders) {
       for (const so of createdOrder.sellerOrders) {
-        if (notifiedSellers.has(`${createdOrder._id}:${so.sellerId}`)) continue;
-        notifiedSellers.add(`${createdOrder._id}:${so.sellerId}`);
-        this.notificationsService
+        const sellerKey = `${createdOrder._id}:${so.sellerId}`;
+        const storeKey = `${createdOrder._id}:${so.storeId}`;
+        const firstForSeller = !notifiedSellers.has(sellerKey);
+        const firstForStore = !notifiedStores.has(storeKey);
+        if (!firstForSeller && !firstForStore) continue;
+        notifiedSellers.add(sellerKey);
+        notifiedStores.add(storeKey);
+        // Shopify's "New order" staff notification: the store owner gets an email too (their own
+        // email on/off preference still applies inside notify()).
+        const soStore: any = await storeModel.findById(so.storeId).select('name').lean().catch(() => null);
+        const orderLink = `${process.env.FRONTEND_URL ?? ''}/store/${so.storeId}/orders/detail/${createdOrder._id}`;
+        const itemCount = so.items.length;
+        const newOrderEmail = {
+          subject: `[${soStore?.name ?? 'Your store'}] New order #${createdOrder.orderNumber}`,
+          html: `<div style="font-family:Arial,sans-serif;max-width:520px;margin:0 auto;color:#222;">
+                <h2 style="margin-bottom:4px;">New order #${createdOrder.orderNumber}</h2>
+                <p style="color:#555;">${escapeHtml(soStore?.name ?? 'Your store')} just received an order for ${itemCount} item(s).</p>
+                <p style="text-align:center;margin:20px 0;"><a href="${orderLink}" style="background:#111;color:#fff;padding:10px 18px;border-radius:6px;text-decoration:none;">View order</a></p>
+              </div>`,
+        };
+        // Extra recipients the seller added under Settings → Notifications (Shopify staff order notifications).
+        if (firstForStore) this.notificationsService.sendStaffOrderEmails(String(so.storeId), newOrderEmail.subject, newOrderEmail.html).catch(() => {});
+        if (firstForSeller) this.notificationsService
           .notify({
             recipientId: so.sellerId,
             recipientRole: 'seller',
+            storeId: String(so.storeId),
             type: NOTIFICATION_TYPES.ORDER_PLACED,
             title: 'New order received',
-            body: `You have a new order #${createdOrder.orderNumber} for ${so.items.length} item(s).`,
+            body: `You have a new order #${createdOrder.orderNumber} for ${itemCount} item(s).`,
             data: { orderId: createdOrder._id.toString() },
+            email: newOrderEmail,
           })
           .catch(() => {});
       }
@@ -2676,50 +2762,60 @@ export class PaymentService {
     orderCurrency: string,
     storeModel: any,
   ) {
-    const buyer = await this.databaseService.repositories.userModel
+    const buyer: any = await this.databaseService.repositories.userModel
       .findById(userId)
-      .select('email contactEmail isGuest')
+      .select('name email contactEmail isGuest')
       .lean();
-    const buyerTo = buyerEmail(buyer as any); // a guest's real (contact) email — never the synthetic login address
+    const buyerTo = buyerEmail(buyer); // a guest's real (contact) email — never the synthetic login address
     if (!buyerTo) return;
 
     // Totals = items (net of discounts) + shipping + tax, in the order's own currency (see order-email-total.util).
     const byStore = buildStoreEmailTotals(createdOrders);
     if (byStore.size === 0) return;
 
-    const stores = await storeModel
-      .find({ _id: { $in: [...byStore.keys()] } })
-      .select('name contactEmail slug customDomain customDomainStatus')
-      .lean();
-    const storeById = new Map(stores.map((s: any) => [String(s._id), s]));
-
     for (const [storeId, entry] of byStore) {
-      const store = storeById.get(storeId) as { name?: string; contactEmail?: string; slug?: string; customDomain?: string | null; customDomainStatus?: string } | undefined;
-      const storeName = escapeHtml(store?.name ?? 'your order');
-      // Shopify's "View your order" status page — a signed link, works without logging in (how a guest tracks it).
-      const base = storePublicUrl(store as any);
-      const statusUrl = base ? `${base}/order-status/${signOrderStatusToken(entry.firstOrderId)}` : null;
-      const itemRows = entry.items
-        .map(
-          (i: any) =>
-            `<tr><td style="padding:6px 0;">${escapeHtml(String(i.name ?? ''))} &times; ${i.quantity}</td><td style="padding:6px 0; text-align:right;">${(i.totalPrice ?? 0).toFixed(2)} ${orderCurrency}</td></tr>`,
-        )
-        .join('');
-      const html = `
-        <div style="font-family: Arial, sans-serif; max-width: 560px; margin: 0 auto; color:#222;">
-          <h2 style="margin-bottom: 4px;">Thanks for your order!</h2>
-          <p style="color:#555;">Order ${[...entry.orderNumbers].join(', ')} from <strong>${storeName}</strong> is confirmed.</p>
-          <table style="width:100%; border-collapse:collapse; margin:16px 0;">${itemRows}</table>
-          <p style="text-align:right; margin:2px 0;">Subtotal: ${entry.subtotal.toFixed(2)} ${orderCurrency}</p>
-          ${entry.shipping > 0 ? `<p style="text-align:right; margin:2px 0;">Shipping: ${entry.shipping.toFixed(2)} ${orderCurrency}</p>` : ''}
-          ${entry.tax > 0 ? `<p style="text-align:right; margin:2px 0;">Tax: ${entry.tax.toFixed(2)} ${orderCurrency}</p>` : ''}
-          <p style="font-weight:bold; text-align:right;">Total: ${entry.total.toFixed(2)} ${orderCurrency}</p>
-          ${statusUrl ? `<p style="text-align:center;margin:20px 0;"><a href="${statusUrl}" style="background:#111;color:#fff;padding:10px 18px;border-radius:6px;text-decoration:none;">View your order</a></p>` : ''}
-          <p style="color:#888; font-size:13px;">Questions about this order? Just reply to this email.</p>
-        </div>`;
-      this.emailService
-        .sendMail(buyerTo, `Your order from ${store?.name ?? 'your order'} is confirmed`, html, store?.contactEmail ?? null)
-        .catch(() => {});
+      // Which email is sent (on/off, the store's own text, sender, reply-to, "View your order" link) and the
+      // order-timeline record are the store's Customer-notification settings — see NotificationsService.
+      await this.notificationsService.sendCustomerEmail({
+        to: buyerTo,
+        storeId,
+        event: 'order_confirmation',
+        orderId: entry.firstOrderId,
+        vars: this.confirmationEmailVars(entry, orderCurrency, buyer?.name),
+      });
     }
+  }
+
+  private confirmationEmailVars(entry: any, currency: string, buyerName?: string | null) {
+    const money = (n: number) => `${Number(n ?? 0).toFixed(2)} ${currency}`;
+    return {
+      customerName: String(buyerName ?? '').trim().split(/\s+/)[0] ?? '',
+      orderNumber: [...entry.orderNumbers].join(', '),
+      itemList: entry.items.map((i: any) => `${String(i.name ?? '')} × ${i.quantity} — ${money(i.totalPrice ?? 0)}`).join('\n'),
+      subtotal: money(entry.subtotal),
+      shipping: entry.shipping > 0 ? money(entry.shipping) : null,
+      tax: entry.tax > 0 ? money(entry.tax) : null,
+      total: money(entry.total),
+    };
+  }
+
+  /** "Resend" from the order page: rebuilds the confirmation for ONE store's part of an existing order. */
+  async resendOrderConfirmationEmail(order: any, storeId: string): Promise<'sent' | 'disabled' | 'failed' | 'no_email'> {
+    const buyer: any = await this.databaseService.repositories.userModel
+      .findById(order.userId)
+      .select('name email contactEmail isGuest')
+      .lean();
+    const to = buyerEmail(buyer);
+    if (!to) return 'no_email';
+    const entry = buildStoreEmailTotals([order]).get(String(storeId));
+    if (!entry) return 'failed';
+    return this.notificationsService.sendCustomerEmail({
+      to,
+      storeId: String(storeId),
+      event: 'order_confirmation',
+      orderId: String(order._id),
+      vars: this.confirmationEmailVars(entry, order.currency ?? 'USD', buyer?.name),
+      force: true,
+    });
   }
 }

@@ -120,7 +120,7 @@ describe('CollectionTemplateService — core sections (Phase 4)', () => {
     collectionTemplateModel = {
       findOne: jest.fn().mockResolvedValue(null),
       findOneAndUpdate: jest.fn().mockImplementation((filter: any, update: any) => {
-        if (filter.installedThemeId?.$exists === false) return Promise.resolve(null);
+        if (filter.installedThemeId === null || filter.installedThemeId?.$exists === false) return Promise.resolve(null); // legacy shared-record adoption finds nothing
         return Promise.resolve({ ...doc, ...update.$setOnInsert });
       }),
     };
