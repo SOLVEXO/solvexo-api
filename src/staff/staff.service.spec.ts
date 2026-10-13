@@ -180,3 +180,20 @@ describe('StaffService retired permissions', () => {
     expect((jwt.sign as jest.Mock).mock.calls[0][0].permissions).toEqual(['orders.view']);
   });
 });
+
+describe('RoleService retired permission cleanup', () => {
+  it('strips retired keys from stored roles when listing, so a later Save validates', async () => {
+    const roles: any[] = [{ _id: 'r1', name: 'Store Manager', permissions: ['orders.view', 'subscriptions.view', 'subscriptions.manage'] }, { _id: 'r2', name: 'Ok', permissions: ['orders.view'] }];
+    const roleModel: any = {
+      find: jest.fn(() => ({ select: () => ({ lean: async () => roles.map((r) => ({ name: r.name })) }), sort: () => ({ lean: async () => roles }) })),
+      insertMany: jest.fn(),
+      updateOne: jest.fn(async () => ({})),
+    };
+    const svc = new RoleService({ repositories: { roleModel, storeModel: {}, staffMemberModel: {} } } as any);
+    (svc as any).verifyStoreOwnership = jest.fn();
+    const res: any = await svc.list('o', 'seller', 'st');
+    expect(res.data[0].permissions).toEqual(['orders.view']);
+    expect(roleModel.updateOne).toHaveBeenCalledTimes(1);
+    expect(roleModel.updateOne).toHaveBeenCalledWith({ _id: 'r1' }, { $set: { permissions: ['orders.view'] } });
+  });
+});

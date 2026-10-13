@@ -3,6 +3,7 @@ import { Injectable, BadRequestException, ForbiddenException, NotFoundException 
 import { DatabaseService } from '../database/databaseservice';
 import { CreateRoleDto } from './dto/create-role.dto';
 import { UpdateRoleDto } from './dto/update-role.dto';
+import { STAFF_PERMISSIONS } from './schemas/staff-member.schema';
 
 /** Seeded, non-deletable starter roles per store — mirrors Shopify's own
  *  out-of-the-box role concept (a seller isn't forced to build every role
@@ -63,6 +64,20 @@ export class RoleService {
     return store;
   }
 
+  /** Roles saved before a permission was retired (e.g. buyer subscriptions) still
+   *  carry its key, which would make every later Save fail validation. Strip
+   *  them from the stored role (and the rows handed back) the first time the
+   *  store's roles are listed. */
+  private async pruneRetiredPermissions(roles: any[]) {
+    const known = STAFF_PERMISSIONS as readonly string[];
+    for (const role of roles) {
+      const clean = (role.permissions ?? []).filter((p: string) => known.includes(p));
+      if (clean.length === (role.permissions ?? []).length) continue;
+      role.permissions = clean;
+      await this.repos.roleModel.updateOne({ _id: role._id }, { $set: { permissions: clean } });
+    }
+  }
+
   /** Idempotent — only inserts a preset row if that exact name doesn't
    *  already exist for this store (a seller may have already renamed/
    *  deleted one, never resurrected). */
@@ -77,7 +92,9 @@ export class RoleService {
   async list(actorId: string, actorRole: string, storeId: string) {
     if (actorRole === 'seller') await this.verifyStoreOwnership(storeId, actorId);
     await this.ensurePresets(storeId);
-    return { success: true, data: await this.repos.roleModel.find({ storeId, isDelete: false }).sort({ isPreset: -1, name: 1 }).lean() };
+    const roles: any[] = await this.repos.roleModel.find({ storeId, isDelete: false }).sort({ isPreset: -1, name: 1 }).lean();
+    await this.pruneRetiredPermissions(roles);
+    return { success: true, data: roles };
   }
 
   /** A staff actor (never a seller/admin) can only create/edit/delete a Role
