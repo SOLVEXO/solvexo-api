@@ -170,3 +170,13 @@ describe('StaffService invite delivery feedback', () => {
     expect(res.inviteUrl).toBeUndefined();
   });
 });
+
+describe('StaffService retired permissions', () => {
+  it('drops permission keys that no longer exist from a role before issuing them', async () => {
+    const staff = { _id: 's1', email: 'a@b.co', name: 'A', status: 'active', sellerId: 'o', roleId: 'r', passwordHash: await bcrypt.hash('right-pass-1', 4) };
+    const { svc, jwt } = makeService({ staff, role: { permissions: ['orders.view', 'subscriptions.view', 'subscriptions.manage'] } });
+    const res = await svc.login('st', 'a@b.co', 'right-pass-1');
+    expect(res.data.staff.permissions).toEqual(['orders.view']);
+    expect((jwt.sign as jest.Mock).mock.calls[0][0].permissions).toEqual(['orders.view']);
+  });
+});

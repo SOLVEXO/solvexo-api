@@ -55,7 +55,9 @@ export class StaffService {
   private async resolvePermissions(storeId: string, roleId: string | null): Promise<string[]> {
     if (!roleId) return [];
     const role = await this.repos.roleModel.findOne({ _id: roleId, storeId, isDelete: false }).select('permissions').lean();
-    return (role as any)?.permissions ?? [];
+    // Roles saved before a permission was retired (e.g. buyer subscriptions) can
+    // still carry its key — never hand those out.
+    return ((role as any)?.permissions ?? []).filter((p: string) => (STAFF_PERMISSIONS as readonly string[]).includes(p));
   }
 
   /** Store-scoped staff login — a real email+password against `StaffMember`,
