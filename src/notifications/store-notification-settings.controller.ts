@@ -30,6 +30,11 @@ export class StoreNotificationSettingsController {
     return this.service.update(actingSellerId(req.user), storeId, dto, { id: req.user?.userId, role: req.user?.role });
   }
 
+  @Post(':storeId/test-email')
+  sendTest(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: PreviewCustomerEmailDto) {
+    return this.service.sendTest(actingSellerId(req.user), storeId, dto, req.user?.email);
+  }
+
   @Post(':storeId/preview')
   preview(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: PreviewCustomerEmailDto) {
     return this.service.preview(actingSellerId(req.user), storeId, dto);

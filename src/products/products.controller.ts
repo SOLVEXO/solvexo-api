@@ -309,8 +309,9 @@ export class productController {
     return this.ProductsService.deleteProduct(actingSellerId(req.user), productId);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, BillingAccessGuard)
   @Roles('seller')
+  @RequireActiveBilling()
   @Post('duplicate-product/:productId')
   async duplicateProduct(@Req() req: any, @Param('productId') productId: string) {
     const { userId: sellerId } = req.user;

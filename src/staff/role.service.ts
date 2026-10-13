@@ -80,16 +80,27 @@ export class RoleService {
     return { success: true, data: await this.repos.roleModel.find({ storeId, isDelete: false }).sort({ isPreset: -1, name: 1 }).lean() };
   }
 
-  async create(actorId: string, actorRole: string, storeId: string, dto: CreateRoleDto) {
+  /** A staff actor (never a seller/admin) can only create/edit/delete a Role
+   *  whose permissions are ALL ones they hold themselves — otherwise a
+   *  `staff.manage` holder could simply grant themselves everything. */
+  private assertSubsetOfActor(actorRole: string, actorPermissions: string[] | null, perms: string[]) {
+    if (actorRole !== 'staff') return;
+    const disallowed = perms.filter((p) => !(actorPermissions ?? []).includes(p));
+    if (disallowed.length > 0) throw new ForbiddenException(`You can't grant permissions you don't have: ${disallowed.join(', ')}`);
+  }
+
+  async create(actorId: string, actorRole: string, storeId: string, dto: CreateRoleDto, actorPermissions: string[] | null = null) {
     if (actorRole === 'seller') await this.verifyStoreOwnership(storeId, actorId);
+    this.assertSubsetOfActor(actorRole, actorPermissions, dto.permissions ?? []);
     const role = await this.repos.roleModel.create({ storeId, name: dto.name, description: dto.description ?? null, permissions: dto.permissions, isPreset: false });
     return { success: true, data: role };
   }
 
-  async update(actorId: string, actorRole: string, storeId: string, roleId: string, dto: UpdateRoleDto) {
+  async update(actorId: string, actorRole: string, storeId: string, roleId: string, dto: UpdateRoleDto, actorPermissions: string[] | null = null) {
     if (actorRole === 'seller') await this.verifyStoreOwnership(storeId, actorId);
     const role = await this.repos.roleModel.findOne({ _id: roleId, storeId, isDelete: false });
     if (!role) throw new NotFoundException('Role not found');
+    this.assertSubsetOfActor(actorRole, actorPermissions, [...((role as any).permissions ?? []), ...(dto.permissions ?? [])]);
     if (dto.name !== undefined) role.name = dto.name;
     if (dto.description !== undefined) role.description = dto.description;
     if (dto.permissions !== undefined) role.permissions = dto.permissions as any;
@@ -104,10 +115,11 @@ export class RoleService {
     return { success: true, data: role.toObject() };
   }
 
-  async remove(actorId: string, actorRole: string, storeId: string, roleId: string) {
+  async remove(actorId: string, actorRole: string, storeId: string, roleId: string, actorPermissions: string[] | null = null) {
     if (actorRole === 'seller') await this.verifyStoreOwnership(storeId, actorId);
     const role = await this.repos.roleModel.findOne({ _id: roleId, storeId, isDelete: false });
     if (!role) throw new NotFoundException('Role not found');
+    this.assertSubsetOfActor(actorRole, actorPermissions, (role as any).permissions ?? []);
     if (role.isPreset) throw new BadRequestException('Preset roles cannot be deleted');
     const inUse = await this.repos.staffMemberModel.countDocuments({ storeId, roleId, isDelete: false });
     if (inUse > 0) throw new BadRequestException(`${inUse} staff member(s) are assigned to this role — reassign them first`);

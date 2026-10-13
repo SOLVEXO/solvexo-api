@@ -25,19 +25,19 @@ export class RoleController {
 
   @Post(':storeId/roles')
   async create(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: CreateRoleDto) {
-    const { role } = req.user;
-    return this.roleService.create(actingSellerId(req.user), role, storeId, dto);
+    const { role, permissions } = req.user;
+    return this.roleService.create(actingSellerId(req.user), role, storeId, dto, permissions);
   }
 
   @Patch(':storeId/roles/:roleId')
   async update(@Req() req: any, @Param('storeId') storeId: string, @Param('roleId') roleId: string, @Body() dto: UpdateRoleDto) {
-    const { role } = req.user;
-    return this.roleService.update(actingSellerId(req.user), role, storeId, roleId, dto);
+    const { role, permissions } = req.user;
+    return this.roleService.update(actingSellerId(req.user), role, storeId, roleId, dto, permissions);
   }
 
   @Delete(':storeId/roles/:roleId')
   async remove(@Req() req: any, @Param('storeId') storeId: string, @Param('roleId') roleId: string) {
-    const { role } = req.user;
-    return this.roleService.remove(actingSellerId(req.user), role, storeId, roleId);
+    const { role, permissions } = req.user;
+    return this.roleService.remove(actingSellerId(req.user), role, storeId, roleId, permissions);
   }
 }

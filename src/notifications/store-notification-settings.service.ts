@@ -2,6 +2,7 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { DatabaseService } from '@/database/databaseservice';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
+import { EmailService } from '@/otp/services/email.service';
 import { verifyStoreOwnershipStrict } from '@/common/store-ownership.util';
 import {
   CUSTOMER_EMAIL_CATALOG,
@@ -30,7 +31,11 @@ export class StoreNotificationSettingsService {
   constructor(
     private readonly db: DatabaseService,
     private readonly activityLogService: ActivityLogService,
+    private readonly emailService: EmailService,
   ) {}
+
+  /** One test email per store every 10 s (a double-click / script guard; per process). */
+  private static readonly testSentAt = new Map<string, number>();
 
   private get r() {
     return this.db.repositories;
@@ -55,6 +60,7 @@ export class StoreNotificationSettingsService {
       const o = settings?.events?.[key] ?? {};
       return {
         key,
+        group: def.group,
         label: def.label,
         description: def.description,
         variables: def.variables,
@@ -155,8 +161,7 @@ export class StoreNotificationSettingsService {
   }
 
   /** Renders an email exactly as a customer would get it, with sample values — the seller's unsaved draft if given. */
-  async preview(sellerId: string, storeId: string, dto: PreviewCustomerEmailDto) {
-    const store: any = await verifyStoreOwnershipStrict(this.r.storeModel, storeId, sellerId);
+  private async renderSample(store: any, storeId: string, dto: PreviewCustomerEmailDto) {
     if (!isCustomerEmailEvent(dto.event)) throw new BadRequestException('Unknown email');
     const def = CUSTOMER_EMAIL_CATALOG[dto.event];
     const settings: any = await this.r.storeNotificationSettingsModel.findOne({ storeId, isDelete: false }).lean();
@@ -166,23 +171,54 @@ export class StoreNotificationSettingsService {
     this.assertTags(dto.event, subjectTpl, 'Subject');
     this.assertTags(dto.event, bodyTpl, 'Message');
     const storeName = store.name ?? 'Your store';
-    const trackingUrl = CUSTOMER_EMAIL_SAMPLE_VARS.trackingUrl;
     const { subject, html } = renderCustomerEmail({
       subjectTemplate: subjectTpl,
       bodyTemplate: bodyTpl,
       vars: { ...CUSTOMER_EMAIL_SAMPLE_VARS, storeName },
       storeName,
       brand: { logoUrl: settings?.showLogo === false ? null : store.logo ?? null, accent: settings?.accentColor ?? null, footerText: settings?.footerText ?? null },
-      cta: dto.event === 'order_shipped' ? { label: 'Track your package', url: trackingUrl } : { label: 'View your order', url: CUSTOMER_EMAIL_SAMPLE_VARS.orderUrl },
+      cta: dto.event === 'order_shipped'
+        ? { label: 'Track your package', url: CUSTOMER_EMAIL_SAMPLE_VARS.trackingUrl }
+        : { label: 'View your order', url: CUSTOMER_EMAIL_SAMPLE_VARS.orderUrl },
     });
     return {
-      success: true,
-      data: {
-        subject,
-        html,
-        fromName: String(settings?.senderName ?? '').trim() || storeName,
-        replyTo: String(settings?.replyToEmail ?? '').trim() || store.contactEmail || null,
-      },
+      subject,
+      html,
+      fromName: String(settings?.senderName ?? '').trim() || storeName,
+      replyTo: String(settings?.replyToEmail ?? '').trim() || store.contactEmail || null,
     };
+  }
+
+  async preview(sellerId: string, storeId: string, dto: PreviewCustomerEmailDto) {
+    const store: any = await verifyStoreOwnershipStrict(this.r.storeModel, storeId, sellerId);
+    return { success: true, data: await this.renderSample(store, storeId, dto) };
+  }
+
+  /**
+   * Shopify's "Send test notification": mails the sample version of one email (the seller's unsaved draft if given)
+   * to the person who clicked — never to a customer. Uses the real SMTP path, sender name and reply-to.
+   */
+  async sendTest(sellerId: string, storeId: string, dto: PreviewCustomerEmailDto, actorEmail?: string | null) {
+    const store: any = await verifyStoreOwnershipStrict(this.r.storeModel, storeId, sellerId);
+    const built = await this.renderSample(store, storeId, dto);
+
+    let to = String(actorEmail ?? '').trim();
+    if (!to) {
+      const seller: any = await this.r.sellerModel.findById(sellerId).select('email').lean();
+      to = String(seller?.email ?? '').trim();
+    }
+    if (!to) throw new BadRequestException('Your account has no email address to send the test to.');
+
+    const now = Date.now();
+    const last = StoreNotificationSettingsService.testSentAt.get(storeId) ?? 0;
+    if (now - last < 10_000) throw new BadRequestException('A test email was just sent — wait a few seconds before sending another.');
+    StoreNotificationSettingsService.testSentAt.set(storeId, now);
+
+    const ok = await this.emailService.sendMail(to, `[Test] ${built.subject}`, built.html, built.replyTo, undefined, undefined, built.fromName);
+    if (!ok) {
+      StoreNotificationSettingsService.testSentAt.delete(storeId); // nothing went out — allow an immediate retry
+      throw new BadRequestException('The test email could not be sent. Check the platform email settings and try again.');
+    }
+    return { success: true, message: `Test email sent to ${to}.`, data: { to } };
   }
 }

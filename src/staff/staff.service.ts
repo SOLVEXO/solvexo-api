@@ -7,7 +7,9 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
-import { randomBytes } from 'crypto';
+import { randomBytes, createHash } from 'crypto';
+import { escapeHtml } from '../newsletter/marketing-email.util';
+import { buildStaffProfile } from '../common/staff-profile.util';
 import { JwtService } from '@nestjs/jwt';
 import { DatabaseService } from '../database/databaseservice';
 import { RedisService } from '../redis/redis.service';
@@ -20,6 +22,10 @@ import { STAFF_PERMISSIONS } from './schemas/staff-member.schema';
 import { EntitlementsService } from '../platform-plans/entitlements.service';
 
 const INVITE_EXPIRY_DAYS = 7;
+const MAX_FAILED_LOGINS = 5;
+const LOCKOUT_MINUTES = 15;
+const RESET_EXPIRY_MINUTES = 60;
+const sha256 = (v: string) => createHash('sha256').update(v).digest('hex');
 
 @Injectable()
 export class StaffService {
@@ -75,8 +81,24 @@ export class StaffService {
       throw new UnauthorizedException("This invite hasn't been accepted yet — check the invite email for the setup link.");
     }
 
+    const lockedUntil = (staff as any).lockedUntil as Date | null;
+    if (lockedUntil && lockedUntil.getTime() > Date.now()) {
+      const mins = Math.ceil((lockedUntil.getTime() - Date.now()) / 60000);
+      throw new UnauthorizedException(`Too many failed attempts. Try again in ${mins} minute${mins === 1 ? '' : 's'}, or reset your password.`);
+    }
+
     const match = await bcrypt.compare(password, (staff as any).passwordHash);
-    if (!match) throw new UnauthorizedException('Invalid email or password');
+    if (!match) {
+      // Atomic increment so parallel guesses can't dodge the counter.
+      const updated: any = await this.repos.staffMemberModel.findByIdAndUpdate(staff._id, { $inc: { failedLoginCount: 1 } }, { new: true }).select('failedLoginCount').lean();
+      if ((updated?.failedLoginCount ?? 0) >= MAX_FAILED_LOGINS) {
+        await this.repos.staffMemberModel.updateOne({ _id: staff._id }, { $set: { failedLoginCount: 0, lockedUntil: new Date(Date.now() + LOCKOUT_MINUTES * 60000) } });
+      }
+      throw new UnauthorizedException('Invalid email or password');
+    }
+    if ((staff as any).failedLoginCount || lockedUntil) {
+      await this.repos.staffMemberModel.updateOne({ _id: staff._id }, { $set: { failedLoginCount: 0, lockedUntil: null } });
+    }
 
     const permissions = await this.resolvePermissions(storeId, (staff as any).roleId);
 
@@ -138,13 +160,16 @@ export class StaffService {
       passwordHash: null,
       inviteToken,
       inviteTokenExpiresAt: new Date(Date.now() + INVITE_EXPIRY_DAYS * 24 * 60 * 60 * 1000),
+      inviteSentAt: new Date(),
       role: dto.role ?? 'staff',
       roleId: dto.roleId ?? null,
       locationId: dto.locationId ?? null,
       status: 'active',
     });
 
-    this.sendInviteEmail(store?.name ?? 'your store', dto.name, dto.email, inviteToken, store?.contactEmail ?? null).catch(() => {});
+    // Awaited (SMTP has an 8 s connect timeout) so the owner is told the truth
+    // about delivery instead of a silent "Invite pending".
+    const emailSent = await this.sendInviteEmail(store?.name ?? 'your store', dto.name, dto.email, inviteToken, store?.contactEmail ?? null).catch(() => false);
 
     this.activityLogService.log({
       storeId, category: 'settings', action: 'staff_member_added',
@@ -154,7 +179,7 @@ export class StaffService {
     });
 
     const { passwordHash: _omit, inviteToken: _omit2, ...safe } = staff.toObject();
-    return { success: true, data: safe };
+    return { success: true, data: safe, emailSent, ...this.inviteLinkFor(actorRole, inviteToken) };
   }
 
   /** Real invite email — best-effort/fire-and-forget from `create()`, same
@@ -167,9 +192,21 @@ export class StaffService {
   // Solvexo's own shared sender address. `null` (no contactEmail set on
   // that store yet) leaves replies going to the platform sender, same as
   // every other email in this codebase before that field existed.
-  private async sendInviteEmail(storeName: string, staffName: string, email: string, token: string, storeContactEmail: string | null) {
+  /** The raw invite link is a one-time credential for that staff account, so
+   *  only the owner/admin may see it (a staff manager could otherwise set a
+   *  colleague's password). Lets the owner share it by hand when the email
+   *  lands in spam. */
+  private inviteLinkFor(actorRole: string, token: string) {
+    if (actorRole === 'staff') return {};
+    return { inviteUrl: `${(process.env.FRONTEND_URL || '').replace(/\/$/, '')}/staff-invite/${token}` };
+  }
+
+  private async sendInviteEmail(storeName: string, staffName: string, email: string, token: string, storeContactEmail: string | null): Promise<boolean> {
     const frontendBase = (process.env.FRONTEND_URL || '').replace(/\/$/, '');
     const inviteUrl = `${frontendBase}/staff-invite/${token}`;
+    const rawStoreName = storeName;
+    storeName = escapeHtml(storeName);
+    staffName = escapeHtml(staffName);
     const html = `
       <div style="font-family:sans-serif;max-width:520px;margin:0 auto;">
         <h2>You've been invited to ${storeName}</h2>
@@ -179,7 +216,7 @@ export class StaffService {
         <p style="color:#888;font-size:12px;">If the button doesn't work, copy this link: ${inviteUrl}</p>
         <p style="color:#888;font-size:12px;">This link expires in ${INVITE_EXPIRY_DAYS} days. If you weren't expecting this, you can ignore this email.</p>
       </div>`;
-    await this.emailService.sendMail(email, `You've been invited to ${storeName}`, html, storeContactEmail);
+    return this.emailService.sendMail(email, `You've been invited to ${rawStoreName}`, html, storeContactEmail);
   }
 
   /** Public (no JWT — the staff member has no account yet) — resolves an
@@ -236,6 +273,7 @@ export class StaffService {
 
     const staff = await this.repos.staffMemberModel.findOne({ _id: staffId, storeId, isDelete: false });
     if (!staff) throw new NotFoundException('Staff member not found');
+    await this.assertActorCanManageTarget(storeId, actorRole, actorPermissions, (staff as any).roleId);
 
     if (dto.roleId !== undefined && dto.roleId !== null) {
       await this.assertActorCanAssignRole(storeId, actorRole, actorPermissions, dto.roleId);
@@ -289,17 +327,142 @@ export class StaffService {
 
     const staff = await this.repos.staffMemberModel.findOne({ _id: staffId, storeId, isDelete: false }).select('+passwordHash name email');
     if (!staff) throw new NotFoundException('Staff member not found');
+    await this.assertActorCanManageTarget(storeId, actorRole, actorPermissions, (staff as any).roleId);
     if ((staff as any).passwordHash) throw new BadRequestException('This staff member has already accepted their invite.');
 
     const inviteToken = randomBytes(24).toString('hex');
     (staff as any).inviteToken = inviteToken;
     (staff as any).inviteTokenExpiresAt = new Date(Date.now() + INVITE_EXPIRY_DAYS * 24 * 60 * 60 * 1000);
+    (staff as any).inviteSentAt = new Date();
     await staff.save();
 
     const store = await this.repos.storeModel.findById(storeId).select('name contactEmail').lean() as any;
-    await this.sendInviteEmail(store?.name ?? 'your store', (staff as any).name, (staff as any).email, inviteToken, store?.contactEmail ?? null);
+    const emailSent = await this.sendInviteEmail(store?.name ?? 'your store', (staff as any).name, (staff as any).email, inviteToken, store?.contactEmail ?? null).catch(() => false);
 
-    return { success: true, message: 'Invite resent' };
+    return { success: true, message: emailSent ? 'Invite resent' : 'Invite saved but the email could not be sent', emailSent, ...this.inviteLinkFor(actorRole, inviteToken) };
+  }
+
+  /** Permanently removes a staff account (Shopify "Delete staff account").
+   *  Hard delete so the email can be invited again later; the activity log
+   *  keeps the audit trail. A staff actor can't delete themselves or anyone
+   *  whose role grants more than they hold. */
+  async remove(actorId: string, actorRole: string, actorPermissions: string[] | null, storeId: string, staffId: string) {
+    if (actorRole === 'seller') await this.verifyStoreOwnership(storeId, actorId);
+    this.assertCanManageStaff(actorRole, actorPermissions);
+    if (actorRole === 'staff' && actorId === staffId) throw new ForbiddenException("You can't delete your own account");
+
+    const staff = await this.repos.staffMemberModel.findOne({ _id: staffId, storeId, isDelete: false });
+    if (!staff) throw new NotFoundException('Staff member not found');
+    await this.assertActorCanManageTarget(storeId, actorRole, actorPermissions, (staff as any).roleId);
+
+    await this.repos.staffMemberModel.deleteOne({ _id: staffId, storeId });
+    // Kill any live session right away (tokenVersion check fails once the row is gone).
+    this.activityLogService.log({
+      storeId, category: 'settings', action: 'staff_member_deleted',
+      description: `Staff member "${staff.name}" deleted`,
+      actorId, actorRole: actorRole as any,
+      targetId: staffId, targetType: 'staff_member',
+    });
+    return { success: true, message: 'Staff member deleted' };
+  }
+
+  // ── The signed-in staff member's OWN account ───────────────────────────
+
+  async getOwnProfile(staffId: string) {
+    return buildStaffProfile(this.repos, staffId);
+  }
+
+  async updateOwnProfile(staffId: string, dto: { name?: string }) {
+    const name = dto.name?.trim();
+    if (!name) throw new BadRequestException('Name is required');
+    const staff = await this.repos.staffMemberModel.findOneAndUpdate({ _id: staffId, isDelete: false }, { $set: { name } }, { new: true });
+    if (!staff) throw new NotFoundException('Staff member not found');
+    return { success: true, message: 'Profile updated', data: await this.getOwnProfile(staffId) };
+  }
+
+  /** Verifies the current password, sets the new one, revokes every older
+   *  session (tokenVersion bump) and hands back a fresh token so the staff
+   *  member stays signed in on THIS device. */
+  async changeOwnPassword(staffId: string, currentPassword: string, newPassword: string, currentToken?: string) {
+    const staff = await this.repos.staffMemberModel.findOne({ _id: staffId, isDelete: false }).select('+passwordHash');
+    if (!staff || !(staff as any).passwordHash) throw new NotFoundException('Staff member not found');
+    if (!(await bcrypt.compare(currentPassword, (staff as any).passwordHash))) {
+      throw new UnauthorizedException('Current password is incorrect');
+    }
+    if (currentPassword === newPassword) throw new BadRequestException('New password must be different from the current one');
+
+    (staff as any).passwordHash = await bcrypt.hash(newPassword, 10);
+    staff.tokenVersion = (staff.tokenVersion ?? 0) + 1;
+    await staff.save();
+    if (currentToken) { try { await this.redis.del(currentToken); } catch { /* best-effort */ } }
+
+    const accessToken = await this.issueToken(staff);
+    return { success: true, message: 'Password changed successfully', data: { accessToken } };
+  }
+
+  private async issueToken(staff: any) {
+    const permissions = await this.resolvePermissions(staff.storeId, staff.roleId);
+    const accessToken = this.jwtService.sign({
+      sub: staff._id, email: staff.email, role: 'staff', tokenVersion: staff.tokenVersion ?? 0,
+      storeId: staff.storeId, permissions, sellerId: staff.sellerId,
+    });
+    try { await this.redis.set(accessToken, staff._id.toString(), 24 * 60 * 60); } catch { /* fails open like login */ }
+    return accessToken;
+  }
+
+  // ── Forgot / reset password (public) ───────────────────────────────────
+
+  /** Always answers the same way so it can't be used to discover which
+   *  emails are staff accounts. */
+  async forgotPassword(storeId: string, email: string) {
+    const generic = { success: true, message: 'If that email belongs to a staff account on this store, a reset link is on its way.' };
+    const staff: any = await this.repos.staffMemberModel
+      .findOne({ storeId, email: String(email).toLowerCase().trim(), isDelete: false, status: 'active' })
+      .select('+passwordHash name email');
+    if (!staff || !staff.passwordHash) return generic; // unknown / not yet accepted (they use the invite link)
+
+    const token = randomBytes(32).toString('hex');
+    staff.resetTokenHash = sha256(token);
+    staff.resetTokenExpiresAt = new Date(Date.now() + RESET_EXPIRY_MINUTES * 60000);
+    await staff.save();
+
+    const store = await this.repos.storeModel.findById(storeId).select('name contactEmail').lean() as any;
+    const url = `${(process.env.FRONTEND_URL || '').replace(/\/$/, '')}/staff-reset-password/${token}`;
+    const html = `
+      <div style="font-family:sans-serif;max-width:520px;margin:0 auto;">
+        <h2>Reset your password</h2>
+        <p>Hi ${escapeHtml(staff.name)}, we got a request to reset your password for <strong>${escapeHtml(store?.name ?? 'your store')}</strong>.</p>
+        <p><a href="${url}" style="display:inline-block;background:#D97757;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:bold;">Choose a new password</a></p>
+        <p style="color:#888;font-size:12px;">This link expires in ${RESET_EXPIRY_MINUTES} minutes. If you didn't ask for this, you can ignore this email — your password stays the same.</p>
+      </div>`;
+    this.emailService.sendMail(staff.email, 'Reset your password', html, store?.contactEmail ?? null).catch(() => {});
+    return generic;
+  }
+
+  async resetPassword(token: string, password: string) {
+    const staff: any = await this.repos.staffMemberModel
+      .findOne({ resetTokenHash: sha256(token), isDelete: false })
+      .select('+resetTokenHash +passwordHash');
+    if (!staff || !staff.resetTokenExpiresAt || staff.resetTokenExpiresAt < new Date()) {
+      throw new BadRequestException('This reset link is invalid or has expired — request a new one.');
+    }
+    staff.passwordHash = await bcrypt.hash(password, 10);
+    staff.resetTokenHash = null;
+    staff.resetTokenExpiresAt = null;
+    staff.failedLoginCount = 0;
+    staff.lockedUntil = null;
+    staff.tokenVersion = (staff.tokenVersion ?? 0) + 1; // signs out every old session
+    await staff.save();
+    return { success: true, message: 'Password updated — you can now sign in.', data: { storeId: staff.storeId } };
+  }
+
+  /** A staff actor can't touch (edit/deactivate/delete/re-invite) a colleague
+   *  whose role grants anything they don't hold. Sellers/admins always pass. */
+  private async assertActorCanManageTarget(storeId: string, actorRole: string, actorPermissions: string[] | null, targetRoleId: string | null) {
+    if (actorRole !== 'staff') return;
+    const targetPerms = await this.resolvePermissions(storeId, targetRoleId);
+    const disallowed = targetPerms.filter((p) => !(actorPermissions ?? []).includes(p));
+    if (disallowed.length > 0) throw new ForbiddenException("You can't manage a staff member whose role has more access than yours");
   }
 
   private assertCanManageStaff(actorRole: string, actorPermissions: string[] | null) {

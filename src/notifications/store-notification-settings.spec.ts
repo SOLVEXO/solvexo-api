@@ -26,7 +26,7 @@ describe('StoreNotificationSettingsService.update', () => {
     const storeModel = { findById: jest.fn(() => Promise.resolve({ _id: STORE_ID, sellerId: SELLER_ID, isDelete: false, name: 'First Store', contactEmail: 'support@first.store' })) };
     const db = { repositories: { storeModel, storeNotificationSettingsModel: settingsModel } };
     const log = { log: jest.fn() };
-    return { svc: new StoreNotificationSettingsService(db, log), settingsModel };
+    return { svc: new StoreNotificationSettingsService(db, log, { sendMail: jest.fn().mockResolvedValue(true) }), settingsModel };
   }
 
   it('rejects an unknown email event', async () => {
@@ -286,6 +286,72 @@ describe('NotificationsService.sendStaffOrderEmails', () => {
   it('does nothing when no extra recipients are set', async () => {
     const { svc, sendMail } = make([]);
     expect(await svc.sendStaffOrderEmails(STORE_ID, 'New order', '<p>x</p>')).toBe(0);
+    expect(sendMail).not.toHaveBeenCalled();
+  });
+});
+
+describe('StoreNotificationSettingsService.sendTest / preview / group', () => {
+  function build(settings = null, sellerEmail = 'owner@shop.test') {
+    const sendMail = jest.fn().mockResolvedValue(true);
+    const db = {
+      repositories: {
+        storeModel: { findById: jest.fn(() => Promise.resolve({ _id: STORE_ID, sellerId: SELLER_ID, isDelete: false, name: 'First Store', contactEmail: 'support@first.store', logo: 'https://cdn.test/l.png' })) },
+        storeNotificationSettingsModel: { findOne: jest.fn(() => leanQuery(settings)), findOneAndUpdate: jest.fn() },
+        sellerModel: { findById: jest.fn(() => leanQuery({ email: sellerEmail })) },
+      },
+    };
+    const svc = new StoreNotificationSettingsService(db, { log: jest.fn() }, { sendMail });
+    StoreNotificationSettingsService.testSentAt.clear();
+    return { svc, sendMail };
+  }
+
+  it('lists every email with its group (orders / returns / invoices)', async () => {
+    const { svc } = build();
+    const res = await svc.get(SELLER_ID, STORE_ID);
+    const byKey = Object.fromEntries(res.data.events.map((e) => [e.key, e.group]));
+    expect(byKey).toMatchObject({ order_confirmation: 'orders', order_edited: 'orders', return_update: 'returns', draft_order_invoice: 'invoices', gift_card: 'invoices' });
+    expect(res.data.events.every((e) => ['orders', 'returns', 'invoices'].includes(e.group))).toBe(true);
+  });
+
+  it('sends the sample (with the unsaved draft text) only to the person who clicked, with the store sender + reply-to', async () => {
+    const { svc, sendMail } = build({ senderName: 'First Store Team', replyToEmail: 'help@first.store' });
+    const res = await svc.sendTest(SELLER_ID, STORE_ID, { event: 'order_shipped', subject: 'Draft {{orderNumber}}', body: 'Hello {{customerName}}' }, 'me@shop.test');
+    expect(res).toMatchObject({ success: true, data: { to: 'me@shop.test' } });
+    const [to, subject, html, replyTo, , , fromName] = sendMail.mock.calls[0];
+    expect(to).toBe('me@shop.test');
+    expect(subject).toBe('[Test] Draft 1001');
+    expect(html).toContain('Hello Alex');
+    expect(replyTo).toBe('help@first.store');
+    expect(fromName).toBe('First Store Team');
+  });
+
+  it("falls back to the owner's email when the caller's token has none", async () => {
+    const { svc, sendMail } = build();
+    await svc.sendTest(SELLER_ID, STORE_ID, { event: 'order_delivered' }, undefined);
+    expect(sendMail.mock.calls[0][0]).toBe('owner@shop.test');
+  });
+
+  it('rejects an unknown email, an unknown placeholder, and a store that is not yours — without sending', async () => {
+    const { svc, sendMail } = build();
+    await expect(svc.sendTest(SELLER_ID, STORE_ID, { event: 'nope' })).rejects.toBeInstanceOf(BadRequestException);
+    await expect(svc.sendTest(SELLER_ID, STORE_ID, { event: 'order_delivered', body: 'x {{carrier}}' })).rejects.toThrow(/unknown placeholder/i);
+    await expect(svc.sendTest('someone-else', STORE_ID, { event: 'order_delivered' })).rejects.toBeDefined();
+    expect(sendMail).not.toHaveBeenCalled();
+  });
+
+  it('limits test emails to one per 10 seconds, and a failed send does not lock out the retry', async () => {
+    const { svc, sendMail } = build();
+    sendMail.mockResolvedValueOnce(false);
+    await expect(svc.sendTest(SELLER_ID, STORE_ID, { event: 'order_delivered' }, 'me@shop.test')).rejects.toThrow(/could not be sent/i);
+    await expect(svc.sendTest(SELLER_ID, STORE_ID, { event: 'order_delivered' }, 'me@shop.test')).resolves.toMatchObject({ success: true });
+    await expect(svc.sendTest(SELLER_ID, STORE_ID, { event: 'order_delivered' }, 'me@shop.test')).rejects.toThrow(/just sent/i);
+  });
+
+  it('preview returns the same render and never sends anything', async () => {
+    const { svc, sendMail } = build();
+    const res = await svc.preview(SELLER_ID, STORE_ID, { event: 'order_confirmation' });
+    expect(res.data.subject).toBe('Your order from First Store is confirmed');
+    expect(res.data.html).toContain('https://cdn.test/l.png');
     expect(sendMail).not.toHaveBeenCalled();
   });
 });

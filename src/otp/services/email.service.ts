@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import * as nodemailer from 'nodemailer';
 import { EventEmitter } from 'events';
+import { htmlToPlainText } from '../../common/html-to-text.util';
 
 /** Every real send attempt, from every EmailService instance in the app — EmailHealthService records it for the admin Email health card and the "emails are failing" alert. */
 export const emailEvents = new EventEmitter();
@@ -67,6 +68,8 @@ export class EmailService {
         to,
         subject,
         html,
+        // Plain-text part alongside the HTML — HTML-only mail is a spam signal.
+        text: htmlToPlainText(html),
         ...(replyTo ? { replyTo } : {}),
         ...(headers ? { headers } : {}),
         ...(attachments?.length ? { attachments } : {}),

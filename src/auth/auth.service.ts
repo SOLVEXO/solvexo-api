@@ -1,3 +1,4 @@
+import { buildStaffProfile } from '../common/staff-profile.util';
 import {
   Injectable,
   Optional,
@@ -890,6 +891,8 @@ export class AuthService {
         userModel = this.databaseService.repositories.sellerModel;
       } else if (role === 'admin') {
         userModel = this.databaseService.repositories.adminModel;
+      } else if (role === 'staff') {
+        throw new BadRequestException('Staff update their profile from the Account page.');
       } else {
         throw new BadRequestException('Invalid role');
       }
@@ -930,6 +933,9 @@ export class AuthService {
 
   async getProfile(userId: string, role: string) {
     try {
+      if (role === 'staff') {
+        return { message: 'Profile fetched successfully', success: true, data: await buildStaffProfile(this.databaseService.repositories, userId) };
+      }
       let userModel;
 
       // 1️⃣ Role ke base pe model select

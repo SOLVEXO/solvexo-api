@@ -22,7 +22,11 @@ export const CUSTOMER_EMAIL_EVENTS = [
 
 export type CustomerEmailEvent = (typeof CUSTOMER_EMAIL_EVENTS)[number];
 
+export type CustomerEmailGroup = 'orders' | 'returns' | 'invoices';
+
 export interface CustomerEmailEventDef {
+  /** Where the email is listed on the seller's Customer emails page. */
+  group: CustomerEmailGroup;
   label: string;
   description: string;
   defaultSubject: string;
@@ -39,6 +43,7 @@ const COMMON = ['storeName', 'customerName', 'orderNumber', 'orderUrl'];
 
 export const CUSTOMER_EMAIL_CATALOG: Record<CustomerEmailEvent, CustomerEmailEventDef> = {
   order_confirmation: {
+    group: 'orders',
     label: 'Order confirmation',
     description: 'Sent to the customer as soon as they place an order.',
     defaultSubject: 'Your order from {{storeName}} is confirmed',
@@ -48,6 +53,7 @@ export const CUSTOMER_EMAIL_CATALOG: Record<CustomerEmailEvent, CustomerEmailEve
     resendable: true,
   },
   order_shipped: {
+    group: 'orders',
     label: 'Shipping confirmation',
     description: 'Sent when you mark an order (or part of it) as shipped.',
     defaultSubject: 'Your order #{{orderNumber}} from {{storeName}} has shipped',
@@ -57,6 +63,7 @@ export const CUSTOMER_EMAIL_CATALOG: Record<CustomerEmailEvent, CustomerEmailEve
     resendable: true,
   },
   order_ready_for_pickup: {
+    group: 'orders',
     label: 'Ready for pickup',
     description: 'Sent when a local-pickup order is ready to collect.',
     defaultSubject: 'Your order #{{orderNumber}} is ready for pickup — {{storeName}}',
@@ -66,6 +73,7 @@ export const CUSTOMER_EMAIL_CATALOG: Record<CustomerEmailEvent, CustomerEmailEve
     resendable: true,
   },
   order_delivered: {
+    group: 'orders',
     label: 'Delivered',
     description: 'Sent when an order is marked delivered (or picked up).',
     defaultSubject: 'Your order #{{orderNumber}} has been {{deliveryStatus}} — {{storeName}}',
@@ -75,6 +83,7 @@ export const CUSTOMER_EMAIL_CATALOG: Record<CustomerEmailEvent, CustomerEmailEve
     resendable: true,
   },
   order_cancelled: {
+    group: 'orders',
     label: 'Order canceled',
     description: 'Sent when you cancel an order (or items in it).',
     defaultSubject: 'Your order #{{orderNumber}} from {{storeName}} was canceled',
@@ -84,6 +93,7 @@ export const CUSTOMER_EMAIL_CATALOG: Record<CustomerEmailEvent, CustomerEmailEve
     resendable: true,
   },
   order_refunded: {
+    group: 'orders',
     label: 'Refund',
     description: 'Sent when you refund an order or a return.',
     defaultSubject: 'Refund for order #{{orderNumber}} from {{storeName}}',
@@ -93,6 +103,7 @@ export const CUSTOMER_EMAIL_CATALOG: Record<CustomerEmailEvent, CustomerEmailEve
     resendable: true,
   },
   order_edited: {
+    group: 'orders',
     label: 'Order edited',
     description: 'Sent when you change an order after it was placed (items, quantities or price).',
     defaultSubject: 'Your order #{{orderNumber}} from {{storeName}} was updated',
@@ -102,6 +113,7 @@ export const CUSTOMER_EMAIL_CATALOG: Record<CustomerEmailEvent, CustomerEmailEve
     resendable: false,
   },
   return_update: {
+    group: 'returns',
     label: 'Return & exchange updates',
     description: 'Sent when a return is approved, declined, received or closed, and when an exchange is created.',
     defaultSubject: '{{updateTitle}} — order #{{orderNumber}} from {{storeName}}',
@@ -111,6 +123,7 @@ export const CUSTOMER_EMAIL_CATALOG: Record<CustomerEmailEvent, CustomerEmailEve
     resendable: false,
   },
   draft_order_invoice: {
+    group: 'invoices',
     label: 'Draft order invoice',
     description: 'Sent when you email an invoice for a draft order with a link to pay it.',
     defaultSubject: 'Invoice from {{storeName}} — {{invoiceTotal}}',
@@ -121,6 +134,7 @@ export const CUSTOMER_EMAIL_CATALOG: Record<CustomerEmailEvent, CustomerEmailEve
     canDisable: false,
   },
   draft_order_overdue: {
+    group: 'invoices',
     label: 'Overdue invoice reminder',
     description: 'Sent automatically when a draft-order invoice is still unpaid after its due date.',
     defaultSubject: 'Overdue invoice from {{storeName}} — {{invoiceTotal}}',
@@ -130,6 +144,7 @@ export const CUSTOMER_EMAIL_CATALOG: Record<CustomerEmailEvent, CustomerEmailEve
     resendable: false,
   },
   gift_card: {
+    group: 'invoices',
     label: 'Gift card',
     description: 'Sent to the person who receives a gift card from your store.',
     defaultSubject: "You've received a {{giftCardValue}} gift card from {{storeName}}",

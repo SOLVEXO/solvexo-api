@@ -10,6 +10,14 @@ export class ProductVariant {
   @Prop({ type: String, required: true })
   productId: string;
 
+  /**
+   * The owning store, copied from the product (a variant used to be reachable only through its product, so "is this SKU
+   * already used in my store?" needed a join). Required on every NEW variant; older rows are filled in at boot by
+   * CatalogIntegrityService. Never client-supplied.
+   */
+  @Prop({ type: String, default: null })
+  storeId: string | null;
+
   @Prop({ required: true })
   sku: string;
 
@@ -177,4 +185,10 @@ export const ProductVariantSchema = SchemaFactory.createForClass(ProductVariant)
 
 ProductVariantSchema.index({ productId: 1 });
 ProductVariantSchema.index({ sku: 1 });
+// A SKU identifies ONE live variant inside a store (Shopify: "SKU must be unique" is the merchant's inventory key). Partial, so
+// deleted variants release their SKU and rows that predate `storeId` are not indexed until CatalogIntegrityService fills them in.
+ProductVariantSchema.index(
+  { storeId: 1, sku: 1 },
+  { unique: true, partialFilterExpression: { isDelete: false, storeId: { $type: 'string' }, sku: { $gt: '' } }, name: 'storeId_1_sku_1_unique_live' },
+);
 ProductVariantSchema.index({ barcode: 1 }, { sparse: true });

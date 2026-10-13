@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Body, Controller, Get, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Put, Req, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
@@ -9,6 +9,7 @@ import { StaffService } from './staff.service';
 import { CreateStaffDto } from './dto/create-staff.dto';
 import { UpdateStaffDto } from './dto/update-staff.dto';
 import { AcceptStaffInviteDto } from './dto/accept-staff-invite.dto';
+import { ChangeOwnStaffPasswordDto, StaffForgotPasswordDto, StaffResetPasswordDto, UpdateOwnStaffProfileDto } from './dto/staff-account.dto';
 
 @Controller('api/staff')
 export class StaffController {
@@ -37,6 +38,34 @@ export class StaffController {
   @Post('invite/:token/accept')
   async acceptInvite(@Param('token') token: string, @Body() dto: AcceptStaffInviteDto) {
     return this.staffService.acceptInvite(token, dto);
+  }
+
+  // Public — forgot/reset password. Literal segments, declared before the
+  // dynamic `:storeId` routes below.
+  @Post('reset-password/:token')
+  async resetPassword(@Param('token') token: string, @Body() dto: StaffResetPasswordDto) {
+    return this.staffService.resetPassword(token, dto.password);
+  }
+
+  @Post(':storeId/forgot-password')
+  async forgotPassword(@Param('storeId') storeId: string, @Body() dto: StaffForgotPasswordDto) {
+    return this.staffService.forgotPassword(storeId, dto.email);
+  }
+
+  // The signed-in staff member's OWN account (no staff.manage needed).
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('staff')
+  @Patch('me')
+  async updateMe(@Req() req: any, @Body() dto: UpdateOwnStaffProfileDto) {
+    return this.staffService.updateOwnProfile(req.user.userId, dto);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('staff')
+  @Put('me/password')
+  async changeMyPassword(@Req() req: any, @Body() dto: ChangeOwnStaffPasswordDto) {
+    const token = req.headers.authorization?.split(' ')[1];
+    return this.staffService.changeOwnPassword(req.user.userId, dto.currentPassword, dto.newPassword, token);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
@@ -78,6 +107,15 @@ export class StaffController {
   async deactivate(@Req() req: any, @Param('storeId') storeId: string, @Param('staffId') staffId: string) {
     const { userId, role, permissions } = req.user;
     return this.staffService.deactivate(userId, role, permissions, storeId, staffId);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'admin', 'staff')
+  @RequirePermission('staff.manage')
+  @Delete(':storeId/:staffId')
+  async remove(@Req() req: any, @Param('storeId') storeId: string, @Param('staffId') staffId: string) {
+    const { userId, role, permissions } = req.user;
+    return this.staffService.remove(userId, role, permissions, storeId, staffId);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)

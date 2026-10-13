@@ -1,5 +1,8 @@
 /* eslint-disable prettier/prettier */
 import { BadRequestException, ForbiddenException, Injectable } from '@nestjs/common';
+import { InjectConnection } from '@nestjs/mongoose';
+import { Connection } from 'mongoose';
+import { softDeleteProducts } from '../products/product-cascade.util';
 import { DatabaseService } from '../database/databaseservice';
 import { ActivityLogService } from '../activity-log/activity-log.service';
 import { ProductVariantsService } from '../product-variants/product-variants.service';
@@ -21,6 +24,7 @@ export class ProductsBulkService {
     private readonly db: DatabaseService,
     private readonly activityLog: ActivityLogService,
     private readonly variants: ProductVariantsService,
+    @InjectConnection() private readonly connection: Connection,
   ) {}
 
   private get r() { return this.db.repositories; }
@@ -92,13 +96,10 @@ export class ProductsBulkService {
     await this.assertOwnedStore(sellerId, storeId);
     const ids = await this.resolveTargets(sellerId, storeId, target);
     if (ids.length === 0) return { success: true, message: 'No matching products', data: { matched: 0, modified: 0 } };
-    await this.r.productModel.updateMany(
-      { _id: { $in: ids }, storeId, sellerId, isDelete: false },
-      { $set: { isDelete: true, status: 'inactive' } },
-    );
-    await this.r.productVariantModel.updateMany(
-      { productId: { $in: ids }, isDelete: false },
-      { $set: { isDelete: true, isDefault: false } },
+    // same cascade as the single delete (variants, carts, collections, wishlists) in one transaction
+    const owned: any[] = await this.r.productModel.find({ _id: { $in: ids }, storeId, sellerId, isDelete: false }).select('_id').lean();
+    await this.connection.transaction((session) =>
+      softDeleteProducts(this.r as any, { storeId, productIds: owned.map((p) => String(p._id)), session }),
     );
     await this.log(storeId, sellerId, actorRole, 'products_bulk_deleted', `${ids.length} product(s) deleted`, ids.length);
     return { success: true, message: `${ids.length} product(s) deleted`, data: { matched: ids.length, modified: ids.length } };

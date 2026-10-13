@@ -4,10 +4,17 @@ import {
   BadRequestException,
   ForbiddenException,
   NotFoundException,
+  ConflictException,
   HttpException,
   HttpStatus,
 } from '@nestjs/common';
-import { isValidObjectId } from 'mongoose';
+import { InjectConnection } from '@nestjs/mongoose';
+import { ClientSession, Connection, Types, isValidObjectId } from 'mongoose';
+import {
+  PRODUCT_LIMITS, assertMoney, assertStockQuantity, copySku, findDuplicateSku, generateSkus, normalizeBarcode, normalizeDescription,
+  normalizeImages, normalizeName, normalizeSku, normalizeStatus, normalizeTags, resolveScheduledAt,
+} from './product-input.util';
+import { softDeleteProducts } from './product-cascade.util';
 import { buildStoreProductFilter, productSort } from './product-list-filter.util';
 
 import { DatabaseService } from '@/database/databaseservice';
@@ -33,6 +40,8 @@ import { toDimensionCm } from '@/shipping-rates/shipping-math.util';
 import { parseCustomsInput } from '@/shipping-rates/customs.util';
 
 const EDUCATION_LEVEL_VALUES: string[] = Object.values(EducationLevel);
+/** Shopify allows 2000 variants per product; a store builder UI is unusable far earlier, so keep a sane ceiling. */
+const MAX_VARIANTS_PER_PRODUCT = 250;
 
 @Injectable()
 export class ProductsService {
@@ -44,6 +53,7 @@ export class ProductsService {
     private marketingService: MarketingService,
     private uploadService: UploadService,
     private redisService: RedisService,
+    @InjectConnection() private readonly connection: Connection,
   ) {}
 
   /** Attaches an `activeCampaign` badge summary (or null) to each product,
@@ -1036,315 +1046,356 @@ export class ProductsService {
     return profile.isGeneral ? null : String(profile._id);
   }
 
-  async addPhysicalProduct(sellerId: string, body: any) {
-    const { storeModel, sellerModel, productModel, productVariantModel } =
-      this.databaseService.repositories;
+  // ── Shared helpers for the write paths below ──────────────────────────────
 
-    const seller = await sellerModel.findOne({
-      _id: sellerId,
-      status: 'active',
-      isDelete: false,
-    });
+  private withTransaction<T>(fn: (session: ClientSession) => Promise<T>): Promise<T> {
+    return this.connection.transaction(fn);
+  }
+
+  /** A Mongo duplicate-key error (a concurrent request won the race) becomes a readable 409 instead of a raw 500. */
+  private rethrowDuplicate(err: any): never {
+    if (err?.code === 11000) {
+      const pattern = JSON.stringify(err?.keyPattern ?? err?.message ?? '');
+      if (pattern.includes('sku')) {
+        throw new ConflictException('A SKU is already used by another product in your store — SKUs must be unique.');
+      }
+      if (pattern.includes('slug')) {
+        throw new ConflictException('A product with this name was just created — please try again.');
+      }
+    }
+    throw err;
+  }
+
+  /** Every given SKU must be free inside the store (live variants only). `exceptProductId` lets a product keep its own SKUs. */
+  private async assertSkusFree(storeId: string, skus: string[], exceptProductId?: string): Promise<void> {
+    if (skus.length === 0) return;
+    const filter: any = { storeId, sku: { $in: skus }, isDelete: false };
+    if (exceptProductId) filter.productId = { $ne: exceptProductId };
+    const clash: any = await this.databaseService.repositories.productVariantModel.findOne(filter).select('sku').lean();
+    if (clash) throw new ConflictException(`SKU "${clash.sku}" is already used by another variant in your store — SKUs must be unique.`);
+  }
+
+  /**
+   * The plan-limit pre-check is a count-then-insert and so can be beaten by two simultaneous creates. After the create is
+   * committed we count again; if the store ended up over its limit this product is the one that crossed it, so it is removed
+   * again and the caller is told (nothing was visible to buyers: it was created a moment ago, normally as a draft).
+   */
+  private async enforceProductLimitAfterCreate(storeId: string, productId: string): Promise<void> {
+    if (!(await this.entitlementsService.isOverProductLimit(storeId))) return;
+    const { productModel, productVariantModel } = this.databaseService.repositories;
+    await productVariantModel.deleteMany({ productId });
+    await productModel.deleteOne({ _id: productId });
+    throw new BadRequestException('Product limit reached for your current plan — upgrade your platform plan to add more products.');
+  }
+
+  /** Validates + normalises one variant from a create request. Everything the database stores for a variant comes out of here. */
+  private prepareVariantInput(v: any) {
+    if (!v || typeof v !== 'object') throw new BadRequestException('Every variant must be an object');
+    if (v.price === undefined || v.price === null) throw new BadRequestException('Every variant requires a price');
+    const price = assertMoney(v.price, 'Price');
+    const compareAtPrice = v.compareAtPrice === undefined || v.compareAtPrice === null ? null : assertMoney(v.compareAtPrice, 'Compare-at price');
+    const unlimitedStock = !!v.unlimitedStock;
+    const stock = v.stock === undefined || v.stock === null ? 0 : assertStockQuantity(v.stock);
+    try {
+      validateOptions(v.options);
+    } catch (e: any) {
+      throw new BadRequestException(e.message);
+    }
+    const customs = parseCustomsInput(v);
+    if (customs.error) throw new BadRequestException(customs.error);
+    return {
+      price,
+      compareAtPrice,
+      stock: unlimitedStock ? 0 : stock,
+      unlimitedStock,
+      allowBackorder: !!v.allowBackorder,
+      options: v.options ?? [],
+      shippingWeight: v.shippingWeight ?? null,
+      length: toDimensionCm(v.length),
+      width: toDimensionCm(v.width),
+      height: toDimensionCm(v.height),
+      customs: { countryOfOrigin: null, hsCode: null, customsDescription: null, ...customs.value },
+      taxable: v.taxable !== false,
+      images: normalizeImages(v.images),
+      sku: normalizeSku(v.sku),
+      barcode: normalizeBarcode(v.barcode),
+      isDefault: v.isDefault === true,
+    };
+  }
+
+  /** Redirect old product URLs to the new one after a rename (Shopify does the same), so shared links and search results keep working. */
+  private async recordSlugRedirect(storeId: string, oldSlug: string, newSlug: string): Promise<void> {
+    if (!oldSlug || !newSlug || oldSlug === newSlug) return;
+    try {
+      const { seoRedirectModel } = this.databaseService.repositories;
+      const from = `/product/${oldSlug}`;
+      const to = `/product/${newSlug}`;
+      // renaming back to a slug that has an old redirect would otherwise create a loop
+      await seoRedirectModel.deleteOne({ storeId, source: to });
+      await seoRedirectModel.updateOne(
+        { storeId, source: from },
+        { $set: { destination: to, statusCode: 301, isActive: true, isDelete: false } },
+        { upsert: true },
+      );
+      // earlier redirects that pointed at the old slug now go straight to the new one (no chains)
+      await seoRedirectModel.updateMany({ storeId, destination: from }, { $set: { destination: to } });
+    } catch {
+      /* a failed redirect must never fail the rename */
+    }
+  }
+
+  async addPhysicalProduct(sellerId: string, body: any) {
+    const { storeModel, sellerModel, productModel, productVariantModel } = this.databaseService.repositories;
+
+    const seller = await sellerModel.findOne({ _id: sellerId, status: 'active', isDelete: false });
     if (!seller) throw new UnauthorizedException('Unauthorized seller');
 
     const {
       storeId,
-      name,
-      description,
       categoryId: requestedCategoryId,
       subCategoryId,
-      images,
-      tags,
       isListedOnSolvexo,
-      status,
-      scheduledAt,
       variants,
       shippingProfileId: requestedShippingProfileId,
-    } = body;
+    } = body ?? {};
 
     if (!storeId) throw new BadRequestException('storeId is required');
 
-    const store = await storeModel.findOne({
-      _id: storeId,
-      sellerId,
-      isDelete: false,
-    });
+    const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
     if (!store) throw new BadRequestException('Store not found');
-    if (store.status !== 'active')
-      throw new BadRequestException('Your store is not active');
+    if (store.status !== 'active') throw new BadRequestException('Your store is not active');
 
     const allowsPhysical =
       store.productTypes?.includes(StoreProductType.PHYSICAL_PRODUCTS) ||
       store.productTypes?.includes(StoreProductType.EDUCATIONAL_RESOURCES);
-    if (!allowsPhysical)
-      throw new BadRequestException(
-        'Your store does not support physical products',
-      );
+    if (!allowsPhysical) throw new BadRequestException('Your store does not support physical products');
 
     await this.entitlementsService.assertCanCreateProduct(storeId);
 
-    if (!name) throw new BadRequestException('Product name is required');
+    const name = normalizeName(body.name);
+    const description = normalizeDescription(body.description);
+    const images = normalizeImages(body.images);
+    const tags = normalizeTags(body.tags);
+    const status = normalizeStatus(body.status);
+    const scheduledAt = resolveScheduledAt(status, body.scheduledAt);
 
     if (!Array.isArray(variants) || variants.length === 0) {
       throw new BadRequestException('At least one variant is required');
     }
-    for (const v of variants) {
-      if (v?.price === undefined || v?.price === null) {
-        throw new BadRequestException('Every variant requires a price');
-      }
-      // Real server-side range validation — found via a live QA pass that
-      // a negative price/stock reached the database layer unvalidated
-      // (the schema itself has no `min` constraint), surfacing as a raw,
-      // unhelpful 500 instead of a clean field-specific error.
-      if (typeof v.price !== 'number' || Number.isNaN(v.price) || v.price < 0) {
-        throw new BadRequestException('Price cannot be negative');
-      }
-      if (v.compareAtPrice !== undefined && v.compareAtPrice !== null && (typeof v.compareAtPrice !== 'number' || v.compareAtPrice < 0)) {
-        throw new BadRequestException('Compare-at price cannot be negative');
-      }
-      if (!v.unlimitedStock && v.stock !== undefined && (typeof v.stock !== 'number' || Number.isNaN(v.stock) || v.stock < 0)) {
-        throw new BadRequestException('Stock quantity cannot be negative');
-      }
-      try {
-        validateOptions(v.options);
-      } catch (e: any) {
-        throw new BadRequestException(e.message);
-      }
-      const customsCheck = parseCustomsInput(v);
-      if (customsCheck.error) throw new BadRequestException(customsCheck.error);
+    if (variants.length > MAX_VARIANTS_PER_PRODUCT) {
+      throw new BadRequestException(`A product can have at most ${MAX_VARIANTS_PER_PRODUCT} variants`);
     }
-    const nameSets = new Set(variants.map((v: any) => optionNameSet(v.options ?? [])));
-    if (nameSets.size > 1) {
-      throw new BadRequestException('All variants must use the same attributes');
-    }
-    const keys = variants.map((v: any) => optionsKey(v.options ?? []));
+    const prepared = variants.map((v: any) => this.prepareVariantInput(v));
+    const nameSets = new Set(prepared.map((v) => optionNameSet(v.options)));
+    if (nameSets.size > 1) throw new BadRequestException('All variants must use the same attributes');
+    const keys = prepared.map((v) => optionsKey(v.options));
     if (new Set(keys).size !== keys.length) {
-      throw new BadRequestException(
-        'Duplicate variants — each must have a unique combination of attributes',
-      );
+      throw new BadRequestException('Duplicate variants — each must have a unique combination of attributes');
     }
-    const defaultFlags = variants.filter((v: any) => v.isDefault === true);
-    if (defaultFlags.length > 1) {
+    if (prepared.filter((v) => v.isDefault).length > 1) {
       throw new BadRequestException('Only one variant may be marked as default');
     }
-
-    if (status === 'scheduled' && !scheduledAt) {
-      throw new BadRequestException(
-        'scheduledAt is required when status is scheduled',
-      );
-    }
+    const duplicatedSku = findDuplicateSku(prepared.map((v) => v.sku));
+    if (duplicatedSku) throw new BadRequestException(`SKU "${duplicatedSku}" is used by more than one variant`);
+    const explicitSkus = prepared.map((v) => v.sku).filter((s): s is string => !!s);
+    await this.assertSkusFree(String(storeId), explicitSkus);
 
     const categoryId = await this.resolveProductCategoryId(storeId, store.categoryId, requestedCategoryId);
-
-    const slug = await generateUniqueSlug(productModel, name, { scope: { storeId } });
     const shippingProfileId = await this.resolveShippingProfileId(storeId, requestedShippingProfileId);
 
-    const product = await productModel.create({
-      sellerId,
-      storeId: store._id.toString(),
-      name,
-      slug,
-      description: description ?? null,
-      shippingProfileId,
-      productType: 'physical',
-      type: 'physical',
-      categoryId,
-      subCategoryId: subCategoryId ?? null,
-      images: images ?? [],
-      tags: tags ?? [],
-      digital: null,
-      isListedOnSolvexo: isListedOnSolvexo ?? false,
-      status: status ?? 'draft',
-      scheduledAt: status === 'scheduled' ? new Date(scheduledAt) : null,
-    });
+    const productId = new Types.ObjectId();
+    const missing = prepared.filter((v) => !v.sku);
+    const generated = generateSkus(String(productId), missing.length, explicitSkus);
+    missing.forEach((v, i) => { v.sku = generated[i]; });
+    const defaultIndex = prepared.findIndex((v) => v.isDefault);
+    const slug = await generateUniqueSlug(productModel, name, { scope: { storeId } });
 
-    const defaultIndex = variants.findIndex((v: any) => v.isDefault === true);
-    const customsFor = (v: any) => ({ countryOfOrigin: null, hsCode: null, customsDescription: null, ...parseCustomsInput(v).value });
-    const createdVariants = await Promise.all(
-      variants.map((v: any, index: number) => {
-        const sku =
-          v.sku ||
-          `SKU-${product._id.toString().slice(-6).toUpperCase()}-${Date.now().toString().slice(-4)}-${index}`;
-        return productVariantModel.create({
-          productId: product._id.toString(),
-          sku,
-          barcode: v.barcode ?? null,
+    let created: { product: any; variants: any[] };
+    try {
+      created = await this.withTransaction(async (session) => {
+        const [product] = await (productModel as any).create(
+          [{
+            _id: productId,
+            sellerId,
+            storeId: store._id.toString(),
+            name,
+            slug,
+            description,
+            shippingProfileId,
+            productType: 'physical',
+            type: 'physical',
+            categoryId,
+            subCategoryId: subCategoryId ?? null,
+            images,
+            tags,
+            digital: null,
+            isListedOnSolvexo: isListedOnSolvexo ?? false,
+            status,
+            scheduledAt,
+          }],
+          { session },
+        );
+        const docs = prepared.map((v, index) => ({
+          productId: String(productId),
+          storeId: store._id.toString(),
+          sku: v.sku,
+          barcode: v.barcode,
           price: v.price,
-          // Stamped from the owning store's own pricing currency — never
-          // client-supplied, never a per-product choice. See
-          // Store.baseCurrency's comment for why this is locked once set.
+          // Stamped from the owning store's own pricing currency — never client-supplied (see Store.baseCurrency).
           currency: store.baseCurrency,
-          compareAtPrice: v.compareAtPrice ?? null,
-          options: v.options ?? [],
-          stock: v.stock ?? 0,
-          unlimitedStock: !!v.unlimitedStock,
-          allowBackorder: !!v.allowBackorder,
-          shippingWeight: v.shippingWeight ?? null,
-          length: toDimensionCm(v.length),
-          width: toDimensionCm(v.width),
-          height: toDimensionCm(v.height),
-          ...customsFor(v),
-          taxable: v.taxable !== false,
-          images: v.images ?? [],
+          compareAtPrice: v.compareAtPrice,
+          options: v.options,
+          stock: v.stock,
+          unlimitedStock: v.unlimitedStock,
+          allowBackorder: v.allowBackorder,
+          shippingWeight: v.shippingWeight,
+          length: v.length,
+          width: v.width,
+          height: v.height,
+          ...v.customs,
+          taxable: v.taxable,
+          images: v.images,
           isDefault: defaultIndex === -1 ? index === 0 : index === defaultIndex,
-        });
-      }),
-    );
+        }));
+        const createdVariants = await productVariantModel.insertMany(docs, { session });
+        return { product, variants: createdVariants };
+      });
+    } catch (err) {
+      this.rethrowDuplicate(err);
+    }
 
-    const defaultVariant =
-      createdVariants.find((v: any) => v.isDefault) || createdVariants[0] || null;
+    await this.enforceProductLimitAfterCreate(String(storeId), String(productId));
 
+    const defaultVariant = created.variants.find((v: any) => v.isDefault) || created.variants[0] || null;
     return {
       success: true,
       message: 'Physical product created successfully',
-      data: { product, variants: createdVariants, defaultVariant },
+      data: { product: created.product, variants: created.variants, defaultVariant },
     };
   }
 
   async addDigitalProduct(sellerId: string, body: any) {
-    const { storeModel, sellerModel, productModel, productVariantModel } =
-      this.databaseService.repositories;
+    const { storeModel, sellerModel, productModel, productVariantModel } = this.databaseService.repositories;
 
-    const seller = await sellerModel.findOne({
-      _id: sellerId,
-      status: 'active',
-      isDelete: false,
-    });
+    const seller = await sellerModel.findOne({ _id: sellerId, status: 'active', isDelete: false });
     if (!seller) throw new UnauthorizedException('Unauthorized seller');
 
     const {
       storeId,
-      name,
-      description,
       productType,
       categoryId: requestedCategoryId,
       subCategoryId,
-      images,
-      tags,
       isListedOnSolvexo,
-      status,
-      scheduledAt,
-      price,
-      compareAtPrice,
       digital,
       educationLevel,
       customLevel,
-    } = body;
+    } = body ?? {};
 
     if (!storeId) throw new BadRequestException('storeId is required');
 
-    const store = await storeModel.findOne({
-      _id: storeId,
-      sellerId,
-      isDelete: false,
-    });
+    const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
     if (!store) throw new BadRequestException('Store not found');
-    if (store.status !== 'active')
-      throw new BadRequestException('Your store is not active');
+    if (store.status !== 'active') throw new BadRequestException('Your store is not active');
 
     const allowsDigital =
       store.productTypes?.includes(StoreProductType.DIGITAL_DOWNLOADS) ||
       store.productTypes?.includes(StoreProductType.EDUCATIONAL_RESOURCES);
-    if (!allowsDigital)
-      throw new BadRequestException(
-        'Your store does not support digital products',
-      );
+    if (!allowsDigital) throw new BadRequestException('Your store does not support digital products');
 
     await this.entitlementsService.assertCanCreateProduct(storeId);
 
-    if (!name) throw new BadRequestException('Product name is required');
-    if (price === undefined || price === null)
-      throw new BadRequestException('Price is required');
+    const name = normalizeName(body.name);
+    const description = normalizeDescription(body.description);
+    const images = normalizeImages(body.images);
+    const tags = normalizeTags(body.tags);
+    const status = normalizeStatus(body.status);
+    const scheduledAt = resolveScheduledAt(status, body.scheduledAt);
+    if (body.price === undefined || body.price === null) throw new BadRequestException('Price is required');
+    const price = assertMoney(body.price, 'Price');
+    const compareAtPrice = body.compareAtPrice === undefined || body.compareAtPrice === null ? null : assertMoney(body.compareAtPrice, 'Compare-at price');
 
-    if (status === 'scheduled' && !scheduledAt) {
-      throw new BadRequestException(
-        'scheduledAt is required when status is scheduled',
-      );
-    }
-
-    const finalProductType =
-      productType === 'educational' ? 'educational' : 'digital';
+    const finalProductType = productType === 'educational' ? 'educational' : 'digital';
 
     // Tier-1/Tier-2 education taxonomy — required only for educational products.
     let finalEducationLevel: string | null = null;
-    let normalizedFields: {
-      customLevel: string | null;
-      normalizedCustomLevel: string | null;
-    } = {
+    let normalizedFields: { customLevel: string | null; normalizedCustomLevel: string | null } = {
       customLevel: null,
       normalizedCustomLevel: null,
     };
     if (finalProductType === 'educational') {
       if (!educationLevel || !EDUCATION_LEVEL_VALUES.includes(educationLevel)) {
-        throw new BadRequestException(
-          `educationLevel is required and must be one of: ${EDUCATION_LEVEL_VALUES.join(', ')}`,
-        );
+        throw new BadRequestException(`educationLevel is required and must be one of: ${EDUCATION_LEVEL_VALUES.join(', ')}`);
       }
       finalEducationLevel = educationLevel;
       if (educationLevel === EducationLevel.OTHER) {
         if (!customLevel || !String(customLevel).trim()) {
-          throw new BadRequestException(
-            'customLevel is required when educationLevel is "other"',
-          );
+          throw new BadRequestException('customLevel is required when educationLevel is "other"');
         }
-        const normalized =
-          await this.educationLevelService.normalizeCustomLevel(
-            String(customLevel),
-          );
-        normalizedFields = {
-          customLevel: normalized.customLevel,
-          normalizedCustomLevel: normalized.normalizedCustomLevel,
-        };
+        const normalized = await this.educationLevelService.normalizeCustomLevel(String(customLevel));
+        normalizedFields = { customLevel: normalized.customLevel, normalizedCustomLevel: normalized.normalizedCustomLevel };
       }
     }
 
     const categoryId = await this.resolveProductCategoryId(storeId, store.categoryId, requestedCategoryId);
+    // Prepared BEFORE the transaction: it can upload/derive a preview file, which must not hold a transaction open.
+    const digitalPayload = digital ? await this.prepareDigitalPreview(null, digital) : null;
 
+    const productId = new Types.ObjectId();
+    const [sku] = generateSkus(String(productId), 1, []);
     const slug = await generateUniqueSlug(productModel, name, { scope: { storeId } });
 
-    const product = await productModel.create({
-      sellerId,
-      storeId: store._id.toString(),
-      name,
-      slug,
-      description: description ?? null,
-      productType: finalProductType,
-      type: 'digital',
-      categoryId,
-      subCategoryId: subCategoryId ?? null,
-      educationLevel: finalEducationLevel,
-      customLevel: normalizedFields.customLevel,
-      normalizedCustomLevel: normalizedFields.normalizedCustomLevel,
-      images: images ?? [],
-      tags: tags ?? [],
-      digital: digital ? await this.prepareDigitalPreview(null, digital) : null,
-      isListedOnSolvexo: isListedOnSolvexo ?? false,
-      status: status ?? 'draft',
-      scheduledAt: status === 'scheduled' ? new Date(scheduledAt) : null,
-    });
+    let created: { product: any; defaultVariant: any };
+    try {
+      created = await this.withTransaction(async (session) => {
+        const [product] = await (productModel as any).create(
+          [{
+            _id: productId,
+            sellerId,
+            storeId: store._id.toString(),
+            name,
+            slug,
+            description,
+            productType: finalProductType,
+            type: 'digital',
+            categoryId,
+            subCategoryId: subCategoryId ?? null,
+            educationLevel: finalEducationLevel,
+            customLevel: normalizedFields.customLevel,
+            normalizedCustomLevel: normalizedFields.normalizedCustomLevel,
+            images,
+            tags,
+            digital: digitalPayload,
+            isListedOnSolvexo: isListedOnSolvexo ?? false,
+            status,
+            scheduledAt,
+          }],
+          { session },
+        );
+        const [defaultVariant] = await (productVariantModel as any).create(
+          [{
+            productId: String(productId),
+            storeId: store._id.toString(),
+            sku,
+            price,
+            currency: store.baseCurrency,
+            compareAtPrice,
+            options: [],
+            stock: 0,
+            shippingWeight: null,
+            images: [],
+            isDefault: true,
+          }],
+          { session },
+        );
+        return { product, defaultVariant };
+      });
+    } catch (err) {
+      this.rethrowDuplicate(err);
+    }
 
-    const sku = `SKU-${product._id.toString().slice(-6).toUpperCase()}-${Date.now().toString().slice(-4)}`;
+    await this.enforceProductLimitAfterCreate(String(storeId), String(productId));
 
-    const defaultVariant = await productVariantModel.create({
-      productId: product._id.toString(),
-      sku,
-      price,
-      // See the physical-product variant creation path (above in this same
-      // file) for why this is stamped from the store, not client-supplied.
-      currency: store.baseCurrency,
-      compareAtPrice: compareAtPrice ?? null,
-      options: [],
-      stock: 0,
-      shippingWeight: null,
-      images: [],
-      isDefault: true,
-    });
-
-    return {
-      success: true,
-      message: 'Digital product created successfully',
-      data: { product, defaultVariant },
-    };
+    return { success: true, message: 'Digital product created successfully', data: created };
   }
 
   async getSellerProductById(sellerId: string, productId: string) {
@@ -1435,8 +1486,7 @@ export class ProductsService {
   }
 
   async editProduct(sellerId: string, body: any) {
-    const { productModel, productVariantModel, sellerModel } =
-      this.databaseService.repositories;
+    const { productModel, productVariantModel, sellerModel } = this.databaseService.repositories;
 
     const {
       productId,
@@ -1456,98 +1506,76 @@ export class ProductsService {
       compareAtPrice,
       templateKey,
       shippingProfileId: requestedShippingProfileId,
-    } = body;
+    } = body ?? {};
 
     if (!productId) throw new BadRequestException('productId is required');
+    if (!isValidObjectId(productId)) throw new BadRequestException('Invalid productId');
 
-    const seller = await sellerModel.findOne({
-      _id: sellerId,
-      status: 'active',
-      isDelete: false,
-    });
+    const seller = await sellerModel.findOne({ _id: sellerId, status: 'active', isDelete: false });
     if (!seller) throw new UnauthorizedException('Unauthorized seller');
 
-    const product = await productModel.findOne({
-      _id: productId,
-      isDelete: false,
-    });
+    const product = await productModel.findOne({ _id: productId, isDelete: false });
     if (!product) throw new BadRequestException('Product not found');
-    if (product.sellerId !== sellerId)
-      throw new UnauthorizedException(
-        'You are not authorized to edit this product',
-      );
+    if (product.sellerId !== sellerId) throw new UnauthorizedException('You are not authorized to edit this product');
 
     const productUpdate: any = {};
+    let renamedFrom: string | null = null;
 
-    if (name && name !== product.name) {
-      const slug = await generateUniqueSlug(productModel, name, { excludeId: productId, scope: { storeId: product.storeId } });
-      productUpdate.name = name;
-      productUpdate.slug = slug;
+    if (name !== undefined) {
+      const cleanName = normalizeName(name);
+      if (cleanName !== product.name) {
+        productUpdate.name = cleanName;
+        productUpdate.slug = await generateUniqueSlug(productModel, cleanName, { excludeId: productId, scope: { storeId: product.storeId } });
+        renamedFrom = product.slug ?? null;
+      }
     }
 
-    if (description !== undefined) productUpdate.description = description;
+    if (description !== undefined) productUpdate.description = normalizeDescription(description);
     if (requestedCategoryId !== undefined) {
-      productUpdate.categoryId = await this.resolveProductCategoryId(
-        String(product.storeId),
-        null,
-        requestedCategoryId,
-      );
+      productUpdate.categoryId = await this.resolveProductCategoryId(String(product.storeId), null, requestedCategoryId);
     }
-    if (subCategoryId !== undefined)
-      productUpdate.subCategoryId = subCategoryId;
-    if (images !== undefined) productUpdate.images = images;
-    if (tags !== undefined) productUpdate.tags = tags;
-    if (isListedOnSolvexo !== undefined)
-      productUpdate.isListedOnSolvexo = isListedOnSolvexo;
+    if (subCategoryId !== undefined) productUpdate.subCategoryId = subCategoryId;
+    if (images !== undefined) productUpdate.images = normalizeImages(images);
+    if (tags !== undefined) productUpdate.tags = normalizeTags(tags);
+    if (isListedOnSolvexo !== undefined) productUpdate.isListedOnSolvexo = !!isListedOnSolvexo;
     if (templateKey !== undefined) productUpdate.templateKey = templateKey;
     if (requestedShippingProfileId !== undefined && product.type === 'physical') {
       productUpdate.shippingProfileId = await this.resolveShippingProfileId(String(product.storeId), requestedShippingProfileId);
     }
     if (status !== undefined) {
-      if (status === 'scheduled' && !scheduledAt) {
-        throw new BadRequestException(
-          'scheduledAt is required when status is scheduled',
-        );
+      const nextStatus = normalizeStatus(status);
+      if (nextStatus === 'active' || nextStatus === 'scheduled') {
+        // A product with no live variant has nothing to sell — never let it go live (or be scheduled).
+        const liveVariants = await productVariantModel.countDocuments({ productId, isDelete: false });
+        if (liveVariants === 0) throw new BadRequestException('Add at least one variant before publishing this product');
       }
-      productUpdate.status = status;
-      productUpdate.scheduledAt =
-        status === 'scheduled' ? new Date(scheduledAt) : null;
+      productUpdate.status = nextStatus;
+      productUpdate.scheduledAt = resolveScheduledAt(nextStatus, scheduledAt);
+    } else if (scheduledAt !== undefined && product.status === 'scheduled') {
+      productUpdate.scheduledAt = resolveScheduledAt('scheduled', scheduledAt);
     }
     if (digital !== undefined && product.type === 'digital') {
-      productUpdate.digital = await this.prepareDigitalPreview(
-        product.digital?.preview,
-        digital,
-      );
+      productUpdate.digital = await this.prepareDigitalPreview(product.digital?.preview, digital);
     }
 
     if (educationLevel !== undefined && product.productType === 'educational') {
       if (!EDUCATION_LEVEL_VALUES.includes(educationLevel)) {
-        throw new BadRequestException(
-          `educationLevel must be one of: ${EDUCATION_LEVEL_VALUES.join(', ')}`,
-        );
+        throw new BadRequestException(`educationLevel must be one of: ${EDUCATION_LEVEL_VALUES.join(', ')}`);
       }
       productUpdate.educationLevel = educationLevel;
     }
     if (product.productType === 'educational') {
-      const effectiveLevel =
-        productUpdate.educationLevel ?? product.educationLevel;
+      const effectiveLevel = productUpdate.educationLevel ?? product.educationLevel;
       if (effectiveLevel === EducationLevel.OTHER) {
         if (customLevel !== undefined) {
-          if (!String(customLevel).trim())
-            throw new BadRequestException(
-              'customLevel is required when educationLevel is "other"',
-            );
-          const normalized =
-            await this.educationLevelService.normalizeCustomLevel(
-              String(customLevel),
-            );
+          if (!String(customLevel).trim()) {
+            throw new BadRequestException('customLevel is required when educationLevel is "other"');
+          }
+          const normalized = await this.educationLevelService.normalizeCustomLevel(String(customLevel));
           productUpdate.customLevel = normalized.customLevel;
-          productUpdate.normalizedCustomLevel =
-            normalized.normalizedCustomLevel;
+          productUpdate.normalizedCustomLevel = normalized.normalizedCustomLevel;
         } else if (!product.customLevel) {
-          throw new BadRequestException(
-            'customLevel is required when educationLevel is "other"',
-          );
+          throw new BadRequestException('customLevel is required when educationLevel is "other"');
         }
       } else if (productUpdate.educationLevel !== undefined) {
         productUpdate.customLevel = null;
@@ -1555,27 +1583,54 @@ export class ProductsService {
       }
     }
 
-    const updatedProduct =
-      Object.keys(productUpdate).length > 0
-        ? await productModel.findByIdAndUpdate(productId, productUpdate, {
-            new: true,
-          })
-        : product;
+    // Digital/educational products still have exactly one (default) variant and no dedicated variant-management endpoints —
+    // price/compareAtPrice edits for them stay routed through here. Physical products manage price per-variant exclusively
+    // via the product-variants module.
+    const variantUpdate: any = {};
+    if (product.type !== 'physical') {
+      if (price !== undefined) variantUpdate.price = assertMoney(price, 'Price');
+      if (compareAtPrice !== undefined) variantUpdate.compareAtPrice = compareAtPrice === null ? null : assertMoney(compareAtPrice, 'Compare-at price');
+    }
 
-    // Digital/educational products still have exactly one (default) variant
-    // and no dedicated variant-management endpoints — price/compareAtPrice
-    // edits for them stay routed through here. Physical products manage
-    // price per-variant exclusively via the product-variants module now.
+    let updatedProduct: any = product;
     let updatedVariant: any;
-    if (product.type !== 'physical' && (price !== undefined || compareAtPrice !== undefined)) {
-      const variantUpdate: any = {};
-      if (price !== undefined) variantUpdate.price = price;
-      if (compareAtPrice !== undefined) variantUpdate.compareAtPrice = compareAtPrice;
-      updatedVariant = await productVariantModel.findOneAndUpdate(
-        { productId, isDefault: true, isDelete: false },
-        variantUpdate,
-        { new: true },
-      );
+    try {
+      await this.withTransaction(async (session) => {
+        if (Object.keys(productUpdate).length > 0) {
+          // Scoped by seller as well as id: the write itself can never touch someone else's product.
+          updatedProduct = await productModel.findOneAndUpdate(
+            { _id: productId, isDelete: false, sellerId },
+            { $set: productUpdate },
+            { new: true, session },
+          );
+          if (!updatedProduct) throw new ConflictException('This product was just deleted or changed — refresh and try again');
+        }
+        if (Object.keys(variantUpdate).length > 0) {
+          updatedVariant = await productVariantModel.findOneAndUpdate(
+            { productId, isDefault: true, isDelete: false },
+            { $set: variantUpdate },
+            { new: true, session },
+          );
+        }
+      });
+    } catch (err) {
+      this.rethrowDuplicate(err);
+    }
+
+    if (renamedFrom) await this.recordSlugRedirect(String(product.storeId), renamedFrom, productUpdate.slug);
+
+    const changed = [...Object.keys(productUpdate), ...Object.keys(variantUpdate)];
+    if (changed.length > 0) {
+      void this.activityLogService.log({
+        storeId: String(product.storeId),
+        category: 'products',
+        action: 'product_updated',
+        description: `Product "${updatedProduct?.name ?? product.name}" updated (${changed.join(', ')})`,
+        actorId: sellerId,
+        actorRole: 'seller',
+        targetId: String(productId),
+        targetType: 'product',
+      } as any);
     }
 
     return {
@@ -1586,54 +1641,43 @@ export class ProductsService {
   }
 
   async deleteProduct(sellerId: string, productId: string) {
-    const { productModel, productVariantModel, sellerModel } =
-      this.databaseService.repositories;
+    const { productModel, sellerModel } = this.databaseService.repositories;
+    if (!isValidObjectId(productId)) throw new BadRequestException('Invalid productId');
 
-    const seller = await sellerModel.findOne({
-      _id: sellerId,
-      status: 'active',
-      isDelete: false,
-    });
+    const seller = await sellerModel.findOne({ _id: sellerId, status: 'active', isDelete: false });
     if (!seller) throw new UnauthorizedException('Unauthorized seller');
 
-    const product = await productModel.findOne({
-      _id: productId,
-      isDelete: false,
-    });
+    const product = await productModel.findOne({ _id: productId, isDelete: false });
     if (!product) throw new BadRequestException('Product not found');
-    if (product.sellerId !== sellerId)
-      throw new UnauthorizedException(
-        'You are not authorized to delete this product',
-      );
+    if (product.sellerId !== sellerId) throw new UnauthorizedException('You are not authorized to delete this product');
 
-    await productModel.findByIdAndUpdate(productId, {
-      isDelete: true,
-      status: 'inactive',
-    });
-    await productVariantModel.updateMany(
-      { productId, isDelete: false },
-      { isDelete: true, isDefault: false },
+    await this.withTransaction((session) =>
+      softDeleteProducts(this.databaseService.repositories as any, { storeId: String(product.storeId), productIds: [String(productId)], session }),
     );
 
-    return {
-      success: true,
-      message: 'Product deleted successfully',
-      data: null,
-    };
+    void this.activityLogService.log({
+      storeId: String(product.storeId),
+      category: 'products',
+      action: 'product_deleted',
+      description: `Product "${product.name}" deleted`,
+      actorId: sellerId,
+      actorRole: 'seller',
+      targetId: String(productId),
+      targetType: 'product',
+    } as any);
+
+    return { success: true, message: 'Product deleted successfully', data: null };
   }
 
   /**
-   * Real "Duplicate" — copies a product and every one of its real variants
-   * into a brand-new draft product, the same one-click convenience Shopify's
-   * own product list has (found missing during the Catalog audit — there
-   * was previously no way to base a new listing on an existing one without
-   * retyping everything by hand). Always lands as `status: 'draft'`
-   * regardless of the original's status, and counts against the store's own
-   * product-limit entitlement exactly like any other new product (a
-   * duplicate is a real new product, not a free pass around that limit).
+   * Real "Duplicate" — copies a product and every one of its variants into a brand-new DRAFT product (Shopify's one-click
+   * duplicate). The copy is a separate listing, so: it counts against the plan's product limit; every variant gets its own
+   * SKU (`<sku>-COPY`, SKUs are unique per store); barcodes are NOT copied (they identify one physical item) and stock starts
+   * at 0 (copying counts would invent inventory that does not exist); the whole copy is written in one transaction.
    */
   async duplicateProduct(sellerId: string, productId: string) {
     const { productModel, productVariantModel, sellerModel } = this.databaseService.repositories;
+    if (!isValidObjectId(productId)) throw new BadRequestException('Invalid productId');
 
     const seller = await sellerModel.findOne({ _id: sellerId, status: 'active', isDelete: false });
     if (!seller) throw new UnauthorizedException('Unauthorized seller');
@@ -1645,8 +1689,10 @@ export class ProductsService {
     await this.entitlementsService.assertCanCreateProduct(original.storeId);
 
     const originalObj: any = original.toObject();
-    const { _id: _origId, createdAt: _origCreatedAt, updatedAt: _origUpdatedAt, ...copy } = originalObj;
-    copy.name = `${copy.name} (Copy)`;
+    const { _id: _origId, createdAt: _c, updatedAt: _u, __v: _v, ...copy } = originalObj;
+    const newId = new Types.ObjectId();
+    copy._id = newId;
+    copy.name = `${String(copy.name).slice(0, PRODUCT_LIMITS.nameMax - 7)} (Copy)`;
     copy.slug = await generateUniqueSlug(productModel, copy.name, { scope: { storeId: copy.storeId } });
     copy.status = 'draft';
     copy.scheduledAt = null;
@@ -1655,20 +1701,38 @@ export class ProductsService {
     copy.isFeatured = false;
     copy.earlyAccessUntil = null;
 
-    const created = await productModel.create(copy);
+    const originalVariants: any[] = await productVariantModel.find({ productId, isDelete: false }).sort({ createdAt: 1 }).lean();
+    const taken = new Set<string>(
+      (await productVariantModel.find({ storeId: copy.storeId, isDelete: false, sku: /-COPY/ }).select('sku').lean()).map((v: any) => v.sku),
+    );
+    const fallbackSkus = generateSkus(String(newId), originalVariants.length, taken);
+    const variantCopies = originalVariants.map((v: any, i: number) => {
+      const { _id: _vid, createdAt: _vc, updatedAt: _vu, __v: _vv, ...rest } = v;
+      return {
+        ...rest,
+        productId: String(newId),
+        storeId: copy.storeId,
+        sku: v.sku ? copySku(v.sku, taken) : fallbackSkus[i],
+        barcode: null,
+        stock: 0,
+        committedStock: 0,
+        damagedStock: 0,
+        inTransitStock: 0,
+      };
+    });
 
-    const originalVariants = await productVariantModel.find({ productId, isDelete: false }).lean();
-    if (originalVariants.length > 0) {
-      const variantCopies = originalVariants.map((v: any) => {
-        const vCopy = { ...v };
-        delete vCopy._id;
-        delete vCopy.createdAt;
-        delete vCopy.updatedAt;
-        vCopy.productId = created._id.toString();
-        return vCopy;
+    let created: any;
+    try {
+      created = await this.withTransaction(async (session) => {
+        const [product] = await productModel.create([copy], { session });
+        if (variantCopies.length > 0) await productVariantModel.insertMany(variantCopies, { session });
+        return product;
       });
-      await productVariantModel.insertMany(variantCopies);
+    } catch (err) {
+      this.rethrowDuplicate(err);
     }
+
+    await this.enforceProductLimitAfterCreate(String(copy.storeId), String(newId));
 
     return { success: true, message: 'Product duplicated', data: created };
   }

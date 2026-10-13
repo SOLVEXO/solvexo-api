@@ -141,6 +141,8 @@ export class StaffMember {
   @Prop({ type: String, default: null, select: false }) inviteToken: string | null;
   @Prop({ type: Date, default: null }) inviteTokenExpiresAt: Date | null;
   @Prop({ type: Date, default: null }) inviteAcceptedAt: Date | null;
+  // When the latest invite email was sent (create or resend) — shown to the owner.
+  @Prop({ type: Date, default: null }) inviteSentAt: Date | null;
 
   // A plain display label (Shopify-parity Role/permissions live on the
   // separate `Role` entity below — this is just "what to call this person
@@ -165,6 +167,17 @@ export class StaffMember {
   // User/Seller/Admin tokenVersion.
   @Prop({ type: Number, default: 0 }) tokenVersion: number;
 
+  // Brute-force protection — 5 wrong passwords lock THIS account for 15 min
+  // (on top of the global per-IP throttle). Reset on a successful login or a
+  // completed password reset.
+  @Prop({ type: Number, default: 0 }) failedLoginCount: number;
+  @Prop({ type: Date, default: null }) lockedUntil: Date | null;
+
+  // Forgot-password: only a SHA-256 hash of the emailed token is stored, so a
+  // DB leak can't be used to take over accounts.
+  @Prop({ type: String, default: null, select: false }) resetTokenHash: string | null;
+  @Prop({ type: Date, default: null }) resetTokenExpiresAt: Date | null;
+
   @Prop({ type: String, enum: ['active', 'inactive'], default: 'active' }) status: string;
   @Prop({ default: false }) isDelete: boolean;
 }
@@ -173,3 +186,4 @@ export const StaffMemberSchema = SchemaFactory.createForClass(StaffMember);
 StaffMemberSchema.index({ storeId: 1, status: 1 });
 StaffMemberSchema.index({ storeId: 1, email: 1 }, { unique: true });
 StaffMemberSchema.index({ inviteToken: 1 }, { sparse: true });
+StaffMemberSchema.index({ resetTokenHash: 1 }, { sparse: true });

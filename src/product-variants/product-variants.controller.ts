@@ -42,6 +42,9 @@ function assertFieldPermission(user: any, body: Record<string, unknown>) {
   if ((body.price !== undefined || body.compareAtPrice !== undefined) && !permissions.includes('products.edit_price')) {
     throw new ForbiddenException("Your staff account doesn't have permission to edit product prices.");
   }
+  if ((body.stock !== undefined || body.unlimitedStock !== undefined) && !permissions.includes('inventory.adjust')) {
+    throw new ForbiddenException("Your staff account doesn't have permission to change stock quantities.");
+  }
   if (body.costPrice !== undefined && !permissions.includes('products.edit_cost')) {
     throw new ForbiddenException("Your staff account doesn't have permission to edit product cost prices.");
   }

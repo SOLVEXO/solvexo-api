@@ -195,6 +195,14 @@ export class EntitlementsService {
   }
 
   /** Throws if the store is already at (or over) its product limit. Call BEFORE creating a new product. */
+  /** True when the store holds MORE live products than its plan allows (used right after a create to settle a race). */
+  async isOverProductLimit(storeId: string): Promise<boolean> {
+    const limits = await this.getLimits(storeId);
+    if (limits.maxProducts === -1) return false;
+    const count = await this.db.repositories.productModel.countDocuments({ storeId, isDelete: false });
+    return count > limits.maxProducts;
+  }
+
   async assertCanCreateProduct(storeId: string): Promise<void> {
     const limits = await this.getLimits(storeId);
     if (limits.maxProducts === -1) return;

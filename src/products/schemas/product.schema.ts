@@ -128,7 +128,7 @@ export class Product {
   @Prop({ type: String })
   slug: string;
 
-  @Prop({ type: String, required: true })
+  @Prop({ type: String, default: '' })
   description: string;
 
   @Prop({ type: String, enum: Object.values(ProductType), required: true })

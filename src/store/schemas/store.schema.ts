@@ -750,7 +750,7 @@ export class Store {
 export const StoreSchema = SchemaFactory.createForClass(Store);
 
 StoreSchema.index({ sellerId: 1 });
-StoreSchema.index({ slug: 1 });
+// slug index is declared once, unique, on the @Prop above (a second non-unique {slug:1} used the same index name and made the build fail)
 StoreSchema.index({ name: 1 });
 StoreSchema.index({ sellerType: 1 });
 StoreSchema.index({ averageRating: -1 });
