@@ -756,14 +756,60 @@ export class StoreService {
     if (!store) throw new NotFoundException('Store not found');
     if (store.sellerId !== sellerId) throw new UnauthorizedException('Unauthorized');
 
+    // Body is untyped, so check it here: it is rendered on every storefront page, and the CTA becomes an <a href>.
+    const text = (v: unknown, max: number, field: string) => {
+      if (v === undefined || v === null || v === '') return null;
+      if (typeof v !== 'string' || v.length > max) throw new BadRequestException(`${field} must be text up to ${max} characters`);
+      return v;
+    };
+    const message = text(body.message, 200, 'message');
+    const ctaLabel = text(body.ctaLabel, 40, 'ctaLabel');
+    const ctaLink = text(body.ctaLink, 500, 'ctaLink');
+    if (ctaLink && !/^(https?:\/\/\S+|\/(?!\/)\S*)$/i.test(ctaLink)) {
+      throw new BadRequestException('ctaLink must start with https://, http:// or /');
+    }
+    const type = body.type ?? 'info';
+    if (!['info', 'sale', 'coupon', 'warning', 'shipping', 'holiday'].includes(type)) throw new BadRequestException('Invalid announcement type');
+    for (const k of ['startAt', 'endAt'] as const) {
+      if (body[k] && Number.isNaN(new Date(body[k]).getTime())) throw new BadRequestException(`${k} is not a valid date`);
+    }
+
+    const LINK_RE = /^(https?:\/\/\S+|\/(?!\/)\S*)$/i;
+    const rawMore = body.moreMessages === undefined || body.moreMessages === null ? [] : body.moreMessages;
+    if (!Array.isArray(rawMore) || rawMore.length > 4) throw new BadRequestException('moreMessages can hold up to 4 extra messages');
+    const moreMessages = rawMore
+      .map((m: any) => ({ message: text(m?.message, 200, 'moreMessages[].message'), ctaLabel: text(m?.ctaLabel, 40, 'moreMessages[].ctaLabel'), ctaLink: text(m?.ctaLink, 500, 'moreMessages[].ctaLink') }))
+      .filter((m: any) => m.message) as { message: string; ctaLabel: string | null; ctaLink: string | null }[];
+    for (const m of moreMessages) {
+      if (m.ctaLink && !LINK_RE.test(m.ctaLink)) throw new BadRequestException('moreMessages[].ctaLink must start with https://, http:// or /');
+    }
+    const rotateSeconds = body.rotateSeconds === undefined || body.rotateSeconds === null ? 5 : Number(body.rotateSeconds);
+    if (!Number.isInteger(rotateSeconds) || rotateSeconds < 3 || rotateSeconds > 15) throw new BadRequestException('rotateSeconds must be a whole number from 3 to 15');
+    const colour = (v: unknown, field: string) => {
+      if (v === undefined || v === null || v === '') return null;
+      if (typeof v !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(v)) throw new BadRequestException(`${field} must be a hex colour like #1a1a1a`);
+      return v;
+    };
+    const placement = body.placement ?? 'below';
+    if (placement !== 'above' && placement !== 'below') throw new BadRequestException('placement must be above or below');
+    const align = body.align ?? 'left';
+    if (align !== 'left' && align !== 'center') throw new BadRequestException('align must be left or center');
+
     store.announcementBar = {
-      message: body.message ?? null,
-      type: body.type ?? 'info',
-      ctaLabel: body.ctaLabel ?? null,
-      ctaLink: body.ctaLink ?? null,
+      message,
+      type,
+      ctaLabel,
+      ctaLink,
       isActive: !!body.isActive,
       startAt: body.startAt ? new Date(body.startAt) : null,
       endAt: body.endAt ? new Date(body.endAt) : null,
+      moreMessages,
+      rotateSeconds,
+      closable: body.closable !== false,
+      bgColor: colour(body.bgColor, 'bgColor'),
+      textColor: colour(body.textColor, 'textColor'),
+      placement,
+      align,
     };
     await store.save();
 
@@ -1385,7 +1431,11 @@ export class StoreService {
         cookieBannerPosition: store.cookieBannerPosition ?? 'bottom_bar',
         cookieBannerColorMode: store.cookieBannerColorMode ?? 'dark',
         showDoNotSellLink: !!store.showDoNotSellLink,
-        announcementBar: announcementActive ? { message: bar.message, type: bar.type, ctaLabel: bar.ctaLabel, ctaLink: bar.ctaLink } : null,
+        announcementBar: announcementActive ? {
+          message: bar.message, type: bar.type, ctaLabel: bar.ctaLabel, ctaLink: bar.ctaLink,
+          moreMessages: bar.moreMessages ?? [], rotateSeconds: bar.rotateSeconds ?? 5, closable: bar.closable !== false,
+          bgColor: bar.bgColor ?? null, textColor: bar.textColor ?? null, placement: bar.placement ?? 'below', align: bar.align ?? 'left',
+        } : null,
         activeCampaign: primaryCampaign ? {
           campaignId: primaryCampaign.campaignId,
           name: primaryCampaign.name,
@@ -1594,9 +1644,12 @@ export class StoreService {
     // fresh) so this endpoint's existing variant/seller/campaign-pricing
     // shaping pipeline is reused as-is rather than duplicated inside the
     // collections module.
+    // A collection keeps the seller's own product order unless the buyer picked another sort.
+    let collectionOrder: string[] | null = null;
     if (query.collectionId && query.collectionId !== 'all') {
       const ids = await this.collectionsService.resolveProductIds(storeId, query.collectionId);
       filter._id = { $in: ids.length ? ids : ['__none__'] };
+      if ([undefined, null, '', 'newest', 'manual', 'default'].includes(query.sort)) collectionOrder = ids.map(String);
     }
     // Same real "on sale" definition the product card's own discount badge
     // already uses (compareAtPrice > price). compareAtPrice/price live on
@@ -1623,6 +1676,9 @@ export class StoreService {
       title_asc:  { name: 1 },
       title_desc: { name: -1 },
       best_rated: { averageRating: -1 },
+      // Sales-driven sorts (counters the order flow already keeps on every product).
+      best_selling: { purchaseCount: -1, createdAt: -1 },
+      trending: { lastPurchasedAt: -1, viewCount: -1 },
       default:    { createdAt: -1 },
     };
 
@@ -1638,6 +1694,7 @@ export class StoreService {
     const csv = (v: unknown): string[] =>
       (Array.isArray(v) ? v : [v]).flatMap((x) => String(x ?? '').split(',')).map((x) => x.trim()).filter(Boolean).slice(0, 50);
     const tagsFilter = csv(query.tags);
+    const vendorFilter = csv(query.vendors);
     const productTypeFilter = csv(query.productType).filter((x) => ['physical', 'digital', 'educational'].includes(x));
     const optionFilters: Record<string, string[]> = {};
     for (const key of Object.keys(query ?? {})) {
@@ -1647,7 +1704,7 @@ export class StoreService {
       if (name && values.length) optionFilters[name] = values;
     }
     const wantFacets = query.facets === true || query.facets === 'true' || query.facets === '1';
-    const needsVariantInfo = priceSort || hasMin || hasMax || !!availability || tagsFilter.length > 0
+    const needsVariantInfo = priceSort || hasMin || hasMax || !!availability || tagsFilter.length > 0 || vendorFilter.length > 0
       || productTypeFilter.length > 0 || Object.keys(optionFilters).length > 0 || wantFacets;
 
     let total: number;
@@ -1659,7 +1716,7 @@ export class StoreService {
       // resolved per product up front — before pagination — so that
       // `total`/skip/limit agree with what's actually returned. A product's
       // price is its cheapest active variant's, same as the card shows.
-      const candidates: any[] = await productModel.find(filter).select('_id tags productType').limit(5000).lean();
+      const candidates: any[] = await productModel.find(filter).select('_id tags productType vendor').limit(5000).lean();
       const candidateIds = candidates.map((p: any) => p._id.toString());
       const agg = await productVariantModel.aggregate([
         { $match: { productId: { $in: candidateIds }, status: 'active', isDelete: false } },
@@ -1684,7 +1741,7 @@ export class StoreService {
         }
         info.set(a._id, { minPrice: a.minPrice, inStock: a.inStock === 1, options: opts });
       }
-      type Group = 'tags' | 'productType' | 'availability' | 'price' | 'options';
+      type Group = 'tags' | 'vendor' | 'productType' | 'availability' | 'price' | 'options';
       const byId = new Map<string, any>(candidates.map((p: any) => [p._id.toString(), p]));
       // `skip` leaves one facet group out so its own counts stay disjunctive
       // (selecting "Red" still shows the other colours' counts, like Shopify).
@@ -1692,6 +1749,7 @@ export class StoreService {
         const p = byId.get(id);
         const i = info.get(id);
         if (skipGroup !== 'tags' && tagsFilter.length && !(p.tags ?? []).some((t: string) => tagsFilter.includes(t))) return false;
+        if (skipGroup !== 'vendor' && vendorFilter.length && !vendorFilter.includes(p.vendor ?? '')) return false;
         if (skipGroup !== 'productType' && productTypeFilter.length && !productTypeFilter.includes(p.productType)) return false;
         if (skipGroup !== 'availability' && availability) {
           if (!i) return availability === 'out_of_stock'; // no active variant → can't be bought
@@ -1715,6 +1773,9 @@ export class StoreService {
       if (priceSort) {
         const dir = query.sort === 'price_asc' ? 1 : -1;
         ids.sort((a, b) => ((info.get(a)?.minPrice ?? 0) - (info.get(b)?.minPrice ?? 0)) * dir);
+      } else if (collectionOrder) {
+        const pos = new Map(collectionOrder.map((id, i) => [id, i] as const));
+        ids.sort((a, b) => (pos.get(a) ?? Number.MAX_SAFE_INTEGER) - (pos.get(b) ?? Number.MAX_SAFE_INTEGER));
       } else {
         const ordered = await productModel
           .find({ _id: { $in: ids } })
@@ -1753,6 +1814,7 @@ export class StoreService {
           availability: availCounts,
           price: { min: prices.length ? Math.min(...prices) : null, max: prices.length ? Math.max(...prices) : null, currency: (store as any).baseCurrency ?? null },
           productTypes: toList(tally('productType', (id) => [byId.get(id).productType])),
+          vendors: toList(tally('vendor', (id) => (byId.get(id).vendor ? [byId.get(id).vendor] : []))).slice(0, 100),
           tags: toList(tally('tags', (id) => byId.get(id).tags ?? [])).slice(0, 100),
           options: [...optionNames].sort().slice(0, 10).map((name) => ({
             name,
@@ -1760,6 +1822,15 @@ export class StoreService {
           })).filter((o) => o.values.length > 0),
         };
       }
+    } else if (collectionOrder) {
+      const pos = new Map(collectionOrder.map((id, i) => [id, i] as const));
+      const matching = (await productModel.find(filter).select('_id').lean()).map((p: any) => p._id.toString());
+      matching.sort((a, b) => (pos.get(a) ?? Number.MAX_SAFE_INTEGER) - (pos.get(b) ?? Number.MAX_SAFE_INTEGER));
+      total = matching.length;
+      const pageIds = matching.slice(skip, skip + limit);
+      const docs = await productModel.find({ _id: { $in: pageIds } }).lean();
+      const docById = new Map(docs.map((d: any) => [d._id.toString(), d]));
+      products = pageIds.map((id) => docById.get(id)).filter(Boolean);
     } else {
       total = await productModel.countDocuments(filter);
       products = await productModel

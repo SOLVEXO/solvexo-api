@@ -27,6 +27,8 @@ import { NotificationsService } from '@/notifications/notifications.service';
 import { ShippingRatesService } from '@/shipping-rates/shipping-rates.service';
 import type { CustomsLine } from '@/shipping-rates/customs.util';
 import { fulfilStockForSellerOrders } from '@/common/fulfil-stock.util';
+import { drainLocationStock, restoreLocationStock } from '@/common/location-stock.util';
+import { consumeLots } from '@/common/lot-consumption.util';
 import { StoreCreditService } from '@/store-credit/store-credit.service';
 import { GiftCardsService } from '@/gift-cards/gift-cards.service';
 import { NOTIFICATION_TYPES } from '@/notifications/notification.types';
@@ -1145,32 +1147,7 @@ export class OrdersService {
    *  boundary for this pass rather than a full retrofit of every
    *  historical stock-mutation call site. */
   private async consumeLotsFifo(variantId: string, quantity: number): Promise<number | null> {
-    const { stockLotModel } = this.databaseService.repositories;
-    let remainingToConsume = quantity;
-    let totalCost = 0;
-    let anyLotFound = false;
-
-    const activeLots = await stockLotModel
-      .find({ variantId, status: 'active', quantityRemaining: { $gt: 0 } })
-      .sort({ expiryDate: 1, receivedAt: 1 })
-      .lean();
-
-    for (const lot of activeLots as any[]) {
-      if (remainingToConsume <= 0) break;
-      anyLotFound = true;
-      const takeFromThisLot = Math.min(lot.quantityRemaining, remainingToConsume);
-      totalCost += takeFromThisLot * lot.costPrice;
-      remainingToConsume -= takeFromThisLot;
-
-      const newRemaining = lot.quantityRemaining - takeFromThisLot;
-      await stockLotModel.updateOne(
-        { _id: lot._id },
-        { $set: { quantityRemaining: newRemaining, status: newRemaining <= 0 ? 'depleted' : 'active' } },
-      );
-    }
-
-    if (!anyLotFound) return null;
-    return Math.round(totalCost * 100) / 100;
+    return consumeLots(this.databaseService.repositories, variantId, quantity);
   }
 
   async updateSellerOrderStatus(
@@ -1515,12 +1492,19 @@ export class OrdersService {
         .select('unlimitedStock stock committedStock trackLots')
         .lean();
       if (!variant || (variant as any).unlimitedStock) continue;
-      const newStock = Math.max(0, (variant as any).stock - line.quantity);
-      const newCommitted = Math.max(0, (variant as any).committedStock - line.quantity);
+      // One atomic, relative update (the old read-then-$set overwrote any receipt/adjustment that landed in between),
+      // then the same movement on the per-location rows.
       await productVariantModel.updateOne(
         { _id: item.variantId },
-        { $set: { stock: newStock, committedStock: newCommitted } },
+        [{
+          $set: {
+            stock: { $max: [0, { $subtract: ['$stock', line.quantity] }] },
+            committedStock: { $max: [0, { $subtract: [{ $ifNull: ['$committedStock', 0] }, line.quantity] }] },
+          },
+        }],
+        { updatePipeline: true } as any,
       );
+      await drainLocationStock(this.databaseService.repositories, String(item.variantId), line.quantity);
 
       // Real FIFO/FEFO cost-of-goods-sold — only for a lot-tracked variant (see StockLot schema /
       // consumeLotsFifo). This is the ACTUAL moment the unit leaves the building.
@@ -1917,7 +1901,7 @@ export class OrdersService {
     const { orderModel, productVariantModel } = this.databaseService.repositories;
     await this.pushTimeline(orderId, 'payment', 'Payment received — order completed', null, 'system');
     // Jumping straight to completed: release the reservation + drop real stock for not-yet-fulfilled sub-orders.
-    await fulfilStockForSellerOrders(productVariantModel, order.sellerOrders);
+    await fulfilStockForSellerOrders(productVariantModel, order.sellerOrders, this.databaseService.repositories);
     const now = new Date();
     const updateData: any = {
       isPaid: true,
@@ -2683,8 +2667,16 @@ export class OrdersService {
     // physical items — release the reservation (never a real `stock` restore here): `BLOCKED` above already
     // guarantees these items were still 'pending'/'processing', i.e. only ever reserved via `committedStock`
     // at checkout, never shipped/decremented from real `stock` — see ProductVariant.committedStock's doc comment.
-    for (const { item } of targetItems) {
+    for (const { item, soIndex: tSoIndex } of targetItems as any[]) {
       if (item.type === 'physical' && item.variantId) {
+        if (order.sellerOrders[tSoIndex]?.stockAlreadyDeducted) {
+          // Draft-order sales already took the units out of on-hand stock when they were completed (no reservation exists),
+          // so cancelling before they ship puts the units BACK. Releasing a reservation here would instead eat into
+          // units reserved by other, still-open orders.
+          await productVariantModel.updateOne({ _id: item.variantId, unlimitedStock: { $ne: true } }, { $inc: { stock: item.quantity } });
+          await restoreLocationStock(this.databaseService.repositories, String(item.variantId), item.quantity);
+          continue;
+        }
         await productVariantModel.updateOne(
           { _id: item.variantId, unlimitedStock: { $ne: true } },
           [{ $set: { committedStock: { $max: [0, { $subtract: ['$committedStock', item.quantity] }] } } }],

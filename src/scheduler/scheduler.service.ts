@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { refreshAllExpiredStock } from '../common/expired-stock.util';
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { DatabaseService } from '@/database/databaseservice';
@@ -197,6 +198,17 @@ export class SchedulerService {
       if (result.processed > 0) {
         this.logger.log(`Announcements: ${result.processed} scheduled announcement(s) published`);
       }
+    });
+  }
+
+  // Lots that crossed their expiry date become unsellable (ProductVariant.expiredStock, subtracted from availability).
+  // Lot changes refresh it immediately; this catches lots that simply expired by the clock.
+  @Cron('*/5 * * * *')
+  async refreshExpiredLotStock() {
+    await this.runLocked('refresh-expired-lot-stock', 240_000, async () => {
+      const { stockLotModel, productVariantModel } = this.databaseService.repositories;
+      const res = await refreshAllExpiredStock({ stockLotModel, productVariantModel });
+      if (res.updated || res.cleared) this.logger.log(`Expired lot stock: ${res.updated} variant(s) updated, ${res.cleared} cleared`);
     });
   }
 

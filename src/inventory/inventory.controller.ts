@@ -49,6 +49,40 @@ export class InventoryController {
   }
 
   @RequirePermission('inventory.view')
+  @Get(':storeId/lots/export')
+  async exportLots(@Req() req: any, @Res() res: Response, @Param('storeId') storeId: string) {
+    const csv = await this.inventoryService.exportLotsCsv(actingSellerId(req.user), storeId);
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="inventory-lots.csv"');
+    res.send(csv);
+  }
+
+  @RequirePermission('inventory.view')
+  @Get(':storeId/lots')
+  async listLots(@Req() req: any, @Param('storeId') storeId: string, @Query() query: any) {
+    return this.inventoryService.listLots(actingSellerId(req.user), storeId, query);
+  }
+
+  @RequirePermission('inventory.adjust')
+  @Post(':storeId/lots/:lotId/write-off')
+  async writeOffLot(@Req() req: any, @Param('storeId') storeId: string, @Param('lotId') lotId: string, @Body() body: { quantity?: number; reason?: 'expired' | 'damaged'; note?: string }) {
+    const { role, userId, permissions } = req.user;
+    return this.inventoryService.writeOffLot(actingSellerId(req.user), storeId, lotId, body ?? {}, { actorId: userId, actorRole: role, actorPermissions: permissions ?? null });
+  }
+
+  @RequirePermission('inventory.view')
+  @Get(':storeId/reports/movements')
+  async movementReport(@Req() req: any, @Param('storeId') storeId: string, @Query() query: any) {
+    return this.inventoryService.getMovementReport(actingSellerId(req.user), storeId, query);
+  }
+
+  @RequirePermission('inventory.view')
+  @Get(':storeId/lookup')
+  async lookupByCode(@Req() req: any, @Param('storeId') storeId: string, @Query('code') code: string) {
+    return this.inventoryService.lookupByCode(actingSellerId(req.user), storeId, code);
+  }
+
+  @RequirePermission('inventory.view')
   @Get('low-stock-summary/:storeId')
   async getLowStockSummary(@Req() req: any, @Param('storeId') storeId: string) {
     return this.inventoryService.getLowStockSummary(actingSellerId(req.user), storeId);

@@ -47,6 +47,11 @@ export class StorePagesController {
     return this.storePagesService.createPage(storeId, actingSellerId(req.user), dto);
   }
 
+  @Post(':storeId/:pageId/duplicate')
+  duplicate(@Req() req: any, @Param('storeId') storeId: string, @Param('pageId') pageId: string) {
+    return this.storePagesService.duplicatePage(storeId, actingSellerId(req.user), pageId);
+  }
+
   @Patch(':storeId/:pageId')
   update(@Req() req: any, @Param('storeId') storeId: string, @Param('pageId') pageId: string, @Body() dto: UpdatePageDto) {
     return this.storePagesService.updatePage(storeId, actingSellerId(req.user), pageId, dto);

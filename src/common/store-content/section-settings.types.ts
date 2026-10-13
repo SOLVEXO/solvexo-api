@@ -76,7 +76,7 @@ export interface FeaturedProductsSectionSettings extends BaseSectionSettings {
   columns?: 2 | 3 | 4;
 }
 export interface ProductCatalogSectionSettings extends BaseSectionSettings {
-  defaultSort?: 'newest' | 'price_asc' | 'price_desc' | 'best_rated';
+  defaultSort?: 'newest' | 'price_asc' | 'price_desc' | 'best_rated' | 'best_selling';
   columns?: 2 | 3 | 4;
   /** At most one of categoryId/collectionId may be set. */
   categoryId?: string;
@@ -124,7 +124,7 @@ export interface MetaobjectListSectionSettings extends BaseSectionSettings {
 }
 /** No `collectionId`/`heading` here (unlike `ProductCatalogSectionSettings`) — this section is contextual, always the collection the visitor is currently on. See `SECTION_TYPES`'s comment for why it's excluded from the general "Add Section" picker. */
 export interface CollectionProductGridSectionSettings {
-  defaultSort?: 'newest' | 'price_asc' | 'price_desc' | 'best_rated';
+  defaultSort?: 'newest' | 'price_asc' | 'price_desc' | 'best_rated' | 'best_selling';
   columns?: 2 | 3 | 4;
   showFilters?: boolean;
 }
@@ -156,7 +156,31 @@ export interface TeamGridSectionSettings extends BaseSectionSettings {}
 // eslint-disable-next-line @typescript-eslint/no-empty-interface
 export interface StatsCounterSectionSettings extends BaseSectionSettings {}
 // eslint-disable-next-line @typescript-eslint/no-empty-interface
-export interface GalleryGridSectionSettings extends BaseSectionSettings {}
+export interface GalleryGridSectionSettings extends BaseSectionSettings {
+  /** Images per row on desktop (phones show 2). */
+  columns?: 2 | 3 | 4 | 5;
+  imageRatio?: 'default' | 'adapt' | 'portrait' | 'square' | 'landscape';
+}
+export interface CollectionListSectionSettings extends BaseSectionSettings {
+  columns?: 2 | 3 | 4;
+  /** How many collections to show (1-24). */
+  limit?: number;
+  imageRatio?: 'default' | 'adapt' | 'portrait' | 'square' | 'landscape';
+  showDescription?: boolean;
+}
+export interface StoreLocationsSectionSettings extends BaseSectionSettings {}
+export interface RelatedProductsSectionSettings extends BaseSectionSettings {
+  columns?: 2 | 3 | 4;
+  /** How many related products (2-12). */
+  limit?: number;
+}
+export interface ContactFormSectionSettings extends BaseSectionSettings {
+  /** A line of text above the form. */
+  intro?: string;
+  buttonLabel?: string;
+  successMessage?: string;
+  showPhone?: boolean;
+}
 
 // ── Shopify-parity section library ──────────────────────────────────────────
 export interface MulticolumnSectionSettings extends BaseSectionSettings {
@@ -263,6 +287,10 @@ export type SectionSettingsMap = RequireAllKeys<SectionType, {
   marquee: MarqueeSectionSettings;
   custom_html: CustomHtmlSectionSettings;
   image_banner: ImageBannerSectionSettings;
+  collection_list: CollectionListSectionSettings;
+  store_locations: StoreLocationsSectionSettings;
+  contact_form: ContactFormSectionSettings;
+  related_products: RelatedProductsSectionSettings;
   product_main: ProductMainSectionSettings;
   search_results: SearchResultsSectionSettings;
   cart_items: CartItemsSectionSettings;
@@ -422,6 +450,17 @@ export interface StatItemBlockSettings {
 }
 export interface GalleryImageBlockSettings {
   imageUrl: string;
+  alt?: string;
+  link?: LinkTarget;
+}
+export interface LocationItemBlockSettings {
+  name: string;
+  address?: string;
+  phone?: string;
+  email?: string;
+  hours?: string;
+  /** A Google/Apple Maps link (https). */
+  mapUrl?: string;
 }
 
 // ── `product_main`'s 7 fixed blocks (Phase 4) — no settings beyond the
@@ -473,6 +512,7 @@ export const BLOCK_TYPES = [
   'multicolumn_column',
   'logo_item',
   'marquee_item',
+  'location_item',
   'product_media',
   'product_title',
   'product_price',
@@ -480,6 +520,11 @@ export const BLOCK_TYPES = [
   'product_quantity',
   'product_buy_buttons',
   'product_description',
+  'product_rating',
+  'product_sku',
+  'product_wishlist',
+  'product_share',
+  'product_specs',
 ] as const;
 export type BlockType = (typeof BLOCK_TYPES)[number];
 
@@ -512,6 +557,7 @@ export type BlockSettingsMap = RequireAllKeys<BlockType, {
   multicolumn_column: MulticolumnColumnBlockSettings;
   logo_item: LogoItemBlockSettings;
   marquee_item: MarqueeItemBlockSettings;
+  location_item: LocationItemBlockSettings;
   product_media: ProductMediaBlockSettings;
   product_title: ProductTitleBlockSettings;
   product_price: ProductPriceBlockSettings;
@@ -519,6 +565,11 @@ export type BlockSettingsMap = RequireAllKeys<BlockType, {
   product_quantity: ProductQuantityBlockSettings;
   product_buy_buttons: ProductBuyButtonsBlockSettings;
   product_description: ProductDescriptionBlockSettings;
+  product_rating: ProductDescriptionBlockSettings;
+  product_sku: ProductDescriptionBlockSettings;
+  product_wishlist: ProductDescriptionBlockSettings;
+  product_share: ProductDescriptionBlockSettings;
+  product_specs: ProductDescriptionBlockSettings;
 }>;
 
 /** `SECTION_ALLOWED_BLOCK_TYPES`'s values are typed against this so a typo'd or retired block-type string in that map is a compile error, not a silent runtime gap. */

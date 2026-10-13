@@ -122,6 +122,9 @@ export class StaffMember {
 
   @Prop({ type: String, required: true }) name: string;
   @Prop({ type: String, required: true }) email: string;
+  // Self-service profile bits (the staff member edits these; email/role stay owner-only).
+  @Prop({ type: String, default: null }) phone: string | null;
+  @Prop({ type: String, default: null }) profileImage: string | null;
 
   // Null until the invited staff member actually accepts their invite and
   // sets their OWN password (see `inviteToken` below) — the seller never

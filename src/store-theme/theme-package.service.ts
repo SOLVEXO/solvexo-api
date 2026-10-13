@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { expiredUnits } from '../common/stock-availability.util';
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { createHash } from 'crypto';
 import * as yauzl from 'yauzl';
@@ -75,7 +76,7 @@ export class ThemePackageService {
     const normalizedPath = normalizePath(path);
     const existing = latest.files.find((file: any) => file.path === normalizedPath);
     if (!existing || existing.encoding !== 'utf8') throw new NotFoundException('Editable theme source file not found');
-    if (typeof content !== 'string' || Buffer.byteLength(content, 'utf8') > MAX_FILE_BYTES) throw new BadRequestException('Theme source file exceeds 2 MiB');
+    if (typeof content !== 'string' || Buffer.byteLength(content, 'utf8') > MAX_FILE_BYTES) throw new BadRequestException('Theme source file exceeds 5 MiB');
     const files = latest.files.map((file: any) => file.path === normalizedPath ? makeFile(normalizedPath, Buffer.from(content, 'utf8'), 'utf8') : file.toObject?.() ?? file);
     validateThemePackage(files);
     return this.createRevision(storeId, installedThemeId, sellerId, files, 'file_edit');
@@ -299,7 +300,7 @@ export class ThemePackageService {
     const productIds = productRows.map((product: any) => String(product._id));
     const variants = productIds.length
       ? await productVariantModel.find({ productId: { $in: productIds }, isDelete: false })
-        .select('_id productId price compareAtPrice options sku stock committedStock damagedStock inTransitStock unlimitedStock allowBackorder')
+        .select('_id productId price compareAtPrice options sku stock committedStock damagedStock inTransitStock expiredStock expiryBuckets unlimitedStock allowBackorder')
         .lean()
       : [];
     const variantsByProduct = new Map<string, any[]>();
@@ -529,7 +530,7 @@ export class ThemePackageService {
     const allArticles = [...new Map([...articles as any[], ...blogArticles as any[]].map((article: any) => [String(article._id), article])).values()];
     const variants = products.length
       ? await productVariantModel.find({ productId: { $in: products.map((product: any) => String(product._id)) }, isDelete: false, status: 'active' })
-        .select('_id productId price compareAtPrice options sku stock committedStock damagedStock inTransitStock unlimitedStock allowBackorder').lean()
+        .select('_id productId price compareAtPrice options sku stock committedStock damagedStock inTransitStock expiredStock expiryBuckets unlimitedStock allowBackorder').lean()
       : [];
     const variantsByProduct = new Map<string, any[]>();
     for (const variant of variants as any[]) {
@@ -586,7 +587,7 @@ export class ThemePackageService {
     ).values()];
     if (additionalProducts.length) {
       const linkedVariants = await productVariantModel.find({ productId: { $in: additionalProducts.map((product: any) => String(product._id)) }, isDelete: false, status: 'active' })
-        .select('_id productId price compareAtPrice options sku stock committedStock damagedStock inTransitStock unlimitedStock allowBackorder').lean();
+        .select('_id productId price compareAtPrice options sku stock committedStock damagedStock inTransitStock expiredStock expiryBuckets unlimitedStock allowBackorder').lean();
       for (const variant of linkedVariants as any[]) {
         const productId = String(variant.productId);
         variantsByProduct.set(productId, [...(variantsByProduct.get(productId) ?? []), variant]);
@@ -774,9 +775,9 @@ async function readThemeZip(buffer: Buffer): Promise<PackageFile[]> {
         const mode = (entry.externalFileAttributes >>> 16) & 0o170000;
         if (mode === 0o120000) return fail('Symbolic links are not allowed in theme ZIPs');
         if (files.some((file) => file.path.toLowerCase() === path.toLowerCase())) return fail(`Duplicate theme file path: ${path}`);
-        if (entry.uncompressedSize > MAX_FILE_BYTES) return fail(`Theme file exceeds 2 MiB: ${path}`);
+        if (entry.uncompressedSize > MAX_FILE_BYTES) return fail(`Theme file exceeds 5 MiB: ${path}`);
         expandedBytes += entry.uncompressedSize;
-        if (expandedBytes > MAX_EXPANDED_BYTES) return fail('Uncompressed theme package exceeds 8 MiB');
+        if (expandedBytes > MAX_EXPANDED_BYTES) return fail('Uncompressed theme package exceeds 40 MiB');
         const ext = extension(path);
         if (!TEXT_EXTENSIONS.has(ext) && !BINARY_EXTENSIONS.has(ext)) return fail(`Unsupported file in theme package: ${path}`);
         zip.openReadStream(entry, (streamError, stream) => {
@@ -1248,7 +1249,7 @@ function routeSegment(path: string, index: number): string | undefined {
 }
 function availableQuantity(variant: any): number {
   return Math.max(0, Number(variant.stock ?? 0) - Number(variant.committedStock ?? 0)
-    - Number(variant.damagedStock ?? 0) - Number(variant.inTransitStock ?? 0));
+    - Number(variant.damagedStock ?? 0) - Number(variant.inTransitStock ?? 0) - expiredUnits(variant as any));
 }
 function productMatchesCollection(product: any, rules: any): boolean {
   const clauses: boolean[] = [];

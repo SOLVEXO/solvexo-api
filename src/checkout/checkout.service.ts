@@ -1,3 +1,4 @@
+import { assertOrderQuantity } from '@/products/selling-options.util';
 import { isValidObjectId } from 'mongoose';
 import { resolveZoneShippingPrice } from '@/shipping-zones/shipping-rate.util';
 import { meetsMinOrderAmount, postcodeMatch } from '@/shipping-zones/shipping-zone-match.util';
@@ -388,6 +389,8 @@ export class CheckoutService {
         throw new BadRequestException(
           `Product not found: ${cartItem.productId}`,
         );
+
+      assertOrderQuantity(product as any, cartItem.quantity);
 
       // The cart is store-scoped — an item whose product belongs to another
       // store can never be checked out here.

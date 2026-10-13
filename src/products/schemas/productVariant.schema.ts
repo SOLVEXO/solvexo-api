@@ -84,6 +84,16 @@ export class ProductVariant {
   @Prop({ default: 0 })
   inTransitStock: number;
 
+  // Units sitting in lots whose expiry date has passed (kept by common/expired-stock.util.ts). Still on-hand until written off,
+  // but never sellable: subtracted in common/stock-availability.util.ts like damagedStock.
+  @Prop({ default: 0 })
+  expiredStock: number;
+
+  // The next upcoming lot expiries ([{ at, units }], earliest first — common/expired-stock.util.ts). Units whose `at` has passed are
+  // treated as expired by the availability expression at that very moment (via $$NOW), without waiting for a refresh.
+  @Prop({ type: [{ _id: false, at: Date, units: Number }], default: [] })
+  expiryBuckets: { at: Date; units: number }[];
+
   // Per-SKU override of the store's single `lowStockThreshold` — null falls
   // back to the store-wide value (same nullable-override convention as
   // Store.enabledCurrencies). Lets a fast-moving SKU and a slow-moving one

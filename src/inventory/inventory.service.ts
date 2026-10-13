@@ -4,8 +4,10 @@ import {
   BadRequestException,
   NotFoundException,
 } from '@nestjs/common';
+import { InjectConnection } from '@nestjs/mongoose';
+import { Connection } from 'mongoose';
 import { DatabaseService } from '@/database/databaseservice';
-import { availableStock, AVAILABLE_STOCK_EXPR } from '@/common/stock-availability.util';
+import { availableStock, AVAILABLE_STOCK_EXPR, EXPIRED_UNITS_EXPR } from '@/common/stock-availability.util';
 import { buildStoreProductFilter, productSort } from '../products/product-list-filter.util';
 import { toCsv } from '@/analytics/utils/csv.util';
 import { importStockCsv as importStockCsvRows } from './stock-bulk-import';
@@ -14,6 +16,9 @@ import { NotificationsService } from '@/notifications/notifications.service';
 import { NOTIFICATION_TYPES } from '@/notifications/notification.types';
 import { STOCK_ADJUSTMENT_REASONS, type StockAdjustmentReason } from './schemas/stock-adjustment.schema';
 import { forecastDailyDemand } from './demand-forecast.util';
+import { consumeLots } from '@/common/lot-consumption.util';
+import { drainLocationStock } from '@/common/location-stock.util';
+import { refreshExpiredStock } from '@/common/expired-stock.util';
 
 @Injectable()
 export class InventoryService {
@@ -21,6 +26,7 @@ export class InventoryService {
     private readonly databaseService: DatabaseService,
     private readonly redis: RedisService,
     private readonly notificationsService: NotificationsService,
+    @InjectConnection() private readonly connection: Connection,
   ) {}
 
   async getStoreInventory(sellerId: string, storeId: string, query: any) {
@@ -256,6 +262,213 @@ export class InventoryService {
   // items that actually need attention. Digital products are excluded —
   // they always have `stock: 0` and would otherwise show up as permanently
   // low/out of stock.
+  /** GET api/inventory/:storeId/lots/export — every lot that still holds stock, with expiry status and value (CSV, max 20000 rows). */
+  async exportLotsCsv(sellerId: string, storeId: string): Promise<string> {
+    const { storeModel, stockLotModel, productModel, productVariantModel } = this.databaseService.repositories;
+    const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false }).select('_id');
+    if (!store) throw new ForbiddenException('Store not found or unauthorized');
+    const lots: any[] = await stockLotModel.find({ storeId, status: 'active', quantityRemaining: { $gt: 0 } }).sort({ expiryDate: 1, receivedAt: 1 }).limit(20000).lean();
+    const prods: any[] = await productModel.find({ _id: { $in: [...new Set(lots.map((l) => l.productId))] } }).select('name').lean();
+    const vars: any[] = await productVariantModel.find({ _id: { $in: [...new Set(lots.map((l) => l.variantId))] } }).select('sku').lean();
+    const pName = new Map(prods.map((p) => [String(p._id), p.name]));
+    const vSku = new Map(vars.map((v) => [String(v._id), v.sku]));
+    const now = Date.now();
+    const rows = lots.map((l) => {
+      const exp = l.expiryDate ? new Date(l.expiryDate).getTime() : null;
+      const status = exp == null ? 'No expiry' : exp < now ? 'Expired' : exp - now <= 30 * 86_400_000 ? 'Expiring within 30 days' : 'OK';
+      return [
+        pName.get(l.productId) ?? '', vSku.get(l.variantId) ?? '', l.lotNumber, l.expiryDate ? new Date(l.expiryDate).toISOString().slice(0, 10) : '', status,
+        l.quantityReceived, l.quantityRemaining, l.costPrice, Math.round(l.quantityRemaining * l.costPrice * 100) / 100,
+        l.receivedAt ? new Date(l.receivedAt).toISOString().slice(0, 10) : '',
+      ];
+    });
+    return toCsv(['Product', 'SKU', 'Lot', 'Expiry date', 'Status', 'Received', 'Remaining', 'Unit cost', 'Value remaining', 'Received on'], rows);
+  }
+
+  // ── Lots: expiry tracking + write-off, and the movement report ───────────────────────────────────────────
+
+  /** GET api/inventory/:storeId/lots — lot rows with remaining stock, newest expiry risk first.
+   *  query: filter = 'expired' | 'expiring' (within `days`, default 30) | 'all' (default), page, limit, q (product/SKU/lot). */
+  async listLots(sellerId: string, storeId: string, query: any = {}) {
+    const { storeModel, stockLotModel, productModel, productVariantModel } = this.databaseService.repositories;
+    const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false }).select('_id');
+    if (!store) throw new ForbiddenException('Store not found or unauthorized');
+    const page = Math.max(1, parseInt(query.page, 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(query.limit, 10) || 20));
+    const now = new Date();
+    const filter: any = { storeId, status: 'active', quantityRemaining: { $gt: 0 } };
+    if (query.filter === 'expired') filter.expiryDate = { $lt: now };
+    else if (query.filter === 'expiring') {
+      const days = Math.min(365, Math.max(1, parseInt(query.days, 10) || 30));
+      filter.expiryDate = { $gte: now, $lte: new Date(now.getTime() + days * 86_400_000) };
+    }
+    const q = typeof query.q === 'string' ? query.q.trim().slice(0, 80) : '';
+    if (q) {
+      const esc = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const variants: any[] = await productVariantModel.find({ storeId, isDelete: false, sku: new RegExp(esc, 'i') }).select('_id').limit(200).lean();
+      const prods: any[] = await productModel.find({ storeId, isDelete: false, name: new RegExp(esc, 'i') }).select('_id').limit(200).lean();
+      filter.$or = [
+        { lotNumber: new RegExp(esc, 'i') },
+        { variantId: { $in: variants.map((v) => String(v._id)) } },
+        { productId: { $in: prods.map((p) => String(p._id)) } },
+      ];
+    }
+    const [lots, total] = await Promise.all([
+      stockLotModel.find(filter).sort({ expiryDate: 1, receivedAt: 1 }).skip((page - 1) * limit).limit(limit).lean(),
+      stockLotModel.countDocuments(filter),
+    ]);
+    const prods: any[] = await productModel.find({ _id: { $in: [...new Set((lots as any[]).map((l) => l.productId))] } }).select('name').lean();
+    const vars: any[] = await productVariantModel.find({ _id: { $in: [...new Set((lots as any[]).map((l) => l.variantId))] } }).select('sku options').lean();
+    const pName = new Map(prods.map((p) => [String(p._id), p.name]));
+    const vById = new Map(vars.map((v) => [String(v._id), v]));
+    const data = (lots as any[]).map((l) => {
+      const exp = l.expiryDate ? new Date(l.expiryDate).getTime() : null;
+      return {
+        ...l,
+        productName: pName.get(l.productId) ?? 'Product',
+        sku: vById.get(l.variantId)?.sku ?? null,
+        options: vById.get(l.variantId)?.options ?? [],
+        isExpired: exp != null && exp < now.getTime(),
+        daysToExpiry: exp == null ? null : Math.ceil((exp - now.getTime()) / 86_400_000),
+        valueRemaining: Math.round(l.quantityRemaining * l.costPrice * 100) / 100,
+      };
+    });
+    return { success: true, data, meta: { page, limit, total, totalPages: Math.ceil(total / limit) } };
+  }
+
+  /** POST api/inventory/:storeId/lots/:lotId/write-off — removes (part of) a lot for good: expired or damaged units. The lot, the
+   *  variant total, the location row and the audit row move together in one transaction. A staff member needs inventory.approve
+   *  (write-offs are the same class of action as a "damaged" adjustment, which already needs sign-off). */
+  async writeOffLot(
+    sellerId: string, storeId: string, lotId: string,
+    body: { quantity?: number; reason?: 'expired' | 'damaged'; note?: string },
+    actor?: { actorId: string; actorRole: string; actorPermissions: string[] | null },
+  ) {
+    const { storeModel, stockLotModel, productVariantModel, productModel, variantLocationStockModel, stockAdjustmentModel } = this.databaseService.repositories;
+    const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false }).select('_id');
+    if (!store) throw new ForbiddenException('Store not found or unauthorized');
+    if (actor?.actorRole === 'staff' && !(actor.actorPermissions ?? []).includes('inventory.approve')) {
+      throw new ForbiddenException('Writing off stock needs the "approve inventory adjustments" permission.');
+    }
+    const reason = body.reason === 'damaged' ? 'damaged' : 'expired';
+    const lotPreview: any = await stockLotModel.findOne({ _id: lotId, storeId }).lean();
+    if (!lotPreview) throw new NotFoundException('Lot not found');
+    const qty = body.quantity == null ? lotPreview.quantityRemaining : body.quantity;
+    if (!Number.isInteger(qty) || qty <= 0) throw new BadRequestException('Write-off quantity must be a whole number greater than 0');
+    if (lotPreview.locationId) {
+      const v: any = await productVariantModel.findOne({ _id: lotPreview.variantId, storeId, isDelete: false });
+      if (v) await this.ensureLocationStockSeeded(storeId, lotPreview.variantId, v);
+    }
+
+    const result = await this.connection.transaction(async (session) => {
+      const lot: any = await stockLotModel.findOneAndUpdate(
+        { _id: lotId, storeId, status: 'active', quantityRemaining: { $gte: qty } },
+        { $inc: { quantityRemaining: -qty } },
+        { new: true, session },
+      );
+      if (!lot) throw new BadRequestException('That lot has fewer units left than you are writing off (or was already written off)');
+      if (lot.quantityRemaining <= 0) {
+        const pastExpiry = lot.expiryDate && new Date(lot.expiryDate).getTime() < Date.now();
+        await stockLotModel.updateOne({ _id: lot._id }, { $set: { status: pastExpiry ? 'expired' : 'depleted' } }, { session });
+      }
+      await refreshExpiredStock(this.databaseService.repositories, lot.variantId, { session });
+      const after: any = await productVariantModel.findOneAndUpdate(
+        { _id: lot.variantId, isDelete: false, $expr: { $gte: [{ $subtract: ['$stock', qty] }, { $ifNull: ['$committedStock', 0] }] } },
+        { $inc: { stock: -qty } },
+        { new: true, session },
+      );
+      if (!after) throw new BadRequestException('Cannot write off that many units — the rest of the stock is reserved by open orders');
+      if (lot.locationId) {
+        const row = await variantLocationStockModel.findOneAndUpdate({ variantId: lot.variantId, locationId: lot.locationId, stock: { $gte: qty } }, { $inc: { stock: -qty } }, { session });
+        if (!row) throw new BadRequestException('Not enough stock at the lot\'s location to write this off');
+      } else {
+        await drainLocationStock(this.databaseService.repositories, lot.variantId, qty, { session });
+      }
+      const product: any = await productModel.findOne({ _id: lot.productId }).select('name').session(session).lean();
+      await (stockAdjustmentModel as any).create([{
+        storeId, productId: lot.productId, variantId: lot.variantId, locationId: lot.locationId ?? null,
+        productName: product?.name ?? 'Product', sku: after.sku ?? null,
+        previousStock: after.stock + qty, newStock: after.stock, delta: -qty, reason: reason === 'expired' ? 'expired' : 'write_off',
+        note: `Lot ${lot.lotNumber} written off (${reason})${body.note ? ' — ' + String(body.note).trim().slice(0, 300) : ''}`,
+        adjustedBy: actor?.actorId ?? sellerId, adjustedByName: null,
+      }], { session });
+      return { lotId: String(lot._id), lotNumber: lot.lotNumber, written: qty, remaining: lot.quantityRemaining, value: Math.round(qty * lot.costPrice * 100) / 100, newStock: after.stock };
+    });
+    return { success: true, message: 'Units written off', data: result };
+  }
+
+  /** GET api/inventory/:storeId/reports/movements?from=&to= — what moved and why (adjustments grouped by reason), supplier
+   *  returns, and the money tied up in expired / soon-to-expire lots. */
+  async getMovementReport(sellerId: string, storeId: string, query: any = {}) {
+    const { storeModel, stockAdjustmentModel, supplierReturnModel, stockLotModel } = this.databaseService.repositories;
+    const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false }).select('_id');
+    if (!store) throw new ForbiddenException('Store not found or unauthorized');
+    const to = query.to ? new Date(query.to) : new Date();
+    const from = query.from ? new Date(query.from) : new Date(to.getTime() - 30 * 86_400_000);
+    if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || from > to) throw new BadRequestException('Invalid date range');
+    if (to.getTime() - from.getTime() > 366 * 86_400_000) throw new BadRequestException('Choose a range of at most one year');
+    const now = new Date();
+    const in30 = new Date(now.getTime() + 30 * 86_400_000);
+
+    const [byReason, returns, expired, expiring] = await Promise.all([
+      stockAdjustmentModel.aggregate([
+        { $match: { storeId, createdAt: { $gte: from, $lte: to } } },
+        { $group: { _id: '$reason', entries: { $sum: 1 }, unitsIn: { $sum: { $cond: [{ $gt: ['$delta', 0] }, '$delta', 0] } }, unitsOut: { $sum: { $cond: [{ $lt: ['$delta', 0] }, { $abs: '$delta' }, 0] } } } },
+        { $sort: { entries: -1 } },
+      ]),
+      supplierReturnModel.aggregate([
+        { $match: { storeId, createdAt: { $gte: from, $lte: to } } },
+        { $group: { _id: null, count: { $sum: 1 }, totalCredit: { $sum: '$totalCredit' }, pendingCredit: { $sum: { $cond: [{ $eq: ['$creditStatus', 'pending'] }, '$totalCredit', 0] } }, units: { $sum: { $sum: '$items.quantity' } } } },
+      ]),
+      stockLotModel.aggregate([
+        { $match: { storeId, status: 'active', quantityRemaining: { $gt: 0 }, expiryDate: { $lt: now } } },
+        { $group: { _id: null, lots: { $sum: 1 }, units: { $sum: '$quantityRemaining' }, value: { $sum: { $multiply: ['$quantityRemaining', '$costPrice'] } } } },
+      ]),
+      stockLotModel.aggregate([
+        { $match: { storeId, status: 'active', quantityRemaining: { $gt: 0 }, expiryDate: { $gte: now, $lte: in30 } } },
+        { $group: { _id: null, lots: { $sum: 1 }, units: { $sum: '$quantityRemaining' }, value: { $sum: { $multiply: ['$quantityRemaining', '$costPrice'] } } } },
+      ]),
+    ]);
+    const r2 = (n: number) => Math.round((n || 0) * 100) / 100;
+    return {
+      success: true,
+      data: {
+        range: { from, to },
+        adjustmentsByReason: byReason.map((x: any) => ({ reason: x._id, entries: x.entries, unitsIn: x.unitsIn, unitsOut: x.unitsOut })),
+        supplierReturns: { count: returns[0]?.count ?? 0, units: returns[0]?.units ?? 0, totalCredit: r2(returns[0]?.totalCredit), pendingCredit: r2(returns[0]?.pendingCredit) },
+        expired: { lots: expired[0]?.lots ?? 0, units: expired[0]?.units ?? 0, value: r2(expired[0]?.value) },
+        expiringIn30Days: { lots: expiring[0]?.lots ?? 0, units: expiring[0]?.units ?? 0, value: r2(expiring[0]?.value) },
+      },
+    };
+  }
+
+
+  /** Barcode-scanner / SKU lookup for receiving, counting and selling: exact barcode or SKU match inside THIS store only. */
+  async lookupByCode(sellerId: string, storeId: string, code: string) {
+    const { storeModel, productModel, productVariantModel } = this.databaseService.repositories;
+    const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false }).select('_id');
+    if (!store) throw new ForbiddenException('Store not found or unauthorized');
+    const term = typeof code === 'string' ? code.trim() : '';
+    if (!term || term.length > 100) throw new BadRequestException('Scan or type a barcode / SKU (max 100 characters)');
+    const variants: any[] = await productVariantModel
+      .find({ storeId, isDelete: false, $or: [{ barcode: term }, { sku: term }] })
+      .limit(5)
+      .lean();
+    const products: any[] = variants.length
+      ? await productModel.find({ _id: { $in: variants.map((v) => v.productId) }, storeId, isDelete: false }).select('name images').lean()
+      : [];
+    const byId = new Map(products.map((p) => [String(p._id), p]));
+    const data = variants
+      .filter((v) => byId.has(String(v.productId)))
+      .map((v) => ({
+        variantId: String(v._id), productId: v.productId, productName: byId.get(String(v.productId)).name,
+        image: byId.get(String(v.productId)).images?.[0] ?? null, sku: v.sku ?? null, barcode: v.barcode ?? null,
+        options: v.options ?? [], stock: v.stock ?? 0, committedStock: v.committedStock ?? 0,
+        available: v.unlimitedStock ? null : Math.max(0, availableStock(v)), unlimitedStock: !!v.unlimitedStock, costPrice: v.costPrice ?? null,
+      }));
+    return { success: true, data };
+  }
+
   async getLowStockSummary(sellerId: string, storeId: string) {
     if (!storeId) throw new BadRequestException('storeId is required');
 
@@ -359,14 +572,9 @@ export class InventoryService {
     const page = Math.max(1, parseInt(query.page) || 1);
     const limit = Math.max(1, parseInt(query.limit) || 20);
 
-    const available = {
-      $max: [0, {
-        $subtract: [
-          AVAILABLE_STOCK_EXPR,
-          { $ifNull: ['$inTransitStock', 0] },
-        ],
-      }],
-    };
+    // AVAILABLE_STOCK_EXPR already subtracts committed, damaged, in-transit AND expired units (subtracting in-transit again
+    // here, as this used to, showed too little available stock).
+    const available = { $max: [0, AVAILABLE_STOCK_EXPR] };
     const effectiveThreshold = { $ifNull: ['$reorderPoint', lowStockThreshold] };
     const statusExpr = {
       $switch: {
@@ -416,6 +624,7 @@ export class InventoryService {
               committedStock: { $ifNull: ['$committedStock', 0] },
               damagedStock: { $ifNull: ['$damagedStock', 0] },
               inTransitStock: { $ifNull: ['$inTransitStock', 0] },
+              expiredStock: EXPIRED_UNITS_EXPR,
               available: '$computedAvailable',
               unlimitedStock: { $ifNull: ['$unlimitedStock', false] },
               status: '$computedStatus',
@@ -534,30 +743,50 @@ export class InventoryService {
    *  `applyStockAdjustment`'s own optimistic/atomic guards still protect
    *  against a genuinely stale mutation, exactly as they do for a direct
    *  seller adjustment). */
+  /** Other modules (supplier returns) register how THEIR queued requests are applied on approval — a registry instead of an
+   *  import, because those modules already depend on InventoryService. */
+  private readonly approvalHandlers = new Map<string, (payload: any, reviewer: { reviewerId: string; reviewerRole: string }) => Promise<any>>();
+  registerApprovalHandler(type: string, handler: (payload: any, reviewer: { reviewerId: string; reviewerRole: string }) => Promise<any>) {
+    this.approvalHandlers.set(type, handler);
+  }
+
   async approveRequest(sellerId: string, storeId: string, approvalId: string, reviewerId: string, reviewerRole: string) {
     const { storeModel, approvalRequestModel, sellerModel, staffMemberModel } = this.databaseService.repositories;
     const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
     if (!store) throw new ForbiddenException('Store not found or unauthorized');
 
-    const approval = await approvalRequestModel.findOne({ _id: approvalId, storeId });
-    if (!approval) throw new NotFoundException('Approval request not found');
-    if (approval.status !== 'pending') {
-      throw new BadRequestException(`This request was already ${approval.status}`);
-    }
-
-    const p = approval.payload as any;
-    const result = await this.applyStockAdjustment(p.sellerId, p.storeId, p.variantId, p.delta, p.reason, p.note, p.locationId);
-
     const reviewer = reviewerRole === 'staff'
       ? await staffMemberModel.findById(reviewerId).select('name').lean()
       : await sellerModel.findById(reviewerId).select('name').lean();
-    approval.status = 'approved';
-    approval.reviewedBy = reviewerId;
-    approval.reviewedByName = (reviewer as any)?.name ?? null;
-    approval.reviewedAt = new Date();
-    await approval.save();
 
-    return { success: true, message: 'Approved and applied', data: { approval: approval.toObject(), result: result.data } };
+    // Claim the request FIRST (pending -> approved, atomic): two reviewers clicking at once can no longer both apply it.
+    // If applying fails, the claim is released so it can be retried.
+    const approval: any = await approvalRequestModel.findOneAndUpdate(
+      { _id: approvalId, storeId, status: 'pending' },
+      { $set: { status: 'approved', reviewedBy: reviewerId, reviewedByName: (reviewer as any)?.name ?? null, reviewedAt: new Date() } },
+      { new: true },
+    );
+    if (!approval) {
+      const cur: any = await approvalRequestModel.findOne({ _id: approvalId, storeId }).select('status').lean();
+      if (!cur) throw new NotFoundException('Approval request not found');
+      throw new BadRequestException(`This request was already ${cur.status}`);
+    }
+
+    try {
+      const p = approval.payload as any;
+      let result: any;
+      if (approval.type === 'stock_adjustment') {
+        result = (await this.applyStockAdjustment(p.sellerId, p.storeId, p.variantId, p.delta, p.reason, p.note, p.locationId)).data;
+      } else {
+        const handler = this.approvalHandlers.get(approval.type);
+        if (!handler) throw new BadRequestException(`Cannot apply a "${approval.type}" request here`);
+        result = await handler(p, { reviewerId, reviewerRole });
+      }
+      return { success: true, message: 'Approved and applied', data: { approval: approval.toObject(), result } };
+    } catch (err) {
+      await approvalRequestModel.updateOne({ _id: approvalId, status: 'approved' }, { $set: { status: 'pending', reviewedBy: null, reviewedByName: null, reviewedAt: null } });
+      throw err;
+    }
   }
 
   async rejectRequest(sellerId: string, storeId: string, approvalId: string, reviewerId: string, reviewerRole: string, reason?: string) {
@@ -688,85 +917,72 @@ export class InventoryService {
       return { success: true, message: 'Units written off', data: { variantId, previousStock, newStock, adjustment } };
     }
 
-    const previousStock = variant.stock;
-    let newStock: number;
-
+    // One atomic unit: the (location) row, the variant total and the audit row commit together or not at all.
+    // Writes are relative ($inc) with the floor ("never below 0 / never below reserved") enforced INSIDE the update
+    // filter, so two concurrent adjustments can neither lose each other's change nor push stock negative.
+    let location: any = null;
     if (locationId) {
-      // Multi-location path — only reachable once a store has 2+ real
-      // StoreLocations (see StoreLocation/VariantLocationStock docs).
-      // Adjust that ONE location's row; `ProductVariant.stock` stays the
-      // auto-maintained sum across every location row for this variant.
-      const location = await storeLocationModel.findOne({ _id: locationId, storeId, isDelete: false });
+      location = await storeLocationModel.findOne({ _id: locationId, storeId, isDelete: false });
       if (!location) throw new NotFoundException('Location not found');
-
       await this.ensureLocationStockSeeded(storeId, variantId, variant);
-      const row = await variantLocationStockModel.findOne({ variantId, locationId });
-      const previousLocationStock = row?.stock ?? 0;
-      const newLocationStock = previousLocationStock + delta;
-      if (newLocationStock < 0) {
-        throw new BadRequestException(`Cannot reduce "${location.name}" stock below 0 (current: ${previousLocationStock})`);
+    }
+
+    const outcome = await this.connection.transaction(async (session) => {
+      if (locationId) {
+        const rowFilter: any = { variantId, locationId };
+        if (delta < 0) rowFilter.stock = { $gte: -delta };
+        const row = await variantLocationStockModel.findOneAndUpdate(
+          rowFilter,
+          { $inc: { stock: delta }, ...(delta > 0 ? { $setOnInsert: { storeId, productId: variant.productId } } : {}) },
+          { new: true, upsert: delta > 0, session },
+        );
+        if (!row) {
+          const current = await variantLocationStockModel.findOne({ variantId, locationId }).session(session).lean();
+          throw new BadRequestException(`Cannot reduce "${location.name}" stock below 0 (current: ${(current as any)?.stock ?? 0})`);
+        }
       }
-      await variantLocationStockModel.updateOne(
-        { variantId, locationId },
-        { $set: { storeId, productId: variant.productId, stock: newLocationStock } },
-        { upsert: true },
+      const after = await productVariantModel.findOneAndUpdate(
+        {
+          _id: variantId,
+          isDelete: false,
+          $expr: { $gte: [{ $add: ['$stock', delta] }, { $ifNull: ['$committedStock', 0] }] },
+        },
+        { $inc: { stock: delta } },
+        { new: true, session },
       );
-
-      // `stock` (the aggregate total) = sum of every location row + whatever
-      // is currently mid-transfer (see ProductVariant.inTransitStock) — not
-      // just the location rows alone, or a seller shipping a transfer and
-      // then making an unrelated location adjustment on the same SKU would
-      // silently erase the in-transit quantity from the visible total.
-      const allRows = await variantLocationStockModel.find({ variantId }).lean();
-      newStock = allRows.reduce((sum, r: any) => sum + (r.stock || 0), 0) + (variant.inTransitStock || 0);
-    } else {
-      newStock = previousStock + delta;
-    }
-
-    if (newStock < 0) {
-      throw new BadRequestException(`Cannot reduce stock below 0 (current: ${previousStock})`);
-    }
-    // Can't manually reduce stock below what's already reserved by a
-    // paid-but-unshipped order — see ProductVariant.committedStock.
-    if (newStock < (variant.committedStock || 0)) {
-      throw new BadRequestException(
-        `Cannot reduce stock below ${variant.committedStock} — that many units are already reserved by pending orders`,
-      );
-    }
-
-    if (locationId) {
-      await productVariantModel.updateOne({ _id: variantId }, { $set: { stock: newStock } });
-    } else {
-      // Optimistic guard: only writes if `stock` hasn't changed since we
-      // read it a moment ago — catches the rare case of two seller
-      // tabs/staff adjusting the same SKU at the same instant, without
-      // needing the heavier atomic $inc-with-floor pattern checkout/POS
-      // use (this is a single dashboard action, not a high-concurrency
-      // buyer-facing path).
-      const result = await productVariantModel.updateOne(
-        { _id: variantId, stock: previousStock },
-        { $set: { stock: newStock } },
-      );
-      if (result.modifiedCount === 0) {
-        throw new BadRequestException('Stock was changed by another action just now — please refresh and try again');
+      if (!after) {
+        const cur = await productVariantModel.findOne({ _id: variantId }).session(session).lean();
+        if (!cur || (cur as any).isDelete) throw new NotFoundException('Variant not found');
+        const committed = (cur as any).committedStock || 0;
+        throw new BadRequestException(
+          committed > 0 && (cur as any).stock + delta >= 0
+            ? `Cannot reduce stock below ${committed} — that many units are already reserved by pending orders`
+            : `Cannot reduce stock below 0 (current: ${(cur as any).stock})`,
+        );
       }
-    }
-
-    const adjustment = await stockAdjustmentModel.create({
-      storeId,
-      productId: variant.productId,
-      variantId,
-      locationId: locationId ?? null,
-      productName: product.name,
-      sku: variant.sku,
-      previousStock,
-      newStock,
-      delta,
-      reason,
-      note: note?.trim() || null,
-      adjustedBy: sellerId,
-      adjustedByName: seller?.name ?? null,
+      const newStock = (after as any).stock as number;
+      const previousStock = newStock - delta;
+      const [created] = await (stockAdjustmentModel as any).create(
+        [{
+          storeId,
+          productId: variant.productId,
+          variantId,
+          locationId: locationId ?? null,
+          productName: product.name,
+          sku: variant.sku,
+          previousStock,
+          newStock,
+          delta,
+          reason,
+          note: note?.trim() || null,
+          adjustedBy: sellerId,
+          adjustedByName: seller?.name ?? null,
+        }],
+        { session },
+      );
+      return { previousStock, newStock, adjustment: created };
     });
+    const { previousStock, newStock, adjustment } = outcome;
 
     // Real FIFO/FEFO lot consumption for a genuine reduction of sellable
     // stock (restocked/correction/other going negative — 'damaged'/
@@ -986,8 +1202,8 @@ export class InventoryService {
     const { storeModel, productModel, productVariantModel, variantLocationStockModel, storeLocationModel, stockTransferModel, sellerModel } =
       this.databaseService.repositories;
 
-    if (!Number.isFinite(quantity) || quantity <= 0) {
-      throw new BadRequestException('Transfer quantity must be greater than 0');
+    if (!Number.isInteger(quantity) || quantity <= 0) {
+      throw new BadRequestException('Transfer quantity must be a whole number greater than 0');
     }
     if (fromLocationId === toLocationId) {
       throw new BadRequestException('Source and destination locations must be different');
@@ -1010,39 +1226,41 @@ export class InventoryService {
 
     await this.ensureLocationStockSeeded(storeId, variantId, variant);
 
-    // Atomic, floor-guarded decrement at the source — mirrors the same
-    // race-safety pattern checkout/POS use, since a transfer can in
-    // principle be triggered from more than one staff session at once.
-    const decResult = await variantLocationStockModel.updateOne(
-      { variantId, locationId: fromLocationId, stock: { $gte: quantity } },
-      { $inc: { stock: -quantity } },
-    );
-    if (decResult.modifiedCount === 0) {
-      throw new BadRequestException(`Not enough stock at "${fromLocation.name}" to transfer ${quantity} unit(s)`);
-    }
-    await productVariantModel.updateOne({ _id: variantId }, { $inc: { inTransitStock: quantity } });
-
     const seller = await sellerModel.findOne({ _id: sellerId }).select('name');
 
-    const transfer = await stockTransferModel.create({
-      storeId,
-      productId: variant.productId,
-      variantId,
-      productName: product.name,
-      sku: variant.sku,
-      fromLocationId,
-      fromLocationName: fromLocation.name,
-      toLocationId,
-      toLocationName: toLocation.name,
-      quantity,
-      receivedQuantity: 0,
-      status: 'in_transit',
-      note: note?.trim() || null,
-      transferredBy: sellerId,
-      transferredByName: seller?.name ?? null,
-      carrier: shipping?.carrier?.trim() || null,
-      trackingNumber: shipping?.trackingNumber?.trim() || null,
-      trackingUrl: shipping?.trackingUrl?.trim() || null,
+    // Source decrement (floor-guarded), in-transit increment and the transfer record commit together: a failure can no
+    // longer leave units "in transit" with no transfer to receive or cancel.
+    const transfer = await this.connection.transaction(async (session) => {
+      const decResult = await variantLocationStockModel.updateOne(
+        { variantId, locationId: fromLocationId, stock: { $gte: quantity } },
+        { $inc: { stock: -quantity } },
+        { session },
+      );
+      if (decResult.modifiedCount === 0) {
+        throw new BadRequestException(`Not enough stock at "${fromLocation.name}" to transfer ${quantity} unit(s)`);
+      }
+      await productVariantModel.updateOne({ _id: variantId }, { $inc: { inTransitStock: quantity } }, { session });
+      const [created] = await (stockTransferModel as any).create([{
+        storeId,
+        productId: variant.productId,
+        variantId,
+        productName: product.name,
+        sku: variant.sku,
+        fromLocationId,
+        fromLocationName: fromLocation.name,
+        toLocationId,
+        toLocationName: toLocation.name,
+        quantity,
+        receivedQuantity: 0,
+        status: 'in_transit',
+        note: note?.trim() || null,
+        transferredBy: sellerId,
+        transferredByName: seller?.name ?? null,
+        carrier: shipping?.carrier?.trim() || null,
+        trackingNumber: shipping?.trackingNumber?.trim() || null,
+        trackingUrl: shipping?.trackingUrl?.trim() || null,
+      }], { session });
+      return created;
     });
 
     return { success: true, message: 'Stock shipped — now in transit', data: transfer };
@@ -1086,74 +1304,85 @@ export class InventoryService {
     const { storeModel, productVariantModel, variantLocationStockModel, stockTransferModel, stockAdjustmentModel, sellerModel, binModel } =
       this.databaseService.repositories;
 
-    if (!Number.isFinite(receivedQty) || receivedQty <= 0) {
-      throw new BadRequestException('Received quantity must be greater than 0');
+    if (!Number.isInteger(receivedQty) || receivedQty <= 0) {
+      throw new BadRequestException('Received quantity must be a whole number greater than 0');
     }
 
     const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
     if (!store) throw new ForbiddenException('Store not found or unauthorized');
 
-    const transfer = await stockTransferModel.findOne({ _id: transferId, storeId });
-    if (!transfer) throw new NotFoundException('Transfer not found');
-    if (transfer.status !== 'in_transit' && transfer.status !== 'partially_received') {
-      throw new BadRequestException(`This transfer is already "${transfer.status}" — nothing left to receive`);
-    }
-
-    const remaining = transfer.quantity - transfer.receivedQuantity;
-    if (receivedQty > remaining) {
-      throw new BadRequestException(`Only ${remaining} unit(s) remain to receive on this transfer`);
+    const preview = await stockTransferModel.findOne({ _id: transferId, storeId });
+    if (!preview) throw new NotFoundException('Transfer not found');
+    if (preview.status !== 'in_transit' && preview.status !== 'partially_received') {
+      throw new BadRequestException(`This transfer is already "${preview.status}" — nothing left to receive`);
     }
 
     let targetBinId: string | null = null;
     if (binId) {
-      const bin = await binModel.findOne({ _id: binId, locationId: transfer.toLocationId, isDelete: false });
+      const bin = await binModel.findOne({ _id: binId, locationId: preview.toLocationId, isDelete: false });
       if (!bin) throw new NotFoundException('Bin not found at the destination location');
       targetBinId = binId;
     }
-
-    await variantLocationStockModel.updateOne(
-      { variantId: transfer.variantId, locationId: transfer.toLocationId, binId: targetBinId },
-      { $inc: { stock: receivedQty }, $setOnInsert: { storeId, productId: transfer.productId } },
-      { upsert: true },
-    );
-    // inTransitStock floor-guarded at 0 via the pipeline $max — defensive
-    // only; it should never actually go negative since receivedQty is
-    // always bounded by `remaining` above.
-    await productVariantModel.updateOne(
-      { _id: transfer.variantId },
-      [{ $set: { inTransitStock: { $max: [0, { $subtract: ['$inTransitStock', receivedQty] }] } } }],
-      { updatePipeline: true } as any,
-    );
-
-    const newReceivedQuantity = transfer.receivedQuantity + receivedQty;
-    const fullyReceived = newReceivedQuantity >= transfer.quantity;
     const seller = await sellerModel.findOne({ _id: sellerId }).select('name');
 
-    transfer.receivedQuantity = newReceivedQuantity;
-    transfer.status = fullyReceived ? 'received' : 'partially_received';
-    if (fullyReceived) {
-      transfer.receivedAt = new Date();
-      transfer.receivedBy = sellerId;
-      transfer.receivedByName = seller?.name ?? null;
-    }
-    await transfer.save();
+    const transfer: any = await this.connection.transaction(async (session) => {
+      // Claim the quantity atomically on the transfer itself: two concurrent receipts (or a receipt racing a cancel)
+      // can never both succeed beyond what is still on the truck, and stock is credited exactly once per claim.
+      const claimed: any = await stockTransferModel.findOneAndUpdate(
+        {
+          _id: transferId, storeId, status: { $in: ['in_transit', 'partially_received'] },
+          $expr: { $lte: [{ $add: ['$receivedQuantity', receivedQty] }, '$quantity'] },
+        },
+        [
+          { $set: { receivedQuantity: { $add: ['$receivedQuantity', receivedQty] } } },
+          { $set: { status: { $cond: [{ $gte: ['$receivedQuantity', '$quantity'] }, 'received', 'partially_received'] } } },
+        ] as any,
+        { new: true, session, updatePipeline: true } as any,
+      );
+      if (!claimed) {
+        const cur: any = await stockTransferModel.findOne({ _id: transferId, storeId }).session(session).lean();
+        if (!cur) throw new NotFoundException('Transfer not found');
+        if (cur.status !== 'in_transit' && cur.status !== 'partially_received') {
+          throw new BadRequestException(`This transfer is already "${cur.status}" — nothing left to receive`);
+        }
+        throw new BadRequestException(`Only ${cur.quantity - cur.receivedQuantity} unit(s) remain to receive on this transfer`);
+      }
+      if (claimed.status === 'received') {
+        await stockTransferModel.updateOne({ _id: transferId }, { $set: { receivedAt: new Date(), receivedBy: sellerId, receivedByName: seller?.name ?? null } }, { session });
+        claimed.receivedAt = new Date();
+      }
 
-    await stockAdjustmentModel.create({
-      storeId,
-      productId: transfer.productId,
-      variantId: transfer.variantId,
-      locationId: transfer.toLocationId,
-      productName: transfer.productName,
-      sku: transfer.sku,
-      previousStock: 0,
-      newStock: 0,
-      delta: receivedQty,
-      reason: 'restocked',
-      note: `Received via transfer from "${transfer.fromLocationName}"`,
-      adjustedBy: sellerId,
-      adjustedByName: seller?.name ?? null,
+      await variantLocationStockModel.updateOne(
+        { variantId: claimed.variantId, locationId: claimed.toLocationId, binId: targetBinId },
+        { $inc: { stock: receivedQty }, $setOnInsert: { storeId, productId: claimed.productId } },
+        { upsert: true, session },
+      );
+      // inTransitStock floor-guarded at 0 via the pipeline $max
+      await productVariantModel.updateOne(
+        { _id: claimed.variantId },
+        [{ $set: { inTransitStock: { $max: [0, { $subtract: ['$inTransitStock', receivedQty] }] } } }],
+        { updatePipeline: true, session } as any,
+      );
+      const v: any = await productVariantModel.findOne({ _id: claimed.variantId }).select('stock').session(session).lean();
+      await (stockAdjustmentModel as any).create([{
+        storeId,
+        productId: claimed.productId,
+        variantId: claimed.variantId,
+        locationId: claimed.toLocationId,
+        productName: claimed.productName,
+        sku: claimed.sku,
+        previousStock: v?.stock ?? 0,
+        newStock: v?.stock ?? 0, // the variant total does not change: units were already counted while in transit
+        delta: receivedQty,
+        reason: 'restocked',
+        note: `Received via transfer from "${claimed.fromLocationName}"`,
+        adjustedBy: sellerId,
+        adjustedByName: seller?.name ?? null,
+      }], { session });
+      return claimed;
     });
 
+    const fullyReceived = transfer.status === 'received';
     return { success: true, message: fullyReceived ? 'Transfer fully received' : 'Partial receipt recorded', data: transfer };
   }
 
@@ -1167,25 +1396,30 @@ export class InventoryService {
     const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
     if (!store) throw new ForbiddenException('Store not found or unauthorized');
 
-    const transfer = await stockTransferModel.findOne({ _id: transferId, storeId });
-    if (!transfer) throw new NotFoundException('Transfer not found');
-    if (transfer.status !== 'in_transit') {
-      throw new BadRequestException(`Only a fully in-transit transfer can be cancelled (this one is "${transfer.status}")`);
-    }
-
-    await variantLocationStockModel.updateOne(
-      { variantId: transfer.variantId, locationId: transfer.fromLocationId },
-      { $inc: { stock: transfer.quantity } },
-    );
-    await productVariantModel.updateOne(
-      { _id: transfer.variantId },
-      [{ $set: { inTransitStock: { $max: [0, { $subtract: ['$inTransitStock', transfer.quantity] }] } } }],
-      { updatePipeline: true } as any,
-    );
-
-    transfer.status = 'cancelled';
-    transfer.cancelledAt = new Date();
-    await transfer.save();
+    const transfer: any = await this.connection.transaction(async (session) => {
+      // the claim is the cancel itself: a concurrent receive/cancel sees a different status and is refused
+      const claimed: any = await stockTransferModel.findOneAndUpdate(
+        { _id: transferId, storeId, status: 'in_transit' },
+        { $set: { status: 'cancelled', cancelledAt: new Date() } },
+        { new: true, session },
+      );
+      if (!claimed) {
+        const cur: any = await stockTransferModel.findOne({ _id: transferId, storeId }).session(session).lean();
+        if (!cur) throw new NotFoundException('Transfer not found');
+        throw new BadRequestException(`Only a fully in-transit transfer can be cancelled (this one is "${cur.status}")`);
+      }
+      await variantLocationStockModel.updateOne(
+        { variantId: claimed.variantId, locationId: claimed.fromLocationId },
+        { $inc: { stock: claimed.quantity } },
+        { session },
+      );
+      await productVariantModel.updateOne(
+        { _id: claimed.variantId },
+        [{ $set: { inTransitStock: { $max: [0, { $subtract: ['$inTransitStock', claimed.quantity] }] } } }],
+        { updatePipeline: true, session } as any,
+      );
+      return claimed;
+    });
 
     return { success: true, message: 'Transfer cancelled — stock returned to the source location', data: transfer };
   }
@@ -1345,12 +1579,23 @@ export class InventoryService {
 
     const lotTrackedVariantIds = (variants as any[]).filter((v) => v.trackLots).map((v) => v._id.toString());
     const lotValueByVariant = new Map<string, number>();
+    // Units in lots past their expiry date are not an asset any more: they are reported as expired exposure (a write-off waiting
+    // to happen) instead of being counted in the inventory value.
+    let expiredValue = 0;
+    let expiredUnits = 0;
     if (lotTrackedVariantIds.length > 0) {
+      const now = new Date();
+      const isExpired = { $and: [{ $ne: ['$expiryDate', null] }, { $lt: ['$expiryDate', now] }] };
       const lotTotals = await stockLotModel.aggregate([
         { $match: { variantId: { $in: lotTrackedVariantIds }, status: 'active', quantityRemaining: { $gt: 0 } } },
-        { $group: { _id: '$variantId', value: { $sum: { $multiply: ['$quantityRemaining', '$costPrice'] } } } },
+        { $group: {
+          _id: '$variantId',
+          value: { $sum: { $cond: [isExpired, 0, { $multiply: ['$quantityRemaining', '$costPrice'] }] } },
+          expiredValue: { $sum: { $cond: [isExpired, { $multiply: ['$quantityRemaining', '$costPrice'] }, 0] } },
+          expiredUnits: { $sum: { $cond: [isExpired, '$quantityRemaining', 0] } },
+        } },
       ]);
-      for (const t of lotTotals) lotValueByVariant.set(t._id, t.value);
+      for (const t of lotTotals) { lotValueByVariant.set(t._id, t.value); expiredValue += t.expiredValue; expiredUnits += t.expiredUnits; }
     }
 
     let totalValue = 0;
@@ -1377,11 +1622,11 @@ export class InventoryService {
     const soldVariantIds90 = new Set(sales90.map((s: any) => s._id));
 
     const deadStock = (variants as any[])
-      .filter(v => (v.stock || 0) > 0 && !soldVariantIds90.has(v._id.toString()))
+      .filter(v => ((v.stock || 0) - (v.expiredStock || 0)) > 0 && !soldVariantIds90.has(v._id.toString()))
       .map(v => ({
         productId: v.productId, variantId: v._id.toString(),
         productName: productById.get(v.productId)?.name ?? '(deleted product)', sku: v.sku,
-        stock: v.stock, value: v.costPrice != null ? Math.round(v.stock * v.costPrice * 100) / 100 : null,
+        stock: v.stock - (v.expiredStock || 0), value: v.costPrice != null ? Math.round((v.stock - (v.expiredStock || 0)) * v.costPrice * 100) / 100 : null,
       }))
       .sort((a, b) => b.stock - a.stock)
       .slice(0, 50);
@@ -1401,6 +1646,8 @@ export class InventoryService {
       success: true,
       data: {
         totalValue: Math.round(totalValue * 100) / 100,
+        expiredValue: Math.round(expiredValue * 100) / 100,
+        expiredUnits,
         valuedSkuCount, totalSkuCount: variants.length,
         deadStock, topMovers,
       },
@@ -1414,32 +1661,7 @@ export class InventoryService {
    *  convention). Drains the oldest active lot(s) first; returns the real
    *  consumed cost, or does nothing (returns null) if no lots exist yet. */
   private async consumeLotsFifo(variantId: string, quantity: number): Promise<number | null> {
-    const { stockLotModel } = this.databaseService.repositories;
-    let remainingToConsume = quantity;
-    let totalCost = 0;
-    let anyLotFound = false;
-
-    const activeLots = await stockLotModel
-      .find({ variantId, status: 'active', quantityRemaining: { $gt: 0 } })
-      .sort({ expiryDate: 1, receivedAt: 1 })
-      .lean();
-
-    for (const lot of activeLots as any[]) {
-      if (remainingToConsume <= 0) break;
-      anyLotFound = true;
-      const takeFromThisLot = Math.min(lot.quantityRemaining, remainingToConsume);
-      totalCost += takeFromThisLot * lot.costPrice;
-      remainingToConsume -= takeFromThisLot;
-
-      const newRemaining = lot.quantityRemaining - takeFromThisLot;
-      await stockLotModel.updateOne(
-        { _id: lot._id },
-        { $set: { quantityRemaining: newRemaining, status: newRemaining <= 0 ? 'depleted' : 'active' } },
-      );
-    }
-
-    if (!anyLotFound) return null;
-    return Math.round(totalCost * 100) / 100;
+    return consumeLots(this.databaseService.repositories, variantId, quantity);
   }
 
   /** Called once daily by SchedulerService (`runLocked`) — the real emitter

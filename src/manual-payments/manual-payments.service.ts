@@ -214,7 +214,7 @@ export class ManualPaymentsService {
 
     const now = new Date();
     for (const order of orders as any[]) {
-      await fulfilStockForSellerOrders(this.db.repositories.productVariantModel, order.sellerOrders);
+      await fulfilStockForSellerOrders(this.db.repositories.productVariantModel, order.sellerOrders, this.db.repositories);
       const updateData: Record<string, any> = {
         isPaid: true,
         paymentStatus: 'paid',

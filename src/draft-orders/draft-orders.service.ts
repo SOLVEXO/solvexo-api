@@ -1,6 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { Injectable, BadRequestException, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { availableStock, AVAILABLE_STOCK_EXPR } from '@/common/stock-availability.util';
+import { drainLocationStock, restoreLocationStock } from '@/common/location-stock.util';
 import { ConfigService } from '@nestjs/config';
 import { randomBytes } from 'crypto';
 import Stripe from 'stripe';
@@ -578,9 +579,11 @@ export class DraftOrdersService {
       if (res.modifiedCount === 0) {
         for (const d of decremented) {
           await this.repos.productVariantModel.updateOne({ _id: d.variantId }, { $inc: { stock: d.quantity } });
+          await restoreLocationStock(this.repos, d.variantId, d.quantity);
         }
         throw new BadRequestException(`Stock not available for item: ${item.name}`);
       }
+      await drainLocationStock(this.repos, String(item.variantId), item.quantity);
       decremented.push({ variantId: item.variantId, quantity: item.quantity });
     }
 

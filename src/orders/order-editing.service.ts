@@ -2,6 +2,7 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { availableStock, AVAILABLE_STOCK_EXPR } from '@/common/stock-availability.util';
 import { Types } from 'mongoose';
+import { drainLocationStock, restoreLocationStock } from '@/common/location-stock.util';
 import { DatabaseService } from '../database/databaseservice';
 import { ActivityLogService } from '../activity-log/activity-log.service';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -234,15 +235,43 @@ export class OrderEditingService {
     if (live.length > 0 && live.every((i: any) => i.status === 'processing')) so.status = 'processing';
 
     // ── 3) stock reservations (atomic; rolled back if anything later fails) ──
+    // A sub-order created from a draft order already took its units out of on-hand stock when it was completed (no reservation
+    // exists), so editing its quantities moves on-hand stock (and the location rows) instead of the reservation counter.
+    const alreadyDeducted = !!so.stockAlreadyDeducted;
     const applied: Array<{ variantId: string; delta: number }> = [];
     const rollbackStock = async () => {
       for (const m of applied) {
+        if (alreadyDeducted) {
+          await this.r.productVariantModel.updateOne({ _id: m.variantId }, { $inc: { stock: m.delta } });
+          if (m.delta > 0) await restoreLocationStock(this.r, m.variantId, m.delta);
+          else await drainLocationStock(this.r, m.variantId, -m.delta);
+          continue;
+        }
         await this.r.productVariantModel.updateOne({ _id: m.variantId }, [{ $set: { committedStock: { $max: [0, { $subtract: ['$committedStock', m.delta] }] } } }]);
       }
     };
     try {
       for (const m of stockMoves) {
         if (m.delta === 0) continue;
+        if (alreadyDeducted) {
+          const v: any = await this.r.productVariantModel.findOne({ _id: m.variantId }).select('unlimitedStock').lean();
+          if (!v?.unlimitedStock) {
+            if (m.delta > 0) {
+              // more units sold: take them from on-hand stock, guarded by real availability
+              const res: any = await this.r.productVariantModel.updateOne(
+                { _id: m.variantId, isDelete: false, $expr: { $gte: [AVAILABLE_STOCK_EXPR, m.delta] } },
+                { $inc: { stock: -m.delta } },
+              );
+              if ((res.modifiedCount ?? res.nModified ?? 0) === 0) throw new BadRequestException('Not enough stock for the increased quantity');
+              await drainLocationStock(this.r, m.variantId, m.delta);
+            } else {
+              await this.r.productVariantModel.updateOne({ _id: m.variantId }, { $inc: { stock: -m.delta } });
+              await restoreLocationStock(this.r, m.variantId, -m.delta);
+            }
+          }
+          applied.push({ variantId: m.variantId, delta: m.delta });
+          continue;
+        }
         if (m.delta > 0) {
           const v: any = await this.r.productVariantModel.findOne({ _id: m.variantId }).select('unlimitedStock allowBackorder').lean();
           if (v?.unlimitedStock || v?.allowBackorder) {

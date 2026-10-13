@@ -1,3 +1,4 @@
+import { restoreLocationStock } from '../common/location-stock.util';
 import {
   BadRequestException,
   ForbiddenException,
@@ -363,6 +364,8 @@ export class RefundRequestService {
                     ? { $inc: { stock: qty } }
                     : { $inc: { stock: qty, damagedStock: qty } },
                 );
+                // keep the per-location rows in step with the variant total (default location gets the units back)
+                await restoreLocationStock(this.databaseService.repositories, String(item.variantId), qty);
                 await stockAdjustmentModel.create({
                   storeId: sellerOrder.storeId, productId: item.productId, variantId: item.variantId, locationId: null,
                   productName: item.name, sku: item.sku ?? null,

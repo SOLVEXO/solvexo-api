@@ -197,3 +197,28 @@ describe('RoleService retired permission cleanup', () => {
     expect(roleModel.updateOne).toHaveBeenCalledWith({ _id: 'r1' }, { $set: { permissions: ['orders.view'] } });
   });
 });
+
+describe('StaffService own profile (phone + photo)', () => {
+  const setup = () => {
+    const ctx = makeService({ staff: { _id: 's1', name: 'A', email: 'a@b.co', storeId: 'st', roleId: null, inviteAcceptedAt: new Date() } });
+    (ctx.staffMemberModel as any).findOneAndUpdate = jest.fn(async () => ({ _id: 's1' }));
+    return ctx;
+  };
+
+  it('changes only the fields that were sent, and clears with an empty string', async () => {
+    const { svc, staffMemberModel } = setup();
+    await svc.updateOwnProfile('s1', { phone: ' +92 300 1234567 ', profileImage: 'https://img.example/p.jpg' });
+    expect((staffMemberModel.findOneAndUpdate as jest.Mock).mock.calls[0][1]).toEqual({ $set: { phone: '+92 300 1234567', profileImage: 'https://img.example/p.jpg' } });
+    await svc.updateOwnProfile('s1', { phone: '', profileImage: '' });
+    expect((staffMemberModel.findOneAndUpdate as jest.Mock).mock.calls[1][1]).toEqual({ $set: { phone: null, profileImage: null } });
+  });
+
+  it('rejects a blank name and an empty update; never touches email/role/permissions', async () => {
+    const { svc, staffMemberModel } = setup();
+    await expect(svc.updateOwnProfile('s1', { name: '   ' })).rejects.toThrow('Name is required');
+    await expect(svc.updateOwnProfile('s1', {})).rejects.toThrow('Nothing to update');
+    await svc.updateOwnProfile('s1', { name: 'New Name', ...({ email: 'x@y.co', roleId: 'r', permissions: ['staff.manage'] } as any) });
+    const set = (staffMemberModel.findOneAndUpdate as jest.Mock).mock.calls[0][1].$set;
+    expect(Object.keys(set)).toEqual(['name']);
+  });
+});

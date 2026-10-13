@@ -30,6 +30,9 @@ const INTEGRATION_PROVIDER: Record<SocialProviderKey, 'google_login' | 'facebook
 const STATE_TTL_MS = 10 * 60 * 1000;
 const EXCHANGE_CODE_TTL_S = 60;
 const FACEBOOK_API = 'v19.0';
+const PROVIDER_TIMEOUT_MS = 10_000;
+const GOOGLE_CLIENT_ID_RE = /^[A-Za-z0-9._-]+\.apps\.googleusercontent\.com$/;
+const FACEBOOK_APP_ID_RE = /^\d{5,24}$/;
 
 type StatePayload = { storeId: string; provider: SocialProviderKey; returnTo: string; nonce: string; exp: number };
 
@@ -68,6 +71,8 @@ export class CustomerSocialLoginService {
         maskedSecret: row?.config?.maskedSecret ?? null,
         redirectUri: this.redirectUri(provider, storeId),
         connectedAt: row ? (row as any).updatedAt : null,
+        lastVerifiedAt: row?.lastVerifiedAt ?? null,
+        lastError: row?.lastError ?? null,
       };
     });
     return { success: true, data: { providers, storeOrigins: this.allowedOrigins(store) } };
@@ -81,6 +86,14 @@ export class CustomerSocialLoginService {
       throw new BadRequestException(provider === 'facebook' ? 'App ID and App secret are required' : 'Client ID and Client secret are required');
     }
     if (clientId.length > 256 || clientSecret.length > 512) throw new BadRequestException('Credentials are too long');
+    if (provider === 'google' && !GOOGLE_CLIENT_ID_RE.test(clientId)) {
+      throw new BadRequestException('That does not look like a Google Client ID. It should end with ".apps.googleusercontent.com".');
+    }
+    if (provider === 'facebook' && !FACEBOOK_APP_ID_RE.test(clientId)) {
+      throw new BadRequestException('That does not look like a Facebook App ID. It should be a number (copy it from App settings → Basic).');
+    }
+    // Never mark a method "connected" unless the provider itself accepts these credentials.
+    await this.verifyCredentials(provider, { clientId, clientSecret }, storeId);
 
     const integrationProvider = INTEGRATION_PROVIDER[provider];
     await this.repos.storeIntegrationModel.findOneAndUpdate(
@@ -99,6 +112,25 @@ export class CustomerSocialLoginService {
       { upsert: true, new: true },
     );
     return this.getSetup(storeId, sellerId);
+  }
+
+  /** "Test connection": re-checks the saved credentials with the provider and records the outcome. */
+  async test(storeId: string, sellerId: string, provider: SocialProviderKey) {
+    await verifyStoreOwnershipStrict(this.repos.storeModel, storeId, sellerId);
+    const integrationProvider = INTEGRATION_PROVIDER[provider];
+    const creds = await this.loadCredentials(storeId, provider);
+    let error: string | null = null;
+    try {
+      await this.verifyCredentials(provider, creds, storeId);
+    } catch (err: any) {
+      error = err instanceof BadRequestException ? err.message : 'Could not reach the provider. Try again in a minute.';
+    }
+    await this.repos.storeIntegrationModel.updateOne(
+      { storeId, type: 'customer_login', provider: integrationProvider },
+      { $set: error ? { lastError: error } : { lastError: null, lastVerifiedAt: new Date() } },
+    );
+    const setup = await this.getSetup(storeId, sellerId);
+    return { ...setup, ok: !error, message: error ?? `${provider === 'google' ? 'Google' : 'Facebook'} accepted your credentials.` };
   }
 
   async disconnect(storeId: string, sellerId: string, provider: SocialProviderKey) {
@@ -137,6 +169,19 @@ export class CustomerSocialLoginService {
     return `https://www.facebook.com/${FACEBOOK_API}/dialog/oauth?${q.toString()}`;
   }
 
+  /** Browser-navigation wrapper: on a problem (method switched off, bad address) send the buyer back to the store's login page with a message instead of a raw JSON error. */
+  async startRedirect(storeId: string, provider: SocialProviderKey, returnTo: string): Promise<string> {
+    try {
+      return await this.buildAuthUrl(storeId, provider, returnTo);
+    } catch (err: any) {
+      const message = err instanceof BadRequestException ? err.message : 'Sign-in failed. Please try again.';
+      const store = /^[a-f\d]{24}$/i.test(storeId) ? await this.repos.storeModel.findOne({ _id: storeId, isDelete: false }) : null;
+      const origin = this.normalizeOrigin(returnTo);
+      if (!store || !origin || !this.allowedOrigins(store).includes(origin)) throw err;
+      return `${origin}/login?${new URLSearchParams({ social_error: message }).toString()}`;
+    }
+  }
+
   /**
    * Provider redirected back with `code`: exchange it with the store's secret, take the provider-VERIFIED
    * email, sign the buyer into THIS store (find by email else create), and hand the storefront a one-time code.
@@ -144,7 +189,14 @@ export class CustomerSocialLoginService {
    */
   async handleCallback(provider: SocialProviderKey, storeId: string, code: string | undefined, stateToken: string | undefined, providerError?: string): Promise<{ redirectTo: string | null; error?: string }> {
     const state = this.verifyState(stateToken, provider);
-    if (!state || state.storeId !== storeId) return { redirectTo: null, error: 'This sign-in link expired or is invalid. Please try again.' };
+    if (!state || state.storeId !== storeId) {
+      // No trusted return address in a bad/expired state, so fall back to the store's own primary address
+      // (derived from the store record, never from the request) and show the message on its login page.
+      const message = 'This sign-in link expired or is invalid. Please try again.';
+      const store = /^[a-f\d]{24}$/i.test(storeId) ? await this.repos.storeModel.findOne({ _id: storeId, isDelete: false }) : null;
+      const origin = store ? this.allowedOrigins(store)[0] : null;
+      return origin ? { redirectTo: `${origin}/login?${new URLSearchParams({ social_error: message }).toString()}` } : { redirectTo: null, error: message };
+    }
     const back = (query: Record<string, string>) => `${state.returnTo}/login?${new URLSearchParams(query).toString()}`;
 
     if (providerError || !code) return { redirectTo: back({ social_error: 'Sign-in was cancelled.' }) };
@@ -173,10 +225,9 @@ export class CustomerSocialLoginService {
   /** One-time swap of the short code in the redirect URL for the real tokens (so tokens never sit in a URL). */
   async exchange(code: string) {
     if (!code || typeof code !== 'string' || !/^[a-f0-9]{48}$/.test(code)) throw new UnauthorizedException('Invalid sign-in code');
-    const key = `social-exchange:${code}`;
-    const raw = await this.redisService.get(key);
+    // Atomic read+delete: a replayed or raced request gets nothing.
+    const raw = await this.redisService.getDel(`social-exchange:${code}`);
     if (!raw) throw new UnauthorizedException('This sign-in link expired. Please try again.');
-    await this.redisService.del(key);
     return { success: true, message: 'Social login successful', data: JSON.parse(raw) };
   }
 
@@ -188,8 +239,61 @@ export class CustomerSocialLoginService {
     return JSON.parse(decryptCredential(row.credentialsEncrypted, 'INTEGRATIONS'));
   }
 
+  /** fetch with a hard timeout so a slow provider can never hang a request. */
+  private fetchWithTimeout(url: string, init?: RequestInit) {
+    return fetch(url, { ...init, signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS) });
+  }
+
+  /**
+   * Asks the provider whether these credentials are real, without needing a user:
+   *  - Google: redeem a fake code. A valid client+secret answers `invalid_grant` (code is bad); wrong ones `invalid_client`.
+   *  - Facebook: request an app access token; only a valid App ID + secret pair gets one.
+   * Throws BadRequestException with a plain message the seller can act on; other failures (network) are re-thrown as-is.
+   */
+  private async verifyCredentials(provider: SocialProviderKey, creds: { clientId: string; clientSecret: string }, storeId: string): Promise<void> {
+    const unreachable = new BadRequestException(`Could not reach ${provider === 'google' ? 'Google' : 'Facebook'} to check these credentials. Try again in a minute.`);
+    if (provider === 'google') {
+      let data: any;
+      try {
+        const resp = await this.fetchWithTimeout('https://oauth2.googleapis.com/token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({
+            code: 'solvexo-credential-check', client_id: creds.clientId, client_secret: creds.clientSecret,
+            redirect_uri: this.redirectUri('google', storeId), grant_type: 'authorization_code',
+          }).toString(),
+        });
+        data = await resp.json().catch(() => ({}));
+      } catch {
+        throw unreachable;
+      }
+      if (data?.error === 'invalid_client') {
+        throw new BadRequestException('Google rejected this Client ID / Client secret. Copy them again from Google Cloud → Credentials (the secret must belong to the same Client ID).');
+      }
+      if (data?.error === 'invalid_grant' || data?.error === 'redirect_uri_mismatch') return; // credentials accepted, the fake code was rejected
+      if (data?.error) {
+        this.logger.warn(`Unexpected Google credential-check answer for store ${storeId}: ${data.error}`);
+        throw new BadRequestException('Google could not confirm these credentials. Check the Client ID and secret and try again.');
+      }
+      return;
+    }
+    let data: any;
+    let ok = false;
+    try {
+      const qs = new URLSearchParams({ client_id: creds.clientId, client_secret: creds.clientSecret, grant_type: 'client_credentials' });
+      const resp = await this.fetchWithTimeout(`https://graph.facebook.com/oauth/access_token?${qs.toString()}`);
+      ok = resp.ok;
+      data = await resp.json().catch(() => ({}));
+    } catch {
+      throw unreachable;
+    }
+    if (!ok || !data?.access_token) {
+      throw new BadRequestException('Facebook rejected this App ID / App secret. Copy them again from App settings → Basic (the secret must belong to the same app).');
+    }
+  }
+
   private async exchangeGoogle(code: string, creds: { clientId: string; clientSecret: string }, storeId: string) {
-    const resp = await fetch('https://oauth2.googleapis.com/token', {
+    const resp = await this.fetchWithTimeout('https://oauth2.googleapis.com/token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
@@ -200,9 +304,12 @@ export class CustomerSocialLoginService {
     const data: any = await resp.json().catch(() => ({}));
     if (!resp.ok || !data?.id_token) throw new UnauthorizedException('Google sign-in could not be completed. Check the store\'s Google app settings.');
     // The id_token came straight from Google's token endpoint over TLS in exchange for OUR code + secret
-    // (OpenID Connect core §3.1.3.7 lets the client skip signature checks in that case), so decoding is enough.
+    // (OpenID Connect core §3.1.3.7 lets the client skip signature checks in that case), so decoding is enough —
+    // but we still check who issued it, who it is for, and that it has not expired.
     const claims = JSON.parse(Buffer.from(String(data.id_token).split('.')[1], 'base64url').toString('utf8'));
-    if (claims.aud !== creds.clientId || !claims.sub) throw new UnauthorizedException('Invalid Google sign-in response');
+    const issuerOk = claims.iss === 'https://accounts.google.com' || claims.iss === 'accounts.google.com';
+    const expired = typeof claims.exp !== 'number' || claims.exp * 1000 < Date.now();
+    if (claims.aud !== creds.clientId || !claims.sub || !issuerOk || expired) throw new UnauthorizedException('Invalid Google sign-in response');
     return {
       id: String(claims.sub),
       email: claims.email_verified && claims.email ? String(claims.email).toLowerCase() : null,
@@ -213,11 +320,11 @@ export class CustomerSocialLoginService {
 
   private async exchangeFacebook(code: string, creds: { clientId: string; clientSecret: string }, storeId: string) {
     const tokenQs = new URLSearchParams({ client_id: creds.clientId, client_secret: creds.clientSecret, redirect_uri: this.redirectUri('facebook', storeId), code });
-    const tokenResp = await fetch(`https://graph.facebook.com/${FACEBOOK_API}/oauth/access_token?${tokenQs.toString()}`);
+    const tokenResp = await this.fetchWithTimeout(`https://graph.facebook.com/${FACEBOOK_API}/oauth/access_token?${tokenQs.toString()}`);
     const tokenData: any = await tokenResp.json().catch(() => ({}));
     if (!tokenResp.ok || !tokenData?.access_token) throw new UnauthorizedException('Facebook sign-in could not be completed. Check the store\'s Facebook app settings.');
     const meQs = new URLSearchParams({ fields: 'id,name,email,picture.width(200).height(200)', access_token: tokenData.access_token });
-    const meResp = await fetch(`https://graph.facebook.com/${FACEBOOK_API}/me?${meQs.toString()}`);
+    const meResp = await this.fetchWithTimeout(`https://graph.facebook.com/${FACEBOOK_API}/me?${meQs.toString()}`);
     const me: any = await meResp.json().catch(() => ({}));
     if (!meResp.ok || !me?.id) throw new UnauthorizedException('Invalid Facebook sign-in response');
     return {

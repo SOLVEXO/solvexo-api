@@ -1,6 +1,6 @@
 /* eslint-disable prettier/prettier */
 import {
-  Body, Controller, Delete, Get, Param, Patch, Post, Query, Req,
+  Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, Res,
   UploadedFile, UseGuards, UseInterceptors, UsePipes, ValidationPipe,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
@@ -15,6 +15,7 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { RequirePermission } from '../auth/decorators/require-permission.decorator';
 import { IdempotencyInterceptor } from '../common/idempotency.interceptor';
 import { PurchaseOrdersService } from './purchase-orders.service';
+import { SupplierReturnsService, CreateSupplierReturnDto } from './supplier-returns.service';
 import { CreatePurchaseOrderDto } from './dto/create-purchase-order.dto';
 import { UpdatePurchaseOrderDto } from './dto/update-purchase-order.dto';
 import { ReceivePurchaseOrderDto } from './dto/receive-purchase-order.dto';
@@ -30,7 +31,34 @@ import { actingSellerId } from '../common/acting-seller-id.util';
 @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
 @Controller('api/purchase-orders')
 export class PurchaseOrdersController {
-  constructor(private readonly service: PurchaseOrdersService) {}
+  constructor(private readonly service: PurchaseOrdersService, private readonly returnsService: SupplierReturnsService) {}
+
+  // ── Supplier returns (declared before the generic ":storeId/:id" routes so "returns" is not read as a PO id) ──
+
+  @Post(':storeId/returns')
+  async createSupplierReturn(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: CreateSupplierReturnDto) {
+    const key = req.headers?.['idempotency-key'];
+    if (!dto.requestId && typeof key === 'string' && key) dto.requestId = key.slice(0, 100);
+    return this.returnsService.create(storeId, actingSellerId(req.user), dto, req.user.userId, { role: req.user.role, permissions: req.user.permissions ?? null });
+  }
+
+  @Get(':storeId/returns/export')
+  async exportSupplierReturns(@Req() req: any, @Res() res: any, @Param('storeId') storeId: string) {
+    const csv = await this.returnsService.exportCsv(storeId, actingSellerId(req.user));
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="supplier-returns.csv"');
+    res.send(csv);
+  }
+
+  @Get(':storeId/returns')
+  async listSupplierReturns(@Req() req: any, @Param('storeId') storeId: string, @Query() query: any) {
+    return this.returnsService.list(storeId, actingSellerId(req.user), query);
+  }
+
+  @Post(':storeId/returns/:returnId/credit-received')
+  async markReturnCredit(@Req() req: any, @Param('storeId') storeId: string, @Param('returnId') returnId: string) {
+    return this.returnsService.markCreditReceived(storeId, actingSellerId(req.user), returnId);
+  }
 
   // ── Suppliers ──────────────────────────────────────────────────────────
 
@@ -122,6 +150,9 @@ export class PurchaseOrdersController {
   @UseInterceptors(IdempotencyInterceptor)
   @Post(':storeId/:id/receive')
   async receive(@Req() req: any, @Param('storeId') storeId: string, @Param('id') id: string, @Body() dto: ReceivePurchaseOrderDto) {
+    // DB-backed duplicate protection: the client's Idempotency-Key doubles as the receipt's requestId
+    const key = req.headers?.['idempotency-key'];
+    if (!dto.requestId && typeof key === 'string' && key) dto.requestId = key.slice(0, 100);
     const result = await this.service.receive(storeId, actingSellerId(req.user), id, dto);
     return { success: true, data: result };
   }

@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { drainLocationStock } from './location-stock.util';
 
 const FULFILLED_STATES = ['shipped', 'delivered', 'completed'];
 
@@ -10,7 +11,7 @@ const FULFILLED_STATES = ['shipped', 'delivered', 'completed'];
  * the reservation stuck in `committedStock` and on-hand `stock` never dropped.
  * Atomic per variant and clamped at 0; unlimited-stock variants are skipped.
  */
-export async function fulfilStockForSellerOrders(productVariantModel: any, sellerOrders: any[]): Promise<void> {
+export async function fulfilStockForSellerOrders(productVariantModel: any, sellerOrders: any[], locationRepos?: { variantLocationStockModel: any }): Promise<void> {
   for (const so of sellerOrders ?? []) {
     if (FULFILLED_STATES.includes(so.status) || ['cancelled', 'refunded'].includes(so.status) || so.stockAlreadyDeducted) continue;
     for (const item of so.items ?? []) {
@@ -24,6 +25,8 @@ export async function fulfilStockForSellerOrders(productVariantModel: any, selle
           },
         }],
       );
+      // keep the per-location rows in step with the variant total
+      if (locationRepos) await drainLocationStock(locationRepos, String(item.variantId), item.quantity);
     }
   }
 }

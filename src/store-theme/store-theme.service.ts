@@ -502,6 +502,7 @@ export class StoreThemeService {
     }
     const draft = doc.draft as StoreThemeDraft;
     const header = await this.resolveHeaderMenu(storeId, draft.header) as any;
+    const footer = await this.resolveFooterMenu(storeId, draft.footer) as any;
     const [store, home] = await Promise.all([
       this.storeModel.findById(storeId, { slug: 1 }).lean(),
       this.storePageModel.findOne({ storeId, type: 'home' }, { themeTemplates: 1, sections: 1, draft: 1 }).lean(),
@@ -512,7 +513,7 @@ export class StoreThemeService {
       data: {
         theme: draft.theme,
         header,
-        footer: draft.footer,
+        footer,
         identityBanner: draft.identityBanner,
         themeDefinitionId: draft.themeDefinitionId ?? doc.themeDefinitionId,
         customCss: draft.customCss,
@@ -793,6 +794,11 @@ export class StoreThemeService {
     if (dto.navAlignment !== undefined) set['draft.header.navAlignment'] = dto.navAlignment;
     if (dto.headerStyle !== undefined) set['draft.header.headerStyle'] = dto.headerStyle;
     if (dto.menuId !== undefined) set['draft.header.menuId'] = dto.menuId;
+    const headerKeys = ['logoWidth', 'mobileLogoWidth', 'sticky', 'showSearch', 'showAccount', 'showWishlist', 'showShopMenu',
+      'shopMenuLabel', 'includePagesInNav', 'showDefaultBlogLink', 'blogLinkLabel'] as const;
+    for (const key of headerKeys) {
+      if (dto[key] !== undefined) set[`draft.header.${key}`] = key.endsWith('Label') ? (dto[key] as string | null)?.toString().trim() || null : dto[key];
+    }
 
     const updated = await this.storeThemeModel.findOneAndUpdate({ _id: instance._id }, { $set: set }, { new: true });
     return { success: true, message: 'Header updated', data: updated };
@@ -805,6 +811,18 @@ export class StoreThemeService {
 
     const set: Record<string, unknown> = { 'draft.footer.blocks': dto.blocks };
     if (dto.footerStyle !== undefined) set['draft.footer.footerStyle'] = dto.footerStyle;
+    if (dto.menuId !== undefined) set['draft.footer.menuId'] = dto.menuId;
+    if (dto.logoSource === 'custom' && !(dto.logoUrl ?? '').trim()) {
+      // A custom logo needs a real image; otherwise the footer would silently show nothing.
+      throw new BadRequestException('Upload a footer logo or choose another logo option');
+    }
+    const footerKeys = ['logoSource', 'logoUrl', 'logoWidth', 'showNewsletter', 'newsletterHeading', 'newsletterText',
+      'showDefaultColumns', 'shopColumnHeading', 'accountColumnHeading', 'blogLinkLabel'] as const;
+    for (const key of footerKeys) {
+      if (dto[key] === undefined) continue;
+      const v = dto[key];
+      set[`draft.footer.${key}`] = typeof v === 'string' && key !== 'logoSource' ? (v.trim() || null) : v;
+    }
 
     const updated = await this.storeThemeModel.findOneAndUpdate({ _id: instance._id }, { $set: set }, { new: true });
     return { success: true, message: 'Footer updated', data: updated };

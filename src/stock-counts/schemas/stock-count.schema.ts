@@ -61,3 +61,5 @@ export class StockCount {
 
 export const StockCountSchema = SchemaFactory.createForClass(StockCount);
 StockCountSchema.index({ storeId: 1, status: 1, createdAt: -1 });
+// at most ONE open count per store, enforced by the database (the service check alone raced)
+StockCountSchema.index({ storeId: 1 }, { unique: true, partialFilterExpression: { status: 'open' }, name: 'storeId_1_one_open_count' });

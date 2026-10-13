@@ -6,6 +6,7 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { availableStock, AVAILABLE_STOCK_EXPR } from '@/common/stock-availability.util';
+import { drainLocationStock, restoreLocationStock } from '@/common/location-stock.util';
 import * as bcrypt from 'bcrypt';
 import * as jwt from 'jsonwebtoken';
 import { DatabaseService } from '@/database/databaseservice';
@@ -814,6 +815,9 @@ export class PosService {
           },
           { $inc: { stock: -item.qty } },
         );
+        if (result.modifiedCount > 0) {
+          await drainLocationStock(this.r, String(item.variantId), item.qty, { preferLocationId: (session as any).locationId ?? null });
+        }
         if (result.matchedCount === 0) {
           // Either unlimitedStock (expected, not an error) or a genuine
           // race lost the stock check — log for investigation, don't fail
@@ -885,7 +889,7 @@ export class PosService {
 
     // now decrement stock and update session (floor-guarded — see createSale)
     for (const item of (sale as any).items) {
-      await this.r.productVariantModel.updateOne(
+      const dec = await this.r.productVariantModel.updateOne(
         {
           _id: item.variantId,
           unlimitedStock: { $ne: true },
@@ -893,6 +897,7 @@ export class PosService {
         },
         { $inc: { stock: -item.qty } },
       );
+      if (dec.modifiedCount > 0) await drainLocationStock(this.r, String(item.variantId), item.qty, { preferLocationId: (sale as any).locationId ?? null });
     }
     await this._incrementSessionTotals((sale as any).sessionId, total, dto.paymentMethod);
     await this.recordPosSaleInLedger(updated);
@@ -973,6 +978,7 @@ export class PosService {
         const unrefunded = item.qty - (item.refundedQty || 0);
         if (unrefunded > 0) {
           await this.r.productVariantModel.findByIdAndUpdate(item.variantId, { $inc: { stock: unrefunded } });
+          await restoreLocationStock(this.r, String(item.variantId), unrefunded, { preferLocationId: (sale as any).locationId ?? null });
         }
       }
       const refundAmount = (sale as any).total - ((sale as any).refundedAmount || 0);
@@ -1012,6 +1018,7 @@ export class PosService {
     // apply stock restores
     for (const u of itemUpdates) {
       await this.r.productVariantModel.findByIdAndUpdate(u.variantId, { $inc: { stock: u.qtyToRestore } });
+      await restoreLocationStock(this.r, String(u.variantId), u.qtyToRestore, { preferLocationId: (sale as any).locationId ?? null });
       await this.r.saleModel.updateOne(
         { _id: saleId, 'items._id': u.saleItemId },
         { $inc: { 'items.$.refundedQty': u.qtyToRestore } },
@@ -1413,6 +1420,7 @@ export class PosService {
 
     for (const item of (sale as any).items) {
       await this.r.productVariantModel.findByIdAndUpdate(item.variantId, { $inc: { stock: item.qty } });
+      await restoreLocationStock(this.r, String(item.variantId), item.qty, { preferLocationId: (sale as any).locationId ?? null });
     }
 
     await this.r.saleModel.findByIdAndUpdate(saleId, {

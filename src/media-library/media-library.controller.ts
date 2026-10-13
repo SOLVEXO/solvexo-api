@@ -1,6 +1,6 @@
 /* eslint-disable prettier/prettier */
 import {
-  Body, Controller, Delete, Get, Param, Patch, Post, Query, Req,
+  BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Query, Req,
   UploadedFile, UseGuards, UseInterceptors, UsePipes, ValidationPipe,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
@@ -15,10 +15,11 @@ import { actingSellerId } from '../common/acting-seller-id.util';
 import { verifyStoreOwnershipStrict } from '../common/store-ownership.util';
 import { DatabaseService } from '../database/databaseservice';
 import { MediaLibraryService } from './media-library.service';
+import { publicUploadFileFilter, assertFileSignature } from '../upload/upload-file-validation';
 import { UpdateMediaAssetDto } from './dto/update-media-asset.dto';
 import { ListMediaAssetsDto } from './dto/list-media-assets.dto';
 
-const LIBRARY_UPLOAD = FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
+const LIBRARY_UPLOAD = FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 }, fileFilter: publicUploadFileFilter });
 
 @ApiTags('Media Library')
 @ApiBearerAuth()
@@ -66,6 +67,9 @@ export class MediaLibraryController {
     @UploadedFile() file: Express.Multer.File,
     @Body() body: { altText?: string; tags?: string },
   ) {
+    if (!file) throw new BadRequestException('No file uploaded');
+    // Same extension allow-list (no SVG) + magic-byte check the public upload route applies.
+    assertFileSignature(file);
     const sellerId = actingSellerId(req.user);
     await verifyStoreOwnershipStrict(this.databaseService.repositories.storeModel, storeId, sellerId);
     const tags = body.tags ? body.tags.split(',').map(t => t.trim()).filter(Boolean) : [];

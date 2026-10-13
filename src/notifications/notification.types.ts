@@ -14,6 +14,7 @@ export const NOTIFICATION_TYPES = {
   PAYMENT_SUCCESS: 'payment_success',
   PAYMENT_FAILED: 'payment_failed',
   NEW_MESSAGE: 'new_message',
+  CONTACT_FORM_MESSAGE: 'contact_form_message',
   LOYALTY_POINTS_EARNED: 'loyalty_points_earned',
   STORE_CREDIT_RECEIVED: 'store_credit_received',
   LOYALTY_TIER_UPGRADE: 'loyalty_tier_upgrade',
@@ -104,6 +105,7 @@ export const NOTIFICATION_CATEGORY: Record<string, 'orders' | 'messages' | 'prom
   [NOTIFICATION_TYPES.PAYMENT_SUCCESS]: 'orders',
   [NOTIFICATION_TYPES.PAYMENT_FAILED]: 'orders',
   [NOTIFICATION_TYPES.NEW_MESSAGE]: 'messages',
+  [NOTIFICATION_TYPES.CONTACT_FORM_MESSAGE]: 'messages',
   [NOTIFICATION_TYPES.LOYALTY_POINTS_EARNED]: 'loyalty',
   [NOTIFICATION_TYPES.STORE_CREDIT_RECEIVED]: 'loyalty',
   [NOTIFICATION_TYPES.LOYALTY_TIER_UPGRADE]: 'loyalty',
@@ -168,6 +170,7 @@ export const NOTIFICATION_CATEGORY: Record<string, 'orders' | 'messages' | 'prom
  * already emails those itself).
  */
 export const SELLER_EMAIL_TYPES = new Set<string>([
+  NOTIFICATION_TYPES.CONTACT_FORM_MESSAGE,
   NOTIFICATION_TYPES.ORDER_CANCELLED,
   NOTIFICATION_TYPES.REFUND_REQUESTED,
   NOTIFICATION_TYPES.DISPUTE_OPENED,

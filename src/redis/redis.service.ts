@@ -49,6 +49,12 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     return await this.client.get(key);
   }
 
+  /** Atomic read-and-delete — a one-time code can be redeemed by exactly one caller. */
+  async getDel(key: string): Promise<string | null> {
+    if (!this._isConnected) return null;
+    return await this.client.getDel(key);
+  }
+
   async del(key: string): Promise<void> {
     if (!this._isConnected) return;
     await this.client.del(key);

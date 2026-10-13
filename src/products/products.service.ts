@@ -38,6 +38,7 @@ import {
 import { optionNameSet, optionsKey, validateOptions } from './variant-options.util';
 import { toDimensionCm } from '@/shipping-rates/shipping-math.util';
 import { parseCustomsInput } from '@/shipping-rates/customs.util';
+import { parseSellingOptions } from './selling-options.util';
 
 const EDUCATION_LEVEL_VALUES: string[] = Object.values(EducationLevel);
 /** Shopify allows 2000 variants per product; a store builder UI is unusable far earlier, so keep a sane ceiling. */
@@ -1222,6 +1223,7 @@ export class ProductsService {
             slug,
             description,
             shippingProfileId,
+            ...parseSellingOptions(body),
             productType: 'physical',
             type: 'physical',
             categoryId,
@@ -1542,6 +1544,7 @@ export class ProductsService {
     if (requestedShippingProfileId !== undefined && product.type === 'physical') {
       productUpdate.shippingProfileId = await this.resolveShippingProfileId(String(product.storeId), requestedShippingProfileId);
     }
+    Object.assign(productUpdate, parseSellingOptions(body, product as any));
     if (status !== undefined) {
       const nextStatus = normalizeStatus(status);
       if (nextStatus === 'active' || nextStatus === 'scheduled') {

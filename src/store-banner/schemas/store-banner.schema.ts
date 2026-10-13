@@ -36,6 +36,10 @@ export class StoreBanner {
   @Prop({ type: String, default: null })
   videoUrl: string | null;
 
+  // Optional separate crop for phones (portrait-friendly). Absent = the same image at every size.
+  @Prop({ type: String, default: null })
+  mobileImageUrl: string | null;
+
   @Prop({ type: String, default: null })
   heading: string | null;
 

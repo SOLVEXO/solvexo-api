@@ -41,6 +41,32 @@ export const PRODUCT_MAIN_BLOCK_TYPES = [
 ] as const;
 export type ProductMainBlockType = (typeof PRODUCT_MAIN_BLOCK_TYPES)[number];
 
+/** Optional product-page blocks. Unlike the 7 required ones they can be absent: a template saved before they existed
+ *  simply has none (the rating then keeps showing under the title, the rest stay off) until the backfill adds them. */
+export const PRODUCT_MAIN_OPTIONAL_BLOCK_TYPES = ['product_rating', 'product_sku', 'product_wishlist', 'product_share', 'product_specs'] as const;
+export type ProductMainOptionalBlockType = (typeof PRODUCT_MAIN_OPTIONAL_BLOCK_TYPES)[number];
+
+const PRODUCT_MAIN_OPTIONAL_LABELS: Record<ProductMainOptionalBlockType, string> = {
+  product_rating: 'Rating',
+  product_sku: 'SKU',
+  product_wishlist: 'Wishlist button',
+  product_share: 'Share button',
+  product_specs: 'Specifications',
+};
+/** Only the rating was always on before; the new ones start off. */
+const PRODUCT_MAIN_OPTIONAL_DEFAULT_ENABLED: Record<ProductMainOptionalBlockType, boolean> = {
+  product_rating: true, product_sku: false, product_wishlist: false, product_share: false, product_specs: false,
+};
+/** Seeded order of the full block list (required + optional). */
+const PRODUCT_MAIN_SEED_ORDER: (ProductMainBlockType | ProductMainOptionalBlockType)[] = [
+  'product_media', 'product_title', 'product_rating', 'product_price', 'product_sku', 'product_variant_picker', 'product_quantity',
+  'product_buy_buttons', 'product_wishlist', 'product_share', 'product_description', 'product_specs',
+];
+
+export function optionalProductBlock(type: ProductMainOptionalBlockType) {
+  return { type: type as string, settings: { label: PRODUCT_MAIN_OPTIONAL_LABELS[type] }, enabled: PRODUCT_MAIN_OPTIONAL_DEFAULT_ENABLED[type] };
+}
+
 const PRODUCT_MAIN_BLOCK_LABELS: Record<ProductMainBlockType, string> = {
   product_media: 'Product media',
   product_title: 'Title',
@@ -87,11 +113,11 @@ function buildCoreSection(type: SectionType) {
     return {
       type,
       settings: {},
-      blocks: PRODUCT_MAIN_BLOCK_TYPES.map(blockType => ({
-        type: blockType as string,
-        settings: { label: PRODUCT_MAIN_BLOCK_LABELS[blockType] },
-        enabled: true,
-      })),
+      blocks: PRODUCT_MAIN_SEED_ORDER.map(blockType => (
+        (PRODUCT_MAIN_OPTIONAL_BLOCK_TYPES as readonly string[]).includes(blockType)
+          ? optionalProductBlock(blockType as ProductMainOptionalBlockType)
+          : { type: blockType as string, settings: { label: PRODUCT_MAIN_BLOCK_LABELS[blockType as ProductMainBlockType] }, enabled: true }
+      )),
     };
   }
   return { type, settings: {}, blocks: [] as { type: string; settings: Record<string, any> }[] };

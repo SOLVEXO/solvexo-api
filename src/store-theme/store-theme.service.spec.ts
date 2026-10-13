@@ -319,4 +319,78 @@ describe('StoreThemeService', () => {
       expect(applyCalls[1][0]).toEqual({ _id: `instance-${OTHER_STORE_ID}` });
     });
   });
+
+  describe('updateFooter', () => {
+    it('saves the attached footer menu (menuId) and can detach it with null', async () => {
+      await service.updateFooter(STORE_ID, SELLER_ID, { blocks: [], menuId: 'menu-1' } as any);
+      const attach = storeThemeModel.findOneAndUpdate.mock.calls.at(-1)[1].$set;
+      expect(attach['draft.footer.menuId']).toBe('menu-1');
+
+      await service.updateFooter(STORE_ID, SELLER_ID, { blocks: [], menuId: null } as any);
+      const detach = storeThemeModel.findOneAndUpdate.mock.calls.at(-1)[1].$set;
+      expect(detach['draft.footer.menuId']).toBeNull();
+    });
+
+    it('leaves the stored menuId alone when the request does not mention it', async () => {
+      await service.updateFooter(STORE_ID, SELLER_ID, { blocks: [] } as any);
+      const set = storeThemeModel.findOneAndUpdate.mock.calls.at(-1)[1].$set;
+      expect('draft.footer.menuId' in set).toBe(false);
+    });
+  });
+
+  describe('header and footer settings (Batch 2)', () => {
+    const lastSet = () => storeThemeModel.findOneAndUpdate.mock.calls.at(-1)[1].$set;
+
+    it('persists every header setting under draft.header and trims labels (empty becomes null)', async () => {
+      await service.updateHeader(STORE_ID, SELLER_ID, {
+        logoWidth: 220, mobileLogoWidth: 90, sticky: true, showSearch: false, showAccount: false, showWishlist: false,
+        showShopMenu: false, shopMenuLabel: '  Store  ', includePagesInNav: false, showDefaultBlogLink: false, blogLinkLabel: '   ',
+        headerStyle: 'centered', navAlignment: 'center',
+      } as any);
+      const set = lastSet();
+      expect(set).toMatchObject({
+        'draft.header.logoWidth': 220, 'draft.header.mobileLogoWidth': 90, 'draft.header.sticky': true,
+        'draft.header.showSearch': false, 'draft.header.showAccount': false, 'draft.header.showWishlist': false,
+        'draft.header.showShopMenu': false, 'draft.header.shopMenuLabel': 'Store', 'draft.header.includePagesInNav': false,
+        'draft.header.showDefaultBlogLink': false, 'draft.header.blogLinkLabel': null,
+        'draft.header.headerStyle': 'centered', 'draft.header.navAlignment': 'center',
+      });
+    });
+
+    it('lets a logo width be cleared with null and leaves untouched settings out of the update', async () => {
+      await service.updateHeader(STORE_ID, SELLER_ID, { logoWidth: null } as any);
+      const set = lastSet();
+      expect(set['draft.header.logoWidth']).toBeNull();
+      expect('draft.header.sticky' in set).toBe(false);
+      expect('draft.header.showSearch' in set).toBe(false);
+    });
+
+    it('persists every footer setting under draft.footer', async () => {
+      await service.updateFooter(STORE_ID, SELLER_ID, {
+        blocks: [], logoSource: 'custom', logoUrl: 'https://cdn.example/logo.png', logoWidth: 180, showNewsletter: false,
+        newsletterHeading: 'Join', newsletterText: '  ', showDefaultColumns: false, shopColumnHeading: 'Browse',
+        accountColumnHeading: 'Me', blogLinkLabel: 'News',
+      } as any);
+      expect(lastSet()).toMatchObject({
+        'draft.footer.logoSource': 'custom', 'draft.footer.logoUrl': 'https://cdn.example/logo.png', 'draft.footer.logoWidth': 180,
+        'draft.footer.showNewsletter': false, 'draft.footer.newsletterHeading': 'Join', 'draft.footer.newsletterText': null,
+        'draft.footer.showDefaultColumns': false, 'draft.footer.shopColumnHeading': 'Browse', 'draft.footer.accountColumnHeading': 'Me',
+        'draft.footer.blogLinkLabel': 'News',
+      });
+    });
+
+    it('refuses a custom footer logo with nothing uploaded instead of silently showing no logo', async () => {
+      await expect(service.updateFooter(STORE_ID, SELLER_ID, { blocks: [], logoSource: 'custom', logoUrl: null } as any)).rejects.toThrow(/footer logo/i);
+      // (resolving the store's default theme may upsert; what must never happen is saving the footer logo setting)
+      expect(storeThemeModel.findOneAndUpdate.mock.calls.some((c: any[]) => c[1]?.$set && 'draft.footer.logoSource' in c[1].$set)).toBe(false);
+    });
+
+    it('accepts the new footer block types', async () => {
+      await expect(service.updateFooter(STORE_ID, SELLER_ID, { blocks: [
+        { type: 'footer_text', settings: { text: 'About' } },
+        { type: 'footer_contact', settings: { email: 'a@b.co' } },
+        { type: 'footer_payment_icons', settings: { icons: ['visa'] } },
+      ] } as any)).resolves.toMatchObject({ success: true });
+    });
+  });
 });

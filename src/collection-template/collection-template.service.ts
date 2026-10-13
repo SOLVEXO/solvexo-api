@@ -9,7 +9,7 @@ import { ContentVersioningService } from '../common/content-versioning/content-v
 import { UpdateSectionsDto } from '../store-pages/dto/update-sections.dto';
 import { ResourceTemplateType } from './schemas/collection-template.schema';
 import { CreateResourceTemplateDto } from './dto/create-resource-template.dto';
-import { buildCoreSections, findMissingCoreParts } from './core-sections.util';
+import { buildCoreSections, findMissingCoreParts, optionalProductBlock, PRODUCT_MAIN_OPTIONAL_BLOCK_TYPES } from './core-sections.util';
 import { AppsService } from '../apps/apps.service';
 import { MetafieldsService } from '../metafields/metafields.service';
 import { assertThemeSupportsSections } from '../common/store-content/theme-section-capabilities';
@@ -170,6 +170,36 @@ export class CollectionTemplateService {
         { new: true },
       );
       if (pushedDraft) current = pushedDraft;
+    }
+    return resourceType === 'product' ? this.backfillProductOptionalBlocks(current) : current;
+  }
+
+  /** A product template saved before the optional blocks (rating, SKU, wishlist, share, specifications) existed gets them
+   *  added to its `product_main` — live and draft, never twice. The rating goes right after the title (where it always
+   *  showed); the others are appended, switched off. */
+  private async backfillProductOptionalBlocks(doc: any) {
+    let current = doc;
+    for (const field of ['sections', 'draft.sections'] as const) {
+      const list: any[] = field === 'sections' ? (current.sections ?? []) : (current.draft?.sections ?? []);
+      const main = list.find(s => s.type === 'product_main');
+      if (!main) continue;
+      for (const type of PRODUCT_MAIN_OPTIONAL_BLOCK_TYPES) {
+        if ((main.blocks ?? []).some((b: any) => b.type === type)) continue;
+        const titleAt = (main.blocks ?? []).findIndex((b: any) => b.type === 'product_title');
+        const push = type === 'product_rating' && titleAt >= 0
+          ? { $each: [optionalProductBlock(type)], $position: titleAt + 1 }
+          : optionalProductBlock(type);
+        const updated = await this.collectionTemplateModel.findOneAndUpdate(
+          { _id: doc._id, [field]: { $elemMatch: { type: 'product_main', 'blocks.type': { $ne: type } } } },
+          { $push: { [`${field}.$.blocks`]: push } },
+          { new: true },
+        );
+        if (updated) {
+          current = updated;
+          const refreshed = (field === 'sections' ? current.sections : current.draft?.sections ?? []).find((s: any) => s.type === 'product_main');
+          if (refreshed) main.blocks = refreshed.blocks;
+        }
+      }
     }
     return current;
   }

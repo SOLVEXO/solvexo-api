@@ -1,10 +1,16 @@
 /* eslint-disable prettier/prettier */
 import { ApiProperty } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsIn, IsNumber, IsOptional, IsString, IsDateString, Max, Min, MaxLength } from 'class-validator';
+import { IsIn, IsNumber, IsOptional, IsString, IsDateString, IsUrl, Max, Min, MaxLength } from 'class-validator';
 import { STORE_BANNER_TYPES, StoreBannerType, STORE_BANNER_LINK_TYPES, StoreBannerLinkType } from '../schemas/store-banner.schema';
 
 export class CreateStoreBannerDto {
+  @ApiProperty({ required: false, description: 'Separate image for phones (https URL)' })
+  @IsOptional()
+  @IsUrl({ protocols: ['https'], require_protocol: true })
+  @MaxLength(2048)
+  mobileImageUrl?: string | null;
+
   @ApiProperty({ enum: STORE_BANNER_TYPES, default: 'hero' })
   @IsOptional()
   @IsIn(STORE_BANNER_TYPES)

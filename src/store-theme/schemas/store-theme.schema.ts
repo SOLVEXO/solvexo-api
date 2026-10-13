@@ -145,6 +145,19 @@ export class StorefrontHeader {
   // rationale and the (disclosed) footer-attachment boundary.
   @Prop({ type: String, default: null })
   menuId: string | null;
+  // Retailer-controlled header chrome. Every field defaults to today's look, so a store saved
+  // before these existed renders exactly as before (the storefront reads a missing value as the default).
+  @Prop({ type: Number, default: null }) logoWidth: number | null;        // px; null = the theme's own max-height behaviour
+  @Prop({ type: Number, default: null }) mobileLogoWidth: number | null;  // px; null = same as desktop (capped)
+  @Prop({ type: Boolean, default: false }) sticky: boolean;
+  @Prop({ type: Boolean, default: true }) showSearch: boolean;
+  @Prop({ type: Boolean, default: true }) showAccount: boolean;
+  @Prop({ type: Boolean, default: true }) showWishlist: boolean;
+  @Prop({ type: Boolean, default: true }) showShopMenu: boolean;          // the auto "Shop" dropdown (categories + collections)
+  @Prop({ type: String, default: null }) shopMenuLabel: string | null;    // null = "Shop"
+  @Prop({ type: Boolean, default: true }) includePagesInNav: boolean;     // pages flagged "show in navigation"
+  @Prop({ type: Boolean, default: true }) showDefaultBlogLink: boolean;   // the theme's Journal/Stories link when the nav is empty
+  @Prop({ type: String, default: null }) blogLinkLabel: string | null;
 }
 export const StorefrontHeaderSchema = SchemaFactory.createForClass(StorefrontHeader);
 
@@ -168,6 +181,17 @@ export class StorefrontFooter {
   // reverts to it, same "nothing lost" guarantee `StorefrontHeader.menuId` gives.
   @Prop({ type: String, default: null })
   menuId: string | null;
+  // Retailer-controlled footer chrome — defaults reproduce the footer as it was before these existed.
+  @Prop({ type: String, enum: ['none', 'store', 'custom'], default: 'none' }) logoSource: 'none' | 'store' | 'custom';
+  @Prop({ type: String, default: null }) logoUrl: string | null;
+  @Prop({ type: Number, default: null }) logoWidth: number | null;
+  @Prop({ type: Boolean, default: true }) showNewsletter: boolean;
+  @Prop({ type: String, default: null }) newsletterHeading: string | null;
+  @Prop({ type: String, default: null }) newsletterText: string | null;
+  @Prop({ type: Boolean, default: true }) showDefaultColumns: boolean;    // the built-in Shop / Account columns when no column blocks exist
+  @Prop({ type: String, default: null }) shopColumnHeading: string | null;
+  @Prop({ type: String, default: null }) accountColumnHeading: string | null;
+  @Prop({ type: String, default: null }) blogLinkLabel: string | null;
 }
 export const StorefrontFooterSchema = SchemaFactory.createForClass(StorefrontFooter);
 

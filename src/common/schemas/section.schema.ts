@@ -52,6 +52,10 @@ export const SECTION_TYPES = [
   'marquee',
   'custom_html',
   'image_banner',
+  'collection_list',
+  'store_locations',
+  'contact_form',
+  'related_products',
   // Core/locked sections — Phase 4 of the Online Store theme-editor rebuild.
   // Every one of these is ALWAYS pre-seeded into its owning
   // `CollectionTemplate` (see `collection-template/core-sections.util.ts`)

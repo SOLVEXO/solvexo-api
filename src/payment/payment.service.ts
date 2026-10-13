@@ -2240,7 +2240,7 @@ export class PaymentService {
     for (const item of physicalItems) {
       const variant = await productVariantModel
         .findOne({ _id: item.variantId, isDelete: false })
-        .select('unlimitedStock allowBackorder stock committedStock damagedStock inTransitStock')
+        .select('unlimitedStock allowBackorder stock committedStock damagedStock inTransitStock expiredStock expiryBuckets')
         .lean();
       if (!variant || (variant as any).unlimitedStock) continue;
 

@@ -26,6 +26,8 @@ export class PurchaseOrderItem {
   // damagedStock pool (never sellable `stock`) and flagged for a possible
   // supplier-return claim, not silently mixed into good stock.
   @Prop({ default: 0 }) quantityDamaged: number;
+  // units already sent back to the supplier against this line (SupplierReturnsService) — returns can never exceed receipts
+  @Prop({ default: 0 }) quantityReturned: number;
 
   @Prop({ required: true }) unitCost: number;
 }
@@ -72,6 +74,8 @@ export class PurchaseOrder {
   @Prop({ type: Date, default: null }) expectedAt: Date | null;
   @Prop({ type: Date, default: null }) orderedAt: Date | null;
   @Prop({ type: Date, default: null }) receivedAt: Date | null;
+  // request ids of recent receipts (last 50) — makes a retried/double-clicked "Receive" submit idempotent
+  @Prop({ type: [String], default: [] }) receivedRequestIds: string[];
   @Prop({ type: Date, default: null }) cancelledAt: Date | null;
 
   // Set the first time PurchaseOrdersService.sendOverdueAlerts fires for

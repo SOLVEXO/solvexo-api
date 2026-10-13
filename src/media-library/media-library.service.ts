@@ -122,14 +122,19 @@ export class MediaLibraryService {
     const repos = this.databaseService.repositories;
     const usages: MediaAssetUsage[] = [];
 
-    const [products, categories, collections, store, banners, pages, theme] = await Promise.all([
+    const [products, categories, collections, store, banners, pages, theme, blogPosts, menus, templates, variantHits] = await Promise.all([
       repos.productModel.find({ storeId, images: url }).select('name').lean(),
-      repos.categoryModel.find({ image: url }).select('name').lean(),
+      repos.categoryModel.find({ storeId, image: url }).select('name').lean(),
       repos.collectionModel.find({ storeId, image: url }).select('name').lean(),
       repos.storeModel.findOne({ _id: storeId, logo: url }).select('name').lean(),
       repos.storeBannerModel.find({ storeId, imageUrl: url }).lean(),
-      repos.storePageModel.find({ storeId }).select('title sections').lean(),
+      // A page's content now lives in `draft`/`themeTemplates` as well as the legacy `sections`, and its SEO carries an og image.
+      repos.storePageModel.find({ storeId }).select('title sections draft themeTemplates seo').lean(),
       repos.storeThemeModel.findOne({ storeId }).lean(),
+      repos.blogPostModel.find({ storeId, isDelete: { $ne: true } }).select('title coverImage content').lean(),
+      repos.menuModel.find({ storeId }).select('name items').lean(),
+      repos.collectionTemplateModel.find({ storeId }).select('resourceType templateKey sections draft').lean(),
+      repos.productVariantModel.find({ images: url }).select('productId').lean(),
     ]);
 
     for (const p of products as any[]) usages.push({ type: 'product', label: p.name });
@@ -139,7 +144,20 @@ export class MediaLibraryService {
     for (let i = 0; i < banners.length; i++) usages.push({ type: 'banner', label: 'A storefront hero banner' });
 
     for (const p of pages as any[]) {
-      if (JSON.stringify(p.sections ?? []).includes(url)) usages.push({ type: 'page', label: `Page "${p.title}"` });
+      if (JSON.stringify({ s: p.sections, d: p.draft, t: p.themeTemplates, o: p.seo }).includes(url)) usages.push({ type: 'page', label: `Page "${p.title}"` });
+    }
+    for (const b of blogPosts as any[]) {
+      if (b.coverImage === url || JSON.stringify(b.content ?? []).includes(url)) usages.push({ type: 'blog', label: `Blog post "${b.title}"` });
+    }
+    for (const m of menus as any[]) {
+      if (JSON.stringify(m.items ?? []).includes(url)) usages.push({ type: 'menu', label: `Menu "${m.name}"` });
+    }
+    for (const t of templates as any[]) {
+      if (JSON.stringify({ s: t.sections, d: t.draft }).includes(url)) usages.push({ type: 'template', label: `${t.resourceType} template "${t.templateKey}"` });
+    }
+    if ((variantHits as any[]).length > 0) {
+      const owned = await repos.productModel.find({ storeId, _id: { $in: (variantHits as any[]).map(v => v.productId) } }).select('name').lean();
+      for (const p of owned as any[]) usages.push({ type: 'product', label: `${p.name} (variant image)` });
     }
     if (theme) {
       const themeHit = JSON.stringify({ header: (theme as any).header, footer: (theme as any).footer, identityBanner: (theme as any).identityBanner, draft: (theme as any).draft }).includes(url);

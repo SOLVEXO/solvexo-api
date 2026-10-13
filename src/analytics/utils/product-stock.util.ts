@@ -15,7 +15,7 @@ export async function sellableStockByProduct(variantModel: Model<any>, productId
   if (productIds.length === 0) return map;
   const variants: any[] = await variantModel
     .find({ productId: { $in: productIds }, isDelete: false })
-    .select('productId stock committedStock damagedStock inTransitStock unlimitedStock')
+    .select('productId stock committedStock damagedStock inTransitStock expiredStock expiryBuckets unlimitedStock')
     .lean();
   for (const v of variants) {
     const entry = map.get(v.productId) ?? { available: 0, unlimited: false };

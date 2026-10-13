@@ -10,6 +10,7 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { RequirePermission } from '../auth/decorators/require-permission.decorator';
 import { actingSellerId } from '../common/acting-seller-id.util';
 import { CustomerSocialLoginService, SOCIAL_PROVIDER_KEYS, SocialProviderKey } from './customer-social-login.service';
+import { ConnectSocialLoginDto } from './dto/connect-social-login.dto';
 
 function asProvider(value: string): SocialProviderKey {
   if (!SOCIAL_PROVIDER_KEYS.includes(value as SocialProviderKey)) throw new BadRequestException(`Unknown provider "${value}"`);
@@ -31,9 +32,16 @@ export class SellerCustomerSocialLoginController {
     return this.service.getSetup(storeId, actingSellerId(req.user));
   }
 
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Put(':provider')
-  connect(@Param('storeId') storeId: string, @Param('provider') provider: string, @Body() body: { clientId?: string; clientSecret?: string }, @Req() req: any) {
-    return this.service.connect(storeId, actingSellerId(req.user), asProvider(provider), body ?? {});
+  connect(@Param('storeId') storeId: string, @Param('provider') provider: string, @Body() body: ConnectSocialLoginDto, @Req() req: any) {
+    return this.service.connect(storeId, actingSellerId(req.user), asProvider(provider), body);
+  }
+
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Post(':provider/test')
+  test(@Param('storeId') storeId: string, @Param('provider') provider: string, @Req() req: any) {
+    return this.service.test(storeId, actingSellerId(req.user), asProvider(provider));
   }
 
   @Delete(':provider')
@@ -56,10 +64,11 @@ export class BuyerSocialLoginController {
   @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @Get('start/:provider')
   async start(@Param('provider') provider: string, @Query('storeId') storeId: string, @Query('returnTo') returnTo: string, @Res() res: Response) {
-    const url = await this.service.buildAuthUrl(String(storeId ?? ''), asProvider(provider), String(returnTo ?? ''));
+    const url = await this.service.startRedirect(String(storeId ?? ''), asProvider(provider), String(returnTo ?? ''));
     res.redirect(302, url);
   }
 
+  @Throttle({ default: { limit: 60, ttl: 60_000 } })
   @Get('callback/:provider/:storeId')
   async callback(
     @Param('provider') provider: string,

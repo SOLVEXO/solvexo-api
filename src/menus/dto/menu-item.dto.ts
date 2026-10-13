@@ -14,6 +14,7 @@ export class MenuItemChildDto {
   @ApiProperty({ required: false }) @IsOptional() @IsString() collectionId?: string | null;
   @ApiProperty({ required: false }) @IsOptional() @IsString() productId?: string | null;
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() highlight?: boolean;
+  @ApiProperty({ required: false }) @IsOptional() @IsBoolean() newTab?: boolean;
   @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(2048) imageUrl?: string | null;
   @ApiProperty({ type: [MenuItemChildDto], required: false })
   @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => MenuItemChildDto)
@@ -31,6 +32,7 @@ export class MenuItemDto {
   @ApiProperty({ required: false }) @IsOptional() @IsString() collectionId?: string | null;
   @ApiProperty({ required: false }) @IsOptional() @IsString() productId?: string | null;
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() highlight?: boolean;
+  @ApiProperty({ required: false }) @IsOptional() @IsBoolean() newTab?: boolean;
   @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(2048) imageUrl?: string | null;
   @ApiProperty({ type: [MenuItemChildDto], required: false })
   @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => MenuItemChildDto)

@@ -374,10 +374,18 @@ export class StaffService {
     return buildStaffProfile(this.repos, staffId);
   }
 
-  async updateOwnProfile(staffId: string, dto: { name?: string }) {
-    const name = dto.name?.trim();
-    if (!name) throw new BadRequestException('Name is required');
-    const staff = await this.repos.staffMemberModel.findOneAndUpdate({ _id: staffId, isDelete: false }, { $set: { name } }, { new: true });
+  async updateOwnProfile(staffId: string, dto: { name?: string; phone?: string; profileImage?: string }) {
+    const set: Record<string, any> = {};
+    if (dto.name !== undefined) {
+      const name = dto.name.trim();
+      if (!name) throw new BadRequestException('Name is required');
+      set.name = name;
+    }
+    if (dto.phone !== undefined) set.phone = dto.phone.trim() || null;
+    if (dto.profileImage !== undefined) set.profileImage = dto.profileImage.trim() || null;
+    if (Object.keys(set).length === 0) throw new BadRequestException('Nothing to update');
+
+    const staff = await this.repos.staffMemberModel.findOneAndUpdate({ _id: staffId, isDelete: false }, { $set: set }, { new: true });
     if (!staff) throw new NotFoundException('Staff member not found');
     return { success: true, message: 'Profile updated', data: await this.getOwnProfile(staffId) };
   }

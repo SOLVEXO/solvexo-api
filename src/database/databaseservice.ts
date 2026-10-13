@@ -349,6 +349,9 @@ export class DatabaseService {
     @InjectModel(schema.StoreFaq.name)
     private storeFaqModel: Model<schema.StoreFaqDocument>,
 
+    @InjectModel(schema.StoreContactMessage.name)
+    private storeContactMessageModel: Model<schema.StoreContactMessageDocument>,
+
     @InjectModel(schema.CollectionTemplate.name)
     private collectionTemplateModel: Model<schema.CollectionTemplateDocument>,
 
@@ -378,6 +381,8 @@ export class DatabaseService {
 
     @InjectModel(schema.StockCount.name)
     private stockCountModel: Model<schema.StockCountDocument>,
+    @InjectModel(schema.SupplierReturn.name)
+    private supplierReturnModel: Model<schema.SupplierReturnDocument>,
 
     @InjectModel(schema.StoreCustomerMeta.name)
     private storeCustomerMetaModel: Model<schema.StoreCustomerMetaDocument>,
@@ -604,6 +609,7 @@ export class DatabaseService {
       themeDefinitionModel: this.themeDefinitionModel,
       storePageModel: this.storePageModel,
       storeFaqModel: this.storeFaqModel,
+      storeContactMessageModel: this.storeContactMessageModel,
       collectionTemplateModel: this.collectionTemplateModel,
       metafieldDefinitionModel: this.metafieldDefinitionModel,
       metafieldValueModel: this.metafieldValueModel,
@@ -614,6 +620,7 @@ export class DatabaseService {
       supplierModel: this.supplierModel,
       purchaseOrderModel: this.purchaseOrderModel,
       stockCountModel: this.stockCountModel,
+      supplierReturnModel: this.supplierReturnModel,
       storeCustomerMetaModel: this.storeCustomerMetaModel,
       newsletterSubscriberModel: this.newsletterSubscriberModel,
       newsletterBroadcastModel: this.newsletterBroadcastModel,

@@ -360,7 +360,7 @@ export class AnalyticsReportsService {
       const productName = new Map(products.map((p) => [String(p._id), p.name]));
       const [variants, sales] = await Promise.all([
         this.r.productVariantModel.find({ productId: { $in: productIds }, isDelete: false })
-          .select('productId sku options stock committedStock damagedStock inTransitStock unlimitedStock').lean(),
+          .select('productId sku options stock committedStock damagedStock inTransitStock expiredStock expiryBuckets unlimitedStock').lean(),
         this.r.orderModel.aggregate([
           ...sellerOrderMatchStage(from90, now, scope),
           { $match: { 'sellerOrders.status': { $ne: 'cancelled' } } },

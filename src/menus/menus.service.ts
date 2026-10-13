@@ -15,6 +15,16 @@ function validateItems(items: Record<string, any>[]): void {
   for (const item of items) validateBlockSettings('nav_link', item);
 }
 
+/** Gives every item (and nested child) a stable server id. Ids the editor made up client-side
+ *  (`new-…`) or left empty are replaced; real ids are kept so reorder/edit identity survives. */
+function withStableIds(items: Record<string, any>[]): Record<string, any>[] {
+  return items.map(i => ({
+    ...i,
+    id: i.id && !String(i.id).startsWith('new-') ? i.id : new Types.ObjectId().toString(),
+    ...(Array.isArray(i.children) ? { children: withStableIds(i.children) } : {}),
+  }));
+}
+
 @Injectable()
 export class MenusService {
   constructor(private readonly databaseService: DatabaseService) {}
@@ -36,7 +46,7 @@ export class MenusService {
     validateItems(items);
     // Every item needs a stable id for reorder/edit even if the caller
     // (a brand-new menu built client-side) didn't assign one yet.
-    const itemsWithIds = items.map(i => ({ ...i, id: i.id || new Types.ObjectId().toString() }));
+    const itemsWithIds = withStableIds(items);
     const created = await this.menuModel.create({ storeId, name: dto.name, items: itemsWithIds });
     return { success: true, message: 'Menu created', data: created };
   }
@@ -47,7 +57,7 @@ export class MenusService {
     if (dto.name !== undefined) set.name = dto.name;
     if (dto.items !== undefined) {
       validateItems(dto.items);
-      set.items = dto.items.map(i => ({ ...i, id: i.id || new Types.ObjectId().toString() }));
+      set.items = withStableIds(dto.items);
     }
     const updated = await this.menuModel.findOneAndUpdate({ _id: menuId, storeId }, { $set: set }, { new: true });
     if (!updated) throw new NotFoundException('Menu not found');

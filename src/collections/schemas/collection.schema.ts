@@ -50,10 +50,16 @@ export class Collection {
       categoryId: { type: String, default: null },
       tags: { type: [String], default: [] },
       matchType: { type: String, enum: ['all', 'any'], default: 'any' },
+      titleContains: { type: String, default: null },
     },
-    default: () => ({ categoryId: null, tags: [], matchType: 'any' }),
+    default: () => ({ categoryId: null, tags: [], matchType: 'any', titleContains: null }),
   })
-  rules: { categoryId: string | null; tags: string[]; matchType: 'all' | 'any' };
+  rules: { categoryId: string | null; tags: string[]; matchType: 'all' | 'any'; titleContains?: string | null };
+
+  // How the products on this collection's page are ordered until the shopper picks another sort.
+  // 'manual' = the seller's own order (manual collections) / newest first (automatic ones).
+  @Prop({ type: String, enum: ['manual', 'newest', 'oldest', 'title_asc', 'title_desc', 'price_asc', 'price_desc', 'best_rated', 'best_selling'], default: 'manual' })
+  defaultSort: string;
 
   @Prop({ type: String, enum: ['active', 'draft'], default: 'draft' })
   status: 'active' | 'draft';

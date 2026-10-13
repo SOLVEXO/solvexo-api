@@ -164,6 +164,22 @@ export class Product {
   @Prop({ type: [String], default: [] })
   tags: string[];
 
+  // Selling options: brand label, order quantity rules, pre-order.
+  @Prop({ type: String, default: '', trim: true, maxlength: 100 })
+  vendor: string;
+
+  @Prop({ type: Number, default: 1 })
+  orderMinQuantity: number;
+
+  @Prop({ type: Number, default: null })
+  orderMaxQuantity: number | null;
+
+  @Prop({ type: Number, default: 1 })
+  orderQuantityStep: number;
+
+  @Prop({ type: { enabled: { type: Boolean, default: false }, availableOn: { type: Date, default: null } }, _id: false, default: () => ({ enabled: false, availableOn: null }) })
+  preorder: { enabled: boolean; availableOn: Date | null };
+
   // Shopify shipping profile (ShippingProfile._id). null/absent = the store's implicit General profile.
   @Prop({ type: String, default: null })
   shippingProfileId: string | null;
@@ -257,5 +273,6 @@ ProductSchema.index({ type: 1 });
 ProductSchema.index({ purchaseCount: -1 });
 ProductSchema.index({ viewCount: -1 });
 ProductSchema.index({ tags: 1 });
+ProductSchema.index({ storeId: 1, vendor: 1 });
 ProductSchema.index({ status: 1 });
 ProductSchema.index({ scheduledAt: 1 });

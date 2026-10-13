@@ -1,4 +1,4 @@
-import { IsEmail, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
+import { IsEmail, IsOptional, IsString, Matches, MaxLength, MinLength } from 'class-validator';
 
 export class UpdateOwnStaffProfileDto {
   @IsOptional()
@@ -6,6 +6,20 @@ export class UpdateOwnStaffProfileDto {
   @MinLength(1)
   @MaxLength(80)
   name?: string;
+
+  /** Digits, spaces and + ( ) - only; empty string clears it. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(30)
+  @Matches(/^[0-9+()\-\s]*$/, { message: 'Phone can only contain digits, spaces and + ( ) -' })
+  phone?: string;
+
+  /** An https image URL (from the upload endpoint); empty string removes the photo. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  @Matches(/^(https:\/\/\S+)?$/, { message: 'Profile photo must be an https image URL' })
+  profileImage?: string;
 }
 
 export class ChangeOwnStaffPasswordDto {

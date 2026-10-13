@@ -24,7 +24,7 @@ const MAX_SECTIONS_PER_PAGE = 40;
 // (`/category/:slugOrId`) and collection-detail (`/collections/:slugOrId`)
 // storefront routes (Store Builder plan, Phase 11) for the same reason.
 // 'search' reserved for the navbar search box's results route.
-const RESERVED_CUSTOM_PAGE_SLUGS = ['home', 'blog', 'category', 'collections', 'product', 'search', 'cart', 'checkout', 'login', 'register', 'verify-otp', 'forgot-password', 'new-password', 'account', 'wishlist', 'loyalty', 'messages', 'notifications', 'returns', 'gift-cards', 'subscriptions'];
+const RESERVED_CUSTOM_PAGE_SLUGS = ['home', 'blog', 'category', 'collections', 'product', 'search', 'cart', 'checkout', 'login', 'register', 'verify-otp', 'forgot-password', 'new-password', 'account', 'wishlist', 'loyalty', 'messages', 'notifications', 'returns', 'gift-cards', 'subscriptions', 'blogs', 'store-credit', 'orders', 'order-status', 'addresses', 'reviews', 'faqs'];
 
 function validateSections(sections: { type: SectionType; settings: Record<string, any>; blocks: { type: string; settings: Record<string, any> }[] }[]) {
   if (sections.length > MAX_SECTIONS_PER_PAGE) {
@@ -216,6 +216,42 @@ export class StorePagesService {
     return { success: true, message: 'Page created', data: page };
   }
 
+  /** A copy of a custom page: same layout (every theme's), content and SEO, saved as a draft with a fresh link,
+   *  hidden from navigation/footer and untagged as a policy so it can't clash with the original. */
+  async duplicatePage(storeId: string, sellerId: string, pageId: string) {
+    const original: any = await this.findOwnedPage(storeId, sellerId, pageId);
+    if (original.type !== 'custom') throw new BadRequestException('Only custom pages can be duplicated');
+    const plain = JSON.parse(JSON.stringify(original.toObject ? original.toObject() : original));
+    // New documents get new ids — drop every stored _id (page, sections, blocks, theme templates).
+    const stripIds = (value: any): any => Array.isArray(value) ? value.map(stripIds)
+      : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).filter(([k]) => k !== '_id').map(([k, v]) => [k, stripIds(v)]))
+      : value;
+
+    const base = `${original.slug}-copy`.slice(0, 90);
+    let slug = base;
+    for (let n = 2; RESERVED_CUSTOM_PAGE_SLUGS.includes(slug) || await this.storePageModel.findOne({ storeId, slug, isDelete: false }); n++) {
+      slug = `${base}-${n}`;
+    }
+    const seo = stripIds(plain.seo ?? {});
+    delete seo.canonicalUrlOverride;
+
+    const copy = await this.storePageModel.create({
+      storeId,
+      type: 'custom',
+      slug,
+      title: `${original.title} (copy)`.slice(0, 120),
+      sections: stripIds(plain.sections ?? []),
+      draft: stripIds(plain.draft ?? { sections: stripIds(plain.sections ?? []) }),
+      themeTemplates: stripIds(plain.themeTemplates ?? []),
+      seo,
+      status: 'draft',
+      showInNav: false,
+      showInFooter: false,
+      policyType: null,
+    });
+    return { success: true, message: 'Page duplicated', data: copy };
+  }
+
   async updatePage(storeId: string, sellerId: string, pageId: string, dto: UpdatePageDto) {
     const page = await this.findOwnedPage(storeId, sellerId, pageId);
     if (dto.slug !== undefined && page.type === 'home') {
@@ -264,7 +300,42 @@ export class StorePagesService {
     if (dto.seo?.keywords !== undefined) set['seo.keywords'] = dto.seo.keywords;
 
     const updated = await this.storePageModel.findOneAndUpdate({ _id: pageId, storeId }, { $set: set }, { new: true });
+    if (dto.slug !== undefined && dto.slug !== page.slug && page.type !== 'home') {
+      await this.keepLinksWorkingAfterSlugChange(storeId, page.slug, dto.slug);
+    }
     return { success: true, message: 'Page updated', data: updated };
+  }
+
+  /** A renamed page must not break the old URL or the menus that point at it: add a 301 from the old
+   *  path (re-pointing any earlier redirect that ended there) and move menu links to the new slug.
+   *  Best-effort — the rename itself has already succeeded. */
+  private async keepLinksWorkingAfterSlugChange(storeId: string, oldSlug: string, newSlug: string) {
+    try {
+      const { seoRedirectModel, menuModel } = this.databaseService.repositories;
+      // The new URL must never redirect away (e.g. the page was renamed back to an earlier slug).
+      await seoRedirectModel.deleteMany({ storeId, source: `/${newSlug}` });
+      await seoRedirectModel.updateMany({ storeId, destination: `/${oldSlug}` }, { $set: { destination: `/${newSlug}` } });
+      await seoRedirectModel.updateOne(
+        { storeId, source: `/${oldSlug}` },
+        { $set: { destination: `/${newSlug}`, statusCode: 301, isActive: true } },
+        { upsert: true },
+      );
+      const retarget = (items: any[]): boolean => {
+        let changed = false;
+        for (const item of items ?? []) {
+          if (item.linkType === 'page' && item.pageSlug === oldSlug) { item.pageSlug = newSlug; changed = true; }
+          if (Array.isArray(item.children) && retarget(item.children)) changed = true;
+        }
+        return changed;
+      };
+      const menus = await menuModel.find({ storeId });
+      for (const menu of menus as any[]) {
+        const items = JSON.parse(JSON.stringify(menu.items ?? []));
+        if (retarget(items)) await menuModel.updateOne({ _id: menu._id }, { $set: { items } });
+      }
+    } catch (err) {
+      console.warn(`Page slug redirect/menu update failed for ${storeId}: ${(err as Error)?.message}`);
+    }
   }
 
   /**

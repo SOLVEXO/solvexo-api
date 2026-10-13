@@ -66,7 +66,9 @@ export class StoreBannerService {
     const banners = await this.storeBannerModel
       .find({
         storeId,
-        status: 'active',
+        // A 'scheduled' banner only carries a future startAt — the date window below decides when it
+        // actually shows, so nothing has to flip its status when that time arrives.
+        status: { $in: ['active', 'scheduled'] },
         // `status: 'active'` alone is only ever set once, at create/update
         // time (see computeInitialStatus) — nothing later flips it when a
         // banner's own `endAt` passes, so without this date check an expired
@@ -87,7 +89,16 @@ export class StoreBannerService {
   async listForSeller(storeId: string, sellerId: string) {
     await verifyStoreOwnershipOrForbidden(this.storeModel, storeId, sellerId);
     const banners = await this.storeBannerModel.find({ storeId }).sort({ priority: -1, order: 1 }).lean();
-    return { success: true, data: banners };
+    // The stored status only changes when the banner is saved, so a banner whose end date has passed (or whose start date has
+    // arrived) would keep showing the wrong badge. Report the status the storefront actually applies; paused/draft stay as set.
+    const now = Date.now();
+    const data = banners.map((b: any) => {
+      if (b.status !== 'active' && b.status !== 'scheduled') return b;
+      if (b.endAt && new Date(b.endAt).getTime() < now) return { ...b, status: 'expired' };
+      if (b.status === 'scheduled' && (!b.startAt || new Date(b.startAt).getTime() <= now)) return { ...b, status: 'active' };
+      return b;
+    });
+    return { success: true, data };
   }
 
   async create(storeId: string, sellerId: string, dto: CreateStoreBannerDto, file: Express.Multer.File | undefined) {
@@ -141,6 +152,7 @@ export class StoreBannerService {
       imageUrl,
       videoUrl: fileIsVideo ? uploaded.url : null,
       publicId: uploaded.publicId,
+      mobileImageUrl: dto.mobileImageUrl || null,
       heading: dto.heading?.trim() || null,
       subheading: dto.subheading?.trim() || null,
       contentAlignment: dto.contentAlignment ?? 'left',
@@ -194,6 +206,7 @@ export class StoreBannerService {
       imageUrl: uploaded.url,
       videoUrl: null,
       publicId: uploaded.publicId,
+      mobileImageUrl: dto.mobileImageUrl || null,
       heading: dto.heading?.trim() || null,
       subheading: dto.subheading?.trim() || null,
       contentAlignment: dto.contentAlignment ?? 'left',
@@ -221,16 +234,36 @@ export class StoreBannerService {
   }
 
   async update(storeId: string, sellerId: string, bannerId: string, dto: UpdateStoreBannerDto) {
-    await this.findOwned(storeId, sellerId, bannerId);
+    const banner = await this.findOwned(storeId, sellerId, bannerId);
 
     const set: Record<string, unknown> = { ...dto };
     if (dto.startAt !== undefined || dto.endAt !== undefined) {
-      set.status = computeInitialStatus(dto.startAt as string | undefined, dto.endAt as string | undefined);
+      // `null` clears a date. Merge with what is stored so editing one date keeps the other,
+      // and never un-pause (or un-draft) a banner just because its schedule changed.
+      const merged = (next: string | null | undefined, stored?: Date | null) =>
+        next === undefined ? (stored ? new Date(stored).toISOString() : undefined) : (next ?? undefined);
+      const nextStatus = computeInitialStatus(merged(dto.startAt, banner.startAt), merged(dto.endAt, banner.endAt));
+      if (banner.status !== 'paused' && banner.status !== 'draft') set.status = nextStatus;
     }
 
     const updated = await this.storeBannerModel.findByIdAndUpdate(bannerId, { $set: set }, { new: true, runValidators: true });
     this.log(storeId, 'store_banner_updated', 'Updated a store banner', sellerId, bannerId);
     return { success: true, message: 'Store banner updated', data: updated };
+  }
+
+  /** Seller-chosen display order: position in `ids` becomes the order, and priority is reset so it cannot override it. */
+  async reorder(storeId: string, sellerId: string, ids: string[]) {
+    await verifyStoreOwnershipOrForbidden(this.storeModel, storeId, sellerId);
+    if (!Array.isArray(ids) || ids.length === 0 || ids.length > 100 || ids.some(id => typeof id !== 'string')) {
+      throw new BadRequestException('ids must be a list of banner ids');
+    }
+    const owned = await this.storeBannerModel.countDocuments({ storeId, _id: { $in: ids } });
+    if (owned !== new Set(ids).size) throw new NotFoundException('One or more banners were not found in this store');
+    await this.storeBannerModel.bulkWrite(
+      ids.map((id, order) => ({ updateOne: { filter: { _id: id, storeId }, update: { $set: { order, priority: 0 } } } })),
+    );
+    this.log(storeId, 'store_banner_reordered', 'Reordered store banners', sellerId, ids[0]);
+    return { success: true, message: 'Banner order saved' };
   }
 
   async pause(storeId: string, sellerId: string, bannerId: string) {

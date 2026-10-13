@@ -6,11 +6,12 @@ import { InventoryModule } from '../inventory/inventory.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { PurchaseOrdersController } from './purchase-orders.controller';
 import { PurchaseOrdersService } from './purchase-orders.service';
+import { SupplierReturnsService } from './supplier-returns.service';
 
 @Module({
   imports: [AuthModule, RedisModule, ActivityLogModule, InventoryModule, NotificationsModule],
   controllers: [PurchaseOrdersController],
-  providers: [PurchaseOrdersService],
+  providers: [PurchaseOrdersService, SupplierReturnsService],
   // Exported so SchedulerModule (the daily overdue-PO-alert cron job) can
   // inject PurchaseOrdersService directly instead of duplicating its logic.
   exports: [PurchaseOrdersService],

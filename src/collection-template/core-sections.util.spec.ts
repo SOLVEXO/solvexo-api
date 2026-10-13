@@ -27,12 +27,17 @@ describe('core-sections.util', () => {
   });
 
   describe('buildCoreSections', () => {
-    it('seeds product_main with all 7 required blocks, each enabled', () => {
+    it('seeds product_main with all 7 required blocks enabled, plus the optional ones (rating on, the rest off)', () => {
       const sections = buildCoreSections('product', 'default');
       expect(sections).toHaveLength(1);
       expect(sections[0].type).toBe('product_main');
-      expect(sections[0].blocks.map(b => b.type)).toEqual([...PRODUCT_MAIN_BLOCK_TYPES]);
-      expect(sections[0].blocks.every(b => b.enabled === true)).toBe(true);
+      const types = sections[0].blocks.map(b => b.type);
+      for (const required of PRODUCT_MAIN_BLOCK_TYPES) expect(types).toContain(required);
+      expect((sections[0].blocks as Array<{ type: string; enabled?: boolean }>).filter(b => (PRODUCT_MAIN_BLOCK_TYPES as readonly string[]).includes(b.type)).every(b => b.enabled === true)).toBe(true);
+      const enabled = Object.fromEntries(sections[0].blocks.map(b => [b.type, b.enabled]));
+      expect(enabled).toMatchObject({ product_rating: true, product_sku: false, product_wishlist: false, product_share: false, product_specs: false });
+      // the rating is seeded right after the title, where it always showed
+      expect(types.indexOf('product_rating')).toBe(types.indexOf('product_title') + 1);
     });
 
     it('seeds two blockless sections for the cart template, in order', () => {

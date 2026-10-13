@@ -157,6 +157,7 @@ export { ThemePackage, ThemePackageDocument, ThemePackageSchema } from '../store
 export { ThemeDefinition, ThemeDefinitionDocument, ThemeDefinitionSchema } from '../theme-catalog/schemas/theme-definition.schema';
 export { StorePage, StorePageDocument, StorePageSchema } from '../store-pages/schemas/store-page.schema';
 export { StoreFaq, StoreFaqDocument, StoreFaqSchema } from '../store-faq/schemas/store-faq.schema';
+export { StoreContactMessage, StoreContactMessageDocument, StoreContactMessageSchema } from '../store-contact/schemas/store-contact-message.schema';
 export { CollectionTemplate, CollectionTemplateDocument, CollectionTemplateSchema } from '../collection-template/schemas/collection-template.schema';
 export { MetafieldDefinition, MetafieldDefinitionDocument, MetafieldDefinitionSchema } from '../metafields/schemas/metafield-definition.schema';
 export { MetafieldValue, MetafieldValueDocument, MetafieldValueSchema } from '../metafields/schemas/metafield-value.schema';
@@ -166,6 +167,7 @@ export { Menu, MenuDocument, MenuSchema } from '../menus/schemas/menu.schema';
 export { DraftOrder, DraftOrderDocument, DraftOrderSchema } from '../draft-orders/schemas/draft-order.schema';
 export { Supplier, SupplierDocument, SupplierSchema } from '../purchase-orders/schemas/supplier.schema';
 export { PurchaseOrder, PurchaseOrderDocument, PurchaseOrderSchema } from '../purchase-orders/schemas/purchase-order.schema';
+export { SupplierReturn, SupplierReturnDocument, SupplierReturnSchema } from '../purchase-orders/schemas/supplier-return.schema';
 export { StockCount, StockCountDocument, StockCountSchema } from '../stock-counts/schemas/stock-count.schema';
 export { StoreCustomerMeta, StoreCustomerMetaDocument, StoreCustomerMetaSchema } from '../store/schemas/store-customer-meta.schema';
 export { BlogPost, BlogPostDocument, BlogPostSchema } from '../store-blog/schemas/blog-post.schema';

@@ -4,6 +4,9 @@ import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { PermissionsGuard } from '../auth/guards/permissions.guard';
+import { RequirePermission } from '../auth/decorators/require-permission.decorator';
+import { actingSellerId } from '../common/acting-seller-id.util';
 import { StoreFaqService } from './store-faq.service';
 import { CreateStoreFaqDto, UpdateStoreFaqDto } from './dto/create-store-faq.dto';
 import { FileInterceptor } from '@nestjs/platform-express';
@@ -13,8 +16,11 @@ import { STORE_FAQ_IMPORT_COLUMNS } from './store-faq-bulk-import';
 
 @ApiTags('Store FAQs')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, RolesGuard)
-@Roles('seller')
+// Staff manage FAQs with the same permission that covers blog posts and pages (onlinestore.content.manage); the guard pins
+// them to their own store and actingSellerId() resolves the owning seller.
+@UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+@Roles('seller', 'staff')
+@RequirePermission('onlinestore.content.manage')
 @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
 @Controller('api/store-faq')
 export class StoreFaqController {
@@ -22,7 +28,7 @@ export class StoreFaqController {
 
   @Get(':storeId')
   list(@Req() req: any, @Param('storeId') storeId: string) {
-    return this.storeFaqService.listForSeller(storeId, req.user.userId);
+    return this.storeFaqService.listForSeller(storeId, actingSellerId(req.user));
   }
 
   @Get(':storeId/import-template')
@@ -33,21 +39,21 @@ export class StoreFaqController {
   @Post(':storeId/import')
   @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }))
   importFaqs(@Req() req: any, @Param('storeId') storeId: string, @UploadedFile() file: any) {
-    return this.storeFaqService.importCsv(storeId, req.user.userId, readUploadedCsv(file));
+    return this.storeFaqService.importCsv(storeId, actingSellerId(req.user), readUploadedCsv(file));
   }
 
   @Post(':storeId')
   create(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: CreateStoreFaqDto) {
-    return this.storeFaqService.create(storeId, req.user.userId, dto);
+    return this.storeFaqService.create(storeId, actingSellerId(req.user), dto);
   }
 
   @Patch(':storeId/:faqId')
   update(@Req() req: any, @Param('storeId') storeId: string, @Param('faqId') faqId: string, @Body() dto: UpdateStoreFaqDto) {
-    return this.storeFaqService.update(storeId, req.user.userId, faqId, dto);
+    return this.storeFaqService.update(storeId, actingSellerId(req.user), faqId, dto);
   }
 
   @Delete(':storeId/:faqId')
   remove(@Req() req: any, @Param('storeId') storeId: string, @Param('faqId') faqId: string) {
-    return this.storeFaqService.remove(storeId, req.user.userId, faqId);
+    return this.storeFaqService.remove(storeId, actingSellerId(req.user), faqId);
   }
 }

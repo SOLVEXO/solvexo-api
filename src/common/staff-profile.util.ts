@@ -13,8 +13,8 @@ export async function buildStaffProfile(repos: any, staffId: string) {
     repos.storeModel.findById(staff.storeId).select('name').lean(),
   ]);
   return {
-    _id: staff._id, name: staff.name, email: staff.email, phone: '', address: '',
-    isVerified: !!staff.inviteAcceptedAt, profileImage: null, status: staff.status, role: 'staff', currencyPreference: null,
+    _id: staff._id, name: staff.name, email: staff.email, phone: staff.phone ?? '', address: '',
+    isVerified: !!staff.inviteAcceptedAt, profileImage: staff.profileImage ?? null, status: staff.status, role: 'staff', currencyPreference: null,
     createdAt: staff.createdAt, updatedAt: staff.updatedAt,
     storeId: staff.storeId, storeName: store?.name ?? null,
     staffRoleName: role?.name ?? null, permissions: (role?.permissions ?? []).filter((p: string) => (STAFF_PERMISSIONS as readonly string[]).includes(p)),

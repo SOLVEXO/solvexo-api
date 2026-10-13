@@ -15,6 +15,9 @@ export const STOCK_ADJUSTMENT_REASONS = [
   // from 'damaged' itself, which only MOVES units into that pool (they stay
   // on-hand, just unsellable) rather than removing them from existence.
   'write_off',
+  // 'supplier_return' — units sent back to a supplier (SupplierReturnsService); 'expired' — a lot that passed its expiry
+  // date was written off (InventoryService.writeOffLot).
+  'supplier_return', 'expired',
 ] as const;
 export type StockAdjustmentReason = (typeof STOCK_ADJUSTMENT_REASONS)[number];
 

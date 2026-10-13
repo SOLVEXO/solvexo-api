@@ -77,6 +77,7 @@ import { StoreThemeModule } from './store-theme/store-theme.module';
 import { StorePagesModule } from './store-pages/store-pages.module';
 import { AppsModule } from './apps/apps.module';
 import { StoreFaqModule } from './store-faq/store-faq.module';
+import { StoreContactModule } from './store-contact/store-contact.module';
 import { CollectionTemplateModule } from './collection-template/collection-template.module';
 import { MetafieldsModule } from './metafields/metafields.module';
 import { MetaobjectsModule } from './metaobjects/metaobjects.module';
@@ -181,6 +182,7 @@ import { StockCountsModule } from './stock-counts/stock-counts.module';
     StorePagesModule,
     AppsModule,
     StoreFaqModule,
+    StoreContactModule,
     CollectionTemplateModule,
     MetafieldsModule,
     MetaobjectsModule,

@@ -4,7 +4,7 @@ import { Document } from 'mongoose';
 
 export type ApprovalRequestDocument = ApprovalRequest & Document;
 
-export const APPROVAL_REQUEST_TYPES = ['stock_adjustment'] as const;
+export const APPROVAL_REQUEST_TYPES = ['stock_adjustment', 'supplier_return'] as const;
 export type ApprovalRequestType = (typeof APPROVAL_REQUEST_TYPES)[number];
 export const APPROVAL_REQUEST_STATUSES = ['pending', 'approved', 'rejected'] as const;
 export type ApprovalRequestStatus = (typeof APPROVAL_REQUEST_STATUSES)[number];

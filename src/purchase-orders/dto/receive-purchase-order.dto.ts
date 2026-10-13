@@ -1,6 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { Type } from 'class-transformer';
-import { IsArray, IsDateString, IsNotEmpty, IsNumber, IsOptional, IsString, Min, ValidateNested, ArrayMinSize } from 'class-validator';
+import { IsArray, IsDateString, IsInt, IsNotEmpty, IsOptional, IsString, MaxLength, Min, ValidateNested, ArrayMinSize } from 'class-validator';
 
 class ReceiveLineDto {
   // The PurchaseOrderItem sub-document's own _id (not productId/variantId) —
@@ -9,10 +9,10 @@ class ReceiveLineDto {
   @IsString() @IsNotEmpty()
   itemId: string;
 
-  @IsNumber() @Min(0)
+  @IsInt() @Min(0)
   quantityReceived: number;
 
-  @IsOptional() @IsNumber() @Min(0)
+  @IsOptional() @IsInt() @Min(0)
   quantityDamaged?: number;
 
   // Only meaningful when the line's variant has `trackLots: true` (see
@@ -34,6 +34,10 @@ class ReceiveLineDto {
 }
 
 export class ReceivePurchaseOrderDto {
+  // Client-generated id for THIS submit — a retry/double click with the same id is a no-op (see PurchaseOrdersService.receive).
+  @IsOptional() @IsString() @MaxLength(100)
+  requestId?: string;
+
   @IsArray() @ArrayMinSize(1) @ValidateNested({ each: true }) @Type(() => ReceiveLineDto)
   items: ReceiveLineDto[];
 }

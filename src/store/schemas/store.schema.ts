@@ -183,6 +183,16 @@ export class StoreAnnouncementBar {
   @Prop({ type: Boolean, default: false }) isActive: boolean;
   @Prop({ type: Date, default: null }) startAt: Date | null;
   @Prop({ type: Date, default: null }) endAt: Date | null;
+  // Optional extra rotating messages (the fields above are message #1). Every field defaults to the
+  // old single-message bar: below the header, closable, left-aligned, the type's own colours.
+  @Prop({ type: [{ _id: false, message: String, ctaLabel: { type: String, default: null }, ctaLink: { type: String, default: null } }], default: [] })
+  moreMessages: { message: string; ctaLabel: string | null; ctaLink: string | null }[];
+  @Prop({ type: Number, default: 5 }) rotateSeconds: number;
+  @Prop({ type: Boolean, default: true }) closable: boolean;
+  @Prop({ type: String, default: null }) bgColor: string | null;
+  @Prop({ type: String, default: null }) textColor: string | null;
+  @Prop({ type: String, enum: ['above', 'below'], default: 'below' }) placement: 'above' | 'below';
+  @Prop({ type: String, enum: ['left', 'center'], default: 'left' }) align: 'left' | 'center';
 }
 export const StoreAnnouncementBarSchema = SchemaFactory.createForClass(StoreAnnouncementBar);
 

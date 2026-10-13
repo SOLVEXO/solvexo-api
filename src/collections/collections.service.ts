@@ -10,6 +10,8 @@ import { UpdateCollectionDto } from './dto/update-collection.dto';
 import { UpdateCollectionProductsDto } from './dto/update-collection-products.dto';
 import { importCollectionsCsv } from './collections-bulk-import';
 
+const escapeRegex = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 // Real cap on how many products an `automatic` collection resolves to at
 // read time — same "bounded, not unlimited" spirit as other placement caps
 // in the codebase (e.g. Store.pinnedProductIds' PlatformConfig.placementLimits).
@@ -72,7 +74,9 @@ export class CollectionsService {
       image: dto.image ?? null,
       type: dto.type,
       productIds: dto.type === 'manual' ? (dto.productIds ?? []) : [],
-      rules: dto.type === 'automatic' ? { categoryId: dto.rules?.categoryId ?? null, tags: dto.rules?.tags ?? [], matchType: dto.rules?.matchType ?? 'any' } : undefined,
+      defaultSort: dto.defaultSort ?? 'manual',
+      seo: { metaTitle: dto.seo?.metaTitle?.trim() || undefined, metaDescription: dto.seo?.metaDescription?.trim() || undefined },
+      rules: dto.type === 'automatic' ? { categoryId: dto.rules?.categoryId ?? null, tags: dto.rules?.tags ?? [], matchType: dto.rules?.matchType ?? 'any', titleContains: dto.rules?.titleContains?.trim() || null } : undefined,
       status: dto.status ?? 'draft',
     });
 
@@ -123,13 +127,34 @@ export class CollectionsService {
     if (dto.image !== undefined) set.image = dto.image;
     if (dto.type !== undefined) set.type = dto.type;
     if (dto.rules !== undefined) {
-      set.rules = { categoryId: dto.rules.categoryId ?? null, tags: dto.rules.tags ?? [], matchType: dto.rules.matchType ?? 'any' };
+      set.rules = { categoryId: dto.rules.categoryId ?? null, tags: dto.rules.tags ?? [], matchType: dto.rules.matchType ?? 'any', titleContains: dto.rules.titleContains?.trim() || null };
     }
+    if (dto.defaultSort !== undefined) set.defaultSort = dto.defaultSort;
+    if (dto.seo?.metaTitle !== undefined) set['seo.metaTitle'] = dto.seo.metaTitle?.trim() || null;
+    if (dto.seo?.metaDescription !== undefined) set['seo.metaDescription'] = dto.seo.metaDescription?.trim() || null;
     if (dto.status !== undefined) set.status = dto.status;
     if (dto.templateKey !== undefined) set.templateKey = dto.templateKey;
 
     const updated = await this.r.collectionModel.findOneAndUpdate({ _id: collectionId, storeId }, { $set: set }, { new: true });
+    if (typeof set.slug === 'string' && set.slug !== collection.slug) await this.redirectOldSlug(storeId, collection.slug, set.slug);
     return { success: true, message: 'Collection updated', data: updated };
+  }
+
+  /** Renaming changes the URL, so the old one must keep working: a 301 from the old path (re-pointing earlier redirects that
+   *  ended there). Best-effort — the rename itself has already succeeded. */
+  private async redirectOldSlug(storeId: string, oldSlug: string, newSlug: string) {
+    try {
+      const model = this.r.seoRedirectModel;
+      await model.deleteMany({ storeId, source: `/collections/${newSlug}` });
+      await model.updateMany({ storeId, destination: `/collections/${oldSlug}` }, { $set: { destination: `/collections/${newSlug}` } });
+      await model.updateOne(
+        { storeId, source: `/collections/${oldSlug}` },
+        { $set: { destination: `/collections/${newSlug}`, statusCode: 301, isActive: true } },
+        { upsert: true },
+      );
+    } catch (err) {
+      console.warn(`Collection slug redirect failed for ${storeId}: ${(err as Error)?.message}`);
+    }
   }
 
   async updateProducts(storeId: string, sellerId: string, collectionId: string, dto: UpdateCollectionProductsDto) {
@@ -203,6 +228,7 @@ export class CollectionsService {
       clauses.push({ $or: [{ categoryId: collection.rules.categoryId }, { subCategoryId: collection.rules.categoryId }] });
     }
     if (collection.rules?.tags?.length) clauses.push({ tags: { $in: collection.rules.tags } });
+    if (collection.rules?.titleContains?.trim()) clauses.push({ name: { $regex: escapeRegex(collection.rules.titleContains.trim()), $options: 'i' } });
     if (clauses.length > 0) {
       filter[collection.rules.matchType === 'all' ? '$and' : '$or'] = clauses;
     }
@@ -234,7 +260,7 @@ export class CollectionsService {
   async listPublic(storeId: string) {
     const collections = await this.r.collectionModel
       .find({ storeId, isDelete: false, status: 'active' })
-      .select('name slug description image type sortOrder templateKey seo')
+      .select('name slug description image type sortOrder templateKey seo defaultSort')
       .sort({ sortOrder: 1, createdAt: -1 })
       .lean();
     return { success: true, data: collections };
@@ -252,7 +278,7 @@ export class CollectionsService {
         status: 'active',
         $or: isValidObjectId(slugOrId) ? [{ slug: slugOrId }, { _id: slugOrId }] : [{ slug: slugOrId }],
       })
-      .select('name slug description image type templateKey seo')
+      .select('name slug description image type templateKey seo defaultSort')
       .lean();
     if (!collection) throw new NotFoundException('Collection not found');
     return { success: true, data: collection };

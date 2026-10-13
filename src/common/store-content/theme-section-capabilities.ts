@@ -6,6 +6,7 @@ const COMMON_SECTION_TYPES = new Set([
   'blog_posts', 'metaobject_list', 'collection_product_grid', 'product_main',
   'search_results', 'cart_items', 'cart_summary', 'blog_post_list', 'article_content',
   'multicolumn', 'logo_list', 'marquee', 'custom_html', 'image_banner',
+  'collection_list', 'store_locations', 'gallery_grid', 'contact_form', 'related_products',
 ]);
 
 /** Theme renderer capability catalog; keep aligned with frontend section registries. */

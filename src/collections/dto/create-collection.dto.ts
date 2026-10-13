@@ -1,6 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { ApiProperty } from '@nestjs/swagger';
-import { IsString, IsNotEmpty, IsOptional, IsEnum, IsArray, ValidateNested, IsIn } from 'class-validator';
+import { IsString, IsNotEmpty, IsOptional, IsEnum, IsArray, ValidateNested, IsIn, MaxLength } from 'class-validator';
 import { Type } from 'class-transformer';
 
 class CollectionRulesDto {
@@ -19,7 +19,20 @@ class CollectionRulesDto {
   @IsOptional()
   @IsIn(['all', 'any'])
   matchType?: 'all' | 'any';
+
+  @ApiProperty({ required: false, nullable: true, description: 'Only products whose title contains this text' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(60)
+  titleContains?: string | null;
 }
+
+class CollectionSeoDto {
+  @ApiProperty({ required: false, nullable: true }) @IsOptional() @IsString() @MaxLength(70) metaTitle?: string | null;
+  @ApiProperty({ required: false, nullable: true }) @IsOptional() @IsString() @MaxLength(160) metaDescription?: string | null;
+}
+
+export const COLLECTION_SORTS = ['manual', 'newest', 'oldest', 'title_asc', 'title_desc', 'price_asc', 'price_desc', 'best_rated', 'best_selling'] as const;
 
 export class CreateCollectionDto {
   @ApiProperty({ example: 'New Arrivals' })
@@ -57,4 +70,15 @@ export class CreateCollectionDto {
   @IsOptional()
   @IsIn(['active', 'draft'])
   status?: 'active' | 'draft';
+
+  @ApiProperty({ required: false, enum: COLLECTION_SORTS })
+  @IsOptional()
+  @IsIn(COLLECTION_SORTS)
+  defaultSort?: (typeof COLLECTION_SORTS)[number];
+
+  @ApiProperty({ required: false, type: CollectionSeoDto })
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => CollectionSeoDto)
+  seo?: CollectionSeoDto;
 }
