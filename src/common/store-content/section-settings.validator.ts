@@ -359,6 +359,40 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
       }
       break;
     }
+    case 'divider':
+      oneOf(settings.style, ['line', 'space'] as const, 'settings.style');
+      if (settings.height !== undefined && (typeof settings.height !== 'number' || settings.height < 0 || settings.height > 160)) {
+        throw new BadRequestException('settings.height must be a number between 0 and 160');
+      }
+      break;
+    case 'multirow':
+      oneOf(settings.imageRatio, IMAGE_RATIOS, 'settings.imageRatio');
+      if (settings.alternate !== undefined && typeof settings.alternate !== 'boolean') throw new BadRequestException('settings.alternate must be true or false');
+      break;
+    case 'collage':
+      oneOf(settings.layout, ['left', 'right'] as const, 'settings.layout');
+      break;
+    case 'featured_product':
+      if (settings.productIds !== undefined && settings.productIds !== null
+        && (!Array.isArray(settings.productIds) || settings.productIds.length > 1 || settings.productIds.some((id: unknown) => typeof id !== 'string'))) {
+        throw new BadRequestException('settings.productIds must hold at most one product id');
+      }
+      maxLen(settings.buttonLabel, 30, 'settings.buttonLabel');
+      break;
+    case 'collection_banner':
+      if (settings.collectionId !== undefined && settings.collectionId !== null && typeof settings.collectionId !== 'string') {
+        throw new BadRequestException('settings.collectionId must be text');
+      }
+      for (const k of ['showImage', 'showDescription'] as const) {
+        if (settings[k] !== undefined && typeof settings[k] !== 'boolean') throw new BadRequestException(`settings.${k} must be true or false`);
+      }
+      break;
+    case 'recently_viewed':
+      if (settings.limit !== undefined && (!Number.isInteger(settings.limit) || settings.limit < 2 || settings.limit > 12)) {
+        throw new BadRequestException('settings.limit must be a whole number from 2 to 12');
+      }
+      if (settings.columns !== undefined && ![2, 3, 4].includes(settings.columns)) throw new BadRequestException('settings.columns must be 2, 3 or 4');
+      break;
     case 'collection_list': {
       if (settings.columns !== undefined && ![2, 3, 4].includes(settings.columns)) {
         throw new BadRequestException('settings.columns must be 2, 3 or 4');
@@ -743,6 +777,18 @@ export function validateBlockSettings(blockType: string, settings: Record<string
     // product_main's 7 fixed blocks (Phase 4) — no settings, purely
     // enable/disable + reorder of an already-real, already-rendered piece
     // of the product page. See `core-sections.util.ts`.
+    case 'multirow_row':
+      if (settings.imageUrl) assertHttpsUrl(settings.imageUrl, 'imageUrl');
+      maxLen(settings.heading, 120, 'heading');
+      maxLen(settings.body, 1000, 'body');
+      maxLen(settings.ctaText, 40, 'ctaText');
+      assertLinkTarget(settings.ctaLink, 'ctaLink');
+      break;
+    case 'collage_item':
+      assertHttpsUrl(settings.imageUrl, 'imageUrl');
+      maxLen(settings.heading, 80, 'heading');
+      assertLinkTarget(settings.link, 'link');
+      break;
     case 'product_variant_picker':
       oneOf(settings.pickerStyle, ['pills', 'dropdown'] as const, 'settings.pickerStyle');
       break;
@@ -904,6 +950,12 @@ export const SECTION_ALLOWED_BLOCK_TYPES: AllowedBlockTypesMap = {
   custom_html: [],
   image_banner: [],
   collection_list: [],
+  divider: [],
+  multirow: ['multirow_row'],
+  collage: ['collage_item'],
+  featured_product: [],
+  collection_banner: [],
+  recently_viewed: [],
   store_locations: ['location_item'],
   contact_form: [],
   related_products: [],

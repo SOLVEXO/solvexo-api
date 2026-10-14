@@ -295,6 +295,12 @@ export type SectionSettingsMap = RequireAllKeys<SectionType, {
   custom_html: CustomHtmlSectionSettings;
   image_banner: ImageBannerSectionSettings;
   collection_list: CollectionListSectionSettings;
+  divider: BaseSectionSettings & { style?: 'line' | 'space'; height?: number };
+  multirow: BaseSectionSettings & { imageRatio?: string; alternate?: boolean };
+  collage: BaseSectionSettings & { layout?: 'left' | 'right' };
+  featured_product: BaseSectionSettings & { productIds?: string[]; buttonLabel?: string };
+  collection_banner: BaseSectionSettings & { collectionId?: string | null; showImage?: boolean; showDescription?: boolean };
+  recently_viewed: BaseSectionSettings & { limit?: number; columns?: number };
   store_locations: StoreLocationsSectionSettings;
   contact_form: ContactFormSectionSettings;
   related_products: RelatedProductsSectionSettings;
@@ -516,6 +522,8 @@ export const BLOCK_TYPES = [
   'team_member',
   'stat_item',
   'gallery_image',
+  'multirow_row',
+  'collage_item',
   'multicolumn_column',
   'logo_item',
   'marquee_item',
@@ -564,6 +572,8 @@ export type BlockSettingsMap = RequireAllKeys<BlockType, {
   team_member: TeamMemberBlockSettings;
   stat_item: StatItemBlockSettings;
   gallery_image: GalleryImageBlockSettings;
+  multirow_row: { imageUrl?: string; heading?: string; body?: string; ctaText?: string; ctaLink?: LinkTarget; focalPoint?: unknown };
+  collage_item: { imageUrl: string; heading?: string; link?: LinkTarget };
   multicolumn_column: MulticolumnColumnBlockSettings;
   logo_item: LogoItemBlockSettings;
   marquee_item: MarqueeItemBlockSettings;
