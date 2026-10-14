@@ -830,12 +830,16 @@ export function validateBlockSettings(blockType: string, settings: Record<string
       maxLen(settings.content, 5000, 'settings.content');
       if (settings.imageUrl) assertHttpsUrl(settings.imageUrl, 'settings.imageUrl');
       break;
+    case 'product_buy_buttons':
+      for (const k of ['addToCartLabel', 'soldOutLabel', 'preorderLabel', 'addedLabel'] as const) maxLen(settings[k], 30, `settings.${k}`);
+      break;
+    case 'product_description':
+      maxLen(settings.heading, 40, 'settings.heading');
+      break;
     case 'product_media':
     case 'product_title':
     case 'product_price':
     case 'product_quantity':
-    case 'product_buy_buttons':
-    case 'product_description':
     case 'product_rating':
     case 'product_sku':
     case 'product_wishlist':
