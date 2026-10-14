@@ -1,7 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { ApiProperty } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsArray, IsBoolean, IsIn, IsInt, IsOptional, IsString, Max, MaxLength, Min, ValidateNested } from 'class-validator';
+import { IsArray, IsBoolean, IsIn, IsInt, IsOptional, IsString, Matches, Max, MaxLength, Min, ValidateIf, ValidateNested } from 'class-validator';
 import { BlockInputDto } from '../../common/dto/block-input.dto';
 
 export class UpdateHeaderDto {
@@ -46,4 +46,8 @@ export class UpdateHeaderDto {
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() includePagesInNav?: boolean;
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() showDefaultBlogLink?: boolean;
   @ApiProperty({ required: false, nullable: true }) @IsOptional() @IsString() @MaxLength(24) blogLinkLabel?: string | null;
+  @ApiProperty({ required: false, nullable: true }) @ValidateIf((_, v) => v !== null && v !== undefined) @Matches(/^#[0-9a-fA-F]{6}$/) bgColor?: string | null;
+  @ApiProperty({ required: false, nullable: true }) @ValidateIf((_, v) => v !== null && v !== undefined) @Matches(/^#[0-9a-fA-F]{6}$/) textColor?: string | null;
+  @ApiProperty({ required: false, enum: ['compact', 'normal', 'spacious'] }) @IsOptional() @IsIn(['compact', 'normal', 'spacious']) paddingY?: 'compact' | 'normal' | 'spacious';
+  @ApiProperty({ required: false }) @IsOptional() @IsBoolean() showDivider?: boolean;
 }

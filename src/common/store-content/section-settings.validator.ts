@@ -551,7 +551,27 @@ export function validateBlockSettings(blockType: string, settings: Record<string
       break;
     case 'footer_text':
       required(settings.text, 'text');
+      maxLen(settings.heading, 60, 'heading');
       maxLen(settings.text, 600, 'text');
+      break;
+    case 'footer_brand':
+      maxLen(settings.text, 600, 'text');
+      for (const k of ['showTagline', 'showSocial']) {
+        if (settings[k] !== undefined && typeof settings[k] !== 'boolean') throw new BadRequestException(`${k} must be true or false`);
+      }
+      break;
+    case 'footer_newsletter':
+      maxLen(settings.heading, 60, 'heading');
+      maxLen(settings.text, 160, 'text');
+      break;
+    case 'footer_image':
+      assertHttpsUrl(settings.imageUrl, 'imageUrl');
+      maxLen(settings.heading, 60, 'heading');
+      maxLen(settings.alt, 120, 'alt');
+      if (settings.width !== undefined && settings.width !== null
+        && (typeof settings.width !== 'number' || settings.width < 40 || settings.width > 400)) {
+        throw new BadRequestException('width must be a number from 40 to 400');
+      }
       break;
     case 'footer_contact': {
       maxLen(settings.email, 120, 'email');
@@ -883,7 +903,8 @@ function validateNavChildren(item: Record<string, any>, depth: number): void {
 // `store-theme` and `theme-catalog`. ─────────────────────────────────────
 
 export const HEADER_ALLOWED_BLOCK_TYPES = ['nav_link'];
-export const FOOTER_ALLOWED_BLOCK_TYPES = ['footer_column', 'social_link', 'copyright_text', 'footer_text', 'footer_contact', 'footer_payment_icons'];
+export const FOOTER_ALLOWED_BLOCK_TYPES = ['footer_column', 'social_link', 'copyright_text', 'footer_text', 'footer_contact', 'footer_payment_icons',
+  'footer_brand', 'footer_newsletter', 'footer_image'];
 
 export function validateBlocks(blocks: { type: string; settings: Record<string, any> }[], allowed: readonly string[], max: number): void {
   if (blocks.length > max) throw new BadRequestException(`Cannot have more than ${max} items`);

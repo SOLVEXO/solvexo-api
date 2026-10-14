@@ -168,6 +168,10 @@ export class StorefrontHeader {
   @Prop({ type: Boolean, default: true }) includePagesInNav: boolean;     // pages flagged "show in navigation"
   @Prop({ type: Boolean, default: true }) showDefaultBlogLink: boolean;   // the theme's Journal/Stories link when the nav is empty
   @Prop({ type: String, default: null }) blogLinkLabel: string | null;
+  @Prop({ type: String, default: null }) bgColor: string | null;          // null = theme colour
+  @Prop({ type: String, default: null }) textColor: string | null;
+  @Prop({ type: String, enum: ['compact', 'normal', 'spacious'], default: 'normal' }) paddingY: 'compact' | 'normal' | 'spacious';
+  @Prop({ type: Boolean, default: true }) showDivider: boolean;
 }
 export const StorefrontHeaderSchema = SchemaFactory.createForClass(StorefrontHeader);
 
@@ -202,6 +206,10 @@ export class StorefrontFooter {
   @Prop({ type: String, default: null }) shopColumnHeading: string | null;
   @Prop({ type: String, default: null }) accountColumnHeading: string | null;
   @Prop({ type: String, default: null }) blogLinkLabel: string | null;
+  @Prop({ type: String, default: null }) bgColor: string | null;
+  @Prop({ type: String, default: null }) textColor: string | null;
+  // true once the footer is saved as an ordered block list (brand + newsletter are blocks); false = older layout.
+  @Prop({ type: Boolean, default: false }) blockLayout: boolean;
 }
 export const StorefrontFooterSchema = SchemaFactory.createForClass(StorefrontFooter);
 

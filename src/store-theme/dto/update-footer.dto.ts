@@ -1,7 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { ApiProperty } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsArray, IsBoolean, IsIn, IsInt, IsOptional, IsString, Max, MaxLength, Min, ValidateNested } from 'class-validator';
+import { IsArray, IsBoolean, IsIn, IsInt, IsOptional, IsString, Matches, Max, MaxLength, Min, ValidateIf, ValidateNested } from 'class-validator';
 import { BlockInputDto } from '../../common/dto/block-input.dto';
 
 export class UpdateFooterDto {
@@ -34,4 +34,7 @@ export class UpdateFooterDto {
   @ApiProperty({ required: false, nullable: true }) @IsOptional() @IsString() @MaxLength(40) shopColumnHeading?: string | null;
   @ApiProperty({ required: false, nullable: true }) @IsOptional() @IsString() @MaxLength(40) accountColumnHeading?: string | null;
   @ApiProperty({ required: false, nullable: true }) @IsOptional() @IsString() @MaxLength(24) blogLinkLabel?: string | null;
+  @ApiProperty({ required: false, nullable: true }) @ValidateIf((_, v) => v !== null && v !== undefined) @Matches(/^#[0-9a-fA-F]{6}$/) bgColor?: string | null;
+  @ApiProperty({ required: false, nullable: true }) @ValidateIf((_, v) => v !== null && v !== undefined) @Matches(/^#[0-9a-fA-F]{6}$/) textColor?: string | null;
+  @ApiProperty({ required: false }) @IsOptional() @IsBoolean() blockLayout?: boolean;
 }

@@ -802,7 +802,7 @@ export class ThemePackageService {
   }
 }
 
-async function readThemeZip(buffer: Buffer): Promise<PackageFile[]> {
+export async function readThemeZip(buffer: Buffer): Promise<PackageFile[]> {
   return new Promise((resolve, reject) => {
     yauzl.fromBuffer(buffer, { lazyEntries: true, validateEntrySizes: true, decodeStrings: true }, (openError, zip) => {
       if (openError || !zip) return reject(new BadRequestException('Could not read the theme ZIP archive'));
@@ -853,7 +853,7 @@ async function readThemeZip(buffer: Buffer): Promise<PackageFile[]> {
   });
 }
 
-function validateThemePackage(files: PackageFile[]) {
+export function validateThemePackage(files: PackageFile[]) {
   const byPath = new Map(files.map((file) => [file.path, file]));
   for (const required of ['layout/theme.liquid', 'config/settings_schema.json', 'templates/index.json']) {
     if (!byPath.has(required)) throw new BadRequestException(`Theme ZIP is missing required file: ${required}`);

@@ -776,10 +776,10 @@ export class StoreService {
 
     const LINK_RE = /^(https?:\/\/\S+|\/(?!\/)\S*)$/i;
     const rawMore = body.moreMessages === undefined || body.moreMessages === null ? [] : body.moreMessages;
-    if (!Array.isArray(rawMore) || rawMore.length > 4) throw new BadRequestException('moreMessages can hold up to 4 extra messages');
+    if (!Array.isArray(rawMore) || rawMore.length > 9) throw new BadRequestException('moreMessages can hold up to 9 extra messages');
     const moreMessages = rawMore
-      .map((m: any) => ({ message: text(m?.message, 200, 'moreMessages[].message'), ctaLabel: text(m?.ctaLabel, 40, 'moreMessages[].ctaLabel'), ctaLink: text(m?.ctaLink, 500, 'moreMessages[].ctaLink') }))
-      .filter((m: any) => m.message) as { message: string; ctaLabel: string | null; ctaLink: string | null }[];
+      .map((m: any) => ({ message: text(m?.message, 200, 'moreMessages[].message'), ctaLabel: text(m?.ctaLabel, 40, 'moreMessages[].ctaLabel'), ctaLink: text(m?.ctaLink, 500, 'moreMessages[].ctaLink'), hidden: m?.hidden === true }))
+      .filter((m: any) => m.message) as { message: string; ctaLabel: string | null; ctaLink: string | null; hidden: boolean }[];
     for (const m of moreMessages) {
       if (m.ctaLink && !LINK_RE.test(m.ctaLink)) throw new BadRequestException('moreMessages[].ctaLink must start with https://, http:// or /');
     }
@@ -800,6 +800,7 @@ export class StoreService {
       type,
       ctaLabel,
       ctaLink,
+      messageHidden: body.messageHidden === true,
       isActive: !!body.isActive,
       startAt: body.startAt ? new Date(body.startAt) : null,
       endAt: body.endAt ? new Date(body.endAt) : null,
@@ -1364,6 +1365,10 @@ export class StoreService {
     const announcementActive = !!bar?.isActive
       && (!bar.startAt || new Date(bar.startAt).getTime() <= now)
       && (!bar.endAt || new Date(bar.endAt).getTime() >= now);
+    const visibleAnnouncements = [
+      ...(bar?.message && !bar.messageHidden ? [{ message: bar.message, ctaLabel: bar.ctaLabel ?? null, ctaLink: bar.ctaLink ?? null }] : []),
+      ...(bar?.moreMessages ?? []).filter((m: any) => m.message && !m.hidden).map((m: any) => ({ message: m.message, ctaLabel: m.ctaLabel ?? null, ctaLink: m.ctaLink ?? null })),
+    ];
 
     return {
       success: true,
@@ -1431,9 +1436,9 @@ export class StoreService {
         cookieBannerPosition: store.cookieBannerPosition ?? 'bottom_bar',
         cookieBannerColorMode: store.cookieBannerColorMode ?? 'dark',
         showDoNotSellLink: !!store.showDoNotSellLink,
-        announcementBar: announcementActive ? {
-          message: bar.message, type: bar.type, ctaLabel: bar.ctaLabel, ctaLink: bar.ctaLink,
-          moreMessages: bar.moreMessages ?? [], rotateSeconds: bar.rotateSeconds ?? 5, closable: bar.closable !== false,
+        announcementBar: announcementActive && visibleAnnouncements.length ? {
+          message: visibleAnnouncements[0].message, type: bar.type, ctaLabel: visibleAnnouncements[0].ctaLabel, ctaLink: visibleAnnouncements[0].ctaLink,
+          moreMessages: visibleAnnouncements.slice(1), rotateSeconds: bar.rotateSeconds ?? 5, closable: bar.closable !== false,
           bgColor: bar.bgColor ?? null, textColor: bar.textColor ?? null, placement: bar.placement ?? 'below', align: bar.align ?? 'left',
         } : null,
         activeCampaign: primaryCampaign ? {

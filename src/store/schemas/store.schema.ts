@@ -185,8 +185,9 @@ export class StoreAnnouncementBar {
   @Prop({ type: Date, default: null }) endAt: Date | null;
   // Optional extra rotating messages (the fields above are message #1). Every field defaults to the
   // old single-message bar: below the header, closable, left-aligned, the type's own colours.
-  @Prop({ type: [{ _id: false, message: String, ctaLabel: { type: String, default: null }, ctaLink: { type: String, default: null } }], default: [] })
-  moreMessages: { message: string; ctaLabel: string | null; ctaLink: string | null }[];
+  @Prop({ type: Boolean, default: false }) messageHidden: boolean;
+  @Prop({ type: [{ _id: false, message: String, ctaLabel: { type: String, default: null }, ctaLink: { type: String, default: null }, hidden: { type: Boolean, default: false } }], default: [] })
+  moreMessages: { message: string; ctaLabel: string | null; ctaLink: string | null; hidden?: boolean }[];
   @Prop({ type: Number, default: 5 }) rotateSeconds: number;
   @Prop({ type: Boolean, default: true }) closable: boolean;
   @Prop({ type: String, default: null }) bgColor: string | null;

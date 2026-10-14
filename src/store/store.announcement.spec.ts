@@ -27,18 +27,19 @@ describe('announcement bar settings', () => {
     const { update, store } = build();
     await update({
       message: 'One', isActive: true,
-      moreMessages: [{ message: 'Two', ctaLabel: 'Shop', ctaLink: '/collections/sale' }, { message: '' }, { message: 'Three' }],
-      rotateSeconds: 8, closable: false, bgColor: '#112233', textColor: '#ffffff', placement: 'above', align: 'center',
+      moreMessages: [{ message: 'Two', ctaLabel: 'Shop', ctaLink: '/collections/sale' }, { message: '' }, { message: 'Three', hidden: true }],
+      rotateSeconds: 8, closable: false, bgColor: '#112233', textColor: '#ffffff', placement: 'above', align: 'center', messageHidden: true,
     });
     expect(store.announcementBar.moreMessages).toEqual([
-      { message: 'Two', ctaLabel: 'Shop', ctaLink: '/collections/sale' },
-      { message: 'Three', ctaLabel: null, ctaLink: null },
+      { message: 'Two', ctaLabel: 'Shop', ctaLink: '/collections/sale', hidden: false },
+      { message: 'Three', ctaLabel: null, ctaLink: null, hidden: true },
     ]);
+    expect(store.announcementBar.messageHidden).toBe(true);
     expect(store.announcementBar).toMatchObject({ rotateSeconds: 8, closable: false, bgColor: '#112233', textColor: '#ffffff', placement: 'above', align: 'center' });
   });
 
   it.each([
-    ['more than 4 extra messages', { message: 'a', moreMessages: Array(5).fill({ message: 'x' }) }],
+    ['more than 9 extra messages', { message: 'a', moreMessages: Array(10).fill({ message: 'x' }) }],
     ['an unsafe extra-message link', { message: 'a', moreMessages: [{ message: 'b', ctaLink: 'javascript:alert(1)' }] }],
     ['an unsafe main link', { message: 'a', ctaLink: 'javascript:alert(1)' }],
     ['a protocol-relative link', { message: 'a', ctaLink: '//evil.example' }],

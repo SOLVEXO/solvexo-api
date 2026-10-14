@@ -119,8 +119,14 @@ export class StoreThemeService {
       settings: { heading: menu.name, links: menu.items },
       enabled: true,
     };
-    const nonColumnBlocks = (footer.blocks ?? []).filter((b: any) => b.type !== 'footer_column');
-    return { ...footer, blocks: [menuColumn, ...nonColumnBlocks] };
+    const blocks: any[] = footer.blocks ?? [];
+    const firstColumn = blocks.findIndex((b: any) => b.type === 'footer_column');
+    // The menu takes the place of the retailer's first link column (or sits after the brand block).
+    const at = firstColumn >= 0 ? firstColumn : blocks.findIndex((b: any) => b.type === 'footer_brand') + 1;
+    const out = blocks.filter((b: any, i: number) => b.type !== 'footer_column' || i === firstColumn);
+    if (firstColumn >= 0) out[out.findIndex((b: any) => b.type === 'footer_column')] = menuColumn;
+    else out.splice(at, 0, menuColumn);
+    return { ...footer, blocks: out };
   }
 
   private get storeThemeModel() {
@@ -795,7 +801,7 @@ export class StoreThemeService {
     if (dto.headerStyle !== undefined) set['draft.header.headerStyle'] = dto.headerStyle;
     if (dto.menuId !== undefined) set['draft.header.menuId'] = dto.menuId;
     const headerKeys = ['logoWidth', 'mobileLogoWidth', 'sticky', 'showSearch', 'showAccount', 'showWishlist', 'showShopMenu',
-      'shopMenuLabel', 'includePagesInNav', 'showDefaultBlogLink', 'blogLinkLabel'] as const;
+      'shopMenuLabel', 'includePagesInNav', 'showDefaultBlogLink', 'blogLinkLabel', 'bgColor', 'textColor', 'paddingY', 'showDivider'] as const;
     for (const key of headerKeys) {
       if (dto[key] !== undefined) set[`draft.header.${key}`] = key.endsWith('Label') ? (dto[key] as string | null)?.toString().trim() || null : dto[key];
     }
@@ -817,7 +823,7 @@ export class StoreThemeService {
       throw new BadRequestException('Upload a footer logo or choose another logo option');
     }
     const footerKeys = ['logoSource', 'logoUrl', 'logoWidth', 'showNewsletter', 'newsletterHeading', 'newsletterText',
-      'showDefaultColumns', 'shopColumnHeading', 'accountColumnHeading', 'blogLinkLabel'] as const;
+      'showDefaultColumns', 'shopColumnHeading', 'accountColumnHeading', 'blogLinkLabel', 'bgColor', 'textColor', 'blockLayout'] as const;
     for (const key of footerKeys) {
       if (dto[key] === undefined) continue;
       const v = dto[key];
