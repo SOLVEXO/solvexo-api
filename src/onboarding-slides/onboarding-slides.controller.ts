@@ -26,6 +26,8 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 
+import { PermissionsGuard } from '../auth/guards/permissions.guard';
+import { RequirePermission } from '../auth/decorators/require-permission.decorator';
 const SLIDE_UPLOAD_MIME = /\/(jpg|jpeg|png|webp)$/;
 const SLIDE_UPLOAD_MAX_BYTES = 5 * 1024 * 1024;
 
@@ -41,7 +43,8 @@ export class OnboardingSlidesController {
   }
 
   // GET all slides incl. inactive — admin only, for the management list
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @RequirePermission('content.manage')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('admin')
   @ApiBearerAuth()
   @Get('admin')
@@ -50,7 +53,8 @@ export class OnboardingSlidesController {
   }
 
   // POST via JSON image URL — admin only
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @RequirePermission('content.manage')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('admin')
   @ApiBearerAuth()
   @Post()
@@ -60,7 +64,8 @@ export class OnboardingSlidesController {
   }
 
   // POST via file upload — admin only
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @RequirePermission('content.manage')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('admin')
   @ApiBearerAuth()
   @Post('upload')
@@ -89,7 +94,8 @@ export class OnboardingSlidesController {
   }
 
   // PATCH edit slide — admin only
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @RequirePermission('content.manage')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('admin')
   @ApiBearerAuth()
   @Patch(':id')
@@ -98,7 +104,8 @@ export class OnboardingSlidesController {
   }
 
   // PUT reorder slides — admin only, bulk order update for drag-and-drop UI
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @RequirePermission('content.manage')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('admin')
   @ApiBearerAuth()
   @Put('reorder')
@@ -107,7 +114,8 @@ export class OnboardingSlidesController {
   }
 
   // DELETE slide — admin only
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @RequirePermission('content.manage')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('admin')
   @ApiBearerAuth()
   @Delete(':id')

@@ -57,8 +57,10 @@ export function readThemePackageStructure(
         /\{%[-+]?\s*schema\s*[-+]?%\}([\s\S]*?)\{%[-+]?\s*endschema\s*[-+]?%\}/gi,
       ),
     ];
-    if (schemaMatches.length !== 1) {
-      throw new Error(`${file.path} must contain exactly one schema tag`);
+    // Shopify allows sections without a schema (static sections such as Dawn's cart-drawer): nothing to edit, still renderable.
+    if (schemaMatches.length === 0) continue;
+    if (schemaMatches.length > 1) {
+      throw new Error(`${file.path} must contain at most one schema tag`);
     }
 
     let schema: unknown;
@@ -71,11 +73,12 @@ export function readThemePackageStructure(
     if (
       !schema ||
       typeof schema !== 'object' ||
-      Array.isArray(schema) ||
-      typeof (schema as Record<string, unknown>).name !== 'string'
+      Array.isArray(schema)
     ) {
-      throw new Error(`${file.path} schema must be an object with a name`);
+      throw new Error(`${file.path} schema must be a JSON object`);
     }
+    // `name` is optional for blocks and translated sections in current Shopify themes; fall back to the file name.
+    if (typeof (schema as Record<string, unknown>).name !== 'string') (schema as Record<string, unknown>).name = match[2];
 
     const schemaRecord = schema as ThemePackageSectionSchema;
     for (const key of ['settings', 'blocks', 'presets'] as const) {
@@ -117,7 +120,8 @@ export function readThemePackageStructure(
   return { components, templates, sectionGroups, themeSettings };
 }
 
-function parseThemeJson(source: string): unknown {
+/** Parses theme JSON the way Shopify does: `/* … */` / `//` comments (generated templates start with one) and trailing commas are allowed. */
+export function parseThemeJson(source: string): unknown {
   return JSON.parse(removeTrailingCommas(removeJsonComments(source)));
 }
 

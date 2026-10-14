@@ -63,6 +63,29 @@ export class Admin {
     // match this current DB value.
     @Prop({ default: 0 })
     tokenVersion: number;
+
+    // ── Admin Team ──────────────────────────────────────────────────────────
+    // The platform owner (and anyone the owner promotes) is a Super Admin: never permission-checked.
+    @Prop({ default: false }) isSuperAdmin: boolean;
+    // A team admin has a role (permissions live on AdminRole); no role + not super = legacy full access until migrated.
+    @Prop({ type: String, default: null }) roleId: string | null;
+    @Prop({ type: String, default: null }) createdByAdminId: string | null;
+    @Prop({ type: String, default: null, select: false }) inviteTokenHash: string | null;
+    @Prop({ type: Date, default: null }) inviteTokenExpiresAt: Date | null;
+    @Prop({ type: Date, default: null }) inviteSentAt: Date | null;
+    @Prop({ type: Date, default: null }) inviteAcceptedAt: Date | null;
+    @Prop({ type: String, default: null, select: false }) resetTokenHash: string | null;
+    @Prop({ type: Date, default: null }) resetTokenExpiresAt: Date | null;
+    @Prop({ type: Number, default: 0 }) failedLoginCount: number;
+    @Prop({ type: Date, default: null }) lockedUntil: Date | null;
+    // Temporary access: after this moment the admin can no longer log in or use an open session.
+    @Prop({ type: Date, default: null }) accessExpiresAt: Date | null;
+    @Prop({ type: Date, default: null }) lastLoginAt: Date | null;
+    @Prop({ type: String, default: null }) lastLoginIp: string | null;
+    @Prop({ type: [{ sid: String, ip: String, userAgent: String, createdAt: Date, lastSeenAt: Date }], default: [], _id: false })
+    sessions: { sid: string; ip: string | null; userAgent: string | null; createdAt: Date; lastSeenAt: Date }[];
+    // sha256(ip|userAgent) of devices that already logged in: a new one triggers a login alert.
+    @Prop({ type: [String], default: [] }) knownDevices: string[];
 }
 
 

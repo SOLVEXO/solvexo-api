@@ -18,6 +18,8 @@ import { IdempotencyInterceptor } from '../common/idempotency.interceptor';
 import { RefundRequestService } from './refund-request.service';
 import { CreateRefundRequestDto, RejectRefundRequestDto, ApproveRefundRequestDto } from './dto/refund-request.dto';
 
+import { PermissionsGuard } from '../auth/guards/permissions.guard';
+import { RequirePermission } from '../auth/decorators/require-permission.decorator';
 @ApiTags('Refund Requests')
 @ApiBearerAuth()
 @Controller('api/refund-request')
@@ -41,7 +43,8 @@ export class RefundRequestController {
     return this.refundRequestService.listForOrder(orderId, req.user.userId, req.user.role);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @RequirePermission('clients.view')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('admin')
   @Get('admin/pending')
   async listPending(@Query('page') page = '1', @Query('limit') limit = '20') {

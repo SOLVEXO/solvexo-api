@@ -778,8 +778,27 @@ export class StoreService {
     const rawMore = body.moreMessages === undefined || body.moreMessages === null ? [] : body.moreMessages;
     if (!Array.isArray(rawMore) || rawMore.length > 9) throw new BadRequestException('moreMessages can hold up to 9 extra messages');
     const moreMessages = rawMore
-      .map((m: any) => ({ message: text(m?.message, 200, 'moreMessages[].message'), ctaLabel: text(m?.ctaLabel, 40, 'moreMessages[].ctaLabel'), ctaLink: text(m?.ctaLink, 500, 'moreMessages[].ctaLink'), hidden: m?.hidden === true }))
-      .filter((m: any) => m.message) as { message: string; ctaLabel: string | null; ctaLink: string | null; hidden: boolean }[];
+      .map((m: any) => ({ message: text(m?.message, 200, 'moreMessages[].message'), ctaLabel: text(m?.ctaLabel, 40, 'moreMessages[].ctaLabel'), ctaLink: text(m?.ctaLink, 500, 'moreMessages[].ctaLink'), hidden: m?.hidden === true, couponCode: text(m?.couponCode, 40, 'moreMessages[].couponCode') }))
+      .filter((m: any) => m.message) as { message: string; ctaLabel: string | null; ctaLink: string | null; hidden: boolean; couponCode: string | null }[];
+    const pick = <T extends string>(v: unknown, allowed: readonly T[], fallback: T, field: string): T => {
+      if (v === undefined || v === null || v === '') return fallback;
+      if (!allowed.includes(v as T)) throw new BadRequestException(`${field} must be one of ${allowed.join(', ')}`);
+      return v as T;
+    };
+    if (body.countdownEndAt && Number.isNaN(new Date(body.countdownEndAt).getTime())) throw new BadRequestException('countdownEndAt is not a valid date');
+    const design = {
+      couponCode: text(body.couponCode, 40, 'couponCode'),
+      animation: pick(body.animation, ['slide', 'fade', 'marquee'] as const, 'slide', 'animation'),
+      marqueeSpeed: pick(body.marqueeSpeed, ['slow', 'normal', 'fast'] as const, 'normal', 'marqueeSpeed'),
+      fontSize: pick(body.fontSize, ['sm', 'md', 'lg'] as const, 'sm', 'fontSize'),
+      uppercase: body.uppercase === true,
+      bold: body.bold === true,
+      showIcon: body.showIcon !== false,
+      device: pick(body.device, ['all', 'mobile', 'desktop'] as const, 'all', 'device'),
+      dismissFor: pick(body.dismissFor, ['forever', 'day', 'session'] as const, 'forever', 'dismissFor'),
+      countdownEndAt: body.countdownEndAt ? new Date(body.countdownEndAt) : null,
+      preset: text(body.preset, 40, 'preset'),
+    };
     for (const m of moreMessages) {
       if (m.ctaLink && !LINK_RE.test(m.ctaLink)) throw new BadRequestException('moreMessages[].ctaLink must start with https://, http:// or /');
     }
@@ -809,8 +828,10 @@ export class StoreService {
       closable: body.closable !== false,
       bgColor: colour(body.bgColor, 'bgColor'),
       textColor: colour(body.textColor, 'textColor'),
+      bgColor2: colour(body.bgColor2, 'bgColor2'),
       placement,
       align,
+      ...design,
     };
     await store.save();
 
@@ -1366,8 +1387,8 @@ export class StoreService {
       && (!bar.startAt || new Date(bar.startAt).getTime() <= now)
       && (!bar.endAt || new Date(bar.endAt).getTime() >= now);
     const visibleAnnouncements = [
-      ...(bar?.message && !bar.messageHidden ? [{ message: bar.message, ctaLabel: bar.ctaLabel ?? null, ctaLink: bar.ctaLink ?? null }] : []),
-      ...(bar?.moreMessages ?? []).filter((m: any) => m.message && !m.hidden).map((m: any) => ({ message: m.message, ctaLabel: m.ctaLabel ?? null, ctaLink: m.ctaLink ?? null })),
+      ...(bar?.message && !bar.messageHidden ? [{ message: bar.message, ctaLabel: bar.ctaLabel ?? null, ctaLink: bar.ctaLink ?? null, couponCode: bar.couponCode ?? null }] : []),
+      ...(bar?.moreMessages ?? []).filter((m: any) => m.message && !m.hidden).map((m: any) => ({ message: m.message, ctaLabel: m.ctaLabel ?? null, ctaLink: m.ctaLink ?? null, couponCode: m.couponCode ?? null })),
     ];
 
     return {
@@ -1440,6 +1461,10 @@ export class StoreService {
           message: visibleAnnouncements[0].message, type: bar.type, ctaLabel: visibleAnnouncements[0].ctaLabel, ctaLink: visibleAnnouncements[0].ctaLink,
           moreMessages: visibleAnnouncements.slice(1), rotateSeconds: bar.rotateSeconds ?? 5, closable: bar.closable !== false,
           bgColor: bar.bgColor ?? null, textColor: bar.textColor ?? null, placement: bar.placement ?? 'below', align: bar.align ?? 'left',
+          couponCode: visibleAnnouncements[0].couponCode, bgColor2: bar.bgColor2 ?? null, animation: bar.animation ?? 'slide',
+          marqueeSpeed: bar.marqueeSpeed ?? 'normal', fontSize: bar.fontSize ?? 'sm', uppercase: !!bar.uppercase, bold: !!bar.bold,
+          showIcon: bar.showIcon !== false, device: bar.device ?? 'all', dismissFor: bar.dismissFor ?? 'forever',
+          countdownEndAt: bar.countdownEndAt ?? null,
         } : null,
         activeCampaign: primaryCampaign ? {
           campaignId: primaryCampaign.campaignId,

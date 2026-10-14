@@ -104,36 +104,42 @@ export class StoreSubscribersController {
 @ApiTags('Newsletter — admin')
 @ApiBearerAuth()
 @Controller('api/admin/newsletter')
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
 @Roles('admin')
 export class AdminNewsletterController {
   constructor(private readonly lists: SubscriberListsService) {}
 
+  @RequirePermission('content.manage')
   @Get('subscribers')
   list(@Query() query: SubscriberListQuery) {
     return this.lists.list(null, query);
   }
 
+  @RequirePermission('content.manage')
   @Get('subscribers/export')
   async export(@Query() query: SubscriberListQuery, @Res() res: Response) {
     sendCsv(res, `solvexo-subscribers-${new Date().toISOString().slice(0, 10)}.csv`, await this.lists.exportCsv(null, query));
   }
 
+  @RequirePermission('content.manage')
   @Patch('subscribers/:subscriberId')
   setStatus(@Param('subscriberId') id: string, @Body() dto: SetSubscriberStatusDto) {
     return this.lists.setStatus(null, id, dto.subscribed);
   }
 
+  @RequirePermission('content.manage')
   @Delete('subscribers/:subscriberId')
   remove(@Param('subscriberId') id: string) {
     return this.lists.remove(null, id);
   }
 
+  @RequirePermission('content.manage')
   @Get('broadcasts')
   broadcasts() {
     return this.lists.listBroadcasts();
   }
 
+  @RequirePermission('content.manage')
   @Post('broadcasts')
   broadcast(@Req() req: any, @Body() dto: BroadcastDto) {
     return this.lists.broadcast(req.user.userId, dto.subject, dto.message, dto.testEmail);

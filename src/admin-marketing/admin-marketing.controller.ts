@@ -15,9 +15,11 @@ import { UpdateCampaignStatusDto } from './dto/update-campaign-status.dto';
 import { CreatePlatformCouponDto } from './dto/create-platform-coupon.dto';
 import { UpdatePlatformCouponDto } from './dto/update-platform-coupon.dto';
 
+import { PermissionsGuard } from '../auth/guards/permissions.guard';
+import { RequirePermission } from '../auth/decorators/require-permission.decorator';
 @ApiTags('Admin Marketing')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
 @Roles('admin')
 @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
 @Controller('api/admin/marketing')
@@ -30,26 +32,31 @@ export class AdminMarketingController {
 
   // ─── Campaigns ───────────────────────────────────────────────────────────
 
+  @RequirePermission('marketing.manage')
   @Post('campaigns')
   createCampaign(@Req() req: any, @Body() dto: CreateCampaignDto) {
     return this.adminMarketingService.createCampaign(dto, this.meta(req));
   }
 
+  @RequirePermission('marketing.manage')
   @Get('campaigns')
   listCampaigns(@Query('status') status?: string) {
     return this.adminMarketingService.listCampaigns(status);
   }
 
+  @RequirePermission('marketing.manage')
   @Put('campaigns/:id')
   updateCampaign(@Req() req: any, @Param('id') id: string, @Body() dto: UpdateCampaignDto) {
     return this.adminMarketingService.updateCampaign(id, dto, this.meta(req));
   }
 
+  @RequirePermission('marketing.manage')
   @Patch('campaigns/:id/status')
   setCampaignStatus(@Req() req: any, @Param('id') id: string, @Body() dto: UpdateCampaignStatusDto) {
     return this.adminMarketingService.setCampaignStatus(id, dto, this.meta(req));
   }
 
+  @RequirePermission('marketing.manage')
   @Delete('campaigns/:id')
   deleteCampaign(@Req() req: any, @Param('id') id: string) {
     return this.adminMarketingService.deleteCampaign(id, this.meta(req));
@@ -57,11 +64,13 @@ export class AdminMarketingController {
 
   // ─── Platform-wide coupons ───────────────────────────────────────────────
 
+  @RequirePermission('marketing.manage')
   @Get('coupons/import-template')
   platformCouponsImportTemplate() {
     return buildTemplatePayload('platform-coupons-import-template.csv', PLATFORM_COUPON_IMPORT_COLUMNS);
   }
 
+  @RequirePermission('marketing.manage')
   @Post('coupons/import')
   @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }))
   importPlatformCoupons(@Req() req: any, @UploadedFile() file: any) {
@@ -72,21 +81,25 @@ export class AdminMarketingController {
     );
   }
 
+  @RequirePermission('marketing.manage')
   @Post('coupons')
   createPlatformCoupon(@Req() req: any, @Body() dto: CreatePlatformCouponDto) {
     return this.adminMarketingService.createPlatformCoupon(dto, this.meta(req));
   }
 
+  @RequirePermission('marketing.manage')
   @Get('coupons')
   listPlatformCoupons() {
     return this.adminMarketingService.listPlatformCoupons();
   }
 
+  @RequirePermission('marketing.manage')
   @Patch('coupons/:id')
   updatePlatformCoupon(@Req() req: any, @Param('id') id: string, @Body() dto: UpdatePlatformCouponDto) {
     return this.adminMarketingService.updatePlatformCoupon(id, dto, this.meta(req));
   }
 
+  @RequirePermission('marketing.manage')
   @Delete('coupons/:id')
   deletePlatformCoupon(@Req() req: any, @Param('id') id: string) {
     return this.adminMarketingService.deletePlatformCoupon(id, this.meta(req));

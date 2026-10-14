@@ -6,20 +6,24 @@ import { RolesGuard } from '../../auth/guards/roles.guard';
 import { Roles } from '../../auth/decorators/roles.decorator';
 import { StripeWebhookService } from './stripe-webhook.service';
 
+import { PermissionsGuard } from '../../auth/guards/permissions.guard';
+import { RequirePermission } from '../../auth/decorators/require-permission.decorator';
 /** Admin dead-letter view + replay for Stripe webhook events (platform infrastructure, not tied to any one feature). */
 @ApiTags('Stripe webhooks — admin')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
 @Roles('admin')
 @Controller('api/subscriptions/admin/webhooks')
 export class StripeWebhookAdminController {
   constructor(private readonly webhookService: StripeWebhookService) {}
 
+  @RequirePermission('billing.manage')
   @Get()
   history(@Query() query: any) {
     return this.webhookService.adminHistory(query);
   }
 
+  @RequirePermission('billing.manage')
   @Post(':id/retry')
   retry(@Param('id') id: string) {
     return this.webhookService.adminRetry(id);

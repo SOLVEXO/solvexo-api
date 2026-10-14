@@ -31,6 +31,8 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 
+import { PermissionsGuard } from '../auth/guards/permissions.guard';
+import { RequirePermission } from '../auth/decorators/require-permission.decorator';
 @ApiTags('FAQs')
 @Controller('api/faqs')
 export class FaqController {
@@ -115,8 +117,9 @@ export class FaqController {
   // ADMIN ENDPOINTS (Auth Required)
   // ============================================================
 
+  @RequirePermission('content.manage')
   @Get('admin/all')
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('admin')
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
@@ -138,8 +141,9 @@ export class FaqController {
     return this.faqService.findAll();
   }
 
+  @RequirePermission('content.manage')
   @Get('import-template')
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('admin')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Bulk-import CSV template (admin)' })
@@ -147,8 +151,9 @@ export class FaqController {
     return buildTemplatePayload('faqs-import-template.csv', FAQ_IMPORT_COLUMNS);
   }
 
+  @RequirePermission('content.manage')
   @Post('import')
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('admin')
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
@@ -164,8 +169,9 @@ export class FaqController {
     );
   }
 
+  @RequirePermission('content.manage')
   @Post()
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('admin')
   @ApiBearerAuth()
   @HttpCode(HttpStatus.CREATED)
@@ -194,8 +200,9 @@ export class FaqController {
     return this.faqService.create(dto);
   }
 
+  @RequirePermission('content.manage')
   @Put(':id')
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('admin')
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
@@ -218,8 +225,9 @@ export class FaqController {
     return this.faqService.update(id, dto);
   }
 
+  @RequirePermission('content.manage')
   @Put(':id/toggle')
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('admin')
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
@@ -242,8 +250,9 @@ export class FaqController {
     return this.faqService.toggleActive(id);
   }
 
+  @RequirePermission('content.manage')
   @Delete(':id')
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('admin')
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)

@@ -7,6 +7,8 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 
+import { PermissionsGuard } from '../auth/guards/permissions.guard';
+import { RequirePermission } from '../auth/decorators/require-permission.decorator';
 /**
  * Platform-wide (unscoped by storeId — pass `storeId` as a query filter to
  * narrow) audit trail viewer for admins. Every module in this codebase
@@ -17,28 +19,32 @@ import { Roles } from '../auth/decorators/roles.decorator';
  */
 @ApiTags('Admin Activity Log')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
 @Roles('admin')
 @Controller('api/admin/activity-log')
 export class AdminActivityLogController {
   constructor(private readonly activityLogService: ActivityLogService) {}
 
+  @RequirePermission('activity.view')
   @Get()
   getAll(@Query() query: any) {
     return this.activityLogService.adminFindAll(query);
   }
 
+  @RequirePermission('activity.view')
   @Get('stats')
   getStats() {
     return this.activityLogService.adminGetStats();
   }
 
   // Static path above must stay registered before this dynamic one.
+  @RequirePermission('activity.view')
   @Get('timeline/:targetId')
   getTimeline(@Param('targetId') targetId: string) {
     return this.activityLogService.getTimeline(targetId);
   }
 
+  @RequirePermission('activity.view')
   @Get('export')
   async export(@Query() query: any, @Res() res: Response) {
     const csv = await this.activityLogService.adminExportCsv(query);

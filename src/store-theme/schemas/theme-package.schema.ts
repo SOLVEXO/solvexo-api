@@ -28,6 +28,8 @@ export class ThemePackage {
   @Prop({ type: String, enum: ['upload', 'file_edit', 'rollback'], required: true }) changeType: 'upload' | 'file_edit' | 'rollback';
   @Prop({ type: Number, default: null }) restoredFromVersion: number | null;
   @Prop({ type: [ThemePackageFileSchema], required: true }) files: ThemePackageFile[];
+  /** Result of the import-time compatibility check (which pages render, notes about unsupported features). */
+  @Prop({ type: Object, default: null }) compatibility: Record<string, any> | null;
   createdAt?: Date;
 }
 
@@ -45,3 +47,22 @@ export type ThemePackageAssetDocument = HydratedDocument<ThemePackageAsset>;
 export const ThemePackageAssetSchema = SchemaFactory.createForClass(ThemePackageAsset);
 ThemePackageAssetSchema.index({ storeId: 1, sha256: 1 }, { unique: true });
 ThemePackageSchema.index({ storeId: 1, installedThemeId: 1, version: -1 }, { unique: true });
+
+/** One background ZIP import. The upload returns immediately; the dialog polls this document. */
+@Schema({ timestamps: true })
+export class ThemeImportJob {
+  @Prop({ required: true }) storeId: string;
+  @Prop({ required: true }) installedThemeId: string;
+  @Prop({ required: true }) createdBy: string;
+  @Prop({ type: String, enum: ['processing', 'ready', 'failed'], default: 'processing' }) status: 'processing' | 'ready' | 'failed';
+  @Prop({ type: String, default: 'reading' }) stage: string;
+  @Prop({ type: String, default: null }) error: string | null;
+  @Prop({ type: Number, default: null }) version: number | null;
+  @Prop({ type: String, default: '' }) fileName: string;
+  createdAt?: Date;
+  updatedAt?: Date;
+}
+export type ThemeImportJobDocument = HydratedDocument<ThemeImportJob>;
+export const ThemeImportJobSchema = SchemaFactory.createForClass(ThemeImportJob);
+ThemeImportJobSchema.index({ storeId: 1, installedThemeId: 1, createdAt: -1 });
+ThemeImportJobSchema.index({ createdAt: 1 }, { expireAfterSeconds: 7 * 24 * 3600 });

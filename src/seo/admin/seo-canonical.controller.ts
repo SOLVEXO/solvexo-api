@@ -14,9 +14,11 @@ import { memoryStorage } from 'multer';
 import { buildTemplatePayload, readUploadedCsv, runBulkImport } from '../../common/bulk-import/bulk-import.util';
 import { CANONICAL_COLUMNS, canonicalFileDedupeKey, makeCanonicalRowHandler } from '../canonical-rules-bulk-import';
 
+import { PermissionsGuard } from '../../auth/guards/permissions.guard';
+import { RequirePermission } from '../../auth/decorators/require-permission.decorator';
 @ApiTags('Admin SEO — Canonical Rules')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
 @Roles('admin')
 @UseInterceptors(SeoResponseInterceptor)
 @Controller('api/admin/seo/canonical-rules')
@@ -25,11 +27,13 @@ export class AdminSeoCanonicalController {
 
   // CSV import. `@Res()` sends the engine's own response shape (the class-level
   // SeoResponseInterceptor would otherwise wrap it a second time).
+  @RequirePermission('seo.manage')
   @Get('import-template')
   importTemplate(@Res() res: any) {
     return res.json(buildTemplatePayload('canonical-rules-import-template.csv', CANONICAL_COLUMNS));
   }
 
+  @RequirePermission('seo.manage')
   @Post('import')
   @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }))
   async importRules(@Req() req: any, @UploadedFile() file: any, @Res() res: any) {
@@ -45,21 +49,25 @@ export class AdminSeoCanonicalController {
     return res.json(result);
   }
 
+  @RequirePermission('seo.manage')
   @Post()
   create(@Req() req: any, @Body() dto: CreateCanonicalRuleDto) {
     return this.canonical.create(null, dto, { id: req.user.userId, role: req.user.role });
   }
 
+  @RequirePermission('seo.manage')
   @Get()
   list(@Query() query: any) {
     return this.canonical.list(null, query);
   }
 
+  @RequirePermission('seo.manage')
   @Patch(':id')
   update(@Req() req: any, @Param('id') id: string, @Body() dto: UpdateCanonicalRuleDto) {
     return this.canonical.update(null, id, dto, { id: req.user.userId, role: req.user.role });
   }
 
+  @RequirePermission('seo.manage')
   @Delete(':id')
   delete(@Req() req: any, @Param('id') id: string) {
     return this.canonical.delete(null, id, { id: req.user.userId, role: req.user.role });

@@ -267,28 +267,32 @@ export class MessagingController {
   // ADMIN  (static routes before parameterized)
   // ═══════════════════════════════════════════════════════════════════════════
 
-  @UseGuards(RolesGuard)
+  @RequirePermission('clients.view')
+  @UseGuards(RolesGuard, PermissionsGuard)
   @Roles('admin')
   @Get('admin/conversations')
   adminGetConversations(@Query() query: any) {
     return this.messagingService.adminGetConversations(query);
   }
 
-  @UseGuards(RolesGuard)
+  @RequirePermission('clients.view')
+  @UseGuards(RolesGuard, PermissionsGuard)
   @Roles('admin')
   @Get('admin/reports')
   adminGetReports(@Query() query: any) {
     return this.messagingService.adminGetReports(query);
   }
 
-  @UseGuards(RolesGuard)
+  @RequirePermission('clients.view')
+  @UseGuards(RolesGuard, PermissionsGuard)
   @Roles('admin')
   @Get('admin/conversations/:id')
   adminGetConversation(@Param('id') id: string) {
     return this.messagingService.adminGetConversation(id);
   }
 
-  @UseGuards(RolesGuard)
+  @RequirePermission('clients.manage')
+  @UseGuards(RolesGuard, PermissionsGuard)
   @Roles('admin')
   @Patch('admin/reports/:id/resolve')
   adminResolveReport(@Req() req: any, @Param('id') id: string, @Body() dto: { resolution?: 'approved' | 'removed'; adminNotes?: string }) {

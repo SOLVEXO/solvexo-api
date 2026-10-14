@@ -70,14 +70,14 @@ describe('readThemePackageStructure', () => {
       ]),
     ).toThrow('sections/broken.liquid contains invalid section schema JSON');
 
-    expect(() =>
-      readThemePackageStructure([
-        {
-          path: 'sections/missing-name.liquid',
-          encoding: 'utf8',
-          content: `{% schema %}{"settings":[]} {% endschema %}`,
-        },
-      ]),
-    ).toThrow('schema must be an object with a name');
+    // Shopify allows a schema without a name (blocks, translated sections): the file name is used.
+    const unnamed = readThemePackageStructure([
+      {
+        path: 'sections/missing-name.liquid',
+        encoding: 'utf8',
+        content: `{% schema %}{"settings":[]} {% endschema %}`,
+      },
+    ]);
+    expect(unnamed.components[0].schema.name).toBe('missing-name');
   });
 });

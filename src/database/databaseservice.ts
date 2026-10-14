@@ -341,6 +341,8 @@ export class DatabaseService {
     private themePackageModel: Model<schema.ThemePackageDocument>,
     @InjectModel(schema.ThemePackageAsset.name)
     private themePackageAssetModel: Model<schema.ThemePackageAssetDocument>,
+    @InjectModel(schema.ThemeImportJob.name)
+    private themeImportJobModel: Model<schema.ThemeImportJobDocument>,
 
     @InjectModel(schema.ThemeDefinition.name)
     private themeDefinitionModel: Model<schema.ThemeDefinitionDocument>,
@@ -465,6 +467,10 @@ export class DatabaseService {
 
     @InjectModel(schema.StaffMember.name)
     private staffMemberModel: Model<schema.StaffMemberDocument>,
+    @InjectModel(schema.AdminRole.name)
+    private adminRoleModel: Model<schema.AdminRoleDocument>,
+    @InjectModel(schema.AdminApproval.name)
+    private adminApprovalModel: Model<schema.AdminApprovalDocument>,
 
     @InjectModel(schema.Role.name)
     private roleModel: Model<schema.RoleDocument>,
@@ -609,6 +615,7 @@ export class DatabaseService {
       storeThemeModel: this.storeThemeModel,
       themePackageModel: this.themePackageModel,
       themePackageAssetModel: this.themePackageAssetModel,
+      themeImportJobModel: this.themeImportJobModel,
       themeDefinitionModel: this.themeDefinitionModel,
       storePageModel: this.storePageModel,
       storeFaqModel: this.storeFaqModel,
@@ -651,6 +658,8 @@ export class DatabaseService {
       posPurchaseModel: this.posPurchaseModel,
       binModel: this.binModel,
       staffMemberModel: this.staffMemberModel,
+      adminRoleModel: this.adminRoleModel,
+      adminApprovalModel: this.adminApprovalModel,
       roleModel: this.roleModel,
       approvalRequestModel: this.approvalRequestModel,
       stockLotModel: this.stockLotModel,

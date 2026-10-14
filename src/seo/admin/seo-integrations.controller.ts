@@ -8,26 +8,31 @@ import { SeoIntegrationsService } from '../services/seo-integrations.service';
 import { ConnectIntegrationDto, GetAuthUrlDto, assertValidProvider } from '../dto/connect-integration.dto';
 import { SeoResponseInterceptor } from '../seo-response.interceptor';
 
+import { PermissionsGuard } from '../../auth/guards/permissions.guard';
+import { RequirePermission } from '../../auth/decorators/require-permission.decorator';
 @ApiTags('Admin SEO — Search Integrations')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
 @Roles('admin')
 @UseInterceptors(SeoResponseInterceptor)
 @Controller('api/admin/seo/integrations')
 export class AdminSeoIntegrationsController {
   constructor(private readonly integrations: SeoIntegrationsService) {}
 
+  @RequirePermission('seo.manage')
   @Get()
   list() {
     return this.integrations.list({ scope: 'platform', storeId: null });
   }
 
+  @RequirePermission('seo.manage')
   @Get(':provider/authorize-url')
   getAuthUrl(@Param('provider') provider: string, @Query() query: GetAuthUrlDto) {
     assertValidProvider(provider);
     return { url: this.integrations.getAuthorizationUrl(provider, query.redirectUri, 'platform') };
   }
 
+  @RequirePermission('seo.manage')
   @Post(':provider/connect')
   connect(@Req() req: any, @Param('provider') provider: string, @Body() dto: ConnectIntegrationDto) {
     assertValidProvider(provider);
@@ -41,12 +46,14 @@ export class AdminSeoIntegrationsController {
     );
   }
 
+  @RequirePermission('seo.manage')
   @Delete(':provider')
   disconnect(@Req() req: any, @Param('provider') provider: string) {
     assertValidProvider(provider);
     return this.integrations.disconnect({ scope: 'platform', storeId: null }, provider, { id: req.user.userId, role: req.user.role });
   }
 
+  @RequirePermission('seo.manage')
   @Post(':provider/sync')
   sync(@Param('provider') provider: string, @Query('days') days?: string) {
     assertValidProvider(provider);

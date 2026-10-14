@@ -23,8 +23,9 @@ export class SellerPlatformSubscriptionsController {
     private readonly entitlementsService: EntitlementsService,
   ) {}
 
+  @RequirePermission('billing.manage')
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('admin')
   @Post('admin/invoices/:invoiceId/refund')
   adminRefundInvoice(@Req() req: any, @Param('invoiceId') invoiceId: string, @Body() dto: RefundInvoiceDto) {
@@ -32,32 +33,36 @@ export class SellerPlatformSubscriptionsController {
   }
 
   // ── Admin manual override — real support tools (unlock/extend/assign/lock) ──
+  @RequirePermission('billing.manage')
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('admin')
   @Post('admin/stores/:storeId/unlock')
   adminUnlockStore(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: AdminUnlockOrLockDto) {
     return this.sellerPlatformSubscriptionsService.adminUnlockStore(req.user.userId, storeId, dto.reason);
   }
 
+  @RequirePermission('billing.manage')
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('admin')
   @Post('admin/stores/:storeId/extend')
   adminExtendSubscription(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: AdminExtendSubscriptionDto) {
     return this.sellerPlatformSubscriptionsService.adminExtendSubscription(req.user.userId, storeId, dto.days, dto.reason);
   }
 
+  @RequirePermission('billing.manage')
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('admin')
   @Post('admin/stores/:storeId/assign-plan')
   adminAssignPlan(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: AdminAssignPlanDto) {
     return this.sellerPlatformSubscriptionsService.adminAssignPlan(req.user.userId, storeId, dto.planId, dto.reason);
   }
 
+  @RequirePermission('billing.manage')
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('admin')
   @Post('admin/stores/:storeId/lock')
   adminLockStore(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: AdminUnlockOrLockDto) {
@@ -77,8 +82,9 @@ export class SellerPlatformSubscriptionsController {
   // a plain `sellerId` argument and does no internal ownership check (it
   // just reads whatever stores that id owns), so this route only needed a
   // real admin-authorized entry point, not new service logic.
+  @RequirePermission('billing.manage')
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('admin')
   @Get('admin/sellers/:sellerId/overview')
   adminGetSellerOverview(@Param('sellerId') sellerId: string) {
@@ -88,8 +94,9 @@ export class SellerPlatformSubscriptionsController {
   // Invoice list for a specific store, for the Clients workspace's Billing
   // tab — an admin needs to see which invoice to refund before calling
   // adminRefundInvoice above.
+  @RequirePermission('billing.manage')
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('admin')
   @Get('admin/stores/:storeId/invoices')
   adminListInvoices(@Param('storeId') storeId: string, @Query() query: ListInvoicesQueryDto) {

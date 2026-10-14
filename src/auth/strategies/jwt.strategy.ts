@@ -42,6 +42,12 @@ async validate(payload: any) {
     // caller with zero service-layer changes, since a staff member's
     // owning seller IS that store's real sellerId.
     sellerId: payload.sellerId ?? null,
+    // Admin Team: session id, team-admin flag, read-only flag. A "view as store" token (staff shape) is GET-only.
+    sid: payload.sid ?? null,
+    teamAdmin: payload.teamAdmin === true,
+    readOnly: payload.readOnly === true,
+    viewOnly: payload.viewOnly === true,
+    viewAs: payload.viewAs ?? null,
   };
 }
 }

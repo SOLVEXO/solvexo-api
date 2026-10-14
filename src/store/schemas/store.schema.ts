@@ -186,8 +186,21 @@ export class StoreAnnouncementBar {
   // Optional extra rotating messages (the fields above are message #1). Every field defaults to the
   // old single-message bar: below the header, closable, left-aligned, the type's own colours.
   @Prop({ type: Boolean, default: false }) messageHidden: boolean;
-  @Prop({ type: [{ _id: false, message: String, ctaLabel: { type: String, default: null }, ctaLink: { type: String, default: null }, hidden: { type: Boolean, default: false } }], default: [] })
-  moreMessages: { message: string; ctaLabel: string | null; ctaLink: string | null; hidden?: boolean }[];
+  @Prop({ type: String, default: null }) couponCode: string | null;
+  @Prop({ type: [{ _id: false, message: String, ctaLabel: { type: String, default: null }, ctaLink: { type: String, default: null }, hidden: { type: Boolean, default: false }, couponCode: { type: String, default: null } }], default: [] })
+  moreMessages: { message: string; ctaLabel: string | null; ctaLink: string | null; hidden?: boolean; couponCode?: string | null }[];
+  // Design (all optional; missing = the original look).
+  @Prop({ type: String, enum: ['slide', 'fade', 'marquee'], default: 'slide' }) animation: 'slide' | 'fade' | 'marquee';
+  @Prop({ type: String, enum: ['slow', 'normal', 'fast'], default: 'normal' }) marqueeSpeed: 'slow' | 'normal' | 'fast';
+  @Prop({ type: String, default: null }) bgColor2: string | null;   // gradient end colour
+  @Prop({ type: String, enum: ['sm', 'md', 'lg'], default: 'sm' }) fontSize: 'sm' | 'md' | 'lg';
+  @Prop({ type: Boolean, default: false }) uppercase: boolean;
+  @Prop({ type: Boolean, default: false }) bold: boolean;
+  @Prop({ type: Boolean, default: true }) showIcon: boolean;
+  @Prop({ type: String, enum: ['all', 'mobile', 'desktop'], default: 'all' }) device: 'all' | 'mobile' | 'desktop';
+  @Prop({ type: String, enum: ['forever', 'day', 'session'], default: 'forever' }) dismissFor: 'forever' | 'day' | 'session';
+  @Prop({ type: Date, default: null }) countdownEndAt: Date | null;
+  @Prop({ type: String, default: null }) preset: string | null;
   @Prop({ type: Number, default: 5 }) rotateSeconds: number;
   @Prop({ type: Boolean, default: true }) closable: boolean;
   @Prop({ type: String, default: null }) bgColor: string | null;

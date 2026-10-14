@@ -39,6 +39,24 @@ export class StoreThemeController {
     return this.themePackageService.upload(storeId, actingSellerId(req.user), installedThemeId, file.buffer);
   }
 
+  // Background import: answers at once with a jobId; the dialog polls GET .../package/import/:jobId.
+  @Post(':storeId/installed/:installedThemeId/package/import')
+  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } }))
+  startThemeImport(@Req() req: any, @Param('storeId') storeId: string, @Param('installedThemeId') installedThemeId: string, @UploadedFile() file: Express.Multer.File) {
+    if (!file) throw new BadRequestException('Theme ZIP file is required');
+    return this.themePackageService.startImport(storeId, actingSellerId(req.user), installedThemeId, file.buffer, file.originalname);
+  }
+
+  @Get(':storeId/installed/:installedThemeId/package/import/:jobId')
+  getThemeImport(@Req() req: any, @Param('storeId') storeId: string, @Param('installedThemeId') installedThemeId: string, @Param('jobId') jobId: string) {
+    return this.themePackageService.getImportJob(storeId, actingSellerId(req.user), installedThemeId, jobId);
+  }
+
+  @Get(':storeId/installed/:installedThemeId/package/:version/file')
+  getThemePackageFile(@Req() req: any, @Param('storeId') storeId: string, @Param('installedThemeId') installedThemeId: string, @Param('version') version: string, @Query('path') path: string) {
+    return this.themePackageService.getFile(storeId, actingSellerId(req.user), installedThemeId, Number(version), String(path ?? ''));
+  }
+
   @Post(':storeId/installed/:installedThemeId/package/preview')
   previewThemePackage(@Req() req: any, @Param('storeId') storeId: string, @Param('installedThemeId') installedThemeId: string, @Body('version') version?: number, @Body('path') path?: string, @Body('draft') draft?: { path: string; content: string }) {
     return this.themePackageService.preview(storeId, actingSellerId(req.user), installedThemeId, version, path, draft);

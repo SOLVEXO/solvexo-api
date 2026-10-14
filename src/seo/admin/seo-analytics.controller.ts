@@ -7,25 +7,30 @@ import { Roles } from '@/auth/decorators/roles.decorator';
 import { SeoAdminAnalyticsService } from '../services/seo-admin-analytics.service';
 import { SeoResponseInterceptor } from '../seo-response.interceptor';
 
+import { PermissionsGuard } from '../../auth/guards/permissions.guard';
+import { RequirePermission } from '../../auth/decorators/require-permission.decorator';
 @ApiTags('Admin SEO — Analytics')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
 @Roles('admin')
 @UseInterceptors(SeoResponseInterceptor)
 @Controller('api/admin/seo/analytics')
 export class AdminSeoAnalyticsController {
   constructor(private readonly analytics: SeoAdminAnalyticsService) {}
 
+  @RequirePermission('seo.manage')
   @Get('overview')
   getOverview(@Query('days') days?: string) {
     return this.analytics.getOverview('platform', null, Number(days) || 28);
   }
 
+  @RequirePermission('seo.manage')
   @Get('search-performance')
   getSearchPerformance(@Query('days') days?: string) {
     return this.analytics.getSearchPerformance('platform', null, Number(days) || 28);
   }
 
+  @RequirePermission('seo.manage')
   @Get('organic-traffic')
   getOrganicTraffic(@Query('days') days?: string) {
     return this.analytics.getOrganicTraffic('platform', null, Number(days) || 28);

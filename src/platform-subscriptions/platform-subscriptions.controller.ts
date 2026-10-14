@@ -13,9 +13,11 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { SubscribeToTierDto } from './dto/subscribe-to-tier.dto';
 import { OverrideStoreTierDto } from './dto/override-store-tier.dto';
 
+import { PermissionsGuard } from '../auth/guards/permissions.guard';
+import { RequirePermission } from '../auth/decorators/require-permission.decorator';
 @ApiTags('Platform Subscriptions (seller pays marketplace)')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
 @Controller('api/platform-subscriptions')
 export class PlatformSubscriptionsController {
   constructor(private readonly service: PlatformSubscriptionsService) {}
@@ -30,12 +32,14 @@ export class PlatformSubscriptionsController {
     return this.service.getTiers();
   }
 
+  @RequirePermission('billing.manage')
   @Roles('admin')
   @Get('admin/tiers')
   adminGetTierConfig() {
     return this.service.adminGetTierConfig();
   }
 
+  @RequirePermission('billing.manage')
   @Roles('admin')
   @Patch('admin/stores/:storeId/override-tier')
   adminOverrideStoreTier(@Param('storeId') storeId: string, @Body() dto: OverrideStoreTierDto) {

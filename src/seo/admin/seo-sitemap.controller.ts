@@ -7,20 +7,24 @@ import { Roles } from '@/auth/decorators/roles.decorator';
 import { SeoSitemapService } from '../services/seo-sitemap.service';
 import { SeoResponseInterceptor } from '../seo-response.interceptor';
 
+import { PermissionsGuard } from '../../auth/guards/permissions.guard';
+import { RequirePermission } from '../../auth/decorators/require-permission.decorator';
 @ApiTags('Admin SEO — Sitemap')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
 @Roles('admin')
 @UseInterceptors(SeoResponseInterceptor)
 @Controller('api/admin/seo/sitemap')
 export class AdminSeoSitemapController {
   constructor(private readonly sitemapService: SeoSitemapService) {}
 
+  @RequirePermission('seo.manage')
   @Get('status')
   getStatus() {
     return this.sitemapService.getStatus();
   }
 
+  @RequirePermission('seo.manage')
   @Post('regenerate')
   regenerate() {
     return this.sitemapService.enqueueRegenerate();

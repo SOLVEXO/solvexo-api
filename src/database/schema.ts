@@ -28,6 +28,8 @@ export { VariantLocationStock, VariantLocationStockDocument, VariantLocationStoc
 export { StockTransfer, StockTransferDocument, StockTransferSchema } from '../inventory/schemas/stock-transfer.schema';
 export { Bin, BinDocument, BinSchema } from '../inventory/schemas/bin.schema';
 export { StaffMember, StaffMemberDocument, StaffMemberSchema } from '../staff/schemas/staff-member.schema';
+export { AdminRole, AdminRoleDocument, AdminRoleSchema } from '../admin-team/schemas/admin-role.schema';
+export { AdminApproval, AdminApprovalDocument, AdminApprovalSchema } from '../admin-team/schemas/admin-approval.schema';
 export { Role, RoleDocument, RoleSchema } from '../staff/schemas/role.schema';
 export { ApprovalRequest, ApprovalRequestDocument, ApprovalRequestSchema } from '../staff/schemas/approval-request.schema';
 export { StockLot, StockLotDocument, StockLotSchema } from '../inventory/schemas/stock-lot.schema';
@@ -153,6 +155,7 @@ export { MediaAsset, MediaAssetDocument, MediaAssetSchema } from '../media-libra
 export { AppInstallation, AppInstallationDocument, AppInstallationSchema } from '../apps/schemas/app-installation.schema';
 export { StoreBanner, StoreBannerDocument, StoreBannerSchema } from '../store-banner/schemas/store-banner.schema';
 export { StoreTheme, StoreThemeDocument, StoreThemeSchema } from '../store-theme/schemas/store-theme.schema';
+export { ThemeImportJob, ThemeImportJobDocument, ThemeImportJobSchema } from '../store-theme/schemas/theme-package.schema';
 export { ThemePackageAsset, ThemePackageAssetDocument, ThemePackageAssetSchema } from '../store-theme/schemas/theme-package.schema';
 export { ThemePackage, ThemePackageDocument, ThemePackageSchema } from '../store-theme/schemas/theme-package.schema';
 export { ThemeDefinition, ThemeDefinitionDocument, ThemeDefinitionSchema } from '../theme-catalog/schemas/theme-definition.schema';

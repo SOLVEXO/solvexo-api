@@ -86,6 +86,7 @@ export const NOTIFICATION_TYPES = {
   ADMIN_STORE_APP_REQUEST: 'admin_store_app_request',
   ADMIN_CONTACT_MESSAGE: 'admin_contact_message',
   ADMIN_EMAIL_FAILURE: 'admin_email_failure',
+  ADMIN_SECURITY_ALERT: 'admin_security_alert',
   ADMIN_MEMORY_PRESSURE: 'admin_memory_pressure',
 } as const;
 
@@ -150,6 +151,7 @@ export const NOTIFICATION_CATEGORY: Record<string, 'orders' | 'messages' | 'prom
   [NOTIFICATION_TYPES.BOOKING_REMINDER]: 'orders',
   [NOTIFICATION_TYPES.PACKAGE_PURCHASED]: 'orders',
   [NOTIFICATION_TYPES.ADMIN_NEW_SELLER]: 'admin',
+  [NOTIFICATION_TYPES.ADMIN_SECURITY_ALERT]: 'admin',
   [NOTIFICATION_TYPES.ADMIN_NEW_STORE]: 'admin',
   [NOTIFICATION_TYPES.ADMIN_VERIFICATION_SUBMITTED]: 'admin',
   [NOTIFICATION_TYPES.ADMIN_REFUND_REQUEST]: 'admin',

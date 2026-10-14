@@ -18,8 +18,9 @@ export class PlatformAddonsController {
 
   // Static "admin/addons" registered before the parameterized ":storeId/addons"
   // routes below — otherwise "admin" would be matched as a :storeId value.
+  @RequirePermission('billing.manage')
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('admin')
   @Get('admin/addons')
   adminListAddons(@Query() query: any) {

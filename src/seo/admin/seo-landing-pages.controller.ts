@@ -9,35 +9,42 @@ import { CreateLandingPageDto } from '../dto/create-landing-page.dto';
 import { UpdateLandingPageDto } from '../dto/update-landing-page.dto';
 import { SeoResponseInterceptor } from '../seo-response.interceptor';
 
+import { PermissionsGuard } from '../../auth/guards/permissions.guard';
+import { RequirePermission } from '../../auth/decorators/require-permission.decorator';
 @ApiTags('Admin SEO — Landing Pages')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
 @Roles('admin')
 @UseInterceptors(SeoResponseInterceptor)
 @Controller('api/admin/seo/landing-pages')
 export class SeoLandingPagesController {
   constructor(private readonly landingPages: SeoLandingPagesService) {}
 
+  @RequirePermission('seo.manage')
   @Post()
   create(@Req() req: any, @Body() dto: CreateLandingPageDto) {
     return this.landingPages.create(dto, { id: req.user.userId, role: req.user.role });
   }
 
+  @RequirePermission('seo.manage')
   @Get()
   list(@Query() query: any) {
     return this.landingPages.list(query);
   }
 
+  @RequirePermission('seo.manage')
   @Get(':id')
   getById(@Param('id') id: string) {
     return this.landingPages.getById(id);
   }
 
+  @RequirePermission('seo.manage')
   @Patch(':id')
   update(@Req() req: any, @Param('id') id: string, @Body() dto: UpdateLandingPageDto) {
     return this.landingPages.update(id, dto, { id: req.user.userId, role: req.user.role });
   }
 
+  @RequirePermission('seo.manage')
   @Delete(':id')
   delete(@Req() req: any, @Param('id') id: string) {
     return this.landingPages.delete(id, { id: req.user.userId, role: req.user.role });

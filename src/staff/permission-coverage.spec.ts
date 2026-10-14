@@ -11,6 +11,7 @@ import * as ts from 'typescript';
 import * as fs from 'fs';
 import * as path from 'path';
 import { STAFF_PERMISSIONS } from './schemas/staff-member.schema';
+import { ADMIN_PERMISSIONS } from '../admin-team/admin-permissions';
 
 const SRC = path.join(__dirname, '..');
 
@@ -23,7 +24,7 @@ const NO_PERMISSION_BY_DESIGN = new Set([
 /** Permissions that gate UI only (no dedicated backend route). */
 const UI_ONLY_PERMISSIONS = new Set(['home.view']);
 
-interface Route { file: string; method: string; route: string; fn: string; roles: string[] | null; perms: string[] | null; guards: string[]; jwt: boolean }
+interface Route { adminSelf: boolean; file: string; method: string; route: string; fn: string; roles: string[] | null; perms: string[] | null; guards: string[]; jwt: boolean }
 
 const decorators = (n: ts.Node) => (ts.canHaveDecorators(n) ? ts.getDecorators(n) ?? [] : []);
 /** String constants / string-array constants declared in the same file (e.g. `const STAFF_VIEW = ['a.view', 'a.manage']`). */
@@ -94,6 +95,7 @@ function collectRoutes(): Route[] {
         const verb = md.find((d) => ['Get', 'Post', 'Put', 'Patch', 'Delete'].includes(d.name));
         if (!verb) continue;
         routes.push({
+          adminSelf: md.some((d) => d.name === 'AdminSelf'),
           file: path.relative(SRC, file).split(path.sep).join('/'),
           method: verb.name.toUpperCase(),
           route: `${ctrl.args[0] ?? ''}/${verb.args[0] ?? ''}`.replace(/\/$/, ''),
@@ -134,7 +136,7 @@ describe('staff permission coverage (static)', () => {
   });
 
   it('every @RequirePermission key exists in STAFF_PERMISSIONS (no typos)', () => {
-    const known = new Set<string>(STAFF_PERMISSIONS);
+    const known = new Set<string>([...STAFF_PERMISSIONS, ...ADMIN_PERMISSIONS]);
     const unknown = routes.flatMap((r) => (r.perms ?? []).filter((p) => !known.has(p)).map((p) => `${p} on ${r.method} ${r.route}`));
     expect(unknown).toEqual([]);
   });
@@ -154,6 +156,23 @@ describe('staff permission coverage (static)', () => {
     const sources = walkTs(SRC).map((f) => fs.readFileSync(f, 'utf8')).join('\n');
     const dead = STAFF_PERMISSIONS.filter((perm) => !used.has(perm) && !UI_ONLY_PERMISSIONS.has(perm) && !sources.includes(`'${perm}'`));
     expect(dead).toEqual([]);
+  });
+
+  const adminOnly = routes.filter((r) => r.roles?.includes('admin') && !/staff|seller|user/.test(r.roles.join(',')));
+
+  it('every admin-only route declares an admin permission (or @AdminSelf) and runs PermissionsGuard', () => {
+    const admin = new Set<string>(ADMIN_PERMISSIONS);
+    const bad = adminOnly
+      .filter((r) => !r.adminSelf)
+      .filter((r) => !r.perms || r.perms.some((p) => !admin.has(p)) || !r.guards.some((g) => /PermissionsGuard/.test(g)))
+      .map((r) => `${r.method} ${r.route} (${r.file} :: ${r.fn})`);
+    expect(bad).toEqual([]);
+    expect(adminOnly.length).toBeGreaterThan(250);
+  });
+
+  it('every admin permission is used by at least one admin route (no dead toggles in the admin role editor)', () => {
+    const used = new Set(adminOnly.flatMap((r) => r.perms ?? []));
+    expect(ADMIN_PERMISSIONS.filter((p) => !used.has(p))).toEqual([]);
   });
 
   it('the permissions added for catalog / draft orders / reviews / activity log are enforced where staff work', () => {

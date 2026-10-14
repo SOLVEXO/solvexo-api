@@ -31,11 +31,28 @@ describe('announcement bar settings', () => {
       rotateSeconds: 8, closable: false, bgColor: '#112233', textColor: '#ffffff', placement: 'above', align: 'center', messageHidden: true,
     });
     expect(store.announcementBar.moreMessages).toEqual([
-      { message: 'Two', ctaLabel: 'Shop', ctaLink: '/collections/sale', hidden: false },
-      { message: 'Three', ctaLabel: null, ctaLink: null, hidden: true },
+      { message: 'Two', ctaLabel: 'Shop', ctaLink: '/collections/sale', hidden: false, couponCode: null },
+      { message: 'Three', ctaLabel: null, ctaLink: null, hidden: true, couponCode: null },
     ]);
     expect(store.announcementBar.messageHidden).toBe(true);
     expect(store.announcementBar).toMatchObject({ rotateSeconds: 8, closable: false, bgColor: '#112233', textColor: '#ffffff', placement: 'above', align: 'center' });
+  });
+
+  it('saves the design fields and falls back to the original look', async () => {
+    const { update, store } = build();
+    await update({ message: 'Sale', isActive: true, animation: 'marquee', fontSize: 'lg', uppercase: true, bgColor2: '#000000', device: 'mobile', couponCode: 'EID20', countdownEndAt: '2030-01-01T00:00:00Z' });
+    expect(store.announcementBar).toMatchObject({ animation: 'marquee', fontSize: 'lg', uppercase: true, bgColor2: '#000000', device: 'mobile', couponCode: 'EID20', showIcon: true, dismissFor: 'forever' });
+    await update({ message: 'Plain', isActive: true });
+    expect(store.announcementBar).toMatchObject({ animation: 'slide', fontSize: 'sm', uppercase: false, bgColor2: null, device: 'all', couponCode: null, countdownEndAt: null });
+  });
+
+  it.each([
+    ['an unknown animation', { message: 'a', animation: 'spin' }],
+    ['a bad gradient colour', { message: 'a', bgColor2: 'blue' }],
+    ['a bad countdown date', { message: 'a', countdownEndAt: 'soon' }],
+  ])('rejects %s', async (_label, body) => {
+    const { update } = build();
+    await expect(update(body)).rejects.toThrow();
   });
 
   it.each([

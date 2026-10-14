@@ -16,6 +16,8 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 
+import { PermissionsGuard } from '../auth/guards/permissions.guard';
+import { RequirePermission } from '../auth/decorators/require-permission.decorator';
 @ApiTags('Contact')
 @Controller('api/contact')
 export class ContactController {
@@ -36,8 +38,9 @@ export class ContactController {
   // ADMIN (Auth Required)
   // ============================================================
 
+  @RequirePermission('content.manage')
   @Get('admin/all')
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('admin')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Get all contact submissions (admin)' })
@@ -45,8 +48,9 @@ export class ContactController {
     return this.contactService.findAll();
   }
 
+  @RequirePermission('content.manage')
   @Patch('admin/:id/status')
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('admin')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Update a contact submission status (admin)' })
@@ -54,8 +58,9 @@ export class ContactController {
     return this.contactService.updateStatus(id, dto);
   }
 
+  @RequirePermission('content.manage')
   @Delete('admin/:id')
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('admin')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Delete a contact submission (admin)' })

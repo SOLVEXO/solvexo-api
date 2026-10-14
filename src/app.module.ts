@@ -36,6 +36,7 @@ import { FinanceModule } from './finance/finance.module';
 import { SubscriptionsModule } from './subscriptions/subscriptions.module';
 import { SchedulerModule } from './scheduler/scheduler.module';
 import { ActivityLogModule } from './activity-log/activity-log.module';
+import { AdminTeamModule } from './admin-team/admin-team.module';
 import { MarketingModule } from './marketing/marketing.module';
 import { LoyaltyModule } from './loyalty/loyalty.module';
 import { GiftCardsModule } from './gift-cards/gift-cards.module';
@@ -112,6 +113,7 @@ import { StockCountsModule } from './stock-counts/stock-counts.module';
     NotificationsModule,
     HealthModule,
     ActivityLogModule,
+    AdminTeamModule,
     AuthModule,
     categoryModule,
     ProductsModule,

@@ -10,9 +10,11 @@ import { UpdateAnnouncementDto } from './dto/update-announcement.dto';
 import { UpdateAnnouncementStatusDto } from './dto/update-announcement-status.dto';
 import { AnnouncementQueryDto } from './dto/announcement-query.dto';
 
+import { PermissionsGuard } from '../auth/guards/permissions.guard';
+import { RequirePermission } from '../auth/decorators/require-permission.decorator';
 @ApiTags('Admin Announcements')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
 @Roles('admin')
 @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
 @Controller('api/admin/announcements')
@@ -23,26 +25,31 @@ export class AdminAnnouncementsController {
     return { adminId: req.user.userId, ip: req.ip, userAgent: req.headers['user-agent'] };
   }
 
+  @RequirePermission('content.manage')
   @Post()
   create(@Req() req: any, @Body() dto: CreateAnnouncementDto) {
     return this.adminAnnouncementsService.create(dto, this.meta(req));
   }
 
+  @RequirePermission('content.manage')
   @Get()
   list(@Query() query: AnnouncementQueryDto) {
     return this.adminAnnouncementsService.list(query);
   }
 
+  @RequirePermission('content.manage')
   @Put(':id')
   update(@Req() req: any, @Param('id') id: string, @Body() dto: UpdateAnnouncementDto) {
     return this.adminAnnouncementsService.update(id, dto, this.meta(req));
   }
 
+  @RequirePermission('content.manage')
   @Patch(':id/status')
   setStatus(@Req() req: any, @Param('id') id: string, @Body() dto: UpdateAnnouncementStatusDto) {
     return this.adminAnnouncementsService.setStatus(id, dto, this.meta(req));
   }
 
+  @RequirePermission('content.manage')
   @Delete(':id')
   remove(@Req() req: any, @Param('id') id: string) {
     return this.adminAnnouncementsService.remove(id, this.meta(req));

@@ -6,10 +6,13 @@ import * as yauzl from 'yauzl';
 import { Liquid } from 'liquidjs';
 import { DatabaseService } from '../database/databaseservice';
 import { verifyStoreOwnershipStrict } from '../common/store-ownership.util';
-import { readThemePackageStructure } from './theme-package-schema.util';
+import { readThemePackageStructure, parseThemeJson } from './theme-package-schema.util';
 import { registerShopifyFilters, applyThemeSettingDefaults, applySectionSettingDefaults } from './liquid-shopify-filters.util';
 import type { LiquidRenderCartItemDto } from './dto/render-liquid-theme.dto';
 import { API_PUBLIC_ORIGIN } from '../common/api-origin';
+import { checkThemeCompatibility } from './theme-compat.util';
+import { registerExtraShopifyFilters } from './liquid-extra-filters.util';
+import { enrichLiquidObjects } from './liquid-shopify-objects.util';
 
 // Real-world Shopify themes (Dawn and premium themes) are several MiB with hundreds of files.
 const MAX_ARCHIVE_BYTES = 20 * 1024 * 1024;
@@ -31,6 +34,9 @@ export class ThemePackageService {
   constructor(private readonly db: DatabaseService) {}
 
   private get packages() { return this.db.repositories.themePackageModel; }
+  private get jobs() { return this.db.repositories.themeImportJobModel; }
+  /** Parsed published themes (immutable per version), so a storefront page view does not re-read up to 12 MiB from Mongo. */
+  private publishedCache = new Map<string, any[]>();
   private get assets() { return this.db.repositories.themePackageAssetModel; }
   private get themes() { return this.db.repositories.storeThemeModel; }
   private get stores() { return this.db.repositories.storeModel; }
@@ -45,19 +51,82 @@ export class ThemePackageService {
     return this.createRevision(storeId, installedThemeId, sellerId, files, 'upload');
   }
 
+  // ── Background import (Shopify: upload returns at once, the theme shows as "Processing" until it is ready) ──
+  async startImport(storeId: string, sellerId: string, installedThemeId: string, archive: Buffer, fileName = '') {
+    await verifyStoreOwnershipStrict(this.stores, storeId, sellerId);
+    await this.assertInstalledTheme(storeId, installedThemeId);
+    if (!archive?.length || archive.length > MAX_ARCHIVE_BYTES) throw new BadRequestException('Theme ZIP must be between 1 byte and 20 MiB.');
+    if (archive.length < 4 || archive[0] !== 0x50 || archive[1] !== 0x4b) throw new BadRequestException('Upload must be a ZIP archive.');
+    const running = await this.jobs.findOne({ storeId, installedThemeId, status: 'processing', updatedAt: { $gt: new Date(Date.now() - 5 * 60 * 1000) } }).select('_id').lean();
+    if (running) throw new BadRequestException('Another import for this theme is still running. Please wait for it to finish.');
+    const job = await this.jobs.create({ storeId, installedThemeId, createdBy: sellerId, fileName: String(fileName).slice(0, 200), status: 'processing', stage: 'reading' });
+    // Fire and forget: the HTTP request is already answered; progress and errors go to the job document.
+    setImmediate(() => { void this.runImport(String(job._id), storeId, sellerId, installedThemeId, archive); });
+    return { success: true, data: { jobId: String(job._id), status: 'processing', stage: 'reading' } };
+  }
+
+  private async setJob(jobId: string, patch: Record<string, any>) {
+    await this.jobs.updateOne({ _id: jobId }, { $set: patch });
+  }
+
+  private async runImport(jobId: string, storeId: string, sellerId: string, installedThemeId: string, archive: Buffer) {
+    try {
+      const files = await readThemeZip(archive);
+      await this.setJob(jobId, { stage: 'checking' });
+      validateThemePackage(files);
+      await this.setJob(jobId, { stage: 'saving' });
+      const created: any = await this.createRevision(storeId, installedThemeId, sellerId, files, 'upload');
+      const version = created?.data?.version;
+      await this.setJob(jobId, { stage: 'compatibility', version });
+      try {
+        const report = await checkThemeCompatibility(files, (list, context, path) => renderThemePreview(list as any, context, path));
+        await this.packages.updateOne({ storeId, installedThemeId, version }, { $set: { compatibility: report } });
+      } catch { /* the theme is saved either way; a missing report must never fail an import */ }
+      await this.setJob(jobId, { status: 'ready', stage: 'done', version });
+    } catch (error: any) {
+      const message = error instanceof BadRequestException ? String(error.message) : 'The theme could not be imported. Please check the ZIP and try again.';
+      await this.setJob(jobId, { status: 'failed', stage: 'failed', error: message }).catch(() => undefined);
+    }
+  }
+
+  async getImportJob(storeId: string, sellerId: string, installedThemeId: string, jobId: string) {
+    await verifyStoreOwnershipStrict(this.stores, storeId, sellerId);
+    await this.assertInstalledTheme(storeId, installedThemeId);
+    if (!/^[a-f\d]{24}$/i.test(jobId)) throw new NotFoundException('Import not found');
+    const job: any = await this.jobs.findOne({ _id: jobId, storeId, installedThemeId }).lean();
+    if (!job) throw new NotFoundException('Import not found');
+    // A server restart mid-import would leave the job "processing" forever; give up after 5 minutes without progress.
+    if (job.status === 'processing' && Date.now() - new Date(job.updatedAt).getTime() > 5 * 60 * 1000) {
+      await this.setJob(jobId, { status: 'failed', stage: 'failed', error: 'The import did not finish. Please upload the theme again.' });
+      job.status = 'failed'; job.error = 'The import did not finish. Please upload the theme again.';
+    }
+    return { success: true, data: { jobId: String(job._id), status: job.status, stage: job.stage, error: job.error ?? null, version: job.version ?? null } };
+  }
+
+  /** One file's text for the code editor (the revision list stays light; content is fetched on click). */
+  async getFile(storeId: string, sellerId: string, installedThemeId: string, version: number, path: string) {
+    await verifyStoreOwnershipStrict(this.stores, storeId, sellerId);
+    await this.assertInstalledTheme(storeId, installedThemeId);
+    const rev: any = await this.packages.findOne({ storeId, installedThemeId, version }, { files: { $elemMatch: { path: String(path) } } }).lean();
+    const file = rev?.files?.[0];
+    if (!file) throw new NotFoundException('Theme file not found');
+    return { success: true, data: { path: file.path, encoding: file.encoding, size: file.size, content: file.encoding === 'utf8' ? file.content : '' } };
+  }
+
   async list(storeId: string, sellerId: string, installedThemeId: string) {
     await verifyStoreOwnershipStrict(this.stores, storeId, sellerId);
     await this.assertInstalledTheme(storeId, installedThemeId);
-    const docs = await this.packages.find({ storeId, installedThemeId }).select('version changeType restoredFromVersion createdBy createdAt files.path files.size files.sha256').sort({ version: -1 }).lean();
+    const docs = await this.packages.find({ storeId, installedThemeId }).select('version changeType restoredFromVersion createdBy createdAt compatibility files.path files.size files.sha256').sort({ version: -1 }).lean();
     return { success: true, data: docs.map((d: any) => ({ ...d, files: d.files.map(({ path, size, sha256 }: any) => ({ path, size, sha256 })) })) };
   }
 
   async getRevision(storeId: string, sellerId: string, installedThemeId: string, version: number) {
     await verifyStoreOwnershipStrict(this.stores, storeId, sellerId);
     await this.assertInstalledTheme(storeId, installedThemeId);
-    const doc = await this.packages.findOne({ storeId, installedThemeId, version }).lean();
+    const doc: any = await this.packages.findOne({ storeId, installedThemeId, version }).lean();
     if (!doc) throw new NotFoundException('Theme source revision not found');
-    return { success: true, data: doc };
+    // File text is loaded per file (getFile); sending every file here made opening a big theme slow.
+    return { success: true, data: { ...doc, files: doc.files.map(({ path, encoding, size, sha256 }: any) => ({ path, encoding, size, sha256 })) } };
   }
 
   async getStructure(storeId: string, sellerId: string, installedThemeId: string, version: number) {
@@ -219,10 +288,18 @@ export class ThemePackageService {
     if (!theme || theme.sourcePackageVersion === null || theme.sourcePackageVersion === undefined) {
       throw new NotFoundException('This store does not have a published Liquid theme');
     }
-    const revision = await this.packages.findOne({
-      storeId, installedThemeId: String(theme._id), version: theme.sourcePackageVersion,
-    }).lean();
-    if (!revision) throw new NotFoundException('Published Liquid theme source is unavailable');
+    const cacheKey = `${storeId}:${String(theme._id)}:${theme.sourcePackageVersion}`;
+    let themeFiles = this.publishedCache.get(cacheKey);
+    if (!themeFiles) {
+      const revision: any = await this.packages.findOne({
+        storeId, installedThemeId: String(theme._id), version: theme.sourcePackageVersion,
+      }).select('files').lean();
+      if (!revision) throw new NotFoundException('Published Liquid theme source is unavailable');
+      themeFiles = revision.files as any[];
+      if (this.publishedCache.size >= 6) this.publishedCache.delete(this.publishedCache.keys().next().value as string);
+      this.publishedCache.set(cacheKey, themeFiles);
+    }
+    const revision = { files: themeFiles };
     const context = await this.getStorefrontContext(storeId, requestedPath, cartItems, revision.files as PackageFile[]);
     const html = await renderThemePreview(revision.files as any[], { ...context, assetBase: this.assetBase(storeId, String(theme._id), theme.sourcePackageVersion) }, requestedPath);
     return { success: true, data: { html, version: theme.sourcePackageVersion } };
@@ -358,6 +435,7 @@ export class ThemePackageService {
         price_min: Math.round(Math.min(...(prices.length ? prices : [0])) * 100),
         price_max: Math.round(Math.max(...(prices.length ? prices : [0])) * 100),
         compare_at_price: compareAtPrices.length ? Math.round(Math.min(...compareAtPrices) * 100) : null,
+        vendor: product.vendor ?? '',
         featured_image: product.images?.[0] ? { src: product.images[0], alt: product.name } : null,
         images: (product.images ?? []).map((src: string) => ({ src, alt: product.name })),
         tags: product.tags ?? [],
@@ -568,6 +646,7 @@ export class ThemePackageService {
         variants: mappedVariants,
         selected_or_first_available_variant: mappedVariants.find((variant) => variant.available) ?? mappedVariants[0] ?? null,
         first_available_variant: mappedVariants.find((variant) => variant.available) ?? null,
+        vendor: product.vendor ?? '',
         featured_image: product.images?.[0] ? { src: product.images[0], alt: product.name } : null,
         images: (product.images ?? []).map((src: string) => ({ src, alt: product.name })),
         tags: product.tags ?? [],
@@ -617,7 +696,8 @@ export class ThemePackageService {
           available: mappedVariants.some((variant) => variant.available), variants: mappedVariants,
           selected_or_first_available_variant: mappedVariants.find((variant) => variant.available) ?? mappedVariants[0] ?? null,
           first_available_variant: mappedVariants.find((variant) => variant.available) ?? null,
-          featured_image: product.images?.[0] ? { src: product.images[0], alt: product.name } : null,
+          vendor: product.vendor ?? '',
+        featured_image: product.images?.[0] ? { src: product.images[0], alt: product.name } : null,
           images: (product.images ?? []).map((src: string) => ({ src, alt: product.name })), tags: product.tags ?? [],
         };
       }
@@ -700,7 +780,8 @@ export class ThemePackageService {
         product: {
           id: String(product._id), title: product.name, handle: product.slug,
           url: `/products/${encodeURIComponent(product.slug ?? "")}`,
-          featured_image: product.images?.[0] ? { src: product.images[0], alt: product.name } : null,
+          vendor: product.vendor ?? '',
+        featured_image: product.images?.[0] ? { src: product.images[0], alt: product.name } : null,
         },
         variant: {
           id: String(variant._id), title: variant.options?.map((option: any) => option.value).join(' / ') || 'Default',
@@ -814,7 +895,7 @@ export async function readThemeZip(buffer: Buffer): Promise<PackageFile[]> {
       zip.on('end', () => {
         if (finished) return;
         finished = true;
-        try { resolve(stripCommonRoot(files)); } catch (error: any) { reject(error); }
+        try { resolve(keepThemeFolders(stripCommonRoot(files))); } catch (error: any) { reject(error); }
       });
       zip.on('entry', (entry: yauzl.Entry) => {
         if (/\/$/.test(entry.fileName)) return zip.readEntry();
@@ -829,7 +910,8 @@ export async function readThemeZip(buffer: Buffer): Promise<PackageFile[]> {
         expandedBytes += entry.uncompressedSize;
         if (expandedBytes > MAX_EXPANDED_BYTES) return fail('Uncompressed theme package exceeds 40 MiB');
         const ext = extension(path);
-        if (!TEXT_EXTENSIONS.has(ext) && !BINARY_EXTENSIONS.has(ext)) return fail(`Unsupported file in theme package: ${path}`);
+        // Real theme repos (GitHub ZIPs) carry README/.github/yml files; Shopify ignores what it does not use, so do we.
+        if (!TEXT_EXTENSIONS.has(ext) && !BINARY_EXTENSIONS.has(ext)) return zip.readEntry();
         zip.openReadStream(entry, (streamError, stream) => {
           if (streamError || !stream) return fail(`Could not read theme file: ${path}`);
           const chunks: Buffer[] = [];
@@ -855,20 +937,25 @@ export async function readThemeZip(buffer: Buffer): Promise<PackageFile[]> {
 
 export function validateThemePackage(files: PackageFile[]) {
   const byPath = new Map(files.map((file) => [file.path, file]));
-  for (const required of ['layout/theme.liquid', 'config/settings_schema.json', 'templates/index.json']) {
-    if (!byPath.has(required)) throw new BadRequestException(`Theme ZIP is missing required file: ${required}`);
+  if (!byPath.has('layout/theme.liquid')) throw new BadRequestException('Theme ZIP is missing required file: layout/theme.liquid');
+  // Shopify accepts either a JSON template (sections everywhere) or a classic Liquid template for the home page.
+  const indexJson = byPath.get('templates/index.json');
+  if (!indexJson && !byPath.has('templates/index.liquid')) throw new BadRequestException('Theme ZIP is missing a home page template: templates/index.json or templates/index.liquid');
+  const settingsSchemaFile = byPath.get('config/settings_schema.json');
+  if (settingsSchemaFile) {
+    let settingsSchema: unknown;
+    try { settingsSchema = parseThemeJson(String(settingsSchemaFile.content)); } catch { throw new BadRequestException('Theme package contains invalid JSON: config/settings_schema.json'); }
+    if (!Array.isArray(settingsSchema)) throw new BadRequestException('config/settings_schema.json must contain a JSON array');
   }
-  for (const path of ['config/settings_schema.json', 'templates/index.json']) {
-    try { JSON.parse(String(byPath.get(path)!.content)); } catch { throw new BadRequestException(`Theme package contains invalid JSON: ${path}`); }
-  }
-  const settingsSchema = JSON.parse(String(byPath.get('config/settings_schema.json')!.content));
-  const indexTemplate = JSON.parse(String(byPath.get('templates/index.json')!.content));
-  if (!Array.isArray(settingsSchema)) throw new BadRequestException('config/settings_schema.json must contain a JSON array');
-  if (!indexTemplate || typeof indexTemplate !== 'object' || !indexTemplate.sections || !Array.isArray(indexTemplate.order)) {
-    throw new BadRequestException('templates/index.json must define section objects and an ordered section list');
-  }
-  if (indexTemplate.order.some((key: unknown) => typeof key !== 'string' || !(key in indexTemplate.sections))) {
-    throw new BadRequestException('templates/index.json order contains a missing section key');
+  if (indexJson) {
+    let indexTemplate: any;
+    try { indexTemplate = parseThemeJson(String(indexJson.content)); } catch { throw new BadRequestException('Theme package contains invalid JSON: templates/index.json'); }
+    if (!indexTemplate || typeof indexTemplate !== 'object' || !indexTemplate.sections || !Array.isArray(indexTemplate.order)) {
+      throw new BadRequestException('templates/index.json must define section objects and an ordered section list');
+    }
+    if (indexTemplate.order.some((key: unknown) => typeof key !== 'string' || !(key in indexTemplate.sections))) {
+      throw new BadRequestException('templates/index.json order contains a missing section key');
+    }
   }
   try {
     readThemePackageStructure(files);
@@ -925,8 +1012,15 @@ function normalizePath(input: string): string {
 function stripCommonRoot(files: PackageFile[]): PackageFile[] {
   if (!files.length) throw new BadRequestException('Theme ZIP is empty');
   const first = files[0].path.split('/')[0];
-  if (files.every((file) => file.path.startsWith(`${first}/`))) return files.map((file) => ({ ...file, path: normalizePath(file.path.slice(first.length + 1)) }));
+  if (!THEME_FOLDERS.has(first) && files.every((file) => file.path.startsWith(`${first}/`))) return files.map((file) => ({ ...file, path: normalizePath(file.path.slice(first.length + 1)) }));
   return files;
+}
+
+/** Only the standard Shopify theme folders are part of a theme; anything else in the ZIP (README, .github, package.json…) is ignored. */
+function keepThemeFolders(files: PackageFile[]): PackageFile[] {
+  const kept = files.filter((file) => THEME_FOLDERS.has(file.path.split('/')[0]) && file.path.includes('/'));
+  if (!kept.length) throw new BadRequestException('This ZIP does not look like a Shopify theme (no layout/, templates/ or sections/ folder found).');
+  return kept;
 }
 
 function extension(path: string): string { return path.slice(path.lastIndexOf('.')).toLowerCase(); }
@@ -938,11 +1032,12 @@ export { buildStoredZip };
 
 export async function renderThemePreview(files: PackageFile[], contextOverrides: Record<string, any> = {}, requestedPath = '/'): Promise<string> {
   const byPath = new Map(files.map((file) => [file.path, file]));
-  const textTemplates = Object.fromEntries(files.filter((file) => file.encoding === 'utf8').map((file) => [file.path, file.content]));
+  // Snippets/blocks pulled in through {% render %} must get the same Shopify-tag handling (form, style, nested render paths) as top-level files.
+  const textTemplates = Object.fromEntries(files.filter((file) => file.encoding === 'utf8').map((file) => [file.path, file.path.endsWith('.liquid') ? preprocessShopifyTags(file.content) : file.content]));
   let settings: Record<string, any> = {};
   let staticSections: Record<string, any> = {};
   try {
-    const data = JSON.parse(byPath.get('config/settings_data.json')?.content ?? '{}');
+    const data: any = parseThemeJson(byPath.get('config/settings_data.json')?.content ?? '{}');
     // `current` may be a preset NAME (string) pointing into `presets` — resolve it instead of exposing a string as `settings`.
     const current = typeof data.current === 'string' ? data.presets?.[data.current] : data.current;
     settings = current && typeof current === 'object' && !Array.isArray(current) ? current : {};
@@ -951,7 +1046,70 @@ export async function renderThemePreview(files: PackageFile[], contextOverrides:
   } catch { /* optional settings data */ }
   settings = applyThemeSettingDefaults(files, settings);
   const moneyCurrency = String(contextOverrides.shop?.currency ?? 'USD');
-  const engine = new Liquid({ templates: textTemplates, extname: '.liquid', strictFilters: false, strictVariables: false, ownPropertyOnly: true, renderLimit: 2500, memoryLimit: 4 * 1024 * 1024 });
+  // Shopify resolves {% render 'name' %} to snippets/name.liquid wherever the tag appears (also inside multi-line {% liquid %} blocks), so resolve at engine level.
+  const findTemplate = (name: string): string | undefined => {
+    const key = String(name).replace(/^\.?\//, '');
+    const bare = key.replace(/\.liquid$/i, '');
+    for (const candidate of [key, `${bare}.liquid`, `snippets/${bare}.liquid`, `blocks/${bare}.liquid`, `sections/${bare}.liquid`]) {
+      if (Object.prototype.hasOwnProperty.call(textTemplates, candidate)) return textTemplates[candidate];
+    }
+    return undefined;
+  };
+  const virtualFs = {
+    sep: '/',
+    resolve: (_root: string, file: string, ext: string) => (file.endsWith(ext) ? file : `${file}${ext}`),
+    dirname: () => '.',
+    contains: () => true,
+    exists: async (file: string) => findTemplate(file) !== undefined,
+    existsSync: (file: string) => findTemplate(file) !== undefined,
+    readFile: async (file: string) => { const t = findTemplate(file); if (t === undefined) throw new Error(`ENOENT: ${file}`); return t; },
+    readFileSync: (file: string) => { const t = findTemplate(file); if (t === undefined) throw new Error(`ENOENT: ${file}`); return t; },
+  };
+  const engine = new Liquid({ fs: virtualFs as any, root: ['.'], extname: '.liquid', strictFilters: false, strictVariables: false, ownPropertyOnly: true, renderLimit: 2500, memoryLimit: 4 * 1024 * 1024 });
+  // Shopify's {% content_for 'blocks' %} (children of the current section/block) and {% content_for 'block', type: 'x', id: 'y' %} (static block).
+  const parsedTemplates = new Map<string, any>();
+  const parseTemplate = (path: string) => {
+    if (!parsedTemplates.has(path)) parsedTemplates.set(path, engine.parse(textTemplates[path]));
+    return parsedTemplates.get(path);
+  };
+  engine.registerTag('content_for', {
+    parse(token: any) { this.rawArgs = String(token.args ?? '').trim(); },
+    *render(ctx: any, emitter: any) {
+      const raw: string = this.rawArgs;
+      const kindMatch = /^(['"])([^'"]+)\1/.exec(raw);
+      const kind = kindMatch?.[2];
+      const params: Record<string, any> = {};
+      for (const m of raw.slice(kindMatch?.[0].length ?? 0).matchAll(/([\w.-]+)\s*:\s*('[^']*'|"[^"]*"|[^,\s]+)/g)) {
+        const expr = m[2];
+        params[m[1]] = /^(['"]).*\1$/.test(expr) ? expr.slice(1, -1) : yield engine.evalValue(expr, ctx);
+      }
+      const depth = Number(ctx.get(['__content_for_depth']) ?? 0);
+      if (depth > 8) return;
+      const section = ctx.get(['section']);
+      const parentBlock = ctx.get(['block']);
+      const closest: Record<string, any> = { ...(ctx.get(['closest']) ?? {}) };
+      for (const [key, value] of Object.entries(params)) if (key.startsWith('closest.')) closest[key.slice(8)] = value;
+      const renderBlock = function* (child: any) {
+        const type = String(child?.type ?? '');
+        if (!/^[a-z0-9_-]+$/i.test(type)) return;
+        const path = 'blocks/' + type + '.liquid';
+        if (!Object.prototype.hasOwnProperty.call(textTemplates, path)) return;
+        const html = yield engine.render(parseTemplate(path), { ...ctx.getAll(), section, block: child, closest, __content_for_depth: depth + 1 });
+        emitter.write(html);
+      };
+      if (kind === 'blocks') {
+        const children = parentBlock && Array.isArray(parentBlock.blocks) ? parentBlock.blocks : (Array.isArray(section?.blocks) ? section.blocks : []);
+        for (const child of children) yield* renderBlock(child);
+      } else if (kind === 'block') {
+        const id = String(params.id ?? params.type ?? '');
+        const type = String(params.type ?? '');
+        const file = byPath.get('blocks/' + type + '.liquid');
+        const saved = section?.blocks_by_id?.[id];
+        const defaults = file ? applySectionSettingDefaults(file.content, { settings: saved?.settings ?? {}, blocks: {} }).settings : (saved?.settings ?? {});
+        yield* renderBlock({ ...(saved ?? {}), id, type, settings: defaults, shopify_attributes: 'data-shopify-editor-block="' + escapeAttribute(id) + '"', blocks: saved?.blocks ?? [], static: true });
+      }
+    },
+  } as any);
   const themeAssetUrl = (name: string) => {
     const assetName = String(name ?? '').replace(/^\/?assets\//i, '').replace(/^\//, '');
     const file = byPath.get(`assets/${assetName}`);
@@ -978,6 +1136,7 @@ export async function renderThemePreview(files: PackageFile[], contextOverrides:
     return src ? `<video controls><source src="${escapeAttribute(src)}"></video>` : '';
   });
   registerShopifyFilters(engine, files);
+  registerExtraShopifyFilters(engine, { files: byPath, assetUrl: themeAssetUrl });
   engine.registerFilter('handleize', (value: unknown) => String(value ?? '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''));
   engine.registerFilter('handle', (value: unknown) => String(value ?? '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''));
 
@@ -992,12 +1151,19 @@ export async function renderThemePreview(files: PackageFile[], contextOverrides:
     content_for_header: '',
     ...contextOverrides,
   };
+  // Shopify's `closest` (nearest product/collection/article/page of the current template) used by theme blocks and dynamic sources.
+  // Shopify media fields (featured_media, media, image sizes) on every product the theme can reach.
+  enrichLiquidObjects(context);
+  // `{{ content_for_header }}` (output form, used by Dawn/Horizon) must also provide the Shopify global theme scripts expect.
+  context.content_for_header = context.content_for_header || shopifyGlobalsScript(context);
+  context.closest = context.closest ?? { product: context.product, collection: context.collection, article: context.article, page: context.page };
+  if (typeof contextOverrides.__inspectEngine === 'function') contextOverrides.__inspectEngine(engine);
   const renderLiquid = async (source: string, scope: Record<string, any> = {}) => {
     const productId = scope.product?.id ?? context.product?.id;
     const productType = scope.product?.type ?? context.product?.type;
     return engine.parseAndRender(preprocessShopifyTags(source, productId, productType), { ...context, ...scope });
   };
-  const renderSection = async (key: string, section: any) => {
+  const renderSection = async (key: string, section: any, group?: string) => {
     const type = String(section?.type ?? '');
     if (!/^[a-z0-9_-]+$/i.test(type)) return '';
     const file = byPath.get(`sections/${type}.liquid`);
@@ -1008,12 +1174,27 @@ export async function renderThemePreview(files: PackageFile[], contextOverrides:
     const resolvedBlocks = Object.fromEntries(Object.entries(section.blocks ?? {}).map(([blockId, block]: [string, any]) => [
       blockId, { ...block, settings: resolveLiquidResourceSettings(block.settings ?? {}, context.__resources) },
     ]));
-    const sectionContext = { id: key, type, settings: resolveLiquidResourceSettings(section.settings ?? {}, context.__resources), blocks: resolvedBlocks, block_order: section.block_order ?? [] };
-    const blockMarkup = await renderSectionBlocks(section, sectionContext, byPath, renderLiquid, context.__resources);
-    const blockPlaceholder = `<!-- SOLVEXO_SECTION_BLOCKS_${escapeAttribute(key)} -->`;
-    const source = file.content.replace(/\{%[-+]?\s*content_for\s+['"]blocks['"][^%]*[-+]?%\}/g, blockPlaceholder);
-    const markup = (await renderLiquid(source, { section: sectionContext })).replace(blockPlaceholder, blockMarkup);
-    return `<div data-shopify-section="${escapeAttribute(key)}">${markup}</div>`;
+    // In Shopify `section.blocks` is an ordered ARRAY ({% for block in section.blocks %} / block.id / block.type / block.settings), with nested `block.blocks`.
+    const blockList = buildBlockTree(section.blocks ?? {}, section.block_order, context.__resources, byPath);
+    const sectionContext = { id: key, type, settings: resolveLiquidResourceSettings(section.settings ?? {}, context.__resources), blocks: blockList, blocks_by_id: resolvedBlocks, block_order: blockList.map((b: any) => b.id) };
+    // Settings may hold Liquid / dynamic sources ("{{ product.vendor }}", "{{ closest.collection.title }}"); Shopify evaluates them before the theme prints them.
+    const evalSettings = async (settings: Record<string, any> | undefined, scope: Record<string, any>) => {
+      for (const settingKey of Object.keys(settings ?? {})) {
+        const value = settings![settingKey];
+        if (typeof value === 'string' && (value.includes('{{') || value.includes('{%'))) {
+          try { settings![settingKey] = await renderLiquid(value, scope); } catch { /* keep the raw text rather than failing the page */ }
+        }
+      }
+    };
+    const evalBlocks = async (list: any[]) => {
+      for (const b of list) { await evalSettings(b.settings, { section: sectionContext, block: b }); await evalBlocks(b.blocks ?? []); }
+    };
+    await evalSettings(sectionContext.settings, { section: sectionContext });
+    await evalBlocks(blockList);
+    // {% content_for 'blocks' %} / {% content_for 'block', type:, id: %} are handled by the engine tag registered above.
+    const markup = await renderLiquid(file.content, { section: sectionContext });
+    const groupClass = group ? ` shopify-section-group-${escapeAttribute(group)}` : '';
+    return `<div id="shopify-section-${escapeAttribute(key)}" class="shopify-section${groupClass}" data-shopify-section="${escapeAttribute(key)}">${markup}</div>`;
   };
   const renderJsonTemplate = async (path: string) => {
     const file = byPath.get(path);
@@ -1035,7 +1216,7 @@ export async function renderThemePreview(files: PackageFile[], contextOverrides:
   if (content === null) content = '<main><h1>Theme preview</h1><p>This theme has no home page template.</p></main>';
   const layoutFile = byPath.get('layout/theme.liquid');
   if (layoutFile) {
-    let layout = preprocessShopifyTags(layoutFile.content).replace(/\{\%[-+]?\s*content_for_header\s*[-+]?\%\}/g, '');
+    let layout = preprocessShopifyTags(layoutFile.content).replace(/\{\%[-+]?\s*content_for_header\s*[-+]?\%\}/g, () => shopifyGlobalsScript(context));
     layout = layout.replace(/\{\{[-+]?\s*content_for_layout\s*[-+]?\}\}/g, '<!-- SHOPIFY_CONTENT_FOR_LAYOUT -->');
     layout = await replaceAsync(layout, /\{%[-+]?\s*section\s+['"]([^'"]+)['"]\s*[-+]?%\}/g, async (_match, sectionName) => renderSection(sectionName, { type: sectionName }));
     layout = await replaceAsync(layout, /\{%[-+]?\s*sections\s+['"]([^'"]+)['"]\s*[-+]?%\}/g, async (_match, groupName) => {
@@ -1047,7 +1228,7 @@ export async function renderThemePreview(files: PackageFile[], contextOverrides:
       for (const key of definition.order ?? []) {
         const section = definition.sections?.[key];
         if (section?.disabled === true) continue;
-        blocks.push(await renderSection(key, section));
+        blocks.push(await renderSection(key, section, groupName));
       }
       return blocks.join('\n');
     });
@@ -1118,11 +1299,14 @@ export function buildShopifyPagination(totalItems: number, pageSize: number, cur
 }
 function preprocessShopifyTags(source: string, productId?: string, productType?: string): string {
   return stripSchemaTags(source)
+    // {% doc %}…{% enddoc %} is documentation for snippet/block parameters; it renders nothing.
+    .replace(/\{%[-+]?\s*doc\s*[-+]?%\}[\s\S]*?\{%[-+]?\s*enddoc\s*[-+]?%\}/g, '')
+    .replace(/\{%[-+]?\s*stylesheet\s*[-+]?%\}/g, '<style>')
+    .replace(/\{%[-+]?\s*endstylesheet\s*[-+]?%\}/g, '</style>')
     .replace(/\{%[-+]?\s*style\s*[-+]?%\}/g, '<style>')
     .replace(/\{%[-+]?\s*endstyle\s*[-+]?%\}/g, '</style>')
     .replace(/\{%[-+]?\s*javascript\s*[-+]?%\}/g, '<script>')
     .replace(/\{%[-+]?\s*endjavascript\s*[-+]?%\}/g, '</script>')
-    .replace(/\{%[-+]?\s*content_for\s+['"]blocks['"][^%]*[-+]?%\}/g, '')
     .replace(/(\{%[-+]?\s*(?:render|include)\s+)(['"])([^'"]+)\2/g, (_match, prefix, quote, name) => {
       const fileName = String(name).replace(/\.liquid$/i, '');
       const withDirectory = fileName.includes('/') ? fileName : `snippets/${fileName}`;
@@ -1146,6 +1330,26 @@ function preprocessShopifyTags(source: string, productId?: string, productType?:
     .replace(/\{%[-+]?\s*endform\s*[-+]?%\}/g, '</form>')
     .replace(/\{%[-+]?\s*paginate\b[^%]*[-+]?%\}/g, '')
     .replace(/\{%[-+]?\s*endpaginate\s*[-+]?%\}/g, '');
+}
+/** Ordered block list for Liquid (`section.blocks` / `block.blocks`): ids, types, settings with schema defaults, nested children. */
+function buildBlockTree(definitions: Record<string, any>, order: unknown, resources: Record<string, any> | undefined, files: Map<string, { content: string }>): any[] {
+  const ids: string[] = Array.isArray(order) ? (order as string[]) : Object.keys(definitions ?? {});
+  return ids
+    .filter((id) => definitions?.[id] && definitions[id].disabled !== true)
+    .map((id) => {
+      const def = definitions[id];
+      const type = String(def.type ?? '');
+      const file = /^[a-z0-9_-]+$/i.test(type) ? files.get('blocks/' + type + '.liquid') : undefined;
+      const withDefaults = file ? applySectionSettingDefaults(file.content, { settings: def.settings ?? {}, blocks: {} }).settings : (def.settings ?? {});
+      return {
+        ...def,
+        id,
+        type,
+        settings: resolveLiquidResourceSettings(withDefaults, resources),
+        shopify_attributes: 'data-shopify-editor-block="' + escapeAttribute(id) + '"',
+        blocks: buildBlockTree(def.blocks ?? {}, def.block_order, resources, files),
+      };
+    });
 }
 async function renderSectionBlocks(
   section: any,
@@ -1191,7 +1395,7 @@ function collectLiquidResourceIds(files: PackageFile[]): string[] {
   for (const file of files) {
     if (file.encoding !== 'utf8' || !file.path.endsWith('.json')) continue;
     try {
-      addValues(JSON.parse(file.content));
+      addValues(parseThemeJson(file.content));
     } catch {
       continue;
     }
@@ -1286,13 +1490,18 @@ function selectTemplatePath(byPath: Map<string, PackageFile>, path: string, prod
   const templateKey = pageType === 'product' ? product?.templateKey ?? 'default' : pageType === 'collection' ? collection?.templateKey ?? 'default' : 'default';
   const json = `templates/${pageType}.${templateKey}.json`;
   if (byPath.has(json)) return { json, liquid: `templates/${pageType}.${templateKey}.liquid` };
+  // Classic themes ship templates/product.liquid etc. instead of JSON templates; Shopify renders those for their own page type.
+  const altLiquid = `templates/${pageType}.${templateKey}.liquid`;
+  if (byPath.has(altLiquid)) return { json: json, liquid: altLiquid };
   const fallbackJson = `templates/${pageType}.json`;
   if (byPath.has(fallbackJson)) return { json: fallbackJson, liquid: `templates/${pageType}.liquid` };
+  const fallbackLiquid = `templates/${pageType}.liquid`;
+  if (byPath.has(fallbackLiquid)) return { json: fallbackJson, liquid: fallbackLiquid };
   return { json: 'templates/index.json', liquid: 'templates/index.liquid' };
 }
 /** A theme file saved through Edit code can hold malformed JSON — never let that 500 a live page. */
 function safeJson(text: string): any | null {
-  try { const v = JSON.parse(text); return v && typeof v === 'object' ? v : null; } catch { return null; }
+  try { const v: any = parseThemeJson(text); return v && typeof v === 'object' ? v : null; } catch { return null; }
 }
 function routeSegment(path: string, index: number): string | undefined {
   const segment = path.split(/[?#]/, 1)[0].split('/')[index];
@@ -1359,8 +1568,25 @@ function resolveThemeImageUrl(value: any, themeAssetUrl: (name: string) => strin
   if (/^\/?assets\//i.test(source)) return themeAssetUrl(source) || source;
   return source;
 }
+/** What Shopify's content_for_header gives theme JavaScript: the `Shopify` global and a few analytics stubs, so theme scripts do not crash. */
+function shopifyGlobalsScript(context: Record<string, any>): string {
+  const shop = context.shop ?? {};
+  const data = {
+    shop: String(shop.domain ?? shop.permanent_domain ?? shop.name ?? ''),
+    locale: 'en',
+    currency: { active: String(shop.currency ?? 'USD'), rate: '1.0' },
+    country: String(shop.country ?? 'US'),
+    theme: { name: 'Solvexo theme', id: 1, role: 'main', handle: 'solvexo-theme', style: { id: null, handle: null } },
+    designMode: false,
+    routes: { root: '/' },
+  };
+  const json = JSON.stringify(data).replace(/</g, '\\u003c');
+  return '<script>window.Shopify=Object.assign(' + json + ',window.Shopify||{});window.ShopifyAnalytics=window.ShopifyAnalytics||{lib:{track:function(){},page:function(){},identify:function(){}},meta:{}};window.theme=window.theme||{};</script>';
+}
 function applyPreviewCsp(html: string): string {
-  const policy = "default-src 'none'; img-src data: blob: https:; style-src 'unsafe-inline' data:; font-src data:; script-src 'unsafe-inline' data:; connect-src 'none'; form-action 'none'; frame-src 'none'; base-uri https:";
+  // Theme assets (css/js/fonts/images) are served from the API origin, so that origin must be allowed for them (and only for them).
+  const assetOrigin = API_PUBLIC_ORIGIN;
+  const policy = `default-src 'none'; img-src data: blob: https: ${assetOrigin}; style-src 'unsafe-inline' data: ${assetOrigin}; font-src data: ${assetOrigin}; script-src 'unsafe-inline' data: ${assetOrigin}; connect-src 'none'; form-action 'none'; frame-src 'none'; base-uri https:`;
   const tag = `<meta http-equiv="Content-Security-Policy" content="${policy}">`;
   return /<head(?:\s[^>]*)?>/i.test(html) ? html.replace(/<head(?:\s[^>]*)?>/i, (head) => `${head}${tag}`) : html;
 }

@@ -10,6 +10,8 @@ import { isValidObjectId } from 'mongoose';
 import { REQUIRE_PERMISSION_KEY } from '../decorators/require-permission.decorator';
 import { STAFF_STORE_PINNED_KEY } from '../decorators/staff-store-pinned.decorator';
 import { DatabaseService } from '../../database/databaseservice';
+import { ADMIN_SELF_KEY, ADMIN_APPROVAL_KEY } from '../decorators/admin-guards.decorator';
+import { consumeOrRequestApproval } from '../../admin-team/admin-approval.util';
 
 const NOT_SCOPED = 'This staff account is not scoped to that store';
 
@@ -46,7 +48,30 @@ export class PermissionsGuard implements CanActivate {
     const hasRequired = !!required && required.length > 0;
     if (!hasRequired && !user) return true; // nothing to enforce, and no identity to pin
     if (!user) throw new ForbiddenException('Access Denied');
-    if (user.role !== 'staff') return true; // seller/admin — always allowed
+    const method = String(request.method ?? 'GET').toUpperCase();
+
+    // Platform admin: the owner / a Super Admin is never restricted; a TEAM admin only gets what its role lists.
+    if (user.role === 'admin') {
+      if (!user.teamAdmin) return true;
+      if (user.readOnly && method !== 'GET' && method !== 'HEAD') {
+        throw new ForbiddenException('Your admin role is read-only: it can look at things but cannot change them.');
+      }
+      if (this.reflector.getAllAndOverride<boolean>(ADMIN_SELF_KEY, [context.getHandler(), context.getClass()])) return true;
+      const granted: string[] = Array.isArray(user.permissions) ? user.permissions : [];
+      // Fails closed: a route that names no permission is not open to a team admin.
+      if (!hasRequired || !required.some((p) => granted.includes(p))) {
+        throw new ForbiddenException(`Your admin role doesn't have permission to do this${hasRequired ? ` (requires: ${required.join(' or ')})` : ''}`);
+      }
+      const approvalKey = this.reflector.getAllAndOverride<string>(ADMIN_APPROVAL_KEY, [context.getHandler(), context.getClass()]);
+      if (approvalKey) await consumeOrRequestApproval(this.db, user, approvalKey, `${method} ${request.route?.path ?? request.path}`);
+      return true;
+    }
+    if (user.role !== 'staff') return true; // seller — always allowed
+
+    // "View as store" (an admin looking at a store for support) is a staff-shaped token that can never write.
+    if (user.viewOnly && method !== 'GET' && method !== 'HEAD') {
+      throw new ForbiddenException('You are viewing this store as an admin (read-only). Exit to make changes.');
+    }
 
     await this.pinStaffToStore(request, user, context);
 

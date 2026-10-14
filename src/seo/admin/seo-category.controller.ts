@@ -8,23 +8,27 @@ import { SeoContentService } from '../services/seo-content.service';
 import { UpdateSeoMetaDto } from '../dto/update-seo-meta.dto';
 import { SeoResponseInterceptor } from '../seo-response.interceptor';
 
+import { PermissionsGuard } from '../../auth/guards/permissions.guard';
+import { RequirePermission } from '../../auth/decorators/require-permission.decorator';
 // Root/main categories are admin-curated (CategoriesService.addCategory
 // requires role==='admin' to create one with no parentId), so category SEO
 // override is admin-only — sellers only ever *view* category meta (Phase 7).
 @ApiTags('Admin SEO — Category Meta')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
 @Roles('admin')
 @UseInterceptors(SeoResponseInterceptor)
 @Controller('api/admin/seo/categories')
 export class AdminSeoCategoryController {
   constructor(private readonly seoContent: SeoContentService) {}
 
+  @RequirePermission('seo.manage')
   @Get(':id')
   getSeo(@Param('id') id: string) {
     return this.seoContent.getCategorySeo(id);
   }
 
+  @RequirePermission('seo.manage')
   @Patch(':id')
   updateSeo(@Req() req: any, @Param('id') id: string, @Body() dto: UpdateSeoMetaDto) {
     return this.seoContent.updateCategorySeo(id, dto, { id: req.user.userId, role: req.user.role });

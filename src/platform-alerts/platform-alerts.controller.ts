@@ -7,6 +7,8 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { AdminAnalyticsQueryDto } from '../admin-analytics/dto/admin-analytics-query.dto';
 import { PlatformAlertsService } from './platform-alerts.service';
 
+import { PermissionsGuard } from '../auth/guards/permissions.guard';
+import { RequirePermission } from '../auth/decorators/require-permission.decorator';
 // Same URL family as Phase 9/10's platform/* endpoints
 // (platform/seller-acquisition, platform/health) — a separate controller
 // (not a method on AdminAnalyticsController) purely to avoid a circular
@@ -16,13 +18,14 @@ import { PlatformAlertsService } from './platform-alerts.service';
 // would be circular. The route path is identical either way.
 @ApiTags('Admin Analytics')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
 @Roles('admin')
 @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
 @Controller('api/admin/analytics/platform')
 export class PlatformAlertsController {
   constructor(private readonly platformAlertsService: PlatformAlertsService) {}
 
+  @RequirePermission('analytics.view')
   @Get('alerts')
   getAlerts(@Query() query: AdminAnalyticsQueryDto) {
     return this.platformAlertsService.getAlerts(query);

@@ -10,6 +10,8 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { TestimonialsService } from './testimonials.service';
 import { CreateTestimonialDto, UpdateTestimonialDto, SubmitTestimonialDto } from './dto/testimonial.dto';
 
+import { PermissionsGuard } from '../auth/guards/permissions.guard';
+import { RequirePermission } from '../auth/decorators/require-permission.decorator';
 @ApiTags('Testimonials')
 @Controller('api/testimonials')
 export class TestimonialsController {
@@ -39,8 +41,9 @@ export class TestimonialsController {
   }
 
   // ── ADMIN (Auth Required) ────────────────────────────────────────────────
+  @RequirePermission('content.manage')
   @Get('admin/all')
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('admin')
   @ApiBearerAuth()
   getAll() {
@@ -48,16 +51,18 @@ export class TestimonialsController {
   }
 
   // CSV import (static routes; no `:id` GET/POST exists to swallow them).
+  @RequirePermission('content.manage')
   @Get('import-template')
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('admin')
   @ApiBearerAuth()
   importTemplate() {
     return buildTemplatePayload('testimonials-import-template.csv', TESTIMONIAL_COLUMNS);
   }
 
+  @RequirePermission('content.manage')
   @Post('import')
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('admin')
   @ApiBearerAuth()
   @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }))
@@ -75,48 +80,54 @@ export class TestimonialsController {
     });
   }
 
+  @RequirePermission('content.manage')
   @Post()
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('admin')
   @ApiBearerAuth()
   create(@Body() dto: CreateTestimonialDto) {
     return this.testimonialsService.create(dto);
   }
 
+  @RequirePermission('content.manage')
   @Put(':id')
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('admin')
   @ApiBearerAuth()
   update(@Param('id') id: string, @Body() dto: UpdateTestimonialDto) {
     return this.testimonialsService.update(id, dto);
   }
 
+  @RequirePermission('content.manage')
   @Put(':id/toggle')
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('admin')
   @ApiBearerAuth()
   toggle(@Param('id') id: string) {
     return this.testimonialsService.toggleActive(id);
   }
 
+  @RequirePermission('content.manage')
   @Delete(':id')
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('admin')
   @ApiBearerAuth()
   remove(@Param('id') id: string) {
     return this.testimonialsService.remove(id);
   }
 
+  @RequirePermission('content.manage')
   @Patch(':id/approve')
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('admin')
   @ApiBearerAuth()
   approve(@Param('id') id: string) {
     return this.testimonialsService.approve(id);
   }
 
+  @RequirePermission('content.manage')
   @Patch(':id/reject')
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('admin')
   @ApiBearerAuth()
   reject(@Param('id') id: string) {

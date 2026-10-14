@@ -1,3 +1,4 @@
+import { AdminSecurityService } from './admin-security.service';
 import { buildStaffProfile } from '../common/staff-profile.util';
 import {
   Injectable,
@@ -38,6 +39,8 @@ export class AuthService {
     private readonly jwtService: JwtService,
     // Global module; optional so auth still boots if the notifications module is ever absent.
     @Optional() private readonly notificationsService?: NotificationsService,
+    // Appended last (optional) so existing positional construction in specs keeps working.
+    @Optional() private readonly adminSecurity?: AdminSecurityService,
   ) {}
 
   /** Tells the platform admins a new seller joined (in-app + email per their preferences). Never throws. */
@@ -272,6 +275,8 @@ export class AuthService {
       if (!existingUser) {
         throw new UnauthorizedException('Invalid email or password');
       }
+      // Admin accounts: lockout + pending-invite checks before anything about the password is revealed.
+      if (role === 'admin') this.adminSecurity?.assertCanAttempt(existingUser);
 
       // Checked BEFORE the password compare — otherwise whether a wrong
       // password gets 'Invalid email or password' vs an unverified account
@@ -292,6 +297,7 @@ export class AuthService {
         existingUser.password,
       );
       if (!isPasswordMatch) {
+        if (role === 'admin') await this.adminSecurity?.recordFailure(existingUser);
         if (role === 'seller') {
           this.logSellerSecurityEvent(
             existingUser._id.toString(),
@@ -335,11 +341,13 @@ export class AuthService {
       // tokenVersion is embedded so a suspend/deactivate action elsewhere
       // (which bumps the DB value) invalidates this token on its very next
       // request — see JwtAuthGuard's comparison against the current DB value.
+      const adminClaims = role === 'admin' && this.adminSecurity ? await this.adminSecurity.onSuccess(existingUser, ip, userAgent) : {};
       const payload = {
         sub: existingUser._id,
         email: existingUser.email,
         role: existingUser.role,
         tokenVersion: existingUser.tokenVersion ?? 0,
+        ...adminClaims,
         // Informational only — read from the resolved account, never from
         // client input. Buyer-only; undefined for seller/admin.
         storeId: role === 'user' ? ((existingUser as any).storeId ?? null) : undefined,
@@ -369,6 +377,7 @@ export class AuthService {
             email: existingUser.email,
             role: existingUser.role,
             image: existingUser.profileImage || null,
+            ...(role === 'admin' ? { isSuperAdmin: !!existingUser.isSuperAdmin } : {}),
           },
           token: {
             // ⬅️ token object me rakhna
@@ -929,6 +938,18 @@ export class AuthService {
         error.message || 'Failed to update profile',
       );
     }
+  }
+
+  /** Profile of an admin's read-only "view as store" session (staff-shaped token; there is no StaffMember row). */
+  async getViewAsProfile(user: any) {
+    const [admin, store]: any[] = await Promise.all([
+      this.databaseService.repositories.adminModel.findById(user.viewAs).select('name email').lean(),
+      this.databaseService.repositories.storeModel.findById(user.storeId).select('name').lean(),
+    ]);
+    return { message: 'Profile fetched successfully', success: true, data: {
+      _id: user.viewAs, name: `${admin?.name ?? 'Admin'} (admin view)`, email: admin?.email ?? '', phone: '', address: '', isVerified: true, profileImage: null,
+      status: 'active', role: 'staff', currencyPreference: null, storeId: user.storeId, storeName: store?.name ?? null, staffRoleName: 'Admin — read-only view', permissions: user.permissions ?? [],
+    } };
   }
 
   async getProfile(userId: string, role: string) {

@@ -9,9 +9,11 @@ import { AdminUsersQueryDto } from './dto/admin-users-query.dto';
 import { StoreCustomersQueryDto } from './dto/store-customers-query.dto';
 import { StoreService } from '../store/store.service';
 
+import { PermissionsGuard } from '../auth/guards/permissions.guard';
+import { RequirePermission } from '../auth/decorators/require-permission.decorator';
 @ApiTags('Admin Users & Sellers')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
 @Roles('admin')
 @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
 @Controller('api/admin/users')
@@ -32,11 +34,13 @@ export class AdminUsersController {
     return role;
   }
 
+  @RequirePermission('clients.view')
   @Get('stats')
   getStats() {
     return this.adminUsersService.getStats();
   }
 
+  @RequirePermission('clients.view')
   @Get()
   list(@Query() query: AdminUsersQueryDto) {
     return this.adminUsersService.list(query);
@@ -49,26 +53,31 @@ export class AdminUsersController {
   // live — see AdminUsersService's class doc comment for why buyers aren't
   // on the top-level list. ──
 
+  @RequirePermission('clients.view')
   @Get('stores/:storeId/customers')
   getStoreCustomers(@Param('storeId') storeId: string, @Query() query: StoreCustomersQueryDto) {
     return this.storeService.getStoreCustomersAdmin(storeId, query);
   }
 
+  @RequirePermission('clients.manage')
   @Patch('stores/:storeId/customers/:buyerId/block')
   blockStoreCustomer(@Req() req: any, @Param('storeId') storeId: string, @Param('buyerId') buyerId: string) {
     return this.storeService.setCustomerBlockedAdmin(storeId, buyerId, true, this.meta(req));
   }
 
+  @RequirePermission('clients.manage')
   @Patch('stores/:storeId/customers/:buyerId/unblock')
   unblockStoreCustomer(@Req() req: any, @Param('storeId') storeId: string, @Param('buyerId') buyerId: string) {
     return this.storeService.setCustomerBlockedAdmin(storeId, buyerId, false, this.meta(req));
   }
 
+  @RequirePermission('clients.manage')
   @Patch('stores/:storeId/suspend')
   suspendStore(@Req() req: any, @Param('storeId') storeId: string) {
     return this.adminUsersService.suspendStore(storeId, this.meta(req));
   }
 
+  @RequirePermission('clients.manage')
   @Patch('stores/:storeId/unsuspend')
   unsuspendStore(@Req() req: any, @Param('storeId') storeId: string) {
     return this.adminUsersService.unsuspendStore(storeId, this.meta(req));
@@ -78,16 +87,19 @@ export class AdminUsersController {
   // whole-account view/suspend from this page's own list, and 'buyer' for
   // the platform-wide ban reachable from a store's customer list above. ──
 
+  @RequirePermission('clients.view')
   @Get(':role/:id')
   getById(@Param('role') role: string, @Param('id') id: string) {
     return this.adminUsersService.getById(this.validateRole(role), id);
   }
 
+  @RequirePermission('clients.manage')
   @Patch(':role/:id/suspend')
   suspend(@Req() req: any, @Param('role') role: string, @Param('id') id: string) {
     return this.adminUsersService.suspend(this.validateRole(role), id, this.meta(req));
   }
 
+  @RequirePermission('clients.manage')
   @Patch(':role/:id/unsuspend')
   unsuspend(@Req() req: any, @Param('role') role: string, @Param('id') id: string) {
     return this.adminUsersService.unsuspend(this.validateRole(role), id, this.meta(req));

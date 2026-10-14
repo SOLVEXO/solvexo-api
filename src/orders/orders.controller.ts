@@ -369,7 +369,8 @@ export class OrdersController {
   // behalf. (Cancel/refund admin routes were built once, then deliberately
   // removed for exactly this reason.) ─────────────────────────────────────
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @RequirePermission('clients.view')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('admin')
   @Get('admin-orders/:storeId/:orderId')
   async adminGetOrderDetail(

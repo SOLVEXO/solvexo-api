@@ -7,6 +7,8 @@ import { IdempotencyInterceptor } from '../common/idempotency.interceptor';
 import { ExchangeRateService } from './exchange-rate.service';
 import { AdminOverrideFxRateDto } from './dto/admin-override-fx-rate.dto';
 
+import { PermissionsGuard } from '../auth/guards/permissions.guard';
+import { RequirePermission } from '../auth/decorators/require-permission.decorator';
 @Controller('api/exchange-rate')
 export class ExchangeRateController {
   constructor(private readonly exchangeRateService: ExchangeRateService) {}
@@ -23,12 +25,13 @@ export class ExchangeRateController {
 
 @ApiTags('Admin FX')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
 @Roles('admin')
 @Controller('api/admin/fx')
 export class AdminFxController {
   constructor(private readonly exchangeRateService: ExchangeRateService) {}
 
+  @RequirePermission('commission.manage')
   @Get('history')
   async getHistory(
     @Query('currency') currency?: string,
@@ -39,12 +42,14 @@ export class AdminFxController {
     return { success: true, data };
   }
 
+  @RequirePermission('commission.manage')
   @Get('staleness')
   async getStaleness() {
     const data = await this.exchangeRateService.getStaleness();
     return { success: true, data };
   }
 
+  @RequirePermission('commission.manage')
   @Post('override')
   @UseInterceptors(IdempotencyInterceptor)
   async override(@Req() req: any, @Body() dto: AdminOverrideFxRateDto) {

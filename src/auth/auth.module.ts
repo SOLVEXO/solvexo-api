@@ -9,6 +9,7 @@ import { AuthService } from './auth.service';
 import { AuthController } from './auth.controller';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { OtpModule } from '@/otp/otp.module';
+import { AdminSecurityService } from './admin-security.service';
 
 import { User, UserSchema } from '../users/schemas/user.schema';
 import { RedisModule } from '@/redis/redis.module';
@@ -39,7 +40,7 @@ import { AuthVisualService } from '../common/auth-visual.service';
     MongooseModule.forFeature([{ name: User.name, schema: UserSchema }]),
   ],
   controllers: [AuthController],
-  providers: [AuthService, GuestSessionService, JwtStrategy, JwtAuthGuard, PermissionsGuard, AuthVisualService],
-  exports: [JwtModule, AuthService, GuestSessionService, JwtAuthGuard, PermissionsGuard],
+  providers: [AuthService, GuestSessionService, JwtStrategy, JwtAuthGuard, PermissionsGuard, AuthVisualService, AdminSecurityService],
+  exports: [JwtModule, AuthService, GuestSessionService, JwtAuthGuard, PermissionsGuard, AdminSecurityService],
 })
 export class AuthModule {}

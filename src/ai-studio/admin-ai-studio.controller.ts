@@ -11,6 +11,8 @@ import { IdempotencyInterceptor } from '../common/idempotency.interceptor';
 import { AdminAiStudioService } from './admin-ai-studio.service';
 import { AdminGenerateSeoDto, AdminGenerateEmailDto, AdminGenerateImageEnhanceDto, AdjustWalletDto } from './dto/admin-generate.dto';
 
+import { PermissionsGuard } from '../auth/guards/permissions.guard';
+import { RequirePermission } from '../auth/decorators/require-permission.decorator';
 /**
  * Admin AI Studio — two halves, both @Roles('admin') only:
  *
@@ -23,7 +25,7 @@ import { AdminGenerateSeoDto, AdminGenerateEmailDto, AdminGenerateImageEnhanceDt
  */
 @ApiTags('Admin AI Studio')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
 @Roles('admin')
 @Controller('api/admin/ai-studio')
 export class AdminAiStudioController {
@@ -31,36 +33,43 @@ export class AdminAiStudioController {
 
   // ---- oversight ----
 
+  @RequirePermission('ai.manage')
   @Get('overview')
   getOverview(@Query('days') days?: string) {
     return this.adminAiStudio.getOverview(Number(days) || 28);
   }
 
+  @RequirePermission('ai.manage')
   @Get('generations')
   listGenerations(@Query() query: any) {
     return this.adminAiStudio.listGenerations(query);
   }
 
+  @RequirePermission('ai.manage')
   @Get('generations/:generationId')
   getGeneration(@Param('generationId') generationId: string) {
     return this.adminAiStudio.getGeneration(generationId);
   }
 
+  @RequirePermission('ai.manage')
   @Get('wallets')
   listWallets(@Query() query: any) {
     return this.adminAiStudio.listWallets(query);
   }
 
+  @RequirePermission('ai.manage')
   @Get('wallets/:storeId/ledger')
   getWalletLedger(@Param('storeId') storeId: string) {
     return this.adminAiStudio.getWalletLedger(storeId);
   }
 
+  @RequirePermission('ai.manage')
   @Post('wallets/:storeId/adjust')
   adjustWallet(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: AdjustWalletDto) {
     return this.adminAiStudio.adjustWallet(storeId, dto, { id: req.user.userId, name: req.user.name, role: req.user.role });
   }
 
+  @RequirePermission('ai.manage')
   @Get('transactions')
   listTransactions(@Query() query: any) {
     return this.adminAiStudio.listTransactions(query);
@@ -68,6 +77,7 @@ export class AdminAiStudioController {
 
   // ---- platform generation (Solvexo's own content) ----
 
+  @RequirePermission('ai.manage')
   @Throttle({ default: { limit: 15, ttl: 60_000 } })
   @UseInterceptors(IdempotencyInterceptor)
   @Post('platform/seo-booster/generate')
@@ -75,6 +85,7 @@ export class AdminAiStudioController {
     return this.adminAiStudio.generatePlatformSeo(req.user.userId, dto);
   }
 
+  @RequirePermission('ai.manage')
   @Throttle({ default: { limit: 15, ttl: 60_000 } })
   @UseInterceptors(IdempotencyInterceptor)
   @Post('platform/email-campaigns/generate')
@@ -82,6 +93,7 @@ export class AdminAiStudioController {
     return this.adminAiStudio.generatePlatformEmail(req.user.userId, dto);
   }
 
+  @RequirePermission('ai.manage')
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @UseInterceptors(IdempotencyInterceptor)
   @Post('platform/image-enhancer/generate')
@@ -89,6 +101,7 @@ export class AdminAiStudioController {
     return this.adminAiStudio.startPlatformImageEnhance(req.user.userId, dto);
   }
 
+  @RequirePermission('ai.manage')
   @Get('platform/image-enhancer/jobs/:jobId')
   getPlatformImageJob(@Param('jobId') jobId: string) {
     return this.adminAiStudio.getPlatformImageJob(jobId);

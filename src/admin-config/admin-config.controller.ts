@@ -20,20 +20,24 @@ import { UpdateManualPaymentConfigDto } from './dto/update-manual-payment-config
 import { UpdateFxConfigDto } from './dto/update-fx-config.dto';
 import { AddCurrencyDto, UpdateCurrencyBandDto } from './dto/currency-band.dto';
 
+import { PermissionsGuard } from '../auth/guards/permissions.guard';
+import { RequirePermission } from '../auth/decorators/require-permission.decorator';
 @ApiTags('Admin Platform Config')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
 @Roles('admin')
 @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
 @Controller('api/admin/platform-config')
 export class AdminConfigController {
   constructor(private readonly adminConfigService: AdminConfigService) {}
 
+  @RequirePermission('config.manage')
   @Get()
   getConfig() {
     return this.adminConfigService.getConfig();
   }
 
+  @RequirePermission('config.manage')
   @Put('feature-flags')
   updateFeatureFlags(@Req() req: any, @Body() dto: UpdateFeatureFlagsDto) {
     return this.adminConfigService.updateFeatureFlags(dto, {
@@ -43,6 +47,7 @@ export class AdminConfigController {
     });
   }
 
+  @RequirePermission('config.manage')
   @Put('ai')
   updateAiConfig(@Req() req: any, @Body() dto: UpdateAiConfigDto) {
     return this.adminConfigService.updateAiConfig(dto, {
@@ -52,6 +57,7 @@ export class AdminConfigController {
     });
   }
 
+  @RequirePermission('config.manage')
   @Put('email')
   updateEmailConfig(@Req() req: any, @Body() dto: UpdateEmailConfigDto) {
     return this.adminConfigService.updateEmailConfig(dto, {
@@ -61,6 +67,7 @@ export class AdminConfigController {
     });
   }
 
+  @RequirePermission('config.manage')
   @Put('placement-limits')
   updatePlacementLimits(@Req() req: any, @Body() dto: UpdatePlacementLimitsDto) {
     return this.adminConfigService.updatePlacementLimits(dto, {
@@ -70,6 +77,7 @@ export class AdminConfigController {
     });
   }
 
+  @RequirePermission('config.manage')
   @Put('payout')
   updatePayoutConfig(@Req() req: any, @Body() dto: UpdatePayoutConfigDto) {
     return this.adminConfigService.updatePayoutConfig(dto, {
@@ -79,6 +87,7 @@ export class AdminConfigController {
     });
   }
 
+  @RequirePermission('config.manage')
   @Put('promotion-pricing')
   updatePromotionPricing(@Req() req: any, @Body() dto: UpdatePromotionPricingDto) {
     return this.adminConfigService.updatePromotionPricing(dto, {
@@ -88,6 +97,7 @@ export class AdminConfigController {
     });
   }
 
+  @RequirePermission('config.manage')
   @Put('manual-payment')
   updateManualPaymentConfig(@Req() req: any, @Body() dto: UpdateManualPaymentConfigDto) {
     return this.adminConfigService.updateManualPaymentConfig(dto, {
@@ -97,6 +107,7 @@ export class AdminConfigController {
     });
   }
 
+  @RequirePermission('config.manage')
   @Put('fx')
   updateFxConfig(@Req() req: any, @Body() dto: UpdateFxConfigDto) {
     return this.adminConfigService.updateFxConfig(dto, {
@@ -109,17 +120,20 @@ export class AdminConfigController {
   // ── Dynamic, admin-managed currency list (Markets) — see AdminConfigService's
   // own doc comments on getEnabledCurrencies/addCurrency/updateCurrencyBand/
   // removeCurrency for why this replaced the old fixed 8-entry array. ──
+  @RequirePermission('config.manage')
   @Get('currencies')
   listCurrencies() {
     return this.adminConfigService.getEnabledCurrencies();
   }
 
   // CSV import (fixed literals, declared before the `currencies/:code` routes).
+  @RequirePermission('config.manage')
   @Get('currencies/import-template')
   currenciesImportTemplate() {
     return buildTemplatePayload('currencies-import-template.csv', CURRENCY_COLUMNS);
   }
 
+  @RequirePermission('config.manage')
   @Post('currencies/import')
   @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }))
   importCurrencies(@Req() req: any, @UploadedFile() file: any) {
@@ -137,6 +151,7 @@ export class AdminConfigController {
     });
   }
 
+  @RequirePermission('config.manage')
   @Post('currencies')
   addCurrency(@Req() req: any, @Body() dto: AddCurrencyDto) {
     return this.adminConfigService.addCurrency(dto.code, dto.sanityBandMin, dto.sanityBandMax, {
@@ -149,6 +164,7 @@ export class AdminConfigController {
   // Bulk "enable every real currency" action — see AdminConfigService.enableAllCurrencies's
   // own doc comment. Route is a fixed literal ('enable-all'), not a :code
   // param, so it never collides with a real 3-letter currency code.
+  @RequirePermission('config.manage')
   @Post('currencies/enable-all')
   enableAllCurrencies(@Req() req: any) {
     return this.adminConfigService.enableAllCurrencies({
@@ -162,6 +178,7 @@ export class AdminConfigController {
   // updateCurrencyBand below — clears a currency's learned "Stripe rejected
   // this" flag back to unknown, for a retry after Stripe adds support or the
   // original rejection was a one-off. See AdminConfigService's own doc comment.
+  @RequirePermission('config.manage')
   @Post('currencies/:code/retry-stripe')
   retryStripeCardPaymentSupport(@Req() req: any, @Param('code') code: string) {
     return this.adminConfigService.retryStripeCardPaymentSupport(code, {
@@ -171,6 +188,7 @@ export class AdminConfigController {
     });
   }
 
+  @RequirePermission('config.manage')
   @Patch('currencies/:code')
   updateCurrencyBand(@Req() req: any, @Param('code') code: string, @Body() dto: UpdateCurrencyBandDto) {
     return this.adminConfigService.updateCurrencyBand(code, dto.sanityBandMin, dto.sanityBandMax, {
@@ -180,6 +198,7 @@ export class AdminConfigController {
     });
   }
 
+  @RequirePermission('config.manage')
   @Delete('currencies/:code')
   removeCurrency(@Req() req: any, @Param('code') code: string) {
     return this.adminConfigService.removeCurrency(code, {
@@ -189,6 +208,7 @@ export class AdminConfigController {
     });
   }
 
+  @RequirePermission('config.manage')
   @Patch('maintenance')
   setMaintenanceMode(@Req() req: any, @Body() dto: UpdateMaintenanceDto) {
     return this.adminConfigService.setMaintenanceMode(dto.maintenanceMode, {

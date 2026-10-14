@@ -27,6 +27,8 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { PromotionPlacement } from '../common/promotion-placements.const';
 
+import { PermissionsGuard } from '../auth/guards/permissions.guard';
+import { RequirePermission } from '../auth/decorators/require-permission.decorator';
 const BANNER_UPLOAD_MIME = /\/(jpg|jpeg|png|webp)$/;
 const BANNER_UPLOAD_MAX_BYTES = 5 * 1024 * 1024;
 // `api/spotlight` is an additive alias of `api/banners` — some browser ad-blockers
@@ -46,7 +48,8 @@ export class BannersController {
   }
 
   // GET banner count — admin only
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @RequirePermission('marketing.manage')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('admin')
   @ApiBearerAuth()
   @Get('count')
@@ -55,7 +58,8 @@ export class BannersController {
   }
 
   // POST via JSON URL — admin only
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @RequirePermission('marketing.manage')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('admin')
   @ApiBearerAuth()
   @Post()
@@ -65,7 +69,8 @@ export class BannersController {
   }
 
   // POST via file upload — admin only
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @RequirePermission('marketing.manage')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('admin')
   @ApiBearerAuth()
   @Post('upload')
@@ -93,7 +98,8 @@ export class BannersController {
   }
 
   // PATCH edit banner — admin only
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @RequirePermission('marketing.manage')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('admin')
   @ApiBearerAuth()
   @Patch(':id')
@@ -102,7 +108,8 @@ export class BannersController {
   }
 
   // PATCH pause banner — admin only
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @RequirePermission('marketing.manage')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('admin')
   @ApiBearerAuth()
   @Patch(':id/pause')
@@ -111,7 +118,8 @@ export class BannersController {
   }
 
   // PATCH resume banner — admin only
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @RequirePermission('marketing.manage')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('admin')
   @ApiBearerAuth()
   @Patch(':id/resume')
@@ -120,7 +128,8 @@ export class BannersController {
   }
 
   // DELETE banner — admin only
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @RequirePermission('marketing.manage')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('admin')
   @ApiBearerAuth()
   @Delete(':id')

@@ -46,6 +46,13 @@ export class JwtAuthGuard extends AuthGuard('jwt') {
     // match the current value, the token was issued before that action and
     // must be rejected immediately, regardless of its Redis/expiry state.
     const user = request.user;
+    if (user?.viewAs) {
+      const viewer: any = await this.databaseService.repositories.adminModel.findById(user.viewAs).select('status isDelete accessExpiresAt').lean();
+      if (!viewer || viewer.isDelete || (viewer.status && viewer.status !== 'active') || (viewer.accessExpiresAt && new Date(viewer.accessExpiresAt).getTime() < Date.now())) {
+        throw new UnauthorizedException('Session revoked, please login again');
+      }
+      return true;
+    }
     if (user?.userId && user?.role) {
       const model = this.modelForRole(user.role);
       if (model) {
@@ -69,6 +76,18 @@ export class JwtAuthGuard extends AuthGuard('jwt') {
             throw new UnauthorizedException('Session revoked, please login again');
           }
         }
+      }
+    }
+
+    // Admin sessions can be listed/revoked: a token that carries a session id must still be on the account.
+    if (user?.role === 'admin' && user.sid) {
+      const session: any = await this.databaseService.repositories.adminModel
+        .findOne({ _id: user.userId, 'sessions.sid': user.sid })
+        .select('status isDelete accessExpiresAt')
+        .lean();
+      if (!session || session.isDelete || (session.status && session.status !== 'active')
+        || (session.accessExpiresAt && new Date(session.accessExpiresAt).getTime() < Date.now())) {
+        throw new UnauthorizedException('Session revoked, please login again');
       }
     }
 

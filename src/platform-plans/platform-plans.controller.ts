@@ -9,6 +9,8 @@ import { CreatePlatformPlanDto } from './dto/create-platform-plan.dto';
 import { UpdatePlatformPlanDto } from './dto/update-platform-plan.dto';
 import { UpdateTrialSettingsDto } from './dto/update-trial-settings.dto';
 
+import { PermissionsGuard } from '../auth/guards/permissions.guard';
+import { RequirePermission } from '../auth/decorators/require-permission.decorator';
 // Every other controller in this codebase either has no global ValidationPipe
 // to fall back on (main.ts registers none app-wide) or opts in locally like
 // this — without it, every @IsNumber/@Min/@Max decorator on these DTOs was
@@ -35,72 +37,81 @@ export class PlatformPlansController {
     return this.platformPlansService.publicTrialSettings();
   }
 
+  @RequirePermission('billing.manage')
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('admin')
   @Get('admin/trial-settings')
   getTrialSettings() {
     return this.platformPlansService.adminGetTrialSettings();
   }
 
+  @RequirePermission('billing.manage')
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('admin')
   @Patch('admin/trial-settings')
   updateTrialSettings(@Req() req: any, @Body() dto: UpdateTrialSettingsDto) {
     return this.platformPlansService.adminUpdateTrialSettings(req.user.userId, dto);
   }
 
+  @RequirePermission('billing.manage')
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('admin')
   @Post('admin')
   createPlan(@Req() req: any, @Body() dto: CreatePlatformPlanDto) {
     return this.platformPlansService.adminCreatePlan(req.user.userId, dto);
   }
 
+  @RequirePermission('billing.manage')
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('admin')
   @Get('admin/revenue')
   getRevenue(@Query() query: any) {
     return this.platformPlansService.adminGetRevenue(query);
   }
 
+  @RequirePermission('billing.manage')
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('admin')
   @Get('admin')
   listPlans(@Query('includeArchived') includeArchived: string) {
     return this.platformPlansService.adminListPlans(includeArchived === 'true');
   }
 
+  @RequirePermission('billing.manage')
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('admin')
   @Get('admin/:id')
   getPlanById(@Param('id') id: string) {
     return this.platformPlansService.adminGetPlanById(id);
   }
 
+  @RequirePermission('billing.manage')
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('admin')
   @Get('admin/:id/subscribers')
   getSubscribers(@Param('id') id: string, @Query() query: any) {
     return this.platformPlansService.adminGetSubscribers(id, query);
   }
 
+  @RequirePermission('billing.manage')
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('admin')
   @Patch('admin/:id')
   updatePlan(@Req() req: any, @Param('id') id: string, @Body() dto: UpdatePlatformPlanDto) {
     return this.platformPlansService.adminUpdatePlan(req.user.userId, id, dto);
   }
 
+  @RequirePermission('billing.manage')
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('admin')
   @Delete('admin/:id')
   archivePlan(@Req() req: any, @Param('id') id: string, @Query('force') force: string) {

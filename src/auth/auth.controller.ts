@@ -22,6 +22,8 @@ import { AUTH_PAGE_CONTEXTS, AUTH_VISUAL_TOPICS, type AuthPageContext, type Auth
 
 
 
+import { PermissionsGuard } from '../auth/guards/permissions.guard';
+import { RequirePermission } from '../auth/decorators/require-permission.decorator';
 @Controller('api/auth')
 export class AuthController {
   constructor(
@@ -178,6 +180,7 @@ export class AuthController {
   @Get('getprofile')
   async getProfile(@Req() req: any) {
     const { userId, role } = req.user;
+    if (req.user.viewAs) return this.authService.getViewAsProfile(req.user);
     return this.authService.getProfile(userId, role);
   }
 
@@ -192,7 +195,8 @@ export class AuthController {
   // no longer allows role:'admin' (see RegisterDto). Only an already
   // logged-in admin can call this, so admin access can only ever be
   // extended by an existing admin, never granted to oneself.
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @RequirePermission('team.manage')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('admin')
   @Post('admin/create-admin')
   async createAdmin(@Req() req: any, @Body() dto: CreateAdminDto) {

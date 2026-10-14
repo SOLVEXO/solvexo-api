@@ -11,9 +11,11 @@ import { SetStoreBadgeDto } from './dto/set-store-badge.dto';
 import { LeadsQueryDto } from './dto/leads-query.dto';
 import { RejectLeadDto } from './dto/reject-lead.dto';
 
+import { PermissionsGuard } from '../auth/guards/permissions.guard';
+import { RequirePermission } from '../auth/decorators/require-permission.decorator';
 @ApiTags('Admin Marketplace')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
 @Roles('admin')
 @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
 @Controller('api/admin/marketplace')
@@ -24,51 +26,61 @@ export class AdminMarketplaceController {
     return { adminId: req.user.userId, ip: req.ip, userAgent: req.headers['user-agent'] };
   }
 
+  @RequirePermission('marketplace.manage')
   @Get('stats')
   getStats() {
     return this.adminMarketplaceService.getStats();
   }
 
+  @RequirePermission('marketplace.manage')
   @Get('listings')
   getListings(@Query() query: MarketplaceListingQueryDto) {
     return this.adminMarketplaceService.getListings(query);
   }
 
+  @RequirePermission('marketplace.manage')
   @Patch('listings/:id/feature')
   setFeatured(@Req() req: any, @Param('id') id: string, @Body() dto: SetFeaturedDto) {
     return this.adminMarketplaceService.setFeatured(id, dto.isFeatured, this.meta(req));
   }
 
+  @RequirePermission('marketplace.manage')
   @Patch('listings/:id/remove')
   remove(@Req() req: any, @Param('id') id: string) {
     return this.adminMarketplaceService.remove(id, this.meta(req));
   }
 
+  @RequirePermission('marketplace.manage')
   @Patch('stores/:id/badge')
   setStoreBadge(@Req() req: any, @Param('id') id: string, @Body() dto: SetStoreBadgeDto) {
     return this.adminMarketplaceService.setStoreBadge(id, dto.badge, dto.grant, this.meta(req));
   }
 
+  @RequirePermission('marketplace.manage')
   @Get('leads')
   getLeads(@Query() query: LeadsQueryDto) {
     return this.adminMarketplaceService.getLeads(query);
   }
 
+  @RequirePermission('marketplace.manage')
   @Get('leads/:id')
   getLeadDetail(@Param('id') id: string) {
     return this.adminMarketplaceService.getLeadDetail(id);
   }
 
+  @RequirePermission('marketplace.manage')
   @Patch('leads/:id/under-review')
   markUnderReview(@Req() req: any, @Param('id') id: string) {
     return this.adminMarketplaceService.markUnderReview(id, this.meta(req));
   }
 
+  @RequirePermission('marketplace.manage')
   @Patch('leads/:id/approve')
   approveLead(@Req() req: any, @Param('id') id: string) {
     return this.adminMarketplaceService.approveLead(id, this.meta(req));
   }
 
+  @RequirePermission('marketplace.manage')
   @Patch('leads/:id/reject')
   rejectLead(@Req() req: any, @Param('id') id: string, @Body() dto: RejectLeadDto) {
     return this.adminMarketplaceService.rejectLead(id, dto.reason, this.meta(req));

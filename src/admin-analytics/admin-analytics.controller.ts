@@ -16,9 +16,11 @@ import { AdminExportQueryDto } from './dto/export-query.dto';
 import { OrdersListQueryDto } from './dto/orders-list-query.dto';
 import { PlatformHealthService } from '../platform-health/platform-health.service';
 
+import { PermissionsGuard } from '../auth/guards/permissions.guard';
+import { RequirePermission } from '../auth/decorators/require-permission.decorator';
 @ApiTags('Admin Analytics')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
 @Roles('admin')
 @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
 @Controller('api/admin/analytics')
@@ -30,6 +32,7 @@ export class AdminAnalyticsController {
 
   // ─── Dashboard overview ─────────────────────────────────────────────────
 
+  @RequirePermission('analytics.view')
   @Get('overview')
   getOverview(@Query() query: AdminAnalyticsQueryDto) {
     return this.adminAnalyticsService.getOverview(query);
@@ -37,11 +40,13 @@ export class AdminAnalyticsController {
 
   // ─── Revenue analytics ──────────────────────────────────────────────────
 
+  @RequirePermission('analytics.view')
   @Get('revenue-over-time')
   getRevenueOverTime(@Query() query: AdminAnalyticsQueryDto) {
     return this.adminAnalyticsService.getRevenueOverTime(query);
   }
 
+  @RequirePermission('analytics.view')
   @Get('revenue-breakdown')
   getRevenueBreakdown(@Query() query: AdminAnalyticsQueryDto) {
     return this.adminAnalyticsService.getRevenueBreakdown(query);
@@ -51,6 +56,7 @@ export class AdminAnalyticsController {
   // AdminAnalyticsService's own doc comment for the method and its honest
   // fallback. Same optional storeId/sellerId drill-down as every sibling
   // route here (omitted = platform-wide).
+  @RequirePermission('analytics.view')
   @Get('growth-forecast')
   getPlatformGrowthForecast(@Query() query: AdminAnalyticsQueryDto) {
     return this.adminAnalyticsService.getPlatformGrowthForecast(query);
@@ -58,16 +64,19 @@ export class AdminAnalyticsController {
 
   // ─── Seller analytics ───────────────────────────────────────────────────
 
+  @RequirePermission('analytics.view')
   @Get('sellers/top')
   getTopSellers(@Query() query: TopSellersQueryDto) {
     return this.adminAnalyticsService.getTopSellers(query);
   }
 
+  @RequirePermission('analytics.view')
   @Get('sellers/performance')
   getSellerPerformance(@Query() query: SellerPerformanceQueryDto) {
     return this.adminAnalyticsService.getSellerPerformance(query);
   }
 
+  @RequirePermission('analytics.view')
   @Get('sellers/registration-trends')
   getSellerRegistrationTrends(@Query() query: AdminAnalyticsQueryDto) {
     return this.adminAnalyticsService.getSellerRegistrationTrends(query);
@@ -75,6 +84,7 @@ export class AdminAnalyticsController {
 
   // ─── Customer analytics ─────────────────────────────────────────────────
 
+  @RequirePermission('analytics.view')
   @Get('customers')
   getCustomerAnalytics(@Query() query: AdminAnalyticsQueryDto) {
     return this.adminAnalyticsService.getCustomerAnalytics(query);
@@ -82,21 +92,25 @@ export class AdminAnalyticsController {
 
   // ─── Product analytics ──────────────────────────────────────────────────
 
+  @RequirePermission('analytics.view')
   @Get('products/top')
   getTopProducts(@Query() query: AdminTopProductsQueryDto) {
     return this.adminAnalyticsService.getTopProducts(query);
   }
 
+  @RequirePermission('analytics.view')
   @Get('categories/top')
   getTopCategories(@Query() query: TopCategoriesQueryDto) {
     return this.adminAnalyticsService.getTopCategories(query);
   }
 
+  @RequirePermission('analytics.view')
   @Get('products/performance')
   getProductPerformance(@Query() query: AdminProductPerformanceQueryDto) {
     return this.adminAnalyticsService.getProductPerformance(query);
   }
 
+  @RequirePermission('analytics.view')
   @Get('inventory-insights')
   getInventoryInsights(@Query() query: AdminAnalyticsQueryDto) {
     return this.adminAnalyticsService.getInventoryInsights(query);
@@ -104,16 +118,19 @@ export class AdminAnalyticsController {
 
   // ─── Order analytics ────────────────────────────────────────────────────
 
+  @RequirePermission('analytics.view')
   @Get('orders-over-time')
   getOrdersOverTime(@Query() query: AdminAnalyticsQueryDto) {
     return this.adminAnalyticsService.getOrdersOverTime(query);
   }
 
+  @RequirePermission('analytics.view')
   @Get('orders/status-breakdown')
   getOrderStatusBreakdown(@Query() query: AdminAnalyticsQueryDto) {
     return this.adminAnalyticsService.getOrderStatusBreakdown(query);
   }
 
+  @RequirePermission('analytics.view')
   @Get('orders/list')
   getOrdersList(@Query() query: OrdersListQueryDto) {
     return this.adminAnalyticsService.getOrdersList(query);
@@ -121,6 +138,7 @@ export class AdminAnalyticsController {
 
   // ─── Payment analytics ──────────────────────────────────────────────────
 
+  @RequirePermission('analytics.view')
   @Get('payments/breakdown')
   getPaymentBreakdown(@Query() query: AdminAnalyticsQueryDto) {
     return this.adminAnalyticsService.getPaymentBreakdown(query);
@@ -128,6 +146,7 @@ export class AdminAnalyticsController {
 
   // ─── Platform analytics ─────────────────────────────────────────────────
 
+  @RequirePermission('analytics.view')
   @Get('platform-metrics')
   getPlatformMetrics(@Query() query: AdminAnalyticsQueryDto) {
     return this.adminAnalyticsService.getPlatformMetrics(query);
@@ -137,6 +156,7 @@ export class AdminAnalyticsController {
   // seller signup — see Seller.acquisitionSource et al.). Deliberately a
   // sibling of platform-metrics, not seller/*, since this is a
   // marketing/growth signal for the Platform tab, not a seller-performance one.
+  @RequirePermission('analytics.view')
   @Get('platform/seller-acquisition')
   getSellerAcquisitionBreakdown(@Query() query: AdminAnalyticsQueryDto) {
     return this.adminAnalyticsService.getSellerAcquisitionBreakdown(query);
@@ -147,6 +167,7 @@ export class AdminAnalyticsController {
   // BullMQ queue backlog) — never a fabricated uptime/latency/error-rate
   // number derived from business analytics. See PlatformHealthService's
   // header comment for exactly which real sources back each field.
+  @RequirePermission('analytics.view')
   @Get('platform/health')
   getPlatformHealth(@Query() query: AdminAnalyticsQueryDto) {
     return this.platformHealthService.getPlatformHealth(query);
@@ -154,6 +175,7 @@ export class AdminAnalyticsController {
 
   // ─── Export ──────────────────────────────────────────────────────────────
 
+  @RequirePermission('analytics.view')
   @Get('export')
   async export(@Query() query: AdminExportQueryDto, @Res() res: Response) {
     if (query.format === 'pdf') {

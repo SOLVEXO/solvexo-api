@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { parseThemeJson } from './theme-package-schema.util';
 import type { Liquid } from 'liquidjs';
 
 // Shopify Liquid filters/helpers that liquidjs does not ship: translations
@@ -20,7 +21,7 @@ export function loadLocale(files: PackageFileLike[], locale = 'en'): Record<stri
     if (!file) continue;
     try {
       // Shopify locale files may start with a /* comment */ block.
-      const parsed = JSON.parse(file.content.replace(/^\s*\/\*[\s\S]*?\*\/\s*/, ''));
+      const parsed: any = parseThemeJson(file.content.replace(/^\s*\/\*[\s\S]*?\*\/\s*/, ''));
       deepAssign(merged, parsed);
     } catch { /* ignore a broken locale file; keys fall back to "translation missing" */ }
   }
@@ -186,7 +187,7 @@ export function applyThemeSettingDefaults(files: PackageFileLike[], settings: Re
   const file = files.find((f) => f.path === 'config/settings_schema.json' && f.encoding === 'utf8');
   if (!file) return settings;
   let groups: any;
-  try { groups = JSON.parse(file.content); } catch { return settings; }
+  try { groups = parseThemeJson(file.content); } catch { return settings; }
   const defaults: Record<string, unknown> = {};
   for (const group of Array.isArray(groups) ? groups : []) Object.assign(defaults, defaultsOf(group?.settings));
   return { ...defaults, ...settings };

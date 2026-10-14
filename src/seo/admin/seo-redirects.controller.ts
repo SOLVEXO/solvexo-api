@@ -13,23 +13,27 @@ import { CreateRedirectDto } from '../dto/create-redirect.dto';
 import { UpdateRedirectDto } from '../dto/update-redirect.dto';
 import { SeoResponseInterceptor, alreadyEnveloped } from '../seo-response.interceptor';
 
+import { PermissionsGuard } from '../../auth/guards/permissions.guard';
+import { RequirePermission } from '../../auth/decorators/require-permission.decorator';
 // Platform-level redirects — storeId is always null here. Store-scoped
 // redirects are managed by the seller controller (seo-redirects.controller.ts
 // in seller/), both against the same SeoRedirectsService/collection.
 @ApiTags('Admin SEO — Redirects')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
 @Roles('admin')
 @UseInterceptors(SeoResponseInterceptor)
 @Controller('api/admin/seo/redirects')
 export class AdminSeoRedirectsController {
   constructor(private readonly redirects: SeoRedirectsService) {}
 
+  @RequirePermission('seo.manage')
   @Get('import-template')
   importTemplate() {
     return alreadyEnveloped(buildTemplatePayload('seo-redirects-import-template.csv', SEO_REDIRECT_IMPORT_COLUMNS));
   }
 
+  @RequirePermission('seo.manage')
   @Post('import')
   @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }))
   async importCsv(@Req() req: any, @UploadedFile() file: any) {
@@ -38,21 +42,25 @@ export class AdminSeoRedirectsController {
     return alreadyEnveloped(res);
   }
 
+  @RequirePermission('seo.manage')
   @Post()
   create(@Req() req: any, @Body() dto: CreateRedirectDto) {
     return this.redirects.create(null, dto, { id: req.user.userId, role: req.user.role });
   }
 
+  @RequirePermission('seo.manage')
   @Get()
   list(@Query() query: any) {
     return this.redirects.list(null, query);
   }
 
+  @RequirePermission('seo.manage')
   @Patch(':id')
   update(@Req() req: any, @Param('id') id: string, @Body() dto: UpdateRedirectDto) {
     return this.redirects.update(null, id, dto, { id: req.user.userId, role: req.user.role });
   }
 
+  @RequirePermission('seo.manage')
   @Delete(':id')
   delete(@Req() req: any, @Param('id') id: string) {
     return this.redirects.delete(null, id, { id: req.user.userId, role: req.user.role });
