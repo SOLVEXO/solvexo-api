@@ -44,6 +44,11 @@ export class UpdateThemeDto {
   @ApiProperty({ required: false, enum: CARD_STYLE_VALUES }) @IsOptional() @IsIn(CARD_STYLE_VALUES) testimonialCardStyle?: string;
   @ApiProperty({ required: false, enum: BORDER_RADIUS_VALUES }) @IsOptional() @IsIn(BORDER_RADIUS_VALUES) testimonialCardRadius?: string;
   @ApiProperty({ required: false, enum: FAQ_STYLE_VALUES }) @IsOptional() @IsIn(FAQ_STYLE_VALUES) faqStyle?: string;
+  // Shopify-style theme settings: product card badges, card style, cart type.
+  @ApiProperty({ required: false, enum: ['show', 'hide'] }) @IsOptional() @IsIn(['show', 'hide']) saleBadge?: string;
+  @ApiProperty({ required: false, enum: ['show', 'hide'] }) @IsOptional() @IsIn(['show', 'hide']) soldOutBadge?: string;
+  @ApiProperty({ required: false, enum: ['theme', 'flat', 'outlined', 'elevated'] }) @IsOptional() @IsIn(['theme', 'flat', 'outlined', 'elevated']) cardStyle?: string;
+  @ApiProperty({ required: false, enum: ['drawer', 'page'] }) @IsOptional() @IsIn(['drawer', 'page']) cartType?: string;
 
   // Set when this update came from applying a curated theme (frontend
   // `themes.ts` id, not a backend ref) — null/omitted clears/leaves it alone.

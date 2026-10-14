@@ -95,6 +95,16 @@ export class StorefrontColors {
   @Prop({ type: String, enum: ['none', 'zoom', 'second-image'], default: 'none' })
   productImageHover: 'none' | 'zoom' | 'second-image';
 
+  // No defaults: unset = the theme's own look (badges shown, theme card, cart drawer).
+  @Prop({ type: String, enum: ['show', 'hide'] })
+  saleBadge?: 'show' | 'hide';
+  @Prop({ type: String, enum: ['show', 'hide'] })
+  soldOutBadge?: 'show' | 'hide';
+  @Prop({ type: String, enum: ['theme', 'flat', 'outlined', 'elevated'] })
+  cardStyle?: 'theme' | 'flat' | 'outlined' | 'elevated';
+  @Prop({ type: String, enum: ['drawer', 'page'] })
+  cartType?: 'drawer' | 'page';
+
   @Prop({ type: String, enum: ['cozy', 'relaxed'], default: 'cozy' })
   productGridDensity: 'cozy' | 'relaxed';
 
