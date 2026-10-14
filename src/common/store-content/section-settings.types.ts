@@ -532,6 +532,9 @@ export const BLOCK_TYPES = [
   'product_wishlist',
   'product_share',
   'product_specs',
+  'product_buy_now',
+  'product_collapsible_tab',
+  'product_size_chart',
 ] as const;
 export type BlockType = (typeof BLOCK_TYPES)[number];
 
@@ -577,6 +580,9 @@ export type BlockSettingsMap = RequireAllKeys<BlockType, {
   product_wishlist: ProductDescriptionBlockSettings;
   product_share: ProductDescriptionBlockSettings;
   product_specs: ProductDescriptionBlockSettings;
+  product_buy_now: { label?: string };
+  product_collapsible_tab: { title: string; content?: string; openByDefault?: boolean };
+  product_size_chart: { label?: string; title?: string; content?: string; imageUrl?: string };
 }>;
 
 /** `SECTION_ALLOWED_BLOCK_TYPES`'s values are typed against this so a typo'd or retired block-type string in that map is a compile error, not a silent runtime gap. */

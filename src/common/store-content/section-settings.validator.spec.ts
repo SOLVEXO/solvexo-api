@@ -299,4 +299,18 @@ describe('section-settings.validator', () => {
       }
     });
   });
+
+  describe('Main Product added blocks', () => {
+    it('variant picker style is pills or dropdown', () => {
+      expect(() => validateBlockSettings('product_variant_picker', { pickerStyle: 'dropdown' })).not.toThrow();
+      expect(() => validateBlockSettings('product_variant_picker', { pickerStyle: 'grid' })).toThrow(BadRequestException);
+    });
+    it('collapsible tab needs a title; size chart image must be https', () => {
+      expect(() => validateBlockSettings('product_collapsible_tab', { title: 'Care', content: 'Wash cold' })).not.toThrow();
+      expect(() => validateBlockSettings('product_collapsible_tab', { content: 'x' })).toThrow(BadRequestException);
+      expect(() => validateBlockSettings('product_size_chart', { imageUrl: 'http://x/a.png' })).toThrow(BadRequestException);
+      expect(() => validateBlockSettings('product_size_chart', { label: 'Sizes', content: 'S M L' })).not.toThrow();
+      expect(() => validateBlockSettings('product_buy_now', { label: 'x'.repeat(41) })).toThrow(BadRequestException);
+    });
+  });
 });

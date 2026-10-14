@@ -743,10 +743,30 @@ export function validateBlockSettings(blockType: string, settings: Record<string
     // product_main's 7 fixed blocks (Phase 4) — no settings, purely
     // enable/disable + reorder of an already-real, already-rendered piece
     // of the product page. See `core-sections.util.ts`.
+    case 'product_variant_picker':
+      oneOf(settings.pickerStyle, ['pills', 'dropdown'] as const, 'settings.pickerStyle');
+      break;
+    // Blocks a seller adds to Main Product (Shopify Dawn): plain text only.
+    case 'product_buy_now':
+      maxLen(settings.label, 40, 'settings.label');
+      break;
+    case 'product_collapsible_tab':
+      required(settings.title, 'settings.title');
+      maxLen(settings.title, 80, 'settings.title');
+      maxLen(settings.content, 5000, 'settings.content');
+      if (settings.openByDefault !== undefined && typeof settings.openByDefault !== 'boolean') {
+        throw new BadRequestException('settings.openByDefault must be true or false');
+      }
+      break;
+    case 'product_size_chart':
+      maxLen(settings.label, 40, 'settings.label');
+      maxLen(settings.title, 80, 'settings.title');
+      maxLen(settings.content, 5000, 'settings.content');
+      if (settings.imageUrl) assertHttpsUrl(settings.imageUrl, 'settings.imageUrl');
+      break;
     case 'product_media':
     case 'product_title':
     case 'product_price':
-    case 'product_variant_picker':
     case 'product_quantity':
     case 'product_buy_buttons':
     case 'product_description':
@@ -887,7 +907,7 @@ export const SECTION_ALLOWED_BLOCK_TYPES: AllowedBlockTypesMap = {
   store_locations: ['location_item'],
   contact_form: [],
   related_products: [],
-  product_main: ['product_media', 'product_title', 'product_price', 'product_variant_picker', 'product_quantity', 'product_buy_buttons', 'product_description', 'product_rating', 'product_sku', 'product_wishlist', 'product_share', 'product_specs'],
+  product_main: ['product_media', 'product_title', 'product_price', 'product_variant_picker', 'product_quantity', 'product_buy_buttons', 'product_description', 'product_rating', 'product_sku', 'product_wishlist', 'product_share', 'product_specs', 'product_buy_now', 'product_collapsible_tab', 'product_size_chart'],
   search_results: [],
   cart_items: [],
   cart_summary: [],
