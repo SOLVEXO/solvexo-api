@@ -22,6 +22,7 @@ import { AdminMarketingService } from '@/admin-marketing/admin-marketing.service
 import { PromotionsService } from '@/promotions/promotions.service';
 import { ExchangeRateService } from '@/exchange-rate/exchange-rate.service';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
+import { StorePagesService } from '@/store-pages/store-pages.service';
 import { AdminFinanceService } from '@/admin-finance/admin-finance.service';
 import { BookingsService } from '@/bookings/bookings.service';
 import { WhatsAppCloudProvider } from '@/integrations/providers/whatsapp-cloud.provider';
@@ -60,6 +61,7 @@ export class SchedulerService {
     private readonly promotionsService: PromotionsService,
     private readonly exchangeRateService: ExchangeRateService,
     private readonly activityLogService: ActivityLogService,
+    private readonly storePagesService: StorePagesService,
     private readonly adminFinanceService: AdminFinanceService,
     private readonly bookingsService: BookingsService,
     private readonly whatsAppProvider: WhatsAppCloudProvider,
@@ -227,6 +229,15 @@ export class SchedulerService {
   // previously had no way to go live at a future date at all (always
   // published immediately); a scheduled post now flips to 'published' here
   // once due, `publishedAt` set to the moment it was actually scheduled for.
+  /** Every minute — pages a seller scheduled to go live (Pages → Visibility date). */
+  @Cron('* * * * *')
+  async publishScheduledPages() {
+    await this.runLocked('publish-scheduled-pages', 50_000, async () => {
+      const n = await this.storePagesService.publishScheduledPages();
+      if (n > 0) this.logger.log(`Published ${n} scheduled page(s)`);
+    });
+  }
+
   @Cron('* * * * *')
   async publishScheduledBlogPosts() {
     await this.runLocked('publish-scheduled-blog-posts', 50_000, async () => {

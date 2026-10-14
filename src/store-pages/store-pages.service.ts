@@ -288,6 +288,12 @@ export class StorePagesService {
     if (dto.showInNav !== undefined) set.showInNav = dto.showInNav;
     if (dto.showInFooter !== undefined) set.showInFooter = dto.showInFooter;
     if (dto.policyType !== undefined) set.policyType = dto.policyType;
+    if (dto.publishAt !== undefined) {
+      if (dto.publishAt !== null && new Date(dto.publishAt).getTime() <= Date.now()) {
+        throw new BadRequestException('Pick a publish time in the future');
+      }
+      set.publishAt = dto.publishAt === null ? null : new Date(dto.publishAt);
+    }
     if (dto.seo?.metaTitle !== undefined) set['seo.metaTitle'] = dto.seo.metaTitle;
     // `metaDesc` is a deprecated write-compat alias — a caller still only
     // sending it (not yet updated to `metaDescription`) still lands in the
@@ -386,6 +392,23 @@ export class StorePagesService {
   }
 
   /** Copies `draft.sections` to live and records its rollback snapshot in one atomic update. */
+  /** Cron: publish every page whose scheduled time has come (as its owner would). */
+  async publishScheduledPages(): Promise<number> {
+    const due = await this.storePageModel.find({ publishAt: { $ne: null, $lte: new Date() }, isDelete: false }).select('_id storeId').limit(200).lean();
+    let n = 0;
+    for (const p of due as any[]) {
+      try {
+        const store = await this.storeModel.findOne({ _id: p.storeId, isDelete: false }).select('sellerId').lean();
+        if (store?.sellerId) { await this.publish(String(p.storeId), String(store.sellerId), String(p._id)); n++; }
+      } catch (err) {
+        console.warn(`Scheduled page publish failed for ${p._id}: ${(err as Error)?.message}`);
+      } finally {
+        await this.storePageModel.updateOne({ _id: p._id }, { $set: { publishAt: null } });
+      }
+    }
+    return n;
+  }
+
   async publish(storeId: string, sellerId: string, pageId: string, requestedThemeId?: string) {
     const page = await this.findOwnedPage(storeId, sellerId, pageId);
     const installedThemeId = await this.resolveInstalledThemeId(storeId, requestedThemeId);

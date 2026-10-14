@@ -1,7 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { ApiProperty } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsArray, IsBoolean, IsIn, IsObject, IsOptional, IsString, Matches, MaxLength, ValidateNested } from 'class-validator';
+import { IsArray, IsBoolean, IsIn, IsObject, IsOptional, IsString, Matches, MaxLength, ValidateNested, ValidateIf, IsISO8601 } from 'class-validator';
 import { STORE_PAGE_POLICY_TYPES, type StorePagePolicyType } from '../schemas/store-page.schema';
 
 class StorePageSeoInputDto {
@@ -35,4 +35,7 @@ export class UpdatePageDto {
 
   @ApiProperty({ required: false, enum: [...STORE_PAGE_POLICY_TYPES, null], description: 'Tags this page as a standard legal/policy page (Privacy Policy, Terms of Service, Refund Policy, Shipping Policy) — at most one page per store per type. Pass null to un-tag.' })
   @IsOptional() @IsIn([...STORE_PAGE_POLICY_TYPES, null]) policyType?: StorePagePolicyType | null;
+
+  @ApiProperty({ required: false, nullable: true, description: 'Publish this page automatically at this time (ISO date). null clears the schedule.' })
+  @IsOptional() @ValidateIf((_o, v) => v !== null) @IsISO8601() publishAt?: string | null;
 }

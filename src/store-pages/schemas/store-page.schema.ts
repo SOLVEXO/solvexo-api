@@ -136,6 +136,11 @@ export class StorePage {
   @Prop({ type: Date, default: null })
   lastPublishedAt: Date | null;
 
+  /** Shopify "Visibility → set visible date": a hidden page that goes live
+   *  (publishes its draft) on its own at this time. Null = no schedule. */
+  @Prop({ type: Date, default: null, index: true })
+  publishAt: Date | null;
+
   @Prop({ type: [StorePageVersionSchema], default: [] })
   versions: StorePageVersion[];
 
