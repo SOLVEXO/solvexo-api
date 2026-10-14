@@ -136,6 +136,55 @@ function assertLinkTarget(link: unknown, field: string): void {
 
 // ── Section-level settings ──────────────────────────────────────────────────
 
+/** "Design & visibility" settings every section may carry (rendered by each
+ *  theme's section wrapper): show-on, full width, background image + overlay,
+ *  anchor id and section-scoped custom CSS. All optional. */
+/** Seller overrides for a theme's own words (labels, button text). Blank = theme default. */
+const COPY_OVERRIDE_LIMITS: Record<string, number> = {
+  eyebrow: 60, viewAllLabel: 30, placeholder: 60, buttonLabel: 30, successMessage: 200, endedText: 60,
+  nameLabel: 40, emailLabel: 40, phoneLabel: 40, messageLabel: 40, directionsLabel: 40,
+};
+function validateCopyOverrides(settings: Record<string, any>, prefix: string): void {
+  if (settings.showEyebrow !== undefined && typeof settings.showEyebrow !== 'boolean') {
+    throw new BadRequestException(`${prefix}.showEyebrow must be true or false`);
+  }
+  for (const [key, max] of Object.entries(COPY_OVERRIDE_LIMITS)) {
+    const v = settings[key];
+    if (v === undefined || v === null) continue;
+    if (typeof v !== 'string') throw new BadRequestException(`${prefix}.${key} must be text`);
+    maxLen(v, max, `${prefix}.${key}`);
+  }
+}
+
+function validateCommonSectionDesign(settings: Record<string, any>): void {
+  validateCopyOverrides(settings, 'settings');
+  oneOf(settings.visibility, ['all', 'desktop', 'mobile'] as const, 'settings.visibility');
+  if (settings.fullWidth !== undefined && typeof settings.fullWidth !== 'boolean') {
+    throw new BadRequestException('settings.fullWidth must be true or false');
+  }
+  if (settings.backgroundImageUrl !== undefined && settings.backgroundImageUrl !== null && settings.backgroundImageUrl !== '') {
+    assertHttpsUrl(settings.backgroundImageUrl, 'settings.backgroundImageUrl');
+    maxLen(settings.backgroundImageUrl, 2000, 'settings.backgroundImageUrl');
+  }
+  const overlay = settings.backgroundOverlay;
+  if (overlay !== undefined && overlay !== null && (typeof overlay !== 'number' || !Number.isFinite(overlay) || overlay < 0 || overlay > 80)) {
+    throw new BadRequestException('settings.backgroundOverlay must be a number between 0 and 80');
+  }
+  if (settings.anchorId !== undefined && settings.anchorId !== null && settings.anchorId !== '') {
+    if (typeof settings.anchorId !== 'string' || !/^[A-Za-z0-9_-]{1,40}$/.test(settings.anchorId.trim())) {
+      throw new BadRequestException('settings.anchorId may only use letters, numbers, - and _ (max 40)');
+    }
+  }
+  if (settings.customCss !== undefined && settings.customCss !== null && settings.customCss !== '') {
+    if (typeof settings.customCss !== 'string') throw new BadRequestException('settings.customCss must be text');
+    maxLen(settings.customCss, 5000, 'settings.customCss');
+    // Same rule as the theme-wide custom CSS: nothing that leaves the <style> tag or runs script.
+    if (/</.test(settings.customCss) || /javascript\s*:/i.test(settings.customCss) || /expression\s*\(/i.test(settings.customCss)) {
+      throw new BadRequestException('settings.customCss: script or HTML is not allowed');
+    }
+  }
+}
+
 export function validateSectionSettings(type: SectionType, settings: Record<string, any>): void {
   maxLen(settings.heading, 120, 'settings.heading');
   for (const key of ['spacingTop', 'spacingBottom'] as const) {
@@ -144,6 +193,7 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
       throw new BadRequestException(`settings.${key} must be a number between 0 and 160`);
     }
   }
+  validateCommonSectionDesign(settings);
 
   switch (type) {
     case 'hero': {
@@ -181,9 +231,11 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
       oneOf(s.source, ['manual', 'category', 'collection', 'bestsellers', 'newArrivals', 'trending', 'pinned', 'onSale'] as const, 'settings.source');
       if (s.source === 'category') required(s.categoryId, 'settings.categoryId');
       if (s.source === 'collection') required(s.collectionId, 'settings.collectionId');
-      if (s.source === 'manual') {
-        if (!Array.isArray(s.productIds) || s.productIds.length === 0) {
-          throw new BadRequestException('settings.productIds is required when source is "manual"');
+      // Hand-picked (or the older pin list): an empty pick is allowed while the
+      // seller is still choosing (falls back to the store pins, else nothing).
+      if (s.productIds !== undefined && s.productIds !== null) {
+        if (!Array.isArray(s.productIds) || s.productIds.some((id: unknown) => typeof id !== 'string')) {
+          throw new BadRequestException('settings.productIds must be a list of product ids');
         }
         if (s.productIds.length > 24) throw new BadRequestException('settings.productIds cannot exceed 24 products');
       }
@@ -221,9 +273,11 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
     }
     case 'featured_category_grid': {
       const s = settings as FeaturedCategoryGridSectionSettings;
-      if (!Array.isArray(s.categoryIds) || s.categoryIds.length === 0) {
-        throw new BadRequestException('settings.categoryIds is required');
+      // Empty is allowed (a freshly added section, Shopify-style); it renders nothing until filled.
+      if (s.categoryIds !== undefined && !Array.isArray(s.categoryIds)) {
+        throw new BadRequestException('settings.categoryIds must be a list');
       }
+      if (!Array.isArray(s.categoryIds)) s.categoryIds = [];
       if (s.categoryIds.length > 12) throw new BadRequestException('settings.categoryIds cannot exceed 12 categories');
       if (s.columns !== undefined && ![2, 3, 4].includes(s.columns)) {
         throw new BadRequestException('settings.columns must be 2, 3, or 4');
@@ -258,8 +312,8 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
         if (typeof s.videoFileUrl !== 'string' || !/^https:\/\/res\.cloudinary\.com\//i.test(s.videoFileUrl)) {
           throw new BadRequestException('settings.videoFileUrl must be an uploaded video file');
         }
-      } else {
-        required(s.videoUrl, 'settings.videoUrl');
+      } else if (s.videoUrl) {
+        // Empty is allowed (a freshly added section); it renders nothing until a video is set.
         // Any https link: YouTube/Vimeo play as an embed, anything else as a direct video file.
         if (typeof s.videoUrl !== 'string' || !/^https:\/\/[^\s]+$/i.test(s.videoUrl)) {
           throw new BadRequestException('settings.videoUrl must be a valid https:// video link, or upload a video file');
@@ -271,6 +325,9 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
     case 'image_with_text':
     case 'testimonials':
     case 'faq':
+      // Questions from the section's blocks, or the store's own FAQ list.
+      oneOf(settings.source, ['blocks', 'store'] as const, 'settings.source');
+      break;
     case 'feature_list':
     case 'team_grid':
     case 'stats_counter':
@@ -421,6 +478,7 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
 // ── Block-level settings (context = the block's `type` string) ─────────────
 
 export function validateBlockSettings(blockType: string, settings: Record<string, any>): void {
+  validateCopyOverrides(settings, 'settings');
   switch (blockType) {
     // Header/footer blocks (StoreTheme)
     case 'nav_link':

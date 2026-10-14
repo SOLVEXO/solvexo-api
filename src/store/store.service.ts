@@ -1651,6 +1651,19 @@ export class StoreService {
       filter._id = { $in: ids.length ? ids : ['__none__'] };
       if ([undefined, null, '', 'newest', 'manual', 'default'].includes(query.sort)) collectionOrder = ids.map(String);
     }
+    // Hand-picked list (a Featured products section with source "manual"):
+    // `ids=a,b,c` keeps the seller's own order, same as a manual collection.
+    if (query.ids) {
+      const picked = (Array.isArray(query.ids) ? query.ids : [query.ids])
+        .flatMap((x: unknown) => String(x ?? '').split(','))
+        .map((x: string) => x.trim())
+        .filter((x: string) => /^[a-f0-9]{24}$/i.test(x))
+        .slice(0, 50);
+      const already: string[] | undefined = filter._id?.$in;
+      const ids = already ? picked.filter((id: string) => already.includes(id)) : picked;
+      filter._id = { $in: ids.length ? ids : ['__none__'] };
+      if (!collectionOrder && [undefined, null, '', 'newest', 'manual', 'default'].includes(query.sort)) collectionOrder = ids;
+    }
     // Same real "on sale" definition the product card's own discount badge
     // already uses (compareAtPrice > price). compareAtPrice/price live on
     // ProductVariant, not Product, so this resolves the matching product ids

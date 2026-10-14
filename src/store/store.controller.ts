@@ -111,18 +111,20 @@ export class StoreController {
     return this.storeService.getPosAppInfo();
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('onlinestore.content.manage')
   @Patch(':storeId/pinned-products')
   async updatePinnedProducts(@Req() req: any, @Param('storeId') storeId: string, @Body() body: { productIds: string[] }) {
-    return this.storeService.updatePinnedProducts(req.user.userId, storeId, body.productIds ?? []);
+    return this.storeService.updatePinnedProducts(actingSellerId(req.user), storeId, Array.isArray(body?.productIds) ? body.productIds : []);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('onlinestore.content.manage')
   @Patch(':storeId/announcement')
   async updateAnnouncementBar(@Req() req: any, @Param('storeId') storeId: string, @Body() body: any) {
-    return this.storeService.updateAnnouncementBar(req.user.userId, storeId, body);
+    return this.storeService.updateAnnouncementBar(actingSellerId(req.user), storeId, body);
   }
 
   // ── Seller business verification (Leads review) ────────────────────────

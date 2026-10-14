@@ -29,6 +29,13 @@ export interface BaseSectionSettings {
    *  each theme's existing layout; accepted range is 0–160. */
   spacingTop?: number;
   spacingBottom?: number;
+  /** "Design & visibility" (every section): see `validateCommonSectionDesign`. */
+  visibility?: 'all' | 'desktop' | 'mobile';
+  fullWidth?: boolean;
+  backgroundImageUrl?: string | null;
+  backgroundOverlay?: number | null;
+  anchorId?: string | null;
+  customCss?: string | null;
 }
 
 /** Shared by any block/section CTA — a nav link, footer link, or hero/image-with-text button. */

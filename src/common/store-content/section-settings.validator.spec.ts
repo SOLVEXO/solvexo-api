@@ -97,10 +97,12 @@ describe('section-settings.validator', () => {
       expect(() => validateSectionSettings('hero', { heading: 'x'.repeat(121) })).toThrow(BadRequestException);
     });
 
-    it('featured_products: requires productIds (non-empty, <=24) when source is "manual"', () => {
-      expect(() => validateSectionSettings('featured_products', { source: 'manual' })).toThrow(BadRequestException);
-      expect(() => validateSectionSettings('featured_products', { source: 'manual', productIds: [] })).toThrow(BadRequestException);
+    it('featured_products: hand-picked list may be empty while choosing, max 24 string ids', () => {
+      expect(() => validateSectionSettings('featured_products', { source: 'manual' })).not.toThrow();
+      expect(() => validateSectionSettings('featured_products', { source: 'manual', productIds: [] })).not.toThrow();
       expect(() => validateSectionSettings('featured_products', { source: 'manual', productIds: Array(25).fill('p') })).toThrow(BadRequestException);
+      expect(() => validateSectionSettings('featured_products', { source: 'manual', productIds: [1, 2] })).toThrow(BadRequestException);
+      expect(() => validateSectionSettings('featured_products', { source: 'pinned', productIds: ['p1'] })).not.toThrow();
       expect(() => validateSectionSettings('featured_products', { source: 'manual', productIds: ['p1', 'p2'] })).not.toThrow();
     });
 
@@ -140,9 +142,40 @@ describe('section-settings.validator', () => {
       expect(() => validateSectionSettings('product_catalog', { columns: 3 })).not.toThrow();
     });
 
-    it('featured_category_grid: requires 1-12 categoryIds', () => {
-      expect(() => validateSectionSettings('featured_category_grid', { categoryIds: [] })).toThrow(BadRequestException);
+    it('featured_category_grid: 0-12 categoryIds (empty = freshly added, renders nothing)', () => {
+      expect(() => validateSectionSettings('featured_category_grid', { categoryIds: [] })).not.toThrow();
+      expect(() => validateSectionSettings('featured_category_grid', {})).not.toThrow();
+      expect(() => validateSectionSettings('featured_category_grid', { categoryIds: 'c1' })).toThrow(BadRequestException);
       expect(() => validateSectionSettings('featured_category_grid', { categoryIds: Array(13).fill('c') })).toThrow(BadRequestException);
+    });
+
+    it('video: an empty, freshly added section is allowed', () => {
+      expect(() => validateSectionSettings('video', {})).not.toThrow();
+    });
+
+    it('faq: source is blocks or store', () => {
+      expect(() => validateSectionSettings('faq', { source: 'store' })).not.toThrow();
+      expect(() => validateSectionSettings('faq', { source: 'blocks' })).not.toThrow();
+      expect(() => validateSectionSettings('faq', { source: 'other' })).toThrow(BadRequestException);
+    });
+
+    it('common design settings: show-on, full width, background, anchor and scoped CSS', () => {
+      const ok = { visibility: 'mobile', fullWidth: true, backgroundImageUrl: 'https://cdn.x/a.jpg', backgroundOverlay: 40, anchorId: 'our-story', customCss: 'h2 { color: red; }' };
+      expect(() => validateSectionSettings('rich_text', ok)).not.toThrow();
+      expect(() => validateSectionSettings('rich_text', { visibility: 'tv' })).toThrow(BadRequestException);
+      expect(() => validateSectionSettings('rich_text', { fullWidth: 'yes' })).toThrow(BadRequestException);
+      expect(() => validateSectionSettings('rich_text', { backgroundImageUrl: 'javascript:alert(1)' })).toThrow(BadRequestException);
+      expect(() => validateSectionSettings('rich_text', { backgroundOverlay: 90 })).toThrow(BadRequestException);
+      expect(() => validateSectionSettings('rich_text', { anchorId: 'bad id!' })).toThrow(BadRequestException);
+      expect(() => validateSectionSettings('rich_text', { customCss: '</style><script>x</script>' })).toThrow(BadRequestException);
+      expect(() => validateSectionSettings('rich_text', { customCss: 'a { background: url(javascript:x) }' })).toThrow(BadRequestException);
+    });
+
+    it('copy overrides: text with a length cap, showEyebrow boolean', () => {
+      expect(() => validateSectionSettings('newsletter', { eyebrow: 'Join us', buttonLabel: 'Join', showEyebrow: false })).not.toThrow();
+      expect(() => validateSectionSettings('newsletter', { eyebrow: 'x'.repeat(61) })).toThrow(BadRequestException);
+      expect(() => validateSectionSettings('newsletter', { buttonLabel: 5 })).toThrow(BadRequestException);
+      expect(() => validateSectionSettings('newsletter', { showEyebrow: 'no' })).toThrow(BadRequestException);
     });
 
     it('video: accepts any https:// link, rejects non-https schemes', () => {

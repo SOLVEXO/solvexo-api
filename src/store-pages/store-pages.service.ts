@@ -130,6 +130,11 @@ export class StorePagesService {
    *  seed state changes from draft to already-published, mirroring exactly
    *  what `publish()` itself sets (`status`+`lastPublishedAt`) below. */
   async ensureHomePage(storeId: string) {
+    // Read first: an upsert that matches still bumps `updatedAt` (Mongoose
+    // timestamps), which made every page list call look like a newer draft
+    // and failed the editor's next Save with a false 409 DRAFT_CONFLICT.
+    const existing = await this.storePageModel.findOne({ storeId, type: 'home' });
+    if (existing) return existing;
     return this.storePageModel.findOneAndUpdate(
       { storeId, type: 'home' },
       {

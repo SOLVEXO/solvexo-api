@@ -4,6 +4,9 @@ import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { PermissionsGuard } from '../auth/guards/permissions.guard';
+import { RequirePermission } from '../auth/decorators/require-permission.decorator';
+import { actingSellerId } from '../common/acting-seller-id.util';
 import { CollectionTemplateService } from './collection-template.service';
 import { UpdateSectionsDto } from '../store-pages/dto/update-sections.dto';
 import { CreateResourceTemplateDto } from './dto/create-resource-template.dto';
@@ -16,8 +19,9 @@ import { ResourceTemplateType } from './schemas/collection-template.schema';
 // (default `'default'`).
 @ApiTags('Resource Templates (Collection / Product)')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, RolesGuard)
-@Roles('seller')
+@UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+@Roles('seller', 'staff')
+@RequirePermission('onlinestore.themes.manage')
 @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
 @Controller('api/collection-template')
 export class CollectionTemplateController {
@@ -29,7 +33,7 @@ export class CollectionTemplateController {
 
   @Get(':storeId/templates')
   listTemplates(@Req() req: any, @Param('storeId') storeId: string, @Query('resourceType') resourceType?: string, @Query('instance') instance?: string) {
-    return this.collectionTemplateService.listTemplates(storeId, req.user.userId, this.resourceType(resourceType), instance);
+    return this.collectionTemplateService.listTemplates(storeId, actingSellerId(req.user), this.resourceType(resourceType), instance);
   }
 
   @Post(':storeId/templates')
@@ -40,7 +44,7 @@ export class CollectionTemplateController {
     @Query('resourceType') resourceType?: string,
     @Query('instance') instance?: string,
   ) {
-    return this.collectionTemplateService.createTemplate(storeId, req.user.userId, this.resourceType(resourceType), dto, instance);
+    return this.collectionTemplateService.createTemplate(storeId, actingSellerId(req.user), this.resourceType(resourceType), dto, instance);
   }
 
   @Delete(':storeId/templates/:templateKey')
@@ -51,17 +55,17 @@ export class CollectionTemplateController {
     @Query('resourceType') resourceType?: string,
     @Query('instance') instance?: string,
   ) {
-    return this.collectionTemplateService.deleteTemplate(storeId, req.user.userId, this.resourceType(resourceType), templateKey, instance);
+    return this.collectionTemplateService.deleteTemplate(storeId, actingSellerId(req.user), this.resourceType(resourceType), templateKey, instance);
   }
 
   @Get(':storeId')
   get(@Req() req: any, @Param('storeId') storeId: string, @Query('resourceType') resourceType?: string, @Query('templateKey') templateKey?: string, @Query('instance') instance?: string) {
-    return this.collectionTemplateService.getForSeller(storeId, req.user.userId, this.resourceType(resourceType), templateKey, instance);
+    return this.collectionTemplateService.getForSeller(storeId, actingSellerId(req.user), this.resourceType(resourceType), templateKey, instance);
   }
 
   @Get(':storeId/draft')
   getDraft(@Req() req: any, @Param('storeId') storeId: string, @Query('resourceType') resourceType?: string, @Query('templateKey') templateKey?: string, @Query('instance') instance?: string) {
-    return this.collectionTemplateService.getDraft(storeId, req.user.userId, this.resourceType(resourceType), templateKey, instance);
+    return this.collectionTemplateService.getDraft(storeId, actingSellerId(req.user), this.resourceType(resourceType), templateKey, instance);
   }
 
   @Patch(':storeId/sections')
@@ -73,22 +77,22 @@ export class CollectionTemplateController {
     @Query('templateKey') templateKey?: string,
     @Query('instance') instance?: string,
   ) {
-    return this.collectionTemplateService.updateSections(storeId, req.user.userId, dto, this.resourceType(resourceType), templateKey, instance);
+    return this.collectionTemplateService.updateSections(storeId, actingSellerId(req.user), dto, this.resourceType(resourceType), templateKey, instance);
   }
 
   @Patch(':storeId/publish')
   publish(@Req() req: any, @Param('storeId') storeId: string, @Query('resourceType') resourceType?: string, @Query('templateKey') templateKey?: string, @Query('instance') instance?: string) {
-    return this.collectionTemplateService.publish(storeId, req.user.userId, this.resourceType(resourceType), templateKey, instance);
+    return this.collectionTemplateService.publish(storeId, actingSellerId(req.user), this.resourceType(resourceType), templateKey, instance);
   }
 
   @Patch(':storeId/revert-draft')
   revertDraft(@Req() req: any, @Param('storeId') storeId: string, @Query('resourceType') resourceType?: string, @Query('templateKey') templateKey?: string, @Query('instance') instance?: string) {
-    return this.collectionTemplateService.revertDraft(storeId, req.user.userId, this.resourceType(resourceType), templateKey, instance);
+    return this.collectionTemplateService.revertDraft(storeId, actingSellerId(req.user), this.resourceType(resourceType), templateKey, instance);
   }
 
   @Get(':storeId/versions')
   listVersions(@Req() req: any, @Param('storeId') storeId: string, @Query('resourceType') resourceType?: string, @Query('templateKey') templateKey?: string, @Query('instance') instance?: string) {
-    return this.collectionTemplateService.listVersions(storeId, req.user.userId, this.resourceType(resourceType), templateKey, instance);
+    return this.collectionTemplateService.listVersions(storeId, actingSellerId(req.user), this.resourceType(resourceType), templateKey, instance);
   }
 
   @Post(':storeId/versions/:versionId/restore')
@@ -100,6 +104,6 @@ export class CollectionTemplateController {
     @Query('templateKey') templateKey?: string,
     @Query('instance') instance?: string,
   ) {
-    return this.collectionTemplateService.restoreVersion(storeId, req.user.userId, versionId, this.resourceType(resourceType), templateKey, instance);
+    return this.collectionTemplateService.restoreVersion(storeId, actingSellerId(req.user), versionId, this.resourceType(resourceType), templateKey, instance);
   }
 }
