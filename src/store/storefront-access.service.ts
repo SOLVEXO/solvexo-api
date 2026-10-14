@@ -146,6 +146,10 @@ export class StorefrontAccessService {
 
 export function createStorefrontAccessMiddleware(svc: StorefrontAccessService) {
   return async (req: any, res: any, next: (e?: any) => void) => {
+    // The password page's own template must load while the store is locked
+    // (Shopify shows the password page's sections to everyone).
+    const path = String(req.path ?? req.url ?? '').split('?')[0];
+    if (/^\/api\/public\/collection-template\/[^/]+\/?$/.test(path) && req.query?.resourceType === 'page' && req.query?.templateKey === 'password') return next();
     try {
       await svc.assertAccess(req);
     } catch (e: any) {
