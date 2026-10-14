@@ -425,7 +425,17 @@ export class OrdersService {
         $group: {
           _id: null,
           count: { $sum: 1 },
-          revenue: { $sum: { $cond: [{ $in: ['$so.status', ['completed', 'delivered']] }, { $ifNull: ['$so.subtotal', 0] }, 0] } },
+          // `so.settlementAmount` is this sub-order's own figure ALREADY
+          // converted into the seller's own Store.baseCurrency (see
+          // PaymentService's buildSellerOrders) — `so.subtotal` is instead
+          // in the BUYER's checkout currency (Order.currency), which can
+          // differ per order even within one store (every buyer picks their
+          // own display currency at checkout). Summing `subtotal` raw mixed
+          // real dollars with real rupees into one number; `settlementAmount`
+          // is what this store is actually credited, so it's the only safe
+          // thing to add across orders. Falls back to `subtotal` only for
+          // orders placed before this field existed.
+          revenue: { $sum: { $cond: [{ $in: ['$so.status', ['completed', 'delivered']] }, { $ifNull: ['$so.settlementAmount', { $ifNull: ['$so.subtotal', 0] }] }, 0] } },
           pending: { $sum: { $cond: [{ $in: ['$so.status', ['pending', 'processing']] }, 1, 0] }, },
         },
       },
@@ -460,13 +470,20 @@ export class OrdersService {
           type: so.fulfillmentType,
           productType: firstItem?.productType ?? null,
           date: order.createdAt,
-          amount: so.subtotal,
+          // `so.settlementAmount` (this sub-order's items + tax, converted
+          // into the SELLER's own Store.baseCurrency at order-creation time
+          // — see PaymentService's buildSellerOrders) is what the seller
+          // actually sees credited, and the right figure for a seller-facing
+          // list per CLAUDE's "store currency only inside that seller's own
+          // store views" rule. `so.subtotal` is instead in the BUYER's own
+          // checkout currency (Order.currency) — showing that number next
+          // to the seller's `currency` symbol below (the bug this fixes)
+          // silently mixed USD figures under a "Rs" label or vice versa.
+          // Falls back to the legacy pairing only for orders placed before
+          // `settlementAmount` existed.
+          amount: so.settlementAmount ?? so.subtotal,
           shippingAddress: order.shippingAddress ?? null,
-          // `amount` above is so.subtotal, which is denominated in the order's
-          // own currency (fixed per store) — carried per-row so a cross-store
-          // "my orders" list can label each row correctly even when the
-          // seller's stores don't all share one currency.
-          currency: order.currency ?? 'USD',
+          currency: so.settlementAmount != null ? (so.settlementCurrency ?? 'USD') : (order.currency ?? 'USD'),
           status: so.status,
           isPaid: order.isPaid,
           paymentType: order.paymentType,

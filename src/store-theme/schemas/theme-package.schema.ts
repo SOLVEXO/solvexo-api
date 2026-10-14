@@ -7,7 +7,9 @@ export type ThemePackageDocument = HydratedDocument<ThemePackage>;
 export class ThemePackageFile {
   @Prop({ required: true }) path: string;
   @Prop({ required: true, enum: ['utf8', 'base64'] }) encoding: 'utf8' | 'base64';
-  @Prop({ required: true }) content: string;
+  /** Binary assets live in ThemePackageAsset (keyed by sha256) so a revision stays far below Mongo's 16 MiB document limit; `content` is '' for them. */
+  @Prop({ default: '' }) content: string;
+  @Prop({ type: Boolean, default: false }) external: boolean;
   @Prop({ required: true }) size: number;
   @Prop({ required: true }) sha256: string;
 }
@@ -30,4 +32,16 @@ export class ThemePackage {
 }
 
 export const ThemePackageSchema = SchemaFactory.createForClass(ThemePackage);
+
+/** Binary theme asset (image/font/…) stored once per store and shared by every revision that contains it. */
+@Schema({ timestamps: true })
+export class ThemePackageAsset {
+  @Prop({ required: true }) storeId: string;
+  @Prop({ required: true }) sha256: string;
+  @Prop({ required: true }) content: string; // base64
+  @Prop({ required: true }) size: number;
+}
+export type ThemePackageAssetDocument = HydratedDocument<ThemePackageAsset>;
+export const ThemePackageAssetSchema = SchemaFactory.createForClass(ThemePackageAsset);
+ThemePackageAssetSchema.index({ storeId: 1, sha256: 1 }, { unique: true });
 ThemePackageSchema.index({ storeId: 1, installedThemeId: 1, version: -1 }, { unique: true });

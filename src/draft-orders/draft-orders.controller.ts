@@ -23,15 +23,21 @@ import { UpdateDraftOrderDto } from './dto/update-draft-order.dto';
 export class DraftOrdersController {
   constructor(private readonly draftOrdersService: DraftOrdersService) {}
 
+  @UseGuards(PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('draft_orders.manage')
   @Get(':storeId/customers/search')
   async searchCustomers(@Req() req: any, @Param('storeId') storeId: string, @Query('q') q: string) {
-    const results = await this.draftOrdersService.searchCustomers(storeId, req.user.userId, q);
+    const results = await this.draftOrdersService.searchCustomers(storeId, actingSellerId(req.user), q);
     return { success: true, data: results };
   }
 
+  @UseGuards(PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('draft_orders.manage')
   @Post(':storeId')
   async create(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: CreateDraftOrderDto) {
-    const draft = await this.draftOrdersService.create(storeId, req.user.userId, dto);
+    const draft = await this.draftOrdersService.create(storeId, actingSellerId(req.user), dto);
     return { success: true, data: draft };
   }
 
@@ -55,15 +61,21 @@ export class DraftOrdersController {
     return { success: true, data: draft };
   }
 
+  @UseGuards(PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('draft_orders.manage')
   @Patch(':storeId/:id')
   async update(@Req() req: any, @Param('storeId') storeId: string, @Param('id') id: string, @Body() dto: UpdateDraftOrderDto) {
-    const draft = await this.draftOrdersService.update(storeId, req.user.userId, id, dto);
+    const draft = await this.draftOrdersService.update(storeId, actingSellerId(req.user), id, dto);
     return { success: true, data: draft };
   }
 
+  @UseGuards(PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('draft_orders.manage')
   @Delete(':storeId/:id')
   async cancel(@Req() req: any, @Param('storeId') storeId: string, @Param('id') id: string) {
-    const draft = await this.draftOrdersService.cancel(storeId, req.user.userId, id);
+    const draft = await this.draftOrdersService.cancel(storeId, actingSellerId(req.user), id);
     return { success: true, data: draft };
   }
 
@@ -71,20 +83,29 @@ export class DraftOrdersController {
   // `cancel` above (kept on its existing DELETE :storeId/:id route for
   // backward compatibility). Restricted to a never-completed draft — see
   // DraftOrdersService.deleteDraft's own doc comment.
+  @UseGuards(PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('draft_orders.manage')
   @Delete(':storeId/:id/permanent')
   async deleteDraft(@Req() req: any, @Param('storeId') storeId: string, @Param('id') id: string) {
-    return this.draftOrdersService.deleteDraft(storeId, req.user.userId, id);
+    return this.draftOrdersService.deleteDraft(storeId, actingSellerId(req.user), id);
   }
 
+  @UseGuards(PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('draft_orders.manage')
   @Post(':storeId/:id/duplicate')
   async duplicate(@Req() req: any, @Param('storeId') storeId: string, @Param('id') id: string) {
-    const draft = await this.draftOrdersService.duplicate(storeId, req.user.userId, id);
+    const draft = await this.draftOrdersService.duplicate(storeId, actingSellerId(req.user), id);
     return { success: true, data: draft };
   }
 
+  @UseGuards(PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('draft_orders.manage')
   @Post(':storeId/:id/send-invoice')
   async sendInvoice(@Req() req: any, @Param('storeId') storeId: string, @Param('id') id: string) {
-    return this.draftOrdersService.sendInvoice(storeId, req.user.userId, id);
+    return this.draftOrdersService.sendInvoice(storeId, actingSellerId(req.user), id);
   }
 
   @UseGuards(PermissionsGuard)
@@ -96,9 +117,12 @@ export class DraftOrdersController {
     return { success: true, data: draft };
   }
 
+  @UseGuards(PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('draft_orders.manage')
   @Post(':storeId/:id/complete')
   async complete(@Req() req: any, @Param('storeId') storeId: string, @Param('id') id: string) {
-    const result = await this.draftOrdersService.complete(storeId, req.user.userId, id);
+    const result = await this.draftOrdersService.complete(storeId, actingSellerId(req.user), id);
     return { success: true, data: result };
   }
 }

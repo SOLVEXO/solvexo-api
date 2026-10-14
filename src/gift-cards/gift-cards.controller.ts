@@ -21,19 +21,21 @@ export class GiftCardsController {
   // ── Seller-facing ─────────────────────────────────────────────────────────
 
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('giftcards.view', 'giftcards.manage')
   @Get(':storeId/settings')
   getSettings(@Req() req: any, @Param('storeId') storeId: string) {
-    return this.giftCardsService.getSettings(req.user.userId, storeId);
+    return this.giftCardsService.getSettings(actingSellerId(req.user), storeId);
   }
 
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('giftcards.manage')
   @Patch(':storeId/settings')
   updateSettings(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: UpdateGiftCardSettingsDto) {
-    return this.giftCardsService.updateSettings(req.user.userId, storeId, dto);
+    return this.giftCardsService.updateSettings(actingSellerId(req.user), storeId, dto);
   }
 
   @ApiBearerAuth()

@@ -28,8 +28,9 @@ export class PlatformAddonsController {
 
   // Static route — also registered before ":storeId/addons".
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('settings.billing.view', 'settings.billing.manage')
   @Get('addons/catalog')
   getAddonCatalog() {
     return this.addonsService.getAddonCatalog();

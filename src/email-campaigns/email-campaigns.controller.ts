@@ -10,6 +10,9 @@ import { CreateEmailCampaignDto } from './dto/create-email-campaign.dto';
 import { UpdateEmailCampaignDto, ScheduleEmailCampaignDto } from './dto/update-email-campaign.dto';
 import { AudiencePreviewDto, SendTestEmailDto } from './dto/campaign-segment.dto';
 
+import { PermissionsGuard } from '../auth/guards/permissions.guard';
+import { RequirePermission } from '../auth/decorators/require-permission.decorator';
+import { actingSellerId } from '../common/acting-seller-id.util';
 @ApiTags('Email Campaigns')
 @Controller('api/email-campaigns')
 export class EmailCampaignsController {
@@ -18,84 +21,94 @@ export class EmailCampaignsController {
   // ── Seller-facing ─────────────────────────────────────────────────────────
 
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('marketing.manage')
   @Post(':storeId')
   create(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: CreateEmailCampaignDto) {
-    return this.emailCampaignsService.create(req.user.userId, storeId, dto);
+    return this.emailCampaignsService.create(actingSellerId(req.user), storeId, dto);
   }
 
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('marketing.manage')
   @Get(':storeId')
   list(@Req() req: any, @Param('storeId') storeId: string, @Query() query: any) {
-    return this.emailCampaignsService.list(req.user.userId, storeId, query);
+    return this.emailCampaignsService.list(actingSellerId(req.user), storeId, query);
   }
 
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('marketing.manage')
   @Get(':storeId/audience-preview')
   previewAudience(@Req() req: any, @Param('storeId') storeId: string, @Query('audience') audience: 'all' | 'buyers' | 'abandoned') {
-    return this.emailCampaignsService.previewAudience(req.user.userId, storeId, audience);
+    return this.emailCampaignsService.previewAudience(actingSellerId(req.user), storeId, audience);
   }
 
   /** Same as the GET above, but with segment filters (too structured for a query string). */
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('marketing.manage')
   @Post(':storeId/audience-preview')
   previewAudienceWithSegment(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: AudiencePreviewDto) {
-    return this.emailCampaignsService.previewAudience(req.user.userId, storeId, dto.audience, dto.segment ?? null);
+    return this.emailCampaignsService.previewAudience(actingSellerId(req.user), storeId, dto.audience, dto.segment ?? null);
   }
 
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('marketing.manage')
   @Post(':storeId/:campaignId/test')
   sendTest(@Req() req: any, @Param('storeId') storeId: string, @Param('campaignId') campaignId: string, @Body() dto: SendTestEmailDto) {
-    return this.emailCampaignsService.sendTest(req.user.userId, storeId, campaignId, dto.email ?? req.user.email ?? null);
+    return this.emailCampaignsService.sendTest(actingSellerId(req.user), storeId, campaignId, dto.email ?? req.user.email ?? null);
   }
 
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('marketing.manage')
   @Get(':storeId/:campaignId')
   getOne(@Req() req: any, @Param('storeId') storeId: string, @Param('campaignId') campaignId: string) {
-    return this.emailCampaignsService.getOne(req.user.userId, storeId, campaignId);
+    return this.emailCampaignsService.getOne(actingSellerId(req.user), storeId, campaignId);
   }
 
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('marketing.manage')
   @Patch(':storeId/:campaignId')
   update(@Req() req: any, @Param('storeId') storeId: string, @Param('campaignId') campaignId: string, @Body() dto: UpdateEmailCampaignDto) {
-    return this.emailCampaignsService.update(req.user.userId, storeId, campaignId, dto);
+    return this.emailCampaignsService.update(actingSellerId(req.user), storeId, campaignId, dto);
   }
 
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('marketing.manage')
   @Delete(':storeId/:campaignId')
   remove(@Req() req: any, @Param('storeId') storeId: string, @Param('campaignId') campaignId: string) {
-    return this.emailCampaignsService.remove(req.user.userId, storeId, campaignId);
+    return this.emailCampaignsService.remove(actingSellerId(req.user), storeId, campaignId);
   }
 
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('marketing.manage')
   @Post(':storeId/:campaignId/send')
   sendNow(@Req() req: any, @Param('storeId') storeId: string, @Param('campaignId') campaignId: string) {
-    return this.emailCampaignsService.sendNow(req.user.userId, storeId, campaignId);
+    return this.emailCampaignsService.sendNow(actingSellerId(req.user), storeId, campaignId);
   }
 
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('marketing.manage')
   @Post(':storeId/:campaignId/schedule')
   schedule(@Req() req: any, @Param('storeId') storeId: string, @Param('campaignId') campaignId: string, @Body() dto: ScheduleEmailCampaignDto) {
-    return this.emailCampaignsService.schedule(req.user.userId, storeId, campaignId, dto.scheduledAt);
+    return this.emailCampaignsService.schedule(actingSellerId(req.user), storeId, campaignId, dto.scheduledAt);
   }
 
   // ── Public — embedded in the sent email itself ───────────────────────────

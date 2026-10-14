@@ -36,6 +36,8 @@ const PRESET_ROLES: { name: string; description: string; permissions: string[] }
       'loyalty.view', 'loyalty.manage', 'loyalty.points.award',
       'seo.view', 'seo.manage',
       'aistudio.view', 'aistudio.use',
+      // Added with PRESET_VERSION 1
+      'products.create', 'collections.manage', 'categories.manage', 'draft_orders.manage', 'reviews.manage', 'activity_log.view',
     ],
   },
   {
@@ -46,9 +48,18 @@ const PRESET_ROLES: { name: string; description: string; permissions: string[] }
   {
     name: 'Support Staff',
     description: 'View and fulfill orders, view customers, and reply to customer messages.',
-    permissions: ['home.view', 'orders.view', 'orders.fulfill', 'orders.return', 'customers.view', 'messaging.view', 'messaging.manage'],
+    permissions: ['home.view', 'orders.view', 'orders.fulfill', 'orders.return', 'customers.view', 'messaging.view', 'messaging.manage', 'reviews.manage'],
   },
 ];
+
+/** Bump when PRESET_ROLES gains permissions; list what each preset gets in PRESET_ADDITIONS for that version. */
+const PRESET_VERSION = 1;
+const PRESET_ADDITIONS: Record<number, Record<string, string[]>> = {
+  1: {
+    'Store Manager': ['products.create', 'collections.manage', 'categories.manage', 'draft_orders.manage', 'reviews.manage', 'activity_log.view'],
+    'Support Staff': ['reviews.manage'],
+  },
+};
 
 @Injectable()
 export class RoleService {
@@ -82,11 +93,22 @@ export class RoleService {
    *  already exist for this store (a seller may have already renamed/
    *  deleted one, never resurrected). */
   private async ensurePresets(storeId: string) {
-    const existing = await this.repos.roleModel.find({ storeId }).select('name').lean();
+    const existing = await this.repos.roleModel.find({ storeId }).select('name isPreset presetVersion permissions').lean();
     const existingNames = new Set(existing.map((r: any) => r.name));
     const toCreate = PRESET_ROLES.filter((p) => !existingNames.has(p.name));
-    if (toCreate.length === 0) return;
-    await this.repos.roleModel.insertMany(toCreate.map((p) => ({ storeId, ...p, isPreset: true })));
+    if (toCreate.length > 0) {
+      await this.repos.roleModel.insertMany(toCreate.map((p) => ({ storeId, ...p, isPreset: true, presetVersion: PRESET_VERSION })));
+    }
+    // Presets created before a newer permission existed absorb it ONCE (set union), never removing what the owner customised.
+    for (const row of existing as any[]) {
+      if (!row.isPreset || (row.presetVersion ?? 0) >= PRESET_VERSION) continue;
+      const add = new Set<string>();
+      for (let v = (row.presetVersion ?? 0) + 1; v <= PRESET_VERSION; v++) for (const k of PRESET_ADDITIONS[v]?.[row.name] ?? []) add.add(k);
+      const merged = Array.from(new Set([...(row.permissions ?? []), ...add]));
+      await this.repos.roleModel.updateOne({ _id: row._id }, { $set: { permissions: merged, presetVersion: PRESET_VERSION } });
+      // Their already-issued tokens carry the old list: refresh on next login.
+      await this.repos.staffMemberModel.updateMany({ storeId, roleId: String(row._id) }, { $inc: { tokenVersion: 1 } });
+    }
   }
 
   async list(actorId: string, actorRole: string, storeId: string) {

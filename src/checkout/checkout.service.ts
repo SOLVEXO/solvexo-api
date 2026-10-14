@@ -197,6 +197,28 @@ export class CheckoutService {
     );
   }
 
+  /** A seller coupon/gift-card/store-credit discount total is computed in
+   *  THAT STORE'S OWN native currency (see applyCoupon's `couponStoreCurrency`
+   *  and settleStoreCredit/applyGiftCard, which both sum native `item.totalPrice`)
+   *  — correct for the per-store balance checks that read the PERSISTED
+   *  `checkout.*DiscountTotalUSD` fields (e.g. StoreCreditService.assertCovers),
+   *  so that stored value must stay native. But a buyer whose checkout
+   *  currency differs from the store's (e.g. store prices in PKR, buyer pays
+   *  in USD) would otherwise see this discount subtracted straight from a
+   *  checkout-currency subtotal — same native-vs-checkout-currency mismatch
+   *  `convertedSubtotal` exists to prevent. This converts ONLY the value
+   *  returned to the frontend for display/math, never the persisted field. */
+  private toCheckoutCurrency(amount: number, fromCurrency: string, checkout: { currency: string; fxSnapshots?: FxSnapshot[] | unknown }) {
+    return this.round(
+      this.exchangeRateService.convertWithSnapshots(
+        amount,
+        fromCurrency ?? checkout.currency,
+        checkout.currency,
+        (checkout.fxSnapshots as FxSnapshot[]) ?? [],
+      ),
+    );
+  }
+
   /** Digital/physical subtotal split — used so the app can show "pay this
    *  much online now" vs "this much COD on delivery" for a mixed cart. Both
    *  numbers are read straight off `item.totalPrice`, which already has
@@ -1713,11 +1735,11 @@ export class CheckoutService {
       data: {
         checkoutId,
         couponCode: normalizedCode,
-        couponDiscountUSD: totalDiscount,
+        couponDiscountUSD: this.toCheckoutCurrency(totalDiscount, couponStoreCurrency, checkout),
         subtotal: newSubtotal,
         shippingFee: checkout.shippingFee || 0,
         totalAmount: newTotal,
-        storeCreditDiscountUSD: sc.applied,
+        storeCreditDiscountUSD: this.toCheckoutCurrency(sc.applied, sc.currency ?? checkout.currency, checkout),
         ...this.splitSubtotalsByType(items),
       },
     };
@@ -1790,7 +1812,7 @@ export class CheckoutService {
         subtotal: newSubtotal,
         shippingFee: checkout.shippingFee || 0,
         totalAmount: newTotal,
-        storeCreditDiscountUSD: sc.applied,
+        storeCreditDiscountUSD: this.toCheckoutCurrency(sc.applied, sc.currency ?? checkout.currency, checkout),
         ...this.splitSubtotalsByType(items),
       },
     };
@@ -1869,12 +1891,14 @@ export class CheckoutService {
       data: {
         checkoutId,
         giftCardCode: normalizedCode,
-        giftCardDiscountUSD: appliedAmount,
+        giftCardDiscountUSD: this.toCheckoutCurrency(appliedAmount, storeItems[0]?.currency ?? checkout.currency, checkout),
+        // The gift card's OWN remaining balance — its own currency, never converted (not combined with checkout totals).
         remainingBalance: this.round(giftCard.balance - appliedAmount),
+        remainingBalanceCurrency: giftCard.currency ?? null,
         subtotal: newSubtotal,
         shippingFee: checkout.shippingFee || 0,
         totalAmount: newTotal,
-        storeCreditDiscountUSD: sc.applied,
+        storeCreditDiscountUSD: this.toCheckoutCurrency(sc.applied, sc.currency ?? checkout.currency, checkout),
         ...this.splitSubtotalsByType(items),
       },
     };
@@ -1926,7 +1950,7 @@ export class CheckoutService {
         subtotal: newSubtotal,
         shippingFee: checkout.shippingFee || 0,
         totalAmount: newTotal,
-        storeCreditDiscountUSD: sc.applied,
+        storeCreditDiscountUSD: this.toCheckoutCurrency(sc.applied, sc.currency ?? checkout.currency, checkout),
         ...this.splitSubtotalsByType(items),
       },
     };
@@ -1964,22 +1988,25 @@ export class CheckoutService {
    * and — if the buyer has it switched on — re-applies it, up to their CURRENT spendable balance
    * and the store's remaining item total. Called after every coupon / gift-card / voucher change so
    * the credit always sits on top of the final discounted prices. Returns the amount now applied
-   * (in the store's currency).
+   * and the native currency it's denominated in (that store's — the persisted
+   * `storeCreditDiscountTotalUSD` field must stay in this currency, see
+   * StoreCreditService.assertCovers; callers convert only for display, via `toCheckoutCurrency`).
    */
-  private async settleStoreCredit(checkout: any, items: any[]): Promise<{ applied: number }> {
+  private async settleStoreCredit(checkout: any, items: any[]): Promise<{ applied: number; currency: string | null }> {
     this.revertStoreCreditFromItems(items);
-    if (!checkout.storeCreditApplied || !checkout.storeCreditStoreId) return { applied: 0 };
+    if (!checkout.storeCreditApplied || !checkout.storeCreditStoreId) return { applied: 0, currency: null };
 
     const storeItems = items.filter((i) => i.storeId === checkout.storeCreditStoreId);
+    const storeCurrency = storeItems[0]?.currency ?? checkout.currency;
     const storeSubtotal = this.round(storeItems.reduce((sum, i) => sum + i.totalPrice, 0));
-    if (storeSubtotal <= 0) return { applied: 0 };
+    if (storeSubtotal <= 0) return { applied: 0, currency: storeCurrency };
 
     const balance = await this.storeCreditService.getSpendableBalance(checkout.storeCreditStoreId, String(checkout.userId));
     const amount = this.round(Math.min(balance, storeSubtotal));
-    if (amount <= 0) return { applied: 0 };
+    if (amount <= 0) return { applied: 0, currency: storeCurrency };
 
     this.distributeStoreCreditDiscount(storeItems, amount);
-    return { applied: amount };
+    return { applied: amount, currency: storeCurrency };
   }
 
   private async loadOpenCheckoutForCredit(userId: string, checkoutId: string) {
@@ -1998,7 +2025,7 @@ export class CheckoutService {
   }
 
   private async persistStoreCredit(checkoutModel: any, checkout: any, items: any[], flag: { storeCreditApplied: boolean; storeCreditStoreId: string | null }) {
-    const applied = (await this.settleStoreCredit({ ...checkout.toObject?.() ?? checkout, userId: checkout.userId, ...flag }, items)).applied;
+    const { applied, currency } = await this.settleStoreCredit({ ...checkout.toObject?.() ?? checkout, userId: checkout.userId, ...flag }, items);
     const newSubtotal = this.convertedSubtotal(items, checkout.currency, checkout.fxSnapshots as any);
     const newTotal = this.checkoutTotal(newSubtotal, checkout);
     await checkoutModel.findByIdAndUpdate(checkout._id, {
@@ -2014,7 +2041,7 @@ export class CheckoutService {
       data: {
         checkoutId: String(checkout._id),
         storeCreditApplied: flag.storeCreditApplied && applied > 0,
-        storeCreditDiscountUSD: applied,
+        storeCreditDiscountUSD: this.toCheckoutCurrency(applied, currency ?? checkout.currency, checkout),
         subtotal: newSubtotal,
         shippingFee: checkout.shippingFee || 0,
         totalAmount: newTotal,
@@ -2154,11 +2181,11 @@ export class CheckoutService {
         data: {
           checkoutId: checkout._id,
           couponCode: normalizedCode,
-          couponDiscountUSD: totalDiscount,
+          couponDiscountUSD: this.toCheckoutCurrency(totalDiscount, storeItems[0]?.currency ?? checkout.currency, checkout),
           subtotal: newSubtotal,
           shippingFee: checkout.shippingFee || 0,
           totalAmount: newTotal,
-          storeCreditDiscountUSD: sc.applied,
+          storeCreditDiscountUSD: this.toCheckoutCurrency(sc.applied, sc.currency ?? checkout.currency, checkout),
           ...this.splitSubtotalsByType(items),
         },
       };
@@ -2210,11 +2237,11 @@ export class CheckoutService {
       data: {
         checkoutId: checkout._id,
         couponCode: normalizedCode,
-        couponDiscountUSD: freeAmount,
+        couponDiscountUSD: this.toCheckoutCurrency(freeAmount, targetItem.currency ?? checkout.currency, checkout),
         subtotal: newSubtotal,
         shippingFee: checkout.shippingFee || 0,
         totalAmount: newTotal,
-        storeCreditDiscountUSD: sc.applied,
+        storeCreditDiscountUSD: this.toCheckoutCurrency(sc.applied, sc.currency ?? checkout.currency, checkout),
         ...this.splitSubtotalsByType(items),
       },
     };

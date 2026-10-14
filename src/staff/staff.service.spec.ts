@@ -222,3 +222,35 @@ describe('StaffService own profile (phone + photo)', () => {
     expect(Object.keys(set)).toEqual(['name']);
   });
 });
+
+describe('RoleService preset upgrade', () => {
+  const setup = (rows: any[]) => {
+    const roleModel: any = {
+      find: jest.fn(() => ({ select: () => ({ lean: async () => rows }), sort: () => ({ lean: async () => rows }) })),
+      insertMany: jest.fn(),
+      updateOne: jest.fn(async () => ({})),
+    };
+    const staffMemberModel: any = { updateMany: jest.fn(async () => ({})) };
+    const svc = new RoleService({ repositories: { roleModel, staffMemberModel, storeModel: {} } } as any);
+    (svc as any).verifyStoreOwnership = jest.fn();
+    return { svc, roleModel, staffMemberModel };
+  };
+  const presets = (version: number) => ['Store Manager', 'Warehouse Staff', 'Support Staff'].map((name, i) => ({ _id: `r${i}`, name, isPreset: true, presetVersion: version, permissions: ['orders.view'] }));
+
+  it('adds permissions introduced later to an old Store Manager preset ONCE, keeping what the owner had, and refreshes its staff tokens', async () => {
+    const { svc, roleModel, staffMemberModel } = setup(presets(0));
+    await svc.list('o', 'seller', 'st');
+    const mgr = (roleModel.updateOne as jest.Mock).mock.calls.find((c: any[]) => c[0]._id === 'r0')!;
+    expect(mgr[1].$set.permissions).toEqual(expect.arrayContaining(['orders.view', 'products.create', 'collections.manage', 'categories.manage', 'draft_orders.manage', 'reviews.manage', 'activity_log.view']));
+    expect(mgr[1].$set.presetVersion).toBe(1);
+    const warehouse = (roleModel.updateOne as jest.Mock).mock.calls.find((c: any[]) => c[0]._id === 'r1')!;
+    expect(warehouse[1].$set.permissions).toEqual(['orders.view']); // nothing new for Warehouse
+    expect(staffMemberModel.updateMany).toHaveBeenCalled();
+  });
+
+  it('does nothing for presets that are already up to date', async () => {
+    const { svc, roleModel } = setup(presets(1));
+    await svc.list('o', 'seller', 'st');
+    expect(roleModel.updateOne).not.toHaveBeenCalled();
+  });
+});

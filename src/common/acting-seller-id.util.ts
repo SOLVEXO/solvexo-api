@@ -11,3 +11,9 @@
 export function actingSellerId(user: any): string {
   return user.role === 'staff' ? user.sellerId : user.userId;
 }
+
+/** The role a staff caller acts under inside services written for a seller's own JWT (`role === 'seller'`
+ *  checks): staff act for their owning seller. Seller/admin/buyer keep their own role. */
+export function actingRole(user: any): string {
+  return user.role === 'staff' ? 'seller' : user.role;
+}

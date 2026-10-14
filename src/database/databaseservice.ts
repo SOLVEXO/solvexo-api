@@ -339,6 +339,8 @@ export class DatabaseService {
 
     @InjectModel(schema.ThemePackage.name)
     private themePackageModel: Model<schema.ThemePackageDocument>,
+    @InjectModel(schema.ThemePackageAsset.name)
+    private themePackageAssetModel: Model<schema.ThemePackageAssetDocument>,
 
     @InjectModel(schema.ThemeDefinition.name)
     private themeDefinitionModel: Model<schema.ThemeDefinitionDocument>,
@@ -606,6 +608,7 @@ export class DatabaseService {
       storeBannerModel: this.storeBannerModel,
       storeThemeModel: this.storeThemeModel,
       themePackageModel: this.themePackageModel,
+      themePackageAssetModel: this.themePackageAssetModel,
       themeDefinitionModel: this.themeDefinitionModel,
       storePageModel: this.storePageModel,
       storeFaqModel: this.storeFaqModel,

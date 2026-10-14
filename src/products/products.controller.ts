@@ -105,8 +105,9 @@ export class productController {
     return this.ProductsService.getEducationFacets();
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('products.create', 'products.edit')
   @Get('education/custom-level-suggestions')
   async getCustomLevelSuggestions(@Query('q') q: string = '') {
     return this.ProductsService.getCustomLevelSuggestions(q);
@@ -131,21 +132,23 @@ export class productController {
     return this.ProductsService.getProductPreview(id, req.ip, storeId);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard, BillingAccessGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard, BillingAccessGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('products.create')
   @RequireActiveBilling()
   @Post('add-physical-product')
   async addPhysicalProduct(@Req() req: any, @Body() body: any) {
-    const { userId: sellerId } = req.user;
+    const sellerId = actingSellerId(req.user);
     return this.ProductsService.addPhysicalProduct(sellerId, body);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard, BillingAccessGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard, BillingAccessGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('products.create')
   @RequireActiveBilling()
   @Post('add-digital-product')
   async addDigitalProduct(@Req() req: any, @Body() body: any) {
-    const { userId: sellerId } = req.user;
+    const sellerId = actingSellerId(req.user);
     return this.ProductsService.addDigitalProduct(sellerId, body);
   }
 
@@ -222,8 +225,9 @@ export class productController {
     res.send(csv);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard, BillingAccessGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard, BillingAccessGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('products.create')
   @RequireActiveBilling()
   @Post('store-products/:storeId/import')
   @UseInterceptors(
@@ -234,7 +238,7 @@ export class productController {
     @Param('storeId') storeId: string,
     @UploadedFile() file: Express.Multer.File,
   ) {
-    const { userId: sellerId } = req.user;
+    const sellerId = actingSellerId(req.user);
     return this.ProductsService.importProductsCsv(
       sellerId,
       storeId,
@@ -243,24 +247,27 @@ export class productController {
     );
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard, BillingAccessGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard, BillingAccessGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('products.create')
   @RequireActiveBilling()
   @Get('store-products/:storeId/import-template')
   getProductsImportTemplate() {
     return buildTemplatePayload('products-import-template.csv', PRODUCT_IMPORT_COLUMNS);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard, BillingAccessGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard, BillingAccessGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('products.create')
   @RequireActiveBilling()
   @Get('store-products/:storeId/variants/import-template')
   getVariantsImportTemplate() {
     return buildTemplatePayload('variants-import-template.csv', VARIANT_IMPORT_COLUMNS);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard, BillingAccessGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard, BillingAccessGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('products.create')
   @RequireActiveBilling()
   @Post('store-products/:storeId/variants/import')
   @UseInterceptors(
@@ -271,7 +278,7 @@ export class productController {
     @Param('storeId') storeId: string,
     @UploadedFile() file: Express.Multer.File,
   ) {
-    const { userId: sellerId } = req.user;
+    const sellerId = actingSellerId(req.user);
     return this.productVariantsService.importVariantsCsv(sellerId, storeId, readUploadedCsv(file));
   }
 
@@ -309,12 +316,13 @@ export class productController {
     return this.ProductsService.deleteProduct(actingSellerId(req.user), productId);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard, BillingAccessGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard, BillingAccessGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('products.create')
   @RequireActiveBilling()
   @Post('duplicate-product/:productId')
   async duplicateProduct(@Req() req: any, @Param('productId') productId: string) {
-    const { userId: sellerId } = req.user;
+    const sellerId = actingSellerId(req.user);
     return this.ProductsService.duplicateProduct(sellerId, productId);
   }
 }

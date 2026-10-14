@@ -259,6 +259,13 @@ export class CartService {
           options: (item as any).options ?? [],
 
           unitPrice: item.price, // single product price
+          // Denominated in `item.currency` below (the owning store's
+          // baseCurrency at add-to-cart time) — never the buyer's display
+          // currency. Was missing from this response entirely, which made
+          // the storefront render a native (e.g. PKR) amount next to
+          // whatever currency symbol the buyer had selected (e.g. $) —
+          // see CartContext.tsx/CartDrawer.tsx's `convert(amount, item.currency)` calls.
+          currency: item.currency ?? null,
           quantity: item.quantity, // quantity
           itemTotal: itemTotal, // quantity × price
         };
@@ -268,6 +275,13 @@ export class CartService {
       return {
         message: 'Cart fetched successfully',
         data: {
+          // Was missing from this response entirely, which made
+          // `CartContext.clearCart()`'s `if (!cart?._id ...) return;` guard
+          // always fire (every page mount re-fetches the cart through here,
+          // overwriting any `_id` a previous addToCart response had set) —
+          // the server-side cart was never actually cleared after an order,
+          // and the header badge stayed stale until a reload re-fetched it.
+          _id: cart._id,
           userId,
           storeId,
           items,

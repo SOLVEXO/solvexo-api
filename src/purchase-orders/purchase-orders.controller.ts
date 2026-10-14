@@ -147,6 +147,8 @@ export class PurchaseOrdersController {
     return { success: true, data: po };
   }
 
+  // Receiving stock is a warehouse task: a role with just 'Receive purchase orders' must be able to do it.
+  @RequirePermission('purchase_orders.manage', 'inventory.receive')
   @UseInterceptors(IdempotencyInterceptor)
   @Post(':storeId/:id/receive')
   async receive(@Req() req: any, @Param('storeId') storeId: string, @Param('id') id: string, @Body() dto: ReceivePurchaseOrderDto) {

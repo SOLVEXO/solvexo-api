@@ -10,6 +10,9 @@ import { CreateAffiliateDto } from './dto/create-affiliate.dto';
 import { UpdateAffiliateDto } from './dto/update-affiliate.dto';
 import { UpdateAffiliateProgramDto } from './dto/update-affiliate-program.dto';
 
+import { PermissionsGuard } from '../auth/guards/permissions.guard';
+import { RequirePermission } from '../auth/decorators/require-permission.decorator';
+import { actingSellerId } from '../common/acting-seller-id.util';
 @ApiTags('Affiliate')
 @Controller('api/affiliate')
 export class AffiliateController {
@@ -18,67 +21,75 @@ export class AffiliateController {
   // ── Seller-facing ─────────────────────────────────────────────────────────
 
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('marketing.manage')
   @Get(':storeId/program')
   getProgram(@Req() req: any, @Param('storeId') storeId: string) {
-    return this.affiliateService.getProgramSettings(req.user.userId, storeId);
+    return this.affiliateService.getProgramSettings(actingSellerId(req.user), storeId);
   }
 
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('marketing.manage')
   @Patch(':storeId/program')
   updateProgram(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: UpdateAffiliateProgramDto) {
-    return this.affiliateService.updateProgramSettings(req.user.userId, storeId, dto);
+    return this.affiliateService.updateProgramSettings(actingSellerId(req.user), storeId, dto);
   }
 
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('marketing.manage')
   @Get(':storeId/stats')
   getStats(@Req() req: any, @Param('storeId') storeId: string) {
-    return this.affiliateService.getStats(req.user.userId, storeId);
+    return this.affiliateService.getStats(actingSellerId(req.user), storeId);
   }
 
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('marketing.manage')
   @Get(':storeId/referrals')
   listReferrals(@Req() req: any, @Param('storeId') storeId: string, @Query() query: any) {
-    return this.affiliateService.listReferrals(req.user.userId, storeId, query);
+    return this.affiliateService.listReferrals(actingSellerId(req.user), storeId, query);
   }
 
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('marketing.manage')
   @Post(':storeId')
   create(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: CreateAffiliateDto) {
-    return this.affiliateService.createAffiliate(req.user.userId, storeId, dto);
+    return this.affiliateService.createAffiliate(actingSellerId(req.user), storeId, dto);
   }
 
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('marketing.manage')
   @Get(':storeId')
   list(@Req() req: any, @Param('storeId') storeId: string, @Query() query: any) {
-    return this.affiliateService.listAffiliates(req.user.userId, storeId, query);
+    return this.affiliateService.listAffiliates(actingSellerId(req.user), storeId, query);
   }
 
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('marketing.manage')
   @Patch(':storeId/:affiliateId')
   update(@Req() req: any, @Param('storeId') storeId: string, @Param('affiliateId') affiliateId: string, @Body() dto: UpdateAffiliateDto) {
-    return this.affiliateService.updateAffiliate(req.user.userId, storeId, affiliateId, dto);
+    return this.affiliateService.updateAffiliate(actingSellerId(req.user), storeId, affiliateId, dto);
   }
 
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('marketing.manage')
   @Delete(':storeId/:affiliateId')
   remove(@Req() req: any, @Param('storeId') storeId: string, @Param('affiliateId') affiliateId: string) {
-    return this.affiliateService.removeAffiliate(req.user.userId, storeId, affiliateId);
+    return this.affiliateService.removeAffiliate(actingSellerId(req.user), storeId, affiliateId);
   }
 
   @ApiBearerAuth()

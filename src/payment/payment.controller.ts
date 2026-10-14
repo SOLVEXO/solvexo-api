@@ -68,11 +68,12 @@ export class PaymentController {
 
   // Seller-facing "Needs Attention" signal — real open-dispute count backed
   // by real Stripe dispute-status tracking (see PaymentService.getOpenDisputeCount).
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('orders.disputes_manage')
   @Get('disputes/:storeId/open-count')
   async getOpenDisputeCount(@Req() req: any, @Param('storeId') storeId: string) {
-    const count = await this.paymentService.getOpenDisputeCount(storeId, req.user.userId);
+    const count = await this.paymentService.getOpenDisputeCount(storeId, actingSellerId(req.user));
     return { success: true, data: { count } };
   }
 
@@ -102,11 +103,12 @@ export class PaymentController {
 
   // Mirrors Shopify Home's "Review high-risk orders" order task — real
   // Stripe Radar fraud-risk signal, see PaymentService.getHighRiskOrderCount.
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('orders.view')
   @Get('risk-orders/:storeId/open-count')
   async getHighRiskOrderCount(@Req() req: any, @Param('storeId') storeId: string) {
-    const count = await this.paymentService.getHighRiskOrderCount(storeId, req.user.userId);
+    const count = await this.paymentService.getHighRiskOrderCount(storeId, actingSellerId(req.user));
     return { success: true, data: { count } };
   }
 
@@ -123,11 +125,12 @@ export class PaymentController {
 
   // Real count of orders still awaiting capture, for the store dashboard's
   // "Needs Attention" card.
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('orders.capture_payment')
   @Get('orders/:storeId/awaiting-capture-count')
   async getAwaitingCaptureCount(@Req() req: any, @Param('storeId') storeId: string) {
-    const count = await this.paymentService.getAwaitingCaptureCount(storeId, req.user.userId);
+    const count = await this.paymentService.getAwaitingCaptureCount(storeId, actingSellerId(req.user));
     return { success: true, data: { count } };
   }
 

@@ -23,6 +23,9 @@ import { EditReviewDto } from './dto/edit-review.dto';
 import { SellerReplyDto } from './dto/seller-reply.dto';
 import { resolveBuyerStoreScope } from '../common/store-scope.util';
 
+import { PermissionsGuard } from '../auth/guards/permissions.guard';
+import { RequirePermission } from '../auth/decorators/require-permission.decorator';
+import { actingSellerId } from '../common/acting-seller-id.util';
 @Controller('api/rating')
 @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
 export class RatingController {
@@ -100,82 +103,98 @@ export class RatingController {
   // SELLER / ADMIN — manage reviews on their store
   // ═══════════════════════════════════════════════════════════════════════════
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller', 'admin')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'admin', 'staff')
+  @RequirePermission('customers.view', 'reviews.manage')
   @Get('store-reviews/:storeId')
   async getStoreReviews(
     @Req() req: any,
     @Param('storeId') storeId: string,
     @Query() query: any,
   ) {
-    const { userId: sellerId, role } = req.user;
+    const { role } = req.user;
+    const sellerId = actingSellerId(req.user);
     return this.ratingService.getStoreReviews(sellerId, role, storeId, query);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller', 'admin')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'admin', 'staff')
+  @RequirePermission('reviews.manage')
   @Post('reply/:reviewId')
   async replyToReview(
     @Req() req: any,
     @Param('reviewId') reviewId: string,
     @Body() body: SellerReplyDto,
   ) {
-    const { userId: sellerId, role } = req.user;
+    const { role } = req.user;
+    const sellerId = actingSellerId(req.user);
     return this.ratingService.replyToReview(sellerId, role, reviewId, body);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller', 'admin')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'admin', 'staff')
+  @RequirePermission('reviews.manage')
   @Put('edit-reply/:reviewId')
   async editReply(
     @Req() req: any,
     @Param('reviewId') reviewId: string,
     @Body() body: SellerReplyDto,
   ) {
-    const { userId: sellerId, role } = req.user;
+    const { role } = req.user;
+    const sellerId = actingSellerId(req.user);
     return this.ratingService.editReply(sellerId, role, reviewId, body);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller', 'admin')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'admin', 'staff')
+  @RequirePermission('reviews.manage')
   @Patch('moderate/:reviewId/approve')
   async approveReview(@Req() req: any, @Param('reviewId') reviewId: string) {
-    const { userId: sellerId, role } = req.user;
+    const { role } = req.user;
+    const sellerId = actingSellerId(req.user);
     return this.ratingService.approveReview(sellerId, role, reviewId);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller', 'admin')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'admin', 'staff')
+  @RequirePermission('reviews.manage')
   @Patch('moderate/:reviewId/reject')
   async rejectReview(@Req() req: any, @Param('reviewId') reviewId: string) {
-    const { userId: sellerId, role } = req.user;
+    const { role } = req.user;
+    const sellerId = actingSellerId(req.user);
     return this.ratingService.rejectReview(sellerId, role, reviewId);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller', 'admin')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'admin', 'staff')
+  @RequirePermission('reviews.manage')
   @Post('flag/:reviewId')
   async flagReview(@Req() req: any, @Param('reviewId') reviewId: string) {
-    const { userId: sellerId, role } = req.user;
+    const { role } = req.user;
+    const sellerId = actingSellerId(req.user);
     return this.ratingService.flagReview(sellerId, role, reviewId);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller', 'admin')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'admin', 'staff')
+  @RequirePermission('reviews.manage')
   @Patch('unflag/:reviewId')
   async unflagReview(@Req() req: any, @Param('reviewId') reviewId: string) {
-    const { userId: sellerId, role } = req.user;
+    const { role } = req.user;
+    const sellerId = actingSellerId(req.user);
     return this.ratingService.unflagReview(sellerId, role, reviewId);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller', 'admin')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'admin', 'staff')
+  @RequirePermission('reviews.manage')
   @Delete('admin/:reviewId')
   async moderateDeleteReview(
     @Req() req: any,
     @Param('reviewId') reviewId: string,
   ) {
-    const { userId: sellerId, role } = req.user;
+    const { role } = req.user;
+    const sellerId = actingSellerId(req.user);
     return this.ratingService.moderateDeleteReview(sellerId, role, reviewId);
   }
 }

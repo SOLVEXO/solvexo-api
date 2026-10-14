@@ -77,25 +77,28 @@ export class StoreController {
     return this.storeService.getStoreById(storeId, u?.userId ?? null, privileged);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('settings.general.manage')
   @Patch(':storeId/privacy')
   async updateStorePrivacy(@Req() req: any, @Param('storeId') storeId: string, @Body() body: { privacyMode: 'public' | 'password' | 'coming_soon'; password?: string }) {
-    return this.storeService.updateStorePrivacy(req.user.userId, storeId, body);
+    return this.storeService.updateStorePrivacy(actingSellerId(req.user), storeId, body);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('seo.manage')
   @Patch(':storeId/robots-txt')
   async updateStoreRobotsTxt(@Req() req: any, @Param('storeId') storeId: string, @Body() body: { robotsTxtOverride: string | null }) {
-    return this.storeService.updateStoreRobotsTxt(req.user.userId, storeId, body?.robotsTxtOverride ?? null);
+    return this.storeService.updateStoreRobotsTxt(actingSellerId(req.user), storeId, body?.robotsTxtOverride ?? null);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('settings.general.manage')
   @Patch(':storeId/white-label')
   async setWhiteLabel(@Req() req: any, @Param('storeId') storeId: string, @Body() body: { enabled: boolean }) {
-    return this.storeService.setWhiteLabel(req.user.userId, storeId, !!body.enabled);
+    return this.storeService.setWhiteLabel(actingSellerId(req.user), storeId, !!body.enabled);
   }
 
   // Solvexo POS is a single, already-published, PAID Google Play listing —
@@ -203,19 +206,21 @@ export class StoreController {
 
   // ── Builder APIs ──────────────────────────────────────────────────────────
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('onlinestore.themes.manage')
   @Post('save-builder-config')
   async saveBuilderConfig(@Req() req: any, @Body() body: any) {
-    const { userId } = req.user;
+    const userId = actingSellerId(req.user);
     return this.storeService.saveBuilderConfig(userId, body);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('onlinestore.themes.manage')
   @Get('builder-config/:storeId')
   async getBuilderConfig(@Req() req: any, @Param('storeId') storeId: string) {
-    const { userId } = req.user;
+    const userId = actingSellerId(req.user);
     return this.storeService.getBuilderConfig(userId, storeId);
   }
 
@@ -278,11 +283,12 @@ export class StoreController {
     return this.storeService.submitPrivacyRequest(storeId, body?.email ?? '');
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('seller')
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('settings.general.manage')
   @Patch(':storeId/privacy-requests/:requestId/complete')
   async completePrivacyRequest(@Req() req: any, @Param('storeId') storeId: string, @Param('requestId') requestId: string) {
-    return this.storeService.completePrivacyRequest(req.user.userId, storeId, requestId);
+    return this.storeService.completePrivacyRequest(actingSellerId(req.user), storeId, requestId);
   }
 
   // Storefront password-gate submission — a visibility convenience, not an

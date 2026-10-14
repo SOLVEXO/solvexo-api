@@ -87,6 +87,9 @@ export class PermissionsGuard implements CanActivate {
     if (p.id && path.includes('messages')) checks.push(this.assertMessage(p.id, staffStoreId));
     else if (p.id && path.includes('conversations')) checks.push(this.assertConversation(p.id, staffStoreId));
     if (p.reportId) checks.push(this.assertSavedReport(p.reportId, staffStoreId));
+    if (p.reviewId) checks.push(this.assertReview(p.reviewId, staffStoreId));
+    if (p.id && path.includes('promotions')) checks.push(this.assertPromotion(p.id, staffStoreId));
+    if (p.id && path.includes('categories')) checks.push(this.assertCategory(p.id, staffStoreId));
     await Promise.all(checks);
 
     // 3) store-less routes marked @StaffStorePinned → pin to the staff member's store
@@ -134,6 +137,22 @@ export class PermissionsGuard implements CanActivate {
   private async assertMessage(messageId: any, staffStoreId: string) {
     const m = await this.find(this.db.repositories.messageModel, messageId, 'conversationId');
     if (m?.conversationId) await this.assertConversation(String(m.conversationId), staffStoreId);
+  }
+
+  private async assertReview(reviewId: any, staffStoreId: string) {
+    const r = await this.find(this.db.repositories.ratingModel, reviewId, 'storeId');
+    if (r && String(r.storeId) !== staffStoreId) throw new ForbiddenException(NOT_SCOPED);
+  }
+
+  private async assertPromotion(promotionId: any, staffStoreId: string) {
+    const r = await this.find(this.db.repositories.promotionRequestModel, promotionId, 'storeId');
+    if (r && String(r.storeId) !== staffStoreId) throw new ForbiddenException(NOT_SCOPED);
+  }
+
+  /** A category with no store is the platform's own tree: a staff member may never touch it. */
+  private async assertCategory(categoryId: any, staffStoreId: string) {
+    const c = await this.find(this.db.repositories.categoryModel, categoryId, 'storeId');
+    if (c && String(c.storeId ?? '') !== staffStoreId) throw new ForbiddenException(NOT_SCOPED);
   }
 
   private async assertSavedReport(reportId: any, staffStoreId: string) {

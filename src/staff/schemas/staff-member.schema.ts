@@ -54,9 +54,11 @@ export const STAFF_PERMISSIONS = [
   'orders.buy_shipping_label', 'orders.return', 'orders.abandoned_checkouts', 'orders.cancel', 'orders.edit',
   'orders.refund', 'orders.record_payment', 'orders.disputes_manage',
   // Draft Orders
-  'draft_orders.view', 'draft_orders.mark_paid',
+  'draft_orders.view', 'draft_orders.manage', 'draft_orders.mark_paid',
   // Products
-  'products.view', 'products.view_cost', 'products.export', 'products.delete', 'products.edit', 'products.edit_price', 'products.edit_cost',
+  'products.view', 'products.create', 'products.view_cost', 'products.export', 'products.delete', 'products.edit', 'products.edit_price', 'products.edit_cost',
+  // Catalog organisation (collections / categories)
+  'collections.manage', 'categories.manage',
   // Inventory / Purchase Orders / Stock Counts (unchanged from the earlier Inventory-only pass)
   'inventory.view', 'inventory.adjust', 'inventory.receive', 'inventory.transfer',
   'inventory.count', 'inventory.approve', 'purchase_orders.manage',
@@ -64,6 +66,8 @@ export const STAFF_PERMISSIONS = [
   'giftcards.view', 'giftcards.deactivate', 'giftcards.manage',
   // Customers
   'customers.view', 'customers.export', 'customers.edit',
+  // Reviews (reply, approve/hide, flag, delete)
+  'reviews.manage',
   // Analytics
   'analytics.view',
   // Marketing (platform-campaign opt-in) / Discounts (own coupons + automatic discounts —
@@ -77,6 +81,8 @@ export const STAFF_PERMISSIONS = [
   'settings.billing.view', 'settings.billing.manage', 'settings.general.manage', 'settings.taxes.manage',
   'settings.shipping.manage', 'settings.locations.manage',
   'settings.domains.manage', 'settings.pixels.manage', 'settings.payments.manage',
+  // Activity log (who did what in this store)
+  'activity_log.view',
   // Finance
   'finance.payouts.view', 'finance.payments.manage', 'finance.tax_documents.manage',
   // Messaging — no dedicated `:storeId` route param on this controller

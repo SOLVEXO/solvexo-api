@@ -24,6 +24,9 @@ export class Role {
   // Shopify's own out-of-the-box role concept. A seller can still edit a
   // preset's own permission list; `isPreset` only blocks deletion.
   @Prop({ default: false }) isPreset: boolean;
+  // Which revision of the preset definition this row has absorbed (see RoleService.PRESET_ADDITIONS):
+  // permissions introduced later are merged in once, without touching what the owner customised.
+  @Prop({ type: Number, default: 0 }) presetVersion: number;
 
   @Prop({ default: false }) isDelete: boolean;
 }

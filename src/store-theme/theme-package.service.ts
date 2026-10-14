@@ -9,6 +9,7 @@ import { verifyStoreOwnershipStrict } from '../common/store-ownership.util';
 import { readThemePackageStructure } from './theme-package-schema.util';
 import { registerShopifyFilters, applyThemeSettingDefaults, applySectionSettingDefaults } from './liquid-shopify-filters.util';
 import type { LiquidRenderCartItemDto } from './dto/render-liquid-theme.dto';
+import { API_PUBLIC_ORIGIN } from '../common/api-origin';
 
 // Real-world Shopify themes (Dawn and premium themes) are several MiB with hundreds of files.
 const MAX_ARCHIVE_BYTES = 20 * 1024 * 1024;
@@ -21,13 +22,16 @@ const MAX_REVISIONS = 20;
 const TEXT_EXTENSIONS = new Set(['.liquid', '.json', '.css', '.js', '.svg', '.txt', '.xml', '.html', '.map']);
 const BINARY_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.avif', '.gif', '.ico', '.woff', '.woff2', '.ttf', '.otf', '.eot', '.mp4', '.webm']);
 
-type PackageFile = { path: string; encoding: 'utf8' | 'base64'; content: string; size: number; sha256: string };
+type PackageFile = { path: string; encoding: 'utf8' | 'base64'; content: string; size: number; sha256: string; external?: boolean };
+// Text (liquid/json/css/js) stays inside the revision document; keep it clear of Mongo's 16 MiB document limit.
+const MAX_INLINE_BYTES = 12 * 1024 * 1024;
 
 @Injectable()
 export class ThemePackageService {
   constructor(private readonly db: DatabaseService) {}
 
   private get packages() { return this.db.repositories.themePackageModel; }
+  private get assets() { return this.db.repositories.themePackageAssetModel; }
   private get themes() { return this.db.repositories.storeThemeModel; }
   private get stores() { return this.db.repositories.storeModel; }
 
@@ -154,7 +158,8 @@ export class ThemePackageService {
       ? await this.latest(storeId, installedThemeId)
       : await this.packages.findOne({ storeId, installedThemeId, version });
     if (!revision) throw new NotFoundException('Theme source revision not found');
-    const files = (revision.files as any[]).map((f) => ({ path: String(f.path), data: Buffer.from(f.content, f.encoding === 'base64' ? 'base64' : 'utf8') }));
+    const hydrated = await this.hydrateAssets(storeId, revision.files as any[]);
+    const files = hydrated.map((f) => ({ path: String(f.path), data: Buffer.from(f.content, f.encoding === 'base64' ? 'base64' : 'utf8') }));
     return { filename: `theme-v${revision.version}.zip`, buffer: buildStoredZip(files) };
   }
 
@@ -184,7 +189,7 @@ export class ThemePackageService {
       files = files.map((f: any) => (f.path === draftPath ? makeFile(draftPath, Buffer.from(draft.content, 'utf8'), 'utf8') : (f.toObject?.() ?? f)));
     }
     const context = await this.getStorefrontContext(storeId, requestedPath, [], files);
-    const html = await renderThemePreview(files as any[], context, requestedPath);
+    const html = await renderThemePreview(files as any[], { ...context, assetBase: this.assetBase(storeId, installedThemeId, revision.version) }, requestedPath);
     return { success: true, data: { version: revision.version, html } };
   }
 
@@ -219,7 +224,7 @@ export class ThemePackageService {
     }).lean();
     if (!revision) throw new NotFoundException('Published Liquid theme source is unavailable');
     const context = await this.getStorefrontContext(storeId, requestedPath, cartItems, revision.files as PackageFile[]);
-    const html = await renderThemePreview(revision.files as any[], context, requestedPath);
+    const html = await renderThemePreview(revision.files as any[], { ...context, assetBase: this.assetBase(storeId, String(theme._id), theme.sourcePackageVersion) }, requestedPath);
     return { success: true, data: { html, version: theme.sourcePackageVersion } };
   }
 
@@ -729,7 +734,49 @@ export class ThemePackageService {
     return this.packages.findOne({ storeId, installedThemeId }).sort({ version: -1 });
   }
 
+  /** Moves binary assets into ThemePackageAsset (deduplicated by sha256) and leaves a small stub in the revision. */
+  private async offloadAssets(storeId: string, files: PackageFile[]): Promise<PackageFile[]> {
+    const binary = files.filter((f) => f.encoding === 'base64' && !f.external && f.content);
+    if (binary.length) {
+      await this.assets.bulkWrite(binary.map((f) => ({
+        updateOne: { filter: { storeId, sha256: f.sha256 }, update: { $setOnInsert: { storeId, sha256: f.sha256, content: f.content, size: f.size } }, upsert: true },
+      })), { ordered: false });
+    }
+    const out = files.map((f) => (f.encoding === 'base64' ? { ...f, content: '', external: true } : f));
+    const inline = out.reduce((sum, f) => sum + Buffer.byteLength(f.content ?? '', 'utf8'), 0);
+    if (inline > MAX_INLINE_BYTES) throw new BadRequestException('Theme code (liquid, json, css, js) is larger than 12 MiB. Remove unused files and try again.');
+    return out;
+  }
+
+  /** Fills binary content back in (export only). */
+  private async hydrateAssets(storeId: string, files: any[]): Promise<any[]> {
+    const shas = files.filter((f) => f.external).map((f) => f.sha256);
+    if (!shas.length) return files;
+    const rows = await this.assets.find({ storeId, sha256: { $in: shas } }).select('sha256 content').lean() as any[];
+    const bySha = new Map(rows.map((r) => [r.sha256, r.content]));
+    return files.map((f) => (f.external ? { ...f, content: bySha.get(f.sha256) ?? '' } : f));
+  }
+
+  /** One theme file for the public asset URL (images, fonts, css, js) — immutable per (theme, version, path). */
+  async getAssetFile(storeId: string, installedThemeId: string, version: number, path: string): Promise<{ buffer: Buffer; mime: string }> {
+    const rev = await this.packages.findOne({ storeId, installedThemeId, version }, { files: { $elemMatch: { path } } }).lean() as any;
+    const file = rev?.files?.[0];
+    if (!file || !/^assets\//i.test(file.path)) throw new NotFoundException('Asset not found');
+    let b64 = file.content as string;
+    if (file.external) {
+      const row = await this.assets.findOne({ storeId, sha256: file.sha256 }).select('content').lean() as any;
+      if (!row) throw new NotFoundException('Asset not found');
+      b64 = row.content;
+    }
+    return { buffer: Buffer.from(b64 ?? '', file.encoding === 'base64' ? 'base64' : 'utf8'), mime: mimeType(file.path) };
+  }
+
+  private assetBase(storeId: string, installedThemeId: string, version: number) {
+    return `${API_PUBLIC_ORIGIN}/api/public/store-theme/${storeId}/source/asset/${installedThemeId}/${version}`;
+  }
+
   private async createRevision(storeId: string, installedThemeId: string, createdBy: string, files: PackageFile[], changeType: 'upload' | 'file_edit' | 'rollback', restoredFromVersion: number | null = null) {
+    files = await this.offloadAssets(storeId, files);
     let doc: any;
     let version = 0;
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -748,6 +795,9 @@ export class ThemePackageService {
     const pruneFilter: Record<string, any> = { storeId, installedThemeId, version: { $lte: version - MAX_REVISIONS } };
     if (typeof live?.sourcePackageVersion === 'number') pruneFilter.version.$ne = live.sourcePackageVersion;
     await this.packages.deleteMany(pruneFilter);
+    // Drop binary assets no remaining revision of this store still references.
+    const used = await this.packages.distinct('files.sha256', { storeId }) as string[];
+    await this.assets.deleteMany({ storeId, sha256: { $nin: used } });
     return { success: true, message: changeType === 'rollback' ? `Theme source restored as revision ${version}` : `Theme source saved as revision ${version}`, data: { version: doc.version, changeType: doc.changeType, restoredFromVersion: doc.restoredFromVersion, files: doc.files.map(({ path, size, sha256 }: any) => ({ path, size, sha256 })) } };
   }
 }
@@ -906,6 +956,9 @@ export async function renderThemePreview(files: PackageFile[], contextOverrides:
     const assetName = String(name ?? '').replace(/^\/?assets\//i, '').replace(/^\//, '');
     const file = byPath.get(`assets/${assetName}`);
     if (!file) return '';
+    // Served from a cacheable public URL instead of inlining every file into every page.
+    if (contextOverrides.assetBase) return `${contextOverrides.assetBase}?path=${encodeURIComponent(file.path)}`;
+    if (file.external) return '';
     if (file.encoding === 'utf8') return `data:${mimeType(file.path)};base64,${Buffer.from(file.content).toString('base64')}`;
     return `data:${mimeType(file.path)};base64,${file.content}`;
   };
