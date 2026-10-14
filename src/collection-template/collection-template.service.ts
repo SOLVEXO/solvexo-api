@@ -259,6 +259,20 @@ export class CollectionTemplateService {
     return { success: true, message: 'Template created', data: created };
   }
 
+  /** Renames an alternate template (display name only — the key products/collections point at never changes). */
+  async renameTemplate(storeId: string, sellerId: string, resourceType: ResourceTemplateType, templateKey: string, name: string, installedThemeId?: string) {
+    await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
+    const resolvedThemeId = await this.resolveInstalledThemeId(storeId, installedThemeId);
+    if (templateKey === DEFAULT_TEMPLATE_KEY) throw new ForbiddenException('The default template cannot be renamed');
+    const updated = await this.collectionTemplateModel.findOneAndUpdate(
+      { storeId, resourceType, templateKey, ...(resolvedThemeId ? { installedThemeId: resolvedThemeId } : {}) },
+      { $set: { name: name.trim() } },
+      { new: true },
+    );
+    if (!updated) throw new NotFoundException('Template not found');
+    return { success: true, message: 'Template renamed', data: updated };
+  }
+
   async deleteTemplate(storeId: string, sellerId: string, resourceType: ResourceTemplateType, templateKey: string, installedThemeId?: string) {
     await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
     const resolvedThemeId = await this.resolveInstalledThemeId(storeId, installedThemeId);

@@ -10,6 +10,7 @@ import { actingSellerId } from '../common/acting-seller-id.util';
 import { CollectionTemplateService } from './collection-template.service';
 import { UpdateSectionsDto } from '../store-pages/dto/update-sections.dto';
 import { CreateResourceTemplateDto } from './dto/create-resource-template.dto';
+import { RenameResourceTemplateDto } from './dto/rename-resource-template.dto';
 import { ResourceTemplateType } from './schemas/collection-template.schema';
 
 // Generalized from a Collection-only singleton into "alternate templates for
@@ -45,6 +46,18 @@ export class CollectionTemplateController {
     @Query('instance') instance?: string,
   ) {
     return this.collectionTemplateService.createTemplate(storeId, actingSellerId(req.user), this.resourceType(resourceType), dto, instance);
+  }
+
+  @Patch(':storeId/templates/:templateKey')
+  renameTemplate(
+    @Req() req: any,
+    @Param('storeId') storeId: string,
+    @Param('templateKey') templateKey: string,
+    @Body() dto: RenameResourceTemplateDto,
+    @Query('resourceType') resourceType?: string,
+    @Query('instance') instance?: string,
+  ) {
+    return this.collectionTemplateService.renameTemplate(storeId, actingSellerId(req.user), this.resourceType(resourceType), templateKey, dto.name, instance);
   }
 
   @Delete(':storeId/templates/:templateKey')
