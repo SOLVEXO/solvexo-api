@@ -54,6 +54,11 @@ export class ShippingZone {
   @Prop({ required: true, default: 0 })
   shippingPrice: number;
 
+  // Currency of the shipping price. null = store's base currency (legacy behavior).
+  // When set, this rate is in the specified currency and must be converted at checkout.
+  @Prop({ type: String, default: null })
+  currency: string | null;
+
   // How the rate is worked out (Shopify: flat / by weight / by price). For 'weight' tiers are in kg,
   // for 'price' tiers are in the store's own currency (order subtotal). 'flat' uses shippingPrice.
   @Prop({ enum: ['flat', 'weight', 'price'], default: 'flat' })

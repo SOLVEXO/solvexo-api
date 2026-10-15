@@ -225,6 +225,7 @@ import { DatabaseService } from './databaseservice';
       { name: schema.ThemePackage.name, schema: schema.ThemePackageSchema },
       { name: schema.ThemePackageAsset.name, schema: schema.ThemePackageAssetSchema },
       { name: schema.ThemeImportJob.name, schema: schema.ThemeImportJobSchema },
+      { name: schema.ThemeUploadChunk.name, schema: schema.ThemeUploadChunkSchema },
       { name: schema.ThemeDefinition.name, schema: schema.ThemeDefinitionSchema },
       { name: schema.StorePage.name, schema: schema.StorePageSchema },
       { name: schema.StoreFaq.name, schema: schema.StoreFaqSchema },

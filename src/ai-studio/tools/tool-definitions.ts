@@ -149,6 +149,86 @@ export function buildWorksheetPrompt(input: {
   };
 }
 
+/**
+ * Translation tool schema and prompt.
+ * Translates product/collection/page content to target languages.
+ */
+export const TRANSLATION_SCHEMA = {
+  type: 'object',
+  properties: {
+    title: { type: 'string' },
+    description: { type: 'string' },
+    metaTitle: { type: 'string' },
+    metaDescription: { type: 'string' },
+  },
+  required: ['title', 'description'],
+  additionalProperties: false,
+};
+
+export function buildTranslationPrompt(input: {
+  sourceText: { title: string; description?: string };
+  targetLanguage: string;
+  sourceLanguage: string;
+  context?: string;
+}): { system: string; prompt: string } {
+  const contextNote = input.context
+    ? `Context: ${input.context}`
+    : 'Context: E-commerce product description';
+
+  return {
+    system: `You are a professional translator specializing in e-commerce content. Translate from ${input.sourceLanguage} to ${input.targetLanguage}. Maintain the same tone, brand voice, and formatting. Ensure product descriptions are persuasive and accurate. Do not translate proper nouns like brand names unless they have established translations.`,
+    prompt: [
+      contextNote,
+      '',
+      `Title to translate: ${input.sourceText.title}`,
+      input.sourceText.description ? `Description to translate: ${input.sourceText.description.slice(0, 2000)}` : '',
+      '',
+      'Provide the translation in the specified language. Keep marketing language engaging and culturally appropriate.',
+    ].filter(Boolean).join('\n'),
+  };
+}
+
+/**
+ * Batch translation schema for multiple items.
+ */
+export const BATCH_TRANSLATION_SCHEMA = {
+  type: 'object',
+  properties: {
+    translations: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          title: { type: 'string' },
+          description: { type: 'string' },
+        },
+        required: ['id', 'title', 'description'],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ['translations'],
+  additionalProperties: false,
+};
+
+export function buildBatchTranslationPrompt(input: {
+  items: Array<{ id: string; title: string; description?: string }>;
+  targetLanguage: string;
+  sourceLanguage: string;
+}): { system: string; prompt: string } {
+  return {
+    system: `You are a professional translator specializing in e-commerce content. Translate from ${input.sourceLanguage} to ${input.targetLanguage}. Maintain consistent tone and quality across all items. Keep descriptions concise but persuasive.`,
+    prompt: [
+      `Translate ${input.items.length} items to ${input.targetLanguage}:`,
+      '',
+      ...input.items.map((item) => `ID: ${item.id}\nTitle: ${item.title}\n${item.description ? `Description: ${item.description.slice(0, 500)}` : ''}\n`),
+      '',
+      'Return all translations in the specified language.',
+    ].join('\n'),
+  };
+}
+
 export const PRICE_EXPLANATION_SCHEMA = {
   type: 'object',
   properties: { explanation: { type: 'string' } },

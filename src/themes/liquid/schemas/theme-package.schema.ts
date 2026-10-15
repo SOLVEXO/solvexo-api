@@ -59,6 +59,10 @@ export class ThemeImportJob {
   @Prop({ type: String, default: null }) error: string | null;
   @Prop({ type: Number, default: null }) version: number | null;
   @Prop({ type: String, default: '' }) fileName: string;
+  // The raw ZIP bytes, kept here (not passed as BullMQ job data — Redis is the wrong place for a 20 MiB blob)
+  // so a worker restart or redeploy mid-import can still pick the job back up. `select: false` keeps it out of
+  // every normal status read; cleared with $unset once the job finishes (success or failure), never kept idle.
+  @Prop({ type: Buffer, select: false }) archive?: Buffer;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -66,3 +70,18 @@ export type ThemeImportJobDocument = HydratedDocument<ThemeImportJob>;
 export const ThemeImportJobSchema = SchemaFactory.createForClass(ThemeImportJob);
 ThemeImportJobSchema.index({ storeId: 1, installedThemeId: 1, createdAt: -1 });
 ThemeImportJobSchema.index({ createdAt: 1 }, { expireAfterSeconds: 7 * 24 * 3600 });
+
+/** One slice of a theme ZIP being uploaded in small pieces (resumable, survives flaky connections). Auto-deleted after an hour. */
+@Schema({ timestamps: true })
+export class ThemeUploadChunk {
+  @Prop({ required: true }) storeId: string;
+  @Prop({ required: true }) uploadId: string;
+  @Prop({ required: true }) index: number;
+  @Prop({ required: true }) total: number;
+  @Prop({ type: Buffer, required: true }) data: Buffer;
+  createdAt?: Date;
+}
+export type ThemeUploadChunkDocument = HydratedDocument<ThemeUploadChunk>;
+export const ThemeUploadChunkSchema = SchemaFactory.createForClass(ThemeUploadChunk);
+ThemeUploadChunkSchema.index({ storeId: 1, uploadId: 1, index: 1 }, { unique: true });
+ThemeUploadChunkSchema.index({ createdAt: 1 }, { expireAfterSeconds: 3600 });

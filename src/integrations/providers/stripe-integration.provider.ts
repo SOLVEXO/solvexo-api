@@ -4,6 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import Stripe from 'stripe';
 import { StripeConnectService } from '@/stripe-connect/stripe-connect.service';
 import { CommissionRulesService } from '@/commission-rules/commission-rules.service';
+import { getStripeMinorUnitMultiplier } from '@/common/currency-metadata.const';
 import {
   DecryptedPaymentConfig,
   PaymentEvent,
@@ -135,9 +136,15 @@ export class StripePaymentProvider implements PaymentProvider {
     // account) — a plain refund would try pulling funds from the platform's
     // own balance, which never received them, so the transfer must always
     // be explicitly reversed (mirrors payment.service.ts's own refund call).
+    // Fetch the payment intent to get the actual currency
+    const paymentIntent = await this.stripe.paymentIntents.retrieve(transactionId);
+    const currency = paymentIntent.currency || 'USD';
+    const minorUnitMultiplier = getStripeMinorUnitMultiplier(currency);
+    const refundAmount = Math.round(amount * minorUnitMultiplier);
+
     const refund = await this.stripe.refunds.create({
       payment_intent: transactionId,
-      amount: Math.round(amount * 100),
+      amount: refundAmount,
       reverse_transfer: true,
       refund_application_fee: true,
     });

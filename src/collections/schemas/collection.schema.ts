@@ -2,6 +2,7 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Document } from 'mongoose';
 import { SeoMeta, SeoMetaSchema } from '../../seo/schemas/seo-meta.schema';
+import { Translation, TranslationSchema } from '@/common/schemas/translation.schema';
 
 export type CollectionDocument = Collection & Document;
 
@@ -78,6 +79,10 @@ export class Collection {
 
   @Prop({ type: SeoMetaSchema, default: () => ({}) })
   seo: SeoMeta;
+
+  // Translations for multi-language support. Map of locale -> Translation.
+  @Prop({ type: Map, of: TranslationSchema, default: {} })
+  translations: Map<string, Translation>;
 
   @Prop({ type: Boolean, default: false })
   isDelete: boolean;

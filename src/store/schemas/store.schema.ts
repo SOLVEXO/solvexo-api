@@ -201,6 +201,8 @@ export class StoreAnnouncementBar {
   @Prop({ type: String, enum: ['forever', 'day', 'session'], default: 'forever' }) dismissFor: 'forever' | 'day' | 'session';
   @Prop({ type: Date, default: null }) countdownEndAt: Date | null;
   @Prop({ type: String, default: null }) preset: string | null;
+  @Prop({ type: String, enum: ['underline', 'button'], default: 'underline' }) linkStyle: 'underline' | 'button';
+  @Prop({ type: String, enum: ['sm', 'md', 'lg'], default: 'md' }) barHeight: 'sm' | 'md' | 'lg';
   @Prop({ type: Number, default: 5 }) rotateSeconds: number;
   @Prop({ type: Boolean, default: true }) closable: boolean;
   @Prop({ type: String, default: null }) bgColor: string | null;

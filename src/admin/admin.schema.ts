@@ -64,6 +64,10 @@ export class Admin {
     @Prop({ default: 0 })
     tokenVersion: number;
 
+    // Language preference for the admin UI. Defaults to 'en'.
+    @Prop({ type: String, default: 'en' })
+    languagePreference: string;
+
     // ── Admin Team ──────────────────────────────────────────────────────────
     // The platform owner (and anyone the owner promotes) is a Super Admin: never permission-checked.
     @Prop({ default: false }) isSuperAdmin: boolean;

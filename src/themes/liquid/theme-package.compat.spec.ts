@@ -101,4 +101,14 @@ describe('what real theme JavaScript and templates rely on', () => {
     expect(html).toMatch(/font-src data: https?:\/\//);
     expect(html).toMatch(/script-src 'unsafe-inline' data: https?:\/\//);
   });
+
+  it('turns a theme script\'s fetch to the Shopify Cart AJAX endpoints into a solvexo:cart-ajax postMessage, since the sandboxed iframe has no network access', async () => {
+    const html = await renderThemePreview([layout, f('templates/index.liquid', 'x')]);
+    expect(html).toContain("send({type:'solvexo:cart-ajax',id:id,action:action,payload:payload})");
+    // The browser's own regex literal must end up with a SINGLE backslash before each slash/dot (one level of
+    // unescaping already happened when the outer `bridge` template literal was evaluated on the server).
+    expect(html).toContain("var m=/^\\/cart\\/(add|change|update|clear)\\.js$/.exec(url.pathname)");
+    expect(html).toContain("url.pathname==='/cart.js'?[null,'get']");
+    expect(html).toContain("if(m.type==='solvexo:cart-ajax-reply'&&cartAjaxPending[m.id])");
+  });
 });

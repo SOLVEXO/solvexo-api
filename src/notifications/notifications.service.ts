@@ -2,6 +2,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
+import { isValidObjectId } from 'mongoose';
 import { DatabaseService } from '@/database/databaseservice';
 import { FirebaseAdminService } from '@/firebase/firebase.config';
 import { EmailService } from '@/otp/services/email.service';
@@ -14,6 +15,8 @@ import { notificationEmailShell } from './templates/notification-email.template'
 import { escapeHtml } from '@/newsletter/marketing-email.util';
 import { CUSTOMER_EMAIL_CATALOG, type CustomerEmailEvent } from './customer-email-events';
 import { renderCustomerEmail, type TemplateVars } from './customer-email-template.util';
+import { pickEmailText } from './customer-email-text.util';
+import { emailUiStrings } from './customer-email-locales';
 import { buyerEmail } from '@/common/buyer-email.util';
 import { signOrderStatusToken } from '@/common/order-status-token.util';
 import { storePublicUrl } from '@/newsletter/marketing-email.util';
@@ -282,7 +285,7 @@ export class NotificationsService {
    * default), sender name and reply-to. Never throws for "store has no settings" — that means all defaults.
    * Returns null when the store doesn't exist.
    */
-  async buildCustomerEmail(args: { storeId: string; event: CustomerEmailEvent; vars: TemplateVars; orderId?: string | null; trackingUrl?: string | null; cta?: { label: string; url: string } | null }): Promise<BuiltCustomerEmail | null> {
+  async buildCustomerEmail(args: { storeId: string; event: CustomerEmailEvent; vars: TemplateVars; orderId?: string | null; trackingUrl?: string | null; cta?: { label: string; url: string } | null; locale?: string | null }): Promise<BuiltCustomerEmail | null> {
     const repos = this.databaseService.repositories;
     const [store, settings]: [any, any] = await Promise.all([
       repos.storeModel.findById(args.storeId).select('name contactEmail slug customDomain customDomainStatus logo').lean(),
@@ -292,23 +295,37 @@ export class NotificationsService {
 
     const def = CUSTOMER_EMAIL_CATALOG[args.event];
     const override = settings?.events?.[args.event] ?? {};
+    // The language is the one the buyer shopped in (stored on the order at checkout); emails with no order stay in English.
+    let locale = args.locale ?? null;
+    if (!locale && args.orderId && isValidObjectId(String(args.orderId))) {
+      // A failed lookup must never stop the email — it just goes out in English.
+      try {
+        const order: any = await repos.orderModel.findById(args.orderId).select('locale').lean();
+        locale = order?.locale ?? null;
+      } catch {
+        locale = null;
+      }
+    }
+    const text = pickEmailText(args.event, locale, settings);
+    const ui = emailUiStrings(text.locale);
     const storeName: string = store.name ?? 'the store';
     const base = storePublicUrl(store);
     const orderUrl = base && args.orderId ? `${base}/order-status/${signOrderStatusToken(String(args.orderId))}` : null;
     const trackingUrl = args.trackingUrl && /^https?:\/\//i.test(args.trackingUrl) ? args.trackingUrl : null;
-    const vars: TemplateVars = { storeName, orderUrl, trackingUrl, ...args.vars, customerName: args.vars.customerName?.trim() || 'there' };
+    const vars: TemplateVars = { storeName, orderUrl, trackingUrl, ...args.vars, customerName: args.vars.customerName?.trim() || ui.customerFallback };
     const ctaUrl = args.event === 'order_shipped' && trackingUrl ? trackingUrl : orderUrl;
-    const ctaLabel = args.event === 'order_shipped' && trackingUrl ? 'Track your package' : 'View your order';
+    const ctaLabel = args.event === 'order_shipped' && trackingUrl ? ui.trackPackage : ui.viewOrder;
 
     const { subject, html } = renderCustomerEmail({
-      subjectTemplate: String(override.subject ?? '').trim() || def.defaultSubject,
-      bodyTemplate: String(override.body ?? '').trim() || def.defaultBody,
+      subjectTemplate: text.subject,
+      bodyTemplate: text.body,
       vars,
       storeName,
       brand: {
         logoUrl: settings?.showLogo === false ? null : store.logo ?? null,
         accent: settings?.accentColor ?? null,
         footerText: settings?.footerText ?? null,
+        locale: text.locale,
       },
       cta: args.cta?.url && /^https?:\/\//i.test(args.cta.url)
         ? { label: args.cta.label, url: args.cta.url.replace(/"/g, '%22') }

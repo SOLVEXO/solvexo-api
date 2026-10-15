@@ -52,6 +52,9 @@ function maxLen(value: unknown, max: number, field: string): void {
   }
 }
 
+const FOOTER_COLUMN_BLOCKS = new Set(['footer_brand', 'footer_column', 'footer_text', 'footer_contact', 'footer_newsletter', 'footer_image']);
+const FOOTER_COLUMN_WIDTHS = ['auto', 'quarter', 'third', 'half', 'full'] as const;
+
 function oneOf<T extends string>(value: unknown, allowed: readonly T[], field: string): void {
   if (value !== undefined && !allowed.includes(value as T)) {
     throw new BadRequestException(`${field} must be one of: ${allowed.join(', ')}`);
@@ -513,6 +516,7 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
 
 export function validateBlockSettings(blockType: string, settings: Record<string, any>): void {
   validateCopyOverrides(settings, 'settings');
+  if (FOOTER_COLUMN_BLOCKS.has(blockType) && settings.width !== null) oneOf(settings.width, FOOTER_COLUMN_WIDTHS, 'width');
   switch (blockType) {
     // Header/footer blocks (StoreTheme)
     case 'nav_link':

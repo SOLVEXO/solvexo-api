@@ -24,7 +24,7 @@ const MAX_SECTIONS_PER_PAGE = 40;
 // (`/category/:slugOrId`) and collection-detail (`/collections/:slugOrId`)
 // storefront routes (Store Builder plan, Phase 11) for the same reason.
 // 'search' reserved for the navbar search box's results route.
-const RESERVED_CUSTOM_PAGE_SLUGS = ['home', 'blog', 'category', 'collections', 'product', 'search', 'cart', 'checkout', 'login', 'register', 'verify-otp', 'forgot-password', 'new-password', 'account', 'wishlist', 'loyalty', 'messages', 'notifications', 'returns', 'gift-cards', 'subscriptions', 'blogs', 'store-credit', 'orders', 'order-status', 'addresses', 'reviews', 'faqs'];
+const RESERVED_CUSTOM_PAGE_SLUGS = ['home', 'blog', 'category', 'collections', 'product', 'search', 'cart', 'checkout', 'login', 'register', 'verify-otp', 'forgot-password', 'new-password', 'account', 'wishlist', 'loyalty', 'messages', 'notifications', 'returns', 'gift-cards', 'subscriptions', 'blogs', 'store-credit', 'orders', 'order-status', 'addresses', 'reviews', 'faqs', 'en', 'ur', 'ar', 'fa', 'he', 'fr', 'de', 'es', 'hi'];
 
 function validateSections(sections: { type: SectionType; settings: Record<string, any>; blocks: { type: string; settings: Record<string, any> }[] }[]) {
   if (sections.length > MAX_SECTIONS_PER_PAGE) {
@@ -581,7 +581,7 @@ export class StorePagesService {
   async listPublicPages(storeId: string) {
     const pages = await this.storePageModel
       .find({ storeId, type: 'custom', status: 'published', isDelete: false })
-      .select('slug title showInNav showInFooter policyType')
+      .select('slug title showInNav showInFooter policyType translations')
       .lean();
     return { success: true, data: pages };
   }

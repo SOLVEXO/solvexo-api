@@ -40,10 +40,10 @@ describe('announcement bar settings', () => {
 
   it('saves the design fields and falls back to the original look', async () => {
     const { update, store } = build();
-    await update({ message: 'Sale', isActive: true, animation: 'marquee', fontSize: 'lg', uppercase: true, bgColor2: '#000000', device: 'mobile', couponCode: 'EID20', countdownEndAt: '2030-01-01T00:00:00Z' });
-    expect(store.announcementBar).toMatchObject({ animation: 'marquee', fontSize: 'lg', uppercase: true, bgColor2: '#000000', device: 'mobile', couponCode: 'EID20', showIcon: true, dismissFor: 'forever' });
+    await update({ message: 'Sale', isActive: true, animation: 'marquee', fontSize: 'lg', uppercase: true, bgColor2: '#000000', device: 'mobile', couponCode: 'EID20', countdownEndAt: '2030-01-01T00:00:00Z', linkStyle: 'button', barHeight: 'lg' });
+    expect(store.announcementBar).toMatchObject({ animation: 'marquee', fontSize: 'lg', uppercase: true, bgColor2: '#000000', device: 'mobile', couponCode: 'EID20', showIcon: true, dismissFor: 'forever', linkStyle: 'button', barHeight: 'lg' });
     await update({ message: 'Plain', isActive: true });
-    expect(store.announcementBar).toMatchObject({ animation: 'slide', fontSize: 'sm', uppercase: false, bgColor2: null, device: 'all', couponCode: null, countdownEndAt: null });
+    expect(store.announcementBar).toMatchObject({ animation: 'slide', fontSize: 'sm', uppercase: false, bgColor2: null, device: 'all', couponCode: null, countdownEndAt: null, linkStyle: 'underline', barHeight: 'md' });
   });
 
   it.each([

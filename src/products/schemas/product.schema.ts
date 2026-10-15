@@ -2,6 +2,7 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Document } from 'mongoose';
 import { SeoMeta, SeoMetaSchema } from '@/seo/schemas/seo-meta.schema';
+import { Translation, TranslationSchema } from '@/common/schemas/translation.schema';
 
 export type ProductDocument = Product & Document;
 
@@ -244,6 +245,11 @@ export class Product {
   // marketplace homepage, separate from seller-controlled fields above
   @Prop({ default: false })
   isFeatured: boolean;
+
+  // Translations for multi-language support. Map of locale -> Translation.
+  // e.g., { "ur": { locale: "ur", title: "پروڈکٹ نام", ... } }
+  @Prop({ type: Map, of: TranslationSchema, default: {} })
+  translations: Map<string, Translation>;
 
   @Prop({ default: false })
   isDelete: boolean;

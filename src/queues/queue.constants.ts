@@ -7,6 +7,7 @@ export const QUEUE_NAMES = {
   NOTIFICATIONS: 'notifications',
   EMAIL_CAMPAIGNS: 'email-campaigns',
   NEWSLETTER_BROADCASTS: 'newsletter-broadcasts',
+  THEME_IMPORT: 'theme-import',
 } as const;
 
 export const STRIPE_WEBHOOK_JOB = 'process-stripe-event';
@@ -21,3 +22,5 @@ export const SEO_SITEMAP_REGENERATE_JOB = 'regenerate-sitemap';
 export const SEO_AUDIT_RUN_JOB = 'run-audit';
 export const SEO_AI_GENERATE_JOB = 'generate-suggestion';
 export const SEO_AI_GENERATE_BULK_JOB = 'generate-suggestion-bulk';
+
+export const THEME_IMPORT_JOB = 'import-theme-zip';

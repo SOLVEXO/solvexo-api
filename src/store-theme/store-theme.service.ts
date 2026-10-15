@@ -801,9 +801,12 @@ export class StoreThemeService {
     if (dto.headerStyle !== undefined) set['draft.header.headerStyle'] = dto.headerStyle;
     if (dto.menuId !== undefined) set['draft.header.menuId'] = dto.menuId;
     const headerKeys = ['logoWidth', 'mobileLogoWidth', 'sticky', 'showSearch', 'showAccount', 'showWishlist', 'showShopMenu',
-      'shopMenuLabel', 'includePagesInNav', 'showDefaultBlogLink', 'blogLinkLabel', 'bgColor', 'textColor', 'paddingY', 'showDivider'] as const;
+      'shopMenuLabel', 'includePagesInNav', 'showDefaultBlogLink', 'blogLinkLabel', 'bgColor', 'textColor', 'paddingY', 'showDivider', 'stickyMode', 'transparentOnHome', 'transparentTextColor',
+      'navFontSize', 'navUppercase', 'navHoverStyle', 'searchStyle', 'ctaLabel', 'ctaLink', 'topBarEnabled', 'topBarText', 'topBarPhone',
+      'topBarEmail', 'topBarBg', 'topBarTextColor', 'preset'] as const;
+    const trimmed = new Set(['shopMenuLabel', 'blogLinkLabel', 'ctaLabel', 'ctaLink', 'topBarText', 'topBarPhone', 'topBarEmail', 'preset']);
     for (const key of headerKeys) {
-      if (dto[key] !== undefined) set[`draft.header.${key}`] = key.endsWith('Label') ? (dto[key] as string | null)?.toString().trim() || null : dto[key];
+      if (dto[key] !== undefined) set[`draft.header.${key}`] = trimmed.has(key) ? (dto[key] as string | null)?.toString().trim() || null : dto[key];
     }
 
     const updated = await this.storeThemeModel.findOneAndUpdate({ _id: instance._id }, { $set: set }, { new: true });
@@ -823,7 +826,8 @@ export class StoreThemeService {
       throw new BadRequestException('Upload a footer logo or choose another logo option');
     }
     const footerKeys = ['logoSource', 'logoUrl', 'logoWidth', 'showNewsletter', 'newsletterHeading', 'newsletterText',
-      'showDefaultColumns', 'shopColumnHeading', 'accountColumnHeading', 'blogLinkLabel', 'bgColor', 'textColor', 'blockLayout'] as const;
+      'showDefaultColumns', 'shopColumnHeading', 'accountColumnHeading', 'blogLinkLabel', 'bgColor', 'textColor', 'blockLayout', 'paddingY', 'bgImageUrl', 'bgOverlay', 'align', 'headingUppercase', 'socialStyle',
+      'newsletterTop', 'mobileAccordion', 'showPolicyLinks', 'showCurrency', 'showBackToTop', 'preset'] as const;
     for (const key of footerKeys) {
       if (dto[key] === undefined) continue;
       const v = dto[key];

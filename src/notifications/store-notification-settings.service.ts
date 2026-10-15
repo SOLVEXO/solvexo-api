@@ -12,6 +12,9 @@ import {
   templateTags,
 } from './customer-email-events';
 import { renderCustomerEmail } from './customer-email-template.util';
+import { pickEmailText } from './customer-email-text.util';
+import { CUSTOMER_EMAIL_DEFAULTS_BY_LOCALE, emailUiStrings } from './customer-email-locales';
+import { normalizeLocale } from '@/markets/market-price.util';
 import { PreviewCustomerEmailDto, UpdateStoreNotificationSettingsDto } from './dto/update-store-notification-settings.dto';
 
 const MAX_SUBJECT = 200;
@@ -91,6 +94,9 @@ export class StoreNotificationSettingsService {
         storeName: (store as any).name ?? null,
         storeContactEmail: (store as any).contactEmail ?? null,
         events,
+        // The seller's own text per language, and the built-in text a language falls back to (shown as the placeholder).
+        eventTranslations: settings?.eventTranslations ?? {},
+        defaultTranslations: CUSTOMER_EMAIL_DEFAULTS_BY_LOCALE,
       },
     };
   }
@@ -139,6 +145,34 @@ export class StoreNotificationSettingsService {
       }
     }
 
+    for (const [key, byLocale] of Object.entries(dto.eventTranslations ?? {})) {
+      if (!isCustomerEmailEvent(key)) throw new BadRequestException(`Unknown email "${key}"`);
+      if (!byLocale || typeof byLocale !== 'object') throw new BadRequestException(`Invalid translations for "${key}"`);
+      for (const [rawLocale, raw] of Object.entries(byLocale)) {
+        const locale = normalizeLocale(rawLocale);
+        if (!locale || locale === 'en') throw new BadRequestException(`"${rawLocale}" is not a language you can translate into`);
+        if (!raw || typeof raw !== 'object') throw new BadRequestException(`Invalid translation for "${key}" (${locale})`);
+        const path = `eventTranslations.${key}.${locale}`;
+        if (raw.reset === true) {
+          $unset[path] = '';
+          continue;
+        }
+        for (const [field, max] of [['subject', MAX_SUBJECT], ['body', MAX_BODY]] as const) {
+          const v = raw[field];
+          if (v === undefined) continue;
+          if (v !== null && typeof v !== 'string') throw new BadRequestException(`"${key}" (${locale}): ${field} must be text`);
+          const text = (v ?? '').trim();
+          if (text.length > max) throw new BadRequestException(`"${key}" (${locale}): ${field} is too long (max ${max} characters)`);
+          if (text) {
+            this.assertTags(key, text, `${CUSTOMER_EMAIL_CATALOG[key].label} (${locale}) ${field}`);
+            $set[`${path}.${field}`] = text;
+          } else {
+            $unset[`${path}.${field}`] = '';
+          }
+        }
+      }
+    }
+
     const update: Record<string, any> = {};
     if (Object.keys($set).length) update.$set = $set;
     if (Object.keys($unset).length) update.$unset = $unset;
@@ -165,9 +199,10 @@ export class StoreNotificationSettingsService {
     if (!isCustomerEmailEvent(dto.event)) throw new BadRequestException('Unknown email');
     const def = CUSTOMER_EMAIL_CATALOG[dto.event];
     const settings: any = await this.r.storeNotificationSettingsModel.findOne({ storeId, isDelete: false }).lean();
-    const saved = settings?.events?.[dto.event] ?? {};
-    const subjectTpl = (dto.subject ?? saved.subject ?? '').trim() || def.defaultSubject;
-    const bodyTpl = (dto.body ?? saved.body ?? '').trim() || def.defaultBody;
+    const text = pickEmailText(dto.event, normalizeLocale(dto.locale), settings, { subject: dto.subject, body: dto.body });
+    const ui = emailUiStrings(text.locale);
+    const subjectTpl = text.subject;
+    const bodyTpl = text.body;
     this.assertTags(dto.event, subjectTpl, 'Subject');
     this.assertTags(dto.event, bodyTpl, 'Message');
     const storeName = store.name ?? 'Your store';
@@ -176,10 +211,10 @@ export class StoreNotificationSettingsService {
       bodyTemplate: bodyTpl,
       vars: { ...CUSTOMER_EMAIL_SAMPLE_VARS, storeName },
       storeName,
-      brand: { logoUrl: settings?.showLogo === false ? null : store.logo ?? null, accent: settings?.accentColor ?? null, footerText: settings?.footerText ?? null },
+      brand: { logoUrl: settings?.showLogo === false ? null : store.logo ?? null, accent: settings?.accentColor ?? null, footerText: settings?.footerText ?? null, locale: text.locale },
       cta: dto.event === 'order_shipped'
-        ? { label: 'Track your package', url: CUSTOMER_EMAIL_SAMPLE_VARS.trackingUrl }
-        : { label: 'View your order', url: CUSTOMER_EMAIL_SAMPLE_VARS.orderUrl },
+        ? { label: ui.trackPackage, url: CUSTOMER_EMAIL_SAMPLE_VARS.trackingUrl }
+        : { label: ui.viewOrder, url: CUSTOMER_EMAIL_SAMPLE_VARS.orderUrl },
     });
     return {
       subject,

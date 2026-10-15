@@ -136,6 +136,10 @@ export class Seller {
     @Prop({ default: 0 })
     tokenVersion: number;
 
+    // Language preference for the admin UI. Defaults to 'en'.
+    @Prop({ type: String, default: 'en' })
+    languagePreference: string;
+
     // Snapshot of the store ids this seller's own OWNED stores that were
     // auto-suspended as a side effect of THIS seller being suspended (see
     // AdminUsersService.suspend/unsuspend and AdminModerationService.remove).

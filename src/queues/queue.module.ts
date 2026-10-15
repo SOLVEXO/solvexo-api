@@ -121,6 +121,20 @@ import { QUEUE_NAMES } from './queue.constants';
           removeOnFail: { count: 5000 },
         },
       },
+      {
+        // A theme ZIP import survives a deploy/restart mid-job: the job only carries the small
+        // `{jobId}` key (the ZIP bytes live in Mongo, see ThemeImportJob.archive), so Redis/BullMQ
+        // can hand it to a fresh worker process after a restart instead of the job simply vanishing
+        // (see ThemeImportProcessor). 2 attempts covers a transient Mongo hiccup; re-running the
+        // whole import is safe either way since it only ever creates a NEW revision.
+        name: QUEUE_NAMES.THEME_IMPORT,
+        defaultJobOptions: {
+          attempts: 2,
+          backoff: { type: 'fixed', delay: 5_000 },
+          removeOnComplete: { count: 200 },
+          removeOnFail: { count: 200 },
+        },
+      },
     ),
   ],
   exports: [BullModule],

@@ -1,6 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument } from 'mongoose';
+import { Translation, TranslationSchema } from '@/common/schemas/translation.schema';
 
 export type MenuDocument = HydratedDocument<Menu>;
 
@@ -22,6 +23,9 @@ export type MenuStyle = (typeof MENU_STYLES)[number];
 export class MenuItemChild {
   @Prop({ required: true }) id: string;
   @Prop({ required: true }) label: string;
+  // Translations for the label. Map of locale -> string.
+  @Prop({ type: Map, of: String, default: {} })
+  labelTranslations: Map<string, string>;
   @Prop({ type: String, enum: MENU_LINK_TYPES, required: true }) linkType: MenuLinkType;
   @Prop({ type: String, default: null }) pageSlug: string | null;
   @Prop({ type: String, default: null }) url: string | null;
@@ -32,10 +36,11 @@ export class MenuItemChild {
   @Prop({ type: Boolean, default: false }) newTab: boolean;
   /** Optional mega-panel tile image (the storefront falls back to the linked category/collection image). */
   @Prop({ type: String, default: null }) imageUrl: string | null;
-  children?: MenuItemChild[];
+  @Prop({ type: [Object], default: [] }) children: MenuItemChild[];
 }
 export const MenuItemChildSchema = SchemaFactory.createForClass(MenuItemChild);
 MenuItemChildSchema.add({ children: { type: [MenuItemChildSchema], default: [] } });
+MenuItemChildSchema.add({ labelTranslations: { type: Map, of: String, default: {} } });
 
 // Three levels are represented as MenuItem -> MenuItemChild -> MenuItemChild;
 // service validation caps the depth so nested schemas cannot grow unbounded.
@@ -43,6 +48,9 @@ MenuItemChildSchema.add({ children: { type: [MenuItemChildSchema], default: [] }
 export class MenuItem {
   @Prop({ required: true }) id: string;
   @Prop({ required: true }) label: string;
+  // Translations for the label. Map of locale -> string.
+  @Prop({ type: Map, of: String, default: {} })
+  labelTranslations: Map<string, string>;
   @Prop({ type: String, enum: MENU_LINK_TYPES, required: true }) linkType: MenuLinkType;
   @Prop({ type: String, default: null }) pageSlug: string | null;
   @Prop({ type: String, default: null }) url: string | null;
@@ -56,6 +64,7 @@ export class MenuItem {
   @Prop({ type: [MenuItemChildSchema], default: [] }) children: MenuItemChild[];
 }
 export const MenuItemSchema = SchemaFactory.createForClass(MenuItem);
+MenuItemSchema.add({ labelTranslations: { type: Map, of: String, default: {} } });
 
 /**
  * A store-level, standalone, reusable menu — the real gap this closes: nav
@@ -88,6 +97,10 @@ export class Menu {
 
   @Prop({ type: [MenuItemSchema], default: [] })
   items: MenuItem[];
+
+  // Translations for multi-language support. Map of locale -> Translation.
+  @Prop({ type: Map, of: TranslationSchema, default: {} })
+  translations: Map<string, Translation>;
 
   createdAt?: Date;
   updatedAt?: Date;

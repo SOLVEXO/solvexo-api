@@ -1,15 +1,18 @@
 /* eslint-disable prettier/prettier */
-import { expiredUnits } from '../common/stock-availability.util';
+import { expiredUnits } from '../../common/stock-availability.util';
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
 import { createHash } from 'crypto';
 import * as yauzl from 'yauzl';
 import { Liquid } from 'liquidjs';
-import { DatabaseService } from '../database/databaseservice';
-import { verifyStoreOwnershipStrict } from '../common/store-ownership.util';
+import { DatabaseService } from '../../database/databaseservice';
+import { verifyStoreOwnershipStrict } from '../../common/store-ownership.util';
+import { QUEUE_NAMES, THEME_IMPORT_JOB } from '../../queues/queue.constants';
 import { readThemePackageStructure, parseThemeJson } from './theme-package-schema.util';
 import { registerShopifyFilters, applyThemeSettingDefaults, applySectionSettingDefaults } from './liquid-shopify-filters.util';
 import type { LiquidRenderCartItemDto } from './dto/render-liquid-theme.dto';
-import { API_PUBLIC_ORIGIN } from '../common/api-origin';
+import { API_PUBLIC_ORIGIN } from '../../common/api-origin';
 import { checkThemeCompatibility } from './theme-compat.util';
 import { registerExtraShopifyFilters } from './liquid-extra-filters.util';
 import { enrichLiquidObjects } from './liquid-shopify-objects.util';
@@ -31,9 +34,13 @@ const MAX_INLINE_BYTES = 12 * 1024 * 1024;
 
 @Injectable()
 export class ThemePackageService {
-  constructor(private readonly db: DatabaseService) {}
+  constructor(
+    private readonly db: DatabaseService,
+    @InjectQueue(QUEUE_NAMES.THEME_IMPORT) private readonly importQueue: Queue,
+  ) {}
 
   private get packages() { return this.db.repositories.themePackageModel; }
+  private get chunks() { return this.db.repositories.themeUploadChunkModel; }
   private get jobs() { return this.db.repositories.themeImportJobModel; }
   /** Parsed published themes (immutable per version), so a storefront page view does not re-read up to 12 MiB from Mongo. */
   private publishedCache = new Map<string, any[]>();
@@ -51,7 +58,38 @@ export class ThemePackageService {
     return this.createRevision(storeId, installedThemeId, sellerId, files, 'upload');
   }
 
-  // ── Background import (Shopify: upload returns at once, the theme shows as "Processing" until it is ready) ──
+  // ── Resumable upload: the browser sends the ZIP in small pieces (each retried on its own), then asks us to assemble it ──
+  private assertUploadId(uploadId: string) {
+    if (!/^[a-f0-9-]{8,64}$/i.test(String(uploadId))) throw new BadRequestException('Invalid upload id.');
+  }
+
+  async saveUploadChunk(storeId: string, sellerId: string, installedThemeId: string, uploadId: string, index: number, total: number, data: Buffer) {
+    await verifyStoreOwnershipStrict(this.stores, storeId, sellerId);
+    await this.assertInstalledTheme(storeId, installedThemeId);
+    this.assertUploadId(uploadId);
+    if (!Number.isInteger(index) || !Number.isInteger(total) || total < 1 || total > 60 || index < 0 || index >= total) throw new BadRequestException('Invalid upload piece.');
+    if (!data?.length || data.length > 2 * 1024 * 1024) throw new BadRequestException('Upload piece is empty or too large.');
+    // Re-sending the same piece (a retry) simply replaces it.
+    await this.chunks.updateOne({ storeId, uploadId, index }, { $set: { storeId, uploadId, index, total, data } }, { upsert: true });
+    return { success: true, data: { index } };
+  }
+
+  async completeUpload(storeId: string, sellerId: string, installedThemeId: string, uploadId: string, total: number, fileName = '') {
+    await verifyStoreOwnershipStrict(this.stores, storeId, sellerId);
+    await this.assertInstalledTheme(storeId, installedThemeId);
+    this.assertUploadId(uploadId);
+    if (!Number.isInteger(total) || total < 1 || total > 60) throw new BadRequestException('Invalid upload piece count.');
+    const pieces: any[] = await this.chunks.find({ storeId, uploadId }).sort({ index: 1 }).lean();
+    const have = new Set(pieces.map((p) => p.index));
+    const missing: number[] = [];
+    for (let i = 0; i < total; i++) if (!have.has(i)) missing.push(i);
+    if (missing.length) throw new BadRequestException(`Upload is incomplete (${missing.length} piece(s) missing). Please try again.`);
+    const archive = Buffer.concat(pieces.slice(0, total).map((p) => binaryToBuffer(p.data)));
+    await this.chunks.deleteMany({ storeId, uploadId });
+    return this.startImport(storeId, sellerId, installedThemeId, archive, fileName);
+  }
+
+  // ── Background import (the upload returns at once, the theme shows as "Processing" until it is ready) ──
   async startImport(storeId: string, sellerId: string, installedThemeId: string, archive: Buffer, fileName = '') {
     await verifyStoreOwnershipStrict(this.stores, storeId, sellerId);
     await this.assertInstalledTheme(storeId, installedThemeId);
@@ -59,9 +97,11 @@ export class ThemePackageService {
     if (archive.length < 4 || archive[0] !== 0x50 || archive[1] !== 0x4b) throw new BadRequestException('Upload must be a ZIP archive.');
     const running = await this.jobs.findOne({ storeId, installedThemeId, status: 'processing', updatedAt: { $gt: new Date(Date.now() - 5 * 60 * 1000) } }).select('_id').lean();
     if (running) throw new BadRequestException('Another import for this theme is still running. Please wait for it to finish.');
-    const job = await this.jobs.create({ storeId, installedThemeId, createdBy: sellerId, fileName: String(fileName).slice(0, 200), status: 'processing', stage: 'reading' });
-    // Fire and forget: the HTTP request is already answered; progress and errors go to the job document.
-    setImmediate(() => { void this.runImport(String(job._id), storeId, sellerId, installedThemeId, archive); });
+    // The ZIP bytes are persisted on the job row (Mongo), not handed to BullMQ as job data — Redis is the wrong
+    // place for a 20 MiB blob, and this way a worker restart/redeploy mid-import can still pick the job back up
+    // from a fresh process instead of it simply vanishing (the old `setImmediate` version could not survive that).
+    const job = await this.jobs.create({ storeId, installedThemeId, createdBy: sellerId, fileName: String(fileName).slice(0, 200), status: 'processing', stage: 'reading', archive });
+    await this.importQueue.add(THEME_IMPORT_JOB, { jobId: String(job._id) });
     return { success: true, data: { jobId: String(job._id), status: 'processing', stage: 'reading' } };
   }
 
@@ -69,9 +109,14 @@ export class ThemePackageService {
     await this.jobs.updateOne({ _id: jobId }, { $set: patch });
   }
 
-  private async runImport(jobId: string, storeId: string, sellerId: string, installedThemeId: string, archive: Buffer) {
+  /** Run by `ThemeImportProcessor` — one BullMQ job per theme import, safe to retry (each run only ever adds a new revision). */
+  async processImportJob(jobId: string): Promise<void> {
+    const job: any = await this.jobs.findById(jobId).select('+archive storeId installedThemeId createdBy').lean();
+    if (!job) return; // the job row is gone (e.g. its 7-day TTL passed) — nothing left to do
+    const { storeId, installedThemeId, createdBy: sellerId, archive } = job;
     try {
-      const files = await readThemeZip(archive);
+      if (!archive?.length) throw new BadRequestException('The uploaded ZIP is no longer available. Please upload the theme again.');
+      const files = await readThemeZip(binaryToBuffer(archive));
       await this.setJob(jobId, { stage: 'checking' });
       validateThemePackage(files);
       await this.setJob(jobId, { stage: 'saving' });
@@ -82,10 +127,17 @@ export class ThemePackageService {
         const report = await checkThemeCompatibility(files, (list, context, path) => renderThemePreview(list as any, context, path));
         await this.packages.updateOne({ storeId, installedThemeId, version }, { $set: { compatibility: report } });
       } catch { /* the theme is saved either way; a missing report must never fail an import */ }
-      await this.setJob(jobId, { status: 'ready', stage: 'done', version });
+      await this.setJob(jobId, { status: 'ready', stage: 'done', version, archive: undefined });
+      await this.jobs.updateOne({ _id: jobId }, { $unset: { archive: 1 } });
     } catch (error: any) {
-      const message = error instanceof BadRequestException ? String(error.message) : 'The theme could not be imported. Please check the ZIP and try again.';
+      // A bad/incompatible ZIP fails the same way every time — only let BullMQ retry errors that
+      // might be transient (a Mongo blip, say); otherwise a retry would just redo the identical,
+      // deterministic failure a few seconds later for no benefit.
+      const isUserError = error instanceof BadRequestException;
+      const message = isUserError ? String(error.message) : 'The theme could not be imported. Please check the ZIP and try again.';
       await this.setJob(jobId, { status: 'failed', stage: 'failed', error: message }).catch(() => undefined);
+      if (isUserError) await this.jobs.updateOne({ _id: jobId }, { $unset: { archive: 1 } }).catch(() => undefined);
+      if (!isUserError) throw error; // let BullMQ retry; the archive is still on the job row for that next attempt
     }
   }
 
@@ -303,6 +355,39 @@ export class ThemePackageService {
     const context = await this.getStorefrontContext(storeId, requestedPath, cartItems, revision.files as PackageFile[]);
     const html = await renderThemePreview(revision.files as any[], { ...context, assetBase: this.assetBase(storeId, String(theme._id), theme.sourcePackageVersion) }, requestedPath);
     return { success: true, data: { html, version: theme.sourcePackageVersion } };
+  }
+
+  /**
+   * Answers a theme's own `fetch('/recommendations/products.json?section_id=&product_id=&limit=')` call (Dawn's
+   * `product-recommendations.js` and similar). Shopify returns that section RE-RENDERED as HTML (not JSON) with
+   * `recommendations.products` populated — not a plain product list — so a theme's own section markup/styling is
+   * reused exactly. We get there by rendering the WHOLE page once (same engine as every other page) with
+   * `recommendations` added to the context, then cutting out just the matching `id="shopify-section-<sectionId>"`
+   * element, rather than duplicating the section-rendering internals of `renderThemePreview`.
+   */
+  async renderRecommendationsFragment(storeId: string, path: string, sectionId: string, productId: string, limit: number): Promise<string> {
+    const requestedPath = normalizeStorefrontPath(path);
+    const theme = await this.themes.findOne({ storeId, status: 'active', sourcePackageVersion: { $ne: null } }).select('_id sourcePackageVersion').lean();
+    if (!theme || theme.sourcePackageVersion == null) return '';
+    const revision: any = await this.packages.findOne({ storeId, installedThemeId: String(theme._id), version: theme.sourcePackageVersion }).select('files').lean();
+    if (!revision) return '';
+    const files = revision.files as PackageFile[];
+    const productModel = this.db.repositories.productModel;
+    const current = await productModel.findOne({ _id: productId, storeId, status: 'active', isDelete: false }).select('categoryId subCategoryId').lean();
+    const recommended = current
+      ? await productModel.find({
+          storeId, status: 'active', isDelete: false, _id: { $ne: productId },
+          $or: [{ categoryId: current.categoryId }, { subCategoryId: current.categoryId }],
+        }).select('_id name slug images').limit(Math.min(10, Math.max(1, limit))).lean()
+      : [];
+    const context = await this.getStorefrontContext(storeId, requestedPath, [], files);
+    const recommendations = {
+      performed: true,
+      products_count: recommended.length,
+      products: recommended.map((p: any) => ({ id: String(p._id), title: p.name, handle: p.slug, url: `/products/${p.slug}`, featured_image: p.images?.[0] ? { src: p.images[0], alt: p.name } : null, images: p.images ?? [] })),
+    };
+    const html = await renderThemePreview(files as any[], { ...context, recommendations }, requestedPath);
+    return extractSectionFragment(html, sectionId);
   }
 
   private async getStorefrontContext(
@@ -883,6 +968,14 @@ export class ThemePackageService {
   }
 }
 
+/** A Mongo Binary (lean) or a Buffer, as exactly the bytes that were stored. */
+function binaryToBuffer(value: any): Buffer {
+  if (Buffer.isBuffer(value)) return value;
+  const raw = value?.buffer;
+  if (raw) return Buffer.from(raw).subarray(0, typeof value.position === 'number' ? value.position : undefined);
+  return Buffer.from(value);
+}
+
 export async function readThemeZip(buffer: Buffer): Promise<PackageFile[]> {
   return new Promise((resolve, reject) => {
     yauzl.fromBuffer(buffer, { lazyEntries: true, validateEntrySizes: true, decodeStrings: true }, (openError, zip) => {
@@ -1019,7 +1112,7 @@ function stripCommonRoot(files: PackageFile[]): PackageFile[] {
 /** Only the standard Shopify theme folders are part of a theme; anything else in the ZIP (README, .github, package.json…) is ignored. */
 function keepThemeFolders(files: PackageFile[]): PackageFile[] {
   const kept = files.filter((file) => THEME_FOLDERS.has(file.path.split('/')[0]) && file.path.includes('/'));
-  if (!kept.length) throw new BadRequestException('This ZIP does not look like a Shopify theme (no layout/, templates/ or sections/ folder found).');
+  if (!kept.length) throw new BadRequestException('This ZIP does not look like a theme (no layout/, templates/ or sections/ folder found).');
   return kept;
 }
 
@@ -1434,7 +1527,7 @@ function toLiquidMenuLink(item: any, resources: Record<string, any>) {
 function appendStorefrontBridge(html: string, origin: string): string {
   const safeOrigin = escapeAttribute(origin);
   const base = `<base href="${safeOrigin}/">`;
-  const bridge = `<script>(function(){function send(data){parent.postMessage(data,'*');}function size(){send({type:'solvexo:resize',height:Math.max(document.documentElement.scrollHeight,document.body?document.body.scrollHeight:0)});}document.addEventListener('click',function(e){var a=e.target.closest('a[href]');if(!a)return;var u;try{u=new URL(a.getAttribute('href'),${JSON.stringify(origin)});}catch(_){return;}if(u.origin!==${JSON.stringify(origin)})return;if(u.pathname==='/cart/clear'){e.preventDefault();send({type:'solvexo:cart-clear'});return;}if(u.pathname==='/cart/change'){e.preventDefault();var variantId=u.searchParams.get('id');var line=Number(u.searchParams.get('line'));var quantity=Number(u.searchParams.get('quantity')||0);if(Number.isInteger(quantity)&&quantity>=0&&quantity<=999)send({type:'solvexo:cart-update',items:[variantId?{variantId:variantId,quantity:quantity}:{index:line-1,quantity:quantity}]});return;}e.preventDefault();send({type:'solvexo:navigate',path:u.pathname+u.search+u.hash});});document.addEventListener('submit',function(e){var f=e.target;if(!(f instanceof HTMLFormElement))return;var kind=f.dataset.shopifyForm;if(kind==='product'){e.preventDefault();var d=new FormData(f);send({type:'solvexo:add-to-cart',productId:f.dataset.productId,productType:f.dataset.productType,variantId:String(d.get('id')||''),quantity:Number(d.get('quantity')||1)});}else if(kind==='search'){e.preventDefault();var d=new FormData(f);send({type:'solvexo:navigate',path:'/search?q='+encodeURIComponent(String(d.get('q')||''))});}else if(kind==='cart'){e.preventDefault();if(f.action.indexOf('/cart/clear')!==-1){send({type:'solvexo:cart-clear'});return;}if(e.submitter&&e.submitter.name==='checkout'){send({type:'solvexo:checkout'});return;}var items=[];var index=0;new FormData(f).forEach(function(value,key){var match=/^updates\\[([^\\]]*)\\]$/.exec(key);if(!match)return;var quantity=Number(value);if(Number.isInteger(quantity)&&quantity>=0&&quantity<=999)items.push(match[1]?{variantId:match[1],quantity:quantity}:{index:index,quantity:quantity});index++;});send({type:'solvexo:cart-update',items:items});}else if(kind==='customer'){e.preventDefault();var d=new FormData(f);send({type:'solvexo:subscribe',email:String(d.get('contact[email]')||d.get('email')||'')});window.__solvexoForm=f;}else if(kind==='contact'){e.preventDefault();note(f,'Contact messages are not available on this store yet.',false);}else if(kind){e.preventDefault();send({type:'solvexo:navigate',path:f.getAttribute('action')||'/'});}},true);function note(f,text,ok){var n=f.querySelector('[data-solvexo-note]');if(!n){n=document.createElement('p');n.setAttribute('data-solvexo-note','');n.setAttribute('role',ok?'status':'alert');f.appendChild(n);}n.textContent=text;}window.addEventListener('message',function(ev){var m=ev.data;if(ev.source!==parent||!m||m.type!=='solvexo:subscribed'||!window.__solvexoForm)return;note(window.__solvexoForm,String(m.message||''),!!m.ok);});new MutationObserver(size).observe(document.documentElement,{childList:true,subtree:true,attributes:true});window.addEventListener('load',size);window.addEventListener('resize',size);size();})();</script>`;
+  const bridge = `<script>(function(){function send(data){parent.postMessage(data,'*');}var cartAjaxPending={};var cartAjaxReqId=0;var realFetch=window.fetch?window.fetch.bind(window):null;function parseAjaxBody(body){if(!body)return null;if(typeof body==='string'){try{return JSON.parse(body);}catch(e){var o={};try{new URLSearchParams(body).forEach(function(v,k){o[k]=v;});}catch(e2){}return o;}}if(typeof FormData!=='undefined'&&body instanceof FormData){var o2={};body.forEach(function(v,k){o2[k]=v;});return o2;}return null;}if(window.fetch){window.fetch=function(input,init){var url;try{url=new URL(typeof input==='string'?input:input.url,location.href);}catch(e){return realFetch(input,init);}var m=/^\\/cart\\/(add|change|update|clear)\\.js$/.exec(url.pathname)||(url.pathname==='/cart.js'?[null,'get']:null);if(m){var action=m[1];var payload=parseAjaxBody(init&&init.body);var id='ca'+(++cartAjaxReqId);return new Promise(function(resolve){cartAjaxPending[id]=resolve;send({type:'solvexo:cart-ajax',id:id,action:action,payload:payload});}).then(function(r){return new Response(JSON.stringify(r.body),{status:r.status,headers:{'Content-Type':'application/json'}});});}if(url.pathname==='/search/suggest.json'){var sid='sa'+(++cartAjaxReqId);var q={};url.searchParams.forEach(function(v,k){q[k]=v;});return new Promise(function(resolve){cartAjaxPending[sid]=resolve;send({type:'solvexo:store-ajax',id:sid,action:'predictive-search',query:q});}).then(function(r){return new Response(JSON.stringify(r.body),{status:r.status,headers:{'Content-Type':'application/json'}});});}if(url.pathname==='/recommendations/products.json'){var rid='ra'+(++cartAjaxReqId);var rq={};url.searchParams.forEach(function(v,k){rq[k]=v;});return new Promise(function(resolve){cartAjaxPending[rid]=resolve;send({type:'solvexo:store-ajax',id:rid,action:'recommendations',query:rq});}).then(function(r){return new Response(r.html||'',{status:r.status,headers:{'Content-Type':'text/html'}});});}return realFetch(input,init);};}function size(){send({type:'solvexo:resize',height:Math.max(document.documentElement.scrollHeight,document.body?document.body.scrollHeight:0)});}document.addEventListener('click',function(e){var a=e.target.closest('a[href]');if(!a)return;var u;try{u=new URL(a.getAttribute('href'),${JSON.stringify(origin)});}catch(_){return;}if(u.origin!==${JSON.stringify(origin)})return;if(u.pathname==='/cart/clear'){e.preventDefault();send({type:'solvexo:cart-clear'});return;}if(u.pathname==='/cart/change'){e.preventDefault();var variantId=u.searchParams.get('id');var line=Number(u.searchParams.get('line'));var quantity=Number(u.searchParams.get('quantity')||0);if(Number.isInteger(quantity)&&quantity>=0&&quantity<=999)send({type:'solvexo:cart-update',items:[variantId?{variantId:variantId,quantity:quantity}:{index:line-1,quantity:quantity}]});return;}e.preventDefault();send({type:'solvexo:navigate',path:u.pathname+u.search+u.hash});});document.addEventListener('submit',function(e){var f=e.target;if(!(f instanceof HTMLFormElement))return;var kind=f.dataset.shopifyForm;if(kind==='product'){e.preventDefault();var d=new FormData(f);send({type:'solvexo:add-to-cart',productId:f.dataset.productId,productType:f.dataset.productType,variantId:String(d.get('id')||''),quantity:Number(d.get('quantity')||1)});}else if(kind==='search'){e.preventDefault();var d=new FormData(f);send({type:'solvexo:navigate',path:'/search?q='+encodeURIComponent(String(d.get('q')||''))});}else if(kind==='cart'){e.preventDefault();if(f.action.indexOf('/cart/clear')!==-1){send({type:'solvexo:cart-clear'});return;}if(e.submitter&&e.submitter.name==='checkout'){send({type:'solvexo:checkout'});return;}var items=[];var index=0;new FormData(f).forEach(function(value,key){var match=/^updates\\[([^\\]]*)\\]$/.exec(key);if(!match)return;var quantity=Number(value);if(Number.isInteger(quantity)&&quantity>=0&&quantity<=999)items.push(match[1]?{variantId:match[1],quantity:quantity}:{index:index,quantity:quantity});index++;});send({type:'solvexo:cart-update',items:items});}else if(kind==='customer'){e.preventDefault();var d=new FormData(f);send({type:'solvexo:subscribe',email:String(d.get('contact[email]')||d.get('email')||'')});window.__solvexoForm=f;}else if(kind==='contact'){e.preventDefault();note(f,'Contact messages are not available on this store yet.',false);}else if(kind){e.preventDefault();send({type:'solvexo:navigate',path:f.getAttribute('action')||'/'});}},true);function note(f,text,ok){var n=f.querySelector('[data-solvexo-note]');if(!n){n=document.createElement('p');n.setAttribute('data-solvexo-note','');n.setAttribute('role',ok?'status':'alert');f.appendChild(n);}n.textContent=text;}window.addEventListener('message',function(ev){var m=ev.data;if(ev.source!==parent||!m)return;if((m.type==='solvexo:cart-ajax-reply'||m.type==='solvexo:store-ajax-reply')&&cartAjaxPending[m.id]){var resolve=cartAjaxPending[m.id];delete cartAjaxPending[m.id];resolve(m);return;}if(m.type==='solvexo:subscribed'&&window.__solvexoForm)note(window.__solvexoForm,String(m.message||''),!!m.ok);});new MutationObserver(size).observe(document.documentElement,{childList:true,subtree:true,attributes:true});window.addEventListener('load',size);window.addEventListener('resize',size);size();})();</script>`;
   let output = html;
   if (/<head(?:\s[^>]*)?>/i.test(output)) output = output.replace(/<head(?:\s[^>]*)?>/i, (tag) => `${tag}${base}`);
   else output = `${base}${output}`;
@@ -1582,6 +1675,25 @@ function shopifyGlobalsScript(context: Record<string, any>): string {
   };
   const json = JSON.stringify(data).replace(/</g, '\\u003c');
   return '<script>window.Shopify=Object.assign(' + json + ',window.Shopify||{});window.ShopifyAnalytics=window.ShopifyAnalytics||{lib:{track:function(){},page:function(){},identify:function(){}},meta:{}};window.theme=window.theme||{};</script>';
+}
+/** Cuts the balanced `<div id="shopify-section-<id>" ...>...</div>` out of a full rendered page — `<` and `>`
+ * nest, so a non-greedy regex would stop at the first inner `</div>` instead of the real matching one. */
+function extractSectionFragment(html: string, sectionId: string): string {
+  if (!/^[a-zA-Z0-9_-]{1,100}$/.test(sectionId)) return '';
+  const marker = `id="shopify-section-${sectionId}"`;
+  const markerIndex = html.indexOf(marker);
+  if (markerIndex < 0) return '';
+  const start = html.lastIndexOf('<div', markerIndex);
+  if (start < 0) return '';
+  let depth = 0;
+  const tag = /<div\b|<\/div>/gi;
+  tag.lastIndex = start;
+  let match: RegExpExecArray | null;
+  while ((match = tag.exec(html))) {
+    depth += match[0][1] === '/' ? -1 : 1;
+    if (depth === 0) return html.slice(start, tag.lastIndex);
+  }
+  return '';
 }
 function applyPreviewCsp(html: string): string {
   // Theme assets (css/js/fonts/images) are served from the API origin, so that origin must be allowed for them (and only for them).

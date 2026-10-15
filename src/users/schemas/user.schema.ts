@@ -88,6 +88,10 @@ export class User {
     @Prop({ type: String, default: null })
     currencyPreference: string | null;
 
+    // Language preference for the storefront and emails. Defaults to 'en'.
+    @Prop({ type: String, default: 'en' })
+    languagePreference: string;
+
     // Bumped whenever this account is suspended/deactivated so any
     // already-issued JWT is invalidated on its next request — see
     // JwtAuthGuard, which rejects a token whose tokenVersion claim doesn't

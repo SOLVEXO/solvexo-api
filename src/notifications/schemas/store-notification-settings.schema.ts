@@ -1,6 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Document } from 'mongoose';
+import { Translation, TranslationSchema } from '@/common/schemas/translation.schema';
 
 export type StoreNotificationSettingsDocument = StoreNotificationSettings & Document;
 
@@ -23,6 +24,11 @@ export class StoreNotificationSettings {
    *  `subject`/`body` = the seller's own text (plain text + {{tags}}); null/absent = the built-in default. */
   @Prop({ type: Object, default: {} })
   events: Record<string, { enabled?: boolean; subject?: string | null; body?: string | null }>;
+
+  // The seller's own email text per language: { [event]: { [locale]: { subject, body } } } (plain text + {{tags}}).
+  // Falls back to the seller's English text, then to the built-in text for that language (customer-email-locales.ts).
+  @Prop({ type: Object, default: {} })
+  eventTranslations: Record<string, Record<string, { subject: string; body: string }>>;
 
   /** Accent colour (#rrggbb) for the heading, button and logo text of customer emails. */
   @Prop({ type: String, default: null })

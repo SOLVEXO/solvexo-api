@@ -78,17 +78,17 @@ export async function checkThemeCompatibility(files: ThemeFile[], render: Render
   const notes: string[] = [];
   const text = files.filter((f) => f.encoding === 'utf8');
   if (text.some((f) => /^(sections|blocks)\//.test(f.path) && /"type"\s*:\s*"@app"/.test(f.content))) {
-    notes.push('This theme has app blocks (@app). Shopify apps are not available on Solvexo, so those spots stay empty.');
+    notes.push('This theme has app blocks (@app). Third-party apps are not available on Solvexo, so those spots stay empty.');
   }
   if (files.some((f) => /^templates\/customers\//.test(f.path))) {
     notes.push('Customer account templates are ignored: Solvexo uses its own login, register and account pages.');
   }
   if (files.some((f) => f.path === 'templates/gift_card.liquid')) {
-    notes.push('The Shopify gift card template is ignored: Solvexo has its own gift card pages.');
+    notes.push('The gift card template in the theme is ignored: Solvexo has its own gift card pages.');
   }
   const layout = text.find((f) => f.path === 'layout/theme.liquid');
   if (layout && !/content_for_header/.test(layout.content)) {
-    notes.push('layout/theme.liquid does not contain content_for_header; some Shopify features may not load.');
+    notes.push('layout/theme.liquid does not contain content_for_header; some theme features may not load.');
   }
   const engineNames = holder.names;
   if (engineNames) {

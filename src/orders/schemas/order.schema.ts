@@ -724,6 +724,17 @@ export class Order {
   })
   attributionSource: string;
 
+  // Copied from Checkout at order creation — which market the buyer shopped in and in which language (drives the
+  // language of this order's customer emails).
+  @Prop({ type: String, default: null })
+  marketId: string | null;
+
+  @Prop({ type: String, default: null })
+  marketCountry: string | null;
+
+  @Prop({ type: String, default: null })
+  locale: string | null;
+
   // Visit traffic type (direct/search/social/email/paid/referral) copied from the storefront session that converted
   // into this order. Null for orders without a tracked visit (consent declined, older orders) — reported as "unknown".
   @Prop({ type: String, default: null })

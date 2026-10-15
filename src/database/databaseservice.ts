@@ -343,6 +343,8 @@ export class DatabaseService {
     private themePackageAssetModel: Model<schema.ThemePackageAssetDocument>,
     @InjectModel(schema.ThemeImportJob.name)
     private themeImportJobModel: Model<schema.ThemeImportJobDocument>,
+    @InjectModel(schema.ThemeUploadChunk.name)
+    private themeUploadChunkModel: Model<schema.ThemeUploadChunkDocument>,
 
     @InjectModel(schema.ThemeDefinition.name)
     private themeDefinitionModel: Model<schema.ThemeDefinitionDocument>,
@@ -373,6 +375,12 @@ export class DatabaseService {
 
     @InjectModel(schema.Menu.name)
     private menuModel: Model<schema.MenuDocument>,
+
+    @InjectModel(schema.Market.name)
+    private marketModel: Model<schema.MarketDocument>,
+
+    @InjectModel(schema.MarketPrice.name)
+    private marketPriceModel: Model<schema.MarketPriceDocument>,
 
     @InjectModel(schema.DraftOrder.name)
     private draftOrderModel: Model<schema.DraftOrderDocument>,
@@ -483,6 +491,9 @@ export class DatabaseService {
 
     @InjectModel(schema.StockUnit.name)
     private stockUnitModel: Model<schema.StockUnitDocument>,
+
+    @InjectModel(schema.Translation.name)
+    private translationModel: Model<schema.TranslationDocument>,
 
     @InjectModel(schema.OrderPaymentRecord.name)
     private orderPaymentRecordModel: Model<schema.OrderPaymentRecordDocument>,
@@ -616,6 +627,7 @@ export class DatabaseService {
       themePackageModel: this.themePackageModel,
       themePackageAssetModel: this.themePackageAssetModel,
       themeImportJobModel: this.themeImportJobModel,
+      themeUploadChunkModel: this.themeUploadChunkModel,
       themeDefinitionModel: this.themeDefinitionModel,
       storePageModel: this.storePageModel,
       storeFaqModel: this.storeFaqModel,
@@ -626,6 +638,8 @@ export class DatabaseService {
       metaobjectDefinitionModel: this.metaobjectDefinitionModel,
       metaobjectEntryModel: this.metaobjectEntryModel,
       menuModel: this.menuModel,
+      marketModel: this.marketModel,
+      marketPriceModel: this.marketPriceModel,
       draftOrderModel: this.draftOrderModel,
       supplierModel: this.supplierModel,
       purchaseOrderModel: this.purchaseOrderModel,
@@ -664,6 +678,7 @@ export class DatabaseService {
       approvalRequestModel: this.approvalRequestModel,
       stockLotModel: this.stockLotModel,
       stockUnitModel: this.stockUnitModel,
+      translationModel: this.translationModel,
       orderPaymentRecordModel: this.orderPaymentRecordModel,
       productViewModel: this.productViewModel,
       storefrontSessionModel: this.storefrontSessionModel,

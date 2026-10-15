@@ -37,4 +37,16 @@ export class UpdateFooterDto {
   @ApiProperty({ required: false, nullable: true }) @ValidateIf((_, v) => v !== null && v !== undefined) @Matches(/^#[0-9a-fA-F]{6}$/) bgColor?: string | null;
   @ApiProperty({ required: false, nullable: true }) @ValidateIf((_, v) => v !== null && v !== undefined) @Matches(/^#[0-9a-fA-F]{6}$/) textColor?: string | null;
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() blockLayout?: boolean;
+  @ApiProperty({ required: false, enum: ['compact', 'normal', 'spacious'] }) @IsOptional() @IsIn(['compact', 'normal', 'spacious']) paddingY?: 'compact' | 'normal' | 'spacious';
+  @ApiProperty({ required: false, nullable: true }) @ValidateIf((_, v) => v !== null && v !== undefined && v !== '') @Matches(/^https:\/\//i, { message: 'Background image must be an https:// URL' }) @MaxLength(2048) bgImageUrl?: string | null;
+  @ApiProperty({ required: false }) @IsOptional() @IsInt() @Min(0) @Max(85) bgOverlay?: number;
+  @ApiProperty({ required: false, enum: ['left', 'center'] }) @IsOptional() @IsIn(['left', 'center']) align?: 'left' | 'center';
+  @ApiProperty({ required: false }) @IsOptional() @IsBoolean() headingUppercase?: boolean;
+  @ApiProperty({ required: false, nullable: true, enum: ['plain', 'circle', 'square'] }) @ValidateIf((_, v) => v !== null && v !== undefined) @IsIn(['plain', 'circle', 'square']) socialStyle?: 'plain' | 'circle' | 'square' | null;
+  @ApiProperty({ required: false }) @IsOptional() @IsBoolean() newsletterTop?: boolean;
+  @ApiProperty({ required: false }) @IsOptional() @IsBoolean() mobileAccordion?: boolean;
+  @ApiProperty({ required: false }) @IsOptional() @IsBoolean() showPolicyLinks?: boolean;
+  @ApiProperty({ required: false }) @IsOptional() @IsBoolean() showCurrency?: boolean;
+  @ApiProperty({ required: false }) @IsOptional() @IsBoolean() showBackToTop?: boolean;
+  @ApiProperty({ required: false, nullable: true }) @IsOptional() @IsString() @MaxLength(40) preset?: string | null;
 }

@@ -1,0 +1,38 @@
+{
+  "common": {
+    "welcome": "Welcome",
+    "loading": "Loading...",
+    "error": "An error occurred",
+    "success": "Success",
+    "save": "Save",
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "edit": "Edit",
+    "add": "Add",
+    "search": "Search",
+    "filter": "Filter",
+    "sort": "Sort"
+  },
+  "markets": {
+    "title": "Markets",
+    "create": "Create Market",
+    "edit": "Edit Market",
+    "delete": "Delete Market",
+    "name": "Market Name",
+    "countries": "Countries",
+    "currency": "Currency",
+    "languages": "Languages",
+    "domain": "Domain",
+    "subfolder": "Subfolder",
+    "isActive": "Active",
+    "isPrimary": "Primary Market",
+    "pricingRule": "Pricing Rule",
+    "shippingSettings": "Shipping Settings"
+  },
+  "pricing": {
+    "fixedPrice": "Fixed Price",
+    "percentageAdjustment": "Percentage Adjustment",
+    "conversionFee": "Conversion Fee",
+    "roundingRule": "Rounding Rule"
+  }
+}

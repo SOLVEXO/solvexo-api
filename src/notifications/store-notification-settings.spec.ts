@@ -87,11 +87,12 @@ describe('StoreNotificationSettingsService.update', () => {
 
 describe('NotificationsService customer emails', () => {
   const store = { _id: STORE_ID, name: 'First Store', contactEmail: 'support@first.store', slug: 'first' };
-  function make(settings, extra = {}) {
+  function make(settings, extra = {}, order = null) {
     const db = {
       repositories: {
         storeModel: { findById: () => leanQuery(store) },
         storeNotificationSettingsModel: { findOne: () => leanQuery(settings) },
+        orderModel: { findById: () => leanQuery(order) },
         ...extra,
       },
     };
@@ -353,5 +354,57 @@ describe('StoreNotificationSettingsService.sendTest / preview / group', () => {
     expect(res.data.subject).toBe('Your order from First Store is confirmed');
     expect(res.data.html).toContain('https://cdn.test/l.png');
     expect(sendMail).not.toHaveBeenCalled();
+  });
+});
+
+describe("customer emails in the buyer's language", () => {
+  const store = { _id: STORE_ID, name: 'First Store', contactEmail: 'support@first.store', slug: 'first' };
+  const ORDER_ID = '64b0000000000000000000aa';
+  function make(settings, order) {
+    const db = {
+      repositories: {
+        storeModel: { findById: () => leanQuery(store) },
+        storeNotificationSettingsModel: { findOne: () => leanQuery(settings) },
+        orderModel: { findById: () => leanQuery(order) },
+      },
+    };
+    return new NotificationsService(db, {}, {}, { sendMail: jest.fn(() => Promise.resolve(true)) }, {}, {});
+  }
+  const args = { storeId: STORE_ID, event: 'order_shipped', orderId: ORDER_ID, vars: { orderNumber: '1001', customerName: '' } };
+
+  it('uses the built-in Urdu text, an RTL shell and Urdu fallbacks when the order was placed in Urdu', async () => {
+    const built = await make(null, { locale: 'ur' }).buildCustomerEmail(args);
+    expect(built.subject).toContain('روانہ ہو گیا ہے');
+    expect(built.subject).toContain('First Store');
+    expect(built.html).toContain('dir="rtl"');
+    expect(built.html).toContain('lang="ur"');
+    expect(built.html).toContain('سلام صارف');
+    expect(built.html).toContain('اپنا آرڈر دیکھیں');
+  });
+
+  it('keeps English (and a left-to-right shell) for an order with no language', async () => {
+    const built = await make(null, { locale: null }).buildCustomerEmail(args);
+    expect(built.subject).toBe('Your order #1001 from First Store has shipped');
+    expect(built.html).toContain('dir="ltr"');
+    expect(built.html).toContain('Hi there');
+  });
+
+  it("prefers the seller's own translation, then the seller's English text, then the built-in text", async () => {
+    const settings = {
+      events: { order_shipped: { subject: 'English custom {{orderNumber}}' } },
+      eventTranslations: { order_shipped: { ur: { subject: 'اردو اپنی {{orderNumber}}' } } },
+    };
+    const built = await make(settings, { locale: 'ur' }).buildCustomerEmail(args);
+    expect(built.subject).toBe('اردو اپنی 1001');
+    // body: no seller translation, no seller English body -> the built-in Urdu body
+    expect(built.html).toContain('خوشخبری');
+
+    const onlyEnglish = await make({ events: { order_shipped: { subject: 'English custom {{orderNumber}}' } } }, { locale: 'ur' }).buildCustomerEmail(args);
+    expect(onlyEnglish.subject).toBe('English custom 1001');
+  });
+
+  it('falls back to English for a language it has no built-in text for', async () => {
+    const built = await make(null, { locale: 'fr' }).buildCustomerEmail(args);
+    expect(built.subject).toBe('Your order #1001 from First Store has shipped');
   });
 });

@@ -86,6 +86,8 @@ import { MenusModule } from './menus/menus.module';
 import { DraftOrdersModule } from './draft-orders/draft-orders.module';
 import { StoreBlogModule } from './store-blog/store-blog.module';
 import { PromotionsModule } from './promotions/promotions.module';
+import { MarketsModule } from './markets/markets.module';
+import { TranslationsModule } from './translations/translations.module';
 import { ThemeCatalogModule } from './theme-catalog/theme-catalog.module';
 import { CommissionRulesModule } from './commission-rules/commission-rules.module';
 import { ManualPaymentsModule } from './manual-payments/manual-payments.module';
@@ -98,6 +100,7 @@ import { ProductViewsModule } from './product-views/product-views.module';
 import { StorefrontAnalyticsModule } from './storefront-analytics/storefront-analytics.module';
 import { StaffModule } from './staff/staff.module';
 import { StockCountsModule } from './stock-counts/stock-counts.module';
+import { AppI18nModule } from './i18n/i18n.module';
 
 @Module({
   imports: [
@@ -192,6 +195,8 @@ import { StockCountsModule } from './stock-counts/stock-counts.module';
     DraftOrdersModule,
     StoreBlogModule,
     PromotionsModule,
+    MarketsModule,
+    TranslationsModule,
     ThemeCatalogModule,
     ExchangeRateModule,
     StoreAppRequestsModule,
@@ -200,6 +205,7 @@ import { StockCountsModule } from './stock-counts/stock-counts.module';
     StorefrontAnalyticsModule,
     StaffModule,
     StockCountsModule,
+    AppI18nModule,
   ],
   controllers: [AppController],
   providers: [AppService, { provide: APP_GUARD, useClass: FriendlyThrottlerGuard }],

@@ -28,6 +28,13 @@ import { EntitlementsService, trimToMarketsLimit } from '@/platform-plans/entitl
 import { StripeConnectService } from '@/stripe-connect/stripe-connect.service';
 import { StoreCreditService } from '@/store-credit/store-credit.service';
 import { shouldShowDutiesNotice } from '@/shipping-rates/customs.util';
+import { MarketsService } from '@/markets/markets.service';
+import {
+  marketAdjustedNativeAmount,
+  marketRuleChangesPrice,
+  normalizeCountryCode,
+  normalizeLocale,
+} from '@/markets/market-price.util';
 
 // Fallback currency for the rare case a store's own `baseCurrency` can't be
 // resolved (e.g. store doc missing at read time). Every real `ShippingZone`
@@ -60,6 +67,7 @@ export class CheckoutService {
     private readonly stripeConnectService: StripeConnectService,
     private readonly storeCreditService: StoreCreditService,
     private readonly profilesService: ShippingProfilesService,
+    private readonly marketsService: MarketsService,
   ) {}
 
   private round(n: number) {
@@ -306,6 +314,18 @@ export class CheckoutService {
     return store.baseCurrency && allowed.includes(store.baseCurrency) ? store.baseCurrency : allowed[0];
   }
 
+  /** The buyer's country for market selection: the delivery address wins (Shopify decides the market from where the
+   *  order ships), else the storefront-reported country (IP / country selector) for pickup and digital carts. */
+  private async resolveBuyerCountry(userId: string, body: any): Promise<string | null> {
+    const { addressModel } = this.databaseService.repositories;
+    let address: any = null;
+    if (body.addressId && isValidObjectId(String(body.addressId))) {
+      address = await addressModel.findOne({ _id: String(body.addressId), userId, isDelete: false }).select('country').lean();
+    }
+    if (!address) address = await addressModel.findOne({ userId, isDefault: true, isDelete: false }).select('country').lean();
+    return normalizeCountryCode((address as any)?.country) ?? normalizeCountryCode(body.country);
+  }
+
   async createCheckout(userId: string, body: any = {}, userStoreId?: string | null) {
     const {
       cartModel,
@@ -316,8 +336,6 @@ export class CheckoutService {
       storeModel,
       shippingZoneModel,
     } = this.databaseService.repositories;
-
-    const preferredCurrency = await this.resolveCheckoutCurrency(userId, body.currencyPreference);
 
     // Cart is now store-scoped (a buyer can have a separate cart per store's
     // subdomain) — without storeId this lookup would be ambiguous the moment
@@ -344,9 +362,22 @@ export class CheckoutService {
     // pivot), so this one store's enabledCurrencies is authoritative for
     // the whole checkout.
     const targetStore = await storeModel.findById(storeId).select('baseCurrency enabledCurrencies').lean();
+    // Shopify Markets: the buyer's country picks the store's market (delivery address first, else the country the
+    // storefront reported). A buyer who explicitly chose a currency keeps it; otherwise the market's currency is the
+    // default. The store's enabled-currency list (and plan cap) still has the last word.
+    const buyerCountry = await this.resolveBuyerCountry(userId, body);
+    const market: any = await this.marketsService.getMarketForCountry(storeId, buyerCountry);
+    const requestedCurrency = body.currencyPreference
+      ? await this.resolveCheckoutCurrency(userId, body.currencyPreference)
+      : market?.currency ?? (await this.resolveCheckoutCurrency(userId, undefined));
     const checkoutCurrency = targetStore
-      ? await this.resolveStoreCurrency(preferredCurrency, targetStore as any)
-      : preferredCurrency;
+      ? await this.resolveStoreCurrency(requestedCurrency, targetStore as any)
+      : requestedCurrency;
+    // The market's price rules (percentage, fee, rounding) only apply to a buyer paying in the market's own currency.
+    const marketRule = market && market.currency === checkoutCurrency && marketRuleChangesPrice(market.pricingRule)
+      ? market.pricingRule
+      : null;
+    const orderLocale = normalizeLocale(body.locale);
 
     const cart = await cartModel.findOne({
       userId,
@@ -373,7 +404,6 @@ export class CheckoutService {
     if (selectedItems.length === 0)
       throw new BadRequestException('None of the provided items found in cart');
 
-    const checkoutItems: any[] = [];
     let hasPhysical = false;
 
     // Cache one lookup per store — a multi-item cart from the same store
@@ -476,6 +506,7 @@ export class CheckoutService {
     const sellerMap = new Map(sellers.map((s: any) => [s._id.toString(), s]));
 
     // Pass 2: build the checkout lines at the variant's list price.
+    const checkoutItems: any[] = [];
     for (const { product, variant, cartItem } of rawItems) {
       const unitPrice = variant.price;
 
@@ -505,6 +536,22 @@ export class CheckoutService {
         totalPrice: this.round(unitPrice * cartItem.quantity),
         originalPrice: null,
       });
+    }
+
+    // Pass 2.5: the market's price rule. Lines keep their NATIVE store currency (everything downstream — seller
+    // ledger, tax, shipping zones — reads `item.currency` as "the selling store's currency"); only the amount moves,
+    // so converting it into the checkout currency with the frozen snapshots lands exactly on the market price.
+    // Snapshots are built once here and reused below so the adjustment and the checkout total use identical rates.
+    let marketSnapshots: FxSnapshot[] | null = null;
+    if (marketRule) {
+      marketSnapshots = await this.exchangeRateService.buildSnapshots([
+        ...new Set([checkoutCurrency, ...checkoutItems.map((i) => i.currency as string)]),
+      ]);
+      for (const item of checkoutItems) {
+        const adjustedLine = marketAdjustedNativeAmount(item.totalPrice, item.currency, checkoutCurrency, marketRule, marketSnapshots);
+        item.price = Math.round((adjustedLine / item.quantity) * 1e6) / 1e6;
+        item.totalPrice = adjustedLine;
+      }
     }
 
     // Pass 3: automatic platform-campaign discount. Resolved per store — a
@@ -714,7 +761,11 @@ export class CheckoutService {
         ...(shippingCurrency ? [shippingCurrency] : []),
       ]),
     ];
-    const fxSnapshots = await this.exchangeRateService.buildSnapshots(involvedCurrencies);
+    const builtSnapshots = await this.exchangeRateService.buildSnapshots(involvedCurrencies);
+    // Keep the exact rates the market adjustment used (same currencies, possibly built a moment earlier).
+    const fxSnapshots = marketSnapshots
+      ? builtSnapshots.map((s) => marketSnapshots!.find((m) => m.currency === s.currency) ?? s)
+      : builtSnapshots;
 
     // Each line is converted from ITS OWN seller currency into the checkout
     // currency individually, THEN summed — never summed raw across
@@ -772,6 +823,7 @@ export class CheckoutService {
         ? await this.taxService.calculateLiveTax(sid, {
             amount: taxableSubtotal,
             shipping: 0,
+            currency: checkoutCurrency,
             toCountry: resolvedAddress.country ?? null,
             toState: resolvedAddress.state ?? null,
             toZip: resolvedAddress.zipCode ?? null,
@@ -827,6 +879,9 @@ export class CheckoutService {
       userId,
       addressId: defaultAddressId,
       currency: checkoutCurrency,
+      marketId: market?._id ? String(market._id) : null,
+      marketCountry: buyerCountry,
+      locale: orderLocale,
       fxSnapshots,
       items: checkoutItems,
       shippingZoneId: null,
@@ -1179,8 +1234,23 @@ export class CheckoutService {
     // resolved earlier in createCheckout's Pass 3.5.
     if (storeIdsInCheckout.length === 1) {
       const discountsByStore = await this.discountsService.getActiveDiscountsForStores(storeIdsInCheckout);
-      const freeShippingDiscount = discountsByStore.get(storeIdsInCheckout[0])?.find(
-        (d: any) => d.discountType === 'free_shipping' && (d.minOrderAmount == null || checkout.subtotal >= d.minOrderAmount),
+      const storeId = storeIdsInCheckout[0];
+      const store = await this.databaseService.repositories.storeModel.findById(storeId).select('baseCurrency').lean();
+      const storeCurrency = store?.baseCurrency || 'USD';
+      
+      const freeShippingDiscount = discountsByStore.get(storeId)?.find(
+        (d: any) => {
+          if (d.discountType !== 'free_shipping') return false;
+          if (d.minOrderAmount == null) return true;
+          // Convert minOrderAmount from store currency to checkout currency for comparison
+          const minInCheckoutCurrency = this.exchangeRateService.convertWithSnapshots(
+            d.minOrderAmount,
+            storeCurrency,
+            checkout.currency,
+            checkout.fxSnapshots || []
+          );
+          return checkout.subtotal >= minInCheckoutCurrency;
+        },
       );
       if (freeShippingDiscount) {
         for (const k of feeByStore.keys()) feeByStore.set(k, 0);

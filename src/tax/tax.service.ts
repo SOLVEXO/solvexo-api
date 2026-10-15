@@ -104,7 +104,7 @@ export class TaxService {
    */
   async calculateLiveTax(
     storeId: string,
-    params: { amount: number; shipping: number; toCountry: string | null; toState?: string | null; toZip?: string | null; toCity?: string | null },
+    params: { amount: number; shipping: number; currency?: string; toCountry: string | null; toState?: string | null; toZip?: string | null; toCity?: string | null },
   ): Promise<{ taxAmount: number; rate: number } | null> {
     if (!params.toCountry) return null;
 
@@ -127,6 +127,7 @@ export class TaxService {
         body: JSON.stringify({
           amount: params.amount,
           shipping: params.shipping,
+          currency: params.currency || 'USD',
           from_country: (store as any)?.country ?? undefined,
           to_country: params.toCountry,
           to_state: params.toState ?? undefined,

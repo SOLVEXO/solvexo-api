@@ -1,0 +1,38 @@
+{
+  "common": {
+    "welcome": "خوش آمدید",
+    "loading": "لوڈ ہو رہا ہے...",
+    "error": "ایک خرابی ہوئی",
+    "success": "کامیابی",
+    "save": "محفوظ کریں",
+    "cancel": "منسوخ کریں",
+    "delete": "حذف کریں",
+    "edit": "ترمیم کریں",
+    "add": "شامل کریں",
+    "search": "تلاش کریں",
+    "filter": "فلٹر",
+    "sort": "ترتیب"
+  },
+  "markets": {
+    "title": "مارکیٹس",
+    "create": "مارکیٹ بنائیں",
+    "edit": "مارکیٹ میں ترمیم کریں",
+    "delete": "مارکیٹ حذف کریں",
+    "name": "مارکیٹ کا نام",
+    "countries": "ممالک",
+    "currency": "کرنسی",
+    "languages": "زبانوں",
+    "domain": "ڈومین",
+    "subfolder": "سب فولڈر",
+    "isActive": "فعال",
+    "isPrimary": "بنیادی مارکیٹ",
+    "pricingRule": "قیمت کا قانون",
+    "shippingSettings": "شپنگ سیٹنگز"
+  },
+  "pricing": {
+    "fixedPrice": "مقررہ قیمت",
+    "percentageAdjustment": "فیصد ایڈجسٹمنٹ",
+    "conversionFee": "کنورژن فیس",
+    "roundingRule": "راؤنڈنگ رول"
+  }
+}

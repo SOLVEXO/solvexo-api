@@ -798,6 +798,8 @@ export class StoreService {
       dismissFor: pick(body.dismissFor, ['forever', 'day', 'session'] as const, 'forever', 'dismissFor'),
       countdownEndAt: body.countdownEndAt ? new Date(body.countdownEndAt) : null,
       preset: text(body.preset, 40, 'preset'),
+      linkStyle: pick(body.linkStyle, ['underline', 'button'] as const, 'underline', 'linkStyle'),
+      barHeight: pick(body.barHeight, ['sm', 'md', 'lg'] as const, 'md', 'barHeight'),
     };
     for (const m of moreMessages) {
       if (m.ctaLink && !LINK_RE.test(m.ctaLink)) throw new BadRequestException('moreMessages[].ctaLink must start with https://, http:// or /');
@@ -1464,7 +1466,7 @@ export class StoreService {
           couponCode: visibleAnnouncements[0].couponCode, bgColor2: bar.bgColor2 ?? null, animation: bar.animation ?? 'slide',
           marqueeSpeed: bar.marqueeSpeed ?? 'normal', fontSize: bar.fontSize ?? 'sm', uppercase: !!bar.uppercase, bold: !!bar.bold,
           showIcon: bar.showIcon !== false, device: bar.device ?? 'all', dismissFor: bar.dismissFor ?? 'forever',
-          countdownEndAt: bar.countdownEndAt ?? null,
+          countdownEndAt: bar.countdownEndAt ?? null, linkStyle: bar.linkStyle ?? 'underline', barHeight: bar.barHeight ?? 'md',
         } : null,
         activeCampaign: primaryCampaign ? {
           campaignId: primaryCampaign.campaignId,

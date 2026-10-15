@@ -2,6 +2,7 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument } from 'mongoose';
 import { Section, SectionSchema } from '../../common/schemas/section.schema';
+import { Translation, TranslationSchema } from '@/common/schemas/translation.schema';
 
 export type StorePageDocument = HydratedDocument<StorePage>;
 
@@ -163,6 +164,10 @@ export class StorePage {
 
   @Prop({ type: String, enum: STORE_PAGE_POLICY_TYPES, default: null })
   policyType: StorePagePolicyType | null;
+
+  // Translations for multi-language support. Map of locale -> Translation.
+  @Prop({ type: Map, of: TranslationSchema, default: {} })
+  translations: Map<string, Translation>;
 
   @Prop({ type: Boolean, default: false })
   isDelete: boolean;

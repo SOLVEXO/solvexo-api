@@ -142,8 +142,9 @@ export class StorefrontHeader {
   navAlignment: 'left' | 'center' | 'right';
   // Overall header composition — 'standard' is today's logo-left/inline-nav
   // layout; 'centered' stacks a centered logo with nav below it.
-  @Prop({ type: String, enum: ['standard', 'centered'], default: 'standard' })
-  headerStyle: 'standard' | 'centered';
+  // 'split' = menu left, logo centre, icons right; 'inline' = logo left, menu centred, icons right.
+  @Prop({ type: String, enum: ['standard', 'centered', 'split', 'inline'], default: 'standard' })
+  headerStyle: 'standard' | 'centered' | 'split' | 'inline';
   // When set, the storefront renders THIS menu's items instead of `blocks`
   // above — resolved into the identical `Block` shape at read time
   // (`StoreThemeService`'s `resolveHeaderMenu`), so neither theme's Navbar
@@ -172,6 +173,23 @@ export class StorefrontHeader {
   @Prop({ type: String, default: null }) textColor: string | null;
   @Prop({ type: String, enum: ['compact', 'normal', 'spacious'], default: 'normal' }) paddingY: 'compact' | 'normal' | 'spacious';
   @Prop({ type: Boolean, default: true }) showDivider: boolean;
+  // Premium header controls; every default reproduces the earlier look.
+  @Prop({ type: String, enum: ['off', 'always', 'scroll-up'], default: null }) stickyMode: 'off' | 'always' | 'scroll-up' | null; // null = follow `sticky`
+  @Prop({ type: Boolean, default: false }) transparentOnHome: boolean;
+  @Prop({ type: String, default: null }) transparentTextColor: string | null;
+  @Prop({ type: String, enum: ['sm', 'md', 'lg'], default: 'md' }) navFontSize: 'sm' | 'md' | 'lg';
+  @Prop({ type: Boolean, default: false }) navUppercase: boolean;
+  @Prop({ type: String, enum: ['none', 'underline', 'pill'], default: 'none' }) navHoverStyle: 'none' | 'underline' | 'pill';
+  @Prop({ type: String, enum: ['icon', 'bar'], default: 'icon' }) searchStyle: 'icon' | 'bar';
+  @Prop({ type: String, default: null }) ctaLabel: string | null;
+  @Prop({ type: String, default: null }) ctaLink: string | null;
+  @Prop({ type: Boolean, default: false }) topBarEnabled: boolean;
+  @Prop({ type: String, default: null }) topBarText: string | null;
+  @Prop({ type: String, default: null }) topBarPhone: string | null;
+  @Prop({ type: String, default: null }) topBarEmail: string | null;
+  @Prop({ type: String, default: null }) topBarBg: string | null;
+  @Prop({ type: String, default: null }) topBarTextColor: string | null;
+  @Prop({ type: String, default: null }) preset: string | null;
 }
 export const StorefrontHeaderSchema = SchemaFactory.createForClass(StorefrontHeader);
 
@@ -210,6 +228,19 @@ export class StorefrontFooter {
   @Prop({ type: String, default: null }) textColor: string | null;
   // true once the footer is saved as an ordered block list (brand + newsletter are blocks); false = older layout.
   @Prop({ type: Boolean, default: false }) blockLayout: boolean;
+  // Premium footer controls; every default reproduces the earlier look.
+  @Prop({ type: String, enum: ['compact', 'normal', 'spacious'], default: 'normal' }) paddingY: 'compact' | 'normal' | 'spacious';
+  @Prop({ type: String, default: null }) bgImageUrl: string | null;
+  @Prop({ type: Number, default: 50 }) bgOverlay: number;              // 0–85 % darkness over the image
+  @Prop({ type: String, enum: ['left', 'center'], default: 'left' }) align: 'left' | 'center';
+  @Prop({ type: Boolean, default: true }) headingUppercase: boolean;
+  @Prop({ type: String, enum: ['plain', 'circle', 'square'], default: null }) socialStyle: 'plain' | 'circle' | 'square' | null; // null = theme
+  @Prop({ type: Boolean, default: false }) newsletterTop: boolean;     // Email sign-up as a wide strip above the columns
+  @Prop({ type: Boolean, default: true }) mobileAccordion: boolean;    // columns fold on phones
+  @Prop({ type: Boolean, default: true }) showPolicyLinks: boolean;
+  @Prop({ type: Boolean, default: false }) showCurrency: boolean;
+  @Prop({ type: Boolean, default: false }) showBackToTop: boolean;
+  @Prop({ type: String, default: null }) preset: string | null;
 }
 export const StorefrontFooterSchema = SchemaFactory.createForClass(StorefrontFooter);
 

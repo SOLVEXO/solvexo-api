@@ -45,6 +45,12 @@ export class UpdateStoreNotificationSettingsDto {
   @IsOptional()
   @IsObject()
   events?: Record<string, { enabled?: boolean; subject?: string | null; body?: string | null; reset?: boolean }>;
+
+  /** { [event]: { [locale]: { subject?, body?, reset? } } } — the seller's own text per language (validated in the service). */
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsObject()
+  eventTranslations?: Record<string, Record<string, { subject?: string | null; body?: string | null; reset?: boolean }>>;
 }
 
 export class PreviewCustomerEmailDto {
@@ -63,4 +69,11 @@ export class PreviewCustomerEmailDto {
   @IsString()
   @MaxLength(5000)
   body?: string | null;
+
+  /** Language to render the sample in ('ur', ...). Default English. */
+  @ApiProperty({ required: false, nullable: true })
+  @IsOptional()
+  @IsString()
+  @MaxLength(10)
+  locale?: string | null;
 }

@@ -1,7 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, Res, UploadedFile, UseGuards, UseInterceptors, UsePipes, ValidationPipe } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
-import { memoryStorage } from 'multer';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UseGuards, UseInterceptors, UsePipes, ValidationPipe } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -18,8 +16,10 @@ import { UpdateIdentityBannerDto } from './dto/update-identity-banner.dto';
 import { UpdateCustomCssDto } from './dto/update-custom-css.dto';
 import { InstallThemeDto } from './dto/install-theme.dto';
 import { CreateColorSchemeDto } from './dto/color-scheme.dto';
-import { ThemePackageService } from './theme-package.service';
 
+// Native (section/block) theme editor — draft/publish/versions/color schemes/header/footer. The imported-Liquid-theme
+// ZIP lifecycle (upload/preview/publish/rollback of `.../package*`) is its own controller on the same prefix:
+// ../themes/liquid/liquid-theme.controller.ts.
 @ApiTags('Store Theme')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
@@ -28,97 +28,7 @@ import { ThemePackageService } from './theme-package.service';
 @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
 @Controller('api/store-theme')
 export class StoreThemeController {
-  constructor(private readonly storeThemeService: StoreThemeService, private readonly themePackageService: ThemePackageService) {}
-
-  // Shopify-compatible source-package lifecycle. ZIP parsing is bounded and
-  // validated before any immutable source revision is persisted.
-  @Post(':storeId/installed/:installedThemeId/package')
-  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } }))
-  uploadThemePackage(@Req() req: any, @Param('storeId') storeId: string, @Param('installedThemeId') installedThemeId: string, @UploadedFile() file: Express.Multer.File) {
-    if (!file) throw new BadRequestException('Theme ZIP file is required');
-    return this.themePackageService.upload(storeId, actingSellerId(req.user), installedThemeId, file.buffer);
-  }
-
-  // Background import: answers at once with a jobId; the dialog polls GET .../package/import/:jobId.
-  @Post(':storeId/installed/:installedThemeId/package/import')
-  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } }))
-  startThemeImport(@Req() req: any, @Param('storeId') storeId: string, @Param('installedThemeId') installedThemeId: string, @UploadedFile() file: Express.Multer.File) {
-    if (!file) throw new BadRequestException('Theme ZIP file is required');
-    return this.themePackageService.startImport(storeId, actingSellerId(req.user), installedThemeId, file.buffer, file.originalname);
-  }
-
-  @Get(':storeId/installed/:installedThemeId/package/import/:jobId')
-  getThemeImport(@Req() req: any, @Param('storeId') storeId: string, @Param('installedThemeId') installedThemeId: string, @Param('jobId') jobId: string) {
-    return this.themePackageService.getImportJob(storeId, actingSellerId(req.user), installedThemeId, jobId);
-  }
-
-  @Get(':storeId/installed/:installedThemeId/package/:version/file')
-  getThemePackageFile(@Req() req: any, @Param('storeId') storeId: string, @Param('installedThemeId') installedThemeId: string, @Param('version') version: string, @Query('path') path: string) {
-    return this.themePackageService.getFile(storeId, actingSellerId(req.user), installedThemeId, Number(version), String(path ?? ''));
-  }
-
-  @Post(':storeId/installed/:installedThemeId/package/preview')
-  previewThemePackage(@Req() req: any, @Param('storeId') storeId: string, @Param('installedThemeId') installedThemeId: string, @Body('version') version?: number, @Body('path') path?: string, @Body('draft') draft?: { path: string; content: string }) {
-    return this.themePackageService.preview(storeId, actingSellerId(req.user), installedThemeId, version, path, draft);
-  }
-
-  @Post(':storeId/installed/:installedThemeId/package/:version/publish')
-  publishThemePackage(@Req() req: any, @Param('storeId') storeId: string, @Param('installedThemeId') installedThemeId: string, @Param('version') version: string) {
-    return this.themePackageService.publish(storeId, actingSellerId(req.user), installedThemeId, Number(version));
-  }
-
-  @Get(':storeId/installed/:installedThemeId/package')
-  listThemePackageVersions(@Req() req: any, @Param('storeId') storeId: string, @Param('installedThemeId') installedThemeId: string) {
-    return this.themePackageService.list(storeId, actingSellerId(req.user), installedThemeId);
-  }
-
-  @Get(':storeId/installed/:installedThemeId/package/:version')
-  getThemePackageVersion(@Req() req: any, @Param('storeId') storeId: string, @Param('installedThemeId') installedThemeId: string, @Param('version') version: string) {
-    return this.themePackageService.getRevision(storeId, actingSellerId(req.user), installedThemeId, Number(version));
-  }
-
-  @Get(':storeId/installed/:installedThemeId/package/:version/structure')
-  getThemePackageStructure(@Req() req: any, @Param('storeId') storeId: string, @Param('installedThemeId') installedThemeId: string, @Param('version') version: string) {
-    return this.themePackageService.getStructure(storeId, actingSellerId(req.user), installedThemeId, Number(version));
-  }
-
-  @Patch(':storeId/installed/:installedThemeId/package/file')
-  editThemePackageFile(@Req() req: any, @Param('storeId') storeId: string, @Param('installedThemeId') installedThemeId: string, @Body() body: { path: string; content: string }) {
-    return this.themePackageService.editFile(storeId, actingSellerId(req.user), installedThemeId, body?.path, body?.content);
-  }
-
-  @Post(':storeId/installed/:installedThemeId/package/file')
-  addThemePackageFile(@Req() req: any, @Param('storeId') storeId: string, @Param('installedThemeId') installedThemeId: string, @Body() body: { path: string; content: string; encoding?: 'utf8' | 'base64' }) {
-    return this.themePackageService.addFile(storeId, actingSellerId(req.user), installedThemeId, body?.path, body?.content, body?.encoding);
-  }
-
-  @Delete(':storeId/installed/:installedThemeId/package/file')
-  deleteThemePackageFile(@Req() req: any, @Param('storeId') storeId: string, @Param('installedThemeId') installedThemeId: string, @Body() body: { path: string }) {
-    return this.themePackageService.deleteFile(storeId, actingSellerId(req.user), installedThemeId, body?.path);
-  }
-
-  @Post(':storeId/installed/:installedThemeId/package/file/rename')
-  renameThemePackageFile(@Req() req: any, @Param('storeId') storeId: string, @Param('installedThemeId') installedThemeId: string, @Body() body: { from: string; to: string }) {
-    return this.themePackageService.renameFile(storeId, actingSellerId(req.user), installedThemeId, body?.from, body?.to);
-  }
-
-  @Post(':storeId/installed/:installedThemeId/package/unpublish')
-  unpublishThemePackage(@Req() req: any, @Param('storeId') storeId: string, @Param('installedThemeId') installedThemeId: string) {
-    return this.themePackageService.unpublish(storeId, actingSellerId(req.user), installedThemeId);
-  }
-
-  @Get(':storeId/installed/:installedThemeId/package/export/zip')
-  async exportThemePackage(@Req() req: any, @Res() res: any, @Param('storeId') storeId: string, @Param('installedThemeId') installedThemeId: string, @Query('version') version?: string) {
-    const { filename, buffer } = await this.themePackageService.exportZip(storeId, actingSellerId(req.user), installedThemeId, version === undefined ? undefined : Number(version));
-    res.setHeader('Content-Type', 'application/zip');
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-    res.send(buffer);
-  }
-
-  @Post(':storeId/installed/:installedThemeId/package/:version/rollback')
-  rollbackThemePackage(@Req() req: any, @Param('storeId') storeId: string, @Param('installedThemeId') installedThemeId: string, @Param('version') version: string) {
-    return this.themePackageService.rollback(storeId, actingSellerId(req.user), installedThemeId, Number(version));
-  }
+  constructor(private readonly storeThemeService: StoreThemeService) {}
 
   // ── Theme Library (installed theme instances) — declared as static
   // segments ahead of the `:storeId/theme` etc. dynamic routes below is not

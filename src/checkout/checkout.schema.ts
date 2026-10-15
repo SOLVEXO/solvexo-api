@@ -213,6 +213,17 @@ export class Checkout {
   // Refunds and seller settlement replay these exact rates; they never
   // re-read today's ExchangeRate table. Absent on any checkout created
   // before this field existed.
+  // Shopify Markets — the market the buyer's country resolved to (null = the store has no markets), the country used
+  // and the storefront language, copied onto the Order. Informational: prices were already fixed at creation.
+  @Prop({ type: String, default: null })
+  marketId: string | null;
+
+  @Prop({ type: String, default: null })
+  marketCountry: string | null;
+
+  @Prop({ type: String, default: null })
+  locale: string | null;
+
   @Prop({ type: [FxSnapshotSchema], default: [] })
   fxSnapshots: FxSnapshot[];
 

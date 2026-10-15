@@ -21,8 +21,8 @@ export class UpdateHeaderDto {
   @IsOptional() @IsIn(['left', 'center', 'right'])
   navAlignment?: string;
 
-  @ApiProperty({ required: false, enum: ['standard', 'centered'] })
-  @IsOptional() @IsIn(['standard', 'centered'])
+  @ApiProperty({ required: false, enum: ['standard', 'centered', 'split', 'inline'] })
+  @IsOptional() @IsIn(['standard', 'centered', 'split', 'inline'])
   headerStyle?: string;
 
   @ApiProperty({ required: false, nullable: true, description: 'A Menu id to render instead of `blocks` — pass null to detach and fall back to `blocks` again.' })
@@ -50,4 +50,20 @@ export class UpdateHeaderDto {
   @ApiProperty({ required: false, nullable: true }) @ValidateIf((_, v) => v !== null && v !== undefined) @Matches(/^#[0-9a-fA-F]{6}$/) textColor?: string | null;
   @ApiProperty({ required: false, enum: ['compact', 'normal', 'spacious'] }) @IsOptional() @IsIn(['compact', 'normal', 'spacious']) paddingY?: 'compact' | 'normal' | 'spacious';
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() showDivider?: boolean;
+  @ApiProperty({ required: false, nullable: true, enum: ['off', 'always', 'scroll-up'] }) @ValidateIf((_, v) => v !== null && v !== undefined) @IsIn(['off', 'always', 'scroll-up']) stickyMode?: 'off' | 'always' | 'scroll-up' | null;
+  @ApiProperty({ required: false }) @IsOptional() @IsBoolean() transparentOnHome?: boolean;
+  @ApiProperty({ required: false, nullable: true }) @ValidateIf((_, v) => v !== null && v !== undefined) @Matches(/^#[0-9a-fA-F]{6}$/) transparentTextColor?: string | null;
+  @ApiProperty({ required: false, enum: ['sm', 'md', 'lg'] }) @IsOptional() @IsIn(['sm', 'md', 'lg']) navFontSize?: 'sm' | 'md' | 'lg';
+  @ApiProperty({ required: false }) @IsOptional() @IsBoolean() navUppercase?: boolean;
+  @ApiProperty({ required: false, enum: ['none', 'underline', 'pill'] }) @IsOptional() @IsIn(['none', 'underline', 'pill']) navHoverStyle?: 'none' | 'underline' | 'pill';
+  @ApiProperty({ required: false, enum: ['icon', 'bar'] }) @IsOptional() @IsIn(['icon', 'bar']) searchStyle?: 'icon' | 'bar';
+  @ApiProperty({ required: false, nullable: true }) @IsOptional() @IsString() @MaxLength(30) ctaLabel?: string | null;
+  @ApiProperty({ required: false, nullable: true }) @ValidateIf((_, v) => v !== null && v !== undefined && v !== '') @Matches(/^(https?:\/\/\S+|\/(?!\/)\S*)$/i, { message: 'Button link must start with https://, http:// or /' }) @MaxLength(500) ctaLink?: string | null;
+  @ApiProperty({ required: false }) @IsOptional() @IsBoolean() topBarEnabled?: boolean;
+  @ApiProperty({ required: false, nullable: true }) @IsOptional() @IsString() @MaxLength(120) topBarText?: string | null;
+  @ApiProperty({ required: false, nullable: true }) @IsOptional() @IsString() @MaxLength(40) topBarPhone?: string | null;
+  @ApiProperty({ required: false, nullable: true }) @ValidateIf((_, v) => v !== null && v !== undefined && v !== '') @Matches(/^[^\s@]+@[^\s@]+\.[^\s@]+$/, { message: 'Top bar email is not a valid address' }) @MaxLength(120) topBarEmail?: string | null;
+  @ApiProperty({ required: false, nullable: true }) @ValidateIf((_, v) => v !== null && v !== undefined) @Matches(/^#[0-9a-fA-F]{6}$/) topBarBg?: string | null;
+  @ApiProperty({ required: false, nullable: true }) @ValidateIf((_, v) => v !== null && v !== undefined) @Matches(/^#[0-9a-fA-F]{6}$/) topBarTextColor?: string | null;
+  @ApiProperty({ required: false, nullable: true }) @IsOptional() @IsString() @MaxLength(40) preset?: string | null;
 }

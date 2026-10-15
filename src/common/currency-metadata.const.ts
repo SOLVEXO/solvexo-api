@@ -99,6 +99,18 @@ export function getCurrencyDecimals(code: string): 0 | 2 | 3 {
   return CURRENCY_METADATA[code.toUpperCase()]?.decimals ?? 2;
 }
 
+/**
+ * Returns the Stripe minor unit multiplier for a currency.
+ * Stripe expects amounts in the smallest currency unit:
+ * - 0-decimal currencies (JPY, KRW, etc.): multiplier = 1 (whole numbers)
+ * - 2-decimal currencies (USD, EUR, etc.): multiplier = 100 (cents)
+ * - 3-decimal currencies (KWD, BHD, OMR, etc.): multiplier = 1000 (mils)
+ */
+export function getStripeMinorUnitMultiplier(code: string): number {
+  const decimals = getCurrencyDecimals(code);
+  return Math.pow(10, decimals);
+}
+
 // Frankfurter (frankfurter.app) is the free, keyless, ECB-sourced FX API
 // already wired into ExchangeRateService.refreshFromProvider. It mirrors the
 // ECB's own daily reference rates, which cover only these ~30 major

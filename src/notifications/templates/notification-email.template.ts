@@ -1,3 +1,5 @@
+import { emailUiStrings, isRtlLocale } from '../customer-email-locales';
+
 const APP_NAME = process.env.APP_NAME || 'Solvexo';
 const BRAND_COLOR = '#d97757';
 
@@ -15,6 +17,8 @@ export interface EmailStoreBrand {
   /** #rrggbb */
   accent?: string | null;
   footerText?: string | null;
+  /** Language of the email ('ur', ...): sets lang/dir, a suitable font stack and the footer wording. */
+  locale?: string | null;
 }
 
 const HEX = /^#[0-9a-fA-F]{6}$/;
@@ -34,22 +38,25 @@ export function notificationEmailShell(
   const wordmarkHtml = logo
     ? `<img src="${logo}" alt="${brand}" style="max-height:56px;max-width:220px;">`
     : `<span>${brand}</span>`;
+  const ui = emailUiStrings(b?.locale);
+  const rtl = isRtlLocale(b?.locale);
+  const lang = esc(String(b?.locale ?? 'en').toLowerCase().split('-')[0] || 'en');
   const footerHtml = b
-    ? `${b.footerText ? `<p>${esc(b.footerText)}</p>` : ''}<p>&copy; ${new Date().getFullYear()} ${brand}. All rights reserved.</p>
-    <p>You're receiving this because of your order from ${brand}. Reply to this email to contact the store.</p>`
+    ? `${b.footerText ? `<p>${esc(b.footerText)}</p>` : ''}<p>&copy; ${new Date().getFullYear()} ${brand}. ${ui.rightsReserved}</p>
+    <p>${ui.receivingBecause.replace('{brand}', brand)}</p>`
     : `<p>&copy; ${new Date().getFullYear()} ${APP_NAME}. All rights reserved.</p>
     <p>You're receiving this because of activity on your ${APP_NAME} account. Manage preferences in the app under Notifications.</p>`;
   return `
 <!DOCTYPE html>
-<html>
+<html lang="${lang}" dir="${rtl ? 'rtl' : 'ltr'}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>${title}</title>
 <style>
   body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-    line-height: 1.6;
+    font-family: ${rtl ? "'Jameel Noori Nastaleeq', 'Noto Nastaliq Urdu', 'Noto Naskh Arabic', Tahoma, 'Segoe UI', Arial, sans-serif" : "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"};
+    line-height: ${rtl ? '2' : '1.6'};
     color: #2b2b2b;
     background: #f5f2ef;
     max-width: 600px;

@@ -17,6 +17,7 @@ import { PromotionsService } from '@/promotions/promotions.service';
 import { FinanceService } from '@/finance/finance.service';
 import { AdminConfigService } from '@/admin-config/admin-config.service';
 import { ExchangeRateService } from '@/exchange-rate/exchange-rate.service';
+import { getStripeMinorUnitMultiplier } from '@/common/currency-metadata.const';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { GiftCardsService } from '@/gift-cards/gift-cards.service';
 import { StoreCreditService } from '@/store-credit/store-credit.service';
@@ -135,15 +136,20 @@ export class PaymentService {
     // portion, matching real-world refund expectations.
     const transaction = await this.databaseService.repositories.paymentTransactionModel
       .findOne({ stripePaymentIntentId, isDelete: false })
-      .select('settledViaConnect');
+      .select('settledViaConnect currency');
     const connectFlags = transaction?.settledViaConnect
       ? { reverse_transfer: true, refund_application_fee: true }
       : {};
 
+    // Use correct Stripe minor unit multiplier based on currency
+    const refundCurrency = transaction?.currency || 'USD';
+    const minorUnitMultiplier = getStripeMinorUnitMultiplier(refundCurrency);
+    const refundAmount = Math.round(amountInPaymentCurrency * minorUnitMultiplier);
+
     const refund = await this.stripe.refunds.create(
       {
         payment_intent: stripePaymentIntentId,
-        amount: Math.round(amountInPaymentCurrency * 100),
+        amount: refundAmount,
         ...connectFlags,
       },
       { idempotencyKey },
@@ -268,7 +274,10 @@ export class PaymentService {
       : checkout.totalAmount;
     const paymentScope = useSplit ? 'digital_only' : 'full';
 
-    const amountCents = Math.round(chargeAmount * 100);
+    // Use correct Stripe minor unit multiplier based on currency
+    // JPY/KRW (0-decimal) → ×1, USD/EUR (2-decimal) → ×100, KWD/BHD/OMR (3-decimal) → ×1000
+    const minorUnitMultiplier = getStripeMinorUnitMultiplier(checkout.currency);
+    const amountCents = Math.round(chargeAmount * minorUnitMultiplier);
 
     // Idempotency key includes the amount so a retry with the SAME total
     // safely dedupes (no duplicate PaymentIntents on a double-tap/network
@@ -2487,6 +2496,9 @@ export class PaymentService {
         paidAt: physicalPayment.isPaid ? new Date() : null,
         orderStatus: 'pending',
         attributionSource: checkout.attributionSource ?? 'other',
+        marketId: checkout.marketId ?? null,
+        marketCountry: checkout.marketCountry ?? null,
+        locale: checkout.locale ?? null,
         attributedBannerId: checkout.attributedBannerId ?? null,
         attributedStoreBannerId: checkout.attributedStoreBannerId ?? null,
         isDelete: false,
@@ -2542,6 +2554,9 @@ export class PaymentService {
         paidAt: digitalPayment.isPaid ? new Date() : null,
         orderStatus: 'pending',
         attributionSource: checkout.attributionSource ?? 'other',
+        marketId: checkout.marketId ?? null,
+        marketCountry: checkout.marketCountry ?? null,
+        locale: checkout.locale ?? null,
         attributedBannerId: checkout.attributedBannerId ?? null,
         attributedStoreBannerId: checkout.attributedStoreBannerId ?? null,
         isDelete: false,

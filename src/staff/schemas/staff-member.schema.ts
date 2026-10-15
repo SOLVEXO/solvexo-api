@@ -171,6 +171,9 @@ export class StaffMember {
   // convention as Employee.locationId (POS).
   @Prop({ type: String, default: null }) locationId: string | null;
 
+  // Language preference for the admin UI. Defaults to 'en'.
+  @Prop({ type: String, default: 'en' }) languagePreference: string;
+
   // Bumped on password change/permission change/deactivation — same
   // immediate-revocation mechanism JwtAuthGuard already uses for
   // User/Seller/Admin tokenVersion.
