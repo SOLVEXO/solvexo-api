@@ -21,6 +21,7 @@ import { DatabaseService } from './databaseservice';
     MongooseModule.forFeature([
       { name: schema.User.name, schema: schema.UserSchema },
       { name: schema.Market.name, schema: schema.MarketSchema },
+      { name: schema.MarketPrice.name, schema: schema.MarketPriceSchema },
       { name: schema.Translation.name, schema: schema.TranslationSchema },
       { name: schema.Seller.name, schema: schema.SellerSchema },
       { name: schema.Admin.name, schema: schema.AdminSchema },
