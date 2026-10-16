@@ -17,7 +17,7 @@ import { PromotionsService } from '@/promotions/promotions.service';
 import { FinanceService } from '@/finance/finance.service';
 import { AdminConfigService } from '@/admin-config/admin-config.service';
 import { ExchangeRateService } from '@/exchange-rate/exchange-rate.service';
-import { getStripeMinorUnitMultiplier } from '@/common/currency-metadata.const';
+import { fromStripeAmount, toStripeAmount } from '@/common/stripe-amount.util';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { GiftCardsService } from '@/gift-cards/gift-cards.service';
 import { StoreCreditService } from '@/store-credit/store-credit.service';
@@ -141,10 +141,8 @@ export class PaymentService {
       ? { reverse_transfer: true, refund_application_fee: true }
       : {};
 
-    // Use correct Stripe minor unit multiplier based on currency
-    const refundCurrency = transaction?.currency || 'USD';
-    const minorUnitMultiplier = getStripeMinorUnitMultiplier(refundCurrency);
-    const refundAmount = Math.round(amountInPaymentCurrency * minorUnitMultiplier);
+    // Stripe minor units for the currency the payment was made in (JPY ×1, USD/PKR ×100, KWD ×1000).
+    const refundAmount = toStripeAmount(amountInPaymentCurrency, transaction?.currency || 'USD');
 
     const refund = await this.stripe.refunds.create(
       {
@@ -274,10 +272,8 @@ export class PaymentService {
       : checkout.totalAmount;
     const paymentScope = useSplit ? 'digital_only' : 'full';
 
-    // Use correct Stripe minor unit multiplier based on currency
-    // JPY/KRW (0-decimal) → ×1, USD/EUR (2-decimal) → ×100, KWD/BHD/OMR (3-decimal) → ×1000
-    const minorUnitMultiplier = getStripeMinorUnitMultiplier(checkout.currency);
-    const amountCents = Math.round(chargeAmount * minorUnitMultiplier);
+    // Stripe minor units for the checkout currency (JPY ×1, USD/PKR ×100, KWD ×1000; see stripe-amount.util).
+    const amountCents = toStripeAmount(chargeAmount, checkout.currency);
 
     // Idempotency key includes the amount so a retry with the SAME total
     // safely dedupes (no duplicate PaymentIntents on a double-tap/network
@@ -429,7 +425,7 @@ export class PaymentService {
       stripeClientSecret: paymentIntent.client_secret,
       settledViaConnect: !!connectAccountId,
       stripeConnectedAccountId: connectAccountId,
-      applicationFeeAmount: connectAccountId ? applicationFeeAmountCents / 100 : 0,
+      applicationFeeAmount: connectAccountId ? fromStripeAmount(applicationFeeAmountCents, checkout.currency) : 0,
     });
 
     await checkoutModel.findByIdAndUpdate(checkoutId, {
@@ -625,7 +621,7 @@ export class PaymentService {
     });
     if (!transaction || transaction.orderIds.length === 0) return;
 
-    const totalRefundedSoFar = this.round((charge.amount_refunded ?? 0) / 100);
+    const totalRefundedSoFar = this.round(fromStripeAmount(charge.amount_refunded ?? 0, charge.currency ?? transaction.currency));
     const previouslyRefunded = transaction.amountRefunded ?? 0;
     const newRefundDelta = this.round(totalRefundedSoFar - previouslyRefunded);
     if (newRefundDelta <= 0) return; // already processed — replayed webhook or no new refund since last event
@@ -653,7 +649,7 @@ export class PaymentService {
     if (!transaction || transaction.orderIds.length === 0) return;
     if ((transaction.disputedChargeIds ?? []).includes(dispute.id)) return;
 
-    const disputeAmount = this.round((dispute.amount ?? 0) / 100);
+    const disputeAmount = this.round(fromStripeAmount(dispute.amount ?? 0, dispute.currency ?? transaction.currency));
     if (disputeAmount <= 0) return;
 
     // Also appends a real `disputes[]` entry (separate from the replay-guard
@@ -1006,7 +1002,7 @@ export class PaymentService {
     // create an order from it and surface it as a security alert rather
     // than silently trusting either side.
     if (typeof paymentIntent.amount === 'number' && typeof paymentIntent.currency === 'string') {
-      const expectedAmountCents = Math.round(transaction.amount * 100);
+      const expectedAmountCents = toStripeAmount(transaction.amount, checkout.currency);
       const expectedCurrency = (checkout.currency || 'USD').toUpperCase();
       const actualCurrency = paymentIntent.currency.toUpperCase();
       if (paymentIntent.amount !== expectedAmountCents || actualCurrency !== expectedCurrency) {
@@ -1190,7 +1186,7 @@ export class PaymentService {
     // Same amount/currency safety net as `finalizePaymentIntent` — a
     // mismatch here must never silently create an order either.
     if (typeof paymentIntent.amount === 'number' && typeof paymentIntent.currency === 'string') {
-      const expectedAmountCents = Math.round(transaction.amount * 100);
+      const expectedAmountCents = toStripeAmount(transaction.amount, checkout.currency);
       const expectedCurrency = (checkout.currency || 'USD').toUpperCase();
       const actualCurrency = paymentIntent.currency.toUpperCase();
       if (paymentIntent.amount !== expectedAmountCents || actualCurrency !== expectedCurrency) {
@@ -1403,7 +1399,7 @@ export class PaymentService {
       if (!(amountToCapture > 0) || amountToCapture > authorizedTotal + 0.01) {
         throw new BadRequestException(`Amount to capture must be between 0 and ${authorizedTotal.toFixed(2)} (the authorized total)`);
       }
-      stripeParams = { amount_to_capture: Math.round(amountToCapture * 100) };
+      stripeParams = { amount_to_capture: toStripeAmount(amountToCapture, transaction.currency) };
     }
 
     const stripe = this.assertStripeConfigured();
@@ -2475,6 +2471,7 @@ export class PaymentService {
         shippingAddress,
         fulfillmentMethod: checkout.fulfillmentMethod === 'pickup' ? 'pickup' : 'ship',
         pickupLocation: checkout.fulfillmentMethod === 'pickup' ? (checkout.pickupLocation ?? null) : null,
+        customerNote: typeof checkout.customerNote === 'string' ? checkout.customerNote.slice(0, 500) : '',
         subtotal,
         shippingFee,
         taxAmount: taxTotal,

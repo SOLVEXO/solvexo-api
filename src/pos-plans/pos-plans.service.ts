@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { toStripeAmount } from '@/common/stripe-amount.util';
 import { DatabaseService } from '../database/databaseservice';
 import { PaymentGatewayService } from '../subscriptions/payment-gateway/payment-gateway.service';
 import { verifyStoreOwnershipOrForbidden } from '../common/store-ownership.util';
@@ -84,7 +85,7 @@ export class PosPlansService {
         {
           price_data: {
             currency: plan.currency.toLowerCase(),
-            unit_amount: Math.round(plan.price * 100),
+            unit_amount: toStripeAmount(plan.price, plan.currency),
             product_data: {
               name: plan.name,
               description: plan.description ?? undefined,

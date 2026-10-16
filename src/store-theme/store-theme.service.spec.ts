@@ -65,7 +65,7 @@ describe('StoreThemeService', () => {
       // the mock derives a stable, per-store `_id` instead of leaving it
       // undefined.
       findOne: jest.fn().mockImplementation((query: any) =>
-        Promise.resolve({ _id: query._id ?? `instance-${query.storeId}`, storeId: query.storeId, themeDefinitionId: 'theme-01-atelier', draft: existingDraft() }),
+        Promise.resolve({ _id: query._id ?? `instance-${query.storeId}`, storeId: query.storeId, themeDefinitionId: 'theme-03-fashion', draft: existingDraft() }),
       ),
       db: { transaction: jest.fn((callback: (session: any) => Promise<any>) => callback(transactionSession)) },
     };
@@ -187,7 +187,7 @@ describe('StoreThemeService', () => {
         lean: jest.fn().mockResolvedValue({
           _id: installedThemeId,
           previewToken: { token: 'share-token', expiresAt: new Date(Date.now() + 60_000) },
-          themeDefinitionId: 'theme-02-nova',
+          themeDefinitionId: 'theme-03-fashion',
           draft: { theme: {}, header: { blocks: [] }, footer: {}, identityBanner: {}, customCss: null },
         }),
       });
@@ -293,9 +293,9 @@ describe('StoreThemeService', () => {
 
       const [filter, update] = storeThemeModel.findOneAndUpdate.mock.calls[0];
       expect(filter).toEqual({ storeId: STORE_ID, status: 'active' });
-      expect(update.$setOnInsert.themeDefinitionId).toBe('theme-01-atelier');
-      expect(update.$setOnInsert['draft.themeDefinitionId']).toBe('theme-01-atelier');
-      expect(update.$setOnInsert['draft.baseThemeId']).toBe('theme-01-atelier');
+      expect(update.$setOnInsert.themeDefinitionId).toBe('theme-03-fashion');
+      expect(update.$setOnInsert['draft.themeDefinitionId']).toBe('theme-03-fashion');
+      expect(update.$setOnInsert['draft.baseThemeId']).toBe('theme-03-fashion');
     });
   });
 

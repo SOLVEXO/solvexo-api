@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { Injectable, BadRequestException, ForbiddenException, Logger, OnModuleInit } from '@nestjs/common';
+import { fromStripeAmount } from '@/common/stripe-amount.util';
 import { ConfigService } from '@nestjs/config';
 import { DatabaseService } from '@/database/databaseservice';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
@@ -119,12 +120,12 @@ export class StripeConnectService implements OnModuleInit {
           monthlyAnchor: schedule.monthly_anchor ?? null,
         },
         balance: {
-          available: (balance.available ?? []).map((b: any) => ({ amount: b.amount / 100, currency: String(b.currency).toUpperCase() })),
-          pending: (balance.pending ?? []).map((b: any) => ({ amount: b.amount / 100, currency: String(b.currency).toUpperCase() })),
+          available: (balance.available ?? []).map((b: any) => ({ amount: fromStripeAmount(b.amount, b.currency), currency: String(b.currency).toUpperCase() })),
+          pending: (balance.pending ?? []).map((b: any) => ({ amount: fromStripeAmount(b.amount, b.currency), currency: String(b.currency).toUpperCase() })),
         },
         payouts: payouts.data.map((p: any) => ({
           id: p.id,
-          amount: p.amount / 100,
+          amount: fromStripeAmount(p.amount, p.currency),
           currency: String(p.currency).toUpperCase(),
           status: p.status,
           arrivalDate: p.arrival_date ? new Date(p.arrival_date * 1000).toISOString() : null,
@@ -141,9 +142,9 @@ export class StripeConnectService implements OnModuleInit {
       id: t.id,
       type: t.type as string, // charge | refund | payment | payment_refund | adjustment | payout | stripe_fee | application_fee ...
       description: t.description ?? null,
-      amount: t.amount / 100,   // gross
-      fee: t.fee / 100,         // Stripe + platform fees taken out of it
-      net: t.net / 100,
+      amount: fromStripeAmount(t.amount, t.currency), // gross
+      fee: fromStripeAmount(t.fee, t.currency), // Stripe + platform fees taken out of it
+      net: fromStripeAmount(t.net, t.currency),
       currency: String(t.currency).toUpperCase(),
       created: new Date(t.created * 1000).toISOString(),
       availableOn: t.available_on ? new Date(t.available_on * 1000).toISOString() : null,
@@ -184,7 +185,7 @@ export class StripeConnectService implements OnModuleInit {
         testMode: this.isTestMode(),
         payout: {
           id: payout.id,
-          amount: payout.amount / 100,
+          amount: fromStripeAmount(payout.amount, payout.currency),
           currency: String(payout.currency).toUpperCase(),
           status: payout.status,
           method: payout.method,

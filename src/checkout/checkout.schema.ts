@@ -284,6 +284,10 @@ export class Checkout {
   @Prop({ default: 0 })
   shippingIncludedTaxAmount: number;
 
+  // Shopify cart note: what the buyer asks of the seller (gift message, delivery hint); copied onto the order.
+  @Prop({ type: String, default: '', maxlength: 500 })
+  customerNote: string;
+
   // 'pickup' when the chosen shipping zone is local pickup — no delivery address is needed then.
   @Prop({ type: String, enum: ['ship', 'pickup'], default: 'ship' })
   fulfillmentMethod: 'ship' | 'pickup';

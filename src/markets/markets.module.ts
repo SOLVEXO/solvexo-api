@@ -11,6 +11,7 @@ import { RedisModule } from '@/redis/redis.module';
 import { DatabaseModule } from '@/database/database.module';
 import { AdminConfigModule } from '@/admin-config/admin-config.module';
 import { ExchangeRateModule } from '@/exchange-rate/exchange-rate.module';
+import { PlatformPlansModule } from '@/platform-plans/platform-plans.module';
 
 @Module({
   imports: [
@@ -19,6 +20,7 @@ import { ExchangeRateModule } from '@/exchange-rate/exchange-rate.module';
     DatabaseModule,
     AdminConfigModule,
     ExchangeRateModule,
+    PlatformPlansModule,
   ],
   controllers: [MarketsController, MarketPricingController, MarketDomainController, PublicMarketsController],
   providers: [MarketsService, MarketPricingService, MarketDomainService],

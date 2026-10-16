@@ -369,6 +369,11 @@ export class Store {
   @Prop({ type: String, default: null })
   timezone: string | null;
 
+  // Store's default (published) language — Shopify Settings > Languages > Default. Storefront text, emails and
+  // SEO fall back to it; other languages come from Markets. Lowercase code such as 'en' or 'ur'.
+  @Prop({ type: String, default: 'en' })
+  defaultLanguage: string;
+
   // "Markets" — which of the platform's `SUPPORTED_CURRENCIES` a buyer may
   // actually check out in on THIS store (real, seller-configurable, distinct
   // from `baseCurrency` which is what the seller is paid/priced in and
@@ -762,7 +767,7 @@ export class Store {
 
   // Real Shopify "Data sale opt-out requests" — a visitor submits their
   // email via the storefront's "Do Not Sell My Personal Information" dialog
-  // (see AtelierFooter.tsx/NovaFooter.tsx), the seller reviews/marks it
+  // (see the theme footers), the seller reviews/marks it
   // resolved from the Privacy settings tab. An embedded array (not a
   // separate collection) since real submission volume is genuinely tiny —
   // most stores will never receive one.

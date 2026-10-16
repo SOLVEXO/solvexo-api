@@ -71,7 +71,7 @@ export const SECTION_TYPES = [
   // editors show what's actually on the page instead of looking blank — the
   // real, always-correct commerce/listing markup on the live storefront
   // stays exactly where it already was (each theme's own page component,
-  // e.g. `AtelierProductPage`), never re-routed through this section system;
+  // e.g. `FashionProductPage`), never re-routed through this section system;
   // these types are rendered for real only by the Customize editor's own
   // live preview, as a representative placeholder (no concrete
   // product/cart/search-query exists in the abstract template-editing

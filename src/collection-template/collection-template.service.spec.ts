@@ -116,7 +116,7 @@ describe('CollectionTemplateService — core sections (Phase 4)', () => {
       lean: jest.fn().mockResolvedValue({ _id: 'theme-row-2' }),
     };
     (db.repositories as any).storeThemeModel = { findOne: jest.fn().mockReturnValue(themeQuery) };
-    const doc: any = { _id: 'tpl-nova', storeId: STORE_ID, installedThemeId: 'theme-row-2', resourceType: 'product', templateKey: 'default', sections: [], draft: { sections: [] } };
+    const doc: any = { _id: 'tpl-extra', storeId: STORE_ID, installedThemeId: 'theme-row-2', resourceType: 'product', templateKey: 'default', sections: [], draft: { sections: [] } };
     collectionTemplateModel = {
       findOne: jest.fn().mockResolvedValue(null),
       findOneAndUpdate: jest.fn().mockImplementation((filter: any, update: any) => {

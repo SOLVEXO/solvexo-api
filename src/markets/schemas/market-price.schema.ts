@@ -10,6 +10,10 @@ export type MarketPriceDocument = MarketPrice & Document;
  */
 @Schema({ timestamps: true })
 export class MarketPrice {
+  /** Owning store (rows written before this field existed have null and are matched by marketId). */
+  @Prop({ type: String, default: null, index: true })
+  storeId: string | null;
+
   @Prop({ required: true, index: true })
   marketId: string;
 

@@ -3,6 +3,7 @@ import {
   Injectable, NotFoundException, ForbiddenException,
   BadRequestException, ConflictException, OnModuleInit,
 } from '@nestjs/common';
+import { toStripeAmount } from '@/common/stripe-amount.util';
 import { InjectConnection } from '@nestjs/mongoose';
 import { Connection, ClientSession, isValidObjectId } from 'mongoose';
 import { DatabaseService } from '@/database/databaseservice';
@@ -743,7 +744,7 @@ export class FinanceService implements OnModuleInit {
     try {
       const transfer = await this.stripeConnectService.createTransfer(
         method.externalAccountId,
-        Math.round(payout.amount * 100),
+        toStripeAmount(payout.amount, payout.currency || 'usd'),
         payout.currency || 'usd',
         idempotencyKey,
         { payoutId: String(payout._id), storeId: payout.storeId, sellerId: payout.sellerId },

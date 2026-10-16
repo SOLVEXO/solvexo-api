@@ -578,6 +578,7 @@ export class OrdersService {
         // Merchant-only: the Shopify order timeline (events + comments) and the internal note.
         timeline: [...((order as any).timeline ?? [])].sort((a: any, b: any) => +new Date(b.createdAt) - +new Date(a.createdAt)),
         note: (order as any).note ?? '',
+        customerNote: (order as any).customerNote ?? '',
       },
     };
   }

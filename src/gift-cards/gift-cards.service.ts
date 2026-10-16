@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { Injectable, Optional, BadRequestException, NotFoundException, ForbiddenException } from '@nestjs/common';
+import { toStripeAmount } from '@/common/stripe-amount.util';
 import { ConfigService } from '@nestjs/config';
 import { DatabaseService } from '@/database/databaseservice';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
@@ -227,7 +228,7 @@ export class GiftCardsService {
     // `currency: checkout.currency.toLowerCase()`), not a separate USD-only
     // rule for gift cards. The gift card's face value is the same amount the
     // buyer is actually charged, no FX conversion involved.
-    const amountCents = Math.round(this.round(dto.amount) * 100);
+    const amountCents = toStripeAmount(this.round(dto.amount), currency);
     if (amountCents < 50) throw new BadRequestException('Amount is too small to process');
 
     // The buyer's payment goes straight to the seller's own connected account

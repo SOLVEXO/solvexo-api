@@ -16,6 +16,7 @@ export type FieldExpressionValue =
   | number
   | boolean
   | null
+  | FieldExpressionValue[]
   | { [key: string]: FieldExpressionValue };
 
 /**

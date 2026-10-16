@@ -1,3 +1,5 @@
+import { stripeMinorUnitFactor } from './stripe-amount.util';
+
 /**
  * The real, complete ISO-4217 currency reference table — code, display name,
  * and minor-unit decimal places (per the actual ISO-4217 standard, same
@@ -100,15 +102,12 @@ export function getCurrencyDecimals(code: string): 0 | 2 | 3 {
 }
 
 /**
- * Returns the Stripe minor unit multiplier for a currency.
- * Stripe expects amounts in the smallest currency unit:
- * - 0-decimal currencies (JPY, KRW, etc.): multiplier = 1 (whole numbers)
- * - 2-decimal currencies (USD, EUR, etc.): multiplier = 100 (cents)
- * - 3-decimal currencies (KWD, BHD, OMR, etc.): multiplier = 1000 (mils)
+ * Stripe minor units per major unit (1, 100 or 1000). Stripe's table differs
+ * from ISO decimals (ISK/UGX are sent ×100), so this delegates to the shared
+ * Stripe helper; build real amounts with `toStripeAmount` / `fromStripeAmount`.
  */
 export function getStripeMinorUnitMultiplier(code: string): number {
-  const decimals = getCurrencyDecimals(code);
-  return Math.pow(10, decimals);
+  return stripeMinorUnitFactor(code);
 }
 
 // Frankfurter (frankfurter.app) is the free, keyless, ECB-sourced FX API

@@ -478,7 +478,7 @@ export interface LocationItemBlockSettings {
 
 // ── `product_main`'s 7 fixed blocks (Phase 4) — no settings beyond the
 // generic `label`/`enabled` every block already carries; each just marks
-// which real, already-rendered piece of `AtelierProductPage` (gallery,
+// which real, already-rendered piece of `FashionProductPage` (gallery,
 // title, price, variant picker, quantity, buy buttons, description) this
 // entry represents, so a merchant can hide/reorder it. See
 // `collection-template/core-sections.util.ts`. ──────────────────────────────

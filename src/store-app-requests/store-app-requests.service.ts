@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { toStripeAmount } from '@/common/stripe-amount.util';
 import { ConfigService } from '@nestjs/config';
 import Stripe from 'stripe';
 import { DatabaseService } from '../database/databaseservice';
@@ -148,7 +149,7 @@ export class StoreAppRequestsService {
     const priceUSD = this.platformFeeUSD();
     const currency = (store as any)?.baseCurrency ?? 'USD';
     const chargeAmount = currency === 'USD' ? priceUSD : await this.exchangeRateService.convert(priceUSD, 'USD', currency);
-    const amountCents = Math.round(chargeAmount * 100);
+    const amountCents = toStripeAmount(chargeAmount, currency);
     const idempotencyKey = `store_app_platform_${request._id.toString()}_${platform}_${amountCents}`;
 
     const paymentIntent = await this.stripe.paymentIntents.create(

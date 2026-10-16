@@ -98,6 +98,12 @@ export class StorefrontColors {
   // No defaults: unset = the theme's own look (badges shown, theme card, cart drawer).
   @Prop({ type: String, enum: ['show', 'hide'] })
   saleBadge?: 'show' | 'hide';
+  // Quick view button on product cards; unset = the theme's own default.
+  @Prop({ type: String, enum: ['show', 'hide'] })
+  quickView?: 'show' | 'hide';
+  // Colour swatches on product cards; unset = the theme's own default.
+  @Prop({ type: String, enum: ['show', 'hide'] })
+  colorSwatches?: 'show' | 'hide';
   @Prop({ type: String, enum: ['show', 'hide'] })
   soldOutBadge?: 'show' | 'hide';
   @Prop({ type: String, enum: ['theme', 'flat', 'outlined', 'elevated'] })
@@ -295,7 +301,7 @@ export class StoreThemeDraft {
   baseThemeId: string | null;
 
   // Which theme package (a code-shipped `NEW_THEME_REGISTRY` key — see
-  // `storefront-themes/registry.ts` on the frontend, e.g. 'theme-01-atelier'
+  // `storefront-themes/registry.ts` on the frontend, e.g. 'theme-03-fashion'
   // — never a Mongo-stored definition) this installed row's REACT CODE is.
   // Mirrors the document root's own `themeDefinitionId` exactly and should
   // never diverge from it outside of `ensureDefaultTheme`'s legacy backfill
@@ -449,7 +455,7 @@ export class StoreTheme {
   // unchanged for every pre-existing row). Set automatically to "Copy of X"
   // by `duplicateTheme`, and editable via `renameTheme` — this is what
   // makes two installed rows of the same `themeDefinitionId` (e.g. two
-  // Atelier instances, one being experimented on) distinguishable in the
+  // Maison instances, one being experimented on) distinguishable in the
   // Theme Library at all.
   @Prop({ type: String, default: null })
   name: string | null;

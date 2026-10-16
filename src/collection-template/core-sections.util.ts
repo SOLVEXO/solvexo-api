@@ -10,7 +10,7 @@ import type { ResourceTemplateType } from './schemas/collection-template.schema'
  * their real commerce/listing content (gallery+price+buy-buttons, the
  * search results grid, cart line items+summary, the blog post list, an
  * article's body) is fixed chrome that already renders unconditionally
- * inside each theme's own page component (`AtelierProductPage` etc.) —
+ * inside each theme's own page component (`FashionProductPage` etc.) —
  * outside the section system entirely, per this app's established
  * architectural boundary. That made the Customize editor's section list
  * (and its live preview) look genuinely blank for these templates, even

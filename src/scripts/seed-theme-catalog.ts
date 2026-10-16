@@ -1,9 +1,9 @@
 /**
- * One-time (safely re-runnable) seed for the full 44-theme Theme Marketplace
+ * One-time (safely re-runnable) seed for the full 42-theme Theme Marketplace
  * catalog — 4 themes across each of the 11 categories (fashion, beauty,
  * electronics, jewelry, furniture, food, restaurant, education, digital
- * products, services, general). The first 10 (Horizon/Vogue/Essential/
- * Atelier/Nova/Royale/Freshly/Urban/Aura/Volt) migrate the original curated
+ * products, services, general). The first 8 (Horizon/Vogue/Essential/
+ * Royale/Freshly/Urban/Aura/Volt) migrate the original curated
  * presets that used to live only in the frontend's `builder/themes.ts`,
  * re-slotted into their matching official name/category (e.g. the old
  * "modern-fashion" preset becomes "Vogue" in `fashion`); the remaining 34
@@ -395,100 +395,8 @@ const THEMES = [
       newsletter(),
     ],
   },
-  {
-    slug: 'atelier',
-    name: 'Atelier',
-    category: 'fashion',
-    tags: ['premium', 'editorial', 'minimalist'],
-    description:
-      'Premium minimalist fashion — magazine-inspired commerce with oversized serif headlines and a bordered product grid.',
-    theme: colors({
-      primaryColor: '#8A6D3B',
-      accentColor: '#5F4A28',
-      bgColor: '#FBFAF7',
-      textColor: '#242220',
-      font: 'Fraunces',
-      buttonStyle: 'outline',
-      buttonRadius: 'small',
-      buttonSize: 'lg',
-      imageRadius: 'large',
-      typeScale: 'spacious',
-      containerWidth: 'wide',
-      sectionSpacing: 'spacious',
-      productCardStyle: 'outlined',
-      productCardRadius: 'small',
-      testimonialCardStyle: 'elevated',
-      testimonialCardRadius: 'large',
-      heroStyle: 'split',
-      productImageRatio: 'portrait',
-      productGridDensity: 'relaxed',
-    }),
-    header: header('standard'),
-    footer: footer('columns'),
-    homePageSections: [
-      hero(
-        'Issue No. 12 — The Edit.',
-        'Stories in fabric. A seasonal capsule, curated.',
-        'Read the Edit',
-        130,
-      ),
-      galleryGrid('From the Atelier', [135, 136, 137]),
-      productCatalog('The Capsule'),
-      testimonials(
-        'Feels less like shopping and more like reading a magazine.',
-        'Jonas W.',
-        'Verified Buyer',
-      ),
-      newsletter(),
-    ],
-  },
-  {
-    slug: 'nova',
-    name: 'Nova',
-    category: 'general',
-    tags: ['modern', 'vibrant', 'universal'],
-    description:
-      'A modern general store — contemporary ecommerce, vibrant and fully rounded, with soft-tinted buttons.',
-    theme: colors({
-      primaryColor: '#FF6B35',
-      accentColor: '#FFB627',
-      bgColor: '#FFFDF9',
-      textColor: '#241C15',
-      font: 'DM Sans',
-      buttonStyle: 'soft',
-      buttonRadius: 'full',
-      imageRadius: 'full',
-      productCardStyle: 'elevated',
-      productCardRadius: 'full',
-      testimonialCardStyle: 'flat',
-      testimonialCardRadius: 'full',
-      heroStyle: 'split',
-      heroAlignment: 'center',
-      productImageHover: 'zoom',
-      productGridDensity: 'relaxed',
-      testimonialStyle: 'minimal',
-      faqStyle: 'list',
-    }),
-    header: header('centered'),
-    footer: footer('minimal'),
-    homePageSections: [
-      hero(
-        'New arrivals, every week.',
-        'Everyday basics, done right.',
-        'Shop New In',
-        170,
-        'medium',
-      ),
-      statsCounter([
-        { value: '50k+', label: 'Happy Customers' },
-        { value: '4.8★', label: 'Average Rating' },
-        { value: '24h', label: 'Fast Dispatch' },
-      ]),
-      productCatalog('Our Products'),
-      trustBadges(),
-      newsletter(),
-    ],
-  },
+
+
   {
     slug: 'royale',
     name: 'Royale',

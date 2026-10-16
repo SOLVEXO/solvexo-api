@@ -12,25 +12,24 @@ const COMMON_SECTION_TYPES = new Set([
 
 /** Theme renderer capability catalog; keep aligned with frontend section registries. */
 export const THEME_SECTION_TYPES: Record<string, ReadonlySet<string>> = {
-  'theme-01-atelier': new Set([...COMMON_SECTION_TYPES, 'video', 'drop_countdown']),
-  // Nova renders video + drop_countdown too (the section files exist) — keep the two themes' capability lists aligned.
-  'theme-02-nova': new Set([...COMMON_SECTION_TYPES, 'video', 'drop_countdown']),
+  'theme-03-fashion': new Set([...COMMON_SECTION_TYPES, 'video', 'drop_countdown']),
 };
+
+const DEFAULT_THEME_ID = 'theme-03-fashion';
+
+/** A theme id the catalog does not know (e.g. a retired theme) is served like the default theme, the same fallback the storefront applies when it renders. */
+const capabilitiesOf = (themeDefinitionId: string) => THEME_SECTION_TYPES[themeDefinitionId] ?? THEME_SECTION_TYPES[DEFAULT_THEME_ID];
 
 export function assertThemeSupportsSections(sections: { type: string }[], themeDefinitionId?: string | null) {
   if (!themeDefinitionId) {
     throw new BadRequestException('The active theme has no registered section capabilities');
   }
-  const supported = THEME_SECTION_TYPES[themeDefinitionId];
-  if (!supported) {
-    throw new BadRequestException(`Theme "${themeDefinitionId}" has no registered section capabilities`);
-  }
+  const supported = capabilitiesOf(themeDefinitionId);
   const unsupported = sections.find(section => !supported.has(section.type));
   if (unsupported) throw new BadRequestException(`Section "${unsupported.type}" is not available in this theme`);
 }
 
 export function filterSectionsToTheme<T extends { type: string }>(sections: T[], themeDefinitionId: string): T[] {
-  const supported = THEME_SECTION_TYPES[themeDefinitionId];
-  if (!supported) throw new BadRequestException(`Theme "${themeDefinitionId}" has no registered section capabilities`);
+  const supported = capabilitiesOf(themeDefinitionId);
   return sections.filter(section => supported.has(section.type));
 }

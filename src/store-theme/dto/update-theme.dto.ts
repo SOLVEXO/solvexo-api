@@ -46,6 +46,8 @@ export class UpdateThemeDto {
   @ApiProperty({ required: false, enum: FAQ_STYLE_VALUES }) @IsOptional() @IsIn(FAQ_STYLE_VALUES) faqStyle?: string;
   // Shopify-style theme settings: product card badges, card style, cart type.
   @ApiProperty({ required: false, enum: ['show', 'hide'] }) @IsOptional() @IsIn(['show', 'hide']) saleBadge?: string;
+  @ApiProperty({ required: false, enum: ['show', 'hide'] }) @IsOptional() @IsIn(['show', 'hide']) quickView?: string;
+  @ApiProperty({ required: false, enum: ['show', 'hide'] }) @IsOptional() @IsIn(['show', 'hide']) colorSwatches?: string;
   @ApiProperty({ required: false, enum: ['show', 'hide'] }) @IsOptional() @IsIn(['show', 'hide']) soldOutBadge?: string;
   @ApiProperty({ required: false, enum: ['theme', 'flat', 'outlined', 'elevated'] }) @IsOptional() @IsIn(['theme', 'flat', 'outlined', 'elevated']) cardStyle?: string;
   @ApiProperty({ required: false, enum: ['drawer', 'page'] }) @IsOptional() @IsIn(['drawer', 'page']) cartType?: string;

@@ -6,7 +6,12 @@ describe('CurrencyMetadata', () => {
     it('should return 0 for zero-decimal currencies', () => {
       expect(getCurrencyDecimals('JPY')).toBe(0);
       expect(getCurrencyDecimals('KRW')).toBe(0);
-      expect(getCurrencyDecimals('PKR')).toBe(0); // Solvexo convention
+    });
+
+    it('keeps PKR at its real ISO/Stripe 2 decimals (whole-rupee display is a rounding rule, not metadata)', () => {
+      // If this were 0, Stripe charges in PKR would be sent ×1 and bill 1/100 of the price.
+      expect(getCurrencyDecimals('PKR')).toBe(2);
+      expect(getStripeMinorUnitMultiplier('PKR')).toBe(100);
     });
 
     it('should return 2 for standard currencies', () => {

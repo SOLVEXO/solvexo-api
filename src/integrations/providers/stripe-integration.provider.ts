@@ -4,7 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import Stripe from 'stripe';
 import { StripeConnectService } from '@/stripe-connect/stripe-connect.service';
 import { CommissionRulesService } from '@/commission-rules/commission-rules.service';
-import { getStripeMinorUnitMultiplier } from '@/common/currency-metadata.const';
+import { fromStripeAmount, toStripeAmount } from '@/common/stripe-amount.util';
 import {
   DecryptedPaymentConfig,
   PaymentEvent,
@@ -75,7 +75,7 @@ export class StripePaymentProvider implements PaymentProvider {
       throw new Error('This store has not completed Stripe Connect onboarding yet — cannot accept Stripe payments.');
     }
 
-    const amountCents = Math.round(order.amount * 100);
+    const amountCents = toStripeAmount(order.amount, order.currency);
     // Card-network cost passed through (+ a custom per-seller commission, if one was agreed) — no plan commission on this rail.
     const applicationFeeAmountCents = await this.commissionRulesService.cardApplicationFeeCents(order.storeId, amountCents, order.currency);
 
@@ -105,7 +105,7 @@ export class StripePaymentProvider implements PaymentProvider {
     return {
       status: paymentIntent.status === 'succeeded' ? 'paid' : paymentIntent.status === 'canceled' ? 'failed' : 'pending',
       providerReference: paymentIntent.id,
-      amount: paymentIntent.amount / 100,
+      amount: fromStripeAmount(paymentIntent.amount, paymentIntent.currency),
       currency: paymentIntent.currency?.toUpperCase() ?? 'USD',
       raw: paymentIntent as any,
     };
@@ -138,9 +138,7 @@ export class StripePaymentProvider implements PaymentProvider {
     // be explicitly reversed (mirrors payment.service.ts's own refund call).
     // Fetch the payment intent to get the actual currency
     const paymentIntent = await this.stripe.paymentIntents.retrieve(transactionId);
-    const currency = paymentIntent.currency || 'USD';
-    const minorUnitMultiplier = getStripeMinorUnitMultiplier(currency);
-    const refundAmount = Math.round(amount * minorUnitMultiplier);
+    const refundAmount = toStripeAmount(amount, paymentIntent.currency || 'USD');
 
     const refund = await this.stripe.refunds.create({
       payment_intent: transactionId,

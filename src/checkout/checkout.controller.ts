@@ -211,6 +211,13 @@ export class CheckoutController {
 
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('user')
+  @Post('customer-note')
+  async setCustomerNote(@Req() req: any, @Body() body: any) {
+    return this.checkoutService.setCustomerNote(req.user.userId, body);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('user')
   @Post('apply-store-credit')
   async applyStoreCredit(@Req() req: any, @Body() body: any) {
     const { userId } = req.user;

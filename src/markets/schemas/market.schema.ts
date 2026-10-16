@@ -10,6 +10,7 @@ export type MarketDocument = Market & Document;
 const PricingRuleSchema = new MongooseSchema(
   {
     type: { $type: String, enum: ['auto', 'manual', 'percentage', 'fixed'], default: 'auto' },
+    manualRate: { $type: Number, default: null },
     percentageAdjustment: { $type: Number, default: null },
     useRounding: { $type: Boolean, default: false },
     roundingRule: { $type: String, enum: ['0.95', '0.99', '1.00', 'nearest'], default: 'nearest' },
@@ -97,6 +98,7 @@ export class Market {
   @Prop({ type: PricingRuleSchema, default: () => ({ type: 'auto' as const }) })
   pricingRule: {
     type: 'auto' | 'manual' | 'percentage' | 'fixed';
+    manualRate?: number | null;
     percentageAdjustment?: number;
     useRounding?: boolean;
     roundingRule?: '0.95' | '0.99' | '1.00' | 'nearest';
@@ -116,8 +118,19 @@ export class Market {
     currencyMode: 'store' | 'local';
   };
 
+  /**
+   * Shopify catalog availability for this market: every product, only `productIds`, or every product except
+   * `productIds`. Enforced on the storefront product lists and at checkout.
+   */
+  @Prop({ type: String, enum: ['all', 'include', 'exclude'], default: 'all' })
+  productAvailability: 'all' | 'include' | 'exclude';
+
+  @Prop({ type: [String], default: [] })
+  productIds: string[];
+
   @Prop({ default: false })
   isDelete: boolean;
 }
 
 export const MarketSchema = SchemaFactory.createForClass(Market);
+MarketSchema.index({ storeId: 1, isDelete: 1, isActive: 1 });

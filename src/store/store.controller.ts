@@ -274,7 +274,7 @@ export class StoreController {
 
   // Real Shopify "data sale opt-out request" — the storefront's "Do Not Sell
   // My Personal Information" dialog submit action (see
-  // AtelierFooter.tsx/NovaFooter.tsx). Same lightweight rate-limit posture
+  // the theme footers). Same lightweight rate-limit posture
   // as `verify-password` above — a visibility/disclosure feature, not an
   // account-security boundary.
   @Throttle({ default: { limit: 5, ttl: 60_000 } })

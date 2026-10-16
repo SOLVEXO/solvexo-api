@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { Injectable, BadRequestException, NotFoundException, ForbiddenException } from '@nestjs/common';
+import { toStripeAmount } from '@/common/stripe-amount.util';
 import { availableStock, AVAILABLE_STOCK_EXPR } from '@/common/stock-availability.util';
 import { drainLocationStock, restoreLocationStock } from '@/common/location-stock.util';
 import { ConfigService } from '@nestjs/config';
@@ -445,7 +446,7 @@ export class DraftOrdersService {
     if (draft.isPaid) throw new BadRequestException('This invoice has already been paid.');
 
     const stripe = this.assertStripeConfigured();
-    const amountCents = Math.round(draft.total * 100);
+    const amountCents = toStripeAmount(draft.total, draft.currency);
     if (amountCents < 50) throw new BadRequestException('Amount is too small to process');
 
     // The buyer's money goes to the seller's own connected account — never to

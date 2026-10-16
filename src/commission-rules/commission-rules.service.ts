@@ -6,6 +6,7 @@ import { EntitlementsService } from '../platform-plans/entitlements.service';
 import { verifyStoreExists } from '../common/store-ownership.util';
 import { buildDiffMetadata } from '../common/activity-diff.util';
 import { PAYMENT_PROCESSING_RATE, PAYMENT_PROCESSING_FIXED } from '../common/payment-fees.const';
+import { roundStripeMinor, stripeMinorUnitFactor, toStripeAmount } from '../common/stripe-amount.util';
 import { rateForPaymentRail } from './payment-rail';
 
 export { classifyPaymentRail, rateForPaymentRail, type PaymentRail } from './payment-rail';
@@ -73,7 +74,10 @@ export class CommissionRulesService {
    */
   async cardApplicationFeeCents(storeId: string, amountCents: number, currency = 'USD'): Promise<number> {
     const commission = rateForPaymentRail(await this.resolveRate(storeId), 'stripe').rate;
-    const fee = Math.round(amountCents * (commission + PAYMENT_PROCESSING_RATE)) + await this.fixedCardFeeMinorUnits(currency);
+    const fee = roundStripeMinor(
+      amountCents * (commission + PAYMENT_PROCESSING_RATE) + await this.fixedCardFeeMinorUnits(currency),
+      currency,
+    );
     return Math.min(amountCents, fee);
   }
 
@@ -85,11 +89,12 @@ export class CommissionRulesService {
    */
   private async fixedCardFeeMinorUnits(currency: string): Promise<number> {
     const cur = (currency || 'USD').toUpperCase();
-    if (cur === 'USD') return Math.round(PAYMENT_PROCESSING_FIXED * 100);
+    if (cur === 'USD') return toStripeAmount(PAYMENT_PROCESSING_FIXED, 'USD');
     const row: any = await this.db.repositories.exchangeRateModel
       .findOne({ currency: cur, isRejected: false, effectiveFrom: { $lte: new Date() } })
       .sort({ effectiveFrom: -1 }).select('ratePerUSD').lean();
-    return row?.ratePerUSD > 0 ? Math.round(PAYMENT_PROCESSING_FIXED * row.ratePerUSD * 100) : 0;
+    // Unrounded on purpose: the caller snaps the whole fee to a Stripe-valid amount once.
+    return row?.ratePerUSD > 0 ? PAYMENT_PROCESSING_FIXED * row.ratePerUSD * stripeMinorUnitFactor(cur) : 0;
   }
 
   // ── Global default ──────────────────────────────────────────────────────

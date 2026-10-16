@@ -88,8 +88,15 @@ describe('CheckoutPaymentMethodsService', () => {
       });
       expect(result.data).toEqual({
         currency: 'PKR',
-        methods: [{ provider: 'safepay', displayName: 'Safepay', currency: 'PKR' }],
+        methods: [{ provider: 'safepay', displayName: 'Safepay', currency: 'PKR', payCurrency: 'PKR', available: true }],
       });
+    });
+
+    it('marks a PKR-only gateway unavailable for a checkout in another currency (Shopify: no local currency on third-party gateways)', async () => {
+      checkoutModel.findOne.mockResolvedValue({ ...checkout([{ storeId: 'store-A', totalPrice: 100 }]), currency: 'USD' });
+      storeIntegrationModel.find.mockResolvedValue([{ provider: 'safepay', config: {} }]);
+      const result = await service.listPaymentMethods('checkout-1', USER_ID);
+      expect(result.data.methods[0]).toEqual(expect.objectContaining({ provider: 'safepay', payCurrency: 'PKR', available: false }));
     });
 
     it('filters out a provider the registry does not actually implement', async () => {
@@ -116,6 +123,15 @@ describe('CheckoutPaymentMethodsService', () => {
       await expect(service.initiatePayment('checkout-1', USER_ID, 'safepay', '', 'https://x.com/cancel')).rejects.toThrow(
         BadRequestException,
       );
+    });
+
+    it('refuses to charge a gateway in a different currency than the checkout records', async () => {
+      checkoutModel.findOne.mockResolvedValue({ ...checkout([{ storeId: 'store-A', totalPrice: 100 }], 100), currency: 'USD' });
+      storeIntegrationModel.findOne.mockResolvedValue({ provider: 'safepay', credentialsEncrypted: null, config: {}, mode: 'sandbox', webhookToken: null });
+      await expect(
+        service.initiatePayment('checkout-1', USER_ID, 'safepay', 'https://x.com/r', 'https://x.com/c'),
+      ).rejects.toThrow('only accepts PKR');
+      expect(paymentService.computeGatewayCharge).not.toHaveBeenCalled();
     });
 
     it('refuses a multi-store checkout rather than routing through one store\'s gateway for another store\'s items', async () => {

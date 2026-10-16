@@ -47,8 +47,16 @@ export class CheckoutPaymentMethodsService {
     return { checkout, storeId: storeIds.length === 1 ? (storeIds[0] as string) : null };
   }
 
+  /**
+   * The only currency a store's own gateway can charge in: local Pakistani gateways are PKR-only and a seller's own
+   * Stripe account settles in the store currency. Shopify: third-party gateways can't take local (market) currencies.
+   */
+  static gatewayCurrency(provider: string, storeCurrency: string | null | undefined): string {
+    return provider === 'stripe' ? (storeCurrency || 'USD') : 'PKR';
+  }
+
   async listPaymentMethods(checkoutId: string, userId: string) {
-    const { storeId } = await this.resolveSingleStoreCheckout(checkoutId, userId);
+    const { checkout, storeId } = await this.resolveSingleStoreCheckout(checkoutId, userId);
     if (!storeId) return { success: true, data: { currency: null, methods: [] } };
 
     // Resolved and returned even when zero gateways are connected yet — the
@@ -72,7 +80,15 @@ export class CheckoutPaymentMethodsService {
       .filter((integration) => this.registry.isSupported(integration.provider))
       .map((integration) => {
         const provider = this.registry.resolve(integration.provider);
-        return { provider: integration.provider, ...provider.getPublicConfig(integration.config ?? {}) };
+        const payCurrency = CheckoutPaymentMethodsService.gatewayCurrency(integration.provider, currency);
+        const checkoutCurrency = (checkout as any).currency ?? currency;
+        return {
+          provider: integration.provider,
+          ...provider.getPublicConfig(integration.config ?? {}),
+          payCurrency,
+          // Not offered for a checkout in another currency; the buyer can switch the checkout to payCurrency.
+          available: payCurrency === checkoutCurrency,
+        };
       });
 
     // Seller-defined custom manual methods (Shopify "Custom payment method"): shown as extra choices; the order is
@@ -151,7 +167,16 @@ export class CheckoutPaymentMethodsService {
     // PKR-only by design — 'PKR' there is correct, not a collapse. Stripe
     // settles in the seller's own real store currency, never hardcoded USD
     // (same bug class as listPaymentMethods above).
-    const currency = integration.provider === 'stripe' ? (store?.baseCurrency ?? 'USD') : 'PKR';
+    const currency = CheckoutPaymentMethodsService.gatewayCurrency(integration.provider, store?.baseCurrency);
+    // Never charge a different currency than the order records (the order, refunds and the ledger all use
+    // checkout.currency). The buyer switches the checkout to the gateway's currency first.
+    if (String((checkout as any).currency ?? currency) !== currency) {
+      throw new BadRequestException({
+        message: `This payment method only accepts ${currency}. Switch your checkout to ${currency} to use it.`,
+        code: 'GATEWAY_CURRENCY_MISMATCH',
+        payCurrency: currency,
+      });
+    }
 
     // The checkout's FINAL payable total (items − discounts + shipping + tax)
     // converted into the gateway currency with the checkout's frozen FX

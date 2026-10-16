@@ -20,20 +20,9 @@ import { assertThemeSupportsSections, filterSectionsToTheme } from '../common/st
 const MAX_HEADER_LINKS = 10;
 const MAX_FOOTER_BLOCKS = 20;
 
-// The one theme package every store gets automatically the moment it's
-// created — must exist as a real theme package on the frontend. Was
-// 'warm-craft' (a theme object from the old, now-superseded 12-theme
-// gallery, which the current Theme Library UI doesn't even list any more) —
-// every brand-new store was silently launching with a theme invisible in
-// its own Theme Library, never the real Atelier theme. Fixed to the one
-// real, complete theme that actually exists today
-// (`src/features/storefront-themes/theme-01-atelier/`). This schema's own
-// field-level defaults below (primaryColor/bgColor/textColor/accentColor/
-// font, etc.) already exactly match Atelier's real default palette — they
-// were never changed, so this is a one-line, zero-risk correction, not a
-// new seed. Backend only ever needs the *id*, never the definition's
-// content — see the class comment on `StoreTheme` for why.
-const DEFAULT_THEME_DEFINITION_ID = 'theme-01-atelier';
+// The one theme package every new store starts with: a real theme in the frontend registry
+// (`storefront-themes/registry.ts`). Backend only ever needs the id, never the definition's content.
+const DEFAULT_THEME_DEFINITION_ID = 'theme-03-fashion';
 
 function validateBlocks(blocks: { type: string; settings: Record<string, any> }[], allowed: string[], max: number) {
   if (blocks.length > max) throw new BadRequestException(`Cannot have more than ${max} items`);
@@ -406,16 +395,16 @@ export class StoreThemeService {
         'draft.identityBanner': themeDef.identityBanner,
         'draft.baseThemeId': themeDefinitionId,
         // NOT 'draft.themeDefinitionId' — that field is a code-registry key
-        // (`NEW_THEME_REGISTRY`'s 'theme-01-atelier'/'theme-02-nova', see
+        // (`NEW_THEME_REGISTRY`'s theme ids, see
         // registry.ts), and `themeDefinitionId` here is a `ThemeDefinition`
         // catalog Mongo _id — a completely different ID namespace. Writing
         // the catalog id into that field (as this line used to) would get
         // copied to the document root on the next publishTheme() call,
         // silently corrupting which theme's REACT CODE the storefront
         // renders — confirmed live: applying a catalog theme then publishing
-        // flipped a Nova-active store's root `themeDefinitionId` to a raw
+        // flipped a store's root `themeDefinitionId` to a raw
         // Mongo ObjectId, which `NEW_THEME_REGISTRY` doesn't recognize, so
-        // every consumer (ThemedRoute, AtelierLivePreview, getThemeManifest)
+        // every consumer (ThemedRoute, ThemeLivePreview, getThemeManifest)
         // silently fell back to DEFAULT_THEME_ID. `appliedCatalogThemeId` is
         // its own field precisely so this can never collide with the
         // code-registry key again.
@@ -555,6 +544,12 @@ export class StoreThemeService {
     return { success: true, data: theme };
   }
 
+  /** Publish expressions: a field the draft never stored (e.g. a draft seeded with only ids, then a header patch) keeps its live value instead of being wiped. */
+  private static readonly DRAFT_OR_LIVE = Object.fromEntries(
+    (['theme', 'header', 'footer', 'identityBanner', 'baseThemeId', 'themeDefinitionId', 'customCss'] as const)
+      .map(key => [key, { $ifNull: [`$draft.${key}`, `$${key}`] }]),
+  );
+
   /** Copies draft → live fields and records the rollback snapshot in one atomic document update. */
   async publishTheme(storeId: string, sellerId: string, installedThemeId?: string) {
     await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
@@ -565,26 +560,9 @@ export class StoreThemeService {
       const updated = await this.contentVersioningService.publishDraftWithVersion(
         this.storeThemeModel,
         filter,
-        {
-          theme: '$draft.theme',
-          header: '$draft.header',
-          footer: '$draft.footer',
-          identityBanner: '$draft.identityBanner',
-          baseThemeId: '$draft.baseThemeId',
-          themeDefinitionId: '$draft.themeDefinitionId',
-          customCss: '$draft.customCss',
-        },
+        StoreThemeService.DRAFT_OR_LIVE,
         { lastPublishedAt: '$$NOW' },
-        {
-          theme: '$draft.theme',
-          header: '$draft.header',
-          footer: '$draft.footer',
-          identityBanner: '$draft.identityBanner',
-          baseThemeId: '$draft.baseThemeId',
-          themeDefinitionId: '$draft.themeDefinitionId',
-          customCss: '$draft.customCss',
-          publishedAt: '$$NOW',
-        },
+        { ...StoreThemeService.DRAFT_OR_LIVE, publishedAt: '$$NOW' },
         20,
         session,
       );

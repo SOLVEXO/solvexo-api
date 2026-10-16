@@ -664,6 +664,10 @@ export class Order {
   @Prop({ type: [Object], default: [] })
   timeline: Array<{ type: string; message: string; actorId: string | null; actorRole: string | null; createdAt: Date }>;
 
+  // Note the buyer wrote at checkout (Shopify cart note); visible to the seller, unlike `note` below.
+  @Prop({ type: String, default: '', maxlength: 500 })
+  customerNote: string;
+
   // Shopify Notes card — merchant-only internal note about this order.
   @Prop({ type: String, default: '' })
   note: string;

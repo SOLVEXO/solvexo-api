@@ -1,5 +1,6 @@
 import {
   applyMarketRule,
+  marketUnitPrice,
   convertUnrounded,
   marketAdjustedNativeAmount,
   marketRuleChangesPrice,
@@ -50,8 +51,15 @@ describe('market-price.util', () => {
       expect(applyMarketRule(100, 'USD', { type: 'percentage', percentageAdjustment: 10 })).toBeCloseTo(110, 6);
       expect(applyMarketRule(100, 'USD', { type: 'percentage', percentageAdjustment: -5 })).toBeCloseTo(95, 6);
     });
-    it('ignores percentageAdjustment unless the rule type is percentage', () => {
-      expect(applyMarketRule(100, 'USD', { type: 'auto', percentageAdjustment: 10 })).toBe(100);
+    it('applies the market % adjustment whatever the exchange-rate type (Shopify catalog adjustment)', () => {
+      expect(applyMarketRule(100, 'USD', { type: 'auto', percentageAdjustment: 10 })).toBeCloseTo(110, 6);
+    });
+    it('never rounds or adds a fee to a price that was not converted', () => {
+      expect(applyMarketRule(100, 'PKR', { useRounding: true, roundingRule: '0.99', conversionFee: 2 }, false)).toBe(100);
+      expect(applyMarketRule(100, 'PKR', { percentageAdjustment: 10, useRounding: true }, false)).toBe(110);
+    });
+    it('PKR has no cents: .99 rounds to whole rupees', () => {
+      expect(applyMarketRule(2796.6, 'PKR', { useRounding: true, roundingRule: '0.99' })).toBe(2797);
     });
     it('applies fee then rounding in the market currency', () => {
       expect(applyMarketRule(100, 'USD', { type: 'auto', conversionFee: 1.5, useRounding: true, roundingRule: '0.99' })).toBe(101.99);
@@ -71,12 +79,14 @@ describe('market-price.util', () => {
     it('is false for plain FX markets', () => {
       expect(marketRuleChangesPrice(null)).toBe(false);
       expect(marketRuleChangesPrice({ type: 'auto' })).toBe(false);
-      expect(marketRuleChangesPrice({ type: 'manual', percentageAdjustment: 5 })).toBe(false);
+      expect(marketRuleChangesPrice({ type: 'manual' })).toBe(false);
     });
     it('is true when adjustment, fee or rounding is set', () => {
       expect(marketRuleChangesPrice({ type: 'percentage', percentageAdjustment: 5 })).toBe(true);
       expect(marketRuleChangesPrice({ conversionFee: 2 })).toBe(true);
       expect(marketRuleChangesPrice({ useRounding: true })).toBe(true);
+      expect(marketRuleChangesPrice({ type: 'auto', percentageAdjustment: 5 })).toBe(true);
+      expect(marketRuleChangesPrice({ type: 'manual', manualRate: 0.004 })).toBe(true);
     });
   });
 
@@ -105,6 +115,28 @@ describe('market-price.util', () => {
     });
     it('is a no-op for a market in the store currency', () => {
       expect(marketAdjustedNativeAmount(100, 'PKR', 'PKR', { useRounding: true, roundingRule: '1.00' }, SNAPS)).toBe(100);
+    });
+  });
+
+  describe('marketUnitPrice (what the storefront shows and checkout charges for ONE unit)', () => {
+    it('a fixed market price wins as-is', () => {
+      expect(marketUnitPrice(2800, 'PKR', 'USD', { useRounding: true, roundingRule: '0.99', percentageAdjustment: 50 }, SNAPS, 12.5)).toBe(12.5);
+    });
+    it('uses the seller manual rate instead of the live rate', () => {
+      // 1 PKR = 0.004 USD manual -> 2800 PKR = 11.20 USD (live would be 10.00)
+      expect(marketUnitPrice(2800, 'PKR', 'USD', { type: 'manual', manualRate: 0.004 }, SNAPS)).toBe(11.2);
+    });
+    it('rounds the unit, so quantity 3 at .99 is exactly 3 x 9.99', () => {
+      const unit = marketUnitPrice(2800, 'PKR', 'USD', { useRounding: true, roundingRule: '0.99' }, SNAPS);
+      expect(unit).toBe(9.99);
+      const nativeUnit = marketAdjustedNativeAmount(2800, 'PKR', 'USD', { useRounding: true, roundingRule: '0.99' }, SNAPS);
+      expect(convertUnrounded(nativeUnit * 3, 'PKR', 'USD', SNAPS)).toBeCloseTo(29.97, 4);
+    });
+    it('nearest rounding keeps cents in a 2-decimal currency', () => {
+      expect(marketUnitPrice(2931.6, 'PKR', 'USD', { useRounding: true, roundingRule: 'nearest' }, SNAPS)).toBe(10.47);
+    });
+    it('the store currency market is never rounded', () => {
+      expect(marketUnitPrice(1234, 'PKR', 'PKR', { useRounding: true, roundingRule: '1.00' }, SNAPS)).toBe(1234);
     });
   });
 });

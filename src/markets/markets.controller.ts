@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Put, Delete, Body, Param, UseGuards, HttpCode } from '@nestjs/common';
+import { Controller, Get, Post, Put, Delete, Body, Param, UseGuards, HttpCode, UsePipes, ValidationPipe } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -14,6 +14,7 @@ import { UpdateMarketDto } from './dto/update-market.dto';
 @ApiBearerAuth()
 @Controller('api/stores/:storeId/markets')
 @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard, StoreAccessGuard)
+@UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }))
 @RequirePermission('settings.general.manage')
 export class MarketsController {
   constructor(private readonly marketsService: MarketsService) {}

@@ -1,355 +1,183 @@
-import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
-import { MarketPrice, MarketPriceDocument } from './schemas/market-price.schema';
-import { CreateMarketPriceDto } from './dto/create-market-price.dto';
-import { UpdateMarketPriceDto } from './dto/update-market-price.dto';
+import { Injectable, NotFoundException } from '@nestjs/common';
+import { isValidObjectId } from 'mongoose';
 import { DatabaseService } from '@/database/databaseservice';
 import { MarketsService } from './markets.service';
-import { ExchangeRateService } from '@/exchange-rate/exchange-rate.service';
-import { calculateFinalPrice, getDefaultRoundingRule } from '@/common/rounding-rules.const';
+import { SetMarketPriceDto } from './dto/create-market-price.dto';
 
+/** One fixed market price as the storefront and checkout use it. */
+export interface FixedMarketPrice {
+  productId: string;
+  variantId: string | null;
+  fixedPrice: number;
+  compareAtPrice: number | null;
+}
+
+/** Key used to look a fixed price up: the variant's own price wins over the product-wide one. */
+export function fixedPriceFor(
+  prices: Map<string, FixedMarketPrice>,
+  productId: string,
+  variantId: string | null | undefined,
+): FixedMarketPrice | null {
+  return (variantId ? prices.get(`${productId}:${variantId}`) : undefined) ?? prices.get(`${productId}:`) ?? null;
+}
+
+/**
+ * Shopify catalog fixed prices: per market, per product (or variant), in the market's currency.
+ * Every write is store-scoped and only fixed prices are accepted (percentage rows from older data are ignored).
+ */
 @Injectable()
 export class MarketPricingService {
   constructor(
     private readonly databaseService: DatabaseService,
     private readonly marketsService: MarketsService,
-    private readonly exchangeRateService: ExchangeRateService,
   ) {}
 
   private get marketPriceModel() {
     return this.databaseService.repositories.marketPriceModel;
   }
 
-  /** A market price may only point at a live product of the SAME store (a seller must never price another store's product). */
-  private async assertProductInStore(storeId: string, productId: string): Promise<void> {
-    const product = await this.databaseService.repositories.productModel
+  private async loadProduct(storeId: string, productId: string, variantId?: string | null) {
+    const product: any = await this.databaseService.repositories.productModel
       .findOne({ _id: productId, storeId, isDelete: false })
-      .select('_id')
+      .select('_id name')
       .lean();
     if (!product) throw new NotFoundException('Product not found in this store');
+    if (variantId) {
+      const variant = await this.databaseService.repositories.productVariantModel
+        .findOne({ _id: variantId, productId: String(productId), isDelete: false })
+        .select('_id')
+        .lean();
+      if (!variant) throw new NotFoundException('Variant not found for this product');
+    }
+    return product;
   }
 
-  /**
-   * Create a market-specific price for a product/variant.
-   */
-  async create(storeId: string, dto: CreateMarketPriceDto): Promise<MarketPrice> {
-    // Verify market belongs to store
-    const market = await this.marketsService.findOne(storeId, dto.marketId);
-    await this.assertProductInStore(storeId, dto.productId);
-
-    // Validate currency matches market currency
-    if (dto.currency !== market.currency) {
-      throw new BadRequestException(`Price currency ${dto.currency} must match market currency ${market.currency}`);
-    }
-
-    // Validate pricing type has required fields
-    if (dto.priceType === 'percentage' && dto.percentageAdjustment === null) {
-      throw new BadRequestException('percentageAdjustment is required when priceType is percentage');
-    }
-
-    if (dto.priceType === 'fixed' && dto.fixedPrice === null) {
-      throw new BadRequestException('fixedPrice is required when priceType is fixed');
-    }
-
-    // Check for existing pricing (soft-deleted entries are ignored)
-    const existing = await this.marketPriceModel.findOne({
-      marketId: dto.marketId,
-      productId: dto.productId,
-      variantId: dto.variantId || null,
-      isDelete: false,
-    });
-
-    if (existing) {
-      throw new BadRequestException('Market pricing already exists for this product/variant');
-    }
-
-    const marketPrice = await this.marketPriceModel.create(dto);
-    return marketPrice;
-  }
-
-  /**
-   * Get all market prices for a store's products.
-   */
-  async findAll(storeId: string): Promise<MarketPrice[]> {
-    // Get all markets for this store
-    const markets = await this.marketsService.findAll(storeId);
-    const marketIds = markets.map((m) => (m as any)._id?.toString());
-
-    return this.marketPriceModel
-      .find({ marketId: { $in: marketIds }, isDelete: false })
+  /** Every fixed price of one market, with product names for the seller screen. */
+  async listForMarket(storeId: string, marketId: string) {
+    const market: any = await this.marketsService.findOne(storeId, marketId);
+    const rows: any[] = await this.marketPriceModel
+      .find({ marketId: String(market._id), priceType: 'fixed', isDelete: false })
       .lean();
+    const productIds = Array.from(new Set(rows.map((r) => r.productId)));
+    const variantIds = rows.map((r) => r.variantId).filter(Boolean);
+    const [products, variants]: [any[], any[]] = await Promise.all([
+      this.databaseService.repositories.productModel
+        .find({ _id: { $in: productIds }, storeId, isDelete: false }).select('name images').lean(),
+      this.databaseService.repositories.productVariantModel
+        .find({ _id: { $in: variantIds } }).select('options sku price').lean(),
+    ]);
+    const pMap = new Map(products.map((p) => [String(p._id), p]));
+    const vMap = new Map(variants.map((v) => [String(v._id), v]));
+    return rows
+      .filter((r) => pMap.has(String(r.productId)))
+      .map((r) => {
+        const p = pMap.get(String(r.productId));
+        const v = r.variantId ? vMap.get(String(r.variantId)) : null;
+        return {
+          id: String(r._id),
+          productId: String(r.productId),
+          variantId: r.variantId ? String(r.variantId) : null,
+          productName: p?.name ?? '',
+          image: p?.images?.[0] ?? null,
+          variantLabel: v ? (v.options ?? []).map((o: any) => o?.value).filter(Boolean).join(' / ') || v.sku || null : null,
+          fixedPrice: r.fixedPrice,
+          compareAtPrice: r.compareAtPrice ?? null,
+          currency: r.currency,
+        };
+      });
   }
 
-  /**
-   * Get market prices for a specific product.
-   */
-  async findByProduct(storeId: string, productId: string): Promise<MarketPrice[]> {
-    const markets = await this.marketsService.findAll(storeId);
-    const marketIds = markets.map((m) => (m as any)._id?.toString());
-
-    return this.marketPriceModel
-      .find({ marketId: { $in: marketIds }, productId, isDelete: false })
+  /** Fixed prices of one product across the store's markets (product page). */
+  async listForProduct(storeId: string, productId: string) {
+    await this.loadProduct(storeId, productId);
+    const markets: any[] = await this.marketsService.findAll(storeId);
+    const ids = markets.map((m) => String(m._id));
+    const rows: any[] = await this.marketPriceModel
+      .find({ marketId: { $in: ids }, productId, priceType: 'fixed', isDelete: false })
       .lean();
+    return rows.map((r) => ({
+      id: String(r._id),
+      marketId: String(r.marketId),
+      variantId: r.variantId ? String(r.variantId) : null,
+      fixedPrice: r.fixedPrice,
+      compareAtPrice: r.compareAtPrice ?? null,
+      currency: r.currency,
+    }));
   }
 
-  /**
-   * Get market price for a specific product/variant in a market.
-   */
-  async findOne(storeId: string, marketId: string, productId: string, variantId?: string | null): Promise<MarketPrice> {
-    const market = await this.marketsService.findOne(storeId, marketId);
-
-    const marketPrice = await this.marketPriceModel.findOne({
-      marketId,
-      productId,
-      variantId: variantId || null,
+  /** Create or replace the fixed price of a product/variant in a market. */
+  async upsert(storeId: string, marketId: string, dto: SetMarketPriceDto) {
+    const market: any = await this.marketsService.findOne(storeId, marketId);
+    await this.loadProduct(storeId, dto.productId, dto.variantId ?? null);
+    const filter = {
+      marketId: String(market._id),
+      productId: String(dto.productId),
+      variantId: dto.variantId ? String(dto.variantId) : null,
       isDelete: false,
-    });
-
-    if (!marketPrice) {
-      throw new NotFoundException('Market price not found');
-    }
-
-    return marketPrice;
+    };
+    const doc: any = await this.marketPriceModel.findOneAndUpdate(
+      filter,
+      {
+        $set: {
+          storeId,
+          priceType: 'fixed',
+          fixedPrice: Number(dto.fixedPrice),
+          compareAtPrice: dto.compareAtPrice == null ? null : Number(dto.compareAtPrice),
+          percentageAdjustment: null,
+          currency: market.currency,
+        },
+      },
+      { new: true, upsert: true, setDefaultsOnInsert: true },
+    ).lean();
+    return {
+      id: String(doc._id),
+      productId: doc.productId,
+      variantId: doc.variantId,
+      fixedPrice: doc.fixedPrice,
+      compareAtPrice: doc.compareAtPrice ?? null,
+      currency: doc.currency,
+    };
   }
 
-  /**
-   * Update a market price.
-   */
-  async update(storeId: string, marketId: string, productId: string, variantId: string | null, dto: UpdateMarketPriceDto): Promise<MarketPrice> {
-    await this.marketsService.findOne(storeId, marketId);
-    await this.assertProductInStore(storeId, productId);
-    const existing = await this.marketPriceModel.findOne({
-      marketId,
-      productId,
-      variantId: variantId || null,
-      isDelete: false,
-    });
-
-    if (!existing) {
-      throw new NotFoundException('Market price not found');
-    }
-
-    // If changing currency, validate against market
-    if (dto.currency && dto.currency !== existing.currency) {
-      const market = await this.marketsService.findOne(storeId, marketId);
-      if (dto.currency !== market.currency) {
-        throw new BadRequestException(`Price currency ${dto.currency} must match market currency ${market.currency}`);
-      }
-    }
-
-    // Validate pricing type has required fields
-    if (dto.priceType === 'percentage' && dto.percentageAdjustment === null) {
-      throw new BadRequestException('percentageAdjustment is required when priceType is percentage');
-    }
-
-    if (dto.priceType === 'fixed' && dto.fixedPrice === null) {
-      throw new BadRequestException('fixedPrice is required when priceType is fixed');
-    }
-
-    const updated = await this.marketPriceModel.findOneAndUpdate(
-      { marketId, productId, variantId: variantId || null, isDelete: false },
-      { $set: dto },
-      { new: true },
+  async remove(storeId: string, marketId: string, priceId: string): Promise<void> {
+    const market: any = await this.marketsService.findOne(storeId, marketId);
+    if (!isValidObjectId(priceId)) throw new NotFoundException('Market price not found');
+    const res = await this.marketPriceModel.updateOne(
+      { _id: priceId, marketId: String(market._id), isDelete: false },
+      { $set: { isDelete: true } },
     );
-
-    return updated as MarketPrice;
+    if (!res.matchedCount) throw new NotFoundException('Market price not found');
   }
 
   /**
-   * Delete a market price (soft delete).
+   * Fixed prices of `productIds` in a market, keyed `productId:variantId` (or `productId:` for product-wide).
+   * Only rows in the market's CURRENT currency count (a currency change retires older prices).
    */
-  async remove(storeId: string, marketId: string, productId: string, variantId?: string | null): Promise<void> {
-    await this.marketsService.findOne(storeId, marketId);
-    await this.assertProductInStore(storeId, productId);
-    const existing = await this.marketPriceModel.findOne({
-      marketId,
-      productId,
-      variantId: variantId || null,
-      isDelete: false,
-    });
-
-    if (!existing) {
-      throw new NotFoundException('Market price not found');
-    }
-
-    await this.marketPriceModel.updateOne(
-      { marketId, productId, variantId: variantId || null },
-      { isDelete: true },
-    );
-  }
-
-  /**
-   * Calculate the price for a product in a specific market.
-   * Uses market-specific pricing if available, otherwise converts base price using FX.
-   * Applies market's rounding rules and conversion fee if configured.
-   *
-   * @param basePrice - Product price in store base currency
-   * @param baseCurrency - Store base currency
-   * @param marketCurrency - Market currency
-   * @param marketPricing - Optional market-specific pricing
-   * @param marketPricingRule - Optional market pricing rule (rounding, conversion fee)
-   * @returns Price in market currency
-   */
-  async calculatePrice(
-    basePrice: number,
-    baseCurrency: string,
-    marketCurrency: string,
-    marketPricing?: MarketPrice | null,
-    marketPricingRule?: { useRounding?: boolean; roundingRule?: string; conversionFee?: number } | null,
-  ): Promise<number> {
-    // If market has fixed pricing, use it directly
-    if (marketPricing && marketPricing.priceType === 'fixed' && marketPricing.fixedPrice !== null) {
-      let price = marketPricing.fixedPrice;
-
-      // Apply conversion fee if configured
-      if (marketPricingRule?.conversionFee) {
-        price = price * (1 + marketPricingRule.conversionFee / 100);
-      }
-
-      // Apply rounding if configured
-      if (marketPricingRule?.useRounding && marketPricingRule.roundingRule) {
-        price = calculateFinalPrice(price, marketCurrency, null, marketPricingRule.roundingRule as any);
-      }
-
-      return price;
-    }
-
-    // If market has percentage adjustment, apply it to converted price
-    let price = basePrice;
-
-    // Convert base price to market currency using USD as pivot
-    if (baseCurrency !== marketCurrency) {
-      const baseRate = await this.exchangeRateService.getCurrentRate(baseCurrency);
-      const marketRate = await this.exchangeRateService.getCurrentRate(marketCurrency);
-
-      if (!baseRate && baseCurrency !== 'USD') {
-        throw new BadRequestException(`Exchange rate not available for ${baseCurrency}`);
-      }
-      if (!marketRate && marketCurrency !== 'USD') {
-        throw new BadRequestException(`Exchange rate not available for ${marketCurrency}`);
-      }
-
-      // Convert: baseCurrency -> USD -> marketCurrency
-      const baseToUsd = baseCurrency === 'USD' ? 1 : baseRate!.ratePerUSD;
-      const usdToMarket = marketCurrency === 'USD' ? 1 : marketRate!.ratePerUSD;
-      price = basePrice / baseToUsd * usdToMarket;
-    }
-
-    // Apply percentage adjustment if available
-    if (marketPricing && marketPricing.priceType === 'percentage' && marketPricing.percentageAdjustment !== null) {
-      const adjustment = price * (marketPricing.percentageAdjustment / 100);
-      price = price + adjustment;
-    }
-
-    // Apply conversion fee if configured
-    if (marketPricingRule?.conversionFee) {
-      price = price * (1 + marketPricingRule.conversionFee / 100);
-    }
-
-    // Apply rounding if configured
-    if (marketPricingRule?.useRounding) {
-      const roundingRule = marketPricingRule.roundingRule || getDefaultRoundingRule(marketCurrency);
-      price = calculateFinalPrice(price, marketCurrency, null, roundingRule as any);
-    }
-
-    return price;
-  }
-
-  /**
-   * Batch create market prices for all markets of a store.
-   * Useful for product creation/update workflows.
-   */
-  async batchCreateForProduct(
-    storeId: string,
-    productId: string,
-    basePrice: number,
-    baseCurrency: string,
-  ): Promise<MarketPrice[]> {
-    await this.assertProductInStore(storeId, productId);
-    const markets = await this.marketsService.findAll(storeId);
-    const createdPrices: MarketPrice[] = [];
-
-    for (const market of markets) {
-      const marketId = (market as any)._id?.toString();
-
-      // Skip if pricing already exists
-      const existing = await this.marketPriceModel.findOne({
-        marketId,
-        productId,
-        variantId: null,
-        isDelete: false,
+  async fixedPricesFor(marketId: string, marketCurrency: string, productIds?: string[]): Promise<Map<string, FixedMarketPrice>> {
+    const filter: any = { marketId: String(marketId), priceType: 'fixed', currency: marketCurrency, isDelete: false };
+    if (productIds) filter.productId = { $in: productIds.map(String) };
+    const rows: any[] = await this.marketPriceModel.find(filter).select('productId variantId fixedPrice compareAtPrice').lean();
+    const map = new Map<string, FixedMarketPrice>();
+    for (const r of rows) {
+      if (!(Number(r.fixedPrice) >= 0)) continue;
+      map.set(`${r.productId}:${r.variantId ?? ''}`, {
+        productId: String(r.productId),
+        variantId: r.variantId ? String(r.variantId) : null,
+        fixedPrice: Number(r.fixedPrice),
+        compareAtPrice: r.compareAtPrice == null ? null : Number(r.compareAtPrice),
       });
-
-      if (existing) {
-        continue;
-      }
-
-      // Calculate price in market currency using USD as pivot
-      let price = basePrice;
-      if (baseCurrency !== market.currency) {
-        const baseRate = await this.exchangeRateService.getCurrentRate(baseCurrency);
-        const marketRate = await this.exchangeRateService.getCurrentRate(market.currency);
-
-        if (baseRate && marketRate) {
-          const baseToUsd = baseCurrency === 'USD' ? 1 : baseRate.ratePerUSD;
-          const usdToMarket = market.currency === 'USD' ? 1 : marketRate.ratePerUSD;
-          price = basePrice / baseToUsd * usdToMarket;
-        }
-      }
-
-      // Create auto pricing entry
-      const marketPrice = await this.marketPriceModel.create({
-        marketId,
-        productId,
-        variantId: null,
-        priceType: 'percentage',
-        percentageAdjustment: 0, // No adjustment, just FX conversion
-        currency: market.currency,
-        fixedPrice: null,
-        compareAtPrice: null,
-      });
-
-      createdPrices.push(marketPrice);
     }
-
-    return createdPrices;
+    return map;
   }
 
-  /**
-   * Calculate final price for a product in a market with all market rules applied.
-   * This is the main method to use at checkout time.
-   *
-   * @param storeId - Store ID
-   * @param marketId - Market ID
-   * @param productId - Product ID
-   * @param basePrice - Base price in store currency
-   * @param baseCurrency - Store base currency
-   * @returns Final price in market currency
-   */
-  async calculateFinalPriceForMarket(
-    storeId: string,
-    marketId: string,
-    productId: string,
-    basePrice: number,
-    baseCurrency: string,
-  ): Promise<number> {
-    // Get market
-    const market = await this.marketsService.findOne(storeId, marketId);
-
-    // Get market-specific pricing if exists
-    const marketPricing = await this.marketPriceModel.findOne({
-      marketId,
-      productId,
-      variantId: null,
-      isDelete: false,
-    });
-
-    // Calculate price with market rules
-    return this.calculatePrice(
-      basePrice,
-      baseCurrency,
-      market.currency,
-      marketPricing,
-      market.pricingRule,
-    );
+  /** Public list for the storefront (only active markets of the store). */
+  async publicPricesForMarket(storeId: string, marketId: string): Promise<FixedMarketPrice[]> {
+    if (!isValidObjectId(marketId)) throw new NotFoundException('Market not found');
+    const market: any = await this.databaseService.repositories.marketModel
+      .findOne({ _id: marketId, storeId, isActive: true, isDelete: false })
+      .select('currency')
+      .lean();
+    if (!market) throw new NotFoundException('Market not found');
+    return Array.from((await this.fixedPricesFor(String(market._id), market.currency)).values());
   }
 }

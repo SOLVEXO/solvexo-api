@@ -2,7 +2,7 @@
  * One-time repair for `StoreTheme.themeDefinitionId`/`baseThemeId` corruption
  * (see `store-theme.schema.ts`'s own doc comment on `themeDefinitionId`,
  * lines ~224-238): `themeDefinitionId` must always be a code-registry key
- * (`'theme-01-atelier'` | `'theme-02-nova'` — see
+ * (`'theme-03-fashion'` — see
  * `storefront-themes/registry.ts` on the frontend), never a Mongo
  * `ThemeDefinition` catalog `_id`. A prior version of
  * `StoreThemeService.applyThemeDefinition` collided the two, writing a raw
@@ -22,7 +22,7 @@
  * silently propagates `null` onto ROOT the moment the seller's first
  * Publish copies draft → root. This script only ever REPAIRS an invalid
  * value — it never touches a document whose `themeDefinitionId`/
- * `baseThemeId` is already one of the two known-valid registry keys.
+ * `baseThemeId` is already a known-valid registry key.
  * Anything else (a wrong non-null string like a stray 24-hex ObjectId, or
  * `null`/empty on a row that should already have a real value) is replaced
  * with `DEFAULT_THEME_DEFINITION_ID`, the exact same fallback the frontend
@@ -40,8 +40,8 @@
 import 'dotenv/config';
 import mongoose from 'mongoose';
 
-const DEFAULT_THEME_DEFINITION_ID = 'theme-01-atelier';
-const VALID_THEME_DEFINITION_IDS = new Set(['theme-01-atelier', 'theme-02-nova']);
+const DEFAULT_THEME_DEFINITION_ID = 'theme-03-fashion';
+const VALID_THEME_DEFINITION_IDS = new Set(['theme-03-fashion']);
 
 function isInvalid(value: unknown): boolean {
   // A wrong non-null string (the original catalog-id-collision bug this

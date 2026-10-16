@@ -1,307 +1,184 @@
-// @ts-nocheck -- jest mock typings only (mongoose Document mocks); the assertions below are real.
-import { Test, TestingModule } from '@nestjs/testing';
+// @ts-nocheck -- in-memory fake models; the assertions below are real.
 import { BadRequestException, NotFoundException } from '@nestjs/common';
-import { MarketsService } from './markets.service';
-import { DatabaseService } from '@/database/databaseservice';
-import { AdminConfigService } from '@/admin-config/admin-config.service';
-import { Market, MarketDocument } from './schemas/market.schema';
-import { CreateMarketDto } from './dto/create-market.dto';
-import { UpdateMarketDto } from './dto/update-market.dto';
+import { Types } from 'mongoose';
+import { MarketsService, isProductAvailableInMarket } from './markets.service';
+
+/** Tiny Mongo-like matcher: equality, $ne, $in (also against array fields). */
+function matches(doc: any, filter: any): boolean {
+  return Object.entries(filter ?? {}).every(([k, cond]: [string, any]) => {
+    const val = doc[k];
+    if (cond && typeof cond === 'object' && !Array.isArray(cond) && !(cond instanceof Types.ObjectId)) {
+      if ('$ne' in cond) return String(val) !== String(cond.$ne);
+      if ('$in' in cond) {
+        const wanted = cond.$in.map(String);
+        return Array.isArray(val) ? val.some((v) => wanted.includes(String(v))) : wanted.includes(String(val));
+      }
+    }
+    return String(val) === String(cond);
+  });
+}
+
+function query(result: any) {
+  const q: any = Promise.resolve(result);
+  q.lean = () => q; q.select = () => q; q.sort = () => q;
+  return q;
+}
+
+function fakeModel(rows: any[]) {
+  return {
+    rows,
+    find: (f) => query(rows.filter((r) => matches(r, f))),
+    findOne: (f) => query(rows.find((r) => matches(r, f)) ?? null),
+    exists: (f) => Promise.resolve(rows.some((r) => matches(r, f)) ? { _id: 1 } : null),
+    countDocuments: (f) => Promise.resolve(rows.filter((r) => matches(r, f)).length),
+    create: (doc) => { const row = { _id: new Types.ObjectId(), ...doc }; rows.push(row); return Promise.resolve(row); },
+    updateMany: (f, u) => { rows.filter((r) => matches(r, f)).forEach((r) => Object.assign(r, u.$set ?? u)); return Promise.resolve({}); },
+    updateOne: (f, u) => {
+      const r = rows.find((x) => matches(x, f));
+      if (r && u.$set) Object.assign(r, u.$set);
+      if (r && u.$addToSet) for (const [k, v] of Object.entries(u.$addToSet)) { r[k] = Array.from(new Set([...(r[k] ?? []), v])); }
+      return Promise.resolve({ matchedCount: r ? 1 : 0 });
+    },
+    findOneAndUpdate: (f, u) => { const r = rows.find((x) => matches(x, f)); if (r) Object.assign(r, u.$set); return Promise.resolve(r ?? null); },
+  };
+}
+
+const STORE_ID = new Types.ObjectId().toString();
+const OTHER_STORE = new Types.ObjectId().toString();
+const PRODUCT_ID = new Types.ObjectId().toString();
+
+function setup(opts: { enabledCurrencies?: string[] | null; maxMarkets?: number } = {}) {
+  const stores = [{
+    _id: STORE_ID, baseCurrency: 'PKR', enabledCurrencies: opts.enabledCurrencies ?? null, isDelete: false,
+    customDomains: [{ domain: 'eu.shop.com', status: 'verified' }, { domain: 'new.shop.com', status: 'unverified' }],
+  }];
+  const markets = fakeModel([]);
+  const storeModel = fakeModel(stores);
+  storeModel.findById = (id) => query(stores.find((s) => String(s._id) === String(id)) ?? null);
+  const products = fakeModel([{ _id: PRODUCT_ID, storeId: STORE_ID, isDelete: false }]);
+  const marketPrices = fakeModel([]);
+  const db = { repositories: { marketModel: markets, storeModel, productModel: products, marketPriceModel: marketPrices } };
+  const adminConfig = { getEnabledCurrencies: jest.fn().mockResolvedValue(['PKR', 'USD', 'EUR', 'GBP'].map((code) => ({ code }))) };
+  const entitlements = { getLimits: jest.fn().mockResolvedValue({ maxMarkets: opts.maxMarkets ?? -1 }) };
+  const service = new MarketsService(db as any, adminConfig as any, entitlements as any);
+  return { service, markets, stores, marketPrices };
+}
 
 describe('MarketsService', () => {
-  let service: MarketsService;
-  let databaseService: DatabaseService;
-  let adminConfigService: AdminConfigService;
-
-  const mockStore = {
-    _id: 'store123',
-    name: 'Test Store',
-    baseCurrency: 'USD',
-  };
-
-  const mockMarket: Partial<Market> = {
-    _id: 'market123',
-    storeId: 'store123',
-    name: 'United States',
-    countries: ['US'],
-    currency: 'USD',
-    languages: ['en'],
-    domainType: 'primary',
-    isActive: true,
-    isPrimary: true,
-    isDelete: false,
-  };
-
-  const mockEnabledCurrencies = [
-    { code: 'USD', sanityBandMin: null, sanityBandMax: null, stripeCardPaymentSupported: true },
-    { code: 'EUR', sanityBandMin: 0.8, sanityBandMax: 1.2, stripeCardPaymentSupported: true },
-    { code: 'PKR', sanityBandMin: 150, sanityBandMax: 450, stripeCardPaymentSupported: true },
-  ];
-
-  beforeEach(async () => {
-    const module: TestingModule = await Test.createTestingModule({
-      providers: [
-        MarketsService,
-        {
-          provide: DatabaseService,
-          useValue: {
-            repositories: {
-              storeModel: {
-                findById: jest.fn(),
-              },
-              marketModel: {
-                create: jest.fn(),
-                find: jest.fn(),
-                findOne: jest.fn(),
-                findOneAndUpdate: jest.fn(),
-                updateMany: jest.fn(),
-                updateOne: jest.fn(),
-              },
-            },
-          },
-        },
-        {
-          provide: AdminConfigService,
-          useValue: {
-            getEnabledCurrencies: jest.fn().mockResolvedValue(mockEnabledCurrencies),
-          },
-        },
-      ],
-    }).compile();
-
-    service = module.get<MarketsService>(MarketsService);
-    databaseService = module.get<DatabaseService>(DatabaseService);
-    adminConfigService = module.get<AdminConfigService>(AdminConfigService);
+  it('makes the first market primary and active', async () => {
+    const { service } = setup();
+    const m: any = await service.create(STORE_ID, { name: 'Pakistan', countries: ['pk'], currency: 'pkr', isActive: false });
+    expect(m.isPrimary).toBe(true);
+    expect(m.isActive).toBe(true);
+    expect(m.countries).toEqual(['PK']);
+    expect(m.currency).toBe('PKR');
   });
 
-  it('should be defined', () => {
-    expect(service).toBeDefined();
+  it('never lets the body move a market to another store or set internal fields', async () => {
+    const { service, markets } = setup();
+    const m: any = await service.create(STORE_ID, { name: 'PK', countries: ['PK'], currency: 'PKR' });
+    await service.update(STORE_ID, String(m._id), { name: 'Pakistan', storeId: OTHER_STORE, isDelete: true, _id: 'x' } as any);
+    const row = markets.rows.find((r) => String(r._id) === String(m._id));
+    expect(row.storeId).toBe(STORE_ID);
+    expect(row.isDelete).toBe(false);
+    expect(row.name).toBe('Pakistan');
   });
 
-  describe('create', () => {
-    it('should create a market successfully', async () => {
-      const dto: CreateMarketDto = {
-        name: 'United States',
-        countries: ['US'],
-        currency: 'USD',
-        languages: ['en'],
-        isPrimary: true,
-      };
+  it('rejects a currency the platform has not enabled', async () => {
+    const { service } = setup();
+    await expect(service.create(STORE_ID, { name: 'X', countries: ['JP'], currency: 'JPY' })).rejects.toThrow(BadRequestException);
+  });
 
-      jest.spyOn(databaseService.repositories.storeModel, 'findById').mockResolvedValue(mockStore);
-      jest.spyOn(databaseService.repositories.marketModel, 'updateMany').mockResolvedValue({} as any);
-      jest.spyOn(databaseService.repositories.marketModel, 'create').mockResolvedValue(mockMarket as MarketDocument);
+  it('requires countries on a non-primary market and keeps each country in one market', async () => {
+    const { service } = setup();
+    await service.create(STORE_ID, { name: 'Home', countries: [], currency: 'PKR' });
+    await expect(service.create(STORE_ID, { name: 'EU', countries: [], currency: 'EUR' })).rejects.toThrow(/at least one country/);
+    await service.create(STORE_ID, { name: 'EU', countries: ['DE', 'FR'], currency: 'EUR' });
+    await expect(service.create(STORE_ID, { name: 'France', countries: ['FR'], currency: 'EUR' })).rejects.toThrow(/already in the market "EU"/);
+  });
 
-      const result = await service.create('store123', dto);
+  it('switching primary moves the flag; the primary market cannot be turned off, demoted or deleted while others exist', async () => {
+    const { service, markets } = setup();
+    const home: any = await service.create(STORE_ID, { name: 'Home', countries: ['PK'], currency: 'PKR' });
+    const eu: any = await service.create(STORE_ID, { name: 'EU', countries: ['DE'], currency: 'EUR' });
+    await expect(service.update(STORE_ID, String(home._id), { isActive: false })).rejects.toThrow(/cannot be turned off/);
+    await expect(service.update(STORE_ID, String(home._id), { isPrimary: false })).rejects.toThrow(/another market primary/);
+    await expect(service.remove(STORE_ID, String(home._id))).rejects.toThrow(/another market primary/);
+    await service.update(STORE_ID, String(eu._id), { isPrimary: true });
+    expect(markets.rows.filter((r) => r.isPrimary && !r.isDelete).map((r) => r.name)).toEqual(['EU']);
+  });
 
-      expect(result).toEqual(mockMarket);
-      expect(databaseService.repositories.storeModel.findById).toHaveBeenCalledWith('store123');
-      expect(databaseService.repositories.marketModel.create).toHaveBeenCalled();
+  it('adds the market currency to the store checkout list, within the plan limit', async () => {
+    const ok = setup({ enabledCurrencies: ['PKR'], maxMarkets: 2 });
+    await ok.service.create(STORE_ID, { name: 'Home', countries: ['PK'], currency: 'PKR' });
+    await ok.service.create(STORE_ID, { name: 'US', countries: ['US'], currency: 'USD' });
+    expect(ok.stores[0].enabledCurrencies).toEqual(['PKR', 'USD']);
+    await expect(ok.service.create(STORE_ID, { name: 'EU', countries: ['DE'], currency: 'EUR' })).rejects.toThrow(/plan allows up to 2/);
+  });
+
+  it('validates subfolders (format, reserved paths, unique) and domains (must be a verified store domain)', async () => {
+    const { service } = setup();
+    await service.create(STORE_ID, { name: 'Home', countries: [], currency: 'PKR' });
+    await expect(service.create(STORE_ID, { name: 'CA', countries: ['CA'], currency: 'USD', domainType: 'subfolder', subfolder: 'Canada!' })).rejects.toThrow(/Subfolder/);
+    const ca: any = await service.create(STORE_ID, { name: 'CA', countries: ['CA'], currency: 'USD', domainType: 'subfolder', subfolder: '/EN-CA/' });
+    expect(ca.subfolder).toBe('en-ca');
+    await expect(service.create(STORE_ID, { name: 'CA2', countries: ['MX'], currency: 'USD', domainType: 'subfolder', subfolder: 'en-ca' })).rejects.toThrow(/already uses/);
+    await expect(service.create(STORE_ID, { name: 'EU', countries: ['DE'], currency: 'EUR', domainType: 'subdomain', domain: 'new.shop.com' })).rejects.toThrow(/verify/);
+    const eu: any = await service.create(STORE_ID, { name: 'EU', countries: ['DE'], currency: 'EUR', domainType: 'subdomain', domain: 'https://EU.shop.com/' });
+    expect(eu.domain).toBe('eu.shop.com');
+  });
+
+  it('manual exchange rate needs a rate', async () => {
+    const { service } = setup();
+    await expect(service.create(STORE_ID, { name: 'US', countries: [], currency: 'USD', pricingRule: { type: 'manual' } })).rejects.toThrow(/exchange rate/);
+  });
+
+  it('product availability only accepts this store\'s products', async () => {
+    const { service } = setup();
+    await expect(service.create(STORE_ID, {
+      name: 'Home', countries: [], currency: 'PKR', productAvailability: 'include', productIds: [new Types.ObjectId().toString()],
+    })).rejects.toThrow(/not in this store/);
+    const m: any = await service.create(STORE_ID, { name: 'Home', countries: [], currency: 'PKR', productAvailability: 'exclude', productIds: [PRODUCT_ID] });
+    expect(isProductAvailableInMarket(m, PRODUCT_ID)).toBe(false);
+    expect(isProductAvailableInMarket({ ...m, productAvailability: 'include' }, PRODUCT_ID)).toBe(true);
+    expect(isProductAvailableInMarket(null, PRODUCT_ID)).toBe(true);
+  });
+
+  describe('resolveForCheckout (Shopify: a country in no market can browse but not buy)', () => {
+    it('no markets = nobody blocked', async () => {
+      const { service } = setup();
+      expect(await service.resolveForCheckout(STORE_ID, 'US')).toEqual({ market: null, blocked: false });
     });
-
-    it('should throw NotFoundException if store does not exist', async () => {
-      const dto: CreateMarketDto = {
-        name: 'United States',
-        countries: ['US'],
-        currency: 'USD',
-      };
-
-      jest.spyOn(databaseService.repositories.storeModel, 'findById').mockResolvedValue(null);
-
-      await expect(service.create('store123', dto)).rejects.toThrow(NotFoundException);
+    it('listed country buys in its market; others fall to a catch-all primary', async () => {
+      const { service } = setup();
+      await service.create(STORE_ID, { name: 'Home', countries: [], currency: 'PKR' });
+      await service.create(STORE_ID, { name: 'EU', countries: ['DE'], currency: 'EUR' });
+      expect((await service.resolveForCheckout(STORE_ID, 'de')).market.name).toBe('EU');
+      expect((await service.resolveForCheckout(STORE_ID, 'US')).market.name).toBe('Home');
     });
-
-    it('should throw BadRequestException if currency is not enabled', async () => {
-      const dto: CreateMarketDto = {
-        name: 'United States',
-        countries: ['US'],
-        currency: 'XXX', // Invalid currency
-      };
-
-      jest.spyOn(databaseService.repositories.storeModel, 'findById').mockResolvedValue(mockStore);
-      jest.spyOn(adminConfigService, 'getEnabledCurrencies').mockResolvedValue(mockEnabledCurrencies);
-
-      await expect(service.create('store123', dto)).rejects.toThrow(BadRequestException);
-      await expect(service.create('store123', dto)).rejects.toThrow('Currency XXX is not enabled on this platform');
-    });
-
-    it('should set isPrimary to false for other markets when creating primary market', async () => {
-      const dto: CreateMarketDto = {
-        name: 'United States',
-        countries: ['US'],
-        currency: 'USD',
-        isPrimary: true,
-      };
-
-      const updateManySpy = jest.spyOn(databaseService.repositories.marketModel, 'updateMany').mockResolvedValue({} as any);
-      jest.spyOn(databaseService.repositories.storeModel, 'findById').mockResolvedValue(mockStore);
-      jest.spyOn(databaseService.repositories.marketModel, 'create').mockResolvedValue(mockMarket as MarketDocument);
-
-      await service.create('store123', dto);
-
-      expect(updateManySpy).toHaveBeenCalledWith(
-        { storeId: 'store123', isPrimary: true, isDelete: false },
-        { isPrimary: false },
-      );
+    it('a primary market with its own countries does not cover the rest of the world', async () => {
+      const { service } = setup();
+      await service.create(STORE_ID, { name: 'Home', countries: ['PK'], currency: 'PKR' });
+      expect((await service.resolveForCheckout(STORE_ID, 'PK')).blocked).toBe(false);
+      expect(await service.resolveForCheckout(STORE_ID, 'US')).toEqual({ market: null, blocked: true });
+      // Unknown country (no address, no IP country yet): primary market, not blocked.
+      expect((await service.resolveForCheckout(STORE_ID, null)).market.name).toBe('Home');
     });
   });
 
-  describe('findAll', () => {
-    it('should return all markets for a store', async () => {
-      const mockMarkets = [mockMarket, { ...mockMarket, _id: 'market456', name: 'Europe' }];
-      jest.spyOn(databaseService.repositories.marketModel, 'find').mockReturnValue({
-        sort: jest.fn().mockReturnValue({ lean: jest.fn().mockResolvedValue(mockMarkets) }),
-      } as any);
-
-      const result = await service.findAll('store123');
-
-      expect(result).toEqual(mockMarkets);
-      expect(databaseService.repositories.marketModel.find).toHaveBeenCalledWith({ storeId: 'store123', isDelete: false });
-    });
+  it('findOne rejects another store\'s market and junk ids', async () => {
+    const { service } = setup();
+    const m: any = await service.create(STORE_ID, { name: 'Home', countries: [], currency: 'PKR' });
+    await expect(service.findOne(OTHER_STORE, String(m._id))).rejects.toThrow(NotFoundException);
+    await expect(service.findOne(STORE_ID, 'nope')).rejects.toThrow(NotFoundException);
   });
 
-  describe('findOne', () => {
-    it('should return a market by ID', async () => {
-      jest.spyOn(databaseService.repositories.marketModel, 'findOne').mockResolvedValue(mockMarket as MarketDocument);
-
-      const result = await service.findOne('store123', 'market123');
-
-      expect(result).toEqual(mockMarket);
-      expect(databaseService.repositories.marketModel.findOne).toHaveBeenCalledWith({
-        _id: 'market123',
-        storeId: 'store123',
-        isDelete: false,
-      });
-    });
-
-    it('should throw NotFoundException if market not found', async () => {
-      jest.spyOn(databaseService.repositories.marketModel, 'findOne').mockResolvedValue(null);
-
-      await expect(service.findOne('store123', 'market123')).rejects.toThrow(NotFoundException);
-    });
-  });
-
-  describe('update', () => {
-    it('should update a market successfully', async () => {
-      const dto: UpdateMarketDto = {
-        name: 'United States (Updated)',
-      };
-
-      const updatedMarket = { ...mockMarket, name: 'United States (Updated)' };
-      jest.spyOn(databaseService.repositories.marketModel, 'findOne').mockResolvedValue(mockMarket as MarketDocument);
-      jest.spyOn(databaseService.repositories.marketModel, 'findOneAndUpdate').mockResolvedValue(updatedMarket as MarketDocument);
-
-      const result = await service.update('store123', 'market123', dto);
-
-      expect(result.name).toBe('United States (Updated)');
-      expect(databaseService.repositories.marketModel.findOneAndUpdate).toHaveBeenCalledWith(
-        { _id: 'market123', storeId: 'store123', isDelete: false },
-        { $set: dto },
-        { new: true },
-      );
-    });
-
-    it('should throw NotFoundException if market does not exist', async () => {
-      const dto: UpdateMarketDto = { name: 'Updated' };
-      jest.spyOn(databaseService.repositories.marketModel, 'findOne').mockResolvedValue(null);
-
-      await expect(service.update('store123', 'market123', dto)).rejects.toThrow(NotFoundException);
-    });
-
-    it('should validate currency if being changed', async () => {
-      const dto: UpdateMarketDto = { currency: 'EUR' };
-      jest.spyOn(databaseService.repositories.marketModel, 'findOne').mockResolvedValue(mockMarket as MarketDocument);
-      jest.spyOn(databaseService.repositories.marketModel, 'findOneAndUpdate').mockResolvedValue(mockMarket as MarketDocument);
-
-      await service.update('store123', 'market123', dto);
-
-      expect(adminConfigService.getEnabledCurrencies).toHaveBeenCalled();
-    });
-
-    it('should throw BadRequestException if new currency is not enabled', async () => {
-      const dto: UpdateMarketDto = { currency: 'XXX' };
-      jest.spyOn(databaseService.repositories.marketModel, 'findOne').mockResolvedValue(mockMarket as MarketDocument);
-      jest.spyOn(adminConfigService, 'getEnabledCurrencies').mockResolvedValue(mockEnabledCurrencies);
-
-      await expect(service.update('store123', 'market123', dto)).rejects.toThrow(BadRequestException);
-    });
-  });
-
-  describe('remove', () => {
-    it('should soft delete a market', async () => {
-      jest.spyOn(databaseService.repositories.marketModel, 'findOne').mockResolvedValue(mockMarket as MarketDocument);
-      jest.spyOn(databaseService.repositories.marketModel, 'updateOne').mockResolvedValue({} as any);
-
-      await service.remove('store123', 'market123');
-
-      expect(databaseService.repositories.marketModel.updateOne).toHaveBeenCalledWith(
-        { _id: 'market123' },
-        { isDelete: true },
-      );
-    });
-
-    it('should throw NotFoundException if market does not exist', async () => {
-      jest.spyOn(databaseService.repositories.marketModel, 'findOne').mockResolvedValue(null);
-
-      await expect(service.remove('store123', 'market123')).rejects.toThrow(NotFoundException);
-    });
-  });
-
-  describe('getPrimaryMarket', () => {
-    it('should return the primary market for a store', async () => {
-      jest.spyOn(databaseService.repositories.marketModel, 'findOne').mockReturnValue({ lean: () => Promise.resolve(mockMarket) } as any);
-
-      const result = await service.getPrimaryMarket('store123');
-
-      expect(result).toEqual(mockMarket);
-      expect(databaseService.repositories.marketModel.findOne).toHaveBeenCalledWith({
-        storeId: 'store123',
-        isPrimary: true,
-        isDelete: false,
-      });
-    });
-
-    it('should return null if no primary market exists', async () => {
-      jest.spyOn(databaseService.repositories.marketModel, 'findOne').mockReturnValue({ lean: () => Promise.resolve(null) } as any);
-
-      expect(await service.getPrimaryMarket('store123')).toBeNull();
-    });
-  });
-
-  describe('getMarketForCountry', () => {
-    const us = { ...mockMarket, _id: 'us', countries: ['US'], isActive: true, isPrimary: false };
-    const home = { ...mockMarket, _id: 'home', countries: ['PK'], isActive: true, isPrimary: true };
-    const stub = (markets: any[]) =>
-      jest.spyOn(databaseService.repositories.marketModel, 'find').mockReturnValue({ lean: () => Promise.resolve(markets) } as any);
-
-    it('should return the market that lists the country', async () => {
-      stub([home, us]);
-      const result = await service.getMarketForCountry('store123', 'us');
-      expect((result as any)._id).toBe('us');
-      expect(databaseService.repositories.marketModel.find).toHaveBeenCalledWith({ storeId: 'store123', isActive: true, isDelete: false });
-    });
-
-    it('should fall back to the primary market for an unlisted country', async () => {
-      stub([home, us]);
-      expect(((await service.getMarketForCountry('store123', 'XX')) as any)._id).toBe('home');
-    });
-
-    it('should return null when no market matches and none is primary', async () => {
-      stub([us]);
-      expect(await service.getMarketForCountry('store123', 'XX')).toBeNull();
-    });
-  });
-
-  describe('getPublicMarkets', () => {
-    it('exposes only public fields and always offers English', async () => {
-      const m = { _id: 'm1', storeId: 'store123', name: 'Pakistan', countries: ['PK'], currency: 'PKR', languages: ['ur'], isPrimary: true, isActive: true, secret: 'x', pricingRule: { type: 'percentage', percentageAdjustment: 5 } };
-      jest.spyOn(databaseService.repositories.marketModel, 'find').mockReturnValue({ sort: () => ({ lean: () => Promise.resolve([m]) }) } as any);
-      const result: any = await service.getPublicMarkets('store123');
-      expect(result.languages).toEqual(['en', 'ur']);
-      expect(result.markets[0]).toEqual({
-        id: 'm1', name: 'Pakistan', countries: ['PK'], currency: 'PKR', languages: ['ur'], isPrimary: true, subfolder: null, domain: null,
-        pricingRule: { type: 'percentage', percentageAdjustment: 5, useRounding: false, roundingRule: 'nearest', conversionFee: null },
-      });
-    });
+  it('public payload exposes only storefront fields', async () => {
+    const { service } = setup();
+    await service.create(STORE_ID, { name: 'Home', countries: [], currency: 'PKR', languages: ['UR'] });
+    const pub: any = await service.getPublicMarkets(STORE_ID);
+    expect(pub.defaultLanguage).toBe('en');
+    expect(pub.languages).toEqual(['en', 'ur']);
+    expect(Object.keys(pub.markets[0])).not.toContain('storeId');
   });
 });

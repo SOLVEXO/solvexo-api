@@ -28,7 +28,8 @@ import { EntitlementsService, trimToMarketsLimit } from '@/platform-plans/entitl
 import { StripeConnectService } from '@/stripe-connect/stripe-connect.service';
 import { StoreCreditService } from '@/store-credit/store-credit.service';
 import { shouldShowDutiesNotice } from '@/shipping-rates/customs.util';
-import { MarketsService } from '@/markets/markets.service';
+import { MarketsService, isProductAvailableInMarket } from '@/markets/markets.service';
+import { MarketPricingService, fixedPriceFor, type FixedMarketPrice } from '@/markets/market-pricing.service';
 import {
   marketAdjustedNativeAmount,
   marketRuleChangesPrice,
@@ -68,6 +69,7 @@ export class CheckoutService {
     private readonly storeCreditService: StoreCreditService,
     private readonly profilesService: ShippingProfilesService,
     private readonly marketsService: MarketsService,
+    private readonly marketPricingService: MarketPricingService,
   ) {}
 
   private round(n: number) {
@@ -366,17 +368,28 @@ export class CheckoutService {
     // storefront reported). A buyer who explicitly chose a currency keeps it; otherwise the market's currency is the
     // default. The store's enabled-currency list (and plan cap) still has the last word.
     const buyerCountry = await this.resolveBuyerCountry(userId, body);
-    const market: any = await this.marketsService.getMarketForCountry(storeId, buyerCountry);
+    const marketResolution = await this.marketsService.resolveForCheckout(storeId, buyerCountry);
+    if (marketResolution.blocked) {
+      // Shopify: a country that is in no market can browse the store but cannot buy.
+      throw new BadRequestException({
+        message: "This store doesn't sell to your country or region yet.",
+        code: 'MARKET_NOT_AVAILABLE',
+        country: buyerCountry,
+      });
+    }
+    const market: any = marketResolution.market;
     const requestedCurrency = body.currencyPreference
       ? await this.resolveCheckoutCurrency(userId, body.currencyPreference)
       : market?.currency ?? (await this.resolveCheckoutCurrency(userId, undefined));
     const checkoutCurrency = targetStore
       ? await this.resolveStoreCurrency(requestedCurrency, targetStore as any)
       : requestedCurrency;
-    // The market's price rules (percentage, fee, rounding) only apply to a buyer paying in the market's own currency.
-    const marketRule = market && market.currency === checkoutCurrency && marketRuleChangesPrice(market.pricingRule)
-      ? market.pricingRule
-      : null;
+    // The market's prices (rule + fixed catalog prices) only apply to a buyer paying in the market's own currency.
+    const marketPricesApply = !!market && market.currency === checkoutCurrency;
+    const marketRule = marketPricesApply && marketRuleChangesPrice(market.pricingRule) ? market.pricingRule : null;
+    const marketFixedPrices = marketPricesApply
+      ? await this.marketPricingService.fixedPricesFor(String(market._id), market.currency)
+      : new Map<string, FixedMarketPrice>();
     const orderLocale = normalizeLocale(body.locale);
 
     const cart = await cartModel.findOne({
@@ -443,6 +456,13 @@ export class CheckoutService {
         );
 
       assertOrderQuantity(product as any, cartItem.quantity);
+
+      // Shopify catalog availability: a product the buyer's market doesn't sell can't be checked out there.
+      if (!isProductAvailableInMarket(market, String(product._id))) {
+        throw new BadRequestException(
+          `"${product.name}" isn't available in your country or region. Please remove it from your cart.`,
+        );
+      }
 
       // The cart is store-scoped — an item whose product belongs to another
       // store can never be checked out here.
@@ -542,15 +562,19 @@ export class CheckoutService {
     // ledger, tax, shipping zones — reads `item.currency` as "the selling store's currency"); only the amount moves,
     // so converting it into the checkout currency with the frozen snapshots lands exactly on the market price.
     // Snapshots are built once here and reused below so the adjustment and the checkout total use identical rates.
+    // Shopify prices and rounds ONE UNIT, then multiplies by quantity — so the line always equals the shown unit
+    // price × quantity (rounding a line total gave 29.99 for three items shown at 9.99 each).
     let marketSnapshots: FxSnapshot[] | null = null;
-    if (marketRule) {
+    if (marketRule || marketFixedPrices.size > 0) {
       marketSnapshots = await this.exchangeRateService.buildSnapshots([
         ...new Set([checkoutCurrency, ...checkoutItems.map((i) => i.currency as string)]),
       ]);
       for (const item of checkoutItems) {
-        const adjustedLine = marketAdjustedNativeAmount(item.totalPrice, item.currency, checkoutCurrency, marketRule, marketSnapshots);
-        item.price = Math.round((adjustedLine / item.quantity) * 1e6) / 1e6;
-        item.totalPrice = adjustedLine;
+        const fixed = fixedPriceFor(marketFixedPrices, item.productId, item.variantId);
+        if (!marketRule && !fixed) continue;
+        const unit = marketAdjustedNativeAmount(item.price, item.currency, checkoutCurrency, marketRule, marketSnapshots, fixed?.fixedPrice ?? null);
+        item.price = unit;
+        item.totalPrice = Math.round(unit * item.quantity * 1e6) / 1e6;
       }
     }
 
@@ -1237,6 +1261,8 @@ export class CheckoutService {
       const storeId = storeIdsInCheckout[0];
       const store = await this.databaseService.repositories.storeModel.findById(storeId).select('baseCurrency').lean();
       const storeCurrency = store?.baseCurrency || 'USD';
+      // The threshold is in the store currency, which may not be among this checkout's own snapshots.
+      shippingFxSnapshots = await this.exchangeRateService.ensureCurrencyInSnapshots(shippingFxSnapshots, storeCurrency);
       
       const freeShippingDiscount = discountsByStore.get(storeId)?.find(
         (d: any) => {
@@ -1247,7 +1273,7 @@ export class CheckoutService {
             d.minOrderAmount,
             storeCurrency,
             checkout.currency,
-            checkout.fxSnapshots || []
+            shippingFxSnapshots,
           );
           return checkout.subtotal >= minInCheckoutCurrency;
         },
@@ -2092,6 +2118,15 @@ export class CheckoutService {
       throw new BadRequestException('Checkout has expired');
     }
     return { checkout, checkoutModel };
+  }
+
+  /** Shopify cart note: the buyer's message to the seller, kept on the open checkout and copied onto the order. */
+  async setCustomerNote(userId: string, body: any) {
+    const { checkout, checkoutModel } = await this.loadOpenCheckoutForCredit(userId, body?.checkoutId);
+    if (body?.note != null && typeof body.note !== 'string') throw new BadRequestException('note must be text');
+    const note = String(body?.note ?? '').trim().slice(0, 500);
+    await checkoutModel.updateOne({ _id: checkout._id }, { $set: { customerNote: note } });
+    return { success: true, message: 'Note saved', data: { customerNote: note } };
   }
 
   private async persistStoreCredit(checkoutModel: any, checkout: any, items: any[], flag: { storeCreditApplied: boolean; storeCreditStoreId: string | null }) {
