@@ -11,13 +11,29 @@ import { createMaintenanceMiddleware } from './admin-config/maintenance.middlewa
 import { StorefrontAccessService, createStorefrontAccessMiddleware } from './store/storefront-access.service';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 
+// Make the real reason visible in the logs before the process dies.
+process.on('unhandledRejection', (reason) => {
+  console.error('[FATAL] unhandledRejection:', reason instanceof Error ? reason.stack : reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[FATAL] uncaughtException:', err instanceof Error ? err.stack : err);
+});
+
 async function bootstrap() {
   // rawBody: true is required for every webhook route that verifies a
   // provider signature over the exact raw bytes (Stripe checkout, Stripe
   // subscriptions, and the new integrations-module gateway webhooks) — each
   // reads `req.rawBody`, which Nest only populates when this flag is set.
   // Without it those routes always throw "Raw request body unavailable".
-  const app = await NestFactory.create<NestExpressApplication>(AppModule, { rawBody: true });
+  // In production only errors/warnings/startup lines are logged: ~1000 "Mapped route" lines at boot exceed
+  // Railway's 500 logs/sec limit and the real crash error gets dropped (LOG_LEVEL=verbose restores everything).
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
+    rawBody: true,
+    logger:
+      process.env.NODE_ENV === 'production' && process.env.LOG_LEVEL !== 'verbose'
+        ? ['error', 'warn']
+        : ['error', 'warn', 'log', 'debug', 'verbose'],
+  });
 
   // Express's default JSON limit is 100 KB — too small for an email campaign
   // (editor design JSON + its rendered HTML) or a subscriber CSV chunk.
