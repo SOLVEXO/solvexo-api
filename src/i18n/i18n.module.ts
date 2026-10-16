@@ -8,7 +8,7 @@ import * as path from 'path';
       fallbackLanguage: 'en',
       loaderOptions: {
         path: path.join(__dirname, '/locales/'),
-        watch: true,
+        watch: process.env.NODE_ENV !== 'production',
       },
       resolvers: [
         { use: QueryResolver, options: ['lang'] },
