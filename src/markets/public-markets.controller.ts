@@ -1,5 +1,6 @@
-import { BadRequestException, Controller, Get, Param } from '@nestjs/common';
+import { BadRequestException, Controller, Get, Param, UseInterceptors } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
+import { PublicCache, PublicCacheInterceptor } from '../common/public-cache.interceptor';
 import { isValidObjectId } from 'mongoose';
 import { MarketsService } from './markets.service';
 import { MarketPricingService } from './market-pricing.service';
@@ -13,6 +14,8 @@ export class PublicMarketsController {
     private readonly marketPricingService: MarketPricingService,
   ) {}
 
+  @UseInterceptors(PublicCacheInterceptor)
+  @PublicCache(15)
   @Get(':storeId')
   async getForStore(@Param('storeId') storeId: string) {
     if (!isValidObjectId(storeId)) throw new BadRequestException('Invalid store id');

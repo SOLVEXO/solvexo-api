@@ -3,6 +3,7 @@ import { ApiProperty } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import { IsArray, IsBoolean, IsIn, IsInt, IsOptional, IsString, Matches, Max, MaxLength, Min, ValidateIf, ValidateNested } from 'class-validator';
 import { BlockInputDto } from '../../common/dto/block-input.dto';
+import { SectionInputDto } from '../../store-pages/dto/section-input.dto';
 
 export class UpdateHeaderDto {
   @ApiProperty({ required: false, enum: ['store', 'custom'] })
@@ -66,4 +67,8 @@ export class UpdateHeaderDto {
   @ApiProperty({ required: false, nullable: true }) @ValidateIf((_, v) => v !== null && v !== undefined) @Matches(/^#[0-9a-fA-F]{6}$/) topBarBg?: string | null;
   @ApiProperty({ required: false, nullable: true }) @ValidateIf((_, v) => v !== null && v !== undefined) @Matches(/^#[0-9a-fA-F]{6}$/) topBarTextColor?: string | null;
   @ApiProperty({ required: false, nullable: true }) @IsOptional() @IsString() @MaxLength(40) preset?: string | null;
+
+  @ApiProperty({ required: false, type: [SectionInputDto], description: 'Extra sections shown with the header/footer (validated per type in the service)' })
+  @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => SectionInputDto)
+  sections?: SectionInputDto[];
 }

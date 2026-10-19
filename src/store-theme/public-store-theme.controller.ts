@@ -1,5 +1,6 @@
-import { Controller, Get, Param } from '@nestjs/common';
+import { Controller, Get, Param, UseInterceptors } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
+import { PublicCache, PublicCacheInterceptor } from '../common/public-cache.interceptor';
 import { StoreThemeService } from './store-theme.service';
 
 // Public — no auth. A buyer visiting a storefront needs its navbar/footer/theme
@@ -10,6 +11,8 @@ import { StoreThemeService } from './store-theme.service';
 export class PublicStoreThemeController {
   constructor(private readonly storeThemeService: StoreThemeService) {}
 
+  @UseInterceptors(PublicCacheInterceptor)
+  @PublicCache(15)
   @Get(':storeId')
   get(@Param('storeId') storeId: string) {
     return this.storeThemeService.getPublic(storeId);

@@ -1,5 +1,9 @@
 /* eslint-disable prettier/prettier */
 import { Controller, Post, Get, Patch, Body, Req, Res, Param, Query, UseGuards, UseInterceptors, UploadedFile, ForbiddenException } from '@nestjs/common';
+import { PublicCache, PublicCacheInterceptor } from '@/common/public-cache.interceptor';
+import { resolveCountryFromIp } from '@/common/geo-locate.util';
+
+const visitorCountry = (req: any) => resolveCountryFromIp(req.ip) ?? 'xx';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
 import { buildTemplatePayload, readUploadedCsv } from '../common/bulk-import/bulk-import.util';
@@ -247,6 +251,8 @@ export class StoreController {
   // — public/no-auth since Onboarding's currency step, a buyer's currency
   // switcher, and a seller's own "Markets" card all need this before/without
   // necessarily having a seller session.
+  @UseInterceptors(PublicCacheInterceptor)
+  @PublicCache(15)
   @Get('public/enabled-currencies')
   async getEnabledCurrencies() {
     return { success: true, data: await this.storeService.getEnabledCurrencies() };
@@ -262,11 +268,17 @@ export class StoreController {
 
 // Registered BEFORE 'public/:slug' — a static path segment must be matched
   // first, or Nest would swallow 'resolve-domain' as `:slug`.
+  @UseInterceptors(PublicCacheInterceptor)
+  @PublicCache(15, visitorCountry)
   @Get('public/resolve-domain')
   async resolveStoreByDomain(@Req() req: any, @Query('host') host: string) {
     return this.storeService.getPublicStoreByDomain(host, req.ip);
   }
 
+  // The only visitor-dependent field in this response is `cookieBannerEnabled` (EU/UK region scoping, from the IP), so the
+  // cache key carries the visitor's country — never one visitor's region decision served to another.
+  @UseInterceptors(PublicCacheInterceptor)
+  @PublicCache(15, visitorCountry)
   @Get('public/:slug')
   async getPublicStore(@Req() req: any, @Param('slug') slug: string) {
     return this.storeService.getPublicStore(slug, req.ip);
@@ -317,6 +329,8 @@ export class StoreController {
   }
 
   @UseGuards(OptionalJwtAuthGuard)
+  @UseInterceptors(PublicCacheInterceptor)
+  @PublicCache(15)
   @Get('public/:storeId/products')
   async getPublicStoreProducts(
     @Req() req: any,
@@ -326,6 +340,8 @@ export class StoreController {
     return this.storeService.getPublicStoreProducts(storeId, query, req.user?.userId ?? null);
   }
 
+  @UseInterceptors(PublicCacheInterceptor)
+  @PublicCache(15)
   @Get('public/:storeId/filters')
   async getPublicStoreFilters(@Param('storeId') storeId: string) {
     return this.storeService.getPublicStoreFilters(storeId);

@@ -30,6 +30,10 @@ export class ColorScheme {
   @Prop({ required: true }) bgColor: string;
   @Prop({ required: true }) textColor: string;
   @Prop({ required: true }) primaryColor: string;
+  // Optional extra roles; absent = the theme derives them from the three above.
+  @Prop({ type: String, default: null }) mutedColor: string | null;
+  @Prop({ type: String, default: null }) borderColor: string | null;
+  @Prop({ type: String, default: null }) saleColor: string | null;
 }
 export const ColorSchemeSchema = SchemaFactory.createForClass(ColorScheme);
 
@@ -45,6 +49,48 @@ export class StorefrontColors {
   @Prop({ type: String, default: null }) mutedColor: string | null;
   @Prop({ type: String, default: null }) borderColor: string | null;
   @Prop({ type: String, default: null }) saleColor: string | null;
+  // Typography / shape options a theme may read (a theme ignores any it does not support).
+  @Prop({ type: String, enum: ['regular', 'medium', 'semibold', 'bold'], default: 'medium' }) headingWeight: string;
+  @Prop({ type: String, enum: ['none', 'uppercase'], default: 'none' }) headingCase: string;
+  @Prop({ type: String, enum: ['auto', 'tight', 'normal', 'wide'], default: 'auto' }) headingTracking: string;
+  @Prop({ type: String, enum: ['normal', 'uppercase'], default: 'normal' }) buttonCase: string;
+  @Prop({ type: String, enum: ['none', 'small', 'medium', 'large'], default: 'large' }) sectionRadius: string;
+  @Prop({ type: String, enum: ['none', 'small', 'medium', 'large', 'full'], default: 'medium' }) inputRadius: string;
+  @Prop({ type: String, enum: ['pill', 'square'], default: 'pill' }) badgeStyle: string;
+  @Prop({ type: String, enum: ['show', 'hide'], default: 'show' }) cardRating: string;
+  @Prop({ type: String, enum: ['show', 'hide'], default: 'show' }) cardTag: string;
+  @Prop({ type: String, enum: ['show', 'hide'], default: 'show' }) cardButton: string;
+  @Prop({ type: String, enum: ['small', 'medium', 'large', 'xlarge'], default: 'medium' }) headingScale: string;
+  @Prop({ type: String, enum: ['small', 'medium', 'large'], default: 'medium' }) bodyScale: string;
+  @Prop({ type: String, enum: ['auto', 'tight', 'normal', 'loose'], default: 'auto' }) headingLineHeight: string;
+  @Prop({ type: String, enum: ['auto', 'always', 'never'], default: 'auto' }) linkUnderline: string;
+  @Prop({ type: String, enum: ['narrow', 'standard', 'wide'], default: 'standard' }) pagePadding: string;
+  @Prop({ type: String, enum: ['tight', 'standard', 'airy'], default: 'standard' }) gridGap: string;
+  @Prop({ type: String, enum: ['fade', 'lift', 'grow'], default: 'fade' }) buttonHover: string;
+  @Prop({ type: String, enum: ['none', 'soft'], default: 'none' }) buttonShadow: string;
+  @Prop({ type: String, enum: ['shadow', 'lift', 'none'], default: 'shadow' }) cardHover: string;
+  @Prop({ type: String, enum: ['left', 'center'], default: 'left' }) cardTextAlign: string;
+  @Prop({ type: String, enum: ['show', 'hide'], default: 'show' }) showBreadcrumbs: string;
+  @Prop({ type: String, enum: ['show', 'hide'], default: 'show' }) showStockStatus: string;
+  @Prop({ type: String, enum: ['show', 'hide'], default: 'show' }) showVendor: string;
+  @Prop({ type: String, enum: ['show', 'hide'], default: 'show' }) showReviews: string;
+  @Prop({ type: String, enum: ['show', 'hide'], default: 'show' }) stickyBuyBar: string;
+  @Prop({ type: String, enum: ['on', 'off'], default: 'on' }) animations: string;
+  @Prop({ type: String, enum: ['auto', 'accent', 'ink'], default: 'auto' }) focusRing: string;
+  @Prop({ type: String, enum: ['regular', 'medium'], default: 'regular' }) bodyWeight: string;
+  @Prop({ type: String, enum: ['none', 'line'], default: 'none' }) sectionDividers: string;
+  @Prop({ type: String, enum: ['auto', 'accent'], default: 'auto' }) selection: string;
+  @Prop({ type: String, enum: ['show', 'hide'], default: 'show' }) cardWishlist: string;
+  @Prop({ type: String, enum: ['show', 'hide'], default: 'show' }) cardViewLink: string;
+  @Prop({ type: String, enum: ['percent', 'label'], default: 'percent' }) saleBadgeText: string;
+  @Prop({ type: String, enum: ['show', 'hide'], default: 'show' }) showDelivery: string;
+  @Prop({ type: String, default: null }) headingColor: string | null;
+  @Prop({ type: String, default: null }) linkColor: string | null;
+  @Prop({ type: String, default: null }) priceColor: string | null;
+  @Prop({ type: String, default: null }) starColor: string | null;
+  @Prop({ type: String, default: null }) successColor: string | null;
+  @Prop({ type: String, default: null }) buttonTextColor: string | null;
+  @Prop({ type: String, default: null }) cardBgColor: string | null;
   // How `ThemedButton` renders a primary CTA — filled / bordered / tinted.
   @Prop({ type: String, enum: ['solid', 'outline', 'soft'], default: 'solid' })
   buttonStyle: 'solid' | 'outline' | 'soft';
@@ -146,6 +192,8 @@ export class StorefrontHeader {
   @Prop({ type: String, enum: ['store', 'custom'], default: 'store' }) logoSource: 'store' | 'custom';
   @Prop({ type: String, default: null }) customLogoUrl: string | null;
   @Prop({ type: [BlockSchema], default: [] }) blocks: Block[]; // nav_link blocks only
+  // Extra full-width sections shown under the header bar (promo strip, trust row...); the seller adds/reorders them like page sections.
+  @Prop({ type: [SectionSchema], default: [] }) sections: Section[];
   // Where the nav-link group sits relative to the logo — the icons (cart/
   // account) always stay pinned to the far right regardless of this.
   @Prop({ type: String, enum: ['left', 'center', 'right'], default: 'left' })
@@ -206,6 +254,8 @@ export const StorefrontHeaderSchema = SchemaFactory.createForClass(StorefrontHea
 @Schema({ _id: false })
 export class StorefrontFooter {
   @Prop({ type: [BlockSchema], default: [] }) blocks: Block[]; // footer_column / social_link / copyright_text blocks
+  // Extra full-width sections shown above the footer panel (newsletter, testimonials, logos...).
+  @Prop({ type: [SectionSchema], default: [] }) sections: Section[];
   // 'columns' is today's multi-column layout; 'minimal' is a single centered
   // row (store name + copyright + socials, no columns).
   @Prop({ type: String, enum: ['columns', 'minimal'], default: 'columns' })
@@ -332,11 +382,6 @@ export class StoreThemeDraft {
   @Prop({ type: String, default: null })
   appliedCatalogThemeId: string | null;
 
-  // Real "developer/advanced authoring" capability #1 — see the class
-  // comment on `StoreTheme.customCss` below for the full safety rationale.
-  @Prop({ type: String, default: null })
-  customCss: string | null;
-
   // Staged by `StoreThemeService.applyThemeDefinition` — a theme's home-page
   // composition can't be committed straight to the live `StorePage` the
   // moment a seller picks a theme (that would bypass the draft/publish
@@ -373,9 +418,6 @@ export class ThemeVersion {
 
   @Prop({ type: String, default: null })
   themeDefinitionId: string | null;
-
-  @Prop({ type: String, default: null })
-  customCss: string | null;
 
   @Prop({ type: Date, required: true })
   publishedAt: Date;
@@ -466,7 +508,7 @@ export class StoreTheme {
 
   // A real, shareable "see this before it's live" link — Shopify's own
   // preview-link concept, scoped down: the token grants read-only access to
-  // this row's DRAFT theme (colors/fonts/buttons/header/footer/customCss)
+  // this row's DRAFT theme (colors/fonts/buttons/header/footer)
   // via `GET api/public/store-theme/:storeId/preview/:token`, with NO auth
   // required — matching Shopify's real "visitor preview" (no login needed).
   // Deliberately theme-tokens-only, not real store/product data — building
@@ -502,28 +544,6 @@ export class StoreTheme {
   // who's only ever used the manual controls).
   @Prop({ type: String, default: null })
   baseThemeId: string | null;
-
-  // Real "developer/advanced authoring" capability — a bounded, genuinely
-  // safe capability (CSS cannot execute code, read cookies, or make
-  // network requests, unlike JS) rather than a fake "Advanced" button that
-  // just opens the same merchant editor. Deliberately scoped to CSS only —
-  // no custom JS, no custom section-type registration via the UI, no raw
-  // theme-source/template editing — because this app has no sandboxing
-  // mechanism (no iframe/shadow-DOM isolation for storefront content) that
-  // would make arbitrary script execution or new render logic safe to
-  // expose to an ordinary merchant. Length-capped and scanned for CSS-level
-  // injection vectors (`javascript:` URLs, deprecated IE `expression()`) in
-  // `StoreThemeService.validateCustomCss` — real validation, not just a
-  // free-text field. There's no separate "theme developer" role in this
-  // app's auth model — advanced authoring is an opt-in mode the store's own
-  // seller uses on their own store (see `StoreSettings`), not a new RBAC
-  // tier; the security boundary is what CSS itself can't do, not a
-  // permission check on top of it. Rendered as a raw `<style>` tag in
-  // `StorefrontLayout`/Live Preview — unscoped, so a careless rule (e.g.
-  // `img { display: none }`) can genuinely break the seller's own storefront
-  // layout; that's flagged in the editor UI as a real risk, not hidden.
-  @Prop({ type: String, default: null })
-  customCss: string | null;
 
   // Defaults to a copy of the live root fields at read time for any store
   // that predates this field (`ensureDefaultTheme`), never left empty — see

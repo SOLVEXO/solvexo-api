@@ -13,6 +13,7 @@ import { UpdateFooterDto } from './dto/update-footer.dto';
 import { UpdateIdentityBannerDto } from './dto/update-identity-banner.dto';
 import { InstallThemeDto } from './dto/install-theme.dto';
 import { CreateColorSchemeDto } from './dto/color-scheme.dto';
+import { validateSections } from '../store-pages/store-pages.service';
 import { MenusService } from '../menus/menus.service';
 import { ThemeCatalogService } from '../theme-catalog/theme-catalog.service';
 import { assertThemeSupportsSections, filterSectionsToTheme } from '../common/store-content/theme-section-capabilities';
@@ -32,33 +33,14 @@ function validateBlocks(blocks: { type: string; settings: Record<string, any> }[
   }
 }
 
-const MAX_CUSTOM_CSS_LENGTH = 20_000;
-// CSS itself can't execute code or read cookies/make network requests the
-// way JS can — the real, structural reason this feature is safe to expose
-// to an ordinary merchant without a sandboxing layer. These are the actual
-// injection vectors that DO exist at the CSS level (a `javascript:`-scheme
-// URL inside `url(...)`, and the long-deprecated IE-only `expression()`
-// dynamic-property mechanism) — blocked outright rather than left as a
-// theoretical gap.
-
-/** Real validation, not just a free-text field: length-capped, scanned for
- *  the known CSS-level injection vectors above. Returns the trimmed value
- *  (or null for an empty/omitted one) — never throws for merely "unusual"
- *  CSS, since a merchant/developer must be able to write genuinely
- *  arbitrary (if layout-risky) styling; only the two concrete vectors above
- *  are rejected. */
-function validateCustomCss(customCss: string | null | undefined): string | null {
-  if (!customCss || !customCss.trim()) return null;
-  const trimmed = customCss.trim();
-  if (trimmed.length > MAX_CUSTOM_CSS_LENGTH) {
-    throw new BadRequestException(`Custom CSS cannot exceed ${MAX_CUSTOM_CSS_LENGTH.toLocaleString()} characters`);
-  }
-  // Shopify theme CSS may use url() and @import (background images, web
-  // fonts), so only block what can break out of the <style> tag or run script.
-  if (/<\s*\/?\s*(script|style|iframe)/i.test(trimmed) || /javascript\s*:/i.test(trimmed) || /expression\s*\(/i.test(trimmed)) {
-    throw new BadRequestException('Invalid CSS: script or HTML tags are not allowed');
-  }
-  return trimmed;
+/** Section types allowed in the header/footer groups (content strips only: nothing that needs a product, cart or page context). */
+const CHROME_SECTION_TYPES = new Set(['newsletter', 'trust_badges', 'image_banner', 'rich_text', 'testimonials', 'marquee', 'logo_list', 'multicolumn', 'custom_html', 'divider', 'image_with_text', 'multirow', 'gallery_grid', 'faq']);
+const MAX_CHROME_SECTIONS = 6;
+export function assertChromeSections(sections: { type: any; settings: Record<string, any>; blocks: { type: string; settings: Record<string, any> }[] }[]) {
+  if (sections.length > MAX_CHROME_SECTIONS) throw new BadRequestException(`Header and footer can each have at most ${MAX_CHROME_SECTIONS} sections`);
+  const bad = sections.find(sec => !CHROME_SECTION_TYPES.has(sec.type));
+  if (bad) throw new BadRequestException(`Section "${bad.type}" cannot be used in the header or footer`);
+  validateSections(sections);
 }
 
 @Injectable()
@@ -185,7 +167,6 @@ export class StoreThemeService {
       identityBanner: '$identityBanner',
       baseThemeId: '$baseThemeId',
       themeDefinitionId: '$themeDefinitionId',
-      customCss: '$customCss',
     });
     return this.storeThemeModel.findOne({ storeId, status: 'active' });
   }
@@ -254,7 +235,6 @@ export class StoreThemeService {
       header: source.header,
       footer: source.footer,
       identityBanner: source.identityBanner,
-      customCss: source.customCss,
       draft: source.draft,
     });
     const duplicateId = String(duplicate._id);
@@ -442,7 +422,6 @@ export class StoreThemeService {
         identityBanner: draft.identityBanner,
         baseThemeId: draft.baseThemeId,
         themeDefinitionId: draft.themeDefinitionId ?? (doc as any).themeDefinitionId,
-        customCss: draft.customCss,
         lastPublishedAt: doc!.lastPublishedAt,
       },
     };
@@ -511,7 +490,6 @@ export class StoreThemeService {
         footer,
         identityBanner: draft.identityBanner,
         themeDefinitionId: draft.themeDefinitionId ?? doc.themeDefinitionId,
-        customCss: draft.customCss,
         storeSlug: store?.slug ?? null,
         // Theme layouts are isolated per installed instance. Falling back to
         // the store-wide legacy sections here could show another theme's draft.
@@ -546,7 +524,7 @@ export class StoreThemeService {
 
   /** Publish expressions: a field the draft never stored (e.g. a draft seeded with only ids, then a header patch) keeps its live value instead of being wiped. */
   private static readonly DRAFT_OR_LIVE = Object.fromEntries(
-    (['theme', 'header', 'footer', 'identityBanner', 'baseThemeId', 'themeDefinitionId', 'customCss'] as const)
+    (['theme', 'header', 'footer', 'identityBanner', 'baseThemeId', 'themeDefinitionId'] as const)
       .map(key => [key, { $ifNull: [`$draft.${key}`, `$${key}`] }]),
   );
 
@@ -663,7 +641,6 @@ export class StoreThemeService {
       'draft.identityBanner': version.identityBanner,
       'draft.baseThemeId': version.baseThemeId,
       'draft.themeDefinitionId': version.themeDefinitionId,
-      'draft.customCss': version.customCss,
     });
     return { success: true, message: 'Version restored to draft — review and publish to make it live.', data: updated };
   }
@@ -680,7 +657,6 @@ export class StoreThemeService {
         identityBanner: '$identityBanner',
         baseThemeId: '$baseThemeId',
         themeDefinitionId: '$themeDefinitionId',
-        customCss: '$customCss',
         // A theme-apply staged into the draft (applyThemeDefinition) but
         // never published must be discarded too — otherwise "revert" would
         // silently leave the pending home-section swap sitting there, ready
@@ -724,7 +700,7 @@ export class StoreThemeService {
     if (existing.length >= StoreThemeService.MAX_COLOR_SCHEMES) {
       throw new BadRequestException(`Cannot save more than ${StoreThemeService.MAX_COLOR_SCHEMES} color schemes`);
     }
-    const scheme = { id: new Types.ObjectId().toString(), name: dto.name, bgColor: dto.bgColor, textColor: dto.textColor, primaryColor: dto.primaryColor };
+    const scheme = { id: new Types.ObjectId().toString(), name: dto.name, bgColor: dto.bgColor, textColor: dto.textColor, primaryColor: dto.primaryColor, mutedColor: dto.mutedColor ?? null, borderColor: dto.borderColor ?? null, saleColor: dto.saleColor ?? null };
     const updated = await this.storeThemeModel.findOneAndUpdate(
       { _id: instance._id },
       { $push: { 'draft.theme.colorSchemes': scheme } },
@@ -751,7 +727,7 @@ export class StoreThemeService {
   async applyColorScheme(storeId: string, sellerId: string, schemeId: string, installedThemeId?: string) {
     await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
     const instance = await this.resolveInstance(storeId, installedThemeId);
-    const scheme = ((instance.draft?.theme?.colorSchemes ?? []) as { id: string; bgColor: string; textColor: string; primaryColor: string }[])
+    const scheme = ((instance.draft?.theme?.colorSchemes ?? []) as { id: string; bgColor: string; textColor: string; primaryColor: string; mutedColor?: string | null; borderColor?: string | null; saleColor?: string | null }[])
       .find(s => s.id === schemeId);
     if (!scheme) throw new NotFoundException('Color scheme not found');
     const updated = await this.storeThemeModel.findOneAndUpdate(
@@ -760,6 +736,9 @@ export class StoreThemeService {
         'draft.theme.bgColor': scheme.bgColor,
         'draft.theme.textColor': scheme.textColor,
         'draft.theme.primaryColor': scheme.primaryColor,
+        'draft.theme.mutedColor': scheme.mutedColor ?? null,
+        'draft.theme.borderColor': scheme.borderColor ?? null,
+        'draft.theme.saleColor': scheme.saleColor ?? null,
       } },
       { new: true },
     );
@@ -770,11 +749,13 @@ export class StoreThemeService {
     await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
     const instance = await this.resolveInstance(storeId, installedThemeId);
     if (dto.blocks) validateBlocks(dto.blocks, HEADER_ALLOWED_BLOCK_TYPES, MAX_HEADER_LINKS);
+    if (dto.sections) assertChromeSections(dto.sections);
 
     const set: Record<string, unknown> = {};
     if (dto.logoSource !== undefined) set['draft.header.logoSource'] = dto.logoSource;
     if (dto.customLogoUrl !== undefined) set['draft.header.customLogoUrl'] = dto.customLogoUrl;
     if (dto.blocks !== undefined) set['draft.header.blocks'] = dto.blocks;
+    if (dto.sections !== undefined) set['draft.header.sections'] = dto.sections;
     if (dto.navAlignment !== undefined) set['draft.header.navAlignment'] = dto.navAlignment;
     if (dto.headerStyle !== undefined) set['draft.header.headerStyle'] = dto.headerStyle;
     if (dto.menuId !== undefined) set['draft.header.menuId'] = dto.menuId;
@@ -795,10 +776,12 @@ export class StoreThemeService {
     await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
     const instance = await this.resolveInstance(storeId, installedThemeId);
     validateBlocks(dto.blocks, FOOTER_ALLOWED_BLOCK_TYPES, MAX_FOOTER_BLOCKS);
+    if (dto.sections) assertChromeSections(dto.sections);
 
     const set: Record<string, unknown> = { 'draft.footer.blocks': dto.blocks };
     if (dto.footerStyle !== undefined) set['draft.footer.footerStyle'] = dto.footerStyle;
     if (dto.menuId !== undefined) set['draft.footer.menuId'] = dto.menuId;
+    if (dto.sections !== undefined) set['draft.footer.sections'] = dto.sections;
     if (dto.logoSource === 'custom' && !(dto.logoUrl ?? '').trim()) {
       // A custom logo needs a real image; otherwise the footer would silently show nothing.
       throw new BadRequestException('Upload a footer logo or choose another logo option');
@@ -825,22 +808,5 @@ export class StoreThemeService {
     }
     const updated = await this.storeThemeModel.findOneAndUpdate({ _id: instance._id }, { $set: set }, { new: true });
     return { success: true, message: 'Store info updated', data: updated };
-  }
-
-  // ── Advanced theme authoring — real, bounded developer capability ────────
-  // (see the class comment on `StoreTheme.customCss` for the full safety
-  // rationale: CSS-only, no custom JS, no arbitrary section-type/template
-  // authoring — the boundary this codebase can actually make safe today).
-
-  async updateCustomCss(storeId: string, sellerId: string, customCss: string | null, installedThemeId?: string) {
-    await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
-    const instance = await this.resolveInstance(storeId, installedThemeId);
-    const validated = validateCustomCss(customCss);
-    const updated = await this.storeThemeModel.findOneAndUpdate(
-      { _id: instance._id },
-      { $set: { 'draft.customCss': validated } },
-      { new: true },
-    );
-    return { success: true, message: 'Custom CSS updated', data: updated };
   }
 }

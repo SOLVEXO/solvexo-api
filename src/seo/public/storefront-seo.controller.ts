@@ -133,6 +133,36 @@ export class StorefrontSeoController {
     res.send(body);
   }
 
+  /** Shopify-style public `/products.json` — the de-facto "is this a <platform> store" probe, and a useful
+   * machine-readable catalog. Public fields only (no cost/stock/seller data); locked stores expose nothing. */
+  @SkipThrottle()
+  @Get('products.json')
+  async productsJson(@Req() req: any, @Query('host') explicitHost: string | undefined, @Query('page') pageParam: string | undefined, @Query('limit') limitParam: string | undefined, @Res() res: Response) {
+    const store = await this.resolveStore(explicitHost || req.headers['x-forwarded-host'] || req.headers.host);
+    if (isLockedStore(store)) throw new NotFoundException('Catalog not available');
+    const page = Math.max(1, Math.floor(Number(pageParam)) || 1);
+    const limit = Math.min(250, Math.max(1, Math.floor(Number(limitParam)) || 30));
+    const products = await this.db.repositories.productModel
+      .find({ storeId: String(store._id), status: 'active', isDelete: false })
+      .select('name slug description productType images createdAt updatedAt')
+      .sort({ _id: 1 }).skip((page - 1) * limit).limit(limit).lean() as any[];
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Cache-Control', 'public, max-age=300, stale-while-revalidate=3600');
+    res.setHeader('X-Powered-By', 'Solvexo');
+    res.send({
+      products: products.map((p) => ({
+        id: String(p._id),
+        title: p.name,
+        handle: p.slug,
+        body_html: p.description ?? '',
+        product_type: p.productType,
+        created_at: p.createdAt,
+        updated_at: p.updatedAt,
+        images: (p.images ?? []).map((src: string) => ({ src })),
+      })),
+    });
+  }
+
   @SkipThrottle()
   @Get('sitemap.xml')
   async sitemap(@Req() req: any, @Query('host') explicitHost: string | undefined, @Res() res: Response) {

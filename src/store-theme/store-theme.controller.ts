@@ -13,7 +13,6 @@ import { UpdateThemeDto } from './dto/update-theme.dto';
 import { UpdateHeaderDto } from './dto/update-header.dto';
 import { UpdateFooterDto } from './dto/update-footer.dto';
 import { UpdateIdentityBannerDto } from './dto/update-identity-banner.dto';
-import { UpdateCustomCssDto } from './dto/update-custom-css.dto';
 import { InstallThemeDto } from './dto/install-theme.dto';
 import { CreateColorSchemeDto } from './dto/color-scheme.dto';
 
@@ -178,10 +177,5 @@ export class StoreThemeController {
   @Post(':storeId/color-schemes/:schemeId/apply')
   applyColorScheme(@Req() req: any, @Param('storeId') storeId: string, @Param('schemeId') schemeId: string, @Query('instance') instance?: string) {
     return this.storeThemeService.applyColorScheme(storeId, actingSellerId(req.user), schemeId, instance);
-  }
-
-  @Patch(':storeId/custom-css')
-  updateCustomCss(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: UpdateCustomCssDto, @Query('instance') instance?: string) {
-    return this.storeThemeService.updateCustomCss(storeId, actingSellerId(req.user), dto.customCss ?? null, instance);
   }
 }

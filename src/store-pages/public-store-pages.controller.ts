@@ -1,5 +1,6 @@
-import { Controller, Get, Param } from '@nestjs/common';
+import { Controller, Get, Param, UseInterceptors } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
+import { PublicCache, PublicCacheInterceptor } from '../common/public-cache.interceptor';
 import { StorePagesService } from './store-pages.service';
 
 // Public — no auth. Backs the real storefront routes: `/:slug` (home),
@@ -10,16 +11,22 @@ import { StorePagesService } from './store-pages.service';
 export class PublicStorePagesController {
   constructor(private readonly storePagesService: StorePagesService) {}
 
+  @UseInterceptors(PublicCacheInterceptor)
+  @PublicCache(15)
   @Get(':storeId/home')
   getHome(@Param('storeId') storeId: string) {
     return this.storePagesService.getPublicHome(storeId);
   }
 
+  @UseInterceptors(PublicCacheInterceptor)
+  @PublicCache(15)
   @Get(':storeId/list')
   list(@Param('storeId') storeId: string) {
     return this.storePagesService.listPublicPages(storeId);
   }
 
+  @UseInterceptors(PublicCacheInterceptor)
+  @PublicCache(15)
   @Get(':storeId/page/:slug')
   getPage(@Param('storeId') storeId: string, @Param('slug') slug: string) {
     return this.storePagesService.getPublicPage(storeId, slug);

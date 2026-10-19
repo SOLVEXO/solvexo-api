@@ -33,7 +33,6 @@ describe('StoreThemeService', () => {
     identityBanner: { showFollowButton: true },
     baseThemeId: null,
     pendingHomeSections: null,
-    customCss: null,
   });
 
   const themeDefinition = (overrides: Partial<any> = {}) => ({
@@ -188,7 +187,7 @@ describe('StoreThemeService', () => {
           _id: installedThemeId,
           previewToken: { token: 'share-token', expiresAt: new Date(Date.now() + 60_000) },
           themeDefinitionId: 'theme-03-fashion',
-          draft: { theme: {}, header: { blocks: [] }, footer: {}, identityBanner: {}, customCss: null },
+          draft: { theme: {}, header: { blocks: [] }, footer: {}, identityBanner: {} },
         }),
       });
       storeModel.findById.mockReturnValue({ lean: jest.fn().mockResolvedValue({ slug: 'my-store' }) });

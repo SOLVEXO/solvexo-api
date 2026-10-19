@@ -26,7 +26,7 @@ const MAX_SECTIONS_PER_PAGE = 40;
 // 'search' reserved for the navbar search box's results route.
 const RESERVED_CUSTOM_PAGE_SLUGS = ['home', 'blog', 'category', 'collections', 'product', 'search', 'cart', 'checkout', 'login', 'register', 'verify-otp', 'forgot-password', 'new-password', 'account', 'wishlist', 'loyalty', 'messages', 'notifications', 'returns', 'gift-cards', 'subscriptions', 'blogs', 'store-credit', 'orders', 'order-status', 'addresses', 'reviews', 'faqs', 'en', 'ur', 'ar', 'fa', 'he', 'fr', 'de', 'es', 'hi'];
 
-function validateSections(sections: { type: SectionType; settings: Record<string, any>; blocks: { type: string; settings: Record<string, any> }[] }[]) {
+export function validateSections(sections: { type: SectionType; settings: Record<string, any>; blocks: { type: string; settings: Record<string, any> }[] }[]) {
   if (sections.length > MAX_SECTIONS_PER_PAGE) {
     throw new BadRequestException(`A page cannot have more than ${MAX_SECTIONS_PER_PAGE} sections`);
   }
@@ -42,10 +42,10 @@ export function stripUnpublished<T extends Record<string, any>>(page: T): Omit<T
   return rest;
 }
 
-function starterHomeSections() {
+export function starterHomeSections() {
   return [
-    // Empty until the seller adds slides (a slide needs an https image), but it is the first thing they see to fill in.
-    { type: 'hero' as SectionType, settings: { heightPreset: 'medium' }, blocks: [] },
+    // Text-only welcome banner (no image needed): the seller swaps in a photo and their own words.
+    { type: 'image_banner' as SectionType, settings: { heading: 'Welcome to our store', subheading: 'Discover our latest products, picked with care.', ctaText: 'Shop now', ctaLink: { linkType: 'search' }, heightPreset: 'medium', contentAlign: 'center', contentPosition: 'middle' }, blocks: [] },
     {
       type: 'trust_badges' as SectionType, settings: {}, blocks: [
         { type: 'trust_badge_item', settings: { icon: 'lock', text: 'Secure checkout' } },
@@ -54,6 +54,7 @@ function starterHomeSections() {
       ],
     },
     { type: 'featured_products' as SectionType, settings: { heading: 'New arrivals', source: 'newArrivals', limit: 8, columns: 4 }, blocks: [] },
+    { type: 'featured_products' as SectionType, settings: { heading: 'Best sellers', source: 'bestsellers', limit: 4, columns: 4 }, blocks: [] },
     { type: 'newsletter' as SectionType, settings: { heading: 'Stay in the loop', subtext: 'Be first to hear about new arrivals and offers.' }, blocks: [] },
   ];
 }

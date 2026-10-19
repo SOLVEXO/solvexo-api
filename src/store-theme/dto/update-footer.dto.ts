@@ -3,6 +3,7 @@ import { ApiProperty } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import { IsArray, IsBoolean, IsIn, IsInt, IsOptional, IsString, Matches, Max, MaxLength, Min, ValidateIf, ValidateNested } from 'class-validator';
 import { BlockInputDto } from '../../common/dto/block-input.dto';
+import { SectionInputDto } from '../../store-pages/dto/section-input.dto';
 
 export class UpdateFooterDto {
   @ApiProperty({ type: [BlockInputDto], description: 'footer_column / social_link / copyright_text blocks' })
@@ -49,4 +50,8 @@ export class UpdateFooterDto {
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() showCurrency?: boolean;
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() showBackToTop?: boolean;
   @ApiProperty({ required: false, nullable: true }) @IsOptional() @IsString() @MaxLength(40) preset?: string | null;
+
+  @ApiProperty({ required: false, type: [SectionInputDto], description: 'Extra sections shown with the header/footer (validated per type in the service)' })
+  @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => SectionInputDto)
+  sections?: SectionInputDto[];
 }
