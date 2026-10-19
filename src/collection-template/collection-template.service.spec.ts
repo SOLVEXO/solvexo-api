@@ -60,7 +60,8 @@ describe('CollectionTemplateService — core sections (Phase 4)', () => {
 
     const first = await service.ensureTemplate(STORE_ID, 'product', 'default');
     expect(first.sections[0].type).toBe('product_main');
-    expect(first.sections[0].blocks.map((b: any) => b.type)).toEqual([...PRODUCT_MAIN_BLOCK_TYPES]);
+    // the 7 required blocks come first-class and in order; optional/extra blocks (rating, SKU, shipping tab...) sit between them
+    expect(first.sections[0].blocks.map((b: any) => b.type).filter((t: string) => (PRODUCT_MAIN_BLOCK_TYPES as readonly string[]).includes(t))).toEqual([...PRODUCT_MAIN_BLOCK_TYPES]);
     expect(doc.sections.filter((s: any) => s.type === 'product_main')).toHaveLength(1);
     expect(doc.draft.sections.filter((s: any) => s.type === 'product_main')).toHaveLength(1);
 

@@ -113,11 +113,15 @@ function buildCoreSection(type: SectionType) {
     return {
       type,
       settings: {},
-      blocks: PRODUCT_MAIN_SEED_ORDER.map(blockType => (
+      blocks: [
+        ...PRODUCT_MAIN_SEED_ORDER.map(blockType => (
         (PRODUCT_MAIN_OPTIONAL_BLOCK_TYPES as readonly string[]).includes(blockType)
           ? optionalProductBlock(blockType as ProductMainOptionalBlockType)
           : { type: blockType as string, settings: { label: PRODUCT_MAIN_BLOCK_LABELS[blockType as ProductMainBlockType] }, enabled: true }
       )),
+        // Off by default (empty content renders nothing): a ready-made spot for the seller's delivery and returns info.
+        { type: 'product_collapsible_tab', settings: { title: 'Shipping & returns', content: '', openByDefault: false }, enabled: false },
+      ],
     };
   }
   return { type, settings: {}, blocks: [] as { type: string; settings: Record<string, any> }[] };

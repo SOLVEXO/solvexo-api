@@ -24,6 +24,9 @@ export class UpdateThemeDto {
   @ApiProperty({ required: false }) @IsOptional() @IsHexColor() accentColor?: string;
   @ApiProperty({ required: false }) @IsOptional() @IsString() font?: string;
   @ApiProperty({ required: false, nullable: true }) @IsOptional() @IsString() headingFont?: string | null;
+  @ApiProperty({ required: false, nullable: true }) @IsOptional() @IsHexColor() mutedColor?: string | null;
+  @ApiProperty({ required: false, nullable: true }) @IsOptional() @IsHexColor() borderColor?: string | null;
+  @ApiProperty({ required: false, nullable: true }) @IsOptional() @IsHexColor() saleColor?: string | null;
   @ApiProperty({ required: false, enum: BUTTON_STYLE_VALUES }) @IsOptional() @IsIn(BUTTON_STYLE_VALUES) buttonStyle?: string;
   @ApiProperty({ required: false, enum: BORDER_RADIUS_VALUES }) @IsOptional() @IsIn(BORDER_RADIUS_VALUES) buttonRadius?: string;
   @ApiProperty({ required: false, enum: BUTTON_WIDTH_VALUES }) @IsOptional() @IsIn(BUTTON_WIDTH_VALUES) buttonWidth?: string;

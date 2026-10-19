@@ -34,7 +34,10 @@ function starterSections(resourceType: ResourceTemplateType, templateKey: string
   if (resourceType === 'collection') {
     return [{ type: 'collection_product_grid' as SectionType, settings: { columns: 3, showFilters: true }, blocks: [] }];
   }
-  return buildCoreSections(resourceType, templateKey);
+  const core = buildCoreSections(resourceType, templateKey);
+  // A new product page ships with a related-products row under the buy box (renders nothing when the category has no other products).
+  if (resourceType === 'product') return [...core, { type: 'related_products' as SectionType, settings: { heading: 'You may also like', limit: 4, columns: 4 }, blocks: [] }];
+  return core;
 }
 
 /**

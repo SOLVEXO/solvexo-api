@@ -41,6 +41,10 @@ export class StorefrontColors {
   @Prop({ type: String, default: '#B95A3A' }) accentColor: string;
   @Prop({ type: String, default: 'Poppins' }) font: string;
   @Prop({ type: String, default: null }) headingFont: string | null;
+  // Optional overrides for colours the theme otherwise derives (null = auto).
+  @Prop({ type: String, default: null }) mutedColor: string | null;
+  @Prop({ type: String, default: null }) borderColor: string | null;
+  @Prop({ type: String, default: null }) saleColor: string | null;
   // How `ThemedButton` renders a primary CTA — filled / bordered / tinted.
   @Prop({ type: String, enum: ['solid', 'outline', 'soft'], default: 'solid' })
   buttonStyle: 'solid' | 'outline' | 'soft';

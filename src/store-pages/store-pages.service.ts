@@ -44,8 +44,17 @@ export function stripUnpublished<T extends Record<string, any>>(page: T): Omit<T
 
 function starterHomeSections() {
   return [
+    // Empty until the seller adds slides (a slide needs an https image), but it is the first thing they see to fill in.
     { type: 'hero' as SectionType, settings: { heightPreset: 'medium' }, blocks: [] },
-    { type: 'product_catalog' as SectionType, settings: { heading: 'Our Products' }, blocks: [] },
+    {
+      type: 'trust_badges' as SectionType, settings: {}, blocks: [
+        { type: 'trust_badge_item', settings: { icon: 'lock', text: 'Secure checkout' } },
+        { type: 'trust_badge_item', settings: { icon: 'shield', text: 'Quality you can trust' } },
+        { type: 'trust_badge_item', settings: { icon: 'headset', text: 'Friendly support' } },
+      ],
+    },
+    { type: 'featured_products' as SectionType, settings: { heading: 'New arrivals', source: 'newArrivals', limit: 8, columns: 4 }, blocks: [] },
+    { type: 'newsletter' as SectionType, settings: { heading: 'Stay in the loop', subtext: 'Be first to hear about new arrivals and offers.' }, blocks: [] },
   ];
 }
 
