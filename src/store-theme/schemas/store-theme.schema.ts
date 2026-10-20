@@ -154,6 +154,10 @@ export class StorefrontColors {
   // Colour swatches on product cards; unset = the theme's own default.
   @Prop({ type: String, enum: ['show', 'hide'] })
   colorSwatches?: 'show' | 'hide';
+  // Settings a theme declares in its own manifest (`custom.<name>` fields). The backend stores them without knowing the
+  // theme: adding a setting to a theme needs no schema or DTO change. Shape/size is enforced by the DTO.
+  @Prop({ type: Object, default: undefined })
+  themeSettings?: Record<string, string | number | boolean>;
   @Prop({ type: String, enum: ['show', 'hide'] })
   soldOutBadge?: 'show' | 'hide';
   @Prop({ type: String, enum: ['theme', 'flat', 'outlined', 'elevated'] })
@@ -242,7 +246,7 @@ export class StorefrontHeader {
   @Prop({ type: Boolean, default: false }) navUppercase: boolean;
   @Prop({ type: String, enum: ['none', 'underline', 'pill'], default: 'none' }) navHoverStyle: 'none' | 'underline' | 'pill';
   @Prop({ type: String, enum: ['icon', 'bar'], default: 'icon' }) searchStyle: 'icon' | 'bar';
-  @Prop({ type: String, enum: ['icons', 'center'], default: 'icons' }) searchPosition: 'icons' | 'center'; // bar only: next to the icons, or centered on its own row
+  @Prop({ type: String, default: 'icons' }) searchPosition: string; // bar only: next to the icons, or centered on its own row
   @Prop({ type: String, default: null }) ctaLabel: string | null;
   @Prop({ type: String, default: null }) ctaLink: string | null;
   @Prop({ type: Boolean, default: false }) topBarEnabled: boolean;

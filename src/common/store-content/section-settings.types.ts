@@ -313,6 +313,7 @@ export type SectionSettingsMap = RequireAllKeys<SectionType, {
   cart_summary: CartSummarySectionSettings;
   blog_post_list: BlogPostListSectionSettings;
   article_content: ArticleContentSectionSettings;
+  theme_section: ThemeSectionSettings;
 }>;
 
 // ── Block settings, one per block `type` string ─────────────────────────────
@@ -500,6 +501,10 @@ export interface ProductBuyButtonsBlockSettings {}
 // eslint-disable-next-line @typescript-eslint/no-empty-interface
 export interface ProductDescriptionBlockSettings {}
 
+/** A section/block declared by the active theme's manifest: `sectionKey`/`blockKey` name it, the remaining keys are its fields (validated generically, see validateThemeFields). */
+export interface ThemeSectionSettings { sectionKey: string; [field: string]: unknown }
+export interface ThemeBlockSettings { blockKey: string; [field: string]: unknown }
+
 export const BLOCK_TYPES = [
   'nav_link',
   'footer_column',
@@ -546,6 +551,7 @@ export const BLOCK_TYPES = [
   'product_buy_now',
   'product_collapsible_tab',
   'product_size_chart',
+  'theme_block',
 ] as const;
 export type BlockType = (typeof BLOCK_TYPES)[number];
 
@@ -596,6 +602,7 @@ export type BlockSettingsMap = RequireAllKeys<BlockType, {
   product_buy_now: { label?: string };
   product_collapsible_tab: { title: string; content?: string; openByDefault?: boolean };
   product_size_chart: { label?: string; title?: string; content?: string; imageUrl?: string };
+  theme_block: ThemeBlockSettings;
 }>;
 
 /** `SECTION_ALLOWED_BLOCK_TYPES`'s values are typed against this so a typo'd or retired block-type string in that map is a compile error, not a silent runtime gap. */

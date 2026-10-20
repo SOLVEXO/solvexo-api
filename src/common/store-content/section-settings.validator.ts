@@ -163,7 +163,7 @@ function validateCopyOverrides(settings: Record<string, any>, prefix: string): v
 
 function validateCommonSectionDesign(settings: Record<string, any>): void {
   validateCopyOverrides(settings, 'settings');
-  oneOf(settings.visibility, ['all', 'desktop', 'mobile'] as const, 'settings.visibility');
+  oneOf(settings.visibility, ['all', 'desktop', 'mobile', 'tablet', 'large', 'mobile-tablet'] as const, 'settings.visibility');
   if (settings.fullWidth !== undefined && typeof settings.fullWidth !== 'boolean') {
     throw new BadRequestException('settings.fullWidth must be true or false');
   }
@@ -188,6 +188,39 @@ function validateCommonSectionDesign(settings: Record<string, any>): void {
       throw new BadRequestException('settings.customCss: script or HTML is not allowed');
     }
   }
+}
+
+/**
+ * Generic rules for fields a THEME declares (the backend does not know the theme's schema): simple key names, at most 60
+ * fields, text <= 5000 chars, finite numbers, booleans, null, short lists of text, and small plain objects (links,
+ * image focal points) up to 2 levels, whole payload <= 20 KB. Themes must render text as text (React escapes).
+ */
+const THEME_FIELD_KEY = /^[A-Za-z][A-Za-z0-9_]{0,39}$/;
+const THEME_ITEM_KEY = /^[a-z][a-z0-9_.-]{0,59}$/;
+
+function isThemeFieldValue(v: unknown, depth: number): boolean {
+  if (v === null || typeof v === 'boolean') return true;
+  if (typeof v === 'number') return Number.isFinite(v);
+  if (typeof v === 'string') return v.length <= 5000;
+  if (depth >= 2) return false;
+  if (Array.isArray(v)) return v.length <= 50 && v.every(x => isThemeFieldValue(x, depth + 1));
+  if (typeof v === 'object') {
+    const entries = Object.entries(v as Record<string, unknown>);
+    return entries.length <= 30 && entries.every(([k, x]) => THEME_FIELD_KEY.test(k) && isThemeFieldValue(x, depth + 1));
+  }
+  return false;
+}
+
+function validateThemeFields(settings: Record<string, any>, idKey: 'sectionKey' | 'blockKey', path: string): void {
+  const id = settings[idKey];
+  if (typeof id !== 'string' || !THEME_ITEM_KEY.test(id)) throw new BadRequestException(`${path}.${idKey} must be a short lowercase key`);
+  const entries = Object.entries(settings).filter(([k]) => k !== idKey);
+  if (entries.length > 60) throw new BadRequestException(`${path}: too many fields`);
+  for (const [k, v] of entries) {
+    if (!THEME_FIELD_KEY.test(k) && !k.startsWith('copy')) throw new BadRequestException(`${path}.${k}: invalid field name`);
+    if (!isThemeFieldValue(v, 0)) throw new BadRequestException(`${path}.${k}: unsupported or too large value`);
+  }
+  if (JSON.stringify(settings).length > 20000) throw new BadRequestException(`${path}: too much content`);
 }
 
 export function validateSectionSettings(type: SectionType, settings: Record<string, any>): void {
@@ -496,6 +529,9 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
       assertLinkTarget(s.ctaLink, 'settings.ctaLink');
       break;
     }
+    case 'theme_section':
+      validateThemeFields(settings, 'sectionKey', 'settings');
+      break;
     case 'product_main':
     case 'search_results':
     case 'cart_items':
@@ -853,6 +889,10 @@ export function validateBlockSettings(blockType: string, settings: Record<string
     case 'product_specs':
       break;
 
+    case 'theme_block':
+      validateThemeFields(settings, 'blockKey', 'settings');
+      break;
+
     default:
       throw new BadRequestException(`Unknown block type: ${blockType}`);
   }
@@ -996,4 +1036,5 @@ export const SECTION_ALLOWED_BLOCK_TYPES: AllowedBlockTypesMap = {
   cart_summary: [],
   blog_post_list: [],
   article_content: [],
+  theme_section: ['theme_block'],
 };

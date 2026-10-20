@@ -1,6 +1,23 @@
 /* eslint-disable prettier/prettier */
 import { ApiProperty } from '@nestjs/swagger';
-import { IsHexColor, IsIn, IsOptional, IsString } from 'class-validator';
+import { IsObject, IsHexColor, IsIn, IsOptional, IsString, Validate, ValidatorConstraint, type ValidatorConstraintInterface } from 'class-validator';
+
+const THEME_SETTING_KEY = /^[A-Za-z][A-Za-z0-9_]{0,39}$/;
+
+/** A theme-declared settings bag: at most 60 keys, simple names, string (<=500 chars) / finite number / boolean values. */
+@ValidatorConstraint({ name: 'themeSettingsMap', async: false })
+export class ThemeSettingsMapConstraint implements ValidatorConstraintInterface {
+  validate(value: unknown): boolean {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+    const entries = Object.entries(value as Record<string, unknown>);
+    if (entries.length > 60) return false;
+    return entries.every(([k, v]) => THEME_SETTING_KEY.test(k)
+      && ((typeof v === 'string' && v.length <= 500) || typeof v === 'boolean' || (typeof v === 'number' && Number.isFinite(v))));
+  }
+  defaultMessage(): string {
+    return 'themeSettings must be an object of up to 60 simple keys with text, number or true/false values';
+  }
+}
 
 const BORDER_RADIUS_VALUES = ['none', 'small', 'medium', 'large', 'full'] as const;
 const BUTTON_STYLE_VALUES = ['solid', 'outline', 'soft'] as const;
@@ -92,6 +109,7 @@ export class UpdateThemeDto {
   @ApiProperty({ required: false, enum: ['show', 'hide'] }) @IsOptional() @IsIn(['show', 'hide']) saleBadge?: string;
   @ApiProperty({ required: false, enum: ['show', 'hide'] }) @IsOptional() @IsIn(['show', 'hide']) quickView?: string;
   @ApiProperty({ required: false, enum: ['show', 'hide'] }) @IsOptional() @IsIn(['show', 'hide']) colorSwatches?: string;
+  @ApiProperty({ required: false, description: 'Settings declared by the theme manifest (custom.<name> fields)' }) @IsOptional() @IsObject() @Validate(ThemeSettingsMapConstraint) themeSettings?: Record<string, string | number | boolean>;
   @ApiProperty({ required: false, enum: ['show', 'hide'] }) @IsOptional() @IsIn(['show', 'hide']) soldOutBadge?: string;
   @ApiProperty({ required: false, enum: ['theme', 'flat', 'outlined', 'elevated'] }) @IsOptional() @IsIn(['theme', 'flat', 'outlined', 'elevated']) cardStyle?: string;
   @ApiProperty({ required: false, enum: ['drawer', 'page'] }) @IsOptional() @IsIn(['drawer', 'page']) cartType?: string;

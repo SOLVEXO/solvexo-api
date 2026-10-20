@@ -1,24 +1,21 @@
 import { BadRequestException } from '@nestjs/common';
+import { SECTION_TYPES } from '../schemas/section.schema';
 
-const COMMON_SECTION_TYPES = new Set([
-  'hero', 'rich_text', 'featured_products', 'product_catalog', 'image_with_text',
-  'testimonials', 'faq', 'featured_category_grid', 'trust_badges', 'newsletter',
-  'blog_posts', 'metaobject_list', 'collection_product_grid', 'product_main',
-  'search_results', 'cart_items', 'cart_summary', 'blog_post_list', 'article_content',
-  'multicolumn', 'logo_list', 'marquee', 'custom_html', 'image_banner',
-  'collection_list', 'store_locations', 'gallery_grid', 'contact_form', 'related_products',
-  'divider', 'multirow', 'collage', 'featured_product', 'collection_banner', 'recently_viewed',
-]);
+/**
+ * Which section types a theme accepts.
+ *
+ * The theme itself decides what it renders (its own renderer registry on the frontend, which also drives the
+ * editor's "Add section" list), so the backend does NOT need an edit when a theme is added: a theme with no entry
+ * here accepts every section type the platform knows (`SECTION_TYPES`). A theme id the backend has never heard of
+ * (a retired theme, a brand-new one) behaves the same way.
+ *
+ * Add an entry only to NARROW a theme on the server as well (a hard rule, not just the editor's list).
+ */
+export const THEME_SECTION_TYPES: Record<string, ReadonlySet<string>> = {};
 
-/** Theme renderer capability catalog; keep aligned with frontend section registries. */
-export const THEME_SECTION_TYPES: Record<string, ReadonlySet<string>> = {
-  'theme-03-fashion': new Set([...COMMON_SECTION_TYPES, 'video', 'drop_countdown']),
-};
+const ALL_SECTION_TYPES: ReadonlySet<string> = new Set<string>(SECTION_TYPES);
 
-const DEFAULT_THEME_ID = 'theme-03-fashion';
-
-/** A theme id the catalog does not know (e.g. a retired theme) is served like the default theme, the same fallback the storefront applies when it renders. */
-const capabilitiesOf = (themeDefinitionId: string) => THEME_SECTION_TYPES[themeDefinitionId] ?? THEME_SECTION_TYPES[DEFAULT_THEME_ID];
+const capabilitiesOf = (themeDefinitionId: string): ReadonlySet<string> => THEME_SECTION_TYPES[themeDefinitionId] ?? ALL_SECTION_TYPES;
 
 export function assertThemeSupportsSections(sections: { type: string }[], themeDefinitionId?: string | null) {
   if (!themeDefinitionId) {

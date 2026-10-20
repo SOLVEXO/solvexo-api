@@ -66,7 +66,8 @@ export class UpdateHeaderDto {
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() navUppercase?: boolean;
   @ApiProperty({ required: false, enum: ['none', 'underline', 'pill'] }) @IsOptional() @IsIn(['none', 'underline', 'pill']) navHoverStyle?: 'none' | 'underline' | 'pill';
   @ApiProperty({ required: false, enum: ['icon', 'bar'] }) @IsOptional() @IsIn(['icon', 'bar']) searchStyle?: 'icon' | 'bar';
-  @ApiProperty({ required: false, enum: ['icons', 'center'] }) @IsOptional() @IsIn(['icons', 'center']) searchPosition?: 'icons' | 'center';
+  @ApiProperty({ required: false, description: 'A choice the active theme offers for the search box position (a short slug such as icons, row, center).' })
+  @IsOptional() @IsString() @Matches(/^[a-z][a-z0-9_-]{0,31}$/, { message: 'searchPosition must be a short lowercase slug' }) searchPosition?: string;
   @ApiProperty({ required: false, nullable: true }) @IsOptional() @IsString() @MaxLength(30) ctaLabel?: string | null;
   @ApiProperty({ required: false, nullable: true }) @ValidateIf((_, v) => v !== null && v !== undefined && v !== '') @Matches(/^(https?:\/\/\S+|\/(?!\/)\S*)$/i, { message: 'Button link must start with https://, http:// or /' }) @MaxLength(500) ctaLink?: string | null;
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() topBarEnabled?: boolean;
