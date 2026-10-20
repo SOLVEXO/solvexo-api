@@ -77,6 +77,8 @@ function assertHttpsUrl(value: unknown, field: string): void {
 // validator has no DB access and never invents ownership guarantees it can't
 // actually check.
 export const LINK_TYPES = ['home', 'page', 'blog', 'search', 'external', 'category', 'collection', 'product', 'cart', 'account', 'email', 'phone'] as const;
+/** Menu items only: a label that opens its dropdown on hover and goes nowhere on click. */
+export const NAV_LINK_TYPES = [...LINK_TYPES, 'none'] as const;
 
 /** Dynamic Sources — a `paragraph` block can bind to a real metafield
  *  (resolved at render time against whichever product a Product Template's
@@ -523,7 +525,7 @@ export function validateBlockSettings(blockType: string, settings: Record<string
       required(settings.label, 'label');
       maxLen(settings.label, 40, 'label');
       required(settings.linkType, 'linkType');
-      oneOf(settings.linkType, LINK_TYPES, 'linkType');
+      oneOf(settings.linkType, NAV_LINK_TYPES, 'linkType');
       if (settings.linkType === 'page') required(settings.pageSlug, 'pageSlug');
       if (settings.linkType === 'external') assertHttpsUrl(settings.url, 'url');
       if (settings.linkType === 'category') required(settings.categoryId, 'categoryId');
@@ -893,7 +895,7 @@ function validateNavChildren(item: Record<string, any>, depth: number): void {
     required(child?.label, 'children[].label');
     maxLen(child?.label, 40, 'children[].label');
     required(child?.linkType, 'children[].linkType');
-    oneOf(child?.linkType, LINK_TYPES, 'children[].linkType');
+    oneOf(child?.linkType, NAV_LINK_TYPES, 'children[].linkType');
     if (child?.linkType === 'page') required(child?.pageSlug, 'children[].pageSlug');
     if (child?.linkType === 'external') assertHttpsUrl(child?.url, 'children[].url');
     if (child?.linkType === 'category') required(child?.categoryId, 'children[].categoryId');
