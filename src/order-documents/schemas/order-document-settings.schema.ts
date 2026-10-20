@@ -29,6 +29,8 @@ export class OrderDocumentSettings {
   @Prop({ type: String, enum: DOC_PAPER_SIZES, default: 'a4' }) paperSize: string;
   @Prop({ type: String, default: null }) accentColor: string | null;
   @Prop({ type: Boolean, default: true }) showLogo: boolean;
+  /** Also print the business name next to the logo (default: the logo replaces the name). */
+  @Prop({ type: Boolean, default: false }) showNameWithLogo: boolean;
   @Prop({ type: String, enum: DOC_SIZES, default: 'medium' }) logoSize: string;
   @Prop({ type: String, enum: DOC_ALIGNS, default: 'left' }) logoAlign: string;
 
@@ -43,12 +45,12 @@ export class OrderDocumentSettings {
   @Prop({ type: String, enum: DOC_SIZES, default: 'medium' }) watermarkSize: string;
 
   // ── Packing slip ──
-  @Prop({ type: Boolean, default: false }) slipShowPrices: boolean;
+  @Prop({ type: Boolean, default: true }) slipShowPrices: boolean;
   @Prop({ type: Boolean, default: true }) slipShowSku: boolean;
   @Prop({ type: Boolean, default: true }) slipShowImages: boolean;
   @Prop({ type: Boolean, default: true }) slipShowNote: boolean;
   @Prop({ type: Boolean, default: true }) slipShowPayment: boolean;
-  @Prop({ type: Boolean, default: true }) slipShowCheckbox: boolean;
+  @Prop({ type: Boolean, default: false }) slipShowCheckbox: boolean;
   @Prop({ type: String, default: null }) slipMessage: string | null;
   @Prop({ type: String, default: null }) slipFooter: string | null;
 

@@ -17,10 +17,10 @@ function cleanText(v: string): string {
 /** What an untouched store prints: used when no settings doc exists and to fill any missing field. */
 export const ORDER_DOCUMENT_DEFAULTS = {
   companyName: null, addressText: null, phone: null, email: null, taxIdLabel: null, taxIdValue: null,
-  paperSize: 'a4', accentColor: null, showLogo: true, logoSize: 'medium', logoAlign: 'left',
+  paperSize: 'a4', accentColor: null, showLogo: true, showNameWithLogo: false, logoSize: 'medium', logoAlign: 'left',
   watermarkEnabled: false, watermarkType: 'logo', watermarkText: null, watermarkPosition: 'center', watermarkAngle: -30,
   watermarkOpacity: 8, watermarkSize: 'medium',
-  slipShowPrices: false, slipShowSku: true, slipShowImages: true, slipShowNote: true, slipShowPayment: true, slipShowCheckbox: true,
+  slipShowPrices: true, slipShowSku: true, slipShowImages: true, slipShowNote: true, slipShowPayment: true, slipShowCheckbox: false,
   slipMessage: null, slipFooter: null,
   invoiceTitle: null, invoiceShowSku: true, invoiceShowImages: false, invoiceShowTaxId: true, invoiceTerms: null, invoiceFooter: null,
 } as const;

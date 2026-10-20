@@ -51,6 +51,25 @@ describe('customers bulk import', () => {
     expect(other.created.length).toBe(0);
   });
 
+  it('subscribes a "yes" row only when the seller confirmed consent', async () => {
+    const { deps, created } = setup();
+    const csv = 'Name,Email,Accepts Email Marketing\nAnn,a@x.com,yes\nBob,b@x.com,no\nCid,c@x.com,';
+    const res = await importCustomersCsv(deps, csv, { consentConfirmed: true });
+    expect(res.data.created).toBe(3);
+    expect(created.find((c) => c.email === 'a@x.com').marketingConsent).toBe(true);
+    expect(created.find((c) => c.email === 'b@x.com').marketingConsent).toBeUndefined();
+    expect(created.find((c) => c.email === 'c@x.com').marketingConsent).toBeUndefined();
+  });
+
+  it('rejects a "yes" row (never silently subscribes) when consent was not confirmed', async () => {
+    const { deps, created } = setup();
+    const res = await importCustomersCsv(deps, 'Name,Email,Accepts Email Marketing\nAnn,a@x.com,yes\nBob,b@x.com,no');
+    expect(res.data.created).toBe(1);
+    expect(res.data.failedCount).toBe(1);
+    expect(res.data.failed[0].error).toContain('consent');
+    expect(created.map((c) => c.email)).toEqual(['b@x.com']);
+  });
+
   it('rejects a file missing a required column', async () => {
     const { deps } = setup();
     await expect(importCustomersCsv(deps, 'Name,Phone\nAnn,1')).rejects.toThrow('Email');

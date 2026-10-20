@@ -2006,6 +2006,7 @@ export class StoreService {
   private static readonly CUSTOMER_AT_RISK_DAYS = 90;
   private static readonly CUSTOMER_VIP_ORDER_COUNT = 5;
   private static readonly CUSTOMER_SEGMENTS = ['new', 'returning', 'vip', 'at_risk', 'no_orders'] as const;
+  private static readonly CUSTOMER_MARKETING_STATES = ['subscribed', 'pending', 'unsubscribed', 'not_subscribed'] as const;
 
   /**
    * One aggregation pipeline (through the segment/tags/notes $addFields
@@ -2033,7 +2034,37 @@ export class StoreService {
     return rows.map((r: any) => String(r._id));
   }
 
-  private buildStoreCustomersPipeline(storeId: string, customerIds: string[], query: any) {
+  /** Emails (lowercased) of everyone the pipeline below already lists as a
+   *  customer of this store — order customers (a guest's real address is its
+   *  `contactEmail`) and seller-created/tagged ones. A subscriber whose email
+   *  is NOT in this set has no customer row yet, so it is listed on its own
+   *  (see `includeSubscribers`). */
+  private async storeCustomerEmails(storeId: string, customerIds: string[]): Promise<string[]> {
+    const { userModel, storeCustomerMetaModel } = this.databaseService.repositories;
+    const metaIds: string[] = await storeCustomerMetaModel.distinct('userId', { storeId });
+    const ids = [...new Set([...customerIds, ...metaIds])].filter((id) => /^[a-f0-9]{24}$/i.test(String(id)));
+    if (!ids.length) return [];
+    const users = await userModel.find({ _id: { $in: ids } }).select('email contactEmail').lean();
+    const out = new Set<string>();
+    for (const u of users as any[]) {
+      if (u.email) out.add(String(u.email).toLowerCase());
+      if (u.contactEmail) out.add(String(u.contactEmail).toLowerCase());
+    }
+    return [...out];
+  }
+
+  /** `includeSubscribers` additionally lists people who agreed to marketing
+   *  email (storefront footer, checkout box, seller add/import) but have no
+   *  customer row — Shopify shows every signup in Customers. Such a row has
+   *  `_id: 'sub:<subscriberId>'` and `isSubscriberOnly: true`; it cannot be
+   *  edited/tagged/archived (there is no account behind it), only
+   *  unsubscribed or removed through the subscriber endpoints. */
+  private buildStoreCustomersPipeline(
+    storeId: string,
+    customerIds: string[],
+    query: any,
+    opts: { includeSubscribers?: boolean; knownEmails?: string[] } = {},
+  ) {
     const { userModel, storeCustomerMetaModel, newsletterSubscriberModel } = this.databaseService.repositories;
 
     const pipeline: any[] = [
@@ -2071,6 +2102,44 @@ export class StoreService {
           ],
         },
       },
+      ...(opts.includeSubscribers
+        ? [{
+            // Signups with no customer row (see `includeSubscribers`). The
+            // account name, when the person registered but never ordered, is
+            // looked up by email inside this store.
+            $unionWith: {
+              coll: newsletterSubscriberModel.collection.name,
+              pipeline: [
+                { $match: { storeId, email: { $nin: opts.knownEmails ?? [] } } },
+                {
+                  $lookup: {
+                    from: userModel.collection.name,
+                    let: { em: '$email' },
+                    pipeline: [
+                      { $match: { $expr: { $and: [{ $eq: ['$storeId', storeId] }, { $eq: [{ $toLower: '$email' }, '$$em'] }] } } },
+                      { $limit: 1 },
+                      { $project: { name: 1, phone: 1 } },
+                    ],
+                    as: 'subscriberUser',
+                  },
+                },
+                {
+                  $project: {
+                    _id: { $concat: ['sub:', { $toString: '$_id' }] },
+                    orderCount: { $literal: 0 },
+                    totalSpent: { $literal: 0 },
+                    lastOrderAt: { $literal: null },
+                    isSubscriberOnly: { $literal: true },
+                    subscriberEmail: '$email',
+                    subscriberCreatedAt: { $ifNull: ['$consentAt', '$createdAt'] },
+                    subscriberName: { $arrayElemAt: ['$subscriberUser.name', 0] },
+                    subscriberPhone: { $arrayElemAt: ['$subscriberUser.phone', 0] },
+                  },
+                },
+              ],
+            },
+          }]
+        : []),
       {
         $addFields: {
           // Null-safe — a zero-order customer's `lastOrderAt` is null, and
@@ -2115,7 +2184,10 @@ export class StoreService {
           as: 'user',
         },
       },
-      { $unwind: '$user' },
+      // A row with no account is dropped (deleted user) unless it is a
+      // subscriber-only row, which never has one.
+      { $unwind: { path: '$user', preserveNullAndEmptyArrays: true } },
+      { $match: { $or: [{ user: { $exists: true } }, { isSubscriberOnly: true }] } },
       {
         $lookup: {
           from: storeCustomerMetaModel.collection.name,
@@ -2127,33 +2199,60 @@ export class StoreService {
       { $unwind: { path: '$meta', preserveNullAndEmptyArrays: true } },
       // Marketing consent comes from the store's subscriber list, not the
       // meta flag — a buyer who subscribed on the storefront or at checkout
-      // may have no meta row at all.
+      // may have no meta row at all. A guest's real address is `contactEmail`
+      // (its login email is synthetic).
       {
         $lookup: {
           from: newsletterSubscriberModel.collection.name,
-          let: { em: { $toLower: '$user.email' } },
+          let: {
+            em: {
+              $toLower: {
+                $ifNull: [
+                  { $cond: [{ $eq: ['$user.isGuest', true] }, { $ifNull: ['$user.contactEmail', '$user.email'] }, '$user.email'] },
+                  '$subscriberEmail',
+                ],
+              },
+            },
+          },
           pipeline: [
-            { $match: { $expr: { $and: [{ $eq: ['$storeId', storeId] }, { $eq: ['$email', '$$em'] }, { $eq: ['$isActive', true] }] } } },
+            { $match: { $expr: { $and: [{ $eq: ['$storeId', storeId] }, { $eq: ['$email', '$$em'] }] } } },
             { $limit: 1 },
-            { $project: { _id: 1 } },
+            { $project: { _id: 1, isActive: 1, pendingConfirmation: 1, source: 1, consentAt: 1, unsubscribedAt: 1 } },
           ],
           as: 'subscription',
         },
       },
       {
         $addFields: {
-          name: '$user.name',
-          email: '$user.email',
-          phone: '$user.phone',
-          createdAt: '$user.createdAt',
+          name: { $ifNull: ['$user.name', { $ifNull: ['$subscriberName', ''] }] },
+          email: { $ifNull: ['$user.email', '$subscriberEmail'] },
+          phone: { $ifNull: ['$user.phone', { $ifNull: ['$subscriberPhone', ''] }] },
+          createdAt: { $ifNull: ['$user.createdAt', '$subscriberCreatedAt'] },
           tags: { $ifNull: ['$meta.tags', []] },
           notes: { $ifNull: ['$meta.notes', ''] },
           isArchived: { $ifNull: ['$meta.isArchived', false] },
-          marketingOptIn: { $gt: [{ $size: '$subscription' }, 0] },
+          // Shopify's four states: subscribed · pending (double opt-in not
+          // confirmed yet) · unsubscribed (opted out) · not_subscribed (never
+          // agreed). Campaigns only ever reach `subscribed`.
+          marketingStatus: {
+            $switch: {
+              branches: [
+                { case: { $eq: [{ $size: '$subscription' }, 0] }, then: 'not_subscribed' },
+                { case: { $eq: [{ $arrayElemAt: ['$subscription.isActive', 0] }, true] }, then: 'subscribed' },
+                { case: { $eq: [{ $arrayElemAt: ['$subscription.pendingConfirmation', 0] }, true] }, then: 'pending' },
+              ],
+              default: 'unsubscribed',
+            },
+          },
+          marketingSource: { $arrayElemAt: ['$subscription.source', 0] },
+          marketingConsentAt: { $arrayElemAt: ['$subscription.consentAt', 0] },
+          marketingUnsubscribedAt: { $arrayElemAt: ['$subscription.unsubscribedAt', 0] },
+          isSubscriberOnly: { $ifNull: ['$isSubscriberOnly', false] },
           isBlocked: { $ifNull: ['$meta.isBlocked', false] },
           isErased: { $ifNull: ['$meta.isErased', false] },
         },
       },
+      { $addFields: { marketingOptIn: { $eq: ['$marketingStatus', 'subscribed'] } } },
     ];
 
     const filter: Record<string, unknown> = {};
@@ -2169,6 +2268,9 @@ export class StoreService {
       if (query.dateFrom) range.$gte = new Date(query.dateFrom);
       if (query.dateTo) range.$lte = new Date(query.dateTo);
       filter.lastOrderAt = range;
+    }
+    if (query.marketing && (StoreService.CUSTOMER_MARKETING_STATES as readonly string[]).includes(query.marketing)) {
+      filter.marketingStatus = query.marketing;
     }
     // Scopes the list/export down to an explicit id set — e.g. "export just
     // the rows I selected" from the Customers table's bulk-action bar.
@@ -2217,16 +2319,17 @@ export class StoreService {
    *  elsewhere in this app. */
   async createStoreCustomer(
     sellerId: string, storeId: string,
-    dto: { name: string; email: string; phone?: string },
+    dto: { name?: string; email: string; phone?: string; marketingConsent?: boolean },
     ip?: string, userAgent?: string,
   ) {
     const store = await this.databaseService.repositories.storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
     if (!store) throw new UnauthorizedException('Store not found or unauthorized');
 
-    const name = (dto.name ?? '').trim();
     const email = (dto.email ?? '').trim().toLowerCase();
-    if (!name) throw new BadRequestException('A customer name is required');
     if (!email) throw new BadRequestException('A customer email is required');
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email) || email.length > 254) throw new BadRequestException('Enter a valid email address');
+    // Name is optional (Shopify shows the email when there is none).
+    const name = (dto.name ?? '').trim().slice(0, 200) || email;
 
     const { userModel, storeCustomerMetaModel } = this.databaseService.repositories;
     let user = await userModel.findOne({ storeId, email, isDelete: { $ne: true } });
@@ -2246,6 +2349,20 @@ export class StoreService {
       { upsert: true },
     );
 
+    // "Customer agreed to receive marketing emails" (the seller attests it,
+    // like Shopify's checkbox). Someone who opted out earlier is never
+    // re-subscribed from here — only they can opt back in.
+    let marketingSubscribed = false;
+    if (dto.marketingConsent === true) {
+      const { newsletterSubscriberModel } = this.databaseService.repositories;
+      const prior: any = await newsletterSubscriberModel.findOne({ storeId, email }).select('isActive pendingConfirmation').lean();
+      if (!prior || prior.isActive) {
+        await setMarketingConsent(newsletterSubscriberModel, { storeId, email, subscribed: true, source: 'seller', userId });
+        await storeCustomerMetaModel.updateOne({ storeId, userId }, { $set: { marketingOptIn: true } });
+        marketingSubscribed = true;
+      }
+    }
+
     this.activityLogService.log({
       storeId, category: 'customers', action: 'customer_profile_created',
       description: `${name} added as a customer${created ? '' : ' (matched an existing account by email)'}`,
@@ -2256,14 +2373,14 @@ export class StoreService {
     return {
       success: true,
       message: created ? 'Customer created' : 'Customer added — an existing account with this email was linked',
-      data: { _id: userId, name: user.name, email: user.email, phone: user.phone ?? null, createdAt: (user as any).createdAt },
+      data: { _id: userId, name: user.name, email: user.email, phone: user.phone ?? null, createdAt: (user as any).createdAt, marketingSubscribed },
     };
   }
 
   /** CSV bulk import — every row goes through createStoreCustomer (same
    *  store scoping, activity log, no password); an existing account of THIS
    *  store with the same email is skipped, never duplicated. */
-  async importStoreCustomers(sellerId: string, storeId: string, text: string, ip?: string, userAgent?: string) {
+  async importStoreCustomers(sellerId: string, storeId: string, text: string, ip?: string, userAgent?: string, consentConfirmed = false) {
     const store = await this.databaseService.repositories.storeModel.findOne({ _id: storeId, sellerId, isDelete: false }).select('_id').lean();
     if (!store) throw new UnauthorizedException('Store not found or unauthorized');
     const { userModel } = this.databaseService.repositories;
@@ -2273,6 +2390,7 @@ export class StoreService {
         create: (dto) => this.createStoreCustomer(sellerId, storeId, dto, ip, userAgent),
       },
       text,
+      { consentConfirmed },
     );
   }
 
@@ -2295,12 +2413,15 @@ export class StoreService {
     const sortDir = query.sortDir === 'asc' ? 1 : -1;
 
     const customerIds = await this.storeCustomerIdsFromOrders(storeId);
-    const pipeline = this.buildStoreCustomersPipeline(storeId, customerIds, query);
+    const knownEmails = await this.storeCustomerEmails(storeId, customerIds);
+    const pipeline = this.buildStoreCustomersPipeline(storeId, customerIds, query, { includeSubscribers: true, knownEmails });
 
     const [customers, [totals]] = await Promise.all([
       orderModel.aggregate([
         ...pipeline,
-        { $sort: { [sortField]: sortDir } },
+        // `_id` tie-break keeps pages stable when many rows share a sort value
+        // (every subscriber-only row has a null lastOrderAt).
+        { $sort: { [sortField]: sortDir, _id: 1 } },
         { $skip: skip },
         { $limit: limit },
         {
@@ -2308,12 +2429,22 @@ export class StoreService {
             _id: 1, name: 1, email: 1, phone: 1, createdAt: 1,
             orderCount: 1, totalSpent: 1, lastOrderAt: 1, segment: 1,
             tags: 1, notes: 1, isArchived: 1, marketingOptIn: 1, isErased: 1,
+            marketingStatus: 1, marketingSource: 1, marketingConsentAt: 1, marketingUnsubscribedAt: 1,
+            isSubscriberOnly: 1,
           },
         },
       ]),
       orderModel.aggregate([
         ...pipeline,
-        { $group: { _id: null, total: { $sum: 1 }, totalOrders: { $sum: '$orderCount' }, totalRevenue: { $sum: '$totalSpent' } } },
+        {
+          $group: {
+            _id: null,
+            total: { $sum: 1 },
+            totalOrders: { $sum: '$orderCount' },
+            totalRevenue: { $sum: '$totalSpent' },
+            subscribed: { $sum: { $cond: [{ $eq: ['$marketingStatus', 'subscribed'] }, 1, 0] } },
+          },
+        },
       ]),
     ]);
 
@@ -2323,7 +2454,7 @@ export class StoreService {
       success: true,
       data: {
         pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
-        summary: { totalOrders: totals?.totalOrders ?? 0, totalRevenue: totals?.totalRevenue ?? 0 },
+        summary: { totalOrders: totals?.totalOrders ?? 0, totalRevenue: totals?.totalRevenue ?? 0, subscribed: totals?.subscribed ?? 0 },
         customers,
       },
     };
@@ -2432,11 +2563,14 @@ export class StoreService {
     const rows = result.data.customers as any[];
 
     const escape = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-    const header = ['Name', 'Email', 'Phone', 'Segment', 'Orders', 'Total Spent', 'Last Order', 'Member Since', 'Tags'];
+    const marketingLabel: Record<string, string> = {
+      subscribed: 'Subscribed', pending: 'Pending', unsubscribed: 'Unsubscribed', not_subscribed: 'Not subscribed',
+    };
+    const header = ['Name', 'Email', 'Phone', 'Email Marketing', 'Segment', 'Orders', 'Total Spent', 'Last Order', 'Member Since', 'Tags'];
     const lines = [header.map(escape).join(',')];
     for (const c of rows) {
       lines.push([
-        c.name, c.email, c.phone, c.segment, c.orderCount, c.totalSpent,
+        c.name, c.email, c.phone, marketingLabel[c.marketingStatus] ?? 'Not subscribed', c.segment, c.orderCount, c.totalSpent,
         c.lastOrderAt ? new Date(c.lastOrderAt).toISOString() : '',
         c.createdAt ? new Date(c.createdAt).toISOString() : '',
         (c.tags ?? []).join('; '),
@@ -2538,6 +2672,90 @@ export class StoreService {
     return { success: true, message: `${archived ? 'Archived' : 'Restored'} ${validIds.length} customer(s)`, data: { updated: validIds.length } };
   }
 
+  /** Bulk "Subscribe / Unsubscribe from email marketing" for the Customers
+   *  table. Same consent rules as the single toggle: a customer who is
+   *  unsubscribed or has not confirmed is never re-subscribed (counted in
+   *  `skipped`); unsubscribing also cancels a pending sign-up. Accepts
+   *  subscriber-only ids (`sub:<id>`) next to real customer ids. */
+  async bulkSetCustomerMarketing(
+    sellerId: string, storeId: string,
+    dto: { customerIds: string[]; subscribed: boolean },
+    ip?: string, userAgent?: string,
+  ) {
+    const { storeModel, userModel, storeCustomerMetaModel, newsletterSubscriberModel } = this.databaseService.repositories;
+    const store = await storeModel.findOne({ _id: storeId, isDelete: false });
+    if (!store) throw new NotFoundException('Store not found');
+    if (store.sellerId !== sellerId) throw new UnauthorizedException('You are not authorized to edit this store\'s customers');
+
+    const requested = [...new Set((dto.customerIds ?? []).map(String).filter(Boolean))];
+    if (!requested.length) throw new BadRequestException('customerIds is required');
+    if (requested.length > 1000) throw new BadRequestException('Select at most 1000 customers at a time');
+    const subscribed = !!dto.subscribed;
+
+    const subscriberIds = requested.filter((id) => id.startsWith('sub:')).map((id) => id.slice(4)).filter((id) => /^[a-f0-9]{24}$/i.test(id));
+    const userIdsRaw = requested.filter((id) => !id.startsWith('sub:'));
+    const userIds = userIdsRaw.length ? await this.resolveStoreCustomerIds(storeId, userIdsRaw) : [];
+    if (!userIds.length && !subscriberIds.length) throw new BadRequestException('None of the selected customers belong to this store');
+
+    // email -> account id (when there is one)
+    const targets = new Map<string, string | null>();
+    if (userIds.length) {
+      const users = await userModel.find({ _id: { $in: userIds } }).select('email contactEmail isGuest').lean();
+      for (const u of users as any[]) {
+        const email = String(u.isGuest ? u.contactEmail || u.email : u.email || '').toLowerCase();
+        if (email) targets.set(email, String(u._id));
+      }
+    }
+    if (subscriberIds.length) {
+      const rows = await newsletterSubscriberModel.find({ _id: { $in: subscriberIds }, storeId }).select('email').lean();
+      for (const r of rows as any[]) if (!targets.has(r.email)) targets.set(r.email, null);
+    }
+
+    const existing = await newsletterSubscriberModel
+      .find({ storeId, email: { $in: [...targets.keys()] } })
+      .select('email isActive pendingConfirmation').lean();
+    const rowByEmail = new Map((existing as any[]).map((r) => [r.email, r]));
+
+    let updated = 0;
+    let skipped = 0;
+    const changedUserIds: string[] = [];
+    for (const [email, userId] of targets) {
+      const row: any = rowByEmail.get(email);
+      if (subscribed) {
+        if (row?.isActive) continue; // already subscribed — nothing to do, not a skip
+        if (row) { skipped++; continue; } // opted out or unconfirmed: only the customer can opt in
+        await setMarketingConsent(newsletterSubscriberModel, { storeId, email, subscribed: true, source: 'seller', userId });
+        updated++;
+        if (userId) changedUserIds.push(userId);
+      } else {
+        if (!row || (!row.isActive && !row.pendingConfirmation)) continue; // nothing to switch off
+        if (row.pendingConfirmation && !row.isActive) {
+          await newsletterSubscriberModel.updateOne({ storeId, email }, { $set: { pendingConfirmation: false, confirmToken: null, unsubscribedAt: new Date() } });
+        } else {
+          await setMarketingConsent(newsletterSubscriberModel, { storeId, email, subscribed: false, source: 'seller', userId });
+        }
+        updated++;
+        if (userId) changedUserIds.push(userId);
+      }
+    }
+
+    if (changedUserIds.length) {
+      await storeCustomerMetaModel.updateMany({ storeId, userId: { $in: changedUserIds } }, { $set: { marketingOptIn: subscribed } });
+    }
+
+    this.activityLogService.log({
+      storeId, category: 'customers', action: subscribed ? 'customers_bulk_subscribed' : 'customers_bulk_unsubscribed',
+      description: `${subscribed ? 'Subscribed' : 'Unsubscribed'} ${updated} customer(s) ${subscribed ? 'to' : 'from'} email marketing${skipped ? ` (${skipped} skipped: they opted out or have not confirmed)` : ''}`,
+      actorId: sellerId, actorRole: 'seller', ip, userAgent,
+    });
+
+    return {
+      success: true,
+      message: `${subscribed ? 'Subscribed' : 'Unsubscribed'} ${updated} customer(s)${skipped ? `, ${skipped} skipped` : ''}`,
+      data: { updated, skipped },
+    };
+  }
+
   async updateStoreCustomer(
     sellerId: string,
     storeId: string,
@@ -2604,11 +2822,31 @@ export class StoreService {
     const known = await this.isKnownStoreCustomer(storeId, customerId);
     if (!known) throw new BadRequestException('This person is not a customer of this store');
 
+    const { newsletterSubscriberModel } = this.databaseService.repositories;
     const set: Record<string, unknown> = {};
     if (dto.tags !== undefined) set.tags = dto.tags.slice(0, 20).map((t) => t.trim()).filter(Boolean);
     if (dto.notes !== undefined) set.notes = dto.notes.slice(0, 2000);
     if (dto.marketingOptIn !== undefined) set.marketingOptIn = !!dto.marketingOptIn;
     if (Object.keys(set).length === 0) throw new BadRequestException('Nothing to update');
+
+    // Consent is the customer's to give back: a seller may add someone who
+    // never agreed, or switch a subscriber off, but must not re-subscribe
+    // someone who opted out themselves or never confirmed (same rule as the
+    // old Subscribers screen and Shopify). Checked BEFORE anything is written.
+    let marketingRow: any = null;
+    let customerEmail: string | null = null;
+    if (dto.marketingOptIn !== undefined) {
+      const customer = await this.databaseService.repositories.userModel.findById(customerId).select('email contactEmail isGuest').lean();
+      customerEmail = ((customer as any)?.isGuest ? (customer as any)?.contactEmail || (customer as any)?.email : (customer as any)?.email)?.toLowerCase() ?? null;
+      if (customerEmail) {
+        marketingRow = await newsletterSubscriberModel.findOne({ storeId, email: customerEmail }).select('isActive pendingConfirmation').lean();
+        if (dto.marketingOptIn && marketingRow && !marketingRow.isActive) {
+          throw new BadRequestException(marketingRow.pendingConfirmation
+            ? 'This customer has not confirmed their subscription yet. They need to click the link in the confirmation email.'
+            : 'This customer is unsubscribed. Only they can re-subscribe (e.g. from your storefront).');
+        }
+      }
+    }
 
     const meta = await storeCustomerMetaModel.findOneAndUpdate(
       { storeId, userId: customerId },
@@ -2618,12 +2856,17 @@ export class StoreService {
 
     // The subscriber row is what campaigns actually read — the meta flag is
     // only its mirror (see NewsletterSubscriber's doc comment).
-    if (dto.marketingOptIn !== undefined) {
-      const customer = await this.databaseService.repositories.userModel.findById(customerId).select('email').lean();
-      if (customer?.email) {
-        await setMarketingConsent(this.databaseService.repositories.newsletterSubscriberModel, {
+    if (dto.marketingOptIn !== undefined && customerEmail) {
+      if (!dto.marketingOptIn && marketingRow?.pendingConfirmation && !marketingRow.isActive) {
+        // Cancels a double opt-in that was never confirmed.
+        await newsletterSubscriberModel.updateOne(
+          { storeId, email: customerEmail },
+          { $set: { pendingConfirmation: false, confirmToken: null, unsubscribedAt: new Date() } },
+        );
+      } else {
+        await setMarketingConsent(newsletterSubscriberModel, {
           storeId,
-          email: customer.email,
+          email: customerEmail,
           subscribed: !!dto.marketingOptIn,
           source: 'seller',
           userId: customerId,
@@ -2644,7 +2887,11 @@ export class StoreService {
       userAgent,
     });
 
-    return { success: true, message: 'Customer notes updated', data: { tags: meta.tags, notes: meta.notes, marketingOptIn: meta.marketingOptIn } };
+    const marketingStatus = dto.marketingOptIn === undefined
+      ? undefined
+      : dto.marketingOptIn ? 'subscribed' : marketingRow ? 'unsubscribed' : 'not_subscribed';
+
+    return { success: true, message: 'Customer notes updated', data: { tags: meta.tags, notes: meta.notes, marketingOptIn: meta.marketingOptIn, ...(marketingStatus ? { marketingStatus } : {}) } };
   }
 
   /** Real GDPR "right to access" — a downloadable bundle of everything THIS

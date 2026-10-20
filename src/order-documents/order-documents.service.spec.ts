@@ -27,17 +27,19 @@ describe('OrderDocumentsService', () => {
     const s: any = (await svc.get('seller-1', 'store-1')).data.settings;
     expect(s.watermarkEnabled).toBe(true);
     expect(s.paperSize).toBe('a5');
-    expect(s.slipShowPrices).toBe(false);
+    expect(s.slipShowPrices).toBe(true);
+    expect(s.slipShowCheckbox).toBe(false);
+    expect(s.showNameWithLogo).toBe(false);
     expect(s.unknownField).toBe(undefined);
   });
 
   it('text fields are cleaned and an empty text clears back to the default (null)', async () => {
     const { svc, updates } = makeService(null);
-    await svc.update('seller-1', 'store-1', { companyName: '  Amara\u0007 Wears  ', addressText: '', slipShowPrices: true } as any);
+    await svc.update('seller-1', 'store-1', { companyName: '  Amara\u0007 Wears  ', addressText: '', slipShowPrices: false } as any);
     const set = updates[0][1].$set;
     expect(set.companyName).toBe('Amara Wears');
     expect(set.addressText).toBe(null);
-    expect(set.slipShowPrices).toBe(true);
+    expect(set.slipShowPrices).toBe(false);
   });
 
   it('refuses a store that belongs to someone else', async () => {

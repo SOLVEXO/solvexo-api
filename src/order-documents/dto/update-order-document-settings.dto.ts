@@ -18,6 +18,7 @@ export class UpdateOrderDocumentSettingsDto {
   @ValidateIf((o) => o.accentColor !== undefined && o.accentColor !== null && o.accentColor !== '')
   @Matches(/^#[0-9a-fA-F]{6}$/, { message: 'accentColor must look like #111111' }) accentColor?: string | null;
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() showLogo?: boolean;
+  @ApiProperty({ required: false }) @IsOptional() @IsBoolean() showNameWithLogo?: boolean;
   @ApiProperty({ required: false, enum: DOC_SIZES }) @IsOptional() @IsIn([...DOC_SIZES]) logoSize?: string;
   @ApiProperty({ required: false, enum: DOC_ALIGNS }) @IsOptional() @IsIn([...DOC_ALIGNS]) logoAlign?: string;
 

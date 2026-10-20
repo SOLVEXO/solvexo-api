@@ -21,6 +21,7 @@ import { StoreService } from './store.service';
 import { UpdateStoreCustomerDto } from './dto/update-store-customer.dto';
 import { BulkTagCustomersDto } from './dto/bulk-tag-customers.dto';
 import { BulkArchiveCustomersDto } from './dto/bulk-archive-customers.dto';
+import { BulkCustomerMarketingDto } from './dto/bulk-customer-marketing.dto';
 import { resolveBuyerStoreScope } from '../common/store-scope.util';
 
 @Controller('api/store')
@@ -386,8 +387,9 @@ export class StoreController {
   @RequirePermission('customers.edit')
   @Post(':storeId/customers/import')
   @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }))
-  async importStoreCustomers(@Req() req: any, @Param('storeId') storeId: string, @UploadedFile() file: any) {
-    return this.storeService.importStoreCustomers(actingSellerId(req.user), storeId, readUploadedCsv(file), req.ip, req.headers['user-agent']);
+  async importStoreCustomers(@Req() req: any, @Param('storeId') storeId: string, @UploadedFile() file: any, @Body() body: any) {
+    // Multipart text field set by the import screen's optional consent box.
+    return this.storeService.importStoreCustomers(actingSellerId(req.user), storeId, readUploadedCsv(file), req.ip, req.headers['user-agent'], String(body?.consentConfirmed) === 'true');
   }
 
   // Real "Create customer profile" — the Tier-2 audit's disclosed gap
@@ -400,7 +402,7 @@ export class StoreController {
   async createStoreCustomer(
     @Req() req: any,
     @Param('storeId') storeId: string,
-    @Body() dto: { name: string; email: string; phone?: string },
+    @Body() dto: { name?: string; email: string; phone?: string; marketingConsent?: boolean },
   ) {
     return this.storeService.createStoreCustomer(actingSellerId(req.user), storeId, dto, req.ip, req.headers['user-agent']);
   }
@@ -411,6 +413,15 @@ export class StoreController {
   @Post(':storeId/customers/bulk-tag')
   async bulkTagCustomers(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: BulkTagCustomersDto) {
     return this.storeService.bulkTagCustomers(actingSellerId(req.user), storeId, dto, req.ip, req.headers['user-agent']);
+  }
+
+  // Bulk "Subscribe / Unsubscribe from email marketing" — consent rules in StoreService.bulkSetCustomerMarketing.
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('customers.edit')
+  @Post(':storeId/customers/bulk-marketing')
+  async bulkCustomerMarketing(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: BulkCustomerMarketingDto) {
+    return this.storeService.bulkSetCustomerMarketing(actingSellerId(req.user), storeId, dto, req.ip, req.headers['user-agent']);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
