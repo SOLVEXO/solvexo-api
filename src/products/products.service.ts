@@ -1795,11 +1795,12 @@ export class ProductsService {
         defaultVariant?.hsCode ?? '',
         defaultVariant?.customsDescription ?? '',
         defaultVariant && defaultVariant.taxable === false ? 'no' : 'yes',
+        defaultVariant?.images?.[0] ?? product.images?.[0] ?? '',
       ]);
     }
 
     return toCsv(
-      ['Name', 'SKU', 'Type', 'Product Type', 'Status', 'Price', 'Compare-at Price', 'Stock', 'Variant Count', 'Tags', 'All-Time Sales', 'Category', 'Length (cm)', 'Width (cm)', 'Height (cm)', 'Country of Origin', 'HS Code', 'Customs Description', 'Charge Tax'],
+      ['Name', 'SKU', 'Type', 'Product Type', 'Status', 'Price', 'Compare-at Price', 'Stock', 'Variant Count', 'Tags', 'All-Time Sales', 'Category', 'Length (cm)', 'Width (cm)', 'Height (cm)', 'Country of Origin', 'HS Code', 'Customs Description', 'Charge Tax', 'Image URL'],
       rows,
     );
   }

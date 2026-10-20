@@ -56,6 +56,31 @@ describe('product bulk import', () => {
     expect(errors).toContain('Category "Nope" not found');
   });
 
+  it('Image URL becomes the product photo and the variant photo; a bad link fails only that row', async () => {
+    const { deps, calls } = setup();
+    const res = await importProductsCsv(deps, 'SEL', 'S1', [
+      'Name,Price,SKU,Category,Image URL',
+      'Tee,10,TEE-1,clothing,https://cdn.example.com/tee.jpg',
+      'Mug,5,MUG-1,clothing,not-a-link',
+    ].join('\n'));
+    expect(res.data.created).toBe(1);
+    expect(res.data.failedCount).toBe(1);
+    expect(calls.add[0].images).toEqual(['https://cdn.example.com/tee.jpg']);
+    expect(calls.add[0].variants[0].images).toEqual(['https://cdn.example.com/tee.jpg']);
+    expect(res.data.failed[0].error).toContain('Image URL');
+  });
+
+  it('Image URL on an existing SKU puts it first in the product photos and sets the variant photo', async () => {
+    const { deps, calls } = setup({
+      products: [{ _id: 'P1', type: 'physical', name: 'Tee', description: 'x', status: 'draft', tags: [], categoryId: 'C1', images: ['https://a/1.jpg'] }],
+      variants: [{ _id: 'V1', productId: 'P1', sku: 'TEE-1', price: 10, compareAtPrice: null, images: [] }],
+    });
+    const res = await importProductsCsv(deps, 'SEL', 'S1', ['Name,Price,SKU,Image URL', 'Tee,10,TEE-1,https://a/2.jpg'].join('\n'));
+    expect(res.data.updated).toBe(1);
+    expect(calls.edit[0].images).toEqual(['https://a/2.jpg', 'https://a/1.jpg']);
+    expect(calls.updVariant[0].dto.images).toEqual(['https://a/2.jpg']);
+  });
+
   it('existing SKU (case-insensitive) updates non-blank cells only and never creates', async () => {
     const { deps, calls } = setup({
       products: [{ _id: 'P1', type: 'physical', name: 'Tee', description: 'old', status: 'draft', tags: [], categoryId: 'C1' }],

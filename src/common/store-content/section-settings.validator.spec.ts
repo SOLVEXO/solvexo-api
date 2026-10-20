@@ -13,6 +13,12 @@ describe('section-settings.validator', () => {
     expect(() => validateSectionSettings('rich_text', { spacingTop: 0, spacingBottom: 160 })).not.toThrow();
   });
 
+  it('accepts inner padding in range and rejects it out of range', () => {
+    expect(() => validateSectionSettings('rich_text', { paddingTop: 0, paddingBottom: 160 })).not.toThrow();
+    expect(() => validateSectionSettings('rich_text', { paddingTop: 161 })).toThrow();
+    expect(() => validateSectionSettings('rich_text', { paddingBottom: -4 })).toThrow();
+  });
+
   it.each([-1, 161, Number.NaN, '24'])('rejects invalid section spacing: %s', spacing => {
     expect(() => validateSectionSettings('rich_text', { spacingTop: spacing })).toThrow();
   });

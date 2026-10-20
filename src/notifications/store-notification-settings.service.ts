@@ -71,7 +71,7 @@ export class StoreNotificationSettingsService {
         canDisable: def.canDisable !== false,
         defaultSubject: def.defaultSubject,
         defaultBody: def.defaultBody,
-        enabled: o.enabled !== false,
+        enabled: (o.enabled ?? def.defaultEnabled ?? true) !== false,
         subject: o.subject ?? null,
         body: o.body ?? null,
         customized: !!(o.subject || o.body),

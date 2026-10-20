@@ -653,6 +653,11 @@ export class Order {
   @Prop({ type: Date, default: null })
   overdueReminderSentAt: Date | null;
 
+  // Set once the "how was your order?" review-request email was handled for this order (sent, switched off, or no
+  // reviewable buyer) so it is never attempted twice.
+  @Prop({ type: Date, default: null })
+  reviewRequestSentAt: Date | null;
+
   // Stable customer identity for counting / customer lists (see resolveCustomerId) — differs from `userId` only for
   // guest checkouts, where repeat purchases by the same email collapse into one customer. Null on older orders
   // (readers fall back to `userId`).
@@ -762,6 +767,8 @@ OrderSchema.index({ 'sellerOrders.storeId': 1 });
 // Store analytics: one store's orders in a date window (sellerOrderMatchStage pre-matches sellerOrders.storeId).
 OrderSchema.index({ 'sellerOrders.storeId': 1, isDelete: 1, createdAt: -1 });
 OrderSchema.index({ 'sellerOrders.items.status': 1 });
+OrderSchema.index({ 'sellerOrders.items.returnStatus': 1 });
+OrderSchema.index({ reviewRequestSentAt: 1, 'sellerOrders.deliveredAt': 1 }); // review-request cron // sidebar "returns to review" count (store-badges)
 OrderSchema.index({ paymentStatus: 1 });
 OrderSchema.index({ customerId: 1 });
 OrderSchema.index({ createdAt: -1 });

@@ -26,6 +26,14 @@ export class UpdateHeaderDto {
   @IsOptional() @IsIn(['standard', 'centered', 'split', 'inline'])
   headerStyle?: string;
 
+  @ApiProperty({ required: false, nullable: true, enum: ['left', 'center', 'right'] })
+  @ValidateIf((_, v) => v !== null && v !== undefined) @IsIn(['left', 'center', 'right'])
+  logoPosition?: 'left' | 'center' | 'right' | null;
+
+  @ApiProperty({ required: false, nullable: true, enum: ['beside', 'below'] })
+  @ValidateIf((_, v) => v !== null && v !== undefined) @IsIn(['beside', 'below'])
+  menuPosition?: 'beside' | 'below' | null;
+
   @ApiProperty({ required: false, nullable: true, description: 'A Menu id to render instead of `blocks` — pass null to detach and fall back to `blocks` again.' })
   @IsOptional() @IsString()
   menuId?: string | null;
@@ -58,6 +66,7 @@ export class UpdateHeaderDto {
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() navUppercase?: boolean;
   @ApiProperty({ required: false, enum: ['none', 'underline', 'pill'] }) @IsOptional() @IsIn(['none', 'underline', 'pill']) navHoverStyle?: 'none' | 'underline' | 'pill';
   @ApiProperty({ required: false, enum: ['icon', 'bar'] }) @IsOptional() @IsIn(['icon', 'bar']) searchStyle?: 'icon' | 'bar';
+  @ApiProperty({ required: false, enum: ['icons', 'center'] }) @IsOptional() @IsIn(['icons', 'center']) searchPosition?: 'icons' | 'center';
   @ApiProperty({ required: false, nullable: true }) @IsOptional() @IsString() @MaxLength(30) ctaLabel?: string | null;
   @ApiProperty({ required: false, nullable: true }) @ValidateIf((_, v) => v !== null && v !== undefined && v !== '') @Matches(/^(https?:\/\/\S+|\/(?!\/)\S*)$/i, { message: 'Button link must start with https://, http:// or /' }) @MaxLength(500) ctaLink?: string | null;
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() topBarEnabled?: boolean;

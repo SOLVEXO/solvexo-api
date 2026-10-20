@@ -44,6 +44,20 @@ describe('variant bulk import', () => {
     expect(calls.add[0].dto).toMatchObject({ sku: 'TEE-M-RED', price: 12, compareAtPrice: 15, stock: 7, options: [{ name: 'Size', value: 'M' }, { name: 'Color', value: 'Red' }] });
   });
 
+  it('Image URL becomes the variant photo on create and on update; a bad link fails only that row', async () => {
+    const { deps, calls } = setup();
+    const header = HEADER + ',Image URL';
+    const res = await importVariantsCsv(deps, 'SEL', 'S1', [
+      header,
+      'tee-s,,Size,M,,,,,TEE-M,12,,7,,https://cdn.example.com/m.jpg',
+      'tee-s,,Size,L,,,,,TEE-L,12,,7,,nope',
+      ',,,,,,,,TEE-S,,,,,https://cdn.example.com/s.jpg',
+    ].join('\n'));
+    expect(res.data).toMatchObject({ created: 1, updated: 1, failedCount: 1 });
+    expect(calls.add[0].dto.images).toEqual(['https://cdn.example.com/m.jpg']);
+    expect(calls.upd[0].dto.images).toEqual(['https://cdn.example.com/s.jpg']);
+  });
+
   it('falls back to a unique Product Name; ambiguous or unknown names fail', async () => {
     const { deps, calls } = setup();
     const res = await run(deps, [',Tee,Size,L,,,,,TEE-L,12,,,', ',Dup,Size,L,,,,,DUP-L,1,,,', ',Nope,Size,L,,,,,N-L,1,,,']);

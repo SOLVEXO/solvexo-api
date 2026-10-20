@@ -46,6 +46,8 @@ export class BulkVariantEditDto {
   @IsOptional() @IsString() @MaxLength(200) customsDescription?: string | null;
   /** "Charge tax on this product". */
   @IsOptional() @IsBoolean() taxable?: boolean;
+  /** The photo shown when this variant is chosen: [] clears, otherwise one https URL. */
+  @IsOptional() @IsArray() @ArrayMaxSize(1) @IsString({ each: true }) @MaxLength(2048, { each: true }) images?: string[];
 }
 
 export class BulkProductEditDto {

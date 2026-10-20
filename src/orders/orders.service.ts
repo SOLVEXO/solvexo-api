@@ -54,6 +54,7 @@ import { buildDeliveredEmail, buildReadyForPickupEmail, buildReturnLabelEmail, b
  *  settlementAmount/settlementCurrency existed. */
 import { sellerTaxShare } from '../common/seller-tax-share.util';
 import { sellerCashBasis, sellerGiftCreditShare, sellerPayoutBasis, sellerPayoutCurrency, refundGiftCreditShare } from '../common/seller-payout-basis.util';
+import { computeOrderDocumentTotals } from '../order-documents/order-totals.util';
 
 /** "Name × qty" lines for the last shipment of a partly-fulfilled order; every item otherwise. */
 function lastShipmentLines(so: any, shipments: any[]): string[] {
@@ -575,6 +576,10 @@ export class OrdersService {
         // fulfillment timestamps, return status. `subtotal` here is already
         // scoped to this seller, unlike `order.subtotal` (the whole order).
         sellerOrder: { ...sellerOrder, items: ((sellerOrder as any).items ?? []).map((it: any) => withEffectiveReturnStatus(it)) },
+        // Print-ready money lines for the invoice (one function, so slip/invoice/screen agree).
+        totals: computeOrderDocumentTotals(order, sellerOrder),
+        couponCode: (order as any).couponCode ?? null,
+        paymentMethodName: (order as any).paymentMethodName ?? null,
         // Merchant-only: the Shopify order timeline (events + comments) and the internal note.
         timeline: [...((order as any).timeline ?? [])].sort((a: any, b: any) => +new Date(b.createdAt) - +new Date(a.createdAt)),
         note: (order as any).note ?? '',

@@ -192,7 +192,7 @@ function validateCommonSectionDesign(settings: Record<string, any>): void {
 
 export function validateSectionSettings(type: SectionType, settings: Record<string, any>): void {
   maxLen(settings.heading, 120, 'settings.heading');
-  for (const key of ['spacingTop', 'spacingBottom'] as const) {
+  for (const key of ['spacingTop', 'spacingBottom', 'paddingTop', 'paddingBottom'] as const) {
     const value = settings[key];
     if (value !== undefined && (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 160)) {
       throw new BadRequestException(`settings.${key} must be a number between 0 and 160`);

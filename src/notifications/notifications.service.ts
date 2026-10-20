@@ -334,7 +334,7 @@ export class NotificationsService {
 
     return {
       // Emails the seller triggers by hand (invoice) or that carry the only copy of something (gift card code) can't be switched off.
-      send: def.canDisable === false ? true : override.enabled !== false,
+      send: def.canDisable === false ? true : (override.enabled ?? def.defaultEnabled ?? true) !== false,
       subject,
       html,
       fromName: String(settings?.senderName ?? '').trim() || storeName,

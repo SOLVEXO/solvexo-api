@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { BadRequestException, ForbiddenException, Injectable } from '@nestjs/common';
+import { normalizeImages } from '../products/product-input.util';
 import { InjectConnection } from '@nestjs/mongoose';
 import { Connection } from 'mongoose';
 import { softDeleteProducts } from '../products/product-cascade.util';
@@ -150,6 +151,7 @@ export class ProductsBulkService {
           if (v.sku !== undefined) patch.sku = v.sku;
           if (v.stock !== undefined) patch.stock = v.stock;
           if (v.taxable !== undefined) patch.taxable = v.taxable;
+          if (v.images !== undefined) patch.images = normalizeImages(v.images);
           if (product.type === 'physical') {
             // Shipping / customs data only exists on physical variants.
             for (const k of ['length', 'width', 'height', 'countryOfOrigin', 'hsCode', 'customsDescription'] as const) {

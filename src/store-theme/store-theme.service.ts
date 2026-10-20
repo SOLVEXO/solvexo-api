@@ -759,9 +759,9 @@ export class StoreThemeService {
     if (dto.navAlignment !== undefined) set['draft.header.navAlignment'] = dto.navAlignment;
     if (dto.headerStyle !== undefined) set['draft.header.headerStyle'] = dto.headerStyle;
     if (dto.menuId !== undefined) set['draft.header.menuId'] = dto.menuId;
-    const headerKeys = ['logoWidth', 'mobileLogoWidth', 'sticky', 'showSearch', 'showAccount', 'showWishlist', 'showShopMenu',
+    const headerKeys = ['logoPosition', 'menuPosition', 'logoWidth', 'mobileLogoWidth', 'sticky', 'showSearch', 'showAccount', 'showWishlist', 'showShopMenu',
       'shopMenuLabel', 'includePagesInNav', 'showDefaultBlogLink', 'blogLinkLabel', 'bgColor', 'textColor', 'paddingY', 'showDivider', 'stickyMode', 'transparentOnHome', 'transparentTextColor',
-      'navFontSize', 'navUppercase', 'navHoverStyle', 'searchStyle', 'ctaLabel', 'ctaLink', 'topBarEnabled', 'topBarText', 'topBarPhone',
+      'navFontSize', 'navUppercase', 'navHoverStyle', 'searchStyle', 'searchPosition', 'ctaLabel', 'ctaLink', 'topBarEnabled', 'topBarText', 'topBarPhone',
       'topBarEmail', 'topBarBg', 'topBarTextColor', 'preset'] as const;
     const trimmed = new Set(['shopMenuLabel', 'blogLinkLabel', 'ctaLabel', 'ctaLink', 'topBarText', 'topBarPhone', 'topBarEmail', 'preset']);
     for (const key of headerKeys) {

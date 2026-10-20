@@ -29,6 +29,9 @@ export interface BaseSectionSettings {
    *  each theme's existing layout; accepted range is 0–160. */
   spacingTop?: number;
   spacingBottom?: number;
+  /** Inner space: replaces the section's own top/bottom padding, inside its background (0–160). */
+  paddingTop?: number;
+  paddingBottom?: number;
   /** "Design & visibility" (every section): see `validateCommonSectionDesign`. */
   visibility?: 'all' | 'desktop' | 'mobile';
   fullWidth?: boolean;

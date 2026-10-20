@@ -63,6 +63,8 @@ import { IntegrationsModule } from './integrations/integrations.module';
 import { CustomerSocialLoginModule } from './customer-social-login/customer-social-login.module';
 import { AiStudioModule } from './ai-studio/ai-studio.module';
 import { NotificationsModule } from './notifications/notifications.module';
+import { OrderDocumentsModule } from './order-documents/order-documents.module';
+import { StoreBadgesModule } from './store-badges/store-badges.module';
 import { AdminConfigModule } from './admin-config/admin-config.module';
 import { AdminAnnouncementsModule } from './admin-announcements/admin-announcements.module';
 import { AdminMarketplaceModule } from './admin-marketplace/admin-marketplace.module';
@@ -114,6 +116,8 @@ import { AppI18nModule } from './i18n/i18n.module';
     DatabaseModule,
     QueueModule,
     NotificationsModule,
+    OrderDocumentsModule,
+    StoreBadgesModule,
     HealthModule,
     ActivityLogModule,
     AdminTeamModule,

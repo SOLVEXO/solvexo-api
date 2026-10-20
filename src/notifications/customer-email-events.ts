@@ -15,6 +15,7 @@ export const CUSTOMER_EMAIL_EVENTS = [
   'order_refunded',
   'order_edited',
   'return_update',
+  'review_request',
   'draft_order_invoice',
   'draft_order_overdue',
   'gift_card',
@@ -37,6 +38,8 @@ export interface CustomerEmailEventDef {
   resendable: boolean;
   /** false = always sent (the seller triggers it by hand, or it carries the only copy of something). Default true. */
   canDisable?: boolean;
+  /** false = off until the seller switches it on (marketing-style emails). Default true. */
+  defaultEnabled?: boolean;
 }
 
 const COMMON = ['storeName', 'customerName', 'orderNumber', 'orderUrl'];
@@ -81,6 +84,17 @@ export const CUSTOMER_EMAIL_CATALOG: Record<CustomerEmailEvent, CustomerEmailEve
       'Hi {{customerName}},\n\nOrder #{{orderNumber}} from {{storeName}} has been {{deliveryStatus}}. Thank you for shopping with us.',
     variables: [...COMMON, 'deliveryStatus'],
     resendable: true,
+  },
+  review_request: {
+    group: 'orders',
+    label: 'Review request',
+    description: 'Sent a few days after an order is delivered, asking the customer to review what they bought. Off until you switch it on.',
+    defaultSubject: 'How was your order from {{storeName}}?',
+    defaultBody:
+      'Hi {{customerName}},\n\nYour order #{{orderNumber}} from {{storeName}} arrived a few days ago. We would love to hear what you think.\n\n{{itemList}}\n\nA short review helps other shoppers and means a lot to us.',
+    variables: [...COMMON, 'itemList', 'reviewUrl'],
+    resendable: false,
+    defaultEnabled: false,
   },
   order_cancelled: {
     group: 'orders',
@@ -184,6 +198,7 @@ export const CUSTOMER_EMAIL_SAMPLE_VARS: Record<string, string> = {
   pickupAddress: '12 Market Road, Karachi',
   pickupInstructions: 'Bring your order number',
   deliveryStatus: 'delivered',
+  reviewUrl: 'https://example.com/orders/sample',
   refundAmount: 'Rs 1,200.00',
   refundMethod: 'Original payment method',
   newTotal: 'Rs 4,200.00',

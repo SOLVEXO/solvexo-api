@@ -203,6 +203,9 @@ export class StorefrontHeader {
   // 'split' = menu left, logo centre, icons right; 'inline' = logo left, menu centred, icons right.
   @Prop({ type: String, enum: ['standard', 'centered', 'split', 'inline'], default: 'standard' })
   headerStyle: 'standard' | 'centered' | 'split' | 'inline';
+  // Independent layout controls (null = derive from `headerStyle`, the older combined choice).
+  @Prop({ type: String, enum: ['left', 'center', 'right'], default: null }) logoPosition: 'left' | 'center' | 'right' | null;
+  @Prop({ type: String, enum: ['beside', 'below'], default: null }) menuPosition: 'beside' | 'below' | null;
   // When set, the storefront renders THIS menu's items instead of `blocks`
   // above — resolved into the identical `Block` shape at read time
   // (`StoreThemeService`'s `resolveHeaderMenu`), so neither theme's Navbar
@@ -239,6 +242,7 @@ export class StorefrontHeader {
   @Prop({ type: Boolean, default: false }) navUppercase: boolean;
   @Prop({ type: String, enum: ['none', 'underline', 'pill'], default: 'none' }) navHoverStyle: 'none' | 'underline' | 'pill';
   @Prop({ type: String, enum: ['icon', 'bar'], default: 'icon' }) searchStyle: 'icon' | 'bar';
+  @Prop({ type: String, enum: ['icons', 'center'], default: 'icons' }) searchPosition: 'icons' | 'center'; // bar only: next to the icons, or centered on its own row
   @Prop({ type: String, default: null }) ctaLabel: string | null;
   @Prop({ type: String, default: null }) ctaLink: string | null;
   @Prop({ type: Boolean, default: false }) topBarEnabled: boolean;

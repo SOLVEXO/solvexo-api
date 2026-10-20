@@ -37,6 +37,7 @@ export const VARIANT_IMPORT_COLUMNS: BulkColumn[] = [
   { key: 'HS Code', description: 'Harmonized System code, 6 to 10 digits (dots allowed).', example: '6109.10' },
   { key: 'Customs Description', description: 'Short goods description for customs forms.', example: 'Cotton t-shirt' },
   { key: 'Charge Tax', description: 'yes / no — "Charge tax on this product". Blank = unchanged (new variants are taxable).', example: 'yes' },
+  { key: 'Image URL', description: 'https link to a photo. It becomes the photo shown when this variant is chosen. Blank = unchanged.', example: 'https://example.com/photo.jpg' },
 ];
 
 export interface VariantImportDeps {
@@ -96,6 +97,8 @@ export async function importVariantsCsv(deps: VariantImportDeps, sellerId: strin
     const width = parseNumberCell(r['Width (cm)'], 'Width (cm)', { min: 0 });
     const height = parseNumberCell(r['Height (cm)'], 'Height (cm)', { min: 0 });
     const taxable = parseBoolCell(r['Charge Tax'], 'Charge Tax');
+    const imageUrl = r['Image URL'].trim();
+    if (imageUrl && !/^https?:\/\/\S+$/i.test(imageUrl)) throw new BulkRowError('Image URL must start with http:// or https://');
     const customsBody: Record<string, string> = {};
     if (r['Country of Origin'].trim()) customsBody.countryOfOrigin = r['Country of Origin'];
     if (r['HS Code'].trim()) customsBody.hsCode = r['HS Code'];
@@ -121,6 +124,7 @@ export async function importVariantsCsv(deps: VariantImportDeps, sellerId: strin
       if (height !== undefined) patch.height = height;
       Object.assign(patch, customs.value);
       if (taxable !== undefined) patch.taxable = taxable;
+      if (imageUrl) patch.images = [imageUrl];
       if (Object.keys(patch).length === 0) return { outcome: 'skipped' as const, note: `No changes (SKU ${sku})` };
       await deps.updateVariant(sellerId, existing.productId, existing.id, patch);
       if (patch.price !== undefined) existing.price = patch.price as number;
@@ -159,6 +163,7 @@ export async function importVariantsCsv(deps: VariantImportDeps, sellerId: strin
       length, width, height,
       ...customs.value,
       ...(taxable !== undefined ? { taxable } : {}),
+      ...(imageUrl ? { images: [imageUrl] } : {}),
     });
     const created = res?.data;
     variantBySku.set(sku.toLowerCase(), {

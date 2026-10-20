@@ -223,6 +223,8 @@ export class DatabaseService {
 
     @InjectModel(schema.StoreNotificationSettings.name)
     private storeNotificationSettingsModel: Model<schema.StoreNotificationSettingsDocument>,
+    @InjectModel(schema.OrderDocumentSettings.name)
+    private orderDocumentSettingsModel: Model<schema.OrderDocumentSettingsDocument>,
 
     @InjectModel(schema.EmailCampaign.name)
     private emailCampaignModel: Model<schema.EmailCampaignDocument>,
@@ -585,6 +587,7 @@ export class DatabaseService {
       giftCardSettingsModel: this.giftCardSettingsModel,
       abandonedCartSettingsModel: this.abandonedCartSettingsModel,
       storeNotificationSettingsModel: this.storeNotificationSettingsModel,
+      orderDocumentSettingsModel: this.orderDocumentSettingsModel,
       emailDailyStatModel: this.emailDailyStatModel,
       emailCampaignModel: this.emailCampaignModel,
       emailCampaignSendModel: this.emailCampaignSendModel,

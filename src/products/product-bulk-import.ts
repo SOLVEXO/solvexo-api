@@ -35,6 +35,7 @@ export const PRODUCT_IMPORT_COLUMNS: BulkColumn[] = [
   { key: 'HS Code', description: 'Harmonized System code, 6 to 10 digits (dots allowed), e.g. 6109.10. Blank = unchanged.', example: '6109.10' },
   { key: 'Customs Description', description: 'Short goods description for customs forms (max 200 chars).', example: 'Cotton t-shirt' },
   { key: 'Charge Tax', description: 'yes / no — "Charge tax on this product". Blank = unchanged (new products are taxable).', example: 'yes' },
+  { key: 'Image URL', description: 'https link to a photo. It becomes the product photo and the photo shown when this variant is chosen. Blank = unchanged.', example: 'https://example.com/photo.jpg' },
 ];
 
 export interface ProductImportDeps {
@@ -94,6 +95,8 @@ export async function importProductsCsv(
     const width = parseNumberCell(r['Width (cm)'], 'Width (cm)', { min: 0 });
     const height = parseNumberCell(r['Height (cm)'], 'Height (cm)', { min: 0 });
     const taxable = parseBoolCell(r['Charge Tax'], 'Charge Tax');
+    const imageUrl = r['Image URL'].trim();
+    if (imageUrl && !/^https?:\/\/\S+$/i.test(imageUrl)) throw new BulkRowError('Image URL must start with http:// or https://');
     // Customs info: only NON-blank cells are applied (blank = leave unchanged), normalised + validated by the
     // same parser the variant form uses.
     const customsBody: Record<string, string> = {};
@@ -130,6 +133,7 @@ export async function importProductsCsv(
       if (r['Description'] && r['Description'] !== p.description) productPatch.description = r['Description'];
       if (tags.length && !sameSet(tags, p.tags ?? [])) productPatch.tags = tags;
       if (status && status !== p.status) productPatch.status = status;
+      if (imageUrl && (p.images ?? [])[0] !== imageUrl) productPatch.images = [imageUrl, ...(p.images ?? []).filter((x: string) => x !== imageUrl)];
       if (categoryId && categoryId !== String(p.categoryId)) productPatch.categoryId = categoryId;
 
       const variantPatch: Record<string, unknown> = {};
@@ -142,6 +146,7 @@ export async function importProductsCsv(
         if (val !== undefined && val !== (v[k] ?? null)) variantPatch[k] = val;
       }
       if (taxable !== undefined && taxable !== (v.taxable !== false)) variantPatch.taxable = taxable;
+      if (imageUrl && (v.images ?? [])[0] !== imageUrl) variantPatch.images = [imageUrl];
 
       if (Object.keys(productPatch).length === 0 && Object.keys(variantPatch).length === 0) {
         return { outcome: 'skipped' as const, note: `No changes (SKU ${sku})` };
@@ -172,7 +177,7 @@ export async function importProductsCsv(
       name,
       description: r['Description'] || name, // the schema requires a description
       categoryId,
-      images: [],
+      images: imageUrl ? [imageUrl] : [],
       tags,
       status: status ?? 'draft',
       variants: [
@@ -187,6 +192,7 @@ export async function importProductsCsv(
           height: height ?? null,
           ...customs.value,
           taxable: taxable ?? true,
+          images: imageUrl ? [imageUrl] : [],
           unlimitedStock: false,
           isDefault: true,
         },
