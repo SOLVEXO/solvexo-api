@@ -369,6 +369,10 @@ export class Store {
   @Prop({ type: String, default: null })
   timezone: string | null;
 
+  // How prices read on the storefront (Shopify: currency formatting): symbol only ("Rs 1,200"), ISO code only ("PKR 1,200") or both.
+  @Prop({ type: String, enum: ['symbol', 'code', 'symbol_code'], default: 'symbol' })
+  currencyDisplay: 'symbol' | 'code' | 'symbol_code';
+
   // Store's default (published) language — Shopify Settings > Languages > Default. Storefront text, emails and
   // SEO fall back to it; other languages come from Markets. Lowercase code such as 'en' or 'ur'.
   @Prop({ type: String, default: 'en' })
@@ -642,12 +646,13 @@ export class Store {
   // requirement calculation all need them cheaply without opting into the
   // sensitive `verification` blob below. ──
 
-  // Where the seller says they operate — drives requirement calculation
-  // (see verification-requirements.config.ts). Defaults to Solvexo's home
-  // market; genuinely different per-country legal rules can be added to
-  // that config later without touching this field.
-  @Prop({ type: String, default: 'PK' })
-  country: string;
+  // Where the seller says they operate (ISO-3166 alpha-2) — drives requirement calculation
+  // (see verification-requirements.config.ts), the default time zone AND which payment providers the store may
+  // use (integrations/payment-availability.util.ts, Shopify-style: by store country). Collected at store creation.
+  // Null = never chosen (older stores): payment availability then falls back to the pricing currency
+  // (PKR = Pakistan, USD = United States) and verification falls back to Pakistan, as it always did.
+  @Prop({ type: String, default: null })
+  country: string | null;
 
   @Prop({ type: String, enum: BUSINESS_TYPES, default: null })
   businessType: BusinessType | null;

@@ -4,7 +4,7 @@ import { DatabaseService } from '@/database/databaseservice';
 import { normalizeLocale } from '@/markets/market-price.util';
 import { SaveTranslationDto } from './dto/translation.dto';
 
-export const TRANSLATION_RESOURCES = ['products', 'collections', 'pages', 'menus'] as const;
+export const TRANSLATION_RESOURCES = ['products', 'collections', 'pages', 'menus', 'blog_posts'] as const;
 export type TranslationResource = (typeof TRANSLATION_RESOURCES)[number];
 
 export function isTranslationResource(v: unknown): v is TranslationResource {
@@ -16,7 +16,7 @@ const MAX_PAGE_SIZE = 50;
 const HANDLE = /^[\p{L}\p{N}][\p{L}\p{N}_-]*$/u;
 
 interface ResourceDef {
-  model: 'productModel' | 'collectionModel' | 'storePageModel' | 'menuModel';
+  model: 'productModel' | 'collectionModel' | 'storePageModel' | 'menuModel' | 'blogPostModel';
   title: string;
   description: string | null;
   handle: string | null;
@@ -28,6 +28,7 @@ const DEFS: Record<TranslationResource, ResourceDef> = {
   collections: { model: 'collectionModel', title: 'name', description: 'description', handle: 'slug', softDelete: true },
   pages: { model: 'storePageModel', title: 'title', description: null, handle: 'slug', softDelete: true },
   menus: { model: 'menuModel', title: 'name', description: null, handle: null, softDelete: false },
+  blog_posts: { model: 'blogPostModel', title: 'title', description: 'excerpt', handle: 'slug', softDelete: true },
 };
 
 const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -91,9 +92,12 @@ export class TranslationsService {
     };
   }
 
-  private static locale(raw: string): string {
+  /** The language to translate into: any language except the one the store is written in. */
+  private async targetLocale(storeId: string, raw: string): Promise<string> {
     const locale = normalizeLocale(raw);
-    if (!locale || locale === 'en') throw new BadRequestException(`"${raw}" is not a language you can translate into`);
+    const store: any = await (this.db.repositories as any).storeModel.findById(storeId).select('defaultLanguage').lean();
+    const source = String(store?.defaultLanguage || 'en').toLowerCase();
+    if (!locale || locale === source) throw new BadRequestException(`"${raw}" is not a language you can translate into`);
     return locale;
   }
 
@@ -123,7 +127,7 @@ export class TranslationsService {
 
   async save(storeId: string, resource: TranslationResource, id: string, rawLocale: string, dto: SaveTranslationDto) {
     TranslationsService.id(id);
-    const locale = TranslationsService.locale(rawLocale);
+    const locale = await this.targetLocale(storeId, rawLocale);
     if (resource === 'menus') return this.saveMenuLabels(storeId, id, locale, dto);
 
     const title = String(dto.title ?? '').trim();
@@ -172,7 +176,7 @@ export class TranslationsService {
 
   async remove(storeId: string, resource: TranslationResource, id: string, rawLocale: string) {
     TranslationsService.id(id);
-    const locale = TranslationsService.locale(rawLocale);
+    const locale = await this.targetLocale(storeId, rawLocale);
     if (resource === 'menus') {
       const menu: any = await this.model('menus').findOne(this.scope('menus', storeId, id)).lean();
       if (!menu) throw new NotFoundException('Menu not found in this store');

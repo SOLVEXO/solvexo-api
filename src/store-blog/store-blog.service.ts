@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { translatedHandleClause } from '../common/translated-handle.util';
 import { DatabaseService } from '../database/databaseservice';
 import { verifyStoreOwnershipStrict } from '../common/store-ownership.util';
 import { validateBlockSettings } from '../common/store-content/section-settings.validator';
@@ -224,14 +225,15 @@ export class StoreBlogService {
     const [posts, total] = await Promise.all([
       this.blogPostModel.find(filter)
         .sort({ publishedAt: -1 }).skip(skip).limit(limit)
-        .select('title slug coverImage excerpt tags publishedAt authorName').lean(),
+        .select('title slug coverImage excerpt tags publishedAt authorName translations').lean(),
       this.blogPostModel.countDocuments(filter),
     ]);
     return { success: true, data: { blog: { title: blog.title, slug: blog.slug }, posts, pagination: { page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) } } };
   }
 
-  async getPublicBySlug(storeId: string, slug: string) {
-    const post = await this.blogPostModel.findOne({ storeId, slug, status: 'published', isDelete: false }).lean();
+  async getPublicBySlug(storeId: string, slug: string, locale?: string) {
+    const translated = translatedHandleClause(locale, slug);
+    const post = await this.blogPostModel.findOne({ storeId, status: 'published', isDelete: false, ...(translated ? { $or: [{ slug }, translated] } : { slug }) }).lean();
     if (!post) throw new NotFoundException('Post not found');
     const blog = post.blogId ? await this.blogModel.findById(post.blogId).select('commentsEnabled title slug').lean() : null;
     return { success: true, data: { ...post, commentsEnabled: blog?.commentsEnabled ?? false } };

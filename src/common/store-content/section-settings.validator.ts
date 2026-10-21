@@ -76,7 +76,7 @@ function assertHttpsUrl(value: unknown, field: string): void {
 // category/collection actually belongs to this store before saving — this
 // validator has no DB access and never invents ownership guarantees it can't
 // actually check.
-export const LINK_TYPES = ['home', 'page', 'blog', 'search', 'external', 'category', 'collection', 'product', 'cart', 'account', 'email', 'phone'] as const;
+export const LINK_TYPES = ['home', 'page', 'blog', 'search', 'external', 'category', 'collection', 'product', 'cart', 'account', 'faqs', 'email', 'phone'] as const;
 /** Menu items only: a label that opens its dropdown on hover and goes nowhere on click. */
 export const NAV_LINK_TYPES = [...LINK_TYPES, 'none'] as const;
 
@@ -127,7 +127,7 @@ export function collectDynamicSourceBindings(sections: { type: string; settings?
   return out;
 }
 
-function assertLinkTarget(link: unknown, field: string): void {
+export function assertLinkTarget(link: unknown, field: string): void {
   if (link === undefined || link === null) return;
   if (typeof link !== 'object') throw new BadRequestException(`${field} is invalid`);
   const l = link as Record<string, unknown>;
@@ -610,9 +610,11 @@ export function validateBlockSettings(blockType: string, settings: Record<string
       assertHttpsUrl(settings.imageUrl, 'imageUrl');
       maxLen(settings.heading, 60, 'heading');
       maxLen(settings.alt, 120, 'alt');
-      if (settings.width !== undefined && settings.width !== null
-        && (typeof settings.width !== 'number' || settings.width < 40 || settings.width > 400)) {
-        throw new BadRequestException('width must be a number from 40 to 400');
+      assertLinkTarget(settings.link, 'link');
+      // `width` is the column width (a preset string); the image's own pixel width is `imageWidth`.
+      if (settings.imageWidth !== undefined && settings.imageWidth !== null
+        && (typeof settings.imageWidth !== 'number' || settings.imageWidth < 40 || settings.imageWidth > 400)) {
+        throw new BadRequestException('imageWidth must be a number from 40 to 400');
       }
       break;
     case 'footer_contact': {

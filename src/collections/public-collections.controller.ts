@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Controller, Get, Param, UseInterceptors } from '@nestjs/common';
+import { Controller, Get, Param, UseInterceptors, Query } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { PublicCache, PublicCacheInterceptor } from '../common/public-cache.interceptor';
 import { CollectionsService } from './collections.service';
@@ -19,7 +19,7 @@ export class PublicCollectionsController {
   @UseInterceptors(PublicCacheInterceptor)
   @PublicCache(15)
   @Get(':storeId/:slugOrId')
-  getBySlug(@Param('storeId') storeId: string, @Param('slugOrId') slugOrId: string) {
-    return this.collectionsService.getPublicBySlug(storeId, slugOrId);
+  getBySlug(@Param('storeId') storeId: string, @Param('slugOrId') slugOrId: string, @Query('locale') locale?: string) {
+    return this.collectionsService.getPublicBySlug(storeId, slugOrId, locale);
   }
 }

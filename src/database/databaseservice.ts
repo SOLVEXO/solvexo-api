@@ -225,6 +225,12 @@ export class DatabaseService {
     private storeNotificationSettingsModel: Model<schema.StoreNotificationSettingsDocument>,
     @InjectModel(schema.OrderDocumentSettings.name)
     private orderDocumentSettingsModel: Model<schema.OrderDocumentSettingsDocument>,
+    @InjectModel(schema.StoreTextTranslation.name)
+    private storeTextTranslationModel: Model<schema.StoreTextTranslationDocument>,
+    @InjectModel(schema.UiLocaleBundle.name)
+    private uiLocaleBundleModel: Model<schema.UiLocaleBundleDocument>,
+    @InjectModel(schema.UiLocaleKey.name)
+    private uiLocaleKeyModel: Model<schema.UiLocaleKeyDocument>,
 
     @InjectModel(schema.EmailCampaign.name)
     private emailCampaignModel: Model<schema.EmailCampaignDocument>,
@@ -588,6 +594,9 @@ export class DatabaseService {
       abandonedCartSettingsModel: this.abandonedCartSettingsModel,
       storeNotificationSettingsModel: this.storeNotificationSettingsModel,
       orderDocumentSettingsModel: this.orderDocumentSettingsModel,
+      storeTextTranslationModel: this.storeTextTranslationModel,
+      uiLocaleBundleModel: this.uiLocaleBundleModel,
+      uiLocaleKeyModel: this.uiLocaleKeyModel,
       emailDailyStatModel: this.emailDailyStatModel,
       emailCampaignModel: this.emailCampaignModel,
       emailCampaignSendModel: this.emailCampaignSendModel,

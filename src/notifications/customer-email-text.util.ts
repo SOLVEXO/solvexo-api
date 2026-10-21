@@ -11,33 +11,35 @@ export function baseLocale(locale: string | null | undefined): string {
 const clean = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
 
 /**
- * The subject + message template a customer email is rendered from, per field, in this order:
- *   1. the seller's own translation for the buyer's language (`eventTranslations[event][lang]`),
- *   2. the seller's own English text (their store language is the fallback — never silently replaced by ours),
- *   3. the built-in text for that language (`customer-email-locales.ts`),
- *   4. the built-in English default.
- * English buyers skip 1 and 3. `draft` (the seller's unsaved text in the editor) takes the place of 1 (or of the
- * English text for English).
+ * The subject + message template a customer email is rendered from, per field. `sourceLanguage` is the language the
+ * store is written in (default 'en'); the seller's own "base" text (`settings.events`) is in THAT language.
+ *   Buyer in the store's own language: the seller's base text, else the built-in text for that language, else the English default.
+ *   Buyer in another language: the seller's translation, else (not English) the seller's base text, else the built-in text
+ *   for that language, else the English default. English buyers of a non-English store never get the seller's base text.
+ * `draft` (the seller's unsaved text in the editor) takes the place of the saved text of THIS language.
  */
 export function pickEmailText(
   event: CustomerEmailEvent,
   locale: string | null | undefined,
   settings: any,
   draft?: { subject?: string | null; body?: string | null },
+  sourceLanguage: string | null | undefined = 'en',
 ): { subject: string; body: string; locale: string } {
   const def = CUSTOMER_EMAIL_CATALOG[event];
   const lang = baseLocale(locale);
-  const english = settings?.events?.[event] ?? {};
-  const translated = lang === 'en' ? {} : settings?.eventTranslations?.[event]?.[lang] ?? {};
+  const source = baseLocale(sourceLanguage);
+  const isSource = lang === source;
+  const base = settings?.events?.[event] ?? {};
+  const translated = isSource ? {} : settings?.eventTranslations?.[event]?.[lang] ?? {};
   const builtIn = lang === 'en' ? undefined : CUSTOMER_EMAIL_DEFAULTS_BY_LOCALE[lang]?.[event];
 
   const field = (name: 'subject' | 'body', defaultText: string): string => {
     // An unsaved editor value (even an emptied one) replaces the saved text of THIS language; empty = "use the default".
     const hasDraft = draft?.[name] !== undefined;
-    const mine = hasDraft ? clean(draft![name]) : lang === 'en' ? clean(english[name]) : clean(translated[name]);
+    const mine = hasDraft ? clean(draft![name]) : isSource ? clean(base[name]) : clean(translated[name]);
     if (mine) return mine;
-    if (lang === 'en') return defaultText;
-    return clean(english[name]) || builtIn?.[name] || defaultText;
+    if (isSource) return builtIn?.[name] || defaultText;
+    return (lang === 'en' ? '' : clean(base[name])) || builtIn?.[name] || defaultText;
   };
 
   return { subject: field('subject', def.defaultSubject), body: field('body', def.defaultBody), locale: lang };

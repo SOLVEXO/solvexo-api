@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
 import { randomBytes } from 'crypto';
 import { DatabaseService } from '../database/databaseservice';
 import { ActivityLogService } from '../activity-log/activity-log.service';
@@ -11,6 +11,7 @@ import { encryptCredential, decryptCredential, maskSecret } from '../common/cred
 import { PaymentProviderRegistry } from './payment-provider.registry';
 import { WhatsAppCloudProvider } from './providers/whatsapp-cloud.provider';
 import { toDecryptedPaymentConfig } from './integration-credentials.helper';
+import { paymentAvailability, resolveStoreCountry } from './payment-availability.util';
 import { WHATSAPP_EVENTS, WHATSAPP_PARAM_TOKENS, isWhatsAppEvent, resolveWhatsAppEventSettings } from './whatsapp-events';
 import {
   STORE_INTEGRATION_PROVIDERS,
@@ -45,7 +46,21 @@ function maskCredentials(credentials: Record<string, any>): Record<string, strin
 }
 
 @Injectable()
-export class StoreIntegrationsService {
+export class StoreIntegrationsService implements OnModuleInit {
+  private readonly logger = new Logger(StoreIntegrationsService.name);
+
+  /** Idempotent boot backfill: stores priced in PKR that never had a country are Pakistan stores (that is what the
+   *  old schema default silently assumed). Keeps their time zone / verification rules / gateways exactly as before.
+   *  Other currencies stay unset on purpose — guessing a country would be wrong; the seller picks it in Settings. */
+  async onModuleInit() {
+    try {
+      const res = await this.repos.storeModel.updateMany({ country: null, baseCurrency: 'PKR' }, { $set: { country: 'PK' } });
+      if (res.modifiedCount) this.logger.log(`Backfilled country=PK on ${res.modifiedCount} PKR store(s)`);
+    } catch (err: any) {
+      this.logger.warn(`Store country backfill skipped: ${err?.message ?? err}`);
+    }
+  }
+
   constructor(
     private readonly databaseService: DatabaseService,
     private readonly activityLogService: ActivityLogService,
@@ -265,9 +280,14 @@ export class StoreIntegrationsService {
     // `StripeConnectSection`). Only providers with a real implementation
     // registered show up — a gateway without a provider class stays hidden from the
     // seller dashboard until their provider classes exist.
-    const localProviders = store.baseCurrency === 'PKR' ? PROVIDERS_BY_CURRENCY.PKR : [];
+    // UPDATE: availability now follows the store COUNTRY (Shopify reads the store address), not the pricing currency:
+    // Pakistani gateways only for Pakistan stores. Stripe is always listed so a seller outside its supported
+    // countries sees WHY it is unavailable instead of nothing.
+    const country = resolveStoreCountry(store);
     const availableProviders: StoreIntegrationProvider[] = [
-      ...localProviders.filter((p) => REGISTRY_EXEMPT_PROVIDERS.includes(p) || this.registry.isSupported(p)),
+      ...PROVIDERS_BY_CURRENCY.PKR.filter(
+        (p) => paymentAvailability(p, country).available && (REGISTRY_EXEMPT_PROVIDERS.includes(p) || this.registry.isSupported(p)),
+      ),
       'stripe',
     ];
 
@@ -278,7 +298,11 @@ export class StoreIntegrationsService {
       availableProviders.map(async (provider) => {
         if (provider === 'stripe') {
           const { data } = await this.stripeConnectService.getStatus(sellerId, storeId);
+          // A store that already has a Connect account keeps it (it was set up before this rule existed).
+          const availability = data.connected ? { available: true, reason: null } : paymentAvailability('stripe', country);
           return {
+            available: availability.available,
+            unavailableReason: availability.reason,
             id: null,
             type: 'payment' as const,
             provider: 'stripe' as const,
@@ -298,8 +322,10 @@ export class StoreIntegrationsService {
           };
         }
         const doc = byProvider.get(provider);
-        if (doc) return this.toPublicView(doc);
+        if (doc) return { ...this.toPublicView(doc), available: true, unavailableReason: null };
         return {
+          available: true,
+          unavailableReason: null,
           id: null,
           type: 'payment' as const,
           provider,
@@ -357,14 +383,12 @@ export class StoreIntegrationsService {
     }
 
     if (type === 'payment') {
-      // Every local gateway in PROVIDERS_BY_CURRENCY is PKR-only today, and
-      // 'stripe' (the only USD-bucket entry) is already rejected above — so
-      // this is really just "is this a PKR store," checked directly against
-      // the store's real currency instead of a collapsed PKR/USD binary
-      // (which used to name the wrong currency in the error message for any
-      // non-PKR, non-USD store like GBP/EUR).
-      if (store.baseCurrency !== 'PKR' || !PROVIDERS_BY_CURRENCY.PKR.includes(provider)) {
-        throw new BadRequestException(`"${provider}" is not available for a ${store.baseCurrency ?? 'USD'} store`);
+      // 'stripe' is rejected above, so this is a local gateway. Same country rule as list(): refused here too, not
+      // only hidden. (A Pakistan store priced in another currency can connect; checkout then asks the buyer to
+      // switch the checkout to PKR — GATEWAY_CURRENCY_MISMATCH.)
+      const availability = paymentAvailability(provider, resolveStoreCountry(store));
+      if (!availability.available || !PROVIDERS_BY_CURRENCY.PKR.includes(provider)) {
+        throw new BadRequestException(availability.reason ?? `"${provider}" is not available for this store`);
       }
       return this.connectPayment(storeId, sellerId, provider, body);
     }

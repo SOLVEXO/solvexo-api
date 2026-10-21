@@ -1,7 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { ApiProperty } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsArray, IsBoolean, IsIn, IsInt, IsOptional, IsString, Matches, Max, MaxLength, Min, ValidateIf, ValidateNested } from 'class-validator';
+import { IsArray, IsBoolean, IsIn, IsInt, IsObject, IsOptional, IsString, Matches, Max, MaxLength, Min, ValidateIf, ValidateNested } from 'class-validator';
 import { BlockInputDto } from '../../common/dto/block-input.dto';
 import { SectionInputDto } from '../../store-pages/dto/section-input.dto';
 
@@ -24,6 +24,10 @@ export class UpdateFooterDto {
 
   @ApiProperty({ required: false, nullable: true }) @IsOptional() @IsString() @MaxLength(2048) logoUrl?: string | null;
 
+  @ApiProperty({ required: false, nullable: true, description: 'Where the footer logo links to ({ linkType, ... }); null = home page' })
+  @ValidateIf((_, v) => v !== null && v !== undefined) @IsObject()
+  logoLink?: Record<string, unknown> | null;
+
   @ApiProperty({ required: false, nullable: true })
   @IsOptional() @IsInt() @Min(40) @Max(400)
   logoWidth?: number | null;
@@ -44,6 +48,13 @@ export class UpdateFooterDto {
   @ApiProperty({ required: false, enum: ['left', 'center'] }) @IsOptional() @IsIn(['left', 'center']) align?: 'left' | 'center';
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() headingUppercase?: boolean;
   @ApiProperty({ required: false, nullable: true, enum: ['plain', 'circle', 'square'] }) @ValidateIf((_, v) => v !== null && v !== undefined) @IsIn(['plain', 'circle', 'square']) socialStyle?: 'plain' | 'circle' | 'square' | null;
+  @ApiProperty({ required: false, nullable: true, enum: ['brand', 'custom'], description: 'Social icon colour: null = theme, brand = each platform\'s own colour, custom = socialCustomColor' })
+  @ValidateIf((_, v) => v !== null && v !== undefined) @IsIn(['brand', 'custom']) socialColor?: 'brand' | 'custom' | null;
+  @ApiProperty({ required: false, nullable: true }) @ValidateIf((_, v) => v !== null && v !== undefined) @Matches(/^#[0-9a-fA-F]{6}$/) socialCustomColor?: string | null;
+  @ApiProperty({ required: false, description: 'Fill the social buttons with the full colour (icon white/dark) instead of a soft tint' })
+  @IsOptional() @IsBoolean() socialFilled?: boolean;
+  @ApiProperty({ required: false, nullable: true, description: 'Width and height of one social icon button in px' })
+  @ValidateIf((_, v) => v !== null && v !== undefined) @IsInt() @Min(24) @Max(72) socialSize?: number | null;
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() newsletterTop?: boolean;
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() mobileAccordion?: boolean;
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() showPolicyLinks?: boolean;

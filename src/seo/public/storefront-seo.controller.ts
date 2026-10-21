@@ -23,9 +23,51 @@ export class StorefrontSeoController {
   @SkipThrottle()
   @Get('document')
   async document(@Query('host') host: string, @Query('path') path: string) {
+    const [meta, store] = await Promise.all([this.documentMeta(host, path), this.resolveStore(host)]);
+    // The tab icon is ONLY the seller's uploaded favicon (never the logo or the platform icon).
+    return (meta as any).redirect ? meta : { ...(meta as any), favicon: (store as any).faviconUrl || null };
+  }
+
+  /** Crawler view of a page, in the language its URL asks for (`/ur/product/x`), with hreflang alternates. */
+  private async documentMeta(host: string, path: string) {
     const store = await this.resolveStore(host);
-    const routePath = normalizeRoutePath(path);
     const storeId = String((store as any)._id);
+    const languages = await this.storeLanguages(storeId, store);
+    const defaultLanguage = languages[0] ?? 'en';
+    const prefixed = /^\/([a-z]{2,3})(\/.*)?$/i.exec(String(path ?? ''));
+    const prefix = prefixed?.[1].toLowerCase();
+    const language = prefix && prefix !== defaultLanguage && languages.includes(prefix) ? prefix : defaultLanguage;
+    const barePath = language !== defaultLanguage ? prefixed?.[2] || '/' : path;
+    const routePath = normalizeRoutePath(barePath);
+
+    const meta: any = await this.routeMeta(store, storeId, routePath);
+    if (meta.redirect) return meta;
+    const translation = meta._translations?.[language];
+    delete meta._translations;
+    if (language !== defaultLanguage && translation) {
+      const title = translation.metaTitle || translation.title;
+      const description = translation.metaDescription || translation.description;
+      if (title) { meta.title = title; meta.ogTitle = title; }
+      if (description) { meta.description = description; meta.ogDescription = description; }
+    }
+    meta.lang = language;
+    if (languages.length > 1 && !meta.noindex) {
+      const origin = getCanonicalOrigin(store);
+      const plain = `${origin}${routePath}`;
+      meta.alternates = [
+        ...languages.map((code) => ({ hreflang: code, href: languageUrl(origin, plain, code, defaultLanguage) })),
+        { hreflang: 'x-default', href: plain },
+      ];
+      // A seller-set canonical override wins; otherwise the page is its own canonical in the language being viewed.
+      if (language !== defaultLanguage && meta.canonicalUrl === plain) {
+        meta.canonicalUrl = languageUrl(origin, plain, language, defaultLanguage);
+        meta.url = meta.canonicalUrl;
+      }
+    }
+    return meta;
+  }
+
+  private async routeMeta(store: any, storeId: string, routePath: string): Promise<any> {
     const redirect = await this.redirects.resolve(storeId, routePath);
     if (redirect) return { redirect: redirect.destination, statusCode: redirect.statusCode };
     if (routePath === '/') return this.seo.resolve('store', storeId);
@@ -40,20 +82,20 @@ export class StorefrontSeoController {
     const productMatch = routePath.match(/^\/product\/([^/]+)$/);
     if (productMatch) {
       const slug = productMatch[1];
-      const product = await this.db.repositories.productModel.findOne({ storeId, slug, status: 'active', isDelete: false }).select('_id').lean() as any;
+      const product = await this.db.repositories.productModel.findOne({ storeId, slug, status: 'active', isDelete: false }).select('_id translations').lean() as any;
       if (!product) throw new NotFoundException('Store product not found');
-      return this.seo.resolve('product', String(product._id));
+      return { ...(await this.seo.resolve('product', String(product._id))), _translations: product.translations };
     }
 
     const blogMatch = routePath.match(/^\/blog\/([^/]+)$/);
     if (blogMatch) {
       const blog = await this.db.repositories.blogModel.findOne({ storeId, isDelete: false }).sort({ createdAt: 1 }).select('_id title slug').lean() as any;
-      const post = await this.db.repositories.blogPostModel.findOne({ storeId, blogId: blog?._id?.toString(), slug: blogMatch[1], status: 'published', isDelete: false }).select('title excerpt seoTitle seoDescription coverImage slug').lean() as any;
+      const post = await this.db.repositories.blogPostModel.findOne({ storeId, blogId: blog?._id?.toString(), slug: blogMatch[1], status: 'published', isDelete: false }).select('title excerpt seoTitle seoDescription coverImage slug translations').lean() as any;
       if (!post) throw new NotFoundException('Blog article not found');
       const url = `${getCanonicalOrigin(store)}/blog/${encodeURIComponent(post.slug)}`;
       const title = post.seoTitle || post.title;
       const description = post.seoDescription || post.excerpt || '';
-      return { title, description, canonicalUrl: url, url, ogTitle: title, ogDescription: description, ogImage: post.coverImage ?? null, noindex: false, jsonLd: [] };
+      return { title, description, canonicalUrl: url, url, ogTitle: title, ogDescription: description, ogImage: post.coverImage ?? null, noindex: false, jsonLd: [], _translations: post.translations };
     }
 
     const namedBlogMatch = routePath.match(/^\/blogs\/([^/]+)(?:\/([^/]+))?$/);
@@ -64,24 +106,24 @@ export class StorefrontSeoController {
         const url = `${getCanonicalOrigin(store)}/blogs/${encodeURIComponent(blog.slug)}`;
         return { title: blog.title, description: '', canonicalUrl: url, url, ogTitle: blog.title, ogDescription: '', ogImage: null, noindex: false, jsonLd: [] };
       }
-      const post = await this.db.repositories.blogPostModel.findOne({ storeId, blogId: blog._id.toString(), slug: namedBlogMatch[2], status: 'published', isDelete: false }).select('title excerpt seoTitle seoDescription coverImage slug').lean() as any;
+      const post = await this.db.repositories.blogPostModel.findOne({ storeId, blogId: blog._id.toString(), slug: namedBlogMatch[2], status: 'published', isDelete: false }).select('title excerpt seoTitle seoDescription coverImage slug translations').lean() as any;
       if (!post) throw new NotFoundException('Blog article not found');
       const url = `${getCanonicalOrigin(store)}/blogs/${encodeURIComponent(blog.slug)}/${encodeURIComponent(post.slug)}`;
       const title = post.seoTitle || post.title;
       const description = post.seoDescription || post.excerpt || '';
-      return { title, description, canonicalUrl: url, url, ogTitle: title, ogDescription: description, ogImage: post.coverImage ?? null, noindex: false, jsonLd: [] };
+      return { title, description, canonicalUrl: url, url, ogTitle: title, ogDescription: description, ogImage: post.coverImage ?? null, noindex: false, jsonLd: [], _translations: post.translations };
     }
 
     const collectionMatch = routePath.match(/^\/collections\/([^/]+)$/);
     if (collectionMatch) {
       const segment = collectionMatch[1];
       const idOrSlug = /^[a-f0-9]{24}$/i.test(segment) ? [{ slug: segment }, { _id: segment }] : [{ slug: segment }];
-      const collection = await this.db.repositories.collectionModel.findOne({ storeId, status: 'active', isDelete: false, $or: idOrSlug }).select('name description slug').lean() as any;
+      const collection = await this.db.repositories.collectionModel.findOne({ storeId, status: 'active', isDelete: false, $or: idOrSlug }).select('name description slug translations').lean() as any;
       if (!collection) throw new NotFoundException('Collection not found');
       const url = `${getCanonicalOrigin(store)}/collections/${encodeURIComponent(collection.slug)}`;
       const title = collection.name || (store as any).name;
       const description = collection.description || '';
-      return { title, description, canonicalUrl: url, url, ogTitle: title, ogDescription: description, ogImage: null, noindex: false, jsonLd: [] };
+      return { title, description, canonicalUrl: url, url, ogTitle: title, ogDescription: description, ogImage: null, noindex: false, jsonLd: [], _translations: collection.translations };
     }
 
     const categoryMatch = routePath.match(/^\/category\/([^/]+)$/);
@@ -99,13 +141,13 @@ export class StorefrontSeoController {
 
     const pageSlug = routePath.slice(1);
     if (!pageSlug.includes('/') && !BUILT_IN_STOREFRONT_PATHS.has(pageSlug)) {
-      const page = await this.db.repositories.storePageModel.findOne({ storeId, type: 'custom', slug: pageSlug, status: 'published', isDelete: false }).select('title seo slug').lean() as any;
+      const page = await this.db.repositories.storePageModel.findOne({ storeId, type: 'custom', slug: pageSlug, status: 'published', isDelete: false }).select('title seo slug translations').lean() as any;
       if (!page) throw new NotFoundException('Store page not found');
       const seo = page.seo ?? {};
       const url = seo.canonicalUrlOverride || `${getCanonicalOrigin(store)}/${encodeURIComponent(page.slug)}`;
       const title = seo.metaTitle || page.title || (store as any).name;
       const description = seo.metaDescription || seo.metaDesc || '';
-      return { title, description, canonicalUrl: url, url, ogTitle: seo.ogTitle || title, ogDescription: seo.ogDescription || description, ogImage: seo.ogImage ?? null, noindex: !!seo.noindex, jsonLd: [] };
+      return { title, description, canonicalUrl: url, url, ogTitle: seo.ogTitle || title, ogDescription: seo.ogDescription || description, ogImage: seo.ogImage ?? null, noindex: !!seo.noindex, jsonLd: [], _translations: page.translations };
     }
 
     if (isBuiltInStorefrontPath(routePath)) {
@@ -171,6 +213,7 @@ export class StorefrontSeoController {
     const origin = getCanonicalOrigin(store);
     const { productModel, storePageModel, blogPostModel, collectionModel, blogModel, categoryModel } = this.db.repositories;
     const storeId = String((store as any)._id);
+    const languages = await this.storeLanguages(storeId, store);
     const [products, pages, posts, collections, blogs, categories] = await Promise.all([
       productModel.find({ storeId, status: 'active', isDelete: false }).select('slug updatedAt').lean(),
       storePageModel.find({ storeId, type: 'custom', status: 'published', isDelete: false }).select('slug updatedAt').lean(),
@@ -195,7 +238,7 @@ export class StorefrontSeoController {
     const chunkCount = Math.max(1, Math.ceil(urls.length / MAX_URLS_PER_SITEMAP));
     let xml: string;
     if (chunkCount === 1) {
-      xml = urlset(urls);
+      xml = urlset(urls, origin, languages);
     } else {
       xml = `<?xml version="1.0" encoding="UTF-8"?>\n<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${Array.from({ length: chunkCount }, (_, i) => `  <sitemap><loc>${xmlEscape(`${origin}/sitemap-${i + 1}.xml`)}</loc></sitemap>`).join('\n')}\n</sitemapindex>`;
     }
@@ -216,6 +259,7 @@ export class StorefrontSeoController {
     const origin = getCanonicalOrigin(store);
     const { productModel, storePageModel, blogPostModel, collectionModel, blogModel, categoryModel } = this.db.repositories;
     const storeId = String((store as any)._id);
+    const languages = await this.storeLanguages(storeId, store);
     const [products, pages, posts, collections, blogs, categories] = await Promise.all([
       productModel.find({ storeId, status: 'active', isDelete: false }).select('slug updatedAt').sort({ _id: 1 }).lean(),
       storePageModel.find({ storeId, type: 'custom', status: 'published', isDelete: false }).select('slug updatedAt').sort({ _id: 1 }).lean(),
@@ -241,7 +285,18 @@ export class StorefrontSeoController {
     if (!slice.length) throw new NotFoundException('Sitemap chunk not found');
     res.setHeader('Content-Type', 'application/xml; charset=utf-8');
     res.setHeader('Cache-Control', 'public, max-age=300, stale-while-revalidate=3600');
-    res.send(urlset(slice));
+    res.send(urlset(slice, origin, languages));
+  }
+
+  /** Every language the store offers (default + its active markets), lowercase; one entry = a single-language store. */
+  private async storeLanguages(storeId: string, store: any): Promise<string[]> {
+    const { marketModel, storeModel } = this.db.repositories as any;
+    const [markets, row] = await Promise.all([
+      marketModel.find({ storeId, isActive: true, isDelete: false }).select('languages').lean(),
+      storeModel.findById(storeId).select('defaultLanguage').lean(),
+    ]);
+    const fallback = String(row?.defaultLanguage || store?.defaultLanguage || 'en').toLowerCase();
+    return Array.from(new Set([fallback, ...markets.flatMap((m: any) => (m.languages ?? []).map((l: string) => String(l).toLowerCase()))])) as string[];
   }
 
   private async resolveStore(hostValue: unknown): Promise<any> {
@@ -298,8 +353,24 @@ function getCanonicalOrigin(store: any): string {
   return `https://${store.slug}.${PLATFORM_ROOT}`;
 }
 
-function urlset(urls: Array<{ loc: string; lastmod?: Date }>): string {
-  return `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.map((item) => `  <url><loc>${xmlEscape(item.loc)}</loc>${item.lastmod ? `<lastmod>${new Date(item.lastmod).toISOString()}</lastmod>` : ''}</url>`).join('\n')}\n</urlset>`;
+/** The English (default) URL has no language prefix; every other language is /<code><path>. */
+function languageUrl(origin: string, loc: string, code: string, defaultLanguage: string): string {
+  if (code === defaultLanguage) return loc;
+  const path = loc.slice(origin.length) || '/';
+  return `${origin}/${code}${path}`;
+}
+
+function urlset(urls: Array<{ loc: string; lastmod?: Date }>, origin: string, languages: string[]): string {
+  // The store's own (default) language comes first in `languages` and has no URL prefix.
+  const defaultLanguage = languages[0] ?? 'en';
+  const multi = languages.length > 1;
+  const alternates = (loc: string) => (multi
+    ? languages.map((code) => `<xhtml:link rel="alternate" hreflang="${xmlEscape(code)}" href="${xmlEscape(languageUrl(origin, loc, code, defaultLanguage))}" />`).join('')
+      + `<xhtml:link rel="alternate" hreflang="x-default" href="${xmlEscape(loc)}" />`
+    : '');
+  const ns = multi ? ' xmlns:xhtml="http://www.w3.org/1999/xhtml"' : '';
+  const rows = urls.map((item) => `  <url><loc>${xmlEscape(item.loc)}</loc>${item.lastmod ? `<lastmod>${new Date(item.lastmod).toISOString()}</lastmod>` : ''}${alternates(item.loc)}</url>`);
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"${ns}>\n${rows.join('\n')}\n</urlset>`;
 }
 
 function xmlEscape(value: string): string {

@@ -110,6 +110,9 @@ export { AbandonedCartSettings, AbandonedCartSettingsDocument, AbandonedCartSett
 export { EmailDailyStat, EmailDailyStatDocument, EmailDailyStatSchema } from '../notifications/schemas/email-daily-stat.schema';
 export { StoreNotificationSettings, StoreNotificationSettingsDocument, StoreNotificationSettingsSchema } from '../notifications/schemas/store-notification-settings.schema';
 export { OrderDocumentSettings, OrderDocumentSettingsDocument, OrderDocumentSettingsSchema } from '../order-documents/schemas/order-document-settings.schema';
+export { StoreTextTranslation, StoreTextTranslationDocument, StoreTextTranslationSchema } from '../store-text-translations/schemas/store-text-translation.schema';
+export { UiLocaleBundle, UiLocaleBundleDocument, UiLocaleBundleSchema } from '../ui-locales/schemas/ui-locale-bundle.schema';
+export { UiLocaleKey, UiLocaleKeyDocument, UiLocaleKeySchema } from '../ui-locales/schemas/ui-locale-key.schema';
 export { EmailCampaign, EmailCampaignDocument, EmailCampaignSchema } from '../email-campaigns/schemas/email-campaign.schema';
 export { EmailCampaignSend, EmailCampaignSendDocument, EmailCampaignSendSchema } from '../email-campaigns/schemas/email-campaign-send.schema';
 export { AffiliateProgram, AffiliateProgramDocument, AffiliateProgramSchema } from '../affiliate/schemas/affiliate-program.schema';

@@ -47,6 +47,11 @@ export class StorePagesController {
     return this.storePagesService.createPage(storeId, actingSellerId(req.user), dto);
   }
 
+  @Post(':storeId/policies/:policyType/template')
+  createPolicyFromTemplate(@Req() req: any, @Param('storeId') storeId: string, @Param('policyType') policyType: string) {
+    return this.storePagesService.createPolicyFromTemplate(storeId, actingSellerId(req.user), policyType);
+  }
+
   @Post(':storeId/:pageId/duplicate')
   duplicate(@Req() req: any, @Param('storeId') storeId: string, @Param('pageId') pageId: string) {
     return this.storePagesService.duplicatePage(storeId, actingSellerId(req.user), pageId);

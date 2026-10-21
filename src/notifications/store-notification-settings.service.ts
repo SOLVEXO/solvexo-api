@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, ServiceUnavailableException } from '@nestjs/common';
+import { TextGenerationService } from '../ai-studio/providers/text-generation.service';
 import { DatabaseService } from '@/database/databaseservice';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { EmailService } from '@/otp/services/email.service';
@@ -35,6 +36,7 @@ export class StoreNotificationSettingsService {
     private readonly db: DatabaseService,
     private readonly activityLogService: ActivityLogService,
     private readonly emailService: EmailService,
+    private readonly ai: TextGenerationService,
   ) {}
 
   /** One test email per store every 10 s (a double-click / script guard; per process). */
@@ -102,7 +104,8 @@ export class StoreNotificationSettingsService {
   }
 
   async update(sellerId: string, storeId: string, dto: UpdateStoreNotificationSettingsDto, actor?: { id?: string; role?: string }) {
-    await verifyStoreOwnershipStrict(this.r.storeModel, storeId, sellerId);
+    const ownedStore: any = await verifyStoreOwnershipStrict(this.r.storeModel, storeId, sellerId);
+    const sourceLanguage = String(ownedStore?.defaultLanguage || 'en').toLowerCase();
     const $set: Record<string, any> = {};
     const $unset: Record<string, ''> = {};
 
@@ -150,7 +153,7 @@ export class StoreNotificationSettingsService {
       if (!byLocale || typeof byLocale !== 'object') throw new BadRequestException(`Invalid translations for "${key}"`);
       for (const [rawLocale, raw] of Object.entries(byLocale)) {
         const locale = normalizeLocale(rawLocale);
-        if (!locale || locale === 'en') throw new BadRequestException(`"${rawLocale}" is not a language you can translate into`);
+        if (!locale || locale === sourceLanguage) throw new BadRequestException(`"${rawLocale}" is not a language you can translate into`);
         if (!raw || typeof raw !== 'object') throw new BadRequestException(`Invalid translation for "${key}" (${locale})`);
         const path = `eventTranslations.${key}.${locale}`;
         if (raw.reset === true) {
@@ -199,7 +202,7 @@ export class StoreNotificationSettingsService {
     if (!isCustomerEmailEvent(dto.event)) throw new BadRequestException('Unknown email');
     const def = CUSTOMER_EMAIL_CATALOG[dto.event];
     const settings: any = await this.r.storeNotificationSettingsModel.findOne({ storeId, isDelete: false }).lean();
-    const text = pickEmailText(dto.event, normalizeLocale(dto.locale), settings, { subject: dto.subject, body: dto.body });
+    const text = pickEmailText(dto.event, normalizeLocale(dto.locale), settings, { subject: dto.subject, body: dto.body }, store?.defaultLanguage);
     const ui = emailUiStrings(text.locale);
     const subjectTpl = text.subject;
     const bodyTpl = text.body;
@@ -222,6 +225,33 @@ export class StoreNotificationSettingsService {
       fromName: String(settings?.senderName ?? '').trim() || storeName,
       replyTo: String(settings?.replyToEmail ?? '').trim() || store.contactEmail || null,
     };
+  }
+
+  /** Translates the email (in the store's own language) into `dto.locale`, keeping every {{tag}} exactly; the seller reviews it and saves. */
+  async autoTranslateEmail(sellerId: string, storeId: string, dto: PreviewCustomerEmailDto) {
+    const store: any = await verifyStoreOwnershipStrict(this.r.storeModel, storeId, sellerId);
+    if (!isCustomerEmailEvent(dto.event)) throw new BadRequestException('Unknown email');
+    const target = normalizeLocale(dto.locale);
+    const source = String(store.defaultLanguage || 'en').toLowerCase();
+    if (!target || target === source) throw new BadRequestException('Pick a language other than your store language');
+    if (this.ai.providerName !== 'claude') throw new ServiceUnavailableException('Automatic translation is not switched on for this platform yet. You can still translate by hand.');
+    const settings: any = await this.r.storeNotificationSettingsModel.findOne({ storeId, isDelete: false }).lean();
+    const from = pickEmailText(dto.event, source, settings, undefined, source);
+    let language: string = target;
+    try { language = new Intl.DisplayNames(['en'], { type: 'language' }).of(target) ?? target; } catch { /* keep the code */ }
+    const schema = { type: 'object', properties: { subject: { type: 'string' }, body: { type: 'string' } }, required: ['subject', 'body'], additionalProperties: false };
+    const res = await this.ai.generate({
+      tier: 'standard', maxTokens: 2000, schema,
+      system: `You translate a store's customer email into ${language}. Keep every {{tag}} exactly as written (same names, same count), keep line breaks, and write the way a friendly shop writes to its customers. Return only the JSON.`,
+      prompt: JSON.stringify({ subject: from.subject, body: from.body }),
+    }).catch(() => { throw new ServiceUnavailableException('The translation service is busy. Try again in a moment.'); });
+    const subject = String(res.json?.subject ?? '').trim();
+    const body = String(res.json?.body ?? '').trim();
+    const tags = (t: string) => (t.match(/\{\{\s*[\w.]+\s*\}\}/g) ?? []).map((x) => x.replace(/\s+/g, '')).sort().join('|');
+    if (!subject || !body || tags(subject) !== tags(from.subject) || tags(body) !== tags(from.body)) {
+      throw new ServiceUnavailableException('The translation changed the email tags. Try again, or translate by hand.');
+    }
+    return { success: true, data: { subject: subject.slice(0, MAX_SUBJECT), body: body.slice(0, MAX_BODY) } };
   }
 
   async preview(sellerId: string, storeId: string, dto: PreviewCustomerEmailDto) {

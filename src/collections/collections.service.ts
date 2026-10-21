@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
+import { translatedHandleClause } from '../common/translated-handle.util';
 import { isValidObjectId } from 'mongoose';
 import { DatabaseService } from '../database/databaseservice';
 import { ActivityLogService } from '../activity-log/activity-log.service';
@@ -270,16 +271,15 @@ export class CollectionsService {
    *  (Phase 4/3b), so the storefront's `/collections/:slugOrId` route
    *  (Phase 11) needs to resolve either, exactly like `/category/:slugOrId`
    *  already does for categories. */
-  async getPublicBySlug(storeId: string, slugOrId: string) {
-    const collection = await this.r.collectionModel
-      .findOne({
-        storeId,
-        isDelete: false,
-        status: 'active',
-        $or: isValidObjectId(slugOrId) ? [{ slug: slugOrId }, { _id: slugOrId }] : [{ slug: slugOrId }],
-      })
-      .select('name slug description image type templateKey seo defaultSort translations')
+  async getPublicBySlug(storeId: string, slugOrId: string, locale?: string) {
+    const base = { storeId, isDelete: false, status: 'active' };
+    const select = 'name slug description image type templateKey seo defaultSort translations';
+    let collection = await this.r.collectionModel
+      .findOne({ ...base, $or: isValidObjectId(slugOrId) ? [{ slug: slugOrId }, { _id: slugOrId }] : [{ slug: slugOrId }] })
+      .select(select)
       .lean();
+    const translated = translatedHandleClause(locale, slugOrId);
+    if (!collection && translated) collection = await this.r.collectionModel.findOne({ ...base, ...translated }).select(select).lean();
     if (!collection) throw new NotFoundException('Collection not found');
     return { success: true, data: collection };
   }

@@ -1,7 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { ApiProperty } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsArray, IsBoolean, IsIn, IsInt, IsOptional, IsString, Matches, Max, MaxLength, Min, ValidateIf, ValidateNested } from 'class-validator';
+import { IsArray, IsBoolean, IsIn, IsInt, IsObject, IsOptional, IsString, Matches, Max, MaxLength, Min, ValidateIf, ValidateNested } from 'class-validator';
 import { BlockInputDto } from '../../common/dto/block-input.dto';
 import { SectionInputDto } from '../../store-pages/dto/section-input.dto';
 
@@ -13,6 +13,10 @@ export class UpdateHeaderDto {
   @ApiProperty({ required: false })
   @IsOptional() @IsString()
   customLogoUrl?: string;
+
+  @ApiProperty({ required: false, nullable: true, description: 'Where the logo links to ({ linkType, ... }); null = home page' })
+  @ValidateIf((_, v) => v !== null && v !== undefined) @IsObject()
+  logoLink?: Record<string, unknown> | null;
 
   @ApiProperty({ required: false, type: [BlockInputDto], description: 'nav_link blocks only' })
   @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => BlockInputDto)

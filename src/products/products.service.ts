@@ -8,6 +8,7 @@ import {
   HttpException,
   HttpStatus,
 } from '@nestjs/common';
+import { translatedHandleClause } from '../common/translated-handle.util';
 import { InjectConnection } from '@nestjs/mongoose';
 import { ClientSession, Connection, Types, isValidObjectId } from 'mongoose';
 import {
@@ -782,7 +783,7 @@ export class ProductsService {
     return this.getTopSellingProducts(storeId, sevenDaysAgo, limit, customerId);
   }
 
-  async getProductById(idOrSlug: string, customerId?: string | null, storeId?: string) {
+  async getProductById(idOrSlug: string, customerId?: string | null, storeId?: string, locale?: string) {
     const productModel = this.databaseService.repositories.productModel;
     const productVariantModel =
       this.databaseService.repositories.productVariantModel;
@@ -809,6 +810,12 @@ export class ProductsService {
           isDelete: false,
         })
         .lean();
+    }
+
+    // The handle a seller saved for this language (Translate & adapt); only with a store, as slugs are unique per store.
+    const translatedHandle = storeId ? translatedHandleClause(locale, idOrSlug) : null;
+    if (!product && translatedHandle) {
+      product = await productModel.findOne({ storeId, status: 'active', isDelete: false, ...translatedHandle }).lean();
     }
 
     if (!product) {

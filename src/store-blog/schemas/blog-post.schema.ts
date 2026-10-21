@@ -2,6 +2,7 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument } from 'mongoose';
 import { Block, BlockSchema } from '../../common/schemas/block.schema';
+import { Translation, TranslationSchema } from '../../common/schemas/translation.schema';
 
 export type BlogPostDocument = HydratedDocument<BlogPost>;
 
@@ -56,6 +57,10 @@ export class BlogPost {
 
   @Prop({ type: [BlockSchema], default: [] })
   content: Block[];
+
+  // Per-language title / excerpt / handle / SEO (locale -> Translation); the body text is translated through store-text-translations (`bp:<id>`).
+  @Prop({ type: Map, of: TranslationSchema, default: {} })
+  translations: Map<string, Translation>;
 
   @Prop({ type: String, enum: BLOG_POST_STATUSES, default: 'draft' })
   status: BlogPostStatus;

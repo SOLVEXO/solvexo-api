@@ -5,6 +5,7 @@ import { ConfigService } from '@nestjs/config';
 import { DatabaseService } from '@/database/databaseservice';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
 import Stripe from 'stripe';
+import { paymentAvailability, resolveStoreCountry } from '@/integrations/payment-availability.util';
 
 @Injectable()
 export class StripeConnectService implements OnModuleInit {
@@ -37,7 +38,7 @@ export class StripeConnectService implements OnModuleInit {
     return this.stripe;
   }
 
-  private readonly CONNECT_FIELDS = 'stripeConnectStatus stripeConnectChargesEnabled stripeConnectPayoutsEnabled sellerId name';
+  private readonly CONNECT_FIELDS = 'stripeConnectStatus stripeConnectChargesEnabled stripeConnectPayoutsEnabled sellerId name country baseCurrency';
 
   /** The store must belong to `sellerId` (a staff caller is already pinned to their store by PermissionsGuard). */
   private async loadOwnedStore(sellerId: string, storeId: string) {
@@ -231,6 +232,14 @@ export class StripeConnectService implements OnModuleInit {
   private async getOrCreateAccount(sellerId: string, store: any): Promise<string> {
     if (store.stripeConnectedAccountId) return store.stripeConnectedAccountId;
 
+    // Only for countries Stripe lets the platform settle in (see payment-availability.util.ts). An account created
+    // without a country silently takes the PLATFORM's country, so the seller's own country is always sent.
+    const country = resolveStoreCountry(store);
+    const availability = paymentAvailability('stripe', country);
+    if (!availability.available || !country) {
+      throw new BadRequestException(availability.reason ?? 'Card payments through Stripe are not available for this store.');
+    }
+
     const seller = await this.r.sellerModel.findById(sellerId).select('email');
     if (!seller) throw new ForbiddenException('Seller not found');
 
@@ -239,6 +248,7 @@ export class StripeConnectService implements OnModuleInit {
     try {
       account = await stripe.accounts.create({
         type: 'express',
+        country,
         email: seller.email ?? undefined,
         capabilities: {
           card_payments: { requested: true },

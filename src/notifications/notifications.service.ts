@@ -288,7 +288,7 @@ export class NotificationsService {
   async buildCustomerEmail(args: { storeId: string; event: CustomerEmailEvent; vars: TemplateVars; orderId?: string | null; trackingUrl?: string | null; cta?: { label: string; url: string } | null; locale?: string | null }): Promise<BuiltCustomerEmail | null> {
     const repos = this.databaseService.repositories;
     const [store, settings]: [any, any] = await Promise.all([
-      repos.storeModel.findById(args.storeId).select('name contactEmail slug customDomain customDomainStatus logo').lean(),
+      repos.storeModel.findById(args.storeId).select('name contactEmail slug customDomain customDomainStatus logo defaultLanguage').lean(),
       repos.storeNotificationSettingsModel.findOne({ storeId: args.storeId, isDelete: false }).lean(),
     ]);
     if (!store) return null;
@@ -306,7 +306,7 @@ export class NotificationsService {
         locale = null;
       }
     }
-    const text = pickEmailText(args.event, locale, settings);
+    const text = pickEmailText(args.event, locale, settings, undefined, store.defaultLanguage);
     const ui = emailUiStrings(text.locale);
     const storeName: string = store.name ?? 'the store';
     const base = storePublicUrl(store);

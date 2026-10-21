@@ -15,6 +15,7 @@ const RESOURCE_PERMISSION: Record<TranslationResource, string> = {
   collections: 'collections.manage',
   pages: 'onlinestore.content.manage',
   menus: 'onlinestore.content.manage',
+  blog_posts: 'onlinestore.content.manage',
 };
 
 function resourceFrom(user: any, raw: string): TranslationResource {

@@ -35,6 +35,12 @@ export class StoreNotificationSettingsController {
     return this.service.sendTest(actingSellerId(req.user), storeId, dto, req.user?.email);
   }
 
+  /** Machine translation of one email into a language, for the seller to review and save (nothing is stored). */
+  @Post(':storeId/auto-translate-email')
+  autoTranslateEmail(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: PreviewCustomerEmailDto) {
+    return this.service.autoTranslateEmail(actingSellerId(req.user), storeId, dto);
+  }
+
   @Post(':storeId/preview')
   preview(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: PreviewCustomerEmailDto) {
     return this.service.preview(actingSellerId(req.user), storeId, dto);

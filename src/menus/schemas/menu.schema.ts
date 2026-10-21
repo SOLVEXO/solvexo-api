@@ -10,7 +10,7 @@ export type MenuDocument = HydratedDocument<Menu>;
 // is the exact same link-target shape, just living in its own reusable,
 // named entity instead of being embedded one-off inside a Header/Footer
 // block. Kept in sync by hand since this is a different schema file.
-export const MENU_LINK_TYPES = ['home', 'page', 'blog', 'search', 'external', 'category', 'collection', 'product', 'cart', 'account', 'email', 'phone', 'none'] as const;
+export const MENU_LINK_TYPES = ['home', 'page', 'blog', 'search', 'external', 'category', 'collection', 'product', 'cart', 'account', 'faqs', 'email', 'phone', 'none'] as const;
 export type MenuLinkType = (typeof MENU_LINK_TYPES)[number];
 
 // How a TOP-LEVEL item's children are presented by the storefront theme:

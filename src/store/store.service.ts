@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { availableStock, AVAILABLE_STOCK_EXPR } from '@/common/stock-availability.util';
 import { importCustomersCsv } from './customer-bulk-import';
+import { isSupportedLanguage } from '@/common/supported-languages.const';
 import { ConfigService } from '@nestjs/config';
 import { promises as dns } from 'dns';
 import * as bcrypt from 'bcrypt';
@@ -41,6 +42,7 @@ import { DASHBOARD_METRIC_IDS } from './store-dashboard-metrics.const';
 import { setMarketingConsent } from '../newsletter/newsletter-consent.util';
 import { parseTaxOverrides } from '../tax/tax-rules.util';
 import { isValidTimeZone } from '../analytics/utils/analytics-date.util';
+import { resolveStoreCountry } from '../integrations/payment-availability.util';
 
 // Real EU member states + UK (retains UK GDPR post-Brexit, same as Shopify's
 // own "regions with consent laws" cookie-banner scoping) — a plain, explicit
@@ -158,6 +160,13 @@ export class StoreService {
 
     if (!name) throw new BadRequestException('Store name is required');
 
+    // Store country (Shopify reads it from the store address): decides which payment providers the store can use.
+    // Optional only so older clients keep working; the onboarding form always sends it.
+    const countryInput = body.country == null || body.country === '' ? null : String(body.country).trim().toUpperCase();
+    if (countryInput !== null && !/^[A-Z]{2}$/.test(countryInput)) {
+      throw new BadRequestException('country must be a 2-letter country code (e.g. PK, US)');
+    }
+
     // Pricing currency is chosen once, here, and is locked forever the
     // moment this store has its first product (see ProductVariantsService/
     // ProductsService, which stamp every new variant's currency from this
@@ -227,6 +236,7 @@ export class StoreService {
       productTypes: finalProductTypes,
       enabledTools: resolveTools(finalProductTypes),
       baseCurrency,
+      country: countryInput,
       // Shopify-style "Markets" default: a NEW store only accepts its own
       // currency until the seller explicitly opts into more via Store
       // Settings — previously this was left `null` (every supported
@@ -468,7 +478,22 @@ export class StoreService {
     const update: Record<string, unknown> = { verification: next };
     // Country/businessType changes recompute the applicable level
     // server-side — never accepted as a client-supplied value.
-    if (body.country !== undefined) update.country = body.country;
+    if (body.country !== undefined) {
+      const nextCountry = String(body.country ?? '').trim().toUpperCase();
+      if (!/^[A-Z]{2}$/.test(nextCountry)) throw new BadRequestException('country must be a 2-letter country code (e.g. PK, US)');
+      const currentCountry = resolveStoreCountry(store);
+      if (nextCountry !== currentCountry) {
+        // The country decides which payment providers are available, so it cannot move under live payment accounts.
+        const [connectedGateway, stripeRow] = await Promise.all([
+          this.databaseService.repositories.storeIntegrationModel.exists({ storeId, type: 'payment', status: 'connected' }),
+          this.databaseService.repositories.storeModel.findById(storeId).select('+stripeConnectedAccountId').lean(),
+        ]);
+        if (connectedGateway || (stripeRow as any)?.stripeConnectedAccountId) {
+          throw new BadRequestException('Disconnect your payment providers before changing the store country.');
+        }
+      }
+      update.country = nextCountry;
+    }
     if (body.businessType !== undefined) {
       update.businessType = body.businessType;
       update.verificationLevel = determineVerificationLevel(body.businessType);
@@ -1066,7 +1091,7 @@ export class StoreService {
   // body would let a seller un-suspend their own store (see
   // usersService.deleteSellerAccount, which suspends stores on delete).
   async updateStore(sellerId: string, storeId: string, body: any) {
-    const { name, logo, faviconUrl, description, tagline, contactEmail, contactPhone, sellerType, productTypes, codEnabled, paymentCaptureMethod, dashboardMetrics, reviewModerationEnabled, lowStockThreshold, taxRate, taxRegions, taxShipping, taxPricesIncludeTax, taxOverrides, showDutiesNotice, enabledCurrencies, cookieBannerEnabled, cookieBannerMessage, showDoNotSellLink, cookieBannerRegionMode, cookieBannerPosition, cookieBannerColorMode, customerAccounts, timezone } = body;
+    const { name, logo, faviconUrl, description, tagline, contactEmail, contactPhone, sellerType, productTypes, codEnabled, paymentCaptureMethod, dashboardMetrics, reviewModerationEnabled, lowStockThreshold, taxRate, taxRegions, taxShipping, taxPricesIncludeTax, taxOverrides, showDutiesNotice, enabledCurrencies, cookieBannerEnabled, cookieBannerMessage, showDoNotSellLink, cookieBannerRegionMode, cookieBannerPosition, cookieBannerColorMode, customerAccounts, timezone, currencyDisplay, defaultLanguage } = body;
 
     if (!storeId) throw new BadRequestException('storeId is required');
 
@@ -1237,6 +1262,15 @@ export class StoreService {
       }
     }
 
+    if (defaultLanguage !== undefined) {
+      const code = String(defaultLanguage).trim().toLowerCase();
+      if (!isSupportedLanguage(code)) throw new BadRequestException('Pick one of the supported languages');
+      updateData.defaultLanguage = code;
+    }
+    if (currencyDisplay !== undefined) {
+      if (!['symbol', 'code', 'symbol_code'].includes(currencyDisplay)) throw new BadRequestException("currencyDisplay must be 'symbol', 'code' or 'symbol_code'");
+      updateData.currencyDisplay = currencyDisplay;
+    }
     if (customerAccounts !== undefined) {
       if (customerAccounts !== 'optional' && customerAccounts !== 'required') throw new BadRequestException("customerAccounts must be 'optional' or 'required'");
       updateData.customerAccounts = customerAccounts;
@@ -1425,6 +1459,8 @@ export class StoreService {
         // frontend uses this to convert every listed price into the
         // buyer's own chosen display currency.
         baseCurrency: store.baseCurrency ?? 'PKR',
+        currencyDisplay: store.currencyDisplay ?? 'symbol',
+        defaultLanguage: store.defaultLanguage ?? 'en',
         // "Markets" — null/empty means every platform-enabled currency is
         // accepted (a store that never touched this setting) — the
         // frontend must treat null the same as "all", never as "none".

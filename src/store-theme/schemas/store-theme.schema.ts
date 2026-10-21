@@ -195,6 +195,7 @@ export const StorefrontColorsSchema = SchemaFactory.createForClass(StorefrontCol
 export class StorefrontHeader {
   @Prop({ type: String, enum: ['store', 'custom'], default: 'store' }) logoSource: 'store' | 'custom';
   @Prop({ type: String, default: null }) customLogoUrl: string | null;
+  @Prop({ type: Object, default: null }) logoLink: Record<string, unknown> | null; // where the logo goes; null = home page
   @Prop({ type: [BlockSchema], default: [] }) blocks: Block[]; // nav_link blocks only
   // Extra full-width sections shown under the header bar (promo strip, trust row...); the seller adds/reorders them like page sections.
   @Prop({ type: [SectionSchema], default: [] }) sections: Section[];
@@ -284,6 +285,7 @@ export class StorefrontFooter {
   // Retailer-controlled footer chrome — defaults reproduce the footer as it was before these existed.
   @Prop({ type: String, enum: ['none', 'store', 'custom'], default: 'none' }) logoSource: 'none' | 'store' | 'custom';
   @Prop({ type: String, default: null }) logoUrl: string | null;
+  @Prop({ type: Object, default: null }) logoLink: Record<string, unknown> | null; // where the footer logo goes; null = home page
   @Prop({ type: Number, default: null }) logoWidth: number | null;
   @Prop({ type: Boolean, default: true }) showNewsletter: boolean;
   @Prop({ type: String, default: null }) newsletterHeading: string | null;
@@ -303,6 +305,13 @@ export class StorefrontFooter {
   @Prop({ type: String, enum: ['left', 'center'], default: 'left' }) align: 'left' | 'center';
   @Prop({ type: Boolean, default: true }) headingUppercase: boolean;
   @Prop({ type: String, enum: ['plain', 'circle', 'square'], default: null }) socialStyle: 'plain' | 'circle' | 'square' | null; // null = theme
+  // Social icon colour: null = the theme's own, 'brand' = each platform's real colour, 'custom' = socialCustomColor.
+  @Prop({ type: String, enum: ['brand', 'custom'], default: null }) socialColor: 'brand' | 'custom' | null;
+  @Prop({ type: String, default: null }) socialCustomColor: string | null;
+  // true = the button is filled with the full colour and the icon is white/dark; false = a soft tint with a coloured icon.
+  @Prop({ type: Boolean, default: false }) socialFilled: boolean;
+  // Width and height of one social icon button in px (24–72); null = the theme's own size.
+  @Prop({ type: Number, default: null }) socialSize: number | null;
   @Prop({ type: Boolean, default: false }) newsletterTop: boolean;     // Email sign-up as a wide strip above the columns
   @Prop({ type: Boolean, default: true }) mobileAccordion: boolean;    // columns fold on phones
   @Prop({ type: Boolean, default: true }) showPolicyLinks: boolean;

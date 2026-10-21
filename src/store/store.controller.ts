@@ -18,6 +18,8 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { RequirePermission } from '../auth/decorators/require-permission.decorator';
 import { actingSellerId } from '../common/acting-seller-id.util';
 import { StoreService } from './store.service';
+import { StoreThemeService } from '../store-theme/store-theme.service';
+import { StorePagesService } from '../store-pages/store-pages.service';
 import { UpdateStoreCustomerDto } from './dto/update-store-customer.dto';
 import { BulkTagCustomersDto } from './dto/bulk-tag-customers.dto';
 import { BulkArchiveCustomersDto } from './dto/bulk-archive-customers.dto';
@@ -26,7 +28,11 @@ import { resolveBuyerStoreScope } from '../common/store-scope.util';
 
 @Controller('api/store')
 export class StoreController {
-  constructor(private readonly storeService: StoreService) {}
+  constructor(
+    private readonly storeService: StoreService,
+    private readonly storeThemeService: StoreThemeService,
+    private readonly storePagesService: StorePagesService,
+  ) {}
 
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('seller')
@@ -265,6 +271,25 @@ export class StoreController {
   @Get('public/:storeId/suggest-location')
   async suggestLocationForStore(@Req() req: any, @Param('storeId') storeId: string) {
     return this.storeService.getSuggestedLocationForStore(storeId, req.ip);
+  }
+
+// First-paint bundle: the store, its live theme and its home page in ONE round trip (the storefront used to fetch the store
+  // first and only then the theme and the home page). Only a plain public store is bundled: a password-protected or coming-soon
+  // store gets just the store record, and the visitor goes through the normal gated calls afterwards.
+  // Registered BEFORE 'public/:slug' for the same reason as 'resolve-domain'.
+  @UseInterceptors(PublicCacheInterceptor)
+  @PublicCache(15, visitorCountry)
+  @Get('public/bootstrap')
+  async getStorefrontBootstrap(@Req() req: any, @Query('slug') slug?: string, @Query('host') host?: string) {
+    const storeRes: any = slug ? await this.storeService.getPublicStore(slug, req.ip) : await this.storeService.getPublicStoreByDomain(host ?? '', req.ip);
+    const store = storeRes?.data;
+    if (!store?.storeId || (store.privacyMode ?? 'public') !== 'public') return { success: true, data: { store, theme: null, home: null } };
+    const id = String(store.storeId);
+    const [theme, home] = await Promise.all([
+      this.storeThemeService.getPublic(id).then((r: any) => r?.data ?? null).catch(() => null),
+      this.storePagesService.getPublicHome(id).then((r: any) => r?.data ?? null).catch(() => null),
+    ]);
+    return { success: true, data: { store, theme, home } };
   }
 
 // Registered BEFORE 'public/:slug' — a static path segment must be matched

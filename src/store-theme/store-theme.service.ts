@@ -4,7 +4,7 @@ import { Types } from 'mongoose';
 import { randomBytes } from 'crypto';
 import { DatabaseService } from '../database/databaseservice';
 import { verifyStoreOwnershipStrict } from '../common/store-ownership.util';
-import { validateBlockSettings, HEADER_ALLOWED_BLOCK_TYPES, FOOTER_ALLOWED_BLOCK_TYPES } from '../common/store-content/section-settings.validator';
+import { assertLinkTarget, validateBlockSettings, HEADER_ALLOWED_BLOCK_TYPES, FOOTER_ALLOWED_BLOCK_TYPES } from '../common/store-content/section-settings.validator';
 import { ContentVersioningService } from '../common/content-versioning/content-versioning.service';
 import { StoreThemeDraft } from './schemas/store-theme.schema';
 import { UpdateThemeDto } from './dto/update-theme.dto';
@@ -750,8 +750,10 @@ export class StoreThemeService {
     const instance = await this.resolveInstance(storeId, installedThemeId);
     if (dto.blocks) validateBlocks(dto.blocks, HEADER_ALLOWED_BLOCK_TYPES, MAX_HEADER_LINKS);
     if (dto.sections) assertChromeSections(dto.sections);
+    assertLinkTarget(dto.logoLink, 'logoLink');
 
     const set: Record<string, unknown> = {};
+    if (dto.logoLink !== undefined) set['draft.header.logoLink'] = dto.logoLink;
     if (dto.logoSource !== undefined) set['draft.header.logoSource'] = dto.logoSource;
     if (dto.customLogoUrl !== undefined) set['draft.header.customLogoUrl'] = dto.customLogoUrl;
     if (dto.blocks !== undefined) set['draft.header.blocks'] = dto.blocks;
@@ -777,8 +779,10 @@ export class StoreThemeService {
     const instance = await this.resolveInstance(storeId, installedThemeId);
     validateBlocks(dto.blocks, FOOTER_ALLOWED_BLOCK_TYPES, MAX_FOOTER_BLOCKS);
     if (dto.sections) assertChromeSections(dto.sections);
+    assertLinkTarget(dto.logoLink, 'logoLink');
 
     const set: Record<string, unknown> = { 'draft.footer.blocks': dto.blocks };
+    if (dto.logoLink !== undefined) set['draft.footer.logoLink'] = dto.logoLink;
     if (dto.footerStyle !== undefined) set['draft.footer.footerStyle'] = dto.footerStyle;
     if (dto.menuId !== undefined) set['draft.footer.menuId'] = dto.menuId;
     if (dto.sections !== undefined) set['draft.footer.sections'] = dto.sections;
@@ -787,7 +791,7 @@ export class StoreThemeService {
       throw new BadRequestException('Upload a footer logo or choose another logo option');
     }
     const footerKeys = ['logoSource', 'logoUrl', 'logoWidth', 'showNewsletter', 'newsletterHeading', 'newsletterText',
-      'showDefaultColumns', 'shopColumnHeading', 'accountColumnHeading', 'blogLinkLabel', 'bgColor', 'textColor', 'blockLayout', 'paddingY', 'bgImageUrl', 'bgOverlay', 'align', 'headingUppercase', 'socialStyle',
+      'showDefaultColumns', 'shopColumnHeading', 'accountColumnHeading', 'blogLinkLabel', 'bgColor', 'textColor', 'blockLayout', 'paddingY', 'bgImageUrl', 'bgOverlay', 'align', 'headingUppercase', 'socialStyle', 'socialColor', 'socialCustomColor', 'socialFilled', 'socialSize',
       'newsletterTop', 'mobileAccordion', 'showPolicyLinks', 'showCurrency', 'showBackToTop', 'preset'] as const;
     for (const key of footerKeys) {
       if (dto[key] === undefined) continue;

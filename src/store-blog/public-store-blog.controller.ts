@@ -31,7 +31,7 @@ export class PublicStoreBlogController {
   }
 
   @Get(':storeId/:slug')
-  getBySlug(@Param('storeId') storeId: string, @Param('slug') slug: string) {
-    return this.storeBlogService.getPublicBySlug(storeId, slug);
+  getBySlug(@Param('storeId') storeId: string, @Param('slug') slug: string, @Query('locale') locale?: string) {
+    return this.storeBlogService.getPublicBySlug(storeId, slug, locale);
   }
 }

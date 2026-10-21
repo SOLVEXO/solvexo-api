@@ -1,4 +1,4 @@
-import { Controller, Get, Param, UseInterceptors } from '@nestjs/common';
+import { Controller, Get, Param, UseInterceptors, Query } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { PublicCache, PublicCacheInterceptor } from '../common/public-cache.interceptor';
 import { StorePagesService } from './store-pages.service';
@@ -28,7 +28,7 @@ export class PublicStorePagesController {
   @UseInterceptors(PublicCacheInterceptor)
   @PublicCache(15)
   @Get(':storeId/page/:slug')
-  getPage(@Param('storeId') storeId: string, @Param('slug') slug: string) {
-    return this.storePagesService.getPublicPage(storeId, slug);
+  getPage(@Param('storeId') storeId: string, @Param('slug') slug: string, @Query('locale') locale?: string) {
+    return this.storePagesService.getPublicPage(storeId, slug, locale);
   }
 }

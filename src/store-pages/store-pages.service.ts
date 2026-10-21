@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { translatedHandleClause } from '../common/translated-handle.util';
 import { Types } from 'mongoose';
 import { DatabaseService } from '../database/databaseservice';
 import { verifyStoreOwnershipStrict } from '../common/store-ownership.util';
@@ -13,6 +14,8 @@ import { CreatePageDto } from './dto/create-page.dto';
 import { UpdatePageDto } from './dto/update-page.dto';
 import { UpdateSectionsDto } from './dto/update-sections.dto';
 import { assertThemeSupportsSections, filterSectionsToTheme } from '../common/store-content/theme-section-capabilities';
+import { STORE_PAGE_POLICY_TYPES, type StorePagePolicyType } from './schemas/store-page.schema';
+import { policyTemplate } from './policy-templates.util';
 
 const MAX_SECTIONS_PER_PAGE = 40;
 // Custom pages are served at the bare `/:slug/:pageSlug` (no `/pages/`
@@ -24,7 +27,7 @@ const MAX_SECTIONS_PER_PAGE = 40;
 // (`/category/:slugOrId`) and collection-detail (`/collections/:slugOrId`)
 // storefront routes (Store Builder plan, Phase 11) for the same reason.
 // 'search' reserved for the navbar search box's results route.
-const RESERVED_CUSTOM_PAGE_SLUGS = ['home', 'blog', 'category', 'collections', 'product', 'search', 'cart', 'checkout', 'login', 'register', 'verify-otp', 'forgot-password', 'new-password', 'account', 'wishlist', 'loyalty', 'messages', 'notifications', 'returns', 'gift-cards', 'subscriptions', 'blogs', 'store-credit', 'orders', 'order-status', 'addresses', 'reviews', 'faqs', 'en', 'ur', 'ar', 'fa', 'he', 'fr', 'de', 'es', 'hi'];
+const RESERVED_CUSTOM_PAGE_SLUGS = ['home', 'blog', 'category', 'collections', 'product', 'search', 'cart', 'checkout', 'login', 'register', 'verify-otp', 'forgot-password', 'new-password', 'account', 'wishlist', 'loyalty', 'messages', 'notifications', 'returns', 'gift-cards', 'subscriptions', 'blogs', 'store-credit', 'orders', 'order-status', 'addresses', 'reviews', 'en', 'ur', 'ar', 'fa', 'he', 'fr', 'de', 'es', 'hi'];
 
 export function validateSections(sections: { type: SectionType; settings: Record<string, any>; blocks: { type: string; settings: Record<string, any> }[] }[]) {
   if (sections.length > MAX_SECTIONS_PER_PAGE) {
@@ -229,6 +232,48 @@ export class StorePagesService {
       status: 'draft',
     });
     return { success: true, message: 'Page created', data: page };
+  }
+
+  /**
+   * Settings → Policies: one click makes the store's Privacy / Terms / Refund / Shipping page from a ready-made text,
+   * published (the footer's "Policy links" switch shows it, no per-page footer flag needed). An existing page for that policy is returned untouched (never overwritten);
+   * the seller then edits the text like any other page.
+   */
+  async createPolicyFromTemplate(storeId: string, sellerId: string, policyType: string) {
+    await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
+    if (!(STORE_PAGE_POLICY_TYPES as readonly string[]).includes(policyType)) {
+      throw new BadRequestException('Unknown policy type');
+    }
+    const type = policyType as StorePagePolicyType;
+    const existing = await this.storePageModel.findOne({ storeId, policyType: type, isDelete: false });
+    if (existing) return { success: true, message: 'This policy already exists', created: false, data: existing };
+
+    const store: any = await this.storeModel.findOne({ _id: storeId }).select('name contactEmail').lean();
+    const tpl = policyTemplate(type, { storeName: store?.name ?? '', contactEmail: store?.contactEmail ?? null });
+
+    let slug = tpl.slug;
+    for (let n = 2; RESERVED_CUSTOM_PAGE_SLUGS.includes(slug) || await this.storePageModel.findOne({ storeId, slug, isDelete: false }); n++) {
+      slug = `${tpl.slug}-${n}`;
+    }
+
+    const created: any = await this.createPage(storeId, sellerId, { title: tpl.title, slug });
+    const pageId = String(created.data._id);
+    try {
+      await this.updateSections(storeId, sellerId, pageId, {
+        sections: [{
+          type: 'rich_text' as SectionType,
+          settings: { heading: tpl.title, alignment: 'left' },
+          blocks: tpl.blocks.map(b => ({ type: b.type, settings: b.type === 'heading' ? { text: b.text, level: 'h2' } : { text: b.text } })),
+        }],
+      } as any);
+      await this.publish(storeId, sellerId, pageId);
+      const updated = await this.updatePage(storeId, sellerId, pageId, { policyType: type } as any);
+      return { success: true, message: `${tpl.title} created`, created: true, data: updated.data };
+    } catch (err) {
+      // Never leave a half-made page behind: the next click would then create "…-2".
+      await this.storePageModel.updateOne({ _id: pageId, storeId }, { $set: { isDelete: true } }).catch(() => {});
+      throw err;
+    }
   }
 
   /** A copy of a custom page: same layout (every theme's), content and SEO, saved as a draft with a fresh link,
@@ -577,9 +622,10 @@ export class StorePagesService {
     throw new NotFoundException('This store has no home page yet');
   }
 
-  async getPublicPage(storeId: string, slug: string) {
+  async getPublicPage(storeId: string, slug: string, locale?: string) {
+    const translated = translatedHandleClause(locale, slug);
     const [page, installedThemeId] = await Promise.all([
-      this.storePageModel.findOne({ storeId, slug, type: 'custom', status: 'published', isDelete: false }),
+      this.storePageModel.findOne({ storeId, type: 'custom', status: 'published', isDelete: false, ...(translated ? { $or: [{ slug }, translated] } : { slug }) }),
       this.resolveInstalledThemeId(storeId),
     ]);
     if (!page) throw new NotFoundException('Page not found');

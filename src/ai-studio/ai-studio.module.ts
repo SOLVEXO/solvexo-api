@@ -46,5 +46,6 @@ import { ImageEnhanceService } from './providers/image-enhance.service';
     PricingDataService,
     ImageEnhanceService,
   ],
+  exports: [TextGenerationService],
 })
 export class AiStudioModule {}
