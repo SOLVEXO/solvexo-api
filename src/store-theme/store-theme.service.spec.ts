@@ -16,6 +16,7 @@ describe('StoreThemeService', () => {
   let service: StoreThemeService;
   let storeThemeModel: any;
   let storeModel: any;
+  let brandKit: any;
   let storePageModel: any;
   let db: DatabaseService;
   let themeCatalogService: ThemeCatalogService;
@@ -68,12 +69,19 @@ describe('StoreThemeService', () => {
       ),
       db: { transaction: jest.fn((callback: (session: any) => Promise<any>) => callback(transactionSession)) },
     };
+    brandKit = null;
     storeModel = {
       // `verifyStoreOwnershipStrict` (real implementation, not mocked) reads
       // `store.isDelete`/`store.sellerId.toString()` off whatever this resolves to.
-      findById: jest.fn().mockImplementation((id: string) =>
-        Promise.resolve(id === STORE_ID ? { _id: STORE_ID, isDelete: false, sellerId: SELLER_ID } : null),
-      ),
+      // Like a real Mongoose Query it is both awaitable AND chainable
+      // (`.select().lean()` — used to read `brandKit`).
+      findById: jest.fn().mockImplementation((id: string) => {
+        const doc = id === STORE_ID ? { _id: STORE_ID, isDelete: false, sellerId: SELLER_ID, brandKit } : null;
+        const query: any = Promise.resolve(doc);
+        query.select = () => ({ lean: () => Promise.resolve(doc) });
+        return query;
+      }),
+      updateOne: jest.fn().mockResolvedValue({ matchedCount: 1 }),
     };
     storePageModel = {
       findOne: jest.fn().mockResolvedValue({ _id: 'home-1', themeTemplates: [{ installedThemeId: `instance-${STORE_ID}`, sections: [], draftSections: [] }] }),
@@ -176,6 +184,106 @@ describe('StoreThemeService', () => {
       // only ever read from — nothing in applyThemeDefinition calls a
       // mutating method on themeCatalogService other than the counter.
       expect((themeCatalogService as any).update).toBeUndefined();
+    });
+  });
+
+  describe('Brand Kit (store-level colours that survive a theme change)', () => {
+    const KIT = { primaryColor: '#e20303', accentColor: '#112233', bgColor: null, textColor: null, saleColor: null, locked: true };
+    const updateCall = (predicate: (set: any) => boolean) =>
+      storeThemeModel.findOneAndUpdate.mock.calls.find(([, update]: any[]) => update?.$set && predicate(update.$set));
+
+    it('applyThemeDefinition overlays a LOCKED kit onto the new theme\'s colours (kit wins, theme keeps the rest)', async () => {
+      brandKit = KIT;
+      themeCatalogService.getPublishedForApply = jest.fn().mockResolvedValue(themeDefinition({ theme: { primaryColor: '#1F1B2E', bgColor: '#fafafa' } }));
+      await service.applyThemeDefinition(STORE_ID, SELLER_ID, THEME_DEF_ID);
+      const call = updateCall(set => set['draft.theme'] !== undefined);
+      expect(call[1].$set['draft.theme']).toEqual({ primaryColor: '#e20303', accentColor: '#112233', bgColor: '#fafafa' });
+    });
+
+    it('applyThemeDefinition leaves the theme\'s own colours alone when the kit is NOT locked', async () => {
+      brandKit = { ...KIT, locked: false };
+      await service.applyThemeDefinition(STORE_ID, SELLER_ID, THEME_DEF_ID);
+      expect(updateCall(set => set['draft.theme'] !== undefined)[1].$set['draft.theme']).toEqual({ primaryColor: '#1F1B2E' });
+    });
+
+    it('applyThemeDefinition leaves the theme\'s own colours alone when the store has never saved a kit', async () => {
+      brandKit = null;
+      await service.applyThemeDefinition(STORE_ID, SELLER_ID, THEME_DEF_ID);
+      expect(updateCall(set => set['draft.theme'] !== undefined)[1].$set['draft.theme']).toEqual({ primaryColor: '#1F1B2E' });
+    });
+
+    it('only overlays optional roles (bg/text/sale) the seller actually set', async () => {
+      brandKit = { ...KIT, bgColor: '#ffffff', saleColor: '#cc0000' };
+      themeCatalogService.getPublishedForApply = jest.fn().mockResolvedValue(themeDefinition({ theme: { primaryColor: '#1F1B2E', textColor: '#222222' } }));
+      await service.applyThemeDefinition(STORE_ID, SELLER_ID, THEME_DEF_ID);
+      expect(updateCall(set => set['draft.theme'] !== undefined)[1].$set['draft.theme']).toEqual({
+        primaryColor: '#e20303', accentColor: '#112233', bgColor: '#ffffff', saleColor: '#cc0000', textColor: '#222222',
+      });
+    });
+
+    it('saveBrandKit stores the kit on the Store and writes the colours into the ACTIVE theme\'s DRAFT only (never live)', async () => {
+      await service.saveBrandKit(STORE_ID, SELLER_ID, { primaryColor: '#e20303', accentColor: '#112233', bgColor: '#ffffff', locked: true } as any);
+      expect(storeModel.updateOne).toHaveBeenCalledWith({ _id: STORE_ID }, { $set: { brandKit: { primaryColor: '#e20303', accentColor: '#112233', bgColor: '#ffffff', textColor: null, saleColor: null, locked: true } } });
+      const call = updateCall(set => set['draft.theme.primaryColor'] !== undefined);
+      expect(call[0]).toEqual({ _id: `instance-${STORE_ID}` });
+      expect(call[1].$set).toEqual({ 'draft.theme.primaryColor': '#e20303', 'draft.theme.accentColor': '#112233', 'draft.theme.bgColor': '#ffffff' });
+      expect(Object.keys(call[1].$set).every(k => k.startsWith('draft.'))).toBe(true);
+    });
+
+    it('saveBrandKit rejects a caller who does not own the store, and writes nothing', async () => {
+      await expect(service.saveBrandKit(STORE_ID, OTHER_SELLER_ID, { primaryColor: '#e20303', accentColor: '#112233', locked: true } as any)).rejects.toThrow(ForbiddenException);
+      expect(storeModel.updateOne).not.toHaveBeenCalled();
+      expect(storeThemeModel.findOneAndUpdate).not.toHaveBeenCalled();
+    });
+
+    it('getBrandKit returns the saved kit, or null when none exists', async () => {
+      brandKit = KIT;
+      expect((await service.getBrandKit(STORE_ID, SELLER_ID)).data).toEqual(KIT);
+      brandKit = null;
+      expect((await service.getBrandKit(STORE_ID, SELLER_ID)).data).toBeNull();
+    });
+
+    it('setBrandKitLocked flips only the lock flag and never touches any theme colours', async () => {
+      await service.setBrandKitLocked(STORE_ID, SELLER_ID, false);
+      expect(storeModel.updateOne).toHaveBeenCalledWith({ _id: STORE_ID, brandKit: { $ne: null } }, { $set: { 'brandKit.locked': false } });
+      expect(storeThemeModel.findOneAndUpdate).not.toHaveBeenCalled();
+    });
+
+    it('setBrandKitLocked refuses when no kit has been saved yet', async () => {
+      storeModel.updateOne.mockResolvedValueOnce({ matchedCount: 0 });
+      await expect(service.setBrandKitLocked(STORE_ID, SELLER_ID, true)).rejects.toThrow('Apply your brand colours first');
+    });
+
+    it('activateTheme re-applies a LOCKED kit to both the live and draft colours of the newly active theme', async () => {
+      brandKit = KIT;
+      const save = jest.fn().mockResolvedValue(undefined);
+      storeThemeModel.findOne = jest.fn().mockResolvedValue({ _id: 'inst-2', storeId: STORE_ID, status: 'installed', save });
+      await service.activateTheme(STORE_ID, SELLER_ID, 'inst-2');
+      const call = updateCall(set => set['theme.primaryColor'] !== undefined);
+      expect(call[0]).toEqual({ _id: 'inst-2' });
+      expect(call[1].$set).toEqual({
+        'theme.primaryColor': '#e20303', 'draft.theme.primaryColor': '#e20303',
+        'theme.accentColor': '#112233', 'draft.theme.accentColor': '#112233',
+      });
+    });
+
+    it('activateTheme leaves colours untouched when the kit is not locked', async () => {
+      brandKit = { ...KIT, locked: false };
+      storeThemeModel.findOne = jest.fn().mockResolvedValue({ _id: 'inst-2', storeId: STORE_ID, status: 'installed', save: jest.fn().mockResolvedValue(undefined) });
+      await service.activateTheme(STORE_ID, SELLER_ID, 'inst-2');
+      expect(updateCall(set => set['theme.primaryColor'] !== undefined)).toBeUndefined();
+    });
+
+    it('installTheme seeds a new theme with the locked kit\'s colours', async () => {
+      brandKit = KIT;
+      storeThemeModel.create = jest.fn().mockImplementation(async (doc: any) => doc);
+      // first findOne = "already installed?" → none; later calls (ensureDefaultTheme) use the default mock
+      const defaultFindOne = storeThemeModel.findOne;
+      storeThemeModel.findOne = jest.fn().mockImplementation((query: any) =>
+        query.themeDefinitionId === 'theme-new' ? Promise.resolve(null) : defaultFindOne(query));
+      const res = await service.installTheme(STORE_ID, SELLER_ID, { themeDefinitionId: 'theme-new', theme: { primaryColor: '#1F1B2E', bgColor: '#fafafa' } } as any);
+      expect((res.data as any).theme).toEqual({ primaryColor: '#e20303', accentColor: '#112233', bgColor: '#fafafa' });
+      expect((res.data as any).draft.theme).toEqual({ primaryColor: '#e20303', accentColor: '#112233', bgColor: '#fafafa' });
     });
   });
 
@@ -300,12 +408,7 @@ describe('StoreThemeService', () => {
 
   describe('cross-seller isolation', () => {
     it('applying the same theme to two different stores never lets one leak into the other\'s update call', async () => {
-      storeModel.findById = jest.fn().mockImplementation((id: string) =>
-        Promise.resolve(
-          id === STORE_ID ? { _id: STORE_ID, isDelete: false, sellerId: SELLER_ID } :
-          id === OTHER_STORE_ID ? { _id: OTHER_STORE_ID, isDelete: false, sellerId: OTHER_SELLER_ID } : null,
-        ),
-      );
+      mockTwoStores({});
 
       await service.applyThemeDefinition(STORE_ID, SELLER_ID, THEME_DEF_ID);
       await service.applyThemeDefinition(OTHER_STORE_ID, OTHER_SELLER_ID, THEME_DEF_ID);
@@ -317,6 +420,31 @@ describe('StoreThemeService', () => {
       expect(applyCalls[0][0]).toEqual({ _id: `instance-${STORE_ID}` });
       expect(applyCalls[1][0]).toEqual({ _id: `instance-${OTHER_STORE_ID}` });
     });
+
+    it('one store\'s locked Brand Kit never colours a different store\'s theme', async () => {
+      mockTwoStores({ [STORE_ID]: { primaryColor: '#e20303', accentColor: '#e20303', bgColor: null, textColor: null, saleColor: null, locked: true } });
+
+      await service.applyThemeDefinition(STORE_ID, SELLER_ID, THEME_DEF_ID);
+      await service.applyThemeDefinition(OTHER_STORE_ID, OTHER_SELLER_ID, THEME_DEF_ID);
+
+      const applyCalls = storeThemeModel.findOneAndUpdate.mock.calls.filter(
+        ([, update]: any[]) => update?.$set?.['draft.theme'] !== undefined,
+      );
+      expect(applyCalls[0][1].$set['draft.theme'].primaryColor).toBe('#e20303');
+      expect(applyCalls[1][1].$set['draft.theme']).toEqual({ primaryColor: '#1F1B2E' }); // the other store keeps the theme's own colours
+    });
+
+    /** Two stores with different owners; `kits` maps storeId → that store's saved Brand Kit. */
+    function mockTwoStores(kits: Record<string, any>) {
+      storeModel.findById = jest.fn().mockImplementation((id: string) => {
+        const doc =
+          id === STORE_ID ? { _id: STORE_ID, isDelete: false, sellerId: SELLER_ID, brandKit: kits[STORE_ID] ?? null } :
+          id === OTHER_STORE_ID ? { _id: OTHER_STORE_ID, isDelete: false, sellerId: OTHER_SELLER_ID, brandKit: kits[OTHER_STORE_ID] ?? null } : null;
+        const query: any = Promise.resolve(doc);
+        query.select = () => ({ lean: () => Promise.resolve(doc) });
+        return query;
+      });
+    }
   });
 
   describe('updateFooter', () => {

@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UseGuards, UseInterceptors, UsePipes, ValidationPipe } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Put, Query, Req, UseGuards, UseInterceptors, UsePipes, ValidationPipe } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -15,6 +15,7 @@ import { UpdateFooterDto } from './dto/update-footer.dto';
 import { UpdateIdentityBannerDto } from './dto/update-identity-banner.dto';
 import { InstallThemeDto } from './dto/install-theme.dto';
 import { CreateColorSchemeDto } from './dto/color-scheme.dto';
+import { SetBrandKitLockDto, UpdateBrandKitDto } from './dto/brand-kit.dto';
 
 // Native (section/block) theme editor — draft/publish/versions/color schemes/header/footer. The imported-Liquid-theme
 // ZIP lifecycle (upload/preview/publish/rollback of `.../package*`) is its own controller on the same prefix:
@@ -177,5 +178,21 @@ export class StoreThemeController {
   @Post(':storeId/color-schemes/:schemeId/apply')
   applyColorScheme(@Req() req: any, @Param('storeId') storeId: string, @Param('schemeId') schemeId: string, @Query('instance') instance?: string) {
     return this.storeThemeService.applyColorScheme(storeId, actingSellerId(req.user), schemeId, instance);
+  }
+
+  // Store-level Brand Kit — outlives any one installed theme (see Store.brandKit).
+  @Get(':storeId/brand-kit')
+  getBrandKit(@Req() req: any, @Param('storeId') storeId: string) {
+    return this.storeThemeService.getBrandKit(storeId, actingSellerId(req.user));
+  }
+
+  @Patch(':storeId/brand-kit/lock')
+  setBrandKitLocked(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: SetBrandKitLockDto) {
+    return this.storeThemeService.setBrandKitLocked(storeId, actingSellerId(req.user), dto.locked);
+  }
+
+  @Put(':storeId/brand-kit')
+  saveBrandKit(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: UpdateBrandKitDto, @Query('instance') instance?: string) {
+    return this.storeThemeService.saveBrandKit(storeId, actingSellerId(req.user), dto, instance);
   }
 }

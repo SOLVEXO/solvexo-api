@@ -180,6 +180,14 @@ export interface CollectionListSectionSettings extends BaseSectionSettings {
 }
 export interface StoreLocationsSectionSettings extends BaseSectionSettings {}
 export interface RelatedProductsSectionSettings extends BaseSectionSettings {
+  /** Where the products come from. Omitted = 'related' (older sections keep working unchanged).
+   *  related = same category as the viewed product · complementary = picked on each product's own page ·
+   *  category / collection / manual = the same fixed list on every product page. */
+  source?: 'related' | 'complementary' | 'category' | 'collection' | 'manual';
+  categoryId?: string;
+  collectionId?: string;
+  /** 1-24, only when `source === 'manual'`. */
+  productIds?: string[];
   columns?: 2 | 3 | 4;
   /** How many related products (2-12). */
   limit?: number;

@@ -379,6 +379,14 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
       break;
     }
     case 'related_products': {
+      oneOf(settings.source, ['related', 'complementary', 'category', 'collection', 'manual'] as const, 'settings.source');
+      if (settings.productIds !== undefined) {
+        if (!Array.isArray(settings.productIds) || settings.productIds.length > 24 || settings.productIds.some((x: unknown) => typeof x !== 'string')) {
+          throw new BadRequestException('settings.productIds must be a list of up to 24 product ids');
+        }
+      }
+      if (settings.source === 'category') required(settings.categoryId, 'settings.categoryId');
+      if (settings.source === 'collection') required(settings.collectionId, 'settings.collectionId');
       if (settings.columns !== undefined && ![2, 3, 4].includes(settings.columns)) {
         throw new BadRequestException('settings.columns must be 2, 3 or 4');
       }

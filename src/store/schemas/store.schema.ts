@@ -531,6 +531,21 @@ export class Store {
   @Prop({ type: String, default: null })
   faviconUrl: string | null;
 
+  // Store-level Brand Kit — the seller's own brand colors, deliberately NOT
+  // inside any one `StoreTheme` instance so they survive installing /
+  // activating / applying a different theme. When `locked`, every theme
+  // install/activate/apply overlays these onto the new theme's colors (see
+  // `StoreThemeService.overlayBrandKit`). null = the seller never set one.
+  @Prop({ type: Object, default: null })
+  brandKit: {
+    primaryColor: string;
+    accentColor: string;
+    bgColor: string | null;
+    textColor: string | null;
+    saleColor: string | null;
+    locked: boolean;
+  } | null;
+
   // Platform-plan-gated features (see EntitlementsService) — dedicated fields
   // rather than buried inside the opaque `builderConfig` blob, so backend
   // enforcement doesn't depend on parsing arbitrary frontend-owned JSON.

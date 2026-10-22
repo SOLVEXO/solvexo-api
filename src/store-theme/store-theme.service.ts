@@ -13,6 +13,7 @@ import { UpdateFooterDto } from './dto/update-footer.dto';
 import { UpdateIdentityBannerDto } from './dto/update-identity-banner.dto';
 import { InstallThemeDto } from './dto/install-theme.dto';
 import { CreateColorSchemeDto } from './dto/color-scheme.dto';
+import { UpdateBrandKitDto } from './dto/brand-kit.dto';
 import { validateSections } from '../store-pages/store-pages.service';
 import { MenusService } from '../menus/menus.service';
 import { ThemeCatalogService } from '../theme-catalog/theme-catalog.service';
@@ -106,6 +107,63 @@ export class StoreThemeService {
   private get storeModel() {
     return this.databaseService.repositories.storeModel;
   }
+
+  // ── Brand Kit — store-level brand colors that outlive any one theme ─────
+
+  /** The theme color fields a Brand Kit controls. Optional roles (bg/text/sale) are only included when the seller set them; otherwise the theme keeps its own. */
+  private brandKitPatch(kit: { primaryColor: string; accentColor: string; bgColor?: string | null; textColor?: string | null; saleColor?: string | null }) {
+    const patch: Record<string, string> = { primaryColor: kit.primaryColor, accentColor: kit.accentColor };
+    if (kit.bgColor) patch.bgColor = kit.bgColor;
+    if (kit.textColor) patch.textColor = kit.textColor;
+    if (kit.saleColor) patch.saleColor = kit.saleColor;
+    return patch;
+  }
+
+  /** Returns the store's LOCKED brand kit patch, or null when there is none / it is unlocked. */
+  private async lockedBrandPatch(storeId: string) {
+    const store = await this.storeModel.findById(storeId).select('brandKit').lean();
+    const kit = (store as any)?.brandKit;
+    return kit?.locked ? this.brandKitPatch(kit) : null;
+  }
+
+  /** Overlays a locked Brand Kit onto a theme's color object (used when a theme is installed or applied). */
+  private async overlayBrandKit<T extends Record<string, any>>(storeId: string, theme: T): Promise<T> {
+    const patch = await this.lockedBrandPatch(storeId);
+    return patch ? { ...theme, ...patch } : theme;
+  }
+
+  async getBrandKit(storeId: string, sellerId: string) {
+    await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
+    const store = await this.storeModel.findById(storeId).select('brandKit').lean();
+    return { success: true, data: (store as any)?.brandKit ?? null };
+  }
+
+  /** Flips only the lock flag of an already-saved kit — never touches any theme colours, so toggling "keep my colours" can't clobber the seller's draft. */
+  async setBrandKitLocked(storeId: string, sellerId: string, locked: boolean) {
+    await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
+    const res = await this.storeModel.updateOne({ _id: storeId, brandKit: { $ne: null } }, { $set: { 'brandKit.locked': locked } });
+    if (!res.matchedCount) throw new BadRequestException('Apply your brand colours first, then you can lock them.');
+    return { success: true, message: locked ? 'Brand colours will stay when you change theme.' : 'Brand colours will follow the theme.', data: { locked } };
+  }
+
+  /** Saves the kit on the Store and writes its colors into the ACTIVE theme's DRAFT, so the seller sees it in the preview and publishes it like any other edit — never straight to the live storefront. */
+  async saveBrandKit(storeId: string, sellerId: string, dto: UpdateBrandKitDto, installedThemeId?: string) {
+    await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
+    const kit = {
+      primaryColor: dto.primaryColor,
+      accentColor: dto.accentColor,
+      bgColor: dto.bgColor ?? null,
+      textColor: dto.textColor ?? null,
+      saleColor: dto.saleColor ?? null,
+      locked: dto.locked,
+    };
+    await this.storeModel.updateOne({ _id: storeId }, { $set: { brandKit: kit } });
+    const instance = await this.resolveInstance(storeId, installedThemeId);
+    const set: Record<string, string> = {};
+    for (const [k, v] of Object.entries(this.brandKitPatch(kit))) set[`draft.theme.${k}`] = v;
+    const updated = await this.storeThemeModel.findOneAndUpdate({ _id: instance._id }, { $set: set }, { new: true });
+    return { success: true, message: 'Brand colors saved to your draft — publish to make them live.', data: { brandKit: kit, theme: updated } };
+  }
   private get storePageModel() {
     return this.databaseService.repositories.storePageModel;
   }
@@ -196,7 +254,7 @@ export class StoreThemeService {
     if (existing) return { success: true, message: 'Theme already installed', data: existing };
 
     const seed = {
-      theme: dto.theme ?? {},
+      theme: await this.overlayBrandKit(storeId, (dto.theme ?? {}) as Record<string, any>),
       header: dto.header ?? {},
       footer: dto.footer ?? {},
       identityBanner: dto.identityBanner ?? {},
@@ -330,6 +388,14 @@ export class StoreThemeService {
     await this.storeThemeModel.updateMany({ storeId, _id: { $ne: installedThemeId } }, { $set: { status: 'installed' } });
     target.status = 'active';
     await target.save();
+    // A locked Brand Kit follows the seller to the newly active theme (live + draft).
+    const brand = await this.lockedBrandPatch(storeId);
+    if (brand) {
+      const set: Record<string, string> = {};
+      for (const [k, v] of Object.entries(brand)) { set[`theme.${k}`] = v; set[`draft.theme.${k}`] = v; }
+      const refreshed = await this.storeThemeModel.findOneAndUpdate({ _id: target._id }, { $set: set }, { new: true });
+      if (refreshed) return { success: true, message: 'Theme activated', data: refreshed };
+    }
     return { success: true, message: 'Theme activated', data: target };
   }
 
@@ -369,7 +435,7 @@ export class StoreThemeService {
     const updated = await this.storeThemeModel.findOneAndUpdate(
       { _id: instance._id },
       { $set: {
-        'draft.theme': themeDef.theme,
+        'draft.theme': await this.overlayBrandKit(storeId, ((themeDef.theme as any)?.toObject?.() ?? themeDef.theme ?? {}) as Record<string, any>),
         'draft.header': header,
         'draft.footer': footer,
         'draft.identityBanner': themeDef.identityBanner,

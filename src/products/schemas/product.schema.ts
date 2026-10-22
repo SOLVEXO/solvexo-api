@@ -231,6 +231,13 @@ export class Product {
   @Prop({ type: String, default: 'default' })
   templateKey: string;
 
+  // Shopify's "Complementary products": products the seller hand-picks to go
+  // WITH this one (e.g. a belt for trousers). Rendered by a Related Products
+  // section whose source is "complementary". Same store only, max 10, never
+  // itself — validated in `editProduct`.
+  @Prop({ type: [String], default: [] })
+  complementaryProductIds: string[];
+
   @Prop({ type: Date, default: null })
   scheduledAt: Date | null;
 

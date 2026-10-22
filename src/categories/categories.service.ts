@@ -368,12 +368,36 @@ export class CategoriesService {
     }
     return total;
   }
-  private async getChildrenRecursive(parentId: string): Promise<any[]> {
+  /** The seller's OWN view of their store's category tree — unlike the public
+   *  `getCategoryTreeNested`, this also returns hidden (`inactive`) categories
+   *  so the Categories page can still show them and let the seller un-hide. */
+  async getStoreCategoryTreeForSeller(userId: string, storeId: string) {
+    await verifyStoreOwnershipStrict(this.databaseService.repositories.storeModel, storeId, userId);
+    const categoryModel = this.databaseService.repositories.categoryModel;
+    const countMap = await this.getActiveProductCountsByCategory();
+
+    const roots = await categoryModel
+      .find({ parentId: null, storeId, status: { $in: ['active', 'inactive'] }, isDelete: false })
+      .sort({ sortOrder: 1 })
+      .lean();
+
+    const result: any[] = [];
+    for (const cat of roots) {
+      await this.ensureSlug(cat);
+      const children = await this.getChildrenRecursive(cat._id.toString(), true);
+      result.push({ ...cat, children });
+    }
+    this.attachProductCounts(result, countMap);
+
+    return { success: true, message: 'Store category tree fetched successfully', data: result };
+  }
+
+  private async getChildrenRecursive(parentId: string, includeInactive = false): Promise<any[]> {
     const categoryModel = this.databaseService.repositories.categoryModel;
 
     const children = await categoryModel.find({
       parentId,
-      status: 'active',
+      status: includeInactive ? { $in: ['active', 'inactive'] } : 'active',
       isDelete: false,
     }).sort({ sortOrder: 1 });
 
@@ -382,7 +406,7 @@ export class CategoriesService {
     for (const child of children) {
       const childObj = child.toObject();
       await this.ensureSlug(childObj);
-      const subChildren = await this.getChildrenRecursive(childObj._id.toString());
+      const subChildren = await this.getChildrenRecursive(childObj._id.toString(), includeInactive);
 
       result.push({
         ...childObj,

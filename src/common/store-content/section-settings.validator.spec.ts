@@ -53,6 +53,25 @@ describe('section-settings.validator', () => {
     });
   });
 
+  it('related_products (Product Recommendations): every source validates, older sections without one still pass', () => {
+    // Sections saved before `source` existed must keep saving.
+    expect(() => validateSectionSettings('related_products', { heading: 'You may also like', columns: 4, limit: 4 })).not.toThrow();
+    expect(() => validateSectionSettings('related_products', { source: 'related' })).not.toThrow();
+    expect(() => validateSectionSettings('related_products', { source: 'complementary', limit: 3, columns: 3 })).not.toThrow();
+    expect(() => validateSectionSettings('related_products', { source: 'category', categoryId: 'cat1' })).not.toThrow();
+    expect(() => validateSectionSettings('related_products', { source: 'collection', collectionId: 'col1' })).not.toThrow();
+    expect(() => validateSectionSettings('related_products', { source: 'manual', productIds: ['p1', 'p2'] })).not.toThrow();
+    // Rejected
+    expect(() => validateSectionSettings('related_products', { source: 'random' })).toThrow(BadRequestException);
+    expect(() => validateSectionSettings('related_products', { source: 'category' })).toThrow(BadRequestException);
+    expect(() => validateSectionSettings('related_products', { source: 'collection' })).toThrow(BadRequestException);
+    expect(() => validateSectionSettings('related_products', { source: 'manual', productIds: 'p1' })).toThrow(BadRequestException);
+    expect(() => validateSectionSettings('related_products', { source: 'manual', productIds: Array.from({ length: 25 }, (_, i) => `p${i}`) })).toThrow(BadRequestException);
+    expect(() => validateSectionSettings('related_products', { source: 'manual', productIds: [1, 2] })).toThrow(BadRequestException);
+    expect(() => validateSectionSettings('related_products', { limit: 1 })).toThrow(BadRequestException);
+    expect(() => validateSectionSettings('related_products', { columns: 5 })).toThrow(BadRequestException);
+  });
+
   it('validates configurable grid columns and filter visibility', () => {
     expect(() => validateSectionSettings('featured_products', { source: 'bestsellers', columns: 4 })).not.toThrow();
     expect(() => validateSectionSettings('featured_category_grid', { categoryIds: ['c1'], columns: 2 })).not.toThrow();
@@ -86,6 +105,8 @@ describe('section-settings.validator', () => {
         team_grid: {},
         stats_counter: {},
         gallery_grid: {},
+        // A theme-owned section must name which of the theme's own sections it is.
+        theme_section: { sectionKey: 'hero' },
       };
       for (const type of SECTION_TYPES) {
         // `?? {}` — a section type not yet listed above (this map has

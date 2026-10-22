@@ -16,6 +16,7 @@ import {
   normalizeImages, normalizeName, normalizeSku, normalizeStatus, normalizeTags, resolveScheduledAt,
 } from './product-input.util';
 import { softDeleteProducts } from './product-cascade.util';
+import { normalizeComplementaryIds } from './complementary-products.util';
 import { buildStoreProductFilter, productSort } from './product-list-filter.util';
 
 import { DatabaseService } from '@/database/databaseservice';
@@ -1514,6 +1515,7 @@ export class ProductsService {
       price,
       compareAtPrice,
       templateKey,
+      complementaryProductIds,
       shippingProfileId: requestedShippingProfileId,
     } = body ?? {};
 
@@ -1548,6 +1550,15 @@ export class ProductsService {
     if (tags !== undefined) productUpdate.tags = normalizeTags(tags);
     if (isListedOnSolvexo !== undefined) productUpdate.isListedOnSolvexo = !!isListedOnSolvexo;
     if (templateKey !== undefined) productUpdate.templateKey = templateKey;
+    if (complementaryProductIds !== undefined) {
+      const wanted = normalizeComplementaryIds(complementaryProductIds, String(productId));
+      // Only this store's own, live products — never another seller's.
+      const owned = wanted.length
+        ? await productModel.find({ _id: { $in: wanted }, storeId: product.storeId, isDelete: false }).select('_id').lean()
+        : [];
+      const ownedIds = new Set(owned.map((p: any) => String(p._id)));
+      productUpdate.complementaryProductIds = wanted.filter(id => ownedIds.has(id));
+    }
     if (requestedShippingProfileId !== undefined && product.type === 'physical') {
       productUpdate.shippingProfileId = await this.resolveShippingProfileId(String(product.storeId), requestedShippingProfileId);
     }

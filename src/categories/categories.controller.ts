@@ -62,6 +62,16 @@ export class CategoriesController {
     return this.categoriesService.importCsv(actingSellerId(req.user), storeId, readUploadedCsv(file));
   }
 
+  // Seller's own view — includes hidden categories (the public `category-tree`
+  // below never does). Declared before any `:param` GET routes.
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('categories.manage')
+  @Get('store/:storeId/category-tree')
+  async getStoreCategoryTreeForSeller(@Req() req: any, @Param('storeId') storeId: string) {
+    return this.categoriesService.getStoreCategoryTreeForSeller(actingSellerId(req.user), storeId);
+  }
+
   @Get('category-tree')
   async getCategoryTree(@Query('id') id?: string, @Query('storeId') storeId?: string) {
     return this.categoriesService.getCategoryTreeNested(id, storeId);
