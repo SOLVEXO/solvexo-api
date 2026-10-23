@@ -4,7 +4,7 @@ import { translatedHandleClause } from '../common/translated-handle.util';
 import { Types } from 'mongoose';
 import { DatabaseService } from '../database/databaseservice';
 import { verifyStoreOwnershipStrict } from '../common/store-ownership.util';
-import { validateSectionSettings, validateBlocksOfType, SECTION_ALLOWED_BLOCK_TYPES } from '../common/store-content/section-settings.validator';
+import { validateSectionSettings, validateBlocksOfType, assertSectionCount, SECTION_ALLOWED_BLOCK_TYPES } from '../common/store-content/section-settings.validator';
 import { sectionAcceptsAppBlocks } from '../common/store-content/app-block.util';
 import { SectionType } from '../common/schemas/section.schema';
 import { ContentVersioningService } from '../common/content-versioning/content-versioning.service';
@@ -17,7 +17,6 @@ import { assertThemeSupportsSections, filterSectionsToTheme } from '../common/st
 import { STORE_PAGE_POLICY_TYPES, type StorePagePolicyType } from './schemas/store-page.schema';
 import { policyTemplate } from './policy-templates.util';
 
-const MAX_SECTIONS_PER_PAGE = 40;
 // Custom pages are served at the bare `/:slug/:pageSlug` (no `/pages/`
 // prefix), so a page slug now shares its namespace directly with sibling
 // storefront routes — 'blog' must be reserved to avoid shadowing
@@ -29,10 +28,8 @@ const MAX_SECTIONS_PER_PAGE = 40;
 // 'search' reserved for the navbar search box's results route.
 const RESERVED_CUSTOM_PAGE_SLUGS = ['home', 'blog', 'category', 'collections', 'product', 'search', 'cart', 'checkout', 'login', 'register', 'verify-otp', 'forgot-password', 'new-password', 'account', 'wishlist', 'loyalty', 'messages', 'notifications', 'returns', 'gift-cards', 'subscriptions', 'blogs', 'store-credit', 'orders', 'order-status', 'addresses', 'reviews', 'en', 'ur', 'ar', 'fa', 'he', 'fr', 'de', 'es', 'hi'];
 
-export function validateSections(sections: { type: SectionType; settings: Record<string, any>; blocks: { type: string; settings: Record<string, any> }[] }[]) {
-  if (sections.length > MAX_SECTIONS_PER_PAGE) {
-    throw new BadRequestException(`A page cannot have more than ${MAX_SECTIONS_PER_PAGE} sections`);
-  }
+export function validateSections(sections: { type: SectionType; settings: Record<string, any>; blocks: { type: string; settings: Record<string, any> }[] }[], previousCount = 0) {
+  assertSectionCount(sections.length, previousCount);
   for (const section of sections) {
     validateSectionSettings(section.type, section.settings ?? {});
     validateBlocksOfType(section.blocks ?? [], SECTION_ALLOWED_BLOCK_TYPES[section.type], sectionAcceptsAppBlocks(section.type));
@@ -412,7 +409,7 @@ export class StorePagesService {
   async updateSections(storeId: string, sellerId: string, pageId: string, dto: UpdateSectionsDto, requestedThemeId?: string) {
     const page = await this.findOwnedPage(storeId, sellerId, pageId);
     this.contentVersioningService.assertDraftNotStale((page as any).updatedAt, dto.baseUpdatedAt);
-    validateSections(dto.sections);
+    validateSections(dto.sections, ((page as any).draft?.sections ?? (page as any).sections ?? []).length);
     const installedThemeId = await this.resolveInstalledThemeId(storeId, requestedThemeId);
     const templatePage = await this.ensurePageThemeTemplate(page, installedThemeId);
     if (installedThemeId) {

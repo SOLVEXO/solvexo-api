@@ -33,7 +33,17 @@ import type {
  * `data:`, etc.), not just a data-quality concern.
  */
 
-const MAX_BLOCKS_PER_SECTION = 20;
+/** Shopify limits. Keep in sync with solvexo-web `features/seller/store/Dashboard/OnlineStore/builder/editorLimits.ts`. */
+export const MAX_BLOCKS_PER_SECTION = 50;
+export const MAX_SECTIONS_PER_PAGE = 25;
+
+/** Throws a friendly error when a page / template holds more sections than allowed. A page that already had more (saved
+ *  under the old, higher limit) can still be saved as long as it does not grow, so existing stores are never locked out. */
+export function assertSectionCount(count: number, previousCount = 0) {
+  if (count > MAX_SECTIONS_PER_PAGE && count > previousCount) {
+    throw new BadRequestException(`A page can have up to ${MAX_SECTIONS_PER_PAGE} sections`);
+  }
+}
 
 /** Where the important part of an image sits — used as CSS `object-position` when the image has to be cropped. */
 export const FOCAL_POINTS = ['top left', 'top', 'top right', 'left', 'center', 'right', 'bottom left', 'bottom', 'bottom right'] as const;
@@ -989,7 +999,7 @@ export function validateBlocks(blocks: { type: string; settings: Record<string, 
  *  as before this feature existed. */
 export function validateBlocksOfType(blocks: { type: string; settings: Record<string, any> }[], allowedTypes: readonly string[], allowAppBlocks = false): void {
   if (blocks.length > MAX_BLOCKS_PER_SECTION) {
-    throw new BadRequestException(`A section cannot have more than ${MAX_BLOCKS_PER_SECTION} blocks`);
+    throw new BadRequestException(`A section can have up to ${MAX_BLOCKS_PER_SECTION} blocks`);
   }
   for (const block of blocks) {
     if (allowAppBlocks && isAppBlockType(block.type)) continue;

@@ -5,10 +5,29 @@ import {
   validateBlockSettings,
   validateBlocksOfType,
   SECTION_ALLOWED_BLOCK_TYPES,
+  MAX_BLOCKS_PER_SECTION,
+  assertSectionCount,
 } from './section-settings.validator';
 import { SECTION_TYPES } from '../schemas/section.schema';
 
 describe('section-settings.validator', () => {
+  describe('Shopify limits (25 sections / 50 blocks)', () => {
+    it('allows 25 sections and refuses 26 with a friendly message', () => {
+      expect(() => assertSectionCount(25)).not.toThrow();
+      expect(() => assertSectionCount(26)).toThrow('A page can have up to 25 sections');
+      // a page saved under the old higher limit may be saved again while it does not grow
+      expect(() => assertSectionCount(30, 30)).not.toThrow();
+      expect(() => assertSectionCount(28, 30)).not.toThrow();
+      expect(() => assertSectionCount(31, 30)).toThrow('A page can have up to 25 sections');
+    });
+
+    it('allows 50 blocks per section and refuses 51 with a friendly message', () => {
+      const blocks = (n: number) => Array.from({ length: n }, () => ({ type: 'text', settings: {} }));
+      expect(MAX_BLOCKS_PER_SECTION).toBe(50);
+      expect(() => validateBlocksOfType(blocks(51), ['text'] as any)).toThrow('A section can have up to 50 blocks');
+    });
+  });
+
   it('accepts optional section spacing within the supported range', () => {
     expect(() => validateSectionSettings('rich_text', { spacingTop: 0, spacingBottom: 160 })).not.toThrow();
   });

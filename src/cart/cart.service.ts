@@ -206,7 +206,7 @@ export class CartService {
       const products = productIds.length
         ? await this.databaseService.repositories.productModel
             .find({ _id: { $in: productIds } })
-            .select('images sellerId')
+            .select('images sellerId orderMinQuantity orderMaxQuantity orderQuantityStep')
             .lean()
         : [];
       const productById = new Map(
@@ -268,6 +268,10 @@ export class CartService {
           currency: item.currency ?? null,
           quantity: item.quantity, // quantity
           itemTotal: itemTotal, // quantity × price
+          // Seller-set order quantity rules, so the cart stepper can follow them.
+          orderMinQuantity: product?.orderMinQuantity ?? null,
+          orderMaxQuantity: product?.orderMaxQuantity ?? null,
+          orderQuantityStep: product?.orderQuantityStep ?? null,
         };
       });
 

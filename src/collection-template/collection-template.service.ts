@@ -2,7 +2,7 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { DatabaseService } from '../database/databaseservice';
 import { verifyStoreOwnershipStrict } from '../common/store-ownership.util';
-import { validateSectionSettings, validateBlocksOfType, SECTION_ALLOWED_BLOCK_TYPES } from '../common/store-content/section-settings.validator';
+import { validateSectionSettings, validateBlocksOfType, assertSectionCount, SECTION_ALLOWED_BLOCK_TYPES } from '../common/store-content/section-settings.validator';
 import { sectionAcceptsAppBlocks } from '../common/store-content/app-block.util';
 import { SectionType } from '../common/schemas/section.schema';
 import { ContentVersioningService } from '../common/content-versioning/content-versioning.service';
@@ -15,7 +15,6 @@ import { MetafieldsService } from '../metafields/metafields.service';
 import { assertThemeSupportsSections } from '../common/store-content/theme-section-capabilities';
 import type { MetafieldOwnerResource } from '../metafields/schemas/metafield-definition.schema';
 
-const MAX_SECTIONS_PER_TEMPLATE = 40;
 const DEFAULT_TEMPLATE_KEY = 'default';
 
 
@@ -60,10 +59,8 @@ export function resolveTemplateOwnerResource(resourceType: ResourceTemplateType,
   return null;
 }
 
-function validateSections(sections: { type: SectionType; settings: Record<string, any>; blocks: { type: string; settings: Record<string, any> }[] }[]) {
-  if (sections.length > MAX_SECTIONS_PER_TEMPLATE) {
-    throw new BadRequestException(`A template cannot have more than ${MAX_SECTIONS_PER_TEMPLATE} sections`);
-  }
+function validateSections(sections: { type: SectionType; settings: Record<string, any>; blocks: { type: string; settings: Record<string, any> }[] }[], previousCount = 0) {
+  assertSectionCount(sections.length, previousCount);
   for (const section of sections) {
     validateSectionSettings(section.type, section.settings ?? {});
     validateBlocksOfType(section.blocks ?? [], SECTION_ALLOWED_BLOCK_TYPES[section.type], sectionAcceptsAppBlocks(section.type));
@@ -310,7 +307,7 @@ export class CollectionTemplateService {
   async updateSections(storeId: string, sellerId: string, dto: UpdateSectionsDto, resourceType: ResourceTemplateType = 'collection', templateKey = DEFAULT_TEMPLATE_KEY, installedThemeId?: string) {
     const template = await this.findOwnedTemplate(storeId, sellerId, resourceType, templateKey, installedThemeId);
     this.contentVersioningService.assertDraftNotStale((template as any).updatedAt, dto.baseUpdatedAt);
-    validateSections(dto.sections);
+    validateSections(dto.sections, ((template as any).draft?.sections ?? (template as any).sections ?? []).length);
     // Defense in depth beyond the editor UI (which already hides the Remove
     // control for a core section/its required blocks) — a direct API call
     // can't silently delete required core content either.
