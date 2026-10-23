@@ -15,10 +15,10 @@ const photo = (id: string, text: { alt?: string; desc?: string; tags?: string[] 
 describe('AuthVisualService', () => {
   let svc: AuthVisualService;
   let s: any;
-  let redis: { get: jest.Mock; set: jest.Mock };
+  let redis: { get: jest.Mock; set: jest.Mock; del: jest.Mock };
 
   beforeEach(() => {
-    redis = { get: jest.fn(), set: jest.fn() };
+    redis = { get: jest.fn(), set: jest.fn(), del: jest.fn() };
     svc = new AuthVisualService(redis as any);
     s = svc as any;
     jest.spyOn(s.logger, 'warn').mockImplementation(() => undefined);
@@ -41,6 +41,9 @@ describe('AuthVisualService', () => {
       expect(s.isSuitable(photo('a', { desc: 'Fashion boutique' }), false)).toBe(false);
       expect(s.isSuitable(photo('a', { tags: ['portrait'] }), false)).toBe(false);
       expect(s.isSuitable(photo('a', { alt: 'lingerie display' }), true)).toBe(false);
+      expect(s.isSuitable(photo('a', { alt: 'businesswoman at a laptop' }), false)).toBe(false);
+      expect(s.isSuitable(photo('a', { tags: ['female'] }), false)).toBe(false);
+      expect(s.isSuitable(photo('a', { alt: 'man at a laptop in a shop' }), false)).toBe(true);
     });
 
     it('matches whole words only (no false positives on substrings)', () => {
@@ -78,16 +81,16 @@ describe('AuthVisualService', () => {
   describe('buildQueryLadder', () => {
     it('goes from specific to generic', () => {
       expect(s.buildQueryLadder('Pakistan', 'register')).toEqual([
-        'Pakistan shop storefront',
+        'Pakistan man laptop setting up online shop',
         'Pakistan market shop',
         'Pakistan street',
       ]);
     });
 
     it('uses the seller-topic hint only on onboarding_products', () => {
-      expect(s.buildQueryLadder('Pakistan', 'onboarding_products', 'creator')[0]).toBe('Pakistan designer desk laptop tablet');
-      expect(s.buildQueryLadder('Pakistan', 'onboarding_products')[0]).toBe('Pakistan packaged products');
-      expect(s.buildQueryLadder('Pakistan', 'login', 'creator')[0]).toBe('Pakistan market street shops');
+      expect(s.buildQueryLadder('Pakistan', 'onboarding_products', 'creator')[0]).toBe('Pakistan man designer desk laptop tablet');
+      expect(s.buildQueryLadder('Pakistan', 'onboarding_products')[0]).toBe('Pakistan man packing products boxes');
+      expect(s.buildQueryLadder('Pakistan', 'login', 'creator')[0]).toBe('Pakistan shopkeeper man at shop counter');
     });
   });
 
@@ -138,24 +141,70 @@ describe('AuthVisualService', () => {
       expect(fetchSpy).toHaveBeenCalledTimes(2);
     });
 
-    it('AI unavailable + non-modest country: accepts a single text-filtered photo', async () => {
-      jest.spyOn(s, 'fetchCandidates').mockResolvedValue(candidates(3));
-      jest.spyOn(s, 'vetPhoto').mockResolvedValue(null);
-      const pool = await s.buildPool('France', 'register', undefined, false);
-      expect(pool).toHaveLength(1);
-    });
-
-    it('AI unavailable + modest country: only strictly safe photos, otherwise nothing', async () => {
+    it('AI unavailable: only people-free photos with a safe subject, in EVERY country', async () => {
       const fetchSpy = jest.spyOn(s, 'fetchCandidates');
       jest.spyOn(s, 'vetPhoto').mockResolvedValue(null);
 
-      fetchSpy.mockResolvedValue([photo('a', { alt: 'person in shop' }), photo('b', { alt: 'shop street' })]);
-      const safe = await s.buildPool('Pakistan', 'register', undefined, true);
-      expect(safe).toHaveLength(1);
-      expect(safe[0].imageUrl).toContain('/b?');
+      fetchSpy.mockResolvedValue([photo('a', { alt: 'man in shop' }), photo('b', { alt: 'shop street' })]);
+      for (const modest of [true, false]) {
+        const safe = await s.buildPool('Pakistan', 'register', undefined, modest);
+        expect(safe).toHaveLength(1);
+        expect(safe[0].imageUrl).toContain('/b?');
+      }
 
       fetchSpy.mockResolvedValue([photo('a', { alt: 'person in shop' })]);
-      expect(await s.buildPool('Pakistan', 'register', undefined, true)).toEqual([]);
+      expect(await s.buildPool('France', 'register', undefined, false)).toEqual([]);
+    });
+
+    it('skips blocked photos', async () => {
+      redis.get.mockResolvedValue(JSON.stringify(['p1']));
+      jest.spyOn(s, 'fetchCandidates').mockResolvedValue(candidates(3));
+      jest.spyOn(s, 'vetPhoto').mockResolvedValue(true);
+      const pool = await s.buildPool('Pakistan', 'register', undefined, false);
+      expect(pool.map((p: any) => p.id)).toEqual(['p0', 'p2']);
+    });
+  });
+
+  describe('vetPhoto rules', () => {
+    it('tells the AI to reject any woman and to match the scene', async () => {
+      const create = jest.fn().mockResolvedValue({ content: [{ type: 'text', text: '{"ok":true}' }] });
+      s.client = { messages: { create } };
+      expect(await s.vetPhoto('https://x/y.jpg', 'Pakistan', 'man laptop setting up online shop', true)).toBe(true);
+      const text = create.mock.calls[0][0].messages[0].content[1].text;
+      expect(text).toMatch(/woman or girl/);
+      expect(text).toContain('man laptop setting up online shop');
+      expect(text).toContain('Islamic modesty');
+    });
+  });
+
+  describe('admin block list + pre-warm', () => {
+    it('blockPhoto stores the id, cleans pools holding it, and resolve never serves it', async () => {
+      s.pools.set('PK:login:', { items: [{ id: 'abc123', imageUrl: 'https://i/photo-1-aaa?x', attribution: null }, { id: 'ok9999', imageUrl: 'https://i/photo-2-bbb?x', attribution: null }], expires: Date.now() + 1000 });
+      redis.get.mockResolvedValue(null);
+      const out = await svc.blockPhoto('https://images.unsplash.com/photo-1-aaa?crop=entropy');
+      expect(out.blocked).toBe('photo-1-aaa');
+      expect(out.poolsCleaned).toBe(1);
+      expect(s.pools.get('PK:login:').items.map((i: any) => i.id)).toEqual(['ok9999']);
+      expect(redis.set).toHaveBeenCalledWith('auth-visual:blocked', JSON.stringify(['photo-1-aaa']), expect.any(Number));
+      await expect(svc.blockPhoto('!!')).rejects.toThrow();
+    });
+
+    it('missingPrewarmPools returns the most important missing screen first and honours the limit', async () => {
+      redis.get.mockResolvedValue(null);
+      const todo = await svc.missingPrewarmPools(3);
+      expect(todo).toHaveLength(3);
+      expect(todo.every(t => t.context === 'register')).toBe(true);
+    });
+
+    it('prewarm stores an approved pool; an empty build is backed off', async () => {
+      process.env.UNSPLASH_ACCESS_KEY = 'k';
+      const build = jest.spyOn(s, 'buildPool');
+      build.mockResolvedValueOnce([{ imageUrl: 'i', attribution: null }]);
+      expect(await svc.prewarm('PK', 'login')).toBe(1);
+      expect(redis.set).toHaveBeenCalledWith('auth-visual:v4:PK:login:', expect.any(String), expect.any(Number));
+      build.mockResolvedValueOnce([]);
+      expect(await svc.prewarm('IN', 'login')).toBe(0);
+      expect(s.retryBackoff('IN', 'login')).toBe(true);
     });
   });
 
@@ -222,7 +271,7 @@ describe('AuthVisualService', () => {
       await new Promise(r => setImmediate(r));
       await new Promise(r => setImmediate(r));
       expect(s.pools.get('k').items).toHaveLength(1);
-      expect(redis.set).toHaveBeenCalledWith('auth-visual:v3:k', expect.any(String), 7 * 24 * 60 * 60);
+      expect(redis.set).toHaveBeenCalledWith('auth-visual:v4:k', expect.any(String), 7 * 24 * 60 * 60);
 
       build.mockResolvedValueOnce([]);
       s.warmPool('e', 'Pakistan', 'login', undefined, false);

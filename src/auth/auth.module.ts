@@ -17,6 +17,7 @@ import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { PermissionsGuard } from './guards/permissions.guard';
 import { GuestSessionService } from './guest-session.service';
 import { AuthVisualService } from '../common/auth-visual.service';
+import { AdminAuthVisualController } from './admin-auth-visual.controller';
 
 @Module({
   imports: [
@@ -39,8 +40,8 @@ import { AuthVisualService } from '../common/auth-visual.service';
 
     MongooseModule.forFeature([{ name: User.name, schema: UserSchema }]),
   ],
-  controllers: [AuthController],
+  controllers: [AuthController, AdminAuthVisualController],
   providers: [AuthService, GuestSessionService, JwtStrategy, JwtAuthGuard, PermissionsGuard, AuthVisualService, AdminSecurityService],
-  exports: [JwtModule, AuthService, GuestSessionService, JwtAuthGuard, PermissionsGuard, AdminSecurityService],
+  exports: [JwtModule, AuthService, AuthVisualService, GuestSessionService, JwtAuthGuard, PermissionsGuard, AdminSecurityService],
 })
 export class AuthModule {}

@@ -154,7 +154,11 @@ export const COUNTRY_TO_AUTH_REGION: Record<string, AuthVisualRegion> = {
   NC: 'oceania', PF: 'oceania', GU: 'oceania', AS: 'oceania', CK: 'oceania',
 };
 
-/** Stable, real Unsplash CDN URLs (no API key needed to keep loading — the
+/** 2026-10-23 review: every photo that showed a woman or a crowd (women visible) was replaced with a
+ *  people-free photo of the same region (duplicates across screens are fine). Keep this set people-free
+ *  or men-only; check new additions on a contact sheet before adding.
+ *
+ *  Stable, real Unsplash CDN URLs (no API key needed to keep loading — the
  *  key was only used once, at curation time, to search/select these). Each
  *  region has 6 distinct photos, keyed by `AuthPageContext`. */
 export const AUTH_REGION_IMAGE_URL: Record<AuthVisualRegion, Record<CuratedContext, string>> = {
@@ -164,8 +168,8 @@ export const AUTH_REGION_IMAGE_URL: Record<AuthVisualRegion, Record<CuratedConte
     // Replaced a generic Lahore mosque-domes shot — onboarding is specifically
     // "I'm setting up my own store," so a real, bustling local street market
     // reads as "starting a business here" the way a landmark photo can't.
-    onboarding: 'https://images.unsplash.com/photo-1518541162457-d21f1884e10f?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
-    forgot_password: 'https://images.unsplash.com/photo-1634628899975-2e681060c681?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    onboarding: 'https://images.unsplash.com/photo-1690015695305-a5e0218125a8?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    forgot_password: 'https://images.unsplash.com/photo-1674502754814-de8b0acb7e22?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
     otp:             'https://images.unsplash.com/photo-1690015695305-a5e0218125a8?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
     new_password:    'https://images.unsplash.com/photo-1767126624081-f692ed0db144?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
   },
@@ -177,7 +181,7 @@ export const AUTH_REGION_IMAGE_URL: Record<AuthVisualRegion, Record<CuratedConte
     // business here."
     onboarding: 'https://images.unsplash.com/photo-1784382358915-5238fe2b6a7b?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
     forgot_password: 'https://images.unsplash.com/photo-1636924271402-d639875aa2bb?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
-    otp:             'https://images.unsplash.com/photo-1786877030136-bfd84dcb8e0d?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    otp:             'https://images.unsplash.com/photo-1784382358915-5238fe2b6a7b?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
     new_password:    'https://images.unsplash.com/photo-1759334928681-dc7ad674138e?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
   },
   europe: {
@@ -186,7 +190,7 @@ export const AUTH_REGION_IMAGE_URL: Record<AuthVisualRegion, Record<CuratedConte
     // Replaced a generic Tower Bridge shot — a real independent shop's own
     // hand-painted storefront sign reads as "starting a business here."
     onboarding: 'https://images.unsplash.com/photo-1771101961440-ef89f1008a18?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
-    forgot_password: 'https://images.unsplash.com/photo-1786033086765-57332fef3583?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    forgot_password: 'https://images.unsplash.com/photo-1539424675410-513ddd709ebd?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
     otp:             'https://images.unsplash.com/photo-1778479959964-c2dffdd00749?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
     new_password:    'https://images.unsplash.com/photo-1758296265626-b6530f338817?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
   },
@@ -207,9 +211,9 @@ export const AUTH_REGION_IMAGE_URL: Record<AuthVisualRegion, Record<CuratedConte
     // stall with its own goods and signage reads as "starting a business
     // here."
     onboarding: 'https://images.unsplash.com/photo-1759299983447-0f7e2e63cfeb?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
-    forgot_password: 'https://images.unsplash.com/photo-1786707237548-d065054f5219?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
-    otp:             'https://images.unsplash.com/photo-1766933233626-8f784567dfed?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
-    new_password:    'https://images.unsplash.com/photo-1771804358832-b71b7e4039ef?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    forgot_password: 'https://images.unsplash.com/photo-1759299983447-0f7e2e63cfeb?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    otp:             'https://images.unsplash.com/photo-1573455494057-12684d151bf4?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    new_password:    'https://images.unsplash.com/photo-1602646993760-7b885ba225af?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
   },
   southeast_asia: {
     register:   'https://images.unsplash.com/photo-1628221680019-f28a2716e727?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
@@ -217,8 +221,8 @@ export const AUTH_REGION_IMAGE_URL: Record<AuthVisualRegion, Record<CuratedConte
     // Replaced a generic Singapore skyline shot — Kuala Lumpur's own Central
     // Market sign reads as "starting a business here."
     onboarding: 'https://images.unsplash.com/photo-1741241858269-2917806a33f8?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
-    forgot_password: 'https://images.unsplash.com/photo-1786299599858-b94752c1ce38?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
-    otp:             'https://images.unsplash.com/photo-1786299600982-6261333a8b7b?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    forgot_password: 'https://images.unsplash.com/photo-1741241858269-2917806a33f8?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    otp:             'https://images.unsplash.com/photo-1628221680019-f28a2716e727?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
     new_password:    'https://images.unsplash.com/photo-1785011070032-a15b0fbfbb26?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
   },
   africa: {
@@ -227,9 +231,9 @@ export const AUTH_REGION_IMAGE_URL: Record<AuthVisualRegion, Record<CuratedConte
     // Replaced a generic camel-and-pyramids shot — a real Marrakech spice/
     // goods street market reads as "starting a business here."
     onboarding: 'https://images.unsplash.com/photo-1570135460237-510ca82c6781?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
-    forgot_password: 'https://images.unsplash.com/photo-1761370980657-22586ea44093?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
-    otp:             'https://images.unsplash.com/photo-1760727466148-fd5049623510?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
-    new_password:    'https://images.unsplash.com/photo-1779088469713-e81a78846b4c?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    forgot_password: 'https://images.unsplash.com/photo-1570133435536-7ececf000ef6?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    otp:             'https://images.unsplash.com/photo-1529528070131-eda9f3e90919?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    new_password:    'https://images.unsplash.com/photo-1570135460237-510ca82c6781?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
   },
   latin_america: {
     register:   'https://images.unsplash.com/photo-1654086441559-f2e71be7f050?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
@@ -237,7 +241,7 @@ export const AUTH_REGION_IMAGE_URL: Record<AuthVisualRegion, Record<CuratedConte
     // Replaced a generic Rio-at-night shot — a real Mexican cafe & bakery's
     // own storefront sign reads as "starting a business here."
     onboarding: 'https://images.unsplash.com/photo-1564688414647-b2c1ecf243ac?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
-    forgot_password: 'https://images.unsplash.com/photo-1783513113196-626ac50b7560?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    forgot_password: 'https://images.unsplash.com/photo-1564688414647-b2c1ecf243ac?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
     otp:             'https://images.unsplash.com/photo-1759375242319-b0a3ad1398ed?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
     new_password:    'https://images.unsplash.com/photo-1763821530010-89534ec80d19?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
   },
@@ -257,7 +261,7 @@ export const AUTH_REGION_IMAGE_URL: Record<AuthVisualRegion, Record<CuratedConte
     // A real shopkeeper opening their shutter to start the day — same
     // "starting a business here" intent as every other region's onboarding
     // photo, not an arbitrary landmark shot.
-    onboarding: 'https://images.unsplash.com/photo-1743414254935-4c374bfacb2c?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    onboarding: 'https://images.unsplash.com/photo-1728565721798-cf65c7bf1efe?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
     forgot_password: 'https://images.unsplash.com/photo-1717486489848-5c79b4d45879?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
     otp:             'https://images.unsplash.com/photo-1715540335937-f54bf332585a?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
     new_password:    'https://images.unsplash.com/photo-1700222599965-2f0ae5cc323c?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
@@ -271,9 +275,9 @@ export const AUTH_REGION_IMAGE_URL: Record<AuthVisualRegion, Record<CuratedConte
     register:   'https://images.unsplash.com/photo-1759542288517-1160b5adfcf9?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
     login:      'https://images.unsplash.com/photo-1631897362327-4842446b5c51?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
     onboarding: 'https://images.unsplash.com/photo-1775883374751-d8157965021b?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
-    forgot_password: 'https://images.unsplash.com/photo-1776941516229-8a922adf0782?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
-    otp:             'https://images.unsplash.com/photo-1772460759097-ad68b3232a4f?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
-    new_password:    'https://images.unsplash.com/photo-1775493765876-ffcd2e4e1e87?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    forgot_password: 'https://images.unsplash.com/photo-1631897362327-4842446b5c51?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    otp:             'https://images.unsplash.com/photo-1775883374751-d8157965021b?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
+    new_password:    'https://images.unsplash.com/photo-1759542288517-1160b5adfcf9?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=1200',
   },
 };
 

@@ -15,6 +15,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { Roles } from '../auth/decorators/roles.decorator'
 import { RolesGuard } from '../auth/guards/roles.guard'; ;
 import { resolveCountryFromIp } from '../common/geo-locate.util';
+import { resolveCountryName } from '../common/country-names.const';
 import { AuthVisualService } from '../common/auth-visual.service';
 import { AUTH_PAGE_CONTEXTS, AUTH_VISUAL_TOPICS, type AuthPageContext, type AuthVisualTopic } from '../common/auth-visual-region.const';
 
@@ -56,8 +57,10 @@ export class AuthController {
   // silently fall back to the curated 10-region map in
   // `auth-visual-region.const.ts`, never an error or a broken image.
   @Get('detect-country')
-  async detectCountry(@Req() req: any, @Query('context') context?: string, @Query('topic') topic?: string) {
-    const country = resolveCountryFromIp(req.ip);
+  async detectCountry(@Req() req: any, @Query('context') context?: string, @Query('topic') topic?: string, @Query('country') urlCountry?: string) {
+    // A country chosen in the page URL (`/pk/register`) wins over the IP guess, but only a real country code counts.
+    const fromUrl = typeof urlCountry === 'string' && /^[A-Za-z]{2}$/.test(urlCountry) && resolveCountryName(urlCountry.toUpperCase()) ? urlCountry.toUpperCase() : null;
+    const country = fromUrl ?? resolveCountryFromIp(req.ip);
     const ctx = AUTH_PAGE_CONTEXTS.includes(context as AuthPageContext) ? (context as AuthPageContext) : 'register';
     const safeTopic = AUTH_VISUAL_TOPICS.includes(topic as AuthVisualTopic) ? (topic as AuthVisualTopic) : undefined;
     const { region, imageUrl, attribution } = await this.authVisualService.resolve(country, ctx, safeTopic);
