@@ -265,6 +265,7 @@ export interface CartSummarySectionSettings {}
 export interface BlogPostListSectionSettings {}
 // eslint-disable-next-line @typescript-eslint/no-empty-interface
 export interface ArticleContentSectionSettings {}
+export interface PageContentSectionSettings {}
 
 // Compile-time-only helper — `T`'s keys must cover every member of `K` (extra
 // keys on `T` are still allowed; TS's structural typing can't cheaply forbid
@@ -321,6 +322,7 @@ export type SectionSettingsMap = RequireAllKeys<SectionType, {
   cart_summary: CartSummarySectionSettings;
   blog_post_list: BlogPostListSectionSettings;
   article_content: ArticleContentSectionSettings;
+  page_content: PageContentSectionSettings;
   theme_section: ThemeSectionSettings;
 }>;
 

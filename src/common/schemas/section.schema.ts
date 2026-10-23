@@ -82,6 +82,9 @@ export const SECTION_TYPES = [
   'cart_summary',
   'blog_post_list',
   'article_content',
+  // The fixed form/list of a customer page (login, register, account, orders, checkout ...): the theme's own page
+  // renders it; the seller can only add sections above and below it. One generic marker for all those pages.
+  'page_content',
   // Carrier for a section the ACTIVE THEME declares in its own manifest (`settings.sectionKey` picks which one,
   // the rest of `settings` are that section's fields). Lets a theme add sections without a backend change.
   'theme_section',

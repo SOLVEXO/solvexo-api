@@ -546,6 +546,7 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
     case 'cart_summary':
     case 'blog_post_list':
     case 'article_content':
+    case 'page_content':
       break; // core/locked sections — no section-level settings, see SECTION_TYPES's comment
     default: {
       // Exhaustiveness guard: if a new SectionType is ever added to
@@ -1046,5 +1047,6 @@ export const SECTION_ALLOWED_BLOCK_TYPES: AllowedBlockTypesMap = {
   cart_summary: [],
   blog_post_list: [],
   article_content: [],
+  page_content: [],
   theme_section: ['theme_block'],
 };

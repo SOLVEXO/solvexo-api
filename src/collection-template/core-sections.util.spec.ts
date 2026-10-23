@@ -20,6 +20,14 @@ describe('core-sections.util', () => {
       expect(requiredCoreSectionTypesFor('page', 'blog-article')).toEqual(['article_content']);
     });
 
+    it('requires one locked page_content for every customer page (login, account, orders, checkout ...)', () => {
+      for (const key of ['login', 'register', 'forgot-password', 'reset-password', 'verify-otp', 'account', 'orders', 'order-detail', 'addresses', 'wishlist', 'checkout']) {
+        expect(requiredCoreSectionTypesFor('page', key)).toEqual(['page_content']);
+      }
+      expect(findMissingCoreParts('page', 'login', [{ type: 'rich_text' }])).toEqual(['page_content']);
+      expect(findMissingCoreParts('page', 'login', [{ type: 'page_content' }])).toEqual([]);
+    });
+
     it('requires nothing for collection templates or an uncovered page templateKey', () => {
       expect(requiredCoreSectionTypesFor('collection', 'default')).toEqual([]);
       expect(requiredCoreSectionTypesFor('page', 'some-custom-starter')).toEqual([]);

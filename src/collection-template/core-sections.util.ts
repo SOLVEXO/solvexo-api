@@ -86,6 +86,14 @@ export const CORE_SECTION_TYPES: readonly SectionType[] = [
   'cart_summary',
   'blog_post_list',
   'article_content',
+  'page_content',
+];
+
+/** `page`-bucket templates for the customer-facing pages whose form/list is fixed code: each one requires a single
+ *  locked `page_content` section, and the seller adds sections above and below it. */
+export const CUSTOMER_PAGE_TEMPLATE_KEYS: readonly string[] = [
+  'login', 'register', 'forgot-password', 'reset-password', 'verify-otp',
+  'account', 'orders', 'order-detail', 'addresses', 'wishlist', 'checkout',
 ];
 
 /** Which core section type(s) a (resourceType, templateKey) pair requires,
@@ -104,6 +112,7 @@ export function requiredCoreSectionTypesFor(resourceType: ResourceTemplateType, 
     if (templateKey === 'cart') return ['cart_items', 'cart_summary'];
     if (templateKey === 'blog-index') return ['blog_post_list'];
     if (templateKey === 'blog-article') return ['article_content'];
+    if (CUSTOMER_PAGE_TEMPLATE_KEYS.includes(templateKey)) return ['page_content'];
   }
   return [];
 }
