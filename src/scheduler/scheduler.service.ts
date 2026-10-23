@@ -36,7 +36,9 @@ import { DraftOrdersService } from '@/draft-orders/draft-orders.service';
 import { OrdersService } from '@/orders/orders.service';
 import { MarketingAutomationsService } from '@/marketing-automations/marketing-automations.service';
 import { AdminAnnouncementsService } from '@/admin-announcements/admin-announcements.service';
+import { AuthVisualService } from '@/common/auth-visual.service';
 import { ScheduledReportsService } from '@/analytics/scheduled-reports.service';
+import { GiftCardsService } from '@/gift-cards/gift-cards.service';
 
 @Injectable()
 export class SchedulerService {
@@ -48,6 +50,7 @@ export class SchedulerService {
     private readonly buyerSubscriptionWindDownService: BuyerSubscriptionWindDownService,
     private readonly storeCreditService: StoreCreditService,
     private readonly guestSessionService: GuestSessionService,
+    private readonly authVisualService: AuthVisualService,
     private readonly customDomainsService: CustomDomainsService,
     private readonly financeService: FinanceService,
     private readonly redis: RedisService,
@@ -76,6 +79,7 @@ export class SchedulerService {
     private readonly transactionFeeBillingService: TransactionFeeBillingService,
     private readonly stuckGatewayPaymentsService: StuckGatewayPaymentsService,
     private readonly scheduledReportsService: ScheduledReportsService,
+    private readonly giftCardsService: GiftCardsService,
   ) {}
 
   /**
@@ -99,6 +103,28 @@ export class SchedulerService {
     if (result === 'lock_not_acquired') {
       this.logger.debug(`Skipped "${jobName}" — another instance already holds the lock (or Redis is unavailable)`);
     }
+  }
+
+  /** Hourly — fills the sign-up/login background photo pools ahead of visitors (a few per run: Unsplash Demo allows 50 searches/hour). */
+  @Cron('10 * * * *')
+  async prewarmAuthVisuals() {
+    await this.runLocked('auth-visual-prewarm', 25 * 60_000, async () => {
+      const todo = await this.authVisualService.missingPrewarmPools(6);
+      let built = 0;
+      for (const t of todo) {
+        if ((await this.authVisualService.prewarm(t.country, t.context, t.topic)) > 0) built++;
+      }
+      if (todo.length > 0) this.logger.log(`Auth visuals pre-warm: ${built}/${todo.length} pool(s) built`);
+    });
+  }
+
+  /** Every 30 min — emails the gift cards that were bought for a future day (the day has now come). */
+  @Cron('*/30 * * * *')
+  async deliverScheduledGiftCards() {
+    await this.runLocked('gift-card-scheduled-delivery', 25 * 60_000, async () => {
+      const { sent, failed } = await this.giftCardsService.processScheduledDeliveries();
+      if (sent > 0 || failed > 0) this.logger.log(`Scheduled gift cards: ${sent} sent, ${failed} failed`);
+    });
   }
 
   /** 06:00 UTC daily — emails saved analytics reports whose schedule is due today (weekly = Monday, monthly = the 1st). */

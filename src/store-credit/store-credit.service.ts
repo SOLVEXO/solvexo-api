@@ -148,11 +148,11 @@ export class StoreCreditService {
       storeId, customerId, currency, type: 'adjust_debit', amount: -take, consumed: res.consumed,
       balanceAfter: round(spendable - take), note, actorId: actor.actorId, actorRole: actor.actorRole,
     });
-    await this.afterAdjust(storeId, customerId, currency, -take, actor, note, null);
+    await this.afterAdjust(storeId, customerId, currency, -take, actor, note, null, round(spendable - take));
     return { success: true, message: 'Store credit removed', data: { balance: round(spendable - take), currency, transaction: tx } };
   }
 
-  private async afterAdjust(storeId: string, customerId: string, currency: string, amount: number, actor: Actor, note: string, expiresAt: Date | null) {
+  private async afterAdjust(storeId: string, customerId: string, currency: string, amount: number, actor: Actor, note: string, expiresAt: Date | null, balanceAfter: number | null = null) {
     this.activityLogService.log({
       storeId, category: 'customers', action: amount > 0 ? 'store_credit_added' : 'store_credit_removed',
       description: `${amount > 0 ? 'Added' : 'Removed'} ${Math.abs(amount).toFixed(2)} ${currency} store credit${note ? ` — ${note}` : ''}`,
@@ -163,6 +163,15 @@ export class StoreCreditService {
         recipientId: customerId, recipientRole: 'user', type: NOTIFICATION_TYPES.STORE_CREDIT_RECEIVED,
         title: 'You received store credit',
         body: `You've been given ${amount.toFixed(2)} ${currency} in store credit${expiresAt ? ` (expires ${expiresAt.toISOString().slice(0, 10)})` : ''}. It will be applied at checkout.`,
+        data: { storeId },
+      }).catch(() => undefined);
+    } else {
+      // The customer may have planned a purchase around the old balance: tell them it went down.
+      const balanceText = balanceAfter == null ? '' : ` Your balance is now ${balanceAfter.toFixed(2)} ${currency}.`;
+      this.notificationsService.notify({
+        recipientId: customerId, recipientRole: 'user', type: NOTIFICATION_TYPES.STORE_CREDIT_RECEIVED,
+        title: 'Your store credit was updated',
+        body: `${Math.abs(amount).toFixed(2)} ${currency} was removed from your store credit${note ? ` (${note})` : ''}.${balanceText}`,
         data: { storeId },
       }).catch(() => undefined);
     }

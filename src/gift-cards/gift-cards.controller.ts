@@ -1,6 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { Controller, Get, Post, Patch, Param, Body, Query, Req, UseGuards } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { GiftCardsService } from './gift-cards.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -59,9 +60,20 @@ export class GiftCardsController {
     @Req() req: any,
     @Param('storeId') storeId: string,
     @Param('giftCardId') giftCardId: string,
-    @Body() body: { delta: number; reason?: string },
+    @Body() body: { delta: number; reason?: string; notify?: boolean },
   ) {
-    return this.giftCardsService.adjustBalance(actingSellerId(req.user), storeId, giftCardId, body.delta, body.reason ?? '');
+    return this.giftCardsService.adjustBalance(actingSellerId(req.user), storeId, giftCardId, body.delta, body.reason ?? '', body.notify === true);
+  }
+
+  /** Re-sends the gift card email with the card's current balance. */
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('giftcards.manage')
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Post(':storeId/:giftCardId/resend')
+  resendEmail(@Req() req: any, @Param('storeId') storeId: string, @Param('giftCardId') giftCardId: string) {
+    return this.giftCardsService.resendGiftCardEmail(actingSellerId(req.user), storeId, giftCardId);
   }
 
   @ApiBearerAuth()
@@ -78,8 +90,8 @@ export class GiftCardsController {
   @Roles('seller', 'staff')
   @RequirePermission('giftcards.deactivate')
   @Patch(':storeId/:giftCardId/disable')
-  disableGiftCard(@Req() req: any, @Param('storeId') storeId: string, @Param('giftCardId') giftCardId: string) {
-    return this.giftCardsService.disableGiftCard(actingSellerId(req.user), storeId, giftCardId);
+  disableGiftCard(@Req() req: any, @Param('storeId') storeId: string, @Param('giftCardId') giftCardId: string, @Body() body?: { notify?: boolean }) {
+    return this.giftCardsService.disableGiftCard(actingSellerId(req.user), storeId, giftCardId, body?.notify === true);
   }
 
   /** The issue/redeem/refund ledger for one gift card — previously written

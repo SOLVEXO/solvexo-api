@@ -68,11 +68,54 @@ export class PdfReportBuilder {
     this.y -= 6;
   }
 
+  /** The standard Helvetica font can only draw WinAnsi characters (Urdu, emoji, ... would throw), so anything it can't encode becomes "?". */
+  private safe(text: string, font: PDFFont): string {
+    let out = '';
+    for (const ch of text.replace(/\s+/g, ' ')) {
+      try { font.encodeText(ch); out += ch; } catch { out += '?'; }
+    }
+    return out;
+  }
+
+  /** Splits `text` into at most `maxLines` lines that fit `maxWidth`; the last line ends with "..." when text is cut. */
+  private wrap(text: string, maxWidth: number, size: number, maxLines: number): string[] {
+    const fits = (s: string) => this.font.widthOfTextAtSize(s, size) <= maxWidth;
+    const lines: string[] = [];
+    let line = '';
+    for (const word of text.split(' ')) {
+      const next = line ? `${line} ${word}` : word;
+      if (fits(next)) { line = next; continue; }
+      if (line) { lines.push(line); line = ''; }
+      // a single word wider than the whole column is split by characters
+      let rest = word;
+      while (rest && !fits(rest)) {
+        let n = rest.length;
+        while (n > 1 && !fits(rest.slice(0, n))) n--;
+        lines.push(rest.slice(0, n));
+        rest = rest.slice(n);
+      }
+      line = rest;
+    }
+    if (line) lines.push(line);
+    if (lines.length <= maxLines) return lines.length ? lines : [''];
+    const kept = lines.slice(0, maxLines);
+    let last = kept[maxLines - 1];
+    while (last.length > 1 && !fits(`${last}...`)) last = last.slice(0, -1);
+    kept[maxLines - 1] = `${last.trimEnd()}...`;
+    return kept;
+  }
+
   addTable(headers: string[], rows: (string | number)[][]) {
-    const colWidth = (this.pageWidth - this.margin * 2) / headers.length;
+    // The first column (names, dates, sources) gets more room than the number columns after it.
+    const weights = headers.map((_, i) => (i === 0 && headers.length >= 3 ? 2.6 : 1));
+    const totalWeight = weights.reduce((a, b) => a + b, 0);
+    const innerWidth = this.pageWidth - this.margin * 2;
+    const colWidths = weights.map(w => (innerWidth * w) / totalWeight);
+    const colX = colWidths.map((_, i) => this.margin + colWidths.slice(0, i).reduce((a, b) => a + b, 0));
+    const gap = 8;
     this.ensureSpace(20);
     headers.forEach((h, i) => {
-      this.page.drawText(h, { x: this.margin + i * colWidth, y: this.y, size: 9, font: this.boldFont, color: rgb(0.3, 0.3, 0.3) });
+      this.page.drawText(this.safe(h, this.boldFont), { x: colX[i], y: this.y, size: 9, font: this.boldFont, color: rgb(0.3, 0.3, 0.3) });
     });
     this.y -= 6;
     this.page.drawLine({
@@ -83,19 +126,24 @@ export class PdfReportBuilder {
     });
     this.y -= 14;
 
+    const lineHeight = 11;
     for (const row of rows) {
-      this.ensureSpace(16);
-      row.forEach((cell, i) => {
-        const text = String(cell ?? '');
-        this.page.drawText(text.length > 40 ? text.slice(0, 37) + '...' : text, {
-          x: this.margin + i * colWidth,
-          y: this.y,
-          size: 9,
-          font: this.font,
-          color: rgb(0.15, 0.15, 0.15),
+      // Long text wraps (max 2 lines) inside its own column instead of running into the next one.
+      const cells = row.map((cell, i) => this.wrap(this.safe(String(cell ?? ''), this.font), colWidths[i] - gap, 9, 2));
+      const rowLines = Math.max(...cells.map(c => c.length));
+      this.ensureSpace(rowLines * lineHeight + 6);
+      cells.forEach((lines, i) => {
+        lines.forEach((text, n) => {
+          this.page.drawText(text, {
+            x: colX[i],
+            y: this.y - n * lineHeight,
+            size: 9,
+            font: this.font,
+            color: rgb(0.15, 0.15, 0.15),
+          });
         });
       });
-      this.y -= 16;
+      this.y -= rowLines * lineHeight + 5;
     }
     this.y -= 10;
   }

@@ -59,6 +59,14 @@ export class GiftCard {
   @Prop({ type: Date, default: null })
   expiresAt: Date | null;
 
+  // A gift bought for a future date: the code is emailed on `deliverAt`, `deliveredAt` is stamped when it goes
+  // out. Both stay null for cards that are sent straight away.
+  @Prop({ type: Date, default: null })
+  deliverAt: Date | null;
+
+  @Prop({ type: Date, default: null })
+  deliveredAt: Date | null;
+
   @Prop({ type: Boolean, default: false })
   isDelete: boolean;
 }
@@ -68,3 +76,4 @@ export const GiftCardSchema = SchemaFactory.createForClass(GiftCard);
 GiftCardSchema.index({ storeId: 1, code: 1 }, { unique: true });
 GiftCardSchema.index({ storeId: 1, status: 1 });
 GiftCardSchema.index({ purchaserUserId: 1 });
+GiftCardSchema.index({ deliverAt: 1, deliveredAt: 1 });

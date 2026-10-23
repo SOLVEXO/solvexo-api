@@ -136,7 +136,7 @@ export class GiftCardsService {
    *  an over-issue, clawing back a mistaken credit) — never allowed to push
    *  `balance` below 0. Writes a real `GiftCardTransaction(type:'adjustment')`
    *  row, same audit-ledger convention every other balance change already uses. */
-  async adjustBalance(sellerId: string, storeId: string, giftCardId: string, delta: number, reason: string) {
+  async adjustBalance(sellerId: string, storeId: string, giftCardId: string, delta: number, reason: string, notify = false) {
     await this.verifyStoreOwnership(storeId, sellerId);
     if (!delta || !Number.isFinite(delta)) throw new BadRequestException('A non-zero adjustment amount is required');
     const rounded = this.round(delta);
@@ -163,10 +163,20 @@ export class GiftCardsService {
       actorId: sellerId, actorRole: 'seller', targetId: giftCardId, targetType: 'gift_card',
     });
 
-    return { success: true, message: 'Gift card balance adjusted', data: updated };
+    let emailed: 'sent' | 'failed' | 'disabled' | 'no_recipient' | null = null;
+    if (notify) {
+      const cleanReason = (reason ?? '').trim();
+      emailed = await this.notifyRecipient(storeId, giftCard, {
+        change: `The balance changed from ${this.money(giftCard.currency, giftCard.balance)} to ${this.money(giftCard.currency, newBalance)}.`,
+        reason: cleanReason ? `Note from the store: ${cleanReason}` : '',
+        balance: this.money(giftCard.currency, newBalance),
+      }, sellerId);
+    }
+
+    return { success: true, message: 'Gift card balance adjusted', data: updated, emailed };
   }
 
-  async disableGiftCard(sellerId: string, storeId: string, giftCardId: string) {
+  async disableGiftCard(sellerId: string, storeId: string, giftCardId: string, notify = false) {
     await this.verifyStoreOwnership(storeId, sellerId);
     const giftCard = await this.r.giftCardModel.findOneAndUpdate(
       { _id: giftCardId, storeId, isDelete: false },
@@ -181,7 +191,75 @@ export class GiftCardsService {
       targetId: giftCardId, targetType: 'gift_card',
     });
 
-    return { success: true, message: 'Gift card disabled', data: giftCard };
+    let emailed: 'sent' | 'failed' | 'disabled' | 'no_recipient' | null = null;
+    if (notify) {
+      // Empty balance drops the "Balance now" line of the template — a disabled card has no usable balance.
+      emailed = await this.notifyRecipient(storeId, giftCard, {
+        change: 'This gift card has been disabled and can no longer be used at checkout.',
+        reason: '',
+        balance: '',
+      }, sellerId);
+    }
+
+    return { success: true, message: 'Gift card disabled', data: giftCard, emailed };
+  }
+
+  /** Re-sends the original gift card email with the card's CURRENT balance (Shopify: "Send gift card"). */
+  async resendGiftCardEmail(sellerId: string, storeId: string, giftCardId: string) {
+    const store = await this.verifyStoreOwnership(storeId, sellerId);
+    const giftCard = await this.r.giftCardModel.findOne({ _id: giftCardId, storeId, isDelete: false });
+    if (!giftCard) throw new NotFoundException('Gift card not found');
+    if (giftCard.status !== 'active') throw new BadRequestException('Only an active gift card can be emailed');
+    if (!giftCard.recipientEmail) throw new BadRequestException('This gift card has no recipient email');
+
+    const now = Date.now();
+    const key = `${storeId}:${giftCardId}`;
+    if (now - (this.resendAt.get(key) ?? 0) < 30_000) throw new BadRequestException('This gift card was just emailed. Please wait a moment.');
+    this.resendAt.set(key, now);
+    if (this.resendAt.size > 500) for (const [k, t] of this.resendAt) if (now - t > 30_000) this.resendAt.delete(k);
+
+    const result = this.notificationsService
+      ? await this.notificationsService.sendCustomerEmail({
+          to: giftCard.recipientEmail, storeId, event: 'gift_card', force: true,
+          vars: {
+            customerName: giftCard.recipientName, giftCardValue: this.money(giftCard.currency, giftCard.balance),
+            giftCardCode: giftCard.code, giftCardMessage: giftCard.message,
+          },
+        })
+      : 'failed';
+    if (result !== 'sent') this.resendAt.delete(key); // nothing went out: allow an immediate retry
+    else this.logEmail(storeId, giftCard, 'resent', sellerId);
+    return { success: result === 'sent', message: result === 'sent' ? `Gift card emailed to ${giftCard.recipientEmail}` : 'The email could not be sent', emailed: result };
+  }
+
+  private readonly resendAt = new Map<string, number>();
+
+  private money(currency: string, value: number) {
+    return `${currency} ${Number(value).toLocaleString('en-US', { maximumFractionDigits: 2 })}`;
+  }
+
+  private logEmail(storeId: string, giftCard: any, what: string, actorId: string) {
+    this.activityLogService.log({
+      storeId, category: 'marketing', action: 'gift_card_email_sent',
+      description: `${giftCard.code} — email (${what}) sent to ${giftCard.recipientEmail}`,
+      actorId, actorRole: 'seller', targetId: String(giftCard._id), targetType: 'gift_card',
+    });
+  }
+
+  private async notifyRecipient(
+    storeId: string, giftCard: any, text: { change: string; reason: string; balance: string }, actorId: string,
+  ): Promise<'sent' | 'failed' | 'disabled' | 'no_recipient'> {
+    if (!giftCard.recipientEmail) return 'no_recipient';
+    if (!this.notificationsService) return 'failed';
+    const result = await this.notificationsService.sendCustomerEmail({
+      to: giftCard.recipientEmail, storeId, event: 'gift_card_updated',
+      vars: {
+        customerName: giftCard.recipientName, giftCardCode: giftCard.code,
+        giftCardBalance: text.balance, giftCardChange: text.change, giftCardReason: text.reason,
+      },
+    });
+    if (result === 'sent') this.logEmail(storeId, giftCard, 'updated', actorId);
+    return result;
   }
 
   // ── Buyer-facing ──────────────────────────────────────────────────────────
@@ -220,6 +298,7 @@ export class GiftCardsService {
     if (!settings.purchaseEnabled) throw new BadRequestException('Gift cards aren\'t available for purchase at this store');
 
     const currency = store.baseCurrency ?? 'USD';
+    const sendOn = this.parseSendOn(dto.sendOn, !!dto.recipientEmail);
     await this.exchangeRateService.assertSupportedCurrency(currency);
     const stripe = this.assertStripeConfigured();
 
@@ -255,6 +334,7 @@ export class GiftCardsService {
         recipientEmail: dto.recipientEmail ?? '',
         recipientName: dto.recipientName ?? '',
         message: (dto.message ?? '').slice(0, 480),
+        sendOn: sendOn ? sendOn.toISOString().slice(0, 10) : '',
       },
       automatic_payment_methods: { enabled: true, allow_redirects: 'never' },
     });
@@ -266,6 +346,25 @@ export class GiftCardsService {
     };
   }
 
+  /** The optional "send on" day of a gift (YYYY-MM-DD, taken as 00:00 UTC): today up to one year ahead, gifts only. */
+  private parseSendOn(raw: string | undefined, isGift: boolean): Date | null {
+    if (!raw) return null;
+    if (!isGift) throw new BadRequestException('A delivery date only applies when the card is sent as a gift');
+    const day = new Date(`${String(raw).slice(0, 10)}T00:00:00.000Z`);
+    if (isNaN(day.getTime())) throw new BadRequestException('Choose a valid delivery date');
+    const today = new Date(); today.setUTCHours(0, 0, 0, 0);
+    const limit = new Date(today); limit.setUTCFullYear(limit.getUTCFullYear() + 1);
+    // One day of slack: the buyer picks a date in their own time zone, which can still be "yesterday" in UTC.
+    const earliest = new Date(today.getTime() - 24 * 3600 * 1000);
+    if (day < earliest) throw new BadRequestException('The delivery date cannot be in the past');
+    if (day > limit) throw new BadRequestException('The delivery date can be at most one year from today');
+    return day;
+  }
+
+  private niceDate(d: Date) {
+    return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
+  }
+
   /** Called from PaymentService.stripeWebhook on `payment_intent.succeeded`
    *  when `metadata.purpose === 'gift_card_purchase'` — mirrors
    *  finalizePaymentIntent's dedup convention (a redelivered webhook must
@@ -274,7 +373,7 @@ export class GiftCardsService {
     const existing = await this.r.giftCardTransactionModel.findOne({ checkoutId: paymentIntent.id, type: 'issue' });
     if (existing) return; // already processed this exact PaymentIntent
 
-    const { storeId, userId, amount, currency, recipientEmail, recipientName, message } = paymentIntent.metadata;
+    const { storeId, userId, amount, currency, recipientEmail, recipientName, message, sendOn } = paymentIntent.metadata;
     const store = await this.r.storeModel.findOne({ _id: storeId, isDelete: false });
     if (!store) return;
 
@@ -284,11 +383,25 @@ export class GiftCardsService {
       : (() => { const d = new Date(); d.setMonth(d.getMonth() + settings.expiryMonths); return d; })();
 
     const value = parseFloat(amount) || 0;
+
+    // Shopify: the recipient is optional. Without one the card is for the buyer themselves, so the code goes to
+    // the buyer's own email (a guest checkout keeps the real address in `contactEmail`).
+    const purchaser: any = userId
+      ? await this.r.userModel.findById(userId).select('name email contactEmail isGuest').lean()
+      : null;
+    const purchaserEmail: string | null = purchaser ? ((purchaser.isGuest ? purchaser.contactEmail : purchaser.email) || null) : null;
+    const isGift = !!recipientEmail;
+    const deliverTo = recipientEmail || purchaserEmail;
+    // A gift for a future day waits (the daily job emails it); anything else goes out now.
+    const scheduledFor = isGift && sendOn ? new Date(`${sendOn}T00:00:00.000Z`) : null;
+    const isScheduled = !!scheduledFor && !isNaN(scheduledFor.getTime()) && scheduledFor.getTime() > Date.now();
+
     const giftCard = await this.createGiftCardRecord({
       storeId, currency: currency || 'USD', value, issuedBy: 'purchase',
       issuedByUserId: null, purchaserUserId: userId,
-      recipientEmail: recipientEmail || null, recipientName: recipientName || null,
+      recipientEmail: deliverTo, recipientName: recipientName || (isGift ? null : (purchaser?.name ?? null)),
       message: message || null, expiresAt, purchaseIntentId: paymentIntent.id,
+      deliverAt: isScheduled ? scheduledFor : null, deliveredAt: isScheduled ? null : new Date(),
     });
 
     this.activityLogService.log({
@@ -297,10 +410,47 @@ export class GiftCardsService {
       actorId: userId, actorRole: 'user', targetId: String(giftCard._id), targetType: 'gift_card',
     });
 
-    const deliverTo = recipientEmail || null;
-    if (deliverTo) {
-      this.sendGiftCardEmail(String(store._id), deliverTo, recipientName || null, store.name, giftCard.code, currency || 'USD', value, message || null).catch(() => {});
+    if (deliverTo && !isScheduled) {
+      this.sendGiftCardEmail(String(store._id), deliverTo, giftCard.recipientName ?? null, store.name, giftCard.code, currency || 'USD', value, message || null).catch(() => {});
     }
+    // A gift: tell the buyer it was sent / when it will be (the code stays with the recipient).
+    if (isGift && purchaserEmail && purchaserEmail.toLowerCase() !== String(recipientEmail).toLowerCase() && this.notificationsService) {
+      this.notificationsService.sendCustomerEmail({
+        to: purchaserEmail, storeId: String(store._id), event: 'gift_card_sent',
+        vars: {
+          customerName: purchaser?.name ?? null, giftCardValue: this.money(currency || 'USD', value),
+          giftCardDelivery: isScheduled ? `will be emailed to ${recipientEmail} on ${this.niceDate(scheduledFor as Date)}` : `was emailed to ${recipientEmail}`,
+        },
+      }).catch(() => {});
+    }
+  }
+
+  /** Daily/hourly job: emails every scheduled gift whose day has come. Each card is claimed first (atomic), so two
+   *  instances or a retry can never send it twice; a failed send releases the claim for the next run (for 7 days). */
+  async processScheduledDeliveries(): Promise<{ sent: number; failed: number }> {
+    const now = new Date();
+    const weekAgo = new Date(now.getTime() - 7 * 24 * 3600 * 1000);
+    const due: any[] = await this.r.giftCardModel
+      .find({ deliverAt: { $ne: null, $lte: now, $gt: weekAgo }, deliveredAt: null, status: 'active', isDelete: false })
+      .limit(200).lean();
+    let sent = 0; let failed = 0;
+    for (const card of due) {
+      const claimed = await this.r.giftCardModel.findOneAndUpdate({ _id: card._id, deliveredAt: null }, { $set: { deliveredAt: now } });
+      if (!claimed) continue;
+      let ok = false;
+      try {
+        if (card.recipientEmail && this.notificationsService) {
+          const result = await this.notificationsService.sendCustomerEmail({
+            to: card.recipientEmail, storeId: card.storeId, event: 'gift_card',
+            vars: { customerName: card.recipientName, giftCardValue: this.money(card.currency, card.balance), giftCardCode: card.code, giftCardMessage: card.message },
+          });
+          ok = result === 'sent';
+        }
+      } catch { ok = false; }
+      if (ok) { sent++; this.logEmail(card.storeId, card, 'scheduled delivery', card.purchaserUserId ?? ''); }
+      else { failed++; await this.r.giftCardModel.updateOne({ _id: card._id }, { $set: { deliveredAt: null } }); }
+    }
+    return { sent, failed };
   }
 
   // ── Checkout redemption (called from CheckoutService) ────────────────────
@@ -390,6 +540,7 @@ export class GiftCardsService {
     storeId: string; currency: string; value: number; issuedBy: 'purchase' | 'manual';
     issuedByUserId: string | null; purchaserUserId: string | null; recipientEmail: string | null;
     recipientName: string | null; message: string | null; expiresAt: Date | null; purchaseIntentId?: string;
+    deliverAt?: Date | null; deliveredAt?: Date | null;
   }) {
     let giftCard: any = null;
     for (let attempt = 0; attempt < 3 && !giftCard; attempt++) {
@@ -400,6 +551,7 @@ export class GiftCardsService {
           issuedByUserId: opts.issuedByUserId, purchaserUserId: opts.purchaserUserId,
           recipientEmail: opts.recipientEmail, recipientName: opts.recipientName,
           message: opts.message, expiresAt: opts.expiresAt,
+          deliverAt: opts.deliverAt ?? null, deliveredAt: opts.deliveredAt ?? null,
         });
       } catch (e: any) {
         if (e?.code !== 11000) throw e; // duplicate code — regenerate and retry

@@ -19,6 +19,8 @@ export const CUSTOMER_EMAIL_EVENTS = [
   'draft_order_invoice',
   'draft_order_overdue',
   'gift_card',
+  'gift_card_updated',
+  'gift_card_sent',
 ] as const;
 
 export type CustomerEmailEvent = (typeof CUSTOMER_EMAIL_EVENTS)[number];
@@ -168,6 +170,26 @@ export const CUSTOMER_EMAIL_CATALOG: Record<CustomerEmailEvent, CustomerEmailEve
     resendable: false,
     canDisable: false,
   },
+  gift_card_updated: {
+    group: 'invoices',
+    label: 'Gift card updated',
+    description: 'Sent when you change a gift card\'s balance or disable it and choose to let the recipient know.',
+    defaultSubject: 'Your {{storeName}} gift card was updated',
+    defaultBody:
+      'Hi {{customerName}},\n\nYour gift card for {{storeName}} was updated.\n\n{{giftCardChange}}\n{{giftCardReason}}\n\nGift card code: {{giftCardCode}}\nBalance now: {{giftCardBalance}}',
+    variables: ['storeName', 'customerName', 'giftCardCode', 'giftCardBalance', 'giftCardChange', 'giftCardReason'],
+    resendable: false,
+  },
+  gift_card_sent: {
+    group: 'invoices',
+    label: 'Gift card sent (to the buyer)',
+    description: 'Sent to the customer who bought a gift card for someone else, to confirm it was delivered. The code itself goes only to the recipient.',
+    defaultSubject: 'Your gift card from {{storeName}} was sent',
+    defaultBody:
+      'Hi {{customerName}},\n\nThanks for your purchase! Your {{giftCardValue}} gift card from {{storeName}} {{giftCardDelivery}}.\n\nIf they cannot find it, ask them to check their spam folder or contact us and we will send it again.',
+    variables: ['storeName', 'customerName', 'giftCardValue', 'giftCardDelivery'],
+    resendable: false,
+  },
 };
 
 export function isCustomerEmailEvent(value: unknown): value is CustomerEmailEvent {
@@ -212,4 +234,8 @@ export const CUSTOMER_EMAIL_SAMPLE_VARS: Record<string, string> = {
   giftCardValue: 'PKR 5,000',
   giftCardCode: 'GCB35B-4C5736',
   giftCardMessage: 'Happy birthday!',
+  giftCardDelivery: 'was emailed to friend@example.com',
+  giftCardBalance: 'PKR 2,000',
+  giftCardChange: 'The balance changed from PKR 5,000 to PKR 2,000.',
+  giftCardReason: 'Note from the store: Correction.',
 };

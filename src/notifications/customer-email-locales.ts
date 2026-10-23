@@ -79,6 +79,10 @@ export const CUSTOMER_EMAIL_DEFAULTS_BY_LOCALE: Record<string, Partial<Record<Cu
       subject: 'آپ کو {{storeName}} کی طرف سے {{giftCardValue}} کا گفٹ کارڈ ملا ہے',
       body: 'سلام {{customerName}}،\n\nآپ کو {{storeName}} کا گفٹ کارڈ موصول ہوا ہے۔\n\n{{giftCardMessage}}\n\nآپ کا کوڈ: {{giftCardCode}}\nقدر: {{giftCardValue}}\n\nاسے استعمال کرنے کے لیے {{storeName}} پر چیک آؤٹ کے وقت یہ کوڈ درج کریں۔',
     },
+    gift_card_updated: {
+      subject: 'آپ کا {{storeName}} گفٹ کارڈ اپڈیٹ کر دیا گیا ہے',
+      body: 'سلام {{customerName}}،\n\n{{storeName}} کا آپ کا گفٹ کارڈ اپڈیٹ کیا گیا ہے۔\n\n{{giftCardChange}}\n{{giftCardReason}}\n\nگفٹ کارڈ کوڈ: {{giftCardCode}}\nموجودہ بیلنس: {{giftCardBalance}}',
+    },
   },
 };
 
