@@ -407,6 +407,23 @@ export class StoreService {
     return { success: true, data: getVerificationRequirements(country, businessType, level) };
   }
 
+  /** Validates a new store country (ISO alpha-2) and returns it normalised. The country decides which payment
+   *  providers the store can use, so it cannot move while a payment provider or Stripe account is connected. */
+  private async validateCountryChange(storeId: string, store: { country?: string | null; baseCurrency?: string | null }, input: unknown): Promise<string> {
+    const nextCountry = String(input ?? '').trim().toUpperCase();
+    if (!/^[A-Z]{2}$/.test(nextCountry)) throw new BadRequestException('country must be a 2-letter country code (e.g. PK, US)');
+    if (nextCountry !== resolveStoreCountry(store)) {
+      const [connectedGateway, stripeRow] = await Promise.all([
+        this.databaseService.repositories.storeIntegrationModel.exists({ storeId, type: 'payment', status: 'connected' }),
+        this.databaseService.repositories.storeModel.findById(storeId).select('+stripeConnectedAccountId').lean(),
+      ]);
+      if (connectedGateway || (stripeRow as any)?.stripeConnectedAccountId) {
+        throw new BadRequestException('Disconnect your payment providers before changing the store country.');
+      }
+    }
+    return nextCountry;
+  }
+
   /** Draft-save — usable while verification is `not_started` (first pass)
    *  or `rejected` (fixing up before resubmitting). Locked once it's
    *  `pending`/`under_review`/`verified` so submitted data can't shift
@@ -479,20 +496,7 @@ export class StoreService {
     // Country/businessType changes recompute the applicable level
     // server-side — never accepted as a client-supplied value.
     if (body.country !== undefined) {
-      const nextCountry = String(body.country ?? '').trim().toUpperCase();
-      if (!/^[A-Z]{2}$/.test(nextCountry)) throw new BadRequestException('country must be a 2-letter country code (e.g. PK, US)');
-      const currentCountry = resolveStoreCountry(store);
-      if (nextCountry !== currentCountry) {
-        // The country decides which payment providers are available, so it cannot move under live payment accounts.
-        const [connectedGateway, stripeRow] = await Promise.all([
-          this.databaseService.repositories.storeIntegrationModel.exists({ storeId, type: 'payment', status: 'connected' }),
-          this.databaseService.repositories.storeModel.findById(storeId).select('+stripeConnectedAccountId').lean(),
-        ]);
-        if (connectedGateway || (stripeRow as any)?.stripeConnectedAccountId) {
-          throw new BadRequestException('Disconnect your payment providers before changing the store country.');
-        }
-      }
-      update.country = nextCountry;
+      update.country = await this.validateCountryChange(storeId, store, body.country);
     }
     if (body.businessType !== undefined) {
       update.businessType = body.businessType;
@@ -1187,6 +1191,9 @@ export class StoreService {
     }
     if (taxOverrides !== undefined) {
       updateData.taxOverrides = parseTaxOverrides(taxOverrides);
+    }
+    if (body.country !== undefined) {
+      updateData.country = await this.validateCountryChange(storeId, store, body.country);
     }
     if (showDutiesNotice !== undefined) {
       if (typeof showDutiesNotice !== 'boolean') throw new BadRequestException('showDutiesNotice must be a boolean');

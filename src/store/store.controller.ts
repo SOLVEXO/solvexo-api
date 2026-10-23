@@ -212,6 +212,10 @@ export class StoreController {
         throw new ForbiddenException("Your staff account doesn't have permission to manage tax settings.");
       }
     }
+    // The store country decides which payment providers exist for the store — owner-only, like the payment setup.
+    if (req.user.role === 'staff' && updateData.country !== undefined) {
+      throw new ForbiddenException('Only the store owner can change the store country.');
+    }
     return this.storeService.updateStore(actingSellerId(req.user), storeId, updateData);
   }
 
