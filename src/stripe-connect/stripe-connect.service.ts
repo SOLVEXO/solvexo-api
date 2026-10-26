@@ -308,6 +308,32 @@ export class StripeConnectService implements OnModuleInit {
     return { success: true, data: { url: accountLink.url } };
   }
 
+  /** Creates a Stripe STANDARD connected account (the seller owns it; used with direct charges, see StripeStandardPaymentProvider). */
+  async createStandardAccount(country: string, email: string | undefined, storeId: string): Promise<string> {
+    const stripe = this.assertStripeConfigured();
+    try {
+      const account = await stripe.accounts.create({ type: 'standard', country, email: email || undefined, metadata: { storeId } });
+      return account.id;
+    } catch (err: any) {
+      if (/signed up for Connect/i.test(String(err?.message))) {
+        this.logger.error('Stripe Connect is NOT enabled on the platform Stripe account - enable it at https://dashboard.stripe.com/connect');
+        throw new BadRequestException('Online card payments are not available yet on this platform. Please try again later.');
+      }
+      throw new BadRequestException(`Stripe could not create the account: ${err?.message ?? 'unknown error'}`);
+    }
+  }
+
+  async createAccountOnboardingUrl(accountId: string, refreshUrl: string, returnUrl: string): Promise<string> {
+    const stripe = this.assertStripeConfigured();
+    const link = await stripe.accountLinks.create({ account: accountId, refresh_url: refreshUrl, return_url: returnUrl, type: 'account_onboarding' });
+    return link.url;
+  }
+
+  async retrieveAccountState(accountId: string): Promise<{ chargesEnabled: boolean; detailsSubmitted: boolean }> {
+    const account = await this.assertStripeConfigured().accounts.retrieve(accountId);
+    return { chargesEnabled: !!account.charges_enabled, detailsSubmitted: !!account.details_submitted };
+  }
+
   /** Re-fetches live status from Stripe and updates the DB cache — called
    *  when the seller lands back on `returnUrl` after onboarding, and from
    *  the `account.updated` webhook for every subsequent change (verification
@@ -337,6 +363,14 @@ export class StripeConnectService implements OnModuleInit {
     await this.r.storeModel.updateMany(
       { stripeConnectedAccountId: account.id },
       { stripeConnectChargesEnabled: chargesEnabled, stripeConnectPayoutsEnabled: payoutsEnabled, stripeConnectStatus: status },
+    );
+    // A Standard account (Stripe rail with direct charges) lives on a StoreIntegration row instead of the store.
+    const ready = chargesEnabled && !!account.details_submitted;
+    await this.r.storeIntegrationModel.updateMany(
+      { provider: 'stripe_standard', 'config.accountId': account.id },
+      ready
+        ? { $set: { status: 'connected', lastError: null } }
+        : { $set: { status: 'error', lastError: 'Stripe onboarding incomplete', isEnabledForCheckout: false } },
     );
   }
 

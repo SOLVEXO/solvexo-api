@@ -59,7 +59,14 @@ describe('JazzCashPaymentProvider', () => {
     expect(JazzCashPaymentProvider.mapResponseCode('000')).toBe('paid');
     expect(JazzCashPaymentProvider.mapResponseCode('124')).toBe('pending');
     expect(JazzCashPaymentProvider.mapResponseCode('121')).toBe('pending');
-    expect(JazzCashPaymentProvider.mapResponseCode('157')).toBe('failed');
+    // 157 is "pending" in JazzCash's own guide (wallet / card checkout still in progress) — never a failure.
+    expect(JazzCashPaymentProvider.mapResponseCode('157')).toBe('pending');
+    expect(JazzCashPaymentProvider.mapResponseCode('210')).toBe('pending');
+    expect(JazzCashPaymentProvider.mapResponseCode('131')).toBe('refunded');
+    expect(JazzCashPaymentProvider.mapResponseCode('122')).toBe('refunded');
+    expect(JazzCashPaymentProvider.mapResponseCode('115')).toBe('failed');
+    expect(JazzCashPaymentProvider.mapResponseCode('112')).toBe('failed');
+    expect(JazzCashPaymentProvider.mapResponseCode(undefined)).toBe('failed');
   });
 
   it('a pending callback never finalizes and a failed one is payment_failed', async () => {

@@ -1,9 +1,11 @@
 import {
   Injectable,
+  Optional,
   BadRequestException,
   NotFoundException,
   ForbiddenException,
 } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
 import { availableStock, AVAILABLE_STOCK_EXPR } from '@/common/stock-availability.util';
 import { resolveCustomerId } from '@/common/customer-identity-resolve.util';
@@ -34,6 +36,9 @@ import { sellerCashBasis, sellerGiftCreditShare, sellerPayoutBasis, sellerPayout
 import { sellerTaxShare } from '../common/seller-tax-share.util';
 import { classifyPaymentRail } from '../commission-rules/payment-rail';
 import { markStorefrontSession } from '../common/storefront-session.util';
+import { GATEWAY_PAYMENT_TYPES, catalogEntry } from '../integrations/payment-provider-catalog';
+import { toDecryptedPaymentConfig } from '../integrations/integration-credentials.helper';
+import { PaymentProviderRegistry } from '../integrations/payment-provider.registry';
 
 /** Thrown by createOrder when the atomic stock reservation loses (the last unit was sold between the buyer paying
  *  and the order being created). Distinct type so the payment-finalize paths can auto-refund instead of retrying forever. */
@@ -78,6 +83,8 @@ export class PaymentService {
     private readonly draftOrdersService: DraftOrdersService,
     private readonly emailService: EmailService,
     private readonly storeCreditService: StoreCreditService,
+    // Lazily resolves the gateway registry (IntegrationsModule imports this module, so it cannot be injected directly).
+    @Optional() private readonly moduleRef?: ModuleRef,
   ) {
     const secretKey = this.configService
       .get<string>('STRIPE_SECRET_KEY')
@@ -157,6 +164,106 @@ export class PaymentService {
       { $inc: { amountRefunded: this.round(amountInPaymentCurrency) } },
     );
     return { id: refund.id };
+  }
+
+  /**
+   * Gives a gateway-paid (non-Stripe) payment back through the gateway's OWN refund API, for every place that used to
+   * say "refund it yourself" (returns, exchanges, order edits, cancellations, refund requests, out-of-stock).
+   *  - 'refunded' : the gateway accepted the refund (it may still settle later, e.g. a queued Mollie refund);
+   *  - 'manual'   : the gateway has no automatic refund (PayFast, JazzCash, Easypaisa, bank transfer...) or the payment was
+   *                 not taken through a connected gateway: the seller must refund it in the gateway's own portal;
+   *  - 'failed'   : the gateway rejected it (the seller is told to refund manually).
+   * Idempotent per key (one gatewayRefunds entry per key) and capped at the amount actually paid.
+   * amountInPaymentCurrency is in the currency the buyer was charged in (the checkout currency).
+   */
+  async refundGatewayTransaction(
+    transaction: any,
+    storeId: string,
+    amountInPaymentCurrency: number,
+    key: string,
+  ): Promise<{ status: 'refunded' | 'manual' | 'failed'; note: string; refundId?: string }> {
+    const { paymentTransactionModel, storeIntegrationModel } = this.databaseService.repositories;
+    const type = String(transaction?.paymentType ?? '');
+    const entry = catalogEntry(type);
+    const label = entry?.label ?? type;
+    const amount = this.round(amountInPaymentCurrency);
+    const currency = transaction?.currency ?? '';
+    const money = `${amount.toFixed(2)} ${currency}`.trim();
+    if (!transaction || !entry || entry.key === 'stripe') {
+      return { status: 'manual', note: `${money} was paid outside the platform - refund it to the customer yourself` };
+    }
+    if (entry.refunds !== 'api') {
+      return { status: 'manual', note: `${money} was paid with ${label}, which cannot refund automatically - refund it in your ${label} account` };
+    }
+    const registry = this.moduleRef?.get(PaymentProviderRegistry, { strict: false });
+    const integration: any = await storeIntegrationModel.findOne({ storeId, type: 'payment', provider: type });
+    if (!registry || !integration || !registry.isSupported(type as any) || !integration.credentialsEncrypted) {
+      return { status: 'manual', note: `${money} was paid with ${label}, which is not connected any more - refund it in your ${label} account` };
+    }
+
+    // One refund per key, never more than was paid: claim the key (and the capacity) atomically BEFORE calling the gateway.
+    const paid = Number(transaction.amount) || 0;
+    const claimed = await paymentTransactionModel.findOneAndUpdate(
+      {
+        _id: transaction._id,
+        'gatewayRefunds.key': { $ne: key },
+        amountRefunded: { $lte: this.round(paid - amount) + 0.005 },
+      },
+      { $push: { gatewayRefunds: { key, amount, refundId: '', status: 'pending', at: new Date() } } },
+      { new: true },
+    );
+    if (!claimed) {
+      const fresh: any = await paymentTransactionModel.findById(transaction._id).select('gatewayRefunds').lean();
+      const prior = (fresh?.gatewayRefunds ?? []).find((r: any) => r.key === key);
+      if (prior) {
+        return { status: 'refunded', note: `${money} was already refunded through ${label}`, refundId: prior.refundId || undefined };
+      }
+      return { status: 'failed', note: `${label} REFUND NOT SENT: ${money} is more than is left to refund on this payment - refund it manually if needed` };
+    }
+
+    try {
+      const result = await registry.resolve(type as any).refund(
+        String(transaction.providerPaymentId || transaction.providerSessionId),
+        amount,
+        toDecryptedPaymentConfig(integration),
+      );
+      if (!result.success) throw new Error(`${label} did not accept the refund`);
+      await paymentTransactionModel.updateOne(
+        { _id: transaction._id, 'gatewayRefunds.key': key },
+        { $set: { 'gatewayRefunds.$.status': result.status, 'gatewayRefunds.$.refundId': result.refundId ?? '' }, $inc: { amountRefunded: amount } },
+      );
+      const pending = result.status === 'pending';
+      return {
+        status: 'refunded',
+        refundId: result.refundId || undefined,
+        note: pending
+          ? `${money} refund started through ${label} - ${label} is still processing it`
+          : `${money} refunded to the original payment method through ${label}`,
+      };
+    } catch (err: any) {
+      // Free the key so the seller can retry (or refund manually).
+      await paymentTransactionModel.updateOne({ _id: transaction._id }, { $pull: { gatewayRefunds: { key } } }).catch(() => undefined);
+      await this.activityLogService.log({
+        storeId, category: 'finance', action: 'gateway_refund_failed',
+        description: `${label} refund of ${money} failed for payment ${String(transaction._id)}: ${err?.message ?? err}`,
+        actorId: 'system', actorRole: 'system', isSecurityAlert: true,
+        targetId: String(transaction._id), targetType: 'payment_transaction',
+      }).catch(() => undefined);
+      return { status: 'failed', note: `${label.toUpperCase()} REFUND FAILED (${err?.message ?? 'unknown error'}) - refund ${money} manually in your ${label} account` };
+    }
+  }
+
+  /** Same as refundGatewayTransaction, looking the payment up by the order it paid for. */
+  async refundGatewayPayment(
+    storeId: string,
+    orderId: string,
+    amountInPaymentCurrency: number,
+    key: string,
+  ): Promise<{ status: 'refunded' | 'manual' | 'failed'; note: string; refundId?: string }> {
+    const transaction = await this.databaseService.repositories.paymentTransactionModel.findOne({
+      orderIds: orderId, status: { $in: ['completed', 'refunded'] }, isDelete: false,
+    });
+    return this.refundGatewayTransaction(transaction, storeId, amountInPaymentCurrency, key);
   }
 
   private assertStripeConfigured(): InstanceType<typeof Stripe> {
@@ -562,6 +669,10 @@ export class PaymentService {
         // `charge.dispute.created`. See handleChargeDisputeStatusChange.
         const dispute = event.data.object;
         await this.handleChargeDisputeStatusChange(dispute);
+      } else if (event.account && String(event.type).startsWith('checkout.session.')) {
+        // A Stripe-Standard store's buyer finished (or abandoned) a hosted Checkout on the seller's own account: ask Stripe
+        // what happened and finalize through the same checks as every other gateway.
+        await this.handleConnectedCheckoutEvent(String(event.account), event.data?.object);
       } else if (event.type === 'account.updated') {
         // Stripe Connect account status change (KYC completed, a capability
         // revoked, etc.) — arrives on the platform's own webhook endpoint
@@ -1513,13 +1624,13 @@ export class PaymentService {
     }
   }
 
-  async finalizeGatewayPayment(providerSessionId: string, paymentType: string): Promise<{ orderIds: string[] } | null> {
+  async finalizeGatewayPayment(providerSessionId: string, paymentType: string, providerPaymentId?: string | null): Promise<{ orderIds: string[] } | null> {
     const { checkoutModel, paymentTransactionModel, orderModel, addressModel, cartModel } =
       this.databaseService.repositories;
 
     const transaction = await paymentTransactionModel.findOneAndUpdate(
       { providerSessionId, paymentType, status: 'pending', isDelete: false },
-      { status: 'completed', paidAt: new Date() },
+      { status: 'completed', paidAt: new Date(), ...(providerPaymentId ? { providerPaymentId: String(providerPaymentId) } : {}) },
       { new: true },
     );
 
@@ -1539,6 +1650,10 @@ export class PaymentService {
     try {
       orders = await this.createOrder(transaction.userId, checkout, orderModel, addressModel, paymentInfo, paymentInfo);
     } catch (err: any) {
+      if (err instanceof StockUnavailableException) {
+        const refunded = await this.autoRefundGatewayUnfulfillable(transaction, checkout, err.message);
+        if (refunded) return { orderIds: [] };
+      }
       await paymentTransactionModel.findByIdAndUpdate(transaction._id, { status: 'pending', paidAt: null });
       console.error('createOrder failed while finalizing gateway payment:', err?.message, {
         checkoutId: checkout._id, providerSessionId, paymentType,
@@ -1555,6 +1670,88 @@ export class PaymentService {
     // Seller notifications are already sent inside `createOrder()` above —
     // no need to duplicate that here (same as `finalizePaymentIntent`).
     return { orderIds: orders.map((o: any) => o._id.toString()) };
+  }
+
+  /**
+   * A buyer paid through a seller's gateway but the last unit sold out before the order could be created (Shopify never
+   * leaves the buyer paid with no order). When the gateway has a refund API the money goes back right away (stable key:
+   * a redelivered webhook can never refund twice), the transaction becomes 'refunded', the checkout is cancelled and
+   * the buyer is told. Returns false when the gateway cannot refund automatically (the caller keeps the old
+   * "retry later" behaviour) after raising an alert so the seller can refund by hand.
+   */
+  private async autoRefundGatewayUnfulfillable(transaction: any, checkout: any, reason: string): Promise<boolean> {
+    const { paymentTransactionModel, checkoutModel } = this.databaseService.repositories;
+    const storeId = String(checkout.items?.[0]?.storeId ?? '');
+    const result = await this.refundGatewayTransaction(transaction, storeId, transaction.amount, `auto-refund-no-stock-${transaction._id}`);
+    if (result.status !== 'refunded') {
+      await this.activityLogService.log({
+        storeId: storeId || 'platform', category: 'finance', action: 'payment_auto_refund_failed',
+        description: `Buyer paid through ${transaction.paymentType} but stock ran out (${reason}) and the payment could not be refunded automatically for checkout ${checkout._id}: ${result.note}`,
+        actorId: 'system', actorRole: 'system', isSecurityAlert: true,
+        targetId: String(checkout._id), targetType: 'checkout',
+      }).catch(() => undefined);
+      return false;
+    }
+    await paymentTransactionModel.findByIdAndUpdate(transaction._id, { status: 'refunded' });
+    await checkoutModel.findByIdAndUpdate(checkout._id, { status: 'cancelled' });
+    await this.activityLogService.log({
+      storeId: storeId || 'platform', category: 'finance', action: 'payment_auto_refunded_out_of_stock',
+      description: `An item sold out while a buyer was paying through ${transaction.paymentType} (${reason}); ${result.note}; no order was created`,
+      actorId: 'system', actorRole: 'system', isSecurityAlert: true,
+      targetId: String(checkout._id), targetType: 'checkout',
+    }).catch(() => undefined);
+    this.notificationsService.notify({
+      recipientId: String(transaction.userId),
+      recipientRole: 'user',
+      type: NOTIFICATION_TYPES.REFUND_ISSUED,
+      title: 'Item sold out — payment returned',
+      body: `Sorry, an item in your order sold out just as you paid. Your payment of ${transaction.amount} ${checkout.currency} has been refunded and no order was placed.`,
+      data: { checkoutId: String(checkout._id) },
+    }).catch(() => undefined);
+    return true;
+  }
+
+  private readonly gatewayPollAt = new Map<string, number>();
+
+  /** `checkout.session.*` event of a connected account -> reconcile the matching Stripe-Standard payment. */
+  private async handleConnectedCheckoutEvent(accountId: string, session: any): Promise<void> {
+    if (!session?.id) return;
+    const integration: any = await this.databaseService.repositories.storeIntegrationModel
+      .findOne({ provider: 'stripe_standard', 'config.accountId': accountId })
+      .select('storeId')
+      .lean();
+    if (!integration?.storeId) return;
+    await this.reconcileGatewaySession(String(integration.storeId), 'stripe_standard', String(session.id), 'stripe webhook');
+  }
+
+  /**
+   * Asks a seller's gateway itself what happened to one payment session and acts on it exactly like its webhook would:
+   * paid + amount/currency/store match -> order created (finalizeGatewayPayment, idempotent per session); failed ->
+   * transaction failed so the buyer can retry. Throws on an amount/store mismatch (no order). Used by the stuck-payment
+   * safety net, right after an Easypaisa app approval and by the buyer's return-page polling (gateways that need a
+   * capture step on return, like PayPal, are only completed by this call).
+   */
+  async reconcileGatewaySession(storeId: string, providerKey: string, sessionId: string, source: string): Promise<'paid' | 'failed' | 'pending'> {
+    const registry = this.moduleRef?.get(PaymentProviderRegistry, { strict: false });
+    const integration: any = await this.databaseService.repositories.storeIntegrationModel.findOne({ storeId, type: 'payment', provider: providerKey });
+    if (!registry || !integration || !registry.isSupported(integration.provider)) return 'pending';
+    const status = await registry.resolve(integration.provider).verifyPayment(sessionId, toDecryptedPaymentConfig(integration)).catch(() => null);
+    if (status?.status === 'paid') {
+      await this.assertGatewayPaymentMatches({
+        providerSessionId: sessionId,
+        paymentType: integration.provider,
+        storeId,
+        paidAmount: status.amount,
+        paidCurrency: status.currency,
+      });
+      await this.finalizeGatewayPayment(sessionId, integration.provider, status.paymentId);
+      return 'paid';
+    }
+    if (status?.status === 'failed') {
+      await this.failGatewayPayment(sessionId, integration.provider, `Gateway reported failed (${source})`);
+      return 'failed';
+    }
+    return 'pending';
   }
 
   /** Marks a pending gateway transaction as failed — no order is ever
@@ -1577,7 +1774,7 @@ export class PaymentService {
    *  re-checks Stripe if the webhook hasn't landed yet. Returns the same
    *  `orders` shape as `codPayment` so the order-success screen doesn't need
    *  a separate code path per payment method. */
-  async getPaymentStatus(userId: string, checkoutId: string) {
+  async getPaymentStatus(userId: string, checkoutId: string, opts?: { skipGatewayCheck?: boolean }) {
     if (!checkoutId) throw new BadRequestException('checkoutId is required');
 
     const { checkoutModel, paymentTransactionModel } =
@@ -1602,6 +1799,26 @@ export class PaymentService {
 
     if (await paymentTransactionModel.exists({ checkoutId, status: 'refunded', isDelete: false })) {
       return { success: true, data: { status: 'failed', orders: [], message: 'An item sold out as you paid — your payment has been refunded and no order was placed.' } };
+    }
+
+    // Seller-gateway payment still pending: ask the gateway NOW instead of waiting for its webhook (a webhook can be
+    // late or never arrive; PayPal-style gateways are only completed by this check). Throttled per transaction.
+    if (!opts?.skipGatewayCheck) {
+      const gw: any = await paymentTransactionModel
+        .findOne({
+          checkoutId, status: 'pending', isDelete: false, providerSessionId: { $ne: null },
+          paymentType: { $in: GATEWAY_PAYMENT_TYPES.filter((t) => t !== 'stripe') },
+        })
+        .sort({ createdAt: -1 })
+        .select('paymentType providerSessionId')
+        .lean();
+      if (gw && Date.now() - (this.gatewayPollAt.get(String(gw._id)) ?? 0) > 3000) {
+        if (this.gatewayPollAt.size > 500) this.gatewayPollAt.delete(this.gatewayPollAt.keys().next().value as string);
+        this.gatewayPollAt.set(String(gw._id), Date.now());
+        const outcome = await this.reconcileGatewaySession(String(checkout.items?.[0]?.storeId ?? ''), gw.paymentType, gw.providerSessionId, 'return page')
+          .catch(() => 'pending' as const);
+        if (outcome === 'paid') return this.getPaymentStatus(userId, checkoutId, { skipGatewayCheck: true });
+      }
     }
 
     const pending = await paymentTransactionModel.findOne({

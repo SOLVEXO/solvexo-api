@@ -11,7 +11,8 @@ import { encryptCredential, decryptCredential, maskSecret } from '../common/cred
 import { PaymentProviderRegistry } from './payment-provider.registry';
 import { WhatsAppCloudProvider } from './providers/whatsapp-cloud.provider';
 import { toDecryptedPaymentConfig } from './integration-credentials.helper';
-import { paymentAvailability, resolveStoreCountry } from './payment-availability.util';
+import { gatewayKeysForCountry, paymentAvailability, resolveStoreCountry } from './payment-availability.util';
+import { catalogEntry, gatewayChargeCurrency, inferGatewayMode } from './payment-provider-catalog';
 import { WHATSAPP_EVENTS, WHATSAPP_PARAM_TOKENS, isWhatsAppEvent, resolveWhatsAppEventSettings } from './whatsapp-events';
 import {
   STORE_INTEGRATION_PROVIDERS,
@@ -20,11 +21,6 @@ import {
   StoreIntegrationType,
 } from './schemas/store-integration.schema';
 
-/** Providers available for a store's own bound currency — see Phase 2 §currency and Store.baseCurrency. */
-const PROVIDERS_BY_CURRENCY: Record<'PKR' | 'USD', StoreIntegrationProvider[]> = {
-  PKR: ['safepay', 'jazzcash', 'easypaisa', 'payfast', 'bank_transfer'],
-  USD: ['stripe'],
-};
 
 // Providers with no PaymentProviderRegistry entry at all — not a real-time
 // gateway (no API calls, no webhook), so `registry.isSupported()` below
@@ -284,10 +280,10 @@ export class StoreIntegrationsService implements OnModuleInit {
     // Pakistani gateways only for Pakistan stores. Stripe is always listed so a seller outside its supported
     // countries sees WHY it is unavailable instead of nothing.
     const country = resolveStoreCountry(store);
+    const gateways = gatewayKeysForCountry(country) as StoreIntegrationProvider[];
     const availableProviders: StoreIntegrationProvider[] = [
-      ...PROVIDERS_BY_CURRENCY.PKR.filter(
-        (p) => paymentAvailability(p, country).available && (REGISTRY_EXEMPT_PROVIDERS.includes(p) || this.registry.isSupported(p)),
-      ),
+      ...gateways.filter((p) => this.registry.isSupported(p)),
+      ...(paymentAvailability('bank_transfer', country).available ? (['bank_transfer'] as StoreIntegrationProvider[]) : []),
       'stripe',
     ];
 
@@ -303,6 +299,7 @@ export class StoreIntegrationsService implements OnModuleInit {
           return {
             available: availability.available,
             unavailableReason: availability.reason,
+            catalog: this.catalogView('stripe', store),
             id: null,
             type: 'payment' as const,
             provider: 'stripe' as const,
@@ -322,10 +319,12 @@ export class StoreIntegrationsService implements OnModuleInit {
           };
         }
         const doc = byProvider.get(provider);
-        if (doc) return { ...this.toPublicView(doc), available: true, unavailableReason: null };
+        const catalog = this.catalogView(provider, store);
+        if (doc) return { ...this.toPublicView(doc), available: true, unavailableReason: null, catalog };
         return {
           available: true,
           unavailableReason: null,
+          catalog,
           id: null,
           type: 'payment' as const,
           provider,
@@ -334,9 +333,7 @@ export class StoreIntegrationsService implements OnModuleInit {
           isEnabledForCheckout: false,
           lastVerifiedAt: null,
           lastError: null,
-          // Reached only for a local (PKR-only) gateway — `localProviders`
-          // above is only ever populated when store.baseCurrency === 'PKR'.
-          config: { currency: 'PKR' },
+          config: { currency: gatewayChargeCurrency(provider, store.baseCurrency) },
           maskedHints: {},
         };
       }),
@@ -381,15 +378,19 @@ export class StoreIntegrationsService implements OnModuleInit {
         'Stripe is connected via the existing Stripe Connect onboarding flow — POST /api/stripe-connect/onboarding-link, not this endpoint.',
       );
     }
+    if (provider === 'stripe_standard') {
+      throw new BadRequestException('Stripe is connected through Stripe\'s own onboarding — use the "Connect with Stripe" button.');
+    }
 
     if (type === 'payment') {
       // 'stripe' is rejected above, so this is a local gateway. Same country rule as list(): refused here too, not
       // only hidden. (A Pakistan store priced in another currency can connect; checkout then asks the buyer to
       // switch the checkout to PKR — GATEWAY_CURRENCY_MISMATCH.)
       const availability = paymentAvailability(provider, resolveStoreCountry(store));
-      if (!availability.available || !PROVIDERS_BY_CURRENCY.PKR.includes(provider)) {
+      if (!availability.available || !(REGISTRY_EXEMPT_PROVIDERS.includes(provider) || this.registry.isSupported(provider))) {
         throw new BadRequestException(availability.reason ?? `"${provider}" is not available for this store`);
       }
+      if (catalogEntry(provider)?.generic) return this.connectGeneric(storeId, sellerId, provider, body, store);
       return this.connectPayment(storeId, sellerId, provider, body);
     }
     if (type === 'whatsapp' && provider === 'whatsapp_cloud') {
@@ -404,9 +405,107 @@ export class StoreIntegrationsService implements OnModuleInit {
     throw new BadRequestException(`"${provider}" does not support type "${type}"`);
   }
 
+  /**
+   * Stripe Standard rail: creates (once) the seller's own Standard Stripe account for this store and returns Stripe's
+   * hosted onboarding URL. The account id lives on the StoreIntegration row (`config.accountId`); the row stays
+   * 'error' ("onboarding incomplete") until Stripe reports charges enabled + details submitted.
+   */
+  async startStripeStandard(storeId: string, sellerId: string, refreshUrl: string, returnUrl: string) {
+    const store = await this.assertOwnedStore(storeId, sellerId);
+    const country = resolveStoreCountry(store);
+    const availability = paymentAvailability('stripe_standard', country);
+    if (!availability.available || !country) throw new BadRequestException(availability.reason ?? 'Stripe is not available for this store.');
+
+    let integration: any = await this.repos.storeIntegrationModel.findOne({ storeId, type: 'payment', provider: 'stripe_standard' });
+    let accountId: string | undefined = integration?.config?.accountId;
+    if (!accountId) {
+      const seller: any = await this.repos.sellerModel.findById(sellerId).select('email').lean();
+      accountId = await this.stripeConnectService.createStandardAccount(country, seller?.email, storeId);
+      integration = await this.repos.storeIntegrationModel.findOneAndUpdate(
+        { storeId, type: 'payment', provider: 'stripe_standard' },
+        {
+          $set: { sellerId, mode: this.stripeConnectService.isTestMode() ? 'sandbox' : 'live', status: 'error', lastError: 'Stripe onboarding incomplete', 'config.accountId': accountId, 'config.displayName': 'Card payment (Stripe)', 'config.currency': gatewayChargeCurrency('stripe_standard', store.baseCurrency) },
+          $setOnInsert: { webhookToken: randomBytes(32).toString('hex'), isEnabledForCheckout: false },
+        },
+        { new: true, upsert: true },
+      );
+      await this.logChange(storeId, sellerId, 'integration.connect', integration, { provider: 'stripe_standard' });
+    }
+    const url = await this.stripeConnectService.createAccountOnboardingUrl(accountId, refreshUrl, returnUrl);
+    return { success: true, data: { url } };
+  }
+
+  /** Re-reads the Standard account from Stripe (after the seller returns from onboarding) and updates the row. */
+  async syncStripeStandard(storeId: string, sellerId: string) {
+    const store = await this.assertOwnedStore(storeId, sellerId);
+    const integration: any = await this.repos.storeIntegrationModel.findOne({ storeId, type: 'payment', provider: 'stripe_standard' });
+    if (!integration?.config?.accountId) throw new BadRequestException('Start the Stripe connection first.');
+    const state = await this.stripeConnectService.retrieveAccountState(integration.config.accountId);
+    const ready = state.chargesEnabled && state.detailsSubmitted;
+    const doc = await this.repos.storeIntegrationModel.findOneAndUpdate(
+      { _id: integration._id },
+      ready
+        ? { $set: { status: 'connected', lastError: null } }
+        : { $set: { status: 'error', lastError: 'Stripe onboarding incomplete', isEnabledForCheckout: false } },
+      { new: true },
+    );
+    return { success: true, data: { ...this.toPublicView(doc!), catalog: this.catalogView('stripe_standard', store) } };
+  }
+
   async updateShippingSettings(storeId: string, sellerId: string, dto: ShippingSettingsInput) {
     await this.assertOwnedStore(storeId, sellerId);
     return this.shippingRatesService.updateSettings(storeId, sellerId, dto);
+  }
+
+  /** What the seller UI needs to render a provider card/form and what a buyer can be charged in (from the catalog). */
+  private catalogView(provider: string, store: { baseCurrency?: string | null }) {
+    const entry = catalogEntry(provider);
+    if (!entry) return null;
+    return {
+      label: entry.label,
+      generic: entry.generic,
+      fields: entry.generic ? entry.fields : [],
+      webhook: entry.webhook,
+      webhookSecretLabel: entry.webhookSecretLabel ?? null,
+      webhookHelp: entry.webhookHelp ?? null,
+      refunds: entry.refunds,
+      currencies: entry.currencies,
+      chargeCurrency: gatewayChargeCurrency(provider, store.baseCurrency),
+      docsUrl: entry.docsUrl ?? null,
+    };
+  }
+
+  /** Connect form for the catalog-driven global gateways (Stripe own keys, PayPal, Razorpay, Paystack, Flutterwave, Mollie). */
+  private async connectGeneric(storeId: string, sellerId: string, provider: StoreIntegrationProvider, body: Record<string, any>, store: { baseCurrency?: string | null }) {
+    const entry = catalogEntry(provider)!;
+    const credentials: Record<string, string> = {};
+    const missing: string[] = [];
+    for (const f of entry.fields) {
+      const v = typeof body[f.key] === 'string' ? body[f.key].trim() : '';
+      if (!v && !f.optional) missing.push(f.label);
+      if (v) credentials[f.key] = v.slice(0, 500);
+    }
+    if (missing.length) throw new BadRequestException(`${missing.join(', ')} ${missing.length > 1 ? 'are' : 'is'} required`);
+    const credentialsEncrypted = encryptCredential(JSON.stringify(credentials), 'INTEGRATIONS');
+    const mode = resolveMode(body.mode, inferGatewayMode(provider, credentials) ?? 'sandbox');
+    const displayName = typeof body.displayName === 'string' && body.displayName.trim() ? body.displayName.trim().slice(0, 60) : entry.label;
+    const doc = await this.repos.storeIntegrationModel.findOneAndUpdate(
+      { storeId, type: 'payment', provider },
+      {
+        $set: {
+          sellerId, mode, status: 'connected', credentialsEncrypted,
+          'config.displayName': displayName,
+          'config.currency': gatewayChargeCurrency(provider, store.baseCurrency),
+          'config.maskedHints': maskCredentials(credentials),
+          lastError: null,
+          lastVerifiedAt: null,
+        },
+        $setOnInsert: { webhookToken: randomBytes(32).toString('hex'), isEnabledForCheckout: false },
+      },
+      { new: true, upsert: true },
+    );
+    await this.logChange(storeId, sellerId, 'integration.connect', doc, { provider, mode });
+    return { success: true, data: { ...this.toPublicView(doc), catalog: this.catalogView(provider, store) } };
   }
 
   private async connectPayment(storeId: string, sellerId: string, provider: StoreIntegrationProvider, body: Record<string, any>) {

@@ -9,6 +9,13 @@ import { StripePaymentProvider } from './providers/stripe-integration.provider';
 import { JazzCashPaymentProvider } from './providers/jazzcash.provider';
 import { PayFastPaymentProvider } from './providers/payfast.provider';
 import { EasypaisaPaymentProvider } from './providers/easypaisa.provider';
+import { StripeOwnPaymentProvider } from './providers/stripe-own.provider';
+import { StripeStandardPaymentProvider } from './providers/stripe-standard.provider';
+import { PayPalPaymentProvider } from './providers/paypal.provider';
+import { RazorpayPaymentProvider } from './providers/razorpay.provider';
+import { PaystackPaymentProvider } from './providers/paystack.provider';
+import { FlutterwavePaymentProvider } from './providers/flutterwave.provider';
+import { MolliePaymentProvider } from './providers/mollie.provider';
 import { WhatsAppCloudProvider } from './providers/whatsapp-cloud.provider';
 import { PaymentProviderRegistry } from './payment-provider.registry';
 import { IntegrationWebhookEventService } from './integration-webhook-event.service';
@@ -39,6 +46,13 @@ import { ShippingRatesService } from '../shipping-rates/shipping-rates.service';
     JazzCashPaymentProvider,
     PayFastPaymentProvider,
     EasypaisaPaymentProvider,
+    StripeOwnPaymentProvider,
+    StripeStandardPaymentProvider,
+    PayPalPaymentProvider,
+    RazorpayPaymentProvider,
+    PaystackPaymentProvider,
+    FlutterwavePaymentProvider,
+    MolliePaymentProvider,
     StripePaymentProvider,
     WhatsAppCloudProvider,
     PaymentProviderRegistry,

@@ -612,6 +612,14 @@ export class Order {
       'easypaisa',
       'payfast',
       'manual',
+      // Global gateways with the seller's own keys (payment-provider-catalog.ts).
+      'stripe_own',
+      'stripe_standard',
+      'paypal',
+      'razorpay',
+      'paystack',
+      'flutterwave',
+      'mollie',
     ],
     required: true,
   })

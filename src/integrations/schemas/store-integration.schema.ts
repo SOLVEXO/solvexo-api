@@ -13,6 +13,14 @@ export const STORE_INTEGRATION_PROVIDERS = [
   'payfast',
   'safepay',
   'stripe',
+  // Global third-party gateways connected with the seller's OWN keys (see payment-provider-catalog.ts).
+  'stripe_own',
+  'stripe_standard',
+  'paypal',
+  'razorpay',
+  'paystack',
+  'flutterwave',
+  'mollie',
   // Manual bank transfer — the seller's own bank account details, shown to
   // the buyer at checkout (not a secret, unlike every other provider here:
   // no credentialsEncrypted, the account number IS what gets displayed).

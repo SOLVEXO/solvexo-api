@@ -9,6 +9,7 @@ import { DatabaseService } from '@/database/databaseservice';
 import { reserveRefundCapacity } from '../common/refund-cap.util';
 import { FinanceService } from '@/finance/finance.service';
 import { PaymentService } from '@/payment/payment.service';
+import { isThirdPartyGatewayType } from '@/integrations/payment-provider-catalog';
 import { ExchangeRateService } from '@/exchange-rate/exchange-rate.service';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { GiftCardsService } from '@/gift-cards/gift-cards.service';
@@ -263,6 +264,10 @@ export class RefundRequestService {
     );
 
     let stripeRefundId: string | null = null;
+    if (isThirdPartyGatewayType(order.paymentType)) {
+      // Seller's own gateway: refund through its API when it has one (the result is logged on the order's activity).
+      await this.paymentService.refundGatewayPayment(sellerOrder.storeId, order._id.toString(), buyerRefundAmount, `refund_request_${request._id}`);
+    }
     if (order.paymentType === 'stripe') {
       const transaction = await this.databaseService.repositories.paymentTransactionModel.findOne({
         orderIds: order._id.toString(), status: 'completed', isDelete: false,

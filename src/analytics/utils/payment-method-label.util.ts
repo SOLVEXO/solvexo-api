@@ -23,6 +23,13 @@ export const PAYMENT_METHOD_LABELS: Record<string, string> = {
   jazzcash: 'JazzCash',
   easypaisa: 'Easypaisa',
   payfast: 'PayFast',
+  stripe_own: 'Stripe (own account)',
+  stripe_standard: 'Card (Stripe)',
+  paypal: 'PayPal',
+  razorpay: 'Razorpay',
+  paystack: 'Paystack',
+  flutterwave: 'Flutterwave',
+  mollie: 'Mollie',
   manual: 'Custom manual payment',
 };
 

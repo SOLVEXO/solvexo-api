@@ -306,7 +306,8 @@ describe('CheckoutPaymentMethodsService', () => {
       // row created in initiatePayment never gets marked completed whenever
       // this (buyer-app) path wins the race against the webhook, which it
       // usually does.
-      expect(paymentService.finalizeGatewayPayment).toHaveBeenCalledWith('track_1', 'safepay');
+      // The gateway's own payment id (used later for refunds) travels with the finalize call; Safepay reports none.
+      expect(paymentService.finalizeGatewayPayment).toHaveBeenCalledWith('track_1', 'safepay', undefined);
       expect(result).toEqual({ success: true, data: { status: 'completed', orderIds: ['order-1'] } });
     });
   });

@@ -5,6 +5,7 @@ import { StripePaymentProvider } from './providers/stripe-integration.provider';
 import { JazzCashPaymentProvider } from './providers/jazzcash.provider';
 import { PayFastPaymentProvider } from './providers/payfast.provider';
 import { EasypaisaPaymentProvider } from './providers/easypaisa.provider';
+import { GENERIC_GATEWAY_KEYS } from './payment-provider-catalog';
 
 describe('PaymentProviderRegistry', () => {
   let registry: PaymentProviderRegistry;
@@ -20,7 +21,8 @@ describe('PaymentProviderRegistry', () => {
     jazzcash = { providerKey: 'jazzcash' } as any;
     payfast = { providerKey: 'payfast' } as any;
     easypaisa = { providerKey: 'easypaisa' } as any;
-    registry = new PaymentProviderRegistry(safepay, stripe, jazzcash, payfast, easypaisa);
+    const extra = ['stripe_own', 'paypal', 'razorpay', 'paystack', 'flutterwave', 'mollie', 'stripe_standard'].map((providerKey) => ({ providerKey } as any));
+    registry = new PaymentProviderRegistry(safepay, stripe, jazzcash, payfast, easypaisa, extra[0], extra[1], extra[2], extra[3], extra[4], extra[5], extra[6]);
   });
 
   it('resolves a registered provider to its concrete implementation', () => {
@@ -38,6 +40,10 @@ describe('PaymentProviderRegistry', () => {
     expect(registry.isSupported('easypaisa')).toBe(true);
     // Bank transfer is a manual method with no gateway implementation.
     expect(registry.isSupported('bank_transfer')).toBe(false);
+  });
+
+  it('registers every catalog-driven global gateway, so none can be offered without an implementation', () => {
+    for (const key of GENERIC_GATEWAY_KEYS) expect(registry.isSupported(key as any)).toBe(true);
   });
 
   it('throws a clear error resolving an unregistered provider rather than returning undefined silently', () => {

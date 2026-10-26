@@ -20,6 +20,7 @@ import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { FinanceService } from '@/finance/finance.service';
 import { PaymentService } from '@/payment/payment.service';
+import { isThirdPartyGatewayType } from '@/integrations/payment-provider-catalog';
 import { ExchangeRateService } from '@/exchange-rate/exchange-rate.service';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { LoyaltyService } from '@/loyalty/loyalty.service';
@@ -2748,6 +2749,16 @@ export class OrdersService {
         totalBuyerRefund += amount;
       }
 
+      if (isThirdPartyGatewayType(order.paymentType) && totalBuyerRefund > 0) {
+        // Seller's own gateway: refund through its API when it has one; otherwise the seller is told to do it by hand.
+        const cancelStoreId = String(order.sellerOrders[targetItems[0]?.soIndex ?? 0]?.storeId ?? '');
+        const gw = await this.paymentService.refundGatewayPayment(
+          cancelStoreId, orderId, totalBuyerRefund,
+          `order_cancel_${orderId}_${targetItems.map((t) => t.item._id.toString()).sort().join(',')}`,
+        );
+        await this.pushTimeline(orderId, 'refund', gw.note, actor.actorId, actor.actorRole as any).catch(() => undefined);
+      }
+
       if (order.paymentType === 'stripe' && totalBuyerRefund > 0) {
         const transaction =
           await this.databaseService.repositories.paymentTransactionModel.findOne(
@@ -3077,6 +3088,11 @@ export class OrdersService {
     }
 
     let stripeRefundId: string | null = null;
+    let gatewayRefundNote = '';
+    if (isThirdPartyGatewayType(order.paymentType)) {
+      const gw = await this.paymentService.refundGatewayPayment(storeId, orderId, amount, `order_manual_refund_${orderId}_${Date.now()}`);
+      gatewayRefundNote = gw.note;
+    }
     if (order.paymentType === 'stripe') {
       const transaction = await this.databaseService.repositories.paymentTransactionModel.findOne({
         orderIds: orderId, status: 'completed', isDelete: false,
@@ -3106,7 +3122,7 @@ export class OrdersService {
       { $inc: { [`sellerOrders.${soIndex}.manualRefundedAmount`]: amount } },
     );
 
-    await this.pushTimeline(orderId, 'refund', `Refunded ${amount} ${buyerCurrency} to the original payment method — ${reason}`, sellerId, 'seller');
+    await this.pushTimeline(orderId, 'refund', gatewayRefundNote ? `${gatewayRefundNote} — ${reason}` : `Refunded ${amount} ${buyerCurrency} to the original payment method — ${reason}`, sellerId, 'seller');
     await this.activityLogService.log({
       storeId, category: 'orders', action: 'order_manual_refund_issued',
       description: `Refunded ${amount} ${buyerCurrency} on order #${order.orderNumber} — ${reason}`,

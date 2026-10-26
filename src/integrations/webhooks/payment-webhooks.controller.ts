@@ -115,7 +115,7 @@ export class PaymentWebhooksController {
           paidAmount: verified.amount,
           paidCurrency: verified.currency,
         });
-        await this.paymentService.finalizeGatewayPayment(event.sessionId, integration.provider);
+        await this.paymentService.finalizeGatewayPayment(event.sessionId, integration.provider, verified.paymentId ?? event.status?.paymentId);
       } else if (event.type === 'payment_failed') {
         await this.paymentService.failGatewayPayment(event.sessionId, integration.provider, JSON.stringify(event.status?.raw ?? {}).slice(0, 300));
       }

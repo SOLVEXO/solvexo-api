@@ -8,6 +8,7 @@ import { PaymentProviderRegistry } from './payment-provider.registry';
 import { toDecryptedPaymentConfig } from './integration-credentials.helper';
 import { StoreIntegrationProvider } from './schemas/store-integration.schema';
 import { StuckGatewayPaymentsService } from './stuck-gateway-payments.service';
+import { gatewayChargeCurrency } from './payment-provider-catalog';
 
 /**
  * Buyer-facing payment-method resolution for checkout — Phase 2 design doc
@@ -52,7 +53,7 @@ export class CheckoutPaymentMethodsService {
    * Stripe account settles in the store currency. Shopify: third-party gateways can't take local (market) currencies.
    */
   static gatewayCurrency(provider: string, storeCurrency: string | null | undefined): string {
-    return provider === 'stripe' ? (storeCurrency || 'USD') : 'PKR';
+    return provider === 'stripe' ? (storeCurrency || 'USD') : gatewayChargeCurrency(provider, storeCurrency);
   }
 
   async listPaymentMethods(checkoutId: string, userId: string) {
@@ -160,7 +161,7 @@ export class CheckoutPaymentMethodsService {
     const config = toDecryptedPaymentConfig(integration);
     // Contact details some gateways require up front (PayFast wants the buyer's mobile number).
     const [buyer, address] = await Promise.all([
-      this.repos.userModel.findById(userId).select('email contactEmail phone').lean(),
+      this.repos.userModel.findById(userId).select('email contactEmail phone name').lean(),
       (checkout as any).addressId ? this.repos.addressModel.findById((checkout as any).addressId).select('phoneNumber').lean() : null,
     ]);
     // Local gateways (safepay/jazzcash/easypaisa/payfast) are genuinely
@@ -191,6 +192,7 @@ export class CheckoutPaymentMethodsService {
       orderId: checkoutId, amount, currency, storeId, returnUrl, cancelUrl,
       buyerEmail: (buyer as any)?.contactEmail ?? (buyer as any)?.email,
       buyerPhone: (address as any)?.phoneNumber ?? (buyer as any)?.phone,
+      buyerName: String((buyer as any)?.name ?? '').trim() || undefined,
       walletAccount: typeof walletAccount === 'string' ? walletAccount.slice(0, 20) : undefined,
     };
     const session = await provider.initiatePayment(orderContext, config);
@@ -316,7 +318,7 @@ export class CheckoutPaymentMethodsService {
     // the webhook in practice, so this MUST be the same method that also
     // completes the PaymentTransaction row, or that row is left orphaned at
     // 'pending' forever whenever this path wins the race (the common case).
-    const result = await this.paymentService.finalizeGatewayPayment(sessionId, integration.provider);
+    const result = await this.paymentService.finalizeGatewayPayment(sessionId, integration.provider, paymentStatus.paymentId);
     return { success: true, data: { status: 'completed', orderIds: result?.orderIds ?? [] } };
   }
 }

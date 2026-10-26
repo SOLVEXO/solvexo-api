@@ -5,11 +5,11 @@ import { PaymentService } from '../payment/payment.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { ActivityLogService } from '../activity-log/activity-log.service';
 import { PaymentProviderRegistry } from './payment-provider.registry';
-import { toDecryptedPaymentConfig } from './integration-credentials.helper';
+import { GATEWAY_PAYMENT_TYPES, PAYMENT_PROVIDER_CATALOG } from './payment-provider-catalog';
 
 /** Seller's own gateways whose result arrives asynchronously (webhook / browser return / Easypaisa app approval). */
-const GATEWAY_TYPES = ['safepay', 'jazzcash', 'payfast', 'easypaisa'] as const;
-const GATEWAY_NAMES: Record<string, string> = { safepay: 'Safepay', jazzcash: 'JazzCash', payfast: 'PayFast', easypaisa: 'Easypaisa' };
+const GATEWAY_TYPES = GATEWAY_PAYMENT_TYPES.filter((t) => t !== 'stripe');
+const GATEWAY_NAMES: Record<string, string> = Object.fromEntries(Object.values(PAYMENT_PROVIDER_CATALOG).map((e) => [e.key, e.label]));
 /** A buyer normally finishes a hosted gateway page within minutes; past this the result is treated as missing. */
 const STUCK_AFTER_MS = 60 * 60_000;
 /** Older sessions are abandoned checkouts, not lost payments — never alert on them. */
@@ -46,26 +46,7 @@ export class StuckGatewayPaymentsService {
    * reopened. Throws on an amount/store mismatch (no order). Also used right after an Easypaisa app approval.
    */
   async reconcileSession(storeId: string, providerKey: string, sessionId: string, source: string): Promise<'paid' | 'failed' | 'pending'> {
-    const integration = await this.repos.storeIntegrationModel.findOne({ storeId, type: 'payment', provider: providerKey });
-    if (!integration || !this.registry.isSupported(integration.provider)) return 'pending';
-    const provider = this.registry.resolve(integration.provider);
-    const status = await provider.verifyPayment(sessionId, toDecryptedPaymentConfig(integration)).catch(() => null);
-    if (status?.status === 'paid') {
-      await this.paymentService.assertGatewayPaymentMatches({
-        providerSessionId: sessionId,
-        paymentType: integration.provider,
-        storeId,
-        paidAmount: status.amount,
-        paidCurrency: status.currency,
-      });
-      await this.paymentService.finalizeGatewayPayment(sessionId, integration.provider);
-      return 'paid';
-    }
-    if (status?.status === 'failed') {
-      await this.paymentService.failGatewayPayment(sessionId, integration.provider, `Gateway reported failed (${source})`);
-      return 'failed';
-    }
-    return 'pending';
+    return this.paymentService.reconcileGatewaySession(storeId, providerKey, sessionId, source);
   }
 
   async processStuckPayments(now = new Date()): Promise<{ checked: number; recovered: number; alerted: number }> {

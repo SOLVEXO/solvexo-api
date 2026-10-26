@@ -18,7 +18,9 @@
 export type PaymentRail = 'solvexo_card' | 'manual' | 'third_party';
 
 const SOLVEXO_CARD_METHODS = new Set(['stripe', 'credit_card', 'debit_card']);
-const MANUAL_METHODS = new Set(['cash_on_delivery', 'cod', 'manual_bank_transfer', 'bank_transfer', 'cash', 'pos', 'manual', 'store_credit']);
+// 'stripe_standard' = a Stripe DIRECT charge on the seller's own Standard account: the money never touches the platform
+// and Stripe bills the seller itself, so it is a fee-free direct-settled rail like COD / bank transfer.
+const MANUAL_METHODS = new Set(['stripe_standard', 'cash_on_delivery', 'cod', 'manual_bank_transfer', 'bank_transfer', 'cash', 'pos', 'manual', 'store_credit']);
 
 export function classifyPaymentRail(paymentMethodType?: string | null): PaymentRail {
   const m = (paymentMethodType ?? 'stripe').toLowerCase();

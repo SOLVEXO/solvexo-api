@@ -9,6 +9,7 @@ import { NOTIFICATION_TYPES } from '../notifications/notification.types';
 import { orderCustomerName } from './shipping-email.util';
 import { ExchangeRateService } from '../exchange-rate/exchange-rate.service';
 import { PaymentService } from '../payment/payment.service';
+import { isThirdPartyGatewayType } from '../integrations/payment-provider-catalog';
 import { FinanceService } from '../finance/finance.service';
 import { StoreCreditService } from '../store-credit/store-credit.service';
 import { GiftCardsService } from '../gift-cards/gift-cards.service';
@@ -351,6 +352,13 @@ export class OrderReturnsService {
                 });
               }
             }
+          } else if (isThirdPartyGatewayType(order.paymentType)) {
+            // Seller's own gateway (Safepay, PayPal, Razorpay...): refund through its API when it has one, else say so.
+            const gw = await this.paymentService.refundGatewayPayment(
+              storeId, orderId, granted,
+              `return_refund_${orderId}_${createHash('sha1').update(sortedIds.join(',')).digest('hex').slice(0, 24)}`,
+            );
+            refundNote = gw.note;
           } else {
             refundNote = `${granted.toFixed(2)} ${buyerCurrency} was paid outside the platform - refund it to the customer yourself`;
           }

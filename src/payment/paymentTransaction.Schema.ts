@@ -1,6 +1,7 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument } from 'mongoose';
 import { FxSnapshot, FxSnapshotSchema } from '../exchange-rate/schemas/exchange-rate.schema';
+import { GATEWAY_PAYMENT_TYPES } from '../integrations/payment-provider-catalog';
 
 export type PaymentTransactionDocument = HydratedDocument<PaymentTransaction>;
 
@@ -16,7 +17,7 @@ export class PaymentTransaction {
   @Prop({ type: [String], default: [] })
   orderIds: string[];
 
-  @Prop({ enum: ['cash_on_delivery', 'stripe', 'manual_bank_transfer', 'safepay', 'jazzcash', 'easypaisa', 'payfast', 'manual', 'store_credit'], required: true })
+  @Prop({ enum: ['cash_on_delivery', 'stripe', 'manual_bank_transfer', 'manual', 'store_credit', ...GATEWAY_PAYMENT_TYPES], required: true })
   paymentType: string;
 
   @Prop({ required: true })
@@ -67,6 +68,16 @@ export class PaymentTransaction {
   // gateway's webhook reports the outcome (see PaymentWebhooksController).
   @Prop({ type: String, default: null, index: true })
   providerSessionId: string | null;
+
+  // The gateway's own id of the successful charge/capture (PayPal capture id, Razorpay payment id, Stripe payment intent...).
+  // Set when the payment is finalized; refunds go through it (falls back to providerSessionId when a gateway uses one id).
+  @Prop({ type: String, default: null })
+  providerPaymentId: string | null;
+
+  // Refunds sent through a gateway's own refund API (non-Stripe gateways). One entry per idempotency key, so a retried
+  // refund call can never pay the buyer twice; an entry is removed again when the gateway rejected the refund.
+  @Prop({ type: [{ key: String, amount: Number, refundId: String, status: String, at: Date, _id: false }], default: [] })
+  gatewayRefunds: { key: string; amount: number; refundId: string; status: string; at: Date }[];
 
   // Storefront page the buyer is sent back to after a gateway that POSTs the result to OUR return route
   // (JazzCash). Set by CheckoutPaymentMethodsService.initiatePayment; read only by the return redirect.

@@ -19,6 +19,8 @@ export type PaymentEventType = 'payment_succeeded' | 'payment_failed' | 'payment
 export interface PaymentStatus {
   status: 'pending' | 'paid' | 'failed' | 'refunded';
   providerReference: string;
+  /** The gateway's id of the successful charge/capture, when it differs from the session id (refunds use it). */
+  paymentId?: string;
   amount?: number;
   /** Real, dynamic currency code (see the Markets architecture), not a fixed
    *  literal union. */
@@ -70,6 +72,7 @@ export interface PaymentOrderContext {
   storeId: string;
   buyerEmail?: string;
   buyerPhone?: string;
+  buyerName?: string;
   /** Buyer-entered wallet account (Easypaisa mobile account number) for push-approval gateways; falls back to buyerPhone. */
   walletAccount?: string;
   returnUrl: string;

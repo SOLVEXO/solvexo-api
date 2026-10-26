@@ -9,6 +9,7 @@ import { RequirePermission } from '../auth/decorators/require-permission.decorat
 import { actingSellerId } from '../common/acting-seller-id.util';
 import { StoreIntegrationsService } from './store-integrations.service';
 import { ShippingSettingsDto } from '../shipping-rates/dto/shipping-settings.dto';
+import { CreateOnboardingLinkDto } from '../stripe-connect/dto/create-onboarding-link.dto';
 import { STORE_INTEGRATION_PROVIDERS, STORE_INTEGRATION_TYPES, StoreIntegrationProvider, StoreIntegrationType } from './schemas/store-integration.schema';
 
 /**
@@ -89,6 +90,17 @@ export class SellerIntegrationsController {
   @Delete('whatsapp/templates/:name')
   deleteWhatsAppTemplate(@Param('storeId') storeId: string, @Param('name') name: string, @Req() req: any) {
     return this.service.deleteWhatsAppTemplate(storeId, actingSellerId(req.user), name);
+  }
+
+  /** Stripe Standard rail: Stripe-hosted onboarding for the seller's OWN Stripe account (direct charges). */
+  @Post('stripe_standard/onboarding-link')
+  startStripeStandard(@Param('storeId') storeId: string, @Body() body: CreateOnboardingLinkDto, @Req() req: any) {
+    return this.service.startStripeStandard(storeId, actingSellerId(req.user), body.refreshUrl, body.returnUrl);
+  }
+
+  @Post('stripe_standard/sync')
+  syncStripeStandard(@Param('storeId') storeId: string, @Req() req: any) {
+    return this.service.syncStripeStandard(storeId, actingSellerId(req.user));
   }
 
   @Post(':type/:provider/connect')

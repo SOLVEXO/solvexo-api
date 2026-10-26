@@ -64,9 +64,17 @@ export class JazzCashPaymentProvider implements PaymentProvider {
     return `${d.getUTCFullYear()}${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}${p(d.getUTCHours())}${p(d.getUTCMinutes())}${p(d.getUTCSeconds())}`;
   }
 
+  /**
+   * pp_ResponseCode -> payment status, from Appendix I of JazzCash's official "Payment Gateway Integration Guide for
+   * Merchants" v4.2 (2019): 000 = success; 124 = OTC order placed (waiting for payment); 157 = pending (mobile wallet and
+   * card checkout); 210 = authorization pending; 119 = awaiting reversal; 121 = confirmed by the merchant after an
+   * authorization (kept pending: only 000 may ever create an order); 131 = refunded and 122 = reversed (money went back).
+   * Every other code (115 bad hash, 112 cancelled, 116 expired, 4xx card declines, 999 technical failure...) is a failure.
+   */
   static mapResponseCode(code: string | undefined): PaymentStatus['status'] {
     if (code === '000') return 'paid';
-    if (code === '121' || code === '124') return 'pending'; // pending / waiting for the buyer to authorise
+    if (code === '121' || code === '124' || code === '157' || code === '210' || code === '119') return 'pending';
+    if (code === '131' || code === '122') return 'refunded';
     return 'failed';
   }
 

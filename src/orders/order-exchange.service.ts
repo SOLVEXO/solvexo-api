@@ -8,6 +8,7 @@ import { NOTIFICATION_TYPES } from '../notifications/notification.types';
 import { orderCustomerName } from './shipping-email.util';
 import { ExchangeRateService } from '../exchange-rate/exchange-rate.service';
 import { PaymentService } from '../payment/payment.service';
+import { isThirdPartyGatewayType } from '../integrations/payment-provider-catalog';
 import { FinanceService } from '../finance/finance.service';
 import { StoreCreditService } from '../store-credit/store-credit.service';
 import { LoyaltyService } from '../loyalty/loyalty.service';
@@ -337,6 +338,10 @@ export class OrderExchangeService {
             if (!txn?.stripePaymentIntentId) throw new Error('No completed Stripe payment found for this order');
             await this.paymentService.refundStripePaymentIntent(txn.stripePaymentIntentId, refundDue, `exchange_${String(newId)}`);
             refundNote = `Exchange difference of ${refundDue.toFixed(2)} ${order.currency} refunded to the original payment method`;
+            await this.r.orderModel.updateOne({ _id: newId }, { $set: { 'exchangeOf.refundedOut': refundDue } }).catch(() => undefined);
+          } else if (isThirdPartyGatewayType(order.paymentType)) {
+            const gw = await this.paymentService.refundGatewayPayment(storeId, String(order._id), refundDue, `exchange_${String(newId)}`);
+            refundNote = `Exchange difference: ${gw.note}`;
             await this.r.orderModel.updateOne({ _id: newId }, { $set: { 'exchangeOf.refundedOut': refundDue } }).catch(() => undefined);
           } else {
             refundNote = `Exchange difference of ${refundDue.toFixed(2)} ${order.currency} was paid outside the platform — refund it to the customer manually`;

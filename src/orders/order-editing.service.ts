@@ -10,6 +10,7 @@ import { NOTIFICATION_TYPES } from '../notifications/notification.types';
 import { orderCustomerName } from './shipping-email.util';
 import { ExchangeRateService } from '../exchange-rate/exchange-rate.service';
 import { PaymentService } from '../payment/payment.service';
+import { isThirdPartyGatewayType } from '../integrations/payment-provider-catalog';
 import { StoreCreditService } from '../store-credit/store-credit.service';
 import { round } from '../common/number.util';
 import { remainingRefundable } from '../common/refund-cap.util';
@@ -335,6 +336,9 @@ export class OrderEditingService {
           } catch (feeErr: any) {
             console.error('Finance reverseConnectCardFee failed (order edit):', feeErr?.message);
           }
+        } else if (isThirdPartyGatewayType(order.paymentType)) {
+          const gw = await this.paymentService.refundGatewayPayment(storeId, String(order._id), refundAmount, `order_edit_${order._id}_${newTotals.totalAmount}`);
+          refundNote = gw.note;
         } else {
           refundNote = `${refundAmount.toFixed(2)} ${order.currency} was paid outside the platform — refund it to the customer manually`;
         }
