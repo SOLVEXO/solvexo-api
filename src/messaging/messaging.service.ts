@@ -19,6 +19,7 @@ import { MessagingGateway } from './messaging.gateway';
 import { NotificationsService } from '@/notifications/notifications.service';
 import { NOTIFICATION_TYPES } from '@/notifications/notification.types';
 import { fetchLinkPreview, LinkPreviewResult } from '@/common/link-preview.util';
+import { StoreChatSettingsService } from '@/store-chat-settings/store-chat-settings.service';
 
 @Injectable()
 export class MessagingService {
@@ -28,6 +29,7 @@ export class MessagingService {
     private readonly gateway: MessagingGateway,
     private readonly notificationsService: NotificationsService,
     private readonly redisService: RedisService,
+    private readonly chatSettings: StoreChatSettingsService,
   ) { }
 
   // ── Helpers ──────────────────────────────────────────────────────────────
@@ -388,7 +390,35 @@ export class MessagingService {
       }).catch(() => {});
     }
 
+    if (iAmBuyer) void this.maybeAutoReply(conv, conversationId);
+
     return message;
+  }
+
+  /** The store's automatic reply (seller chat settings): sent as the seller, at most once per 12 h per conversation, and
+   *  only when the seller switched it on (and, if chosen, only while the store is closed). Never throws into the buyer's send. */
+  private async maybeAutoReply(conv: any, conversationId: string) {
+    try {
+      if (!conv.storeId) return;
+      const text = await this.chatSettings.autoReplyFor(String(conv.storeId));
+      if (!text) return;
+      const since = new Date(Date.now() - 12 * 60 * 60 * 1000);
+      const recent = await this.msgModel.findOne({ conversationId, isAutoReply: true, createdAt: { $gte: since } }).select('_id').lean();
+      if (recent) return;
+      const sellerId = String(conv.sellerId);
+      const message = await this.msgModel.create({
+        conversationId, senderId: sellerId, senderRole: 'seller', type: 'text', text, attachments: [],
+        status: 'sent', isAutoReply: true, spamScore: 0, isFlagged: false,
+      });
+      const updatedConv = await this.convModel.findByIdAndUpdate(conversationId, {
+        lastMessage: { messageId: message._id.toString(), text, type: 'text', senderId: sellerId, senderRole: 'seller', sentAt: new Date() },
+        $inc: { buyerUnread: 1 },
+      }, { new: true }).lean();
+      this.gateway.emitNewMessage(conversationId, message);
+      if (updatedConv) this.gateway.emitConversationUpdate([conv.buyerId, conv.sellerId], updatedConv);
+    } catch (err) {
+      console.error('[messaging] auto-reply failed', err);
+    }
   }
 
   async getMessages(userId: string, role: string, conversationId: string, query: any, callerStoreId?: string | null) {

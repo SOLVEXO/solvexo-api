@@ -64,6 +64,9 @@ export class Message {
   @Prop({ type: [Object], default: [] })
   seenBy: { userId: string; seenAt: Date }[];
 
+  // Sent by the store's auto-reply, not typed by a person
+  @Prop({ type: Boolean, default: false }) isAutoReply: boolean;
+
   // Edit tracking
   @Prop({ type: Boolean, default: false }) isEdited: boolean;
   @Prop({ type: Date, default: null }) editedAt: Date | null;

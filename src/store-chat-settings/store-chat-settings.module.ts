@@ -11,5 +11,6 @@ import { StoreChatSettingsService } from './store-chat-settings.service';
   imports: [AuthModule, RedisModule, MongooseModule.forFeature([{ name: StoreChatSettings.name, schema: StoreChatSettingsSchema }])],
   controllers: [StoreChatSettingsController, PublicStoreChatSettingsController],
   providers: [StoreChatSettingsService],
+  exports: [StoreChatSettingsService],
 })
 export class StoreChatSettingsModule {}
