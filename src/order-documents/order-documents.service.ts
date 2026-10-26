@@ -54,6 +54,9 @@ export class OrderDocumentsService {
           contactEmail: store.contactEmail ?? null,
           phone: store.phone ?? null,
           currency: store.baseCurrency ?? null,
+          // The store's own tax number (Settings → Taxes): the invoice uses it unless Order documents sets its own.
+          taxId: store.taxId || null,
+          country: store.country ?? null,
         },
       },
     };

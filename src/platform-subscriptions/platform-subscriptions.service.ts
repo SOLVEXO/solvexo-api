@@ -4,7 +4,8 @@
  * mounted (not imported by AppModule/SchedulerModule); kept only so the schema/model stays registered and the
  * historical data remains readable. Do not extend; do not re-import.
  */
-import { Injectable, NotFoundException, ForbiddenException, BadRequestException } from '@nestjs/common';
+import { Injectable, NotFoundException, ForbiddenException, BadRequestException, Optional } from '@nestjs/common';
+import { PlatformTaxService } from '@/platform-tax/platform-tax.service';
 import { DatabaseService } from '../database/databaseservice';
 import { PaymentGatewayService } from '../subscriptions/payment-gateway/payment-gateway.service';
 import { ActivityLogService } from '../activity-log/activity-log.service';
@@ -26,7 +27,14 @@ export class PlatformSubscriptionsService {
     private readonly gateway: PaymentGatewayService,
     private readonly activityLogService: ActivityLogService,
     private readonly notifications: PlatformBillingNotificationsService,
+    @Optional() private readonly platformTax?: PlatformTaxService,
   ) {}
+
+  /** Net amount + Solvexo's own tax for this store's seller (the amount the card is actually charged). */
+  private async withPlatformTax(storeId: string, netUSD: number): Promise<number> {
+    const q = await this.platformTax?.quoteForStore(String(storeId), netUSD);
+    return q ? q.totalUSD : netUSD;
+  }
 
   private get subModel()   { return this.db.repositories.platformSubscriptionModel; }
   private get storeModel() { return this.db.repositories.storeModel; }
@@ -136,12 +144,14 @@ export class PlatformSubscriptionsService {
     let description: string;
 
     if (netDue > 0) {
-      const charge = await this.gateway.chargeSubscription(subId, netDue);
+      // Solvexo's own tax is added on top of what is due.
+      const dueTotal = await this.withPlatformTax(storeId, netDue);
+      const charge = await this.gateway.chargeSubscription(subId, dueTotal);
       if (!charge.success) {
-        throw new BadRequestException(`Payment of $${netDue.toFixed(2)} failed — plan was not changed`);
+        throw new BadRequestException(`Payment of ${dueTotal.toFixed(2)} failed — plan was not changed`);
       }
       sub.creditBalanceUSD = 0;
-      description = `${sub.tier} → ${dto.tier} (${dto.billingInterval}) — $${netDue.toFixed(2)} charged`;
+      description = `${sub.tier} → ${dto.tier} (${dto.billingInterval}) — ${dueTotal.toFixed(2)} charged`;
     } else {
       sub.creditBalanceUSD = this.round(-netDue);
       description = `${sub.tier} → ${dto.tier} (${dto.billingInterval}) — $${sub.creditBalanceUSD.toFixed(2)} credited to account`;
@@ -223,7 +233,7 @@ export class PlatformSubscriptionsService {
     }
 
     const subId = (sub as any)._id.toString();
-    const charge = await this.gateway.chargeSubscription(`${subId}-pos`, POS_ADDON_MONTHLY_PRICE_USD);
+    const charge = await this.gateway.chargeSubscription(`${subId}-pos`, await this.withPlatformTax(storeId, POS_ADDON_MONTHLY_PRICE_USD));
     if (!charge.success) {
       throw new BadRequestException('POS add-on payment failed');
     }
@@ -324,7 +334,7 @@ export class PlatformSubscriptionsService {
         const creditToApply = this.round(Math.min(sub.creditBalanceUSD ?? 0, sub.amountUSD));
         const chargeAmount = this.round(sub.amountUSD - creditToApply);
         const charge = chargeAmount > 0
-          ? await this.gateway.chargeSubscription(subId, chargeAmount)
+          ? await this.gateway.chargeSubscription(subId, await this.withPlatformTax((sub as any).storeId, chargeAmount))
           : { success: true, providerChargeId: null as string | null };
 
         if (charge.success) {
@@ -392,7 +402,7 @@ export class PlatformSubscriptionsService {
       posAddonsProcessed++;
       try {
         const subId = (sub as any)._id.toString();
-        const charge = await this.gateway.chargeSubscription(`${subId}-pos`, POS_ADDON_MONTHLY_PRICE_USD);
+        const charge = await this.gateway.chargeSubscription(`${subId}-pos`, await this.withPlatformTax((sub as any).storeId, POS_ADDON_MONTHLY_PRICE_USD));
 
         if (charge.success) {
           sub.posAddon.nextBillingDate = this.addPeriod(now, 'monthly');

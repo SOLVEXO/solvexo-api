@@ -6,7 +6,7 @@ import { GENERAL_GROUP_KEY, ShippingSelection, addressRequired, groupItemsByProf
 import { ShippingProfilesService } from '@/shipping-zones/shipping-profiles.service';
 import { resolveRegionRate as resolveTaxRegionRate, shippingTaxFromRate } from '@/tax/shipping-tax.util';
 import { geocodeAddress } from '@/common/geocoding/geocoding.util';
-import { StoreTaxConfig, TaxItemContext, collectionIdsForProduct, pricesIncludeTaxFor, resolveItemTaxRate, splitLineTax } from '@/tax/tax-rules.util';
+import { StoreTaxConfig, TaxItemContext, collectionIdsForProduct, pricesIncludeTaxFor, resolveItemTaxRate, splitLineTax, isTaxCollectionOff } from '@/tax/tax-rules.util';
 import {
   Injectable,
   BadRequestException,
@@ -820,7 +820,7 @@ export class CheckoutService {
     const taxRateStoreIds = [...new Set(checkoutItems.map((i) => i.storeId))];
     const taxRateStores = await this.databaseService.repositories.storeModel
       .find({ _id: { $in: taxRateStoreIds } })
-      .select('taxRate taxRegions taxPricesIncludeTax taxOverrides')
+      .select('taxRate taxRegions taxPricesIncludeTax taxOverrides taxRegistered')
       .lean();
     const taxCfgByStore = new Map<string, StoreTaxConfig>(taxRateStores.map((s: any) => [String(s._id), s as StoreTaxConfig]));
     // Per-item tax context: variant "charge tax" flag + category / collections (for Shopify-style tax overrides).
@@ -839,6 +839,11 @@ export class CheckoutService {
     for (const sid of taxRateStoreIds) {
       const cfg = taxCfgByStore.get(sid) ?? {};
       const storeItems = checkoutItems.filter((item: any) => item.storeId === sid);
+      // A seller who is not tax-registered collects no tax at all (rates stay saved for when they register).
+      if (isTaxCollectionOff(cfg as any)) {
+        for (const item of storeItems) { item.taxUSD = 0; item.includedTaxUSD = 0; }
+        continue;
+      }
       const included = pricesIncludeTaxFor(cfg, resolvedAddress);
       const taxableItems = storeItems.filter((i: any) => taxCtx.get(i)?.taxable !== false);
       const taxableSubtotal = taxableItems.reduce((sum: number, i: any) => sum + toCheckoutCcy(i.totalPrice, i), 0);
@@ -1412,9 +1417,9 @@ export class CheckoutService {
   ): Promise<{ added: number; included: number }> {
     const store: any = await this.databaseService.repositories.storeModel
       .findById(storeId)
-      .select('taxRate taxRegions taxShipping taxPricesIncludeTax')
+      .select('taxRate taxRegions taxShipping taxPricesIncludeTax taxRegistered')
       .lean();
-    if (!store?.taxShipping) return { added: 0, included: 0 };
+    if (!store?.taxShipping || isTaxCollectionOff(store)) return { added: 0, included: 0 };
     if (address?.country) {
       const storeSubtotal = items
         .filter((i) => i.storeId === storeId)

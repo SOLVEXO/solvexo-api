@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
-import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, Optional } from '@nestjs/common';
+import { PlatformTaxService } from '@/platform-tax/platform-tax.service';
 import { ConfigService } from '@nestjs/config';
 import { DatabaseService } from '../../database/databaseservice';
 import { PaymentGatewayService } from '../../subscriptions/payment-gateway/payment-gateway.service';
@@ -20,6 +21,7 @@ export class PosPlansWebhookService {
     private readonly databaseService: DatabaseService,
     private readonly paymentGatewayService: PaymentGatewayService,
     private readonly config: ConfigService,
+    @Optional() private readonly platformTax?: PlatformTaxService,
   ) {}
 
   private get r() {
@@ -84,6 +86,12 @@ export class PosPlansWebhookService {
       if (err.code === 11000) return { received: true, duplicate: true };
       throw err;
     }
+
+    // Solvexo's own tax inside this checkout (Stripe Checkout line-item tax), for the admin's tax report.
+    await this.platformTax?.recordCollected({
+      source: 'pos_plan', refId: session.id, storeId,
+      taxMinor: Number(session.total_details?.amount_tax) || 0, currency: session.currency ?? plan?.currency ?? 'usd',
+    });
 
     return { received: true };
   }

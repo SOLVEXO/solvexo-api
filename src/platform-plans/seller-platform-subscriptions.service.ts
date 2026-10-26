@@ -1,5 +1,7 @@
 /* eslint-disable prettier/prettier */
-import { Injectable, NotFoundException, BadRequestException, ForbiddenException, Logger } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, ForbiddenException, Logger, Optional } from '@nestjs/common';
+import { PlatformTaxService } from '@/platform-tax/platform-tax.service';
+import { invoiceTaxSnapshot } from '@/platform-tax/platform-tax.util';
 import { OnEvent } from '@nestjs/event-emitter';
 import { InjectConnection } from '@nestjs/mongoose';
 import { Connection, ClientSession, isValidObjectId } from 'mongoose';
@@ -41,6 +43,7 @@ export class SellerPlatformSubscriptionsService {
     private readonly notificationsService: NotificationsService,
     private readonly criticalAlerts: CriticalAlertService,
     @InjectConnection() private readonly connection: Connection,
+    @Optional() private readonly platformTax?: PlatformTaxService,
   ) {}
 
   /**
@@ -1122,9 +1125,11 @@ export class SellerPlatformSubscriptionsService {
           couponId = providerCouponId;
         }
 
+        // Solvexo's own tax on the plan fee (null = none applies to this seller's country).
+        const taxRateId = (await this.platformTax?.taxRateIdForStore(storeId)) ?? undefined;
         const created = await this.gateway.createProviderSubscription(
           sub._id.toString(), `Platform: ${newPlan.name}`, newAmountUSD, newInterval,
-          { providerCustomerId: seller.stripeCustomerId, providerPriceId, idempotencyKey, trialEndUnixSeconds, couponId, metadata: { kind: PLATFORM_PLAN_STRIPE_METADATA_KIND, storeId } },
+          { providerCustomerId: seller.stripeCustomerId, providerPriceId, idempotencyKey, trialEndUnixSeconds, couponId, taxRateId, metadata: { kind: PLATFORM_PLAN_STRIPE_METADATA_KIND, storeId } },
         );
         sub.providerSubscriptionId = created.providerSubscriptionId;
         sub.stripeCustomerId = seller.stripeCustomerId;
@@ -1175,24 +1180,30 @@ export class SellerPlatformSubscriptionsService {
       const chargeCustomerId = await resolveSubCustomerId(
         this.gateway, this.db.repositories.sellerModel, this.subModel, sub, sellerId,
       );
-      const charge = await this.gateway.chargeSubscription(sub._id.toString(), netDue, { providerCustomerId: chargeCustomerId, idempotencyKey });
+      // Solvexo's own tax is added on top of what is due (this ad-hoc charge never goes through a Stripe invoice).
+      const dueQuote = await this.platformTax?.quoteForStore(storeId, netDue);
+      const dueTaxUSD = dueQuote?.taxUSD ?? 0;
+      const dueTotalUSD = this.round(netDue + dueTaxUSD);
+      const charge = await this.gateway.chargeSubscription(sub._id.toString(), dueTotalUSD, { providerCustomerId: chargeCustomerId, idempotencyKey });
       invoice = await this.invoiceModel.create({
         storeId, sellerId, platformPlanId: newPlanId,
         invoiceNumber: await this.generateInvoiceNumber(), type: isFirstPaidPurchase ? 'initial' : 'proration',
-        amountUSD: netDue, status: charge.success ? 'paid' : 'failed',
+        amountUSD: dueTotalUSD, subtotalUSD: netDue, taxAmountUSD: dueTaxUSD, taxRatePercent: dueTaxUSD > 0 ? dueQuote!.ratePercent : 0,
+        taxLabel: dueTaxUSD > 0 ? dueQuote!.label : null, taxCountry: dueTaxUSD > 0 ? dueQuote!.country : null,
+        status: charge.success ? 'paid' : 'failed',
         paidAt: charge.success ? now : null, providerChargeId: charge.providerChargeId,
         paymentMethodType: charge.paymentMethodType ?? 'manual',
       });
       await this.recordAttempt({
         storeId, sellerId, attemptType: 'proration', outcome: charge.success ? 'success' : 'failed',
-        amountUSD: netDue, failureReason: charge.success ? null : (charge.failureReason ?? 'Payment declined'),
+        amountUSD: dueTotalUSD, failureReason: charge.success ? null : (charge.failureReason ?? 'Payment declined'),
         failureCode: charge.failureCode ?? null, invoiceId: invoice._id.toString(), providerChargeId: charge.providerChargeId,
       });
-      if (!charge.success) throw new BadRequestException(`Payment of $${netDue.toFixed(2)} failed — plan was not changed`);
+      if (!charge.success) throw new BadRequestException(`Payment of $${dueTotalUSD.toFixed(2)} failed — plan was not changed`);
 
-      sub.totalPaidUSD = this.round((sub.totalPaidUSD ?? 0) + netDue);
+      sub.totalPaidUSD = this.round((sub.totalPaidUSD ?? 0) + dueTotalUSD);
       sub.creditBalanceUSD = 0;
-      message = `Changed to "${newPlan.name}" — $${netDue.toFixed(2)} charged`;
+      message = `Changed to "${newPlan.name}" — $${dueTotalUSD.toFixed(2)} charged${dueTaxUSD > 0 ? ` (includes $${dueTaxUSD.toFixed(2)} ${dueQuote!.label ?? 'tax'})` : ''}`;
     } else {
       sub.creditBalanceUSD = this.round(-netDue);
       message = `Changed to "${newPlan.name}" — $${sub.creditBalanceUSD.toFixed(2)} credited to your account`;
@@ -1480,7 +1491,11 @@ export class SellerPlatformSubscriptionsService {
         // A downgrade the seller scheduled for this cycle's end takes effect now, so this renewal bills the new price.
         await this.applyScheduledPlanChange(sub);
         const creditToApply = this.round(Math.min(sub.creditBalanceUSD ?? 0, sub.amountUSD));
-        const chargeAmount = this.round(sub.amountUSD - creditToApply);
+        const netAmount = this.round(sub.amountUSD - creditToApply);
+        // Solvexo's own tax on top of the net amount (nothing when the credit covers it all or no rate applies).
+        const renewalQuote = netAmount > 0 ? await this.platformTax?.quoteForStore(sub.storeId, netAmount) : null;
+        const renewalTaxUSD = renewalQuote?.taxUSD ?? 0;
+        const chargeAmount = this.round(netAmount + renewalTaxUSD);
         const charge = chargeAmount > 0
           ? await this.gateway.chargeSubscription(sub._id.toString(), chargeAmount)
           : { success: true, providerChargeId: null as string | null, paymentMethodType: 'manual' };
@@ -1508,7 +1523,9 @@ export class SellerPlatformSubscriptionsService {
             // (null platformPlanId, $0 amount) can never reach here.
             storeId: sub.storeId, sellerId: sub.sellerId, platformPlanId: sub.platformPlanId!,
             invoiceNumber, type: 'recurring',
-            amountUSD: chargeAmount, status: charge.success ? 'paid' : 'failed',
+            amountUSD: chargeAmount, subtotalUSD: netAmount, taxAmountUSD: renewalTaxUSD, taxRatePercent: renewalTaxUSD > 0 ? renewalQuote!.ratePercent : 0,
+            taxLabel: renewalTaxUSD > 0 ? renewalQuote!.label : null, taxCountry: renewalTaxUSD > 0 ? renewalQuote!.country : null,
+            status: charge.success ? 'paid' : 'failed',
             paidAt: charge.success ? now : null, providerChargeId: charge.providerChargeId,
             paymentMethodType: (charge as any).paymentMethodType ?? 'manual',
           }], { session });
@@ -1842,6 +1859,10 @@ export class SellerPlatformSubscriptionsService {
     if (invoice.billing_reason === 'subscription_cycle') await this.applyScheduledPlanChange(sub);
 
     const amountUSD = this.round((invoice.amount_paid ?? 0) / 100);
+    // Solvexo's own tax inside what the seller paid (0 when the invoice carries none): a snapshot taken from Stripe's
+    // own invoice, so a later rate change never alters this record. Revenue reports subtract it.
+    const { subtotalUSD: netUSD, taxAmountUSD, taxRatePercent } = invoiceTaxSnapshot(invoice, amountUSD);
+    const taxInfo = taxAmountUSD > 0 ? await this.platformTax?.resolveForStore(sub.storeId).catch(() => null) : null;
     const line = invoice.lines?.data?.[0];
     const periodEnd = line?.period?.end ? new Date(line.period.end * 1000) : this.addPeriod(new Date(), sub.billingInterval as any);
     const providerChargeId = getInvoicePaymentIntentId(invoice);
@@ -1865,7 +1886,10 @@ export class SellerPlatformSubscriptionsService {
         storeId: sub.storeId, sellerId: sub.sellerId, platformPlanId: sub.platformPlanId!,
         invoiceNumber,
         type: invoice.billing_reason === 'subscription_create' ? 'initial' : 'recurring',
-        amountUSD, status: 'paid', paidAt: new Date(), providerChargeId, stripeInvoiceId: invoice.id,
+        amountUSD, subtotalUSD: netUSD, taxAmountUSD, taxRatePercent,
+        taxLabel: taxAmountUSD > 0 ? (taxInfo?.rate?.label ?? 'Tax') : null,
+        taxCountry: taxAmountUSD > 0 ? (taxInfo?.country ?? null) : null,
+        status: 'paid', paidAt: new Date(), providerChargeId, stripeInvoiceId: invoice.id,
         hostedInvoiceUrl: invoice.hosted_invoice_url ?? null, invoicePdfUrl: invoice.invoice_pdf ?? null,
         paymentMethodType: 'card',
       }], { session });

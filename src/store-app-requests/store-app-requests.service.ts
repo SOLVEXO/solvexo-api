@@ -1,6 +1,7 @@
 /* eslint-disable prettier/prettier */
-import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { toStripeAmount } from '@/common/stripe-amount.util';
+import { BadRequestException, Injectable, Logger, NotFoundException, Optional } from '@nestjs/common';
+import { PlatformTaxService } from '@/platform-tax/platform-tax.service';
+import { fromStripeAmount, toStripeAmount } from '@/common/stripe-amount.util';
 import { ConfigService } from '@nestjs/config';
 import Stripe from 'stripe';
 import { DatabaseService } from '../database/databaseservice';
@@ -32,6 +33,7 @@ export class StoreAppRequestsService {
     private readonly emailService: EmailService,
     private readonly configService: ConfigService,
     private readonly exchangeRateService: ExchangeRateService,
+    @Optional() private readonly platformTax?: PlatformTaxService,
   ) {
     const secretKey = this.configService.get<string>('STRIPE_SECRET_KEY')?.trim();
     if (secretKey) this.stripe = new Stripe(secretKey, { apiVersion: '2025-04-30.basil' as any });
@@ -149,14 +151,18 @@ export class StoreAppRequestsService {
     const priceUSD = this.platformFeeUSD();
     const currency = (store as any)?.baseCurrency ?? 'USD';
     const chargeAmount = currency === 'USD' ? priceUSD : await this.exchangeRateService.convert(priceUSD, 'USD', currency);
-    const amountCents = toStripeAmount(chargeAmount, currency);
+    // Solvexo's own tax is added on top of the fee, in the same currency (rate % of the amount).
+    const taxRate = await this.platformTax?.rateForStore(storeId);
+    const netCents = toStripeAmount(chargeAmount, currency);
+    const taxCents = taxRate ? Math.round(netCents * (taxRate.ratePercent / 100)) : 0;
+    const amountCents = netCents + taxCents;
     const idempotencyKey = `store_app_platform_${request._id.toString()}_${platform}_${amountCents}`;
 
     const paymentIntent = await this.stripe.paymentIntents.create(
       {
         amount: amountCents,
         currency: currency.toLowerCase(),
-        metadata: { storeId, sellerId, requestId: request._id.toString(), platform, purpose: 'store_app_platform' },
+        metadata: { storeId, sellerId, requestId: request._id.toString(), platform, purpose: 'store_app_platform', ...(taxCents ? { netCents: String(netCents), taxCents: String(taxCents), taxRatePercent: String(taxRate!.ratePercent) } : {}) },
         automatic_payment_methods: { enabled: true, allow_redirects: 'never' },
       },
       { idempotencyKey },
@@ -168,7 +174,8 @@ export class StoreAppRequestsService {
 
     // Real, actually-charged amount/currency — see promotions.service.ts's
     // identical fix for why this must never stay the raw USD reference price.
-    return { success: true, data: { clientSecret: paymentIntent.client_secret, amount: chargeAmount, currency } };
+    // `amount` = the TOTAL actually charged (fee + tax); `taxAmount`/`taxLabel` let the UI show the split.
+    return { success: true, data: { clientSecret: paymentIntent.client_secret, amount: fromStripeAmount(amountCents, currency), currency, taxAmount: fromStripeAmount(taxCents, currency), taxLabel: taxCents ? taxRate!.label : null, taxRatePercent: taxCents ? taxRate!.ratePercent : 0 } };
   }
 
   /** Called right after Stripe Elements confirms the card payment
@@ -197,6 +204,12 @@ export class StoreAppRequestsService {
     if (paymentIntent.status !== 'succeeded') {
       throw new BadRequestException(`Payment has not completed yet (status: ${paymentIntent.status}).`);
     }
+
+    // Solvexo's own tax inside this charge, for the admin's tax report (idempotent per PaymentIntent).
+    await this.platformTax?.recordCollected({
+      source: 'store_app', refId: paymentIntent.id, storeId,
+      taxMinor: Number(paymentIntent.metadata?.taxCents) || 0, currency: paymentIntent.currency,
+    });
 
     state.requested = true;
     state.status = 'pending';

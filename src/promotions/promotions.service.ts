@@ -1,6 +1,7 @@
 /* eslint-disable prettier/prettier */
-import { BadRequestException, Injectable, NotFoundException, Logger } from '@nestjs/common';
-import { toStripeAmount } from '@/common/stripe-amount.util';
+import { BadRequestException, Injectable, NotFoundException, Logger, Optional } from '@nestjs/common';
+import { PlatformTaxService } from '@/platform-tax/platform-tax.service';
+import { fromStripeAmount, toStripeAmount } from '@/common/stripe-amount.util';
 import { ConfigService } from '@nestjs/config';
 import { OnEvent } from '@nestjs/event-emitter';
 import Stripe from 'stripe';
@@ -38,6 +39,7 @@ export class PromotionsService {
     private readonly configService: ConfigService,
     private readonly entitlementsService: EntitlementsService,
     private readonly exchangeRateService: ExchangeRateService,
+    @Optional() private readonly platformTax?: PlatformTaxService,
   ) {
     const secretKey = this.configService.get<string>('STRIPE_SECRET_KEY')?.trim();
     if (secretKey) this.stripe = new Stripe(secretKey, { apiVersion: '2025-04-30.basil' as any });
@@ -253,14 +255,18 @@ export class PromotionsService {
     const store = await this.storeModel.findById(request.storeId).select('baseCurrency').lean();
     const currency = (store as any)?.baseCurrency ?? 'USD';
     const chargeAmount = currency === 'USD' ? request.priceUSD : await this.exchangeRateService.convert(request.priceUSD, 'USD', currency);
-    const amountCents = toStripeAmount(chargeAmount, currency);
+    // Solvexo's own tax is added on top of the price, in the same currency (rate % of the amount).
+    const taxRate = await this.platformTax?.rateForStore(request.storeId);
+    const netCents = toStripeAmount(chargeAmount, currency);
+    const taxCents = taxRate ? Math.round(netCents * (taxRate.ratePercent / 100)) : 0;
+    const amountCents = netCents + taxCents;
     const idempotencyKey = `promotion_${id}_${amountCents}`;
 
     const paymentIntent = await this.stripe.paymentIntents.create(
       {
         amount: amountCents,
         currency: currency.toLowerCase(),
-        metadata: { promotionRequestId: id, sellerId },
+        metadata: { promotionRequestId: id, sellerId, ...(taxCents ? { netCents: String(netCents), taxCents: String(taxCents), taxRatePercent: String(taxRate!.ratePercent) } : {}) },
         automatic_payment_methods: { enabled: true, allow_redirects: 'never' },
       },
       { idempotencyKey },
@@ -274,7 +280,9 @@ export class PromotionsService {
     // and its displayed total both match what this PaymentIntent really
     // charges (a mismatch here would be a real, visible bug for any
     // non-USD store, not just a cosmetic one).
-    return { success: true, data: { clientSecret: paymentIntent.client_secret, amount: chargeAmount, currency } };
+    // `amount` = the TOTAL actually charged (price + tax); `taxAmount`/`taxLabel` let the UI show the split.
+    const totalCharged = fromStripeAmount(amountCents, currency);
+    return { success: true, data: { clientSecret: paymentIntent.client_secret, amount: totalCharged, currency, taxAmount: fromStripeAmount(taxCents, currency), taxLabel: taxCents ? taxRate!.label : null, taxRatePercent: taxCents ? taxRate!.ratePercent : 0 } };
   }
 
   private async activatePaidRequest(request: any) {
@@ -318,9 +326,14 @@ export class PromotionsService {
   // seller doesn't have to wait on/depend on a webhook for the demo to work.
   // Safe to call from both — `paymentStatus` and `activatePaidRequest`'s own
   // `resultingBannerId` guard make whichever one runs second a no-op.
-  private async markPaidAndMaybeActivate(request: any) {
+  private async markPaidAndMaybeActivate(request: any, paymentIntent?: any) {
     request.paymentStatus = 'paid';
     await request.save();
+    // Solvexo's own tax inside this charge, for the admin's tax report (idempotent per PaymentIntent).
+    await this.platformTax?.recordCollected({
+      source: 'promotion', refId: String(paymentIntent?.id ?? ''), storeId: request.storeId,
+      taxMinor: Number(paymentIntent?.metadata?.taxCents) || 0, currency: paymentIntent?.currency ?? 'usd',
+    });
     this.notificationsService.notify({
       recipientId: request.sellerId, recipientRole: 'seller', storeId: request.storeId,
       type: NOTIFICATION_TYPES.PROMOTION_PAYMENT_SUCCEEDED,
@@ -339,7 +352,7 @@ export class PromotionsService {
     if (!requestId) return; // not ours — another listener owns this event
     const request = await this.model.findById(requestId);
     if (!request || request.paymentStatus === 'paid') return;
-    await this.markPaidAndMaybeActivate(request);
+    await this.markPaidAndMaybeActivate(request, paymentIntent);
   }
 
   // ── Client-confirm (called right after Stripe Elements confirms the card
@@ -361,7 +374,7 @@ export class PromotionsService {
       throw new BadRequestException(`Payment has not completed yet (status: ${paymentIntent.status}).`);
     }
 
-    await this.markPaidAndMaybeActivate(request);
+    await this.markPaidAndMaybeActivate(request, paymentIntent);
     return { success: true, message: 'Payment confirmed', data: request };
   }
 

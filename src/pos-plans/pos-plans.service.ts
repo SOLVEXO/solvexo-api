@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException, Optional } from '@nestjs/common';
+import { PlatformTaxService } from '@/platform-tax/platform-tax.service';
 import { toStripeAmount } from '@/common/stripe-amount.util';
 import { DatabaseService } from '../database/databaseservice';
 import { PaymentGatewayService } from '../subscriptions/payment-gateway/payment-gateway.service';
@@ -13,6 +14,7 @@ export class PosPlansService {
   constructor(
     private readonly databaseService: DatabaseService,
     private readonly paymentGatewayService: PaymentGatewayService,
+    @Optional() private readonly platformTax?: PlatformTaxService,
   ) {}
 
   private get r() {
@@ -79,10 +81,14 @@ export class PosPlansService {
     const stripe = this.paymentGatewayService.stripeClient;
     if (!stripe) throw new BadRequestException('Stripe is not configured on this environment');
 
+    // Solvexo's own tax on this plan (null = none applies to this seller's country): Stripe adds it on top at checkout.
+    const taxRateId = await this.platformTax?.taxRateIdForStore(storeId);
+
     const session = await stripe.checkout.sessions.create({
       mode: 'payment',
       line_items: [
         {
+          ...(taxRateId ? { tax_rates: [taxRateId] } : {}),
           price_data: {
             currency: plan.currency.toLowerCase(),
             unit_amount: toStripeAmount(plan.price, plan.currency),

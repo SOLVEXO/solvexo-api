@@ -224,11 +224,11 @@ export class PlatformPlansService {
     const [totalAgg, byPlanRaw, activeByPlan, activeSubs] = await Promise.all([
       this.db.repositories.platformPlanInvoiceModel.aggregate([
         { $match: { status: 'paid', isDelete: false, paidAt: { $gte: from, $lte: to } } },
-        { $group: { _id: null, total: { $sum: '$amountUSD' }, count: { $sum: 1 } } },
+        { $group: { _id: null, total: { $sum: { $subtract: ['$amountUSD', { $ifNull: ['$taxAmountUSD', 0] }] } }, count: { $sum: 1 } } },
       ]),
       this.db.repositories.platformPlanInvoiceModel.aggregate([
         { $match: { status: 'paid', isDelete: false, paidAt: { $gte: from, $lte: to } } },
-        { $group: { _id: '$platformPlanId', total: { $sum: '$amountUSD' }, count: { $sum: 1 } } },
+        { $group: { _id: '$platformPlanId', total: { $sum: { $subtract: ['$amountUSD', { $ifNull: ['$taxAmountUSD', 0] }] } }, count: { $sum: 1 } } },
         { $sort: { total: -1 } },
       ]),
       this.subModel.aggregate([

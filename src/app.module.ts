@@ -58,6 +58,7 @@ import { AdminFinanceModule } from './admin-finance/admin-finance.module';
 import { QueueModule } from './queues/queue.module';
 import { HealthModule } from './health/health.module';
 import { PlatformPlansModule } from './platform-plans/platform-plans.module';
+import { PlatformTaxModule } from './platform-tax/platform-tax.module';
 import { SeoModule } from './seo/seo.module';
 import { IntegrationsModule } from './integrations/integrations.module';
 import { CustomerSocialLoginModule } from './customer-social-login/customer-social-login.module';
@@ -161,6 +162,7 @@ import { AppI18nModule } from './i18n/i18n.module';
     SubscriptionsModule,
     BookingsModule,
     PlatformPlansModule,
+    PlatformTaxModule,
     AiStudioModule,
     SchedulerModule,
     MarketingModule,

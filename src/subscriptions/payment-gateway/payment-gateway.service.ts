@@ -79,6 +79,17 @@ export class PaymentGatewayService implements IPaymentGateway, OnModuleInit {
     return this.provider.createProviderSubscription(subscriptionId, planName, amountUSD, interval, context);
   }
 
+  /** Stripe only; the manual provider has no tax-rate objects (returns null). */
+  async getOrCreateTaxRate(params: { percentage: number; label: string; country: string; existingId?: string | null }): Promise<string | null> {
+    return this.provider instanceof StripePaymentProvider ? this.provider.getOrCreateTaxRate(params) : null;
+  }
+
+  async setSubscriptionTaxRate(providerSubscriptionId: string, taxRateId: string | null): Promise<boolean> {
+    if (!(this.provider instanceof StripePaymentProvider)) return false;
+    await this.provider.setSubscriptionTaxRate(providerSubscriptionId, taxRateId);
+    return true;
+  }
+
   cancelProviderSubscription(providerSubscriptionId: string): Promise<void> {
     return this.provider.cancelProviderSubscription(providerSubscriptionId);
   }

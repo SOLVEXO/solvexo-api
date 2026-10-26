@@ -41,6 +41,7 @@ import { CollectionsService } from '../collections/collections.service';
 import { DASHBOARD_METRIC_IDS } from './store-dashboard-metrics.const';
 import { setMarketingConsent } from '../newsletter/newsletter-consent.util';
 import { parseTaxOverrides } from '../tax/tax-rules.util';
+import { isValidTaxId } from '../platform-tax/platform-tax.util';
 import { isValidTimeZone } from '../analytics/utils/analytics-date.util';
 import { resolveStoreCountry } from '../integrations/payment-availability.util';
 
@@ -1095,7 +1096,7 @@ export class StoreService {
   // body would let a seller un-suspend their own store (see
   // usersService.deleteSellerAccount, which suspends stores on delete).
   async updateStore(sellerId: string, storeId: string, body: any) {
-    const { name, logo, faviconUrl, description, tagline, contactEmail, contactPhone, sellerType, productTypes, codEnabled, paymentCaptureMethod, dashboardMetrics, reviewModerationEnabled, lowStockThreshold, taxRate, taxRegions, taxShipping, taxPricesIncludeTax, taxOverrides, showDutiesNotice, enabledCurrencies, cookieBannerEnabled, cookieBannerMessage, showDoNotSellLink, cookieBannerRegionMode, cookieBannerPosition, cookieBannerColorMode, customerAccounts, timezone, currencyDisplay, defaultLanguage } = body;
+    const { name, logo, faviconUrl, description, tagline, contactEmail, contactPhone, sellerType, productTypes, codEnabled, paymentCaptureMethod, dashboardMetrics, reviewModerationEnabled, lowStockThreshold, taxRate, taxRegions, taxShipping, taxPricesIncludeTax, taxOverrides, taxId, taxRegistered, showDutiesNotice, enabledCurrencies, cookieBannerEnabled, cookieBannerMessage, showDoNotSellLink, cookieBannerRegionMode, cookieBannerPosition, cookieBannerColorMode, customerAccounts, timezone, currencyDisplay, defaultLanguage } = body;
 
     if (!storeId) throw new BadRequestException('storeId is required');
 
@@ -1184,6 +1185,16 @@ export class StoreService {
     if (taxShipping !== undefined) {
       if (typeof taxShipping !== 'boolean') throw new BadRequestException('taxShipping must be a boolean');
       updateData.taxShipping = taxShipping;
+    }
+    if (taxId !== undefined) {
+      if (typeof taxId !== 'string') throw new BadRequestException('taxId must be text');
+      const v = taxId.trim();
+      if (v && !isValidTaxId(v)) throw new BadRequestException('Tax number may contain letters, digits, spaces, "-", "." and "/" only (max 30 characters).');
+      updateData.taxId = v;
+    }
+    if (taxRegistered !== undefined) {
+      if (typeof taxRegistered !== 'boolean') throw new BadRequestException('taxRegistered must be a boolean');
+      updateData.taxRegistered = taxRegistered;
     }
     if (taxPricesIncludeTax !== undefined) {
       if (typeof taxPricesIncludeTax !== 'boolean') throw new BadRequestException('taxPricesIncludeTax must be a boolean');

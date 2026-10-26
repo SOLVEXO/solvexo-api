@@ -131,3 +131,8 @@ export function collectionIdsForProduct(
   }
   return out;
 }
+
+/** A seller who is NOT tax-registered collects no tax at all (items and shipping). Missing/true = registered, so every existing store behaves as before. */
+export function isTaxCollectionOff(cfg: { taxRegistered?: boolean | null } | null | undefined): boolean {
+  return cfg?.taxRegistered === false;
+}

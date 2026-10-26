@@ -165,6 +165,9 @@ export class StripePaymentProvider implements IPaymentGateway {
         // every invoice in between still fires the normal webhook this module
         // already handles.
         ...(context.couponId ? { discounts: [{ coupon: context.couponId }] } : {}),
+        // Solvexo's own tax on the plan fee (exclusive Stripe TaxRate): Stripe adds it to every invoice, so the
+        // amount charged = plan + tax and the invoice shows the tax line.
+        ...(context.taxRateId ? { default_tax_rates: [context.taxRateId] } : {}),
       },
       { idempotencyKey: context.idempotencyKey ?? `sub_create_${subscriptionId}` },
     );
@@ -378,6 +381,27 @@ export class StripePaymentProvider implements IPaymentGateway {
     } catch (err: any) {
       return { success: false, failureReason: err?.message ?? 'Refund failed' };
     }
+  }
+
+  /** Stripe TaxRates are immutable: one per (percentage, label, country). Reuses `existingId` when given. */
+  async getOrCreateTaxRate(params: { percentage: number; label: string; country: string; existingId?: string | null }): Promise<string> {
+    if (params.existingId) return params.existingId;
+    const taxRate = await this.stripe.taxRates.create(
+      {
+        display_name: params.label,
+        percentage: params.percentage,
+        inclusive: false,
+        country: params.country,
+        metadata: { kind: 'solvexo_platform_tax' },
+      },
+      { idempotencyKey: `taxrate_${params.country}_${params.label}_${params.percentage}` },
+    );
+    return taxRate.id;
+  }
+
+  /** Sets (or clears, with null) the default tax rate of an existing subscription — applies from its NEXT invoice. */
+  async setSubscriptionTaxRate(providerSubscriptionId: string, taxRateId: string | null): Promise<void> {
+    await this.stripe.subscriptions.update(providerSubscriptionId, { default_tax_rates: taxRateId ? [taxRateId] : '' as any });
   }
 
   async updateProviderSubscriptionPrice(

@@ -1,5 +1,7 @@
 /* eslint-disable prettier/prettier */
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
+import { PlatformTaxService } from '@/platform-tax/platform-tax.service';
+import { getInvoiceTaxCents } from '@/platform-tax/platform-tax.util';
 import { OnEvent } from '@nestjs/event-emitter';
 import { DatabaseService } from '../database/databaseservice';
 import { PaymentGatewayService } from '../subscriptions/payment-gateway/payment-gateway.service';
@@ -33,6 +35,7 @@ export class TransactionFeeBillingService {
     private readonly gateway: PaymentGatewayService,
     private readonly exchangeRate: ExchangeRateService,
     private readonly activityLogService: ActivityLogService,
+    @Optional() private readonly platformTax?: PlatformTaxService,
   ) {}
 
   private get txModel() { return this.db.repositories.transactionModel; }
@@ -165,6 +168,8 @@ export class TransactionFeeBillingService {
     const cents = Math.round(amountUSD * 100);
     const description = `Transaction fees — ${periodKey} (${saleCount} sale${saleCount === 1 ? '' : 's'} via third-party payment gateways)`;
     try {
+      // Solvexo's own tax on the fees (null = none applies): Stripe adds it on top of the net fee line.
+      const taxRateId = await this.platformTax?.taxRateIdForStore(storeId);
       await stripe.invoiceItems.create(
         { customer: seller.stripeCustomerId, amount: cents, currency: 'usd', description, metadata: { purpose: 'transaction_fees', billId, storeId } },
         { idempotencyKey: `txfee-item-${billId}-${cents}` },
@@ -173,6 +178,7 @@ export class TransactionFeeBillingService {
         {
           customer: seller.stripeCustomerId, collection_method: 'charge_automatically', auto_advance: false,
           pending_invoice_items_behavior: 'include', description,
+          ...(taxRateId ? { default_tax_rates: [taxRateId] } : {}),
           metadata: { purpose: 'transaction_fees', billId, storeId },
         },
         { idempotencyKey: `txfee-inv-${billId}-${cents}` },
@@ -191,6 +197,7 @@ export class TransactionFeeBillingService {
       await this.billModel.updateOne({ _id: bill._id }, {
         $set: {
           status, failureReason, stripeInvoiceId: invoice.id, hostedInvoiceUrl: invoice.hosted_invoice_url ?? null,
+          taxAmountUSD: round(getInvoiceTaxCents(invoice) / 100),
           paidAt: status === 'paid' ? new Date() : null,
         },
       });

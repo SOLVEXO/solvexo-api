@@ -1,6 +1,6 @@
 /* eslint-disable prettier/prettier */
 import {
-  collectionIdsForProduct, findTaxOverride, parseTaxOverrides, pricesIncludeTaxFor, resolveItemTaxRate, splitLineTax,
+  collectionIdsForProduct, findTaxOverride, parseTaxOverrides, pricesIncludeTaxFor, resolveItemTaxRate, splitLineTax, isTaxCollectionOff,
 } from './tax-rules.util';
 
 describe('splitLineTax', () => {
@@ -90,5 +90,14 @@ describe('parseTaxOverrides', () => {
     expect(() => parseTaxOverrides([{ rate: 120, collectionIds: ['c'] }])).toThrow();
     expect(() => parseTaxOverrides([{ rate: 5 }])).toThrow(/collection or category/);
     expect(() => parseTaxOverrides('x')).toThrow();
+  });
+});
+
+describe('isTaxCollectionOff', () => {
+  it('is off only for a seller who is explicitly not tax-registered', () => {
+    expect(isTaxCollectionOff({ taxRegistered: false })).toBe(true);
+    expect(isTaxCollectionOff({ taxRegistered: true })).toBe(false);
+    expect(isTaxCollectionOff({})).toBe(false); // every store created before this field existed
+    expect(isTaxCollectionOff(null)).toBe(false);
   });
 });

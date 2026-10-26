@@ -30,10 +30,11 @@ export class PlatformAddonPurchase {
   // platform revenue is summed from. Purchases made before this field existed have none; readers fall back to
   // one charge of `priceUSD` at `createdAt`.
   @Prop({
-    type: [{ _id: false, amountUSD: Number, chargedAt: Date, providerChargeId: { type: String, default: null } }],
+    // `amountUSD` = the net price; `taxUSD` = Solvexo's own tax charged on top (absent on older charges = none).
+    type: [{ _id: false, amountUSD: Number, taxUSD: { type: Number, default: 0 }, chargedAt: Date, providerChargeId: { type: String, default: null } }],
     default: [],
   })
-  charges: Array<{ amountUSD: number; chargedAt: Date; providerChargeId: string | null }>;
+  charges: Array<{ amountUSD: number; taxUSD?: number; chargedAt: Date; providerChargeId: string | null }>;
 }
 
 export const PlatformAddonPurchaseSchema = SchemaFactory.createForClass(PlatformAddonPurchase);

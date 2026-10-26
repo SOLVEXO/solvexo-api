@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
-import { Injectable, BadRequestException, NotFoundException, Logger } from '@nestjs/common';
+import { Injectable, BadRequestException, NotFoundException, Logger, Optional } from '@nestjs/common';
+import { PlatformTaxService } from '@/platform-tax/platform-tax.service';
 import { DatabaseService } from '@/database/databaseservice';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { PaymentGatewayService } from '@/subscriptions/payment-gateway/payment-gateway.service';
@@ -38,6 +39,7 @@ export class PlatformAddonsService {
     private readonly gateway: PaymentGatewayService,
     private readonly activityLogService: ActivityLogService,
     private readonly aiCreditsService: AiCreditsService,
+    @Optional() private readonly platformTax?: PlatformTaxService,
   ) {}
 
   private get addonModel() { return this.db.repositories.platformAddonPurchaseModel; }
@@ -97,11 +99,15 @@ export class PlatformAddonsService {
     const customerId = await resolveSubCustomerId(
       this.gateway, this.db.repositories.sellerModel, this.db.repositories.sellerPlatformSubscriptionModel, sub, sellerId,
     );
-    const charge = await this.gateway.chargeSubscription(`addon_${storeId}_${dto.addonType}_${Date.now()}`, totalPriceUSD, {
+    // Solvexo's own tax is added on top of the add-on price (priceUSD stays the net price; revenue is net of tax).
+    const quote = await this.platformTax?.quoteForStore(storeId, totalPriceUSD);
+    const taxUSD = quote?.taxUSD ?? 0;
+    const chargeTotalUSD = this.round(totalPriceUSD + taxUSD);
+    const charge = await this.gateway.chargeSubscription(`addon_${storeId}_${dto.addonType}_${Date.now()}`, chargeTotalUSD, {
       providerCustomerId: customerId,
     });
     if (!charge.success) {
-      throw new BadRequestException(`Payment of $${totalPriceUSD.toFixed(2)} failed — ${charge.failureReason ?? 'declined'}`);
+      throw new BadRequestException(`Payment of $${chargeTotalUSD.toFixed(2)} failed — ${charge.failureReason ?? 'declined'}`);
     }
 
     const addon = await this.addonModel.create({
@@ -110,7 +116,7 @@ export class PlatformAddonsService {
       status: 'active',
       nextBillingDate: pricing.recurring ? this.addMonth(new Date()) : null,
       providerChargeId: charge.providerChargeId,
-      charges: [{ amountUSD: totalPriceUSD, chargedAt: new Date(), providerChargeId: charge.providerChargeId ?? null }],
+      charges: [{ amountUSD: totalPriceUSD, taxUSD, chargedAt: new Date(), providerChargeId: charge.providerChargeId ?? null }],
     });
 
     // Immediate effects
@@ -203,13 +209,15 @@ export class PlatformAddonsService {
         const renewalCustomerId = await resolveSubCustomerId(
           this.gateway, this.db.repositories.sellerModel, this.db.repositories.sellerPlatformSubscriptionModel, sub, addon.sellerId,
         );
-        const charge = await this.gateway.chargeSubscription(`addon_renewal_${addon._id}`, addon.priceUSD, {
+        const renewalQuote = await this.platformTax?.quoteForStore(addon.storeId, addon.priceUSD);
+        const renewalTaxUSD = renewalQuote?.taxUSD ?? 0;
+        const charge = await this.gateway.chargeSubscription(`addon_renewal_${addon._id}`, this.round(addon.priceUSD + renewalTaxUSD), {
           providerCustomerId: renewalCustomerId,
         });
 
         if (charge.success) {
           addon.nextBillingDate = this.addMonth(now);
-          addon.charges = [...(addon.charges ?? []), { amountUSD: addon.priceUSD, chargedAt: now, providerChargeId: charge.providerChargeId ?? null }];
+          addon.charges = [...(addon.charges ?? []), { amountUSD: addon.priceUSD, taxUSD: renewalTaxUSD, chargedAt: now, providerChargeId: charge.providerChargeId ?? null }];
           succeeded++;
         } else {
           addon.status = 'canceled';

@@ -64,6 +64,8 @@ export interface ChargeContext {
   trialEndUnixSeconds?: number;
   /** Only meaningful for `createProviderSubscription` — a provider-native discount (e.g. Stripe Coupon id) applied on top of the price, for a plan's intro offer (see `getOrCreateCoupon`). */
   couponId?: string;
+  /** Only meaningful for `createProviderSubscription` — a provider-native exclusive tax rate id (Stripe TaxRate) added on top of the price. */
+  taxRateId?: string;
 }
 
 /**

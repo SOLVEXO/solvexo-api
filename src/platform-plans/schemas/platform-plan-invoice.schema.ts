@@ -14,7 +14,14 @@ export class PlatformPlanInvoice {
   @Prop({ type: String, required: true, unique: true }) invoiceNumber: string;
   @Prop({ type: String, enum: ['initial', 'recurring', 'proration'], default: 'recurring' }) type: string;
 
+  /** Total the seller paid (plan + Solvexo tax). Refunds are capped on this. */
   @Prop({ type: Number, required: true }) amountUSD: number;
+  /** Solvexo's own tax inside `amountUSD`, snapshot from the Stripe invoice (0/absent on older invoices = no tax). */
+  @Prop({ type: Number, default: null }) subtotalUSD: number | null;
+  @Prop({ type: Number, default: 0 }) taxAmountUSD: number;
+  @Prop({ type: Number, default: 0 }) taxRatePercent: number;
+  @Prop({ type: String, default: null }) taxLabel: string | null;
+  @Prop({ type: String, default: null }) taxCountry: string | null;
   @Prop({ type: String, enum: ['paid', 'failed', 'pending', 'refunded', 'partially_refunded'], default: 'pending' }) status: string;
   @Prop({ type: Date, default: null }) paidAt: Date | null;
   @Prop({ type: Date, default: null }) refundedAt: Date | null;

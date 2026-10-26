@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, Optional } from '@nestjs/common';
 import { DatabaseService } from '../database/databaseservice';
 import { RedisService } from '../redis/redis.service';
 import { FinanceService } from '../finance/finance.service';
@@ -14,6 +14,7 @@ import { toCsv } from '../analytics/utils/csv.util';
 import { PdfReportBuilder } from '../analytics/utils/pdf-report.util';
 import { AdminConfigService } from '../admin-config/admin-config.service';
 import { ActivityLogService } from '../activity-log/activity-log.service';
+import { PlatformTaxService } from '../platform-tax/platform-tax.service';
 
 const CACHE_TTL_SECONDS = 600; // 10 minutes — same convention as admin/seller analytics
 
@@ -34,6 +35,7 @@ export class AdminFinanceService {
     private readonly financeService: FinanceService,
     private readonly adminConfigService: AdminConfigService,
     private readonly activityLogService: ActivityLogService,
+    @Optional() private readonly platformTax?: PlatformTaxService,
   ) {}
 
   private get r() {
@@ -142,15 +144,26 @@ export class AdminFinanceService {
   async getPlatformRevenue(query: any) {
     const { from, to } = resolveDateRange(query);
 
-    return this.cached(this.key('platform-revenue-v2', { r: rangeCacheKey(query) }), async () => {
-      const [planRows, paidBillRows, openBillRows, accruedRows, rates, addonRows] = await Promise.all([
+    return this.cached(this.key('platform-revenue-v3', { r: rangeCacheKey(query) }), async () => {
+      const [planRows, paidBillRows, openBillRows, accruedRows, rates, addonRows, oneOffTaxUSD] = await Promise.all([
         this.r.platformPlanInvoiceModel.aggregate([
           { $match: { status: { $in: ['paid', 'partially_refunded', 'refunded'] }, isDelete: false, paidAt: { $gte: from, $lte: to } } },
-          { $group: { _id: null, gross: { $sum: '$amountUSD' }, refunded: { $sum: '$refundedAmountUSD' }, count: { $sum: 1 } } },
+          // Solvexo's own tax inside `amountUSD` is NOT revenue (it is owed to the tax authority): revenue is net of it,
+          // and a refund is split between net and tax in the same proportion as the original charge.
+          { $addFields: { _tax: { $ifNull: ['$taxAmountUSD', 0] } } },
+          { $addFields: { _taxShare: { $cond: [{ $gt: ['$amountUSD', 0] }, { $divide: ['$_tax', '$amountUSD'] }, 0] } } },
+          { $group: {
+            _id: null,
+            gross: { $sum: { $subtract: ['$amountUSD', '$_tax'] } },
+            refunded: { $sum: { $multiply: ['$refundedAmountUSD', { $subtract: [1, '$_taxShare'] }] } },
+            taxGross: { $sum: '$_tax' },
+            taxRefunded: { $sum: { $multiply: ['$refundedAmountUSD', '$_taxShare'] } },
+            count: { $sum: 1 },
+          } },
         ]),
         this.r.transactionFeeBillModel.aggregate([
           { $match: { status: 'paid', isDelete: false, paidAt: { $gte: from, $lte: to } } },
-          { $group: { _id: null, total: { $sum: '$amountUSD' }, count: { $sum: 1 } } },
+          { $group: { _id: null, total: { $sum: '$amountUSD' }, tax: { $sum: { $ifNull: ['$taxAmountUSD', 0] } }, count: { $sum: 1 } } },
         ]),
         this.r.transactionFeeBillModel.aggregate([
           { $match: { status: { $in: ['invoiced', 'payment_failed'] }, isDelete: false, createdAt: { $gte: from, $lte: to } } },
@@ -167,8 +180,10 @@ export class AdminFinanceService {
           { $addFields: { _charges: { $cond: [{ $gt: [{ $size: { $ifNull: ['$charges', []] } }, 0] }, '$charges', [{ amountUSD: '$priceUSD', chargedAt: '$createdAt' }]] } } },
           { $unwind: '$_charges' },
           { $match: { '_charges.chargedAt': { $gte: from, $lte: to } } },
-          { $group: { _id: null, total: { $sum: '$_charges.amountUSD' }, count: { $sum: 1 } } },
+          { $group: { _id: null, total: { $sum: '$_charges.amountUSD' }, tax: { $sum: { $ifNull: ['$_charges.taxUSD', 0] } }, count: { $sum: 1 } } },
         ]),
+        // Tax collected on promotions, store-app fees and POS plans (rows written when each charge was confirmed).
+        this.platformTax?.collectedTaxUSD(from, to) ?? Promise.resolve(0),
       ]);
 
       const addonGross = round(addonRows[0]?.total ?? 0);
@@ -194,6 +209,9 @@ export class AdminFinanceService {
           currency: 'USD',
           range: { from, to },
           planRevenue: { grossUSD: planGross, refundedUSD: planRefunded, netUSD: planNet, invoiceCount: planRows[0]?.count ?? 0 },
+          // Solvexo's own tax collected on plan fees (owed to the tax authority, kept out of revenue above).
+          // (plan invoices net of refunds + add-on charges + transaction-fee bills + promotions/app fees/POS plans)
+          planTax: { collectedUSD: round((planRows[0]?.taxGross ?? 0) - (planRows[0]?.taxRefunded ?? 0) + (addonRows[0]?.tax ?? 0) + (paidBillRows[0]?.tax ?? 0) + oneOffTaxUSD) },
           transactionFees: {
             collectedUSD: feesCollected,
             billCount: paidBillRows[0]?.count ?? 0,

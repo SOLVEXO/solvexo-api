@@ -473,6 +473,16 @@ export class Store {
   @Prop({ type: Boolean, default: false })
   taxShipping!: boolean;
 
+  // The seller's own tax registration number as their government calls it (NTN/STRN in Pakistan, TRN, VAT number,
+  // GSTIN...). Printed on the invoice; never shown on the public storefront.
+  @Prop({ type: String, default: '' })
+  taxId!: string;
+
+  // Shopify "I don't collect tax": false = this seller is not tax-registered, so checkout charges NO tax on their
+  // items or shipping (rates below stay saved). Default true = every existing store behaves exactly as before.
+  @Prop({ type: Boolean, default: true })
+  taxRegistered!: boolean;
+
   // Shopify international checkout notice: "Duties and import taxes are not included — you may be charged on
   // delivery" shown to buyers whose shipping country differs from the store country. Default on.
   @Prop({ type: Boolean, default: true })

@@ -23,7 +23,9 @@ export class TransactionFeeBill {
   @Prop({ type: String, required: true }) periodKey: string;
 
   /** Billed in USD (platform plans are USD). */
+  /** The net fees billed. Solvexo's own tax on top (if any) is `taxAmountUSD`; revenue counts only `amountUSD`. */
   @Prop({ type: Number, default: 0 }) amountUSD: number;
+  @Prop({ type: Number, default: 0 }) taxAmountUSD: number;
   @Prop({ type: Number, default: 0 }) saleCount: number;
 
   /** Per-sale-currency detail: what accrued natively and its USD value at billing time. */
