@@ -135,8 +135,12 @@ export class CollectionTemplateService {
       } catch (err: any) {
         // Two requests (or a leftover older unique index) raced the upsert: the row exists now, so read it instead of a 500.
         if (err?.code !== 11000) throw err;
-        doc = await this.collectionTemplateModel.findOne({ storeId, resourceType, templateKey, ...(resolvedThemeId ? {} : {}) });
-        if (!doc) throw err;
+        doc = await this.collectionTemplateModel.findOne(filter);
+        if (!doc) {
+          // The row is not ours: a leftover older unique index (storeId+resourceType+templateKey) is blocking the insert.
+          console.error(`[collection-template] duplicate key for ${storeId}/${resourceType}/${templateKey} theme=${resolvedThemeId}: drop the stale index (see scripts/migrate-theme-scoped-resource-templates.ts)`, err?.keyPattern);
+          throw err;
+        }
       }
     }
     try {
