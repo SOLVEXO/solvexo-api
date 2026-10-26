@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
+import { Injectable, BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
 import { refreshExpiredStock } from '../common/expired-stock.util';
 import { ClientSession, Connection } from 'mongoose';
@@ -38,6 +38,8 @@ export class PurchaseOrdersService {
 
   async createSupplier(storeId: string, sellerId: string, dto: CreateSupplierDto) {
     await verifyStoreOwnershipOrForbidden(this.repos.storeModel, storeId, sellerId);
+    const taken = await this.repos.supplierModel.findOne({ storeId, isDelete: false, name: new RegExp(`^${dto.name.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') }).select('_id').lean();
+    if (taken) throw new ConflictException('A supplier with this name already exists');
     const supplier = await this.repos.supplierModel.create({
       storeId, sellerId,
       name: dto.name, email: dto.email ?? null, phone: dto.phone ?? null,

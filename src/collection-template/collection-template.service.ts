@@ -113,24 +113,39 @@ export class CollectionTemplateService {
         { new: true },
       );
     }
-    if (!doc) doc = await this.collectionTemplateModel.findOneAndUpdate(
-      filter,
-      {
-        $setOnInsert: {
-          storeId,
-          ...(resolvedThemeId ? { installedThemeId: resolvedThemeId } : {}),
-          resourceType,
-          templateKey,
-          name: templateKey === DEFAULT_TEMPLATE_KEY ? 'Default' : templateKey,
-          isDefault: templateKey === DEFAULT_TEMPLATE_KEY,
-          sections: seed,
-          draft: { sections: seed },
-          status: 'draft',
-        },
-      },
-      { upsert: true, new: true, setDefaultsOnInsert: true },
-    );
-    return this.backfillCoreSections(doc, resourceType, templateKey);
+    if (!doc) {
+      try {
+        doc = await this.collectionTemplateModel.findOneAndUpdate(
+          filter,
+          {
+            $setOnInsert: {
+              storeId,
+              ...(resolvedThemeId ? { installedThemeId: resolvedThemeId } : {}),
+              resourceType,
+              templateKey,
+              name: templateKey === DEFAULT_TEMPLATE_KEY ? 'Default' : templateKey,
+              isDefault: templateKey === DEFAULT_TEMPLATE_KEY,
+              sections: seed,
+              draft: { sections: seed },
+              status: 'draft',
+            },
+          },
+          { upsert: true, new: true, setDefaultsOnInsert: true },
+        );
+      } catch (err: any) {
+        // Two requests (or a leftover older unique index) raced the upsert: the row exists now, so read it instead of a 500.
+        if (err?.code !== 11000) throw err;
+        doc = await this.collectionTemplateModel.findOne({ storeId, resourceType, templateKey, ...(resolvedThemeId ? {} : {}) });
+        if (!doc) throw err;
+      }
+    }
+    try {
+      return await this.backfillCoreSections(doc, resourceType, templateKey);
+    } catch (err) {
+      // The backfill only tidies older rows; never block loading the template because of it.
+      console.error(`[collection-template] backfill failed for ${storeId}/${resourceType}/${templateKey}`, err);
+      return doc;
+    }
   }
 
   /** Prepends any required core section that's missing from `sections`
