@@ -82,6 +82,7 @@ import { StoreThemeModule } from './store-theme/store-theme.module';
 import { StorePagesModule } from './store-pages/store-pages.module';
 import { AppsModule } from './apps/apps.module';
 import { StoreFaqModule } from './store-faq/store-faq.module';
+import { StoreChatSettingsModule } from './store-chat-settings/store-chat-settings.module';
 import { StoreContactModule } from './store-contact/store-contact.module';
 import { CollectionTemplateModule } from './collection-template/collection-template.module';
 import { MetafieldsModule } from './metafields/metafields.module';
@@ -195,6 +196,7 @@ import { AppI18nModule } from './i18n/i18n.module';
     StorePagesModule,
     AppsModule,
     StoreFaqModule,
+    StoreChatSettingsModule,
     StoreContactModule,
     CollectionTemplateModule,
     MetafieldsModule,
