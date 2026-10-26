@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, HttpException, Injectable, NotFoundException, OnModuleInit } from '@nestjs/common';
 import { DatabaseService } from '../database/databaseservice';
 import { verifyStoreOwnershipStrict } from '../common/store-ownership.util';
 import { validateSectionSettings, validateBlocksOfType, assertSectionCount, SECTION_ALLOWED_BLOCK_TYPES } from '../common/store-content/section-settings.validator';
@@ -69,13 +69,29 @@ function validateSections(sections: { type: SectionType; settings: Record<string
 
 
 @Injectable()
-export class CollectionTemplateService {
+export class CollectionTemplateService implements OnModuleInit {
   constructor(
     private readonly databaseService: DatabaseService,
     private readonly contentVersioningService: ContentVersioningService,
     private readonly appsService: AppsService,
     private readonly metafieldsService: MetafieldsService,
   ) {}
+
+  /** Templates are unique per (store, theme, type, key). A database that never ran the theme-scoped migration still has the
+   *  older store-wide unique index, which makes every second theme's template insert fail (500). Drop it once, at boot. */
+  async onModuleInit() {
+    try {
+      const col = this.collectionTemplateModel.collection;
+      const stale = (await col.indexes()).find(i => i.unique && JSON.stringify(i.key) === JSON.stringify({ storeId: 1, resourceType: 1, templateKey: 1 }));
+      if (stale?.name) {
+        await col.dropIndex(stale.name);
+        console.warn(`[collection-template] dropped stale unique index ${stale.name}`);
+      }
+      await col.createIndex({ storeId: 1, installedThemeId: 1, resourceType: 1, templateKey: 1 }, { unique: true });
+    } catch (err) {
+      console.error('[collection-template] index check failed', err);
+    }
+  }
 
   private get collectionTemplateModel() {
     return this.databaseService.repositories.collectionTemplateModel;
@@ -231,6 +247,16 @@ export class CollectionTemplateService {
   }
 
   private async findOwnedTemplate(storeId: string, sellerId: string, resourceType: ResourceTemplateType, templateKey: string, installedThemeId?: string) {
+    try {
+      return await this.findOwnedTemplateUnsafe(storeId, sellerId, resourceType, templateKey, installedThemeId);
+    } catch (err) {
+      // Anything that is not an intended 4xx is a real bug: record exactly what failed so it can be fixed from the log.
+      if (!(err instanceof HttpException)) console.error(`[collection-template] load failed ${storeId}/${resourceType}/${templateKey} theme=${installedThemeId}`, err);
+      throw err;
+    }
+  }
+
+  private async findOwnedTemplateUnsafe(storeId: string, sellerId: string, resourceType: ResourceTemplateType, templateKey: string, installedThemeId?: string) {
     await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
     const resolvedThemeId = await this.resolveInstalledThemeId(storeId, installedThemeId);
     await this.ensureTemplate(storeId, resourceType, templateKey, resolvedThemeId);
