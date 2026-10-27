@@ -5,6 +5,15 @@ import { RedisService } from '../redis/redis.service';
 
 const PUBLIC_CACHE_META = 'solvexo:public-cache';
 
+/**
+ * What a CDN in front of the API may do with an anonymous storefront read: keep it briefly, and keep serving the last copy
+ * while the API is slow (stale-while-revalidate) or down (stale-if-error). Browsers always revalidate (max-age=0) so a seller's
+ * edit is never stuck in a visitor's browser.
+ */
+function cdnCacheControl(ttlSeconds: number) {
+  return `public, max-age=0, s-maxage=${Math.max(ttlSeconds * 2, 30)}, stale-while-revalidate=300, stale-if-error=86400`;
+}
+
 interface PublicCacheOptions {
   ttlSeconds: number;
   /** Extra cache-key part for the one thing, if any, that makes the response differ between anonymous visitors. */
@@ -33,6 +42,11 @@ export class PublicCacheInterceptor implements NestInterceptor {
 
     let key = `pubcache:v1:${req.originalUrl}`;
     try { if (opts.vary) key += `|${opts.vary(req)}`; } catch { return next.handle(); }
+
+    // A CDN never runs the password / coming-soon gate, so only a response for a store the access middleware has confirmed as
+    // public may be shared. Responses that differ per visitor (opts.vary) and routes whose store was not identified stay private.
+    const res = context.switchToHttp().getResponse?.();
+    if (res?.setHeader && !opts.vary && req.storefrontGateMode === 'public') res.setHeader('Cache-Control', cdnCacheControl(opts.ttlSeconds));
 
     try {
       const hit = await this.redis.get(key);

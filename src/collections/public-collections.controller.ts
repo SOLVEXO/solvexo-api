@@ -1,7 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { Controller, Get, Param, UseInterceptors, Query } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
-import { PublicCache, PublicCacheInterceptor } from '../common/public-cache.interceptor';
+import { PublicCache, PublicCacheInterceptor } from '../storefront/public-cache.interceptor';
 import { CollectionsService } from './collections.service';
 
 @ApiTags('Public Collections')

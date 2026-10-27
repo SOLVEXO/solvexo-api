@@ -1,6 +1,6 @@
 import { Controller, Get, Param, UseInterceptors, Query } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
-import { PublicCache, PublicCacheInterceptor } from '../common/public-cache.interceptor';
+import { PublicCache, PublicCacheInterceptor } from '../storefront/public-cache.interceptor';
 import { StorePagesService } from './store-pages.service';
 
 // Public — no auth. Backs the real storefront routes: `/:slug` (home),

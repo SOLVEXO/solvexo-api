@@ -1,6 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { Controller, Post, Get, Patch, Body, Req, Res, Param, Query, UseGuards, UseInterceptors, UploadedFile, ForbiddenException } from '@nestjs/common';
-import { PublicCache, PublicCacheInterceptor } from '@/common/public-cache.interceptor';
+import { PublicCache, PublicCacheInterceptor } from '@/storefront/public-cache.interceptor';
 import { resolveCountryFromIp } from '@/common/geo-locate.util';
 
 const visitorCountry = (req: any) => resolveCountryFromIp(req.ip) ?? 'xx';

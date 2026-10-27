@@ -15,7 +15,7 @@ type Req = { method?: string; path?: string; originalUrl?: string; query?: any; 
 const RULES: Array<{ re: RegExp; kind: 'param' | 'product' | 'variant' | 'ctx' }> = [
   { re: /^\/api\/store\/public\/([^/]+)\/(products|filters)\/?$/, kind: 'param' },
   { re: /^\/api\/products\/store\/([^/]+)\/(pinned|new-arrivals|best-sellers|trending)\/?$/, kind: 'param' },
-  { re: /^\/api\/public\/(?:collections|store-pages|store-theme|store-blog|store-banners|collection-template)\/([^/]+)(?:\/|$)/, kind: 'param' },
+  { re: /^\/api\/public\/(?:collections|store-pages|store-theme|store-markets|store-blog|store-banners|collection-template)\/([^/]+)(?:\/|$)/, kind: 'param' },
   { re: /^\/api\/products\/getProductById\/([^/]+)\/?$/, kind: 'product' },
   { re: /^\/api\/products\/preview\/([^/]+)\/?$/, kind: 'product' },
   { re: /^\/api\/products\/getVariantById\/([^/]+)\/?$/, kind: 'variant' },
@@ -125,6 +125,8 @@ export class StorefrontAccessService {
     const storeId = await this.resolveStoreId(req);
     if (!storeId) return;
     const gate = await this.gateState(storeId);
+    // Remembered for the public-cache interceptor: a CDN may only keep a response whose store is known to be public.
+    (req as any).storefrontGateMode = gate.mode;
     if (gate.mode !== 'password' && gate.mode !== 'coming_soon') return;
     const comingSoon = gate.mode === 'coming_soon';
     const hdr = req.headers?.[STOREFRONT_TOKEN_HEADER];

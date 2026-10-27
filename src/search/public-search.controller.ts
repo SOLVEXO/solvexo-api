@@ -13,7 +13,7 @@ const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
  *  products, active collections, published pages and published posts are
  *  returned; password / coming-soon stores are blocked before reaching here by
  *  the global storefront-access middleware (see RULES in
- *  store/storefront-access.service.ts). */
+ *  storefront/storefront-access.service.ts). */
 @Controller('api/public/search')
 export class PublicSearchController {
   constructor(private readonly db: DatabaseService) {}

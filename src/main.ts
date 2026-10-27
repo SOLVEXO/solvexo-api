@@ -8,7 +8,7 @@ import helmet from 'helmet';
 import { CustomDomainsService } from './store/custom-domains.service';
 import { AdminConfigService } from './admin-config/admin-config.service';
 import { createMaintenanceMiddleware } from './admin-config/maintenance.middleware';
-import { StorefrontAccessService, createStorefrontAccessMiddleware } from './store/storefront-access.service';
+import { StorefrontAccessService, createStorefrontAccessMiddleware } from './storefront/storefront-access.service';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 
 // Make the real reason visible in the logs before the process dies.

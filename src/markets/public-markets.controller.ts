@@ -1,6 +1,6 @@
 import { BadRequestException, Controller, Get, Param, UseInterceptors } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
-import { PublicCache, PublicCacheInterceptor } from '../common/public-cache.interceptor';
+import { PublicCache, PublicCacheInterceptor } from '../storefront/public-cache.interceptor';
 import { isValidObjectId } from 'mongoose';
 import { MarketsService } from './markets.service';
 import { MarketPricingService } from './market-pricing.service';

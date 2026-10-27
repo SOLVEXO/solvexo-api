@@ -1,6 +1,6 @@
 import { Controller, Get, Param, UseInterceptors } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
-import { PublicCache, PublicCacheInterceptor } from '../common/public-cache.interceptor';
+import { PublicCache, PublicCacheInterceptor } from '../storefront/public-cache.interceptor';
 import { StoreThemeService } from './store-theme.service';
 
 // Public — no auth. A buyer visiting a storefront needs its navbar/footer/theme

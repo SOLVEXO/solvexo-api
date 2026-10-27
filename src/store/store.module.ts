@@ -15,7 +15,7 @@ import { StoreThemeModule } from '../store-theme/store-theme.module';
 import { StorePagesModule } from '../store-pages/store-pages.module';
 import { CollectionsModule } from '../collections/collections.module';
 
-import { StorefrontAccessService } from './storefront-access.service';
+import { StorefrontAccessService } from '../storefront/storefront-access.service';
 
 @Module({
   imports: [AuthModule, RedisModule, AdminConfigModule, MarketingModule, UploadModule, StoreThemeModule, StorePagesModule, CollectionsModule],

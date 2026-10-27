@@ -22,6 +22,15 @@ describe('StorefrontAccessService', () => {
     await expect(svc.assertAccess(req('/api/public/collections/s1'))).resolves.toBeUndefined();
   });
 
+  it('remembers the gate mode on the request so the public cache can tell a public store from a locked one', async () => {
+    const pub: any = req('/api/public/store-theme/s1');
+    await make('public').svc.assertAccess(pub);
+    expect(pub.storefrontGateMode).toBe('public');
+    const locked: any = req('/api/public/store-theme/s1');
+    await make('password').svc.assertAccess(locked).catch(() => undefined);
+    expect(locked.storefrontGateMode).toBe('password');
+  });
+
   it('ignores routes that are not gated (store basic info, verify route)', async () => {
     const { svc, db } = make('password');
     await svc.assertAccess(req('/api/store/public/my-slug'));
@@ -31,7 +40,7 @@ describe('StorefrontAccessService', () => {
 
   it('blocks gated routes of a password store without a token', async () => {
     const { svc } = make('password');
-    for (const p of ['/api/public/collections/s1', '/api/public/store-theme/s1', '/api/store/public/s1/products', '/api/products/getProductById/p1', '/api/products/getVariantById/v1']) {
+    for (const p of ['/api/public/collections/s1', '/api/public/store-theme/s1', '/api/public/store-markets/s1', '/api/public/store-markets/s1/m1/prices', '/api/store/public/s1/products', '/api/products/getProductById/p1', '/api/products/getVariantById/v1']) {
       await expect(svc.assertAccess(req(p))).rejects.toBeInstanceOf(ForbiddenException);
     }
   });

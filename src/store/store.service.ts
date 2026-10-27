@@ -11,7 +11,7 @@ import { isSupportedLanguage } from '@/common/supported-languages.const';
 import { ConfigService } from '@nestjs/config';
 import { promises as dns } from 'dns';
 import * as bcrypt from 'bcrypt';
-import { StorefrontAccessService } from './storefront-access.service';
+import { StorefrontAccessService } from '../storefront/storefront-access.service';
 import { DatabaseService } from '@/database/databaseservice';
 import {
   SellerType, ProductType, resolveTools,
