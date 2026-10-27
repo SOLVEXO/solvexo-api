@@ -470,6 +470,7 @@ export interface TeamMemberBlockSettings {
   name: string;
   role: string;
   bio?: string;
+  imageUrl?: string;
 }
 export interface StatItemBlockSettings {
   value: string;
@@ -561,6 +562,8 @@ export const BLOCK_TYPES = [
   'product_buy_now',
   'product_collapsible_tab',
   'product_size_chart',
+  'product_text',
+  'product_pickup',
   'theme_block',
 ] as const;
 export type BlockType = (typeof BLOCK_TYPES)[number];
@@ -612,6 +615,8 @@ export type BlockSettingsMap = RequireAllKeys<BlockType, {
   product_buy_now: { label?: string };
   product_collapsible_tab: { title: string; content?: string; openByDefault?: boolean };
   product_size_chart: { label?: string; title?: string; content?: string; imageUrl?: string };
+  product_text: { text?: string; size?: 'small' | 'medium' | 'large' };
+  product_pickup: { heading?: string };
   theme_block: ThemeBlockSettings;
 }>;
 

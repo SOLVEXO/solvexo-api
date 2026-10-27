@@ -9,6 +9,7 @@ import type { CustomerEmailEvent } from './customer-email-events';
  */
 export interface EmailUiStrings {
   viewOrder: string;
+  viewGiftCard: string;
   trackPackage: string;
   customerFallback: string;
   rightsReserved: string;
@@ -19,6 +20,7 @@ export interface EmailUiStrings {
 export const EMAIL_UI_STRINGS: Record<string, EmailUiStrings> = {
   en: {
     viewOrder: 'View your order',
+    viewGiftCard: 'View your gift card',
     trackPackage: 'Track your package',
     customerFallback: 'there',
     rightsReserved: 'All rights reserved.',
@@ -26,6 +28,7 @@ export const EMAIL_UI_STRINGS: Record<string, EmailUiStrings> = {
   },
   ur: {
     viewOrder: 'اپنا آرڈر دیکھیں',
+    viewGiftCard: 'اپنا گفٹ کارڈ دیکھیں',
     trackPackage: 'اپنا پارسل ٹریک کریں',
     customerFallback: 'صارف',
     rightsReserved: 'جملہ حقوق محفوظ ہیں۔',

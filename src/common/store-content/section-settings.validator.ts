@@ -805,6 +805,7 @@ export function validateBlockSettings(blockType: string, settings: Record<string
       required(settings.role, 'role');
       maxLen(settings.role, 80, 'role');
       maxLen(settings.bio, 300, 'bio');
+      if (settings.imageUrl) assertHttpsUrl(settings.imageUrl, 'imageUrl');
       break;
 
     // stats_counter section blocks
@@ -892,6 +893,13 @@ export function validateBlockSettings(blockType: string, settings: Record<string
       maxLen(settings.title, 80, 'settings.title');
       maxLen(settings.content, 5000, 'settings.content');
       if (settings.imageUrl) assertHttpsUrl(settings.imageUrl, 'settings.imageUrl');
+      break;
+    case 'product_pickup':
+      maxLen(settings.heading, 60, 'settings.heading');
+      break;
+    case 'product_text':
+      maxLen(settings.text, 1000, 'settings.text');
+      oneOf(settings.size, ['small', 'medium', 'large'] as const, 'settings.size');
       break;
     case 'product_buy_buttons':
       for (const k of ['addToCartLabel', 'soldOutLabel', 'preorderLabel', 'addedLabel'] as const) maxLen(settings[k], 30, `settings.${k}`);
@@ -1051,7 +1059,7 @@ export const SECTION_ALLOWED_BLOCK_TYPES: AllowedBlockTypesMap = {
   store_locations: ['location_item'],
   contact_form: [],
   related_products: [],
-  product_main: ['product_media', 'product_title', 'product_price', 'product_variant_picker', 'product_quantity', 'product_buy_buttons', 'product_description', 'product_rating', 'product_sku', 'product_wishlist', 'product_share', 'product_specs', 'product_buy_now', 'product_collapsible_tab', 'product_size_chart'],
+  product_main: ['product_media', 'product_title', 'product_price', 'product_variant_picker', 'product_quantity', 'product_buy_buttons', 'product_description', 'product_rating', 'product_sku', 'product_wishlist', 'product_share', 'product_specs', 'product_buy_now', 'product_collapsible_tab', 'product_size_chart', 'product_text', 'product_pickup'],
   search_results: [],
   cart_items: [],
   cart_summary: [],

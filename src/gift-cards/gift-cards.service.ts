@@ -13,6 +13,8 @@ import { UpdateGiftCardSettingsDto } from './dto/update-gift-card-settings.dto';
 import { IssueManualGiftCardDto } from './dto/issue-manual-gift-card.dto';
 import { CreatePurchaseIntentDto } from './dto/create-purchase-intent.dto';
 import { randomBytes } from 'crypto';
+import { isValidObjectId } from 'mongoose';
+import { verifyGiftCardViewToken } from '@/common/gift-card-view-token.util';
 import Stripe from 'stripe';
 
 function generateGiftCardCode(): string {
@@ -108,7 +110,7 @@ export class GiftCardsService {
     });
 
     if (dto.recipientEmail) {
-      this.sendGiftCardEmail(storeId, dto.recipientEmail, dto.recipientName ?? null, store.name, giftCard.code, currency, dto.value, dto.message ?? null).catch(() => {});
+      this.sendGiftCardEmail(storeId, dto.recipientEmail, dto.recipientName ?? null, store.name, giftCard.code, currency, dto.value, dto.message ?? null, String(giftCard._id)).catch(() => {});
     }
 
     return { success: true, message: 'Gift card issued', data: giftCard };
@@ -220,7 +222,7 @@ export class GiftCardsService {
 
     const result = this.notificationsService
       ? await this.notificationsService.sendCustomerEmail({
-          to: giftCard.recipientEmail, storeId, event: 'gift_card', force: true,
+          to: giftCard.recipientEmail, storeId, event: 'gift_card', force: true, giftCardId: String(giftCard._id),
           vars: {
             customerName: giftCard.recipientName, giftCardValue: this.money(giftCard.currency, giftCard.balance),
             giftCardCode: giftCard.code, giftCardMessage: giftCard.message,
@@ -263,6 +265,28 @@ export class GiftCardsService {
   }
 
   // ── Buyer-facing ──────────────────────────────────────────────────────────
+
+  /** The gift card page (Shopify's `gift_card` template): opens ONE card from the signed link in its email, no login.
+   *  Returns only what the page shows; a bad, forged or expired link looks exactly like a missing card. */
+  async getPublicView(token: string) {
+    const giftCardId = verifyGiftCardViewToken(token);
+    if (!giftCardId || !isValidObjectId(giftCardId)) throw new NotFoundException('Gift card not found');
+    const card: any = await this.r.giftCardModel.findOne({ _id: giftCardId, isDelete: false })
+      .select('storeId code currency initialValue balance status expiresAt message recipientName').lean();
+    if (!card) throw new NotFoundException('Gift card not found');
+    const store: any = await this.r.storeModel.findOne({ _id: card.storeId, isDelete: false }).select('name').lean();
+    if (!store) throw new NotFoundException('Gift card not found');
+    const expired = card.status === 'expired' || (!!card.expiresAt && new Date(card.expiresAt).getTime() < Date.now());
+    return {
+      success: true,
+      data: {
+        storeId: String(card.storeId), storeName: store.name,
+        code: card.code, currency: card.currency, initialValue: card.initialValue, balance: card.balance,
+        status: card.status === 'disabled' ? 'disabled' : expired ? 'expired' : 'active',
+        expiresAt: card.expiresAt ?? null, message: card.message ?? null, recipientName: card.recipientName ?? null,
+      },
+    };
+  }
 
   async getPublicSettings(storeId: string) {
     const store = await this.r.storeModel.findOne({ _id: storeId, isDelete: false, status: 'active' }).select('baseCurrency');
@@ -411,7 +435,7 @@ export class GiftCardsService {
     });
 
     if (deliverTo && !isScheduled) {
-      this.sendGiftCardEmail(String(store._id), deliverTo, giftCard.recipientName ?? null, store.name, giftCard.code, currency || 'USD', value, message || null).catch(() => {});
+      this.sendGiftCardEmail(String(store._id), deliverTo, giftCard.recipientName ?? null, store.name, giftCard.code, currency || 'USD', value, message || null, String(giftCard._id)).catch(() => {});
     }
     // A gift: tell the buyer it was sent / when it will be (the code stays with the recipient).
     if (isGift && purchaserEmail && purchaserEmail.toLowerCase() !== String(recipientEmail).toLowerCase() && this.notificationsService) {
@@ -441,7 +465,7 @@ export class GiftCardsService {
       try {
         if (card.recipientEmail && this.notificationsService) {
           const result = await this.notificationsService.sendCustomerEmail({
-            to: card.recipientEmail, storeId: card.storeId, event: 'gift_card',
+            to: card.recipientEmail, storeId: card.storeId, event: 'gift_card', giftCardId: String(card._id),
             vars: { customerName: card.recipientName, giftCardValue: this.money(card.currency, card.balance), giftCardCode: card.code, giftCardMessage: card.message },
           });
           ok = result === 'sent';
@@ -570,12 +594,12 @@ export class GiftCardsService {
 
   private async sendGiftCardEmail(
     storeId: string, to: string, recipientName: string | null, storeName: string, code: string,
-    currency: string, value: number, message: string | null,
+    currency: string, value: number, message: string | null, giftCardId?: string,
   ) {
     if (this.notificationsService) {
       // The store's Customer-notification settings decide on/off, text, sender and reply-to.
       const result = await this.notificationsService.sendCustomerEmail({
-        to, storeId, event: 'gift_card',
+        to, storeId, event: 'gift_card', giftCardId,
         vars: { customerName: recipientName, giftCardValue: `${currency} ${value}`, giftCardCode: code, giftCardMessage: message },
       });
       if (result !== 'failed') return;

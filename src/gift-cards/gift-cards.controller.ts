@@ -19,6 +19,14 @@ import { resolveBuyerStoreScope } from '../common/store-scope.util';
 export class GiftCardsController {
   constructor(private readonly giftCardsService: GiftCardsService) {}
 
+  /** The gift card page opened from the link in the gift card email (no login; the signed token is the key).
+   *  Declared first so `view/:token` is never read as `:storeId/<something>`. */
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  @Get('view/:token')
+  getPublicView(@Param('token') token: string) {
+    return this.giftCardsService.getPublicView(token);
+  }
+
   // ── Seller-facing ─────────────────────────────────────────────────────────
 
   @ApiBearerAuth()

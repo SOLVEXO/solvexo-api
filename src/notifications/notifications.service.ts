@@ -19,6 +19,7 @@ import { pickEmailText } from './customer-email-text.util';
 import { emailUiStrings } from './customer-email-locales';
 import { buyerEmail } from '@/common/buyer-email.util';
 import { signOrderStatusToken } from '@/common/order-status-token.util';
+import { signGiftCardViewToken } from '@/common/gift-card-view-token.util';
 import { storePublicUrl } from '@/newsletter/marketing-email.util';
 
 export interface BuiltCustomerEmail {
@@ -285,7 +286,7 @@ export class NotificationsService {
    * default), sender name and reply-to. Never throws for "store has no settings" — that means all defaults.
    * Returns null when the store doesn't exist.
    */
-  async buildCustomerEmail(args: { storeId: string; event: CustomerEmailEvent; vars: TemplateVars; orderId?: string | null; trackingUrl?: string | null; cta?: { label: string; url: string } | null; locale?: string | null }): Promise<BuiltCustomerEmail | null> {
+  async buildCustomerEmail(args: { storeId: string; event: CustomerEmailEvent; vars: TemplateVars; orderId?: string | null; giftCardId?: string | null; trackingUrl?: string | null; cta?: { label: string; url: string } | null; locale?: string | null }): Promise<BuiltCustomerEmail | null> {
     const repos = this.databaseService.repositories;
     const [store, settings]: [any, any] = await Promise.all([
       repos.storeModel.findById(args.storeId).select('name contactEmail slug customDomain customDomainStatus logo defaultLanguage').lean(),
@@ -313,8 +314,10 @@ export class NotificationsService {
     const orderUrl = base && args.orderId ? `${base}/order-status/${signOrderStatusToken(String(args.orderId))}` : null;
     const trackingUrl = args.trackingUrl && /^https?:\/\//i.test(args.trackingUrl) ? args.trackingUrl : null;
     const vars: TemplateVars = { storeName, orderUrl, trackingUrl, ...args.vars, customerName: args.vars.customerName?.trim() || ui.customerFallback };
-    const ctaUrl = args.event === 'order_shipped' && trackingUrl ? trackingUrl : orderUrl;
-    const ctaLabel = args.event === 'order_shipped' && trackingUrl ? ui.trackPackage : ui.viewOrder;
+    // The gift card page link (code + balance) only goes in the mail that carries the card itself.
+    const giftCardUrl = base && args.giftCardId && args.event === 'gift_card' ? `${base}/gift-cards/view/${signGiftCardViewToken(String(args.giftCardId))}` : null;
+    const ctaUrl = giftCardUrl ?? (args.event === 'order_shipped' && trackingUrl ? trackingUrl : orderUrl);
+    const ctaLabel = giftCardUrl ? ui.viewGiftCard : args.event === 'order_shipped' && trackingUrl ? ui.trackPackage : ui.viewOrder;
 
     const { subject, html } = renderCustomerEmail({
       subjectTemplate: text.subject,
@@ -346,7 +349,7 @@ export class NotificationsService {
    * Sends one customer email straight away (order confirmation, "Resend" from the order page) and records the real
    * outcome on the order timeline. `force` ignores the store's off-switch (a manual resend is the seller's decision).
    */
-  async sendCustomerEmail(args: { to: string; storeId: string; event: CustomerEmailEvent; vars: TemplateVars; orderId?: string | null; trackingUrl?: string | null; cta?: { label: string; url: string } | null; force?: boolean }): Promise<'sent' | 'disabled' | 'failed'> {
+  async sendCustomerEmail(args: { to: string; storeId: string; event: CustomerEmailEvent; vars: TemplateVars; orderId?: string | null; giftCardId?: string | null; trackingUrl?: string | null; cta?: { label: string; url: string } | null; force?: boolean }): Promise<'sent' | 'disabled' | 'failed'> {
     try {
       const built = await this.buildCustomerEmail(args);
       if (!built) return 'failed';

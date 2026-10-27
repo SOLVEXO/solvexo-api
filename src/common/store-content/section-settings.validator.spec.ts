@@ -358,5 +358,16 @@ describe('section-settings.validator', () => {
       expect(() => validateBlockSettings('product_size_chart', { label: 'Sizes', content: 'S M L' })).not.toThrow();
       expect(() => validateBlockSettings('product_buy_now', { label: 'x'.repeat(41) })).toThrow(BadRequestException);
     });
+    it('pickup block: optional heading up to 60 characters', () => {
+      expect(() => validateBlockSettings('product_pickup', {})).not.toThrow();
+      expect(() => validateBlockSettings('product_pickup', { heading: 'Collect in store' })).not.toThrow();
+      expect(() => validateBlockSettings('product_pickup', { heading: 'x'.repeat(61) })).toThrow(BadRequestException);
+    });
+    it('text block: short note, size small/medium/large', () => {
+      expect(() => validateBlockSettings('product_text', { text: 'Free returns within 14 days', size: 'small' })).not.toThrow();
+      expect(() => validateBlockSettings('product_text', {})).not.toThrow();
+      expect(() => validateBlockSettings('product_text', { text: 'x'.repeat(1001) })).toThrow(BadRequestException);
+      expect(() => validateBlockSettings('product_text', { size: 'huge' })).toThrow(BadRequestException);
+    });
   });
 });
