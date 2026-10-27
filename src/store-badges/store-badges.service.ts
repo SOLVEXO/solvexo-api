@@ -33,7 +33,7 @@ export class StoreBadgesService {
         disputes: { $elemMatch: { storeIds: storeId, status: { $in: ['needs_response', 'warning_needs_response'] } } },
       })],
       ['payment-proofs', can('orders.record_payment'), () => r.manualPaymentProofModel.countDocuments({ storeIds: storeId, status: 'pending' })],
-      ['messages', can('messaging.view', 'messaging.manage'), () => r.conversationModel.countDocuments({ storeId, sellerUnread: { $gt: 0 } })],
+      ['messages', can('messaging.view', 'messaging.manage'), () => r.conversationModel.countDocuments({ storeId, deletedBySeller: false, sellerUnread: { $gt: 0 } })],
       ['online-store-contact', can('onlinestore.content.manage'), () => r.storeContactMessageModel.countDocuments({ storeId, status: 'new' })],
       // Products with a variant that is out of stock or at/below its reorder point (the same rule as the Inventory screen).
       ['inventory', can('inventory.view', 'inventory.adjust'), async () => {
