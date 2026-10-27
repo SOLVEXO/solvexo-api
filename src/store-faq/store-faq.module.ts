@@ -2,7 +2,7 @@ import { Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
 import { RedisModule } from '../redis/redis.module';
 import { StoreFaqController } from './store-faq.controller';
-import { PublicStoreFaqController } from './public-store-faq.controller';
+import { PublicStoreFaqController } from '../storefront/public-store-faq.controller';
 import { StoreFaqService } from './store-faq.service';
 
 // `RedisModule` alongside `AuthModule` is required by every module whose

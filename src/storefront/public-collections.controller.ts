@@ -1,10 +1,13 @@
 /* eslint-disable prettier/prettier */
 import { Controller, Get, Param, UseInterceptors, Query } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
-import { PublicCache, PublicCacheInterceptor } from '../storefront/public-cache.interceptor';
-import { CollectionsService } from './collections.service';
+import { PublicCache, PublicCacheInterceptor } from './public-cache.interceptor';
+import { Throttle } from '@nestjs/throttler';
+import { PUBLIC_BROWSE_LIMIT } from './public-throttle';
+import { CollectionsService } from '../collections/collections.service';
 
 @ApiTags('Public Collections')
+@Throttle(PUBLIC_BROWSE_LIMIT)
 @Controller('api/public/collections')
 export class PublicCollectionsController {
   constructor(private readonly collectionsService: CollectionsService) {}

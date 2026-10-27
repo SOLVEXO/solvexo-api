@@ -1,6 +1,6 @@
 import { Controller, Get, Param } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
-import { StoreBannerService } from './store-banner.service';
+import { StoreBannerService } from '../store-banner/store-banner.service';
 
 // Public — no auth. Buyers viewing a storefront need to see its active banners
 // without logging in. Deliberately its own controller (not nested under the

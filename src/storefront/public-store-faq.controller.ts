@@ -1,6 +1,6 @@
 import { Controller, Get, Param } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
-import { StoreFaqService } from './store-faq.service';
+import { StoreFaqService } from '../store-faq/store-faq.service';
 
 // Public — no auth. Buyers viewing a storefront (solvexo-app) need this
 // store's FAQs without logging in. Own controller, same reasoning as

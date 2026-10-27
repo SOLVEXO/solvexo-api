@@ -5,7 +5,7 @@ import { MarketPricingController } from './market-pricing.controller';
 import { MarketPricingService } from './market-pricing.service';
 import { MarketDomainController } from './market-domain.controller';
 import { MarketDomainService } from './market-domain.service';
-import { PublicMarketsController } from './public-markets.controller';
+import { PublicMarketsController } from '../storefront/public-markets.controller';
 import { AuthModule } from '@/auth/auth.module';
 import { RedisModule } from '@/redis/redis.module';
 import { DatabaseModule } from '@/database/database.module';

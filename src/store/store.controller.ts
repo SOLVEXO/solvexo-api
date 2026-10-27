@@ -1,6 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { Controller, Post, Get, Patch, Body, Req, Res, Param, Query, UseGuards, UseInterceptors, UploadedFile, ForbiddenException } from '@nestjs/common';
 import { PublicCache, PublicCacheInterceptor } from '@/storefront/public-cache.interceptor';
+import { PUBLIC_BROWSE_LIMIT } from '@/storefront/public-throttle';
 import { resolveCountryFromIp } from '@/common/geo-locate.util';
 
 const visitorCountry = (req: any) => resolveCountryFromIp(req.ip) ?? 'xx';
@@ -263,6 +264,7 @@ export class StoreController {
   // switcher, and a seller's own "Markets" card all need this before/without
   // necessarily having a seller session.
   @UseInterceptors(PublicCacheInterceptor)
+  @Throttle(PUBLIC_BROWSE_LIMIT)
   @PublicCache(15)
   @Get('public/enabled-currencies')
   async getEnabledCurrencies() {
@@ -282,6 +284,7 @@ export class StoreController {
   // store gets just the store record, and the visitor goes through the normal gated calls afterwards.
   // Registered BEFORE 'public/:slug' for the same reason as 'resolve-domain'.
   @UseInterceptors(PublicCacheInterceptor)
+  @Throttle(PUBLIC_BROWSE_LIMIT)
   @PublicCache(15, visitorCountry)
   @Get('public/bootstrap')
   async getStorefrontBootstrap(@Req() req: any, @Query('slug') slug?: string, @Query('host') host?: string) {
@@ -299,6 +302,7 @@ export class StoreController {
 // Registered BEFORE 'public/:slug' — a static path segment must be matched
   // first, or Nest would swallow 'resolve-domain' as `:slug`.
   @UseInterceptors(PublicCacheInterceptor)
+  @Throttle(PUBLIC_BROWSE_LIMIT)
   @PublicCache(15, visitorCountry)
   @Get('public/resolve-domain')
   async resolveStoreByDomain(@Req() req: any, @Query('host') host: string) {
@@ -308,6 +312,7 @@ export class StoreController {
   // The only visitor-dependent field in this response is `cookieBannerEnabled` (EU/UK region scoping, from the IP), so the
   // cache key carries the visitor's country — never one visitor's region decision served to another.
   @UseInterceptors(PublicCacheInterceptor)
+  @Throttle(PUBLIC_BROWSE_LIMIT)
   @PublicCache(15, visitorCountry)
   @Get('public/:slug')
   async getPublicStore(@Req() req: any, @Param('slug') slug: string) {
@@ -360,6 +365,7 @@ export class StoreController {
 
   @UseGuards(OptionalJwtAuthGuard)
   @UseInterceptors(PublicCacheInterceptor)
+  @Throttle(PUBLIC_BROWSE_LIMIT)
   @PublicCache(15)
   @Get('public/:storeId/products')
   async getPublicStoreProducts(
@@ -371,6 +377,7 @@ export class StoreController {
   }
 
   @UseInterceptors(PublicCacheInterceptor)
+  @Throttle(PUBLIC_BROWSE_LIMIT)
   @PublicCache(15)
   @Get('public/:storeId/filters')
   async getPublicStoreFilters(@Param('storeId') storeId: string) {

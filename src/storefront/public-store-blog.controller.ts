@@ -1,8 +1,8 @@
 import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { ApiTags } from '@nestjs/swagger';
-import { StoreBlogService } from './store-blog.service';
-import { SubmitCommentDto } from './dto/submit-comment.dto';
+import { StoreBlogService } from '../store-blog/store-blog.service';
+import { SubmitCommentDto } from '../store-blog/dto/submit-comment.dto';
 
 // Public — no auth. Backs `/:slug/blog[s/:blogSlug]` and `/:slug/blog/:postSlug`.
 @ApiTags('Store Blog (public)')

@@ -1,12 +1,15 @@
 import { Controller, Get, Param, UseInterceptors } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
-import { PublicCache, PublicCacheInterceptor } from '../storefront/public-cache.interceptor';
-import { StoreThemeService } from './store-theme.service';
+import { PublicCache, PublicCacheInterceptor } from './public-cache.interceptor';
+import { Throttle } from '@nestjs/throttler';
+import { PUBLIC_BROWSE_LIMIT } from './public-throttle';
+import { StoreThemeService } from '../store-theme/store-theme.service';
 
 // Public — no auth. A buyer visiting a storefront needs its navbar/footer/theme
 // without logging in. Own controller, same reasoning as PublicStoreBannerController.
 // Imported-Liquid-theme public routes (render/asset) live in ../themes/liquid/public-liquid-theme.controller.ts.
 @ApiTags('Store Theme (public)')
+@Throttle(PUBLIC_BROWSE_LIMIT)
 @Controller('api/public/store-theme')
 export class PublicStoreThemeController {
   constructor(private readonly storeThemeService: StoreThemeService) {}

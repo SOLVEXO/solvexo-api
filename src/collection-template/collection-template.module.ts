@@ -5,7 +5,7 @@ import { ContentVersioningModule } from '../common/content-versioning/content-ve
 import { AppsModule } from '../apps/apps.module';
 import { MetafieldsModule } from '../metafields/metafields.module';
 import { CollectionTemplateController } from './collection-template.controller';
-import { PublicCollectionTemplateController } from './public-collection-template.controller';
+import { PublicCollectionTemplateController } from '../storefront/public-collection-template.controller';
 import { CollectionTemplateService } from './collection-template.service';
 
 @Module({

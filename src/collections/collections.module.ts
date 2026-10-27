@@ -1,6 +1,6 @@
 import { Module } from '@nestjs/common';
 import { CollectionsController } from './collections.controller';
-import { PublicCollectionsController } from './public-collections.controller';
+import { PublicCollectionsController } from '../storefront/public-collections.controller';
 import { CollectionsService } from './collections.service';
 import { AuthModule } from '../auth/auth.module';
 import { RedisModule } from '../redis/redis.module';

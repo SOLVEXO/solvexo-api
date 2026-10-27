@@ -1,12 +1,15 @@
 import { BadRequestException, Controller, Get, Param, UseInterceptors } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
-import { PublicCache, PublicCacheInterceptor } from '../storefront/public-cache.interceptor';
+import { PublicCache, PublicCacheInterceptor } from './public-cache.interceptor';
+import { Throttle } from '@nestjs/throttler';
+import { PUBLIC_BROWSE_LIMIT } from './public-throttle';
 import { isValidObjectId } from 'mongoose';
-import { MarketsService } from './markets.service';
-import { MarketPricingService } from './market-pricing.service';
+import { MarketsService } from '../markets/markets.service';
+import { MarketPricingService } from '../markets/market-pricing.service';
 
 /** What a storefront needs to resolve its visitor's market (country -> currency, languages, price rule). No auth. */
 @ApiTags('Markets (public)')
+@Throttle(PUBLIC_BROWSE_LIMIT)
 @Controller('api/public/store-markets')
 export class PublicMarketsController {
   constructor(

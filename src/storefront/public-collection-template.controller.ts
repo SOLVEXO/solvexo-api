@@ -1,7 +1,7 @@
 import { Controller, Get, Param, Query } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
-import { CollectionTemplateService } from './collection-template.service';
-import { ResourceTemplateType } from './schemas/collection-template.schema';
+import { CollectionTemplateService } from '../collection-template/collection-template.service';
+import { ResourceTemplateType } from '../collection-template/schemas/collection-template.schema';
 
 // Public — no auth. Backs the real storefront routes `/collections/:slugOrId`
 // and `/product/:slug` (surrounding-sections template resolution). Same

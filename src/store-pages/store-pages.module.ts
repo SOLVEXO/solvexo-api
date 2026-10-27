@@ -6,7 +6,7 @@ import { ContentVersioningModule } from '../common/content-versioning/content-ve
 import { AppsModule } from '../apps/apps.module';
 import { MetafieldsModule } from '../metafields/metafields.module';
 import { StorePagesController } from './store-pages.controller';
-import { PublicStorePagesController } from './public-store-pages.controller';
+import { PublicStorePagesController } from '../storefront/public-store-pages.controller';
 import { StorePagesService } from './store-pages.service';
 
 @Module({

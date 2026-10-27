@@ -4,7 +4,7 @@ import { RedisModule } from '../redis/redis.module';
 import { AdminConfigModule } from '../admin-config/admin-config.module';
 import { MediaLibraryModule } from '../media-library/media-library.module';
 import { StoreBannerController } from './store-banner.controller';
-import { PublicStoreBannerController } from './public-store-banner.controller';
+import { PublicStoreBannerController } from '../storefront/public-store-banner.controller';
 import { StoreBannerService } from './store-banner.service';
 
 @Module({
