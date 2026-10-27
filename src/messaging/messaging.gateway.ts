@@ -81,11 +81,16 @@ export class MessagingGateway implements OnGatewayConnection, OnGatewayDisconnec
     if (!userId) return;
 
     const count = Math.max(0, (this.onlineCounts.get(userId) || 1) - 1);
+    this.onlineCounts.set(userId, count);
     if (count === 0) {
-      this.onlineCounts.delete(userId);
-      this.server.emit(`presence:${userId}`, { userId, online: false, lastSeen: new Date() });
-    } else {
-      this.onlineCounts.set(userId, count);
+      // Grace period: a page refresh / mobile network blip reconnects within seconds
+      // and must not flash the person as offline.
+      setTimeout(() => {
+        if ((this.onlineCounts.get(userId) || 0) === 0) {
+          this.onlineCounts.delete(userId);
+          this.server?.emit(`presence:${userId}`, { userId, online: false, lastSeen: new Date() });
+        }
+      }, 5000);
     }
 
     const joined: Set<string> = (client.data)?.joinedConversations || new Set();
@@ -103,7 +108,7 @@ export class MessagingGateway implements OnGatewayConnection, OnGatewayDisconnec
   }
 
   isOnline(userId: string) {
-    return this.onlineCounts.has(userId);
+    return (this.onlineCounts.get(userId) || 0) > 0;
   }
 
   @SubscribeMessage('join-conversation')
