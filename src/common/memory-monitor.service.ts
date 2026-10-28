@@ -45,7 +45,9 @@ export class MemoryMonitorService implements OnModuleInit, OnModuleDestroy {
 
     const line = `heapUsed=${mb(heap.used_heap_size)}MB limit=${mb(heap.heap_size_limit)}MB (${Math.round(ratio * 100)}%) rss=${mb(mem.rss)}MB external=${mb(mem.external)}MB arrayBuffers=${mb(mem.arrayBuffers)}MB uptime=${Math.round(process.uptime() / 60)}min`;
     if (ratio >= WARN_RATIO) this.logger.warn(`High memory: ${line}`);
-    else if (this.samples % LOG_EVERY_SAMPLES === 1) this.logger.log(line);
+    // Production only prints error/warn through Nest's logger (see main.ts), so the periodic line goes to stdout directly:
+    // it is the memory trend the Railway logs need to show (one line every 10 minutes).
+    else if (this.samples % LOG_EVERY_SAMPLES === 1) console.log(`[MemoryMonitor] ${line}`);
 
     if (ratio >= ALERT_RATIO && now - this.lastAlertAt > ALERT_EVERY_MS) {
       this.lastAlertAt = now;

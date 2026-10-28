@@ -44,7 +44,8 @@ export class CatalogIntegrityService implements OnModuleInit {
         this.logger.warn(`Variant index build failed (fix remaining duplicate SKUs): ${err?.message ?? err}`);
       }
       result = { backfilled, renamed };
-      if (backfilled || renamed) this.logger.log(`Catalog integrity: ${backfilled} variant(s) got a storeId, ${renamed} duplicate SKU(s) renamed`);
+      // warn, not log: production prints only error/warn, and this line says that product data was changed.
+      if (backfilled || renamed) this.logger.warn(`Catalog integrity: ${backfilled} variant(s) got a storeId, ${renamed} duplicate SKU(s) renamed`);
     };
     const outcome = await this.redis.withLock('catalog-integrity-boot', 10 * 60_000, work);
     // No Redis (local/dev): the work is idempotent, so just run it.
