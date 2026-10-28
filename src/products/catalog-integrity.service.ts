@@ -54,9 +54,10 @@ export class CatalogIntegrityService implements OnModuleInit {
 
   async backfillVariantStoreIds(): Promise<number> {
     let total = 0;
+    const settled: string[] = []; // variants handled (or given up on) in this run, so a stuck one cannot loop forever
     for (let i = 0; i < MAX_BATCHES; i++) {
       const variants: any[] = await this.r.productVariantModel
-        .find({ $or: [{ storeId: null }, { storeId: { $exists: false } }] })
+        .find({ $and: [{ $or: [{ storeId: null }, { storeId: { $exists: false } }] }, { _id: { $nin: settled } }] })
         .select('productId')
         .limit(BATCH)
         .lean();
@@ -68,11 +69,43 @@ export class CatalogIntegrityService implements OnModuleInit {
         .filter((v) => storeOf.has(String(v.productId)))
         .map((v) => ({ updateOne: { filter: { _id: v._id }, update: { $set: { storeId: storeOf.get(String(v.productId)) } } } }));
       if (ops.length === 0) break; // only orphans left (product gone) — nothing to fill, stop instead of looping
-      await this.r.productVariantModel.bulkWrite(ops as any, { ordered: false });
+      let failed: number[] = [];
+      try {
+        await this.r.productVariantModel.bulkWrite(ops as any, { ordered: false });
+      } catch (err: any) {
+        // The unique {storeId, sku} index already exists: an old variant whose SKU equals another live variant of its store
+        // cannot take that storeId as is. The rest of the batch was applied (unordered); fix these one by one below.
+        const writeErrors: any[] = err?.writeErrors ?? err?.result?.getWriteErrors?.() ?? [];
+        if (err?.code !== 11000 && !writeErrors.some((e) => (e?.code ?? e?.err?.code) === 11000)) throw err;
+        failed = writeErrors.map((e) => e?.index ?? e?.err?.index).filter((n) => typeof n === 'number');
+        if (failed.length === 0) throw err;
+      }
+      for (const idx of failed) {
+        const v = variants.filter((x) => storeOf.has(String(x.productId)))[idx];
+        if (v) await this.assignStoreIdWithUniqueSku(v._id, storeOf.get(String(v.productId))!);
+      }
+      for (const v of variants) settled.push(String(v._id));
       total += ops.length;
       if (variants.length < BATCH) break;
     }
     return total;
+  }
+
+  /** Gives a variant its storeId and, because its SKU collides inside that store, a free `-D<n>` suffix. Nothing else changes. */
+  private async assignStoreIdWithUniqueSku(variantId: any, storeId: string): Promise<void> {
+    const v: any = await this.r.productVariantModel.findById(variantId).select('sku isDelete').lean();
+    if (!v) return;
+    for (let n = 1; n <= 20; n++) {
+      const candidate = `${String(v.sku ?? '').slice(0, 56)}-D${n}`;
+      if (await this.r.productVariantModel.exists({ storeId, sku: candidate, isDelete: false })) continue;
+      try {
+        await this.r.productVariantModel.updateOne({ _id: variantId }, { $set: { storeId, sku: candidate } });
+        return;
+      } catch (err: any) {
+        if (err?.code !== 11000) throw err; // taken in the meantime: try the next suffix
+      }
+    }
+    this.logger.warn(`Could not give variant ${String(variantId)} a unique SKU in store ${storeId}; left unchanged`);
   }
 
   async dedupeSkus(): Promise<number> {
