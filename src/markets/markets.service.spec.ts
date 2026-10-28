@@ -181,4 +181,16 @@ describe('MarketsService', () => {
     expect(pub.languages).toEqual(['en', 'ur']);
     expect(Object.keys(pub.markets[0])).not.toContain('storeId');
   });
+
+  it('public payload drops markets whose currency the plan no longer allows (matches checkout)', async () => {
+    const { service, markets } = setup();
+    await service.create(STORE_ID, { name: 'Home', countries: ['PK'], currency: 'PKR' });
+    await service.create(STORE_ID, { name: 'US', countries: ['US'], currency: 'USD' });
+    await service.create(STORE_ID, { name: 'EU', countries: ['DE'], currency: 'EUR' });
+    // Plan downgraded after the markets were created (create() is capped, so the rows are already there).
+    (service as any).entitlementsService.getLimits.mockResolvedValue({ maxMarkets: 2 });
+    const pub: any = await service.getPublicMarkets(STORE_ID);
+    expect(markets.rows.length).toBe(3);
+    expect(pub.markets.map((m: any) => m.currency)).toEqual(['PKR', 'USD']);
+  });
 });

@@ -5,7 +5,7 @@ import { CreateMarketDto } from './dto/create-market.dto';
 import { UpdateMarketDto } from './dto/update-market.dto';
 import { DatabaseService } from '@/database/databaseservice';
 import { AdminConfigService } from '@/admin-config/admin-config.service';
-import { EntitlementsService } from '@/platform-plans/entitlements.service';
+import { EntitlementsService, trimToMarketsLimit } from '@/platform-plans/entitlements.service';
 import { manualRateOf, pickMarketForCountry, normalizeCountryCode } from './market-price.util';
 
 /** URL prefixes the storefront already owns; a market subfolder may not shadow them. */
@@ -293,10 +293,17 @@ export class MarketsService {
 
   /** What the storefront may know about a store's markets (no internal fields). */
   async getPublicMarkets(storeId: string) {
-    const [markets, store]: [any[], any] = await Promise.all([
+    const [allMarkets, store, limits]: [any[], any, { maxMarkets: number }] = await Promise.all([
       this.marketModel.find({ storeId, isActive: true, isDelete: false }).sort({ isPrimary: -1, name: 1 }).lean(),
-      this.databaseService.repositories.storeModel.findById(storeId).select('defaultLanguage').lean(),
+      this.databaseService.repositories.storeModel.findById(storeId).select('defaultLanguage baseCurrency').lean(),
+      this.entitlementsService.getLimits(storeId),
     ]);
+    // Checkout only prices in the currencies the plan allows (same trim as CheckoutService.resolveStoreCurrency), so
+    // the storefront must not offer a market the buyer could not actually pay in (e.g. after a plan downgrade).
+    const keptCurrencies = new Set(trimToMarketsLimit(
+      Array.from(new Set(allMarkets.map((m) => m.currency as string))), store?.baseCurrency, limits.maxMarkets,
+    ));
+    const markets = allMarkets.filter((m) => m.isPrimary || keptCurrencies.has(m.currency));
     const defaultLanguage = String(store?.defaultLanguage || 'en').toLowerCase();
     const languages = Array.from(new Set([
       defaultLanguage,
