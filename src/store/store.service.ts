@@ -9,6 +9,7 @@ import { availableStock, AVAILABLE_STOCK_EXPR } from '@/common/stock-availabilit
 import { importCustomersCsv } from './customer-bulk-import';
 import { isSupportedLanguage } from '@/common/supported-languages.const';
 import { ConfigService } from '@nestjs/config';
+import { isValidObjectId } from 'mongoose';
 import { promises as dns } from 'dns';
 import * as bcrypt from 'bcrypt';
 import { StorefrontAccessService } from '../storefront/storefront-access.service';
@@ -45,6 +46,9 @@ import { parseTaxOverrides } from '../tax/tax-rules.util';
 import { isValidTaxId } from '../platform-tax/platform-tax.util';
 import { isValidTimeZone } from '../analytics/utils/analytics-date.util';
 import { resolveStoreCountry } from '../integrations/payment-availability.util';
+import { ExchangeRateService } from '../exchange-rate/exchange-rate.service';
+import { MarketPricingService } from '../markets/market-pricing.service';
+import { browseDisplayPrice, priceInRange, type BrowsePriceContext } from '../markets/browse-price.util';
 
 // Real EU member states + UK (retains UK GDPR post-Brexit, same as Shopify's
 // own "regions with consent laws" cookie-banner scoping) — a plain, explicit
@@ -91,6 +95,8 @@ export class StoreService {
     private readonly storefrontAccess: StorefrontAccessService,
     private readonly collectionsService: CollectionsService,
     private readonly configService: ConfigService,
+    private readonly exchangeRateService: ExchangeRateService,
+    private readonly marketPricingService: MarketPricingService,
   ) {}
 
   /** Thin passthrough — AdminConfigService is already injected here for
@@ -1690,6 +1696,43 @@ export class StoreService {
   }
 
   // ── 4. Public store products ──────────────────────────────────────────────
+  /**
+   * The price context of a storefront listing request: `currency` is the buyer's currency (the one price filters are
+   * typed in and prices are shown in) and `marketId` the buyer's market. Returns null (= catalogue prices, the old
+   * behaviour) when the storefront sent no currency or a rate is missing — the storefront then shows catalogue prices too.
+   */
+  private async buildBrowsePricing(storeId: string, store: any, query: any): Promise<BrowsePriceContext | null> {
+    const buyer = typeof query?.currency === 'string' ? query.currency.trim().toUpperCase() : '';
+    const native = String(store?.baseCurrency ?? '').toUpperCase();
+    if (!/^[A-Z]{3}$/.test(buyer) || !/^[A-Z]{3}$/.test(native)) return null;
+
+    let market: BrowsePriceContext['market'] = null;
+    let fixed: BrowsePriceContext['fixed'] = new Map();
+    const marketId = typeof query?.marketId === 'string' && isValidObjectId(query.marketId) ? query.marketId : null;
+    if (marketId) {
+      const m: any = await this.databaseService.repositories.marketModel
+        .findOne({ _id: marketId, storeId, isActive: true, isDelete: false })
+        .select('currency pricingRule')
+        .lean();
+      if (m) {
+        market = { currency: m.currency, pricingRule: m.pricingRule };
+        // Fixed catalogue prices only apply to a buyer paying in the market's own currency.
+        if (m.currency === buyer) fixed = await this.marketPricingService.fixedPricesFor(String(m._id), m.currency);
+      }
+    }
+
+    const snapshots: BrowsePriceContext['snapshots'] = [];
+    if (native !== buyer) {
+      for (const currency of [native, buyer]) {
+        if (currency === 'USD') continue;
+        const rate: any = await this.exchangeRateService.getCurrentRate(currency);
+        if (!(rate?.ratePerUSD > 0)) return null;
+        snapshots.push({ currency, ratePerUSD: rate.ratePerUSD });
+      }
+    }
+    return { nativeCurrency: native, buyerCurrency: buyer, market, fixed, snapshots };
+  }
+
   async getPublicStoreProducts(storeId: string, query: any, customerId?: string | null) {
     if (!storeId) throw new BadRequestException('storeId is required');
 
@@ -1817,18 +1860,24 @@ export class StoreService {
       // price is its cheapest active variant's, same as the card shows.
       const candidates: any[] = await productModel.find(filter).select('_id tags productType vendor').limit(5000).lean();
       const candidateIds = candidates.map((p: any) => p._id.toString());
+      // Prices the buyer SEES (market rule / fixed prices / FX) when the storefront sent its currency + market;
+      // otherwise null and the catalogue (store currency) prices are used as before.
+      const pricing = await this.buildBrowsePricing(storeId, store, query);
       const agg = await productVariantModel.aggregate([
         { $match: { productId: { $in: candidateIds }, status: 'active', isDelete: false } },
+        // The card shows the market price of the product's cheapest variant, so find that variant first.
+        ...(pricing ? [{ $sort: { price: 1 as const, _id: 1 as const } }] : []),
         {
           $group: {
             _id: '$productId',
+            cheapestVariantId: { $first: '$_id' },
             minPrice: { $min: '$price' },
             inStock: { $max: { $cond: [{ $or: ['$unlimitedStock', '$allowBackorder', { $gt: [AVAILABLE_STOCK_EXPR, 0] }] }, 1, 0] } },
             options: { $push: '$options' },
           },
         },
       ]);
-      const info = new Map<string, { minPrice: number; inStock: boolean; options: Map<string, Set<string>> }>();
+      const info = new Map<string, { minPrice: number; shown: number; inStock: boolean; options: Map<string, Set<string>> }>();
       for (const a of agg as any[]) {
         const opts = new Map<string, Set<string>>();
         for (const list of a.options ?? []) {
@@ -1838,7 +1887,8 @@ export class StoreService {
             opts.get(o.name)!.add(String(o.value));
           }
         }
-        info.set(a._id, { minPrice: a.minPrice, inStock: a.inStock === 1, options: opts });
+        const shown = pricing ? browseDisplayPrice(a.minPrice, a._id, a.cheapestVariantId ? String(a.cheapestVariantId) : null, pricing) : a.minPrice;
+        info.set(a._id, { minPrice: a.minPrice, shown, inStock: a.inStock === 1, options: opts });
       }
       type Group = 'tags' | 'vendor' | 'productType' | 'availability' | 'price' | 'options';
       const byId = new Map<string, any>(candidates.map((p: any) => [p._id.toString(), p]));
@@ -1857,8 +1907,7 @@ export class StoreService {
         }
         if (skipGroup !== 'price' && (hasMin || hasMax)) {
           if (!i) return false;
-          if (hasMin && i.minPrice < (minPrice as number)) return false;
-          if (hasMax && i.minPrice > (maxPrice as number)) return false;
+          if (!priceInRange(i.shown, hasMin ? (minPrice as number) : null, hasMax ? (maxPrice as number) : null)) return false;
         }
         for (const [name, values] of Object.entries(optionFilters)) {
           if (skipGroup === 'options' && skipOption === name) continue;
@@ -1871,7 +1920,7 @@ export class StoreService {
       let ids = candidateIds.filter((id) => matches(id));
       if (priceSort) {
         const dir = query.sort === 'price_asc' ? 1 : -1;
-        ids.sort((a, b) => ((info.get(a)?.minPrice ?? 0) - (info.get(b)?.minPrice ?? 0)) * dir);
+        ids.sort((a, b) => ((info.get(a)?.shown ?? 0) - (info.get(b)?.shown ?? 0)) * dir);
       } else if (collectionOrder) {
         const pos = new Map(collectionOrder.map((id, i) => [id, i] as const));
         ids.sort((a, b) => (pos.get(a) ?? Number.MAX_SAFE_INTEGER) - (pos.get(b) ?? Number.MAX_SAFE_INTEGER));
@@ -1903,7 +1952,7 @@ export class StoreService {
         const optionNames = new Set<string>(Object.keys(optionFilters));
         for (const i of info.values()) for (const n of i.options.keys()) optionNames.add(n);
         const priceIds = candidateIds.filter((id) => matches(id, 'price') && info.get(id));
-        const prices = priceIds.map((id) => info.get(id)!.minPrice);
+        const prices = priceIds.map((id) => info.get(id)!.shown);
         const availCounts = { in_stock: 0, out_of_stock: 0 };
         for (const id of candidateIds) {
           if (!matches(id, 'availability')) continue;
@@ -1911,7 +1960,7 @@ export class StoreService {
         }
         facets = {
           availability: availCounts,
-          price: { min: prices.length ? Math.min(...prices) : null, max: prices.length ? Math.max(...prices) : null, currency: (store as any).baseCurrency ?? null },
+          price: { min: prices.length ? Math.min(...prices) : null, max: prices.length ? Math.max(...prices) : null, currency: pricing ? pricing.buyerCurrency : ((store as any).baseCurrency ?? null) },
           productTypes: toList(tally('productType', (id) => [byId.get(id).productType])),
           vendors: toList(tally('vendor', (id) => (byId.get(id).vendor ? [byId.get(id).vendor] : []))).slice(0, 100),
           tags: toList(tally('tags', (id) => byId.get(id).tags ?? [])).slice(0, 100),

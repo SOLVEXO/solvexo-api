@@ -91,4 +91,15 @@ describe('PaymentService.computeGatewayCharge', () => {
     const res = await service.computeGatewayCharge({ totalAmount: 1234.567, currency: 'PKR' }, 'PKR');
     expect(res.amount).toBe(1234.57);
   });
+
+  it('snaps the charge to the currency minor unit (JPY whole yen, KWD three decimals) so the paid amount matches what the gateway reports', async () => {
+    const exchange = {
+      ensureCurrencyInSnapshots: jest.fn().mockResolvedValue([]),
+      convertWithSnapshots: jest.fn().mockImplementation((amount: number) => amount),
+    };
+    const { service } = makeService({ exchange });
+    expect((await service.computeGatewayCharge({ totalAmount: 1234.56, currency: 'JPY' }, 'JPY')).amount).toBe(1235);
+    expect((await service.computeGatewayCharge({ totalAmount: 5.1234, currency: 'KWD' }, 'KWD')).amount).toBe(5.12); // Stripe wants the last of 3 digits to be 0
+    expect((await service.computeGatewayCharge({ totalAmount: 10.005, currency: 'USD' }, 'USD')).amount).toBe(10.01);
+  });
 });

@@ -285,24 +285,52 @@ export class MarketsService {
     if (!markets.length) return { market: null, blocked: false };
     const code = normalizeCountryCode(countryCode);
     const hit = pickMarketForCountry(markets, code);
-    if (!code || !hit) return { market: hit, blocked: !hit && !!code };
+    if (!code || !hit) return { market: await this.asSellableMarket(storeId, hit), blocked: !hit && !!code };
     const listed = (hit.countries ?? []).some((c: string) => String(c).toUpperCase() === code);
-    if (listed || !(hit.countries ?? []).length) return { market: hit, blocked: false };
+    if (listed || !(hit.countries ?? []).length) return { market: await this.asSellableMarket(storeId, hit), blocked: false };
     return { market: null, blocked: true };
+  }
+
+  /**
+   * Shopify: a store can sell in local (market) currencies only with Shopify Payments (or Adyen). With any other
+   * processor customers in every market pay in the store's default currency. Solvexo's equivalent of Shopify Payments
+   * is the platform card rail: a fully onboarded Stripe Connect account on the store.
+   */
+  async supportsLocalCurrencies(storeId: string): Promise<boolean> {
+    const s: any = await this.databaseService.repositories.storeModel
+      .findById(storeId).select('stripeConnectStatus stripeConnectChargesEnabled stripeConnectPayoutsEnabled').lean();
+    return !!s && s.stripeConnectStatus === 'active' && !!s.stripeConnectChargesEnabled && !!s.stripeConnectPayoutsEnabled;
+  }
+
+  /** A market as the buyer can really buy in it: without the local-currency rail it sells in the store currency, no conversion rule. */
+  private async asSellableMarket(storeId: string, market: any | null): Promise<any | null> {
+    if (!market || (await this.supportsLocalCurrencies(storeId))) return market;
+    const store: any = await this.databaseService.repositories.storeModel.findById(storeId).select('baseCurrency').lean();
+    return store?.baseCurrency ? this.inStoreCurrency(market, store.baseCurrency) : market;
+  }
+
+  private inStoreCurrency(market: any, baseCurrency: string): any {
+    return { ...market, currency: baseCurrency, pricingRule: { type: 'auto', manualRate: null, percentageAdjustment: null, useRounding: false, roundingRule: 'nearest', conversionFee: null } };
   }
 
   /** What the storefront may know about a store's markets (no internal fields). */
   async getPublicMarkets(storeId: string) {
-    const [allMarkets, store, limits]: [any[], any, { maxMarkets: number }] = await Promise.all([
+    const [rawMarkets, store, limits, platformCurrencies, local]: [any[], any, { maxMarkets: number }, { code: string }[], boolean] = await Promise.all([
       this.marketModel.find({ storeId, isActive: true, isDelete: false }).sort({ isPrimary: -1, name: 1 }).lean(),
-      this.databaseService.repositories.storeModel.findById(storeId).select('defaultLanguage baseCurrency').lean(),
+      this.databaseService.repositories.storeModel.findById(storeId).select('defaultLanguage baseCurrency enabledCurrencies').lean(),
       this.entitlementsService.getLimits(storeId),
+      this.adminConfigService.getEnabledCurrencies(),
+      this.supportsLocalCurrencies(storeId),
     ]);
-    // Checkout only prices in the currencies the plan allows (same trim as CheckoutService.resolveStoreCurrency), so
-    // the storefront must not offer a market the buyer could not actually pay in (e.g. after a plan downgrade).
-    const keptCurrencies = new Set(trimToMarketsLimit(
-      Array.from(new Set(allMarkets.map((m) => m.currency as string))), store?.baseCurrency, limits.maxMarkets,
-    ));
+    // No local-currency rail: every market sells in the store currency (see supportsLocalCurrencies).
+    const allMarkets = local || !store?.baseCurrency ? rawMarkets : rawMarkets.map((m) => this.inStoreCurrency(m, store.baseCurrency));
+    // Checkout only prices in the currencies the store + plan allow. This is the SAME list and trim as
+    // CheckoutService.resolveStoreCurrency (store list, else the platform list; plan cap, base currency first), so the
+    // storefront never offers a market the buyer could not actually pay in (e.g. after a plan downgrade).
+    const allowed: string[] = Array.isArray(store?.enabledCurrencies) && store.enabledCurrencies.length
+      ? store.enabledCurrencies
+      : platformCurrencies.map((c) => c.code);
+    const keptCurrencies = new Set(trimToMarketsLimit(allowed, store?.baseCurrency, limits.maxMarkets));
     const markets = allMarkets.filter((m) => m.isPrimary || keptCurrencies.has(m.currency));
     const defaultLanguage = String(store?.defaultLanguage || 'en').toLowerCase();
     const languages = Array.from(new Set([

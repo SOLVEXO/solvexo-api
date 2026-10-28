@@ -178,6 +178,8 @@ export class MarketPricingService {
       .select('currency')
       .lean();
     if (!market) throw new NotFoundException('Market not found');
+    // Without the local-currency rail the market sells in the store currency (no fixed market prices apply).
+    if (!(await this.marketsService.supportsLocalCurrencies(storeId))) return [];
     return Array.from((await this.fixedPricesFor(String(market._id), market.currency)).values());
   }
 }

@@ -378,9 +378,14 @@ export class CheckoutService {
       });
     }
     const market: any = marketResolution.market;
-    const requestedCurrency = body.currencyPreference
-      ? await this.resolveCheckoutCurrency(userId, body.currencyPreference)
-      : market?.currency ?? (await this.resolveCheckoutCurrency(userId, undefined));
+    // Shopify: without the local-currency rail (Shopify Payments / here the Stripe Connect card rail) every buyer pays
+    // in the store's own currency, whatever market or currency the browser asked for.
+    const localCurrencies = await this.marketsService.supportsLocalCurrencies(storeId);
+    const requestedCurrency = !localCurrencies && (targetStore as any)?.baseCurrency
+      ? String((targetStore as any).baseCurrency)
+      : body.currencyPreference
+        ? await this.resolveCheckoutCurrency(userId, body.currencyPreference)
+        : market?.currency ?? (await this.resolveCheckoutCurrency(userId, undefined));
     const checkoutCurrency = targetStore
       ? await this.resolveStoreCurrency(requestedCurrency, targetStore as any)
       : requestedCurrency;
@@ -1734,10 +1739,15 @@ export class CheckoutService {
         (checkout.fxSnapshots as any) ?? [],
       );
       if (storeSubtotal < minOrderInStoreCurrency) {
+        // Shopify: the buyer sees the minimum in their own (checkout) currency, converted at checkout.
+        const shownCurrency = checkout.currency ?? couponStoreCurrency;
+        const shown = shownCurrency === couponStoreCurrency
+          ? minOrderInStoreCurrency
+          : this.round(this.exchangeRateService.convertWithSnapshots(minOrderInStoreCurrency, couponStoreCurrency, shownCurrency, (checkout.fxSnapshots as any) ?? []));
         throw new BadRequestException(
           isPlatformCoupon
-            ? `This coupon requires a minimum order of ${minOrderInStoreCurrency} ${couponStoreCurrency}`
-            : `This coupon requires a minimum order of ${minOrderInStoreCurrency} ${couponStoreCurrency} from this store`,
+            ? `This coupon requires a minimum order of ${shown} ${shownCurrency}`
+            : `This coupon requires a minimum order of ${shown} ${shownCurrency} from this store`,
         );
       }
     }

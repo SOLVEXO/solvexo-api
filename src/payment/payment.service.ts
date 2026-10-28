@@ -1583,7 +1583,9 @@ export class PaymentService {
       targetCurrency,
       fxSnapshots,
     );
-    return { amount: this.round(amount), fxSnapshots };
+    // Snapped to the currency's real minor unit (JPY/KRW are whole units, KWD three decimals): the gateway charges and
+    // reports exactly that figure, so `assertGatewayPaymentMatches` compares like with like.
+    return { amount: fromStripeAmount(toStripeAmount(amount, targetCurrency), targetCurrency), fxSnapshots };
   }
 
   /**
@@ -2190,6 +2192,11 @@ export class PaymentService {
     if (checkout.expiredAt && checkout.expiredAt < new Date()) {
       await checkoutModel.findByIdAndUpdate(checkout._id, { status: 'expired' });
       throw new BadRequestException('Checkout has expired');
+    }
+
+    // This path records the order and its transaction in PKR (the local bank-transfer rail): never for another currency.
+    if (checkout.currency && checkout.currency !== 'PKR') {
+      throw new BadRequestException('Bank transfer is only available for checkouts in PKR');
     }
 
     await this.assertDiscountsStillValid(checkout);

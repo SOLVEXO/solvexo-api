@@ -47,9 +47,11 @@ const STORE_ID = new Types.ObjectId().toString();
 const OTHER_STORE = new Types.ObjectId().toString();
 const PRODUCT_ID = new Types.ObjectId().toString();
 
-function setup(opts: { enabledCurrencies?: string[] | null; maxMarkets?: number } = {}) {
+function setup(opts: { enabledCurrencies?: string[] | null; maxMarkets?: number; noLocalRail?: boolean } = {}) {
   const stores = [{
     _id: STORE_ID, baseCurrency: 'PKR', enabledCurrencies: opts.enabledCurrencies ?? null, isDelete: false,
+    // Fully onboarded Stripe Connect = the platform card rail = local (market) currencies allowed (Shopify Payments equivalent).
+    ...(opts.noLocalRail ? {} : { stripeConnectStatus: 'active', stripeConnectChargesEnabled: true, stripeConnectPayoutsEnabled: true }),
     customDomains: [{ domain: 'eu.shop.com', status: 'verified' }, { domain: 'new.shop.com', status: 'unverified' }],
   }];
   const markets = fakeModel([]);
@@ -192,5 +194,37 @@ describe('MarketsService', () => {
     const pub: any = await service.getPublicMarkets(STORE_ID);
     expect(markets.rows.length).toBe(3);
     expect(pub.markets.map((m: any) => m.currency)).toEqual(['PKR', 'USD']);
+  });
+
+  it('Shopify: without the local-currency rail every market sells in the store currency, no conversion rule', async () => {
+    const { service } = setup({ noLocalRail: true });
+    await service.create(STORE_ID, { name: 'Home', countries: ['PK'], currency: 'PKR' });
+    await service.create(STORE_ID, { name: 'US', countries: ['US'], currency: 'USD', pricingRule: { type: 'percentage', percentageAdjustment: 10, useRounding: true, roundingRule: '0.99' } } as any);
+    expect(await service.supportsLocalCurrencies(STORE_ID)).toBe(false);
+    const pub: any = await service.getPublicMarkets(STORE_ID);
+    expect(pub.markets.map((m: any) => m.currency)).toEqual(['PKR', 'PKR']);
+    expect(pub.markets.every((m: any) => !m.pricingRule.percentageAdjustment && !m.pricingRule.useRounding)).toBe(true);
+    const checkout = await service.resolveForCheckout(STORE_ID, 'US');
+    expect(checkout.market.currency).toBe('PKR');
+    expect(checkout.blocked).toBe(false);
+  });
+
+  it('with the local-currency rail (Stripe Connect active) markets keep their own currency', async () => {
+    const { service } = setup();
+    await service.create(STORE_ID, { name: 'Home', countries: ['PK'], currency: 'PKR' });
+    await service.create(STORE_ID, { name: 'US', countries: ['US'], currency: 'USD' });
+    expect(await service.supportsLocalCurrencies(STORE_ID)).toBe(true);
+    expect((await service.resolveForCheckout(STORE_ID, 'US')).market.currency).toBe('USD');
+  });
+
+  it('public payload trims the same list as checkout: the store checkout list order, not the market sort order', async () => {
+    const { service } = setup({ enabledCurrencies: ['PKR', 'EUR', 'USD'] });
+    await service.create(STORE_ID, { name: 'Home', countries: ['PK'], currency: 'PKR' });
+    await service.create(STORE_ID, { name: 'US', countries: ['US'], currency: 'USD' });
+    await service.create(STORE_ID, { name: 'EU', countries: ['DE'], currency: 'EUR' });
+    (service as any).entitlementsService.getLimits.mockResolvedValue({ maxMarkets: 2 });
+    const pub: any = await service.getPublicMarkets(STORE_ID);
+    // Checkout keeps [PKR, EUR] (list order), so a US market must not be offered.
+    expect(pub.markets.map((m: any) => m.currency).sort()).toEqual(['EUR', 'PKR']);
   });
 });

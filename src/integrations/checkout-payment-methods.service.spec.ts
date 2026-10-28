@@ -12,6 +12,17 @@ function checkout(items: Array<{ storeId: string; totalPrice: number }>, totalAm
   return { _id: 'checkout-1', userId: USER_ID, items, totalAmount, currency: 'PKR', status: 'pending' };
 }
 
+describe('CheckoutPaymentMethodsService.gatewayCurrency', () => {
+  it('any-currency gateways (stripe_own, stripe_standard) charge the checkout currency; fixed-currency ones keep theirs', () => {
+    const g = CheckoutPaymentMethodsService.gatewayCurrency;
+    expect(g('stripe_standard', 'GBP', 'usd')).toBe('USD');
+    expect(g('stripe_own', 'PKR', 'EUR')).toBe('EUR');
+    expect(g('stripe_own', 'GBP')).toBe('GBP');
+    expect(g('safepay', 'PKR', 'USD')).toBe('PKR');
+    expect(g('stripe', 'PKR', 'USD')).toBe('PKR');
+  });
+});
+
 describe('CheckoutPaymentMethodsService', () => {
   let service: CheckoutPaymentMethodsService;
   let checkoutModel: any;

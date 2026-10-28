@@ -14,11 +14,13 @@ import { UploadModule } from '@/upload/upload.module';
 import { StoreThemeModule } from '../store-theme/store-theme.module';
 import { StorePagesModule } from '../store-pages/store-pages.module';
 import { CollectionsModule } from '../collections/collections.module';
+import { ExchangeRateModule } from '../exchange-rate/exchange-rate.module';
+import { MarketsModule } from '../markets/markets.module';
 
 import { StorefrontAccessService } from '../storefront/storefront-access.service';
 
 @Module({
-  imports: [AuthModule, RedisModule, AdminConfigModule, MarketingModule, UploadModule, StoreThemeModule, StorePagesModule, CollectionsModule],
+  imports: [AuthModule, RedisModule, AdminConfigModule, MarketingModule, UploadModule, StoreThemeModule, StorePagesModule, CollectionsModule, ExchangeRateModule, MarketsModule],
   controllers: [StoreController, CustomDomainsController, StoreTaxRegionsImportController],
   providers: [StoreService, StorefrontAccessService, CustomDomainsService, VercelDomainsService, DomainDnsGuideService],
   exports: [StoreService, StorefrontAccessService, CustomDomainsService],

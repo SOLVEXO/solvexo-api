@@ -13,6 +13,7 @@ import { PaymentService } from '../payment/payment.service';
 import { isThirdPartyGatewayType } from '../integrations/payment-provider-catalog';
 import { StoreCreditService } from '../store-credit/store-credit.service';
 import { round } from '../common/number.util';
+import { marketUnitPrice } from '../markets/market-price.util';
 import { remainingRefundable } from '../common/refund-cap.util';
 import { FinanceService } from '../finance/finance.service';
 import { sellerCashBasis, sellerGiftCreditShare, sellerPayoutBasis } from '../common/seller-payout-basis.util';
@@ -52,6 +53,30 @@ export class OrderEditingService {
   ) {}
 
   private get r() { return this.db.repositories; }
+
+  /**
+   * Price of an item ADDED to an existing order (Shopify): the exchange rate current at the time of the edit (quantity
+   * changes of existing lines keep the order's own rate), with the market's rule (fee, rounding, manual rate) and fixed
+   * catalog price when the order was placed in that market's currency.
+   */
+  private async addedItemUnitPrice(variant: any, productId: string, baseCurrency: string, order: any, storeId: string): Promise<number> {
+    const cur: string = order.currency;
+    const snapshots = baseCurrency === cur ? [] : await this.exchangeRate.buildSnapshots([baseCurrency, cur]);
+    let rule: any = null;
+    let fixed: number | null = null;
+    if (order.marketId && Types.ObjectId.isValid(String(order.marketId))) {
+      const market: any = await this.r.marketModel.findOne({ _id: String(order.marketId), storeId, isDelete: false }).select('currency pricingRule').lean();
+      if (market && market.currency === cur) {
+        rule = market.pricingRule ?? null;
+        const rows: any[] = await this.r.marketPriceModel
+          .find({ marketId: String(order.marketId), priceType: 'fixed', currency: cur, productId, isDelete: false })
+          .select('variantId fixedPrice').lean();
+        const hit = rows.find((x) => String(x.variantId ?? '') === String(variant._id)) ?? rows.find((x) => !x.variantId);
+        if (hit && Number(hit.fixedPrice) >= 0) fixed = Number(hit.fixedPrice);
+      }
+    }
+    return round(marketUnitPrice(variant.price, baseCurrency, cur, rule, snapshots as any, fixed));
+  }
 
   private async loadOwned(sellerId: string, storeId: string, orderId: string) {
     if (!Types.ObjectId.isValid(orderId)) throw new NotFoundException('Order not found');
@@ -184,7 +209,7 @@ export class OrderEditingService {
       const product: any = await this.r.productModel.findOne({ _id: variant.productId, storeId, sellerId, isDelete: false }).lean();
       if (!product || product.status !== 'active') throw new BadRequestException('A product you tried to add is not an active product of this store');
       if (product.type !== 'physical') throw new BadRequestException('Only physical products can be added to an order');
-      const unit = round(this.exchangeRate.convertWithSnapshots(variant.price, store.baseCurrency, order.currency, order.fxSnapshots ?? []));
+      const unit = await this.addedItemUnitPrice(variant, String(product._id), store.baseCurrency, order, storeId);
       const total = round(unit * a.quantity);
       const tax = round(total * effTaxRate);
       so.items.push({
