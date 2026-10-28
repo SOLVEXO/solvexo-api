@@ -42,7 +42,11 @@ async function bootstrap() {
 
   // Behind Railway/Vercel/any reverse proxy: trust the first hop so req.ip (throttler, login limits, logs)
   // is the real client IP instead of the proxy's.
-  app.set('trust proxy', 1);
+  // Number of proxies in front of the API whose X-Forwarded-For entry is trusted (rate limits and logs read the client IP from it).
+  // 1 = Railway edge only (today). Put a CDN such as Cloudflare in front and set TRUST_PROXY_HOPS=2, otherwise every visitor looks
+  // like one CDN IP and shares a single rate-limit bucket. Never set it higher than the real number of proxies (the IP becomes spoofable).
+  const hops = Number(process.env.TRUST_PROXY_HOPS);
+  app.set('trust proxy', Number.isInteger(hops) && hops >= 1 && hops <= 5 ? hops : 1);
 
   // Security headers (nosniff, frameguard, HSTS, no X-Powered-By…). CSP is off: this is a JSON API and Swagger's UI
   // needs inline scripts. CORP is cross-origin because the web app (another origin) loads files/images from the API.
