@@ -486,6 +486,10 @@ export class OrdersService {
           amount: so.settlementAmount ?? so.subtotal,
           shippingAddress: order.shippingAddress ?? null,
           currency: so.settlementAmount != null ? (so.settlementCurrency ?? 'USD') : (order.currency ?? 'USD'),
+          // What the buyer was actually charged for this store's part (items + tax, order currency). Lets the seller
+          // list show the customer's currency beside the store-currency amount when the two differ (Shopify parity).
+          orderCurrency: order.currency ?? 'USD',
+          orderAmount: Math.round(((so.subtotal ?? 0) + (so.taxAmount ?? 0)) * 100) / 100,
           status: so.status,
           isPaid: order.isPaid,
           paymentType: order.paymentType,
@@ -559,6 +563,10 @@ export class OrdersService {
         orderNumber: order.orderNumber,
         createdAt: (order as any).createdAt,
         currency: order.currency ?? 'USD',
+        // The store's own currency and the rate frozen on the order (units per 1 USD): lets the seller UI show how
+        // the customer-currency amounts convert into the store currency without guessing today's rate.
+        storeCurrency: (store as any).baseCurrency ?? null,
+        ratePerUSD: (order as any).ratePerUSD ?? null,
         paymentType: order.paymentType,
         paymentStatus: order.paymentStatus,
         isPaid: order.isPaid,
