@@ -46,7 +46,14 @@ export class PublicCacheInterceptor implements NestInterceptor {
     // A CDN never runs the password / coming-soon gate, so only a response for a store the access middleware has confirmed as
     // public may be shared. Responses that differ per visitor (opts.vary) and routes whose store was not identified stay private.
     const res = context.switchToHttp().getResponse?.();
-    if (res?.setHeader && !opts.vary && req.storefrontGateMode === 'public') res.setHeader('Cache-Control', cdnCacheControl(opts.ttlSeconds));
+    if (res?.setHeader && !opts.vary && req.storefrontGateMode === 'public') {
+      res.setHeader('Cache-Control', cdnCacheControl(opts.ttlSeconds));
+      // A shared cache keys on method + host + path + query, NOT on Origin (Railway's CDN ignores `Vary: Origin`), so the CORS header
+      // the cors middleware reflected for the FIRST visitor would be replayed to every other origin and block their browsers.
+      // These responses are anonymous public data (no cookies/credentials), so a wildcard origin is correct and cacheable.
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.removeHeader?.('Access-Control-Allow-Credentials');
+    }
 
     try {
       const hit = await this.redis.get(key);

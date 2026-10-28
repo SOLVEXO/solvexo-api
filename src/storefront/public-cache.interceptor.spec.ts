@@ -14,7 +14,7 @@ function setup(opts: { connected?: boolean; stored?: string | null } = {}) {
   };
   const interceptor = new PublicCacheInterceptor(new Reflector(), redis);
   const headers: Record<string, string> = {};
-  const res = { setHeader: (k: string, v: string) => { headers[k] = v; } };
+  const res = { setHeader: (k: string, v: string) => { headers[k] = v; }, removeHeader: (k: string) => { delete headers[k]; } };
   const ctx = (handler: any, req: any): any => ({ getHandler: () => handler, switchToHttp: () => ({ getRequest: () => req, getResponse: () => res }) });
   return { interceptor, redis, ctx, store, headers };
 }
@@ -63,11 +63,13 @@ describe('PublicCacheInterceptor', () => {
       const { interceptor, ctx, headers } = setup();
       await lastValueFrom(await interceptor.intercept(ctx(Dummy.prototype.novary, hit({ storefrontGateMode: 'public' })), { handle: () => of({ n: 1 }) }));
       expect(headers['Cache-Control']).toBe('public, max-age=0, s-maxage=30, stale-while-revalidate=300, stale-if-error=86400');
+      expect(headers['Access-Control-Allow-Origin']).toBe('*'); // a shared cache must not replay one origin's CORS header to another
     });
     it.each([['password'], ['coming_soon'], [undefined]])('is NOT sent when the store gate is %s', async (mode) => {
       const { interceptor, ctx, headers } = setup();
       await lastValueFrom(await interceptor.intercept(ctx(Dummy.prototype.novary, hit({ storefrontGateMode: mode })), { handle: () => of({ n: 1 }) }));
       expect(headers['Cache-Control']).toBeUndefined();
+      expect(headers['Access-Control-Allow-Origin']).toBeUndefined();
     });
     it('is NOT sent for per-visitor (vary) responses, nor to signed-in callers', async () => {
       const a = setup();
