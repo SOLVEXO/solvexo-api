@@ -23,8 +23,7 @@ export async function fulfilStockForSellerOrders(productVariantModel: any, selle
             stock: { $max: [0, { $subtract: ['$stock', item.quantity] }] },
             committedStock: { $max: [0, { $subtract: ['$committedStock', item.quantity] }] },
           },
-        }],
-      );
+        }], { updatePipeline: true });
       // keep the per-location rows in step with the variant total
       if (locationRepos) await drainLocationStock(locationRepos, String(item.variantId), item.quantity);
     }

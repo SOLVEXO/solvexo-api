@@ -146,7 +146,7 @@ export class OrderExchangeService {
     const applied: Array<{ variantId: string; qty: number }> = [];
     const rollbackStock = async () => {
       for (const m of applied) {
-        await this.r.productVariantModel.updateOne({ _id: m.variantId }, [{ $set: { committedStock: { $max: [0, { $subtract: ['$committedStock', m.qty] }] } } }]).catch(() => undefined);
+        await this.r.productVariantModel.updateOne({ _id: m.variantId }, [{ $set: { committedStock: { $max: [0, { $subtract: ['$committedStock', m.qty] }] } } }], { updatePipeline: true }).catch(() => undefined);
       }
     };
     try {

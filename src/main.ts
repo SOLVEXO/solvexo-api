@@ -57,9 +57,6 @@ async function bootstrap() {
   // Platform maintenance mode (admin switch) — 503 for everything except health, webhooks, auth and the admin API.
   app.use(createMaintenanceMiddleware(app.get(AdminConfigService)));
 
-  // Shopify password page, enforced server-side for buyer-facing storefront routes.
-  app.use(createStorefrontAccessMiddleware(app.get(StorefrontAccessService)));
-
   // Global validation: every `@Body()/@Query()/@Param()` typed with a
   // class-validator DTO is now actually checked (previously only the ~36
   // controllers that opted in with @UsePipes were — e.g. the cart's `@Min`
@@ -143,6 +140,10 @@ async function bootstrap() {
     // Cache the preflight for a day so the browser doesn't spend an extra round trip (~300 ms) on every API call.
     maxAge: 86400,
   });
+
+  // Shopify password page, enforced server-side for buyer-facing storefront routes. Registered AFTER enableCors so its 403
+  // (storefrontLocked) carries the CORS headers and the storefront can read it; the JSON parser above it is already in place.
+  app.use(createStorefrontAccessMiddleware(app.get(StorefrontAccessService)));
 
   const document = SwaggerModule.createDocument(app, config);
   SwaggerModule.setup('api', app, document, {

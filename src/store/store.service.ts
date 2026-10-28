@@ -12,6 +12,7 @@ import { ConfigService } from '@nestjs/config';
 import { promises as dns } from 'dns';
 import * as bcrypt from 'bcrypt';
 import { StorefrontAccessService } from '../storefront/storefront-access.service';
+import { pickPublicStoreFields } from './public-store-fields.util';
 import { DatabaseService } from '@/database/databaseservice';
 import {
   SellerType, ProductType, resolveTools,
@@ -1013,11 +1014,10 @@ export class StoreService {
 
     if (!requestingUserId || store.sellerId !== requestingUserId) {
       if (privileged) return { success: true, data: store };
-      // Anonymous / other users get a public projection only — never the raw document
-      // (privacyRequests = customer emails, rejectionReason, tax config, builder/internal fields).
-      const pub: any = typeof (store as any).toObject === 'function' ? (store as any).toObject() : { ...(store as any) };
-      for (const k of ['privacyRequests', 'rejectionReason', 'taxRegions', 'builderConfig', 'sellerId', 'stripeConnectedAccountId']) delete pub[k];
-      return { success: true, data: pub };
+      // Anonymous / other users get an ALLOW-LISTED public projection, never the document minus a few keys (a deny-list leaked
+      // ~80 fields: tax id, AI credits, POS registers/shifts, Stripe Connect state, custom domains, verification...).
+      const raw: any = typeof (store as any).toObject === 'function' ? (store as any).toObject() : { ...(store as any) };
+      return { success: true, data: pickPublicStoreFields(raw) };
     }
 
     const { sellerModel, productModel, orderModel, sellerPlatformSubscriptionModel, platformPlanModel } = this.databaseService.repositories;
@@ -2682,8 +2682,7 @@ export class StoreService {
     // enforces up front — trim any row that exceeded it in one follow-up pass.
     await storeCustomerMetaModel.updateMany(
       { storeId, userId: { $in: validIds }, $expr: { $gt: [{ $size: '$tags' }, 20] } },
-      [{ $set: { tags: { $slice: ['$tags', 20] } } }],
-    );
+      [{ $set: { tags: { $slice: ['$tags', 20] } } }], { updatePipeline: true });
 
     this.activityLogService.log({
       storeId, category: 'customers', action: 'customers_bulk_tagged',

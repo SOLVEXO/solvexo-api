@@ -248,7 +248,7 @@ export class OrderEditingService {
           else await drainLocationStock(this.r, m.variantId, -m.delta);
           continue;
         }
-        await this.r.productVariantModel.updateOne({ _id: m.variantId }, [{ $set: { committedStock: { $max: [0, { $subtract: ['$committedStock', m.delta] }] } } }]);
+        await this.r.productVariantModel.updateOne({ _id: m.variantId }, [{ $set: { committedStock: { $max: [0, { $subtract: ['$committedStock', m.delta] }] } } }], { updatePipeline: true });
       }
     };
     try {
@@ -285,7 +285,7 @@ export class OrderEditingService {
             if ((res.modifiedCount ?? res.nModified ?? 0) === 0) throw new BadRequestException('Not enough stock for the increased quantity');
           }
         } else {
-          await this.r.productVariantModel.updateOne({ _id: m.variantId, unlimitedStock: { $ne: true } }, [{ $set: { committedStock: { $max: [0, { $add: ['$committedStock', m.delta] }] } } }]);
+          await this.r.productVariantModel.updateOne({ _id: m.variantId, unlimitedStock: { $ne: true } }, [{ $set: { committedStock: { $max: [0, { $add: ['$committedStock', m.delta] }] } } }], { updatePipeline: true });
         }
         applied.push({ variantId: m.variantId, delta: m.delta });
       }
