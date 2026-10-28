@@ -1,4 +1,4 @@
-import { browseDisplayPrice, priceInRange, type BrowsePriceContext } from './browse-price.util';
+import { browseDisplayPrice, compareCheapestVariant, priceInRange, type BrowsePriceContext } from './browse-price.util';
 
 const SNAPS = [
   { currency: 'PKR', ratePerUSD: 280 },
@@ -75,5 +75,16 @@ describe('priceInRange', () => {
     expect(priceInRange(4.99, 5, null)).toBe(false);
     expect(priceInRange(10.01, null, 10)).toBe(false);
     expect(priceInRange(1000, null, null)).toBe(true);
+  });
+});
+
+describe('compareCheapestVariant', () => {
+  it('orders by price, then by id so the card and the price filter pick the same variant', () => {
+    const tieA = { _id: 'aaa', price: 1500 };
+    const tieB = { _id: 'bbb', price: 1500 };
+    const dearer = { _id: '000', price: 1600 };
+    const sorted = [dearer, tieB, tieA].sort(compareCheapestVariant);
+    expect(sorted.map(v => v._id)).toEqual(['aaa', 'bbb', '000']);
+    expect([tieA, tieB].sort(compareCheapestVariant)[0]).toBe(tieA);
   });
 });

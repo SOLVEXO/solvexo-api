@@ -48,7 +48,8 @@ import { isValidTimeZone } from '../analytics/utils/analytics-date.util';
 import { resolveStoreCountry } from '../integrations/payment-availability.util';
 import { ExchangeRateService } from '../exchange-rate/exchange-rate.service';
 import { MarketPricingService } from '../markets/market-pricing.service';
-import { browseDisplayPrice, priceInRange, type BrowsePriceContext } from '../markets/browse-price.util';
+import { browseDisplayPrice, compareCheapestVariant, priceInRange, type BrowsePriceContext } from '../markets/browse-price.util';
+import { SUB_ORDER_SPEND_EXPR } from './customer-spend.util';
 
 // Real EU member states + UK (retains UK GDPR post-Brexit, same as Shopify's
 // own "regions with consent laws" cookie-banner scoping) — a plain, explicit
@@ -1994,7 +1995,8 @@ export class StoreService {
     const productIds = products.map((p: any) => p._id.toString());
     const variants = await this.databaseService.repositories.productVariantModel.find({
       productId: { $in: productIds }, status: 'active', isDelete: false,
-    }).sort({ price: 1 }).lean();
+    }).sort({ price: 1, _id: 1 }).lean();
+    variants.sort(compareCheapestVariant);
     const cheapestByProduct = new Map<string, any>();
     // Every active variant per product — the shared `variants[]` shape every
     // other listing endpoint returns (getProductsByCategoryId, search,
@@ -2179,7 +2181,9 @@ export class StoreService {
           // one customer per email (Shopify) — see resolveCustomerId
           _id: { $ifNull: ['$customerId', '$userId'] },
           orderCount: { $sum: 1 },
-          totalSpent: { $sum: '$sellerOrders.subtotal' },
+          // Store-currency figure (items + tax converted at the order's frozen rate); `subtotal` alone is in the
+          // BUYER's currency, so summing it mixed dollars, euros and rupees into one number.
+          totalSpent: { $sum: SUB_ORDER_SPEND_EXPR },
           lastOrderAt: { $max: '$createdAt' },
         },
       },

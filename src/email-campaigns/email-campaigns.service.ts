@@ -13,6 +13,7 @@ import { newsletterUnsubscribeUrl } from '@/newsletter/newsletter-consent.util';
 import { storePublicUrl } from '@/newsletter/marketing-email.util';
 import { EmailService } from '@/otp/services/email.service';
 import { campaignLinkTargets, renderCampaignEmail } from './campaign-email.util';
+import { SUB_ORDER_SPEND_EXPR } from '../store/customer-spend.util';
 
 const PLATFORM_ORIGIN = 'https://solvexo.store';
 
@@ -190,7 +191,7 @@ export class EmailCampaignsService {
         { $match: { userId: { $in: allIds }, isDelete: false, 'sellerOrders.storeId': storeId } },
         { $unwind: '$sellerOrders' },
         { $match: { 'sellerOrders.storeId': storeId } },
-        { $group: { _id: '$userId', count: { $sum: 1 }, spent: { $sum: '$sellerOrders.subtotal' }, last: { $max: '$createdAt' } } },
+        { $group: { _id: '$userId', count: { $sum: 1 }, spent: { $sum: SUB_ORDER_SPEND_EXPR }, last: { $max: '$createdAt' } } },
       ]);
       for (const row of rows as any[]) stats.set(String(row._id), { count: row.count, spent: row.spent ?? 0, last: row.last ?? null });
     }
