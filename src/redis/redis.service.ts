@@ -69,6 +69,17 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     return count;
   }
 
+  /** One hit of a fixed-window counter (used by the shared rate limiter): returns the count and the milliseconds left in the window. */
+  async throttleHit(key: string, ttlMs: number): Promise<{ hits: number; ttlMs: number }> {
+    const [hits, pttl] = (await this.client.multi().incr(key).pTTL(key).exec()) as unknown as [number, number];
+    let left = pttl;
+    if (hits === 1 || left < 0) {
+      await this.client.pExpire(key, ttlMs); // first hit (or a key that lost its expiry): start the window
+      left = ttlMs;
+    }
+    return { hits, ttlMs: left };
+  }
+
   async withLock(
     lockKey: string,
     ttlMs: number,

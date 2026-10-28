@@ -3,6 +3,9 @@ import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule } from '@nestjs/config';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { FriendlyThrottlerGuard } from './common/friendly-throttler.guard';
+import { RedisThrottlerStorage } from './common/redis-throttler.storage';
+import { RedisModule } from './redis/redis.module';
+import { RedisService } from './redis/redis.service';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
@@ -113,11 +116,17 @@ import { AppI18nModule } from './i18n/i18n.module';
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     EventEmitterModule.forRoot(),
-    ThrottlerModule.forRoot([
-      // Platform-wide default: 100 req/min per IP. Endpoints that need a tighter
-      // (payment/webhook) or looser (public browse) limit override via @Throttle().
-      { name: 'default', ttl: 60_000, limit: 100 },
-    ]),
+    ThrottlerModule.forRootAsync({
+      imports: [RedisModule],
+      inject: [RedisService],
+      useFactory: (redis: RedisService) => ({
+        // Platform-wide default: 100 req/min per IP. Endpoints that need a tighter
+        // (payment/webhook) or looser (public browse) limit override via @Throttle().
+        throttlers: [{ name: 'default', ttl: 60_000, limit: 100 }],
+        // THROTTLE_STORAGE=redis shares the counters between API instances (set it before running 2+ copies).
+        storage: process.env.THROTTLE_STORAGE === 'redis' ? new RedisThrottlerStorage(redis) : undefined,
+      }),
+    }),
     DatabaseModule,
     QueueModule,
     NotificationsModule,
