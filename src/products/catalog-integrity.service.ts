@@ -75,7 +75,8 @@ export class CatalogIntegrityService implements OnModuleInit {
       } catch (err: any) {
         // The unique {storeId, sku} index already exists: an old variant whose SKU equals another live variant of its store
         // cannot take that storeId as is. The rest of the batch was applied (unordered); fix these one by one below.
-        const writeErrors: any[] = err?.writeErrors ?? err?.result?.getWriteErrors?.() ?? [];
+        const raw = err?.writeErrors ?? err?.result?.getWriteErrors?.() ?? []; // the driver gives ONE error as an object, several as an array
+        const writeErrors: any[] = Array.isArray(raw) ? raw : [raw];
         if (err?.code !== 11000 && !writeErrors.some((e) => (e?.code ?? e?.err?.code) === 11000)) throw err;
         failed = writeErrors.map((e) => e?.index ?? e?.err?.index).filter((n) => typeof n === 'number');
         if (failed.length === 0) throw err;

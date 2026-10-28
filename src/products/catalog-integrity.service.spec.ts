@@ -47,6 +47,14 @@ describe('CatalogIntegrityService.backfillVariantStoreIds', () => {
     expect(updates[0][1]).toEqual({ $set: { storeId: 's1', sku: 'DUP-1-D1' } });
   });
 
+  it('accepts the driver reporting ONE write error as an object, not an array', async () => {
+    const err: any = Object.assign(new Error('E11000'), { code: 11000, writeErrors: { index: 1, code: 11000 } });
+    const { svc, updates } = make({ bulkError: err });
+    await svc.backfillVariantStoreIds();
+    expect(updates).toHaveLength(1);
+    expect(updates[0][1]).toEqual({ $set: { storeId: 's1', sku: 'DUP-1-D1' } });
+  });
+
   it('skips a suffix that is already taken in the store', async () => {
     const err: any = Object.assign(new Error('E11000'), { code: 11000, writeErrors: [{ index: 1, code: 11000 }] });
     const { svc, updates } = make({ bulkError: err, taken: ['DUP-1-D1'] });
