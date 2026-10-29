@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Injectable, BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
+import { Injectable, BadRequestException, ConflictException, NotFoundException, BadGatewayException } from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
 import { refreshExpiredStock } from '../common/expired-stock.util';
 import { ClientSession, Connection } from 'mongoose';
@@ -7,6 +7,8 @@ import { DatabaseService } from '../database/databaseservice';
 import { ActivityLogService } from '../activity-log/activity-log.service';
 import { InventoryService } from '../inventory/inventory.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { EmailService } from '../otp/services/email.service';
+import { OrderDocumentsService } from '../order-documents/order-documents.service';
 import { NOTIFICATION_TYPES } from '../notifications/notification.types';
 import { verifyStoreOwnershipOrForbidden, verifyStoreOwnershipStrict } from '../common/store-ownership.util';
 import { CreatePurchaseOrderDto } from './dto/create-purchase-order.dto';
@@ -15,6 +17,8 @@ import { ReceivePurchaseOrderDto } from './dto/receive-purchase-order.dto';
 import { CreateSupplierDto } from './dto/create-supplier.dto';
 import { UpdateSupplierDto } from './dto/update-supplier.dto';
 import { importSuppliersCsv } from './supplier-bulk-import';
+import { buildPurchaseOrderPdf, type PoPdfBrand, type PoPdfData } from './po-pdf.util';
+import { buildPurchaseOrderEmailHtml } from './po-email.util';
 
 function round(n: number) {
   return Math.round(n * 100) / 100;
@@ -27,6 +31,8 @@ export class PurchaseOrdersService {
     private readonly activityLogService: ActivityLogService,
     private readonly inventoryService: InventoryService,
     private readonly notificationsService: NotificationsService,
+    private readonly emailService: EmailService,
+    private readonly orderDocumentsService: OrderDocumentsService,
     @InjectConnection() private readonly connection: Connection,
   ) {}
 
@@ -184,7 +190,8 @@ export class PurchaseOrdersService {
 
   async getById(storeId: string, sellerId: string, id: string) {
     const po = await this.getOwned(storeId, sellerId, id);
-    return po.toObject();
+    const supplierEmail = await this.supplierEmailOf(po);
+    return { ...po.toObject(), supplierEmail };
   }
 
   async update(storeId: string, sellerId: string, id: string, dto: UpdatePurchaseOrderDto) {
@@ -215,13 +222,28 @@ export class PurchaseOrdersService {
     return po.toObject();
   }
 
-  async markAsOrdered(storeId: string, sellerId: string, id: string) {
+  /** `emailSupplier` sends the freshly-ordered PO to the supplier's own email
+   *  address in the same action. The status change is committed first and
+   *  never rolled back by a failed send — a mail problem must not leave the
+   *  seller's order stuck in `draft`, so the failure is reported back
+   *  (`emailError`) alongside the saved PO instead of throwing. */
+  async markAsOrdered(storeId: string, sellerId: string, id: string, emailSupplier = false) {
     const po = await this.getOwned(storeId, sellerId, id);
     if (po.status !== 'draft') throw new BadRequestException('Only a draft purchase order can be marked as ordered.');
     po.status = 'ordered';
     po.orderedAt = new Date();
     await po.save();
-    return po.toObject();
+    const result: Record<string, unknown> = { ...po.toObject(), emailSent: null as boolean | null, emailError: null as string | null };
+    if (emailSupplier) {
+      try {
+        await this.sendToSupplier(storeId, sellerId, id);
+        result.emailSent = true;
+      } catch (err) {
+        result.emailSent = false;
+        result.emailError = err instanceof Error ? err.message : 'The email could not be sent.';
+      }
+    }
+    return result;
   }
 
   async cancel(storeId: string, sellerId: string, id: string) {
@@ -246,6 +268,111 @@ export class PurchaseOrdersService {
     po.status = 'closed_short';
     await po.save();
     return po.toObject();
+  }
+
+  // ── Documents: branded PDF + supplier email ────────────────────────────
+
+  private async supplierEmailOf(po: { storeId: string; supplierId?: string | null }) {
+    if (!po.supplierId) return null;
+    const supplier = await this.repos.supplierModel
+      .findOne({ _id: po.supplierId, storeId: po.storeId, isDelete: false }).select('email').lean();
+    return (supplier as any)?.email ?? null;
+  }
+
+  /** The PO, the store's print branding and the supplier's contact details,
+   *  assembled once for both the PDF download and the supplier email. */
+  private async buildDocument(storeId: string, sellerId: string, id: string) {
+    const po = await this.getOwned(storeId, sellerId, id);
+    const { settings, store } = (await this.orderDocumentsService.get(sellerId, storeId)).data;
+    const supplier = po.supplierId
+      ? ((await this.repos.supplierModel.findOne({ _id: po.supplierId, storeId, isDelete: false }).lean()) as any)
+      : null;
+    const s = settings as Record<string, any>;
+    const taxValue = s.taxIdValue || store.taxId || null;
+
+    const brand: PoPdfBrand = {
+      businessName: s.companyName || store.name || 'Store',
+      addressText: s.addressText || null,
+      phone: s.phone || store.phone || null,
+      email: s.email || store.contactEmail || null,
+      taxLine: taxValue
+        ? `${s.taxIdLabel || (store.country === 'PK' ? 'NTN / STRN' : 'Tax number')}: ${taxValue}`
+        : null,
+      // Same precedence the printable invoice/slip uses, so a PO and an
+      // invoice from one store always look like the same business made them.
+      accentColor: typeof s.accentColor === 'string' && /^#[0-9a-f]{6}$/i.test(s.accentColor) ? s.accentColor : '#111111',
+      logoUrl: store.logo || null,
+      showLogo: s.showLogo !== false,
+      showNameWithLogo: s.showNameWithLogo === true,
+      logoAlign: ['left', 'center', 'right'].includes(s.logoAlign) ? s.logoAlign : 'left',
+    };
+
+    const data: PoPdfData = {
+      poNumber: po.poNumber,
+      status: po.status,
+      // A PO is "issued" when it is ordered; before that it is still a draft
+      // the seller is working on, so its creation date is the honest label.
+      issuedAt: po.orderedAt ?? po.createdAt ?? new Date(),
+      expectedAt: po.expectedAt ?? null,
+      orderedAt: po.orderedAt ?? null,
+      currency: po.currency,
+      supplierName: supplier?.name || po.supplierName,
+      supplierEmail: supplier?.email ?? null,
+      supplierPhone: supplier?.phone ?? null,
+      supplierAddress: supplier?.address ?? null,
+      lines: po.items.map(i => ({
+        name: i.name,
+        options: (i.options ?? []).map(o => o.value),
+        sku: i.sku ?? null,
+        quantityOrdered: i.quantityOrdered,
+        unitCost: i.unitCost,
+      })),
+      subtotal: po.subtotal,
+      shippingCost: po.shippingCost,
+      taxCost: po.taxCost,
+      total: po.total,
+      notes: po.notes?.trim() ? po.notes.trim() : null,
+    };
+
+    return { po, brand, data };
+  }
+
+  private pdfFilename(poNumber: string) {
+    return `${poNumber.replace(/[^A-Za-z0-9._-]/g, '-')}.pdf`;
+  }
+
+  async buildPdf(storeId: string, sellerId: string, id: string) {
+    const { po, brand, data } = await this.buildDocument(storeId, sellerId, id);
+    return { buffer: await buildPurchaseOrderPdf(data, brand), filename: this.pdfFilename(po.poNumber) };
+  }
+
+  /** Emails the PO to the supplier it was raised against, with the branded PDF attached. */
+  async sendToSupplier(storeId: string, sellerId: string, id: string) {
+    const { brand, data } = await this.buildDocument(storeId, sellerId, id);
+    if (data.status === 'cancelled') throw new BadRequestException('This purchase order was cancelled.');
+    if (!data.supplierEmail) {
+      throw new BadRequestException('This supplier has no email address yet. Add one under Inventory → Suppliers first.');
+    }
+    const pdf = await buildPurchaseOrderPdf(data, brand);
+    const sent = await this.emailService.sendMail(
+      data.supplierEmail,
+      `Purchase order ${data.poNumber} from ${brand.businessName}`,
+      buildPurchaseOrderEmailHtml(data, brand),
+      // A supplier's reply must land in the seller's own inbox, not the platform's shared sender.
+      brand.email,
+      undefined,
+      [{ filename: this.pdfFilename(data.poNumber), content: pdf, contentType: 'application/pdf' }],
+      brand.businessName,
+    );
+    if (!sent) {
+      throw new BadGatewayException('The email could not be sent. Try again, or download the PDF and send it yourself.');
+    }
+    await this.activityLogService.log({
+      storeId, category: 'inventory', action: 'purchase_order_emailed',
+      description: `Purchase order ${data.poNumber} emailed to ${data.supplierName} (${data.supplierEmail})`,
+      actorId: sellerId, actorRole: 'seller', targetId: id, targetType: 'purchase_order',
+    });
+    return { sent: true, supplierEmail: data.supplierEmail, poNumber: data.poNumber };
   }
 
   /** POST .../:poId/receive — the real "goods arrived" step, callable more

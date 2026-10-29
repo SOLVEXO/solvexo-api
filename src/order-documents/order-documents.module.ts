@@ -10,5 +10,8 @@ import { OrderDocumentsService } from './order-documents.service';
   imports: [AuthModule, RedisModule],
   controllers: [OrderDocumentsController],
   providers: [OrderDocumentsService],
+  // Purchase orders print with the same branding as this store's invoices,
+  // so PurchaseOrdersModule reads the settings through this service.
+  exports: [OrderDocumentsService],
 })
 export class OrderDocumentsModule {}

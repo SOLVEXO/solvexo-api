@@ -87,7 +87,7 @@ d('Inventory on a real replica set', () => {
     counts = new StockCountsService(db, activity, conn as any);
     returns = new SupplierReturnsService(db, activity, inv, conn as any);
     returns.onModuleInit(); // registers how a queued supplier return is applied on approval
-    pos = new PurchaseOrdersService(db, activity, inv, { notify: jest.fn() } as any, conn as any);
+    pos = new PurchaseOrdersService(db, activity, inv, { notify: jest.fn() } as any, { sendMail: jest.fn() } as any, { get: jest.fn() } as any, conn as any);
 
     const sid = oid(); SELLER = String(sid);
     await r.sellerModel.collection.insertOne({ _id: sid, name: 'Seller', status: 'active', isDelete: false });

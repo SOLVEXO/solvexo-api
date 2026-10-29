@@ -21,6 +21,7 @@ import { UpdatePurchaseOrderDto } from './dto/update-purchase-order.dto';
 import { ReceivePurchaseOrderDto } from './dto/receive-purchase-order.dto';
 import { CreateSupplierDto } from './dto/create-supplier.dto';
 import { UpdateSupplierDto } from './dto/update-supplier.dto';
+import { MarkOrderedPurchaseOrderDto } from './dto/mark-ordered-purchase-order.dto';
 import { actingSellerId } from '../common/acting-seller-id.util';
 
 @ApiTags('Purchase Orders')
@@ -123,6 +124,24 @@ export class PurchaseOrdersController {
     return { success: true, data: po };
   }
 
+  /** The PO rendered as a branded, downloadable PDF — the seller's own logo
+   *  and colours (Settings → Order documents), streamed on demand the same
+   *  way the finance tax-report PDF is. */
+  @Get(':storeId/:id/pdf')
+  async downloadPdf(@Req() req: any, @Param('storeId') storeId: string, @Param('id') id: string, @Res() res: any) {
+    const { buffer, filename } = await this.service.buildPdf(storeId, actingSellerId(req.user), id);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(buffer);
+  }
+
+  /** Emails the PO (with that same PDF attached) to the supplier's own address. */
+  @Post(':storeId/:id/send-to-supplier')
+  async sendToSupplier(@Req() req: any, @Param('storeId') storeId: string, @Param('id') id: string) {
+    const result = await this.service.sendToSupplier(storeId, actingSellerId(req.user), id);
+    return { success: true, data: result };
+  }
+
   @Patch(':storeId/:id')
   async update(@Req() req: any, @Param('storeId') storeId: string, @Param('id') id: string, @Body() dto: UpdatePurchaseOrderDto) {
     const po = await this.service.update(storeId, actingSellerId(req.user), id, dto);
@@ -130,8 +149,8 @@ export class PurchaseOrdersController {
   }
 
   @Post(':storeId/:id/mark-ordered')
-  async markAsOrdered(@Req() req: any, @Param('storeId') storeId: string, @Param('id') id: string) {
-    const po = await this.service.markAsOrdered(storeId, actingSellerId(req.user), id);
+  async markAsOrdered(@Req() req: any, @Param('storeId') storeId: string, @Param('id') id: string, @Body() dto: MarkOrderedPurchaseOrderDto) {
+    const po = await this.service.markAsOrdered(storeId, actingSellerId(req.user), id, dto.emailSupplier === true);
     return { success: true, data: po };
   }
 
