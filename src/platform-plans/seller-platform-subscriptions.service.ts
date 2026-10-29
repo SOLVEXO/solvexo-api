@@ -192,6 +192,7 @@ export class SellerPlatformSubscriptionsService {
     sub.planHistory = [...(sub.planHistory ?? []), {
       fromPlanId: sub.platformPlanId, fromPlanName: (oldPlan as any)?.name ?? 'Unknown',
       toPlanId: pending.planId, toPlanName: (newPlan as any).name, proratedAmountUSD: 0, changedAt: new Date(),
+      amountUSD: this.round(amount), interval: pending.interval,
     }];
     sub.platformPlanId = pending.planId;
     sub.billingInterval = pending.interval;
@@ -315,6 +316,7 @@ export class SellerPlatformSubscriptionsService {
    */
   private async lockStore(sub: any): Promise<void> {
     sub.status = 'locked';
+    sub.lockedAt = new Date();
     sub.scheduledPlanChange = null;
     sub.failedPaymentAttempts = 0;
     sub.cancelAtPeriodEnd = false;
@@ -919,7 +921,7 @@ export class SellerPlatformSubscriptionsService {
     sub.planHistory = [...(sub.planHistory ?? []), {
       fromPlanId: oldPlanId, fromPlanName: (oldPlan as any)?.name ?? 'Unknown',
       toPlanId: (plan as any)._id.toString(), toPlanName: plan.name,
-      proratedAmountUSD: 0, changedAt: now,
+      proratedAmountUSD: 0, changedAt: now, amountUSD: sub.amountUSD, interval: 'monthly',
     }];
     await sub.save();
     await this.syncFeaturedBadge(storeId, plan);
@@ -1031,6 +1033,7 @@ export class SellerPlatformSubscriptionsService {
     const historyEntry = {
       fromPlanId: sub.platformPlanId, fromPlanName: oldPlan?.name ?? 'Unknown',
       toPlanId: newPlanId, toPlanName: newPlan.name, proratedAmountUSD: netDue, changedAt: now,
+      amountUSD: this.round(newAmountUSD), interval: newInterval,
     };
 
     let invoice: any = null;
