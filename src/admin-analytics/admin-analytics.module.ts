@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { MongooseModule } from '@nestjs/mongoose';
 import { AuthModule } from '../auth/auth.module';
 import { RedisModule } from '../redis/redis.module';
 // Phase 10 — Platform Health. A separate module (own real dependencies:
@@ -9,11 +10,16 @@ import { AdminFinanceModule } from '../admin-finance/admin-finance.module';
 import { PlatformHealthModule } from '../platform-health/platform-health.module';
 import { AdminAnalyticsController } from './admin-analytics.controller';
 import { AdminAnalyticsService } from './admin-analytics.service';
+import { SaasMetricsService } from './saas-metrics.service';
+import { PlatformMrrSnapshot, PlatformMrrSnapshotSchema } from './schemas/platform-mrr-snapshot.schema';
 
 @Module({
-  imports: [AuthModule, RedisModule, PlatformHealthModule, AdminFinanceModule],
+  imports: [
+    AuthModule, RedisModule, PlatformHealthModule, AdminFinanceModule,
+    MongooseModule.forFeature([{ name: PlatformMrrSnapshot.name, schema: PlatformMrrSnapshotSchema }]),
+  ],
   controllers: [AdminAnalyticsController],
-  providers: [AdminAnalyticsService],
-  exports: [AdminAnalyticsService],
+  providers: [AdminAnalyticsService, SaasMetricsService],
+  exports: [AdminAnalyticsService, SaasMetricsService],
 })
 export class AdminAnalyticsModule {}

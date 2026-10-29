@@ -15,6 +15,8 @@ import { AdminProductPerformanceQueryDto } from './dto/product-performance-query
 import { AdminExportQueryDto } from './dto/export-query.dto';
 import { OrdersListQueryDto } from './dto/orders-list-query.dto';
 import { PlatformHealthService } from '../platform-health/platform-health.service';
+import { SaasMetricsService } from './saas-metrics.service';
+import { SaasMetricsQueryDto } from './dto/saas-metrics-query.dto';
 
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { RequirePermission } from '../auth/decorators/require-permission.decorator';
@@ -28,7 +30,26 @@ export class AdminAnalyticsController {
   constructor(
     private readonly adminAnalyticsService: AdminAnalyticsService,
     private readonly platformHealthService: PlatformHealthService,
+    private readonly saasMetrics: SaasMetricsService,
   ) {}
+
+  // ─── SaaS metrics (Solvexo's own plan revenue) ──────────────────────────
+
+  /** MRR movement, NRR, churn, ARPU, LTV, cohorts and the trial funnel for the last `months` months (3–24, default 12). */
+  @RequirePermission('analytics.view', 'finance.view')
+  @Get('saas-metrics')
+  getSaasMetrics(@Query() query: SaasMetricsQueryDto) {
+    return this.saasMetrics.getMetrics(query.months ?? 12);
+  }
+
+  @RequirePermission('analytics.view', 'finance.view')
+  @Get('saas-metrics/export')
+  async exportSaasMetrics(@Query() query: SaasMetricsQueryDto, @Res() res: Response) {
+    const csv = await this.saasMetrics.exportCsv(query.months ?? 12);
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="solvexo-saas-metrics.csv"');
+    res.send(csv);
+  }
 
   // ─── Dashboard overview ─────────────────────────────────────────────────
 
