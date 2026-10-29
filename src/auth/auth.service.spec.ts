@@ -180,7 +180,7 @@ describe('AuthService — per-store buyer identity', () => {
         role: 'user',
         storeId: 'storeA',
       } as any);
-      expect(loginA.data.user.id).toEqual(accountA._id);
+      expect((loginA.data as any).user.id).toEqual(accountA._id);
 
       // correct password for A, but scoped to B — must not match A's account
       await expect(
@@ -198,8 +198,8 @@ describe('AuthService — per-store buyer identity', () => {
         role: 'user',
         storeId: 'storeB',
       } as any);
-      expect(loginB.data.user.id).toEqual(accountB._id);
-      expect(loginB.data.user.id).not.toEqual(loginA.data.user.id);
+      expect((loginB.data as any).user.id).toEqual(accountB._id);
+      expect((loginB.data as any).user.id).not.toEqual((loginA.data as any).user.id);
     });
   });
 
@@ -367,5 +367,65 @@ describe('AuthService — admin alert for a new seller', () => {
       { sign: jest.fn(() => 'signed-jwt') } as any,
     );
     await expect(service.verifyOtp('sam@shop.test', 'seller', '123456')).resolves.toMatchObject({ success: true });
+  });
+});
+
+describe('AuthService — admin two-factor sign-in', () => {
+  const bcrypt = require('bcrypt');
+  async function build(twoFactorEnabled: boolean) {
+    const admin: any = {
+      _id: 'admin-1', name: 'Owner', email: 'owner@solvexo.test', role: 'admin', isVerified: true, status: 'active',
+      tokenVersion: 0, twoFactorEnabled, password: await bcrypt.hash('pass-1234', 4),
+    };
+    const { model: adminModel } = makeFakeModel([admin]);
+    (adminModel as any).findById = jest.fn(async () => admin);
+    const sign = jest.fn(() => 'signed-jwt');
+    const adminSecurity = { assertCanAttempt: jest.fn(), recordFailure: jest.fn(), onSuccess: jest.fn(async () => ({ sid: 's1' })) };
+    const adminTwoFactor = {
+      signChallenge: jest.fn(() => 'challenge-token'),
+      verifyChallenge: jest.fn(() => ({ adminId: 'admin-1', tokenVersion: 0 })),
+      verifyLoginCode: jest.fn(async (_id: string, code: string) => ({ ok: code === '123456', usedRecoveryCode: false, recoveryCodesLeft: 10 })),
+    };
+    const service = new AuthService(
+      { repositories: { userModel: makeFakeModel().model, sellerModel: makeFakeModel().model, adminModel, storeModel: makeFakeModel().model } } as any,
+      { sendOtp: jest.fn() } as any,
+      { set: jest.fn().mockResolvedValue(undefined), del: jest.fn() } as any,
+      { log: jest.fn().mockResolvedValue(undefined) } as any,
+      { sign } as any,
+      undefined,
+      adminSecurity as any,
+      adminTwoFactor as any,
+    );
+    return { service, admin, sign, adminSecurity, adminTwoFactor };
+  }
+  const creds = { email: 'owner@solvexo.test', password: 'pass-1234', role: 'admin' } as any;
+
+  it('a correct password with two-factor on returns a challenge, never a session', async () => {
+    const { service, sign, adminSecurity } = await build(true);
+    const res: any = await service.login(creds);
+    expect(res.data).toEqual({ twoFactorRequired: true, challengeToken: 'challenge-token' });
+    expect(sign).not.toHaveBeenCalled();
+    expect(adminSecurity.onSuccess).not.toHaveBeenCalled();
+  });
+
+  it('admins without two-factor still sign in in one step', async () => {
+    const { service } = await build(false);
+    const res: any = await service.login(creds);
+    expect(res.data.token.accessToken).toBe('signed-jwt');
+  });
+
+  it('the code step issues the session; a wrong code counts toward the lockout', async () => {
+    const { service, adminSecurity } = await build(true);
+    await expect(service.completeAdminTwoFactorLogin('challenge-token', '000000')).rejects.toThrow("didn't match");
+    expect(adminSecurity.recordFailure).toHaveBeenCalledTimes(1);
+    const res: any = await service.completeAdminTwoFactorLogin('challenge-token', '123456');
+    expect(res.data.token.accessToken).toBe('signed-jwt');
+    expect(adminSecurity.onSuccess).toHaveBeenCalledTimes(1);
+  });
+
+  it('a password reset after the password step voids the challenge', async () => {
+    const { service, admin } = await build(true);
+    admin.tokenVersion = 1;
+    await expect(service.completeAdminTwoFactorLogin('challenge-token', '123456')).rejects.toThrow('expired');
   });
 });

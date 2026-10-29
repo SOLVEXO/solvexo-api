@@ -53,10 +53,11 @@ export class PermissionsGuard implements CanActivate {
     // Platform admin: the owner / a Super Admin is never restricted; a TEAM admin only gets what its role lists.
     if (user.role === 'admin') {
       if (!user.teamAdmin) return true;
+      // Own-account routes (sessions, two-factor sign-in) stay open to read-only roles: securing your own account changes no platform data.
+      if (this.reflector.getAllAndOverride<boolean>(ADMIN_SELF_KEY, [context.getHandler(), context.getClass()])) return true;
       if (user.readOnly && method !== 'GET' && method !== 'HEAD') {
         throw new ForbiddenException('Your admin role is read-only: it can look at things but cannot change them.');
       }
-      if (this.reflector.getAllAndOverride<boolean>(ADMIN_SELF_KEY, [context.getHandler(), context.getClass()])) return true;
       const granted: string[] = Array.isArray(user.permissions) ? user.permissions : [];
       // Fails closed: a route that names no permission is not open to a team admin.
       if (!hasRequired || !required.some((p) => granted.includes(p))) {

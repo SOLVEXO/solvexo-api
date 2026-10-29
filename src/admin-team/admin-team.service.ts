@@ -4,6 +4,7 @@ import * as bcrypt from 'bcrypt';
 import { createHash, randomBytes } from 'crypto';
 import { DatabaseService } from '../database/databaseservice';
 import { RedisService } from '../redis/redis.service';
+import { AdminTwoFactorService } from '../auth/admin-two-factor.service';
 import { ActivityLogService } from '../activity-log/activity-log.service';
 import { EmailService } from '../otp/services/email.service';
 import { STAFF_PERMISSIONS } from '../staff/schemas/staff-member.schema';
@@ -29,6 +30,7 @@ export class AdminTeamService implements OnModuleInit {
     private readonly redis: RedisService,
     private readonly activity: ActivityLogService,
     private readonly email: EmailService,
+    private readonly twoFactor: AdminTwoFactorService,
   ) {}
 
   private get admins() { return this.db.repositories.adminModel; }
@@ -83,7 +85,7 @@ export class AdminTeamService implements OnModuleInit {
       _id: a._id, name: a.name, email: a.email, phone: a.phone ?? '', profileImage: a.profileImage ?? null, isSuperAdmin: !!a.isSuperAdmin,
       roleId: a.roleId ?? null, roleName, status: a.status, state, accessExpiresAt: a.accessExpiresAt ?? null,
       inviteSentAt: a.inviteSentAt ?? null, inviteTokenExpiresAt: a.inviteTokenExpiresAt ?? null, lastLoginAt: a.lastLoginAt ?? null, lastLoginIp: a.lastLoginIp ?? null,
-      sessionCount: (a.sessions ?? []).length, createdAt: a.createdAt,
+      sessionCount: (a.sessions ?? []).length, twoFactorEnabled: !!a.twoFactorEnabled, createdAt: a.createdAt,
     };
   }
 
@@ -254,6 +256,18 @@ export class AdminTeamService implements OnModuleInit {
     await admin.save();
     await this.log(actor, 'admin_sessions_revoked', `All sessions of "${admin.name}" signed out`, id);
     return { success: true };
+  }
+
+  /** Lost phone and recovery codes: switches two-factor off so the admin can sign in with their password and set it up again. */
+  async resetAdminTwoFactor(actor: Actor, id: string) {
+    const admin = await this.getTarget(id);
+    await this.assertCanManage(actor, admin);
+    if (!admin.twoFactorEnabled) throw new BadRequestException('Two-factor sign-in is already off for this admin.');
+    await this.twoFactor.clear(String(admin._id));
+    // Their open sessions were made with the old phone; sign them out so the next sign-in starts clean.
+    await this.admins.updateOne({ _id: admin._id }, { $set: { sessions: [] }, $inc: { tokenVersion: 1 } });
+    await this.log(actor, 'admin_2fa_reset', `Two-factor sign-in reset for "${admin.name}" (${admin.email})`, id);
+    return { success: true, message: 'Two-factor sign-in reset. They can sign in with their password and turn it on again.' };
   }
 
   // ── invite / password (public) ───────────────────────────────────────────

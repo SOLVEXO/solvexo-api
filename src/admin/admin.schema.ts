@@ -90,6 +90,17 @@ export class Admin {
     sessions: { sid: string; ip: string | null; userAgent: string | null; createdAt: Date; lastSeenAt: Date }[];
     // sha256(ip|userAgent) of devices that already logged in: a new one triggers a login alert.
     @Prop({ type: [String], default: [] }) knownDevices: string[];
+
+    // ── Two-factor authentication (authenticator app, see auth/admin-two-factor.service.ts) ──
+    @Prop({ default: false }) twoFactorEnabled: boolean;
+    @Prop({ type: Date, default: null }) twoFactorEnabledAt: Date | null;
+    // AES-GCM encrypted base32 secrets; "pending" is the one being set up, not yet confirmed with a code.
+    @Prop({ type: String, default: null, select: false }) twoFactorSecret: string | null;
+    @Prop({ type: String, default: null, select: false }) twoFactorPendingSecret: string | null;
+    // sha256 of each unused one-time recovery code.
+    @Prop({ type: [String], default: [], select: false }) twoFactorRecoveryCodes: string[];
+    // Last accepted 30-second step: the same code can't be replayed within its validity window.
+    @Prop({ type: Number, default: 0, select: false }) twoFactorLastStep: number;
 }
 
 

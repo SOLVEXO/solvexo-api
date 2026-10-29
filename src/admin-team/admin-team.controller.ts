@@ -102,6 +102,10 @@ export class AdminTeamController {
   revoke(@Req() req: any, @Param('id') id: string) { return this.team.revokeAdminSessions(actor(req), id); }
 
   @RequirePermission('team.manage')
+  @Post('admins/:id/reset-2fa')
+  reset2fa(@Req() req: any, @Param('id') id: string) { return this.team.resetAdminTwoFactor(actor(req), id); }
+
+  @RequirePermission('team.manage')
   @Put('admins/:id/super')
   setSuper(@Req() req: any, @Param('id') id: string, @Body() dto: SuperDto) { return this.team.setSuper(actor(req), id, dto.isSuperAdmin); }
 
