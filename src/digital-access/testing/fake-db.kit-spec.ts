@@ -61,7 +61,7 @@ export class FakeModel {
   }
 
   async create(d: any) {
-    const r = this.wrap({ _id: `id${++seq}`, ...JSON.parse(JSON.stringify(this.defaults)), ...d });
+    const r = this.wrap({ _id: `id${++seq}`, createdAt: new Date(), ...JSON.parse(JSON.stringify(this.defaults)), ...d });
     // the real models have unique indexes; a model may declare which fields are unique together
     if ((this as any).unique && this.rows.some((x) => (this as any).unique.every((f: string) => same(x[f], r[f])))) throw Object.assign(new Error('E11000 duplicate key'), { code: 11000 });
     this.rows.push(r);

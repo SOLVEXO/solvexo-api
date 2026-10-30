@@ -6,6 +6,9 @@ import { AccessPlan, AccessPlanDocument, MemberSubscription, MemberSubscriptionD
 import { accessUntil, addInterval, dunningDecision, prorationCredit, upgradeAmountDue, REMINDER_DAYS_BEFORE, type PlanInterval } from './membership.util';
 import { SUBSCRIPTION_PROVIDERS } from './subscription-provider';
 import { DigitalMailerService } from '../digital-access/digital-mailer.service';
+import { StripeMembershipProvider } from './stripe-membership.provider';
+import { getInvoiceSubscriptionId } from '../common/stripe-invoice.util';
+import { storePublicUrl } from '../newsletter/marketing-email.util';
 
 const LIVE = ['trialing', 'active', 'past_due', 'paused'];
 const DAY = 86_400_000;
@@ -21,6 +24,7 @@ export class MembershipsService {
     @InjectModel(AccessPlan.name) readonly planModel: Model<AccessPlanDocument>,
     @InjectModel(MemberSubscription.name) readonly subModel: Model<MemberSubscriptionDocument>,
     @Optional() private readonly mailer?: DigitalMailerService,
+    @Optional() private readonly stripe?: StripeMembershipProvider,
   ) {}
 
   private mail(event: Parameters<DigitalMailerService['membership']>[0], s: { storeId: string; customerId: string; planId: string; currentPeriodEnd?: Date | null }) {
@@ -60,6 +64,7 @@ export class MembershipsService {
       tier: int(b?.tier, 1, 100, 1),
       graceDays: int(b?.graceDays, 0, 7, 0),
       productId: b?.productId ? String(b.productId).trim().slice(0, 40) : null,
+      autoRenew: type === 'recurring' && !!b?.autoRenew,
     };
   }
 
@@ -67,6 +72,19 @@ export class MembershipsService {
     const s: any = await this.db.repositories.storeModel.findOne({ _id: storeId, isDelete: false }).select('baseCurrency').lean();
     if (!s) throw new NotFoundException('Store not found');
     return s.baseCurrency || 'USD';
+  }
+
+  /** Auto billing can only be switched on where Stripe Connect can serve the store. */
+  private async assertAutoRenew(storeId: string) {
+    const a = await this.billingMode(storeId);
+    if (!a.autoAvailable) throw new BadRequestException(a.reason ?? 'Automatic billing is not available for this store');
+  }
+
+  /** What the seller UI shows: Auto (cards charged by Stripe) or Manual, and why. */
+  async billingMode(storeId: string): Promise<{ mode: 'auto' | 'manual'; autoAvailable: boolean; reason: string | null }> {
+    if (!this.stripe) return { mode: 'manual', autoAvailable: false, reason: 'Automatic card renewal is not available.' };
+    const a = await this.stripe.availability(storeId);
+    return { mode: a.available ? 'auto' : 'manual', autoAvailable: a.available, reason: a.reason };
   }
 
   /** A plan's product must be a live product of THIS store. */
@@ -78,6 +96,7 @@ export class MembershipsService {
 
   async createPlan(storeId: string, body: any) {
     await this.assertPlanProduct(storeId, body?.productId ? String(body.productId) : null);
+    if (body?.autoRenew) await this.assertAutoRenew(storeId);
     return this.planModel.create({ storeId, ...this.cleanPlan(body, await this.storeCurrency(storeId)) });
   }
 
@@ -86,6 +105,7 @@ export class MembershipsService {
     if (!plan) throw new NotFoundException('Plan not found');
     const next = this.cleanPlan({ ...plan.toObject(), ...body }, plan.currency);
     await this.assertPlanProduct(storeId, next.productId);
+    if (next.autoRenew && !plan.autoRenew) await this.assertAutoRenew(storeId);
     // price / type changes never touch existing members: they keep their current period
     Object.assign(plan, next);
     if (body?.status === 'archived' || body?.status === 'active') plan.status = body.status;
@@ -196,10 +216,16 @@ export class MembershipsService {
     const s = await this.own(storeId, customerId, id);
     if (!LIVE.includes(s.status)) throw new BadRequestException('Membership is not active');
     const plan = await this.planModel.findOne({ _id: s.planId, storeId }).lean();
-    await SUBSCRIPTION_PROVIDERS[s.provider]?.cancel(s.providerSubscriptionId);
-    if (!s.currentPeriodEnd || plan?.type !== 'recurring' || s.awaitingFirstPayment) {
-      s.status = 'cancelled';
-    } else s.cancelAtPeriodEnd = true; // keeps access until the period ends
+    if (s.provider === 'stripe') {
+      if (!this.stripe || !s.providerSubscriptionId) throw new BadRequestException('This membership cannot be changed right now');
+      await this.stripe.setCancelAtPeriodEnd(s.providerSubscriptionId, true); // Stripe stops charging; the webhook confirms the end
+      s.cancelAtPeriodEnd = true;
+    } else {
+      await SUBSCRIPTION_PROVIDERS[s.provider]?.cancel(s.providerSubscriptionId);
+      if (!s.currentPeriodEnd || plan?.type !== 'recurring' || s.awaitingFirstPayment) {
+        s.status = 'cancelled';
+      } else s.cancelAtPeriodEnd = true; // keeps access until the period ends
+    }
     s.audit.push(audit('cancel_requested', customerId));
     await s.save();
     return s;
@@ -210,6 +236,10 @@ export class MembershipsService {
     const plan = await this.planModel.findOne({ _id: s.planId, storeId }).lean();
     if (!plan?.pauseAllowed) throw new ForbiddenException('This plan cannot be paused');
     if (s.status !== 'active') throw new BadRequestException('Only an active membership can be paused');
+    if (s.provider === 'stripe') {
+      if (!this.stripe || !s.providerSubscriptionId) throw new BadRequestException('This membership cannot be changed right now');
+      await this.stripe.setPaused(s.providerSubscriptionId, true);
+    }
     s.status = 'paused';
     s.pausedAt = new Date();
     s.audit.push(audit('paused', customerId));
@@ -219,6 +249,10 @@ export class MembershipsService {
   async resume(storeId: string, customerId: string, id: string) {
     const s = await this.own(storeId, customerId, id);
     if (s.status !== 'paused' || !s.pausedAt) throw new BadRequestException('Membership is not paused');
+    if (s.provider === 'stripe') {
+      if (!this.stripe || !s.providerSubscriptionId) throw new BadRequestException('This membership cannot be changed right now');
+      await this.stripe.setPaused(s.providerSubscriptionId, false);
+    }
     const pausedMs = Date.now() - s.pausedAt.getTime();
     if (s.currentPeriodEnd) s.currentPeriodEnd = new Date(s.currentPeriodEnd.getTime() + pausedMs); // the pause does not eat paid time
     s.status = 'active';
@@ -245,6 +279,15 @@ export class MembershipsService {
       s.audit.push(audit('downgrade_scheduled', customerId, String(next._id)));
       await s.save();
       return { subscription: s, amountDue: 0, effective: 'period_end' as const };
+    }
+    if (s.provider === 'stripe') {
+      if (!this.stripe || !s.providerSubscriptionId) throw new BadRequestException('This membership cannot be changed right now');
+      await this.stripe.changePlan(s.providerSubscriptionId, next, this.planModel, 'upgrade'); // Stripe invoices the prorated difference now
+      s.planId = String(next._id);
+      s.pendingPlanId = null;
+      s.audit.push(audit('upgraded', customerId, 'prorated by Stripe'));
+      await s.save();
+      return { subscription: s, amountDue: 0, effective: 'now' as const, billedAutomatically: true };
     }
     const now = new Date();
     const credit = s.currentPeriodStart && s.currentPeriodEnd && s.status === 'active' ? prorationCredit(cur.amount, s.currentPeriodStart, s.currentPeriodEnd, now) : 0;
@@ -281,6 +324,7 @@ export class MembershipsService {
     const s = await this.subModel.findOne({ _id: id, storeId }).catch(() => null);
     if (!s) throw new NotFoundException('Subscription not found');
     if (!['trialing', 'active', 'past_due'].includes(s.status)) throw new BadRequestException('Subscription is not payable');
+    if (s.provider === 'stripe') throw new BadRequestException('This membership is charged automatically by Stripe: the card payment marks each period paid');
     const plan = await this.planModel.findOne({ _id: s.planId, storeId }).lean();
     if (!plan) throw new NotFoundException('Plan not found');
     const now = new Date();
@@ -337,6 +381,144 @@ export class MembershipsService {
     return { counts, mrr: Math.round(mrr * 100) / 100, churned: counts.cancelled + counts.expired, awaitingPayment: subs.filter((s) => s.awaitingFirstPayment).length };
   }
 
+  // ---------------- Stripe (automatic billing) ----------------
+
+  /** Buyer starts an automatic subscription: returns Stripe's hosted Checkout link. */
+  async startStripeCheckout(storeId: string, customerId: string, planId: string): Promise<{ url: string }> {
+    if (!this.stripe) throw new BadRequestException('Automatic billing is not available');
+    const plan: any = await this.planModel.findOne({ _id: planId, storeId, status: 'active' }).catch(() => null);
+    if (!plan) throw new NotFoundException('Plan not found');
+    if (plan.type !== 'recurring' || !plan.autoRenew) throw new BadRequestException('This plan is not charged automatically');
+    const live = await this.subModel.findOne({ storeId, customerId, planId, status: { $in: LIVE } });
+    if (live) throw new ConflictException('You already have this membership');
+    const user: any = await (this.db.repositories as any).userModel.findOne({ _id: customerId }).select('email contactEmail').lean();
+    const email = String(user?.contactEmail || user?.email || '');
+    if (!email.includes('@') || email.endsWith('.invalid')) throw new BadRequestException('Add a real email address to your account first');
+    const store: any = await this.db.repositories.storeModel.findOne({ _id: storeId }).select('slug customDomain customDomainStatus').lean();
+    const base = storePublicUrl(store);
+    if (!base) throw new BadRequestException('The store address is not ready yet');
+    return this.stripe.createCheckout({ storeId, plan, planModel: this.planModel, customerId, email, successUrl: `${base}/memberships?joined=1`, cancelUrl: `${base}/memberships` });
+  }
+
+  async paymentMethodUrl(storeId: string, customerId: string, id: string): Promise<{ url: string }> {
+    const s = await this.own(storeId, customerId, id);
+    if (s.provider !== 'stripe' || !s.providerCustomerId || !this.stripe) throw new BadRequestException('This membership is not paid by card through Stripe');
+    return { url: await this.stripe.paymentMethodUpdateUrl(s.providerCustomerId, storeId) };
+  }
+
+  private periodOf(obj: any): { start: Date | null; end: Date | null } {
+    const line = obj?.lines?.data?.[0]?.period;
+    const start = line?.start ?? obj?.current_period_start;
+    const end = line?.end ?? obj?.current_period_end;
+    return { start: start ? new Date(start * 1000) : null, end: end ? new Date(end * 1000) : null };
+  }
+
+  /** Applies one verified Stripe event to the memberships. Every branch is a conditional update, so a replay changes nothing. */
+  async applyStripeEvent(event: any): Promise<'applied' | 'ignored'> {
+    const obj = event?.data?.object;
+    if (!obj) return 'ignored';
+
+    if (event.type === 'checkout.session.completed') {
+      const m = obj.metadata ?? {};
+      if (obj.mode !== 'subscription' || m.purpose !== 'member_subscription' || !m.storeId || !m.customerId || !m.planId || !obj.subscription) return 'ignored';
+      const plan: any = await this.planModel.findOne({ _id: m.planId, storeId: m.storeId }).lean().catch(() => null);
+      if (!plan) return 'ignored';
+      const subId = String(obj.subscription);
+      if (await this.subModel.findOne({ providerSubscriptionId: subId })) return 'applied'; // replay
+      const remote: any = this.stripe ? await this.stripe.getSubscription(subId) : null;
+      const { start, end } = this.periodOf(remote ?? {});
+      const trialing = remote?.status === 'trialing';
+      const base: any = {
+        storeId: m.storeId, customerId: m.customerId, planId: m.planId, provider: 'stripe', providerSubscriptionId: subId,
+        providerCustomerId: obj.customer ? String(obj.customer) : null, status: trialing ? 'trialing' : 'active',
+        awaitingFirstPayment: false, currentPeriodStart: start ?? new Date(), currentPeriodEnd: end, periodsPaid: trialing ? 0 : 1,
+        audit: [audit('joined', m.customerId, 'Stripe checkout')],
+      };
+      try {
+        const created = await this.subModel.create(base);
+        this.mail('membership_welcome', created as any);
+      } catch (e: any) {
+        if (e?.code !== 11000) throw e;
+        // the buyer already had a live membership of this plan (e.g. manual): move it to automatic billing
+        await this.subModel.updateOne({ storeId: m.storeId, customerId: m.customerId, planId: m.planId, status: { $in: LIVE } }, { $set: { provider: 'stripe', providerSubscriptionId: subId, providerCustomerId: base.providerCustomerId, status: base.status, currentPeriodStart: base.currentPeriodStart, currentPeriodEnd: base.currentPeriodEnd, awaitingFirstPayment: false, dueAt: null, failedCount: 0 } });
+      }
+      return 'applied';
+    }
+
+    const subId = event.type.startsWith('invoice.') ? getInvoiceSubscriptionId(obj) : event.type.startsWith('customer.subscription.') ? obj.id : undefined;
+    if (!subId) return 'ignored';
+    const sub = await this.subModel.findOne({ providerSubscriptionId: String(subId), provider: 'stripe' });
+    if (!sub) return 'ignored';
+
+    if (event.type === 'invoice.paid') {
+      const { start, end } = this.periodOf(obj);
+      const set: any = { status: 'active', failedCount: 0, dueAt: null, awaitingFirstPayment: false, amountDue: 0 };
+      if (start) set.currentPeriodStart = start;
+      if (end) set.currentPeriodEnd = end;
+      // one invoice counts once: the invoice id is remembered on the subscription
+      const claimed = await this.subModel.updateOne({ _id: sub._id, appliedItemIds: { $ne: String(obj.id) } }, { $set: set, $addToSet: { appliedItemIds: String(obj.id) }, $inc: { periodsPaid: obj.amount_paid > 0 || obj.total > 0 ? 1 : 0 }, $push: { audit: audit('paid', 'stripe', String(obj.id)) } });
+      if (claimed.modifiedCount && obj.billing_reason === 'subscription_cycle' && sub.pendingPlanId && this.stripe) {
+        const next: any = await this.planModel.findOne({ _id: sub.pendingPlanId, storeId: sub.storeId }).lean();
+        if (next && sub.providerSubscriptionId) {
+          await this.stripe.changePlan(sub.providerSubscriptionId, next, this.planModel, 'downgrade');
+          await this.subModel.updateOne({ _id: sub._id }, { $set: { planId: String(next._id), pendingPlanId: null } });
+        }
+      }
+      return 'applied';
+    }
+
+    if (event.type === 'invoice.payment_failed') {
+      const first = sub.status !== 'past_due';
+      await this.subModel.updateOne(
+        { _id: sub._id, appliedItemIds: { $ne: `failed:${obj.id}:${obj.attempt_count ?? 0}` } },
+        { $set: { status: 'past_due', ...(sub.dueAt ? {} : { dueAt: new Date() }) }, $inc: { failedCount: 1 }, $addToSet: { appliedItemIds: `failed:${obj.id}:${obj.attempt_count ?? 0}` }, $push: { audit: audit('payment_failed', 'stripe', String(obj.attempt_count ?? '')) } },
+      );
+      this.mail(first ? 'membership_payment_failed' : 'membership_grace_period', sub as any);
+      return 'applied';
+    }
+
+    if (event.type === 'customer.subscription.updated') {
+      const set: any = { cancelAtPeriodEnd: !!obj.cancel_at_period_end };
+      const { start, end } = this.periodOf(obj);
+      if (end && obj.status !== 'past_due') { set.currentPeriodEnd = end; if (start) set.currentPeriodStart = start; }
+      if (obj.pause_collection && sub.status === 'active') { set.status = 'paused'; set.pausedAt = sub.pausedAt ?? new Date(); }
+      if (!obj.pause_collection && sub.status === 'paused') { set.status = 'active'; set.pausedAt = null; }
+      if (obj.status === 'past_due' && sub.status !== 'past_due') { set.status = 'past_due'; set.dueAt = sub.dueAt ?? new Date(); }
+      await this.subModel.updateOne({ _id: sub._id }, { $set: set });
+      return 'applied';
+    }
+
+    if (event.type === 'customer.subscription.deleted') {
+      if (['cancelled', 'expired'].includes(sub.status)) return 'applied';
+      const asked = sub.cancelAtPeriodEnd;
+      const status = asked ? 'cancelled' : 'expired';
+      const r = await this.subModel.updateOne({ _id: sub._id, status: { $in: LIVE } }, { $set: { status, cancelAtPeriodEnd: false }, $push: { audit: audit(status, 'stripe', 'subscription ended') } });
+      if (r.modifiedCount) this.mail(asked ? 'membership_cancelled' : 'membership_expired', sub as any);
+      return 'applied';
+    }
+    return 'ignored';
+  }
+
+  /**
+   * Hourly job for Stripe-billed memberships: Stripe retries the card on its own schedule (set it to 1 / 3 / 5 / 7 days in
+   * the Stripe dashboard); access already stops at due date + grace days. Seven days after the first failure the
+   * subscription is ended here so nobody keeps being retried forever.
+   */
+  async reconcileStripeDunning(now = new Date()): Promise<number> {
+    if (!this.stripe) return 0;
+    const cutoff = new Date(now.getTime() - 7 * DAY);
+    const late = await this.subModel.find({ provider: 'stripe', status: 'past_due', dueAt: { $ne: null, $lte: cutoff } }).limit(200);
+    let ended = 0;
+    for (const s of late) {
+      try {
+        if (s.providerSubscriptionId) await this.stripe.cancelNow(s.providerSubscriptionId);
+      } catch { /* already ended on Stripe's side: still close it here */ }
+      const r = await this.subModel.updateOne({ _id: s._id, status: 'past_due' }, { $set: { status: 'expired' }, $push: { audit: audit('expired', 'system', 'card payments failed for 7 days') } });
+      if (r.modifiedCount) { ended++; this.mail('membership_expired', s as any); }
+    }
+    return ended;
+  }
+
   // ---------------- renewals + dunning (cron; every step is a conditional update => safe to re-run) ----------------
 
   async processRenewals(now = new Date()): Promise<RenewalEvent[]> {
@@ -356,7 +538,8 @@ export class MembershipsService {
     }
 
     // 2. periods that ended
-    const ended = await this.subModel.find({ status: { $in: ['trialing', 'active'] }, currentPeriodEnd: { $ne: null, $lte: now } }).limit(500);
+    // Stripe-billed memberships are driven by Stripe's webhooks (invoice.paid / payment_failed), never by this clock
+    const ended = await this.subModel.find({ status: { $in: ['trialing', 'active'] }, provider: { $ne: 'stripe' }, currentPeriodEnd: { $ne: null, $lte: now } }).limit(500);
     for (const s of ended) {
       const guard = { _id: s._id, status: s.status, currentPeriodEnd: s.currentPeriodEnd };
       const plan = await this.planModel.findOne({ _id: s.planId, storeId: s.storeId }).lean();
@@ -372,7 +555,7 @@ export class MembershipsService {
     }
 
     // 3. dunning ladder
-    const late = await this.subModel.find({ status: 'past_due', dueAt: { $ne: null } }).limit(500);
+    const late = await this.subModel.find({ status: 'past_due', provider: { $ne: 'stripe' }, dueAt: { $ne: null } }).limit(500);
     for (const s of late) {
       const plan = await this.planModel.findOne({ _id: s.planId, storeId: s.storeId }).lean();
       const d = dunningDecision({ failedCount: s.failedCount, dueAt: s.dueAt as Date, now, graceDays: plan?.graceDays });

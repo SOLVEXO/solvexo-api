@@ -13,7 +13,7 @@ const top = () => stack[stack.length - 1];
 global.describe = (name, fn) => { const s = { name, before: [], tests: [], parent: top() }; top().tests.push(s); stack.push(s); fn(); stack.pop(); };
 global.beforeEach = (fn) => top().before.push(fn);
 global.it = global.test = (name, fn) => top().tests.push({ name, fn, parent: top() });
-global.jest = { fn: (impl) => { const f = (...a) => { f.calls.push(a); return impl ? impl(...a) : undefined; }; f.calls = []; f.mockResolvedValue = (v) => { impl = async () => v; return f; }; return f; } };
+global.jest = { fn: (impl) => { const f = (...a) => { f.calls.push(a); return impl ? impl(...a) : undefined; }; f.calls = []; f.mock = { calls: f.calls }; f.mockResolvedValue = (v) => { impl = async () => v; return f; }; return f; } };
 
 const fmt = (v) => { try { return JSON.stringify(v); } catch { return String(v); } };
 function expect(actual) {

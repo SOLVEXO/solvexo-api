@@ -24,6 +24,9 @@ export class AccessPlan {
   // A digital product of this store that sells the plan: buying it through the normal checkout (the seller's own
   // payment methods) starts or renews the membership. Solvexo never handles the money.
   @Prop({ type: String, default: null }) productId: string | null;
+  // Charge members' cards automatically through Stripe (only where the store can use Stripe Connect); false = manual billing.
+  @Prop({ default: false }) autoRenew: boolean;
+  @Prop({ type: String, default: null }) stripeProductId: string | null;
 }
 export const AccessPlanSchema = SchemaFactory.createForClass(AccessPlan);
 AccessPlanSchema.index({ storeId: 1, status: 1, tier: 1 });

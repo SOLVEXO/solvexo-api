@@ -21,6 +21,8 @@ export class DigitalAccess {
   @Prop({ type: String, enum: ['active', 'expired', 'revoked'], default: 'active' }) status: string;
   @Prop({ type: Number, default: 0 }) downloadCount: number;
   @Prop({ type: Boolean, default: false }) flagged: boolean;
+  // Set (conditionally, once) right before the "your downloads are ready" mail is sent: a retry or a parallel event can never mail twice.
+  @Prop({ type: Date, default: null }) mailedAt: Date | null;
 
   @Prop({ type: [{ at: Date, action: String, by: String, note: String, _id: false }], default: [] })
   audit: { at: Date; action: string; by: string; note: string }[];
