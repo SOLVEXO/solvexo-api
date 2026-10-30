@@ -134,6 +134,10 @@ export class DigitalConfig {
 
   @Prop({ type: DigitalPreviewSchema, default: () => ({}) })
   preview: DigitalPreview;
+
+  // per-sale license keys (M7)
+  @Prop({ type: { enabled: { type: Boolean, default: false }, activationLimit: { type: Number, default: 1 } }, _id: false, default: () => ({ enabled: false, activationLimit: 1 }) })
+  licenseKeys: { enabled: boolean; activationLimit: number };
 }
 export const DigitalConfigSchema = SchemaFactory.createForClass(DigitalConfig);
 

@@ -89,6 +89,7 @@ import { StoreFaqModule } from './store-faq/store-faq.module';
 import { StoreChatSettingsModule } from './store-chat-settings/store-chat-settings.module';
 import { DigitalAccessModule } from './digital-access/digital-access.module';
 import { MembershipsModule } from './memberships/memberships.module';
+import { LicensesModule } from './licenses/licenses.module';
 import { DashboardLayoutsModule } from './dashboard-layouts/dashboard-layouts.module';
 import { StoreContactModule } from './store-contact/store-contact.module';
 import { CollectionTemplateModule } from './collection-template/collection-template.module';
@@ -213,6 +214,7 @@ import { AppI18nModule } from './i18n/i18n.module';
     StoreChatSettingsModule,
     DigitalAccessModule,
     MembershipsModule,
+    LicensesModule,
     DashboardLayoutsModule,
     StoreContactModule,
     CollectionTemplateModule,

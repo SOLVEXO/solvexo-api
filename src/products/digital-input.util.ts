@@ -35,6 +35,14 @@ export function assertAllowedDigitalFile(name: string, size: number | null): voi
   if (size !== null && size > MAX_DIGITAL_FILE_BYTES) throw new BadRequestException(`"${name}" is larger than 2 GB`);
 }
 
+function normalizeLicenseKeys(input: any, existing?: any) {
+  const src = input === undefined ? existing : input;
+  const enabled = !!src?.enabled;
+  const n = Number(src?.activationLimit ?? 1);
+  if (!Number.isInteger(n) || n < 1 || n > 1000) throw new BadRequestException('activationLimit must be a whole number between 1 and 1000');
+  return { enabled, activationLimit: n };
+}
+
 /**
  * Allow-lists the seller-supplied `digital` payload. Server-managed fields
  * (preview.previewSource*) are never read from input.
@@ -119,5 +127,6 @@ export function normalizeDigital(input: any, existing?: any): any {
     licenseType: input.licenseType ?? existing?.licenseType ?? undefined,
     buyerDeliveryMessage: input.buyerDeliveryMessage === undefined ? existing?.buyerDeliveryMessage ?? null : clean(input.buyerDeliveryMessage, 2000),
     preview: { enabled: !!prev.enabled, sourceFileIndex: idx },
+    licenseKeys: normalizeLicenseKeys(input.licenseKeys, existing?.licenseKeys),
   };
 }
