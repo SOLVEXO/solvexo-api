@@ -21,6 +21,6 @@ import { PlatformMrrSnapshot, PlatformMrrSnapshotSchema } from './schemas/platfo
   ],
   controllers: [AdminAnalyticsController],
   providers: [AdminAnalyticsService, SaasMetricsService, ActivationFunnelService],
-  exports: [AdminAnalyticsService, SaasMetricsService],
+  exports: [AdminAnalyticsService, SaasMetricsService, ActivationFunnelService],
 })
 export class AdminAnalyticsModule {}
