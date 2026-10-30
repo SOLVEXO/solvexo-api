@@ -12,7 +12,11 @@ export function matches(doc: any, filter: any): boolean {
       // dotted path through an array of sub documents: sellerOrders.items.productId
       const [head, ...rest] = k.split('.');
       const arr = doc?.[head];
-      if (Array.isArray(arr)) return arr.some((x: any) => matches(x, { [rest.join('.')]: cond }));
+      const existsCond = cond && typeof cond === 'object' && '$exists' in cond;
+      if (Array.isArray(arr) && !/^d+$/.test(rest[0]) && !existsCond) {
+        const negative = cond && typeof cond === 'object' && ('$ne' in cond);
+        return negative ? arr.every((x: any) => matches(x, { [rest.join('.')]: cond })) : arr.some((x: any) => matches(x, { [rest.join('.')]: cond }));
+      }
     }
     const test = (v: any) => {
       if (cond && typeof cond === 'object' && !(cond instanceof Date) && !Array.isArray(cond)) {
@@ -27,7 +31,11 @@ export function matches(doc: any, filter: any): boolean {
       }
       return same(cond, v);
     };
-    if (Array.isArray(val) && !(cond && typeof cond === 'object' && '$exists' in cond)) return val.some(test) || test(val);
+    if (Array.isArray(val) && !(cond && typeof cond === 'object' && '$exists' in cond)) {
+      // Mongo: $ne on an array field matches only when NO element equals the value
+      if (cond && typeof cond === 'object' && '$ne' in cond) return val.every(test);
+      return val.some(test) || test(val);
+    }
     return test(val);
   });
 }
