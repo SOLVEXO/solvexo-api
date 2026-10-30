@@ -42,7 +42,7 @@ function shell(title: string, bodyHtml: string): string {
 </html>`;
 }
 
-const money = (n: number) => `$${Math.abs(n).toFixed(2)}`;
+const money = (n: number) => `$ ${Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 /** Seller-facing emails for platform-plan (seller-to-Solvexo) billing — same visual style/shell as SubscriptionNotificationsService, different audience (sellers, not buyers). */
 @Injectable()

@@ -766,7 +766,7 @@ export class AdminFinanceService {
     const wallet: any = await this.r.sellerBalanceModel.findOne({ storeId, currency }).select('availableBalance').lean();
     const availableUSD = round((wallet?.availableBalance ?? 0) / rate);
     if (nativeAmount > (wallet?.availableBalance ?? 0)) {
-      throw new BadRequestException(`Insufficient balance - available: $${availableUSD.toFixed(2)}`);
+      throw new BadRequestException(`Insufficient balance - available: $ ${availableUSD.toFixed(2)}`);
     }
 
     const data = await this.financeService.adminCreateManualPayout(storeId, adminId, nativeAmount, payoutMethodId, notes, ip, userAgent, currency);
@@ -1353,7 +1353,7 @@ export class AdminFinanceService {
         storeId: 'platform',
         category: 'finance',
         action: 'fx_exposure_threshold_breached',
-        description: `Platform open FX exposure is $${data.totalUSDEquivalent.toFixed(2)}, above the configured $${data.threshold.toFixed(2)} threshold`,
+        description: `Platform open FX exposure is $ ${data.totalUSDEquivalent.toFixed(2)}, above the configured $ ${data.threshold.toFixed(2)} threshold`,
         actorId: 'system',
         actorRole: 'system',
         isSecurityAlert: true,

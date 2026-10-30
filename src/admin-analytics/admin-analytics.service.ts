@@ -1374,9 +1374,9 @@ export class AdminAnalyticsService {
 
     pdf.addSectionHeading('Overview');
     pdf.addKeyValueGrid([
-      { label: 'Total GMV', value: `$${overview.data.totalGMV.toFixed(2)}` },
-      { label: 'Total Revenue (net)', value: `$${overview.data.totalRevenue.toFixed(2)}` },
-      { label: 'Custom Commission', value: `$${overview.data.platformEarnings.toFixed(2)}` },
+      { label: 'Total GMV', value: `$ ${overview.data.totalGMV.toFixed(2)}` },
+      { label: 'Total Revenue (net)', value: `$ ${overview.data.totalRevenue.toFixed(2)}` },
+      { label: 'Custom Commission', value: `$ ${overview.data.platformEarnings.toFixed(2)}` },
       { label: 'Total Orders', value: `${overview.data.totalOrders}` },
       { label: 'Seller Accounts', value: `${overview.data.totalSellers}` },
       { label: 'Sellers Active This Month', value: `${overview.data.sellersActiveThisMonth}` },
@@ -1392,7 +1392,7 @@ export class AdminAnalyticsService {
     if (revenue.data.series.length > 0) {
       pdf.addTable(
         ['Date', 'Gross', 'Net'],
-        revenue.data.series.map((s: any) => [new Date(s.date).toISOString().split('T')[0], `$${s.grossRevenue.toFixed(2)}`, `$${s.netRevenue.toFixed(2)}`]),
+        revenue.data.series.map((s: any) => [new Date(s.date).toISOString().split('T')[0], `$ ${s.grossRevenue.toFixed(2)}`, `$ ${s.netRevenue.toFixed(2)}`]),
       );
     } else {
       pdf.addEmptyNote('No revenue recorded in this period.');
@@ -1402,7 +1402,7 @@ export class AdminAnalyticsService {
     if (topSellers.data.length > 0) {
       pdf.addTable(
         ['Seller', 'Orders', 'Units', 'Revenue'],
-        topSellers.data.map((s: any) => [s.name, s.orderCount, s.unitsSold, `$${s.revenue.toFixed(2)}`]),
+        topSellers.data.map((s: any) => [s.name, s.orderCount, s.unitsSold, `$ ${s.revenue.toFixed(2)}`]),
       );
     } else {
       pdf.addEmptyNote('No seller sales recorded in this period.');
@@ -1412,7 +1412,7 @@ export class AdminAnalyticsService {
     if (topProducts.data.length > 0) {
       pdf.addTable(
         ['Product', 'Orders', 'Units', 'Revenue'],
-        topProducts.data.map((p: any) => [p.name, p.orderCount, p.unitsSold, `$${p.revenue.toFixed(2)}`]),
+        topProducts.data.map((p: any) => [p.name, p.orderCount, p.unitsSold, `$ ${p.revenue.toFixed(2)}`]),
       );
     } else {
       pdf.addEmptyNote('No product sales recorded in this period.');

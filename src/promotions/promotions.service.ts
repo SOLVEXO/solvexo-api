@@ -337,7 +337,7 @@ export class PromotionsService {
     this.notificationsService.notify({
       recipientId: request.sellerId, recipientRole: 'seller', storeId: request.storeId,
       type: NOTIFICATION_TYPES.PROMOTION_PAYMENT_SUCCEEDED,
-      title: 'Payment received', body: `Payment of $${request.priceUSD} for your ${request.placement} promotion succeeded.`,
+      title: 'Payment received', body: `Payment of $ ${request.priceUSD} for your ${request.placement} promotion succeeded.`,
       data: { promotionRequestId: request._id },
     }).catch(() => {});
 

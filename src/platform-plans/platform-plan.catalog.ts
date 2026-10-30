@@ -237,8 +237,8 @@ export function validatePlanPricing(p: {
   }
   if (selfServe && typeof p.monthlyPriceUSD === 'number' && typeof p.yearlyPriceUSD === 'number') {
     const full = p.monthlyPriceUSD * 12;
-    if (p.yearlyPriceUSD > full) problems.push(`Yearly price ($${p.yearlyPriceUSD}) can't be more than 12 months at the monthly price ($${full}).`);
-    if (p.yearlyPriceUSD < full * 0.5) problems.push(`Yearly price ($${p.yearlyPriceUSD}) can't be more than 50% below 12 months at the monthly price ($${full}).`);
+    if (p.yearlyPriceUSD > full) problems.push(`Yearly price ($ ${p.yearlyPriceUSD}) can't be more than 12 months at the monthly price ($ ${full}).`);
+    if (p.yearlyPriceUSD < full * 0.5) problems.push(`Yearly price ($ ${p.yearlyPriceUSD}) can't be more than 50% below 12 months at the monthly price ($ ${full}).`);
   }
   if (p.introOfferEnabled) {
     if (p.introPriceUSD == null || p.introDurationCycles == null) problems.push('The intro offer needs both a price and a number of months.');
@@ -266,7 +266,7 @@ export function assertCatalogValid(catalog: CatalogPlan[] = PLAN_CATALOG): void 
   for (let i = 1; i < sorted.length; i++) problems.push(...validateTierOrder(sorted[i - 1], sorted[i]));
   for (const plan of sorted) {
     if (!plan.isCustomPricing && plan.monthlyPriceUSD != null && plan.yearlyPriceUSD !== yearlyPriceFor(plan.monthlyPriceUSD)) {
-      problems.push(`${plan.name}: yearly price must apply the uniform ${YEARLY_DISCOUNT * 100}% yearly discount ($${yearlyPriceFor(plan.monthlyPriceUSD)}).`);
+      problems.push(`${plan.name}: yearly price must apply the uniform ${YEARLY_DISCOUNT * 100}% yearly discount ($ ${yearlyPriceFor(plan.monthlyPriceUSD)}).`);
     }
   }
   if (sorted.filter(p => !p.isCustomPricing).length < 1) problems.push('At least one self-serve plan is required.');
