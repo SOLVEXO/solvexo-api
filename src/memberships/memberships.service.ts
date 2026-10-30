@@ -1,10 +1,11 @@
-import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { DatabaseService } from '../database/databaseservice';
 import { AccessPlan, AccessPlanDocument, MemberSubscription, MemberSubscriptionDocument } from './membership.schema';
 import { accessUntil, addInterval, dunningDecision, prorationCredit, upgradeAmountDue, REMINDER_DAYS_BEFORE, type PlanInterval } from './membership.util';
 import { SUBSCRIPTION_PROVIDERS } from './subscription-provider';
+import { DigitalMailerService } from '../digital-access/digital-mailer.service';
 
 const LIVE = ['trialing', 'active', 'past_due', 'paused'];
 const DAY = 86_400_000;
@@ -19,7 +20,13 @@ export class MembershipsService {
     private readonly db: DatabaseService,
     @InjectModel(AccessPlan.name) readonly planModel: Model<AccessPlanDocument>,
     @InjectModel(MemberSubscription.name) readonly subModel: Model<MemberSubscriptionDocument>,
+    @Optional() private readonly mailer?: DigitalMailerService,
   ) {}
+
+  private mail(event: Parameters<DigitalMailerService['membership']>[0], s: { storeId: string; customerId: string; planId: string; currentPeriodEnd?: Date | null }) {
+    if (!this.mailer) return;
+    this.planModel.findOne({ _id: s.planId, storeId: s.storeId }).lean().then((p) => this.mailer?.membership(event, s.storeId, s.customerId, p?.name ?? 'your plan', s.currentPeriodEnd ?? null)).catch(() => undefined);
+  }
 
   // ---------------- plans (seller) ----------------
 
@@ -112,7 +119,9 @@ export class MembershipsService {
       Object.assign(base, { status: 'trialing', currentPeriodStart: now, currentPeriodEnd: new Date(now.getTime() + plan.trialDays * DAY) });
     else Object.assign(base, { status: 'past_due', awaitingFirstPayment: true, dueAt: now, currentPeriodStart: null, currentPeriodEnd: null });
     try {
-      return await this.subModel.create(base);
+      const created = await this.subModel.create(base);
+      this.mail('membership_welcome', created as any);
+      return created;
     } catch (e: any) {
       if (e?.code === 11000) throw new ConflictException('You already have this membership');
       throw e;
@@ -304,6 +313,13 @@ export class MembershipsService {
         const r = await this.subModel.updateOne({ _id: s._id, status: 'past_due' }, { $set: { status: 'expired' }, $push: { audit: audit('expired', 'system', 'dunning exhausted') } });
         if (r.modifiedCount) ev('expired', s);
       }
+    }
+    const map: Record<RenewalEvent['kind'], Parameters<DigitalMailerService['membership']>[0]> = {
+      reminder: 'membership_renewal_reminder', payment_failed: 'membership_payment_failed', grace: 'membership_grace_period', cancelled: 'membership_cancelled', expired: 'membership_expired',
+    };
+    for (const e of events) {
+      const sub = await this.subModel.findOne({ _id: e.subscriptionId }).lean();
+      if (sub) this.mail(map[e.kind], sub as any);
     }
     return events;
   }

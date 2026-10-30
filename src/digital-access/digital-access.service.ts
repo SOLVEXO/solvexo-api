@@ -1,8 +1,9 @@
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { ForbiddenException, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { DatabaseService } from '../database/databaseservice';
 import { DigitalAccess, DigitalAccessDocument, DeliveryLog, DeliveryDocument } from './digital-access.schema';
+import { DigitalMailerService } from './digital-mailer.service';
 
 export interface CanResult {
   allowed: boolean;
@@ -18,7 +19,21 @@ export class DigitalAccessService {
     private readonly db: DatabaseService,
     @InjectModel(DigitalAccess.name) readonly accessModel: Model<DigitalAccessDocument>,
     @InjectModel(DeliveryLog.name) readonly logModel: Model<DeliveryDocument>,
+    @Optional() private readonly mailer?: DigitalMailerService,
   ) {}
+
+  /** Mail every customer who currently has active access to this product about a new file version. */
+  async notifyFileUpdated(storeId: string, productId: string, v: { productName: string; fileName: string; version: string; changelog: string | null }): Promise<number> {
+    if (!this.mailer) return 0;
+    const rows = await this.accessModel.find({ storeId, resourceKind: 'file', resourceRef: productId, status: 'active' }).select('customerId').limit(5000).lean();
+    const seen = new Set<string>();
+    for (const r of rows) {
+      if (seen.has(r.customerId)) continue;
+      seen.add(r.customerId);
+      void this.mailer.fileUpdated(storeId, r.customerId, v);
+    }
+    return seen.size;
+  }
 
   /** expiry date for a product's link-expiry setting, counted from now */
   private expiryFor(product: any): Date | null {
@@ -58,7 +73,10 @@ export class DigitalAccessService {
           },
           { upsert: true },
         );
-        if (res.upsertedCount) granted++;
+        if (res.upsertedCount) {
+          granted++;
+          void this.mailer?.purchaseDelivered(storeId, order.userId, (await productModel.findOne({ _id: item.productId, storeId }).select('name').lean() as any)?.name ?? 'your purchase');
+        }
       }
     }
     return granted;

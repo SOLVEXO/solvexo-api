@@ -4,6 +4,7 @@ import { AuthModule } from '../auth/auth.module';
 import { RedisModule } from '../redis/redis.module';
 import { AccessPlan, AccessPlanSchema, MemberSubscription, MemberSubscriptionSchema } from './membership.schema';
 import { PlatformPlansModule } from '../platform-plans/platform-plans.module';
+import { DigitalMailerModule } from '../digital-access/digital-mailer.module';
 import { MembershipsService } from './memberships.service';
 import { BuyerMembershipsController, PublicMembershipsController, SellerMembershipsController } from './memberships.controller';
 
@@ -12,6 +13,7 @@ import { BuyerMembershipsController, PublicMembershipsController, SellerMembersh
     AuthModule,
     RedisModule,
     PlatformPlansModule,
+    DigitalMailerModule,
     MongooseModule.forFeature([
       { name: AccessPlan.name, schema: AccessPlanSchema },
       { name: MemberSubscription.name, schema: MemberSubscriptionSchema },

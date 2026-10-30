@@ -1,3 +1,4 @@
+import { DigitalAccessService } from '../digital-access/digital-access.service';
 import {
   Controller,
   Get,
@@ -39,6 +40,7 @@ export class productController {
   constructor(
     private readonly ProductsService: ProductsService,
     private readonly productVariantsService: ProductVariantsService,
+    private readonly digitalAccess: DigitalAccessService,
   ) {}
 
   @UseGuards(OptionalJwtAuthGuard)
@@ -160,7 +162,10 @@ export class productController {
   async publishDigitalFileVersion(@Req() req: any, @Param('productId') productId: string, @Param('fileIndex') fileIndex: string, @Body() body: any) {
     const idx = Number(fileIndex);
     if (!Number.isInteger(idx) || idx < 0) throw new BadRequestException('Invalid file index');
-    return this.ProductsService.publishDigitalFileVersion(actingSellerId(req.user), productId, idx, body);
+    const res: any = await this.ProductsService.publishDigitalFileVersion(actingSellerId(req.user), productId, idx, body);
+    const d = res.data;
+    void this.digitalAccess.notifyFileUpdated(d.storeId, productId, { productName: d.productName, fileName: d.name, version: d.version, changelog: d.changelog }).catch(() => undefined);
+    return { success: true, data: { fileIndex: d.fileIndex, version: d.version, name: d.name } };
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)

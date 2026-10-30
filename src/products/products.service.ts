@@ -1320,7 +1320,7 @@ export class ProductsService {
       [`digital.files.${fileIndex}.history`]: history,
     };
     await productModel.updateOne({ _id: productId, sellerId }, { $set: set });
-    return { success: true, data: { fileIndex, version, name: next.name, notifyUpdated: true } };
+    return { success: true, data: { fileIndex, version, name: next.name, storeId: String(product.storeId), productName: product.name, changelog } };
   }
 
   async addDigitalProduct(sellerId: string, body: any) {
