@@ -4,7 +4,7 @@ import { Type } from 'class-transformer';
 import { IsInt, IsOptional, Max, Min } from 'class-validator';
 
 export class SaasMetricsQueryDto {
-  @ApiPropertyOptional({ description: 'How many months of history (3-24)', default: 12 })
-  @IsOptional() @Type(() => Number) @IsInt() @Min(3) @Max(24)
+  @ApiPropertyOptional({ description: 'How many months of history (SaaS metrics: 3-24; activation funnel: 1-24)' })
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(24)
   months?: number;
 }
