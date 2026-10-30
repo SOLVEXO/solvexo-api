@@ -160,7 +160,10 @@ export class PosController {
   // Seller (owner) or staff of that store only — a buyer/admin token has no
   // business minting POS employee sessions; the service additionally pins the
   // caller to the target store.
-  @UseGuards(JwtAuthGuard, RolesGuard, PosEntitlementGuard)
+  // NOT entitlement-gated: a cashier must always be able to PIN in — to close the shift, count
+  // the drawer, refund or look at reports — even after the plan lapses. Selling, holding and
+  // opening a session are what the plan gates.
+  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('seller', 'staff')
   @Post('pin-login')
   pinLogin(@Req() req: any, @Body() dto: PinLoginDto) {
@@ -259,7 +262,9 @@ export class PosController {
     return this.posService.getSessionHistory(req.user.userId, storeId, query);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard, PosEntitlementGuard)
+  // Cash in/out is drawer reconciliation (manager-token only), so it stays available when the plan is
+  // inactive, alongside session close.
+  @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('seller')
   @UseInterceptors(IdempotencyInterceptor)
   @Post('sessions/:sessionId/cash-adjustment')

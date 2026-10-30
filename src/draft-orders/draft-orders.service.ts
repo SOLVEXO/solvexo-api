@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { searchStoreCustomers } from '../common/store-customer-search.util';
 import { Injectable, BadRequestException, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { toStripeAmount } from '@/common/stripe-amount.util';
 import { availableStock, AVAILABLE_STOCK_EXPR } from '@/common/stock-availability.util';
@@ -521,16 +522,12 @@ export class DraftOrdersService {
     return this.repos.draftOrderModel.findByIdAndUpdate(id, { $set: { isPaid: true, paidAt: new Date() } }, { new: true }).lean();
   }
 
+  /** Customer lookup for attaching to a draft order — scoped to THIS store's own customers (people who ordered
+   *  from it, were sold to at its POS, or were added as its customers). It used to search every user on the
+   *  platform, which let any seller enumerate other stores' buyers. Route and response shape are unchanged. */
   async searchCustomers(storeId: string, sellerId: string, q: string) {
     await verifyStoreOwnershipStrict(this.repos.storeModel, storeId, sellerId);
-    if (!q?.trim()) return [];
-    const re = new RegExp(q.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
-    const users = await this.repos.userModel
-      .find({ $or: [{ name: re }, { email: re }, { phone: re }] })
-      .select('name email phone')
-      .limit(10)
-      .lean();
-    return users.map((u: any) => ({ id: u._id.toString(), name: u.name, email: u.email, phone: u.phone }));
+    return searchStoreCustomers(this.repos as any, storeId, q);
   }
 
   /** Converts an `open` draft with a registered customer attached into a

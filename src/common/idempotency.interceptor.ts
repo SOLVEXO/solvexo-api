@@ -7,6 +7,9 @@ import { Observable, from, of } from 'rxjs';
 import { switchMap, tap, catchError } from 'rxjs/operators';
 import { DatabaseService } from '@/database/databaseservice';
 
+/** `code` of the 409 returned while a request with the same Idempotency-Key is still running. */
+export const IDEMPOTENCY_IN_PROGRESS = 'IDEMPOTENCY_IN_PROGRESS';
+
 const IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000; // 24h — comfortably covers any realistic client retry window
 // A claim still `in_progress` after this long belongs to a request that died mid-flight
 // (process crash/restart) — without a takeover the client's retry would 409 for the whole TTL.
@@ -43,14 +46,22 @@ export class IdempotencyInterceptor implements NestInterceptor {
           return of(claim.record.responseBody);
         }
         if (claim.status === 'in_progress_conflict') {
-          throw new ConflictException('A request with this Idempotency-Key is already being processed');
+          // Machine-readable so clients can tell "same key still running — retry shortly with the SAME key"
+          // apart from a business conflict 409 (which is final and must not be retried).
+          throw new ConflictException({
+            statusCode: 409,
+            code: IDEMPOTENCY_IN_PROGRESS,
+            message: 'A request with this Idempotency-Key is already being processed',
+          });
         }
         // claim.status === 'claimed' — proceed with the real handler
         return next.handle().pipe(
           tap((responseBody) => {
             model.updateOne(
               { key: storedKey },
-              { $set: { status: 'completed', responseStatusCode: 200, responseBody: responseBody ?? null } },
+              // Stored as plain JSON (ObjectIds → strings, Dates → ISO) — exactly what the first caller received,
+              // so a replay is byte-for-byte the original result rather than a Mongoose document.
+              { $set: { status: 'completed', responseStatusCode: 200, responseBody: responseBody == null ? null : JSON.parse(JSON.stringify(responseBody)) } },
             ).catch((err) => this.logger.warn(`Failed to persist idempotency result for ${storedKey}: ${err?.message}`));
           }),
           catchError((err) => {

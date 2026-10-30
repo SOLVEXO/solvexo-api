@@ -9,6 +9,7 @@ import {
 import { availableStock, AVAILABLE_STOCK_EXPR } from '@/common/stock-availability.util';
 import { drainLocationStock, restoreLocationStock } from '@/common/location-stock.util';
 import { Types } from 'mongoose';
+import { searchStoreCustomers } from '@/common/store-customer-search.util';
 import * as bcrypt from 'bcrypt';
 import * as jwt from 'jsonwebtoken';
 import { DatabaseService } from '@/database/databaseservice';
@@ -39,6 +40,12 @@ import { UpdatePosSettingsDto } from './dto/update-pos-settings.dto';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { FinanceService } from '@/finance/finance.service';
 import { EntitlementsService } from '@/platform-plans/entitlements.service';
+
+/** 409 for a *business* conflict — final, never to be retried by a client. (The idempotency
+ *  "same key still running" 409 is a different, retryable code: IDEMPOTENCY_IN_PROGRESS.) */
+function businessConflict(code: string, message: string): ConflictException {
+  return new ConflictException({ statusCode: 409, code, message });
+}
 
 /** Consecutive wrong PINs before an employee is locked out of PIN login, and for how long. */
 const POS_PIN_MAX_ATTEMPTS = 5;
@@ -572,7 +579,7 @@ export class PosService {
       { $set: { closingCash: dto.closingCash, expectedCash, cashDifference, closedAt: new Date(), status: 'closed' } },
       { new: true },
     );
-    if (!updated) throw new ConflictException('This session was already closed');
+    if (!updated) throw businessConflict('SESSION_ALREADY_CLOSED', 'This session was already closed');
 
     this.writeAuditLog({ storeId: (session as any).storeId, employeeId: (session as any).employeeId, action: 'session_closed', targetId: dto.sessionId, targetType: 'session', metadata: { closingCash: dto.closingCash, expectedCash, cashDifference } }).catch(() => {});
 
@@ -774,9 +781,20 @@ export class PosService {
     // Take the stock first (all-or-nothing, floor-guarded). A completed sale only exists once its
     // stock has genuinely been taken; if recording the sale then fails, the stock is handed back.
     const sessionLocationId: string | null = (session as any).locationId ?? null;
-    const reserved = isHeld
-      ? []
-      : await this.reserveStock(dto.items.map((i, idx) => ({ variantId: i.variantId, qty: i.qty, sku: saleItems[idx].sku })), sessionLocationId);
+    let reserved: Array<{ variantId: string; qty: number }> = [];
+    if (!isHeld) {
+      try {
+        reserved = await this.reserveStock(dto.items.map((i, idx) => ({ variantId: i.variantId, qty: i.qty, sku: saleItems[idx].sku })), sessionLocationId);
+      } catch (err) {
+        // A concurrent duplicate of THIS checkout may have just taken the last units and written the sale;
+        // that is the same sale, not a shortage — hand back the winner instead of "insufficient stock".
+        if (dto.idempotencyKey) {
+          const winner = await this.r.saleModel.findOne({ idempotencyKey: dto.idempotencyKey, storeId: dto.storeId }).lean();
+          if (winner) return { success: true, message: 'Duplicate request — returning existing sale', data: winner };
+        }
+        throw err;
+      }
+    }
 
     // saleNumber is only unique per-store, and two terminals in the same store
     // can check out at nearly the same instant — retry with a fresh number on
@@ -903,7 +921,7 @@ export class PosService {
     );
     if (!updated) {
       await this.releaseStock(reserved, locationId);
-      throw new ConflictException('This held sale was already completed or discarded');
+      throw businessConflict('HELD_SALE_ALREADY_RESOLVED', 'This held sale was already completed or discarded');
     }
 
     try {
@@ -995,7 +1013,7 @@ export class PosService {
     if (!isPartial) {
       const refundAmount = (sale as any).total - ((sale as any).refundedAmount || 0);
       const claimed = await this.r.saleModel.findOneAndUpdate(stateFilter, { $set: { status: 'refunded', refundedAmount: (sale as any).total } });
-      if (!claimed) throw new ConflictException(staleMessage);
+      if (!claimed) throw businessConflict('SALE_CHANGED_CONCURRENTLY', staleMessage);
 
       const toRestore = (sale as any).items
         .map((item: any) => ({ variantId: String(item.variantId), qty: item.qty - (item.refundedQty || 0) }))
@@ -1053,7 +1071,7 @@ export class PosService {
       { $inc: inc, $set: { status: newStatus, refundedAmount: newRefundedAmount } },
       { arrayFilters },
     );
-    if (!claimed) throw new ConflictException(staleMessage);
+    if (!claimed) throw businessConflict('SALE_CHANGED_CONCURRENTLY', staleMessage);
 
     await this.restoreSoldStock(itemUpdates.map((u) => ({ variantId: u.variantId, qty: u.qtyToRestore })), locationId);
 
@@ -1074,7 +1092,7 @@ export class PosService {
 
     // status-guarded so a discard racing a completion can't delete a sale that just became real
     const deleted = await this.r.saleModel.findOneAndDelete({ _id: saleId, status: 'held' });
-    if (!deleted) throw new ConflictException('This held sale was already completed or discarded');
+    if (!deleted) throw businessConflict('HELD_SALE_ALREADY_RESOLVED', 'This held sale was already completed or discarded');
 
     return { success: true, message: 'Held sale discarded' };
   }
@@ -1082,34 +1100,13 @@ export class PosService {
   // ── CUSTOMER SEARCH (store-scoped) ────────────────────────────────────────
 
   /**
-   * Finds customers to attach to a sale — limited to people who already relate to THIS store
-   * (placed an online order here, or were attached to an earlier POS sale). The generic
-   * draft-orders search queries every user on the platform by name/email/phone, which lets any
-   * seller enumerate other stores' buyers; POS must not expose that.
+   * Finds customers to attach to a sale — limited to people who already relate to THIS store (see
+   * `common/store-customer-search.util.ts`). The same rule now scopes the draft-orders search.
    */
   async searchStoreCustomers(sellerId: string, storeId: string, q: string) {
     await this.verifyStoreOwnership(storeId, sellerId);
-    const term = (q ?? '').trim();
-    if (term.length < 2) return { success: true, data: [] };
-
-    const re = new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
-
-    const orderRows = await this.r.orderModel.aggregate([
-      { $match: { 'sellerOrders.storeId': storeId, isDelete: false } },
-      { $group: { _id: { $ifNull: ['$customerId', '$userId'] } } },
-    ]);
-    const posCustomerIds: string[] = await this.r.saleModel.distinct('customerId', { storeId, customerId: { $ne: null } });
-    const ids = [...new Set([...orderRows.map((r: any) => String(r._id)), ...posCustomerIds.map(String)])]
-      .filter((id) => /^[a-f0-9]{24}$/i.test(id));
-    if (!ids.length) return { success: true, data: [] };
-
-    const users = await this.r.userModel
-      .find({ _id: { $in: ids }, $or: [{ name: re }, { email: re }, { phone: re }] })
-      .select('name email phone')
-      .limit(10)
-      .lean();
-
-    return { success: true, data: users.map((u: any) => ({ id: u._id.toString(), name: u.name, email: u.email, phone: u.phone })) };
+    if ((q ?? '').trim().length < 2) return { success: true, data: [] };
+    return { success: true, data: await searchStoreCustomers(this.r as any, storeId, q) };
   }
 
   // ── DAILY REPORT ──────────────────────────────────────────────────────────
@@ -1551,7 +1548,7 @@ export class PosService {
       { _id: saleId, status: 'completed' },
       { $set: { status: 'voided', voidedAt: new Date(), voidedBy: actor.employeeId } },
     );
-    if (!claimed) throw new ConflictException('This sale was already voided or refunded');
+    if (!claimed) throw businessConflict('SALE_CHANGED_CONCURRENTLY', 'This sale was already voided or refunded');
 
     await this.restoreSoldStock(
       (sale as any).items.map((item: any) => ({ variantId: String(item.variantId), qty: item.qty })),
