@@ -120,6 +120,13 @@ export class DigitalSellerController {
     return { ...digital, memberships: members, needsAttention: { pastDue: members.counts.past_due, awaitingPayment: members.awaitingPayment, flaggedAccess: digital.flaggedAccess } };
   }
 
+  @Get('reports')
+  @RequirePermission('digital.view')
+  async reports(@Req() req: any, @Param('storeId') storeId: string) {
+    await this.own(req, storeId);
+    return this.access.reports(storeId);
+  }
+
   @Get('orders/:orderId/access')
   @RequirePermission('digital.view')
   async forOrder(@Req() req: any, @Param('storeId') storeId: string, @Param('orderId') orderId: string) {

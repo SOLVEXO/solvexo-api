@@ -191,6 +191,30 @@ export class DigitalAccessService {
     return { last30Days: { digitalRevenue: Math.round(revenue * 100) / 100, digitalItemsSold: items, deliveries: ok, deniedOrFailed: denied }, flaggedAccess: flagged };
   }
 
+  /** Reports: top downloaded products and a per-day delivery count for the last 30 days. */
+  async reports(storeId: string) {
+    const since = new Date(Date.now() - 30 * 86_400_000);
+    const [top, perDay] = await Promise.all([
+      this.logModel.aggregate([
+        { $match: { storeId, outcome: 'ok', at: { $gte: since }, productId: { $ne: null } } },
+        { $group: { _id: '$productId', deliveries: { $sum: 1 }, customers: { $addToSet: '$customerId' } } },
+        { $project: { deliveries: 1, customers: { $size: '$customers' } } },
+        { $sort: { deliveries: -1 } }, { $limit: 20 },
+      ]),
+      this.logModel.aggregate([
+        { $match: { storeId, at: { $gte: since } } },
+        { $group: { _id: { day: { $dateToString: { format: '%Y-%m-%d', date: '$at' } }, outcome: '$outcome' }, n: { $sum: 1 } } },
+        { $sort: { '_id.day': 1 } },
+      ]),
+    ]);
+    const products: any[] = await this.db.repositories.productModel.find({ _id: { $in: top.map((t: any) => t._id) }, storeId }).select('name').lean();
+    const name = new Map(products.map((p) => [String(p._id), p.name]));
+    return {
+      topProducts: top.map((t: any) => ({ productId: t._id, name: name.get(String(t._id)) ?? 'Deleted product', deliveries: t.deliveries, customers: t.customers })),
+      perDay: perDay.map((d: any) => ({ day: d._id.day, outcome: d._id.outcome, count: d.n })),
+    };
+  }
+
   async listForOrder(storeId: string, orderId: string) {
     return this.accessModel.find({ storeId, sourceOrderId: orderId }).lean();
   }
