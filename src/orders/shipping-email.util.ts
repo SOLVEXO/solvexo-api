@@ -36,7 +36,7 @@ export function customerEmailExtras(
 function detailRows(rows: [string, string | null | undefined][]): string {
   const body = rows
     .filter(([, v]) => v)
-    .map(([k, v]) => `<div class="row"><span>${escapeHtml(k)}</span><strong>${escapeHtml(String(v))}</strong></div>`)
+    .map(([k, v]) => `<table role="presentation" width="100%" style="border-collapse:collapse;"><tr><td style="padding:6px 0;font-size:14px;color:#767676;text-align:left;">${escapeHtml(k)}</td><td style="padding:6px 0 6px 16px;font-size:14px;font-weight:600;color:#222;text-align:right;">${escapeHtml(String(v))}</td></tr></table>`)
     .join('');
   return body ? `<div class="box">${body}</div>` : '';
 }

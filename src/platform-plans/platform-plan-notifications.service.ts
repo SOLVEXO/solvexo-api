@@ -72,8 +72,8 @@ export class PlatformPlanNotificationsService {
       <p>Hi ${data.sellerName},</p>
       <p>Your store <strong>${data.storeName}</strong>'s Solvexo platform plan has been updated.</p>
       <div class="box">
-        <div class="row"><span class="label">Previous plan</span><span class="value">${data.fromPlanName}</span></div>
-        <div class="row"><span class="label">New plan</span><span class="value">${data.toPlanName}</span></div>
+        <table role="presentation" width="100%" style="border-collapse:collapse;"><tr><td style="padding:6px 0;font-size:14px;color:#767676;text-align:left;">Previous plan</td><td style="padding:6px 0 6px 16px;font-size:14px;font-weight:600;color:#222;text-align:right;">${data.fromPlanName}</td></tr></table>
+        <table role="presentation" width="100%" style="border-collapse:collapse;"><tr><td style="padding:6px 0;font-size:14px;color:#767676;text-align:left;">New plan</td><td style="padding:6px 0 6px 16px;font-size:14px;font-weight:600;color:#222;text-align:right;">${data.toPlanName}</td></tr></table>
       </div>
       <div class="amount">${money(data.amountUSD)} charged</div>
       <p style="text-align:center;color:#666;font-size:13px;">This is a prorated charge for the remainder of your current billing period.</p>
@@ -88,8 +88,8 @@ export class PlatformPlanNotificationsService {
       <p>Hi ${data.sellerName},</p>
       <p>Your store <strong>${data.storeName}</strong>'s Solvexo platform plan has been updated.</p>
       <div class="box">
-        <div class="row"><span class="label">Previous plan</span><span class="value">${data.fromPlanName}</span></div>
-        <div class="row"><span class="label">New plan</span><span class="value">${data.toPlanName}</span></div>
+        <table role="presentation" width="100%" style="border-collapse:collapse;"><tr><td style="padding:6px 0;font-size:14px;color:#767676;text-align:left;">Previous plan</td><td style="padding:6px 0 6px 16px;font-size:14px;font-weight:600;color:#222;text-align:right;">${data.fromPlanName}</td></tr></table>
+        <table role="presentation" width="100%" style="border-collapse:collapse;"><tr><td style="padding:6px 0;font-size:14px;color:#767676;text-align:left;">New plan</td><td style="padding:6px 0 6px 16px;font-size:14px;font-weight:600;color:#222;text-align:right;">${data.toPlanName}</td></tr></table>
       </div>
       <div class="success">
         <strong>No charge today.</strong> ${money(data.creditUSD)} in unused time has been credited to your
@@ -199,8 +199,8 @@ export class PlatformPlanNotificationsService {
   }) {
     const committedBox = data.committedPlan
       ? `<div class="box">
-          <div class="row"><span class="label">Plan after trial</span><span class="value">${data.committedPlan.name}</span></div>
-          <div class="row"><span class="label">Amount to be charged</span><span class="value">${money(data.committedPlan.amountUSD)}</span></div>
+          <table role="presentation" width="100%" style="border-collapse:collapse;"><tr><td style="padding:6px 0;font-size:14px;color:#767676;text-align:left;">Plan after trial</td><td style="padding:6px 0 6px 16px;font-size:14px;font-weight:600;color:#222;text-align:right;">${data.committedPlan.name}</td></tr></table>
+          <table role="presentation" width="100%" style="border-collapse:collapse;"><tr><td style="padding:6px 0;font-size:14px;color:#767676;text-align:left;">Amount to be charged</td><td style="padding:6px 0 6px 16px;font-size:14px;font-weight:600;color:#222;text-align:right;">${money(data.committedPlan.amountUSD)}</td></tr></table>
         </div>
         <p style="text-align:center;color:#666;font-size:13px;">No action needed if you want to continue — your card will be charged automatically when the trial ends.</p>`
       : `<p style="text-align:center;color:#666;font-size:13px;">Choose a plan before then to keep selling without interruption — your store's data is always safe either way.</p>`;
