@@ -16,6 +16,7 @@ import { verifyStoreOwnershipOrForbidden } from '../common/store-ownership.util'
 import { DatabaseService } from '../database/databaseservice';
 import { DigitalAccessService } from './digital-access.service';
 import { DigitalDeliveryService } from './digital-delivery.service';
+import { MembershipsService } from '../memberships/memberships.service';
 
 class DownloadTokenDto {
   @IsString() @IsNotEmpty() productId: string;
@@ -97,7 +98,7 @@ export class DigitalBuyerController {
   }
 }
 
-/** Seller side. Permissions reuse orders.* until the dedicated digital.* keys exist (M8). */
+/** Seller side. Permissions: digital.view / digital.manage. */
 @ApiTags('Digital access (seller)')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
@@ -105,42 +106,50 @@ export class DigitalBuyerController {
 @Controller('api/digital/:storeId')
 @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
 export class DigitalSellerController {
-  constructor(private readonly access: DigitalAccessService, private readonly db: DatabaseService) {}
+  constructor(private readonly access: DigitalAccessService, private readonly db: DatabaseService, private readonly memberships: MembershipsService) {}
 
   private async own(req: any, storeId: string) {
     await verifyStoreOwnershipOrForbidden(this.db.repositories.storeModel as any, storeId, actingSellerId(req.user));
   }
 
+  @Get('overview')
+  @RequirePermission('digital.view')
+  async overview(@Req() req: any, @Param('storeId') storeId: string) {
+    await this.own(req, storeId);
+    const [digital, members] = await Promise.all([this.access.stats(storeId), this.memberships.stats(storeId)]);
+    return { ...digital, memberships: members, needsAttention: { pastDue: members.counts.past_due, awaitingPayment: members.awaitingPayment, flaggedAccess: digital.flaggedAccess } };
+  }
+
   @Get('orders/:orderId/access')
-  @RequirePermission('orders.view')
+  @RequirePermission('digital.view')
   async forOrder(@Req() req: any, @Param('storeId') storeId: string, @Param('orderId') orderId: string) {
     await this.own(req, storeId);
     return this.access.listForOrder(storeId, orderId);
   }
 
   @Get('delivery-log')
-  @RequirePermission('orders.view')
+  @RequirePermission('digital.view')
   async log(@Req() req: any, @Param('storeId') storeId: string, @Query('limit') limit?: string, @Query('customerId') customerId?: string) {
     await this.own(req, storeId);
     return this.access.deliveryLog(storeId, Number(limit) || 50, customerId);
   }
 
   @Post('access/:id/revoke')
-  @RequirePermission('orders.edit')
+  @RequirePermission('digital.manage')
   async revoke(@Req() req: any, @Param('storeId') storeId: string, @Param('id') id: string) {
     await this.own(req, storeId);
     return this.access.sellerRevoke(storeId, id, req.user.userId ?? req.user.staffId ?? 'seller');
   }
 
   @Post('access/:id/reset-limit')
-  @RequirePermission('orders.edit')
+  @RequirePermission('digital.manage')
   async reset(@Req() req: any, @Param('storeId') storeId: string, @Param('id') id: string) {
     await this.own(req, storeId);
     return this.access.sellerResetLimit(storeId, id, req.user.userId ?? req.user.staffId ?? 'seller');
   }
 
   @Post('access/:id/resend')
-  @RequirePermission('orders.edit')
+  @RequirePermission('digital.manage')
   async resend(@Req() req: any, @Param('storeId') storeId: string, @Param('id') id: string) {
     await this.own(req, storeId);
     return this.access.sellerResend(storeId, id, req.user.userId ?? req.user.staffId ?? 'seller');

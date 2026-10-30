@@ -14,6 +14,8 @@ export interface PlatformPlanLimits {
   advancedAnalyticsAllowed: boolean;
   abandonedCartRecoveryAllowed: boolean;
   emailCampaignsAllowed: boolean;
+  digitalMembershipsAllowed: boolean;
+  digitalLicensesAllowed: boolean;
   apiWebhooksAllowed: boolean;
   dedicatedAccountManager: boolean;
   prioritySupport: boolean;
@@ -64,6 +66,8 @@ const FALLBACK_LIMITS: PlatformPlanLimits = {
   transactionFeeRate: 0, customDomainAllowed: false, whiteLabelAllowed: false,
   loyaltyProgramAllowed: false, advancedAnalyticsAllowed: false,
   abandonedCartRecoveryAllowed: false, emailCampaignsAllowed: false, apiWebhooksAllowed: false,
+  // digital delivery is free for every plan; these two default ON and an admin can switch them off per plan
+  digitalMembershipsAllowed: true, digitalLicensesAllowed: true,
   dedicatedAccountManager: false, prioritySupport: false, marketplaceFeaturedBadge: false, slaUptimePercent: null,
   advancedSeoToolsAllowed: false, seoAiSuggestionsAllowed: false, searchConsoleIntegrationAllowed: false, customRedirectsAllowed: false,
   maxActiveStoreBanners: 4, maxActivePromotions: 1,
@@ -77,6 +81,8 @@ const BOOLEAN_FEATURES: Array<{ key: keyof PlatformPlanLimits; label: string }> 
   { key: 'advancedAnalyticsAllowed', label: 'Advanced analytics' },
   { key: 'abandonedCartRecoveryAllowed', label: 'Abandoned cart recovery' },
   { key: 'emailCampaignsAllowed', label: 'Email campaigns' },
+  { key: 'digitalMembershipsAllowed', label: 'Memberships & access plans' },
+  { key: 'digitalLicensesAllowed', label: 'License keys' },
   { key: 'apiWebhooksAllowed', label: 'API access & webhooks' },
   { key: 'advancedSeoToolsAllowed', label: 'Advanced SEO tools (audit, score, checklist)' },
   { key: 'seoAiSuggestionsAllowed', label: 'AI-generated SEO suggestions' },
@@ -170,6 +176,8 @@ export class EntitlementsService {
       advancedAnalyticsAllowed: true,
       abandonedCartRecoveryAllowed: true,
       emailCampaignsAllowed: true,
+      digitalMembershipsAllowed: true,
+      digitalLicensesAllowed: true,
       apiWebhooksAllowed: true,
       advancedSeoToolsAllowed: true,
       seoAiSuggestionsAllowed: true,

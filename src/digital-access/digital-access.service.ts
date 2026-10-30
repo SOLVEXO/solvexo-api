@@ -156,6 +156,23 @@ export class DigitalAccessService {
     return { success: true };
   }
 
+  /** 30-day digital sales + delivery counters + what needs the seller's attention. */
+  async stats(storeId: string) {
+    const since = new Date(Date.now() - 30 * 86_400_000);
+    const [orders, ok, denied, flagged] = await Promise.all([
+      this.db.repositories.orderModel.find({ isPaid: true, isDelete: false, createdAt: { $gte: since }, 'sellerOrders.storeId': storeId }).select('sellerOrders').limit(5000).lean(),
+      this.logModel.countDocuments({ storeId, outcome: 'ok', at: { $gte: since } }),
+      this.logModel.countDocuments({ storeId, outcome: { $ne: 'ok' }, at: { $gte: since } }),
+      this.accessModel.countDocuments({ storeId, flagged: true, status: 'active' }),
+    ]);
+    let revenue = 0;
+    let items = 0;
+    for (const o of orders as any[]) for (const so of o.sellerOrders ?? []) if (so.storeId === storeId) for (const it of so.items ?? []) {
+      if (it.type === 'digital' && !['cancelled', 'refunded'].includes(it.status)) { revenue += Number(it.totalPrice) || 0; items++; }
+    }
+    return { last30Days: { digitalRevenue: Math.round(revenue * 100) / 100, digitalItemsSold: items, deliveries: ok, deniedOrFailed: denied }, flaggedAccess: flagged };
+  }
+
   async listForOrder(storeId: string, orderId: string) {
     return this.accessModel.find({ storeId, sourceOrderId: orderId }).lean();
   }

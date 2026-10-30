@@ -241,6 +241,23 @@ export class MembershipsService {
     return s.save();
   }
 
+  /** Counts by status + MRR (recurring plans only, each normalised to one month; ignores trials and unpaid). */
+  async stats(storeId: string) {
+    const [subs, plans] = await Promise.all([this.subModel.find({ storeId }).select('planId status awaitingFirstPayment').lean(), this.planModel.find({ storeId }).lean()]);
+    const byPlan = new Map(plans.map((p) => [String(p._id), p]));
+    const counts: Record<string, number> = { trialing: 0, active: 0, past_due: 0, paused: 0, cancelled: 0, expired: 0 };
+    let mrr = 0;
+    for (const s of subs) {
+      counts[s.status] = (counts[s.status] ?? 0) + 1;
+      const p: any = byPlan.get(s.planId);
+      if (s.status === 'active' && p?.type === 'recurring') {
+        const months = p.interval === 'year' ? 12 * p.intervalCount : p.interval === 'week' ? (p.intervalCount * 7) / 30.4375 : p.intervalCount;
+        mrr += p.amount / months;
+      }
+    }
+    return { counts, mrr: Math.round(mrr * 100) / 100, churned: counts.cancelled + counts.expired, awaitingPayment: subs.filter((s) => s.awaitingFirstPayment).length };
+  }
+
   // ---------------- renewals + dunning (cron; every step is a conditional update => safe to re-run) ----------------
 
   async processRenewals(now = new Date()): Promise<RenewalEvent[]> {

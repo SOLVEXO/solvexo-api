@@ -12,6 +12,7 @@ import { actingSellerId } from '../common/acting-seller-id.util';
 import { resolveBuyerStoreScope } from '../common/store-scope.util';
 import { verifyStoreOwnershipOrForbidden } from '../common/store-ownership.util';
 import { DatabaseService } from '../database/databaseservice';
+import { EntitlementsService } from '../platform-plans/entitlements.service';
 import { LicensesService } from './licenses.service';
 
 class ValidateDto {
@@ -59,25 +60,25 @@ export class BuyerLicensesController {
   }
 }
 
-/** Seller. Permissions reuse existing keys until `licenses.manage` lands (M8). */
+/** Seller. Permission: licenses.manage. */
 @ApiTags('Licenses (seller)')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
 @Roles('seller', 'staff')
 @Controller('api/licenses/store/:storeId')
 export class SellerLicensesController {
-  constructor(private readonly svc: LicensesService, private readonly db: DatabaseService) {}
+  constructor(private readonly svc: LicensesService, private readonly db: DatabaseService, private readonly entitlements: EntitlementsService) {}
   private own = (req: any, storeId: string) => verifyStoreOwnershipOrForbidden(this.db.repositories.storeModel as any, storeId, actingSellerId(req.user));
 
-  @Get() @RequirePermission('customers.view')
+  @Get() @RequirePermission('licenses.manage')
   async list(@Req() req: any, @Param('storeId') storeId: string, @Query('limit') limit?: string) { await this.own(req, storeId); return this.svc.listForStore(storeId, Number(limit) || 50); }
 
-  @Post('api-token') @RequirePermission('settings.general.manage')
-  async token(@Req() req: any, @Param('storeId') storeId: string) { await this.own(req, storeId); return this.svc.newApiToken(storeId); }
+  @Post('api-token') @RequirePermission('licenses.manage')
+  async token(@Req() req: any, @Param('storeId') storeId: string) { await this.own(req, storeId); await this.entitlements.assertFeatureAllowed(storeId, 'digitalLicensesAllowed', 'License keys'); return this.svc.newApiToken(storeId); }
 
-  @Post(':id/revoke') @RequirePermission('customers.edit')
+  @Post(':id/revoke') @RequirePermission('licenses.manage')
   async revoke(@Req() req: any, @Param('storeId') storeId: string, @Param('id') id: string) { await this.own(req, storeId); return this.svc.sellerRevoke(storeId, id); }
 
-  @Post(':id/reset-activations') @RequirePermission('customers.edit')
+  @Post(':id/reset-activations') @RequirePermission('licenses.manage')
   async reset(@Req() req: any, @Param('storeId') storeId: string, @Param('id') id: string) { await this.own(req, storeId); return this.svc.sellerResetActivations(storeId, id); }
 }

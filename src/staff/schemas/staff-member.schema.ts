@@ -83,6 +83,8 @@ export const STAFF_PERMISSIONS = [
   'settings.domains.manage', 'settings.pixels.manage', 'settings.payments.manage',
   // Activity log (who did what in this store)
   'activity_log.view',
+  // Digital commerce (downloads, memberships, courses, license keys)
+  'digital.view', 'digital.manage', 'members.manage', 'licenses.manage',
   // Finance
   'finance.payouts.view', 'finance.payments.manage', 'finance.tax_documents.manage',
   // Messaging — no dedicated `:storeId` route param on this controller

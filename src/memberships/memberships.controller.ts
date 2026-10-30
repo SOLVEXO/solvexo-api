@@ -12,6 +12,7 @@ import { actingSellerId } from '../common/acting-seller-id.util';
 import { resolveBuyerStoreScope } from '../common/store-scope.util';
 import { verifyStoreOwnershipOrForbidden } from '../common/store-ownership.util';
 import { DatabaseService } from '../database/databaseservice';
+import { EntitlementsService } from '../platform-plans/entitlements.service';
 import { MembershipsService } from './memberships.service';
 
 class PlanIdDto { @IsString() @IsNotEmpty() planId: string; }
@@ -74,7 +75,7 @@ export class BuyerMembershipsController {
   }
 }
 
-/** Seller. Permissions reuse existing keys until the dedicated digital.* / subscribers.* keys land (M8). */
+/** Seller. Permission: members.manage. */
 @ApiTags('Memberships (seller)')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
@@ -82,28 +83,28 @@ export class BuyerMembershipsController {
 @Controller('api/memberships/store/:storeId')
 @UsePipes(new ValidationPipe({ whitelist: false, transform: true }))
 export class SellerMembershipsController {
-  constructor(private readonly svc: MembershipsService, private readonly db: DatabaseService) {}
+  constructor(private readonly svc: MembershipsService, private readonly db: DatabaseService, private readonly entitlements: EntitlementsService) {}
   private own = (req: any, storeId: string) => verifyStoreOwnershipOrForbidden(this.db.repositories.storeModel as any, storeId, actingSellerId(req.user));
   private by = (req: any) => String(req.user.userId ?? req.user.staffId ?? 'seller');
 
-  @Get('plans') @RequirePermission('products.view')
+  @Get('plans') @RequirePermission('members.manage')
   async plans(@Req() req: any, @Param('storeId') storeId: string) { await this.own(req, storeId); return this.svc.listPlans(storeId); }
 
-  @Post('plans') @RequirePermission('products.edit')
-  async create(@Req() req: any, @Param('storeId') storeId: string, @Body() body: any) { await this.own(req, storeId); return this.svc.createPlan(storeId, body); }
+  @Post('plans') @RequirePermission('members.manage')
+  async create(@Req() req: any, @Param('storeId') storeId: string, @Body() body: any) { await this.own(req, storeId); await this.entitlements.assertFeatureAllowed(storeId, 'digitalMembershipsAllowed', 'Memberships'); return this.svc.createPlan(storeId, body); }
 
-  @Patch('plans/:planId') @RequirePermission('products.edit')
+  @Patch('plans/:planId') @RequirePermission('members.manage')
   async update(@Req() req: any, @Param('storeId') storeId: string, @Param('planId') planId: string, @Body() body: any) { await this.own(req, storeId); return this.svc.updatePlan(storeId, planId, body); }
 
-  @Get('subscribers') @RequirePermission('customers.view')
+  @Get('subscribers') @RequirePermission('members.manage')
   async subs(@Req() req: any, @Param('storeId') storeId: string, @Query('status') status?: string, @Query('limit') limit?: string) { await this.own(req, storeId); return this.svc.listSubscribers(storeId, status, Number(limit) || 50); }
 
-  @Post('subscribers/grant') @RequirePermission('customers.edit')
+  @Post('subscribers/grant') @RequirePermission('members.manage')
   async grant(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: GrantDto) { await this.own(req, storeId); return this.svc.sellerGrant(storeId, dto.customerId, dto.planId, this.by(req)); }
 
-  @Post('subscribers/:id/mark-paid') @RequirePermission('customers.edit')
+  @Post('subscribers/:id/mark-paid') @RequirePermission('members.manage')
   async paid(@Req() req: any, @Param('storeId') storeId: string, @Param('id') id: string) { await this.own(req, storeId); return this.svc.markPaid(storeId, id, this.by(req)); }
 
-  @Post('subscribers/:id/revoke') @RequirePermission('customers.edit')
+  @Post('subscribers/:id/revoke') @RequirePermission('members.manage')
   async revoke(@Req() req: any, @Param('storeId') storeId: string, @Param('id') id: string) { await this.own(req, storeId); return this.svc.sellerRevoke(storeId, id, this.by(req)); }
 }
