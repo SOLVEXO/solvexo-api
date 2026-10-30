@@ -21,6 +21,9 @@ export class AccessPlan {
   @Prop({ type: Number, default: 1 }) tier: number; // higher tier includes the lower ones
   @Prop({ type: Number, default: 0, min: 0, max: 7 }) graceDays: number;
   @Prop({ type: String, enum: ['active', 'archived'], default: 'active' }) status: string;
+  // A digital product of this store that sells the plan: buying it through the normal checkout (the seller's own
+  // payment methods) starts or renews the membership. Solvexo never handles the money.
+  @Prop({ type: String, default: null }) productId: string | null;
 }
 export const AccessPlanSchema = SchemaFactory.createForClass(AccessPlan);
 AccessPlanSchema.index({ storeId: 1, status: 1, tier: 1 });
@@ -44,6 +47,7 @@ export class MemberSubscription {
   @Prop({ type: String, enum: ['manual', 'stripe', 'safepay'], default: 'manual' }) provider: string;
   @Prop({ type: String, default: null }) providerSubscriptionId: string | null;
   @Prop({ type: String, default: null }) providerCustomerId: string | null;
+  @Prop({ type: [String], default: [] }) appliedItemIds: string[]; // paid order items already counted (idempotent)
   @Prop({ type: Number, default: 0 }) amountDue: number; // upgrade difference the seller still has to collect
   @Prop({ type: [{ at: Date, action: String, by: String, note: String, _id: false }], default: [] })
   audit: { at: Date; action: string; by: string; note: string }[];

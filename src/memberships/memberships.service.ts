@@ -59,6 +59,7 @@ export class MembershipsService {
       benefits: (Array.isArray(b?.benefits) ? b.benefits : []).map((x: any) => String(x).trim().slice(0, 120)).filter(Boolean).slice(0, 20),
       tier: int(b?.tier, 1, 100, 1),
       graceDays: int(b?.graceDays, 0, 7, 0),
+      productId: b?.productId ? String(b.productId).trim().slice(0, 40) : null,
     };
   }
 
@@ -68,7 +69,15 @@ export class MembershipsService {
     return s.baseCurrency || 'USD';
   }
 
+  /** A plan's product must be a live product of THIS store. */
+  private async assertPlanProduct(storeId: string, productId: string | null) {
+    if (!productId) return;
+    const p = await this.db.repositories.productModel.findOne({ _id: productId, storeId, isDelete: false }).select('_id').lean().catch(() => null);
+    if (!p) throw new BadRequestException('The product of this plan was not found in your store');
+  }
+
   async createPlan(storeId: string, body: any) {
+    await this.assertPlanProduct(storeId, body?.productId ? String(body.productId) : null);
     return this.planModel.create({ storeId, ...this.cleanPlan(body, await this.storeCurrency(storeId)) });
   }
 
@@ -76,6 +85,7 @@ export class MembershipsService {
     const plan = await this.planModel.findOne({ _id: planId, storeId }).catch(() => null);
     if (!plan) throw new NotFoundException('Plan not found');
     const next = this.cleanPlan({ ...plan.toObject(), ...body }, plan.currency);
+    await this.assertPlanProduct(storeId, next.productId);
     // price / type changes never touch existing members: they keep their current period
     Object.assign(plan, next);
     if (body?.status === 'archived' || body?.status === 'active') plan.status = body.status;
@@ -93,6 +103,7 @@ export class MembershipsService {
     if (!storeId || !customerId || !requiredPlanId) return false;
     const required = await this.planModel.findOne({ _id: requiredPlanId, storeId }).lean().catch(() => null);
     if (!required) return false;
+    await this.syncFromOrders(storeId, customerId);
     const subs = await this.subModel.find({ storeId, customerId, status: { $in: ['trialing', 'active', 'past_due'] } }).lean();
     for (const s of subs) {
       if (s.awaitingFirstPayment) continue;
@@ -105,6 +116,39 @@ export class MembershipsService {
       if (own && own.tier > required.tier) return true;
     }
     return false;
+  }
+
+  // ---------------- purchase through the normal checkout ----------------
+
+  /**
+   * Paid order items of a plan's product start (or renew) the membership. Idempotent per order item:
+   * the item id is claimed on the subscription with a conditional update before it is applied.
+   */
+  async syncFromOrders(storeId: string, customerId: string): Promise<void> {
+    const plans = await this.planModel.find({ storeId, productId: { $ne: null }, status: 'active' }).lean();
+    if (!plans.length) return;
+    const byProduct = new Map(plans.map((p) => [String(p.productId), p]));
+    const orders = await this.db.repositories.orderModel
+      .find({ userId: customerId, isPaid: true, isDelete: false, 'sellerOrders.storeId': storeId, 'sellerOrders.items.productId': { $in: [...byProduct.keys()] } })
+      .sort({ createdAt: 1 }).limit(200).lean();
+    for (const o of orders as any[]) for (const so of o.sellerOrders ?? []) {
+      if (so.storeId !== storeId) continue;
+      for (const it of so.items ?? []) {
+        const plan: any = byProduct.get(String(it.productId));
+        if (!plan || ['cancelled', 'refunded'].includes(it.status)) continue;
+        const itemId = String(it._id);
+        // an item already counted on ANY membership of this plan (also an ended one) is never applied again
+        if (await this.subModel.exists({ storeId, customerId, planId: String(plan._id), appliedItemIds: itemId })) continue;
+        let sub = await this.subModel.findOne({ storeId, customerId, planId: String(plan._id), status: { $in: LIVE } });
+        if (!sub) {
+          // a membership that ended (or never existed): this payment starts a fresh one
+          sub = await this.join(storeId, customerId, String(plan._id)).catch(() => null) as any;
+          if (!sub) continue;
+        }
+        const claimed = await this.subModel.updateOne({ _id: sub._id, appliedItemIds: { $ne: itemId } }, { $addToSet: { appliedItemIds: itemId } });
+        if (claimed.modifiedCount && plan.type !== 'free') await this.markPaid(storeId, String(sub._id), 'checkout');
+      }
+    }
   }
 
   // ---------------- buyer actions ----------------
@@ -134,7 +178,8 @@ export class MembershipsService {
     return s;
   }
 
-  mine(storeId: string, customerId: string) {
+  async mine(storeId: string, customerId: string) {
+    await this.syncFromOrders(storeId, customerId);
     return this.subModel.find({ storeId, customerId }).sort({ createdAt: -1 }).lean();
   }
 

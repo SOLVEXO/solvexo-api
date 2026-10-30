@@ -22,13 +22,16 @@ class GrantDto { @IsString() @IsNotEmpty() customerId: string; @IsString() @IsNo
 @ApiTags('Memberships (public)')
 @Controller('api/public/memberships')
 export class PublicMembershipsController {
-  constructor(private readonly svc: MembershipsService) {}
+  constructor(private readonly svc: MembershipsService, private readonly db: DatabaseService) {}
 
   @Throttle({ default: { limit: 120, ttl: 60_000 } })
   @Get(':storeId/plans')
   async plans(@Param('storeId') storeId: string) {
     const plans = await this.svc.listPlans(storeId, true);
-    return plans.map((p) => ({ _id: p._id, name: p.name, description: p.description, type: p.type, amount: p.amount, currency: p.currency, interval: p.interval, intervalCount: p.intervalCount, trialDays: p.trialDays, benefits: p.benefits, tier: p.tier }));
+    const ids = plans.map((p) => p.productId).filter(Boolean) as string[];
+    const products: any[] = ids.length ? await this.db.repositories.productModel.find({ _id: { $in: ids }, storeId, isDelete: false, status: 'active' }).select('slug').lean() : [];
+    const slugOf = new Map(products.map((x) => [String(x._id), x.slug]));
+    return plans.map((p) => ({ productSlug: p.productId ? slugOf.get(String(p.productId)) ?? null : null, _id: p._id, name: p.name, description: p.description, type: p.type, amount: p.amount, currency: p.currency, interval: p.interval, intervalCount: p.intervalCount, trialDays: p.trialDays, benefits: p.benefits, tier: p.tier }));
   }
 }
 
