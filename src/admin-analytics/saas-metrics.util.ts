@@ -56,7 +56,7 @@ export function liveMrrMap(subs: SubRow[]): StoreMrrMap {
 }
 
 /** The ordered plan segments of a subscription: which plan, at what monthly price, from when. */
-function segments(sub: SubRow, plans: Map<string, PlanInfo>) {
+export function planSegments(sub: SubRow, plans: Map<string, PlanInfo>) {
   const history = [...(sub.planHistory ?? [])].sort((a, b) => t(a.changedAt) - t(b.changedAt));
   const priceOf = (planId: string | null, interval?: string | null) => {
     const p = planId ? plans.get(String(planId)) : undefined;
@@ -104,7 +104,7 @@ export function paidEndedAt(sub: SubRow, plans: Map<string, PlanInfo>): number |
 
 /** First moment the store ever paid (MRR > 0), or null if it never has. */
 export function firstPaidAt(sub: SubRow, plans: Map<string, PlanInfo>): number | null {
-  const paid = segments(sub, plans).find((s) => s.mrr > 0);
+  const paid = planSegments(sub, plans).find((s) => s.mrr > 0);
   if (!paid) return null;
   const end = paidEndedAt(sub, plans);
   return end !== null && end <= paid.from ? null : paid.from;
@@ -120,7 +120,7 @@ export function reconstructStoreMrrAt(sub: SubRow, at: number, plans: Map<string
   const end = paidEndedAt(sub, plans);
   if (end !== null && at >= end) return null;
   if (sub.status === 'trialing') return null;
-  const segs = segments(sub, plans);
+  const segs = planSegments(sub, plans);
   let current = segs[0];
   for (const s of segs) if (s.from <= at) current = s;
   return current.mrr > 0 ? { mrr: round2(current.mrr), planId: current.planId } : null;

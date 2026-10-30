@@ -17,6 +17,7 @@ import { OrdersListQueryDto } from './dto/orders-list-query.dto';
 import { PlatformHealthService } from '../platform-health/platform-health.service';
 import { SaasMetricsService } from './saas-metrics.service';
 import { ActivationFunnelService } from './activation-funnel.service';
+import { PlanInsightsService } from './plan-insights.service';
 import { SaasMetricsQueryDto } from './dto/saas-metrics-query.dto';
 
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
@@ -33,6 +34,7 @@ export class AdminAnalyticsController {
     private readonly platformHealthService: PlatformHealthService,
     private readonly saasMetrics: SaasMetricsService,
     private readonly activationFunnel: ActivationFunnelService,
+    private readonly planInsights: PlanInsightsService,
   ) {}
 
   /** Merchant activation funnel for sellers who signed up in the last `months` months (1–24, default 6). */
@@ -49,6 +51,13 @@ export class AdminAnalyticsController {
   @Get('saas-metrics')
   getSaasMetrics(@Query() query: SaasMetricsQueryDto) {
     return this.saasMetrics.getMetrics(query.months ?? 12);
+  }
+
+  /** Per-plan subscribers, MRR, plan moves, price paid vs list and stores outgrowing their plan (3–24 months, default 12). */
+  @RequirePermission('analytics.view', 'finance.view')
+  @Get('plan-insights')
+  getPlanInsights(@Query() query: SaasMetricsQueryDto) {
+    return this.planInsights.getInsights(query.months ?? 12);
   }
 
   @RequirePermission('analytics.view', 'finance.view')
