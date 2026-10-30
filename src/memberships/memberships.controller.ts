@@ -1,7 +1,8 @@
 /* eslint-disable prettier/prettier */
-import { Body, Controller, Get, Param, Patch, Post, Query, Req, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
-import { Throttle } from '@nestjs/throttler';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { BadRequestException, Body, Controller, Get, Headers, HttpCode, Param, Patch, Post, Query, RawBodyRequest, Req, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
+import type { Request } from 'express';
+import { SkipThrottle, Throttle } from '@nestjs/throttler';
+import { ApiBearerAuth, ApiExcludeEndpoint, ApiTags } from '@nestjs/swagger';
 import { IsNotEmpty, IsString } from 'class-validator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -15,9 +16,26 @@ import { DatabaseService } from '../database/databaseservice';
 import { EntitlementsService } from '../platform-plans/entitlements.service';
 import { pageOf } from '../common/paging';
 import { MembershipsService } from './memberships.service';
+import { MembershipStripeWebhookService } from './membership-stripe-webhook.service';
 
 class PlanIdDto { @IsString() @IsNotEmpty() planId: string; }
 class GrantDto { @IsString() @IsNotEmpty() customerId: string; @IsString() @IsNotEmpty() planId: string; }
+
+/** Stripe -> us. Signature-verified, idempotent. Configure this URL as its own Stripe webhook endpoint (test mode). */
+@ApiTags('Memberships (Stripe webhook)')
+@Controller('api/memberships/webhooks')
+export class MembershipStripeWebhookController {
+  constructor(private readonly webhook: MembershipStripeWebhookService) {}
+
+  @SkipThrottle()
+  @ApiExcludeEndpoint()
+  @Post('stripe')
+  @HttpCode(200)
+  async stripe(@Req() req: RawBodyRequest<Request>, @Headers('stripe-signature') signature: string) {
+    if (!req.rawBody) throw new BadRequestException('Raw request body unavailable');
+    return this.webhook.receive(req.rawBody, signature);
+  }
+}
 
 /** Public: what a store sells (no auth, no private fields). */
 @ApiTags('Memberships (public)')
@@ -32,7 +50,7 @@ export class PublicMembershipsController {
     const ids = plans.map((p) => p.productId).filter(Boolean) as string[];
     const products: any[] = ids.length ? await this.db.repositories.productModel.find({ _id: { $in: ids }, storeId, isDelete: false, status: 'active' }).select('slug').lean() : [];
     const slugOf = new Map(products.map((x) => [String(x._id), x.slug]));
-    return plans.map((p) => ({ productSlug: p.productId ? slugOf.get(String(p.productId)) ?? null : null, _id: p._id, name: p.name, description: p.description, type: p.type, amount: p.amount, currency: p.currency, interval: p.interval, intervalCount: p.intervalCount, trialDays: p.trialDays, benefits: p.benefits, tier: p.tier }));
+    return plans.map((p) => ({ autoRenew: !!(p as any).autoRenew, productSlug: p.productId ? slugOf.get(String(p.productId)) ?? null : null, _id: p._id, name: p.name, description: p.description, type: p.type, amount: p.amount, currency: p.currency, interval: p.interval, intervalCount: p.intervalCount, trialDays: p.trialDays, benefits: p.benefits, tier: p.tier }));
   }
 }
 
@@ -56,6 +74,18 @@ export class BuyerMembershipsController {
   @Post('join')
   join(@Req() req: any, @Query('storeId') storeId: string, @Body() dto: PlanIdDto) {
     return this.svc.join(this.scope(req, storeId), req.user.userId, dto.planId);
+  }
+
+  /** Starts an automatic (card) subscription: returns Stripe's hosted checkout link. */
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Post('checkout')
+  checkout(@Req() req: any, @Query('storeId') storeId: string, @Body() dto: PlanIdDto) {
+    return this.svc.startStripeCheckout(this.scope(req, storeId), req.user.userId, dto.planId);
+  }
+
+  @Post(':id/payment-method')
+  paymentMethod(@Req() req: any, @Query('storeId') storeId: string, @Param('id') id: string) {
+    return this.svc.paymentMethodUrl(this.scope(req, storeId), req.user.userId, id);
   }
 
   @Post(':id/cancel')
@@ -90,6 +120,9 @@ export class SellerMembershipsController {
   constructor(private readonly svc: MembershipsService, private readonly db: DatabaseService, private readonly entitlements: EntitlementsService) {}
   private own = (req: any, storeId: string) => verifyStoreOwnershipOrForbidden(this.db.repositories.storeModel as any, storeId, actingSellerId(req.user));
   private by = (req: any) => String(req.user.userId ?? req.user.staffId ?? 'seller');
+
+  @Get('billing-mode') @RequirePermission('members.manage')
+  async billingMode(@Req() req: any, @Param('storeId') storeId: string) { await this.own(req, storeId); return this.svc.billingMode(storeId); }
 
   @Get('plans') @RequirePermission('members.manage')
   async plans(@Req() req: any, @Param('storeId') storeId: string, @Query('page') page?: string, @Query('limit') limit?: string) { await this.own(req, storeId); return this.svc.listPlansPaged(storeId, pageOf(page, limit)); }

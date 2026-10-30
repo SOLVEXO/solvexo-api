@@ -66,7 +66,53 @@ describe('event-driven grant and revoke', () => {
     await s.access.onOrderChanged('o1');
     await s.access.onOrderChanged('o1');
     expect(s.accessModel.rows.length).toBe(1);
-    expect(s.mailer.purchaseDelivered.calls.length).toBe(1);
+    expect(s.mailer.purchaseDelivered.mock.calls.length).toBe(1);
+  });
+
+  it('parallel paid events (two API copies / duplicate webhook) still produce ONE mail and ONE record', async () => {
+    const s = setup();
+    await Promise.all([s.access.onOrderChanged('o1'), s.access.onOrderChanged('o1'), s.access.onOrderChanged('o1')]);
+    expect(s.accessModel.rows.length).toBe(1);
+    expect(s.mailer.purchaseDelivered.mock.calls.length).toBe(1);
+    expect(!!s.accessModel.rows[0].mailedAt).toBe(true);
+  });
+
+  it('a crash between the grant and the mail is repaired by the next event (mail never missing)', async () => {
+    const s = setup();
+    await s.access.onOrderChanged('o1');
+    s.accessModel.rows[0].mailedAt = null; // the process died before the mail was claimed
+    s.mailer.purchaseDelivered.mock.calls.length = 0;
+    await s.access.onOrderChanged('o1');
+    expect(s.mailer.purchaseDelivered.mock.calls.length).toBe(1);
+    await s.access.onOrderChanged('o1');
+    expect(s.mailer.purchaseDelivered.mock.calls.length).toBe(1);
+  });
+
+  it('records granted long ago (before the mail guard existed) never get a surprise mail', async () => {
+    const s = setup();
+    await s.access.onOrderChanged('o1');
+    s.accessModel.rows[0].mailedAt = null;
+    s.accessModel.rows[0].createdAt = new Date(Date.now() - 3 * 86_400_000);
+    s.mailer.purchaseDelivered.mock.calls.length = 0;
+    s.item().status = 'pending';
+    await s.access.onOrderChanged('o1');
+    expect(s.mailer.purchaseDelivered.mock.calls.length).toBe(0);
+  });
+
+  it('a duplicate-key race on one item does not stop the other items of the order from being granted', async () => {
+    const s = setup({ sellerOrders: [{ storeId: 's1', items: [
+      { _id: 'i1', type: 'digital', productId: 'p1', status: 'pending' },
+      { _id: 'i2', type: 'digital', productId: 'p2', status: 'pending' },
+    ] }] });
+    s.productModel.rows.push(digitalProduct({ _id: 'p2', name: 'Second' }));
+    const real = s.accessModel.updateOne.bind(s.accessModel);
+    let first = true;
+    (s.accessModel as any).updateOne = async (f: any, u: any, o: any) => {
+      if (first && f.resourceRef === 'p1' && o?.upsert) { first = false; throw Object.assign(new Error('E11000 duplicate key'), { code: 11000 }); }
+      return real(f, u, o);
+    };
+    await s.access.onOrderChanged('o1');
+    expect(s.accessModel.rows.some((r) => r.resourceRef === 'p2')).toBe(true);
   });
 
   it('does not grant for an unpaid order, and grants as soon as it is paid', async () => {

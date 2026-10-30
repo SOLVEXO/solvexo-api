@@ -8,6 +8,7 @@ export const QUEUE_NAMES = {
   EMAIL_CAMPAIGNS: 'email-campaigns',
   NEWSLETTER_BROADCASTS: 'newsletter-broadcasts',
   THEME_IMPORT: 'theme-import',
+  MEMBERSHIP_BILLING: 'membership-billing',
 } as const;
 
 export const STRIPE_WEBHOOK_JOB = 'process-stripe-event';
@@ -24,3 +25,4 @@ export const SEO_AI_GENERATE_JOB = 'generate-suggestion';
 export const SEO_AI_GENERATE_BULK_JOB = 'generate-suggestion-bulk';
 
 export const THEME_IMPORT_JOB = 'import-theme-zip';
+export const MEMBERSHIP_BILLING_JOB = 'run-membership-billing';

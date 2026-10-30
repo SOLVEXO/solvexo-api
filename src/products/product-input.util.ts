@@ -52,13 +52,7 @@ export function normalizeImages(raw: unknown): string[] {
   return out;
 }
 
-const VIDEO_HOSTS = new Set([
-  'res.cloudinary.com',
-  'www.youtube.com', 'youtube.com', 'm.youtube.com', 'youtu.be', 'www.youtube-nocookie.com',
-  'vimeo.com', 'www.vimeo.com', 'player.vimeo.com',
-]);
-
-/** Optional product video: '' (none), an https Cloudinary upload, or a YouTube / Vimeo link. */
+/** Optional product video: '' (none) or any https link (an uploaded file, YouTube / Vimeo, a direct video file or a page). */
 export function normalizeVideoUrl(raw: unknown): string {
   if (raw === undefined || raw === null) return '';
   if (typeof raw !== 'string') throw new BadRequestException('videoUrl must be a link');
@@ -67,10 +61,11 @@ export function normalizeVideoUrl(raw: unknown): string {
   let parsed: URL;
   try { parsed = new URL(url); } catch { throw new BadRequestException('Product video must be a valid link'); }
   if (parsed.protocol !== 'https:' || url.length > PRODUCT_LIMITS.imageUrlMax) throw new BadRequestException('Product video must be a valid https link');
-  if (!VIDEO_HOSTS.has(parsed.hostname.toLowerCase())) {
-    throw new BadRequestException('Product video must be an uploaded file or a YouTube / Vimeo link');
+  const host = parsed.hostname.toLowerCase();
+  if (host === 'localhost' || host.endsWith('.local') || /^[\d.]+$/.test(host) || host.includes(':')) {
+    throw new BadRequestException('Product video must be a public https link');
   }
-  if (parsed.hostname.toLowerCase() === 'res.cloudinary.com' && !/\/video\/upload\//.test(parsed.pathname)) {
+  if (host === 'res.cloudinary.com' && !/\/video\/upload\//.test(parsed.pathname)) {
     throw new BadRequestException('Upload a video file (not an image) as the product video');
   }
   return url;

@@ -1,5 +1,7 @@
 /* eslint-disable prettier/prettier */
-import { MembershipsService } from '../memberships/memberships.service';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
+import { MEMBERSHIP_BILLING_JOB, QUEUE_NAMES } from '../queues/queue.constants';
 import { refreshAllExpiredStock } from '../common/expired-stock.util';
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
@@ -52,7 +54,7 @@ export class SchedulerService {
     private readonly storeCreditService: StoreCreditService,
     private readonly guestSessionService: GuestSessionService,
     private readonly authVisualService: AuthVisualService,
-    private readonly membershipsService: MembershipsService,
+    @InjectQueue(QUEUE_NAMES.MEMBERSHIP_BILLING) private readonly membershipBillingQueue: Queue,
     private readonly customDomainsService: CustomDomainsService,
     private readonly financeService: FinanceService,
     private readonly redis: RedisService,
@@ -111,8 +113,8 @@ export class SchedulerService {
   @Cron('20 * * * *')
   async processMemberships() {
     await this.runLocked('membership-renewals', 25 * 60_000, async () => {
-      const events = await this.membershipsService.processRenewals();
-      if (events.length > 0) this.logger.log(`Memberships: ${events.length} lifecycle event(s)`);
+      const hour = Math.floor(Date.now() / 3_600_000);
+      await this.membershipBillingQueue.add(MEMBERSHIP_BILLING_JOB, {}, { jobId: `membership-billing-${hour}`, removeOnComplete: true });
     });
   }
 

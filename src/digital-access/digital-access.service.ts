@@ -111,7 +111,9 @@ export class DigitalAccessService implements OnModuleInit {
       for (const item of so.items ?? []) {
         if (item.type !== 'digital' || DEAD_ITEM.includes(item.status)) continue;
         const product: any = await productModel.findOne({ _id: item.productId, storeId }).select('digital').lean();
-        const res = await this.accessModel.updateOne(
+        let res: { upsertedCount?: number };
+        try {
+          res = await this.accessModel.updateOne(
           {
             storeId,
             customerId: order.userId,
@@ -129,14 +131,38 @@ export class DigitalAccessService implements OnModuleInit {
             },
           },
           { upsert: true },
-        );
-        if (res.upsertedCount) {
-          granted++;
-          void this.mailer?.purchaseDelivered(storeId, order.userId, (await productModel.findOne({ _id: item.productId, storeId }).select('name').lean() as any)?.name ?? 'your purchase');
+          );
+        } catch (e: any) {
+          // two API copies / two webhook deliveries upserting the same record at once: the loser gets a duplicate-key error.
+          // The record exists, so just go on with the other items of the order (never abort the whole order).
+          if (e?.code === 11000) continue;
+          throw e;
         }
+        if (res.upsertedCount) granted++;
       }
     }
+    await this.mailPurchase(String(order._id), storeId);
     return granted;
+  }
+
+  /**
+   * "Your downloads are ready" mail, at most once per access record. The mail is claimed with a conditional update
+   * (mailedAt null -> now) BEFORE it is sent, so duplicate webhook deliveries, parallel events and retries cannot
+   * send it twice, and a crash between the grant and the mail is repaired by the next event (mailedAt still null).
+   * Only records created in the last 24 h are mailed: older ones (granted before this guard existed) never get a surprise mail.
+   */
+  private async mailPurchase(orderId: string, storeId: string): Promise<void> {
+    if (!this.mailer) return;
+    const rows = await this.accessModel.find({
+      storeId, sourceOrderId: orderId, resourceKind: 'file', status: 'active', mailedAt: null,
+      createdAt: { $gte: new Date(Date.now() - 24 * 3_600_000) },
+    });
+    for (const r of rows) {
+      const claim = await this.accessModel.updateOne({ _id: r._id, mailedAt: null }, { $set: { mailedAt: new Date() } });
+      if (!claim.modifiedCount) continue;
+      const product: any = await this.db.repositories.productModel.findOne({ _id: r.resourceRef, storeId }).select('name').lean();
+      void this.mailer.purchaseDelivered(storeId, r.customerId, product?.name ?? 'your purchase');
+    }
   }
 
   /** Grants from every paid order of this customer in this store (covers orders placed before DigitalAccess existed). */
