@@ -774,7 +774,9 @@ OrderSchema.post('findOneAndUpdate', function (doc: any) { if (doc?._id && updat
 OrderSchema.post('updateOne', function () {
   const q: any = this as any;
   const id = q.getFilter?.()?._id;
-  if (id && typeof id !== 'object' && updateTouchesPaymentOrStatus(q.getUpdate?.())) emitOrderChanged(String(id));
+  // the filter is usually { _id: <ObjectId> } (an object) or a plain id string; operator objects such as { $in } are skipped
+  const plainId = typeof id === 'string' || (id && typeof id === 'object' && /^[a-f0-9]{24}$/i.test(String(id)));
+  if (plainId && updateTouchesPaymentOrStatus(q.getUpdate?.())) emitOrderChanged(String(id));
 });
 
 OrderSchema.index({ orderNumber: 1 }, { unique: true });
