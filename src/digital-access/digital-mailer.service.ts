@@ -41,6 +41,11 @@ export class DigitalMailerService {
     }
   }
 
+  /** Guest recovery: the one-time link goes only to the address stored on the order's customer. */
+  accessLink(storeId: string, customerId: string, token: string) {
+    return this.send('digital_access_link', storeId, customerId, {}, `/library?recovery=${encodeURIComponent(token)}`);
+  }
+
   purchaseDelivered(storeId: string, customerId: string, productName: string) {
     return this.send('digital_purchase_delivered', storeId, customerId, { productName }, '/library');
   }

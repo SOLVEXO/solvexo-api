@@ -15,7 +15,7 @@ type Req = { method?: string; path?: string; originalUrl?: string; query?: any; 
 const RULES: Array<{ re: RegExp; kind: 'param' | 'product' | 'variant' | 'ctx' }> = [
   { re: /^\/api\/store\/public\/([^/]+)\/(products|filters)\/?$/, kind: 'param' },
   { re: /^\/api\/products\/store\/([^/]+)\/(pinned|new-arrivals|best-sellers|trending)\/?$/, kind: 'param' },
-  { re: /^\/api\/public\/(?:collections|store-pages|store-theme|store-markets|store-blog|store-banners|collection-template)\/([^/]+)(?:\/|$)/, kind: 'param' },
+  { re: /^\/api\/public\/(?:collections|store-pages|store-theme|store-markets|memberships|store-blog|store-banners|collection-template)\/([^/]+)(?:\/|$)/, kind: 'param' },
   { re: /^\/api\/products\/getProductById\/([^/]+)\/?$/, kind: 'product' },
   { re: /^\/api\/products\/preview\/([^/]+)\/?$/, kind: 'product' },
   { re: /^\/api\/products\/getVariantById\/([^/]+)\/?$/, kind: 'variant' },

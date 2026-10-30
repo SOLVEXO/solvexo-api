@@ -487,6 +487,13 @@ export class Store {
   @Prop({ type: String, enum: ['off', 'soft-flag', 'block'], default: 'soft-flag' })
   digitalAbuseMode!: string;
 
+  // Set by a platform admin (abuse / piracy handling): stops downloads, course media and license validation for the store.
+  @Prop({ type: Boolean, default: false })
+  digitalDisabled!: boolean;
+
+  @Prop({ type: String, default: null })
+  digitalDisabledReason!: string | null;
+
   // sha256 of the license API token (the token itself is shown once, never stored)
   @Prop({ type: String, default: null, select: false, index: true })
   licenseApiTokenHash!: string | null;

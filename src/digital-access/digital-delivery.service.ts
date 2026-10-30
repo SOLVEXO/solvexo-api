@@ -5,6 +5,7 @@ import { RedisService } from '../redis/redis.service';
 import { UploadService } from '../upload/upload.service';
 import { DigitalAccessService } from './digital-access.service';
 import { MembershipsService } from '../memberships/memberships.service';
+import { DigitalMailerService } from './digital-mailer.service';
 
 export const TOKEN_TTL_SECONDS = 300;
 export const TOKENS_PER_HOUR = 30; // per customer
@@ -27,6 +28,7 @@ export class DigitalDeliveryService {
     private readonly upload: UploadService,
     private readonly access: DigitalAccessService,
     private readonly memberships: MembershipsService,
+    private readonly mailer: DigitalMailerService,
   ) {}
 
   private async log(storeId: string, customerId: string, productId: string | null, fileIndex: number | null, outcome: 'ok' | 'denied' | 'failed', reason: string, ctx: Ctx, flagged = false) {
@@ -35,6 +37,11 @@ export class DigitalDeliveryService {
     } catch (e: any) {
       this.logger.warn(`delivery log failed: ${e?.message}`);
     }
+  }
+
+  private async assertEnabled(storeId: string): Promise<void> {
+    const s: any = await this.db.repositories.storeModel.findOne({ _id: storeId }).select('digitalDisabled').lean();
+    if (s?.digitalDisabled) throw new ForbiddenException('Digital delivery is paused for this store');
   }
 
   private async abuseMode(storeId: string): Promise<AbuseMode> {
@@ -52,6 +59,7 @@ export class DigitalDeliveryService {
       throw new HttpException('Too many download requests, try again later', HttpStatus.TOO_MANY_REQUESTS);
     }
 
+    await this.assertEnabled(storeId);
     const gate = await this.access.can(storeId, customerId, { kind: 'file', ref: productId });
     if (!gate.allowed || !gate.access) {
       await this.log(storeId, customerId, productId, fileIndex, 'denied', gate.reason ?? 'no_access', ctx);
@@ -93,19 +101,21 @@ export class DigitalDeliveryService {
     if (tries > 5) throw new HttpException('Too many attempts, try again later', HttpStatus.TOO_MANY_REQUESTS);
     const ref = String(orderRef ?? '').trim().slice(0, 40);
     const mail = String(email ?? '').trim().toLowerCase().slice(0, 200);
-    const miss = new NotFoundException('We could not find a matching order');
-    if (!ref || !mail || !storeId) throw miss;
+    // Same answer whether or not an order matched: nobody can probe order numbers or emails.
+    const generic = { sent: true };
+    if (!ref || !mail || !storeId) return generic;
     const { orderModel, userModel } = this.db.repositories as any;
     const order: any = await orderModel
       .findOne({ $or: [{ orderNumber: ref }, ...(/^[a-f0-9]{24}$/i.test(ref) ? [{ _id: ref }] : [])], isPaid: true, isDelete: false, 'sellerOrders.storeId': storeId })
       .lean();
-    if (!order) throw miss;
+    if (!order) return generic;
     const user: any = await userModel.findOne({ _id: order.userId }).select('email contactEmail').lean();
     const ok = [user?.email, user?.contactEmail].filter(Boolean).some((e: string) => String(e).toLowerCase() === mail);
-    if (!ok) throw miss;
+    if (!ok) return generic;
     const token = randomBytes(32).toString('hex');
     await this.redis.set(`dl:recov:${hash(token)}`, JSON.stringify({ storeId, customerId: String(order.userId) }), 1800);
-    return { recoveryToken: token, expiresInSeconds: 1800 };
+    void this.mailer.accessLink(storeId, String(order.userId), token); // the token only ever travels by email
+    return generic;
   }
 
   async resolveRecovery(token: string): Promise<{ storeId: string; customerId: string }> {
@@ -121,6 +131,7 @@ export class DigitalDeliveryService {
     const raw = await this.redis.getDel(`dl:tok:${hash(token)}`); // atomic: a second use gets null
     if (!raw) throw new BadRequestException('Download link expired or already used');
     const { storeId, customerId, productId, fileIndex, accessId } = JSON.parse(raw);
+    await this.assertEnabled(storeId);
 
     const gate = await this.access.can(storeId, customerId, { kind: 'file', ref: productId });
     if (!gate.allowed || !gate.access || String(gate.access._id) !== accessId) {

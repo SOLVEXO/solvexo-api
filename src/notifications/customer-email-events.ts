@@ -22,6 +22,7 @@ export const CUSTOMER_EMAIL_EVENTS = [
   'gift_card_updated',
   'gift_card_sent',
   'digital_purchase_delivered',
+  'digital_access_link',
   'digital_file_updated',
   'membership_welcome',
   'membership_renewal_reminder',
@@ -207,6 +208,17 @@ export const CUSTOMER_EMAIL_CATALOG: Record<CustomerEmailEvent, CustomerEmailEve
       "Hi {{customerName}},\n\nThanks for your purchase! {{productName}} is ready to download from your library:\n{{libraryUrl}}\n\nIf you have trouble, just reply to this email.",
     variables: ["storeName","customerName","productName","libraryUrl"],
     resendable: false,
+  },
+  digital_access_link: {
+    group: 'digital',
+    label: 'Find my downloads link',
+    description: 'Sent when a customer asks to find their downloads with an order number and email. The link opens their library for 30 minutes.',
+    defaultSubject: 'Your downloads from {{storeName}}',
+    defaultBody:
+      'Hi {{customerName}},\n\nUse this link to open your downloads. It works for 30 minutes:\n{{libraryUrl}}\n\nIf you did not ask for this, you can ignore this email.',
+    variables: ['storeName', 'customerName', 'libraryUrl'],
+    resendable: false,
+    canDisable: false,
   },
   digital_file_updated: {
     group: 'digital',

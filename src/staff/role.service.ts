@@ -38,6 +38,8 @@ const PRESET_ROLES: { name: string; description: string; permissions: string[] }
       'aistudio.view', 'aistudio.use',
       // Added with PRESET_VERSION 1
       'products.create', 'collections.manage', 'categories.manage', 'draft_orders.manage', 'reviews.manage', 'activity_log.view',
+      // Added with PRESET_VERSION 2
+      'digital.view', 'digital.manage', 'members.manage', 'courses.manage', 'licenses.manage',
     ],
   },
   {
@@ -48,16 +50,20 @@ const PRESET_ROLES: { name: string; description: string; permissions: string[] }
   {
     name: 'Support Staff',
     description: 'View and fulfill orders, view customers, and reply to customer messages.',
-    permissions: ['home.view', 'orders.view', 'orders.fulfill', 'orders.return', 'customers.view', 'messaging.view', 'messaging.manage', 'reviews.manage'],
+    permissions: ['home.view', 'orders.view', 'orders.fulfill', 'orders.return', 'customers.view', 'messaging.view', 'messaging.manage', 'reviews.manage', 'digital.view'],
   },
 ];
 
 /** Bump when PRESET_ROLES gains permissions; list what each preset gets in PRESET_ADDITIONS for that version. */
-const PRESET_VERSION = 1;
+const PRESET_VERSION = 2;
 const PRESET_ADDITIONS: Record<number, Record<string, string[]>> = {
   1: {
     'Store Manager': ['products.create', 'collections.manage', 'categories.manage', 'draft_orders.manage', 'reviews.manage', 'activity_log.view'],
     'Support Staff': ['reviews.manage'],
+  },
+  2: {
+    'Store Manager': ['digital.view', 'digital.manage', 'members.manage', 'courses.manage', 'licenses.manage'],
+    'Support Staff': ['digital.view'],
   },
 };
 

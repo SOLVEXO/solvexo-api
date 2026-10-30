@@ -118,6 +118,8 @@ export class LicensesService {
   /** Same response for unknown / revoked / refunded keys: valid=false, no reason that helps a guesser. */
   async validate(token: string, body: { key: string; deviceId?: string; activate?: boolean }, ctx: Ctx) {
     const storeId = await this.storeFromToken(token, ctx);
+    const st: any = await this.db.repositories.storeModel.findOne({ _id: storeId }).select('digitalDisabled').lean();
+    if (st?.digitalDisabled) return { valid: false };
     const k = await this.load(storeId, body?.key);
     if (!k || k.status !== 'active' || !(await this.itemAlive(k))) return { valid: false };
     let activated = false;

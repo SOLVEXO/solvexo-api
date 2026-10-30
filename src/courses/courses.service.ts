@@ -88,6 +88,8 @@ export class CoursesService {
   private async gate(storeId: string, customerId: string, courseId: string) {
     const course = await this.courseModel.findOne({ _id: courseId, storeId, status: 'published' }).catch(() => null);
     if (!course) throw new NotFoundException('Course not found');
+    const st: any = await this.db.repositories.storeModel.findOne({ _id: storeId }).select('digitalDisabled').lean();
+    if (st?.digitalDisabled) throw new ForbiddenException('Digital delivery is paused for this store');
     await this.grantFromOrders(storeId, customerId);
     const r = await this.access.can(storeId, customerId, { kind: 'course', ref: courseId });
     const byPlan = !r.allowed && !!course.requiresPlan && (await this.memberships.hasPlanAccess(storeId, customerId, course.requiresPlan));

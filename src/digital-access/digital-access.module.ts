@@ -9,6 +9,7 @@ import { MembershipsModule } from '../memberships/memberships.module';
 import { DigitalMailerModule } from './digital-mailer.module';
 import { DigitalDeliveryService } from './digital-delivery.service';
 import { DigitalBuyerController, DigitalSellerController } from './digital-access.controller';
+import { AdminDigitalController } from './admin-digital.controller';
 
 @Module({
   imports: [
@@ -22,7 +23,7 @@ import { DigitalBuyerController, DigitalSellerController } from './digital-acces
       { name: DeliveryLog.name, schema: DeliveryLogSchema },
     ]),
   ],
-  controllers: [DigitalBuyerController, DigitalSellerController],
+  controllers: [DigitalBuyerController, DigitalSellerController, AdminDigitalController],
   providers: [DigitalAccessService, DigitalDeliveryService],
   exports: [DigitalAccessService, DigitalDeliveryService],
 })
