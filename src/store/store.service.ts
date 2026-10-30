@@ -1491,6 +1491,8 @@ export class StoreService {
         // frontend must treat null the same as "all", never as "none".
         enabledCurrencies: await this.effectiveEnabledCurrencies(store),
         sellerType: store.sellerType ?? null,
+        // lets the storefront show Library / Courses / Memberships / Licenses links only where they matter
+        sellsDigital: (store.productTypes ?? []).some((p: string) => p === 'digital_downloads' || p === 'educational_resources'),
         badges: store.badges ?? [],
         createdAt: store.createdAt,
         // Not sensitive (never the hash) — the storefront needs it up front
