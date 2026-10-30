@@ -36,7 +36,13 @@ export class CoursesService {
     return c.save();
   }
 
-  list(storeId: string) { return this.courseModel.find({ storeId }).select('title status productId requiresPlan updatedAt').sort({ createdAt: -1 }).lean(); }
+  async list(storeId: string, pg: { page: number; limit: number; skip: number } = { page: 1, limit: 20, skip: 0 }) {
+    const [items, total] = await Promise.all([
+      this.courseModel.find({ storeId }).select('title status productId requiresPlan updatedAt').sort({ createdAt: -1 }).skip(pg.skip).limit(pg.limit).lean(),
+      this.courseModel.countDocuments({ storeId }),
+    ]);
+    return { items, total, page: pg.page, limit: pg.limit };
+  }
 
   async get(storeId: string, id: string) {
     const c = await this.courseModel.findOne({ _id: id, storeId }).lean().catch(() => null);

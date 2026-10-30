@@ -92,6 +92,15 @@ export class MembershipsService {
     return plan.save();
   }
 
+  /** Seller list: one page of plans, newest tier first. */
+  async listPlansPaged(storeId: string, pg: { page: number; limit: number; skip: number }) {
+    const [items, total] = await Promise.all([
+      this.planModel.find({ storeId }).sort({ tier: 1, amount: 1 }).skip(pg.skip).limit(pg.limit).lean(),
+      this.planModel.countDocuments({ storeId }),
+    ]);
+    return { items, total, page: pg.page, limit: pg.limit };
+  }
+
   listPlans(storeId: string, onlyActive = false) {
     return this.planModel.find({ storeId, ...(onlyActive ? { status: 'active' } : {}) }).sort({ tier: 1, amount: 1 }).lean();
   }

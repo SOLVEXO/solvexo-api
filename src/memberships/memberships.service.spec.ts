@@ -204,3 +204,15 @@ describe('plan validation', () => {
     await expect(s.svc.createPlan('s1', { name: 'X', type: 'free', productId: 'nope' })).rejects.toThrow('not found in your store');
   });
 });
+
+describe('plans list paging', () => {
+  it('the seller list is paged on the server', async () => {
+    const s = setup();
+    const p1: any = await s.svc.listPlansPaged('s1', { page: 1, limit: 2, skip: 0 });
+    const p2: any = await s.svc.listPlansPaged('s1', { page: 2, limit: 2, skip: 2 });
+    expect(p1.total).toBe(3);
+    expect(p1.items.length).toBe(2);
+    expect(p2.items.length).toBe(1);
+    expect(((await s.svc.listPlansPaged('s2', { page: 1, limit: 2, skip: 0 })) as any).total).toBe(0);
+  });
+});

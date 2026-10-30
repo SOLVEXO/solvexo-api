@@ -1,5 +1,6 @@
 import { DigitalMailerService } from './digital-mailer.service';
 import { DigitalAccessService } from './digital-access.service';
+import { CUSTOMER_EMAIL_DEFAULTS_BY_LOCALE } from '../notifications/customer-email-locales';
 import { CUSTOMER_EMAIL_CATALOG, CUSTOMER_EMAIL_EVENTS } from '../notifications/customer-email-events';
 import { FakeModel, makeDb } from './testing/fake-db.kit-spec';
 
@@ -94,5 +95,18 @@ describe('file update mails', () => {
     expect(n).toBe(2);
     expect(sent.map((x) => x.to).sort()).toEqual(['c1@example.com', 'c2@example.com']);
     expect(sent[0].vars.versionLabel).toBe('2.0');
+  });
+});
+
+describe('Urdu built-in texts', () => {
+  it('every digital email has an Urdu text that uses exactly the same tags as English', async () => {
+    const tags = (t: string) => (t.match(/\{\{\w+\}\}/g) ?? []).sort().join(',');
+    for (const ev of DIGITAL_EVENTS) {
+      const ur = (CUSTOMER_EMAIL_DEFAULTS_BY_LOCALE as any).ur[ev];
+      const en = (CUSTOMER_EMAIL_CATALOG as any)[ev];
+      expect(!!ur).toBe(true);
+      expect(tags(ur.subject)).toBe(tags(en.defaultSubject));
+      expect(tags(ur.body)).toBe(tags(en.defaultBody));
+    }
   });
 });

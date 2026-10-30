@@ -13,6 +13,7 @@ import { actingSellerId } from '../common/acting-seller-id.util';
 import { resolveBuyerStoreScope } from '../common/store-scope.util';
 import { verifyStoreOwnershipOrForbidden } from '../common/store-ownership.util';
 import { DatabaseService } from '../database/databaseservice';
+import { pageOf } from '../common/paging';
 import { CoursesService } from './courses.service';
 
 class QuizDto { @IsArray() answers: number[]; }
@@ -69,7 +70,7 @@ export class SellerCoursesController {
   constructor(private readonly svc: CoursesService, private readonly db: DatabaseService) {}
   private own = (req: any, storeId: string) => verifyStoreOwnershipOrForbidden(this.db.repositories.storeModel as any, storeId, actingSellerId(req.user));
 
-  @Get() async list(@Req() req: any, @Param('storeId') s: string) { await this.own(req, s); return this.svc.list(s); }
+  @Get() async list(@Req() req: any, @Param('storeId') s: string, @Query('page') page?: string, @Query('limit') limit?: string) { await this.own(req, s); return this.svc.list(s, pageOf(page, limit)); }
   @Post() async create(@Req() req: any, @Param('storeId') s: string, @Body() b: any) { await this.own(req, s); return this.svc.create(s, b); }
   @Get(':id') async get(@Req() req: any, @Param('storeId') s: string, @Param('id') id: string) { await this.own(req, s); return this.svc.get(s, id); }
   @Patch(':id') async update(@Req() req: any, @Param('storeId') s: string, @Param('id') id: string, @Body() b: any) { await this.own(req, s); return this.svc.update(s, id, b); }

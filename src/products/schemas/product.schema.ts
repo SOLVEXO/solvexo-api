@@ -198,6 +198,14 @@ export class Product {
   @Prop({ type: [String], default: [] })
   images: string[];
 
+  // Optional product video shown in the storefront gallery: an uploaded file (Cloudinary) or a YouTube / Vimeo link.
+  @Prop({ type: String, default: '' })
+  videoUrl: string;
+
+  // true = the video is the first item of the gallery (the cover stays the first image).
+  @Prop({ type: Boolean, default: false })
+  videoFirst: boolean;
+
   @Prop({ type: [String], default: [] })
   tags: string[];
 

@@ -16,8 +16,7 @@ import { InjectConnection } from '@nestjs/mongoose';
 import { ClientSession, Connection, Types, isValidObjectId } from 'mongoose';
 import {
   PRODUCT_LIMITS, assertMoney, assertStockQuantity, copySku, findDuplicateSku, generateSkus, normalizeBarcode, normalizeDescription,
-  normalizeImages, normalizeName, normalizeSku, normalizeStatus, normalizeTags, resolveScheduledAt,
-} from './product-input.util';
+  normalizeImages, normalizeName, normalizeSku, normalizeStatus, normalizeTags, resolveScheduledAt, normalizeVideoUrl } from './product-input.util';
 import { softDeleteProducts } from './product-cascade.util';
 import { normalizeComplementaryIds } from './complementary-products.util';
 import { buildStoreProductFilter, productSort } from './product-list-filter.util';
@@ -1240,6 +1239,8 @@ export class ProductsService {
             categoryId,
             subCategoryId: subCategoryId ?? null,
             images,
+            videoUrl: normalizeVideoUrl(body.videoUrl),
+            videoFirst: body.videoFirst === true,
             tags,
             digital: null,
             isListedOnSolvexo: isListedOnSolvexo ?? false,
@@ -1412,6 +1413,8 @@ export class ProductsService {
             customLevel: normalizedFields.customLevel,
             normalizedCustomLevel: normalizedFields.normalizedCustomLevel,
             images,
+            videoUrl: normalizeVideoUrl(body.videoUrl),
+            videoFirst: body.videoFirst === true,
             tags,
             digital: digitalPayload,
             isListedOnSolvexo: isListedOnSolvexo ?? false,
@@ -1586,6 +1589,8 @@ export class ProductsService {
     }
     if (subCategoryId !== undefined) productUpdate.subCategoryId = subCategoryId;
     if (images !== undefined) productUpdate.images = normalizeImages(images);
+    if (body?.videoUrl !== undefined) productUpdate.videoUrl = normalizeVideoUrl(body.videoUrl);
+    if (body?.videoFirst !== undefined) productUpdate.videoFirst = body.videoFirst === true;
     if (tags !== undefined) productUpdate.tags = normalizeTags(tags);
     if (isListedOnSolvexo !== undefined) productUpdate.isListedOnSolvexo = !!isListedOnSolvexo;
     if (templateKey !== undefined) productUpdate.templateKey = templateKey;

@@ -52,6 +52,30 @@ export function normalizeImages(raw: unknown): string[] {
   return out;
 }
 
+const VIDEO_HOSTS = new Set([
+  'res.cloudinary.com',
+  'www.youtube.com', 'youtube.com', 'm.youtube.com', 'youtu.be', 'www.youtube-nocookie.com',
+  'vimeo.com', 'www.vimeo.com', 'player.vimeo.com',
+]);
+
+/** Optional product video: '' (none), an https Cloudinary upload, or a YouTube / Vimeo link. */
+export function normalizeVideoUrl(raw: unknown): string {
+  if (raw === undefined || raw === null) return '';
+  if (typeof raw !== 'string') throw new BadRequestException('videoUrl must be a link');
+  const url = raw.trim();
+  if (!url) return '';
+  let parsed: URL;
+  try { parsed = new URL(url); } catch { throw new BadRequestException('Product video must be a valid link'); }
+  if (parsed.protocol !== 'https:' || url.length > PRODUCT_LIMITS.imageUrlMax) throw new BadRequestException('Product video must be a valid https link');
+  if (!VIDEO_HOSTS.has(parsed.hostname.toLowerCase())) {
+    throw new BadRequestException('Product video must be an uploaded file or a YouTube / Vimeo link');
+  }
+  if (parsed.hostname.toLowerCase() === 'res.cloudinary.com' && !/\/video\/upload\//.test(parsed.pathname)) {
+    throw new BadRequestException('Upload a video file (not an image) as the product video');
+  }
+  return url;
+}
+
 export function normalizeTags(raw: unknown): string[] {
   if (raw === undefined || raw === null) return [];
   if (!Array.isArray(raw)) throw new BadRequestException('tags must be a list');

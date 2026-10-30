@@ -38,6 +38,42 @@ export const EMAIL_UI_STRINGS: Record<string, EmailUiStrings> = {
 
 export const CUSTOMER_EMAIL_DEFAULTS_BY_LOCALE: Record<string, Partial<Record<CustomerEmailEvent, { subject: string; body: string }>>> = {
   ur: {
+    digital_purchase_delivered: {
+      subject: "{{storeName}} سے آپ کی ڈاؤن لوڈز تیار ہیں",
+      body: "سلام {{customerName}}،\n\nآپ کی خریداری کا شکریہ! {{productName}} اب آپ کی لائبریری سے ڈاؤن لوڈ کے لیے تیار ہے:\n{{libraryUrl}}\n\nکوئی مسئلہ ہو تو اس ای میل کا جواب دیں۔",
+    },
+    digital_file_updated: {
+      subject: "{{productName}} اپڈیٹ ہو گیا ہے",
+      body: "سلام {{customerName}}،\n\n{{productName}} میں {{fileName}} کا نیا ورژن ({{versionLabel}}) دستیاب ہے۔\n{{changelog}}\n\nاسے اپنی لائبریری سے ڈاؤن لوڈ کریں:\n{{libraryUrl}}",
+    },
+    digital_access_link: {
+      subject: "{{storeName}} سے آپ کی ڈاؤن لوڈز",
+      body: "سلام {{customerName}}،\n\nاپنی ڈاؤن لوڈز کھولنے کے لیے یہ لنک استعمال کریں۔ یہ 30 منٹ تک کام کرتا ہے:\n{{libraryUrl}}\n\nاگر آپ نے یہ درخواست نہیں کی تو اس ای میل کو نظر انداز کر دیں۔",
+    },
+    membership_welcome: {
+      subject: "{{planName}} میں خوش آمدید",
+      body: "سلام {{customerName}}،\n\n{{storeName}} پر {{planName}} میں خوش آمدید! اپنی ممبرشپ یہاں سنبھالیں:\n{{membershipUrl}}",
+    },
+    membership_renewal_reminder: {
+      subject: "آپ کی {{planName}} جلد تجدید ہو گی",
+      body: "سلام {{customerName}}،\n\n{{storeName}} پر آپ کی {{planName}} ممبرشپ {{renewalDate}} کو تجدید ہو گی۔\nیہاں سنبھالیں:\n{{membershipUrl}}",
+    },
+    membership_payment_failed: {
+      subject: "{{planName}} کے لیے ادائیگی درکار ہے",
+      body: "سلام {{customerName}}،\n\n{{storeName}} پر آپ کی {{planName}} ممبرشپ کی ادائیگی موصول نہیں ہوئی۔ رسائی برقرار رکھنے کے لیے براہ کرم ادائیگی مکمل کریں۔\n{{membershipUrl}}",
+    },
+    membership_grace_period: {
+      subject: "آپ کی {{planName}} کی رسائی ختم ہونے والی ہے",
+      body: "سلام {{customerName}}،\n\n{{storeName}} پر {{planName}} کی ادائیگی ابھی باقی ہے۔ آپ کی رسائی کچھ وقت کے لیے جاری ہے۔ رسائی کھونے سے بچنے کے لیے ادائیگی کریں۔\n{{membershipUrl}}",
+    },
+    membership_cancelled: {
+      subject: "آپ کی {{planName}} ممبرشپ ختم ہو گئی",
+      body: "سلام {{customerName}}،\n\n{{storeName}} پر آپ کی {{planName}} ممبرشپ ختم ہو گئی ہے۔ آپ جب چاہیں دوبارہ شامل ہو سکتے ہیں:\n{{membershipUrl}}",
+    },
+    membership_expired: {
+      subject: "آپ کی {{planName}} ممبرشپ کی مدت ختم ہو گئی",
+      body: "سلام {{customerName}}،\n\n{{storeName}} پر آپ کی {{planName}} ممبرشپ کی مدت ختم ہو گئی ہے۔ رسائی واپس پانے کے لیے یہاں تجدید کریں:\n{{membershipUrl}}",
+    },
     order_confirmation: {
       subject: '{{storeName}} سے آپ کا آرڈر تصدیق شدہ ہے',
       body: 'سلام {{customerName}}،\n\nآپ کے آرڈر کا شکریہ! {{storeName}} سے آرڈر {{orderNumber}} کی تصدیق ہو گئی ہے۔\n\n{{itemList}}\n\nذیلی کل: {{subtotal}}\nشپنگ: {{shipping}}\nٹیکس: {{tax}}\nکل رقم: {{total}}\n\nاس آرڈر کے بارے میں کوئی سوال ہو تو بس اس ای میل کا جواب دیں۔',

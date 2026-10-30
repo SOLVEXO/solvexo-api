@@ -92,7 +92,7 @@ export class SellerMembershipsController {
   private by = (req: any) => String(req.user.userId ?? req.user.staffId ?? 'seller');
 
   @Get('plans') @RequirePermission('members.manage')
-  async plans(@Req() req: any, @Param('storeId') storeId: string) { await this.own(req, storeId); return this.svc.listPlans(storeId); }
+  async plans(@Req() req: any, @Param('storeId') storeId: string, @Query('page') page?: string, @Query('limit') limit?: string) { await this.own(req, storeId); return this.svc.listPlansPaged(storeId, pageOf(page, limit)); }
 
   @Post('plans') @RequirePermission('members.manage')
   async create(@Req() req: any, @Param('storeId') storeId: string, @Body() body: any) { await this.own(req, storeId); await this.entitlements.assertFeatureAllowed(storeId, 'digitalMembershipsAllowed', 'Memberships'); return this.svc.createPlan(storeId, body); }
