@@ -16,7 +16,7 @@ const ALLOWED_EXT = new Set([
 ]);
 const BLOCKED_EXT = new Set(['exe', 'bat', 'sh', 'msi', 'apk', 'cmd', 'com', 'scr', 'jar', 'ps1', 'vbs', 'dmg']);
 
-const PRIVATE_ID = /^private\/digital-products\/[A-Za-z0-9_\-./ ()]+$/;
+export const PRIVATE_ID = /^private\/digital-products\/[A-Za-z0-9_\-./ ()]+$/;
 
 const clean = (v: any, max: number): string | null => {
   if (v === undefined || v === null) return null;
