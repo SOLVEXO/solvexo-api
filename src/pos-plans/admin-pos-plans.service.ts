@@ -1,15 +1,24 @@
 /* eslint-disable prettier/prettier */
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { Types } from 'mongoose';
+import { ActivityLogService } from '../activity-log/activity-log.service';
 import { DatabaseService } from '../database/databaseservice';
 import { CreatePosPlanDto } from './dto/create-pos-plan.dto';
 import { UpdatePosPlanDto } from './dto/update-pos-plan.dto';
 import { PosPurchaseQueryDto } from './dto/pos-purchase-query.dto';
+import { GrantPosPlanDto, RevokePosPlanDto } from './dto/manual-pos-plan.dto';
+
+/** Who performed a manual action — written to the audit log with the reason. */
+export interface AdminActor { adminId: string; email?: string | null; ip?: string | null; userAgent?: string | null }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 @Injectable()
 export class AdminPosPlansService {
-  constructor(private readonly databaseService: DatabaseService) {}
+  constructor(
+    private readonly databaseService: DatabaseService,
+    private readonly activityLog: ActivityLogService,
+  ) {}
 
   private get r() {
     return this.databaseService.repositories;
@@ -44,6 +53,94 @@ export class AdminPosPlansService {
       priceUSD: this.toUsd(p.price, p.currency, rates),
     }));
     return { success: true, data };
+  }
+
+  // ── Manual grant / extend / revoke ────────────────────────────────────────────────────────────────
+
+  private async requireStore(storeId: string) {
+    const store: any = await this.r.storeModel.findOne({ _id: storeId, isDelete: false }).select('name sellerId').lean();
+    if (!store) throw new NotFoundException('Store not found');
+    return store;
+  }
+
+  private async latestPurchase(storeId: string): Promise<any> {
+    return this.r.posPurchaseModel.findOne({ storeId }).sort({ purchasedAt: -1 }).lean();
+  }
+
+  private audit(actor: AdminActor, action: string, storeId: string, description: string, metadata: object) {
+    return this.activityLog.log({
+      category: 'admin_audit', action, description,
+      actorId: actor.adminId, actorName: actor.email ?? null, actorRole: 'admin',
+      targetId: storeId, targetType: 'store', ip: actor.ip ?? null, userAgent: actor.userAgent ?? null,
+      metadata: { ...metadata, adminId: actor.adminId },
+    });
+  }
+
+  private async createManualPurchase(store: any, storeId: string, dto: GrantPosPlanDto, actor: AdminActor, expiresAt: Date) {
+    let planId = 'manual';
+    let planName = 'Manual grant';
+    if (dto.planId) {
+      const plan: any = await this.r.posPlanModel.findById(dto.planId).lean();
+      if (!plan) throw new NotFoundException('Plan not found');
+      planId = String(plan._id);
+      planName = `${plan.name} (manual)`;
+    }
+    return this.r.posPurchaseModel.create({
+      storeId,
+      sellerId: String(store.sellerId),
+      planId,
+      planNameSnapshot: planName,
+      priceSnapshot: 0,
+      currencySnapshot: 'USD',
+      durationInDaysSnapshot: dto.days,
+      stripeCheckoutSessionId: `manual:${new Types.ObjectId()}`,
+      stripePaymentIntentId: null,
+      purchasedAt: new Date(),
+      expiresAt,
+      source: 'manual',
+      grantedByAdminId: actor.adminId,
+      grantReason: dto.reason,
+    });
+  }
+
+  /** Gives a store with NO active plan `days` days of POS access starting now. */
+  async grantManually(dto: GrantPosPlanDto, actor: AdminActor) {
+    const store = await this.requireStore(dto.storeId);
+    const latest = await this.latestPurchase(dto.storeId);
+    if (latest && new Date(latest.expiresAt).getTime() > Date.now()) {
+      throw new BadRequestException('This store already has an active POS plan — use extend instead');
+    }
+    const expiresAt = new Date(Date.now() + dto.days * DAY_MS);
+    const purchase = await this.createManualPurchase(store, dto.storeId, dto, actor, expiresAt);
+    await this.audit(actor, 'pos_plan_granted', dto.storeId, `POS plan granted to "${store.name}" for ${dto.days} day(s): ${dto.reason}`,
+      { days: dto.days, reason: dto.reason, expiresAt, purchaseId: String(purchase._id) });
+    return { success: true, message: 'POS plan granted', data: purchase };
+  }
+
+  /** Adds `days` to a store's current expiry (or to now, if it lapsed). The new row becomes the latest purchase. */
+  async extendManually(dto: GrantPosPlanDto, actor: AdminActor) {
+    const store = await this.requireStore(dto.storeId);
+    const latest = await this.latestPurchase(dto.storeId);
+    const base = latest && new Date(latest.expiresAt).getTime() > Date.now() ? new Date(latest.expiresAt).getTime() : Date.now();
+    const expiresAt = new Date(base + dto.days * DAY_MS);
+    const purchase = await this.createManualPurchase(store, dto.storeId, dto, actor, expiresAt);
+    await this.audit(actor, 'pos_plan_extended', dto.storeId, `POS plan for "${store.name}" extended by ${dto.days} day(s): ${dto.reason}`,
+      { days: dto.days, reason: dto.reason, previousExpiresAt: latest?.expiresAt ?? null, expiresAt, purchaseId: String(purchase._id) });
+    return { success: true, message: 'POS plan extended', data: purchase };
+  }
+
+  /** Ends a store's access immediately by expiring every still-running purchase (rows are kept for history). */
+  async revokeManually(dto: RevokePosPlanDto, actor: AdminActor) {
+    const store = await this.requireStore(dto.storeId);
+    const now = new Date();
+    const result = await this.r.posPurchaseModel.updateMany(
+      { storeId: dto.storeId, expiresAt: { $gt: now } },
+      { $set: { expiresAt: now, revokedAt: now, revokedByAdminId: actor.adminId, revokeReason: dto.reason } },
+    );
+    if (result.modifiedCount === 0) throw new BadRequestException('This store has no active POS plan to revoke');
+    await this.audit(actor, 'pos_plan_revoked', dto.storeId, `POS plan revoked for "${store.name}": ${dto.reason}`,
+      { reason: dto.reason, purchasesRevoked: result.modifiedCount });
+    return { success: true, message: 'POS plan revoked', data: { storeId: dto.storeId, revoked: result.modifiedCount } };
   }
 
   async createPlan(dto: CreatePosPlanDto) {
