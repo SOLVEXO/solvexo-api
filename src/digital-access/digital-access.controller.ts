@@ -23,6 +23,17 @@ class DownloadTokenDto {
   @IsOptional() @IsString() storeId?: string;
 }
 
+class RecoverDto {
+  @IsString() @IsNotEmpty() storeId: string;
+  @IsString() @IsNotEmpty() orderRef: string;
+  @IsString() @IsNotEmpty() email: string;
+}
+
+class RecoveredTokenDto {
+  @IsString() @IsNotEmpty() productId: string;
+  @Type(() => Number) @IsInt() @Min(0) @Max(1000) fileIndex: number;
+}
+
 const ctxOf = (req: any) => ({ ip: String(req.ip ?? ''), userAgent: String(req.headers?.['user-agent'] ?? '') });
 
 /** Buyer side: library + single-use download tokens. */
@@ -49,6 +60,26 @@ export class DigitalBuyerController {
   token(@Req() req: any, @Body() dto: DownloadTokenDto) {
     const storeId = resolveBuyerStoreScope(req.user.storeId, dto.storeId);
     return this.delivery.mintToken(storeId, req.user.userId, dto.productId, dto.fileIndex, ctxOf(req));
+  }
+
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Post('recover')
+  recover(@Req() req: any, @Body() dto: RecoverDto) {
+    return this.delivery.recoverGuest(dto.storeId, dto.orderRef, dto.email, ctxOf(req));
+  }
+
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  @Get('recovered/:rt/library')
+  async recoveredLibrary(@Param('rt') rt: string) {
+    const { storeId, customerId } = await this.delivery.resolveRecovery(rt);
+    return this.access.library(storeId, customerId);
+  }
+
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  @Post('recovered/:rt/download-token')
+  async recoveredToken(@Req() req: any, @Param('rt') rt: string, @Body() dto: RecoveredTokenDto) {
+    const { storeId, customerId } = await this.delivery.resolveRecovery(rt);
+    return this.delivery.mintToken(storeId, customerId, dto.productId, dto.fileIndex, ctxOf(req));
   }
 
   // Token-only (browser download link): single use, 5 min.

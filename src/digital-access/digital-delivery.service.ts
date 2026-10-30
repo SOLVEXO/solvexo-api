@@ -82,6 +82,38 @@ export class DigitalDeliveryService {
     return { token, expiresInSeconds: TOKEN_TTL_SECONDS, fileName: file.name };
   }
 
+  /**
+   * Guest recovery: order number (or id) + the email used at checkout => a 30 minute recovery
+   * token that can list the library and mint download tokens for THAT customer in THAT store.
+   * Same answer whether or not the order exists (no enumeration); 5 tries / hour / IP.
+   */
+  async recoverGuest(storeId: string, orderRef: string, email: string, ctx: Ctx) {
+    const tries = await this.redis.incrWithTtl(`dl:rec:${ctx.ip}`, 3600);
+    if (tries > 5) throw new HttpException('Too many attempts, try again later', HttpStatus.TOO_MANY_REQUESTS);
+    const ref = String(orderRef ?? '').trim().slice(0, 40);
+    const mail = String(email ?? '').trim().toLowerCase().slice(0, 200);
+    const miss = new NotFoundException('We could not find a matching order');
+    if (!ref || !mail || !storeId) throw miss;
+    const { orderModel, userModel } = this.db.repositories as any;
+    const order: any = await orderModel
+      .findOne({ $or: [{ orderNumber: ref }, ...(/^[a-f0-9]{24}$/i.test(ref) ? [{ _id: ref }] : [])], isPaid: true, isDelete: false, 'sellerOrders.storeId': storeId })
+      .lean();
+    if (!order) throw miss;
+    const user: any = await userModel.findOne({ _id: order.userId }).select('email contactEmail').lean();
+    const ok = [user?.email, user?.contactEmail].filter(Boolean).some((e: string) => String(e).toLowerCase() === mail);
+    if (!ok) throw miss;
+    const token = randomBytes(32).toString('hex');
+    await this.redis.set(`dl:recov:${hash(token)}`, JSON.stringify({ storeId, customerId: String(order.userId) }), 1800);
+    return { recoveryToken: token, expiresInSeconds: 1800 };
+  }
+
+  async resolveRecovery(token: string): Promise<{ storeId: string; customerId: string }> {
+    if (!token || typeof token !== 'string' || token.length > 200) throw new ForbiddenException('Invalid recovery link');
+    const raw = await this.redis.get(`dl:recov:${hash(token)}`);
+    if (!raw) throw new ForbiddenException('Recovery link expired');
+    return JSON.parse(raw);
+  }
+
   /** Step 2 (token only, no JWT): single use. Re-checks can(), concurrency, limit, anomalies. */
   async redeem(token: string, ctx: Ctx): Promise<{ buffer: Buffer; fileName: string; mimeType: string }> {
     if (!token || typeof token !== 'string' || token.length > 200) throw new BadRequestException('Invalid link');
