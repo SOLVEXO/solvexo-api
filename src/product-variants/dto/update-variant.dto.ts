@@ -85,6 +85,10 @@ export class UpdateVariantDto {
 
   @IsOptional()
   @IsString()
+  videoUrl?: string;
+
+  @IsOptional()
+  @IsString()
   sku?: string;
 
   @IsOptional()

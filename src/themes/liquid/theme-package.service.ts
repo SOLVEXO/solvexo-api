@@ -522,7 +522,7 @@ export class ThemePackageService {
         compare_at_price: compareAtPrices.length ? Math.round(Math.min(...compareAtPrices) * 100) : null,
         vendor: product.vendor ?? '',
         featured_image: product.images?.[0] ? { src: product.images[0], alt: product.name } : null,
-        images: (product.images ?? []).map((src: string) => ({ src, alt: product.name })),
+        images: (product.images ?? []).map((src: string) => ({ src, alt: product.name })), video_url: product.videoUrl ?? '', video_first: !!product.videoFirst,
         tags: product.tags ?? [],
         variants: storefrontVariants,
         rating: product.averageRating ?? 0,
@@ -733,7 +733,7 @@ export class ThemePackageService {
         first_available_variant: mappedVariants.find((variant) => variant.available) ?? null,
         vendor: product.vendor ?? '',
         featured_image: product.images?.[0] ? { src: product.images[0], alt: product.name } : null,
-        images: (product.images ?? []).map((src: string) => ({ src, alt: product.name })),
+        images: (product.images ?? []).map((src: string) => ({ src, alt: product.name })), video_url: product.videoUrl ?? '', video_first: !!product.videoFirst,
         tags: product.tags ?? [],
       };
     }
@@ -783,7 +783,7 @@ export class ThemePackageService {
           first_available_variant: mappedVariants.find((variant) => variant.available) ?? null,
           vendor: product.vendor ?? '',
         featured_image: product.images?.[0] ? { src: product.images[0], alt: product.name } : null,
-          images: (product.images ?? []).map((src: string) => ({ src, alt: product.name })), tags: product.tags ?? [],
+          images: (product.images ?? []).map((src: string) => ({ src, alt: product.name })), video_url: product.videoUrl ?? '', video_first: !!product.videoFirst, tags: product.tags ?? [],
         };
       }
     }

@@ -1128,6 +1128,7 @@ export class ProductsService {
       customs: { countryOfOrigin: null, hsCode: null, customsDescription: null, ...customs.value },
       taxable: v.taxable !== false,
       images: normalizeImages(v.images),
+      videoUrl: normalizeVideoUrl(v.videoUrl),
       sku: normalizeSku(v.sku),
       barcode: normalizeBarcode(v.barcode),
       isDefault: v.isDefault === true,
@@ -1858,11 +1859,12 @@ export class ProductsService {
         defaultVariant?.customsDescription ?? '',
         defaultVariant && defaultVariant.taxable === false ? 'no' : 'yes',
         defaultVariant?.images?.[0] ?? product.images?.[0] ?? '',
+        product.videoUrl ?? '',
       ]);
     }
 
     return toCsv(
-      ['Name', 'SKU', 'Type', 'Product Type', 'Status', 'Price', 'Compare-at Price', 'Stock', 'Variant Count', 'Tags', 'All-Time Sales', 'Category', 'Length (cm)', 'Width (cm)', 'Height (cm)', 'Country of Origin', 'HS Code', 'Customs Description', 'Charge Tax', 'Image URL'],
+      ['Name', 'SKU', 'Type', 'Product Type', 'Status', 'Price', 'Compare-at Price', 'Stock', 'Variant Count', 'Tags', 'All-Time Sales', 'Category', 'Length (cm)', 'Width (cm)', 'Height (cm)', 'Country of Origin', 'HS Code', 'Customs Description', 'Charge Tax', 'Image URL', 'Video URL'],
       rows,
     );
   }

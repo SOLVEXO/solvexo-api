@@ -10,6 +10,7 @@ import {
 } from '../common/bulk-import/bulk-import.util';
 import { verifyStoreOwnershipOrForbidden } from '../common/store-ownership.util';
 import { parseCustomsInput } from '../shipping-rates/customs.util';
+import { normalizeVideoUrl } from './product-input.util';
 
 /** Product import (Shopify-style "Import products"): CSV template + per-row
  *  create/update through the real ProductsService/ProductVariantsService
@@ -36,6 +37,7 @@ export const PRODUCT_IMPORT_COLUMNS: BulkColumn[] = [
   { key: 'Customs Description', description: 'Short goods description for customs forms (max 200 chars).', example: 'Cotton t-shirt' },
   { key: 'Charge Tax', description: 'yes / no — "Charge tax on this product". Blank = unchanged (new products are taxable).', example: 'yes' },
   { key: 'Image URL', description: 'https link to a photo. It becomes the product photo and the photo shown when this variant is chosen. Blank = unchanged.', example: 'https://example.com/photo.jpg' },
+  { key: 'Video URL', description: 'https link to an uploaded video, or a YouTube / Vimeo link, shown in the product gallery. Blank = unchanged.', example: 'https://www.youtube.com/watch?v=...' },
 ];
 
 export interface ProductImportDeps {
@@ -97,6 +99,8 @@ export async function importProductsCsv(
     const taxable = parseBoolCell(r['Charge Tax'], 'Charge Tax');
     const imageUrl = r['Image URL'].trim();
     if (imageUrl && !/^https?:\/\/\S+$/i.test(imageUrl)) throw new BulkRowError('Image URL must start with http:// or https://');
+    let videoUrl = '';
+    try { videoUrl = normalizeVideoUrl((r['Video URL'] ?? '').trim()); } catch (e: any) { throw new BulkRowError(`Video URL: ${e?.message ?? 'invalid link'}`); }
     // Customs info: only NON-blank cells are applied (blank = leave unchanged), normalised + validated by the
     // same parser the variant form uses.
     const customsBody: Record<string, string> = {};
@@ -135,6 +139,7 @@ export async function importProductsCsv(
       if (status && status !== p.status) productPatch.status = status;
       if (imageUrl && (p.images ?? [])[0] !== imageUrl) productPatch.images = [imageUrl, ...(p.images ?? []).filter((x: string) => x !== imageUrl)];
       if (categoryId && categoryId !== String(p.categoryId)) productPatch.categoryId = categoryId;
+      if (videoUrl && videoUrl !== (p.videoUrl ?? '')) productPatch.videoUrl = videoUrl;
 
       const variantPatch: Record<string, unknown> = {};
       if (price !== undefined && price !== v.price) variantPatch.price = price;
@@ -178,6 +183,7 @@ export async function importProductsCsv(
       description: r['Description'] || name, // the schema requires a description
       categoryId,
       images: imageUrl ? [imageUrl] : [],
+      videoUrl,
       tags,
       status: status ?? 'draft',
       variants: [
