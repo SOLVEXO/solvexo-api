@@ -483,6 +483,14 @@ export class Store {
   @Prop({ type: Boolean, default: true })
   taxRegistered!: boolean;
 
+  // Digital downloads: what happens when one customer downloads from many distinct IPs in 24h.
+  @Prop({ type: String, enum: ['off', 'soft-flag', 'block'], default: 'soft-flag' })
+  digitalAbuseMode!: string;
+
+  // sha256 of the license API token (the token itself is shown once, never stored)
+  @Prop({ type: String, default: null, select: false, index: true })
+  licenseApiTokenHash!: string | null;
+
   // Shopify international checkout notice: "Duties and import taxes are not included — you may be charged on
   // delivery" shown to buyers whose shipping country differs from the store country. Default on.
   @Prop({ type: Boolean, default: true })

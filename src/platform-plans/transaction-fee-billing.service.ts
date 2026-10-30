@@ -141,7 +141,7 @@ export class TransactionFeeBillingService {
     if (!seller?.stripeCustomerId) {
       this.activityLogService.log({
         storeId, category: 'finance', action: 'transaction_fee_billing_skipped',
-        description: `Transaction fees of $${amountUSD.toFixed(2)} for ${periodKey} could not be billed — the seller has no billing payment method on file yet; they will be included once one is added.`,
+        description: `Transaction fees of $ ${amountUSD.toFixed(2)} for ${periodKey} could not be billed — the seller has no billing payment method on file yet; they will be included once one is added.`,
         actorRole: 'system', targetId: storeId, targetType: 'store',
       });
       return 'skipped';
@@ -203,7 +203,7 @@ export class TransactionFeeBillingService {
       });
       this.activityLogService.log({
         storeId, category: 'finance', action: 'transaction_fees_billed',
-        description: `Transaction fees ${periodKey}: $${amountUSD.toFixed(2)} invoiced (${status})`,
+        description: `Transaction fees ${periodKey}: $ ${amountUSD.toFixed(2)} invoiced (${status})`,
         actorRole: 'system', targetId: billId, targetType: 'transaction_fee_bill',
       });
       return 'billed';

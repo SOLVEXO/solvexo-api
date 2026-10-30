@@ -3561,7 +3561,7 @@ export class OrdersService {
       // independently-deduped arrays that could misalign.
       const seenPairs = new Set<string>();
       const amount = order.totalAmount ?? 0;
-      const symbol = order.currency === 'PKR' ? 'Rs. ' : order.currency === 'USD' ? '$' : `${order.currency} `;
+      const symbol = order.currency === 'PKR' ? 'Rs' : order.currency === 'USD' ? '$' : order.currency;
 
       for (const so of order.sellerOrders) {
         const pairKey = `${so.sellerId}:${so.storeId}`;
@@ -3571,7 +3571,7 @@ export class OrdersService {
           recipientId: so.sellerId, recipientRole: 'seller', storeId: so.storeId,
           type: NOTIFICATION_TYPES.ORDER_PAYMENT_OVERDUE,
           title: 'Order payment overdue',
-          body: `Order ${order.orderNumber} (${symbol}${amount}) was due ${new Date(order.dueDate).toLocaleDateString()} and is still unpaid.`,
+          body: `Order ${order.orderNumber} (${symbol} ${amount}) was due ${new Date(order.dueDate).toLocaleDateString()} and is still unpaid.`,
           data: { orderId: order._id.toString(), link: `/store/${so.storeId}/orders/${order._id.toString()}` },
         });
       }

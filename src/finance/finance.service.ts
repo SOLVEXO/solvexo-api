@@ -42,7 +42,7 @@ function clearingDaysForRail(paymentMethodType: string): number {
 
 /** Currency-aware amount formatting for CSV export — every other currency-agnostic $-literal in this file was a latent multi-currency bug waiting to happen; this is the one shared spot so it can't drift per call site. */
 function amountFmt(n: number, currency: string): string {
-  return currency === 'USD' ? `$${n.toFixed(2)}` : `${currency} ${n.toFixed(2)}`;
+  return currency === 'USD' ? `$ ${n.toFixed(2)}` : `${currency} ${n.toFixed(2)}`;
 }
 
 @Injectable()
@@ -312,13 +312,13 @@ export class FinanceService implements OnModuleInit {
   /** "2.9% + <fixed part in the store's currency>" — the fixed $0.30 converted at the latest rate (USD stays $0.30). */
   private async processingFeeText(currency: string): Promise<string> {
     const pct = `${+(PAYMENT_PROCESSING_RATE * 100).toFixed(2)}%`;
-    if (currency === 'USD') return `${pct} + $${PAYMENT_PROCESSING_FIXED.toFixed(2)}`;
+    if (currency === 'USD') return `${pct} + $ ${PAYMENT_PROCESSING_FIXED.toFixed(2)}`;
     const row: any = await this.db.repositories.exchangeRateModel
       .findOne({ currency, isRejected: false, effectiveFrom: { $lte: new Date() } })
       .sort({ effectiveFrom: -1 }).select('ratePerUSD').lean();
     return row?.ratePerUSD > 0
       ? `${pct} + ${currency} ${(PAYMENT_PROCESSING_FIXED * row.ratePerUSD).toFixed(2)}`
-      : `${pct} + $${PAYMENT_PROCESSING_FIXED.toFixed(2)}`;
+      : `${pct} + $ ${PAYMENT_PROCESSING_FIXED.toFixed(2)}`;
   }
 
   /** Compute next scheduled payout date from current schedule */

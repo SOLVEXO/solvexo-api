@@ -94,7 +94,7 @@ export class ShippingZonesService {
       storeId,
       category: 'settings',
       action: 'shipping_zone_created',
-      description: `${dto.city ?? dto.country} — Rs${dto.shippingPrice}`,
+      description: `${dto.city ?? dto.country} — Rs ${dto.shippingPrice}`,
       actorId: sellerId,
       actorRole: 'seller',
       targetId: String(zone._id),

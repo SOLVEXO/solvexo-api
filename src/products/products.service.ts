@@ -1,3 +1,6 @@
+import { normalizeDigital } from './digital-input.util';
+
+const pickNewFile = (b: any) => ({ url: b?.url, name: b?.name, size: b?.size, mimeType: b?.mimeType });
 import {
   Injectable,
   UnauthorizedException,
@@ -1284,6 +1287,42 @@ export class ProductsService {
     };
   }
 
+  /**
+   * M4: publish a new version of one digital file. The array slot (fileIndex) stays, so every
+   * DigitalAccess / order that points at it automatically serves the latest version; the old
+   * version is kept in file.history. Returns the saved file (without history urls).
+   */
+  async publishDigitalFileVersion(sellerId: string, productId: string, fileIndex: number, body: any) {
+    const { productModel } = this.databaseService.repositories;
+    const product: any = await productModel.findOne({ _id: productId, sellerId, isDelete: false });
+    if (!product || product.type !== 'digital' || !product.digital?.files?.[fileIndex]) throw new NotFoundException('File not found');
+    const old = product.digital.files[fileIndex];
+    if (old.archived) throw new BadRequestException('This file was removed');
+
+    const next = normalizeDigital({ files: [{ ...(old.toObject?.() ?? old), ...pickNewFile(body) }] }, { files: [] }).files[0];
+    const version = body?.version ? String(body.version).trim().slice(0, 30) : null;
+    const changelog = body?.changelog ? String(body.changelog).trim().slice(0, 1000) : null;
+    if (!version) throw new BadRequestException('version is required');
+    if (version === old.version) throw new BadRequestException('Use a new version number');
+
+    const history = [
+      ...(old.history ?? []).slice(-49),
+      { url: old.url, name: old.name, size: old.size ?? null, mimeType: old.mimeType ?? null, version: old.version ?? null, changelog: old.changelog ?? null, replacedAt: new Date() },
+    ];
+    const set: any = {
+      [`digital.files.${fileIndex}.url`]: next.url,
+      [`digital.files.${fileIndex}.name`]: next.name,
+      [`digital.files.${fileIndex}.size`]: next.size,
+      [`digital.files.${fileIndex}.mimeType`]: next.mimeType,
+      [`digital.files.${fileIndex}.version`]: version,
+      [`digital.files.${fileIndex}.changelog`]: changelog,
+      [`digital.files.${fileIndex}.updatedAt`]: new Date(),
+      [`digital.files.${fileIndex}.history`]: history,
+    };
+    await productModel.updateOne({ _id: productId, sellerId }, { $set: set });
+    return { success: true, data: { fileIndex, version, name: next.name, storeId: String(product.storeId), productName: product.name, changelog } };
+  }
+
   async addDigitalProduct(sellerId: string, body: any) {
     const { storeModel, sellerModel, productModel, productVariantModel } = this.databaseService.repositories;
 
@@ -1348,7 +1387,7 @@ export class ProductsService {
 
     const categoryId = await this.resolveProductCategoryId(storeId, store.categoryId, requestedCategoryId);
     // Prepared BEFORE the transaction: it can upload/derive a preview file, which must not hold a transaction open.
-    const digitalPayload = digital ? await this.prepareDigitalPreview(null, digital) : null;
+    const digitalPayload = digital ? await this.prepareDigitalPreview(null, normalizeDigital(digital)) : null;
 
     const productId = new Types.ObjectId();
     const [sku] = generateSkus(String(productId), 1, []);
@@ -1576,7 +1615,7 @@ export class ProductsService {
       productUpdate.scheduledAt = resolveScheduledAt('scheduled', scheduledAt);
     }
     if (digital !== undefined && product.type === 'digital') {
-      productUpdate.digital = await this.prepareDigitalPreview(product.digital?.preview, digital);
+      productUpdate.digital = await this.prepareDigitalPreview(product.digital?.preview, normalizeDigital(digital, product.digital));
     }
 
     if (educationLevel !== undefined && product.productType === 'educational') {

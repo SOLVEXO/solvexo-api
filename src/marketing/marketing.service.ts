@@ -48,7 +48,7 @@ export class MarketingService {
       expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : null,
     });
 
-    const discountLabel = dto.discountType === 'percentage' ? `${dto.discountValue}% off` : `$${dto.discountValue} off`;
+    const discountLabel = dto.discountType === 'percentage' ? `${dto.discountValue}% off` : `$ ${dto.discountValue} off`;
     const expiryLabel = coupon.expiresAt ? ` — expires ${coupon.expiresAt.toLocaleDateString()}` : '';
 
     this.activityLogService.log({

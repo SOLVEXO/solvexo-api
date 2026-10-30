@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { DigitalAccessModule } from '../digital-access/digital-access.module';
 import { productController } from './products.controller';
 import { ProductsService } from './products.service';
 import { EducationLevelService } from './education-level.service';
@@ -12,6 +13,7 @@ import { ProductVariantsModule } from '@/product-variants/product-variants.modul
 
 @Module({
   imports: [
+    DigitalAccessModule,
     AuthModule,
     RedisModule,
     AdminConfigModule,

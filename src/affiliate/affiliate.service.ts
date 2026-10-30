@@ -224,11 +224,11 @@ export class AffiliateService {
 
     this.activityLogService.log({
       storeId, category: 'marketing', action: 'affiliate_paid',
-      description: `Marked $${totalPaid.toFixed(2)} paid to affiliate "${affiliate.name}" (${pending.length} referral(s))`,
+      description: `Marked $ ${totalPaid.toFixed(2)} paid to affiliate "${affiliate.name}" (${pending.length} referral(s))`,
       actorRole: 'seller', targetId: affiliateId, targetType: 'affiliate',
     });
 
-    return { success: true, message: `Marked $${totalPaid.toFixed(2)} paid`, data: this.toApiShape(affiliate) };
+    return { success: true, message: `Marked $ ${totalPaid.toFixed(2)} paid`, data: this.toApiShape(affiliate) };
   }
 
   // ── Public click tracking ─────────────────────────────────────────────────
@@ -300,7 +300,7 @@ export class AffiliateService {
 
       this.activityLogService.log({
         storeId: affiliate.storeId, category: 'marketing', action: 'affiliate_conversion',
-        description: `Order ${matchedOrderId} attributed to affiliate "${affiliate.name}" — $${commissionUSD.toFixed(2)} commission`,
+        description: `Order ${matchedOrderId} attributed to affiliate "${affiliate.name}" — $ ${commissionUSD.toFixed(2)} commission`,
         actorRole: 'system', targetId: matchedOrderId, targetType: 'order',
       });
     } catch (e: any) {
