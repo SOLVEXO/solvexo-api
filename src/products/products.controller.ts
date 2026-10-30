@@ -12,6 +12,7 @@ import {
   UseInterceptors,
   UploadedFile,
   ForbiddenException,
+  BadRequestException,
 } from '@nestjs/common';
 import type { Response } from 'express';
 import { FileInterceptor } from '@nestjs/platform-express';
@@ -150,6 +151,16 @@ export class productController {
   async addDigitalProduct(@Req() req: any, @Body() body: any) {
     const sellerId = actingSellerId(req.user);
     return this.ProductsService.addDigitalProduct(sellerId, body);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('products.edit')
+  @Post('digital-file-version/:productId/:fileIndex')
+  async publishDigitalFileVersion(@Req() req: any, @Param('productId') productId: string, @Param('fileIndex') fileIndex: string, @Body() body: any) {
+    const idx = Number(fileIndex);
+    if (!Number.isInteger(idx) || idx < 0) throw new BadRequestException('Invalid file index');
+    return this.ProductsService.publishDigitalFileVersion(actingSellerId(req.user), productId, idx, body);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)

@@ -75,6 +75,16 @@ export class DigitalFile {
   // "removed" by the seller: hidden from new buyers but the index stays valid
   @Prop({ default: false })
   archived: boolean;
+
+  // ---- versions (M4): the file above is always the LATEST; older ones live here ----
+  @Prop({ type: Date, default: null })
+  updatedAt: Date | null;
+
+  @Prop({ type: String, default: null })
+  changelog: string | null;
+
+  @Prop({ type: [{ url: String, name: String, size: Number, mimeType: String, version: String, changelog: String, replacedAt: Date, _id: false }], default: [] })
+  history: { url: string; name: string; size: number | null; mimeType: string | null; version: string | null; changelog: string | null; replacedAt: Date }[];
 }
 export const DigitalFileSchema = SchemaFactory.createForClass(DigitalFile);
 

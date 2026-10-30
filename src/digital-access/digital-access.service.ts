@@ -185,7 +185,7 @@ export class DigitalAccessService {
         downloadLimit: p.digital.downloadLimit,
         downloadsUsed: doc.downloadCount,
         files: (p.digital.files ?? [])
-          .map((f: any, fileIndex: number) => ({ fileIndex, name: f.name, label: f.label ?? null, version: f.version ?? null, size: f.size ?? null, archived: !!f.archived, position: f.position ?? 0 }))
+          .map((f: any, fileIndex: number) => ({ fileIndex, name: f.name, label: f.label ?? null, version: f.version ?? null, updatedAt: f.updatedAt ?? null, changelog: f.changelog ?? null, size: f.size ?? null, archived: !!f.archived, position: f.position ?? 0 }))
           .filter((f: any) => !f.archived)
           .sort((a: any, b: any) => a.position - b.position),
       });
