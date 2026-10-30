@@ -6,6 +6,7 @@ import { DatabaseService } from '../database/databaseservice';
 import { PaymentGatewayService } from '../subscriptions/payment-gateway/payment-gateway.service';
 import { verifyStoreOwnershipOrForbidden } from '../common/store-ownership.util';
 import { CreateCheckoutSessionDto } from './dto/create-checkout-session.dto';
+import { isPosEntitlementEnforced } from '../pos/guards/pos-entitlement.guard';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -47,7 +48,7 @@ export class PosPlansService {
 
     const purchase = await this.r.posPurchaseModel.findOne({ storeId }).sort({ purchasedAt: -1 });
     if (!purchase) {
-      return { success: true, data: { status: 'none' } };
+      return { success: true, data: { status: 'none', enforced: isPosEntitlementEnforced() } };
     }
 
     const now = Date.now();
@@ -58,6 +59,9 @@ export class PosPlansService {
       success: true,
       data: {
         status: isActive ? 'active' : 'expired',
+        // Whether the backend is actually blocking selling for a store without an active plan
+        // (POS_ENTITLEMENT_ENFORCED). Lets the app mirror the server instead of inventing a rule of its own.
+        enforced: isPosEntitlementEnforced(),
         planName: purchase.planNameSnapshot,
         purchasedAt: purchase.purchasedAt,
         expiresAt: purchase.expiresAt,

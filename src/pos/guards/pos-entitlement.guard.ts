@@ -17,7 +17,8 @@ const OBJECT_ID = /^[a-f0-9]{24}$/i;
  * existing base of stores can be audited/backfilled before enforcement is turned on. Read per request, so
  * flipping the env var + restarting is the whole rollout.
  */
-const enforced = () => process.env.POS_ENTITLEMENT_ENFORCED === 'true';
+export const isPosEntitlementEnforced = () => process.env.POS_ENTITLEMENT_ENFORCED === 'true';
+const enforced = isPosEntitlementEnforced;
 
 /**
  * Gate for every POS route that *starts or continues selling*: an active POS plan
