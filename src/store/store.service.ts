@@ -1771,7 +1771,9 @@ export class StoreService {
     if (query.search && String(query.search).trim()) {
       // Like Shopify: the term matches the title, vendor, product type and tags.
       const searchRx = { $regex: String(query.search).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' };
-      filter.$and = [...(filter.$and ?? []), { $or: [{ name: searchRx }, { vendor: searchRx }, { productType: searchRx }, { tags: searchRx }] }];
+      // ...and a variant SKU (SKUs live on the variants, so look the products up through them).
+      const skuProductIds = await this.databaseService.repositories.productVariantModel.distinct('productId', { storeId, isDelete: false, sku: searchRx });
+      filter.$and = [...(filter.$and ?? []), { $or: [{ name: searchRx }, { vendor: searchRx }, { productType: searchRx }, { tags: searchRx }, ...(skuProductIds.length ? [{ _id: { $in: skuProductIds.slice(0, 500) } }] : [])] }];
     }
     // Collection membership — resolved via CollectionsService (manual: the
     // seller's own ordered pick; automatic: category/tag rule, evaluated

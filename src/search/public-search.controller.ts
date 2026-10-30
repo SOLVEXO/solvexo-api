@@ -59,8 +59,10 @@ export class PublicSearchController {
     const rx = new RegExp(escapeRegex(q), 'i');
     const { productModel, productVariantModel, collectionModel } = this.db.repositories;
 
+    // A variant SKU also finds its product (SKUs live on the variants).
+    const skuProductIds: string[] = await productVariantModel.distinct('productId', { storeId, isDelete: false, sku: rx });
     const [products, collections, content, tagRows] = await Promise.all([
-      productModel.find({ storeId, isDelete: false, status: 'active', $or: [{ name: rx }, { vendor: rx }, { productType: rx }] }).select('name slug images').sort({ createdAt: -1 }).limit(limit).lean(),
+      productModel.find({ storeId, isDelete: false, status: 'active', $or: [{ name: rx }, { vendor: rx }, { productType: rx }, ...(skuProductIds.length ? [{ _id: { $in: skuProductIds.slice(0, 200) } }] : [])] }).select('name slug images').sort({ createdAt: -1 }).limit(limit).lean(),
       collectionModel.find({ storeId, isDelete: false, status: 'active', name: rx }).select('name slug image').limit(limit).lean(),
       this.contentMatches(storeId, rx, limit),
       productModel.aggregate([
