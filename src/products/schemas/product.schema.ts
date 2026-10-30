@@ -53,6 +53,28 @@ export class DigitalFile {
 
   @Prop({ type: String, default: null })
   mimeType: string | null;
+
+  // ---- multi-file / versioning (all optional; old single-file products keep working) ----
+  @Prop({ type: String, default: null })
+  label: string | null;
+
+  @Prop({ type: String, default: null })
+  version: string | null;
+
+  @Prop({ default: false })
+  stampPdf: boolean;
+
+  // AccessPlan id required to download this file (M5); null = anyone who bought it
+  @Prop({ type: String, default: null })
+  requiresPlan: string | null;
+
+  // display order only; the array index is NEVER reordered (orders reference it)
+  @Prop({ type: Number, default: 0 })
+  position: number;
+
+  // "removed" by the seller: hidden from new buyers but the index stays valid
+  @Prop({ default: false })
+  archived: boolean;
 }
 export const DigitalFileSchema = SchemaFactory.createForClass(DigitalFile);
 

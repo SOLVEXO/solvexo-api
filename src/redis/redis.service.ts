@@ -60,6 +60,12 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     await this.client.del(key);
   }
 
+  async decr(key: string): Promise<void> {
+    if (!this._isConnected) return;
+    const n = await this.client.decr(key);
+    if (n <= 0) await this.client.del(key);
+  }
+
   async incrWithTtl(key: string, ttl: number): Promise<number> {
     if (!this._isConnected) return 0;
     const count = await this.client.incr(key);

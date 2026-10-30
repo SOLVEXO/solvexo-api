@@ -1,3 +1,4 @@
+import { normalizeDigital } from './digital-input.util';
 import {
   Injectable,
   UnauthorizedException,
@@ -1348,7 +1349,7 @@ export class ProductsService {
 
     const categoryId = await this.resolveProductCategoryId(storeId, store.categoryId, requestedCategoryId);
     // Prepared BEFORE the transaction: it can upload/derive a preview file, which must not hold a transaction open.
-    const digitalPayload = digital ? await this.prepareDigitalPreview(null, digital) : null;
+    const digitalPayload = digital ? await this.prepareDigitalPreview(null, normalizeDigital(digital)) : null;
 
     const productId = new Types.ObjectId();
     const [sku] = generateSkus(String(productId), 1, []);
@@ -1576,7 +1577,7 @@ export class ProductsService {
       productUpdate.scheduledAt = resolveScheduledAt('scheduled', scheduledAt);
     }
     if (digital !== undefined && product.type === 'digital') {
-      productUpdate.digital = await this.prepareDigitalPreview(product.digital?.preview, digital);
+      productUpdate.digital = await this.prepareDigitalPreview(product.digital?.preview, normalizeDigital(digital, product.digital));
     }
 
     if (educationLevel !== undefined && product.productType === 'educational') {
