@@ -1332,6 +1332,8 @@ export const STOREFRONT_EN: Record<string, any> = {
   "share": "Share",
   "shippingFrom": "Shipping {{price}}",
   "showImageN": "Show image {{n}}",
+  "showVideo": "Show video",
+  "video": "Product video",
   "sizeChart": "Size chart",
   "sku": "SKU",
   "soldOut": "Sold out",
