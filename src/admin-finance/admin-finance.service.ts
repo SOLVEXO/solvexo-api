@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { BadRequestException, Injectable, Optional } from '@nestjs/common';
+import { latestUsdRates, toUsd } from '../common/usd-rates.util';
 import { DatabaseService } from '../database/databaseservice';
 import { RedisService } from '../redis/redis.service';
 import { FinanceService } from '../finance/finance.service';
@@ -56,21 +57,12 @@ export class AdminFinanceService {
    * USD figure for the platform owner — Solvexo's own books are USD (Stripe);
    * PKR rows exist only because some sellers' stores settle in PKR.
    */
-  private async getUsdRates(): Promise<Map<string, number>> {
-    const rates = await this.r.exchangeRateModel.aggregate([
-      { $match: { isRejected: false } },
-      { $sort: { effectiveFrom: -1 } },
-      { $group: { _id: '$currency', ratePerUSD: { $first: '$ratePerUSD' } } },
-    ]);
-    const map = new Map<string, number>(rates.map((r: any) => [r._id, r.ratePerUSD]));
-    map.set('USD', 1);
-    return map;
+  private getUsdRates(): Promise<Map<string, number>> {
+    return latestUsdRates(this.r.exchangeRateModel);
   }
 
-  /** `null` when no rate is known — callers must disclose, never guess. */
   private toUsd(amount: number, currency: string, rates: Map<string, number>): number | null {
-    const rate = rates.get(currency);
-    return rate && rate > 0 ? amount / rate : null;
+    return toUsd(amount, currency, rates);
   }
 
   // ═══════════════════════════════════════════════════════════════════════
