@@ -236,6 +236,9 @@ export class MembershipsService {
   }
 
   async sellerGrant(storeId: string, customerId: string, planId: string, by: string) {
+    // only a buyer account of THIS store (or a legacy global buyer) can be granted a membership
+    const user: any = await (this.db.repositories as any).userModel.findOne({ _id: customerId, isDelete: { $ne: true } }).select('storeId').lean().catch(() => null);
+    if (!user || (user.storeId && String(user.storeId) !== storeId)) throw new NotFoundException('Customer not found');
     const sub = await this.join(storeId, customerId, planId);
     const plan = await this.planModel.findOne({ _id: planId, storeId }).lean();
     if (plan && plan.type !== 'free') return this.markPaid(storeId, String(sub._id), by); // a manual grant is a gift: counts as paid

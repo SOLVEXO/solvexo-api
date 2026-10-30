@@ -1,6 +1,6 @@
 import { normalizeDigital } from './digital-input.util';
 
-const f = (n: string, u: string) => ({ url: 'https://x/' + u, name: n, size: 10 });
+const f = (n: string, u: string) => ({ url: 'private/digital-products/' + u, name: n, size: 10 });
 
 describe('normalizeDigital', () => {
   it('keeps indexes stable, archives removed files, appends new', () => {
@@ -10,6 +10,9 @@ describe('normalizeDigital', () => {
     expect(b.downloadLimit).toBe('3');
   });
   it.each([
+    [{ files: [{ url: 'https://evil.example/x.pdf', name: 'a.pdf', size: 1 }] }],
+    [{ files: [{ url: 'private/kyc-documents/x', name: 'a.pdf', size: 1 }] }],
+    [{ files: [{ url: 'private/digital-products/../kyc/x', name: 'a.pdf', size: 1 }] }],
     [{ files: [f('x.exe', 'x')] }],
     [{ files: [f('a.pdf', 'a')], downloadLimit: '9' }],
     [{ files: [f('a.pdf', 'a')], linkExpiryDays: 0 }],

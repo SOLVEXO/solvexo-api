@@ -16,6 +16,8 @@ const ALLOWED_EXT = new Set([
 ]);
 const BLOCKED_EXT = new Set(['exe', 'bat', 'sh', 'msi', 'apk', 'cmd', 'com', 'scr', 'jar', 'ps1', 'vbs', 'dmg']);
 
+const PRIVATE_ID = /^private\/digital-products\/[A-Za-z0-9_\-./ ()]+$/;
+
 const clean = (v: any, max: number): string | null => {
   if (v === undefined || v === null) return null;
   const s = String(v).trim();
@@ -86,7 +88,10 @@ export function normalizeDigital(input: any, existing?: any): any {
       if (!raw || typeof raw !== 'object') throw new BadRequestException('Invalid file entry');
       const url = clean(raw.url, 2000);
       const name = clean(raw.name, 255);
-      if (!url || !/^https:\/\//i.test(url)) throw new BadRequestException('Each file needs an https url');
+      // The upload endpoint returns a Cloudinary publicId under private/digital-products/. Only those (or a value this
+      // product already holds, for legacy data) are accepted: never an arbitrary link, never another folder (e.g. KYC documents).
+      const known = old.some((f) => f.url === url);
+      if (!url || (!known && (!PRIVATE_ID.test(url) || url.includes('..')))) throw new BadRequestException('Each file must be uploaded through the file uploader');
       if (!name) throw new BadRequestException('Each file needs a name');
       const size = raw.size === undefined || raw.size === null ? null : Number(raw.size);
       if (size !== null && (!Number.isFinite(size) || size < 0)) throw new BadRequestException('Invalid file size');
