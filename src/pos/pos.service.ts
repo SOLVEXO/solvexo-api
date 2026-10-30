@@ -4,9 +4,11 @@ import {
   BadRequestException,
   NotFoundException,
   ForbiddenException,
+  ConflictException,
 } from '@nestjs/common';
 import { availableStock, AVAILABLE_STOCK_EXPR } from '@/common/stock-availability.util';
 import { drainLocationStock, restoreLocationStock } from '@/common/location-stock.util';
+import { Types } from 'mongoose';
 import * as bcrypt from 'bcrypt';
 import * as jwt from 'jsonwebtoken';
 import { DatabaseService } from '@/database/databaseservice';
@@ -440,6 +442,7 @@ export class PosService {
         price: v.price,
         compareAtPrice: v.compareAtPrice,
         stock: v.stock,
+        unlimitedStock: v.unlimitedStock === true,
         options: v.options,
         isDefault: v.isDefault,
         images: v.images,
@@ -491,6 +494,7 @@ export class PosService {
         price: v.price,
         compareAtPrice: v.compareAtPrice,
         stock: v.stock,
+        unlimitedStock: v.unlimitedStock === true,
         options: v.options,
         isDefault: v.isDefault,
         images: v.images,
@@ -524,16 +528,24 @@ export class PosService {
       throw new BadRequestException(`Register already has an open session (held by ${holder})`);
     }
 
-    const session = await this.r.registerSessionModel.create({
-      storeId: dto.storeId,
-      registerId: dto.registerId,
-      locationId: (register as any).locationId ?? null,
-      employeeId: dto.employeeId,
-      shiftId: dto.shiftId ?? null,
-      openedAt: new Date(),
-      openingCash: dto.openingCash,
-      status: 'open',
-    });
+    // The check above gives a friendly message; the unique partial index on (registerId, status:'open')
+    // is what actually guarantees one open session per register when two terminals open at once.
+    let session: any;
+    try {
+      session = await this.r.registerSessionModel.create({
+        storeId: dto.storeId,
+        registerId: dto.registerId,
+        locationId: (register as any).locationId ?? null,
+        employeeId: dto.employeeId,
+        shiftId: dto.shiftId ?? null,
+        openedAt: new Date(),
+        openingCash: dto.openingCash,
+        status: 'open',
+      });
+    } catch (err: any) {
+      if (err?.code === 11000) throw new BadRequestException('Register already has an open session');
+      throw err;
+    }
 
     this.writeAuditLog({ storeId: dto.storeId, employeeId: dto.employeeId, action: 'session_opened', targetId: String(session._id), targetType: 'session', metadata: { registerId: dto.registerId, openingCash: dto.openingCash } }).catch(() => {});
 
@@ -554,11 +566,13 @@ export class PosService {
     const expectedCash = session.openingCash + session.cashSales + cashIn - cashOut;
     const cashDifference = dto.closingCash - expectedCash;
 
-    const updated = await this.r.registerSessionModel.findByIdAndUpdate(
-      dto.sessionId,
+    // status-guarded so two close requests (retry / two terminals) can't both close and double-audit
+    const updated = await this.r.registerSessionModel.findOneAndUpdate(
+      { _id: dto.sessionId, status: 'open' },
       { $set: { closingCash: dto.closingCash, expectedCash, cashDifference, closedAt: new Date(), status: 'closed' } },
       { new: true },
     );
+    if (!updated) throw new ConflictException('This session was already closed');
 
     this.writeAuditLog({ storeId: (session as any).storeId, employeeId: (session as any).employeeId, action: 'session_closed', targetId: dto.sessionId, targetType: 'session', metadata: { closingCash: dto.closingCash, expectedCash, cashDifference } }).catch(() => {});
 
@@ -700,6 +714,9 @@ export class PosService {
 
     const session = await this.r.registerSessionModel.findOne({ _id: dto.sessionId, status: 'open' });
     if (!session) throw new BadRequestException('No open session found');
+    // The session must belong to the store this request is entitled/authorised for — otherwise a
+    // seller could sell into one store's register while the entitlement check passed for another.
+    if (String((session as any).storeId) !== String(dto.storeId)) throw new BadRequestException('Session does not belong to this store');
 
     const employee = await this.r.employeeModel.findOne({ _id: dto.employeeId, storeId: dto.storeId, isDelete: false });
     if (!employee) throw new BadRequestException('Employee not found');
@@ -754,82 +771,71 @@ export class PosService {
     }
     const total = subtotal - discount + tax;
 
+    // Take the stock first (all-or-nothing, floor-guarded). A completed sale only exists once its
+    // stock has genuinely been taken; if recording the sale then fails, the stock is handed back.
+    const sessionLocationId: string | null = (session as any).locationId ?? null;
+    const reserved = isHeld
+      ? []
+      : await this.reserveStock(dto.items.map((i, idx) => ({ variantId: i.variantId, qty: i.qty, sku: saleItems[idx].sku })), sessionLocationId);
+
     // saleNumber is only unique per-store, and two terminals in the same store
     // can check out at nearly the same instant — retry with a fresh number on
     // a rare duplicate-key collision instead of failing the sale outright.
-    // idempotencyKey is now a *unique* sparse index (sales.schema.ts) — a
+    // idempotencyKey is a *unique* sparse index (sales.schema.ts) — a
     // concurrent retry of the same logical checkout that loses the race
     // hits that instead of creating a second sale; re-fetch and return the
-    // winner rather than erroring, same contract as the pre-check above.
+    // winner (after giving back the stock this loser took).
     let sale: any;
-    for (let attempt = 0; attempt < 5; attempt++) {
-      const saleNumber = await this.generateSaleNumber(dto.storeId);
-      try {
-        sale = await this.r.saleModel.create({
-          saleNumber,
-          storeId: dto.storeId,
-          sessionId: dto.sessionId,
-          registerId: dto.registerId,
-          locationId: (session as any).locationId ?? null,
-          employeeId: dto.employeeId,
-          items: saleItems,
-          subtotal,
-          discount,
-          tax,
-          total,
-          paymentMethod: dto.paymentMethod,
-          customerId: dto.customerId ?? null,
-          customerName: dto.customerName ?? 'Walk-in',
-          notes: dto.notes ?? null,
-          heldAt: isHeld ? new Date() : null,
-          status: isHeld ? 'held' : 'completed',
-          // Omit entirely (not `null`) when absent — a `sparse` index only
-          // excludes documents where the field doesn't exist at all, not
-          // ones where it's explicitly set to `null`; setting it to `null`
-          // here made every key-less sale after the first collide on the
-          // unique index (E11000 on `idempotencyKey: null`), caught live
-          // while E2E-testing this change against a real running backend.
-          ...(dto.idempotencyKey ? { idempotencyKey: dto.idempotencyKey } : {}),
-        });
-        break;
-      } catch (err: any) {
-        if (err?.code === 11000 && err?.keyPattern?.saleNumber && attempt < 4) continue;
-        if (err?.code === 11000 && err?.keyPattern?.idempotencyKey && dto.idempotencyKey) {
-          const existing = await this.r.saleModel.findOne({ idempotencyKey: dto.idempotencyKey, storeId: dto.storeId }).lean();
-          if (existing) return { success: true, message: 'Duplicate request — returning existing sale', data: existing };
+    try {
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const saleNumber = await this.generateSaleNumber(dto.storeId);
+        try {
+          sale = await this.r.saleModel.create({
+            saleNumber,
+            storeId: dto.storeId,
+            sessionId: dto.sessionId,
+            registerId: dto.registerId,
+            locationId: sessionLocationId,
+            employeeId: dto.employeeId,
+            items: saleItems,
+            subtotal,
+            discount,
+            tax,
+            total,
+            paymentMethod: dto.paymentMethod,
+            customerId: dto.customerId ?? null,
+            customerName: dto.customerName ?? 'Walk-in',
+            notes: dto.notes ?? null,
+            heldAt: isHeld ? new Date() : null,
+            status: isHeld ? 'held' : 'completed',
+            // Omit entirely (not `null`) when absent — a `sparse` index only
+            // excludes documents where the field doesn't exist at all, not
+            // ones where it's explicitly set to `null`.
+            ...(dto.idempotencyKey ? { idempotencyKey: dto.idempotencyKey } : {}),
+          });
+          break;
+        } catch (err: any) {
+          if (err?.code === 11000 && err?.keyPattern?.saleNumber && attempt < 4) continue;
+          throw err;
         }
-        throw err;
       }
+    } catch (err: any) {
+      await this.releaseStock(reserved, sessionLocationId);
+      if (err?.code === 11000 && err?.keyPattern?.idempotencyKey && dto.idempotencyKey) {
+        const existing = await this.r.saleModel.findOne({ idempotencyKey: dto.idempotencyKey, storeId: dto.storeId }).lean();
+        if (existing) return { success: true, message: 'Duplicate request — returning existing sale', data: existing };
+      }
+      throw err;
     }
 
     if (!isHeld) {
-      // Decrement stock and update session totals only when completing.
-      // Floor-guarded ($gte qty) so a duplicate/concurrent decrement can't
-      // drive stock negative — unlimited-stock variants are still skipped.
-      for (const item of dto.items) {
-        const result = await this.r.productVariantModel.updateOne(
-          {
-            _id: item.variantId,
-            unlimitedStock: { $ne: true },
-            $expr: { $gte: [AVAILABLE_STOCK_EXPR, item.qty] },
-          },
-          { $inc: { stock: -item.qty } },
-        );
-        if (result.modifiedCount > 0) {
-          await drainLocationStock(this.r, String(item.variantId), item.qty, { preferLocationId: (session as any).locationId ?? null });
-        }
-        if (result.matchedCount === 0) {
-          // Either unlimitedStock (expected, not an error) or a genuine
-          // race lost the stock check — log for investigation, don't fail
-          // an already-created sale over it.
-          const stillExists = await this.r.productVariantModel.exists({ _id: item.variantId, unlimitedStock: { $ne: true } });
-          if (stillExists) {
-            // eslint-disable-next-line no-console
-            console.error(`[createSale] stock floor guard blocked decrement for variant ${item.variantId} on sale ${sale?._id}`);
-          }
-        }
+      try {
+        await this._incrementSessionTotals(dto.sessionId, total, dto.paymentMethod);
+      } catch (e: any) {
+        // The sale and its stock movement are committed; only the drawer counters missed this sale.
+        // eslint-disable-next-line no-console
+        console.error(`[createSale] session totals update failed for sale ${sale?._id} (session ${dto.sessionId}) — reconcile manually:`, e?.message);
       }
-      await this._incrementSessionTotals(dto.sessionId, total, dto.paymentMethod);
       await this.recordPosSaleInLedger(sale);
     }
 
@@ -857,8 +863,8 @@ export class PosService {
       this.requireManagerEmployee(employeeToken, (sale as any).storeId, 'apply a discount');
     }
 
-    // re-check stock before completing (against real availability — see
-    // ProductVariant.committedStock)
+    // friendly pre-check against real availability (see ProductVariant.committedStock); the
+    // authoritative, race-proof check is the atomic reserveStock below
     for (const item of (sale as any).items) {
       const variant = await this.r.productVariantModel.findOne({ _id: item.variantId, isDelete: false });
       if (!variant) throw new BadRequestException(`Variant no longer available: ${item.sku}`);
@@ -870,9 +876,18 @@ export class PosService {
 
     const tax = dto.tax ?? (sale as any).tax;
     const total = (sale as any).subtotal - discount + tax;
+    const locationId: string | null = (sale as any).locationId ?? null;
 
-    const updated = await this.r.saleModel.findByIdAndUpdate(
-      saleId,
+    // Stock first, then claim the held sale with a status-guarded update: if two terminals (or a
+    // retry) both get here, exactly one wins the `held → completed` transition; the loser gives
+    // its stock back and is told the sale is already gone. No double decrement, no double count.
+    const reserved = await this.reserveStock(
+      (sale as any).items.map((i: any) => ({ variantId: String(i.variantId), qty: i.qty, sku: i.sku })),
+      locationId,
+    );
+
+    const updated = await this.r.saleModel.findOneAndUpdate(
+      { _id: saleId, status: 'held' },
       {
         $set: {
           status: 'completed',
@@ -886,20 +901,17 @@ export class PosService {
       },
       { new: true },
     );
-
-    // now decrement stock and update session (floor-guarded — see createSale)
-    for (const item of (sale as any).items) {
-      const dec = await this.r.productVariantModel.updateOne(
-        {
-          _id: item.variantId,
-          unlimitedStock: { $ne: true },
-          $expr: { $gte: [AVAILABLE_STOCK_EXPR, item.qty] },
-        },
-        { $inc: { stock: -item.qty } },
-      );
-      if (dec.modifiedCount > 0) await drainLocationStock(this.r, String(item.variantId), item.qty, { preferLocationId: (sale as any).locationId ?? null });
+    if (!updated) {
+      await this.releaseStock(reserved, locationId);
+      throw new ConflictException('This held sale was already completed or discarded');
     }
-    await this._incrementSessionTotals((sale as any).sessionId, total, dto.paymentMethod);
+
+    try {
+      await this._incrementSessionTotals((sale as any).sessionId, total, dto.paymentMethod);
+    } catch (e: any) {
+      // eslint-disable-next-line no-console
+      console.error(`[completeSale] session totals update failed for sale ${saleId} — reconcile manually:`, e?.message);
+    }
     await this.recordPosSaleInLedger(updated);
 
     this.writeAuditLog({ storeId: (sale as any).storeId, employeeId: (sale as any).employeeId, action: 'sale_completed', targetId: saleId, targetType: 'sale', metadata: { total, discount } }).catch(() => {});
@@ -971,18 +983,24 @@ export class PosService {
     const actor = this.requireManagerEmployee(employeeToken, (sale as any).storeId, 'issue refunds');
 
     const isPartial = dto?.items && dto.items.length > 0;
+    const locationId: string | null = (sale as any).locationId ?? null;
+
+    // Optimistic-concurrency claim: the sale document is updated only if it is still exactly in
+    // the state we just read (same status + same cumulative refundedAmount). Two concurrent
+    // refunds (double-tap, two terminals, a retry) therefore cannot both succeed — the loser gets
+    // a 409 — and stock is restored only by the request that won the claim.
+    const stateFilter = { _id: saleId, status: (sale as any).status, refundedAmount: (sale as any).refundedAmount || 0 };
+    const staleMessage = 'This sale was changed by another refund or terminal — reload it and check before refunding again';
 
     if (!isPartial) {
-      // full refund — existing behavior
-      for (const item of (sale as any).items) {
-        const unrefunded = item.qty - (item.refundedQty || 0);
-        if (unrefunded > 0) {
-          await this.r.productVariantModel.findByIdAndUpdate(item.variantId, { $inc: { stock: unrefunded } });
-          await restoreLocationStock(this.r, String(item.variantId), unrefunded, { preferLocationId: (sale as any).locationId ?? null });
-        }
-      }
       const refundAmount = (sale as any).total - ((sale as any).refundedAmount || 0);
-      await this.r.saleModel.findByIdAndUpdate(saleId, { status: 'refunded', refundedAmount: (sale as any).total });
+      const claimed = await this.r.saleModel.findOneAndUpdate(stateFilter, { $set: { status: 'refunded', refundedAmount: (sale as any).total } });
+      if (!claimed) throw new ConflictException(staleMessage);
+
+      const toRestore = (sale as any).items
+        .map((item: any) => ({ variantId: String(item.variantId), qty: item.qty - (item.refundedQty || 0) }))
+        .filter((i: any) => i.qty > 0);
+      await this.restoreSoldStock(toRestore, locationId);
 
       const sessionUpdate: any = { $inc: { totalRefunds: refundAmount, totalTransactions: -1 } };
       const pm = (sale as any).paymentMethod;
@@ -1012,17 +1030,7 @@ export class PosService {
 
       const lineRefund = parseFloat((refundItem.qty * saleItem.price).toFixed(2));
       partialTotal += lineRefund;
-      itemUpdates.push({ variantId: saleItem.variantId, qtyToRestore: refundItem.qty, saleItemId: refundItem.saleItemId });
-    }
-
-    // apply stock restores
-    for (const u of itemUpdates) {
-      await this.r.productVariantModel.findByIdAndUpdate(u.variantId, { $inc: { stock: u.qtyToRestore } });
-      await restoreLocationStock(this.r, String(u.variantId), u.qtyToRestore, { preferLocationId: (sale as any).locationId ?? null });
-      await this.r.saleModel.updateOne(
-        { _id: saleId, 'items._id': u.saleItemId },
-        { $inc: { 'items.$.refundedQty': u.qtyToRestore } },
-      );
+      itemUpdates.push({ variantId: String(saleItem.variantId), qtyToRestore: refundItem.qty, saleItemId: refundItem.saleItemId });
     }
 
     const newRefundedAmount = ((sale as any).refundedAmount || 0) + partialTotal;
@@ -1031,9 +1039,23 @@ export class PosService {
       const finalRefundedQty = (item.refundedQty || 0) + (updated?.qtyToRestore || 0);
       return finalRefundedQty >= item.qty;
     });
-
     const newStatus = allItemsFullyRefunded ? 'refunded' : 'partially_refunded';
-    await this.r.saleModel.findByIdAndUpdate(saleId, { status: newStatus, refundedAmount: newRefundedAmount });
+
+    // one atomic update: per-line refundedQty + cumulative amount + status together
+    const inc: Record<string, number> = {};
+    const arrayFilters: any[] = [];
+    itemUpdates.forEach((u, idx) => {
+      inc[`items.$[line${idx}].refundedQty`] = u.qtyToRestore;
+      arrayFilters.push({ [`line${idx}._id`]: new Types.ObjectId(u.saleItemId) });
+    });
+    const claimed = await this.r.saleModel.findOneAndUpdate(
+      stateFilter,
+      { $inc: inc, $set: { status: newStatus, refundedAmount: newRefundedAmount } },
+      { arrayFilters },
+    );
+    if (!claimed) throw new ConflictException(staleMessage);
+
+    await this.restoreSoldStock(itemUpdates.map((u) => ({ variantId: u.variantId, qty: u.qtyToRestore })), locationId);
 
     const sessionUpdate: any = { $inc: { totalRefunds: partialTotal } };
     await this.r.registerSessionModel.findByIdAndUpdate((sale as any).sessionId, sessionUpdate);
@@ -1050,9 +1072,44 @@ export class PosService {
 
     await this.verifyStoreOwnership((sale as any).storeId, sellerId);
 
-    await this.r.saleModel.findByIdAndDelete(saleId);
+    // status-guarded so a discard racing a completion can't delete a sale that just became real
+    const deleted = await this.r.saleModel.findOneAndDelete({ _id: saleId, status: 'held' });
+    if (!deleted) throw new ConflictException('This held sale was already completed or discarded');
 
     return { success: true, message: 'Held sale discarded' };
+  }
+
+  // ── CUSTOMER SEARCH (store-scoped) ────────────────────────────────────────
+
+  /**
+   * Finds customers to attach to a sale — limited to people who already relate to THIS store
+   * (placed an online order here, or were attached to an earlier POS sale). The generic
+   * draft-orders search queries every user on the platform by name/email/phone, which lets any
+   * seller enumerate other stores' buyers; POS must not expose that.
+   */
+  async searchStoreCustomers(sellerId: string, storeId: string, q: string) {
+    await this.verifyStoreOwnership(storeId, sellerId);
+    const term = (q ?? '').trim();
+    if (term.length < 2) return { success: true, data: [] };
+
+    const re = new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+
+    const orderRows = await this.r.orderModel.aggregate([
+      { $match: { 'sellerOrders.storeId': storeId, isDelete: false } },
+      { $group: { _id: { $ifNull: ['$customerId', '$userId'] } } },
+    ]);
+    const posCustomerIds: string[] = await this.r.saleModel.distinct('customerId', { storeId, customerId: { $ne: null } });
+    const ids = [...new Set([...orderRows.map((r: any) => String(r._id)), ...posCustomerIds.map(String)])]
+      .filter((id) => /^[a-f0-9]{24}$/i.test(id));
+    if (!ids.length) return { success: true, data: [] };
+
+    const users = await this.r.userModel
+      .find({ _id: { $in: ids }, $or: [{ name: re }, { email: re }, { phone: re }] })
+      .select('name email phone')
+      .limit(10)
+      .lean();
+
+    return { success: true, data: users.map((u: any) => ({ id: u._id.toString(), name: u.name, email: u.email, phone: u.phone })) };
   }
 
   // ── DAILY REPORT ──────────────────────────────────────────────────────────
@@ -1146,6 +1203,75 @@ export class PosService {
   }
 
   // ── PRIVATE HELPERS ───────────────────────────────────────────────────────
+
+  // ── ATOMIC STOCK HELPERS ──────────────────────────────────────────────────
+  // Stock is reserved BEFORE the sale document is written and handed back if the sale can't be
+  // recorded, so a sale never exists without its stock having been taken, and a lost race
+  // rejects the sale instead of silently overselling. (No Mongo transaction: nothing else in
+  // this codebase's sale paths uses one, and the per-variant `$gte`-guarded `$inc` is atomic.)
+
+  /** Takes `qty` of each stock-tracked line, all-or-nothing. Unlimited-stock variants are skipped. */
+  private async reserveStock(
+    items: Array<{ variantId: string; qty: number; sku?: string }>,
+    locationId: string | null,
+  ): Promise<Array<{ variantId: string; qty: number }>> {
+    const taken: Array<{ variantId: string; qty: number }> = [];
+    for (const item of items) {
+      const result = await this.r.productVariantModel.updateOne(
+        {
+          _id: item.variantId,
+          unlimitedStock: { $ne: true },
+          $expr: { $gte: [AVAILABLE_STOCK_EXPR, item.qty] },
+        },
+        { $inc: { stock: -item.qty } },
+      );
+      if (result.modifiedCount > 0) {
+        taken.push({ variantId: String(item.variantId), qty: item.qty });
+        await drainLocationStock(this.r, String(item.variantId), item.qty, { preferLocationId: locationId });
+        continue;
+      }
+      // Matched nothing: either an unlimited-stock variant (fine — nothing to take) or the floor
+      // guard lost a race / stock is short (reject and give back what this call already took).
+      const trackedVariantExists = await this.r.productVariantModel.exists({ _id: item.variantId, unlimitedStock: { $ne: true } });
+      if (trackedVariantExists) {
+        await this.releaseStock(taken, locationId);
+        throw new BadRequestException(`Insufficient stock for "${item.sku ?? item.variantId}"`);
+      }
+    }
+    return taken;
+  }
+
+  /** Puts back stock previously taken by reserveStock (compensation path). */
+  private async releaseStock(taken: Array<{ variantId: string; qty: number }>, locationId: string | null): Promise<void> {
+    for (const t of taken) {
+      try {
+        await this.r.productVariantModel.updateOne({ _id: t.variantId }, { $inc: { stock: t.qty } });
+        await restoreLocationStock(this.r, t.variantId, t.qty, { preferLocationId: locationId });
+      } catch (e: any) {
+        // eslint-disable-next-line no-console
+        console.error(`[pos] stock release failed for variant ${t.variantId} (qty ${t.qty}) — manual stock correction needed:`, e?.message);
+      }
+    }
+  }
+
+  /**
+   * Returns stock for a refund/void. Variants flagged `unlimitedStock` are skipped — they never
+   * had stock taken on sale, so adding units back would inflate a number that means nothing.
+   */
+  private async restoreSoldStock(items: Array<{ variantId: string; qty: number }>, locationId: string | null): Promise<void> {
+    if (!items.length) return;
+    const unlimited = new Set(
+      (await this.r.productVariantModel
+        .find({ _id: { $in: items.map((i) => i.variantId) }, unlimitedStock: true })
+        .select('_id')
+        .lean()).map((v: any) => String(v._id)),
+    );
+    for (const item of items) {
+      if (!(item.qty > 0) || unlimited.has(String(item.variantId))) continue;
+      await this.r.productVariantModel.findByIdAndUpdate(item.variantId, { $inc: { stock: item.qty } });
+      await restoreLocationStock(this.r, String(item.variantId), item.qty, { preferLocationId: locationId });
+    }
+  }
 
   private async _incrementSessionTotals(sessionId: string, total: number, paymentMethod: string) {
     const inc: any = { totalSales: total, totalTransactions: 1 };
@@ -1398,6 +1524,7 @@ export class PosService {
           price: (variant as any).price,
           compareAtPrice: (variant as any).compareAtPrice,
           stock: (variant as any).stock,
+          unlimitedStock: (variant as any).unlimitedStock === true,
           options: (variant as any).options,
           isDefault: (variant as any).isDefault,
         },
@@ -1418,16 +1545,18 @@ export class PosService {
 
     const actor = this.requireManagerEmployee(employeeToken, (sale as any).storeId, 'void sales');
 
-    for (const item of (sale as any).items) {
-      await this.r.productVariantModel.findByIdAndUpdate(item.variantId, { $inc: { stock: item.qty } });
-      await restoreLocationStock(this.r, String(item.variantId), item.qty, { preferLocationId: (sale as any).locationId ?? null });
-    }
+    // Claim the void with a status-guarded update first; only the request that wins the
+    // `completed → voided` transition restores stock and reverses the session totals.
+    const claimed = await this.r.saleModel.findOneAndUpdate(
+      { _id: saleId, status: 'completed' },
+      { $set: { status: 'voided', voidedAt: new Date(), voidedBy: actor.employeeId } },
+    );
+    if (!claimed) throw new ConflictException('This sale was already voided or refunded');
 
-    await this.r.saleModel.findByIdAndUpdate(saleId, {
-      status: 'voided',
-      voidedAt: new Date(),
-      voidedBy: actor.employeeId,
-    });
+    await this.restoreSoldStock(
+      (sale as any).items.map((item: any) => ({ variantId: String(item.variantId), qty: item.qty })),
+      (sale as any).locationId ?? null,
+    );
 
     const sessionUpdate: any = { $inc: { totalSales: -(sale as any).total, totalTransactions: -1 } };
     const pm = (sale as any).paymentMethod;

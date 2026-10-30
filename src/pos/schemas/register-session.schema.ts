@@ -99,6 +99,15 @@ export const RegisterSessionSchema = SchemaFactory.createForClass(RegisterSessio
 RegisterSessionSchema.index({ storeId: 1, status: 1 });
 RegisterSessionSchema.index({ employeeId: 1 });
 RegisterSessionSchema.index({ registerId: 1 });
+// At most ONE open session per register, enforced by the database (not just the service-level
+// findOne check, which two terminals opening at the same instant can both pass). Partial, so
+// closed sessions — any number per register — are unaffected.
+// NOTE: building this on a database that already holds two `open` sessions for one register
+// fails (Mongo logs it, the app keeps running) — close/force-close the duplicates first.
+RegisterSessionSchema.index(
+  { registerId: 1, status: 1 },
+  { unique: true, partialFilterExpression: { status: 'open' }, name: 'uniq_open_session_per_register' },
+);
 RegisterSessionSchema.index({ shiftId: 1 });
 RegisterSessionSchema.index({ storeId: 1, createdAt: -1 });
 RegisterSessionSchema.index({ locationId: 1, createdAt: -1 });

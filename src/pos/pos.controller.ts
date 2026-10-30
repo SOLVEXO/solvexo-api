@@ -17,8 +17,8 @@ import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { RequirePermission } from '../auth/decorators/require-permission.decorator';
 import { actingSellerId } from '../common/acting-seller-id.util';
-import { BillingAccessGuard } from '../platform-plans/guards/billing-access.guard';
-import { RequireActiveBilling } from '../platform-plans/decorators/require-active-billing.decorator';
+import { IdempotencyInterceptor } from '../common/idempotency.interceptor';
+import { PosEntitlementGuard } from './guards/pos-entitlement.guard';
 import { CreateEmployeeDto } from './dto/create-employee.dto';
 import { UpdateEmployeeDto } from './dto/update-employee.dto';
 import { PinLoginDto } from './dto/pin-login.dto';
@@ -160,7 +160,7 @@ export class PosController {
   // Seller (owner) or staff of that store only — a buyer/admin token has no
   // business minting POS employee sessions; the service additionally pins the
   // caller to the target store.
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, PosEntitlementGuard)
   @Roles('seller', 'staff')
   @Post('pin-login')
   pinLogin(@Req() req: any, @Body() dto: PinLoginDto) {
@@ -210,7 +210,7 @@ export class PosController {
   // PRODUCT SEARCH & BROWSE  (seller only)
   // ═══════════════════════════════════════════════════════════════════════════
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, PosEntitlementGuard)
   @Roles('seller')
   @Get('products/search')
   searchProducts(@Req() req: any, @Query('storeId') storeId: string, @Query('q') q: string) {
@@ -218,7 +218,7 @@ export class PosController {
   }
 
   // must be after /products/search — parameterized route last
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, PosEntitlementGuard)
   @Roles('seller')
   @Get('products/:storeId')
   getPosProducts(@Req() req: any, @Param('storeId') storeId: string, @Query() query: any) {
@@ -229,8 +229,9 @@ export class PosController {
   // SESSIONS  (seller only)
   // ═══════════════════════════════════════════════════════════════════════════
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, PosEntitlementGuard)
   @Roles('seller')
+  @UseInterceptors(IdempotencyInterceptor)
   @Post('sessions/open')
   openSession(@Req() req: any, @Body() dto: OpenSessionDto) {
     return this.posService.openSession(req.user.userId, dto);
@@ -238,6 +239,7 @@ export class PosController {
 
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('seller')
+  @UseInterceptors(IdempotencyInterceptor)
   @Post('sessions/close')
   closeSession(@Req() req: any, @Body() dto: CloseSessionDto) {
     return this.posService.closeSession(req.user.userId, dto);
@@ -257,8 +259,9 @@ export class PosController {
     return this.posService.getSessionHistory(req.user.userId, storeId, query);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, PosEntitlementGuard)
   @Roles('seller')
+  @UseInterceptors(IdempotencyInterceptor)
   @Post('sessions/:sessionId/cash-adjustment')
   cashInOut(@Req() req: any, @Param('sessionId') sessionId: string, @Body() dto: CashAdjustmentDto, @Headers('x-pos-employee-token') employeeToken?: string) {
     return this.posService.cashInOut(req.user.userId, sessionId, dto, employeeToken);
@@ -276,18 +279,14 @@ export class PosController {
   // SALES  (seller only)
   // ═══════════════════════════════════════════════════════════════════════════
 
-  @UseGuards(JwtAuthGuard, RolesGuard, BillingAccessGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, PosEntitlementGuard)
   @Roles('seller')
-  // Real in-person sale, blocked during a still-running trial — same
-  // "checkout disabled until a plan is chosen" rule as online checkout
-  // (see RequireActiveBillingOptions' own doc comment), matching Shopify's
-  // own real behavior (choosing a plan activates "online store checkout,
-  // and POS in-person sales"). Setup routes above (employees, registers,
-  // locations, PIN login) are deliberately NOT gated — only the actual
-  // sale-creation moment is. Enforced here at the backend, so it applies
-  // identically whether the caller is the web POS terminal or the native
-  // POS app — both hit this same endpoint.
-  @RequireActiveBilling({ blockDuringTrial: true })
+  // Gated by the POS plan only (PosEntitlementGuard) — the platform-plan trial guard
+  // (`BillingAccessGuard`/`blockDuringTrial`) no longer applies to POS routes. Enforced
+  // here at the backend, so it is identical for the web POS terminal and the native app.
+  // Idempotent on both the body `idempotencyKey` (unique index, survives header loss)
+  // and the `Idempotency-Key` header (replays the first response on an exact retry).
+  @UseInterceptors(IdempotencyInterceptor)
   @Post('sales')
   createSale(@Req() req: any, @Body() dto: CreateSaleDto, @Headers('x-pos-employee-token') employeeToken?: string) {
     return this.posService.createSale(req.user.userId, dto, employeeToken);
@@ -315,8 +314,9 @@ export class PosController {
     return this.posService.getSaleById(req.user.userId, saleId);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, PosEntitlementGuard)
   @Roles('seller')
+  @UseInterceptors(IdempotencyInterceptor)
   @Post('sales/:saleId/complete')
   completeSale(@Req() req: any, @Param('saleId') saleId: string, @Body() dto: CompleteSaleDto, @Headers('x-pos-employee-token') employeeToken?: string) {
     return this.posService.completeSale(req.user.userId, saleId, dto, employeeToken);
@@ -324,6 +324,7 @@ export class PosController {
 
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('seller')
+  @UseInterceptors(IdempotencyInterceptor)
   @Post('sales/:saleId/refund')
   refundSale(@Req() req: any, @Param('saleId') saleId: string, @Body() dto: RefundSaleDto, @Headers('x-pos-employee-token') employeeToken?: string) {
     return this.posService.refundSale(req.user.userId, saleId, dto, employeeToken);
@@ -331,6 +332,7 @@ export class PosController {
 
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('seller')
+  @UseInterceptors(IdempotencyInterceptor)
   @Delete('sales/:saleId/discard')
   discardHeldSale(@Req() req: any, @Param('saleId') saleId: string) {
     return this.posService.discardHeldSale(req.user.userId, saleId);
@@ -440,7 +442,7 @@ export class PosController {
   // PRODUCT BARCODE LOOKUP  (seller only)
   // ═══════════════════════════════════════════════════════════════════════════
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, PosEntitlementGuard)
   @Roles('seller')
   @Get('products/barcode/:storeId/:barcode')
   getProductByBarcode(@Req() req: any, @Param('storeId') storeId: string, @Param('barcode') barcode: string) {
@@ -453,16 +455,28 @@ export class PosController {
 
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('seller')
+  @UseInterceptors(IdempotencyInterceptor)
   @Post('sales/:saleId/void')
   voidSale(@Req() req: any, @Param('saleId') saleId: string, @Body() dto: { reason?: string }, @Headers('x-pos-employee-token') employeeToken?: string) {
     return this.posService.voidSale(req.user.userId, saleId, dto, employeeToken);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, PosEntitlementGuard)
   @Roles('seller')
   @Patch('sales/:saleId/items')
   editHeldSaleItems(@Req() req: any, @Param('saleId') saleId: string, @Body() dto: UpdateSaleItemsDto, @Headers('x-pos-employee-token') employeeToken?: string) {
     return this.posService.editHeldSaleItems(req.user.userId, saleId, dto, employeeToken);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // CUSTOMER SEARCH  (seller only) — scoped to this store's own buyers
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Get('customers/:storeId/search')
+  searchStoreCustomers(@Req() req: any, @Param('storeId') storeId: string, @Query('q') q: string) {
+    return this.posService.searchStoreCustomers(req.user.userId, storeId, q);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
