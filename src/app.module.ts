@@ -88,6 +88,7 @@ import { AppsModule } from './apps/apps.module';
 import { StoreFaqModule } from './store-faq/store-faq.module';
 import { StoreChatSettingsModule } from './store-chat-settings/store-chat-settings.module';
 import { DigitalAccessModule } from './digital-access/digital-access.module';
+import { MembershipsModule } from './memberships/memberships.module';
 import { DashboardLayoutsModule } from './dashboard-layouts/dashboard-layouts.module';
 import { StoreContactModule } from './store-contact/store-contact.module';
 import { CollectionTemplateModule } from './collection-template/collection-template.module';
@@ -211,6 +212,7 @@ import { AppI18nModule } from './i18n/i18n.module';
     StoreFaqModule,
     StoreChatSettingsModule,
     DigitalAccessModule,
+    MembershipsModule,
     DashboardLayoutsModule,
     StoreContactModule,
     CollectionTemplateModule,

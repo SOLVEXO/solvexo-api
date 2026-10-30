@@ -4,6 +4,7 @@ import { DatabaseService } from '../database/databaseservice';
 import { RedisService } from '../redis/redis.service';
 import { UploadService } from '../upload/upload.service';
 import { DigitalAccessService } from './digital-access.service';
+import { MembershipsService } from '../memberships/memberships.service';
 
 export const TOKEN_TTL_SECONDS = 300;
 export const TOKENS_PER_HOUR = 30; // per customer
@@ -25,6 +26,7 @@ export class DigitalDeliveryService {
     private readonly redis: RedisService,
     private readonly upload: UploadService,
     private readonly access: DigitalAccessService,
+    private readonly memberships: MembershipsService,
   ) {}
 
   private async log(storeId: string, customerId: string, productId: string | null, fileIndex: number | null, outcome: 'ok' | 'denied' | 'failed', reason: string, ctx: Ctx, flagged = false) {
@@ -62,8 +64,7 @@ export class DigitalDeliveryService {
       await this.log(storeId, customerId, productId, fileIndex, 'denied', 'file_unavailable', ctx);
       throw new NotFoundException('File not found');
     }
-    if (file.requiresPlan) {
-      // Plan gating arrives with memberships (M5); until then a plan-gated file is never served.
+    if (file.requiresPlan && !(await this.memberships.hasPlanAccess(storeId, customerId, String(file.requiresPlan)))) {
       await this.log(storeId, customerId, productId, fileIndex, 'denied', 'plan_required', ctx);
       throw new ForbiddenException('This file requires a membership');
     }

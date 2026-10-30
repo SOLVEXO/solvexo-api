@@ -5,6 +5,7 @@ import { RedisModule } from '../redis/redis.module';
 import { UploadModule } from '../upload/upload.module';
 import { DigitalAccess, DigitalAccessSchema, DeliveryLog, DeliveryLogSchema } from './digital-access.schema';
 import { DigitalAccessService } from './digital-access.service';
+import { MembershipsModule } from '../memberships/memberships.module';
 import { DigitalDeliveryService } from './digital-delivery.service';
 import { DigitalBuyerController, DigitalSellerController } from './digital-access.controller';
 
@@ -13,6 +14,7 @@ import { DigitalBuyerController, DigitalSellerController } from './digital-acces
     AuthModule,
     RedisModule,
     UploadModule,
+    MembershipsModule,
     MongooseModule.forFeature([
       { name: DigitalAccess.name, schema: DigitalAccessSchema },
       { name: DeliveryLog.name, schema: DeliveryLogSchema },

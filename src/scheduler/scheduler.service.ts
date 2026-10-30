@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { MembershipsService } from '../memberships/memberships.service';
 import { refreshAllExpiredStock } from '../common/expired-stock.util';
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
@@ -51,6 +52,7 @@ export class SchedulerService {
     private readonly storeCreditService: StoreCreditService,
     private readonly guestSessionService: GuestSessionService,
     private readonly authVisualService: AuthVisualService,
+    private readonly membershipsService: MembershipsService,
     private readonly customDomainsService: CustomDomainsService,
     private readonly financeService: FinanceService,
     private readonly redis: RedisService,
@@ -103,6 +105,15 @@ export class SchedulerService {
     if (result === 'lock_not_acquired') {
       this.logger.debug(`Skipped "${jobName}" — another instance already holds the lock (or Redis is unavailable)`);
     }
+  }
+
+  /** Hourly: membership reminders, payment-due and the dunning ladder (every step is a conditional update, so re-runs are safe). */
+  @Cron('20 * * * *')
+  async processMemberships() {
+    await this.runLocked('membership-renewals', 25 * 60_000, async () => {
+      const events = await this.membershipsService.processRenewals();
+      if (events.length > 0) this.logger.log(`Memberships: ${events.length} lifecycle event(s)`);
+    });
   }
 
   /** Hourly — fills the sign-up/login background photo pools ahead of visitors (a few per run: Unsplash Demo allows 50 searches/hour). */
@@ -387,7 +398,7 @@ export class SchedulerService {
     await this.runLocked('finance-clearing-balances', 45 * 60_000, async () => {
       const result = await this.financeService.processClearingBalances();
       if (result.processed > 0) {
-        this.logger.log(`Finance clearing: ${result.processed} transaction(s) cleared, $${result.totalAmount.toFixed(2)} moved to available balance`);
+        this.logger.log(`Finance clearing: ${result.processed} transaction(s) cleared, $ ${result.totalAmount.toFixed(2)} moved to available balance`);
       }
     });
   }
@@ -405,7 +416,7 @@ export class SchedulerService {
       const result = await this.financeService.processScheduledPayouts();
       if (result.payoutsCreated > 0 || result.schedulesChecked > 0) {
         this.logger.log(
-          `Scheduled payouts: ${result.schedulesChecked} schedule(s) due, ${result.payoutsCreated} payout(s) auto-created ($${result.totalAmount.toFixed(2)} total), ${result.skipped} skipped`,
+          `Scheduled payouts: ${result.schedulesChecked} schedule(s) due, ${result.payoutsCreated} payout(s) auto-created ($ ${result.totalAmount.toFixed(2)} total), ${result.skipped} skipped`,
         );
       }
     });
