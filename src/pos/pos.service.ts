@@ -10,6 +10,10 @@ import { availableStock, AVAILABLE_STOCK_EXPR } from '@/common/stock-availabilit
 import { drainLocationStock, restoreLocationStock } from '@/common/location-stock.util';
 import { Types } from 'mongoose';
 import { searchStoreCustomers } from '@/common/store-customer-search.util';
+import {
+  allocateRefund, assertClientTotal, byTender, computeTotals, DiscountType, effectivePayments, exponentOf, fromMinor,
+  moneyError, partialRefundAmount, roundMoney, settlePayments, tenderNets, toMinor, Totals,
+} from './pos-money.util';
 import * as bcrypt from 'bcrypt';
 import * as jwt from 'jsonwebtoken';
 import { DatabaseService } from '@/database/databaseservice';
@@ -537,16 +541,19 @@ export class PosService {
 
     // The check above gives a friendly message; the unique partial index on (registerId, status:'open')
     // is what actually guarantees one open session per register when two terminals open at once.
+    const sessionMoney = await this.moneyContext(dto.storeId);
     let session: any;
     try {
       session = await this.r.registerSessionModel.create({
         storeId: dto.storeId,
         registerId: dto.registerId,
+        currency: sessionMoney.currency,
+        currencyExponent: sessionMoney.exp,
         locationId: (register as any).locationId ?? null,
         employeeId: dto.employeeId,
         shiftId: dto.shiftId ?? null,
         openedAt: new Date(),
-        openingCash: dto.openingCash,
+        openingCash: roundMoney(dto.openingCash, sessionMoney.exp),
         status: 'open',
       });
     } catch (err: any) {
@@ -570,18 +577,20 @@ export class PosService {
     const cashIn = adjustments.filter((a: any) => a.type === 'cash_in').reduce((s: number, a: any) => s + a.amount, 0);
     const cashOut = adjustments.filter((a: any) => a.type === 'cash_out').reduce((s: number, a: any) => s + a.amount, 0);
 
-    const expectedCash = session.openingCash + session.cashSales + cashIn - cashOut;
-    const cashDifference = dto.closingCash - expectedCash;
+    const { exp: closeExp } = await this.docMoney(session);
+    const expectedCash = roundMoney(session.openingCash + session.cashSales + cashIn - cashOut, closeExp);
+    const closingCash = roundMoney(dto.closingCash, closeExp);
+    const cashDifference = roundMoney(closingCash - expectedCash, closeExp);
 
     // status-guarded so two close requests (retry / two terminals) can't both close and double-audit
     const updated = await this.r.registerSessionModel.findOneAndUpdate(
       { _id: dto.sessionId, status: 'open' },
-      { $set: { closingCash: dto.closingCash, expectedCash, cashDifference, closedAt: new Date(), status: 'closed' } },
+      { $set: { closingCash, expectedCash, cashDifference, closedAt: new Date(), status: 'closed' } },
       { new: true },
     );
     if (!updated) throw businessConflict('SESSION_ALREADY_CLOSED', 'This session was already closed');
 
-    this.writeAuditLog({ storeId: (session as any).storeId, employeeId: (session as any).employeeId, action: 'session_closed', targetId: dto.sessionId, targetType: 'session', metadata: { closingCash: dto.closingCash, expectedCash, cashDifference } }).catch(() => {});
+    this.writeAuditLog({ storeId: (session as any).storeId, employeeId: (session as any).employeeId, action: 'session_closed', targetId: dto.sessionId, targetType: 'session', metadata: { closingCash, expectedCash, cashDifference } }).catch(() => {});
 
     return { success: true, message: 'Register session closed', data: updated };
   }
@@ -637,9 +646,11 @@ export class PosService {
     if (!session) throw new NotFoundException('Session not found');
 
     await this.verifyStoreOwnership((session as any).storeId, sellerId);
+    const { currency, exp } = await this.docMoney(session);
 
-    const sales = await this.r.saleModel.find({ sessionId, status: 'completed' }).lean();
-    const refunds = await this.r.saleModel.find({ sessionId, status: 'refunded' }).lean();
+    // Partially refunded sales are still sales (and their tender nets already have the refund taken out).
+    const sales = await this.r.saleModel.find({ sessionId, status: { $in: ['completed', 'partially_refunded'] } }).lean();
+    const refunded = await this.r.saleModel.find({ sessionId, status: 'refunded' }).lean();
     const held = await this.r.saleModel.countDocuments({ sessionId, status: 'held' });
 
     const byPayment: Record<string, { count: number; total: number }> = {
@@ -647,27 +658,38 @@ export class PosService {
       card: { count: 0, total: 0 },
       other: { count: 0, total: 0 },
     };
+    let splitSales = 0;
     for (const sale of sales) {
-      const pm = (sale as any).paymentMethod;
-      byPayment[pm].count++;
-      byPayment[pm].total += (sale as any).total;
+      const nets = tenderNets(sale as any, exp);
+      const used = effectivePayments(sale as any);
+      if (new Set(used.map((l) => l.method)).size > 1) splitSales++;
+      for (const method of ['cash', 'card', 'other'] as const) {
+        if (used.some((l) => l.method === method)) {
+          byPayment[method].count++;
+          byPayment[method].total = roundMoney(byPayment[method].total + nets[method], exp);
+        }
+      }
     }
 
     const adjustments = (session as any).cashAdjustments || [];
     const cashIn = adjustments.filter((a: any) => a.type === 'cash_in').reduce((s: number, a: any) => s + a.amount, 0);
     const cashOut = adjustments.filter((a: any) => a.type === 'cash_out').reduce((s: number, a: any) => s + a.amount, 0);
+    const refundsTotal = roundMoney(refunded.reduce((s: number, r: any) => s + r.total, 0) + sales.reduce((s: number, r: any) => s + (r.refundedAmount || 0), 0), exp);
 
     return {
       success: true,
       data: {
         session,
+        currency,
+        currencyExponent: exp,
         summary: {
           totalSales: (session as any).totalSales,
           totalTransactions: (session as any).totalTransactions,
           completedSales: sales.length,
           heldSales: held,
-          refundsCount: refunds.length,
-          refundsTotal: refunds.reduce((s: number, r: any) => s + r.total, 0),
+          splitSales,
+          refundsCount: refunded.length + sales.filter((r: any) => (r.refundedAmount || 0) > 0).length,
+          refundsTotal,
           byPaymentMethod: byPayment,
           cashFlow: {
             openingCash: (session as any).openingCash,
@@ -693,7 +715,8 @@ export class PosService {
 
     const actor = this.requireManagerEmployee(employeeToken, (session as any).storeId, 'record cash movements');
 
-    const adjustment = { type: dto.type, amount: dto.amount, reason: dto.reason, employeeId: actor.employeeId, createdAt: new Date() };
+    const { exp: adjExp } = await this.docMoney(session);
+    const adjustment = { type: dto.type, amount: roundMoney(dto.amount, adjExp), reason: dto.reason, employeeId: actor.employeeId, createdAt: new Date() };
 
     await this.r.registerSessionModel.findByIdAndUpdate(
       sessionId,
@@ -731,13 +754,13 @@ export class PosService {
     // A discount requires a verified manager — the mobile UI already keeps
     // cashiers from entering one; this is the server-side backstop for
     // direct API calls. See requireManagerEmployee's doc comment.
-    if ((dto.discount ?? 0) > 0) {
+    const discountReq = this.discountSpec(dto);
+    if (discountReq.value > 0) {
       this.requireManagerEmployee(employeeToken, dto.storeId, 'apply a discount');
     }
 
     // resolve items — fetch variant snapshots + check stock
     const saleItems: any[] = [];
-    let subtotal = 0;
     const isHeld = dto.status === 'held';
 
     for (const item of dto.items) {
@@ -755,9 +778,6 @@ export class PosService {
       const product = await this.r.productModel.findOne({ _id: item.productId, isDelete: false }).select('name gallery coverImages');
       if (!product) throw new BadRequestException(`Product not found: ${item.productId}`);
 
-      const lineTotal = variant.price * item.qty;
-      subtotal += lineTotal;
-
       saleItems.push({
         productId: item.productId,
         variantId: item.variantId,
@@ -766,17 +786,23 @@ export class PosService {
         image: (product as any).gallery?.[0] ?? (product as any).coverImages?.[0] ?? null,
         price: variant.price,
         qty: item.qty,
-        lineTotal,
+        lineTotal: 0, // set below from the server-computed, exponent-rounded line totals
       });
     }
 
-    const discount = dto.discount ?? 0;
-    let tax = dto.tax ?? null;
-    if (tax === null) {
-      const settings = await this.r.posSettingsModel.findOne({ storeId: dto.storeId }).lean();
-      tax = settings ? parseFloat(((settings as any).taxRate * subtotal).toFixed(2)) : 0;
-    }
-    const total = subtotal - discount + tax;
+    // The SERVER prices the sale: line totals, discount, tax and total are computed here in the store
+    // currency's minor units; any client-sent `tax`/totals are ignored. A client total that disagrees
+    // beyond one minor unit is rejected (TOTAL_MISMATCH) rather than charging a number nobody saw.
+    const money = await this.moneyContext(dto.storeId);
+    const totals = computeTotals(saleItems, { exp: money.exp, discountType: discountReq.type, discountValue: discountReq.value, taxRate: money.taxRate });
+    assertClientTotal(dto.clientTotal, totals);
+    saleItems.forEach((it, i) => { it.lineTotal = totals.lineTotals[i]; });
+    const { subtotal, discount, tax, total } = totals;
+
+    // Tender lines — validated against the server's total (a held sale has none yet; it is paid when completed).
+    const settled = isHeld
+      ? null
+      : settlePayments(totals.minor.total, money.exp, { payments: dto.payments, paymentMethod: dto.paymentMethod, amountTendered: dto.amountTendered, reference: dto.paymentReference });
 
     // Take the stock first (all-or-nothing, floor-guarded). A completed sale only exists once its
     // stock has genuinely been taken; if recording the sale then fails, the stock is handed back.
@@ -820,7 +846,15 @@ export class PosService {
             discount,
             tax,
             total,
-            paymentMethod: dto.paymentMethod,
+            currency: money.currency,
+            currencyExponent: money.exp,
+            discountType: discountReq.value > 0 ? discountReq.type : null,
+            discountValue: discountReq.value > 0 ? discountReq.value : null,
+            taxRate: money.taxRate,
+            paymentMethod: settled ? settled.method : dto.paymentMethod,
+            payments: settled ? settled.lines : [],
+            changeGiven: settled ? settled.change : 0,
+            employeeName: (employee as any).name ?? null,
             customerId: dto.customerId ?? null,
             customerName: dto.customerName ?? 'Walk-in',
             notes: dto.notes ?? null,
@@ -848,7 +882,7 @@ export class PosService {
 
     if (!isHeld) {
       try {
-        await this._incrementSessionTotals(dto.sessionId, total, dto.paymentMethod);
+        await this._incrementSessionTotals(dto.sessionId, { total, payments: settled!.lines, paymentMethod: settled!.method }, money.exp);
       } catch (e: any) {
         // The sale and its stock movement are committed; only the drawer counters missed this sale.
         // eslint-disable-next-line no-console
@@ -876,8 +910,9 @@ export class PosService {
 
     await this.verifyStoreOwnership((sale as any).storeId, sellerId);
 
-    const discount = dto.discount ?? (sale as any).discount;
-    if (discount > 0) {
+    // Completion re-prices from the held lines with the CURRENT tax rate and the (possibly changed) discount.
+    const discountReq = this.discountSpec(dto, sale);
+    if (discountReq.value > 0) {
       this.requireManagerEmployee(employeeToken, (sale as any).storeId, 'apply a discount');
     }
 
@@ -892,8 +927,11 @@ export class PosService {
       }
     }
 
-    const tax = dto.tax ?? (sale as any).tax;
-    const total = (sale as any).subtotal - discount + tax;
+    const money = await this.moneyContext(String((sale as any).storeId));
+    const totals = computeTotals((sale as any).items, { exp: money.exp, discountType: discountReq.type, discountValue: discountReq.value, taxRate: money.taxRate });
+    assertClientTotal(dto.clientTotal, totals);
+    const settled = settlePayments(totals.minor.total, money.exp, { payments: dto.payments, paymentMethod: dto.paymentMethod, amountTendered: dto.amountTendered, reference: dto.paymentReference });
+    const { discount, tax, total } = totals;
     const locationId: string | null = (sale as any).locationId ?? null;
 
     // Stock first, then claim the held sale with a status-guarded update: if two terminals (or a
@@ -909,10 +947,18 @@ export class PosService {
       {
         $set: {
           status: 'completed',
-          paymentMethod: dto.paymentMethod,
+          paymentMethod: settled.method,
+          payments: settled.lines,
+          changeGiven: settled.change,
+          subtotal: totals.subtotal,
           discount,
           tax,
           total,
+          currency: money.currency,
+          currencyExponent: money.exp,
+          discountType: discountReq.value > 0 ? discountReq.type : null,
+          discountValue: discountReq.value > 0 ? discountReq.value : null,
+          taxRate: money.taxRate,
           heldAt: null,
           notes: dto.notes ?? (sale as any).notes,
         },
@@ -925,7 +971,7 @@ export class PosService {
     }
 
     try {
-      await this._incrementSessionTotals((sale as any).sessionId, total, dto.paymentMethod);
+      await this._incrementSessionTotals((sale as any).sessionId, { total, payments: settled.lines, paymentMethod: settled.method }, money.exp);
     } catch (e: any) {
       // eslint-disable-next-line no-console
       console.error(`[completeSale] session totals update failed for sale ${saleId} — reconcile manually:`, e?.message);
@@ -954,7 +1000,9 @@ export class PosService {
 
     await this.verifyStoreOwnership((sale as any).storeId, sellerId);
 
-    return { success: true, data: sale };
+    // sales from before 5B carry no currency snapshot — always hand the app one
+    const m = await this.docMoney(sale);
+    return { success: true, data: { ...(sale as any), currency: m.currency, currencyExponent: m.exp } };
   }
 
   async getSales(sellerId: string, query: any) {
@@ -978,12 +1026,16 @@ export class PosService {
     }
 
     const total = await this.r.saleModel.countDocuments(filter);
-    const sales = await this.r.saleModel.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean();
+    const found = await this.r.saleModel.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean();
+    const m = await this.moneyContext(query.storeId);
+    const sales = found.map((x: any) => ({ ...x, currency: x.currency ?? m.currency, currencyExponent: x.currencyExponent ?? m.exp }));
 
     return {
       success: true,
       data: {
         pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+        currency: m.currency,
+        currencyExponent: m.exp,
         sales,
       },
     };
@@ -1002,85 +1054,99 @@ export class PosService {
 
     const isPartial = dto?.items && dto.items.length > 0;
     const locationId: string | null = (sale as any).locationId ?? null;
+    const { currency, exp } = await this.docMoney(sale);
+    const lines = effectivePayments(sale as any);
+    const alreadyRefunded = (sale as any).refundedAmount || 0;
 
     // Optimistic-concurrency claim: the sale document is updated only if it is still exactly in
     // the state we just read (same status + same cumulative refundedAmount). Two concurrent
     // refunds (double-tap, two terminals, a retry) therefore cannot both succeed — the loser gets
     // a 409 — and stock is restored only by the request that won the claim.
-    const stateFilter = { _id: saleId, status: (sale as any).status, refundedAmount: (sale as any).refundedAmount || 0 };
+    const stateFilter = { _id: saleId, status: (sale as any).status, refundedAmount: alreadyRefunded };
     const staleMessage = 'This sale was changed by another refund or terminal — reload it and check before refunding again';
 
+    // Money for this refund and how it splits across the sale's tenders. See pos-money.util.ts#refundOrder for
+    // the documented order (card/other first, cash last; cash change is not refundable).
+    let refundAmount: number;
+    let itemUpdates: Array<{ variantId: string; qtyToRestore: number; saleItemId: string }> = [];
+    let newStatus: 'refunded' | 'partially_refunded' = 'refunded';
+
     if (!isPartial) {
-      const refundAmount = (sale as any).total - ((sale as any).refundedAmount || 0);
-      const claimed = await this.r.saleModel.findOneAndUpdate(stateFilter, { $set: { status: 'refunded', refundedAmount: (sale as any).total } });
-      if (!claimed) throw businessConflict('SALE_CHANGED_CONCURRENTLY', staleMessage);
+      refundAmount = roundMoney((sale as any).total - alreadyRefunded, exp);
+      (sale as any).items.forEach((item: any) => {
+        const left = item.qty - (item.refundedQty || 0);
+        if (left > 0) itemUpdates.push({ variantId: String(item.variantId), qtyToRestore: left, saleItemId: String(item._id) });
+      });
+    } else {
+      const refundLines: Array<{ price: number; qty: number }> = [];
+      for (const refundItem of dto!.items!) {
+        const saleItem = (sale as any).items.find((i: any) => i._id.toString() === refundItem.saleItemId);
+        if (!saleItem) throw new BadRequestException(`Sale item not found: ${refundItem.saleItemId}`);
 
-      const toRestore = (sale as any).items
-        .map((item: any) => ({ variantId: String(item.variantId), qty: item.qty - (item.refundedQty || 0) }))
-        .filter((i: any) => i.qty > 0);
-      await this.restoreSoldStock(toRestore, locationId);
-
-      const sessionUpdate: any = { $inc: { totalRefunds: refundAmount, totalTransactions: -1 } };
-      const pm = (sale as any).paymentMethod;
-      if (pm === 'cash') sessionUpdate.$inc.cashSales = -refundAmount;
-      else if (pm === 'card') sessionUpdate.$inc.cardSales = -refundAmount;
-      else sessionUpdate.$inc.otherSales = -refundAmount;
-      sessionUpdate.$inc.totalSales = -refundAmount;
-      await this.r.registerSessionModel.findByIdAndUpdate((sale as any).sessionId, sessionUpdate);
-
-      await this.recordPosRefundInLedger(sale, refundAmount, 'refund');
-      this.writeAuditLog({ storeId: (sale as any).storeId, employeeId: actor.employeeId, action: 'sale_refunded_full', targetId: saleId, targetType: 'sale' }).catch(() => {});
-      return { success: true, message: 'Sale fully refunded and stock restored' };
-    }
-
-    // partial refund
-    let partialTotal = 0;
-    const itemUpdates: Array<{ variantId: string; qtyToRestore: number; saleItemId: string }> = [];
-
-    for (const refundItem of dto.items!) {
-      const saleItem = (sale as any).items.find((i: any) => i._id.toString() === refundItem.saleItemId);
-      if (!saleItem) throw new BadRequestException(`Sale item not found: ${refundItem.saleItemId}`);
-
-      const available = saleItem.qty - (saleItem.refundedQty || 0);
-      if (refundItem.qty > available) {
-        throw new BadRequestException(`Cannot refund ${refundItem.qty} of "${saleItem.name}" — only ${available} unreturned`);
+        const available = saleItem.qty - (saleItem.refundedQty || 0);
+        if (refundItem.qty > available) {
+          throw new BadRequestException(`Cannot refund ${refundItem.qty} of "${saleItem.name}" — only ${available} unreturned`);
+        }
+        refundLines.push({ price: saleItem.price, qty: refundItem.qty });
+        itemUpdates.push({ variantId: String(saleItem.variantId), qtyToRestore: refundItem.qty, saleItemId: refundItem.saleItemId });
       }
-
-      const lineRefund = parseFloat((refundItem.qty * saleItem.price).toFixed(2));
-      partialTotal += lineRefund;
-      itemUpdates.push({ variantId: String(saleItem.variantId), qtyToRestore: refundItem.qty, saleItemId: refundItem.saleItemId });
+      const completesSale = (sale as any).items.every((item: any) => {
+        const u = itemUpdates.find((x) => x.saleItemId === item._id.toString());
+        return (item.refundedQty || 0) + (u?.qtyToRestore || 0) >= item.qty;
+      });
+      // pro-rated: each line's share of what the customer actually PAID (net of discount, incl. tax)
+      refundAmount = partialRefundAmount(sale as any, refundLines, exp, completesSale);
+      newStatus = completesSale ? 'refunded' : 'partially_refunded';
     }
 
-    const newRefundedAmount = ((sale as any).refundedAmount || 0) + partialTotal;
-    const allItemsFullyRefunded = (sale as any).items.every((item: any) => {
-      const updated = itemUpdates.find((u) => u.saleItemId === item._id.toString());
-      const finalRefundedQty = (item.refundedQty || 0) + (updated?.qtyToRestore || 0);
-      return finalRefundedQty >= item.qty;
-    });
-    const newStatus = allItemsFullyRefunded ? 'refunded' : 'partially_refunded';
+    const tenders = allocateRefund(lines, alreadyRefunded, refundAmount, exp);
+    const refundRecord = {
+      amount: refundAmount, kind: isPartial ? 'partial' : 'full',
+      tenders, items: itemUpdates.map((u) => ({ saleItemId: u.saleItemId, qty: u.qtyToRestore })),
+      employeeId: actor.employeeId, currency, currencyExponent: exp, createdAt: new Date(),
+    };
 
-    // one atomic update: per-line refundedQty + cumulative amount + status together
-    const inc: Record<string, number> = {};
-    const arrayFilters: any[] = [];
-    itemUpdates.forEach((u, idx) => {
-      inc[`items.$[line${idx}].refundedQty`] = u.qtyToRestore;
-      arrayFilters.push({ [`line${idx}._id`]: new Types.ObjectId(u.saleItemId) });
-    });
-    const claimed = await this.r.saleModel.findOneAndUpdate(
-      stateFilter,
-      { $inc: inc, $set: { status: newStatus, refundedAmount: newRefundedAmount } },
-      { arrayFilters },
-    );
+    const update: any = {
+      $set: { status: newStatus, refundedAmount: roundMoney(alreadyRefunded + refundAmount, exp) },
+      $push: { refunds: refundRecord },
+    };
+    let arrayFilters: any[] | undefined;
+    if (isPartial) {
+      const inc: Record<string, number> = {};
+      arrayFilters = [];
+      itemUpdates.forEach((u, idx) => {
+        inc[`items.$[line${idx}].refundedQty`] = u.qtyToRestore;
+        arrayFilters!.push({ [`line${idx}._id`]: new Types.ObjectId(u.saleItemId) });
+      });
+      update.$inc = inc;
+    }
+    const claimed = await this.r.saleModel.findOneAndUpdate(stateFilter, update, arrayFilters ? { arrayFilters } : undefined);
     if (!claimed) throw businessConflict('SALE_CHANGED_CONCURRENTLY', staleMessage);
 
     await this.restoreSoldStock(itemUpdates.map((u) => ({ variantId: u.variantId, qty: u.qtyToRestore })), locationId);
 
-    const sessionUpdate: any = { $inc: { totalRefunds: partialTotal } };
-    await this.r.registerSessionModel.findByIdAndUpdate((sale as any).sessionId, sessionUpdate);
+    // Session: the refund comes OUT of sales and out of the right tender — so a cash refund lowers the
+    // cash the drawer should now hold (expected cash = opening + cashSales + cashIn − cashOut). The
+    // transaction count drops only when the sale becomes fully refunded, and exactly once.
+    const split = byTender(tenders);
+    const sessionInc: any = {
+      totalRefunds: refundAmount,
+      totalSales: -refundAmount,
+      ...this.tenderInc(split, -1),
+    };
+    if (newStatus === 'refunded') sessionInc.totalTransactions = -1;
+    await this.r.registerSessionModel.findByIdAndUpdate((sale as any).sessionId, { $inc: sessionInc });
 
-    await this.recordPosRefundInLedger(sale, partialTotal, 'partial refund');
-    this.writeAuditLog({ storeId: (sale as any).storeId, employeeId: actor.employeeId, action: 'sale_refunded_partial', targetId: saleId, targetType: 'sale', metadata: { partialTotal, items: dto.items } }).catch(() => {});
-    return { success: true, message: `Partial refund of ${partialTotal.toFixed(2)} processed`, data: { refundedAmount: partialTotal, newStatus } };
+    await this.recordPosRefundInLedger(sale, refundAmount, newStatus === 'refunded' && !isPartial ? 'refund' : 'partial refund');
+    this.writeAuditLog({
+      storeId: (sale as any).storeId, employeeId: actor.employeeId,
+      action: newStatus === 'refunded' && !isPartial ? 'sale_refunded_full' : (newStatus === 'refunded' ? 'sale_refunded_full' : 'sale_refunded_partial'),
+      targetId: saleId, targetType: 'sale',
+      metadata: { refundAmount, tenders, currency, items: dto?.items },
+    }).catch(() => {});
+
+    if (!isPartial) return { success: true, message: 'Sale fully refunded and stock restored', data: { refundedAmount: refundAmount, newStatus, tenders, currency, currencyExponent: exp } };
+    return { success: true, message: `Partial refund of ${refundAmount.toFixed(exp)} processed`, data: { refundedAmount: refundAmount, newStatus, tenders, currency, currencyExponent: exp } };
   }
 
   async discardHeldSale(sellerId: string, saleId: string) {
@@ -1113,6 +1179,7 @@ export class PosService {
 
   async getDailyReport(sellerId: string, storeId: string, query: any) {
     await this.verifyStoreOwnership(storeId, sellerId);
+    const { currency, exp } = await this.moneyContext(storeId);
 
     const date = query.date ? new Date(query.date) : new Date();
     const startOfDay = new Date(date);
@@ -1120,45 +1187,24 @@ export class PosService {
     const endOfDay = new Date(date);
     endOfDay.setHours(23, 59, 59, 999);
 
-    const filter: any = {
-      storeId,
-      status: 'completed',
-      createdAt: { $gte: startOfDay, $lte: endOfDay },
-    };
-    if (query.registerId) filter.registerId = query.registerId;
-    if (query.locationId) filter.locationId = query.locationId;
+    const scope: any = { storeId, createdAt: { $gte: startOfDay, $lte: endOfDay } };
+    if (query.registerId) scope.registerId = query.registerId;
+    if (query.locationId) scope.locationId = query.locationId;
 
-    const sales = await this.r.saleModel.find(filter).lean();
+    // completed AND partially-refunded sales are sales; fully refunded / voided ones are "reversed"
+    const sales = await this.r.saleModel.find({ ...scope, status: { $in: ['completed', 'partially_refunded'] } }).lean();
+    const reversed = await this.r.saleModel.find({ ...scope, status: { $in: ['refunded', 'voided'] } }).lean();
+    const summary = this.summarizeSales(sales, reversed, exp);
 
-    let totalRevenue = 0;
-    let totalDiscount = 0;
-    let totalTax = 0;
-    const byPayment: Record<string, { count: number; total: number }> = {
-      cash: { count: 0, total: 0 },
-      card: { count: 0, total: 0 },
-      other: { count: 0, total: 0 },
-    };
     const hourlyMap: Record<number, number> = {};
     const productSales: Record<string, { name: string; qty: number; revenue: number }> = {};
-
     for (const sale of sales) {
-      totalRevenue += (sale as any).total;
-      totalDiscount += (sale as any).discount;
-      totalTax += (sale as any).tax;
-
-      const pm = (sale as any).paymentMethod;
-      byPayment[pm].count++;
-      byPayment[pm].total += (sale as any).total;
-
       const hour = new Date((sale as any).createdAt).getHours();
-      hourlyMap[hour] = (hourlyMap[hour] || 0) + (sale as any).total;
-
+      hourlyMap[hour] = roundMoney((hourlyMap[hour] || 0) + (sale as any).total, exp);
       for (const item of (sale as any).items) {
-        if (!productSales[item.productId]) {
-          productSales[item.productId] = { name: item.name, qty: 0, revenue: 0 };
-        }
+        if (!productSales[item.productId]) productSales[item.productId] = { name: item.name, qty: 0, revenue: 0 };
         productSales[item.productId].qty += item.qty;
-        productSales[item.productId].revenue += item.lineTotal;
+        productSales[item.productId].revenue = roundMoney(productSales[item.productId].revenue + item.lineTotal, exp);
       }
     }
 
@@ -1173,25 +1219,14 @@ export class PosService {
       total: hourlyMap[h] || 0,
     }));
 
-    const refunds = await this.r.saleModel.find({
-      storeId, status: 'refunded',
-      createdAt: { $gte: startOfDay, $lte: endOfDay },
-    }).lean();
-
+    const { byPayment, ...flat } = summary;
     return {
       success: true,
       data: {
         date: date.toISOString().split('T')[0],
-        summary: {
-          totalTransactions: sales.length,
-          totalRevenue: parseFloat(totalRevenue.toFixed(2)),
-          totalDiscount: parseFloat(totalDiscount.toFixed(2)),
-          totalTax: parseFloat(totalTax.toFixed(2)),
-          netRevenue: parseFloat((totalRevenue - totalDiscount).toFixed(2)),
-          avgTransactionValue: sales.length > 0 ? parseFloat((totalRevenue / sales.length).toFixed(2)) : 0,
-          refundsCount: refunds.length,
-          refundsTotal: parseFloat(refunds.reduce((s: number, r: any) => s + r.total, 0).toFixed(2)),
-        },
+        currency,
+        currencyExponent: exp,
+        summary: flat,
         byPaymentMethod: byPayment,
         topProducts,
         hourlyBreakdown,
@@ -1199,7 +1234,81 @@ export class PosService {
     };
   }
 
+  // ── REPORT SUMMARY (shared by the daily and range reports) ─────────────────────
+
+  /**
+   * `sales` = completed + partially-refunded sales in the window; `reversed` = fully refunded or voided
+   * sales in the same window. Everything is rounded to the currency exponent, tender figures are NET of
+   * refunds (a cash partial refund lowers cash), and refunds count partial refunds too.
+   */
+  private summarizeSales(sales: any[], reversed: any[], exp: number) {
+    const sum = (xs: number[]) => roundMoney(xs.reduce((a, b) => a + b, 0), exp);
+    const totalRevenue = sum(sales.map((x) => x.total));
+    const totalDiscount = sum(sales.map((x) => x.discount));
+    const totalTax = sum(sales.map((x) => x.tax));
+    const partialRefunds = sum(sales.map((x) => x.refundedAmount || 0));
+    const byPayment: Record<string, { count: number; total: number }> = { cash: { count: 0, total: 0 }, card: { count: 0, total: 0 }, other: { count: 0, total: 0 } };
+    for (const sale of sales) {
+      const nets = tenderNets(sale, exp);
+      const used = effectivePayments(sale);
+      for (const m of ['cash', 'card', 'other'] as const) {
+        if (used.some((l) => l.method === m)) { byPayment[m].count++; byPayment[m].total = roundMoney(byPayment[m].total + nets[m], exp); }
+      }
+    }
+    const refundedValue = sum(reversed.map((x) => (x.status === 'voided' ? x.total : (x.refundedAmount || x.total))));
+    return {
+      totalTransactions: sales.length,
+      totalRevenue,
+      totalDiscount,
+      totalTax,
+      // revenue the shop keeps: gross sales minus what was handed back on partially refunded sales
+      netRevenue: roundMoney(totalRevenue - partialRefunds, exp),
+      avgTransactionValue: sales.length > 0 ? roundMoney(totalRevenue / sales.length, exp) : 0,
+      refundsCount: reversed.length + sales.filter((x) => (x.refundedAmount || 0) > 0).length,
+      refundsTotal: roundMoney(refundedValue + partialRefunds, exp),
+      byPayment,
+    };
+  }
+
   // ── PRIVATE HELPERS ───────────────────────────────────────────────────────
+
+  // ── MONEY HELPERS (Phase 5B) ──────────────────────────────────────────────────
+
+  /** The store's selling currency, its minor-unit exponent and POS tax rate — everything money maths needs. */
+  private async moneyContext(storeId: string): Promise<{ currency: string; exp: number; taxRate: number }> {
+    const [store, settings]: any[] = await Promise.all([
+      this.r.storeModel.findById(storeId).select('baseCurrency').lean(),
+      this.r.posSettingsModel.findOne({ storeId }).select('taxRate').lean(),
+    ]);
+    const currency = String(store?.baseCurrency || 'USD').toUpperCase();
+    return { currency, exp: exponentOf(currency), taxRate: Number(settings?.taxRate) || 0 };
+  }
+
+  /** currency/exponent of an existing sale or session; documents from before 5B carry neither, so fall back to the store's. */
+  private async docMoney(doc: any): Promise<{ currency: string; exp: number }> {
+    if (doc?.currency && doc?.currencyExponent !== null && doc?.currencyExponent !== undefined) {
+      return { currency: doc.currency, exp: doc.currencyExponent };
+    }
+    const ctx = await this.moneyContext(String(doc.storeId));
+    return { currency: ctx.currency, exp: ctx.exp };
+  }
+
+  /** What discount the request asks for: the new type+value form, else the legacy flat `discount`, else (completing/editing a held sale) what's already on it. */
+  private discountSpec(dto: { discount?: number; discountType?: DiscountType; discountValue?: number }, existing?: any): { type: DiscountType; value: number } {
+    if (dto.discountType) return { type: dto.discountType, value: dto.discountValue ?? 0 };
+    if (dto.discount !== undefined && dto.discount !== null) return { type: 'amount', value: dto.discount };
+    if (existing?.discountType) return { type: existing.discountType, value: existing.discountValue ?? 0 };
+    return { type: 'amount', value: existing?.discount ?? 0 };
+  }
+
+  /** `$inc` for the register session from a sale's tender nets (cash net of change; refunds already deducted). */
+  private tenderInc(nets: Record<'cash' | 'card' | 'other', number>, sign: 1 | -1): Record<string, number> {
+    const inc: Record<string, number> = {};
+    if (nets.cash) inc.cashSales = sign * nets.cash;
+    if (nets.card) inc.cardSales = sign * nets.card;
+    if (nets.other) inc.otherSales = sign * nets.other;
+    return inc;
+  }
 
   // ── ATOMIC STOCK HELPERS ──────────────────────────────────────────────────
   // Stock is reserved BEFORE the sale document is written and handed back if the sale can't be
@@ -1270,12 +1379,10 @@ export class PosService {
     }
   }
 
-  private async _incrementSessionTotals(sessionId: string, total: number, paymentMethod: string) {
-    const inc: any = { totalSales: total, totalTransactions: 1 };
-    if (paymentMethod === 'cash') inc.cashSales = total;
-    else if (paymentMethod === 'card') inc.cardSales = total;
-    else inc.otherSales = total;
-
+  /** Counts a completed sale into its register session: total, one transaction, and each tender's NET amount (cash net of change). */
+  private async _incrementSessionTotals(sessionId: string, sale: { total: number; payments?: any[]; paymentMethod?: string }, exp: number) {
+    const nets = tenderNets({ ...sale, refundedAmount: 0, status: 'completed' }, exp);
+    const inc: any = { totalSales: sale.total, totalTransactions: 1, ...this.tenderInc(nets, 1) };
     await this.r.registerSessionModel.findByIdAndUpdate(sessionId, { $inc: inc });
   }
 
@@ -1466,7 +1573,8 @@ export class PosService {
     const adjustments = (session as any).cashAdjustments || [];
     const cashIn = adjustments.filter((a: any) => a.type === 'cash_in').reduce((s: number, a: any) => s + a.amount, 0);
     const cashOut = adjustments.filter((a: any) => a.type === 'cash_out').reduce((s: number, a: any) => s + a.amount, 0);
-    const expectedCash = session.openingCash + session.cashSales + cashIn - cashOut;
+    const { exp: forceExp } = await this.docMoney(session);
+    const expectedCash = roundMoney(session.openingCash + session.cashSales + cashIn - cashOut, forceExp);
 
     const updated = await this.r.registerSessionModel.findByIdAndUpdate(
       sessionId,
@@ -1555,12 +1663,12 @@ export class PosService {
       (sale as any).locationId ?? null,
     );
 
-    const sessionUpdate: any = { $inc: { totalSales: -(sale as any).total, totalTransactions: -1 } };
-    const pm = (sale as any).paymentMethod;
-    if (pm === 'cash') sessionUpdate.$inc.cashSales = -(sale as any).total;
-    else if (pm === 'card') sessionUpdate.$inc.cardSales = -(sale as any).total;
-    else sessionUpdate.$inc.otherSales = -(sale as any).total;
-    await this.r.registerSessionModel.findByIdAndUpdate((sale as any).sessionId, sessionUpdate);
+    // A void reverses the whole sale: total and per-tender nets (cash net of change) come out of the session.
+    const { exp: voidExp } = await this.docMoney(sale);
+    const voidNets = tenderNets({ ...(sale as any).toObject?.() ?? sale, refundedAmount: 0, status: 'completed' }, voidExp);
+    await this.r.registerSessionModel.findByIdAndUpdate((sale as any).sessionId, {
+      $inc: { totalSales: -(sale as any).total, totalTransactions: -1, ...this.tenderInc(voidNets, -1) },
+    });
 
     await this.recordPosRefundInLedger(sale, (sale as any).total - ((sale as any).refundedAmount || 0), 'void');
     this.writeAuditLog({ storeId: (sale as any).storeId, employeeId: actor.employeeId, action: 'sale_voided', targetId: saleId, targetType: 'sale', metadata: { reason: dto.reason } }).catch(() => {});
@@ -1574,12 +1682,12 @@ export class PosService {
 
     await this.verifyStoreOwnership((sale as any).storeId, sellerId);
 
-    if ((dto.discount ?? 0) > 0) {
+    const discountReq = this.discountSpec(dto, sale);
+    if (discountReq.value > 0) {
       this.requireManagerEmployee(employeeToken, (sale as any).storeId, 'apply a discount');
     }
 
     const saleItems: any[] = [];
-    let subtotal = 0;
 
     for (const item of dto.items) {
       const variant = await this.r.productVariantModel.findOne({ _id: item.variantId, productId: item.productId, isDelete: false });
@@ -1587,9 +1695,6 @@ export class PosService {
 
       const product = await this.r.productModel.findOne({ _id: item.productId, isDelete: false }).select('name gallery coverImages');
       if (!product) throw new BadRequestException(`Product not found: ${item.productId}`);
-
-      const lineTotal = variant.price * item.qty;
-      subtotal += lineTotal;
 
       saleItems.push({
         productId: item.productId,
@@ -1599,18 +1704,24 @@ export class PosService {
         image: (product as any).gallery?.[0] ?? (product as any).coverImages?.[0] ?? null,
         price: variant.price,
         qty: item.qty,
-        lineTotal,
+        lineTotal: 0,
         refundedQty: 0,
       });
     }
 
-    const discount = dto.discount ?? (sale as any).discount;
-    const tax = dto.tax ?? (sale as any).tax;
-    const total = subtotal - discount + tax;
+    const money = await this.moneyContext(String((sale as any).storeId));
+    const totals = computeTotals(saleItems, { exp: money.exp, discountType: discountReq.type, discountValue: discountReq.value, taxRate: money.taxRate });
+    saleItems.forEach((it, i) => { it.lineTotal = totals.lineTotals[i]; });
 
     const updated = await this.r.saleModel.findByIdAndUpdate(
       saleId,
-      { $set: { items: saleItems, subtotal, discount, tax, total } },
+      {
+        $set: {
+          items: saleItems, subtotal: totals.subtotal, discount: totals.discount, tax: totals.tax, total: totals.total,
+          currency: money.currency, currencyExponent: money.exp, taxRate: money.taxRate,
+          discountType: discountReq.value > 0 ? discountReq.type : null, discountValue: discountReq.value > 0 ? discountReq.value : null,
+        },
+      },
       { new: true },
     );
 
@@ -1621,6 +1732,7 @@ export class PosService {
 
   async getDateRangeReport(sellerId: string, storeId: string, query: any) {
     await this.verifyStoreOwnership(storeId, sellerId);
+    const { currency, exp } = await this.moneyContext(storeId);
 
     if (!query.from || !query.to) throw new BadRequestException('from and to date are required');
 
@@ -1628,48 +1740,20 @@ export class PosService {
     const to = new Date(query.to);
     to.setHours(23, 59, 59, 999);
 
-    const statusFilter = ['completed', 'partially_refunded'];
-    const locationFilter = query.locationId ? { locationId: query.locationId } : {};
-    const sales = await this.r.saleModel.find({
-      storeId,
-      status: { $in: statusFilter },
-      createdAt: { $gte: from, $lte: to },
-      ...locationFilter,
-    }).lean();
+    const scope: any = { storeId, createdAt: { $gte: from, $lte: to }, ...(query.locationId ? { locationId: query.locationId } : {}) };
+    const sales = await this.r.saleModel.find({ ...scope, status: { $in: ['completed', 'partially_refunded'] } }).lean();
+    const reversed = await this.r.saleModel.find({ ...scope, status: { $in: ['refunded', 'voided'] } }).lean();
+    const summary = this.summarizeSales(sales, reversed, exp);
 
-    const refunds = await this.r.saleModel.find({
-      storeId,
-      status: { $in: ['refunded', 'voided'] },
-      createdAt: { $gte: from, $lte: to },
-      ...locationFilter,
-    }).lean();
-
-    let totalRevenue = 0;
-    let totalDiscount = 0;
-    let totalTax = 0;
-    const byPayment: Record<string, { count: number; total: number }> = {
-      cash: { count: 0, total: 0 },
-      card: { count: 0, total: 0 },
-      other: { count: 0, total: 0 },
-    };
     const dailyMap: Record<string, number> = {};
     const productSales: Record<string, { name: string; qty: number; revenue: number }> = {};
-
     for (const sale of sales) {
-      totalRevenue += (sale as any).total;
-      totalDiscount += (sale as any).discount;
-      totalTax += (sale as any).tax;
-      const pm = (sale as any).paymentMethod;
-      byPayment[pm].count++;
-      byPayment[pm].total += (sale as any).total;
-
       const day = new Date((sale as any).createdAt).toISOString().split('T')[0];
-      dailyMap[day] = (dailyMap[day] || 0) + (sale as any).total;
-
+      dailyMap[day] = roundMoney((dailyMap[day] || 0) + (sale as any).total, exp);
       for (const item of (sale as any).items) {
         if (!productSales[item.productId]) productSales[item.productId] = { name: item.name, qty: 0, revenue: 0 };
         productSales[item.productId].qty += item.qty;
-        productSales[item.productId].revenue += item.lineTotal;
+        productSales[item.productId].revenue = roundMoney(productSales[item.productId].revenue + item.lineTotal, exp);
       }
     }
 
@@ -1678,21 +1762,15 @@ export class PosService {
       .sort((a, b) => b.revenue - a.revenue)
       .slice(0, 10);
 
+    const { byPayment, ...flat } = summary;
     return {
       success: true,
       data: {
         from: query.from,
         to: query.to,
-        summary: {
-          totalTransactions: sales.length,
-          totalRevenue: parseFloat(totalRevenue.toFixed(2)),
-          totalDiscount: parseFloat(totalDiscount.toFixed(2)),
-          totalTax: parseFloat(totalTax.toFixed(2)),
-          netRevenue: parseFloat((totalRevenue - totalDiscount).toFixed(2)),
-          avgTransactionValue: sales.length > 0 ? parseFloat((totalRevenue / sales.length).toFixed(2)) : 0,
-          refundsCount: refunds.length,
-          refundsTotal: parseFloat(refunds.reduce((s: number, r: any) => s + r.total, 0).toFixed(2)),
-        },
+        currency,
+        currencyExponent: exp,
+        summary: flat,
         byPaymentMethod: byPayment,
         topProducts,
         dailyBreakdown: Object.entries(dailyMap).map(([date, total]) => ({ date, total })).sort((a, b) => a.date.localeCompare(b.date)),
@@ -1718,7 +1796,8 @@ export class PosService {
 
     const sales = await this.r.saleModel.find(salesFilter).lean();
 
-    const totalRevenue = sales.reduce((s: number, sale: any) => s + sale.total, 0);
+    const regExp = exponentOf((store as any).baseCurrency);
+    const totalRevenue = roundMoney(sales.reduce((s: number, sale: any) => s + sale.total, 0), regExp);
     const register = store.registers.find((r: any) => r._id.toString() === registerId);
 
     return {
@@ -1729,8 +1808,8 @@ export class PosService {
         summary: {
           totalSessions: sessions.length,
           totalTransactions: sales.length,
-          totalRevenue: parseFloat(totalRevenue.toFixed(2)),
-          avgPerSession: sessions.length > 0 ? parseFloat((totalRevenue / sessions.length).toFixed(2)) : 0,
+          totalRevenue,
+          avgPerSession: sessions.length > 0 ? roundMoney(totalRevenue / sessions.length, regExp) : 0,
         },
         sessions: sessions.map((s: any) => ({
           sessionId: s._id,
@@ -1759,7 +1838,8 @@ export class PosService {
     if (from || to) { filter.createdAt = {}; if (from) filter.createdAt.$gte = from; if (to) filter.createdAt.$lte = to; }
 
     const sales = await this.r.saleModel.find(filter).lean();
-    const totalRevenue = sales.reduce((s: number, sale: any) => s + sale.total, 0);
+    const empMoney = await this.moneyContext(query.storeId);
+    const totalRevenue = roundMoney(sales.reduce((s: number, sale: any) => s + sale.total, 0), empMoney.exp);
 
     const sessionFilter: any = { employeeId, storeId: query.storeId };
     if (from || to) { sessionFilter.createdAt = {}; if (from) sessionFilter.createdAt.$gte = from; if (to) sessionFilter.createdAt.$lte = to; }
@@ -1772,8 +1852,8 @@ export class PosService {
         period: { from: query.from ?? null, to: query.to ?? null },
         summary: {
           totalTransactions: sales.length,
-          totalRevenue: parseFloat(totalRevenue.toFixed(2)),
-          avgTransactionValue: sales.length > 0 ? parseFloat((totalRevenue / sales.length).toFixed(2)) : 0,
+          totalRevenue,
+          avgTransactionValue: sales.length > 0 ? roundMoney(totalRevenue / sales.length, empMoney.exp) : 0,
           totalSessions: sessions.length,
         },
         recentSales: sales.slice(0, 20).map((s: any) => ({ saleId: s._id, saleNumber: s.saleNumber, total: s.total, paymentMethod: s.paymentMethod, createdAt: s.createdAt })),
@@ -1783,6 +1863,7 @@ export class PosService {
 
   async exportDailyReportCsv(sellerId: string, storeId: string, query: any): Promise<string> {
     await this.verifyStoreOwnership(storeId, sellerId);
+    const { currency, exp } = await this.moneyContext(storeId);
 
     const date = query.date ? new Date(query.date) : new Date();
     const startOfDay = new Date(date); startOfDay.setHours(0, 0, 0, 0);
@@ -1794,20 +1875,28 @@ export class PosService {
       createdAt: { $gte: startOfDay, $lte: endOfDay },
     }).lean();
 
-    const rows = [['Sale Number', 'Date', 'Employee', 'Status', 'Payment', 'Subtotal', 'Discount', 'Tax', 'Total', 'Customer'].join(',')];
+    // amounts are written with exactly the currency's decimals (JPY 0, USD 2, KWD 3), never a fixed 2
+    const money = (n: number) => Number(n || 0).toFixed(exp);
+    const csvCell = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const rows = [['Sale Number', 'Date', 'Employee', 'Status', 'Payment', 'Currency', 'Subtotal', 'Discount', 'Tax', 'Total', 'Refunded', 'Change Given', 'Customer'].join(',')];
 
     for (const sale of sales) {
+      const used = effectivePayments(sale as any);
+      const payment = used.map((l) => `${l.method} ${money(l.amount)}`).join(' + ');
       rows.push([
-        (sale as any).saleNumber,
+        csvCell((sale as any).saleNumber),
         new Date((sale as any).createdAt).toISOString(),
-        (sale as any).employeeId,
+        csvCell((sale as any).employeeName ?? (sale as any).employeeId),
         (sale as any).status,
-        (sale as any).paymentMethod,
-        (sale as any).subtotal,
-        (sale as any).discount,
-        (sale as any).tax,
-        (sale as any).total,
-        ((sale as any).customerName || '').replace(/,/g, ' '),
+        csvCell(payment),
+        (sale as any).currency ?? currency,
+        money((sale as any).subtotal),
+        money((sale as any).discount),
+        money((sale as any).tax),
+        money((sale as any).total),
+        money((sale as any).refundedAmount || 0),
+        money((sale as any).changeGiven || 0),
+        csvCell((sale as any).customerName || ''),
       ].join(','));
     }
 
@@ -1819,12 +1908,14 @@ export class PosService {
   async getPosSettings(sellerId: string, storeId: string) {
     await this.verifyStoreOwnership(storeId, sellerId);
 
-    let settings = await this.r.posSettingsModel.findOne({ storeId }).lean();
+    let settings: any = await this.r.posSettingsModel.findOne({ storeId }).lean();
     if (!settings) {
-      settings = await this.r.posSettingsModel.create({ storeId });
+      settings = (await this.r.posSettingsModel.create({ storeId })).toObject();
     }
 
-    return { success: true, data: settings };
+    // The authoritative selling currency comes from the store, not from the free-text `currencySymbol`.
+    const { currency, exp } = await this.moneyContext(storeId);
+    return { success: true, data: { ...settings, currency, currencyExponent: exp } };
   }
 
   async updatePosSettings(sellerId: string, storeId: string, dto: UpdatePosSettingsDto) {

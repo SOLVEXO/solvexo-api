@@ -5,6 +5,7 @@ import {
   IsNumber, IsOptional, IsEnum, Min,
 } from 'class-validator';
 import { Type } from 'class-transformer';
+import { PaymentLineDto } from './payment.dto';
 
 export class SaleItemDto {
   @ApiProperty({ example: '664product1' })
@@ -51,23 +52,61 @@ export class CreateSaleDto {
   @Type(() => SaleItemDto)
   items: SaleItemDto[];
 
-  @ApiProperty({ example: 0, required: false, description: 'Flat discount amount' })
+  @ApiProperty({ example: 0, required: false, description: 'Flat discount amount (legacy form — prefer discountType + discountValue)' })
   @IsOptional()
   @Type(() => Number)
   @IsNumber()
   @Min(0)
   discount?: number;
 
-  @ApiProperty({ example: 0, required: false })
+  @ApiProperty({ enum: ['amount', 'percent'], required: false, description: 'How `discountValue` is read; the server computes the discount amount' })
+  @IsOptional()
+  @IsEnum(['amount', 'percent'])
+  discountType?: 'amount' | 'percent';
+
+  @ApiProperty({ example: 10, required: false })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  discountValue?: number;
+
+  @ApiProperty({ required: false, deprecated: true, description: 'IGNORED. Tax is computed by the server from the store tax rate.' })
   @IsOptional()
   @Type(() => Number)
   @IsNumber()
   @Min(0)
   tax?: number;
 
-  @ApiProperty({ enum: ['cash', 'card', 'other'], default: 'cash' })
+  @ApiProperty({ required: false, example: 58.76, description: 'The total the device displayed. The server computes its own; a difference beyond one minor unit is rejected (TOTAL_MISMATCH)' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  clientTotal?: number;
+
+  @ApiProperty({ enum: ['cash', 'card', 'other'], default: 'cash', description: 'Single-payment form; ignored when `payments` is sent' })
   @IsEnum(['cash', 'card', 'other'])
   paymentMethod: string;
+
+  @ApiProperty({ type: [PaymentLineDto], required: false, description: 'Split tender: one entry per tender. Overrides paymentMethod.' })
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => PaymentLineDto)
+  payments?: PaymentLineDto[];
+
+  @ApiProperty({ required: false, example: 50, description: 'Single cash payment only: what the customer handed over (server computes change)' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  amountTendered?: number;
+
+  @ApiProperty({ required: false, description: 'Single non-cash payment: card auth code / bank reference' })
+  @IsOptional()
+  @IsString()
+  paymentReference?: string;
 
   @ApiProperty({ required: false, example: '664user1' })
   @IsOptional()

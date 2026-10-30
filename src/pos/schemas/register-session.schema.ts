@@ -51,6 +51,13 @@ export class RegisterSession {
   @Prop({ type: Number, default: 0 })
   openingCash: number;
 
+  // Currency snapshot (Phase 5B): every cash figure on this session is in this currency, rounded to its exponent.
+  @Prop({ type: String, default: null })
+  currency: string | null;
+
+  @Prop({ type: Number, default: null })
+  currencyExponent: number | null;
+
   @Prop({ type: Number, default: null })
   closingCash: number | null;
 

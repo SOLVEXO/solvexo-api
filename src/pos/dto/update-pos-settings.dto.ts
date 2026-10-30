@@ -4,7 +4,7 @@ import { IsNumber, IsOptional, IsString, Max, Min } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class UpdatePosSettingsDto {
-  @ApiProperty({ required: false, example: 0.05, description: '0.05 = 5% — applied to subtotal when sale.tax not provided' })
+  @ApiProperty({ required: false, example: 0.05, description: '0.05 = 5% — the server applies it to (subtotal − discount) on every sale; client-sent tax is ignored' })
   @IsOptional()
   @Type(() => Number)
   @IsNumber()
@@ -36,4 +36,9 @@ export class UpdatePosSettingsDto {
   @IsOptional()
   @IsString()
   currencySymbol?: string;
+
+  @ApiProperty({ required: false, example: 'NTN 1234567-8', description: 'Printed on receipts' })
+  @IsOptional()
+  @IsString()
+  businessTaxId?: string;
 }

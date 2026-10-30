@@ -35,6 +35,54 @@ export class SaleItem {
 }
 export const SaleItemSchema = SchemaFactory.createForClass(SaleItem);
 
+/** One tender taken for a sale. `amount` is what was APPLIED to the total (cash net of change). */
+@Schema({ _id: false })
+export class SalePayment {
+  @Prop({ enum: ['cash', 'card', 'other'], required: true })
+  method: string;
+
+  @Prop({ type: Number, required: true })
+  amount: number;
+
+  // cash only — what the customer handed over; change = tendered − amount, stored once on the sale
+  @Prop({ type: Number })
+  tendered?: number;
+
+  // card auth code / bank transfer ref / etc.
+  @Prop({ type: String, default: null })
+  reference: string | null;
+}
+export const SalePaymentSchema = SchemaFactory.createForClass(SalePayment);
+
+/** One refund event against a sale — what came back, to which tenders, and in what currency. */
+@Schema({ _id: false })
+export class SaleRefund {
+  @Prop({ type: Number, required: true })
+  amount: number;
+
+  @Prop({ enum: ['full', 'partial'], required: true })
+  kind: string;
+
+  @Prop({ type: [{ _id: false, method: String, amount: Number }], default: [] })
+  tenders: Array<{ method: string; amount: number }>;
+
+  @Prop({ type: [{ _id: false, saleItemId: String, qty: Number }], default: [] })
+  items: Array<{ saleItemId: string; qty: number }>;
+
+  @Prop({ type: String, default: null })
+  employeeId: string | null;
+
+  @Prop({ type: String, default: null })
+  currency: string | null;
+
+  @Prop({ type: Number, default: null })
+  currencyExponent: number | null;
+
+  @Prop({ type: Date, default: () => new Date() })
+  createdAt: Date;
+}
+export const SaleRefundSchema = SchemaFactory.createForClass(SaleRefund);
+
 @Schema({ timestamps: true })
 export class Sale {
   @Prop({ required: true })
@@ -72,8 +120,45 @@ export class Sale {
   @Prop({ type: Number, required: true })
   total: number;
 
-  @Prop({ enum: ['cash', 'card', 'other'], default: 'cash' })
+  // ── Currency snapshot (Phase 5B / D1) ─────────────────────────────────────────────────────────
+  // The store's currency at the moment of sale and its ISO-4217 minor-unit exponent (JPY 0, USD/PKR 2,
+  // KWD 3). Every amount on this sale is rounded to that exponent. Sales created before 5B have neither
+  // field; readers fall back to the store's current baseCurrency.
+  @Prop({ type: String, default: null })
+  currency: string | null;
+
+  @Prop({ type: Number, default: null })
+  currencyExponent: number | null;
+
+  // What the cashier entered for the discount (the server computed `discount` from it) and the tax rate
+  // that was applied — kept so a receipt can say "10% off" / "Tax (8%)" without guessing.
+  @Prop({ type: String, enum: ['amount', 'percent', null], default: null })
+  discountType: string | null;
+
+  @Prop({ type: Number, default: null })
+  discountValue: number | null;
+
+  @Prop({ type: Number, default: null })
+  taxRate: number | null;
+
+  // 'split' when more than one tender was used. For old single-payment sales this is the only payment info.
+  @Prop({ enum: ['cash', 'card', 'other', 'split'], default: 'cash' })
   paymentMethod: string;
+
+  // Tender lines (empty for held sales and for sales made before split tender — see effectivePayments()).
+  @Prop({ type: [SalePaymentSchema], default: [] })
+  payments: SalePayment[];
+
+  // Cash handed back to the customer (computed server-side from the cash tendered).
+  @Prop({ type: Number, default: 0 })
+  changeGiven: number;
+
+  // Snapshot of who rang it up, so a receipt can print a cashier name without another lookup.
+  @Prop({ type: String, default: null })
+  employeeName: string | null;
+
+  @Prop({ type: [SaleRefundSchema], default: [] })
+  refunds: SaleRefund[];
 
   @Prop({ type: String, default: null })
   customerId: string | null;

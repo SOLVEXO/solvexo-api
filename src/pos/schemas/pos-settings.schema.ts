@@ -25,7 +25,11 @@ export class PosSettings {
   businessAddress: string | null;
 
   @Prop({ type: String, default: null })
-  currencySymbol: string | null;
+  currencySymbol: string | null;   // legacy free text — the app now derives the symbol from the store's currency code
+
+  // Printed on receipts when set (VAT / GST / NTN number).
+  @Prop({ type: String, default: null })
+  businessTaxId: string | null;
 
   @Prop({ type: Number, default: 0 })
   saleCounter: number;         // atomically incremented to mint saleNumber ("POS-00001") per store
