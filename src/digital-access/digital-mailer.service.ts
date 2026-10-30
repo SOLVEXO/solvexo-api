@@ -54,7 +54,7 @@ export class DigitalMailerService {
     return this.send('digital_file_updated', storeId, customerId, { productName: v.productName, fileName: v.fileName, versionLabel: v.version, changelog: v.changelog ? `What is new: ${v.changelog}` : '' }, '/library');
   }
 
-  membership(event: Extract<CustomerEmailEvent, `membership_${string}`>, storeId: string, customerId: string, planName: string, renewalDate?: Date | null) {
-    return this.send(event, storeId, customerId, { planName, renewalDate: renewalDate ? renewalDate.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '' }, '/memberships');
+  membership(event: Extract<CustomerEmailEvent, `membership_${string}`>, storeId: string, customerId: string, planName: string, renewalDate?: Date | null, extra: Record<string, any> = {}) {
+    return this.send(event, storeId, customerId, { planName, renewalDate: renewalDate ? renewalDate.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '', ...extra }, '/memberships');
   }
 }

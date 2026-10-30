@@ -70,6 +70,14 @@ export const CUSTOMER_EMAIL_DEFAULTS_BY_LOCALE: Record<string, Partial<Record<Cu
       subject: "آپ کی {{planName}} ممبرشپ ختم ہو گئی",
       body: "سلام {{customerName}}،\n\n{{storeName}} پر آپ کی {{planName}} ممبرشپ ختم ہو گئی ہے۔ آپ جب چاہیں دوبارہ شامل ہو سکتے ہیں:\n{{membershipUrl}}",
     },
+    membership_proof_rejected: {
+      subject: "{{planName}} کی ادائیگی کی تصدیق نہیں ہو سکی",
+      body: "سلام {{customerName}}،\n\n{{storeName}} {{planName}} کے لیے آپ کی بھیجی ہوئی ادائیگی کی تصدیق نہیں کر سکا۔\nوجہ: {{rejectionReason}}\n\nبراہ کرم اسے دیکھ کر رسید دوبارہ اپ لوڈ کریں:\n{{membershipUrl}}",
+    },
+    membership_renewal_approved: {
+      subject: "{{planName}} کی ادائیگی کی تصدیق ہو گئی",
+      body: "سلام {{customerName}}،\n\n{{storeName}} نے {{planName}} کے لیے آپ کی ادائیگی کی تصدیق کر دی ہے۔ آپ کی رسائی اب {{periodEnd}} تک جاری ہے۔\n\nشکریہ!\n{{membershipUrl}}",
+    },
     membership_expired: {
       subject: "آپ کی {{planName}} ممبرشپ کی مدت ختم ہو گئی",
       body: "سلام {{customerName}}،\n\n{{storeName}} پر آپ کی {{planName}} ممبرشپ کی مدت ختم ہو گئی ہے۔ رسائی واپس پانے کے لیے یہاں تجدید کریں:\n{{membershipUrl}}",

@@ -53,7 +53,7 @@ export class StripeMembershipProvider {
     const country = resolveStoreCountry(store);
     const allowed = stripeConnectCountries();
     if (!country || !allowed.includes(country)) {
-      return { available: false, reason: `Stripe card payments through Solvexo are not available for stores in ${country ? countryName(country) : 'your country'} yet. Memberships stay on manual billing.` };
+      return { available: false, reason: `Auto billing is not available in ${country ? countryName(country) : 'your country'} yet; use Manual billing.` };
     }
     const account = await this.connect.getEligibleConnectAccountForStore(storeId);
     if (!account) return { available: false, reason: 'Connect your Stripe account (Settings -> Integrations) and finish its setup to charge members automatically.' };

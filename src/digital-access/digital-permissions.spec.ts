@@ -1,6 +1,7 @@
 import { Reflector } from '@nestjs/core';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { SellerMembershipsController } from '../memberships/memberships.controller';
+import { SellerRenewalInvoicesController } from '../memberships/renewal-invoices.controller';
 import { SellerLicensesController } from '../licenses/licenses.controller';
 import { SellerCoursesController } from '../courses/courses.controller';
 import { DigitalSellerController } from './digital-access.controller';
@@ -20,6 +21,12 @@ const ROUTES: [any, string, string][] = [
   [SellerMembershipsController, 'create', 'members.manage'],
   [SellerMembershipsController, 'subs', 'members.manage'],
   [SellerMembershipsController, 'paid', 'members.manage'],
+  [SellerRenewalInvoicesController, 'list', 'members.manage'],
+  [SellerRenewalInvoicesController, 'approve', 'members.manage'],
+  [SellerRenewalInvoicesController, 'reject', 'members.manage'],
+  [SellerRenewalInvoicesController, 'voidIt', 'members.manage'],
+  [SellerRenewalInvoicesController, 'remind', 'members.manage'],
+  [SellerRenewalInvoicesController, 'proofUrl', 'members.manage'],
   [SellerLicensesController, 'list', 'licenses.manage'],
   [SellerLicensesController, 'token', 'licenses.manage'],
   [SellerCoursesController, 'list', 'courses.manage'],

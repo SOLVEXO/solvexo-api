@@ -7,6 +7,7 @@ import { accessUntil, addInterval, dunningDecision, prorationCredit, upgradeAmou
 import { SUBSCRIPTION_PROVIDERS } from './subscription-provider';
 import { DigitalMailerService } from '../digital-access/digital-mailer.service';
 import { StripeMembershipProvider } from './stripe-membership.provider';
+import { OPEN_INVOICE, RenewalInvoice, RenewalInvoiceDocument } from './renewal-invoice.schema';
 import { getInvoiceSubscriptionId } from '../common/stripe-invoice.util';
 import { storePublicUrl } from '../newsletter/marketing-email.util';
 
@@ -25,6 +26,7 @@ export class MembershipsService {
     @InjectModel(MemberSubscription.name) readonly subModel: Model<MemberSubscriptionDocument>,
     @Optional() private readonly mailer?: DigitalMailerService,
     @Optional() private readonly stripe?: StripeMembershipProvider,
+    @Optional() @InjectModel(RenewalInvoice.name) private readonly invoiceModel?: Model<RenewalInvoiceDocument>,
   ) {}
 
   private mail(event: Parameters<DigitalMailerService['membership']>[0], s: { storeId: string; customerId: string; planId: string; currentPeriodEnd?: Date | null }) {
@@ -320,13 +322,21 @@ export class MembershipsService {
   }
 
   /** Seller confirms the period was paid (manual provider): starts / extends the period. Idempotent per period via the `paidThrough` guard. */
-  async markPaid(storeId: string, id: string, by: string) {
+  /** `key` makes the call idempotent: the same key never extends the period twice (approve of a renewal invoice uses `invoice:<id>`). */
+  async markPaid(storeId: string, id: string, by: string, key?: string) {
     const s = await this.subModel.findOne({ _id: id, storeId }).catch(() => null);
     if (!s) throw new NotFoundException('Subscription not found');
     if (!['trialing', 'active', 'past_due'].includes(s.status)) throw new BadRequestException('Subscription is not payable');
     if (s.provider === 'stripe') throw new BadRequestException('This membership is charged automatically by Stripe: the card payment marks each period paid');
     const plan = await this.planModel.findOne({ _id: s.planId, storeId }).lean();
     if (!plan) throw new NotFoundException('Plan not found');
+    if (key) {
+      const claim = await this.subModel.updateOne({ _id: s._id, appliedItemIds: { $ne: key } }, { $addToSet: { appliedItemIds: key } });
+      if (!claim.modifiedCount) return s; // already applied: nothing to extend
+    } else if (this.invoiceModel) {
+      // a hand-made "mark paid" settles the open invoices of this membership
+      await this.invoiceModel.updateMany({ subscriptionId: String(s._id), status: { $in: OPEN_INVOICE } }, { $set: { status: 'paid', paidAt: new Date(), reviewedBy: by, reviewedAt: new Date() }, $push: { audit: { at: new Date(), action: 'settled_manually', by, note: '' } } });
+    }
     const now = new Date();
     if (plan.type === 'one_time') {
       s.status = 'active'; s.currentPeriodEnd = null; s.currentPeriodStart = now;
@@ -557,6 +567,8 @@ export class MembershipsService {
     // 3. dunning ladder
     const late = await this.subModel.find({ status: 'past_due', provider: { $ne: 'stripe' }, dueAt: { $ne: null } }).limit(500);
     for (const s of late) {
+      // the buyer sent proof and the seller has not decided yet: the seller's delay must not cost the member access
+      if (this.invoiceModel && (await this.invoiceModel.exists({ subscriptionId: String(s._id), status: 'submitted' }))) continue;
       const plan = await this.planModel.findOne({ _id: s.planId, storeId: s.storeId }).lean();
       const d = dunningDecision({ failedCount: s.failedCount, dueAt: s.dueAt as Date, now, graceDays: plan?.graceDays });
       if (d.action === 'retry') {

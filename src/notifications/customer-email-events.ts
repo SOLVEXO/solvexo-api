@@ -30,6 +30,8 @@ export const CUSTOMER_EMAIL_EVENTS = [
   'membership_grace_period',
   'membership_cancelled',
   'membership_expired',
+  'membership_proof_rejected',
+  'membership_renewal_approved',
 ] as const;
 
 export type CustomerEmailEvent = (typeof CUSTOMER_EMAIL_EVENTS)[number];
@@ -291,6 +293,26 @@ export const CUSTOMER_EMAIL_CATALOG: Record<CustomerEmailEvent, CustomerEmailEve
     variables: ["storeName","customerName","planName","membershipUrl"],
     resendable: false,
   },
+  membership_proof_rejected: {
+    group: 'digital',
+    label: "Membership payment proof rejected",
+    description: "Sent when the store could not confirm the payment receipt a member uploaded.",
+    defaultSubject: "We could not confirm your payment for {{planName}}",
+    defaultBody:
+      "Hi {{customerName}},\n\n{{storeName}} could not confirm the payment you sent for {{planName}}.\nReason: {{rejectionReason}}\n\nPlease check it and upload the receipt again:\n{{membershipUrl}}",
+    variables: ["storeName","customerName","planName","rejectionReason","membershipUrl"],
+    resendable: false,
+  },
+  membership_renewal_approved: {
+    group: 'digital',
+    label: "Membership payment confirmed",
+    description: "Sent when the store confirms a membership payment and the period is extended.",
+    defaultSubject: "Payment confirmed for {{planName}}",
+    defaultBody:
+      "Hi {{customerName}},\n\n{{storeName}} confirmed your payment for {{planName}}. Your access now runs until {{periodEnd}}.\n\nThank you!\n{{membershipUrl}}",
+    variables: ["storeName","customerName","planName","periodEnd","membershipUrl"],
+    resendable: false,
+  },
 };
 
 export function isCustomerEmailEvent(value: unknown): value is CustomerEmailEvent {
@@ -347,4 +369,6 @@ export const CUSTOMER_EMAIL_SAMPLE_VARS: Record<string, string> = {
   planName: 'Gold',
   membershipUrl: 'https://example.com/memberships',
   renewalDate: '30 Oct 2026',
+  rejectionReason: 'The amount on the receipt does not match.',
+  periodEnd: '2026-12-01',
 };

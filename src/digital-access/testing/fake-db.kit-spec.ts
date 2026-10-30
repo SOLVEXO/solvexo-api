@@ -126,6 +126,7 @@ export class FakeRedis {
 export function makeDb() {
   const repositories = {
     orderModel: new FakeModel(), productModel: new FakeModel(), storeModel: new FakeModel(), userModel: new FakeModel(),
+    storeIntegrationModel: new FakeModel(), manualPaymentMethodModel: new FakeModel(),
   };
   return { db: { repositories } as any, ...repositories };
 }
