@@ -16,6 +16,7 @@ import { AdminExportQueryDto } from './dto/export-query.dto';
 import { OrdersListQueryDto } from './dto/orders-list-query.dto';
 import { PlatformHealthService } from '../platform-health/platform-health.service';
 import { SaasMetricsService } from './saas-metrics.service';
+import { ActivationFunnelService } from './activation-funnel.service';
 import { SaasMetricsQueryDto } from './dto/saas-metrics-query.dto';
 
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
@@ -31,7 +32,15 @@ export class AdminAnalyticsController {
     private readonly adminAnalyticsService: AdminAnalyticsService,
     private readonly platformHealthService: PlatformHealthService,
     private readonly saasMetrics: SaasMetricsService,
+    private readonly activationFunnel: ActivationFunnelService,
   ) {}
+
+  /** Merchant activation funnel for sellers who signed up in the last `months` months (1–24, default 6). */
+  @RequirePermission('analytics.view')
+  @Get('activation-funnel')
+  getActivationFunnel(@Query() query: SaasMetricsQueryDto) {
+    return this.activationFunnel.getFunnel(query.months ?? 6);
+  }
 
   // ─── SaaS metrics (Solvexo's own plan revenue) ──────────────────────────
 
