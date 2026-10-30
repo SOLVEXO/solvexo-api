@@ -58,6 +58,11 @@ describe('PermissionsGuard — platform admin team', () => {
     await expect(run(team([]))).resolves.toBe(true);
   });
 
+  it('a read-only role can still secure its own account (@AdminSelf writes, e.g. two-factor sign-in)', async () => {
+    const { run } = makeGuard({ [ADMIN_SELF_KEY]: true });
+    await expect(run(team([], { readOnly: true }), 'POST')).resolves.toBe(true);
+  });
+
   it('an approval-gated action is refused, queued once, then allowed exactly once after the Super Admin approves', async () => {
     const approvals: any[] = [];
     const { run } = makeGuard({ [REQUIRE_PERMISSION_KEY]: ['finance.payouts'], [ADMIN_APPROVAL_KEY]: 'payout.manual' }, approvals);
@@ -153,7 +158,7 @@ describe('AdminTeamService rules', () => {
     const redis = { set: jest.fn() };
     const activity = { log: jest.fn() };
     const storeModel: any = { findById: () => lean({ _id: 'S1', name: 'Shop', sellerId: 'sel1', isDelete: false }) };
-    const svc = new AdminTeamService({ repositories: { adminModel, adminRoleModel: roleModel, adminApprovalModel: approvalModel, storeModel } } as any, jwt as any, redis as any, activity as any, email as any);
+    const svc = new AdminTeamService({ repositories: { adminModel, adminRoleModel: roleModel, adminApprovalModel: approvalModel, storeModel } } as any, jwt as any, redis as any, activity as any, email as any, { clear: async () => undefined } as any);
     return { svc, target, adminModel, jwt, email };
   };
   const owner = { userId: 'o1' };

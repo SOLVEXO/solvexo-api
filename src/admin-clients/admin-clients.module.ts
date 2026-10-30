@@ -10,6 +10,7 @@ import { AdminModerationModule } from '../admin-moderation/admin-moderation.modu
 // import needed for SellerPlatformSubscriptionsService to be injectable here.
 import { AdminClientsController } from './admin-clients.controller';
 import { AdminClientsService } from './admin-clients.service';
+import { MerchantHealthService } from './merchant-health.service';
 
 @Module({
   // RedisModule — JwtAuthGuard (used on this controller) depends on
@@ -20,7 +21,7 @@ import { AdminClientsService } from './admin-clients.service';
   // ("Cannot read properties of undefined (reading 'isConnected')").
   imports: [AuthModule, RedisModule, AdminUsersModule, AdminAnalyticsModule, AdminFinanceModule, AdminModerationModule],
   controllers: [AdminClientsController],
-  providers: [AdminClientsService],
-  exports: [AdminClientsService],
+  providers: [AdminClientsService, MerchantHealthService],
+  exports: [AdminClientsService, MerchantHealthService],
 })
 export class AdminClientsModule {}

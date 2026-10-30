@@ -20,13 +20,21 @@ const IV_LENGTH = 12; // recommended IV length for GCM
 
 const KEY_ENV_VARS = {
   INTEGRATIONS: 'INTEGRATIONS_CREDENTIALS_ENCRYPTION_KEY',
+  ADMIN_2FA: 'ADMIN_2FA_ENCRYPTION_KEY',
 } as const;
+
+// Used only when the key family's own env var is unset, so a deploy that hasn't added the new variable yet still works.
+// Admin 2FA secrets fall back to JWT_SECRET: anyone holding that can already mint admin tokens, so it adds no new exposure.
+const FALLBACK_ENV_VARS: Partial<Record<keyof typeof KEY_ENV_VARS, string>> = {
+  ADMIN_2FA: 'JWT_SECRET',
+};
 
 export type CredentialKeyName = keyof typeof KEY_ENV_VARS;
 
 function deriveKey(keyName: CredentialKeyName): Buffer {
   const envVar = KEY_ENV_VARS[keyName];
-  const secret = process.env[envVar];
+  const fallback = FALLBACK_ENV_VARS[keyName];
+  const secret = process.env[envVar] || (fallback ? process.env[fallback] : undefined);
   if (!secret) {
     throw new Error(`${envVar} is not set — refusing to encrypt/decrypt ${keyName} credentials without a real key.`);
   }

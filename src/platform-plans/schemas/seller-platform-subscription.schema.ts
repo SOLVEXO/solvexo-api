@@ -116,7 +116,13 @@ export class SellerPlatformSubscription {
     // trial (no plan attached) TO a real one.
     fromPlanId: string | null; fromPlanName: string; toPlanId: string; toPlanName: string;
     proratedAmountUSD: number; changedAt: Date;
+    // The new plan's price and interval at the time of the change, so MRR history (admin SaaS metrics) doesn't
+    // depend on today's plan prices. Absent on entries written before these fields existed.
+    amountUSD?: number; interval?: 'monthly' | 'yearly';
   }>;
+  // When the store was last locked (unpaid / canceled with no free fallback). MRR history uses it as the end of
+  // paid revenue; older locked rows without it fall back to gracePeriodEndsAt.
+  @Prop({ type: Date, default: null }) lockedAt: Date | null;
 
   @Prop({ type: String, enum: ['manual', 'stripe'], default: 'manual' }) paymentProvider: string;
   @Prop({ type: String, default: null }) providerSubscriptionId: string | null;

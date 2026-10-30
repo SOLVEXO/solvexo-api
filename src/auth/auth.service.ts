@@ -1,4 +1,5 @@
 import { AdminSecurityService } from './admin-security.service';
+import { AdminTwoFactorService } from './admin-two-factor.service';
 import { buildStaffProfile } from '../common/staff-profile.util';
 import {
   Injectable,
@@ -41,6 +42,7 @@ export class AuthService {
     @Optional() private readonly notificationsService?: NotificationsService,
     // Appended last (optional) so existing positional construction in specs keeps working.
     @Optional() private readonly adminSecurity?: AdminSecurityService,
+    @Optional() private readonly adminTwoFactor?: AdminTwoFactorService,
   ) {}
 
   /** Tells the platform admins a new seller joined (in-app + email per their preferences). Never throws. */
@@ -326,6 +328,15 @@ export class AuthService {
         );
       }
 
+      // Admins with two-factor on get a short-lived challenge instead of a session; completeAdminTwoFactorLogin finishes it.
+      if (role === 'admin' && existingUser.twoFactorEnabled && this.adminTwoFactor) {
+        return {
+          message: 'Enter the code from your authenticator app',
+          success: true,
+          data: { twoFactorRequired: true, challengeToken: this.adminTwoFactor.signChallenge(existingUser) },
+        };
+      }
+
       if (role === 'seller') {
         this.logSellerSecurityEvent(
           existingUser._id.toString(),
@@ -338,57 +349,82 @@ export class AuthService {
         );
       }
 
-      // tokenVersion is embedded so a suspend/deactivate action elsewhere
-      // (which bumps the DB value) invalidates this token on its very next
-      // request — see JwtAuthGuard's comparison against the current DB value.
-      const adminClaims = role === 'admin' && this.adminSecurity ? await this.adminSecurity.onSuccess(existingUser, ip, userAgent) : {};
-      const payload = {
-        sub: existingUser._id,
-        email: existingUser.email,
-        role: existingUser.role,
-        tokenVersion: existingUser.tokenVersion ?? 0,
-        ...adminClaims,
-        // Informational only — read from the resolved account, never from
-        // client input. Buyer-only; undefined for seller/admin.
-        storeId: role === 'user' ? ((existingUser as any).storeId ?? null) : undefined,
-      };
-
-      const token = this.jwtService.sign(payload);
-
-      await this.redisService.set(
-        token,
-        existingUser._id.toString(),
-        24 * 60 * 60,
-      );
-
-      // ✅ Refresh Token (long expiry)
-      const refreshToken = this.jwtService.sign(payload, {
-        expiresIn: '7d',
-      });
-
-      return {
-        message: 'Login successful',
-        success: true, // ye add karna zaroori hai
-        data: {
-          user: {
-            // ⬅️ user object me rakhna
-            id: existingUser._id,
-            name: existingUser.name,
-            email: existingUser.email,
-            role: existingUser.role,
-            image: existingUser.profileImage || null,
-            ...(role === 'admin' ? { isSuperAdmin: !!existingUser.isSuperAdmin } : {}),
-          },
-          token: {
-            // ⬅️ token object me rakhna
-            accessToken: token,
-            refreshToken: refreshToken,
-          },
-        },
-      };
+      return await this.issueLoginSession(existingUser, role, ip, userAgent);
     } catch (error) {
       throw new UnauthorizedException(error.message || 'Login failed');
     }
+  }
+
+  /** Second login step for an admin with two-factor on: the challenge from login() plus an authenticator or recovery code. */
+  async completeAdminTwoFactorLogin(challengeToken: string, code: string, ip?: string, userAgent?: string) {
+    if (!this.adminTwoFactor || !this.adminSecurity) throw new UnauthorizedException('Two-factor sign-in is unavailable');
+    const { adminId, tokenVersion } = this.adminTwoFactor.verifyChallenge(challengeToken);
+    const admin: any = await this.databaseService.repositories.adminModel.findById(adminId);
+    // A password reset, suspension or "sign out everywhere" since the password step voids the challenge.
+    if (!admin || admin.isDelete || admin.status !== 'active' || (admin.tokenVersion ?? 0) !== tokenVersion) {
+      throw new UnauthorizedException('Your sign-in step expired. Enter your email and password again.');
+    }
+    this.adminSecurity.assertCanAttempt(admin);
+    const result = await this.adminTwoFactor.verifyLoginCode(adminId, code);
+    if (!result.ok) {
+      await this.adminSecurity.recordFailure(admin);
+      throw new UnauthorizedException("That code didn't match. Use the newest code from your app, or a recovery code.");
+    }
+    const session: any = await this.issueLoginSession(admin, 'admin', ip, userAgent);
+    session.data.twoFactor = { usedRecoveryCode: result.usedRecoveryCode, recoveryCodesLeft: result.recoveryCodesLeft };
+    return session;
+  }
+
+  /** Signs the access/refresh tokens once every login check has passed. */
+  private async issueLoginSession(existingUser: any, role: string, ip?: string, userAgent?: string) {
+    // tokenVersion is embedded so a suspend/deactivate action elsewhere
+    // (which bumps the DB value) invalidates this token on its very next
+    // request — see JwtAuthGuard's comparison against the current DB value.
+    const adminClaims = role === 'admin' && this.adminSecurity ? await this.adminSecurity.onSuccess(existingUser, ip, userAgent) : {};
+    const payload = {
+      sub: existingUser._id,
+      email: existingUser.email,
+      role: existingUser.role,
+      tokenVersion: existingUser.tokenVersion ?? 0,
+      ...adminClaims,
+      // Informational only — read from the resolved account, never from
+      // client input. Buyer-only; undefined for seller/admin.
+      storeId: role === 'user' ? ((existingUser as any).storeId ?? null) : undefined,
+    };
+
+    const token = this.jwtService.sign(payload);
+
+    await this.redisService.set(
+      token,
+      existingUser._id.toString(),
+      24 * 60 * 60,
+    );
+
+    // ✅ Refresh Token (long expiry)
+    const refreshToken = this.jwtService.sign(payload, {
+      expiresIn: '7d',
+    });
+
+    return {
+      message: 'Login successful',
+      success: true, // ye add karna zaroori hai
+      data: {
+        user: {
+          // ⬅️ user object me rakhna
+          id: existingUser._id,
+          name: existingUser.name,
+          email: existingUser.email,
+          role: existingUser.role,
+          image: existingUser.profileImage || null,
+          ...(role === 'admin' ? { isSuperAdmin: !!existingUser.isSuperAdmin } : {}),
+        },
+        token: {
+          // ⬅️ token object me rakhna
+          accessToken: token,
+          refreshToken: refreshToken,
+        },
+      },
+    };
   }
 
   /** Verifies the provider token server-side so a forged socialId/email pair can't be used to hijack an account. */
