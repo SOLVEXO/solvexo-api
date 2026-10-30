@@ -52,8 +52,11 @@ export class FakeModel {
     return r;
   }
   private chain(result: any) {
-    const p: any = Promise.resolve(result);
-    for (const m of ['sort', 'limit', 'select', 'skip', 'lean']) p[m] = () => p;
+    let cur = result;
+    const p: any = { then: (a: any, b: any) => Promise.resolve(cur).then(a, b), catch: (b: any) => Promise.resolve(cur).catch(b) };
+    p.skip = (n: number) => { if (Array.isArray(cur)) cur = cur.slice(n); return p; };
+    p.limit = (n: number) => { if (Array.isArray(cur)) cur = cur.slice(0, n); return p; };
+    for (const m of ['sort', 'select', 'lean']) p[m] = () => p;
     return p;
   }
 

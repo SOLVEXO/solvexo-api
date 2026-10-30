@@ -13,6 +13,7 @@ import { resolveBuyerStoreScope } from '../common/store-scope.util';
 import { verifyStoreOwnershipOrForbidden } from '../common/store-ownership.util';
 import { DatabaseService } from '../database/databaseservice';
 import { EntitlementsService } from '../platform-plans/entitlements.service';
+import { pageOf } from '../common/paging';
 import { LicensesService } from './licenses.service';
 
 class ValidateDto {
@@ -71,7 +72,7 @@ export class SellerLicensesController {
   private own = (req: any, storeId: string) => verifyStoreOwnershipOrForbidden(this.db.repositories.storeModel as any, storeId, actingSellerId(req.user));
 
   @Get() @RequirePermission('licenses.manage')
-  async list(@Req() req: any, @Param('storeId') storeId: string, @Query('limit') limit?: string) { await this.own(req, storeId); return this.svc.listForStore(storeId, Number(limit) || 50); }
+  async list(@Req() req: any, @Param('storeId') storeId: string, @Query('page') page?: string, @Query('limit') limit?: string, @Query('status') status?: string) { await this.own(req, storeId); return this.svc.listForStore(storeId, pageOf(page, limit), status); }
 
   @Post('api-token') @RequirePermission('licenses.manage')
   async token(@Req() req: any, @Param('storeId') storeId: string) { await this.own(req, storeId); await this.entitlements.assertFeatureAllowed(storeId, 'digitalLicensesAllowed', 'License keys'); return this.svc.newApiToken(storeId); }

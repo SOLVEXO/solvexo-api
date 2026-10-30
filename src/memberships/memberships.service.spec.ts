@@ -178,6 +178,22 @@ describe('plan changes, pause, grants', () => {
   });
 });
 
+describe('seller list', () => {
+  it('subscribers are paged on the server, filtered by status and enriched', async () => {
+    const s = setup();
+    s.userModel.rows.push({ _id: 'c1', name: 'Ayesha', email: 'a@x.pk' });
+    for (let i = 0; i < 5; i++) { const sub: any = await s.svc.join('s1', 'c' + i, 'free'); sub.status = i < 3 ? 'active' : 'expired'; }
+    const p1: any = await s.svc.listSubscribers('s1', undefined, { page: 1, limit: 2, skip: 0 });
+    const p3: any = await s.svc.listSubscribers('s1', undefined, { page: 3, limit: 2, skip: 4 });
+    expect(p1.total).toBe(5);
+    expect(p1.items.length).toBe(2);
+    expect(p3.items.length).toBe(1);
+    expect(((await s.svc.listSubscribers('s1', 'expired')) as any).total).toBe(2);
+    expect(p1.items.every((i: any) => i.planName === 'Free')).toBe(true);
+    expect(((await s.svc.listSubscribers('s2')) as any).total).toBe(0);
+  });
+});
+
 describe('plan validation', () => {
   it('rejects bad input and a product of another store', async () => {
     const s = setup();

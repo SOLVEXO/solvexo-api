@@ -80,9 +80,16 @@ export class LicensesService {
     return { token }; // shown once; only the hash is stored
   }
 
-  async listForStore(storeId: string, limit = 50) {
-    const rows = await this.keyModel.find({ storeId }).sort({ createdAt: -1 }).limit(Math.min(limit, 200)).lean();
-    return rows.map((r) => ({ id: String(r._id), productId: r.productId, customerId: r.customerId, orderId: r.orderId, keyHint: r.keyHint, status: r.status, activationLimit: r.activationLimit, activations: r.activations.length, createdAt: (r as any).createdAt }));
+  async listForStore(storeId: string, pg: { page: number; limit: number; skip: number } = { page: 1, limit: 20, skip: 0 }, status?: string) {
+    const filter: any = { storeId, ...(status === 'active' || status === 'revoked' ? { status } : {}) };
+    const [rows, total] = await Promise.all([
+      this.keyModel.find(filter).sort({ createdAt: -1 }).skip(pg.skip).limit(pg.limit).lean(),
+      this.keyModel.countDocuments(filter),
+    ]);
+    const products: any[] = await this.db.repositories.productModel.find({ _id: { $in: rows.map((r) => r.productId) }, storeId }).select('name').lean();
+    const name = new Map(products.map((p) => [String(p._id), p.name]));
+    const items = rows.map((r) => ({ id: String(r._id), productId: r.productId, productName: name.get(String(r.productId)) ?? 'Deleted product', customerId: r.customerId, orderId: r.orderId, keyHint: r.keyHint, status: r.status, activationLimit: r.activationLimit, activations: r.activations.length, createdAt: (r as any).createdAt }));
+    return { items, total, page: pg.page, limit: pg.limit };
   }
 
   private async forStore(storeId: string, id: string) {

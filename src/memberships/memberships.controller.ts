@@ -13,6 +13,7 @@ import { resolveBuyerStoreScope } from '../common/store-scope.util';
 import { verifyStoreOwnershipOrForbidden } from '../common/store-ownership.util';
 import { DatabaseService } from '../database/databaseservice';
 import { EntitlementsService } from '../platform-plans/entitlements.service';
+import { pageOf } from '../common/paging';
 import { MembershipsService } from './memberships.service';
 
 class PlanIdDto { @IsString() @IsNotEmpty() planId: string; }
@@ -100,7 +101,7 @@ export class SellerMembershipsController {
   async update(@Req() req: any, @Param('storeId') storeId: string, @Param('planId') planId: string, @Body() body: any) { await this.own(req, storeId); return this.svc.updatePlan(storeId, planId, body); }
 
   @Get('subscribers') @RequirePermission('members.manage')
-  async subs(@Req() req: any, @Param('storeId') storeId: string, @Query('status') status?: string, @Query('limit') limit?: string) { await this.own(req, storeId); return this.svc.listSubscribers(storeId, status, Number(limit) || 50); }
+  async subs(@Req() req: any, @Param('storeId') storeId: string, @Query('status') status?: string, @Query('page') page?: string, @Query('limit') limit?: string) { await this.own(req, storeId); return this.svc.listSubscribers(storeId, status, pageOf(page, limit)); }
 
   @Post('subscribers/grant') @RequirePermission('members.manage')
   async grant(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: GrantDto) { await this.own(req, storeId); return this.svc.sellerGrant(storeId, dto.customerId, dto.planId, this.by(req)); }

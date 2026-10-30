@@ -250,8 +250,21 @@ export class MembershipsService {
 
   // ---------------- seller actions ----------------
 
-  listSubscribers(storeId: string, status?: string, limit = 50) {
-    return this.subModel.find({ storeId, ...(status ? { status } : {}) }).sort({ createdAt: -1 }).limit(Math.min(limit, 200)).lean();
+  /** One page of this store's memberships with the plan name and the customer's name/email (the seller's own customers). */
+  async listSubscribers(storeId: string, status?: string, pg: { page: number; limit: number; skip: number } = { page: 1, limit: 20, skip: 0 }) {
+    const filter: any = { storeId, ...(status ? { status } : {}) };
+    const [rows, total] = await Promise.all([
+      this.subModel.find(filter).sort({ createdAt: -1 }).skip(pg.skip).limit(pg.limit).lean(),
+      this.subModel.countDocuments(filter),
+    ]);
+    const [plans, users]: any[] = await Promise.all([
+      this.planModel.find({ storeId, _id: { $in: rows.map((r: any) => r.planId) } }).select('name').lean(),
+      (this.db.repositories as any).userModel.find({ _id: { $in: rows.map((r: any) => r.customerId) } }).select('name email contactEmail').lean(),
+    ]);
+    const planName = new Map(plans.map((p: any) => [String(p._id), p.name]));
+    const user = new Map(users.map((u: any) => [String(u._id), u]));
+    const items = rows.map((r: any) => ({ ...r, planName: planName.get(String(r.planId)) ?? 'Deleted plan', customerName: (user.get(String(r.customerId)) as any)?.name ?? null, customerEmail: (user.get(String(r.customerId)) as any)?.contactEmail || (user.get(String(r.customerId)) as any)?.email || null }));
+    return { items, total, page: pg.page, limit: pg.limit };
   }
 
   /** Seller confirms the period was paid (manual provider): starts / extends the period. Idempotent per period via the `paidThrough` guard. */

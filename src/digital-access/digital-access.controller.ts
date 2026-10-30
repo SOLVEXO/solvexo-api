@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Body, Controller, Get, Param, Post, Query, Req, Res, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Query, Req, Res, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { IsInt, IsNotEmpty, IsOptional, IsString, Max, Min } from 'class-validator';
@@ -15,6 +15,7 @@ import { resolveBuyerStoreScope } from '../common/store-scope.util';
 import { verifyStoreOwnershipOrForbidden } from '../common/store-ownership.util';
 import { DatabaseService } from '../database/databaseservice';
 import { DigitalAccessService } from './digital-access.service';
+import { pageOf } from '../common/paging';
 import { DigitalDeliveryService } from './digital-delivery.service';
 import { MembershipsService } from '../memberships/memberships.service';
 
@@ -120,6 +121,20 @@ export class DigitalSellerController {
     return { ...digital, memberships: members, needsAttention: { pastDue: members.counts.past_due, awaitingPayment: members.awaitingPayment, flaggedAccess: digital.flaggedAccess } };
   }
 
+  @Get('settings')
+  @RequirePermission('digital.view')
+  async settings(@Req() req: any, @Param('storeId') storeId: string) {
+    await this.own(req, storeId);
+    return this.access.getSettings(storeId);
+  }
+
+  @Patch('settings')
+  @RequirePermission('digital.manage')
+  async updateSettings(@Req() req: any, @Param('storeId') storeId: string, @Body() body: any) {
+    await this.own(req, storeId);
+    return this.access.updateSettings(storeId, body);
+  }
+
   @Get('reports')
   @RequirePermission('digital.view')
   async reports(@Req() req: any, @Param('storeId') storeId: string) {
@@ -136,9 +151,9 @@ export class DigitalSellerController {
 
   @Get('delivery-log')
   @RequirePermission('digital.view')
-  async log(@Req() req: any, @Param('storeId') storeId: string, @Query('limit') limit?: string, @Query('customerId') customerId?: string) {
+  async log(@Req() req: any, @Param('storeId') storeId: string, @Query('page') page?: string, @Query('limit') limit?: string, @Query('customerId') customerId?: string, @Query('outcome') outcome?: string) {
     await this.own(req, storeId);
-    return this.access.deliveryLog(storeId, Number(limit) || 50, customerId);
+    return this.access.deliveryLog(storeId, pageOf(page, limit), { customerId, outcome });
   }
 
   @Post('access/:id/revoke')

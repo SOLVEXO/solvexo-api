@@ -26,6 +26,8 @@ const ROUTES: [any, string, string][] = [
   [SellerCoursesController, 'create', 'courses.manage'],
   [DigitalSellerController, 'overview', 'digital.view'],
   [DigitalSellerController, 'reports', 'digital.view'],
+  [DigitalSellerController, 'settings', 'digital.view'],
+  [DigitalSellerController, 'updateSettings', 'digital.manage'],
   [DigitalSellerController, 'log', 'digital.view'],
   [DigitalSellerController, 'revoke', 'digital.manage'],
   [DigitalSellerController, 'resend', 'digital.manage'],

@@ -1,4 +1,4 @@
-import { ForbiddenException, Injectable, Logger, NotFoundException, OnModuleInit, Optional } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException, OnModuleInit, Optional } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { DatabaseService } from '../database/databaseservice';
@@ -248,6 +248,19 @@ export class DigitalAccessService implements OnModuleInit {
     return { last30Days: { digitalRevenue: Math.round(revenue * 100) / 100, digitalItemsSold: items, deliveries: ok, deniedOrFailed: denied }, flaggedAccess: flagged };
   }
 
+  /** Store-level digital settings (today: what happens when one customer downloads from many IPs). */
+  async getSettings(storeId: string) {
+    const s: any = await this.db.repositories.storeModel.findOne({ _id: storeId }).select('digitalAbuseMode digitalDisabled').lean();
+    return { abuseMode: s?.digitalAbuseMode === 'off' || s?.digitalAbuseMode === 'block' ? s.digitalAbuseMode : 'soft-flag', pausedByPlatform: !!s?.digitalDisabled };
+  }
+
+  async updateSettings(storeId: string, body: any) {
+    const mode = body?.abuseMode;
+    if (!['off', 'soft-flag', 'block'].includes(mode)) throw new BadRequestException('abuseMode must be off, soft-flag or block');
+    await this.db.repositories.storeModel.updateOne({ _id: storeId }, { $set: { digitalAbuseMode: mode } });
+    return this.getSettings(storeId);
+  }
+
   /** Reports: top downloaded products and a per-day delivery count for the last 30 days. */
   async reports(storeId: string) {
     const since = new Date(Date.now() - 30 * 86_400_000);
@@ -276,10 +289,15 @@ export class DigitalAccessService implements OnModuleInit {
     return this.accessModel.find({ storeId, sourceOrderId: orderId }).lean();
   }
 
-  async deliveryLog(storeId: string, limit = 50, customerId?: string) {
+  async deliveryLog(storeId: string, pg: { page: number; limit: number; skip: number } = { page: 1, limit: 20, skip: 0 }, opts: { customerId?: string; outcome?: string } = {}) {
     const filter: any = { storeId };
-    if (customerId) filter.customerId = customerId;
-    return this.logModel.find(filter).sort({ at: -1 }).limit(Math.min(limit, 200)).lean();
+    if (opts.customerId) filter.customerId = opts.customerId;
+    if (opts.outcome === 'ok' || opts.outcome === 'denied' || opts.outcome === 'failed') filter.outcome = opts.outcome;
+    const [items, total] = await Promise.all([
+      this.logModel.find(filter).sort({ at: -1 }).skip(pg.skip).limit(pg.limit).lean(),
+      this.logModel.countDocuments(filter),
+    ]);
+    return { items, total, page: pg.page, limit: pg.limit };
   }
 
   /** Buyer library: every active access with its product's visible (non-archived) files. */
