@@ -60,12 +60,12 @@ export class PublicSearchController {
     const { productModel, productVariantModel, collectionModel } = this.db.repositories;
 
     const [products, collections, content, tagRows] = await Promise.all([
-      productModel.find({ storeId, isDelete: false, status: 'active', name: rx }).select('name slug images').sort({ createdAt: -1 }).limit(limit).lean(),
+      productModel.find({ storeId, isDelete: false, status: 'active', $or: [{ name: rx }, { vendor: rx }, { productType: rx }] }).select('name slug images').sort({ createdAt: -1 }).limit(limit).lean(),
       collectionModel.find({ storeId, isDelete: false, status: 'active', name: rx }).select('name slug image').limit(limit).lean(),
       this.contentMatches(storeId, rx, limit),
       productModel.aggregate([
-        { $match: { storeId, isDelete: false, status: 'active', $or: [{ name: rx }, { tags: rx }] } },
-        { $project: { name: 1, tags: 1 } },
+        { $match: { storeId, isDelete: false, status: 'active', $or: [{ name: rx }, { tags: rx }, { vendor: rx }] } },
+        { $project: { name: 1, tags: 1, vendor: 1 } },
         { $limit: 200 },
       ]),
     ]);

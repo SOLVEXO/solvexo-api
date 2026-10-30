@@ -1769,7 +1769,9 @@ export class StoreService {
     }
     if (query.tag && query.tag !== 'all') filter.tags = query.tag;
     if (query.search && String(query.search).trim()) {
-      filter.name = { $regex: String(query.search).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' };
+      // Like Shopify: the term matches the title, vendor, product type and tags.
+      const searchRx = { $regex: String(query.search).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' };
+      filter.$and = [...(filter.$and ?? []), { $or: [{ name: searchRx }, { vendor: searchRx }, { productType: searchRx }, { tags: searchRx }] }];
     }
     // Collection membership — resolved via CollectionsService (manual: the
     // seller's own ordered pick; automatic: category/tag rule, evaluated
