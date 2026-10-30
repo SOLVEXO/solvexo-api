@@ -1,5 +1,6 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument } from 'mongoose';
+import { emitOrderChanged, updateTouchesPaymentOrStatus } from '../../common/order-events';
 import { FxSnapshot, FxSnapshotSchema } from '../../exchange-rate/schemas/exchange-rate.schema';
 
 export type OrderDocument = HydratedDocument<Order>;
@@ -765,6 +766,16 @@ export class Order {
 }
 
 export const OrderSchema = SchemaFactory.createForClass(Order);
+
+// Digital delivery follows the order: any write that can change paid / cancelled / refunded state raises an event
+// (see common/order-events.ts). Updates by filter only signal when the filter pins one _id.
+OrderSchema.post('save', function (doc: any) { emitOrderChanged(String(doc._id)); });
+OrderSchema.post('findOneAndUpdate', function (doc: any) { if (doc?._id && updateTouchesPaymentOrStatus((this as any).getUpdate?.())) emitOrderChanged(String(doc._id)); });
+OrderSchema.post('updateOne', function () {
+  const q: any = this as any;
+  const id = q.getFilter?.()?._id;
+  if (id && typeof id !== 'object' && updateTouchesPaymentOrStatus(q.getUpdate?.())) emitOrderChanged(String(id));
+});
 
 OrderSchema.index({ orderNumber: 1 }, { unique: true });
 OrderSchema.index({ userId: 1 });

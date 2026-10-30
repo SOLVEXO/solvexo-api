@@ -1,9 +1,10 @@
-import { ForbiddenException, Injectable, NotFoundException, Optional } from '@nestjs/common';
+import { ForbiddenException, Injectable, Logger, NotFoundException, OnModuleInit, Optional } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { DatabaseService } from '../database/databaseservice';
 import { DigitalAccess, DigitalAccessDocument, DeliveryLog, DeliveryDocument } from './digital-access.schema';
 import { DigitalMailerService } from './digital-mailer.service';
+import { ORDER_CHANGED, ORDER_DISPUTED, orderEvents } from '../common/order-events';
 
 export interface CanResult {
   allowed: boolean;
@@ -14,13 +15,69 @@ export interface CanResult {
 const DEAD_ITEM = ['cancelled', 'refunded'];
 
 @Injectable()
-export class DigitalAccessService {
+export class DigitalAccessService implements OnModuleInit {
+  private readonly logger = new Logger(DigitalAccessService.name);
+  private pending = new Set<string>();
+
   constructor(
     private readonly db: DatabaseService,
     @InjectModel(DigitalAccess.name) readonly accessModel: Model<DigitalAccessDocument>,
     @InjectModel(DeliveryLog.name) readonly logModel: Model<DeliveryDocument>,
     @Optional() private readonly mailer?: DigitalMailerService,
   ) {}
+
+  onModuleInit() {
+    orderEvents.on(ORDER_CHANGED, (id: string) => this.queueOrder(id));
+    orderEvents.on(ORDER_DISPUTED, (ids: string[]) => {
+      this.revokeDisputed(ids).catch((e) => this.logger.warn(`chargeback revoke failed: ${e?.message}`));
+    });
+  }
+
+  /** Several writes to one order in a row (very common) are handled once. */
+  private queueOrder(orderId: string) {
+    if (this.pending.has(orderId)) return;
+    this.pending.add(orderId);
+    setTimeout(() => {
+      this.pending.delete(orderId);
+      this.onOrderChanged(orderId).catch((e) => this.logger.warn(`digital sync of order ${orderId} failed: ${e?.message}`));
+    }, 250);
+  }
+
+  /**
+   * Event-driven grant / revoke. Paid order => grant (idempotent, mails once); cancelled / refunded item =>
+   * its access is revoked. Reconcile on read stays as the safety net for anything this misses.
+   */
+  async onOrderChanged(orderId: string): Promise<void> {
+    const order: any = await this.db.repositories.orderModel.findOne({ _id: orderId, isDelete: false }).lean();
+    if (!order) return;
+    const hasDigital = (order.sellerOrders ?? []).some((so: any) => (so.items ?? []).some((i: any) => i.type === 'digital'));
+    if (!hasDigital) return;
+    for (const storeId of new Set<string>((order.sellerOrders ?? []).map((so: any) => String(so.storeId)))) {
+      await this.grantForOrder(order, storeId);
+    }
+    await this.reconcileOrder(orderId);
+  }
+
+  /** Chargeback: withdraw every access created by these orders (the seller can grant it again if the dispute is won). */
+  async revokeDisputed(orderIds: string[]): Promise<number> {
+    let n = 0;
+    for (const id of orderIds) {
+      const order: any = await this.db.repositories.orderModel.findOne({ _id: id }).select('sellerOrders.storeId').lean();
+      for (const storeId of new Set<string>((order?.sellerOrders ?? []).map((s: any) => String(s.storeId)))) n += await this.revokeForOrder(storeId, id, 'chargeback');
+    }
+    return n;
+  }
+
+  /** Revoke the access of every item of this order that was cancelled or refunded. */
+  async reconcileOrder(orderId: string): Promise<number> {
+    const rows = await this.accessModel.find({ sourceOrderId: orderId, status: 'active' });
+    let revoked = 0;
+    for (const r of rows) {
+      const fresh = await this.reconcile(r);
+      if (fresh.status === 'revoked') revoked++;
+    }
+    return revoked;
+  }
 
   /** Mail every customer who currently has active access to this product about a new file version. */
   async notifyFileUpdated(storeId: string, productId: string, v: { productName: string; fileName: string; version: string; changelog: string | null }): Promise<number> {
