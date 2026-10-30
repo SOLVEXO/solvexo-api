@@ -146,7 +146,12 @@ export class InventoryService {
         images: product.images ?? [],
         type: product.type,
         productType: product.productType,
+        // `stock` keeps its historical mixed type (number, or the display
+        // string '∞ Unlimited') for the web dashboard. API clients that need
+        // a stable type (the POS app) read these two typed fields instead.
         stock: stockDisplay,
+        isUnlimited: isDigital || hasUnlimitedVariant,
+        stockQuantity: typeof stockDisplay === 'number' ? stockDisplay : null,
         stockStatus,
         status: product.status,
         scheduledAt: product.scheduledAt ?? null,
