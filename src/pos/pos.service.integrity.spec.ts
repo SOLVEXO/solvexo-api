@@ -235,29 +235,8 @@ describe('PosService — Phase 5A sale integrity', () => {
   });
 
   describe('searchStoreCustomers', () => {
-    it('only searches users who ordered from, or were sold to by, this store', async () => {
-      const r = makeRepos();
-      const orderedId = 'aaaaaaaaaaaaaaaaaaaaaaaa';
-      const posId = 'bbbbbbbbbbbbbbbbbbbbbbbb';
-      r.orderModel.aggregate.mockResolvedValue([{ _id: orderedId }]);
-      r.saleModel.distinct.mockResolvedValue([posId]);
-      const find = jest.fn().mockReturnValue({ select: () => ({ limit: () => ({ lean: () => Promise.resolve([{ _id: orderedId, name: 'Ann', email: 'a@x.com', phone: '1' }]) }) }) });
-      r.userModel.find = find;
-
-      const res: any = await build(r).searchStoreCustomers('seller1', 's1', 'ann');
-
-      const filter = find.mock.calls[0][0];
-      expect(filter._id.$in.sort()).toEqual([orderedId, posId].sort()); // never an unscoped find
-      expect(res.data).toEqual([{ id: orderedId, name: 'Ann', email: 'a@x.com', phone: '1' }]);
-    });
-
-    it('returns nothing (and runs no user query) when the store has no customers', async () => {
-      const r = makeRepos();
-      const res: any = await build(r).searchStoreCustomers('seller1', 's1', 'ann');
-      expect(res.data).toEqual([]);
-    });
-
-    it('ignores one-character queries', async () => {
+    // The scoping rules themselves are proven against a real database in pos.integration.spec.ts.
+    it('ignores one-character queries without touching the database', async () => {
       const r = makeRepos();
       const res: any = await build(r).searchStoreCustomers('seller1', 's1', 'a');
       expect(res.data).toEqual([]);
