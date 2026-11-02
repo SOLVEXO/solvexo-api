@@ -90,6 +90,7 @@ export const NOTIFICATION_TYPES = {
   ADMIN_MEMORY_PRESSURE: 'admin_memory_pressure',
   ADMIN_PLATFORM_ALERT: 'admin_platform_alert',
   ADMIN_WEEKLY_DIGEST: 'admin_weekly_digest',
+  EMAIL_SENDER_FAILING: 'email_sender_failing',
 } as const;
 
 export type NotificationType = (typeof NOTIFICATION_TYPES)[keyof typeof NOTIFICATION_TYPES];
@@ -109,6 +110,7 @@ export const NOTIFICATION_CATEGORY: Record<string, 'orders' | 'messages' | 'prom
   [NOTIFICATION_TYPES.PAYMENT_FAILED]: 'orders',
   [NOTIFICATION_TYPES.NEW_MESSAGE]: 'messages',
   [NOTIFICATION_TYPES.CONTACT_FORM_MESSAGE]: 'messages',
+  [NOTIFICATION_TYPES.EMAIL_SENDER_FAILING]: 'orders',
   [NOTIFICATION_TYPES.LOYALTY_POINTS_EARNED]: 'loyalty',
   [NOTIFICATION_TYPES.STORE_CREDIT_RECEIVED]: 'loyalty',
   [NOTIFICATION_TYPES.LOYALTY_TIER_UPGRADE]: 'loyalty',

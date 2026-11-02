@@ -30,6 +30,10 @@ export class StoreContactMessage {
   @Prop({ type: String, enum: CONTACT_MESSAGE_STATUSES, default: 'new' })
   status: ContactMessageStatus;
 
+  /** What the store answered from the inbox (newest last). */
+  @Prop({ type: [{ _id: false, message: String, sentAt: Date, sentBy: String }], default: [] })
+  replies: { message: string; sentAt: Date; sentBy: string }[];
+
   createdAt?: Date;
   updatedAt?: Date;
 }

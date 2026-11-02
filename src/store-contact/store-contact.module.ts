@@ -4,11 +4,12 @@ import { RedisModule } from '../redis/redis.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { StoreContactController, PublicStoreContactController } from './store-contact.controller';
 import { StoreContactService } from './store-contact.service';
+import { EmailService } from '../otp/services/email.service';
 
 @Module({
   imports: [AuthModule, RedisModule, NotificationsModule],
   controllers: [StoreContactController, PublicStoreContactController],
-  providers: [StoreContactService],
+  providers: [StoreContactService, EmailService],
   exports: [StoreContactService],
 })
 export class StoreContactModule {}

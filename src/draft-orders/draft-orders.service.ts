@@ -332,7 +332,7 @@ export class DraftOrdersService {
     });
     if (sent === 'failed') {
       // Template engine unavailable — fall back to the built-in mail so the invoice still goes out.
-      await this.emailService.sendMail(draft.customerEmail, `Invoice from ${(store as any).name} — ${symbol} ${draft.total.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, html, (store as any).contactEmail ?? null, undefined, undefined, (store as any).name).catch(() => {});
+      await this.emailService.sendMail(draft.customerEmail, `Invoice from ${(store as any).name} — ${symbol} ${draft.total.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, html, (store as any).contactEmail ?? null, undefined, undefined, (store as any).name, storeId).catch(() => {});
     }
 
     await this.activityLogService.log({

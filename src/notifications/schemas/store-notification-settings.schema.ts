@@ -49,6 +49,10 @@ export class StoreNotificationSettings {
   @Prop({ type: Date, default: null })
   lastEmailFailureAt: Date | null;
 
+  /** The store's own SMTP for its customer emails; null = Solvexo sends them. passwordEnc is AES-GCM and never returned. */
+  @Prop({ type: Object, default: null })
+  smtp: { enabled: boolean; host: string; port: number; user: string; fromEmail: string; passwordEnc: string; verifiedAt: Date | null; lastError: string | null; lastFailureAt: Date | null; consecutiveFailures: number } | null;
+
   /** Extra addresses that also get the "New order" email (Shopify staff order notifications). */
   @Prop({ type: [String], default: [] })
   staffOrderEmails: string[];

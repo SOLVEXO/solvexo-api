@@ -413,6 +413,7 @@ export class PurchaseOrdersService {
       undefined,
       [{ filename: this.pdfFilename(data.poNumber), content: pdf, contentType: 'application/pdf' }],
       brand.businessName,
+      storeId,
     );
     if (!sent) {
       throw new BadGatewayException('The email could not be sent. Try again, or download the PDF and send it yourself.');

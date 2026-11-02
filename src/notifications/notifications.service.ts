@@ -144,6 +144,7 @@ export class NotificationsService {
               html,
               ...(sender?.fromName ? { fromName: sender.fromName } : {}),
               ...(sender?.replyTo ? { replyTo: sender.replyTo } : {}),
+              ...(sender && storeId ? { storeId } : {}),
               ...(email.event && storeId ? { timeline: { orderId: data?.orderId ? String(data.orderId) : null, event: email.event, storeId } } : {}),
             });
           }
@@ -355,7 +356,7 @@ export class NotificationsService {
       const built = await this.buildCustomerEmail(args);
       if (!built) return 'failed';
       if (!built.send && !args.force) return 'disabled';
-      const ok = await this.emailService.sendMail(args.to, built.subject, built.html, built.replyTo, undefined, args.attachments, built.fromName);
+      const ok = await this.emailService.sendMail(args.to, built.subject, built.html, built.replyTo, undefined, args.attachments, built.fromName, args.storeId);
       if (args.orderId) await this.recordEmailTimeline(String(args.orderId), args.event, args.to, ok, args.storeId);
       else await this.recordDeliveryResult(args.storeId, ok);
       return ok ? 'sent' : 'failed';
@@ -432,7 +433,7 @@ export class NotificationsService {
       if (jobName === NOTIFICATION_PUSH_JOB) {
         await this.firebaseAdminService.sendToUser(data.userId, { title: data.title, body: data.body, data: data.data });
       } else if (jobName === NOTIFICATION_EMAIL_JOB) {
-        const ok = await this.emailService.sendMail(data.to, data.subject, data.html, data.replyTo ?? null, undefined, undefined, data.fromName ?? null);
+        const ok = await this.emailService.sendMail(data.to, data.subject, data.html, data.replyTo ?? null, undefined, undefined, data.fromName ?? null, data.storeId ?? data.timeline?.storeId ?? null);
         if (data.timeline) {
           if (data.timeline.orderId) await this.recordEmailTimeline(data.timeline.orderId, data.timeline.event, data.to, ok, data.timeline.storeId);
           else if (data.timeline.storeId) await this.recordDeliveryResult(data.timeline.storeId, ok);
