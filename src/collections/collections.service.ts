@@ -228,7 +228,7 @@ export class CollectionsService {
     if (collection.rules?.categoryId) {
       clauses.push({ $or: [{ categoryId: collection.rules.categoryId }, { subCategoryId: collection.rules.categoryId }] });
     }
-    if (collection.rules?.tags?.length) clauses.push({ tags: { $in: collection.rules.tags } });
+    if (collection.rules?.tags?.length) clauses.push({ tags: collection.rules.matchType === 'all' ? { $all: collection.rules.tags } : { $in: collection.rules.tags } });
     if (collection.rules?.titleContains?.trim()) clauses.push({ name: { $regex: escapeRegex(collection.rules.titleContains.trim()), $options: 'i' } });
     if (clauses.length > 0) {
       filter[collection.rules.matchType === 'all' ? '$and' : '$or'] = clauses;
