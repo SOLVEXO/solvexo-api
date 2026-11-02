@@ -99,7 +99,16 @@ export class StockCountsService {
 
   async getById(storeId: string, sellerId: string, id: string) {
     const count = await this.getOwned(storeId, sellerId, id);
-    return count.toObject();
+    return this.withVariantLabels(count.toObject());
+  }
+
+  /** The line only snapshots product name + SKU: look the variant options up so the counter sees "Black", not 5 identical names. */
+  private async withVariantLabels(obj: any) {
+    const variantIds = [...new Set<string>((obj.items ?? []).map((i: any) => i.variantId).filter(Boolean))];
+    if (variantIds.length === 0) return obj;
+    const variants: any[] = await this.repos.productVariantModel.find({ _id: { $in: variantIds } }).select('options').lean();
+    const labelById = new Map<string, string>(variants.map(v => [String(v._id), (v.options ?? []).map((o: any) => o.value).filter(Boolean).join(' / ')]));
+    return { ...obj, items: obj.items.map((i: any) => ({ ...i, variantLabel: labelById.get(String(i.variantId)) || null })) };
   }
 
   /** Repeatable per-line — the whole point of a real counting session is
@@ -122,7 +131,7 @@ export class StockCountsService {
       if (still && still.status !== 'open') throw new BadRequestException('This stock count is no longer open.');
       throw new NotFoundException('Line item not found on this stock count');
     }
-    return updated.toObject();
+    return this.withVariantLabels(updated.toObject());
   }
 
   async cancel(storeId: string, sellerId: string, id: string) {
