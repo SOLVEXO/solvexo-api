@@ -151,6 +151,9 @@ export class AdminPosPlansService {
       durationInDays: dto.durationInDays,
       description: dto.description ?? null,
       isActive: true,
+      maxRegisters: dto.maxRegisters ?? null,
+      maxEmployees: dto.maxEmployees ?? null,
+      maxLocations: dto.maxLocations ?? null,
     });
     return { success: true, message: 'Plan created', data: plan };
   }
@@ -165,6 +168,9 @@ export class AdminPosPlansService {
     if (dto.durationInDays !== undefined) plan.durationInDays = dto.durationInDays;
     if (dto.description !== undefined) plan.description = dto.description;
     if (dto.isActive !== undefined) plan.isActive = dto.isActive;
+    if (dto.maxRegisters !== undefined) plan.maxRegisters = dto.maxRegisters;
+    if (dto.maxEmployees !== undefined) plan.maxEmployees = dto.maxEmployees;
+    if (dto.maxLocations !== undefined) plan.maxLocations = dto.maxLocations;
 
     await plan.save();
     return { success: true, message: 'Plan updated', data: plan };

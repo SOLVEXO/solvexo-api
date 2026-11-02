@@ -49,6 +49,7 @@ import { QuoteSaleDto } from './dto/quote-sale.dto';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { FinanceService } from '@/finance/finance.service';
 import { EntitlementsService } from '@/platform-plans/entitlements.service';
+import { assertWithinPosPlanLimit } from '../pos-plans/pos-plan-limits.util';
 import { PosTokenRevocationService } from './pos-token-revocation.service';
 import { currentDeviceScope } from './pos-device-scope';
 import { randomUUID } from 'crypto';
@@ -196,6 +197,7 @@ export class PosService {
     // Shopify's own rule for POS-only staff. (The plan's location limit is
     // still enforced where locations are created — StoreLocationService.)
     await this.assertLocationBelongsToStore(dto.storeId, dto.locationId);
+    await assertWithinPosPlanLimit(this.r, dto.storeId, 'employees', await this.r.employeeModel.countDocuments({ storeId: dto.storeId, isDelete: false }));
 
     const hashedPin = await bcrypt.hash(dto.pin, 10);
 
@@ -382,6 +384,8 @@ export class PosService {
     if (!body.name) throw new BadRequestException('Register name is required');
     await this.verifyStoreOwnership(storeId, sellerId);
     await this.assertLocationBelongsToStore(storeId, body.locationId);
+    const store: any = await this.r.storeModel.findById(storeId).select('registers').lean();
+    await assertWithinPosPlanLimit(this.r, storeId, 'registers', (store?.registers ?? []).filter((x: any) => x.status !== 'inactive').length);
 
     const updated = await this.r.storeModel.findByIdAndUpdate(
       storeId,

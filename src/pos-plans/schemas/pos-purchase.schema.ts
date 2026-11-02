@@ -43,6 +43,10 @@ export class PosPurchase {
   @Prop({ type: Date, default: null }) revokedAt: Date | null;
   @Prop({ type: String, default: null }) revokedByAdminId: string | null;
   @Prop({ type: String, default: null }) revokeReason: string | null;
+
+  // Stripe refund / dispute: the purchase's days were taken back (see PosPlansWebhookService).
+  @Prop({ type: Date, default: null }) reversedAt: Date | null;
+  @Prop({ type: String, default: null }) reversedReason: string | null;
 }
 
 export const PosPurchaseSchema = SchemaFactory.createForClass(PosPurchase);
