@@ -86,6 +86,12 @@ export class SalesOpsController {
   }
 
   @RequirePermission('sales.manage')
+  @Get('partner-logins')
+  partnerLogins() {
+    return this.partners.logins();
+  }
+
+  @RequirePermission('sales.manage')
   @Get('partners')
   listPartners() {
     return this.partners.listPartners();

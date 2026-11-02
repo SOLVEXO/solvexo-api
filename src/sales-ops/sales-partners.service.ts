@@ -475,6 +475,40 @@ export class SalesPartnersService {
     return { success: true, data: await this.buildStatement(partnerId, month) };
   }
 
+  /** Logins a partner can be linked to (name, email, role), and which partner already uses each. */
+  async logins() {
+    const r = this.db.repositories;
+    const [admins, roles, linked]: [any[], any[], any[]] = await Promise.all([
+      r.adminModel
+        .find({ isDelete: { $ne: true } })
+        .select('name email roleId status isSuperAdmin')
+        .sort({ name: 1 })
+        .lean(),
+      r.adminRoleModel.find({}).select('name').lean(),
+      this.partners
+        .find({ adminId: { $ne: null } })
+        .select('adminId name')
+        .lean(),
+    ]);
+    const roleName = new Map(roles.map((x) => [String(x._id), x.name]));
+    const partnerOf = new Map(linked.map((x) => [x.adminId, x.name]));
+    return {
+      success: true,
+      data: admins.map((a) => ({
+        _id: String(a._id),
+        name: a.name,
+        email: a.email,
+        status: a.status ?? 'active',
+        roleName: a.isSuperAdmin
+          ? 'Super Admin'
+          : a.roleId
+            ? (roleName.get(String(a.roleId)) ?? null)
+            : 'Full access',
+        partnerName: partnerOf.get(String(a._id)) ?? null,
+      })),
+    };
+  }
+
   // ── The partner's own view ─────────────────────────────────────────────────
 
   async me(actor: SalesActor, month?: string) {
