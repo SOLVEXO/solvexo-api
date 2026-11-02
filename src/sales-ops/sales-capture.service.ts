@@ -242,7 +242,7 @@ export class SalesCaptureService {
             `<p>Hi ${escapeHtml(dto.name.trim())},</p><p>Thank you for booking a Solvexo demo. Someone from our team will call or WhatsApp you on <strong>${escapeHtml(dto.phone.trim())}</strong> within one working day to find a time that suits you.</p><p>In the meantime you can start a free trial and look around.</p>`,
             {
               label: 'Start your free trial',
-              url: 'https://solvexo.store/register',
+              url: 'https://solvexo.store/register?role=seller',
             },
           ),
         )
