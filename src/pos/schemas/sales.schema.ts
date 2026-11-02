@@ -160,6 +160,45 @@ export class Sale {
   @Prop({ type: [SaleRefundSchema], default: [] })
   refunds: SaleRefund[];
 
+  // ── Offline sync (Phase 5C) ──────────────────────────────────────────────────────────────────
+  // A sale rung up while the device had no connection is replayed later with the time it was REALLY made.
+  // `createdAt` then carries that time (so reports, shifts and receipts are right); `receivedAt` is when the
+  // server actually got it, and `clientCreatedAt` the raw device timestamp.
+  @Prop({ type: Boolean, default: false })
+  isOffline: boolean;
+
+  @Prop({ type: Date, default: null })
+  clientCreatedAt: Date | null;
+
+  @Prop({ type: Date, default: null })
+  receivedAt: Date | null;
+
+  // The settingsVersion (tax rate etc.) this sale was priced with.
+  @Prop({ type: Number, default: null })
+  settingsVersion: number | null;
+
+  // Something a manager should look at: oversell on sync, price changed while offline, sale into a closed
+  // session, a payment shortfall. Cleared by POST /pos/sales/:id/resolve-review.
+  @Prop({ type: [{ _id: false, type: { type: String }, detail: { type: Object } }], default: [] })
+  flags: Array<{ type: string; detail: Record<string, any> }>;
+
+  @Prop({ type: Boolean, default: false })
+  needsReview: boolean;
+
+  @Prop({ type: String, default: null })
+  reviewedBy: string | null;
+
+  @Prop({ type: Date, default: null })
+  reviewedAt: Date | null;
+
+  @Prop({ type: String, default: null })
+  reviewNote: string | null;
+
+  // Offline sales only: what the server priced minus what the customer was actually charged on the device (>0 =
+  // the shop is owed the difference). Never rejects money that already changed hands — it is recorded and flagged.
+  @Prop({ type: Number, default: 0 })
+  paymentShortfall: number;
+
   @Prop({ type: String, default: null })
   customerId: string | null;
 

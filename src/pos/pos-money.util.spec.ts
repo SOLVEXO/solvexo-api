@@ -244,3 +244,21 @@ describe('partialRefundAmount — pro-rated tax & discount, exact remainder on t
     expect(partialRefundAmount({ subtotal: 0, total: 0 }, [{ price: 0, qty: 1 }], 2, false)).toBe(0);
   });
 });
+
+describe('settlePayments allowShort (offline sales only)', () => {
+  it('records what was really paid and reports the shortfall instead of rejecting money that already changed hands', () => {
+    const r = settlePayments(toMinor(12, 2), 2, { paymentMethod: 'cash', amountTendered: 10 }, { allowShort: true });
+    expect(r.shortBy).toBe(2);
+    expect(r.change).toBe(0);
+    expect(r.lines).toEqual([{ method: 'cash', amount: 10, tendered: 10, reference: null }]);
+  });
+  it('without allowShort the same payment is still rejected (online sales stay strict)', () => {
+    expect(code(() => settlePayments(toMinor(12, 2), 2, { paymentMethod: 'cash', amountTendered: 10 }))).toBe('PAYMENT_SHORT');
+  });
+  it('a full payment reports shortBy 0', () => {
+    expect(settlePayments(toMinor(12, 2), 2, { paymentMethod: 'cash', amountTendered: 12 }, { allowShort: true }).shortBy).toBe(0);
+  });
+  it('card/other can still never exceed the total, even offline', () => {
+    expect(code(() => settlePayments(toMinor(10, 2), 2, { payments: [{ method: 'card', amount: 11 }] }, { allowShort: true }))).toBe('PAYMENT_EXCEEDS_TOTAL');
+  });
+});

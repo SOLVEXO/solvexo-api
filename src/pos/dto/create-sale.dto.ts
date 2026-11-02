@@ -2,7 +2,7 @@
 import { ApiProperty } from '@nestjs/swagger';
 import {
   IsString, IsNotEmpty, IsArray, ValidateNested,
-  IsNumber, IsOptional, IsEnum, Min,
+  IsNumber, IsOptional, IsEnum, Min, IsInt, IsDateString, IsBoolean,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { PaymentLineDto } from './payment.dto';
@@ -127,6 +127,23 @@ export class CreateSaleDto {
   @IsOptional()
   @IsEnum(['completed', 'held'])
   status?: 'completed' | 'held';
+
+  @ApiProperty({ required: false, example: 3, description: 'The POS settingsVersion (tax rate…) the device priced this sale with — see GET /pos/settings and POST /pos/sales/quote' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  settingsVersion?: number;
+
+  @ApiProperty({ required: false, description: 'ISO time the sale was really made on the device (offline sales)' })
+  @IsOptional()
+  @IsDateString()
+  clientCreatedAt?: string;
+
+  @ApiProperty({ required: false, description: 'true when this is a queued sale being replayed after the device was offline' })
+  @IsOptional()
+  @IsBoolean()
+  offline?: boolean;
 
   @ApiProperty({ required: false, example: 'idem_abc123', description: 'Client-generated key — prevents duplicate sales on retry' })
   @IsOptional()

@@ -22,8 +22,12 @@ export interface MongoHarness {
 }
 
 export async function startMongoHarness(): Promise<MongoHarness> {
-  const server = await MongoMemoryServer.create();
-  const conn = await mongoose.createConnection(server.getUri(), { dbName: 'pos_test' }).asPromise();
+  // Normal path: the ONE shared mongod started by test/jest-global-setup.ts, with a database of our own so
+  // suites can't see each other's data. Fallback (e.g. running a spec outside jest's globalSetup): our own mongod.
+  const sharedUri = process.env.TEST_MONGO_URI;
+  const own = sharedUri ? null : await MongoMemoryServer.create();
+  const dbName = `pos_test_${process.pid}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const conn = await mongoose.createConnection(sharedUri ?? own!.getUri(), { dbName }).asPromise();
 
   const m = (cls: any, sch: any) => conn.model(cls.name, sch);
   const repos: Record<string, any> = {
@@ -42,6 +46,7 @@ export async function startMongoHarness(): Promise<MongoHarness> {
     storeCustomerMetaModel: m(schema.StoreCustomerMeta, schema.StoreCustomerMetaSchema),
     posPurchaseModel: m(schema.PosPurchase, schema.PosPurchaseSchema),
     posPlanModel: m(schema.PosPlan, schema.PosPlanSchema),
+    posSettingsVersionModel: m(schema.PosSettingsVersion, schema.PosSettingsVersionSchema),
     idempotencyRecordModel: m(schema.IdempotencyRecord, schema.IdempotencyRecordSchema),
   };
   // Build every index now (unique sale key, unique open session per register, …) so tests hit the real constraints.
@@ -50,7 +55,11 @@ export async function startMongoHarness(): Promise<MongoHarness> {
   return {
     conn,
     repos,
-    stop: async () => { await conn.close(); await server.stop(); },
+    stop: async () => {
+      if (sharedUri) await conn.dropDatabase();
+      await conn.close();
+      if (own) await own.stop();
+    },
     reset: async () => {
       for (const model of Object.values(repos)) await model.deleteMany({});
     },

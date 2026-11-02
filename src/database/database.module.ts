@@ -273,6 +273,7 @@ import { DatabaseService } from './databaseservice';
       { name: schema.StockTransfer.name, schema: schema.StockTransferSchema },
       { name: schema.PosPlan.name, schema: schema.PosPlanSchema },
       { name: schema.PosPurchase.name, schema: schema.PosPurchaseSchema },
+      { name: schema.PosSettingsVersion.name, schema: schema.PosSettingsVersionSchema },
       { name: schema.Bin.name, schema: schema.BinSchema },
       { name: schema.StaffMember.name, schema: schema.StaffMemberSchema },
       { name: schema.AdminRole.name, schema: schema.AdminRoleSchema },

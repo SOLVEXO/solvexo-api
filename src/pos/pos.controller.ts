@@ -25,6 +25,7 @@ import { PinLoginDto } from './dto/pin-login.dto';
 import { OpenSessionDto } from './dto/open-session.dto';
 import { CloseSessionDto } from './dto/close-session.dto';
 import { CreateSaleDto } from './dto/create-sale.dto';
+import { QuoteSaleDto } from './dto/quote-sale.dto';
 import { CompleteSaleDto } from './dto/complete-sale.dto';
 import { CashAdjustmentDto } from './dto/cash-adjustment.dto';
 import { RefundSaleDto } from './dto/refund-sale.dto';
@@ -295,6 +296,38 @@ export class PosController {
   @Post('sales')
   createSale(@Req() req: any, @Body() dto: CreateSaleDto, @Headers('x-pos-employee-token') employeeToken?: string) {
     return this.posService.createSale(req.user.userId, dto, employeeToken);
+  }
+
+  // Price a cart without selling it — gated exactly like selling (it is part of ringing a sale), no side effects.
+  @UseGuards(JwtAuthGuard, RolesGuard, PosEntitlementGuard)
+  @Roles('seller')
+  @Post('sales/quote')
+  quoteSale(@Req() req: any, @Body() dto: QuoteSaleDto) {
+    return this.posService.quoteSale(req.user.userId, dto);
+  }
+
+  // Offline-sync review queue — static segments, declared before the parameterised `sales/:saleId` routes.
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Get('sales/needs-review')
+  getSalesNeedingReview(@Req() req: any, @Query('storeId') storeId: string) {
+    return this.posService.getSalesNeedingReview(req.user.userId, storeId);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Post('sales/:saleId/resolve-review')
+  resolveSaleReview(@Req() req: any, @Param('saleId') saleId: string, @Body('note') note: string, @Headers('x-pos-employee-token') employeeToken?: string) {
+    return this.posService.resolveSaleReview(req.user.userId, saleId, note, employeeToken);
+  }
+
+  // A manager gives up on a queued offline sale that can never sync — recorded in the audit log (reason required).
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @UseInterceptors(IdempotencyInterceptor)
+  @Post('offline-discards')
+  recordOfflineDiscard(@Req() req: any, @Body() body: { storeId: string; idempotencyKey: string; reason: string; summary?: Record<string, any> }, @Headers('x-pos-employee-token') employeeToken?: string) {
+    return this.posService.recordOfflineDiscard(req.user.userId, body, employeeToken);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)

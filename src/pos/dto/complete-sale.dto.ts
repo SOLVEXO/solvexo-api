@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsArray, IsEnum, IsOptional, IsNumber, IsString, Min, ValidateNested } from 'class-validator';
+import { IsArray, IsEnum, IsInt, IsOptional, IsNumber, IsString, Min, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
 import { PaymentLineDto } from './payment.dto';
 
@@ -59,6 +59,13 @@ export class CompleteSaleDto {
   @IsNumber()
   @Min(0)
   clientTotal?: number;
+
+  @ApiProperty({ required: false, description: 'The settingsVersion the device priced this with' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  settingsVersion?: number;
 
   @ApiProperty({ required: false })
   @IsOptional()

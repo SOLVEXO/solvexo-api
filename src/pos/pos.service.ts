@@ -14,6 +14,7 @@ import {
   allocateRefund, assertClientTotal, byTender, computeTotals, DiscountType, effectivePayments, exponentOf, fromMinor,
   moneyError, partialRefundAmount, roundMoney, settlePayments, tenderNets, toMinor, Totals,
 } from './pos-money.util';
+import { CLOCK_SKEW_MS, offlineWindowMs, parseOffline } from './pos-offline.util';
 import * as bcrypt from 'bcrypt';
 import * as jwt from 'jsonwebtoken';
 import { DatabaseService } from '@/database/databaseservice';
@@ -41,6 +42,7 @@ import { UpdateShiftDto } from './dto/update-shift.dto';
 import { ResetPinDto } from './dto/reset-pin.dto';
 import { UpdateSaleItemsDto } from './dto/update-sale-items.dto';
 import { UpdatePosSettingsDto } from './dto/update-pos-settings.dto';
+import { QuoteSaleDto } from './dto/quote-sale.dto';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { FinanceService } from '@/finance/finance.service';
 import { EntitlementsService } from '@/platform-plans/entitlements.service';
@@ -121,10 +123,16 @@ export class PosService {
   // employee's _id/role via GET /pos/employees/:storeId and just pass one
   // through). This is the actual employee currently PIN-logged-in on the
   // device, proven by a signature only the server could have issued.
-  private verifyEmployeeToken(token: string | undefined, storeId: string): { employeeId: string; role: string } | null {
+  private verifyEmployeeToken(token: string | undefined, storeId: string, at?: Date): { employeeId: string; role: string } | null {
     if (!token) return null;
     try {
-      const payload = jwt.verify(token, requireJwtSecret()) as any;
+      // For an offline sale replayed later, the token may have expired since — what matters is that it was a valid,
+      // signed PIN session AT THE TIME of the sale (iat ≤ sale time ≤ exp), not at sync time.
+      const payload = jwt.verify(token, requireJwtSecret(), at ? { ignoreExpiration: true } : undefined) as any;
+      if (at) {
+        const t = at.getTime();
+        if (!(payload?.iat * 1000 <= t + 5 * 60 * 1000) || !(t <= payload?.exp * 1000 + 5 * 60 * 1000)) return null;
+      }
       if (payload?.type !== 'pos_employee' || payload?.storeId !== storeId) return null;
       return { employeeId: payload.employeeId, role: payload.role };
     } catch {
@@ -136,8 +144,8 @@ export class PosService {
   // by every privileged action (refund, void, cash in/out, discounts).
   // Mandatory, unlike the old actingEmployeeId check it replaces: there is
   // no "skip the check if the field is omitted" path anymore.
-  private requireManagerEmployee(token: string | undefined, storeId: string, actionLabel: string): { employeeId: string; role: string } {
-    const actor = this.verifyEmployeeToken(token, storeId);
+  private requireManagerEmployee(token: string | undefined, storeId: string, actionLabel: string, at?: Date): { employeeId: string; role: string } {
+    const actor = this.verifyEmployeeToken(token, storeId, at);
     if (!actor) throw new ForbiddenException(`A valid employee PIN session is required to ${actionLabel}`);
     if (actor.role !== 'manager') throw new ForbiddenException(`Only managers can ${actionLabel}`);
     return actor;
@@ -742,11 +750,26 @@ export class PosService {
       if (existing) return { success: true, message: 'Duplicate request — returning existing sale', data: existing };
     }
 
-    const session = await this.r.registerSessionModel.findOne({ _id: dto.sessionId, status: 'open' });
-    if (!session) throw new BadRequestException('No open session found');
+    // Offline replay? Validates the device timestamp (not future, not older than the offline window).
+    const off = parseOffline(dto);
+
+    // Online: the session must be open. Offline: the sale belongs to the session that was open WHEN it was made —
+    // even if that session has been closed since (checked below against its open period).
+    const session = await this.r.registerSessionModel.findOne(off.isOffline ? { _id: dto.sessionId } : { _id: dto.sessionId, status: 'open' });
+    if (!session) throw new BadRequestException(off.isOffline ? 'Session not found' : 'No open session found');
     // The session must belong to the store this request is entitled/authorised for — otherwise a
     // seller could sell into one store's register while the entitlement check passed for another.
     if (String((session as any).storeId) !== String(dto.storeId)) throw new BadRequestException('Session does not belong to this store');
+    if (off.isOffline) {
+      const opened = new Date((session as any).openedAt).getTime();
+      const closed = (session as any).closedAt ? new Date((session as any).closedAt).getTime() : Infinity;
+      const t = off.at.getTime();
+      if (t < opened - CLOCK_SKEW_MS || t > closed + CLOCK_SKEW_MS) {
+        throw moneyError('OFFLINE_SALE_OUTSIDE_SESSION', "This sale's time is outside the session it was rung up in — a manager must resolve it", {
+          clientCreatedAt: off.at.toISOString(), sessionOpenedAt: (session as any).openedAt, sessionClosedAt: (session as any).closedAt ?? null,
+        });
+      }
+    }
 
     const employee = await this.r.employeeModel.findOne({ _id: dto.employeeId, storeId: dto.storeId, isDelete: false });
     if (!employee) throw new BadRequestException('Employee not found');
@@ -756,7 +779,7 @@ export class PosService {
     // direct API calls. See requireManagerEmployee's doc comment.
     const discountReq = this.discountSpec(dto);
     if (discountReq.value > 0) {
-      this.requireManagerEmployee(employeeToken, dto.storeId, 'apply a discount');
+      this.requireManagerEmployee(employeeToken, dto.storeId, 'apply a discount', off.isOffline ? off.at : undefined);
     }
 
     // resolve items — fetch variant snapshots + check stock
@@ -771,7 +794,7 @@ export class PosService {
       // raw `stock` — some of it may already be reserved by a paid-but-
       // unshipped online order (see ProductVariant.committedStock).
       const availableForPos = availableStock(variant as any);
-      if (!isHeld && !variant.unlimitedStock && availableForPos < item.qty) {
+      if (!isHeld && !off.isOffline && !variant.unlimitedStock && availableForPos < item.qty) {
         throw new BadRequestException(`Insufficient stock for "${variant.sku}" — available: ${availableForPos}`);
       }
 
@@ -793,24 +816,37 @@ export class PosService {
     // The SERVER prices the sale: line totals, discount, tax and total are computed here in the store
     // currency's minor units; any client-sent `tax`/totals are ignored. A client total that disagrees
     // beyond one minor unit is rejected (TOTAL_MISMATCH) rather than charging a number nobody saw.
-    const money = await this.moneyContext(dto.storeId);
+    // The tax rate comes from the settingsVersion the device priced with (when still within the offline window).
+    const money = await this.moneyContext(dto.storeId, { version: dto.settingsVersion });
     const totals = computeTotals(saleItems, { exp: money.exp, discountType: discountReq.type, discountValue: discountReq.value, taxRate: money.taxRate });
-    assertClientTotal(dto.clientTotal, totals);
+    const flags: Array<{ type: string; detail: Record<string, any> }> = [];
+    if (off.isOffline) {
+      // Money has ALREADY changed hands on the device, so a synced offline sale is never rejected over its total.
+      // If a catalog PRICE changed while the device was offline the server total differs from what was charged:
+      // record it at the server's price and flag the difference for a manager (see paymentShortfall).
+      if (dto.clientTotal !== undefined && Math.abs(toMinor(dto.clientTotal, totals.exp) - totals.minor.total) > 1) {
+        flags.push({ type: 'price_changed_while_offline', detail: { deviceTotal: dto.clientTotal, serverTotal: totals.total } });
+      }
+    } else {
+      assertClientTotal(dto.clientTotal, totals);
+    }
     saleItems.forEach((it, i) => { it.lineTotal = totals.lineTotals[i]; });
     const { subtotal, discount, tax, total } = totals;
 
     // Tender lines — validated against the server's total (a held sale has none yet; it is paid when completed).
     const settled = isHeld
       ? null
-      : settlePayments(totals.minor.total, money.exp, { payments: dto.payments, paymentMethod: dto.paymentMethod, amountTendered: dto.amountTendered, reference: dto.paymentReference });
+      : settlePayments(totals.minor.total, money.exp, { payments: dto.payments, paymentMethod: dto.paymentMethod, amountTendered: dto.amountTendered, reference: dto.paymentReference }, { allowShort: off.isOffline });
+    if (settled && settled.shortBy > 0) flags.push({ type: 'payment_shortfall', detail: { shortBy: settled.shortBy, serverTotal: total } });
 
     // Take the stock first (all-or-nothing, floor-guarded). A completed sale only exists once its
     // stock has genuinely been taken; if recording the sale then fails, the stock is handed back.
     const sessionLocationId: string | null = (session as any).locationId ?? null;
     let reserved: Array<{ variantId: string; qty: number }> = [];
+    const oversold: Array<{ variantId: string; sku?: string; requested: number; available: number }> = [];
     if (!isHeld) {
       try {
-        reserved = await this.reserveStock(dto.items.map((i, idx) => ({ variantId: i.variantId, qty: i.qty, sku: saleItems[idx].sku })), sessionLocationId);
+        reserved = await this.reserveStock(dto.items.map((i, idx) => ({ variantId: i.variantId, qty: i.qty, sku: saleItems[idx].sku })), sessionLocationId, { allowNegative: off.isOffline, oversold });
       } catch (err) {
         // A concurrent duplicate of THIS checkout may have just taken the last units and written the sale;
         // that is the same sale, not a shortage — hand back the winner instead of "insufficient stock".
@@ -854,7 +890,13 @@ export class PosService {
             paymentMethod: settled ? settled.method : dto.paymentMethod,
             payments: settled ? settled.lines : [],
             changeGiven: settled ? settled.change : 0,
+            paymentShortfall: settled ? settled.shortBy : 0,
             employeeName: (employee as any).name ?? null,
+            settingsVersion: money.settingsVersion,
+            receivedAt: new Date(),
+            ...(off.isOffline ? { isOffline: true, clientCreatedAt: off.at, createdAt: off.at } : {}),
+            flags: [...flags, ...oversold.map((o) => ({ type: 'oversold_on_sync', detail: o }))],
+            needsReview: flags.length > 0 || oversold.length > 0,
             customerId: dto.customerId ?? null,
             customerName: dto.customerName ?? 'Walk-in',
             notes: dto.notes ?? null,
@@ -897,8 +939,22 @@ export class PosService {
       action: isHeld ? 'sale_held' : 'sale_created',
       targetId: String(sale._id),
       targetType: 'sale',
-      metadata: { total, discount, itemCount: dto.items.length },
+      metadata: { total, discount, itemCount: dto.items.length, ...(off.isOffline ? { offline: true, clientCreatedAt: off.at, settingsVersion: money.settingsVersion, sessionClosed: (session as any).status === 'closed' } : {}) },
     }).catch(() => {});
+
+    if (off.isOffline) {
+      // Every flagged offline sale leaves a trail a manager can find: audit log (POS) + inventory activity (store).
+      for (const f of sale.flags ?? []) {
+        this.writeAuditLog({ storeId: dto.storeId, employeeId: dto.employeeId, action: f.type === 'oversold_on_sync' ? 'sale_oversold_offline' : `sale_flag_${f.type}`, targetId: String(sale._id), targetType: 'sale', metadata: f.detail }).catch(() => {});
+      }
+      for (const o of oversold) {
+        void this.activityLogService.log({
+          storeId: dto.storeId, category: 'inventory', action: 'inventory_oversell',
+          description: `Offline sale ${sale.saleNumber} sold ${o.requested} of "${o.sku ?? o.variantId}" but only ${o.available} were in stock — stock is now negative`,
+          actorId: dto.employeeId, actorRole: 'pos_employee', targetId: o.variantId, targetType: 'variant', metadata: { saleId: String(sale._id), ...o },
+        });
+      }
+    }
 
     return { success: true, message: isHeld ? 'Sale put on hold' : 'Sale completed', data: sale };
   }
@@ -927,7 +983,7 @@ export class PosService {
       }
     }
 
-    const money = await this.moneyContext(String((sale as any).storeId));
+    const money = await this.moneyContext(String((sale as any).storeId), { version: dto.settingsVersion });
     const totals = computeTotals((sale as any).items, { exp: money.exp, discountType: discountReq.type, discountValue: discountReq.value, taxRate: money.taxRate });
     assertClientTotal(dto.clientTotal, totals);
     const settled = settlePayments(totals.minor.total, money.exp, { payments: dto.payments, paymentMethod: dto.paymentMethod, amountTendered: dto.amountTendered, reference: dto.paymentReference });
@@ -959,6 +1015,7 @@ export class PosService {
           discountType: discountReq.value > 0 ? discountReq.type : null,
           discountValue: discountReq.value > 0 ? discountReq.value : null,
           taxRate: money.taxRate,
+          settingsVersion: money.settingsVersion,
           heldAt: null,
           notes: dto.notes ?? (sale as any).notes,
         },
@@ -1163,6 +1220,96 @@ export class PosService {
     return { success: true, message: 'Held sale discarded' };
   }
 
+  // ── QUOTE (price a cart, no side effects) ─────────────────────────────────────
+
+  /**
+   * What the server WOULD charge for a cart — lines, discount, tax, total, currency, exponent and the settingsVersion
+   * used. Nothing is created and no stock is touched. The app calls it before Charge (when online), shows the
+   * server's total and sends that same total + settingsVersion with the sale, so a stale tax rate or price on the
+   * device is corrected BEFORE the customer is charged rather than rejected after.
+   */
+  async quoteSale(sellerId: string, dto: QuoteSaleDto) {
+    await this.verifyStoreOwnership(dto.storeId, sellerId);
+    if (!dto.items?.length) throw new BadRequestException('Add at least one item to price');
+
+    const lines: any[] = [];
+    for (const item of dto.items) {
+      const variant: any = await this.r.productVariantModel.findOne({ _id: item.variantId, productId: item.productId, isDelete: false }).lean();
+      if (!variant) throw new BadRequestException(`Variant not found: ${item.variantId}`);
+      const product: any = await this.r.productModel.findOne({ _id: item.productId, isDelete: false }).select('name').lean();
+      if (!product) throw new BadRequestException(`Product not found: ${item.productId}`);
+      lines.push({ productId: item.productId, variantId: item.variantId, name: `${product.name}${formatOptionsSuffix(variant.options)}`, sku: variant.sku, price: variant.price, qty: item.qty });
+    }
+    const discountReq = this.discountSpec(dto);
+    const money = await this.moneyContext(dto.storeId, { version: dto.settingsVersion });
+    const totals = computeTotals(lines, { exp: money.exp, discountType: discountReq.type, discountValue: discountReq.value, taxRate: money.taxRate });
+    return {
+      success: true,
+      data: {
+        lines: lines.map((l, i) => ({ ...l, lineTotal: totals.lineTotals[i] })),
+        subtotal: totals.subtotal, discount: totals.discount, tax: totals.tax, total: totals.total,
+        taxRate: money.taxRate, currency: money.currency, currencyExponent: money.exp,
+        settingsVersion: money.settingsVersion,
+        // the version asked for could not be honoured (unknown, or older than the offline window) → priced with current
+        settingsVersionReplaced: !money.usedRequestedVersion,
+      },
+    };
+  }
+
+  // ── OFFLINE REVIEW / DISCARD ──────────────────────────────────────────────────
+
+  /** Sales a manager should look at: oversold on sync, price changed while offline, payment shortfall. Newest first. */
+  async getSalesNeedingReview(sellerId: string, storeId: string) {
+    await this.verifyStoreOwnership(storeId, sellerId);
+    const sales = await this.r.saleModel.find({ storeId, needsReview: true }).sort({ createdAt: -1 }).limit(200).lean();
+    return { success: true, count: sales.length, data: sales };
+  }
+
+  /** A manager acknowledges a flagged sale (note required). Atomic — a second resolve gets a business 409. */
+  async resolveSaleReview(sellerId: string, saleId: string, note: string, employeeToken: string | undefined) {
+    const sale: any = await this.r.saleModel.findById(saleId).lean();
+    if (!sale) throw new NotFoundException('Sale not found');
+    await this.verifyStoreOwnership(sale.storeId, sellerId);
+    const actor = this.requireManagerEmployee(employeeToken, sale.storeId, 'resolve a flagged sale');
+    if (!note || note.trim().length < 3) throw moneyError('REASON_REQUIRED', 'A short note explaining the resolution is required');
+    const done = await this.r.saleModel.findOneAndUpdate(
+      { _id: saleId, needsReview: true },
+      { $set: { needsReview: false, reviewedBy: actor.employeeId, reviewedAt: new Date(), reviewNote: note.trim() } },
+      { new: true },
+    );
+    if (!done) throw businessConflict('SALE_ALREADY_REVIEWED', 'This sale was already resolved');
+    this.writeAuditLog({ storeId: sale.storeId, employeeId: actor.employeeId, action: 'sale_review_resolved', targetId: saleId, targetType: 'sale', metadata: { note: note.trim(), flags: sale.flags } }).catch(() => {});
+    return { success: true, message: 'Sale marked as reviewed', data: done };
+  }
+
+  /**
+   * A manager gives up on a queued offline sale that can never sync (too old, outside its session, …). The sale itself
+   * never reached the server, so this writes the audit trail ("sale X for 42.00 made at T was discarded by M because …")
+   * — keyed by the sale's idempotency key so a retried discard is a no-op. Reason required; manager token required.
+   */
+  async recordOfflineDiscard(
+    sellerId: string,
+    dto: { storeId: string; idempotencyKey: string; reason: string; summary?: Record<string, any> },
+    employeeToken: string | undefined,
+  ) {
+    await this.verifyStoreOwnership(dto.storeId, sellerId);
+    const actor = this.requireManagerEmployee(employeeToken, dto.storeId, 'discard an unsynced sale');
+    if (!dto.reason || dto.reason.trim().length < 3) throw moneyError('REASON_REQUIRED', 'A reason is required to discard an unsynced sale');
+    if (!dto.idempotencyKey) throw moneyError('INVALID_KEY', 'idempotencyKey is required');
+
+    const sold = await this.r.saleModel.findOne({ idempotencyKey: dto.idempotencyKey, storeId: dto.storeId }).select('_id saleNumber').lean();
+    if (sold) throw businessConflict('SALE_ALREADY_SYNCED', 'This sale already reached the server — it cannot be discarded');
+
+    const already = await this.r.posAuditLogModel.findOne({ storeId: dto.storeId, action: 'offline_sale_discarded', targetId: dto.idempotencyKey }).lean();
+    if (!already) {
+      await this.writeAuditLog({
+        storeId: dto.storeId, employeeId: actor.employeeId, action: 'offline_sale_discarded', targetId: dto.idempotencyKey, targetType: 'offline_sale',
+        metadata: { reason: dto.reason.trim(), summary: dto.summary ?? null },
+      });
+    }
+    return { success: true, message: 'Discard recorded', data: { idempotencyKey: dto.idempotencyKey, alreadyRecorded: !!already } };
+  }
+
   // ── CUSTOMER SEARCH (store-scoped) ────────────────────────────────────────
 
   /**
@@ -1274,14 +1421,51 @@ export class PosService {
 
   // ── MONEY HELPERS (Phase 5B) ──────────────────────────────────────────────────
 
-  /** The store's selling currency, its minor-unit exponent and POS tax rate — everything money maths needs. */
-  private async moneyContext(storeId: string): Promise<{ currency: string; exp: number; taxRate: number }> {
+  /**
+   * The store's selling currency, minor-unit exponent and POS tax rate — everything money maths needs — plus the
+   * `settingsVersion` they belong to.
+   *
+   * Pass `version` (what the device priced with) and the server prices with THAT version when it still exists and
+   * was superseded no more than the offline window ago; otherwise (unknown version, or too old) it silently uses
+   * the current settings. That is what keeps TOTAL_MISMATCH meaning "tampering or a client bug": a tax-rate change
+   * made while a device was offline or mid-checkout no longer makes an honest sale disagree with the server.
+   */
+  private async moneyContext(storeId: string, opts: { version?: number | null } = {}): Promise<{ currency: string; exp: number; taxRate: number; settingsVersion: number; usedRequestedVersion: boolean }> {
     const [store, settings]: any[] = await Promise.all([
       this.r.storeModel.findById(storeId).select('baseCurrency').lean(),
-      this.r.posSettingsModel.findOne({ storeId }).select('taxRate').lean(),
+      this.r.posSettingsModel.findOne({ storeId }).select('taxRate settingsVersion createdAt').lean(),
     ]);
     const currency = String(store?.baseCurrency || 'USD').toUpperCase();
-    return { currency, exp: exponentOf(currency), taxRate: Number(settings?.taxRate) || 0 };
+    const current = { currency, exp: exponentOf(currency), taxRate: Number(settings?.taxRate) || 0, settingsVersion: Number(settings?.settingsVersion) || 1 };
+
+    const wanted = opts.version ?? null;
+    if (wanted && wanted !== current.settingsVersion) {
+      const row: any = await this.r.posSettingsVersionModel.findOne({ storeId, version: wanted }).lean();
+      const stillUsable = row && (!row.supersededAt || new Date(row.supersededAt).getTime() >= Date.now() - offlineWindowMs());
+      if (stillUsable) {
+        return { currency: row.currency, exp: row.currencyExponent, taxRate: Number(row.taxRate) || 0, settingsVersion: row.version, usedRequestedVersion: true };
+      }
+    }
+    return { ...current, usedRequestedVersion: !wanted || wanted === current.settingsVersion };
+  }
+
+  /** Makes sure the CURRENT settings version has a history row (stores created before versioning have none). */
+  private async ensureVersionRow(storeId: string): Promise<void> {
+    const [store, settings]: any[] = await Promise.all([
+      this.r.storeModel.findById(storeId).select('baseCurrency').lean(),
+      this.r.posSettingsModel.findOne({ storeId }).lean(),
+    ]);
+    if (!settings) return;
+    const currency = String(store?.baseCurrency || 'USD').toUpperCase();
+    try {
+      await this.r.posSettingsVersionModel.updateOne(
+        { storeId, version: settings.settingsVersion || 1 },
+        { $setOnInsert: { storeId, version: settings.settingsVersion || 1, taxRate: Number(settings.taxRate) || 0, currency, currencyExponent: exponentOf(currency), effectiveFrom: settings.createdAt ?? new Date(), supersededAt: null } },
+        { upsert: true },
+      );
+    } catch (e: any) {
+      if (e?.code !== 11000) throw e; // a concurrent request created it — fine
+    }
   }
 
   /** currency/exponent of an existing sale or session; documents from before 5B carry neither, so fall back to the store's. */
@@ -1320,6 +1504,7 @@ export class PosService {
   private async reserveStock(
     items: Array<{ variantId: string; qty: number; sku?: string }>,
     locationId: string | null,
+    opts: { allowNegative?: boolean; oversold?: Array<{ variantId: string; sku?: string; requested: number; available: number }> } = {},
   ): Promise<Array<{ variantId: string; qty: number }>> {
     const taken: Array<{ variantId: string; qty: number }> = [];
     for (const item of items) {
@@ -1338,8 +1523,18 @@ export class PosService {
       }
       // Matched nothing: either an unlimited-stock variant (fine — nothing to take) or the floor
       // guard lost a race / stock is short (reject and give back what this call already took).
-      const trackedVariantExists = await this.r.productVariantModel.exists({ _id: item.variantId, unlimitedStock: { $ne: true } });
-      if (trackedVariantExists) {
+      const trackedVariant: any = await this.r.productVariantModel.findOne({ _id: item.variantId, unlimitedStock: { $ne: true } }).lean();
+      if (trackedVariant && opts.allowNegative) {
+        // OFFLINE-SYNC RULE: the goods already left the shop, so the sale is recorded and stock is allowed to go
+        // negative — the shortfall is reported (opts.oversold → audit log, inventory activity, needs-review flag).
+        // Online sales never take this branch: they keep the strict no-negative rule.
+        opts.oversold?.push({ variantId: String(item.variantId), sku: item.sku, requested: item.qty, available: Math.max(0, availableStock(trackedVariant)) });
+        await this.r.productVariantModel.updateOne({ _id: item.variantId }, { $inc: { stock: -item.qty } });
+        taken.push({ variantId: String(item.variantId), qty: item.qty });
+        await drainLocationStock(this.r, String(item.variantId), item.qty, { preferLocationId: locationId });
+        continue;
+      }
+      if (trackedVariant) {
         await this.releaseStock(taken, locationId);
         throw new BadRequestException(`Insufficient stock for "${item.sku ?? item.variantId}"`);
       }
@@ -1383,7 +1578,17 @@ export class PosService {
   private async _incrementSessionTotals(sessionId: string, sale: { total: number; payments?: any[]; paymentMethod?: string }, exp: number) {
     const nets = tenderNets({ ...sale, refundedAmount: 0, status: 'completed' }, exp);
     const inc: any = { totalSales: sale.total, totalTransactions: 1, ...this.tenderInc(nets, 1) };
-    await this.r.registerSessionModel.findByIdAndUpdate(sessionId, { $inc: inc });
+    const updated: any = await this.r.registerSessionModel.findByIdAndUpdate(sessionId, { $inc: inc }, { new: true });
+
+    // A sale synced into a session that has ALREADY been closed: its cash is real, so the session's stored close
+    // figures must move with it — expected cash includes the sale, and the variance is re-derived from the count the
+    // cashier entered at close (the drawer did hold that cash; the count simply pre-dated the sync).
+    if (updated && updated.status === 'closed' && nets.cash) {
+      const expectedCash = roundMoney((updated.expectedCash || 0) + nets.cash, exp);
+      const $set: Record<string, any> = { expectedCash };
+      if (updated.closingCash !== null && updated.closingCash !== undefined) $set.cashDifference = roundMoney(updated.closingCash - expectedCash, exp);
+      await this.r.registerSessionModel.updateOne({ _id: sessionId }, { $set });
+    }
   }
 
   private async writeAuditLog(data: {
@@ -1914,20 +2119,43 @@ export class PosService {
     }
 
     // The authoritative selling currency comes from the store, not from the free-text `currencySymbol`.
+    await this.ensureVersionRow(storeId);
     const { currency, exp } = await this.moneyContext(storeId);
-    return { success: true, data: { ...settings, currency, currencyExponent: exp } };
+    return { success: true, data: { ...settings, settingsVersion: settings.settingsVersion || 1, currency, currencyExponent: exp } };
   }
 
   async updatePosSettings(sellerId: string, storeId: string, dto: UpdatePosSettingsDto) {
     await this.verifyStoreOwnership(storeId, sellerId);
 
-    const settings = await this.r.posSettingsModel.findOneAndUpdate(
-      { storeId },
-      { $set: dto },
-      { new: true, upsert: true },
-    );
+    const existing: any = await this.r.posSettingsModel.findOne({ storeId }).lean();
+    const taxChanged = dto.taxRate !== undefined && existing && Number(existing.taxRate) !== Number(dto.taxRate);
 
-    this.writeAuditLog({ storeId, employeeId: null, action: 'settings_updated', targetId: storeId, targetType: 'settings', metadata: { fields: Object.keys(dto) } }).catch(() => {});
+    let settings: any;
+    if (taxChanged) {
+      // A change to how sales are priced bumps settingsVersion and keeps the old values, so devices that priced a
+      // sale (possibly offline) with the previous version can still be honoured. Optimistic on the version so two
+      // concurrent edits can't both claim the same number.
+      await this.ensureVersionRow(storeId);
+      const curVersion = existing.settingsVersion ?? 1;
+      settings = await this.r.posSettingsModel.findOneAndUpdate(
+        { storeId, settingsVersion: existing.settingsVersion === undefined ? { $exists: false } : existing.settingsVersion },
+        { $set: { ...dto, settingsVersion: curVersion + 1 } },
+        { new: true },
+      );
+      if (!settings) throw businessConflict('SETTINGS_CHANGED_CONCURRENTLY', 'The POS settings were changed by someone else — reload and try again');
+      const ctx = await this.moneyContext(storeId);
+      const now = new Date();
+      await this.r.posSettingsVersionModel.updateOne({ storeId, version: curVersion }, { $set: { supersededAt: now } });
+      await this.r.posSettingsVersionModel.updateOne(
+        { storeId, version: settings.settingsVersion },
+        { $setOnInsert: { storeId, version: settings.settingsVersion, taxRate: Number(settings.taxRate) || 0, currency: ctx.currency, currencyExponent: ctx.exp, effectiveFrom: now, supersededAt: null } },
+        { upsert: true },
+      );
+    } else {
+      settings = await this.r.posSettingsModel.findOneAndUpdate({ storeId }, { $set: dto }, { new: true, upsert: true });
+    }
+
+    this.writeAuditLog({ storeId, employeeId: null, action: 'settings_updated', targetId: storeId, targetType: 'settings', metadata: { fields: Object.keys(dto), settingsVersion: settings?.settingsVersion } }).catch(() => {});
 
     return { success: true, message: 'POS settings updated', data: settings };
   }

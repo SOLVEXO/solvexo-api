@@ -13,6 +13,8 @@ import { PosService } from './pos.service';
  *  - customer search only reaches people who relate to the store
  */
 const lean = <T>(v: T) => ({ lean: () => Promise.resolve(v), select: () => ({ lean: () => Promise.resolve(v) }) });
+/** A promise that ALSO has .lean() — for code paths that do `await model.findOne(...)` in one place and `.findOne(...).lean()` in another. */
+const thenableLean = <T>(v: T) => { const p: any = Promise.resolve(v); p.lean = () => Promise.resolve(v); return p; };
 const chain = <T>(v: T) => { const c: any = Promise.resolve(v); c.select = () => c; c.lean = () => Promise.resolve(v); c.session = () => c; c.sort = () => c; return c; };
 
 function makeRepos(over: Record<string, any> = {}) {
@@ -35,7 +37,7 @@ function makeRepos(over: Record<string, any> = {}) {
     },
     employeeModel: { findOne: jest.fn().mockResolvedValue({ _id: 'e1' }), findById: jest.fn() },
     productVariantModel: {
-      findOne: jest.fn().mockResolvedValue(variant),
+      findOne: jest.fn().mockImplementation(() => thenableLean(variant)),
       updateOne: jest.fn().mockResolvedValue({ modifiedCount: 1, matchedCount: 1 }),
       findByIdAndUpdate: jest.fn().mockResolvedValue({}),
       exists: jest.fn().mockResolvedValue({ _id: 'v1' }),
@@ -69,7 +71,7 @@ describe('PosService — Phase 5A sale integrity', () => {
   describe('createSale', () => {
     it('rejects a sale when a later line loses the stock race and gives back what the first line took (no sale written)', async () => {
       const r = makeRepos();
-      r.productVariantModel.findOne.mockResolvedValue({ _id: 'x', sku: 'S', price: 10, stock: 9, unlimitedStock: false, options: [] });
+      r.productVariantModel.findOne.mockImplementation(() => thenableLean({ _id: 'x', sku: 'S', price: 10, stock: 9, unlimitedStock: false, options: [] }));
       r.productVariantModel.updateOne
         .mockResolvedValueOnce({ modifiedCount: 1, matchedCount: 1 }) // line 1 reserved
         .mockResolvedValueOnce({ modifiedCount: 0, matchedCount: 0 }) // line 2 guard lost

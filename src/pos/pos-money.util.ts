@@ -130,6 +130,8 @@ export interface SettledPayments {
   change: number;
   /** The single method, or 'split' when more than one method took part. */
   method: Tender | 'split';
+  /** Only with `allowShort` (an offline sale whose device charged less than the server prices it): total − paid. */
+  shortBy: number;
 }
 
 const MAX_PAYMENT_LINES = 8;
@@ -145,6 +147,7 @@ export function settlePayments(
   totalM: number,
   exp: number,
   input: { payments?: PaymentInput[]; paymentMethod?: string; amountTendered?: number | null; reference?: string | null },
+  opts: { allowShort?: boolean } = {},
 ): SettledPayments {
   let raw: PaymentInput[];
   if (input.payments && input.payments.length > 0) {
@@ -174,13 +177,16 @@ export function settlePayments(
   }
   const cashDueM = totalM - nonCashM;
   const cashHandedM = given.filter((g) => g.method === 'cash').reduce((s, g) => s + g.amountM, 0);
-  if (cashHandedM < cashDueM) {
+  const shortM = cashHandedM < cashDueM ? cashDueM - cashHandedM : 0;
+  // `allowShort` is ONLY for an offline sale that is already over (the customer paid what the device showed): the
+  // shortfall is recorded and flagged for a manager instead of rejecting money that already changed hands.
+  if (shortM > 0 && !opts.allowShort) {
     throw moneyError('PAYMENT_SHORT', 'The payments do not cover the total', {
       total: fromMinor(totalM, exp), paid: fromMinor(nonCashM + cashHandedM, exp), shortBy: fromMinor(cashDueM - cashHandedM, exp),
     });
   }
 
-  let remainingCash = cashDueM;
+  let remainingCash = Math.min(cashDueM, cashHandedM);
   const lines: PaymentLine[] = [];
   for (const g of given) {
     if (g.method !== 'cash') {
@@ -195,7 +201,8 @@ export function settlePayments(
   const methods = new Set(lines.map((l) => l.method));
   return {
     lines,
-    change: fromMinor(cashHandedM - cashDueM, exp),
+    change: fromMinor(Math.max(0, cashHandedM - cashDueM), exp),
+    shortBy: fromMinor(shortM, exp),
     method: methods.size > 1 ? 'split' : (lines[0]?.method ?? (input.paymentMethod as Tender) ?? 'cash'),
   };
 }

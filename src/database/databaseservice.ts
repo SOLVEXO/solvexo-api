@@ -477,6 +477,8 @@ export class DatabaseService {
 
     @InjectModel(schema.PosPurchase.name)
     private posPurchaseModel: Model<schema.PosPurchaseDocument>,
+    @InjectModel(schema.PosSettingsVersion.name)
+    private posSettingsVersionModel: Model<schema.PosSettingsVersionDocument>,
 
     @InjectModel(schema.Bin.name)
     private binModel: Model<schema.BinDocument>,
@@ -682,6 +684,7 @@ export class DatabaseService {
       stockTransferModel: this.stockTransferModel,
       posPlanModel: this.posPlanModel,
       posPurchaseModel: this.posPurchaseModel,
+      posSettingsVersionModel: this.posSettingsVersionModel,
       binModel: this.binModel,
       staffMemberModel: this.staffMemberModel,
       adminRoleModel: this.adminRoleModel,

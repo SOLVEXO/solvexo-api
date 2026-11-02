@@ -1,6 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { BadRequestException, CanActivate, ExecutionContext, ForbiddenException, Injectable, Logger } from '@nestjs/common';
 import { DatabaseService } from '@/database/databaseservice';
+import { parseOffline } from '../pos-offline.util';
 
 /** Machine-readable `code` values the POS app switches on (response body: `{ code, message }`). */
 export const POS_PLAN_REQUIRED = 'POS_PLAN_REQUIRED';
@@ -63,6 +64,19 @@ export class PosEntitlementGuard implements CanActivate {
     if (!store) throw new ForbiddenException('Store not found or unauthorized');
     if (BLOCKED_STORE_STATUSES.has(store.status)) {
       return this.block(req, storeId, `store ${store.status}`, new ForbiddenException({ statusCode: 403, code: POS_STORE_DISABLED, message: 'This store is not currently allowed to use POS' }));
+    }
+
+    // An OFFLINE sale being synced is judged by whether the plan was active when the sale was MADE (its device
+    // timestamp), not when it finally reaches us — a sale rung up during an active plan must not be lost because the
+    // plan lapsed before the device got a connection. parseOffline also enforces the max offline window and
+    // rejects future timestamps (OFFLINE_SALE_TOO_OLD / OFFLINE_SALE_FROM_FUTURE).
+    const off = parseOffline(req.body);
+    if (off.isOffline) {
+      const covering: any = await r.posPurchaseModel.findOne({ storeId, purchasedAt: { $lte: off.at }, expiresAt: { $gt: off.at } }).select('_id').lean();
+      if (!covering) {
+        return this.block(req, storeId, 'no plan active when the offline sale was made', new ForbiddenException({ statusCode: 403, code: POS_PLAN_REQUIRED, message: 'POS plan was not active when this sale was made' }));
+      }
+      return true;
     }
 
     const latest: any = await r.posPurchaseModel.findOne({ storeId }).sort({ purchasedAt: -1 }).select('expiresAt').lean();

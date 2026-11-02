@@ -31,6 +31,11 @@ export class PosSettings {
   @Prop({ type: String, default: null })
   businessTaxId: string | null;
 
+  // Bumped (and the previous values kept in PosSettingsVersion) whenever something that changes how a sale is priced
+  // changes — currently the tax rate. Sale requests carry the version they were priced with. See PosService.pricingFor.
+  @Prop({ type: Number, default: 1 })
+  settingsVersion: number;
+
   @Prop({ type: Number, default: 0 })
   saleCounter: number;         // atomically incremented to mint saleNumber ("POS-00001") per store
 }
