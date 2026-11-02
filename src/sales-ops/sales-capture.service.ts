@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import {
+  Optional,
   BadRequestException,
   ForbiddenException,
   Injectable,
@@ -29,6 +30,7 @@ import {
 } from './schemas/sales-activity.schema';
 import { SOURCE_LABELS, type LeadSource } from './sales-ops.constants';
 import { SalesOpsService } from './sales-ops.service';
+import { SalesGrowthService } from './sales-growth.service';
 import { type SalesActor, normalizeEmail, phoneKey } from './sales-ops.util';
 
 export interface CaptureInput {
@@ -101,6 +103,7 @@ export class SalesCaptureService {
     private readonly activities: Model<SalesActivityDocument>,
     @InjectModel(ContactSubmission.name)
     private readonly contacts: Model<ContactSubmissionDocument>,
+    @Optional() private readonly growth?: SalesGrowthService,
   ) {}
 
   // ── One lead at a time ───────────────────────────────────────────────────
@@ -153,6 +156,11 @@ export class SalesCaptureService {
       return { leadId: id, created: false };
     }
 
+    // Leads nobody added by hand go to the next rep in turn, when auto-assign is on.
+    const autoOwner =
+      !input.ownerAdminId && !input.createdByAdminId && this.growth
+        ? await this.growth.nextAssignee().catch(() => null)
+        : null;
     const lead: any = await this.leads.create({
       name: name.slice(0, 120),
       email,
@@ -166,7 +174,7 @@ export class SalesCaptureService {
       utm: this.cleanUtm(input.utm),
       sellerId: input.sellerId ?? null,
       linkedAt: input.sellerId ? new Date() : null,
-      ownerAdminId: input.ownerAdminId ?? null,
+      ownerAdminId: input.ownerAdminId ?? autoOwner,
       createdByAdminId: input.createdByAdminId ?? null,
       stage: 'new',
       stageChangedAt: new Date(),
@@ -180,6 +188,16 @@ export class SalesCaptureService {
       input.createdByAdminId ?? null,
       { source: input.source },
     );
+    if (autoOwner && this.growth) {
+      const names = (await this.sales.owners()).data;
+      await this.sales.log(
+        id,
+        'owner_change',
+        `Assigned automatically to ${names.find((o) => o._id === autoOwner)?.name ?? 'a rep'}.`,
+        null,
+      );
+      void this.growth.notifyAssigned(autoOwner, id, name, label);
+    }
     await this.sales.linkLead(lead).catch(() => false);
     return { leadId: id, created: true };
   }
