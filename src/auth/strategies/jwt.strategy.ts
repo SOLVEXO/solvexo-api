@@ -16,6 +16,8 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
 
 async validate(payload: any) {
   return {
+    // POS device / employee tokens share the secret but are NOT account sessions — see JwtAuthGuard.
+    tokenType: payload.type ?? null,
     userId: payload.sub,
     email: payload.email,
     role: payload.role || null,

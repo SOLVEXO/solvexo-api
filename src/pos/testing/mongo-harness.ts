@@ -47,6 +47,7 @@ export async function startMongoHarness(): Promise<MongoHarness> {
     posPurchaseModel: m(schema.PosPurchase, schema.PosPurchaseSchema),
     posPlanModel: m(schema.PosPlan, schema.PosPlanSchema),
     posSettingsVersionModel: m(schema.PosSettingsVersion, schema.PosSettingsVersionSchema),
+    posDeviceModel: m(schema.PosDevice, schema.PosDeviceSchema),
     variantPriceHistoryModel: m(schema.VariantPriceHistory, schema.VariantPriceHistorySchema),
     idempotencyRecordModel: m(schema.IdempotencyRecord, schema.IdempotencyRecordSchema),
   };

@@ -4,6 +4,14 @@ import { IsNumber, IsOptional, IsString, Max, Min } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class UpdatePosSettingsDto {
+  @ApiProperty({ required: false, example: 5, description: 'Idle minutes (1–240) before the POS locks to the PIN screen. Default 5.' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(1)
+  @Max(240)
+  autoLockMinutes?: number;
+
   @ApiProperty({ required: false, example: 0.05, description: '0.05 = 5% — the server applies it to (subtotal − discount) on every sale; client-sent tax is ignored' })
   @IsOptional()
   @Type(() => Number)

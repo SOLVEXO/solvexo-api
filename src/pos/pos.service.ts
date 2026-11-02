@@ -1,6 +1,9 @@
 /* eslint-disable prettier/prettier */
 import {
   Injectable,
+  Optional,
+  HttpException,
+  HttpStatus,
   BadRequestException,
   NotFoundException,
   ForbiddenException,
@@ -46,6 +49,9 @@ import { QuoteSaleDto } from './dto/quote-sale.dto';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { FinanceService } from '@/finance/finance.service';
 import { EntitlementsService } from '@/platform-plans/entitlements.service';
+import { PosTokenRevocationService } from './pos-token-revocation.service';
+import { currentDeviceScope } from './pos-device-scope';
+import { randomUUID } from 'crypto';
 
 /** 409 for a *business* conflict — final, never to be retried by a client. (The idempotency
  *  "same key still running" 409 is a different, retryable code: IDEMPOTENCY_IN_PROGRESS.) */
@@ -64,6 +70,8 @@ export class PosService {
     private readonly activityLogService: ActivityLogService,
     private readonly entitlementsService: EntitlementsService,
     private readonly financeService: FinanceService,
+    // optional so unit tests that build the service by hand keep working (no revocation list → nothing revoked)
+    @Optional() private readonly revocations?: PosTokenRevocationService,
   ) {}
 
   private get r() {
@@ -106,6 +114,11 @@ export class PosService {
   // ── HELPERS ───────────────────────────────────────────────────────────────
 
   private async verifyStoreOwnership(storeId: string, sellerId: string) {
+    // A POS device is bound to ONE store: whatever route/id it came in through, any other store is off limits.
+    const scope = currentDeviceScope();
+    if (scope && String(storeId) !== scope.storeId) {
+      throw new ForbiddenException({ statusCode: 403, code: 'POS_DEVICE_WRONG_STORE', message: 'This device is registered to a different store' });
+    }
     const store = await this.r.storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
     if (!store) throw new ForbiddenException('Store not found or unauthorized');
     return store;
@@ -123,7 +136,7 @@ export class PosService {
   // employee's _id/role via GET /pos/employees/:storeId and just pass one
   // through). This is the actual employee currently PIN-logged-in on the
   // device, proven by a signature only the server could have issued.
-  private verifyEmployeeToken(token: string | undefined, storeId: string, at?: Date): { employeeId: string; role: string } | null {
+  private async verifyEmployeeToken(token: string | undefined, storeId: string, at?: Date): Promise<{ employeeId: string; role: string; jti?: string } | null> {
     if (!token) return null;
     try {
       // For an offline sale replayed later, the token may have expired since — what matters is that it was a valid,
@@ -134,7 +147,10 @@ export class PosService {
         if (!(payload?.iat * 1000 <= t + 5 * 60 * 1000) || !(t <= payload?.exp * 1000 + 5 * 60 * 1000)) return null;
       }
       if (payload?.type !== 'pos_employee' || payload?.storeId !== storeId) return null;
-      return { employeeId: payload.employeeId, role: payload.role };
+      // Server-side revocation (pin-logout / deactivation / PIN reset / lockout). For an offline replay it only counts if
+      // it had already happened when the sale was made — see PosTokenRevocationService.
+      if (this.revocations && (await this.revocations.isRevoked(payload, at))) return null;
+      return { employeeId: payload.employeeId, role: payload.role, jti: payload.jti };
     } catch {
       return null;
     }
@@ -144,8 +160,8 @@ export class PosService {
   // by every privileged action (refund, void, cash in/out, discounts).
   // Mandatory, unlike the old actingEmployeeId check it replaces: there is
   // no "skip the check if the field is omitted" path anymore.
-  private requireManagerEmployee(token: string | undefined, storeId: string, actionLabel: string, at?: Date): { employeeId: string; role: string } {
-    const actor = this.verifyEmployeeToken(token, storeId, at);
+  private async requireManagerEmployee(token: string | undefined, storeId: string, actionLabel: string, at?: Date): Promise<{ employeeId: string; role: string }> {
+    const actor = await this.verifyEmployeeToken(token, storeId, at);
     if (!actor) throw new ForbiddenException(`A valid employee PIN session is required to ${actionLabel}`);
     if (actor.role !== 'manager') throw new ForbiddenException(`Only managers can ${actionLabel}`);
     return actor;
@@ -238,6 +254,7 @@ export class PosService {
     const updated = await this.r.employeeModel
       .findByIdAndUpdate(employeeId, { $set: updateData }, { new: true })
       .select('-pin');
+    if (dto.pin || (dto as any).status === 'inactive') await this.revocations?.revokeEmployee(employeeId);
 
     return { success: true, message: 'Employee updated successfully', data: updated };
   }
@@ -250,6 +267,7 @@ export class PosService {
     if (activeSession) throw new BadRequestException('Employee has an open session — close it first');
 
     await this.r.employeeModel.findByIdAndUpdate(employeeId, { isDelete: true, status: 'inactive' });
+    await this.revocations?.revokeEmployee(employeeId);
     return { success: true, message: 'Employee removed successfully' };
   }
 
@@ -257,7 +275,7 @@ export class PosService {
 
   async pinLogin(
     dto: PinLoginDto,
-    caller: { userId: string; role: string; storeId?: string | null; sellerId?: string | null },
+    caller: { userId: string; role: string; storeId?: string | null; sellerId?: string | null; deviceId?: string | null },
   ) {
     // The terminal's own session (seller or staff) must belong to the store
     // whose employee PIN it is trying — otherwise any token could brute-force
@@ -270,11 +288,19 @@ export class PosService {
       throw new ForbiddenException('Store not found or unauthorized');
     }
 
+    // Per-DEVICE guess limiter (owner/staff sessions are keyed by account): the per-employee lockout below stops one
+    // account being ground down, this stops a terminal cycling through every employee and PIN.
+    const rlKey = `${caller.deviceId ? `dev:${caller.deviceId}` : `acct:${caller.userId}`}:${dto.storeId}`;
+    const retryAfter = (await this.revocations?.pinRetryAfter(rlKey)) ?? 0;
+    if (retryAfter > 0) {
+      throw new HttpException({ statusCode: 429, code: 'POS_PIN_RATE_LIMITED', message: 'Too many wrong PIN attempts on this device. Try again later.', retryAfterSeconds: retryAfter }, HttpStatus.TOO_MANY_REQUESTS);
+    }
+
     const employee = await this.r.employeeModel
       .findOne({ storeId: dto.storeId, email: dto.email, isDelete: false })
       .select('+pin +pinFailedAttempts +pinLockedUntil');
 
-    if (!employee) throw new BadRequestException('Invalid credentials');
+    if (!employee) { await this.revocations?.notePinFailure(rlKey); throw new BadRequestException('Invalid credentials'); }
     if (employee.status === 'inactive') throw new BadRequestException('Employee account is inactive');
 
     const lockedUntil: Date | null = (employee as any).pinLockedUntil ?? null;
@@ -285,6 +311,7 @@ export class PosService {
 
     const isPinValid = await bcrypt.compare(dto.pin, employee.pin);
     if (!isPinValid) {
+      await this.revocations?.notePinFailure(rlKey);
       // Atomic so parallel guesses can't slip past the counter.
       const after: any = await this.r.employeeModel
         .findOneAndUpdate({ _id: employee._id }, { $inc: { pinFailedAttempts: 1 } }, { new: true })
@@ -295,6 +322,8 @@ export class PosService {
           { _id: employee._id },
           { $set: { pinFailedAttempts: 0, pinLockedUntil: new Date(Date.now() + POS_PIN_LOCK_MS) } },
         );
+        // A locked-out employee must not be able to keep working on a session opened before the lock.
+        await this.revocations?.revokeEmployee(String(employee._id));
         this.writeAuditLog({ storeId: dto.storeId, employeeId: String(employee._id), action: 'pin_locked', targetId: String(employee._id), targetType: 'employee' }).catch(() => {});
       }
       throw new BadRequestException('Invalid credentials');
@@ -317,10 +346,12 @@ export class PosService {
         sellerId: String((employee as any).sellerId),
         role: employee.role,
         type: 'pos_employee',
+        iatMs: Date.now(), // millisecond issue time: lets a revocation made in the same second still tell old tokens from new
       },
       requireJwtSecret(),
-      { expiresIn: '12h' },
+      { expiresIn: '12h', jwtid: randomUUID() },
     );
+    await this.revocations?.clearPinFailures(rlKey);
 
     this.writeAuditLog({ storeId: dto.storeId, employeeId: String(employee._id), action: 'pin_login', targetId: String(employee._id), targetType: 'employee' }).catch(() => {});
 
@@ -337,8 +368,9 @@ export class PosService {
   // early; not built here — the 12h expiry is the bound until then.
   async pinLogout(sellerId: string, storeId: string, employeeToken: string | undefined) {
     await this.verifyStoreOwnership(storeId, sellerId);
-    const actor = this.verifyEmployeeToken(employeeToken, storeId);
+    const actor = await this.verifyEmployeeToken(employeeToken, storeId);
     if (actor) {
+      await this.revocations?.revokeToken(actor.jti); // the 12h token stops working server-side, not just on this device
       this.writeAuditLog({ storeId, employeeId: actor.employeeId, action: 'pin_logout', targetId: actor.employeeId, targetType: 'employee' }).catch(() => {});
     }
     return { success: true, message: 'Logged out' };
@@ -721,7 +753,7 @@ export class PosService {
 
     await this.verifyStoreOwnership((session as any).storeId, sellerId);
 
-    const actor = this.requireManagerEmployee(employeeToken, (session as any).storeId, 'record cash movements');
+    const actor = await this.requireManagerEmployee(employeeToken, (session as any).storeId, 'record cash movements');
 
     const { exp: adjExp } = await this.docMoney(session);
     const adjustment = { type: dto.type, amount: roundMoney(dto.amount, adjExp), reason: dto.reason, employeeId: actor.employeeId, createdAt: new Date() };
@@ -791,7 +823,7 @@ export class PosService {
     const discountReq = this.discountSpec(dto);
     let approver: { employeeId: string; role: string } | null = null;
     if (discountReq.value > 0) {
-      approver = this.requireManagerEmployee(employeeToken, dto.storeId, 'apply a discount', off.isOffline ? off.at : undefined);
+      approver = await this.requireManagerEmployee(employeeToken, dto.storeId, 'apply a discount', off.isOffline ? off.at : undefined);
     }
     // Offline: the approval was judged at the sale's time. If that manager has since been deactivated/removed the
     // sale still stands (money is already collected) — but it is logged so the owner can see who approved it.
@@ -1010,7 +1042,7 @@ export class PosService {
     // Completion re-prices from the held lines with the CURRENT tax rate and the (possibly changed) discount.
     const discountReq = this.discountSpec(dto, sale);
     if (discountReq.value > 0) {
-      this.requireManagerEmployee(employeeToken, (sale as any).storeId, 'apply a discount');
+      await this.requireManagerEmployee(employeeToken, (sale as any).storeId, 'apply a discount');
     }
 
     // friendly pre-check against real availability (see ProductVariant.committedStock); the
@@ -1148,7 +1180,7 @@ export class PosService {
 
     await this.verifyStoreOwnership((sale as any).storeId, sellerId);
 
-    const actor = this.requireManagerEmployee(employeeToken, (sale as any).storeId, 'issue refunds');
+    const actor = await this.requireManagerEmployee(employeeToken, (sale as any).storeId, 'issue refunds');
 
     const isPartial = dto?.items && dto.items.length > 0;
     const locationId: string | null = (sale as any).locationId ?? null;
@@ -1311,7 +1343,7 @@ export class PosService {
     const sale: any = await this.r.saleModel.findById(saleId).lean();
     if (!sale) throw new NotFoundException('Sale not found');
     await this.verifyStoreOwnership(sale.storeId, sellerId);
-    const actor = this.requireManagerEmployee(employeeToken, sale.storeId, 'resolve a flagged sale');
+    const actor = await this.requireManagerEmployee(employeeToken, sale.storeId, 'resolve a flagged sale');
     if (!note || note.trim().length < 3) throw moneyError('REASON_REQUIRED', 'A short note explaining the resolution is required');
     const done = await this.r.saleModel.findOneAndUpdate(
       { _id: saleId, needsReview: true },
@@ -1334,7 +1366,7 @@ export class PosService {
     employeeToken: string | undefined,
   ) {
     await this.verifyStoreOwnership(dto.storeId, sellerId);
-    const actor = this.requireManagerEmployee(employeeToken, dto.storeId, 'discard an unsynced sale');
+    const actor = await this.requireManagerEmployee(employeeToken, dto.storeId, 'discard an unsynced sale');
     if (!dto.reason || dto.reason.trim().length < 3) throw moneyError('REASON_REQUIRED', 'A reason is required to discard an unsynced sale');
     if (!dto.idempotencyKey) throw moneyError('INVALID_KEY', 'idempotencyKey is required');
 
@@ -1777,6 +1809,7 @@ export class PosService {
       .findByIdAndUpdate(employeeId, { $set: updateData }, { new: true })
       .select('-pin');
 
+    if (dto.pin || (dto as any).status === 'inactive') await this.revocations?.revokeEmployee(employeeId);
     this.writeAuditLog({ storeId, employeeId: null, action: 'employee_updated', targetId: employeeId, targetType: 'employee', metadata: { fields: Object.keys(dto) } }).catch(() => {});
 
     return { success: true, message: 'Employee updated', data: updated };
@@ -1791,6 +1824,7 @@ export class PosService {
     if (activeSession) throw new BadRequestException('Employee has an open session — close it first');
 
     await this.r.employeeModel.findByIdAndUpdate(employeeId, { isDelete: true, status: 'inactive' });
+    await this.revocations?.revokeEmployee(employeeId);
 
     this.writeAuditLog({ storeId, employeeId: null, action: 'employee_deactivated', targetId: employeeId, targetType: 'employee' }).catch(() => {});
     return { success: true, message: 'Employee deactivated' };
@@ -1803,6 +1837,7 @@ export class PosService {
 
     const hashedPin = await bcrypt.hash(dto.newPin, 10);
     await this.r.employeeModel.findByIdAndUpdate(employeeId, { pin: hashedPin, pinFailedAttempts: 0, pinLockedUntil: null });
+    await this.revocations?.revokeEmployee(employeeId); // sessions opened with the OLD pin end now
 
     this.writeAuditLog({ storeId, employeeId: null, action: 'employee_pin_reset', targetId: employeeId, targetType: 'employee' }).catch(() => {});
     return { success: true, message: 'PIN reset successfully' };
@@ -1894,7 +1929,7 @@ export class PosService {
 
     await this.verifyStoreOwnership((sale as any).storeId, sellerId);
 
-    const actor = this.requireManagerEmployee(employeeToken, (sale as any).storeId, 'void sales');
+    const actor = await this.requireManagerEmployee(employeeToken, (sale as any).storeId, 'void sales');
 
     // Claim the void with a status-guarded update first; only the request that wins the
     // `completed → voided` transition restores stock and reverses the session totals.
@@ -1930,7 +1965,7 @@ export class PosService {
 
     const discountReq = this.discountSpec(dto, sale);
     if (discountReq.value > 0) {
-      this.requireManagerEmployee(employeeToken, (sale as any).storeId, 'apply a discount');
+      await this.requireManagerEmployee(employeeToken, (sale as any).storeId, 'apply a discount');
     }
 
     const saleItems: any[] = [];
@@ -2162,7 +2197,7 @@ export class PosService {
     // The authoritative selling currency comes from the store, not from the free-text `currencySymbol`.
     await this.ensureVersionRow(storeId);
     const { currency, exp } = await this.moneyContext(storeId);
-    return { success: true, data: { ...settings, settingsVersion: settings.settingsVersion || 1, currency, currencyExponent: exp } };
+    return { success: true, data: { ...settings, autoLockMinutes: settings.autoLockMinutes ?? 5, settingsVersion: settings.settingsVersion || 1, currency, currencyExponent: exp } };
   }
 
   async updatePosSettings(sellerId: string, storeId: string, dto: UpdatePosSettingsDto) {

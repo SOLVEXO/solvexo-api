@@ -479,6 +479,8 @@ export class DatabaseService {
     private posPurchaseModel: Model<schema.PosPurchaseDocument>,
     @InjectModel(schema.PosSettingsVersion.name)
     private posSettingsVersionModel: Model<schema.PosSettingsVersionDocument>,
+    @InjectModel(schema.PosDevice.name)
+    private posDeviceModel: Model<schema.PosDeviceDocument>,
     @InjectModel(schema.VariantPriceHistory.name)
     private variantPriceHistoryModel: Model<schema.VariantPriceHistoryDocument>,
 
@@ -688,6 +690,7 @@ export class DatabaseService {
       posPurchaseModel: this.posPurchaseModel,
       posSettingsVersionModel: this.posSettingsVersionModel,
       variantPriceHistoryModel: this.variantPriceHistoryModel,
+      posDeviceModel: this.posDeviceModel,
       binModel: this.binModel,
       staffMemberModel: this.staffMemberModel,
       adminRoleModel: this.adminRoleModel,

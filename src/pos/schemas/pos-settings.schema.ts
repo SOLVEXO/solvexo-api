@@ -10,7 +10,11 @@ export class PosSettings {
   storeId: string;
 
   @Prop({ type: Number, default: 0, min: 0, max: 1 })
-  taxRate: number;             // e.g. 0.05 = 5% — applied to subtotal if sale.tax not provided
+  taxRate: number;
+
+  // Idle minutes before the till locks to the PIN screen (owner-set; the cart and the offline queue are kept).
+  @Prop({ type: Number, default: 5, min: 1, max: 240 })
+  autoLockMinutes: number;             // e.g. 0.05 = 5% — applied to subtotal if sale.tax not provided
 
   @Prop({ type: String, default: null })
   receiptHeader: string | null;

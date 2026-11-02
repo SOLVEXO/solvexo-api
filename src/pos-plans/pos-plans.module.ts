@@ -26,5 +26,7 @@ import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
   imports: [AuthModule, RedisModule, SubscriptionsModule],
   controllers: [PosPlansController, AdminPosPlansController, PosPlansWebhookController],
   providers: [PosPlansService, AdminPosPlansService, PosPlansWebhookService],
+  // PosModule re-exposes the read-only status to POS devices (a device token is not accepted on this module's own routes)
+  exports: [PosPlansService],
 })
 export class PosPlansModule {}

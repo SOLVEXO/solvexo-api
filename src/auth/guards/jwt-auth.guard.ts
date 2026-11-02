@@ -3,6 +3,7 @@ import {
   Injectable,
   ExecutionContext,
   UnauthorizedException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { RedisService } from '@/redis/redis.service';
@@ -30,6 +31,12 @@ export class JwtAuthGuard extends AuthGuard('jwt') {
 
     if (!token) {
       throw new UnauthorizedException('Token missing');
+    }
+
+    // A POS device token or PIN-session token is signed with the same secret but is not an account session: it must
+    // never authenticate anything that asks for an account (only PosAuthGuard understands device tokens).
+    if (request.user?.tokenType === 'pos_device' || request.user?.tokenType === 'pos_employee') {
+      throw new ForbiddenException('This token cannot be used for this request');
     }
 
     // Only enforce Redis session check when Redis is actually connected.
