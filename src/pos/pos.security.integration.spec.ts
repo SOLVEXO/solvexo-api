@@ -273,3 +273,32 @@ describe('device self sign-out', () => {
     expect(await h.repos.posAuditLogModel.countDocuments({ action: 'device_signed_out' })).toBe(1);
   });
 });
+
+describe('legacy auth sunset (POS_LEGACY_AUTH_ALLOWED)', () => {
+  afterEach(() => { delete process.env.POS_LEGACY_AUTH_ALLOWED; });
+  const withOwnerJwt = async (fn: () => Promise<any>) => {
+    const spy = jest.spyOn(JwtAuthGuard.prototype, 'canActivate').mockResolvedValue(true);
+    try { return await fn(); } finally { spy.mockRestore(); }
+  };
+  const ownerJwt = () => jwt.sign({ sub: 'seller-1', role: 'seller' }, 'test-secret');
+
+  it('default (true): an owner JWT still passes the POS guard', async () => {
+    expect(await withOwnerJwt(() => makeGuard().canActivate(ctx(request(ownerJwt()))))).toBe(true);
+  });
+
+  it('false: an owner/staff JWT gets POS_LEGACY_AUTH_DISABLED (403); a device token is unaffected', async () => {
+    process.env.POS_LEGACY_AUTH_ALLOWED = 'false';
+    const err: any = await withOwnerJwt(async () => { try { await makeGuard().canActivate(ctx(request(ownerJwt()))); } catch (e) { return e; } });
+    expect(err).toBeInstanceOf(ForbiddenException);
+    expect(err.getResponse().code).toBe('POS_LEGACY_AUTH_DISABLED');
+    const s = await seedStore(h);
+    const d = await registerDevice(s);
+    expect(await makeGuard().canActivate(ctx(request(d.deviceToken)))).toBe(true);
+  });
+
+  it('owner-only routes (JwtAuthGuard) are NOT affected by the flag — registration and revoke still work for the owner', async () => {
+    process.env.POS_LEGACY_AUTH_ALLOWED = 'false';
+    const s = await seedStore(h);
+    await expect(devices.register(s.sellerId, { storeId: s.storeId, registerId: s.registerId, name: 'x' })).resolves.toBeTruthy();
+  });
+});

@@ -37,7 +37,16 @@ export class PosAuthGuard extends JwtAuthGuard {
     const req = context.switchToHttp().getRequest();
     const bearer: string | undefined = req.headers?.authorization?.split(' ')[1];
     const peek: any = bearer ? jwt.decode(bearer) : null;
-    if (peek?.type !== POS_DEVICE_TOKEN_TYPE) return super.canActivate(context);
+    if (peek?.type !== POS_DEVICE_TOKEN_TYPE) {
+      const ok = await super.canActivate(context);
+      // Legacy sunset: once every install has been moved to device tokens, POS_LEGACY_AUTH_ALLOWED=false makes the POS
+      // routes refuse owner/staff JWTs with a distinct code (403, NOT 401, so clients don't treat it as a dead session).
+      // The app answers by forcing device setup, keeping the cart and the offline queue.
+      if (ok && process.env.POS_LEGACY_AUTH_ALLOWED === 'false') {
+        throw new ForbiddenException({ statusCode: 403, code: 'POS_LEGACY_AUTH_DISABLED', message: 'This POS install must be set up as a registered device' });
+      }
+      return ok;
+    }
 
     const device = await this.devices.verifyToken(bearer!, req.ip);
     const asked = [req.params?.storeId, req.query?.storeId, req.body?.storeId].filter((v) => typeof v === 'string' && v);
