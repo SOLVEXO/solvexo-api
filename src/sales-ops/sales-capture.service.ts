@@ -31,6 +31,10 @@ import {
 import { SOURCE_LABELS, type LeadSource } from './sales-ops.constants';
 import { SalesOpsService } from './sales-ops.service';
 import { SalesGrowthService } from './sales-growth.service';
+import {
+  SalesPartner,
+  SalesPartnerDocument,
+} from './schemas/sales-partner.schema';
 import { type SalesActor, normalizeEmail, phoneKey } from './sales-ops.util';
 
 export interface CaptureInput {
@@ -50,6 +54,7 @@ export interface CaptureInput {
     campaign?: string | null;
   } | null;
   sellerId?: string | null;
+  partnerId?: string | null;
   ownerAdminId?: string | null;
   createdByAdminId?: string | null;
 }
@@ -104,6 +109,9 @@ export class SalesCaptureService {
     @InjectModel(ContactSubmission.name)
     private readonly contacts: Model<ContactSubmissionDocument>,
     @Optional() private readonly growth?: SalesGrowthService,
+    @Optional()
+    @InjectModel(SalesPartner.name)
+    private readonly partners?: Model<SalesPartnerDocument>,
   ) {}
 
   // ── One lead at a time ───────────────────────────────────────────────────
@@ -129,6 +137,7 @@ export class SalesCaptureService {
         if (v && !existing[k]) fill[k] = v;
       };
       maybe('email', email);
+      maybe('partnerId', input.partnerId);
       if (pk && !existing.phoneKey) {
         fill.phone = trimOrNull(input.phone, 40);
         fill.phoneKey = pk;
@@ -173,6 +182,7 @@ export class SalesCaptureService {
       sourceDetail: trimOrNull(input.sourceDetail),
       utm: this.cleanUtm(input.utm),
       sellerId: input.sellerId ?? null,
+      partnerId: input.partnerId ?? null,
       linkedAt: input.sellerId ? new Date() : null,
       ownerAdminId: input.ownerAdminId ?? autoOwner,
       createdByAdminId: input.createdByAdminId ?? null,
@@ -216,6 +226,7 @@ export class SalesCaptureService {
     utmMedium?: string | null;
     utmCampaign?: string | null;
     page?: string | null;
+    partnerCode?: string | null;
   }) {
     if (!phoneKey(dto.phone))
       throw new BadRequestException(
@@ -226,7 +237,18 @@ export class SalesCaptureService {
       dto.preferredTime ? `Best time to call: ${dto.preferredTime}.` : null,
       dto.page ? `Sent from ${dto.page}.` : null,
     ].filter(Boolean);
+    // A partner's referral code on the link: the lead (and the merchant it becomes) is credited to them.
+    const code = dto.partnerCode
+      ?.trim()
+      .toUpperCase()
+      .replace(/[^A-Z0-9-]/g, '');
+    const partner: any =
+      code && this.partners
+        ? await this.partners.findOne({ code }).select('_id name').lean()
+        : null;
+    if (partner) lines.push(`Referred by partner ${partner.name} (${code}).`);
     const r = await this.capture({
+      partnerId: partner ? String(partner._id) : null,
       name: dto.name,
       phone: dto.phone,
       email: dto.email,

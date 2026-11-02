@@ -188,6 +188,12 @@ export class Seller {
     // data" from "all fields are null." Never set retroactively/backfilled.
     @Prop({ type: Date, default: null })
     acquisitionCapturedAt: Date | null;
+
+    // Sales Ops partners: the referral code on the link the seller signed up
+    // through (solvexo.store/?partner=CODE), upper-case. Captured once at
+    // signup like the fields above; SalesPartnersService credits the partner.
+    @Prop({ type: String, default: null, index: true })
+    acquisitionPartnerCode: string | null;
 }
 
 

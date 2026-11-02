@@ -123,6 +123,42 @@ export function model(rows: any[] = []) {
           r[k] = (r[k] ?? 0) + (v as number);
       return q(before ? [before] : [], true);
     }),
+    updateMany: jest.fn(async (f: any, u: any) => {
+      const hit = rows.filter((x) => matches(x, f));
+      hit.forEach((r) => Object.assign(r, u.$set));
+      return { modifiedCount: hit.length };
+    }),
+    // Just the $match + $group shapes Sales Ops uses.
+    aggregate: jest.fn(async (pipeline: any[]) => {
+      let list = [...rows];
+      for (const stage of pipeline) {
+        if (stage.$match) list = list.filter((r) => matches(r, stage.$match));
+        if (stage.$group) {
+          const { _id, ...acc } = stage.$group;
+          const val = (r: any, e: any) =>
+            typeof e === 'string' && e.startsWith('$') ? r[e.slice(1)] : e;
+          const keyOf = (r: any) =>
+            _id && typeof _id === 'object'
+              ? Object.fromEntries(
+                  Object.entries(_id).map(([k, e]) => [k, val(r, e)]),
+                )
+              : val(r, _id);
+          const groups = new Map<string, any>();
+          for (const r of list) {
+            const k = keyOf(r);
+            const g = groups.get(JSON.stringify(k)) ?? {
+              _id: k,
+              ...Object.fromEntries(Object.keys(acc).map((a) => [a, 0])),
+            };
+            for (const [a, spec] of Object.entries(acc) as [string, any][])
+              g[a] += Number(val(r, spec.$sum)) || 0;
+            groups.set(JSON.stringify(k), g);
+          }
+          list = [...groups.values()];
+        }
+      }
+      return list;
+    }),
     deleteOne: jest.fn(async (f: any) => {
       const i = rows.findIndex((x) => matches(x, f));
       if (i >= 0) rows.splice(i, 1);

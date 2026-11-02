@@ -58,6 +58,8 @@ export class SalesLead {
     medium: string | null;
     campaign: string | null;
   } | null;
+  /** Partner whose referral code came with the lead (Book-a-demo form). */
+  @Prop({ type: String, default: null }) partnerId: string | null;
   @Prop({ type: String, default: null }) createdByAdminId: string | null;
   @Prop({ type: Boolean, default: false, index: true }) isDelete: boolean;
 }

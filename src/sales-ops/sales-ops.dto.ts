@@ -153,6 +153,7 @@ export class DemoRequestDto {
   @OptStr(100) utmCampaign?: string | null;
   @OptStr(200) page?: string | null;
   @OptStr(200) website?: string | null;
+  @OptStr(40) partnerCode?: string | null;
 }
 
 export class ImportRowDto {
@@ -249,4 +250,85 @@ export class TargetsDto {
 export class SalesSettingsDto {
   @IsBoolean() autoAssign: boolean;
   @IsArray() @ArrayMaxSize(200) @IsString({ each: true }) assigneeIds: string[];
+}
+
+// ── Partners & commissions (phase 4) ───────────────────────────────────────
+
+export class TierDto {
+  @Type(() => Number) @IsInt() @Min(1) minPaying: number;
+  @Type(() => Number) @IsNumber() @Min(0) percent: number;
+}
+
+export class CommissionPlanDto {
+  @IsOptional() @IsString() @MaxLength(80) name?: string;
+  @OptStr(500) description?: string | null;
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null)
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  bountyPKR?: number | null;
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null)
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  percent?: number | null;
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null)
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  percentMonths?: number | null;
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(10)
+  @ValidateNested({ each: true })
+  @Type(() => TierDto)
+  tiers?: TierDto[];
+  @IsOptional() @Type(() => Number) @IsInt() @Min(0) holdDays?: number;
+  @IsOptional() @Type(() => Number) @IsNumber() @Min(0) minPayoutPKR?: number;
+  @IsOptional() @IsBoolean() isArchived?: boolean;
+}
+
+export class PartnerDto {
+  @IsOptional() @IsString() @MaxLength(120) name?: string;
+  @IsOptional() @IsString() @MaxLength(20) kind?: string;
+  @IsOptional() @IsString() @MaxLength(40) code?: string;
+  @IsOptional() @ValidateIf((_, v) => v !== null) @IsString() adminId?:
+    | string
+    | null;
+  @OptStr(160) email?: string | null;
+  @OptStr(40) phone?: string | null;
+  @OptStr(80) city?: string | null;
+  @IsOptional() @ValidateIf((_, v) => v !== null) @IsString() planId?:
+    | string
+    | null;
+  @IsOptional() @IsString() @MaxLength(20) payoutMethod?: string;
+  @OptStr(500) payoutDetails?: string | null;
+  @IsOptional() @IsIn(['active', 'paused']) status?: 'active' | 'paused';
+  @OptStr(2000) notes?: string | null;
+}
+
+export class ReferralDto {
+  @OptStr(160) sellerEmail?: string;
+  @OptStr(40) sellerId?: string;
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null)
+  @IsDateString()
+  effectiveFrom?: string | null;
+}
+
+export class AdjustmentDto {
+  @Type(() => Number) @IsInt() amountPKR: number;
+  @IsString() @MaxLength(200) description: string;
+}
+
+export class PayoutDto {
+  @IsOptional() @IsString() @MaxLength(20) method?: string;
+  @OptStr(120) reference?: string | null;
+  @IsOptional() @ValidateIf((_, v) => v !== null) @IsDateString() paidAt?:
+    | string
+    | null;
+  @OptStr(500) note?: string | null;
 }

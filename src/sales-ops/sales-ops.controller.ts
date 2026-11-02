@@ -24,9 +24,15 @@ import { RequirePermission } from '../auth/decorators/require-permission.decorat
 import { SalesOpsService } from './sales-ops.service';
 import { SalesCaptureService } from './sales-capture.service';
 import { SalesGrowthService } from './sales-growth.service';
+import { SalesPartnersService } from './sales-partners.service';
 import { salesActor } from './sales-ops.util';
 import {
   ActivityDto,
+  AdjustmentDto,
+  CommissionPlanDto,
+  PartnerDto,
+  PayoutDto,
+  ReferralDto,
   CampaignDto,
   SalesSettingsDto,
   SpendDto,
@@ -56,7 +62,110 @@ export class SalesOpsController {
     private readonly sales: SalesOpsService,
     private readonly capture: SalesCaptureService,
     private readonly growth: SalesGrowthService,
+    private readonly partners: SalesPartnersService,
   ) {}
+
+  // ── Partners & commissions (managers; payouts also need finance.payouts) ──
+
+  @RequirePermission('sales.manage')
+  @Get('commission-plans')
+  plans() {
+    return this.partners.listPlans();
+  }
+
+  @RequirePermission('sales.manage')
+  @Post('commission-plans')
+  createPlan(@Body() dto: CommissionPlanDto) {
+    return this.partners.savePlan(null, dto);
+  }
+
+  @RequirePermission('sales.manage')
+  @Patch('commission-plans/:id')
+  updatePlan(@Param('id') id: string, @Body() dto: CommissionPlanDto) {
+    return this.partners.savePlan(id, dto);
+  }
+
+  @RequirePermission('sales.manage')
+  @Get('partner-logins')
+  partnerLogins() {
+    return this.partners.logins();
+  }
+
+  @RequirePermission('sales.manage')
+  @Get('partners')
+  listPartners() {
+    return this.partners.listPartners();
+  }
+
+  @RequirePermission('sales.manage')
+  @Get('partners/:id')
+  partner(@Param('id') id: string) {
+    return this.partners.getPartner(id);
+  }
+
+  @RequirePermission('sales.manage')
+  @Post('partners')
+  createPartner(@Req() req: any, @Body() dto: PartnerDto) {
+    return this.partners.savePartner(salesActor(req.user), null, dto);
+  }
+
+  @RequirePermission('sales.manage')
+  @Patch('partners/:id')
+  updatePartner(
+    @Req() req: any,
+    @Param('id') id: string,
+    @Body() dto: PartnerDto,
+  ) {
+    return this.partners.savePartner(salesActor(req.user), id, dto);
+  }
+
+  @RequirePermission('sales.manage')
+  @Post('partners/:id/referrals')
+  addReferral(
+    @Req() req: any,
+    @Param('id') id: string,
+    @Body() dto: ReferralDto,
+  ) {
+    return this.partners.setReferral(salesActor(req.user), id, dto);
+  }
+
+  @RequirePermission('sales.manage')
+  @Delete('partners/:id/referrals/:sellerId')
+  removeReferral(@Param('id') id: string, @Param('sellerId') sellerId: string) {
+    return this.partners.removeReferral(id, sellerId);
+  }
+
+  @RequirePermission('sales.manage')
+  @Post('partners/:id/adjustments')
+  adjustment(
+    @Req() req: any,
+    @Param('id') id: string,
+    @Body() dto: AdjustmentDto,
+  ) {
+    return this.partners.addAdjustment(salesActor(req.user), id, dto);
+  }
+
+  @RequirePermission('sales.manage')
+  @Get('partners/:id/statement')
+  partnerStatement(@Param('id') id: string, @Query('month') month?: string) {
+    return this.partners.statementFor(id, month);
+  }
+
+  /** Money out: needs the finance payouts permission (the owner / Super Admins always can). */
+  @RequirePermission('finance.payouts')
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Post('partners/:id/payouts')
+  payout(@Req() req: any, @Param('id') id: string, @Body() dto: PayoutDto) {
+    return this.partners.recordPayout(salesActor(req.user), id, dto);
+  }
+
+  /** Run the daily commission calculation now. */
+  @RequirePermission('sales.manage')
+  @Throttle({ default: { limit: 3, ttl: 60_000 } })
+  @Post('commissions/run')
+  runCommissions() {
+    return this.partners.run();
+  }
 
   // ── Campaigns (managers) ───────────────────────────────────────────────────
 
@@ -288,5 +397,26 @@ export class SalesPublicController {
           'Thank you! We’ll call or WhatsApp you within one working day.',
       };
     return this.capture.demoRequest(dto);
+  }
+}
+
+/** A partner's own earnings: referral link, referred merchants, commissions, payouts and statements. */
+@ApiTags('Admin Partner Portal')
+@ApiBearerAuth()
+@UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+@Roles('admin')
+@RequirePermission('partner.portal', 'sales.access', 'sales.manage')
+@Controller('api/admin/partner-portal')
+export class PartnerPortalController {
+  constructor(private readonly partners: SalesPartnersService) {}
+
+  @Get()
+  me(@Req() req: any, @Query('month') month?: string) {
+    return this.partners.me(salesActor(req.user), month);
+  }
+
+  @Get('statement')
+  statement(@Req() req: any, @Query('month') month?: string) {
+    return this.partners.myStatement(salesActor(req.user), month);
   }
 }
