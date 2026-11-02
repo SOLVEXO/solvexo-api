@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { buildInvoiceItemsHtml, buildInvoicePdf, invoiceNumber } from './draft-order-invoice.util';
 import { Injectable, BadRequestException, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { toStripeAmount } from '@/common/stripe-amount.util';
 import { availableStock, AVAILABLE_STOCK_EXPR } from '@/common/stock-availability.util';
@@ -311,11 +312,22 @@ export class DraftOrdersService {
         <p style="color:#888;font-size:12px;">If the button doesn't work, copy this link: ${invoiceUrl}</p>
       </div>`;
     const dueText = draft.paymentTerms === 'due_on_receipt' ? 'Payment is due on receipt.' : draft.dueDate ? `Payment is due by ${new Date(draft.dueDate).toLocaleDateString()}.` : '';
+    const invoiceDraft = {
+      id: String(draft._id), customerName: draft.customerName, customerEmail: draft.customerEmail, currency: draft.currency,
+      items: draft.items.map((i: any) => ({ name: i.name, options: i.options ?? [], sku: i.sku ?? null, quantity: i.quantity, unitPrice: i.unitPrice })),
+      subtotal: draft.subtotal, discountAmount: draft.discountAmount, shippingAmount: draft.shippingAmount, taxAmount: draft.taxAmount, total: draft.total,
+      notes: draft.notes, dueText,
+    };
+    let invoicePdf: Buffer | null = null;
+    try { invoicePdf = await buildInvoicePdf(invoiceDraft, { name: (store as any).name }, symbol, invoiceUrl); } catch { /* the mail still goes out without the PDF */ }
     // The store's Customer-notification settings decide on/off, text, sender and reply-to (see NotificationsService).
     const sent = await this.notificationsService.sendCustomerEmail({
       to: draft.customerEmail, storeId, event: 'draft_order_invoice',
       vars: { customerName: draft.customerName, invoiceTotal: `${symbol} ${draft.total.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, dueText, invoiceUrl },
       cta: { label: 'Pay invoice', url: invoiceUrl },
+      // The items in the mail body and the same invoice as a PDF (a failed PDF never stops the mail).
+      extraHtml: buildInvoiceItemsHtml(invoiceDraft, symbol),
+      attachments: invoicePdf ? [{ filename: `Invoice-${invoiceNumber(String(draft._id)).slice(1)}.pdf`, content: invoicePdf, contentType: 'application/pdf' }] : undefined,
       force: true,
     });
     if (sent === 'failed') {

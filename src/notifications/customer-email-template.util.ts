@@ -56,9 +56,11 @@ export function renderCustomerEmail(args: {
   storeName: string;
   brand?: Omit<EmailStoreBrand, 'name'> | null;
   cta?: { label: string; url: string } | null;
+  /** Trusted HTML (built by the caller with every value escaped) shown under the text, e.g. an items table. */
+  extraHtml?: string;
 }): { subject: string; html: string } {
   const subject = renderSubject(args.subjectTemplate, args.vars) || args.storeName;
   const body = renderBodyText(args.bodyTemplate, args.vars);
-  const html = notificationEmailShell(escapeHtml(subject), textToParagraphs(body), args.cta ?? undefined, { name: args.storeName, ...(args.brand ?? {}) });
+  const html = notificationEmailShell(escapeHtml(subject), textToParagraphs(body) + (args.extraHtml ?? ''), args.cta ?? undefined, { name: args.storeName, ...(args.brand ?? {}) });
   return { subject, html };
 }
