@@ -263,3 +263,13 @@ describe('per-device PIN rate limiting', () => {
     expect(Number(await redis.get(`pos:pin-rl:dev:${dev2}:${s.storeId}`) ?? 0)).toBe(0);
   });
 });
+
+describe('device self sign-out', () => {
+  it('retires its own token (and the guard then refuses it)', async () => {
+    const s = await seedStore(h);
+    const d = await registerDevice(s);
+    await devices.signOutSelf(d.deviceId, s.storeId);
+    expect(await codeOf(makeGuard().canActivate(ctx(request(d.deviceToken))))).toBe('POS_DEVICE_REVOKED');
+    expect(await h.repos.posAuditLogModel.countDocuments({ action: 'device_signed_out' })).toBe(1);
+  });
+});

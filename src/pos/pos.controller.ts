@@ -3,6 +3,7 @@ import {
   Controller, Get, Post, Patch, Delete,
   Body, Param, Query, Req, Res, UseGuards, Headers, UseInterceptors, UploadedFile,
 } from '@nestjs/common';
+import { ForbiddenException } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
 import { buildTemplatePayload, readUploadedCsv } from '../common/bulk-import/bulk-import.util';
@@ -72,6 +73,15 @@ export class PosController {
   async deviceMe(@Req() req: any) {
     // Reaching here means the guard accepted the token: it is a live, un-revoked device (or an owner/staff session).
     return { success: true, data: req.user.posDevice ?? null };
+  }
+
+  @UseGuards(PosAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Post('devices/me/sign-out')
+  deviceSignOut(@Req() req: any) {
+    // Only a device can retire itself this way (an owner session has no device to retire).
+    if (!req.user.posDevice) throw new ForbiddenException('Only a registered device can sign itself out');
+    return this.devices.signOutSelf(req.user.posDevice.deviceId, req.user.posDevice.storeId);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)

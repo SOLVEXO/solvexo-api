@@ -60,6 +60,13 @@ export class PosDeviceService {
     return { success: true, message: 'Device revoked', data: device };
   }
 
+  /** The device retiring itself (full sign-out / reset): its own token stops working. */
+  async signOutSelf(deviceId: string, storeId: string) {
+    await this.r.posDeviceModel.updateOne({ _id: deviceId, storeId }, { $set: { status: 'revoked', revokedAt: new Date(), revokedBy: 'device' } });
+    await this.r.posAuditLogModel.create({ storeId, employeeId: null, action: 'device_signed_out', targetId: deviceId, targetType: 'device' }).catch(() => {});
+    return { success: true, message: 'Device signed out' };
+  }
+
   /** Verifies the signature, the type, and — the part that makes revocation instant — that the device row is still active. */
   async verifyToken(token: string, ip?: string): Promise<VerifiedDevice> {
     let payload: any;
