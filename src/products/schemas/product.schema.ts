@@ -176,6 +176,10 @@ export class Product {
   @Prop({ type: [{ _id: false, title: String, content: String }], default: [] })
   tabs: { title: string; content: string }[];
 
+  /** Preferred supplier (a Supplier of the same store): reorder suggestions group by it. Never sent to shoppers. */
+  @Prop({ type: String, default: null })
+  supplierId: string | null;
+
   @Prop({ type: String, enum: Object.values(ProductType), required: true })
   productType: ProductType;
 

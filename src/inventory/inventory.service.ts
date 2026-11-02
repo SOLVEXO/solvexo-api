@@ -1472,14 +1472,14 @@ export class InventoryService {
    *  actually used, so the UI never claims a "smart" prediction it didn't
    *  have enough data to make. */
   async getReorderSuggestions(sellerId: string, storeId: string) {
-    const { storeModel, productModel, productVariantModel, purchaseOrderModel, orderModel } = this.databaseService.repositories;
+    const { storeModel, productModel, productVariantModel, purchaseOrderModel, orderModel, supplierModel } = this.databaseService.repositories;
     const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
     if (!store) throw new ForbiddenException('Store not found or unauthorized');
     const lowStockThreshold = store.lowStockThreshold ?? 10;
 
     const products = await productModel
       .find({ storeId, sellerId, isDelete: false, type: { $ne: 'digital' } })
-      .select('name images')
+      .select('name images supplierId')
       .lean();
     const productIds = products.map((p: any) => p._id.toString());
     const productById = new Map<string, any>(products.map((p: any) => [p._id.toString(), p]));
@@ -1518,7 +1518,13 @@ export class InventoryService {
         },
       ]),
     ]);
-    const supplierByVariant = new Map(recentPoItems.map((r: any) => [r._id, { supplierId: r.supplierId, supplierName: r.supplierName }]));
+    const supplierByVariant = new Map<string, { supplierId: string | null; supplierName: string }>(recentPoItems.map((r: any) => [r._id, { supplierId: r.supplierId, supplierName: r.supplierName }]));
+    // A supplier chosen on the product wins over "last received from"; lead time and terms come from the supplier record.
+    const supplierIds = new Set<string>();
+    for (const p of products as any[]) if (p.supplierId) supplierIds.add(String(p.supplierId));
+    for (const r of supplierByVariant.values()) if (r.supplierId) supplierIds.add(String(r.supplierId));
+    const supplierDocs: any[] = supplierIds.size ? await supplierModel.find({ _id: { $in: [...supplierIds] }, storeId, isDelete: false }).select('name leadTimeDays paymentTerms').lean() : [];
+    const supplierById = new Map<string, any>(supplierDocs.map(d => [String(d._id), d]));
 
     // Per-variant daily-quantity maps (for the forecast) + a plain 30-day
     // sum (for the fallback average) — both derived from the same 90-day
@@ -1536,25 +1542,40 @@ export class InventoryService {
       }
     }
 
-    const groups = new Map<string, { supplierId: string | null; supplierName: string; items: any[] }>();
+    const groups = new Map<string, { supplierId: string | null; supplierName: string; items: any[]; leadTimeDays: number | null; paymentTerms: string | null }>();
     for (const v of lowVariants as any[]) {
       const product = productById.get(v.productId);
-      const supplier = supplierByVariant.get(v._id.toString());
-      const key = supplier?.supplierId ?? 'unassigned';
+      const preferred = product?.supplierId ? supplierById.get(String(product.supplierId)) : null;
+      const received = supplierByVariant.get(v._id.toString());
+      const supplierId: string | null = preferred ? String(preferred._id) : (received?.supplierId ?? null);
+      const supplierDoc = supplierId ? supplierById.get(String(supplierId)) : null;
+      const key = supplierId ?? 'unassigned';
       if (!groups.has(key)) {
-        groups.set(key, { supplierId: supplier?.supplierId ?? null, supplierName: supplier?.supplierName ?? 'No supplier yet', items: [] });
+        groups.set(key, {
+          supplierId, supplierName: supplierDoc?.name ?? received?.supplierName ?? 'No supplier yet', items: [],
+          leadTimeDays: supplierDoc?.leadTimeDays ?? null, paymentTerms: supplierDoc?.paymentTerms ?? null,
+        });
       }
       const available = Math.max(0, (v.stock || 0) - (v.committedStock || 0) - (v.damagedStock || 0) - (v.inTransitStock || 0));
       const variantId = v._id.toString();
       const forecast = forecastDailyDemand(dailyByVariant.get(variantId) ?? new Map());
       const simpleAvg = (thirtyDaySumByVariant.get(variantId) ?? 0) / 30;
       const perDay = forecast ?? simpleAvg;
-      groups.get(key)!.items.push({
+      const group = groups.get(key)!;
+      const lead = group.leadTimeDays;
+      const daysLeft = perDay > 0 ? Math.round(available / perDay) : null;
+      // Enough to cover the supplier's lead time plus two weeks of selling; without sales history, back up to twice the reorder point.
+      const reorderPoint = v.reorderPoint ?? lowStockThreshold;
+      const suggestedQty = perDay > 0 ? Math.min(100000, Math.max(1, Math.ceil(perDay * ((lead ?? 7) + 14)) - available)) : Math.max(1, reorderPoint * 2 - available);
+      group.items.push({
         productId: v.productId, variantId,
         productName: product?.name ?? '(deleted product)', image: product?.images?.[0] ?? null,
         sku: v.sku, available, reorderPoint: v.reorderPoint ?? lowStockThreshold,
-        daysOfStockLeft: perDay > 0 ? Math.round(available / perDay) : null,
+        daysOfStockLeft: daysLeft,
         forecastMethod: forecast != null ? 'trend_seasonal' : 'simple_average',
+        suggestedQty,
+        // Stock will run out before a new order could arrive.
+        urgent: daysLeft != null && lead != null && daysLeft <= lead,
       });
     }
 

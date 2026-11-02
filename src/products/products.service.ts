@@ -841,6 +841,9 @@ export class ProductsService {
       };
     }
 
+    // Internal: the preferred supplier is for the seller's reordering only.
+    delete (product as any).supplierId;
+
     // 2️⃣ Get seller name
     const seller = await sellerModel
       .findOne({
@@ -1237,6 +1240,7 @@ export class ProductsService {
             description,
             shortDescription,
             tabs,
+            supplierId: await this.resolveSupplierId(storeId, body.supplierId),
             shippingProfileId,
             ...parseSellingOptions(body),
             productType: 'physical',
@@ -1490,6 +1494,15 @@ export class ProductsService {
     };
   }
 
+  /** A product's preferred supplier must be a live supplier of the same store; empty clears it. */
+  private async resolveSupplierId(storeId: string, raw: unknown): Promise<string | null> {
+    if (raw === undefined || raw === null || raw === '') return null;
+    if (typeof raw !== 'string' || !isValidObjectId(raw)) throw new BadRequestException('Supplier not found');
+    const found = await this.databaseService.repositories.supplierModel.exists({ _id: raw, storeId, isDelete: false });
+    if (!found) throw new BadRequestException('Supplier not found');
+    return raw;
+  }
+
   /** What archiving these products would leave pointing at them: open draft orders, open purchase orders, menu links, carts. Read-only. */
   async archiveImpact(sellerId: string, storeId: string, rawIds: string) {
     const ids = String(rawIds ?? '').split(',').map(x => x.trim()).filter(Boolean).slice(0, 200);
@@ -1611,6 +1624,7 @@ export class ProductsService {
     if (description !== undefined) productUpdate.description = normalizeDescription(description);
     if (body.shortDescription !== undefined) productUpdate.shortDescription = normalizeShortDescription(body.shortDescription);
     if (body.tabs !== undefined) productUpdate.tabs = normalizeProductTabs(body.tabs);
+    if (body.supplierId !== undefined) productUpdate.supplierId = await this.resolveSupplierId(String(product.storeId), body.supplierId);
     if (requestedCategoryId !== undefined) {
       productUpdate.categoryId = await this.resolveProductCategoryId(String(product.storeId), null, requestedCategoryId);
     }

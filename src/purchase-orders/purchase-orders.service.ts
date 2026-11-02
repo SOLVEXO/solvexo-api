@@ -98,6 +98,7 @@ export class PurchaseOrdersService {
     if (!supplier) throw new NotFoundException('Supplier not found');
     const pos: any[] = await this.repos.purchaseOrderModel.find({ storeId, supplierId, isDelete: { $ne: true } }).sort({ createdAt: -1 }).limit(100).lean();
     const returns: any[] = await this.repos.supplierReturnModel.find({ storeId, supplierId }).sort({ createdAt: -1 }).limit(10).lean();
+    const preferredProducts: any[] = await this.repos.productModel.find({ storeId, supplierId: String(supplierId), isDelete: false }).select('name').sort({ name: 1 }).limit(100).lean();
     const byVariant = new Map<string, any>();
     for (const po of pos) {
       if (po.status === 'draft' || po.status === 'cancelled') continue;
@@ -113,6 +114,7 @@ export class PurchaseOrdersService {
       recentPurchaseOrders: pos.slice(0, 10).map(p => ({ _id: p._id, poNumber: p.poNumber, status: p.status, total: p.total, currency: p.currency, createdAt: p.createdAt, expectedAt: p.expectedAt ?? null })),
       recentReturns: returns.map(r => ({ _id: r._id, createdAt: r.createdAt, status: r.status ?? null, total: r.total ?? null })),
       products: [...byVariant.values()].slice(0, 50),
+      preferredProducts: preferredProducts.map(p => ({ _id: String(p._id), name: p.name })),
     };
   }
 
