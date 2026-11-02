@@ -1,10 +1,29 @@
 /* eslint-disable prettier/prettier */
 import { Module } from '@nestjs/common';
+import { SalesPartnersService } from './sales-partners.service';
+import {
+  SalesPartner,
+  SalesPartnerSchema,
+} from './schemas/sales-partner.schema';
+import {
+  SalesCommissionPlan,
+  SalesCommissionPlanSchema,
+} from './schemas/sales-commission-plan.schema';
+import {
+  SalesPartnerReferral,
+  SalesPartnerReferralSchema,
+} from './schemas/sales-partner-referral.schema';
+import {
+  SalesCommission,
+  SalesCommissionSchema,
+} from './schemas/sales-commission.schema';
+import { SalesPayout, SalesPayoutSchema } from './schemas/sales-payout.schema';
 import { MongooseModule } from '@nestjs/mongoose';
 import { AuthModule } from '../auth/auth.module';
 import { RedisModule } from '../redis/redis.module';
 import { EmailService } from '../otp/services/email.service';
 import {
+  PartnerPortalController,
   SalesOpsController,
   SalesPublicController,
 } from './sales-ops.controller';
@@ -53,13 +72,23 @@ import {
       { name: SalesCampaign.name, schema: SalesCampaignSchema },
       { name: SalesTarget.name, schema: SalesTargetSchema },
       { name: SalesSettings.name, schema: SalesSettingsSchema },
+      { name: SalesPartner.name, schema: SalesPartnerSchema },
+      { name: SalesCommissionPlan.name, schema: SalesCommissionPlanSchema },
+      { name: SalesPartnerReferral.name, schema: SalesPartnerReferralSchema },
+      { name: SalesCommission.name, schema: SalesCommissionSchema },
+      { name: SalesPayout.name, schema: SalesPayoutSchema },
     ]),
   ],
-  controllers: [SalesOpsController, SalesPublicController],
+  controllers: [
+    SalesOpsController,
+    SalesPublicController,
+    PartnerPortalController,
+  ],
   providers: [
     SalesOpsService,
     SalesCaptureService,
     SalesGrowthService,
+    SalesPartnersService,
     EmailService,
   ],
   exports: [SalesOpsService, SalesCaptureService],

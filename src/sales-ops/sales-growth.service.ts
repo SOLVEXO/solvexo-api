@@ -523,9 +523,7 @@ export class SalesGrowthService {
   }
 
   /** Every lead and merchant with a campaign code (or linked to such a lead), and what each merchant went on to do. */
-  private async attributionData(
-    onlyCode?: string,
-  ): Promise<{
+  private async attributionData(onlyCode?: string): Promise<{
     leads: LeadRow[];
     merchants: MerchantRow[];
     pkrPerUSD: number | null;
