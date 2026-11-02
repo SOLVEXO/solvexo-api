@@ -24,6 +24,18 @@ export const LEAD_SOURCES = [
   'other',
 ] as const;
 export type LeadSource = (typeof LEAD_SOURCES)[number];
+export const SOURCE_LABELS: Record<LeadSource, string> = {
+  website_form: 'Book-a-demo form',
+  contact_message: 'Contact Us message',
+  manual: 'Added by hand',
+  import: 'Import',
+  stalled_signup: 'Stalled sign-up',
+  whatsapp: 'WhatsApp',
+  social: 'Social media',
+  referral: 'Referral',
+  event: 'Event',
+  other: 'Other',
+};
 
 export const LOST_REASONS = [
   'price',

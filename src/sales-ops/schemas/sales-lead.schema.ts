@@ -52,10 +52,17 @@ export class SalesLead {
   @Prop({ type: String, default: null, index: true }) sellerId: string | null;
   @Prop({ type: String, default: null }) storeId: string | null;
   @Prop({ type: Date, default: null }) linkedAt: Date | null;
+  /** Campaign tags from the link the lead arrived through (utm_source / utm_medium / utm_campaign). */
+  @Prop({ type: Object, default: null }) utm: {
+    source: string | null;
+    medium: string | null;
+    campaign: string | null;
+  } | null;
   @Prop({ type: String, default: null }) createdByAdminId: string | null;
   @Prop({ type: Boolean, default: false, index: true }) isDelete: boolean;
 }
 
 export const SalesLeadSchema = SchemaFactory.createForClass(SalesLead);
 SalesLeadSchema.index({ email: 1 });
+SalesLeadSchema.index({ 'utm.campaign': 1 });
 SalesLeadSchema.index({ isDelete: 1, stage: 1, updatedAt: -1 });

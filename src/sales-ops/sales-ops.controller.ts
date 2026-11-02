@@ -21,10 +21,13 @@ import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { RequirePermission } from '../auth/decorators/require-permission.decorator';
 import { SalesOpsService } from './sales-ops.service';
+import { SalesCaptureService } from './sales-capture.service';
 import { salesActor } from './sales-ops.util';
 import {
   ActivityDto,
+  DemoRequestDto,
   EmailDto,
+  ImportDto,
   LeadDto,
   LeadListDto,
   StageDto,
@@ -43,7 +46,42 @@ import {
 @RequirePermission('sales.access', 'sales.manage')
 @Controller('api/admin/sales')
 export class SalesOpsController {
-  constructor(private readonly sales: SalesOpsService) {}
+  constructor(
+    private readonly sales: SalesOpsService,
+    private readonly capture: SalesCaptureService,
+  ) {}
+
+  // ── Lead capture ─────────────────────────────────────────────────────────
+
+  /** CSV import (parsed in the browser). `dryRun` checks the file without saving. */
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Post('imports')
+  importLeads(@Req() req: any, @Body() dto: ImportDto) {
+    return this.capture.importLeads(
+      salesActor(req.user),
+      dto.rows,
+      {
+        ownerAdminId: dto.ownerAdminId,
+        sourceDetail: dto.sourceDetail,
+        tags: dto.tags,
+      },
+      !!dto.dryRun,
+    );
+  }
+
+  /** "Add to pipeline" on a Contact Us message. */
+  @Post('contact-messages/:id/lead')
+  fromContact(@Req() req: any, @Param('id') id: string) {
+    return this.capture.addContactToPipeline(salesActor(req.user), id);
+  }
+
+  /** Run the daily stalled sign-up check now. */
+  @RequirePermission('sales.manage')
+  @Throttle({ default: { limit: 3, ttl: 60_000 } })
+  @Post('stalled/sync')
+  syncStalled() {
+    return this.capture.syncStalled();
+  }
 
   @Get('leads') list(@Req() req: any, @Query() q: LeadListDto) {
     return this.sales.list(salesActor(req.user), q);
@@ -150,5 +188,26 @@ export class SalesOpsController {
   @Delete('templates/:id')
   deleteTemplate(@Param('id') id: string) {
     return this.sales.deleteTemplate(id);
+  }
+}
+
+/** The public Book-a-demo form on solvexo.store (no login). */
+@ApiTags('Sales (public)')
+@UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
+@Controller('api/sales')
+export class SalesPublicController {
+  constructor(private readonly capture: SalesCaptureService) {}
+
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @Post('demo-request')
+  demoRequest(@Body() dto: DemoRequestDto) {
+    // Honeypot filled in: answer like a success so the bot moves on, save nothing.
+    if (dto.website?.trim())
+      return {
+        success: true,
+        message:
+          'Thank you! We’ll call or WhatsApp you within one working day.',
+      };
+    return this.capture.demoRequest(dto);
   }
 }

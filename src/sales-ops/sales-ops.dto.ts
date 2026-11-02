@@ -5,6 +5,7 @@ import {
   IsArray,
   IsBoolean,
   IsDateString,
+  IsEmail,
   IsIn,
   IsInt,
   IsNumber,
@@ -13,6 +14,7 @@ import {
   MaxLength,
   Min,
   ValidateIf,
+  ValidateNested,
 } from 'class-validator';
 import { LEAD_SOURCES, LEAD_STAGES, LOST_REASONS } from './sales-ops.constants';
 
@@ -118,4 +120,66 @@ export class TemplateDto {
   @IsString() @MaxLength(80) name: string;
   @IsString() @MaxLength(200) subject: string;
   @IsString() @MaxLength(10000) body: string;
+}
+
+// ── Lead capture (phase 2) ─────────────────────────────────────────────────
+
+const optStr = (max: number) => [
+  IsOptional(),
+  ValidateIf((_: unknown, v: unknown) => v !== null),
+  IsString(),
+  MaxLength(max),
+];
+function OptStr(max: number): PropertyDecorator {
+  return (target, key) => optStr(max).forEach((d) => d(target, key));
+}
+
+/** The public Book-a-demo form. `website` is a honeypot: people never see it, bots fill it. */
+export class DemoRequestDto {
+  @IsString() @MaxLength(120) name: string;
+  @IsString() @MaxLength(40) phone: string;
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null && v !== '')
+  @IsEmail()
+  @MaxLength(160)
+  email?: string | null;
+  @OptStr(160) businessName?: string | null;
+  @OptStr(80) city?: string | null;
+  @OptStr(80) businessType?: string | null;
+  @OptStr(2000) message?: string | null;
+  @OptStr(40) preferredTime?: string | null;
+  @OptStr(100) utmSource?: string | null;
+  @OptStr(100) utmMedium?: string | null;
+  @OptStr(100) utmCampaign?: string | null;
+  @OptStr(200) page?: string | null;
+  @OptStr(200) website?: string | null;
+}
+
+export class ImportRowDto {
+  @OptStr(120) name?: string;
+  @OptStr(160) email?: string;
+  @OptStr(40) phone?: string;
+  @OptStr(160) businessName?: string;
+  @OptStr(80) city?: string;
+  @OptStr(80) businessType?: string;
+  @IsOptional() dealValuePKR?: number | string | null;
+  @OptStr(2000) note?: string;
+}
+
+export class ImportDto {
+  @IsArray()
+  @ArrayMaxSize(2000)
+  @ValidateNested({ each: true })
+  @Type(() => ImportRowDto)
+  rows: ImportRowDto[];
+  @IsOptional() @ValidateIf((_, v) => v !== null) @IsString() ownerAdminId?:
+    | string
+    | null;
+  @OptStr(200) sourceDetail?: string | null;
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(20)
+  @IsString({ each: true })
+  tags?: string[];
+  @IsOptional() @IsBoolean() dryRun?: boolean;
 }

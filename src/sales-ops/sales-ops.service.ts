@@ -709,7 +709,8 @@ export class SalesOpsService {
     };
   }
 
-  private async setStage(
+  /** Moves a lead and logs it. Used by SalesCaptureService too. */
+  async setStage(
     lead: any,
     stage: string,
     adminId: string | null,
@@ -765,7 +766,8 @@ export class SalesOpsService {
     );
   }
 
-  private log(
+  /** Adds a timeline entry. Used by SalesCaptureService too. */
+  log(
     leadId: string,
     type: string,
     body: string,
