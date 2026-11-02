@@ -11,8 +11,8 @@ export const PRODUCT_LIMITS = {
   descriptionMax: 50_000,
   imagesMax: 50,
   imageUrlMax: 2048,
-  tagsMax: 100,
-  tagMax: 60,
+  tagsMax: 250,
+  tagMax: 255,
   skuMax: 64,
   barcodeMax: 64,
 } as const;
