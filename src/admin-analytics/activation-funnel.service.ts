@@ -36,6 +36,11 @@ export class ActivationFunnelService {
     };
   }
 
+  /** Every merchant who signed up in the last `withinDays` and has been stuck on one step for `minDays`+ (no cap). */
+  async stuck(withinDays = 30, minDays = 3, now = Date.now()) {
+    return stuckMerchants(await this.journeys(new Date(now - withinDays * 86_400_000)), now, withinDays, minDays);
+  }
+
   private async journeys(from: Date): Promise<MerchantJourney[]> {
     const sellers: any[] = await this.r.sellerModel.find({ isDelete: { $ne: true }, createdAt: { $gte: from } })
       .select('name email isVerified acquisitionSource createdAt').lean();

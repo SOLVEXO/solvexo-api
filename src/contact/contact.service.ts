@@ -1,15 +1,22 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import {
   ContactSubmission,
   ContactSubmissionDocument,
 } from './schemas/contact-submission.schema';
-import { CreateContactSubmissionDto, UpdateContactStatusDto } from './dto/contact.dto';
+import {
+  CreateContactSubmissionDto,
+  UpdateContactStatusDto,
+} from './dto/contact.dto';
 import { EmailService } from '../otp/services/email.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { escapeHtml } from '../newsletter/marketing-email.util';
 import { NOTIFICATION_TYPES } from '../notifications/notification.types';
+import { SalesCaptureService } from '../sales-ops/sales-capture.service';
+
+/** Contact Us topics that are sales conversations: these also go into Super Admin → Sales Ops. */
+export const SALES_TOPICS = new Set(['Selling on Solvexo']);
 
 const APP_NAME = process.env.APP_NAME || 'Solvexo';
 
@@ -44,6 +51,7 @@ export class ContactService {
     private readonly contactModel: Model<ContactSubmissionDocument>,
     private readonly emailService: EmailService,
     private readonly notificationsService: NotificationsService,
+    @Optional() private readonly salesCapture?: SalesCaptureService,
   ) {}
 
   async submit(dto: CreateContactSubmissionDto) {
@@ -54,12 +62,17 @@ export class ContactService {
       message: dto.message.trim(),
     });
 
-    this.notificationsService.notifyAdmins({
-      type: NOTIFICATION_TYPES.ADMIN_CONTACT_MESSAGE,
-      title: 'New contact message',
-      body: `${submission.name} (${submission.email}) wrote about "${submission.topic}".`,
-      data: { link: '/admin/content' },
-    }).catch(() => undefined);
+    this.notificationsService
+      .notifyAdmins({
+        type: NOTIFICATION_TYPES.ADMIN_CONTACT_MESSAGE,
+        title: 'New contact message',
+        body: `${submission.name} (${submission.email}) wrote about "${submission.topic}".`,
+        data: { link: '/admin/content' },
+      })
+      .catch(() => undefined);
+
+    if (this.salesCapture && SALES_TOPICS.has(submission.topic))
+      this.salesCapture.fromContactMessage(submission).catch(() => undefined);
 
     this.emailService
       .sendMail(
