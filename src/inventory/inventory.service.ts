@@ -94,7 +94,8 @@ export class InventoryService {
           (sum: number, v: any) => sum + (v.stock || 0),
           0,
         );
-        stockDisplay = totalStock;
+        // an offline POS oversell can leave stock negative — shown as 0 (stockStatus is already out_of_stock)
+        stockDisplay = Math.max(0, totalStock);
 
         // Status/stats classification uses real AVAILABLE stock (stock -
         // committed) — a product showing "10 in stock" here while all 10
@@ -468,7 +469,7 @@ export class InventoryService {
       .map((v) => ({
         variantId: String(v._id), productId: v.productId, productName: byId.get(String(v.productId)).name,
         image: byId.get(String(v.productId)).images?.[0] ?? null, sku: v.sku ?? null, barcode: v.barcode ?? null,
-        options: v.options ?? [], stock: v.stock ?? 0, committedStock: v.committedStock ?? 0,
+        options: v.options ?? [], stock: Math.max(0, v.stock ?? 0), committedStock: v.committedStock ?? 0,
         available: v.unlimitedStock ? null : Math.max(0, availableStock(v)), unlimitedStock: !!v.unlimitedStock, costPrice: v.costPrice ?? null,
       }));
     return { success: true, data };

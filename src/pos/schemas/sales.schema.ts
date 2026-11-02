@@ -22,7 +22,15 @@ export class SaleItem {
   image: string | null;         // product image snapshot
 
   @Prop({ type: Number, required: true })
-  price: number;                // snapshot — price at time of sale
+  price: number;                // the price actually CHARGED (for a synced offline sale: what the till collected)
+
+  // Offline sales only: the variant's list price when the sale was synced, and whether the charged price was a genuine
+  // price of that variant within the offline window (false → flagged for review).
+  @Prop({ type: Number, default: null })
+  listPrice: number | null;
+
+  @Prop({ type: Boolean, default: true })
+  priceVerified: boolean;
 
   @Prop({ type: Number, required: true })
   qty: number;
@@ -164,6 +172,13 @@ export class Sale {
   // A sale rung up while the device had no connection is replayed later with the time it was REALLY made.
   // `createdAt` then carries that time (so reports, shifts and receipts are right); `receivedAt` is when the
   // server actually got it, and `clientCreatedAt` the raw device timestamp.
+  // The manager whose verified PIN session authorised the discount (online or offline).
+  @Prop({ type: String, default: null })
+  approvedBy: string | null;
+
+  @Prop({ type: Date, default: null })
+  approvedAt: Date | null;
+
   @Prop({ type: Boolean, default: false })
   isOffline: boolean;
 

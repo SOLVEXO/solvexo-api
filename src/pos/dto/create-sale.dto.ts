@@ -23,6 +23,13 @@ export class SaleItemDto {
   @IsNumber()
   @Min(1)
   qty: number;
+
+  @ApiProperty({ required: false, example: 19.99, description: 'Offline replay only: the unit price the till actually CHARGED. Recorded as the price of the line if it matches a genuine price of the variant within the offline window; otherwise recorded anyway and flagged unverified. Ignored for ordinary online sales.' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  unitPrice?: number;
 }
 
 export class CreateSaleDto {

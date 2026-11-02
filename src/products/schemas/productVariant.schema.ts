@@ -193,6 +193,11 @@ export class ProductVariant {
 
 export const ProductVariantSchema = SchemaFactory.createForClass(ProductVariant);
 
+import { applyPriceHistoryHooks } from '../variant-price-history.hooks';
+
+// keeps a short history of price changes (used to verify prices charged by offline POS sales)
+applyPriceHistoryHooks(ProductVariantSchema);
+
 ProductVariantSchema.index({ productId: 1 });
 ProductVariantSchema.index({ sku: 1 });
 // A SKU identifies ONE live variant inside a store (Shopify: "SKU must be unique" is the merchant's inventory key). Partial, so

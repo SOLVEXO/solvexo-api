@@ -742,6 +742,17 @@ export class PosService {
 
   // ── SALES ─────────────────────────────────────────────────────────────────
 
+  /** Was `charged` a genuine price of the variant while an offline sale made at `at` was being rung up? */
+  private async isGenuineOfflinePrice(variantId: string, current: number, charged: number, at: Date): Promise<boolean> {
+    const same = (a: number, b: number) => Math.abs(a - b) < 1e-9;
+    if (same(current, charged)) return true;
+    const model = (this.r as any).variantPriceHistoryModel;
+    if (!model) return false;
+    // A previous price was still in force at/after the sale time iff it was superseded no earlier than then.
+    const rows: any[] = await model.find({ variantId, supersededAt: { $gte: new Date(at.getTime() - CLOCK_SKEW_MS) } }).select('price').lean();
+    return rows.some((r) => same(Number(r.price), charged));
+  }
+
   async createSale(sellerId: string, dto: CreateSaleDto, employeeToken: string | undefined) {
     await this.verifyStoreOwnership(dto.storeId, sellerId);
 
@@ -778,8 +789,16 @@ export class PosService {
     // cashiers from entering one; this is the server-side backstop for
     // direct API calls. See requireManagerEmployee's doc comment.
     const discountReq = this.discountSpec(dto);
+    let approver: { employeeId: string; role: string } | null = null;
     if (discountReq.value > 0) {
-      this.requireManagerEmployee(employeeToken, dto.storeId, 'apply a discount', off.isOffline ? off.at : undefined);
+      approver = this.requireManagerEmployee(employeeToken, dto.storeId, 'apply a discount', off.isOffline ? off.at : undefined);
+    }
+    // Offline: the approval was judged at the sale's time. If that manager has since been deactivated/removed the
+    // sale still stands (money is already collected) — but it is logged so the owner can see who approved it.
+    let approverGone = false;
+    if (approver && off.isOffline) {
+      const a: any = await this.r.employeeModel.findOne({ _id: approver.employeeId, storeId: dto.storeId }).select('status isDelete').lean();
+      approverGone = !a || a.isDelete === true || a.status === 'inactive';
     }
 
     // resolve items — fetch variant snapshots + check stock
@@ -801,13 +820,26 @@ export class PosService {
       const product = await this.r.productModel.findOne({ _id: item.productId, isDelete: false }).select('name gallery coverImages');
       if (!product) throw new BadRequestException(`Product not found: ${item.productId}`);
 
+      // Offline replay: the till collected `unitPrice`. Record THAT (money in the drawer must equal the sale) and judge it:
+      // genuine = the variant's current price, or one it had since the sale was made (variant price history).
+      let charged = variant.price;
+      let listPrice: number | null = null;
+      let priceVerified = true;
+      if (off.isOffline && item.unitPrice !== undefined && item.unitPrice !== null) {
+        charged = item.unitPrice;
+        listPrice = variant.price;
+        priceVerified = await this.isGenuineOfflinePrice(item.variantId, variant.price, item.unitPrice, off.at);
+      }
+
       saleItems.push({
         productId: item.productId,
         variantId: item.variantId,
         name: `${product.name}${formatOptionsSuffix(variant.options)}`,
         sku: variant.sku,
         image: (product as any).gallery?.[0] ?? (product as any).coverImages?.[0] ?? null,
-        price: variant.price,
+        price: charged,
+        listPrice,
+        priceVerified,
         qty: item.qty,
         lineTotal: 0, // set below from the server-computed, exponent-rounded line totals
       });
@@ -820,11 +852,15 @@ export class PosService {
     const money = await this.moneyContext(dto.storeId, { version: dto.settingsVersion });
     const totals = computeTotals(saleItems, { exp: money.exp, discountType: discountReq.type, discountValue: discountReq.value, taxRate: money.taxRate });
     const flags: Array<{ type: string; detail: Record<string, any> }> = [];
+    const unverified = saleItems.filter((it) => it.priceVerified === false);
+    if (unverified.length) {
+      flags.push({ type: 'unverified_price', detail: { lines: unverified.map((it) => ({ variantId: it.variantId, sku: it.sku, charged: it.price, listPrice: it.listPrice })) } });
+    }
     if (off.isOffline) {
       // Money has ALREADY changed hands on the device, so a synced offline sale is never rejected over its total.
       // If a catalog PRICE changed while the device was offline the server total differs from what was charged:
       // record it at the server's price and flag the difference for a manager (see paymentShortfall).
-      if (dto.clientTotal !== undefined && Math.abs(toMinor(dto.clientTotal, totals.exp) - totals.minor.total) > 1) {
+      if (dto.clientTotal !== undefined && Math.abs(toMinor(dto.clientTotal, totals.exp) - totals.minor.total) > 1 && !saleItems.some((it) => it.listPrice !== null)) {
         flags.push({ type: 'price_changed_while_offline', detail: { deviceTotal: dto.clientTotal, serverTotal: totals.total } });
       }
     } else {
@@ -893,6 +929,8 @@ export class PosService {
             paymentShortfall: settled ? settled.shortBy : 0,
             employeeName: (employee as any).name ?? null,
             settingsVersion: money.settingsVersion,
+            approvedBy: approver?.employeeId ?? null,
+            approvedAt: approver ? (off.isOffline ? off.at : new Date()) : null,
             receivedAt: new Date(),
             ...(off.isOffline ? { isOffline: true, clientCreatedAt: off.at, createdAt: off.at } : {}),
             flags: [...flags, ...oversold.map((o) => ({ type: 'oversold_on_sync', detail: o }))],
@@ -946,6 +984,9 @@ export class PosService {
       // Every flagged offline sale leaves a trail a manager can find: audit log (POS) + inventory activity (store).
       for (const f of sale.flags ?? []) {
         this.writeAuditLog({ storeId: dto.storeId, employeeId: dto.employeeId, action: f.type === 'oversold_on_sync' ? 'sale_oversold_offline' : `sale_flag_${f.type}`, targetId: String(sale._id), targetType: 'sale', metadata: f.detail }).catch(() => {});
+      }
+      if (approverGone) {
+        this.writeAuditLog({ storeId: dto.storeId, employeeId: dto.employeeId, action: 'offline_approver_deactivated', targetId: String(sale._id), targetType: 'sale', metadata: { approvedBy: approver!.employeeId, clientCreatedAt: off.at } }).catch(() => {});
       }
       for (const o of oversold) {
         void this.activityLogService.log({

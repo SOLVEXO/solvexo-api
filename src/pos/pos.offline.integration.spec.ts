@@ -419,3 +419,97 @@ describe('manager review and offline discard', () => {
     expect(await code(svc.recordOfflineDiscard(s.sellerId, { ...dto, idempotencyKey: 'already-synced-1' }, mgrToken(s)))).toBe('SALE_ALREADY_SYNCED');
   });
 });
+
+describe('5C.1: price charged offline is what is recorded (verified against price history)', () => {
+  const setPrice = (s: Seed, price: number) => h.repos.productVariantModel.findOneAndUpdate({ _id: s.variantId }, { $set: { price } });
+
+  it('a price change through Mongoose writes the OLD price to the history', async () => {
+    const s = await seedStore(h, { stock: 10, price: 10 });
+    await setPrice(s, 12);
+    await setPrice(s, 15);
+    await new Promise((r) => setTimeout(r, 200));
+    const rows: any[] = await h.repos.variantPriceHistoryModel.find({ variantId: s.variantId }).sort({ price: 1 }).lean();
+    expect(rows.map((r) => r.price)).toEqual([10, 12]);
+  });
+
+  it('charged == a price the variant had since the sale → recorded as charged, verified, drawer = collected', async () => {
+    const svc = makeService();
+    const s = await seedStore(h, { stock: 10, price: 10 });
+    const sid = await open(svc, s, 5 * HOUR);
+    await setPrice(s, 12); // price rose after the sale was rung up at 10
+    await new Promise((r) => setTimeout(r, 200));
+    const res: any = await svc.createSale(s.sellerId, offlineDto(s, sid, HOUR, { items: [{ productId: s.productId, variantId: s.variantId, qty: 1, unitPrice: 10 }], clientTotal: 10, amountTendered: 10 }) as any, undefined);
+    expect(res.data.total).toBe(10);
+    expect(res.data.items[0]).toMatchObject({ price: 10, listPrice: 12, priceVerified: true });
+    expect(res.data.flags).toEqual([]);
+    expect(res.data.paymentShortfall).toBe(0);
+    expect(await session(sid)).toMatchObject({ cashSales: 10, totalSales: 10 });
+  });
+
+  it('charged price never valid in the window → recorded anyway, flagged unverified_price, needs review, audited; drawer = collected', async () => {
+    const svc = makeService();
+    const s = await seedStore(h, { stock: 10, price: 10 });
+    const sid = await open(svc, s, 5 * HOUR);
+    const res: any = await svc.createSale(s.sellerId, offlineDto(s, sid, HOUR, { items: [{ productId: s.productId, variantId: s.variantId, qty: 2, unitPrice: 1 }], amountTendered: 2 }) as any, undefined);
+    expect(res.data.total).toBe(2);
+    expect(res.data.items[0]).toMatchObject({ price: 1, listPrice: 10, priceVerified: false });
+    expect(res.data.needsReview).toBe(true);
+    expect(res.data.flags.map((f: any) => f.type)).toEqual(['unverified_price']);
+    expect(await session(sid)).toMatchObject({ cashSales: 2, totalSales: 2 });
+    await new Promise((r) => setTimeout(r, 100));
+    expect(await h.repos.posAuditLogModel.countDocuments({ action: 'sale_flag_unverified_price' })).toBe(1);
+  });
+
+  it('a price that was superseded BEFORE the sale was made is not accepted', async () => {
+    const svc = makeService();
+    const s = await seedStore(h, { stock: 10, price: 10 });
+    const sid = await open(svc, s, 5 * HOUR);
+    await setPrice(s, 12);
+    await new Promise((r) => setTimeout(r, 200));
+    await h.repos.variantPriceHistoryModel.collection.updateMany({ variantId: s.variantId }, { $set: { supersededAt: new Date(Date.now() - 3 * HOUR) } });
+    const res: any = await svc.createSale(s.sellerId, offlineDto(s, sid, HOUR, { items: [{ productId: s.productId, variantId: s.variantId, qty: 1, unitPrice: 10 }], amountTendered: 10 }) as any, undefined);
+    expect(res.data.flags.map((f: any) => f.type)).toEqual(['unverified_price']);
+  });
+
+  it('unitPrice is ignored for an ONLINE sale (server price wins)', async () => {
+    const svc = makeService();
+    const s = await seedStore(h, { stock: 10, price: 10 });
+    const sid = await open(svc, s);
+    const res: any = await svc.createSale(s.sellerId, { ...offlineDto(s, sid, 0), offline: false, items: [{ productId: s.productId, variantId: s.variantId, qty: 1, unitPrice: 1 }] } as any, undefined);
+    expect(res.data.total).toBe(10);
+  });
+});
+
+describe('5C.1: approving manager recorded on the sale', () => {
+  // a PIN session that was already live when the sale (1h ago) was rung up
+  const oldMgr = (s: Seed) => { const now = Math.floor(Date.now() / 1000); return mgrToken(s, { iat: now - 2 * 3600, exp: now + 10 * 3600 }); };
+  it('stores approvedBy/approvedAt (sale time for offline)', async () => {
+    const svc = makeService();
+    const s = await seedStore(h, { stock: 10, price: 100 });
+    const sid = await open(svc, s, 5 * HOUR);
+    const res: any = await svc.createSale(s.sellerId, offlineDto(s, sid, HOUR, { discountType: 'percent', discountValue: 10 }) as any, oldMgr(s));
+    expect(res.data.approvedBy).toBe(s.managerId);
+    expect(Math.abs(new Date(res.data.approvedAt).getTime() - (Date.now() - HOUR))).toBeLessThan(3000);
+  });
+
+  it('manager deactivated after the sale → sale still accepted, and the fact is logged', async () => {
+    const svc = makeService();
+    const s = await seedStore(h, { stock: 10, price: 100 });
+    const sid = await open(svc, s, 5 * HOUR);
+    const token = oldMgr(s);
+    await h.repos.employeeModel.collection.updateOne({ _id: new Types.ObjectId(s.managerId) }, { $set: { status: 'inactive', isDelete: true } });
+    const res: any = await svc.createSale(s.sellerId, offlineDto(s, sid, HOUR, { discountType: 'percent', discountValue: 10 }) as any, token);
+    expect(res.data.status).toBe('completed');
+    expect(res.data.approvedBy).toBe(s.managerId);
+    await new Promise((r) => setTimeout(r, 100));
+    expect(await h.repos.posAuditLogModel.countDocuments({ action: 'offline_approver_deactivated' })).toBe(1);
+  });
+
+  it('a sale with no discount has no approver', async () => {
+    const svc = makeService();
+    const s = await seedStore(h, { stock: 10, price: 100 });
+    const sid = await open(svc, s);
+    const res: any = await svc.createSale(s.sellerId, offlineDto(s, sid, 0) as any, undefined);
+    expect(res.data.approvedBy).toBeNull();
+  });
+});
