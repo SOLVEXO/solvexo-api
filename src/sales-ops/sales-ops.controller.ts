@@ -26,9 +26,13 @@ import { SalesCaptureService } from './sales-capture.service';
 import { SalesGrowthService } from './sales-growth.service';
 import { SalesPartnersService } from './sales-partners.service';
 import { SalesAgentService } from './sales-agent.service';
+import { SalesWhatsAppService } from './sales-whatsapp.service';
 import { salesActor } from './sales-ops.util';
 import {
   ActivityDto,
+  WaConnectDto,
+  WaListDto,
+  WaSendDto,
   AgentPreviewDto,
   AgentSettingsDto,
   ChatMessageDto,
@@ -70,7 +74,75 @@ export class SalesOpsController {
     private readonly growth: SalesGrowthService,
     private readonly partners: SalesPartnersService,
     private readonly agent: SalesAgentService,
+    private readonly whatsapp: SalesWhatsAppService,
   ) {}
+
+  // ── WhatsApp (Solvexo's own number) ────────────────────────────────────────
+
+  @RequirePermission('sales.manage')
+  @Get('whatsapp/connection')
+  waConnection() {
+    return this.whatsapp.getConnection();
+  }
+
+  @RequirePermission('sales.manage')
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Put('whatsapp/connection')
+  waConnect(@Body() dto: WaConnectDto) {
+    return this.whatsapp.connect(dto);
+  }
+
+  @RequirePermission('sales.manage')
+  @Delete('whatsapp/connection')
+  waDisconnect() {
+    return this.whatsapp.disconnect();
+  }
+
+  @Get('whatsapp/conversations')
+  waList(@Req() req: any, @Query() q: WaListDto) {
+    return this.whatsapp.listConversations(salesActor(req.user), {
+      leadId: q.leadId,
+      unread: q.unread === 'true',
+    });
+  }
+
+  @Get('whatsapp/conversations/:id')
+  waGet(@Req() req: any, @Param('id') id: string) {
+    return this.whatsapp.getConversation(salesActor(req.user), id);
+  }
+
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  @Post('whatsapp/conversations/:id/send')
+  waSend(@Req() req: any, @Param('id') id: string, @Body() dto: WaSendDto) {
+    return this.whatsapp.send(
+      salesActor(req.user),
+      id,
+      dto.text,
+      !!dto.fromAiDraft,
+    );
+  }
+
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Post('whatsapp/conversations/:id/template')
+  waTemplate(@Req() req: any, @Param('id') id: string) {
+    return this.whatsapp.sendTemplate(salesActor(req.user), id);
+  }
+
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Post('whatsapp/conversations/:id/draft')
+  waRedraft(@Req() req: any, @Param('id') id: string) {
+    return this.whatsapp.redraft(salesActor(req.user), id);
+  }
+
+  @Delete('whatsapp/conversations/:id/draft')
+  waDiscardDraft(@Req() req: any, @Param('id') id: string) {
+    return this.whatsapp.discardDraft(salesActor(req.user), id);
+  }
+
+  @Post('leads/:id/whatsapp')
+  waOpenForLead(@Req() req: any, @Param('id') id: string) {
+    return this.whatsapp.openForLead(salesActor(req.user), id);
+  }
 
   // ── AI sales agent ───────────────────────────────────────────────────────
 

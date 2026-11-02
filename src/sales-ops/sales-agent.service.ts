@@ -63,6 +63,7 @@ export interface AgentSettingsInput {
   aiEnabled?: boolean;
   aiFirstReply?: boolean;
   aiChat?: boolean;
+  aiWhatsApp?: boolean;
   aiAgentName?: string;
   aiGreeting?: string | null;
   aiKnowledge?: string | null;
@@ -126,13 +127,19 @@ export class SalesAgentService {
         aiReplyTo: s.aiReplyTo ?? null,
         aiChatDailyLimit: s.aiChatDailyLimit ?? 300,
         chatsToday: await this.chatsToday(),
+        aiWhatsApp: s.aiWhatsApp !== false,
       },
     };
   }
 
   async saveConfig(input: AgentSettingsInput) {
     const set: Record<string, unknown> = {};
-    for (const k of ['aiEnabled', 'aiFirstReply', 'aiChat'] as const)
+    for (const k of [
+      'aiEnabled',
+      'aiFirstReply',
+      'aiChat',
+      'aiWhatsApp',
+    ] as const)
       if (input[k] !== undefined) set[k] = !!input[k];
     if (set.aiEnabled && !this.connected)
       throw new BadRequestException(
@@ -184,12 +191,10 @@ export class SalesAgentService {
     if (!text) throw new BadRequestException('Type a message to test.');
     const s = await this.load();
     const turns = [
-      ...history
-        .slice(-10)
-        .map((h) => ({
-          role: h.role,
-          text: String(h.text ?? '').slice(0, MAX_MESSAGE_CHARS),
-        })),
+      ...history.slice(-10).map((h) => ({
+        role: h.role,
+        text: String(h.text ?? '').slice(0, MAX_MESSAGE_CHARS),
+      })),
       { role: 'visitor' as const, text },
     ];
     const out = await this.chatTurn(s, turns, {});
@@ -503,6 +508,34 @@ export class SalesAgentService {
       );
     await this.leads.updateOne({ _id: leadId }, { $set: { aiDraft: null } });
     return this.sales.get(actor, leadId);
+  }
+
+  /**
+   * A suggested reply to a WhatsApp conversation, for a person to send. Null when the assistant or its WhatsApp
+   * drafts are switched off, no AI is connected, or the model fails (the inbox then simply has no draft).
+   */
+  async draftWhatsApp(
+    turns: { role: 'visitor' | 'agent'; text: string }[],
+    known: ChatDetails = {},
+  ): Promise<string | null> {
+    const s = await this.load();
+    if (!(s.aiEnabled && s.aiWhatsApp !== false && this.connected)) return null;
+    try {
+      const out = await this.ai.generate({
+        tier: 'standard',
+        maxTokens: 700,
+        schema: CHAT_SCHEMA,
+        system: systemPrompt(this.cfg(s), await this.plans(), 'whatsapp'),
+        prompt: chatPrompt(turns, known, 'whatsapp'),
+      });
+      const reply = (out.json as any)?.reply;
+      return typeof reply === 'string' && reply.trim()
+        ? reply.trim().slice(0, 1500)
+        : null;
+    } catch (e: any) {
+      this.logger.warn(`AI WhatsApp draft failed: ${e?.message}`);
+      return null;
+    }
   }
 
   // ── Transcripts ────────────────────────────────────────────────────────────

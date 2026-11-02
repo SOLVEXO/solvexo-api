@@ -339,6 +339,7 @@ export class AgentSettingsDto {
   @IsOptional() @IsBoolean() aiEnabled?: boolean;
   @IsOptional() @IsBoolean() aiFirstReply?: boolean;
   @IsOptional() @IsBoolean() aiChat?: boolean;
+  @IsOptional() @IsBoolean() aiWhatsApp?: boolean;
   @IsOptional() @IsString() @MaxLength(40) aiAgentName?: string;
   @OptStr(300) aiGreeting?: string | null;
   @OptStr(8000) aiKnowledge?: string | null;
@@ -377,4 +378,24 @@ export class ChatMessageDto {
 
 export class DraftDto {
   @IsBoolean() sent: boolean;
+}
+
+// ── WhatsApp inbox ──────────────────────────────────────────────────────────
+
+export class WaConnectDto {
+  @IsString() @MaxLength(30) phoneNumberId: string;
+  @OptStr(1000) accessToken?: string;
+  @OptStr(100) templateName?: string | null;
+  @IsOptional() @IsString() @MaxLength(10) templateLang?: string;
+  @IsOptional() @IsBoolean() templateUsesName?: boolean;
+}
+
+export class WaSendDto {
+  @IsString() @MaxLength(4000) text: string;
+  @IsOptional() @IsBoolean() fromAiDraft?: boolean;
+}
+
+export class WaListDto {
+  @IsOptional() @IsString() leadId?: string;
+  @IsOptional() @IsIn(['true', 'false']) unread?: string;
 }
