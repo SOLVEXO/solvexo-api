@@ -20,6 +20,9 @@ import { consumeLots } from '@/common/lot-consumption.util';
 import { drainLocationStock } from '@/common/location-stock.util';
 import { refreshExpiredStock } from '@/common/expired-stock.util';
 
+/** "Black" or "Black / M" from a variant's options; null for a single-variant product. */
+const variantLabelOf = (v: any): string | null => (v?.options ?? []).map((o: any) => o?.value).filter(Boolean).join(' / ') || null;
+
 @Injectable()
 export class InventoryService {
   constructor(
@@ -1441,8 +1444,12 @@ export class InventoryService {
     const filter: any = { storeId };
     if (query.status && query.status !== 'all') filter.status = query.status;
 
-    const transfers = await stockTransferModel.find(filter).sort({ createdAt: -1 }).limit(200).lean();
-    return { success: true, data: transfers };
+    const transfers: any[] = await stockTransferModel.find(filter).sort({ createdAt: -1 }).limit(200).lean();
+    // Transfers only snapshot the product name: add the variant name so Black / Silver are not the same line.
+    const ids = [...new Set(transfers.map(t => t.variantId).filter(Boolean))];
+    const vs: any[] = ids.length ? await this.databaseService.repositories.productVariantModel.find({ _id: { $in: ids } }).select('options').lean() : [];
+    const labels = new Map<string, string | null>(vs.map(v => [String(v._id), variantLabelOf(v)]));
+    return { success: true, data: transfers.map(t => ({ ...t, variantLabel: labels.get(String(t.variantId)) ?? null })) };
   }
 
   /** GET api/inventory/:storeId/reorder-suggestions — every SKU at/below
@@ -1631,7 +1638,7 @@ export class InventoryService {
       .filter(v => ((v.stock || 0) - (v.expiredStock || 0)) > 0 && !soldVariantIds90.has(v._id.toString()))
       .map(v => ({
         productId: v.productId, variantId: v._id.toString(),
-        productName: productById.get(v.productId)?.name ?? '(deleted product)', sku: v.sku,
+        productName: productById.get(v.productId)?.name ?? '(deleted product)', variantLabel: variantLabelOf(v), sku: v.sku,
         stock: v.stock - (v.expiredStock || 0), value: v.costPrice != null ? Math.round((v.stock - (v.expiredStock || 0)) * v.costPrice * 100) / 100 : null,
       }))
       .sort((a, b) => b.stock - a.stock)
@@ -1644,7 +1651,7 @@ export class InventoryService {
       .map((s: any) => {
         const v = variantById.get(s._id);
         if (!v) return null;
-        return { variantId: s._id, productName: productById.get(v.productId)?.name ?? '(deleted product)', sku: v.sku, qty: s.qty };
+        return { variantId: s._id, productName: productById.get(v.productId)?.name ?? '(deleted product)', variantLabel: variantLabelOf(v), sku: v.sku, qty: s.qty };
       })
       .filter(Boolean);
 
