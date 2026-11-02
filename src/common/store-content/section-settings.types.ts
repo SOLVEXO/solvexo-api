@@ -613,7 +613,7 @@ export type BlockSettingsMap = RequireAllKeys<BlockType, {
   product_share: ProductDescriptionBlockSettings;
   product_specs: ProductDescriptionBlockSettings;
   product_buy_now: { label?: string };
-  product_collapsible_tab: { title: string; content?: string; openByDefault?: boolean };
+  product_collapsible_tab: { title: string; content?: string; openByDefault?: boolean; showAsTab?: boolean };
   product_size_chart: { label?: string; title?: string; content?: string; imageUrl?: string };
   product_text: { text?: string; size?: 'small' | 'medium' | 'large' };
   product_pickup: { heading?: string };

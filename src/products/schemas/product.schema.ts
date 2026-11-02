@@ -168,6 +168,14 @@ export class Product {
   @Prop({ type: String, default: '' })
   description: string;
 
+  /** One or two lines shown under the price. */
+  @Prop({ type: String, default: '' })
+  shortDescription: string;
+
+  /** Extra tabs next to Description (title + content). */
+  @Prop({ type: [{ _id: false, title: String, content: String }], default: [] })
+  tabs: { title: string; content: string }[];
+
   @Prop({ type: String, enum: Object.values(ProductType), required: true })
   productType: ProductType;
 

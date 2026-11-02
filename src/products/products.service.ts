@@ -15,7 +15,7 @@ import { translatedHandleClause } from '../common/translated-handle.util';
 import { InjectConnection } from '@nestjs/mongoose';
 import { ClientSession, Connection, Types, isValidObjectId } from 'mongoose';
 import {
-  PRODUCT_LIMITS, assertMoney, assertStockQuantity, copySku, findDuplicateSku, generateSkus, normalizeBarcode, normalizeDescription,
+  PRODUCT_LIMITS, assertMoney, assertStockQuantity, copySku, findDuplicateSku, generateSkus, normalizeBarcode, normalizeDescription, normalizeShortDescription, normalizeProductTabs,
   normalizeImages, normalizeName, normalizeSku, normalizeStatus, normalizeTags, resolveScheduledAt, normalizeVideoUrl } from './product-input.util';
 import { softDeleteProducts } from './product-cascade.util';
 import { normalizeComplementaryIds } from './complementary-products.util';
@@ -1186,6 +1186,8 @@ export class ProductsService {
 
     const name = normalizeName(body.name);
     const description = normalizeDescription(body.description);
+    const shortDescription = normalizeShortDescription(body.shortDescription);
+    const tabs = normalizeProductTabs(body.tabs);
     const images = normalizeImages(body.images);
     const tags = normalizeTags(body.tags);
     const status = normalizeStatus(body.status);
@@ -1233,6 +1235,8 @@ export class ProductsService {
             name,
             slug,
             description,
+            shortDescription,
+            tabs,
             shippingProfileId,
             ...parseSellingOptions(body),
             productType: 'physical',
@@ -1357,6 +1361,8 @@ export class ProductsService {
 
     const name = normalizeName(body.name);
     const description = normalizeDescription(body.description);
+    const shortDescription = normalizeShortDescription(body.shortDescription);
+    const tabs = normalizeProductTabs(body.tabs);
     const images = normalizeImages(body.images);
     const tags = normalizeTags(body.tags);
     const status = normalizeStatus(body.status);
@@ -1406,6 +1412,8 @@ export class ProductsService {
             name,
             slug,
             description,
+            shortDescription,
+            tabs,
             productType: finalProductType,
             type: 'digital',
             categoryId,
@@ -1480,6 +1488,22 @@ export class ProductsService {
       message: 'Product fetched successfully',
       data: { product, variants, defaultVariant },
     };
+  }
+
+  /** What archiving these products would leave pointing at them: open draft orders, open purchase orders, menu links, carts. Read-only. */
+  async archiveImpact(sellerId: string, storeId: string, rawIds: string) {
+    const ids = String(rawIds ?? '').split(',').map(x => x.trim()).filter(Boolean).slice(0, 200);
+    if (!storeId || ids.length === 0) throw new BadRequestException('storeId and ids are required');
+    const { storeModel, draftOrderModel, purchaseOrderModel, menuModel, cartModel } = this.databaseService.repositories as any;
+    const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false }).select('_id').lean();
+    if (!store) throw new ForbiddenException('Store not found or unauthorized');
+    const [draftOrders, purchaseOrders, menus, carts] = await Promise.all([
+      draftOrderModel.countDocuments({ storeId, isDelete: false, status: 'open', 'items.productId': { $in: ids } }),
+      purchaseOrderModel.countDocuments({ storeId, isDelete: { $ne: true }, status: { $in: ['draft', 'ordered', 'partially_received'] }, 'items.productId': { $in: ids } }),
+      menuModel.countDocuments({ storeId, isDelete: { $ne: true }, $or: [{ 'items.productId': { $in: ids } }, { 'items.children.productId': { $in: ids } }, { 'items.children.children.productId': { $in: ids } }] }),
+      this.databaseService.repositories.cartModel.countDocuments({ storeId, isDelete: false, 'items.productId': { $in: ids } }),
+    ]);
+    return { data: { draftOrders, purchaseOrders, menus, carts, total: draftOrders + purchaseOrders + menus + carts } };
   }
 
   async getStoreProducts(sellerId: string, storeId: string, query: any) {
@@ -1585,6 +1609,8 @@ export class ProductsService {
     }
 
     if (description !== undefined) productUpdate.description = normalizeDescription(description);
+    if (body.shortDescription !== undefined) productUpdate.shortDescription = normalizeShortDescription(body.shortDescription);
+    if (body.tabs !== undefined) productUpdate.tabs = normalizeProductTabs(body.tabs);
     if (requestedCategoryId !== undefined) {
       productUpdate.categoryId = await this.resolveProductCategoryId(String(product.storeId), null, requestedCategoryId);
     }
@@ -1860,11 +1886,16 @@ export class ProductsService {
         defaultVariant && defaultVariant.taxable === false ? 'no' : 'yes',
         defaultVariant?.images?.[0] ?? product.images?.[0] ?? '',
         product.videoUrl ?? '',
+        product.shortDescription ?? '',
+        product.tabs?.[0]?.title ?? '',
+        product.tabs?.[0]?.content ?? '',
+        product.tabs?.[1]?.title ?? '',
+        product.tabs?.[1]?.content ?? '',
       ]);
     }
 
     return toCsv(
-      ['Name', 'SKU', 'Type', 'Product Type', 'Status', 'Price', 'Compare-at Price', 'Stock', 'Variant Count', 'Tags', 'All-Time Sales', 'Category', 'Length (cm)', 'Width (cm)', 'Height (cm)', 'Country of Origin', 'HS Code', 'Customs Description', 'Charge Tax', 'Image URL', 'Video URL'],
+      ['Name', 'SKU', 'Type', 'Product Type', 'Status', 'Price', 'Compare-at Price', 'Stock', 'Variant Count', 'Tags', 'All-Time Sales', 'Category', 'Length (cm)', 'Width (cm)', 'Height (cm)', 'Country of Origin', 'HS Code', 'Customs Description', 'Charge Tax', 'Image URL', 'Video URL', 'Short Description', 'Tab 1 Title', 'Tab 1 Content', 'Tab 2 Title', 'Tab 2 Content'],
       rows,
     );
   }

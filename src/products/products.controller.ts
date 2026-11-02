@@ -232,6 +232,14 @@ export class productController {
 
   @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('seller', 'staff')
+  @RequirePermission('products.view')
+  @Get('store-products/:storeId/archive-impact')
+  async archiveImpact(@Req() req: any, @Param('storeId') storeId: string, @Query('ids') ids: string) {
+    return this.ProductsService.archiveImpact(actingSellerId(req.user), storeId, ids);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
   @RequirePermission('products.export')
   @Get('store-products/:storeId/export')
   async exportProductsCsv(@Req() req: any, @Res() res: Response, @Param('storeId') storeId: string) {

@@ -193,7 +193,8 @@ export const STOREFRONT_EN: Record<string, any> = {
   "viewCart": "View cart",
   "yourAccent": "cart",
   "yourCart": "Your cart",
-  "yourLead": "Your"
+  "yourLead": "Your",
+  "itemUnavailable": "This item is no longer available. Please remove it to check out."
  },
  "category": {
   "notFound": "Category not found",
@@ -1115,6 +1116,7 @@ export const STOREFRONT_EN: Record<string, any> = {
   "share_a_product": "Share a product",
   "share_by_email": "Share by email",
   "share_on_facebook": "Share on Facebook",
+  "share_on_pinterest": "Share on Pinterest",
   "share_on_whatsapp": "Share on WhatsApp",
   "share_on_x": "Share on X",
   "share_this_article": "Share this article",
@@ -1370,7 +1372,9 @@ export const STOREFRONT_EN: Record<string, any> = {
   "tags": "Tags",
   "unavailable": "This product isn't available.",
   "yes": "Yes",
-  "zoomImage": "Zoom image"
+  "zoomImage": "Zoom image",
+  "description": "Description",
+  "details": "Product details"
  },
  "returns": {
   "approved": "Return approved",

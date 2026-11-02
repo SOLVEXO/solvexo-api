@@ -37,6 +37,34 @@ export function normalizeDescription(raw: unknown): string {
   return raw;
 }
 
+export const PRODUCT_TAB_LIMITS = { shortMax: 500, tabsMax: 6, tabTitleMax: 40, tabContentMax: 20_000 };
+
+export function normalizeShortDescription(raw: unknown): string {
+  if (raw === undefined || raw === null) return '';
+  if (typeof raw !== 'string') throw new BadRequestException('Short description must be text');
+  const v = raw.trim();
+  if (v.length > PRODUCT_TAB_LIMITS.shortMax) throw new BadRequestException(`Short description must be at most ${PRODUCT_TAB_LIMITS.shortMax} characters`);
+  return v;
+}
+
+/** Extra product tabs ("Delivery", "Size guide"...). Rows with no title or no content are dropped. */
+export function normalizeProductTabs(raw: unknown): { title: string; content: string }[] {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) throw new BadRequestException('Tabs must be a list');
+  if (raw.length > PRODUCT_TAB_LIMITS.tabsMax * 3) throw new BadRequestException('Too many tabs');
+  const out: { title: string; content: string }[] = [];
+  for (const row of raw) {
+    const title = typeof row?.title === 'string' ? row.title.replace(/\s+/g, ' ').trim() : '';
+    const content = typeof row?.content === 'string' ? row.content : '';
+    if (!title || !content.trim()) continue;
+    if (title.length > PRODUCT_TAB_LIMITS.tabTitleMax) throw new BadRequestException(`Tab title must be at most ${PRODUCT_TAB_LIMITS.tabTitleMax} characters`);
+    if (content.length > PRODUCT_TAB_LIMITS.tabContentMax) throw new BadRequestException(`Tab content must be at most ${PRODUCT_TAB_LIMITS.tabContentMax} characters`);
+    out.push({ title, content });
+  }
+  if (out.length > PRODUCT_TAB_LIMITS.tabsMax) throw new BadRequestException(`At most ${PRODUCT_TAB_LIMITS.tabsMax} tabs`);
+  return out;
+}
+
 export function normalizeImages(raw: unknown): string[] {
   if (raw === undefined || raw === null) return [];
   if (!Array.isArray(raw)) throw new BadRequestException('images must be a list of URLs');

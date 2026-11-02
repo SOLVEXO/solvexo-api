@@ -75,6 +75,11 @@ export class InventoryService {
       variantMap[v.productId].push(v);
     }
 
+    // How many products sit in each status (all of the store's, not just this page), for the filter labels.
+    const statusRows: any[] = await productModel.aggregate([{ $match: { storeId, isDelete: false } }, { $group: { _id: '$status', n: { $sum: 1 } } }]);
+    const statusCounts: Record<string, number> = {};
+    for (const r of statusRows) statusCounts[String(r._id)] = r.n;
+
     // stats counters
     let inStock = 0;
     let lowStock = 0;
@@ -110,17 +115,17 @@ export class InventoryService {
 
         if (totalAvailable === 0) {
           stockStatus = 'out_of_stock';
-          outOfStock++;
+          if (product.status === 'active') outOfStock++;
         } else if (totalAvailable <= lowStockThreshold) {
           stockStatus = 'low_stock';
-          lowStock++;
-          inStock++;
+          if (product.status === 'active') lowStock++;
+          if (product.status === 'active') inStock++;
         } else {
           stockStatus = 'active';
-          inStock++;
+          if (product.status === 'active') inStock++;
         }
       } else {
-        inStock++; // digital, or has an unlimited-stock variant — always in stock
+        if (product.status === 'active') inStock++; // digital, or has an unlimited-stock variant — always in stock
       }
 
       // default variant ki price, fallback to min price
@@ -168,6 +173,7 @@ export class InventoryService {
     return {
       success: true,
       data: {
+        statusCounts,
         stats: {
           totalProducts,
           inStock,

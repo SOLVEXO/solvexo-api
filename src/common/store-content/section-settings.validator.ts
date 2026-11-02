@@ -887,6 +887,9 @@ export function validateBlockSettings(blockType: string, settings: Record<string
       if (settings.openByDefault !== undefined && typeof settings.openByDefault !== 'boolean') {
         throw new BadRequestException('settings.openByDefault must be true or false');
       }
+      if (settings.showAsTab !== undefined && typeof settings.showAsTab !== 'boolean') {
+        throw new BadRequestException('settings.showAsTab must be true or false');
+      }
       break;
     case 'product_size_chart':
       maxLen(settings.label, 40, 'settings.label');
