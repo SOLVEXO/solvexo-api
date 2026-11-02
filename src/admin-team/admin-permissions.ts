@@ -19,6 +19,8 @@ export const ADMIN_PERMISSIONS = [
   'activity.view', // activity log
   'audit.view', // admin audit trail + sessions of other admins
   'team.manage', // roles, admins, approvals
+  'sales.access', // Sales Ops: own leads, tasks and emails
+  'sales.manage', // Sales Ops: every lead, assignment and templates
 ] as const;
 export type AdminPermission = (typeof ADMIN_PERMISSIONS)[number];
 
@@ -38,6 +40,16 @@ export const ADMIN_PRESET_ROLES: { key: string; name: string; description: strin
     key: 'content_seo', name: 'Content & SEO', readOnly: false,
     description: 'Site content, SEO, newsletter, platform coupons and the theme catalog.',
     permissions: ['analytics.view', 'seo.manage', 'content.manage', 'marketing.manage', 'themes.manage'],
+  },
+  {
+    key: 'sales_rep', name: 'Sales rep', readOnly: false,
+    description: 'Works their own leads in Sales Ops: calls, emails, follow-ups and stages.',
+    permissions: ['sales.access'],
+  },
+  {
+    key: 'sales_manager', name: 'Sales manager', readOnly: false,
+    description: 'Sees every lead, assigns them to reps and manages the sales email templates.',
+    permissions: ['sales.access', 'sales.manage', 'analytics.view'],
   },
   {
     key: 'auditor', name: 'Auditor (read-only)', readOnly: true,
