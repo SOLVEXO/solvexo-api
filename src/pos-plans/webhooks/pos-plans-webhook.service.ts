@@ -55,6 +55,8 @@ export class PosPlansWebhookService {
         return this.onChargeRefunded(event.data.object);
       case 'charge.dispute.created':
         return this.onDisputeCreated(event.data.object);
+      case 'charge.dispute.closed':
+        return this.onDisputeClosed(event.data.object);
       default:
         return { received: true };
     }
@@ -131,6 +133,34 @@ export class PosPlansWebhookService {
   }
 
   /**
+   * Dispute closed: WON → give back exactly the days that were removed when it was opened (once; audit-logged). LOST (or any
+   * other status) → nothing changes — access stays as the creation already left it.
+   */
+  private async onDisputeClosed(dispute: any) {
+    if (dispute.status !== 'won') return { received: true, ignored: `dispute_${dispute.status ?? 'unknown'}` };
+    const pi = typeof dispute.payment_intent === 'string' ? dispute.payment_intent : null;
+    if (!pi) return { received: true };
+    const now = new Date();
+    const purchase: any = await this.r.posPurchaseModel.findOneAndUpdate(
+      { stripePaymentIntentId: pi, source: { $ne: 'manual' }, reversedReason: 'disputed', disputeRestoredAt: null },
+      { $set: { disputeRestoredAt: now } },
+      { new: true },
+    ).lean();
+    if (!purchase) return { received: true, duplicate: true };
+    const removed = Number(purchase.reversedRemovedMs) || 0;
+    if (removed > 0 && !purchase.revokedAt) {
+      const latest: any = await this.r.posPurchaseModel.findOne({ storeId: purchase.storeId }).sort({ purchasedAt: -1 }).lean();
+      if (latest) {
+        const base = Math.max(now.getTime(), new Date(latest.expiresAt).getTime());
+        await this.r.posPurchaseModel.updateOne({ _id: latest._id }, { $set: { expiresAt: new Date(base + removed) } });
+      }
+    }
+    await this.r.posAuditLogModel?.create({ storeId: purchase.storeId, employeeId: null, action: 'pos_plan_dispute_won_restored', targetId: String(purchase._id), targetType: 'pos_purchase', metadata: { restoredMs: removed, restoredDays: Math.round((removed / DAY_MS) * 100) / 100 } }).catch(() => {});
+    this.logger.warn(`POS dispute won: restored ${removed}ms to store ${purchase.storeId}`);
+    return { received: true, restored: true };
+  }
+
+  /**
    * Takes ONE purchase's days back, exactly once (atomic `reversedAt: null` claim → a redelivered event is a no-op):
    *  - the purchase is stamped reversed;
    *  - if its term is still running, the store's CURRENT latest expiry is shortened by that purchase's duration (floored at
@@ -158,6 +188,8 @@ export class PosPlansWebhookService {
     if (unused <= 0) return { received: true };
     const shortened = Math.max(now.getTime(), new Date(latest.expiresAt).getTime() - unused);
     await this.r.posPurchaseModel.updateOne({ _id: latest._id }, { $set: { expiresAt: new Date(shortened) } });
+    // Remember EXACTLY what was removed — a won dispute gives back precisely this.
+    await this.r.posPurchaseModel.updateOne({ _id: purchase._id }, { $set: { reversedRemovedMs: new Date(latest.expiresAt).getTime() - shortened } });
     this.logger.warn(`POS purchase ${purchase._id} ${reason}: store ${purchase.storeId} access now ends ${new Date(shortened).toISOString()}`);
     return { received: true, reversed: true };
   }

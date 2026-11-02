@@ -138,6 +138,53 @@ describe('webhook: refunds and disputes', () => {
     expect((await latest(s.storeId)).reversedReason).toBe('disputed');
   });
 
+  const closed = (pi: string, status: string) => ({ type: 'charge.dispute.closed', data: { object: { payment_intent: pi, status } } });
+
+  it('dispute WON restores exactly the days removed at creation; redelivery is a no-op; it is audit-logged', async () => {
+    const s = await seedStore(h); const planId = await mkPlan();
+    await webhook().handleEvent(paid(s, planId, 'cs_a'));
+    await tick();
+    await webhook().handleEvent(paid(s, planId, 'cs_b')); // 60 days stacked
+    const before = new Date((await latest(s.storeId)).expiresAt).getTime();
+    await webhook().handleEvent(dispute('pi_cs_a')); // removes A's unused ~30 days
+    const during = new Date((await latest(s.storeId)).expiresAt).getTime();
+    expect(before - during).toBeGreaterThan(29 * DAY);
+    expect(await webhook().handleEvent(closed('pi_cs_a', 'won'))).toMatchObject({ restored: true });
+    expect(new Date((await latest(s.storeId)).expiresAt).getTime()).toBe(before);
+    expect(await webhook().handleEvent(closed('pi_cs_a', 'won'))).toMatchObject({ duplicate: true });
+    expect(new Date((await latest(s.storeId)).expiresAt).getTime()).toBe(before);
+    expect(await h.repos.posAuditLogModel.countDocuments({ action: 'pos_plan_dispute_won_restored' })).toBe(1);
+  });
+
+  it('dispute WON on the only purchase (access had ended) gives the removed days back from now', async () => {
+    const s = await seedStore(h); const planId = await mkPlan();
+    await webhook().handleEvent(paid(s, planId, 'cs_1'));
+    await webhook().handleEvent(dispute('pi_cs_1'));
+    expect((await status(s)).status).toBe('expired');
+    await webhook().handleEvent(closed('pi_cs_1', 'won'));
+    const st = await status(s);
+    expect(st.status).toBe('active');
+    expect(st.daysRemaining).toBe(30);
+  });
+
+  it('dispute LOST changes nothing; a "won" for something never disputed or refunded does nothing', async () => {
+    const s = await seedStore(h); const planId = await mkPlan();
+    await webhook().handleEvent(paid(s, planId, 'cs_1'));
+    expect(await webhook().handleEvent(closed('pi_cs_1', 'won'))).toMatchObject({ duplicate: true }); // never disputed
+    await webhook().handleEvent(dispute('pi_cs_1'));
+    expect(await webhook().handleEvent(closed('pi_cs_1', 'lost'))).toMatchObject({ ignored: 'dispute_lost' });
+    expect((await status(s)).status).toBe('expired');
+  });
+
+  it('a won dispute does not undo an admin revoke', async () => {
+    const s = await seedStore(h); const planId = await mkPlan();
+    await webhook().handleEvent(paid(s, planId, 'cs_1'));
+    await admin().revokeManually({ storeId: s.storeId, reason: 'x' } as any, actor);
+    await webhook().handleEvent(dispute('pi_cs_1'));
+    await webhook().handleEvent(closed('pi_cs_1', 'won'));
+    expect((await status(s)).status).toBe('expired');
+  });
+
   it('refunding a purchase whose term already ended does not eat into a newer manual extension', async () => {
     const s = await seedStore(h); const planId = await mkPlan();
     await webhook().handleEvent(paid(s, planId, 'cs_old'));

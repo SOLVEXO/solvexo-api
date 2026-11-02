@@ -47,6 +47,9 @@ export class PosPurchase {
   // Stripe refund / dispute: the purchase's days were taken back (see PosPlansWebhookService).
   @Prop({ type: Date, default: null }) reversedAt: Date | null;
   @Prop({ type: String, default: null }) reversedReason: string | null;
+  // Exactly how many ms were taken off the store's expiry by the reversal, and whether a WON dispute gave them back.
+  @Prop({ type: Number, default: 0 }) reversedRemovedMs: number;
+  @Prop({ type: Date, default: null }) disputeRestoredAt: Date | null;
 }
 
 export const PosPurchaseSchema = SchemaFactory.createForClass(PosPurchase);
