@@ -34,6 +34,7 @@ import { InventoryModule } from './inventory/inventory.module';
 import { RatingModule } from './rating/rating.module';
 import { SearchModule } from './search/search.module';
 import { PosModule } from './pos/pos.module';
+import { AccountDeletionModule } from './account-deletion/account-deletion.module';
 import { MessagingModule } from './messaging/messaging.module';
 import { FinanceModule } from './finance/finance.module';
 import { SubscriptionsModule } from './subscriptions/subscriptions.module';
@@ -165,6 +166,7 @@ import { AppI18nModule } from './i18n/i18n.module';
     RatingModule,
     SearchModule,
     PosModule,
+    AccountDeletionModule,
     MessagingModule,
     CommissionRulesModule,
     ManualPaymentsModule,

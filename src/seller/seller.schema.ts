@@ -58,6 +58,16 @@ export class Seller {
   @Prop({required: false , default: "active" })
   status: string;
 
+  // Account deletion (see account-deletion/): requested → pending_deletion → purged (personal data de-identified)
+  @Prop({ type: Date, default: null })
+  deletionRequestedAt: Date | null;
+
+  @Prop({ type: Date, default: null })
+  deletionScheduledFor: Date | null;
+
+  @Prop({ type: Date, default: null })
+  anonymizedAt: Date | null;
+
     @Prop({required: true})
   role: string;
 
