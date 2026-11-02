@@ -34,6 +34,9 @@ export class PosPlansService {
         currency: p.currency,
         durationInDays: p.durationInDays,
         description: p.description,
+        maxRegisters: (p as any).maxRegisters ?? null,
+        maxEmployees: (p as any).maxEmployees ?? null,
+        maxLocations: (p as any).maxLocations ?? null,
       })),
     };
   }
