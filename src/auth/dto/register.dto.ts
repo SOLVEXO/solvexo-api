@@ -3,6 +3,7 @@ import {
   IsEmail,
   IsString,
   IsOptional,
+  MaxLength,
   MinLength,
   IsNotEmpty,
   IsIn,
@@ -83,4 +84,10 @@ export class RegisterDto {
   @IsOptional()
   @IsString()
   acquisitionLandingPage?: string;
+
+  /** Sales Ops partner referral code from the sign-up link (?partner=CODE). Optional, seller sign-ups only. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  partnerCode?: string;
 }

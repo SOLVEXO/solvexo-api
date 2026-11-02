@@ -91,6 +91,7 @@ export const NOTIFICATION_TYPES = {
   ADMIN_PLATFORM_ALERT: 'admin_platform_alert',
   ADMIN_WEEKLY_DIGEST: 'admin_weekly_digest',
   EMAIL_SENDER_FAILING: 'email_sender_failing',
+  ADMIN_SALES_LEAD: 'admin_sales_lead',
 } as const;
 
 export type NotificationType = (typeof NOTIFICATION_TYPES)[keyof typeof NOTIFICATION_TYPES];
@@ -168,6 +169,7 @@ export const NOTIFICATION_CATEGORY: Record<string, 'orders' | 'messages' | 'prom
   [NOTIFICATION_TYPES.ADMIN_MEMORY_PRESSURE]: 'admin',
   [NOTIFICATION_TYPES.ADMIN_PLATFORM_ALERT]: 'admin',
   [NOTIFICATION_TYPES.ADMIN_WEEKLY_DIGEST]: 'admin',
+  [NOTIFICATION_TYPES.ADMIN_SALES_LEAD]: 'admin',
 };
 
 /**
