@@ -2,6 +2,7 @@
 /* eslint-disable */
 jest.mock('../otp/services/email.service', () => ({ EmailService: class {} }));
 jest.mock('../notifications/notifications.service', () => ({ NotificationsService: class {} }));
+jest.mock('../sales-ops/sales-capture.service', () => ({ SalesCaptureService: class {} }));
 jest.mock('./schemas/contact-submission.schema', () => ({ ContactSubmission: { name: 'ContactSubmission' } }));
 
 import { ContactService } from './contact.service';
@@ -28,5 +29,16 @@ describe('ContactService.submit', () => {
     const { svc, notifications } = make();
     notifications.notifyAdmins.mockRejectedValue(new Error('queue down'));
     await expect(svc.submit({ name: 'Jane', email: 'jane@x.com', topic: 't', message: 'm' })).resolves.toMatchObject({ success: true });
+  });
+
+  it('sends sales conversations (Selling on Solvexo, General question) to Sales Ops, and nothing else', async () => {
+    const { model, email, notifications } = make();
+    const sales = { fromContactMessage: jest.fn().mockResolvedValue({ leadId: 'l1', created: true }) };
+    const svc = new ContactService(model, email, notifications, sales);
+    for (const topic of ['Selling on Solvexo', 'General question', 'Order or delivery', 'Billing & payments', 'Report a problem']) {
+      model.create.mockResolvedValueOnce({ name: 'Jane', email: 'jane@x.com', topic, message: 'Hi' });
+      await svc.submit({ name: 'Jane', email: 'jane@x.com', topic, message: 'Hi' });
+    }
+    expect(sales.fromContactMessage.mock.calls.map((c) => c[0].topic)).toEqual(['Selling on Solvexo', 'General question']);
   });
 });
