@@ -13,6 +13,7 @@ export type LeadStage = (typeof LEAD_STAGES)[number];
 
 export const LEAD_SOURCES = [
   'website_form',
+  'website_chat',
   'contact_message',
   'manual',
   'import',
@@ -26,6 +27,7 @@ export const LEAD_SOURCES = [
 export type LeadSource = (typeof LEAD_SOURCES)[number];
 export const SOURCE_LABELS: Record<LeadSource, string> = {
   website_form: 'Book-a-demo form',
+  website_chat: 'Website chat',
   contact_message: 'Contact Us message',
   manual: 'Added by hand',
   import: 'Import',

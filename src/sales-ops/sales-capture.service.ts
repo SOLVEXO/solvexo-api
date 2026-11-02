@@ -1,5 +1,7 @@
 /* eslint-disable prettier/prettier */
 import {
+  Inject,
+  forwardRef,
   Optional,
   BadRequestException,
   ForbiddenException,
@@ -31,6 +33,7 @@ import {
 import { SOURCE_LABELS, type LeadSource } from './sales-ops.constants';
 import { SalesOpsService } from './sales-ops.service';
 import { SalesGrowthService } from './sales-growth.service';
+import { SalesAgentService } from './sales-agent.service';
 import {
   SalesPartner,
   SalesPartnerDocument,
@@ -112,6 +115,9 @@ export class SalesCaptureService {
     @Optional()
     @InjectModel(SalesPartner.name)
     private readonly partners?: Model<SalesPartnerDocument>,
+    @Optional()
+    @Inject(forwardRef(() => SalesAgentService))
+    private readonly agent?: SalesAgentService,
   ) {}
 
   // ── One lead at a time ───────────────────────────────────────────────────
@@ -272,26 +278,46 @@ export class SalesCaptureService {
       r.leadId,
     );
     const to = normalizeEmail(dto.email);
-    if (to) {
-      void this.email
-        .sendMail(
-          to,
-          'We got your demo request — Solvexo',
-          notificationEmailShell(
-            'Thanks — we’ll be in touch',
-            `<p>Hi ${escapeHtml(dto.name.trim())},</p><p>Thank you for booking a Solvexo demo. Someone from our team will call or WhatsApp you on <strong>${escapeHtml(dto.phone.trim())}</strong> within one working day to find a time that suits you.</p><p>In the meantime you can start a free trial and look around.</p>`,
-            {
-              label: 'Start your free trial',
-              url: 'https://solvexo.store/register?role=seller',
-            },
-          ),
-        )
-        .catch(() => undefined);
-    }
+    // The AI assistant's personalised first reply replaces the standard acknowledgement when it goes out.
+    void this.afterNewLead(r, dto.message ?? null, () => {
+      if (to) this.sendDemoAck(to, dto.name, dto.phone);
+    });
     return {
       success: true,
       message: 'Thank you! We’ll call or WhatsApp you within one working day.',
     };
+  }
+
+  /** Runs the AI first reply for a new lead; `fallback` runs when the AI did not send an email. */
+  private async afterNewLead(
+    r: CaptureResult,
+    message: string | null,
+    fallback: () => void,
+  ) {
+    let sent = false;
+    if (r.created && this.agent)
+      sent =
+        (await this.agent
+          .firstReply(r.leadId, message)
+          .catch(() => 'skipped')) === 'sent';
+    if (!sent) fallback();
+  }
+
+  private sendDemoAck(to: string, name: string, phone: string) {
+    void this.email
+      .sendMail(
+        to,
+        'We got your demo request — Solvexo',
+        notificationEmailShell(
+          'Thanks — we’ll be in touch',
+          `<p>Hi ${escapeHtml(name.trim())},</p><p>Thank you for booking a Solvexo demo. Someone from our team will call or WhatsApp you on <strong>${escapeHtml(phone.trim())}</strong> within one working day to find a time that suits you.</p><p>In the meantime you can start a free trial and look around.</p>`,
+          {
+            label: 'Start your free trial',
+            url: 'https://solvexo.store/register?role=seller',
+          },
+        ),
+      )
+      .catch(() => undefined);
   }
 
   /** A Contact Us message about selling on Solvexo becomes (or lands on) a lead. */
@@ -313,6 +339,7 @@ export class SalesCaptureService {
       c.email,
       r.leadId,
     );
+    void this.afterNewLead(r, c.message, () => undefined);
     return r;
   }
 
@@ -631,11 +658,7 @@ export class SalesCaptureService {
   }
 
   /** In-app (and email) alert to whoever can see every lead: Super Admins, unrestricted admins, sales managers. */
-  private async notifyManagers(
-    title: string,
-    body: string,
-    leadId: string | null,
-  ) {
+  async notifyManagers(title: string, body: string, leadId: string | null) {
     try {
       const r = this.db.repositories;
       const roles: any[] = await r.adminRoleModel

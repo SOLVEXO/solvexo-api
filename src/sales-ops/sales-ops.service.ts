@@ -340,8 +340,14 @@ export class SalesOpsService {
       throw new BadRequestException('Unknown activity type.');
     if (!body?.trim()) throw new BadRequestException('Write what happened.');
     const lead: any = await this.mustFind(actor, id);
-    await this.log(id, type, body.trim(), actor.adminId, {
-      outcome: outcome ?? null,
+    // `outcome` is its own field on the activity: the lead timeline shows it next to the type.
+    await this.activities.create({
+      leadId: id,
+      type,
+      body: body.trim(),
+      outcome: outcome?.trim() || null,
+      adminId: actor.adminId,
+      meta: null,
     });
     await this.touch(lead, type, actor.adminId);
     return this.get(actor, id);

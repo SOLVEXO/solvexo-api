@@ -109,7 +109,13 @@ export function model(rows: any[] = []) {
       if (r) {
         Object.assign(r, u.$set);
         for (const [k, v] of Object.entries(u.$push ?? {}))
-          r[k] = [...(r[k] ?? []), { _id: oid(), ...(v as any) }];
+          r[k] = [
+            ...(r[k] ?? []),
+            ...((v as any).$each ?? [v]).map((e: any) => ({
+              _id: oid(),
+              ...e,
+            })),
+          ];
         for (const [k, v] of Object.entries(u.$pull ?? {}))
           r[k] = (r[k] ?? []).filter((e: any) => !matches(e, v));
       }
