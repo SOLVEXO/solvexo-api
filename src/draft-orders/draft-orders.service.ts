@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { emailUiStrings, isRtlLocale } from '../notifications/customer-email-locales';
 import { buildInvoiceItemsHtml, buildInvoicePdf, invoiceNumber } from './draft-order-invoice.util';
 import { Injectable, BadRequestException, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { toStripeAmount } from '@/common/stripe-amount.util';
@@ -326,7 +327,7 @@ export class DraftOrdersService {
       vars: { customerName: draft.customerName, invoiceTotal: `${symbol} ${draft.total.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, dueText, invoiceUrl },
       cta: { label: 'Pay invoice', url: invoiceUrl },
       // The items in the mail body and the same invoice as a PDF (a failed PDF never stops the mail).
-      extraHtml: buildInvoiceItemsHtml(invoiceDraft, symbol),
+      extraHtml: buildInvoiceItemsHtml(invoiceDraft, symbol, emailUiStrings((store as any).defaultLanguage), isRtlLocale((store as any).defaultLanguage)),
       attachments: invoicePdf ? [{ filename: `Invoice-${invoiceNumber(String(draft._id)).slice(1)}.pdf`, content: invoicePdf, contentType: 'application/pdf' }] : undefined,
       force: true,
     });

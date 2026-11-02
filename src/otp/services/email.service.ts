@@ -66,7 +66,8 @@ export class EmailService {
     headers?: Record<string, string>,
     attachments?: { filename: string; content: Buffer | string; contentType?: string }[],
     fromName?: string | null,
-    /** A store's customer mail: sent through that store's own SMTP when it has one (platform sender is the fallback). */
+    /** A store's customer mail: sent through that store's own SMTP when it has one (platform sender is the fallback).
+     *  Bulk mail (campaigns, newsletters, automations, abandoned carts) deliberately does NOT pass this: it always goes through the platform sender, so a store's mailbox is never used for bulk sends. */
     storeId?: string | null,
   ): Promise<boolean> {
     if (storeId && EmailService.storeMail) {

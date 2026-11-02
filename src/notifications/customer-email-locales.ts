@@ -15,6 +15,9 @@ export interface EmailUiStrings {
   rightsReserved: string;
   /** `{brand}` is replaced with the store name. */
   receivingBecause: string;
+  /** The invoice items table (draft order invoice). */
+  invItem: string; invQty: string; invPrice: string; invTotal: string;
+  invSubtotal: string; invDiscount: string; invShipping: string; invTax: string; invGrandTotal: string;
 }
 
 export const EMAIL_UI_STRINGS: Record<string, EmailUiStrings> = {
@@ -24,6 +27,8 @@ export const EMAIL_UI_STRINGS: Record<string, EmailUiStrings> = {
     trackPackage: 'Track your package',
     customerFallback: 'there',
     rightsReserved: 'All rights reserved.',
+    invItem: 'Item', invQty: 'Qty', invPrice: 'Price', invTotal: 'Total',
+    invSubtotal: 'Subtotal', invDiscount: 'Discount', invShipping: 'Shipping', invTax: 'Tax', invGrandTotal: 'Total',
     receivingBecause: "You're receiving this because of your order from {brand}. Reply to this email to contact the store.",
   },
   ur: {
@@ -32,6 +37,8 @@ export const EMAIL_UI_STRINGS: Record<string, EmailUiStrings> = {
     trackPackage: 'اپنا پارسل ٹریک کریں',
     customerFallback: 'صارف',
     rightsReserved: 'جملہ حقوق محفوظ ہیں۔',
+    invItem: 'آئٹم', invQty: 'تعداد', invPrice: 'قیمت', invTotal: 'کل',
+    invSubtotal: 'ذیلی کل', invDiscount: 'رعایت', invShipping: 'شپنگ', invTax: 'ٹیکس', invGrandTotal: 'کل رقم',
     receivingBecause: 'آپ کو یہ ای میل {brand} سے کیے گئے آپ کے آرڈر کی وجہ سے موصول ہوئی ہے۔ اسٹور سے رابطہ کرنے کے لیے اس ای میل کا جواب دیں۔',
   },
 };

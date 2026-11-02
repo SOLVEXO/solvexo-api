@@ -21,6 +21,17 @@ describe('invoice items html', () => {
   });
 });
 
+describe('invoice items html in another language', () => {
+  it('uses the given labels and flips the table for a right-to-left language', () => {
+    const labels = { invItem: 'آئٹم', invQty: 'تعداد', invPrice: 'قیمت', invTotal: 'کل', invSubtotal: 'ذیلی کل', invDiscount: 'رعایت', invShipping: 'شپنگ', invTax: 'ٹیکس', invGrandTotal: 'کل رقم' };
+    const html = buildInvoiceItemsHtml(draft(), 'Rs', labels, true);
+    expect(html).toContain('dir="rtl"');
+    expect(html).toContain('آئٹم');
+    expect(html).toContain('کل رقم');
+    expect(html).not.toContain('>Subtotal<');
+  });
+});
+
 describe('invoice pdf', () => {
   it('is a real PDF', async () => {
     const buf = await buildInvoicePdf(draft(), { name: 'Amarawears', accent: '#6B2D44' }, 'Rs', 'https://amara.example/pay-invoice/abc');

@@ -24,21 +24,26 @@ const money = (symbol: string, n: number) => `${symbol} ${n.toLocaleString('en-U
 const optionText = (o: { name: string; value: string }[]) => o.map(x => x.value).filter(Boolean).join(' / ');
 
 /** The items and totals as an email-safe table (inline styles only; every value escaped). */
-export function buildInvoiceItemsHtml(d: InvoiceDraft, symbol: string): string {
-  const th = 'text-align:left;padding:8px 6px;border-bottom:2px solid #222;font-size:12px;color:#555;';
+export interface InvoiceLabels { invItem: string; invQty: string; invPrice: string; invTotal: string; invSubtotal: string; invDiscount: string; invShipping: string; invTax: string; invGrandTotal: string }
+const EN_LABELS: InvoiceLabels = { invItem: 'Item', invQty: 'Qty', invPrice: 'Price', invTotal: 'Total', invSubtotal: 'Subtotal', invDiscount: 'Discount', invShipping: 'Shipping', invTax: 'Tax', invGrandTotal: 'Total' };
+
+export function buildInvoiceItemsHtml(d: InvoiceDraft, symbol: string, labels: InvoiceLabels = EN_LABELS, rtl = false): string {
+  const start = rtl ? 'right' : 'left';
+  const end = rtl ? 'left' : 'right';
+  const th = `text-align:${start};padding:8px 6px;border-bottom:2px solid #222;font-size:12px;color:#555;`;
   const td = 'padding:8px 6px;border-bottom:1px solid #e5e5e5;font-size:13px;vertical-align:top;';
   const rows = d.items.map(i => {
     const opt = optionText(i.options);
     return `<tr><td style="${td}"><strong>${esc(i.name)}</strong>${opt ? `<br><span style="color:#777;font-size:12px;">${esc(opt)}</span>` : ''}</td>`
-      + `<td style="${td}text-align:center;">${i.quantity}</td><td style="${td}text-align:right;white-space:nowrap;">${esc(money(symbol, i.unitPrice))}</td>`
-      + `<td style="${td}text-align:right;white-space:nowrap;">${esc(money(symbol, i.unitPrice * i.quantity))}</td></tr>`;
+      + `<td style="${td}text-align:center;">${i.quantity}</td><td style="${td}text-align:${end};white-space:nowrap;">${esc(money(symbol, i.unitPrice))}</td>`
+      + `<td style="${td}text-align:${end};white-space:nowrap;">${esc(money(symbol, i.unitPrice * i.quantity))}</td></tr>`;
   }).join('');
   const total = (label: string, v: string, strong = false) =>
-    `<tr><td colspan="3" style="padding:4px 6px;text-align:right;font-size:13px;${strong ? 'font-weight:bold;' : 'color:#555;'}">${esc(label)}</td><td style="padding:4px 6px;text-align:right;font-size:13px;white-space:nowrap;${strong ? 'font-weight:bold;' : ''}">${esc(v)}</td></tr>`;
-  return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:18px 0 8px;">
-<thead><tr><th style="${th}">Item</th><th style="${th}text-align:center;">Qty</th><th style="${th}text-align:right;">Price</th><th style="${th}text-align:right;">Total</th></tr></thead>
+    `<tr><td colspan="3" style="padding:4px 6px;text-align:${end};font-size:13px;${strong ? 'font-weight:bold;' : 'color:#555;'}">${esc(label)}</td><td style="padding:4px 6px;text-align:${end};font-size:13px;white-space:nowrap;${strong ? 'font-weight:bold;' : ''}">${esc(v)}</td></tr>`;
+  return `<table role="presentation" dir="${rtl ? 'rtl' : 'ltr'}" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:18px 0 8px;">
+<thead><tr><th style="${th}">${esc(labels.invItem)}</th><th style="${th}text-align:center;">${esc(labels.invQty)}</th><th style="${th}text-align:${end};">${esc(labels.invPrice)}</th><th style="${th}text-align:${end};">${esc(labels.invTotal)}</th></tr></thead>
 <tbody>${rows}</tbody>
-<tfoot>${total('Subtotal', money(symbol, d.subtotal))}${d.discountAmount > 0 ? total('Discount', `- ${money(symbol, d.discountAmount)}`) : ''}${d.shippingAmount > 0 ? total('Shipping', money(symbol, d.shippingAmount)) : ''}${d.taxAmount > 0 ? total('Tax', money(symbol, d.taxAmount)) : ''}${total('Total', money(symbol, d.total), true)}</tfoot></table>`;
+<tfoot>${total(labels.invSubtotal, money(symbol, d.subtotal))}${d.discountAmount > 0 ? total(labels.invDiscount, `- ${money(symbol, d.discountAmount)}`) : ''}${d.shippingAmount > 0 ? total(labels.invShipping, money(symbol, d.shippingAmount)) : ''}${d.taxAmount > 0 ? total(labels.invTax, money(symbol, d.taxAmount)) : ''}${total(labels.invGrandTotal, money(symbol, d.total), true)}</tfoot></table>`;
 }
 
 // Helvetica (the built-in PDF font) cannot draw other scripts: they print as "?" instead of failing.
