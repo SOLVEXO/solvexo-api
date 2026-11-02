@@ -50,6 +50,8 @@ export class PurchaseOrdersService {
       storeId, sellerId,
       name: dto.name, email: dto.email ?? null, phone: dto.phone ?? null,
       address: dto.address ?? null, notes: dto.notes ?? null,
+      contactName: dto.contactName?.trim() || null, city: dto.city?.trim() || null, country: dto.country?.trim() || null,
+      leadTimeDays: dto.leadTimeDays ?? null, paymentTerms: dto.paymentTerms?.trim() || null,
       status: 'active',
     });
     return supplier.toObject();
@@ -68,9 +70,50 @@ export class PurchaseOrdersService {
     );
   }
 
+  /** Suppliers with how much was bought from each: PO counts, money spent (non-draft, non-cancelled POs) and the last order date. */
   async listSuppliers(storeId: string, sellerId: string) {
     await verifyStoreOwnershipOrForbidden(this.repos.storeModel, storeId, sellerId);
-    return this.repos.supplierModel.find({ storeId, isDelete: false }).sort({ name: 1 }).lean();
+    const suppliers: any[] = await this.repos.supplierModel.find({ storeId, isDelete: false }).sort({ name: 1 }).lean();
+    const rows: any[] = await this.repos.purchaseOrderModel.aggregate([
+      { $match: { storeId, supplierId: { $ne: null }, isDelete: { $ne: true } } },
+      { $group: {
+        _id: '$supplierId',
+        poCount: { $sum: 1 },
+        openPoCount: { $sum: { $cond: [{ $in: ['$status', ['draft', 'ordered', 'partially_received']] }, 1, 0] } },
+        spent: { $sum: { $cond: [{ $in: ['$status', ['ordered', 'partially_received', 'received', 'closed_short']] }, '$total', 0] } },
+        lastOrderAt: { $max: { $ifNull: ['$orderedAt', '$createdAt'] } },
+      } },
+    ]);
+    const stats = new Map<string, any>(rows.map(r => [String(r._id), r]));
+    return suppliers.map(sp => {
+      const r = stats.get(String(sp._id));
+      return { ...sp, stats: { poCount: r?.poCount ?? 0, openPoCount: r?.openPoCount ?? 0, spent: r?.spent ?? 0, lastOrderAt: r?.lastOrderAt ?? null } };
+    });
+  }
+
+  /** One supplier with its recent purchase orders, recent returns and the products bought from it (latest cost first). */
+  async getSupplierDetail(storeId: string, sellerId: string, supplierId: string) {
+    await verifyStoreOwnershipOrForbidden(this.repos.storeModel, storeId, sellerId);
+    const supplier: any = await this.repos.supplierModel.findOne({ _id: supplierId, storeId, isDelete: false }).lean();
+    if (!supplier) throw new NotFoundException('Supplier not found');
+    const pos: any[] = await this.repos.purchaseOrderModel.find({ storeId, supplierId, isDelete: { $ne: true } }).sort({ createdAt: -1 }).limit(100).lean();
+    const returns: any[] = await this.repos.supplierReturnModel.find({ storeId, supplierId }).sort({ createdAt: -1 }).limit(10).lean();
+    const byVariant = new Map<string, any>();
+    for (const po of pos) {
+      if (po.status === 'draft' || po.status === 'cancelled') continue;
+      for (const it of po.items ?? []) {
+        const key = String(it.variantId);
+        const cur = byVariant.get(key);
+        if (!cur) byVariant.set(key, { variantId: key, productId: it.productId, name: it.name, sku: it.sku ?? null, options: it.options ?? [], lastUnitCost: it.unitCost, lastOrderedAt: po.orderedAt ?? po.createdAt, quantity: it.quantity });
+        else cur.quantity += it.quantity;
+      }
+    }
+    return {
+      supplier,
+      recentPurchaseOrders: pos.slice(0, 10).map(p => ({ _id: p._id, poNumber: p.poNumber, status: p.status, total: p.total, currency: p.currency, createdAt: p.createdAt, expectedAt: p.expectedAt ?? null })),
+      recentReturns: returns.map(r => ({ _id: r._id, createdAt: r.createdAt, status: r.status ?? null, total: r.total ?? null })),
+      products: [...byVariant.values()].slice(0, 50),
+    };
   }
 
   async updateSupplier(storeId: string, sellerId: string, supplierId: string, dto: UpdateSupplierDto) {
@@ -82,6 +125,11 @@ export class PurchaseOrdersService {
     if (dto.phone !== undefined) supplier.phone = dto.phone ?? null;
     if (dto.address !== undefined) supplier.address = dto.address ?? null;
     if (dto.notes !== undefined) supplier.notes = dto.notes ?? null;
+    if (dto.contactName !== undefined) supplier.contactName = dto.contactName?.trim() || null;
+    if (dto.city !== undefined) supplier.city = dto.city?.trim() || null;
+    if (dto.country !== undefined) supplier.country = dto.country?.trim() || null;
+    if (dto.leadTimeDays !== undefined) supplier.leadTimeDays = dto.leadTimeDays ?? null;
+    if (dto.paymentTerms !== undefined) supplier.paymentTerms = dto.paymentTerms?.trim() || null;
     if (dto.status !== undefined) supplier.status = dto.status;
     await supplier.save();
     return supplier.toObject();

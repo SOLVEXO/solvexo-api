@@ -17,6 +17,14 @@ export class Supplier {
   @Prop({ type: String, default: null }) email: string | null;
   @Prop({ type: String, default: null }) phone: string | null;
   @Prop({ type: String, default: null }) address: string | null;
+  /** The person to talk to at this supplier (the supplier name is the company). */
+  @Prop({ type: String, default: null }) contactName: string | null;
+  @Prop({ type: String, default: null }) city: string | null;
+  @Prop({ type: String, default: null }) country: string | null;
+  /** Usual days from order to delivery; used to read expected dates and reorder timing. */
+  @Prop({ type: Number, default: null }) leadTimeDays: number | null;
+  /** Free text such as "Net 30" or "Cash on delivery". */
+  @Prop({ type: String, default: null }) paymentTerms: string | null;
   @Prop({ type: String, default: null }) notes: string | null;
 
   @Prop({ type: String, enum: ['active', 'archived'], default: 'active' }) status: 'active' | 'archived';

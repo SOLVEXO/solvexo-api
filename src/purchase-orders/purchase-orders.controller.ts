@@ -86,6 +86,12 @@ export class PurchaseOrdersController {
     return { success: true, data: suppliers };
   }
 
+  @Get(':storeId/suppliers/:supplierId')
+  async supplierDetail(@Req() req: any, @Param('storeId') storeId: string, @Param('supplierId') supplierId: string) {
+    const detail = await this.service.getSupplierDetail(storeId, actingSellerId(req.user), supplierId);
+    return { success: true, data: detail };
+  }
+
   @Patch(':storeId/suppliers/:supplierId')
   async updateSupplier(@Req() req: any, @Param('storeId') storeId: string, @Param('supplierId') supplierId: string, @Body() dto: UpdateSupplierDto) {
     const supplier = await this.service.updateSupplier(storeId, actingSellerId(req.user), supplierId, dto);
