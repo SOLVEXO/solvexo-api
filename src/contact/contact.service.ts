@@ -16,7 +16,7 @@ import { NOTIFICATION_TYPES } from '../notifications/notification.types';
 import { SalesCaptureService } from '../sales-ops/sales-capture.service';
 
 /** Contact Us topics that are sales conversations: these also go into Super Admin → Sales Ops. */
-export const SALES_TOPICS = new Set(['Selling on Solvexo']);
+export const SALES_TOPICS = new Set(['Selling on Solvexo', 'General question']);
 
 const APP_NAME = process.env.APP_NAME || 'Solvexo';
 
