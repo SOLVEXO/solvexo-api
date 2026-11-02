@@ -1,5 +1,11 @@
 /* eslint-disable prettier/prettier */
 import { Module } from '@nestjs/common';
+import { SalesAgentService } from './sales-agent.service';
+import { AiStudioModule } from '../ai-studio/ai-studio.module';
+import {
+  SalesChatSession,
+  SalesChatSessionSchema,
+} from './schemas/sales-chat-session.schema';
 import { SalesPartnersService } from './sales-partners.service';
 import {
   SalesPartner,
@@ -63,6 +69,7 @@ import {
     RedisModule,
     AdminAnalyticsModule,
     ExchangeRateModule,
+    AiStudioModule,
     MongooseModule.forFeature([
       { name: SalesLead.name, schema: SalesLeadSchema },
       { name: SalesActivity.name, schema: SalesActivitySchema },
@@ -77,6 +84,7 @@ import {
       { name: SalesPartnerReferral.name, schema: SalesPartnerReferralSchema },
       { name: SalesCommission.name, schema: SalesCommissionSchema },
       { name: SalesPayout.name, schema: SalesPayoutSchema },
+      { name: SalesChatSession.name, schema: SalesChatSessionSchema },
     ]),
   ],
   controllers: [
@@ -89,6 +97,7 @@ import {
     SalesCaptureService,
     SalesGrowthService,
     SalesPartnersService,
+    SalesAgentService,
     EmailService,
   ],
   exports: [SalesOpsService, SalesCaptureService],

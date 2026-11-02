@@ -25,9 +25,15 @@ import { SalesOpsService } from './sales-ops.service';
 import { SalesCaptureService } from './sales-capture.service';
 import { SalesGrowthService } from './sales-growth.service';
 import { SalesPartnersService } from './sales-partners.service';
+import { SalesAgentService } from './sales-agent.service';
 import { salesActor } from './sales-ops.util';
 import {
   ActivityDto,
+  AgentPreviewDto,
+  AgentSettingsDto,
+  ChatMessageDto,
+  ChatStartDto,
+  DraftDto,
   AdjustmentDto,
   CommissionPlanDto,
   PartnerDto,
@@ -63,7 +69,50 @@ export class SalesOpsController {
     private readonly capture: SalesCaptureService,
     private readonly growth: SalesGrowthService,
     private readonly partners: SalesPartnersService,
+    private readonly agent: SalesAgentService,
   ) {}
+
+  // ── AI sales agent ───────────────────────────────────────────────────────
+
+  @RequirePermission('sales.manage')
+  @Get('ai-agent')
+  agentConfig() {
+    return this.agent.getConfig();
+  }
+
+  @RequirePermission('sales.manage')
+  @Put('ai-agent')
+  saveAgentConfig(@Body() dto: AgentSettingsDto) {
+    return this.agent.saveConfig(dto);
+  }
+
+  @RequirePermission('sales.manage')
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  @Post('ai-agent/preview')
+  previewAgent(@Body() dto: AgentPreviewDto) {
+    return this.agent.preview(dto.message, dto.history ?? []);
+  }
+
+  @RequirePermission('sales.manage')
+  @Get('ai-agent/chats')
+  agentChats() {
+    return this.agent.recentChats(50);
+  }
+
+  @Get('leads/:id/chats')
+  leadChats(@Req() req: any, @Param('id') id: string) {
+    return this.agent.leadChats(salesActor(req.user), id);
+  }
+
+  /** Mark the AI's draft as sent (logs it) or discard it. */
+  @Post('leads/:id/ai-draft')
+  resolveDraft(
+    @Req() req: any,
+    @Param('id') id: string,
+    @Body() dto: DraftDto,
+  ) {
+    return this.agent.resolveDraft(salesActor(req.user), id, dto.sent);
+  }
 
   // ── Partners & commissions (managers; payouts also need finance.payouts) ──
 
@@ -384,7 +433,28 @@ export class SalesOpsController {
 @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
 @Controller('api/sales')
 export class SalesPublicController {
-  constructor(private readonly capture: SalesCaptureService) {}
+  constructor(
+    private readonly capture: SalesCaptureService,
+    private readonly agent: SalesAgentService,
+  ) {}
+
+  /** Is the website chat on? (The widget stays hidden when it isn't.) */
+  @Get('chat/config')
+  chatConfig() {
+    return this.agent.chatConfig();
+  }
+
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Post('chat/start')
+  startChat(@Body() dto: ChatStartDto) {
+    return this.agent.startChat(dto);
+  }
+
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  @Post('chat/:token/message')
+  chatMessage(@Param('token') token: string, @Body() dto: ChatMessageDto) {
+    return this.agent.chatMessage(token, dto.message);
+  }
 
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @Post('demo-request')

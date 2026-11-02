@@ -58,6 +58,12 @@ export class SalesLead {
     medium: string | null;
     campaign: string | null;
   } | null;
+  /** A message the AI wrote for a human to send (e.g. a WhatsApp first message when there is no email). */
+  @Prop({ type: Object, default: null }) aiDraft: {
+    channel: 'whatsapp' | 'email';
+    text: string;
+    createdAt: Date;
+  } | null;
   /** Partner whose referral code came with the lead (Book-a-demo form). */
   @Prop({ type: String, default: null }) partnerId: string | null;
   @Prop({ type: String, default: null }) createdByAdminId: string | null;

@@ -332,3 +332,49 @@ export class PayoutDto {
     | null;
   @OptStr(500) note?: string | null;
 }
+
+// ── AI sales agent ──────────────────────────────────────────────────────────
+
+export class AgentSettingsDto {
+  @IsOptional() @IsBoolean() aiEnabled?: boolean;
+  @IsOptional() @IsBoolean() aiFirstReply?: boolean;
+  @IsOptional() @IsBoolean() aiChat?: boolean;
+  @IsOptional() @IsString() @MaxLength(40) aiAgentName?: string;
+  @OptStr(300) aiGreeting?: string | null;
+  @OptStr(8000) aiKnowledge?: string | null;
+  @OptStr(2000) aiRules?: string | null;
+  @OptStr(200) aiSignOff?: string | null;
+  @OptStr(160) aiReplyTo?: string | null;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) aiChatDailyLimit?: number;
+}
+
+export class ChatTurnDto {
+  @IsIn(['visitor', 'agent']) role: 'visitor' | 'agent';
+  @IsString() @MaxLength(1500) text: string;
+}
+
+export class AgentPreviewDto {
+  @IsString() @MaxLength(1000) message: string;
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(20)
+  @ValidateNested({ each: true })
+  @Type(() => ChatTurnDto)
+  history?: ChatTurnDto[];
+}
+
+export class ChatStartDto {
+  @OptStr(200) page?: string | null;
+  @OptStr(100) utmSource?: string | null;
+  @OptStr(100) utmMedium?: string | null;
+  @OptStr(100) utmCampaign?: string | null;
+  @OptStr(40) partnerCode?: string | null;
+}
+
+export class ChatMessageDto {
+  @IsString() @MaxLength(1000) message: string;
+}
+
+export class DraftDto {
+  @IsBoolean() sent: boolean;
+}
