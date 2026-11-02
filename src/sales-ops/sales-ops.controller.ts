@@ -7,6 +7,7 @@ import {
   Param,
   Patch,
   Post,
+  Put,
   Query,
   Req,
   UseGuards,
@@ -22,9 +23,14 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { RequirePermission } from '../auth/decorators/require-permission.decorator';
 import { SalesOpsService } from './sales-ops.service';
 import { SalesCaptureService } from './sales-capture.service';
+import { SalesGrowthService } from './sales-growth.service';
 import { salesActor } from './sales-ops.util';
 import {
   ActivityDto,
+  CampaignDto,
+  SalesSettingsDto,
+  SpendDto,
+  TargetsDto,
   DemoRequestDto,
   EmailDto,
   ImportDto,
@@ -49,7 +55,80 @@ export class SalesOpsController {
   constructor(
     private readonly sales: SalesOpsService,
     private readonly capture: SalesCaptureService,
+    private readonly growth: SalesGrowthService,
   ) {}
+
+  // ── Campaigns (managers) ───────────────────────────────────────────────────
+
+  @RequirePermission('sales.manage')
+  @Get('campaigns')
+  campaigns(@Query('archived') archived?: string) {
+    return this.growth.listCampaigns(archived === 'true');
+  }
+
+  @RequirePermission('sales.manage')
+  @Get('campaigns/:id')
+  campaign(@Param('id') id: string) {
+    return this.growth.getCampaign(id);
+  }
+
+  @RequirePermission('sales.manage')
+  @Post('campaigns')
+  createCampaign(@Req() req: any, @Body() dto: CampaignDto) {
+    return this.growth.saveCampaign(salesActor(req.user), null, dto);
+  }
+
+  @RequirePermission('sales.manage')
+  @Patch('campaigns/:id')
+  updateCampaign(
+    @Req() req: any,
+    @Param('id') id: string,
+    @Body() dto: CampaignDto,
+  ) {
+    return this.growth.saveCampaign(salesActor(req.user), id, dto);
+  }
+
+  @RequirePermission('sales.manage')
+  @Post('campaigns/:id/spend')
+  addSpend(@Req() req: any, @Param('id') id: string, @Body() dto: SpendDto) {
+    return this.growth.addSpend(salesActor(req.user), id, dto);
+  }
+
+  @RequirePermission('sales.manage')
+  @Delete('campaigns/:id/spend/:spendId')
+  removeSpend(@Param('id') id: string, @Param('spendId') spendId: string) {
+    return this.growth.removeSpend(id, spendId);
+  }
+
+  // ── Team ─────────────────────────────────────────────────────────────────
+
+  /** Leaderboard for a month: everyone in sales sees it; only managers set targets. */
+  @Get('team')
+  team(@Query('month') month?: string) {
+    return this.growth.team(month);
+  }
+
+  @RequirePermission('sales.manage')
+  @Put('targets')
+  saveTargets(@Req() req: any, @Body() dto: TargetsDto) {
+    return this.growth.saveTargets(
+      salesActor(req.user),
+      dto.month,
+      dto.targets,
+    );
+  }
+
+  @RequirePermission('sales.manage')
+  @Get('settings')
+  getSettings() {
+    return this.growth.getSettings();
+  }
+
+  @RequirePermission('sales.manage')
+  @Put('settings')
+  saveSettings(@Body() dto: SalesSettingsDto) {
+    return this.growth.saveSettings(dto);
+  }
 
   // ── Lead capture ─────────────────────────────────────────────────────────
 

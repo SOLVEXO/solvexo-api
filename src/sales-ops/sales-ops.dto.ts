@@ -183,3 +183,70 @@ export class ImportDto {
   tags?: string[];
   @IsOptional() @IsBoolean() dryRun?: boolean;
 }
+
+// ── Campaigns & team (phase 3) ─────────────────────────────────────────────
+
+export class CampaignDto {
+  @IsOptional() @IsString() @MaxLength(120) name?: string;
+  @IsOptional() @IsString() @MaxLength(60) code?: string;
+  @IsOptional() @IsString() @MaxLength(30) channel?: string;
+  @OptStr(60) utmSource?: string | null;
+  @OptStr(60) utmMedium?: string | null;
+  @IsOptional() @IsString() @MaxLength(200) landingPath?: string;
+  @IsOptional() @ValidateIf((_, v) => v !== null) @IsDateString() startDate?:
+    | string
+    | null;
+  @IsOptional() @ValidateIf((_, v) => v !== null) @IsDateString() endDate?:
+    | string
+    | null;
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null)
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  budgetPKR?: number | null;
+  @OptStr(2000) notes?: string | null;
+  @IsOptional() @IsBoolean() isArchived?: boolean;
+}
+
+export class SpendDto {
+  @IsDateString() date: string;
+  @Type(() => Number) @IsNumber() @Min(1) amountPKR: number;
+  @OptStr(200) note?: string | null;
+}
+
+export class TargetRowDto {
+  @IsString() adminId: string;
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null)
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  wonDeals?: number | null;
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null)
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  wonValuePKR?: number | null;
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null)
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  activities?: number | null;
+}
+
+export class TargetsDto {
+  @IsString() @MaxLength(7) month: string;
+  @IsArray()
+  @ArrayMaxSize(200)
+  @ValidateNested({ each: true })
+  @Type(() => TargetRowDto)
+  targets: TargetRowDto[];
+}
+
+export class SalesSettingsDto {
+  @IsBoolean() autoAssign: boolean;
+  @IsArray() @ArrayMaxSize(200) @IsString({ each: true }) assigneeIds: string[];
+}

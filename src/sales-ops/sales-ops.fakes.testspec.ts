@@ -8,7 +8,9 @@ const oid = () => (++seq).toString(16).padStart(24, '0');
 function matches(doc: any, f: any): boolean {
   return Object.entries(f ?? {}).every(([k, v]: [string, any]) => {
     if (k === '$or') return v.some((x: any) => matches(doc, x));
-    const d = doc[k];
+    const d = k
+      .split('.')
+      .reduce((o: any, part) => (o == null ? undefined : o[part]), doc);
     if (v instanceof RegExp) return typeof d === 'string' && v.test(d);
     if (
       v &&
@@ -26,6 +28,11 @@ function matches(doc: any, f: any): boolean {
           return x === null
             ? d !== null && d !== undefined
             : String(d) !== String(x);
+        if (op === '$nin')
+          return (
+            !x.map(String).includes(String(d ?? null)) &&
+            !(x.includes(null) && d == null)
+          );
         if (op === '$lt') return d != null && d < x;
         if (op === '$lte') return d != null && d <= x;
         if (op === '$gte') return d != null && d >= x;
@@ -87,10 +94,34 @@ export function model(rows: any[] = []) {
         return { ...r, toObject: () => ({ ...r }) };
       }),
     ),
-    updateOne: jest.fn(async (f: any, u: any) => {
-      const r = rows.find((x) => matches(x, f));
-      if (r) Object.assign(r, u.$set);
+    updateOne: jest.fn(async (f: any, u: any, opts?: { upsert?: boolean }) => {
+      let r = rows.find((x) => matches(x, f));
+      if (!r && opts?.upsert) {
+        r = {
+          _id: oid(),
+          createdAt: new Date(),
+          ...Object.fromEntries(
+            Object.entries(f).filter(([k]) => !k.startsWith('$')),
+          ),
+        };
+        rows.push(r);
+      }
+      if (r) {
+        Object.assign(r, u.$set);
+        for (const [k, v] of Object.entries(u.$push ?? {}))
+          r[k] = [...(r[k] ?? []), { _id: oid(), ...(v as any) }];
+        for (const [k, v] of Object.entries(u.$pull ?? {}))
+          r[k] = (r[k] ?? []).filter((e: any) => !matches(e, v));
+      }
       return { matchedCount: r ? 1 : 0 };
+    }),
+    findOneAndUpdate: jest.fn((f: any, u: any) => {
+      const r = rows.find((x) => matches(x, f));
+      const before = r ? { ...r } : null;
+      if (r)
+        for (const [k, v] of Object.entries(u.$inc ?? {}))
+          r[k] = (r[k] ?? 0) + (v as number);
+      return q(before ? [before] : [], true);
     }),
     deleteOne: jest.fn(async (f: any) => {
       const i = rows.findIndex((x) => matches(x, f));

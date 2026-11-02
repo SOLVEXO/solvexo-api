@@ -9,6 +9,17 @@ import {
   SalesPublicController,
 } from './sales-ops.controller';
 import { SalesCaptureService } from './sales-capture.service';
+import { SalesGrowthService } from './sales-growth.service';
+import { ExchangeRateModule } from '../exchange-rate/exchange-rate.module';
+import {
+  SalesCampaign,
+  SalesCampaignSchema,
+} from './schemas/sales-campaign.schema';
+import { SalesTarget, SalesTargetSchema } from './schemas/sales-target.schema';
+import {
+  SalesSettings,
+  SalesSettingsSchema,
+} from './schemas/sales-settings.schema';
 import { AdminAnalyticsModule } from '../admin-analytics/admin-analytics.module';
 import {
   ContactSubmission,
@@ -32,16 +43,25 @@ import {
     AuthModule,
     RedisModule,
     AdminAnalyticsModule,
+    ExchangeRateModule,
     MongooseModule.forFeature([
       { name: SalesLead.name, schema: SalesLeadSchema },
       { name: SalesActivity.name, schema: SalesActivitySchema },
       { name: SalesTask.name, schema: SalesTaskSchema },
       { name: SalesEmailTemplate.name, schema: SalesEmailTemplateSchema },
       { name: ContactSubmission.name, schema: ContactSubmissionSchema },
+      { name: SalesCampaign.name, schema: SalesCampaignSchema },
+      { name: SalesTarget.name, schema: SalesTargetSchema },
+      { name: SalesSettings.name, schema: SalesSettingsSchema },
     ]),
   ],
   controllers: [SalesOpsController, SalesPublicController],
-  providers: [SalesOpsService, SalesCaptureService, EmailService],
+  providers: [
+    SalesOpsService,
+    SalesCaptureService,
+    SalesGrowthService,
+    EmailService,
+  ],
   exports: [SalesOpsService, SalesCaptureService],
 })
 export class SalesOpsModule {}
