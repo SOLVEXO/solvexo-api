@@ -120,4 +120,28 @@ export class PosPlansService {
 
     return { success: true, data: { url: session.url } };
   }
+
+  /**
+   * PUBLIC (no auth) status of a POS plan Checkout Session, for the portal's success page when its session cookie has not been
+   * restored yet. The Stripe session id is itself the secret; the answer is limited to what the page needs. Anything that is not a
+   * POS-plan session (or cannot be retrieved) is a plain 'unknown' — no amounts, emails or customer data, no extra oracle.
+   */
+  async getCheckoutSessionStatus(sessionId: string) {
+    const unknown = { success: true, data: { status: 'unknown' as const, planActivated: false, storeId: null as string | null } };
+    if (typeof sessionId !== 'string' || !/^cs_(test|live)_[A-Za-z0-9]{10,200}$/.test(sessionId)) return unknown;
+    const stripe = this.paymentGatewayService.stripeClient;
+    if (!stripe) return unknown;
+    let session: any;
+    try {
+      session = await stripe.checkout.sessions.retrieve(sessionId);
+    } catch {
+      return unknown;
+    }
+    if (!session || session.mode !== 'payment' || session.metadata?.type !== 'pos_purchase') return unknown;
+    const status = session.status === 'expired' ? 'expired'
+      : session.status === 'complete' && (session.payment_status === 'paid' || session.payment_status === 'no_payment_required') ? 'paid'
+      : 'open';
+    const planActivated = !!(await this.r.posPurchaseModel.exists({ stripeCheckoutSessionId: sessionId }));
+    return { success: true, data: { status, planActivated, storeId: session.metadata?.storeId ? String(session.metadata.storeId) : null } };
+  }
 }

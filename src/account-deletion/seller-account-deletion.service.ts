@@ -3,6 +3,7 @@ import { BadRequestException, ForbiddenException, UnauthorizedException, Injecta
 import * as bcrypt from 'bcrypt';
 import { DatabaseService } from '@/database/databaseservice';
 import { PosTokenRevocationService } from '../pos/pos-token-revocation.service';
+import { AppleTokenService } from '../auth/apple-token.service';
 import { AuthService } from '../auth/auth.service';
 import { OtpService } from '../otp/otp.service';
 import { generateOtp, assertOtpAttempt } from '../common/otp.util';
@@ -36,6 +37,8 @@ export class SellerAccountDeletionService {
     @Optional() private readonly revocations?: PosTokenRevocationService,
     @Optional() private readonly auth?: AuthService,
     @Optional() private readonly otpService?: OtpService,
+    // Sign in with Apple: revoke Apple's token when the account is finally purged (5G.1).
+    @Optional() private readonly appleTokens?: AppleTokenService,
   ) {}
 
   private get r() { return this.databaseService.repositories; }
@@ -128,6 +131,8 @@ export class SellerAccountDeletionService {
     seller.deletionScheduledFor = scheduled;
     seller.tokenVersion = (seller.tokenVersion ?? 0) + 1; // every owner session is revoked right now
     await seller.save();
+    // Portal cookie sessions too (also dead via tokenVersion/pending_deletion checks; revoked explicitly so nothing lingers).
+    await this.r.refreshTokenFamilyModel?.updateMany({ userId: String(seller._id), revokedAt: null }, { $set: { revokedAt: now, revokedReason: 'account_deletion' } }).catch(() => {});
 
     // Storefront and POS go dark; every registered device stops working; every PIN session ends.
     await this.r.storeModel.updateMany({ _id: { $in: storeIds } }, { $set: { status: 'suspended' } });
@@ -188,5 +193,7 @@ export class SellerAccountDeletionService {
     for (const storeId of storeIds) {
       await this.r.posAuditLogModel.create({ storeId, employeeId: null, action: 'account_purged', targetId: sellerId, targetType: 'seller', metadata: { employees: employees.length } }).catch(() => {});
     }
+    // Last step, and it can never block or undo the deletion above: a failure is recorded on the seller and retried by the cron.
+    try { await this.appleTokens?.revokeForSeller(sellerId, now); } catch (e: any) { this.logger.error(`Apple revocation for ${sellerId} threw: ${e?.message}`); }
   }
 }

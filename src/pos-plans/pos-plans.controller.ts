@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
-import { Body, Controller, Get, Param, Post, Req, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query, Req, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -29,5 +30,18 @@ export class PosPlansController {
   @Post('pos-subscriptions/:storeId/checkout-session')
   createCheckoutSession(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: CreateCheckoutSessionDto) {
     return this.posPlansService.createCheckoutSession(storeId, req.user.userId, dto);
+  }
+}
+
+/** Public (no JWT): the portal's Stripe success page asks whether the webhook has activated the plan yet. */
+@ApiTags('POS Plans')
+@Controller('api/pos-checkout')
+export class PosCheckoutStatusController {
+  constructor(private readonly posPlansService: PosPlansService) {}
+
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  @Get('session-status')
+  sessionStatus(@Query('sessionId') sessionId: string) {
+    return this.posPlansService.getCheckoutSessionStatus(sessionId);
   }
 }

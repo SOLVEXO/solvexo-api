@@ -1,6 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { Module } from '@nestjs/common';
-import { PosPlansController } from './pos-plans.controller';
+import { PosPlansController, PosCheckoutStatusController } from './pos-plans.controller';
 import { AdminPosPlansController } from './admin-pos-plans.controller';
 import { PosPlansWebhookController } from './webhooks/pos-plans-webhook.controller';
 import { PosPlansService } from './pos-plans.service';
@@ -24,7 +24,7 @@ import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
   // reuses the same Stripe client setup as the platform-plans/buyer-facing
   // subscription billing rather than instantiating a second Stripe client.
   imports: [AuthModule, RedisModule, SubscriptionsModule],
-  controllers: [PosPlansController, AdminPosPlansController, PosPlansWebhookController],
+  controllers: [PosPlansController, PosCheckoutStatusController, AdminPosPlansController, PosPlansWebhookController],
   providers: [PosPlansService, AdminPosPlansService, PosPlansWebhookService],
   // PosModule re-exposes the read-only status to POS devices (a device token is not accepted on this module's own routes)
   exports: [PosPlansService],
