@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import * as nodemailer from 'nodemailer';
 import { EventEmitter } from 'events';
 import { htmlToPlainText } from '../../common/html-to-text.util';
+import { isDevMailSinkEnabled, writeDevMail } from '../../common/dev-mail-sink.util';
 
 /** Every real send attempt, from every EmailService instance in the app — EmailHealthService records it for the admin Email health card and the "emails are failing" alert. */
 export const emailEvents = new EventEmitter();
@@ -64,6 +65,12 @@ export class EmailService {
     if (/\.invalid$/i.test(String(to ?? '').trim())) {
       console.warn('Skipped email to a non-deliverable (.invalid) address');
       return false;
+    }
+    // DEV-ONLY (NODE_ENV!=production AND DEV_OTP_LOG=true): log the mail for the local e2e stack instead of using SMTP.
+    if (isDevMailSinkEnabled()) {
+      writeDevMail({ to, subject, text: htmlToPlainText(html) });
+      emailEvents.emit('result', { ok: true } as EmailResultEvent);
+      return true;
     }
     try {
       // `fromName` = the store's name for customer-facing mails (the mailbox

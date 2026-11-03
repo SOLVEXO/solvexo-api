@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule } from '@nestjs/config';
 import { ThrottlerModule } from '@nestjs/throttler';
+import { isDevThrottleDisabled } from './common/dev-mail-sink.util';
 import { FriendlyThrottlerGuard } from './common/friendly-throttler.guard';
 import { RedisThrottlerStorage } from './common/redis-throttler.storage';
 import { RedisModule } from './redis/redis.module';
@@ -124,6 +125,8 @@ import { AppI18nModule } from './i18n/i18n.module';
         // Platform-wide default: 100 req/min per IP. Endpoints that need a tighter
         // (payment/webhook) or looser (public browse) limit override via @Throttle().
         throttlers: [{ name: 'default', ttl: 60_000, limit: 100 }],
+        // DEV-ONLY (never in production): DEV_DISABLE_THROTTLE=true so repeated local e2e runs don't hit the limiter.
+        skipIf: () => isDevThrottleDisabled(),
         // THROTTLE_STORAGE=redis shares the counters between API instances (set it before running 2+ copies).
         storage: process.env.THROTTLE_STORAGE === 'redis' ? new RedisThrottlerStorage(redis) : undefined,
       }),
