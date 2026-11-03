@@ -512,6 +512,10 @@ export interface ProductBuyButtonsBlockSettings {}
 // eslint-disable-next-line @typescript-eslint/no-empty-interface
 export interface ProductDescriptionBlockSettings {}
 
+/** Which networks the product Share popup offers; a missing key follows the theme settings. */
+export const SHARE_NETWORKS = ['facebook', 'x', 'pinterest', 'whatsapp', 'email', 'linkedin', 'telegram'] as const;
+export type ProductShareBlockSettings = { [K in (typeof SHARE_NETWORKS)[number]]?: 'show' | 'hide' } & { customLinks?: string };
+
 /** A section/block declared by the active theme's manifest: `sectionKey`/`blockKey` name it, the remaining keys are its fields (validated generically, see validateThemeFields). */
 export interface ThemeSectionSettings { sectionKey: string; [field: string]: unknown }
 export interface ThemeBlockSettings { blockKey: string; [field: string]: unknown }
@@ -610,7 +614,7 @@ export type BlockSettingsMap = RequireAllKeys<BlockType, {
   product_rating: ProductDescriptionBlockSettings;
   product_sku: ProductDescriptionBlockSettings;
   product_wishlist: ProductDescriptionBlockSettings;
-  product_share: ProductDescriptionBlockSettings;
+  product_share: ProductShareBlockSettings;
   product_specs: ProductDescriptionBlockSettings;
   product_buy_now: { label?: string };
   product_collapsible_tab: { title: string; content?: string; openByDefault?: boolean; showAsTab?: boolean };
