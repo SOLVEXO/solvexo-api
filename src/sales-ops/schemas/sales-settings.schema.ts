@@ -33,6 +33,23 @@ export class SalesSettings {
   @Prop({ type: String, default: null }) aiReplyTo: string | null;
   /** Most new chats per day (Pakistan time); a guard on cost and abuse. */
   @Prop({ type: Number, default: 300 }) aiChatDailyLimit: number;
+  /** Draft a reply to every incoming WhatsApp message (a person always sends it). */
+  @Prop({ type: Boolean, default: true }) aiWhatsApp: boolean;
+
+  // ── Solvexo's own WhatsApp Business number (Meta Cloud API) ─────────────
+  @Prop({ type: String, default: null }) waPhoneNumberId: string | null;
+  @Prop({ type: String, default: null }) waWabaId: string | null;
+  @Prop({ type: String, default: null }) waDisplayNumber: string | null;
+  @Prop({ type: String, default: null }) waVerifiedName: string | null;
+  /** Permanent System User token, encrypted (INTEGRATIONS key). Never sent to the browser. */
+  @Prop({ type: String, default: null }) waAccessTokenEnc: string | null;
+  /** Approved template used to restart a chat after the 24-hour window. */
+  @Prop({ type: String, default: null }) waTemplateName: string | null;
+  @Prop({ type: String, default: 'en' }) waTemplateLang: string;
+  /** The template's body has {{1}} for the person's first name. */
+  @Prop({ type: Boolean, default: false }) waTemplateUsesName: boolean;
+  @Prop({ type: Date, default: null }) waConnectedAt: Date | null;
+  @Prop({ type: Date, default: null }) waLastEventAt: Date | null;
 }
 
 export const SalesSettingsSchema = SchemaFactory.createForClass(SalesSettings);

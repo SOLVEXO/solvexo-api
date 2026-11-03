@@ -108,6 +108,8 @@ export function model(rows: any[] = []) {
       }
       if (r) {
         Object.assign(r, u.$set);
+        for (const [k, v] of Object.entries(u.$inc ?? {}))
+          r[k] = (r[k] ?? 0) + (v as number);
         for (const [k, v] of Object.entries(u.$push ?? {}))
           r[k] = [
             ...(r[k] ?? []),

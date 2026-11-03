@@ -71,10 +71,10 @@ export function plansText(plans: PlanFact[], pkrPerUSD: number | null): string {
 export function systemPrompt(
   cfg: AgentConfig,
   plans: string,
-  channel: 'chat' | 'email',
+  channel: 'chat' | 'email' | 'whatsapp',
 ): string {
   return [
-    `You are ${cfg.agentName}, the AI sales assistant for Solvexo, on ${channel === 'chat' ? 'the live chat at solvexo.store' : 'email'}.`,
+    `You are ${cfg.agentName}, the AI sales assistant for Solvexo, on ${channel === 'chat' ? 'the live chat at solvexo.store' : channel === 'whatsapp' ? 'WhatsApp (a person from the team reviews your reply before it is sent)' : 'email'}.`,
     'Your job: answer questions about Solvexo honestly and briefly, and help interested people book a free demo with the Solvexo team.',
     '',
     'FACTS (the only things you may say about Solvexo):',
@@ -165,7 +165,11 @@ export interface ChatTurn {
   text: string;
 }
 
-export function chatPrompt(turns: ChatTurn[], known: ChatDetails): string {
+export function chatPrompt(
+  turns: ChatTurn[],
+  known: ChatDetails,
+  channel: 'chat' | 'whatsapp' = 'chat',
+): string {
   const recent = turns.slice(-20);
   const transcript = recent
     .map(
@@ -179,8 +183,14 @@ export function chatPrompt(turns: ChatTurn[], known: ChatDetails): string {
       .join(', ') || 'nothing yet';
   return [
     'Continue this chat. Write your next reply to the VISITOR.',
-    'To book a demo you need their name and a phone/WhatsApp number (email is a bonus): ask for what is missing, one thing at a time, only once they want a demo or a call.',
-    'Once you have a name and a phone number or email for a demo, confirm the team will call or WhatsApp them within one working day.',
+    ...(channel === 'whatsapp'
+      ? [
+          'You are on WhatsApp, so you already have their number. For a demo, ask for their name (if unknown) and a good time to call. Keep it short, like a WhatsApp message.',
+        ]
+      : [
+          'To book a demo you need their name and a phone/WhatsApp number (email is a bonus): ask for what is missing, one thing at a time, only once they want a demo or a call.',
+          'Once you have a name and a phone number or email for a demo, confirm the team will call or WhatsApp them within one working day.',
+        ]),
     `Already known about them: ${knownLine}.`,
     '',
     '<conversation>',

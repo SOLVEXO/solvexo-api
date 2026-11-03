@@ -1,5 +1,14 @@
 /* eslint-disable prettier/prettier */
 import { Module } from '@nestjs/common';
+import { SalesWhatsAppService } from './sales-whatsapp.service';
+import {
+  SalesWaConversation,
+  SalesWaConversationSchema,
+} from './schemas/sales-wa-conversation.schema';
+import {
+  SalesWaMessage,
+  SalesWaMessageSchema,
+} from './schemas/sales-wa-message.schema';
 import { SalesAgentService } from './sales-agent.service';
 import { AiStudioModule } from '../ai-studio/ai-studio.module';
 import {
@@ -85,6 +94,8 @@ import {
       { name: SalesCommission.name, schema: SalesCommissionSchema },
       { name: SalesPayout.name, schema: SalesPayoutSchema },
       { name: SalesChatSession.name, schema: SalesChatSessionSchema },
+      { name: SalesWaConversation.name, schema: SalesWaConversationSchema },
+      { name: SalesWaMessage.name, schema: SalesWaMessageSchema },
     ]),
   ],
   controllers: [
@@ -98,6 +109,7 @@ import {
     SalesGrowthService,
     SalesPartnersService,
     SalesAgentService,
+    SalesWhatsAppService,
     EmailService,
   ],
   exports: [SalesOpsService, SalesCaptureService],
