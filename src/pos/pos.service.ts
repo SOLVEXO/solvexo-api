@@ -1861,8 +1861,9 @@ export class PosService {
     const { exp: forceExp } = await this.docMoney(session);
     const expectedCash = roundMoney(session.openingCash + session.cashSales + cashIn - cashOut, forceExp);
 
-    const updated = await this.r.registerSessionModel.findByIdAndUpdate(
-      sessionId,
+    // status-guarded like closeSession: a force close racing the cashier's own close must not overwrite the counted cash
+    const updated = await this.r.registerSessionModel.findOneAndUpdate(
+      { _id: sessionId, status: 'open' },
       {
         $set: {
           status: 'closed',
@@ -1877,6 +1878,7 @@ export class PosService {
       },
       { new: true },
     );
+    if (!updated) throw businessConflict('SESSION_ALREADY_CLOSED', 'This session was already closed');
 
     this.writeAuditLog({ storeId: (session as any).storeId, employeeId: null, action: 'session_force_closed', targetId: sessionId, targetType: 'session', metadata: { reason: dto.reason } }).catch(() => {});
     return { success: true, message: 'Session force-closed', data: updated };
