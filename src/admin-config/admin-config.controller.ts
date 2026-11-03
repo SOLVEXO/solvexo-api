@@ -122,8 +122,9 @@ export class AdminConfigController {
   // removeCurrency for why this replaced the old fixed 8-entry array. ──
   @RequirePermission('config.manage')
   @Get('currencies')
-  listCurrencies() {
-    return this.adminConfigService.getEnabledCurrencies();
+  async listCurrencies() {
+    // Same { success, data } envelope as every other admin endpoint; the admin FX page reads `res.data`.
+    return { success: true, data: await this.adminConfigService.getEnabledCurrencies() };
   }
 
   // CSV import (fixed literals, declared before the `currencies/:code` routes).
