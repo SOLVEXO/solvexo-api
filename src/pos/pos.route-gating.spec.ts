@@ -61,7 +61,7 @@ describe('which POS routes are idempotent (Idempotency-Key honoured)', () => {
   it('no other mutating money route exists without it (a new POST/PATCH/DELETE on sales/sessions must be classified here)', () => {
     const NOT_MONEY = /^(POST pin-(login|logout)|POST devices|POST employees|POST registers|POST shifts|POST locations|POST sales\/quote|POST sales\/:saleId\/resolve-review)/;
     const unwired = routes().filter((r) => /^(POST|PATCH|DELETE) (sales|sessions)/.test(r.key) && !r.idem && !NOT_MONEY.test(r.key)).map((r) => r.key);
-    // Known, documented exceptions (5A): held-sale item edit is an absolute replace, discard is status-guarded server-side.
-    expect(unwired.sort()).toEqual(['DELETE sales/:saleId/discard', 'PATCH sales/:saleId/items', 'POST sessions/:sessionId/force-close'].sort());
+    // Known, documented exceptions (5A): held-sale item edit is an absolute replace; force-close is now status-guarded (pos.session-close spec).
+    expect(unwired.sort()).toEqual(['PATCH sales/:saleId/items', 'POST sessions/:sessionId/force-close'].sort());
   });
 });
