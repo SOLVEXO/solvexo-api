@@ -10,7 +10,9 @@ const chain = (value: any) => {
 };
 
 function make(models: Record<string, any>) {
-  return new TranslationsService({ repositories: models } as any);
+  // The store's default language (the source text) can't be a translation target.
+  const storeModel = { findById: jest.fn(() => chain({ defaultLanguage: 'en' })) };
+  return new TranslationsService({ repositories: { storeModel, ...models } } as any);
 }
 
 describe('TranslationsService', () => {

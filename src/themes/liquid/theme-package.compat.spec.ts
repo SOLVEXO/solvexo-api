@@ -109,6 +109,6 @@ describe('what real theme JavaScript and templates rely on', () => {
     // unescaping already happened when the outer `bridge` template literal was evaluated on the server).
     expect(html).toContain("var m=/^\\/cart\\/(add|change|update|clear)\\.js$/.exec(url.pathname)");
     expect(html).toContain("url.pathname==='/cart.js'?[null,'get']");
-    expect(html).toContain("if(m.type==='solvexo:cart-ajax-reply'&&cartAjaxPending[m.id])");
+    expect(html).toContain("if((m.type==='solvexo:cart-ajax-reply'||m.type==='solvexo:store-ajax-reply')&&cartAjaxPending[m.id])");
   });
 });

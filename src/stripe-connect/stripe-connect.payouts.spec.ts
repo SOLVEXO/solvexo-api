@@ -66,7 +66,7 @@ describe('StripeConnectService — payout detail & balance transactions', () => 
     (service as any).r.sellerModel = { findById: jest.fn().mockReturnValue({ select: jest.fn().mockResolvedValue({ email: 'a@b.c' }) }) };
     stripe.accounts = { create: jest.fn().mockRejectedValue(new Error("You can only create new accounts if you've signed up for Connect, which you can do at https://dashboard.stripe.com/connect.")) };
 
-    await expect((service as any).getOrCreateAccount(SELLER_ID, { _id: STORE_ID, stripeConnectedAccountId: null }))
+    await expect((service as any).getOrCreateAccount(SELLER_ID, { _id: STORE_ID, stripeConnectedAccountId: null, country: 'US' }))
       .rejects.toThrow('Online card payments are not available yet on this platform');
   });
 

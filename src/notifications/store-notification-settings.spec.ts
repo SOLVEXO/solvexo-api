@@ -311,7 +311,7 @@ describe('StoreNotificationSettingsService.sendTest / preview / group', () => {
     const res = await svc.get(SELLER_ID, STORE_ID);
     const byKey = Object.fromEntries(res.data.events.map((e) => [e.key, e.group]));
     expect(byKey).toMatchObject({ order_confirmation: 'orders', order_edited: 'orders', return_update: 'returns', draft_order_invoice: 'invoices', gift_card: 'invoices' });
-    expect(res.data.events.every((e) => ['orders', 'returns', 'invoices'].includes(e.group))).toBe(true);
+    expect(res.data.events.every((e) => ['orders', 'returns', 'invoices', 'digital'].includes(e.group))).toBe(true);
   });
 
   it('sends the sample (with the unsaved draft text) only to the person who clicked, with the store sender + reply-to', async () => {
