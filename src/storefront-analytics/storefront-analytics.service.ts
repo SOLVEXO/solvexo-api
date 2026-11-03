@@ -2,7 +2,7 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { isValidObjectId } from 'mongoose';
 import { DatabaseService } from '../database/databaseservice';
-import { isAnalyticsId } from '../common/storefront-session.util';
+import { isAnalyticsId, markStorefrontSession } from '../common/storefront-session.util';
 import {
   classifyTrafficSource,
   cleanPath,
@@ -80,6 +80,11 @@ export class StorefrontAnalyticsService implements OnModuleInit {
   }
 
   /** Only live, open stores collect sessions; the store's own hosts are internal referrers. Cached for a minute. */
+  /** Marks an existing visit as holding a cart (never creates a visit, never throws). */
+  async markCartActive(storeId: string, sessionId: string): Promise<void> {
+    await markStorefrontSession(this.r.storefrontSessionModel, storeId, sessionId, { addedToCart: true });
+  }
+
   private async storeInfo(storeId: string): Promise<{ ok: boolean; hosts: string[] }> {
     const hit = this.storeCache.get(storeId);
     if (hit && Date.now() - hit.at < STORE_CACHE_MS) return hit;

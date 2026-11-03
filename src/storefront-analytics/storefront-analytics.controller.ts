@@ -7,6 +7,11 @@ import { StorefrontAnalyticsService } from './storefront-analytics.service';
 
 const ID = /^[A-Za-z0-9_-]{8,64}$/;
 
+export class StorefrontCartSignalDto {
+  @IsMongoId() storeId: string;
+  @Matches(ID) sessionId: string;
+}
+
 export class StorefrontPageViewDto {
   @IsMongoId() storeId: string;
   @Matches(ID) sessionId: string;
@@ -43,6 +48,16 @@ export class StorefrontAnalyticsController {
       geoCountry: header('cf-ipcountry') ?? header('x-vercel-ip-country') ?? header('cloudfront-viewer-country'),
       userId: req.user?.role === 'user' ? req.user.userId : null,
     });
+    return { ok: true };
+  }
+
+  // A visitor's cart (kept in the browser while logged out) holds items: Live View counts it as an active cart.
+  @Throttle({ default: { limit: 60, ttl: 60_000 } })
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: false }))
+  @HttpCode(202)
+  @Post('cart-signal')
+  async cartSignal(@Body() body: StorefrontCartSignalDto) {
+    await this.service.markCartActive(body.storeId, body.sessionId);
     return { ok: true };
   }
 }
