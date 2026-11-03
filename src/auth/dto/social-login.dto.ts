@@ -38,10 +38,12 @@ export class SocialLoginDto {
   @IsString()
   name?: string;
 
-  @ApiProperty({ example: 'john@example.com' })
+  // Optional: Sign in with Apple may not share an email after the first sign-in. When the provider token carries a
+  // verified email that is used; otherwise login falls back to the verified provider id.
+  @ApiProperty({ example: 'john@example.com', required: false })
+  @IsOptional()
   @IsEmail()
-  @IsNotEmpty()
-  email: string;
+  email?: string;
 
   // Which account this social login should resolve against — 'user' (buyer,
   // default) or 'seller'. Buyer and seller are separate collections, so this

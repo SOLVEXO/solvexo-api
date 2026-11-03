@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Body, Controller, Post, Req, Get, Patch, Query, ForbiddenException } from '@nestjs/common';
+import { Body, Controller, Post, Req, Get, Patch, Query, ForbiddenException, HttpCode, UnauthorizedException } from '@nestjs/common';
 import { GuestSessionService } from './guest-session.service';
 import { GuestSessionDto, GuestContactDto } from './dto/guest-session.dto';
 import { Throttle } from '@nestjs/throttler';
@@ -111,6 +111,14 @@ export class AuthController {
     const result = await this.authService.socialLogin(socialLoginDto);
     if ((socialLoginDto.role ?? 'user') === 'user') await this.guestSessions.mergeFromAuthResult(result, socialLoginDto.storeId);
     return result;
+  }
+
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  @HttpCode(200)
+  @Post('refresh')
+  async refresh(@Body() body: { refreshToken?: string }) {
+    if (!body?.refreshToken || typeof body.refreshToken !== 'string') throw new UnauthorizedException('Invalid refresh token');
+    return this.authService.refresh(body.refreshToken);
   }
 
   @Throttle({ default: { limit: 5, ttl: 60_000 } })

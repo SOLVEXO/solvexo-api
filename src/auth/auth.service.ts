@@ -401,9 +401,7 @@ export class AuthService {
     );
 
     // ✅ Refresh Token (long expiry)
-    const refreshToken = this.jwtService.sign(payload, {
-      expiresIn: '7d',
-    });
+    const refreshToken = this.signRefreshToken(payload);
 
     return {
       message: 'Login successful',
@@ -425,6 +423,19 @@ export class AuthService {
         },
       },
     };
+  }
+
+  /** Seam for tests; production verifies against Apple's published keys. */
+  protected async verifyAppleIdToken(token: string, audiences: string[]): Promise<any> {
+    return appleSignin.verifyIdToken(token, { audience: audiences.length === 1 ? audiences[0] : audiences });
+  }
+
+  /**
+   * Public wrapper for flows that need a fresh provider proof for an already-signed-in account (e.g. account-deletion
+   * re-authentication). Returns the provider-verified email (or null). Throws UnauthorizedException on a bad token.
+   */
+  async verifyProviderIdentity(authProvider: string, socialId: string, token?: string): Promise<string | null> {
+    return this.verifySocialToken(authProvider, socialId, token);
   }
 
   /** Verifies the provider token server-side so a forged socialId/email pair can't be used to hijack an account. */
@@ -459,16 +470,59 @@ export class AuthService {
       }
       return data.email ? String(data.email).toLowerCase() : null;
     } else if (authProvider === 'apple') {
-      const payload = await appleSignin.verifyIdToken(token, {
-        audience: process.env.APPLE_CLIENT_ID,
-      });
+      // APPLE_CLIENT_ID is a comma-separated list: the iOS bundle id (native sign-in) AND the web Services ID.
+      const audiences = (process.env.APPLE_CLIENT_ID ?? '').split(',').map((a) => a.trim()).filter(Boolean);
+      const payload: any = await this.verifyAppleIdToken(token, audiences);
       if (!payload || payload.sub !== socialId) {
         throw new UnauthorizedException('Invalid Apple token');
       }
-      return (payload as any).email ? String((payload as any).email).toLowerCase() : null;
+      // Apple's email only counts as verified when the token says so (relay addresses are verified too).
+      const emailVerified = payload.email_verified === true || payload.email_verified === 'true';
+      return emailVerified && payload.email ? String(payload.email).toLowerCase() : null;
     } else {
       throw new UnauthorizedException('Unsupported auth provider');
     }
+  }
+
+  /** Refresh tokens carry `typ:'refresh'` so an access token can never be replayed as one (and vice versa). */
+  private signRefreshToken(payload: Record<string, any>): string {
+    return this.jwtService.sign({ ...payload, typ: 'refresh' }, { expiresIn: '7d' });
+  }
+
+  /** True when an account already exists for this provider id (lets an email-less Apple/Facebook login continue). */
+  private async hasProviderAccount(dto: SocialLoginDto): Promise<boolean> {
+    const m: any = dto.role === 'seller' ? this.databaseService.repositories.sellerModel : this.databaseService.repositories.userModel;
+    const storeScope = dto.role === 'seller' ? {} : { storeId: dto.storeId ?? null };
+    return !!(await m.findOne({ providerId: dto.socialId, authProvider: dto.authProvider, ...storeScope }));
+  }
+
+  /**
+   * Silent refresh: exchanges a valid refresh token for a new access token and a ROTATED refresh token.
+   * Rejects access tokens (no `typ`), tokens from before a tokenVersion bump, and suspended / deleted / pending-deletion accounts.
+   * (Refresh tokens issued before this endpoint existed have no `typ` and are refused — they were never usable anyway.)
+   */
+  async refresh(refreshToken: string) {
+    let payload: any;
+    try {
+      payload = this.jwtService.verify(refreshToken);
+    } catch {
+      throw new UnauthorizedException('Invalid refresh token');
+    }
+    if (payload?.typ !== 'refresh' || payload?.type || payload?.guest) throw new UnauthorizedException('Invalid refresh token');
+    const repos: any = this.databaseService.repositories;
+    const model = payload.role === 'seller' ? repos.sellerModel : payload.role === 'user' ? repos.userModel : payload.role === 'admin' ? repos.adminModel : null;
+    if (!model) throw new UnauthorizedException('Invalid refresh token');
+    const account: any = await model.findById(payload.sub);
+    if (!account || account.isDelete || ['deleted', 'suspended', 'pending_deletion'].includes(account.status)) {
+      throw new UnauthorizedException('Session expired, please sign in again');
+    }
+    if ((account.tokenVersion ?? 0) !== (payload.tokenVersion ?? 0)) {
+      throw new UnauthorizedException('Session expired, please sign in again');
+    }
+    const { iat, exp, typ, ...claims } = payload;
+    const accessToken = this.jwtService.sign(claims);
+    await this.redisService.set(accessToken, String(account._id), 24 * 60 * 60);
+    return { success: true, data: { token: { accessToken, refreshToken: this.signRefreshToken(claims) } } };
   }
 
   /** Social login resolves against the buyer (User) or seller (Seller) collection based on dto.role (default 'user') — same role-picks-the-model pattern as login()/signup(). */
@@ -511,6 +565,9 @@ export class AuthService {
         throw new UnauthorizedException('Email does not match the verified provider account');
       }
       const email = verifiedEmail ?? claimedEmail;
+      if (!email && !(await this.hasProviderAccount(dto))) {
+        throw new UnauthorizedException('No email available from the provider. Sign in with email, or share your email with the app.');
+      }
 
       const targetRole: 'user' | 'seller' = role === 'seller' ? 'seller' : 'user';
       let accountModel;
@@ -603,7 +660,7 @@ export class AuthService {
         account._id.toString(),
         24 * 60 * 60,
       );
-      const refreshToken = this.jwtService.sign(payload, { expiresIn: '7d' });
+      const refreshToken = this.signRefreshToken(payload);
 
       return {
         message: 'Social login successful',
@@ -734,9 +791,7 @@ export class AuthService {
 
       await this.redisService.set(token, user._id.toString(), 24 * 60 * 60);
 
-      const refreshToken = this.jwtService.sign(payload, {
-        expiresIn: '7d',
-      });
+      const refreshToken = this.signRefreshToken(payload);
 
       return {
         message: 'OTP verified successfully',
