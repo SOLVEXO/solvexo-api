@@ -1,15 +1,17 @@
 import { transliterateUrdu, transliterateArabic, transliterate, createSlug, createLocalizedSlug } from './slug-transliteration.util';
 
+// Urdu and Arabic are written without short vowels, so transliteration is letter by letter: کتاب (k-t-a-b) becomes
+// "ktab", not "kitab" (inserting the missing vowels would need a dictionary).
 describe('Slug Transliteration', () => {
   describe('transliterateUrdu', () => {
     it('should transliterate basic Urdu characters', () => {
-      expect(transliterateUrdu('السلام')).toBe('alsalam');
-      expect(transliterateUrdu('کتاب')).toBe('kitab');
-      expect(transliterateUrdu('پاکستان')).toBe('pakistan');
+      expect(transliterateUrdu('السلام')).toBe('alslam');
+      expect(transliterateUrdu('کتاب')).toBe('ktab');
+      expect(transliterateUrdu('پاکستان')).toBe('pakstan');
     });
 
     it('should handle mixed Urdu and English', () => {
-      expect(transliterateUrdu('کتاب-book')).toBe('kitab-book');
+      expect(transliterateUrdu('کتاب-book')).toBe('ktab-book');
     });
 
     it('should handle empty string', () => {
@@ -19,12 +21,12 @@ describe('Slug Transliteration', () => {
 
   describe('transliterateArabic', () => {
     it('should transliterate basic Arabic characters', () => {
-      expect(transliterateArabic('السلام')).toBe('alsalam');
-      expect(transliterateArabic('كتاب')).toBe('kitab');
+      expect(transliterateArabic('السلام')).toBe('alslam');
+      expect(transliterateArabic('كتاب')).toBe('ktab');
     });
 
     it('should handle mixed Arabic and English', () => {
-      expect(transliterateArabic('كتاب-book')).toBe('kitab-book');
+      expect(transliterateArabic('كتاب-book')).toBe('ktab-book');
     });
 
     it('should handle empty string', () => {
@@ -34,11 +36,11 @@ describe('Slug Transliteration', () => {
 
   describe('transliterate', () => {
     it('should use Urdu transliteration for ur language', () => {
-      expect(transliterate('کتاب', 'ur')).toBe('kitab');
+      expect(transliterate('کتاب', 'ur')).toBe('ktab');
     });
 
     it('should use Arabic transliteration for ar language', () => {
-      expect(transliterate('كتاب', 'ar')).toBe('kitab');
+      expect(transliterate('كتاب', 'ar')).toBe('ktab');
     });
 
     it('should return as-is for English', () => {
@@ -56,11 +58,11 @@ describe('Slug Transliteration', () => {
     });
 
     it('should transliterate Urdu and create slug', () => {
-      expect(createSlug('کتاب', 'ur')).toBe('kitab');
+      expect(createSlug('کتاب', 'ur')).toBe('ktab');
     });
 
     it('should transliterate Arabic and create slug', () => {
-      expect(createSlug('كتاب', 'ar')).toBe('kitab');
+      expect(createSlug('كتاب', 'ar')).toBe('ktab');
     });
 
     it('should handle special characters', () => {
@@ -88,11 +90,11 @@ describe('Slug Transliteration', () => {
     });
 
     it('should handle Urdu with prefix', () => {
-      expect(createLocalizedSlug('کتاب', 'ur')).toBe('ur/kitab');
+      expect(createLocalizedSlug('کتاب', 'ur')).toBe('ur/ktab');
     });
 
     it('should handle Arabic with prefix', () => {
-      expect(createLocalizedSlug('كتاب', 'ar')).toBe('ar/kitab');
+      expect(createLocalizedSlug('كتاب', 'ar')).toBe('ar/ktab');
     });
   });
 });
