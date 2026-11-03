@@ -17,6 +17,7 @@ import type {
   DropCountdownSectionSettings,
   MetaobjectListSectionSettings,
 } from './section-settings.types';
+import { SHARE_NETWORKS } from './section-settings.types';
 
 /**
  * Imperative per-type validation for seller-authored storefront content
@@ -887,6 +888,9 @@ export function validateBlockSettings(blockType: string, settings: Record<string
       if (settings.openByDefault !== undefined && typeof settings.openByDefault !== 'boolean') {
         throw new BadRequestException('settings.openByDefault must be true or false');
       }
+      if (settings.showAsTab !== undefined && typeof settings.showAsTab !== 'boolean') {
+        throw new BadRequestException('settings.showAsTab must be true or false');
+      }
       break;
     case 'product_size_chart':
       maxLen(settings.label, 40, 'settings.label');
@@ -914,8 +918,22 @@ export function validateBlockSettings(blockType: string, settings: Record<string
     case 'product_rating':
     case 'product_sku':
     case 'product_wishlist':
-    case 'product_share':
     case 'product_specs':
+      break;
+    case 'product_share':
+      for (const n of SHARE_NETWORKS) oneOf(settings[n], ['show', 'hide'] as const, `settings.${n}`);
+      maxLen(settings.customLinks, 2000, 'settings.customLinks');
+      if (typeof settings.customLinks === 'string') {
+        const lines = settings.customLinks.split(/\r?\n/).filter((l) => l.trim());
+        if (lines.length > 10) throw new BadRequestException('settings.customLinks allows up to 10 links');
+        for (const line of lines) {
+          const i = line.indexOf('|');
+          const tpl = line.slice(i + 1).trim();
+          if (i < 1 || !line.slice(0, i).trim() || line.slice(0, i).trim().length > 30 || !/^https:\/\//i.test(tpl) || !tpl.includes('{url}') || tpl.length > 500) {
+            throw new BadRequestException('Each share link must look like: Name | https://site.com/share?u={url}');
+          }
+        }
+      }
       break;
 
     case 'theme_block':

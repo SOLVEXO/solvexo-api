@@ -43,7 +43,7 @@ function shell(title: string, bodyHtml: string): string {
 </html>`;
 }
 
-const money = (n: number) => `$${Math.abs(n).toFixed(2)}`;
+const money = (n: number) => `$ ${Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 @Injectable()
 export class PlatformBillingNotificationsService {

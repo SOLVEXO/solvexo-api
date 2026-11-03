@@ -1,5 +1,14 @@
 /* eslint-disable prettier/prettier */
-import { BadRequestException, Controller, Get, Headers, Post, Query, Req, Res } from '@nestjs/common';
+import {
+  BadRequestException,
+  Controller,
+  Get,
+  Headers,
+  Post,
+  Query,
+  Req,
+  Res,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Throttle } from '@nestjs/throttler';
 import { Response } from 'express';
@@ -7,6 +16,7 @@ import { RawBodyRequest } from '@nestjs/common';
 import { Request } from 'express';
 import { DatabaseService } from '../../database/databaseservice';
 import { WhatsAppCloudProvider } from '../providers/whatsapp-cloud.provider';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 
 /**
  * Single, platform-wide WhatsApp webhook — NOT one URL per store like the
@@ -24,6 +34,7 @@ export class WhatsAppWebhookController {
     private readonly configService: ConfigService,
     private readonly databaseService: DatabaseService,
     private readonly provider: WhatsAppCloudProvider,
+    private readonly events: EventEmitter2,
   ) {}
 
   /** Meta's one-time subscription handshake (`hub.mode=subscribe`) when the webhook URL is registered in the App Dashboard. */
@@ -34,7 +45,9 @@ export class WhatsAppWebhookController {
     @Query('hub.challenge') challenge: string,
     @Res() res: Response,
   ) {
-    const expected = this.configService.get<string>('WHATSAPP_WEBHOOK_VERIFY_TOKEN');
+    const expected = this.configService.get<string>(
+      'WHATSAPP_WEBHOOK_VERIFY_TOKEN',
+    );
     if (mode === 'subscribe' && expected && verifyToken === expected) {
       res.status(200).send(challenge);
       return;
@@ -44,9 +57,14 @@ export class WhatsAppWebhookController {
 
   @Throttle({ default: { limit: 120, ttl: 60_000 } })
   @Post()
-  async receive(@Req() req: RawBodyRequest<Request>, @Headers('x-hub-signature-256') signature: string) {
+  async receive(
+    @Req() req: RawBodyRequest<Request>,
+    @Headers('x-hub-signature-256') signature: string,
+  ) {
     if (!req.rawBody) {
-      throw new BadRequestException('Raw request body unavailable — check rawBody bootstrap config');
+      throw new BadRequestException(
+        'Raw request body unavailable — check rawBody bootstrap config',
+      );
     }
     if (!this.provider.verifyWebhookSignature(req.rawBody, signature)) {
       throw new BadRequestException('Webhook signature verification failed');
@@ -57,11 +75,19 @@ export class WhatsAppWebhookController {
       return { received: true };
     }
 
-    const integration = await this.databaseService.repositories.storeIntegrationModel.findOne({
-      type: 'whatsapp',
-      provider: 'whatsapp_cloud',
-      'config.phoneNumberId': event.phoneNumberId,
+    // Solvexo's own sales number (Super Admin → Sales Ops → WhatsApp) shares this app-level webhook: the
+    // signature is already verified, so hand the event over; SalesWhatsAppService ignores other numbers.
+    this.events.emit('whatsapp.webhook', {
+      phoneNumberId: event.phoneNumberId,
+      payload: event.raw,
     });
+
+    const integration =
+      await this.databaseService.repositories.storeIntegrationModel.findOne({
+        type: 'whatsapp',
+        provider: 'whatsapp_cloud',
+        'config.phoneNumberId': event.phoneNumberId,
+      });
     if (!integration) {
       // Not one of our connected stores (or it was disconnected) — Meta
       // still expects a 200 for any well-formed, correctly-signed event.

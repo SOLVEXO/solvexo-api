@@ -522,7 +522,7 @@ export class ThemePackageService {
         compare_at_price: compareAtPrices.length ? Math.round(Math.min(...compareAtPrices) * 100) : null,
         vendor: product.vendor ?? '',
         featured_image: product.images?.[0] ? { src: product.images[0], alt: product.name } : null,
-        images: (product.images ?? []).map((src: string) => ({ src, alt: product.name })),
+        images: (product.images ?? []).map((src: string) => ({ src, alt: product.name })), video_url: product.videoUrl ?? '', video_first: !!product.videoFirst,
         tags: product.tags ?? [],
         variants: storefrontVariants,
         rating: product.averageRating ?? 0,
@@ -733,7 +733,7 @@ export class ThemePackageService {
         first_available_variant: mappedVariants.find((variant) => variant.available) ?? null,
         vendor: product.vendor ?? '',
         featured_image: product.images?.[0] ? { src: product.images[0], alt: product.name } : null,
-        images: (product.images ?? []).map((src: string) => ({ src, alt: product.name })),
+        images: (product.images ?? []).map((src: string) => ({ src, alt: product.name })), video_url: product.videoUrl ?? '', video_first: !!product.videoFirst,
         tags: product.tags ?? [],
       };
     }
@@ -783,7 +783,7 @@ export class ThemePackageService {
           first_available_variant: mappedVariants.find((variant) => variant.available) ?? null,
           vendor: product.vendor ?? '',
         featured_image: product.images?.[0] ? { src: product.images[0], alt: product.name } : null,
-          images: (product.images ?? []).map((src: string) => ({ src, alt: product.name })), tags: product.tags ?? [],
+          images: (product.images ?? []).map((src: string) => ({ src, alt: product.name })), video_url: product.videoUrl ?? '', video_first: !!product.videoFirst, tags: product.tags ?? [],
         };
       }
     }
@@ -1355,7 +1355,7 @@ function getRequestedPage(path: string): number {
 function buildCollectionProductFilter(rules: any): Record<string, any> {
   const clauses: Record<string, any>[] = [];
   if (rules?.categoryId) clauses.push({ $or: [{ categoryId: rules.categoryId }, { subCategoryId: rules.categoryId }] });
-  if (rules?.tags?.length) clauses.push({ tags: { $in: rules.tags } });
+  if (rules?.tags?.length) clauses.push({ tags: rules?.matchType === 'all' ? { $all: rules.tags } : { $in: rules.tags } });
   if (!clauses.length) return {};
   return rules?.matchType === 'all' ? { $and: clauses } : { $or: clauses };
 }
@@ -1609,7 +1609,7 @@ function availableQuantity(variant: any): number {
 function productMatchesCollection(product: any, rules: any): boolean {
   const clauses: boolean[] = [];
   if (rules?.categoryId) clauses.push(product.categoryId === rules.categoryId || product.subCategoryId === rules.categoryId);
-  if (rules?.tags?.length) clauses.push((product.tags ?? []).some((tag: string) => rules.tags.includes(tag)));
+  if (rules?.tags?.length) clauses.push(rules?.matchType === 'all' ? rules.tags.every((tag: string) => (product.tags ?? []).includes(tag)) : (product.tags ?? []).some((tag: string) => rules.tags.includes(tag)));
   if (!clauses.length) return true;
   return rules?.matchType === 'all' ? clauses.every(Boolean) : clauses.some(Boolean);
 }

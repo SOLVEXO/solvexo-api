@@ -151,6 +151,21 @@ export class SaasMetricsService {
     };
   }
 
+  /**
+   * Live MRR now vs the daily snapshot from 7 days ago (for the weekly digest). The movement is null until that
+   * snapshot exists; "new" means never seen in the week-ago snapshot (a returning store counts as new here).
+   */
+  async weekOverWeek(now = Date.now()) {
+    const { subs } = await this.load();
+    const live = liveMrrMap(subs);
+    const weekAgo: any = await this.snapshots.findOne({ date: dayKey(now - 7 * 86_400_000) }).lean();
+    const base = { mrr: totalMrr(live), payingStores: live.size, arpu: live.size ? round2(totalMrr(live) / live.size) : 0 };
+    if (!weekAgo) return { ...base, mrrWeekAgo: null, newMrr: null, churnedMrr: null, newPayingStores: null, churnedStores: null };
+    const prev = new Map<string, { mrr: number; planId: string | null }>(weekAgo.stores.map((x: any) => [String(x.storeId), { mrr: x.mrr, planId: x.planId ?? null }]));
+    const m = movementBetween(prev, live, () => false);
+    return { ...base, mrrWeekAgo: m.startMrr, newMrr: m.newMrr, churnedMrr: m.churnedMrr, newPayingStores: m.newStores, churnedStores: m.churnedStores };
+  }
+
   /** CSV of the monthly table, for spreadsheets. */
   async exportCsv(monthsWanted = 12): Promise<string> {
     const { data } = await this.getMetrics(monthsWanted);

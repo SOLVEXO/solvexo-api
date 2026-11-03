@@ -9,7 +9,7 @@ import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { RequirePermission } from '../auth/decorators/require-permission.decorator';
 import { actingSellerId } from '../common/acting-seller-id.util';
 import { StoreContactService } from './store-contact.service';
-import { CreateContactMessageDto, UpdateContactMessageDto } from './dto/create-contact-message.dto';
+import { CreateContactMessageDto, ReplyContactMessageDto, UpdateContactMessageDto } from './dto/create-contact-message.dto';
 
 /** Seller inbox for the storefront contact form. Staff with `onlinestore.content.manage` can read and triage it too. */
 @ApiTags('Store contact messages')
@@ -30,6 +30,13 @@ export class StoreContactController {
   @Patch(':storeId/:id')
   setStatus(@Req() req: any, @Param('storeId') storeId: string, @Param('id') id: string, @Body() dto: UpdateContactMessageDto) {
     return this.service.setStatus(storeId, actingSellerId(req.user), id, dto.status);
+  }
+
+  /** Answers the visitor by email from the store (its own SMTP when connected, else Solvexo's sender with the store's name). */
+  @Post(':storeId/:id/reply')
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  reply(@Req() req: any, @Param('storeId') storeId: string, @Param('id') id: string, @Body() dto: ReplyContactMessageDto) {
+    return this.service.reply(storeId, actingSellerId(req.user), id, dto.message, String(req.user?.name ?? req.user?.email ?? 'Store'));
   }
 
   @Delete(':storeId/:id')

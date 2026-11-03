@@ -37,7 +37,7 @@ export class LegacyPlatformSubscriptionBackfillService implements OnModuleInit {
       this.logger.warn(
         `LEGACY PLATFORM SUBSCRIPTIONS WITHOUT A SellerPlatformSubscription: ${orphans.length} store(s). ` +
         `Nothing bills these any more — review manually. ` +
-        orphans.map((o) => `[storeId=${o.storeId} tier=${o.tier} status=${o.status} ${o.billingInterval} $${o.amountUSD} provider=${o.paymentProvider}${o.providerSubscriptionId ? ' stripeSub=' + o.providerSubscriptionId : ''}]`).join(' '),
+        orphans.map((o) => `[storeId=${o.storeId} tier=${o.tier} status=${o.status} ${o.billingInterval} $ ${o.amountUSD} provider=${o.paymentProvider}${o.providerSubscriptionId ? ' stripeSub=' + o.providerSubscriptionId : ''}]`).join(' '),
       );
     }
     return orphans.map((o) => ({ storeId: String(o.storeId), tier: o.tier, status: o.status }));

@@ -19,13 +19,13 @@ export class ManualPaymentProvider implements IPaymentGateway {
 
   async chargeSubscription(subscriptionId: string, amountUSD: number, _context?: ChargeContext): Promise<ChargeResult> {
     const providerChargeId = this.fakeId('manual_chg');
-    console.log(`[ManualPayment] Simulated charge: $${amountUSD.toFixed(2)} USD | sub=${subscriptionId} | chargeId=${providerChargeId}`);
+    console.log(`[ManualPayment] Simulated charge: $ ${amountUSD.toFixed(2)} USD | sub=${subscriptionId} | chargeId=${providerChargeId}`);
     return { success: true, providerChargeId, paymentMethodType: 'manual', currency: 'usd' };
   }
 
   async chargeOneTime(referenceId: string, amountUSD: number, _context?: ChargeContext): Promise<ChargeResult> {
     const providerChargeId = this.fakeId('manual_chg');
-    console.log(`[ManualPayment] Simulated one-time charge: $${amountUSD.toFixed(2)} USD | ref=${referenceId} | chargeId=${providerChargeId}`);
+    console.log(`[ManualPayment] Simulated one-time charge: $ ${amountUSD.toFixed(2)} USD | ref=${referenceId} | chargeId=${providerChargeId}`);
     return { success: true, providerChargeId, paymentMethodType: 'manual', currency: 'usd' };
   }
 
@@ -37,7 +37,7 @@ export class ManualPaymentProvider implements IPaymentGateway {
     _context?: ChargeContext,
   ): Promise<CreateProviderSubResult> {
     const providerSubscriptionId = this.fakeId('manual_sub');
-    console.log(`[ManualPayment] Simulated subscription: ${planName} $${amountUSD.toFixed(2)}/${interval} | sub=${subscriptionId} | provId=${providerSubscriptionId}`);
+    console.log(`[ManualPayment] Simulated subscription: ${planName} $ ${amountUSD.toFixed(2)}/${interval} | sub=${subscriptionId} | provId=${providerSubscriptionId}`);
     return { providerSubscriptionId, status: 'active' };
   }
 
@@ -75,7 +75,7 @@ export class ManualPaymentProvider implements IPaymentGateway {
   }
 
   async refund(providerChargeId: string, amountUSD: number): Promise<RefundResult> {
-    console.log(`[ManualPayment] Simulated refund: $${amountUSD.toFixed(2)} USD | chargeId=${providerChargeId}`);
+    console.log(`[ManualPayment] Simulated refund: $ ${amountUSD.toFixed(2)} USD | chargeId=${providerChargeId}`);
     return { success: true, providerRefundId: this.fakeId('manual_re') };
   }
 

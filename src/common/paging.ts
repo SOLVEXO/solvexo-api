@@ -1,0 +1,1 @@
+export const pageOf = (page: any, limit: any, max = 100) => { const l = Math.min(Math.max(parseInt(limit, 10) || 20, 1), max); const p = Math.max(parseInt(page, 10) || 1, 1); return { page: p, limit: l, skip: (p - 1) * l }; };

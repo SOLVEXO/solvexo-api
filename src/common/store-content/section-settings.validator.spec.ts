@@ -359,6 +359,12 @@ describe('section-settings.validator', () => {
       expect(() => validateBlockSettings('product_buy_now', { label: 'x'.repeat(41) })).toThrow(BadRequestException);
     });
     it('pickup block: optional heading up to 60 characters', () => {
+      expect(() => validateBlockSettings('product_share', {})).not.toThrow();
+      expect(() => validateBlockSettings('product_share', { linkedin: 'show', x: 'hide' })).not.toThrow();
+      expect(() => validateBlockSettings('product_share', { telegram: 'maybe' })).toThrow(BadRequestException);
+      expect(() => validateBlockSettings('product_share', { customLinks: 'Reddit | https://www.reddit.com/submit?url={url}&title={title}' })).not.toThrow();
+      expect(() => validateBlockSettings('product_share', { customLinks: 'Bad | http://x.com/?u={url}' })).toThrow(BadRequestException);
+      expect(() => validateBlockSettings('product_share', { customLinks: 'NoUrl | https://x.com/' })).toThrow(BadRequestException);
       expect(() => validateBlockSettings('product_pickup', {})).not.toThrow();
       expect(() => validateBlockSettings('product_pickup', { heading: 'Collect in store' })).not.toThrow();
       expect(() => validateBlockSettings('product_pickup', { heading: 'x'.repeat(61) })).toThrow(BadRequestException);

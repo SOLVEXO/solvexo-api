@@ -1,3 +1,4 @@
+import { emitOrdersDisputed } from '../common/order-events';
 import {
   Injectable,
   Optional,
@@ -788,6 +789,7 @@ export class PaymentService {
       },
     });
     await this.reverseSellerLedgerForOrders(transaction.orderIds, disputeAmount, 'Stripe dispute/chargeback');
+    emitOrdersDisputed(transaction.orderIds); // digital downloads / courses of these orders stop until the seller restores them
 
     // Real, actionable notification — previously a dispute only ever showed
     // up as a silent ledger reversal + the "Needs Attention" count; a seller

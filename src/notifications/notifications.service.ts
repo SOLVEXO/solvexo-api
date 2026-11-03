@@ -144,6 +144,7 @@ export class NotificationsService {
               html,
               ...(sender?.fromName ? { fromName: sender.fromName } : {}),
               ...(sender?.replyTo ? { replyTo: sender.replyTo } : {}),
+              ...(sender && storeId ? { storeId } : {}),
               ...(email.event && storeId ? { timeline: { orderId: data?.orderId ? String(data.orderId) : null, event: email.event, storeId } } : {}),
             });
           }
@@ -286,7 +287,7 @@ export class NotificationsService {
    * default), sender name and reply-to. Never throws for "store has no settings" — that means all defaults.
    * Returns null when the store doesn't exist.
    */
-  async buildCustomerEmail(args: { storeId: string; event: CustomerEmailEvent; vars: TemplateVars; orderId?: string | null; giftCardId?: string | null; trackingUrl?: string | null; cta?: { label: string; url: string } | null; locale?: string | null }): Promise<BuiltCustomerEmail | null> {
+  async buildCustomerEmail(args: { extraHtml?: string; storeId: string; event: CustomerEmailEvent; vars: TemplateVars; orderId?: string | null; giftCardId?: string | null; trackingUrl?: string | null; cta?: { label: string; url: string } | null; locale?: string | null }): Promise<BuiltCustomerEmail | null> {
     const repos = this.databaseService.repositories;
     const [store, settings]: [any, any] = await Promise.all([
       repos.storeModel.findById(args.storeId).select('name contactEmail slug customDomain customDomainStatus logo defaultLanguage').lean(),
@@ -330,6 +331,7 @@ export class NotificationsService {
         footerText: settings?.footerText ?? null,
         locale: text.locale,
       },
+      extraHtml: args.extraHtml,
       cta: args.cta?.url && /^https?:\/\//i.test(args.cta.url)
         ? { label: args.cta.label, url: args.cta.url.replace(/"/g, '%22') }
         : ctaUrl ? { label: ctaLabel, url: ctaUrl.replace(/"/g, '%22') } : null,
@@ -349,12 +351,12 @@ export class NotificationsService {
    * Sends one customer email straight away (order confirmation, "Resend" from the order page) and records the real
    * outcome on the order timeline. `force` ignores the store's off-switch (a manual resend is the seller's decision).
    */
-  async sendCustomerEmail(args: { to: string; storeId: string; event: CustomerEmailEvent; vars: TemplateVars; orderId?: string | null; giftCardId?: string | null; trackingUrl?: string | null; cta?: { label: string; url: string } | null; force?: boolean }): Promise<'sent' | 'disabled' | 'failed'> {
+  async sendCustomerEmail(args: { attachments?: { filename: string; content: Buffer | string; contentType?: string }[]; extraHtml?: string; to: string; storeId: string; event: CustomerEmailEvent; vars: TemplateVars; orderId?: string | null; giftCardId?: string | null; trackingUrl?: string | null; cta?: { label: string; url: string } | null; force?: boolean }): Promise<'sent' | 'disabled' | 'failed'> {
     try {
       const built = await this.buildCustomerEmail(args);
       if (!built) return 'failed';
       if (!built.send && !args.force) return 'disabled';
-      const ok = await this.emailService.sendMail(args.to, built.subject, built.html, built.replyTo, undefined, undefined, built.fromName);
+      const ok = await this.emailService.sendMail(args.to, built.subject, built.html, built.replyTo, undefined, args.attachments, built.fromName, args.storeId);
       if (args.orderId) await this.recordEmailTimeline(String(args.orderId), args.event, args.to, ok, args.storeId);
       else await this.recordDeliveryResult(args.storeId, ok);
       return ok ? 'sent' : 'failed';
@@ -431,7 +433,7 @@ export class NotificationsService {
       if (jobName === NOTIFICATION_PUSH_JOB) {
         await this.firebaseAdminService.sendToUser(data.userId, { title: data.title, body: data.body, data: data.data });
       } else if (jobName === NOTIFICATION_EMAIL_JOB) {
-        const ok = await this.emailService.sendMail(data.to, data.subject, data.html, data.replyTo ?? null, undefined, undefined, data.fromName ?? null);
+        const ok = await this.emailService.sendMail(data.to, data.subject, data.html, data.replyTo ?? null, undefined, undefined, data.fromName ?? null, data.storeId ?? data.timeline?.storeId ?? null);
         if (data.timeline) {
           if (data.timeline.orderId) await this.recordEmailTimeline(data.timeline.orderId, data.timeline.event, data.to, ok, data.timeline.storeId);
           else if (data.timeline.storeId) await this.recordDeliveryResult(data.timeline.storeId, ok);

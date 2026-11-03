@@ -24,7 +24,17 @@ export class StockCountsService {
    *  verifies against. Only one OPEN count per store at a time — starting a
    *  second one while another is still open would make it ambiguous which
    *  session's `finish()` should win. */
-  async start(storeId: string, sellerId: string, locationId?: string) {
+  /** Display name of whoever is acting (staff member or the seller); never blocks the action. */
+  private async actorName(actor?: { userId?: string; role?: string }): Promise<string | null> {
+    if (!actor?.userId) return null;
+    try {
+      const model: any = actor.role === 'staff' ? this.repos.staffMemberModel : this.repos.sellerModel;
+      const doc: any = await model.findById(actor.userId).select('name').lean();
+      return typeof doc?.name === 'string' && doc.name.trim() ? doc.name.trim() : null;
+    } catch { return null; }
+  }
+
+  async start(storeId: string, sellerId: string, locationId?: string, actor?: { userId?: string; role?: string }) {
     const { storeModel, productModel, productVariantModel, variantLocationStockModel, storeLocationModel, stockCountModel } = this.repos;
     await verifyStoreOwnershipOrForbidden(storeModel, storeId, sellerId);
 
@@ -68,7 +78,7 @@ export class StockCountsService {
     let count: any;
     try {
       count = await stockCountModel.create({
-        storeId, sellerId, locationId: locationId ?? null, items, status: 'open', startedBy: sellerId, startedAt: new Date(),
+        storeId, sellerId, locationId: locationId ?? null, items, status: 'open', startedBy: sellerId, startedByName: await this.actorName(actor), startedAt: new Date(),
       });
     } catch (err: any) {
       // the partial unique index {storeId, status:'open'} caught a concurrent start
@@ -99,7 +109,16 @@ export class StockCountsService {
 
   async getById(storeId: string, sellerId: string, id: string) {
     const count = await this.getOwned(storeId, sellerId, id);
-    return count.toObject();
+    return this.withVariantLabels(count.toObject());
+  }
+
+  /** The line only snapshots product name + SKU: look the variant options up so the counter sees "Black", not 5 identical names. */
+  private async withVariantLabels(obj: any) {
+    const variantIds = [...new Set<string>((obj.items ?? []).map((i: any) => i.variantId).filter(Boolean))];
+    if (variantIds.length === 0) return obj;
+    const variants: any[] = await this.repos.productVariantModel.find({ _id: { $in: variantIds } }).select('options').lean();
+    const labelById = new Map<string, string>(variants.map(v => [String(v._id), (v.options ?? []).map((o: any) => o.value).filter(Boolean).join(' / ')]));
+    return { ...obj, items: obj.items.map((i: any) => ({ ...i, variantLabel: labelById.get(String(i.variantId)) || null })) };
   }
 
   /** Repeatable per-line — the whole point of a real counting session is
@@ -122,7 +141,7 @@ export class StockCountsService {
       if (still && still.status !== 'open') throw new BadRequestException('This stock count is no longer open.');
       throw new NotFoundException('Line item not found on this stock count');
     }
-    return updated.toObject();
+    return this.withVariantLabels(updated.toObject());
   }
 
   async cancel(storeId: string, sellerId: string, id: string) {
@@ -141,10 +160,11 @@ export class StockCountsService {
    *  already uses for a manual count fix. Uncounted lines (`countedQty ===
    *  null`) are left completely untouched — a partial count never zeroes
    *  out whatever the seller didn't get to. */
-  async finish(storeId: string, sellerId: string, id: string) {
+  async finish(storeId: string, sellerId: string, id: string, actor?: { userId?: string; role?: string }) {
     await this.getOwned(storeId, sellerId, id);
     const { productVariantModel, stockAdjustmentModel, sellerModel, variantLocationStockModel, stockCountModel } = this.repos;
     const seller = await sellerModel.findOne({ _id: sellerId }).select('name');
+    const completedByName = await this.actorName(actor);
     const skipped: string[] = [];
 
     // Everything below commits as ONE transaction, and the count is "claimed" (open -> completed) first: a double click /
@@ -154,7 +174,7 @@ export class StockCountsService {
     const result = await this.connection.transaction(async (session) => {
       skipped.length = 0;
       const count: any = await stockCountModel
-        .findOneAndUpdate({ _id: id, storeId, status: 'open' }, { $set: { status: 'completed', completedAt: new Date() } }, { new: true, session });
+        .findOneAndUpdate({ _id: id, storeId, status: 'open' }, { $set: { status: 'completed', completedAt: new Date(), completedByName } }, { new: true, session });
       if (!count) throw new BadRequestException('This stock count is no longer open.');
 
       let applied = 0;

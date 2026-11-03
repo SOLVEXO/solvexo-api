@@ -141,8 +141,8 @@ export async function buildPurchaseOrderPdf(data: PoPdfData, brand: PoPdfBrand):
   const COL = {
     idx: MARGIN + 4,
     name: MARGIN + 26,
-    qty: MARGIN + innerW - 190,
-    unit: MARGIN + innerW - 128,
+    qty: MARGIN + innerW - 236,
+    unit: MARGIN + innerW - 120,
     amount: PAGE_W - MARGIN - 4,
   };
   const nameW = COL.qty - COL.name - 46;

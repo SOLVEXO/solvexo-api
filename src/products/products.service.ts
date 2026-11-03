@@ -1,3 +1,6 @@
+import { normalizeDigital } from './digital-input.util';
+
+const pickNewFile = (b: any) => ({ url: b?.url, name: b?.name, size: b?.size, mimeType: b?.mimeType });
 import {
   Injectable,
   UnauthorizedException,
@@ -12,9 +15,8 @@ import { translatedHandleClause } from '../common/translated-handle.util';
 import { InjectConnection } from '@nestjs/mongoose';
 import { ClientSession, Connection, Types, isValidObjectId } from 'mongoose';
 import {
-  PRODUCT_LIMITS, assertMoney, assertStockQuantity, copySku, findDuplicateSku, generateSkus, normalizeBarcode, normalizeDescription,
-  normalizeImages, normalizeName, normalizeSku, normalizeStatus, normalizeTags, resolveScheduledAt,
-} from './product-input.util';
+  PRODUCT_LIMITS, assertMoney, assertStockQuantity, copySku, findDuplicateSku, generateSkus, normalizeBarcode, normalizeDescription, normalizeShortDescription, normalizeProductTabs,
+  normalizeImages, normalizeName, normalizeSku, normalizeStatus, normalizeTags, resolveScheduledAt, normalizeVideoUrl } from './product-input.util';
 import { softDeleteProducts } from './product-cascade.util';
 import { normalizeComplementaryIds } from './complementary-products.util';
 import { buildStoreProductFilter, productSort } from './product-list-filter.util';
@@ -839,6 +841,9 @@ export class ProductsService {
       };
     }
 
+    // Internal: the preferred supplier is for the seller's reordering only.
+    delete (product as any).supplierId;
+
     // 2️⃣ Get seller name
     const seller = await sellerModel
       .findOne({
@@ -1126,6 +1131,7 @@ export class ProductsService {
       customs: { countryOfOrigin: null, hsCode: null, customsDescription: null, ...customs.value },
       taxable: v.taxable !== false,
       images: normalizeImages(v.images),
+      videoUrl: normalizeVideoUrl(v.videoUrl),
       sku: normalizeSku(v.sku),
       barcode: normalizeBarcode(v.barcode),
       isDefault: v.isDefault === true,
@@ -1183,6 +1189,8 @@ export class ProductsService {
 
     const name = normalizeName(body.name);
     const description = normalizeDescription(body.description);
+    const shortDescription = normalizeShortDescription(body.shortDescription);
+    const tabs = normalizeProductTabs(body.tabs);
     const images = normalizeImages(body.images);
     const tags = normalizeTags(body.tags);
     const status = normalizeStatus(body.status);
@@ -1230,6 +1238,9 @@ export class ProductsService {
             name,
             slug,
             description,
+            shortDescription,
+            tabs,
+            supplierId: await this.resolveSupplierId(storeId, body.supplierId),
             shippingProfileId,
             ...parseSellingOptions(body),
             productType: 'physical',
@@ -1237,6 +1248,8 @@ export class ProductsService {
             categoryId,
             subCategoryId: subCategoryId ?? null,
             images,
+            videoUrl: normalizeVideoUrl(body.videoUrl),
+            videoFirst: body.videoFirst === true,
             tags,
             digital: null,
             isListedOnSolvexo: isListedOnSolvexo ?? false,
@@ -1284,6 +1297,42 @@ export class ProductsService {
     };
   }
 
+  /**
+   * M4: publish a new version of one digital file. The array slot (fileIndex) stays, so every
+   * DigitalAccess / order that points at it automatically serves the latest version; the old
+   * version is kept in file.history. Returns the saved file (without history urls).
+   */
+  async publishDigitalFileVersion(sellerId: string, productId: string, fileIndex: number, body: any) {
+    const { productModel } = this.databaseService.repositories;
+    const product: any = await productModel.findOne({ _id: productId, sellerId, isDelete: false });
+    if (!product || product.type !== 'digital' || !product.digital?.files?.[fileIndex]) throw new NotFoundException('File not found');
+    const old = product.digital.files[fileIndex];
+    if (old.archived) throw new BadRequestException('This file was removed');
+
+    const next = normalizeDigital({ files: [{ ...(old.toObject?.() ?? old), ...pickNewFile(body) }] }, { files: [] }).files[0];
+    const version = body?.version ? String(body.version).trim().slice(0, 30) : null;
+    const changelog = body?.changelog ? String(body.changelog).trim().slice(0, 1000) : null;
+    if (!version) throw new BadRequestException('version is required');
+    if (version === old.version) throw new BadRequestException('Use a new version number');
+
+    const history = [
+      ...(old.history ?? []).slice(-49),
+      { url: old.url, name: old.name, size: old.size ?? null, mimeType: old.mimeType ?? null, version: old.version ?? null, changelog: old.changelog ?? null, replacedAt: new Date() },
+    ];
+    const set: any = {
+      [`digital.files.${fileIndex}.url`]: next.url,
+      [`digital.files.${fileIndex}.name`]: next.name,
+      [`digital.files.${fileIndex}.size`]: next.size,
+      [`digital.files.${fileIndex}.mimeType`]: next.mimeType,
+      [`digital.files.${fileIndex}.version`]: version,
+      [`digital.files.${fileIndex}.changelog`]: changelog,
+      [`digital.files.${fileIndex}.updatedAt`]: new Date(),
+      [`digital.files.${fileIndex}.history`]: history,
+    };
+    await productModel.updateOne({ _id: productId, sellerId }, { $set: set });
+    return { success: true, data: { fileIndex, version, name: next.name, storeId: String(product.storeId), productName: product.name, changelog } };
+  }
+
   async addDigitalProduct(sellerId: string, body: any) {
     const { storeModel, sellerModel, productModel, productVariantModel } = this.databaseService.repositories;
 
@@ -1316,6 +1365,8 @@ export class ProductsService {
 
     const name = normalizeName(body.name);
     const description = normalizeDescription(body.description);
+    const shortDescription = normalizeShortDescription(body.shortDescription);
+    const tabs = normalizeProductTabs(body.tabs);
     const images = normalizeImages(body.images);
     const tags = normalizeTags(body.tags);
     const status = normalizeStatus(body.status);
@@ -1348,7 +1399,7 @@ export class ProductsService {
 
     const categoryId = await this.resolveProductCategoryId(storeId, store.categoryId, requestedCategoryId);
     // Prepared BEFORE the transaction: it can upload/derive a preview file, which must not hold a transaction open.
-    const digitalPayload = digital ? await this.prepareDigitalPreview(null, digital) : null;
+    const digitalPayload = digital ? await this.prepareDigitalPreview(null, normalizeDigital(digital)) : null;
 
     const productId = new Types.ObjectId();
     const [sku] = generateSkus(String(productId), 1, []);
@@ -1365,6 +1416,8 @@ export class ProductsService {
             name,
             slug,
             description,
+            shortDescription,
+            tabs,
             productType: finalProductType,
             type: 'digital',
             categoryId,
@@ -1373,6 +1426,8 @@ export class ProductsService {
             customLevel: normalizedFields.customLevel,
             normalizedCustomLevel: normalizedFields.normalizedCustomLevel,
             images,
+            videoUrl: normalizeVideoUrl(body.videoUrl),
+            videoFirst: body.videoFirst === true,
             tags,
             digital: digitalPayload,
             isListedOnSolvexo: isListedOnSolvexo ?? false,
@@ -1437,6 +1492,31 @@ export class ProductsService {
       message: 'Product fetched successfully',
       data: { product, variants, defaultVariant },
     };
+  }
+
+  /** A product's preferred supplier must be a live supplier of the same store; empty clears it. */
+  private async resolveSupplierId(storeId: string, raw: unknown): Promise<string | null> {
+    if (raw === undefined || raw === null || raw === '') return null;
+    if (typeof raw !== 'string' || !isValidObjectId(raw)) throw new BadRequestException('Supplier not found');
+    const found = await this.databaseService.repositories.supplierModel.exists({ _id: raw, storeId, isDelete: false });
+    if (!found) throw new BadRequestException('Supplier not found');
+    return raw;
+  }
+
+  /** What archiving these products would leave pointing at them: open draft orders, open purchase orders, menu links, carts. Read-only. */
+  async archiveImpact(sellerId: string, storeId: string, rawIds: string) {
+    const ids = String(rawIds ?? '').split(',').map(x => x.trim()).filter(Boolean).slice(0, 200);
+    if (!storeId || ids.length === 0) throw new BadRequestException('storeId and ids are required');
+    const { storeModel, draftOrderModel, purchaseOrderModel, menuModel, cartModel } = this.databaseService.repositories as any;
+    const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false }).select('_id').lean();
+    if (!store) throw new ForbiddenException('Store not found or unauthorized');
+    const [draftOrders, purchaseOrders, menus, carts] = await Promise.all([
+      draftOrderModel.countDocuments({ storeId, isDelete: false, status: 'open', 'items.productId': { $in: ids } }),
+      purchaseOrderModel.countDocuments({ storeId, isDelete: { $ne: true }, status: { $in: ['draft', 'ordered', 'partially_received'] }, 'items.productId': { $in: ids } }),
+      menuModel.countDocuments({ storeId, isDelete: { $ne: true }, $or: [{ 'items.productId': { $in: ids } }, { 'items.children.productId': { $in: ids } }, { 'items.children.children.productId': { $in: ids } }] }),
+      this.databaseService.repositories.cartModel.countDocuments({ storeId, isDelete: false, 'items.productId': { $in: ids } }),
+    ]);
+    return { data: { draftOrders, purchaseOrders, menus, carts, total: draftOrders + purchaseOrders + menus + carts } };
   }
 
   async getStoreProducts(sellerId: string, storeId: string, query: any) {
@@ -1542,11 +1622,16 @@ export class ProductsService {
     }
 
     if (description !== undefined) productUpdate.description = normalizeDescription(description);
+    if (body.shortDescription !== undefined) productUpdate.shortDescription = normalizeShortDescription(body.shortDescription);
+    if (body.tabs !== undefined) productUpdate.tabs = normalizeProductTabs(body.tabs);
+    if (body.supplierId !== undefined) productUpdate.supplierId = await this.resolveSupplierId(String(product.storeId), body.supplierId);
     if (requestedCategoryId !== undefined) {
       productUpdate.categoryId = await this.resolveProductCategoryId(String(product.storeId), null, requestedCategoryId);
     }
     if (subCategoryId !== undefined) productUpdate.subCategoryId = subCategoryId;
     if (images !== undefined) productUpdate.images = normalizeImages(images);
+    if (body?.videoUrl !== undefined) productUpdate.videoUrl = normalizeVideoUrl(body.videoUrl);
+    if (body?.videoFirst !== undefined) productUpdate.videoFirst = body.videoFirst === true;
     if (tags !== undefined) productUpdate.tags = normalizeTags(tags);
     if (isListedOnSolvexo !== undefined) productUpdate.isListedOnSolvexo = !!isListedOnSolvexo;
     if (templateKey !== undefined) productUpdate.templateKey = templateKey;
@@ -1576,7 +1661,7 @@ export class ProductsService {
       productUpdate.scheduledAt = resolveScheduledAt('scheduled', scheduledAt);
     }
     if (digital !== undefined && product.type === 'digital') {
-      productUpdate.digital = await this.prepareDigitalPreview(product.digital?.preview, digital);
+      productUpdate.digital = await this.prepareDigitalPreview(product.digital?.preview, normalizeDigital(digital, product.digital));
     }
 
     if (educationLevel !== undefined && product.productType === 'educational') {
@@ -1814,11 +1899,17 @@ export class ProductsService {
         defaultVariant?.customsDescription ?? '',
         defaultVariant && defaultVariant.taxable === false ? 'no' : 'yes',
         defaultVariant?.images?.[0] ?? product.images?.[0] ?? '',
+        product.videoUrl ?? '',
+        product.shortDescription ?? '',
+        product.tabs?.[0]?.title ?? '',
+        product.tabs?.[0]?.content ?? '',
+        product.tabs?.[1]?.title ?? '',
+        product.tabs?.[1]?.content ?? '',
       ]);
     }
 
     return toCsv(
-      ['Name', 'SKU', 'Type', 'Product Type', 'Status', 'Price', 'Compare-at Price', 'Stock', 'Variant Count', 'Tags', 'All-Time Sales', 'Category', 'Length (cm)', 'Width (cm)', 'Height (cm)', 'Country of Origin', 'HS Code', 'Customs Description', 'Charge Tax', 'Image URL'],
+      ['Name', 'SKU', 'Type', 'Product Type', 'Status', 'Price', 'Compare-at Price', 'Stock', 'Variant Count', 'Tags', 'All-Time Sales', 'Category', 'Length (cm)', 'Width (cm)', 'Height (cm)', 'Country of Origin', 'HS Code', 'Customs Description', 'Charge Tax', 'Image URL', 'Video URL', 'Short Description', 'Tab 1 Title', 'Tab 1 Content', 'Tab 2 Title', 'Tab 2 Content'],
       rows,
     );
   }

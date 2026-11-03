@@ -171,7 +171,7 @@ export class StaffService {
 
     // Awaited (SMTP has an 8 s connect timeout) so the owner is told the truth
     // about delivery instead of a silent "Invite pending".
-    const emailSent = await this.sendInviteEmail(store?.name ?? 'your store', dto.name, dto.email, inviteToken, store?.contactEmail ?? null).catch(() => false);
+    const emailSent = await this.sendInviteEmail(store?.name ?? 'your store', dto.name, dto.email, inviteToken, store?.contactEmail ?? null, storeId).catch(() => false);
 
     this.activityLogService.log({
       storeId, category: 'settings', action: 'staff_member_added',
@@ -203,7 +203,7 @@ export class StaffService {
     return { inviteUrl: `${(process.env.FRONTEND_URL || '').replace(/\/$/, '')}/staff-invite/${token}` };
   }
 
-  private async sendInviteEmail(storeName: string, staffName: string, email: string, token: string, storeContactEmail: string | null): Promise<boolean> {
+  private async sendInviteEmail(storeName: string, staffName: string, email: string, token: string, storeContactEmail: string | null, storeId?: string): Promise<boolean> {
     const frontendBase = (process.env.FRONTEND_URL || '').replace(/\/$/, '');
     const inviteUrl = `${frontendBase}/staff-invite/${token}`;
     const rawStoreName = storeName;
@@ -218,7 +218,7 @@ export class StaffService {
         <p style="color:#888;font-size:12px;">If the button doesn't work, copy this link: ${inviteUrl}</p>
         <p style="color:#888;font-size:12px;">This link expires in ${INVITE_EXPIRY_DAYS} days. If you weren't expecting this, you can ignore this email.</p>
       </div>`;
-    return this.emailService.sendMail(email, `You've been invited to ${rawStoreName}`, html, storeContactEmail);
+    return this.emailService.sendMail(email, `You've been invited to ${rawStoreName}`, html, storeContactEmail, undefined, undefined, storeName, storeId);
   }
 
   /** Public (no JWT — the staff member has no account yet) — resolves an
@@ -339,7 +339,7 @@ export class StaffService {
     await staff.save();
 
     const store = await this.repos.storeModel.findById(storeId).select('name contactEmail').lean() as any;
-    const emailSent = await this.sendInviteEmail(store?.name ?? 'your store', (staff as any).name, (staff as any).email, inviteToken, store?.contactEmail ?? null).catch(() => false);
+    const emailSent = await this.sendInviteEmail(store?.name ?? 'your store', (staff as any).name, (staff as any).email, inviteToken, store?.contactEmail ?? null, storeId).catch(() => false);
 
     return { success: true, message: emailSent ? 'Invite resent' : 'Invite saved but the email could not be sent', emailSent, ...this.inviteLinkFor(actorRole, inviteToken) };
   }
@@ -445,7 +445,7 @@ export class StaffService {
         <p><a href="${url}" style="display:inline-block;background:#D97757;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:bold;">Choose a new password</a></p>
         <p style="color:#888;font-size:12px;">This link expires in ${RESET_EXPIRY_MINUTES} minutes. If you didn't ask for this, you can ignore this email — your password stays the same.</p>
       </div>`;
-    this.emailService.sendMail(staff.email, 'Reset your password', html, store?.contactEmail ?? null).catch(() => {});
+    this.emailService.sendMail(staff.email, 'Reset your password', html, store?.contactEmail ?? null, undefined, undefined, store?.name ?? null, storeId).catch(() => {});
     return generic;
   }
 

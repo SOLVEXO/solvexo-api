@@ -91,6 +91,9 @@ export class Admin {
     // sha256(ip|userAgent) of devices that already logged in: a new one triggers a login alert.
     @Prop({ type: [String], default: [] }) knownDevices: string[];
 
+    // Weekly business digest email (Mondays). On by default; each admin can switch it off in Settings → Notifications.
+    @Prop({ default: true }) weeklyDigest: boolean;
+
     // ── Two-factor authentication (authenticator app, see auth/admin-two-factor.service.ts) ──
     @Prop({ default: false }) twoFactorEnabled: boolean;
     @Prop({ type: Date, default: null }) twoFactorEnabledAt: Date | null;

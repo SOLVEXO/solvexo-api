@@ -6,6 +6,8 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { AdminFinanceService } from './admin-finance.service';
+import { RevenueModelService } from './revenue-model.service';
+import { SaasMetricsQueryDto } from '../admin-analytics/dto/saas-metrics-query.dto';
 import { AdminAnalyticsQueryDto } from '../admin-analytics/dto/admin-analytics-query.dto';
 import { SellerBalancesQueryDto } from './dto/seller-balances-query.dto';
 import { AdminTransactionsQueryDto } from './dto/admin-transactions-query.dto';
@@ -26,7 +28,10 @@ import { RequireApproval } from '../auth/decorators/admin-guards.decorator';
 @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
 @Controller('api/admin/finance')
 export class AdminFinanceController {
-  constructor(private readonly adminFinanceService: AdminFinanceService) {}
+  constructor(
+    private readonly adminFinanceService: AdminFinanceService,
+    private readonly revenueModel: RevenueModelService,
+  ) {}
 
   // ─── Dashboard ───────────────────────────────────────────────────────────
 
@@ -34,6 +39,13 @@ export class AdminFinanceController {
   @Get('overview')
   getOverview(@Query() query: AdminAnalyticsQueryDto) {
     return this.adminFinanceService.getOverview(query);
+  }
+
+  /** Solvexo revenue by stream and month vs merchant GMV: take rate, mix and concentration (3–24 months, default 12). */
+  @RequirePermission('finance.view')
+  @Get('revenue-model')
+  getRevenueModel(@Query() query: SaasMetricsQueryDto) {
+    return this.revenueModel.getRevenueModel(query.months ?? 12);
   }
 
   /** What sellers pay Solvexo: plan revenue + collected third-party transaction fees (USD). */

@@ -93,6 +93,10 @@ export class CreateVariantDto {
 
   @IsOptional()
   @IsString()
+  videoUrl?: string;
+
+  @IsOptional()
+  @IsString()
   sku?: string;
 
   @IsOptional()

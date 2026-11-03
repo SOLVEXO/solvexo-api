@@ -53,6 +53,38 @@ export class DigitalFile {
 
   @Prop({ type: String, default: null })
   mimeType: string | null;
+
+  // ---- multi-file / versioning (all optional; old single-file products keep working) ----
+  @Prop({ type: String, default: null })
+  label: string | null;
+
+  @Prop({ type: String, default: null })
+  version: string | null;
+
+  @Prop({ default: false })
+  stampPdf: boolean;
+
+  // AccessPlan id required to download this file (M5); null = anyone who bought it
+  @Prop({ type: String, default: null })
+  requiresPlan: string | null;
+
+  // display order only; the array index is NEVER reordered (orders reference it)
+  @Prop({ type: Number, default: 0 })
+  position: number;
+
+  // "removed" by the seller: hidden from new buyers but the index stays valid
+  @Prop({ default: false })
+  archived: boolean;
+
+  // ---- versions (M4): the file above is always the LATEST; older ones live here ----
+  @Prop({ type: Date, default: null })
+  updatedAt: Date | null;
+
+  @Prop({ type: String, default: null })
+  changelog: string | null;
+
+  @Prop({ type: [{ url: String, name: String, size: Number, mimeType: String, version: String, changelog: String, replacedAt: Date, _id: false }], default: [] })
+  history: { url: string; name: string; size: number | null; mimeType: string | null; version: string | null; changelog: string | null; replacedAt: Date }[];
 }
 export const DigitalFileSchema = SchemaFactory.createForClass(DigitalFile);
 
@@ -102,6 +134,10 @@ export class DigitalConfig {
 
   @Prop({ type: DigitalPreviewSchema, default: () => ({}) })
   preview: DigitalPreview;
+
+  // per-sale license keys (M7)
+  @Prop({ type: { enabled: { type: Boolean, default: false }, activationLimit: { type: Number, default: 1 } }, _id: false, default: () => ({ enabled: false, activationLimit: 1 }) })
+  licenseKeys: { enabled: boolean; activationLimit: number };
 }
 export const DigitalConfigSchema = SchemaFactory.createForClass(DigitalConfig);
 
@@ -132,6 +168,18 @@ export class Product {
   @Prop({ type: String, default: '' })
   description: string;
 
+  /** One or two lines shown under the price. */
+  @Prop({ type: String, default: '' })
+  shortDescription: string;
+
+  /** Extra tabs next to Description (title + content). */
+  @Prop({ type: [{ _id: false, title: String, content: String }], default: [] })
+  tabs: { title: string; content: string }[];
+
+  /** Preferred supplier (a Supplier of the same store): reorder suggestions group by it. Never sent to shoppers. */
+  @Prop({ type: String, default: null })
+  supplierId: string | null;
+
   @Prop({ type: String, enum: Object.values(ProductType), required: true })
   productType: ProductType;
 
@@ -161,6 +209,14 @@ export class Product {
   // product gallery / cover images (dono type ke liye)
   @Prop({ type: [String], default: [] })
   images: string[];
+
+  // Optional product video shown in the storefront gallery: an uploaded file (Cloudinary) or a YouTube / Vimeo link.
+  @Prop({ type: String, default: '' })
+  videoUrl: string;
+
+  // true = the video is the first item of the gallery (the cover stays the first image).
+  @Prop({ type: Boolean, default: false })
+  videoFirst: boolean;
 
   @Prop({ type: [String], default: [] })
   tags: string[];

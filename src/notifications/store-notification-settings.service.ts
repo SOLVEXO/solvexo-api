@@ -57,6 +57,17 @@ export class StoreNotificationSettingsService {
     }
   }
 
+  /** Where a connection test goes: the signed-in person's email, else the owner's. */
+  async testRecipient(sellerId: string, actorEmail?: string | null): Promise<string> {
+    let to = String(actorEmail ?? '').trim();
+    if (!to) {
+      const seller: any = await this.r.sellerModel.findById(sellerId).select('email').lean();
+      to = String(seller?.email ?? '').trim();
+    }
+    if (!to) throw new BadRequestException('Your account has no email address to send the test to.');
+    return to;
+  }
+
   async get(sellerId: string, storeId: string) {
     const store = await verifyStoreOwnershipStrict(this.r.storeModel, storeId, sellerId);
     const settings: any = await this.r.storeNotificationSettingsModel.findOne({ storeId, isDelete: false }).lean();
@@ -279,7 +290,7 @@ export class StoreNotificationSettingsService {
     if (now - last < 10_000) throw new BadRequestException('A test email was just sent — wait a few seconds before sending another.');
     StoreNotificationSettingsService.testSentAt.set(storeId, now);
 
-    const ok = await this.emailService.sendMail(to, `[Test] ${built.subject}`, built.html, built.replyTo, undefined, undefined, built.fromName);
+    const ok = await this.emailService.sendMail(to, `[Test] ${built.subject}`, built.html, built.replyTo, undefined, undefined, built.fromName, storeId);
     if (!ok) {
       StoreNotificationSettingsService.testSentAt.delete(storeId); // nothing went out — allow an immediate retry
       throw new BadRequestException('The test email could not be sent. Check the platform email settings and try again.');

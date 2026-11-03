@@ -1,3 +1,4 @@
+import { DigitalAccessService } from '../digital-access/digital-access.service';
 import {
   Controller,
   Get,
@@ -12,6 +13,7 @@ import {
   UseInterceptors,
   UploadedFile,
   ForbiddenException,
+  BadRequestException,
 } from '@nestjs/common';
 import type { Response } from 'express';
 import { FileInterceptor } from '@nestjs/platform-express';
@@ -38,6 +40,7 @@ export class productController {
   constructor(
     private readonly ProductsService: ProductsService,
     private readonly productVariantsService: ProductVariantsService,
+    private readonly digitalAccess: DigitalAccessService,
   ) {}
 
   @UseGuards(OptionalJwtAuthGuard)
@@ -154,6 +157,19 @@ export class productController {
 
   @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('seller', 'staff')
+  @RequirePermission('products.edit')
+  @Post('digital-file-version/:productId/:fileIndex')
+  async publishDigitalFileVersion(@Req() req: any, @Param('productId') productId: string, @Param('fileIndex') fileIndex: string, @Body() body: any) {
+    const idx = Number(fileIndex);
+    if (!Number.isInteger(idx) || idx < 0) throw new BadRequestException('Invalid file index');
+    const res: any = await this.ProductsService.publishDigitalFileVersion(actingSellerId(req.user), productId, idx, body);
+    const d = res.data;
+    void this.digitalAccess.notifyFileUpdated(d.storeId, productId, { productName: d.productName, fileName: d.name, version: d.version, changelog: d.changelog }).catch(() => undefined);
+    return { success: true, data: { fileIndex: d.fileIndex, version: d.version, name: d.name } };
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
   @RequirePermission('products.view')
   @Get('get-my-product/:productId')
   async getSellerProductById(
@@ -212,6 +228,14 @@ export class productController {
       result.data.products = result.data.products.map((p: any) => ({ ...p, variants: omitCostPriceFromVariants(p.variants) }));
     }
     return result;
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('products.view')
+  @Get('store-products/:storeId/archive-impact')
+  async archiveImpact(@Req() req: any, @Param('storeId') storeId: string, @Query('ids') ids: string) {
+    return this.ProductsService.archiveImpact(actingSellerId(req.user), storeId, ids);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)

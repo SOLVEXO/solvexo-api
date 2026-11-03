@@ -21,7 +21,7 @@ export class StockCountsController {
 
   @Post(':storeId/start')
   async start(@Req() req: any, @Param('storeId') storeId: string, @Body() body: { locationId?: string }) {
-    const count = await this.service.start(storeId, actingSellerId(req.user), body?.locationId);
+    const count = await this.service.start(storeId, actingSellerId(req.user), body?.locationId, req.user);
     return { success: true, data: count };
   }
 
@@ -55,7 +55,7 @@ export class StockCountsController {
   @UseInterceptors(IdempotencyInterceptor)
   @Post(':storeId/:id/finish')
   async finish(@Req() req: any, @Param('storeId') storeId: string, @Param('id') id: string) {
-    const result = await this.service.finish(storeId, actingSellerId(req.user), id);
+    const result = await this.service.finish(storeId, actingSellerId(req.user), id, req.user);
     return { success: true, data: result };
   }
 }

@@ -1,5 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { searchStoreCustomers } from '../common/store-customer-search.util';
+import { emailUiStrings, isRtlLocale } from '../notifications/customer-email-locales';
+import { buildInvoiceItemsHtml, buildInvoicePdf, invoiceNumber } from './draft-order-invoice.util';
 import { Injectable, BadRequestException, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { toStripeAmount } from '@/common/stripe-amount.util';
 import { availableStock, AVAILABLE_STOCK_EXPR } from '@/common/stock-availability.util';
@@ -302,26 +304,37 @@ export class DraftOrdersService {
     const frontendBase = (process.env.FRONTEND_URL || '').replace(/\/$/, '');
     const invoiceUrl = `${frontendBase}/pay-invoice/${token}`;
 
-    const symbol = draft.currency === 'PKR' ? 'Rs. ' : draft.currency === 'USD' ? '$' : `${draft.currency} `;
+    const symbol = draft.currency === 'PKR' ? 'Rs' : draft.currency === 'USD' ? '$' : draft.currency;
     const html = `
       <div style="font-family:sans-serif;max-width:520px;margin:0 auto;">
         <h2>Invoice from ${(store as any).name}</h2>
         <p>Hi ${draft.customerName},</p>
-        <p>You have a new invoice for <strong>${symbol}${draft.total.toFixed(2)}</strong>${draft.paymentTerms === 'due_on_receipt' ? ' due on receipt' : draft.dueDate ? ` due by ${new Date(draft.dueDate).toLocaleDateString()}` : ''}.</p>
+        <p>You have a new invoice for <strong>${symbol} ${draft.total.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>${draft.paymentTerms === 'due_on_receipt' ? ' due on receipt' : draft.dueDate ? ` due by ${new Date(draft.dueDate).toLocaleDateString()}` : ''}.</p>
         <p><a href="${invoiceUrl}" style="display:inline-block;background:#D97757;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:bold;">Pay Invoice</a></p>
         <p style="color:#888;font-size:12px;">If the button doesn't work, copy this link: ${invoiceUrl}</p>
       </div>`;
     const dueText = draft.paymentTerms === 'due_on_receipt' ? 'Payment is due on receipt.' : draft.dueDate ? `Payment is due by ${new Date(draft.dueDate).toLocaleDateString()}.` : '';
+    const invoiceDraft = {
+      id: String(draft._id), customerName: draft.customerName, customerEmail: draft.customerEmail, currency: draft.currency,
+      items: draft.items.map((i: any) => ({ name: i.name, options: i.options ?? [], sku: i.sku ?? null, quantity: i.quantity, unitPrice: i.unitPrice })),
+      subtotal: draft.subtotal, discountAmount: draft.discountAmount, shippingAmount: draft.shippingAmount, taxAmount: draft.taxAmount, total: draft.total,
+      notes: draft.notes, dueText,
+    };
+    let invoicePdf: Buffer | null = null;
+    try { invoicePdf = await buildInvoicePdf(invoiceDraft, { name: (store as any).name }, symbol, invoiceUrl); } catch { /* the mail still goes out without the PDF */ }
     // The store's Customer-notification settings decide on/off, text, sender and reply-to (see NotificationsService).
     const sent = await this.notificationsService.sendCustomerEmail({
       to: draft.customerEmail, storeId, event: 'draft_order_invoice',
-      vars: { customerName: draft.customerName, invoiceTotal: `${symbol}${draft.total.toFixed(2)}`, dueText, invoiceUrl },
+      vars: { customerName: draft.customerName, invoiceTotal: `${symbol} ${draft.total.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, dueText, invoiceUrl },
       cta: { label: 'Pay invoice', url: invoiceUrl },
+      // The items in the mail body and the same invoice as a PDF (a failed PDF never stops the mail).
+      extraHtml: buildInvoiceItemsHtml(invoiceDraft, symbol, emailUiStrings((store as any).defaultLanguage), isRtlLocale((store as any).defaultLanguage)),
+      attachments: invoicePdf ? [{ filename: `Invoice-${invoiceNumber(String(draft._id)).slice(1)}.pdf`, content: invoicePdf, contentType: 'application/pdf' }] : undefined,
       force: true,
     });
     if (sent === 'failed') {
       // Template engine unavailable — fall back to the built-in mail so the invoice still goes out.
-      await this.emailService.sendMail(draft.customerEmail, `Invoice from ${(store as any).name} — ${symbol}${draft.total.toFixed(2)}`, html, (store as any).contactEmail ?? null, undefined, undefined, (store as any).name).catch(() => {});
+      await this.emailService.sendMail(draft.customerEmail, `Invoice from ${(store as any).name} — ${symbol} ${draft.total.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, html, (store as any).contactEmail ?? null, undefined, undefined, (store as any).name, storeId).catch(() => {});
     }
 
     await this.activityLogService.log({
@@ -357,7 +370,7 @@ export class DraftOrdersService {
     for (const draft of overdue) {
       const store = await this.repos.storeModel.findOne({ _id: draft.storeId, isDelete: false }).select('name').lean();
       const storeName = (store as any)?.name ?? 'the store';
-      const symbol = draft.currency === 'PKR' ? 'Rs. ' : draft.currency === 'USD' ? '$' : `${draft.currency} `;
+      const symbol = draft.currency === 'PKR' ? 'Rs' : draft.currency === 'USD' ? '$' : draft.currency;
       const frontendBase = (process.env.FRONTEND_URL || '').replace(/\/$/, '');
       const invoiceUrl = `${frontendBase}/pay-invoice/${draft.invoiceToken}`;
 
@@ -366,7 +379,7 @@ export class DraftOrdersService {
           <div style="font-family:sans-serif;max-width:520px;margin:0 auto;">
             <h2>Overdue invoice from ${storeName}</h2>
             <p>Hi ${draft.customerName},</p>
-            <p>Your invoice for <strong>${symbol}${draft.total.toFixed(2)}</strong> was due by ${new Date(draft.dueDate!).toLocaleDateString()} and is still unpaid.</p>
+            <p>Your invoice for <strong>${symbol} ${draft.total.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong> was due by ${new Date(draft.dueDate!).toLocaleDateString()} and is still unpaid.</p>
             <p><a href="${invoiceUrl}" style="display:inline-block;background:#D97757;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:bold;">Pay Invoice</a></p>
             <p style="color:#888;font-size:12px;">If the button doesn't work, copy this link: ${invoiceUrl}</p>
           </div>`;
@@ -374,12 +387,12 @@ export class DraftOrdersService {
           recipientId: draft.customerId, recipientRole: 'user', storeId: draft.storeId,
           type: NOTIFICATION_TYPES.DRAFT_ORDER_INVOICE_OVERDUE,
           title: 'Overdue invoice',
-          body: `Your invoice from ${storeName} for ${symbol}${draft.total.toFixed(2)} is overdue.`,
+          body: `Your invoice from ${storeName} for ${symbol} ${draft.total.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} is overdue.`,
           data: { draftOrderId: draft._id.toString() },
           email: {
-            subject: `Overdue invoice from ${storeName} — ${symbol}${draft.total.toFixed(2)}`, html,
+            subject: `Overdue invoice from ${storeName} — ${symbol} ${draft.total.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, html,
             event: 'draft_order_overdue',
-            vars: { customerName: draft.customerName, invoiceTotal: `${symbol}${draft.total.toFixed(2)}`, dueDate: new Date(draft.dueDate!).toLocaleDateString(), invoiceUrl },
+            vars: { customerName: draft.customerName, invoiceTotal: `${symbol} ${draft.total.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, dueDate: new Date(draft.dueDate!).toLocaleDateString(), invoiceUrl },
             cta: { label: 'Pay invoice', url: invoiceUrl },
           },
         });
@@ -389,7 +402,7 @@ export class DraftOrdersService {
         recipientId: draft.sellerId, recipientRole: 'seller', storeId: draft.storeId,
         type: NOTIFICATION_TYPES.DRAFT_ORDER_INVOICE_OVERDUE,
         title: 'Customer invoice overdue',
-        body: `${draft.customerName}'s invoice for ${symbol}${draft.total.toFixed(2)} was due ${new Date(draft.dueDate!).toLocaleDateString()} and is still unpaid.`,
+        body: `${draft.customerName}'s invoice for ${symbol} ${draft.total.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} was due ${new Date(draft.dueDate!).toLocaleDateString()} and is still unpaid.`,
         data: { draftOrderId: draft._id.toString(), link: `/store/${draft.storeId}/draft-orders/${draft._id.toString()}` },
       });
 

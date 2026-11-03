@@ -181,6 +181,10 @@ export class ProductVariant {
   @Prop({ type: [String], default: [] })
   images: string[];
 
+  // Optional video for this variant (uploaded file or YouTube / Vimeo link); falls back to the product's video.
+  @Prop({ type: String, default: '' })
+  videoUrl: string;
+
   @Prop({ default: false })
   isDefault!: boolean;
 

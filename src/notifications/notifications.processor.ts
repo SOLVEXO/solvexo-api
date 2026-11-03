@@ -38,7 +38,7 @@ export class NotificationsProcessor extends WorkerHost {
         return;
       case NOTIFICATION_EMAIL_JOB:
         {
-          const ok = await this.emailService.sendMail(job.data.to, job.data.subject, job.data.html, job.data.replyTo ?? null, undefined, undefined, job.data.fromName ?? null);
+          const ok = await this.emailService.sendMail(job.data.to, job.data.subject, job.data.html, job.data.replyTo ?? null, undefined, undefined, job.data.fromName ?? null, job.data.storeId ?? null);
           if (job.data.timeline?.orderId) {
             await this.notificationsService.recordEmailTimeline(job.data.timeline.orderId, job.data.timeline.event, job.data.to, ok, job.data.timeline.storeId);
           } else if (job.data.timeline?.storeId) {

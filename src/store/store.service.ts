@@ -1491,6 +1491,8 @@ export class StoreService {
         // frontend must treat null the same as "all", never as "none".
         enabledCurrencies: await this.effectiveEnabledCurrencies(store),
         sellerType: store.sellerType ?? null,
+        // lets the storefront show Library / Courses / Memberships / Licenses links only where they matter
+        sellsDigital: (store.productTypes ?? []).some((p: string) => p === 'digital_downloads' || p === 'educational_resources'),
         badges: store.badges ?? [],
         createdAt: store.createdAt,
         // Not sensitive (never the hash) — the storefront needs it up front
@@ -1767,7 +1769,11 @@ export class StoreService {
     }
     if (query.tag && query.tag !== 'all') filter.tags = query.tag;
     if (query.search && String(query.search).trim()) {
-      filter.name = { $regex: String(query.search).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' };
+      // Like Shopify: the term matches the title, vendor, product type and tags.
+      const searchRx = { $regex: String(query.search).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' };
+      // ...and a variant SKU (SKUs live on the variants, so look the products up through them).
+      const skuProductIds = await this.databaseService.repositories.productVariantModel.distinct('productId', { storeId, isDelete: false, sku: searchRx });
+      filter.$and = [...(filter.$and ?? []), { $or: [{ name: searchRx }, { vendor: searchRx }, { productType: searchRx }, { tags: searchRx }, ...(skuProductIds.length ? [{ _id: { $in: skuProductIds.slice(0, 500) } }] : [])] }];
     }
     // Collection membership — resolved via CollectionsService (manual: the
     // seller's own ordered pick; automatic: category/tag rule, evaluated

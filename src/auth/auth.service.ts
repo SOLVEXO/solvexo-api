@@ -174,7 +174,7 @@ export class AuthService {
     try {
       const {
         name, password, phone, address, role, profileImage, storeId,
-        acquisitionSource, acquisitionMedium, acquisitionCampaign, acquisitionLandingPage,
+        acquisitionSource, acquisitionMedium, acquisitionCampaign, acquisitionLandingPage, partnerCode,
       } = RegisterDto;
       // Stored normalized so this account is actually reachable by every
       // later lookup — every one of them (login, resend-otp, verify-otp,
@@ -243,6 +243,7 @@ export class AuthService {
               acquisitionMedium: acquisitionMedium ?? null,
               acquisitionCampaign: acquisitionCampaign ?? null,
               acquisitionLandingPage: acquisitionLandingPage ?? null,
+              acquisitionPartnerCode: partnerCode?.trim().toUpperCase().replace(/[^A-Z0-9-]/g, '').slice(0, 40) || null,
               acquisitionCapturedAt:
                 acquisitionSource || acquisitionMedium || acquisitionCampaign
                   ? new Date()

@@ -12,6 +12,22 @@ function toImage(value: any, index: number, fallbackAlt: string) {
   return { ...(typeof value === 'object' && value ? value : {}), id: value?.id ?? index + 1, position: index + 1, src, url: src, alt: value?.alt ?? fallbackAlt, width, height, aspect_ratio: width / height };
 }
 
+/** A product video as a Shopify media entry: `external_video` for YouTube / Vimeo, `video` for an uploaded file. */
+function videoMedia(rawUrl: unknown, poster: any, alt: string) {
+  const url = String(rawUrl ?? '').trim();
+  if (!url) return null;
+  let u: URL;
+  try { u = new URL(url); } catch { return null; }
+  const host = u.hostname.replace(/^www\./, '');
+  const base = { id: 'video', media_type: 'video', alt, preview_image: poster ?? null };
+  const yt = host === 'youtu.be' ? u.pathname.split('/')[1] : host.endsWith('youtube.com') ? (u.searchParams.get('v') ?? u.pathname.split('/').pop()) : null;
+  if (yt) return { ...base, media_type: 'external_video', host: 'youtube', external_id: yt };
+  const vm = host.endsWith('vimeo.com') ? u.pathname.match(/(\d{5,})/)?.[1] : null;
+  if (vm) return { ...base, media_type: 'external_video', host: 'vimeo', external_id: vm };
+  if (host === 'res.cloudinary.com') return { ...base, sources: [{ url, mime_type: 'video/mp4', format: 'mp4', width: 1280, height: 720 }] };
+  return null;
+}
+
 function enrichProduct(product: any) {
   if (product.__shopifyEnriched) return;
   const alt = String(product.title ?? product.name ?? '');
@@ -19,6 +35,8 @@ function enrichProduct(product: any) {
   const images = sources.map((img, i) => toImage(img, i, alt)).filter(Boolean) as any[];
   const featured = toImage(product.featured_image, 0, alt) ?? images[0] ?? null;
   const media = images.map((img) => ({ id: img.id, position: img.position, media_type: 'image', alt: img.alt, src: img.src, width: img.width, height: img.height, aspect_ratio: img.aspect_ratio, preview_image: img }));
+  const video = videoMedia(product.video_url, images[0] ?? null, alt);
+  if (video) { if (product.video_first) media.unshift(video as any); else media.push(video as any); }
   Object.defineProperty(product, '__shopifyEnriched', { value: true, enumerable: false });
   product.images = images;
   product.featured_image = featured;

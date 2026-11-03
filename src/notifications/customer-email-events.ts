@@ -21,11 +21,22 @@ export const CUSTOMER_EMAIL_EVENTS = [
   'gift_card',
   'gift_card_updated',
   'gift_card_sent',
+  'digital_purchase_delivered',
+  'digital_access_link',
+  'digital_file_updated',
+  'membership_welcome',
+  'membership_renewal_reminder',
+  'membership_payment_failed',
+  'membership_grace_period',
+  'membership_cancelled',
+  'membership_expired',
+  'membership_proof_rejected',
+  'membership_renewal_approved',
 ] as const;
 
 export type CustomerEmailEvent = (typeof CUSTOMER_EMAIL_EVENTS)[number];
 
-export type CustomerEmailGroup = 'orders' | 'returns' | 'invoices';
+export type CustomerEmailGroup = 'orders' | 'returns' | 'invoices' | 'digital';
 
 export interface CustomerEmailEventDef {
   /** Where the email is listed on the seller's Customer emails page. */
@@ -190,6 +201,118 @@ export const CUSTOMER_EMAIL_CATALOG: Record<CustomerEmailEvent, CustomerEmailEve
     variables: ['storeName', 'customerName', 'giftCardValue', 'giftCardDelivery'],
     resendable: false,
   },
+  digital_purchase_delivered: {
+    group: 'digital',
+    label: "Digital purchase ready",
+    description: "Sent when a digital purchase is paid and the downloads are ready in the customer's library.",
+    defaultSubject: "Your downloads from {{storeName}} are ready",
+    defaultBody:
+      "Hi {{customerName}},\n\nThanks for your purchase! {{productName}} is ready to download from your library:\n{{libraryUrl}}\n\nIf you have trouble, just reply to this email.",
+    variables: ["storeName","customerName","productName","libraryUrl"],
+    resendable: false,
+  },
+  digital_access_link: {
+    group: 'digital',
+    label: 'Find my downloads link',
+    description: 'Sent when a customer asks to find their downloads with an order number and email. The link opens their library for 30 minutes.',
+    defaultSubject: 'Your downloads from {{storeName}}',
+    defaultBody:
+      'Hi {{customerName}},\n\nUse this link to open your downloads. It works for 30 minutes:\n{{libraryUrl}}\n\nIf you did not ask for this, you can ignore this email.',
+    variables: ['storeName', 'customerName', 'libraryUrl'],
+    resendable: false,
+    canDisable: false,
+  },
+  digital_file_updated: {
+    group: 'digital',
+    label: "Digital file updated",
+    description: "Sent to buyers when a new version of a file they own is published.",
+    defaultSubject: "{{productName}} was updated",
+    defaultBody:
+      "Hi {{customerName}},\n\nA new version ({{versionLabel}}) of {{fileName}} in {{productName}} is available.\n{{changelog}}\n\nDownload it from your library:\n{{libraryUrl}}",
+    variables: ["storeName","customerName","productName","fileName","versionLabel","changelog","libraryUrl"],
+    resendable: false,
+    defaultEnabled: true,
+  },
+  membership_welcome: {
+    group: 'digital',
+    label: "Membership welcome",
+    description: "Sent when a customer joins a membership plan.",
+    defaultSubject: "Welcome to {{planName}}",
+    defaultBody:
+      "Hi {{customerName}},\n\nWelcome to {{planName}} at {{storeName}}! You can manage your membership here:\n{{membershipUrl}}",
+    variables: ["storeName","customerName","planName","membershipUrl"],
+    resendable: false,
+  },
+  membership_renewal_reminder: {
+    group: 'digital',
+    label: "Membership renewal reminder",
+    description: "Sent about 7 days before a membership renews.",
+    defaultSubject: "Your {{planName}} renews soon",
+    defaultBody:
+      "Hi {{customerName}},\n\nYour {{planName}} membership at {{storeName}} renews on {{renewalDate}}.\nManage it here:\n{{membershipUrl}}",
+    variables: ["storeName","customerName","planName","renewalDate","membershipUrl"],
+    resendable: false,
+  },
+  membership_payment_failed: {
+    group: 'digital',
+    label: "Membership payment due",
+    description: "Sent when a membership payment has not been received.",
+    defaultSubject: "Payment needed for {{planName}}",
+    defaultBody:
+      "Hi {{customerName}},\n\nWe have not received the payment for your {{planName}} membership at {{storeName}}. Please complete it to keep your access.\n{{membershipUrl}}",
+    variables: ["storeName","customerName","planName","membershipUrl"],
+    resendable: false,
+  },
+  membership_grace_period: {
+    group: 'digital',
+    label: "Membership grace period",
+    description: "Sent while a past-due membership is still within its grace period.",
+    defaultSubject: "Your {{planName}} access is about to end",
+    defaultBody:
+      "Hi {{customerName}},\n\nYour payment for {{planName}} at {{storeName}} is still outstanding. Your access continues for a short time. Please pay to avoid losing it.\n{{membershipUrl}}",
+    variables: ["storeName","customerName","planName","membershipUrl"],
+    resendable: false,
+  },
+  membership_cancelled: {
+    group: 'digital',
+    label: "Membership cancelled",
+    description: "Sent when a membership ends because it was cancelled.",
+    defaultSubject: "Your {{planName}} membership has ended",
+    defaultBody:
+      "Hi {{customerName}},\n\nYour {{planName}} membership at {{storeName}} has ended. You can rejoin any time:\n{{membershipUrl}}",
+    variables: ["storeName","customerName","planName","membershipUrl"],
+    resendable: false,
+  },
+  membership_expired: {
+    group: 'digital',
+    label: "Membership expired",
+    description: "Sent when a membership expires (unpaid or fixed length reached).",
+    defaultSubject: "Your {{planName}} membership expired",
+    defaultBody:
+      "Hi {{customerName}},\n\nYour {{planName}} membership at {{storeName}} has expired. To get your access back, renew here:\n{{membershipUrl}}",
+    variables: ["storeName","customerName","planName","membershipUrl"],
+    resendable: false,
+  },
+  membership_proof_rejected: {
+    group: 'digital',
+    label: "Membership payment proof rejected",
+    description: "Sent when the store could not confirm the payment receipt a member uploaded.",
+    defaultSubject: "We could not confirm your payment for {{planName}}",
+    defaultBody:
+      "Hi {{customerName}},\n\n{{storeName}} could not confirm the payment you sent for {{planName}}.\nReason: {{rejectionReason}}\n\nPlease check it and upload the receipt again:\n{{membershipUrl}}",
+    variables: ["storeName","customerName","planName","rejectionReason","membershipUrl"],
+    resendable: false,
+  },
+  membership_renewal_approved: {
+    group: 'digital',
+    label: "Membership payment confirmed",
+    description: "Sent when the store confirms a membership payment and the period is extended.",
+    defaultSubject: "Payment confirmed for {{planName}}",
+    defaultBody:
+      "Hi {{customerName}},\n\n{{storeName}} confirmed your payment for {{planName}}. Your access now runs until {{periodEnd}}.\n\nThank you!\n{{membershipUrl}}",
+    variables: ["storeName","customerName","planName","periodEnd","membershipUrl"],
+    resendable: false,
+  },
 };
 
 export function isCustomerEmailEvent(value: unknown): value is CustomerEmailEvent {
@@ -238,4 +361,14 @@ export const CUSTOMER_EMAIL_SAMPLE_VARS: Record<string, string> = {
   giftCardBalance: 'PKR 2,000',
   giftCardChange: 'The balance changed from PKR 5,000 to PKR 2,000.',
   giftCardReason: 'Note from the store: Correction.',
+  productName: 'Brand Kit',
+  libraryUrl: 'https://example.com/library',
+  fileName: 'brand-kit.zip',
+  versionLabel: '2.0',
+  changelog: 'What is new: fixed icons.',
+  planName: 'Gold',
+  membershipUrl: 'https://example.com/memberships',
+  renewalDate: '30 Oct 2026',
+  rejectionReason: 'The amount on the receipt does not match.',
+  periodEnd: '2026-12-01',
 };

@@ -46,9 +46,9 @@ export function buildPurchaseOrderEmailHtml(data: PoPdfData, brand: PoPdfBrand):
     `<p>Hi ${esc(data.supplierName)},</p>
      <p>${esc(brand.businessName)} is ordering the items below. The full purchase order is attached as a PDF.</p>
      <div class="box" style="padding:12px 14px;">
-       <div class="row"><span class="label">PO number</span><span class="value">${esc(data.poNumber)}</span></div>
-       <div class="row"><span class="label">Date issued</span><span class="value">${esc(formatDate(data.issuedAt))}</span></div>
-       <div class="row"><span class="label">Expected delivery</span><span class="value">${esc(formatDate(data.expectedAt))}</span></div>
+       <table role="presentation" width="100%" style="border-collapse:collapse;"><tr><td style="padding:6px 0;font-size:14px;color:#767676;text-align:left;">PO number</td><td style="padding:6px 0 6px 16px;font-size:14px;font-weight:600;color:#222;text-align:right;">${esc(data.poNumber)}</td></tr></table>
+       <table role="presentation" width="100%" style="border-collapse:collapse;"><tr><td style="padding:6px 0;font-size:14px;color:#767676;text-align:left;">Date issued</td><td style="padding:6px 0 6px 16px;font-size:14px;font-weight:600;color:#222;text-align:right;">${esc(formatDate(data.issuedAt))}</td></tr></table>
+       <table role="presentation" width="100%" style="border-collapse:collapse;"><tr><td style="padding:6px 0;font-size:14px;color:#767676;text-align:left;">Expected delivery</td><td style="padding:6px 0 6px 16px;font-size:14px;font-weight:600;color:#222;text-align:right;">${esc(formatDate(data.expectedAt))}</td></tr></table>
      </div>
      <table style="width:100%;border-collapse:collapse;margin:18px 0 6px;">
        <thead><tr>

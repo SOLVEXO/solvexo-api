@@ -212,7 +212,7 @@ export class CartService {
       const products = productIds.length
         ? await this.databaseService.repositories.productModel
             .find({ _id: { $in: productIds } })
-            .select('images sellerId orderMinQuantity orderMaxQuantity orderQuantityStep')
+            .select('images sellerId status isDelete orderMinQuantity orderMaxQuantity orderQuantityStep')
             .lean()
         : [];
       const productById = new Map(
@@ -278,6 +278,8 @@ export class CartService {
           orderMinQuantity: product?.orderMinQuantity ?? null,
           orderMaxQuantity: product?.orderMaxQuantity ?? null,
           orderQuantityStep: product?.orderQuantityStep ?? null,
+          // Archived, draft or deleted since it was added: the buyer must remove it before checkout.
+          unavailable: !product || (product as any).isDelete === true || (product as any).status !== 'active',
         };
       });
 
@@ -520,8 +522,8 @@ export class CartService {
             item.productVariantId,
           );
 
-        // Agar product nahi mila
-        if (!product) {
+        // Missing, deleted, archived or draft products are hidden from the buyer (kept, so they return when the product is active again)
+        if (!product || (product as any).isDelete === true || (product as any).status !== 'active') {
           continue;
         }
 

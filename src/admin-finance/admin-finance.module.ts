@@ -6,11 +6,12 @@ import { AdminConfigModule } from '../admin-config/admin-config.module';
 import { ActivityLogModule } from '../activity-log/activity-log.module';
 import { AdminFinanceController } from './admin-finance.controller';
 import { AdminFinanceService } from './admin-finance.service';
+import { RevenueModelService } from './revenue-model.service';
 
 @Module({
   imports: [AuthModule, RedisModule, FinanceModule, AdminConfigModule, ActivityLogModule],
   controllers: [AdminFinanceController],
-  providers: [AdminFinanceService],
-  exports: [AdminFinanceService],
+  providers: [AdminFinanceService, RevenueModelService],
+  exports: [AdminFinanceService, RevenueModelService],
 })
 export class AdminFinanceModule {}

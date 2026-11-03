@@ -25,3 +25,8 @@ export class UpdateContactMessageDto {
   @ApiProperty({ enum: CONTACT_MESSAGE_STATUSES }) @IsIn(CONTACT_MESSAGE_STATUSES)
   status: ContactMessageStatus;
 }
+
+export class ReplyContactMessageDto {
+  @ApiProperty() @IsString() @IsNotEmpty({ message: 'Write your reply' }) @MaxLength(5000)
+  message: string;
+}

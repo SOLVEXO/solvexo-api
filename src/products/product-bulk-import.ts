@@ -10,6 +10,7 @@ import {
 } from '../common/bulk-import/bulk-import.util';
 import { verifyStoreOwnershipOrForbidden } from '../common/store-ownership.util';
 import { parseCustomsInput } from '../shipping-rates/customs.util';
+import { normalizeShortDescription, normalizeProductTabs, normalizeVideoUrl } from './product-input.util';
 
 /** Product import (Shopify-style "Import products"): CSV template + per-row
  *  create/update through the real ProductsService/ProductVariantsService
@@ -26,7 +27,7 @@ export const PRODUCT_IMPORT_COLUMNS: BulkColumn[] = [
   { key: 'Stock', description: 'Opening stock for NEW products (whole number). Use the Stock import to change stock later.', example: '50' },
   { key: 'Weight', description: 'Shipping weight as text, e.g. "0.5 kg". Applied to new products only.', example: '0.5 kg' },
   { key: 'Tags', description: 'Separate tags with a semicolon (;).', example: 'summer;cotton' },
-  { key: 'Status', description: 'active or draft. New products default to draft.', example: 'draft' },
+  { key: 'Status', description: 'active, draft or archived. New products default to draft.', example: 'draft' },
   { key: 'Category', description: "Name of one of your store's active categories (case-insensitive). Blank uses the store's default/first category.", example: 'Clothing' },
   { key: 'Length (cm)', description: 'Package length in cm (used to pack the item into a shipping package for live rates). Blank = unchanged.', example: '30' },
   { key: 'Width (cm)', description: 'Package width in cm.', example: '20' },
@@ -36,6 +37,12 @@ export const PRODUCT_IMPORT_COLUMNS: BulkColumn[] = [
   { key: 'Customs Description', description: 'Short goods description for customs forms (max 200 chars).', example: 'Cotton t-shirt' },
   { key: 'Charge Tax', description: 'yes / no — "Charge tax on this product". Blank = unchanged (new products are taxable).', example: 'yes' },
   { key: 'Image URL', description: 'https link to a photo. It becomes the product photo and the photo shown when this variant is chosen. Blank = unchanged.', example: 'https://example.com/photo.jpg' },
+  { key: 'Short Description', description: 'One or two lines shown under the price (max 500 characters). Blank = unchanged.', example: 'Soft everyday tee in organic cotton' },
+  { key: 'Tab 1 Title', description: 'Title of an extra tab next to Description (max 40 characters). Needs Tab 1 Content too. Blank = unchanged.', example: 'Size guide' },
+  { key: 'Tab 1 Content', description: 'Text of that tab (plain text or simple HTML). Blank = unchanged.', example: 'S fits 36, M fits 38' },
+  { key: 'Tab 2 Title', description: 'Title of a second extra tab. Blank = unchanged.', example: 'Delivery' },
+  { key: 'Tab 2 Content', description: 'Text of the second tab. Blank = unchanged.', example: 'Ships in 2 to 3 days' },
+  { key: 'Video URL', description: 'https link to an uploaded video, or a YouTube / Vimeo link, shown in the product gallery. Blank = unchanged.', example: 'https://www.youtube.com/watch?v=...' },
 ];
 
 export interface ProductImportDeps {
@@ -50,7 +57,7 @@ export interface ProductImportDeps {
   updateVariant: (sellerId: string, productId: string, variantId: string, dto: any) => Promise<any>;
 }
 
-const STATUSES = ['active', 'draft'] as const;
+const STATUSES = ['active', 'draft', 'archived', 'inactive'] as const;
 
 const sameSet = (a: string[], b: string[]) =>
   a.length === b.length && [...a].sort().join('\u0000') === [...b].sort().join('\u0000');
@@ -89,7 +96,8 @@ export async function importProductsCsv(
     const price = parseNumberCell(r['Price'], 'Price', { min: 0 });
     const compareAt = parseNumberCell(r['Compare-at Price'], 'Compare-at Price', { min: 0 });
     const stock = parseNumberCell(r['Stock'], 'Stock', { min: 0, integer: true });
-    const status = parseEnumCell(r['Status'], 'Status', STATUSES);
+    const statusCell = parseEnumCell(r['Status'], 'Status', STATUSES);
+    const status = (statusCell === 'archived' ? 'inactive' : statusCell) as string | undefined; // the API stores Archived as 'inactive'
     const tags = parseListCell(r['Tags']);
     const length = parseNumberCell(r['Length (cm)'], 'Length (cm)', { min: 0 });
     const width = parseNumberCell(r['Width (cm)'], 'Width (cm)', { min: 0 });
@@ -97,6 +105,12 @@ export async function importProductsCsv(
     const taxable = parseBoolCell(r['Charge Tax'], 'Charge Tax');
     const imageUrl = r['Image URL'].trim();
     if (imageUrl && !/^https?:\/\/\S+$/i.test(imageUrl)) throw new BulkRowError('Image URL must start with http:// or https://');
+    let shortDescription = '';
+    try { shortDescription = normalizeShortDescription(r['Short Description'] ?? ''); } catch (e: any) { throw new BulkRowError(`Short Description: ${e?.message ?? 'invalid'}`); }
+    let csvTabs: { title: string; content: string }[] = [];
+    try { csvTabs = normalizeProductTabs([1, 2].map(n => ({ title: r[`Tab ${n} Title`] ?? '', content: r[`Tab ${n} Content`] ?? '' }))); } catch (e: any) { throw new BulkRowError(`Tabs: ${e?.message ?? 'invalid'}`); }
+    let videoUrl = '';
+    try { videoUrl = normalizeVideoUrl((r['Video URL'] ?? '').trim()); } catch (e: any) { throw new BulkRowError(`Video URL: ${e?.message ?? 'invalid link'}`); }
     // Customs info: only NON-blank cells are applied (blank = leave unchanged), normalised + validated by the
     // same parser the variant form uses.
     const customsBody: Record<string, string> = {};
@@ -135,6 +149,9 @@ export async function importProductsCsv(
       if (status && status !== p.status) productPatch.status = status;
       if (imageUrl && (p.images ?? [])[0] !== imageUrl) productPatch.images = [imageUrl, ...(p.images ?? []).filter((x: string) => x !== imageUrl)];
       if (categoryId && categoryId !== String(p.categoryId)) productPatch.categoryId = categoryId;
+      if (videoUrl && videoUrl !== (p.videoUrl ?? '')) productPatch.videoUrl = videoUrl;
+      if (shortDescription && shortDescription !== (p.shortDescription ?? '')) productPatch.shortDescription = shortDescription;
+      if (csvTabs.length) productPatch.tabs = csvTabs;
 
       const variantPatch: Record<string, unknown> = {};
       if (price !== undefined && price !== v.price) variantPatch.price = price;
@@ -178,6 +195,9 @@ export async function importProductsCsv(
       description: r['Description'] || name, // the schema requires a description
       categoryId,
       images: imageUrl ? [imageUrl] : [],
+      videoUrl,
+      shortDescription,
+      tabs: csvTabs,
       tags,
       status: status ?? 'draft',
       variants: [

@@ -52,6 +52,16 @@ import { QUEUE_NAMES } from './queue.constants';
         },
       },
       {
+        // Hourly membership run (renewals, dunning, Stripe cut-off). A failed run is retried; the work itself is idempotent.
+        name: QUEUE_NAMES.MEMBERSHIP_BILLING,
+        defaultJobOptions: {
+          attempts: 4,
+          backoff: { type: 'exponential', delay: 30_000 },
+          removeOnComplete: { count: 100 },
+          removeOnFail: { count: 500 },
+        },
+      },
+      {
         // Building a full multi-store, chunked product sitemap can be slow —
         // triggered by cron + manual admin/seller "regenerate" action.
         name: QUEUE_NAMES.SEO_SITEMAP,

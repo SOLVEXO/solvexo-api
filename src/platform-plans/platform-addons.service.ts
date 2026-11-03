@@ -107,7 +107,7 @@ export class PlatformAddonsService {
       providerCustomerId: customerId,
     });
     if (!charge.success) {
-      throw new BadRequestException(`Payment of $${chargeTotalUSD.toFixed(2)} failed — ${charge.failureReason ?? 'declined'}`);
+      throw new BadRequestException(`Payment of $ ${chargeTotalUSD.toFixed(2)} failed — ${charge.failureReason ?? 'declined'}`);
     }
 
     const addon = await this.addonModel.create({
@@ -126,7 +126,7 @@ export class PlatformAddonsService {
 
     this.activityLogService.log({
       storeId, category: 'platform_plans', action: 'addon_purchased',
-      description: `Purchased add-on "${dto.addonType}" ×${quantity} — $${totalPriceUSD.toFixed(2)}${pricing.recurring ? '/mo' : ''}`,
+      description: `Purchased add-on "${dto.addonType}" ×${quantity} — $ ${totalPriceUSD.toFixed(2)}${pricing.recurring ? '/mo' : ''}`,
       actorId: sellerId, actorRole: 'seller',
       targetId: (addon as any)._id.toString(), targetType: 'platform_addon_purchase',
     });

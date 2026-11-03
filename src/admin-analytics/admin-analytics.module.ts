@@ -11,6 +11,8 @@ import { PlatformHealthModule } from '../platform-health/platform-health.module'
 import { AdminAnalyticsController } from './admin-analytics.controller';
 import { AdminAnalyticsService } from './admin-analytics.service';
 import { SaasMetricsService } from './saas-metrics.service';
+import { ActivationFunnelService } from './activation-funnel.service';
+import { PlanInsightsService } from './plan-insights.service';
 import { PlatformMrrSnapshot, PlatformMrrSnapshotSchema } from './schemas/platform-mrr-snapshot.schema';
 
 @Module({
@@ -19,7 +21,7 @@ import { PlatformMrrSnapshot, PlatformMrrSnapshotSchema } from './schemas/platfo
     MongooseModule.forFeature([{ name: PlatformMrrSnapshot.name, schema: PlatformMrrSnapshotSchema }]),
   ],
   controllers: [AdminAnalyticsController],
-  providers: [AdminAnalyticsService, SaasMetricsService],
-  exports: [AdminAnalyticsService, SaasMetricsService],
+  providers: [AdminAnalyticsService, SaasMetricsService, ActivationFunnelService, PlanInsightsService],
+  exports: [AdminAnalyticsService, SaasMetricsService, ActivationFunnelService],
 })
 export class AdminAnalyticsModule {}

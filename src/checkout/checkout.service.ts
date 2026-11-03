@@ -457,7 +457,7 @@ export class CheckoutService {
       });
       if (!product)
         throw new BadRequestException(
-          `Product not found: ${cartItem.productId}`,
+          `An item in your cart is no longer available. Please remove it and try again.`,
         );
 
       assertOrderQuantity(product as any, cartItem.quantity);

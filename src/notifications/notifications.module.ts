@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { StoreMailService } from './store-mail.service';
 import { Global, Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { AiStudioModule } from '../ai-studio/ai-studio.module';
@@ -47,7 +48,7 @@ import { IntegrationsModule } from '../integrations/integrations.module';
     }),
   ],
   controllers: [NotificationsController, StoreNotificationSettingsController, AdminEmailHealthController],
-  providers: [NotificationsService, StoreNotificationSettingsService, EmailHealthService, MemoryMonitorService, NotificationsGateway, NotificationsProcessor, FirebaseAdminService, EmailService],
+  providers: [NotificationsService, StoreMailService, StoreNotificationSettingsService, EmailHealthService, MemoryMonitorService, NotificationsGateway, NotificationsProcessor, FirebaseAdminService, EmailService],
   exports: [NotificationsService],
 })
 export class NotificationsModule {}

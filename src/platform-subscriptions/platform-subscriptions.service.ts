@@ -154,7 +154,7 @@ export class PlatformSubscriptionsService {
       description = `${sub.tier} → ${dto.tier} (${dto.billingInterval}) — ${dueTotal.toFixed(2)} charged`;
     } else {
       sub.creditBalanceUSD = this.round(-netDue);
-      description = `${sub.tier} → ${dto.tier} (${dto.billingInterval}) — $${sub.creditBalanceUSD.toFixed(2)} credited to account`;
+      description = `${sub.tier} → ${dto.tier} (${dto.billingInterval}) — $ ${sub.creditBalanceUSD.toFixed(2)} credited to account`;
     }
 
     sub.tier = dto.tier;
@@ -250,7 +250,7 @@ export class PlatformSubscriptionsService {
 
     this.activityLogService.log({
       storeId, category: 'platform_billing', action: 'pos_addon_subscribed',
-      description: `POS add-on activated — $${POS_ADDON_MONTHLY_PRICE_USD}/mo`,
+      description: `POS add-on activated — $ ${POS_ADDON_MONTHLY_PRICE_USD}/mo`,
       actorId: sellerId, actorRole: 'seller', targetId: subId, targetType: 'platform_subscription',
     });
 

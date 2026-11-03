@@ -19,29 +19,97 @@ export const ADMIN_PERMISSIONS = [
   'activity.view', // activity log
   'audit.view', // admin audit trail + sessions of other admins
   'team.manage', // roles, admins, approvals
+  'sales.access', // Sales Ops: own leads, tasks and emails
+  'sales.manage', // Sales Ops: every lead, assignment and templates
+  'partner.portal', // A partner (reseller / agent): only their own referrals, commissions and payouts
 ] as const;
 export type AdminPermission = (typeof ADMIN_PERMISSIONS)[number];
 
 /** Seeded (non-deletable) starter roles, created lazily the first time roles are listed. */
-export const ADMIN_PRESET_ROLES: { key: string; name: string; description: string; readOnly: boolean; permissions: AdminPermission[] }[] = [
+export const ADMIN_PRESET_ROLES: {
+  key: string;
+  name: string;
+  description: string;
+  readOnly: boolean;
+  permissions: AdminPermission[];
+}[] = [
   {
-    key: 'support', name: 'Support', readOnly: false,
-    description: 'Look up stores and sellers, handle moderation and customer issues.',
-    permissions: ['analytics.view', 'clients.view', 'clients.manage', 'activity.view', 'content.manage'],
+    key: 'support',
+    name: 'Support',
+    readOnly: false,
+    description:
+      'Look up stores and sellers, handle moderation and customer issues.',
+    permissions: [
+      'analytics.view',
+      'clients.view',
+      'clients.manage',
+      'activity.view',
+      'content.manage',
+    ],
   },
   {
-    key: 'finance', name: 'Finance', readOnly: false,
-    description: 'See finance, analytics and clients. Cannot move money (payouts stay with the Super Admin).',
-    permissions: ['analytics.view', 'finance.view', 'clients.view', 'activity.view'],
+    key: 'finance',
+    name: 'Finance',
+    readOnly: false,
+    description:
+      'See finance, analytics and clients. Cannot move money (payouts stay with the Super Admin).',
+    permissions: [
+      'analytics.view',
+      'finance.view',
+      'clients.view',
+      'activity.view',
+    ],
   },
   {
-    key: 'content_seo', name: 'Content & SEO', readOnly: false,
-    description: 'Site content, SEO, newsletter, platform coupons and the theme catalog.',
-    permissions: ['analytics.view', 'seo.manage', 'content.manage', 'marketing.manage', 'themes.manage'],
+    key: 'content_seo',
+    name: 'Content & SEO',
+    readOnly: false,
+    description:
+      'Site content, SEO, newsletter, platform coupons and the theme catalog.',
+    permissions: [
+      'analytics.view',
+      'seo.manage',
+      'content.manage',
+      'marketing.manage',
+      'themes.manage',
+    ],
   },
   {
-    key: 'auditor', name: 'Auditor (read-only)', readOnly: true,
-    description: 'Can look at everything it is allowed to see but can change nothing.',
-    permissions: ['analytics.view', 'clients.view', 'finance.view', 'activity.view', 'audit.view'],
+    key: 'sales_rep',
+    name: 'Sales rep',
+    readOnly: false,
+    description:
+      'Works their own leads in Sales Ops: calls, emails, follow-ups and stages.',
+    permissions: ['sales.access'],
+  },
+  {
+    key: 'sales_manager',
+    name: 'Sales manager',
+    readOnly: false,
+    description:
+      'Sees every lead, assigns them to reps and manages the sales email templates.',
+    permissions: ['sales.access', 'sales.manage', 'analytics.view'],
+  },
+  {
+    key: 'partner',
+    name: 'Partner (reseller / agent)',
+    readOnly: false,
+    description:
+      'An outside partner: sees only their own referral link, referred merchants, commissions and payouts.',
+    permissions: ['partner.portal'],
+  },
+  {
+    key: 'auditor',
+    name: 'Auditor (read-only)',
+    readOnly: true,
+    description:
+      'Can look at everything it is allowed to see but can change nothing.',
+    permissions: [
+      'analytics.view',
+      'clients.view',
+      'finance.view',
+      'activity.view',
+      'audit.view',
+    ],
   },
 ];

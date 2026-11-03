@@ -8,9 +8,17 @@ import { isDevMailSinkEnabled, writeDevMail } from '../../common/dev-mail-sink.u
 export const emailEvents = new EventEmitter();
 export interface EmailResultEvent { ok: boolean; error?: string }
 
+/** Registered by StoreMailService: a store's own SMTP for its customer mails (see notifications/store-mail.service.ts). */
+export interface StoreMailHook {
+  resolve(storeId: string): Promise<{ transporter: nodemailer.Transporter; from: string } | null>;
+  report(storeId: string, ok: boolean, error?: string): Promise<void>;
+}
+
 @Injectable()
 export class EmailService {
   private transporter: nodemailer.Transporter;
+  /** Set once at boot by StoreMailService; static so every EmailService instance (one per module) uses it. */
+  static storeMail: StoreMailHook | null = null;
 
   constructor() {
     // Configure email transporter
@@ -59,6 +67,9 @@ export class EmailService {
     headers?: Record<string, string>,
     attachments?: { filename: string; content: Buffer | string; contentType?: string }[],
     fromName?: string | null,
+    /** A store's customer mail: sent through that store's own SMTP when it has one (platform sender is the fallback).
+     *  Bulk mail (campaigns, newsletters, automations, abandoned carts) deliberately does NOT pass this: it always goes through the platform sender, so a store's mailbox is never used for bulk sends. */
+    storeId?: string | null,
   ): Promise<boolean> {
     // `.invalid` is reserved (RFC 2606): placeholder addresses of Apple sign-ins that shared no email and purged
     // accounts' de-identified addresses can never receive mail — never hand them to SMTP.
@@ -71,6 +82,10 @@ export class EmailService {
       writeDevMail({ to, subject, text: htmlToPlainText(html) });
       emailEvents.emit('result', { ok: true } as EmailResultEvent);
       return true;
+    }
+    if (storeId && EmailService.storeMail) {
+      const viaStore = await this.sendThroughStore(storeId, to, subject, html, replyTo, headers, attachments, fromName);
+      if (viaStore) return true;
     }
     try {
       // `fromName` = the store's name for customer-facing mails (the mailbox
@@ -94,6 +109,30 @@ export class EmailService {
     } catch (error) {
       console.error('❌ Error sending email:', error);
       emailEvents.emit('result', { ok: false, error: String((error as any)?.message ?? error).slice(0, 300) } as EmailResultEvent);
+      return false;
+    }
+  }
+
+  /** True when the store's own server accepted the mail. Any failure returns false so the platform sender can take over. */
+  private async sendThroughStore(storeId: string, to: string, subject: string, html: string, replyTo?: string | null, headers?: Record<string, string>, attachments?: { filename: string; content: Buffer | string; contentType?: string }[], fromName?: string | null): Promise<boolean> {
+    const hook = EmailService.storeMail;
+    if (!hook) return false;
+    try {
+      const t = await hook.resolve(storeId);
+      if (!t) return false;
+      const displayName = String(fromName || '').replace(/["\r\n<>]/g, '').trim();
+      try {
+        await t.transporter.sendMail({
+          from: displayName ? `"${displayName}" <${t.from}>` : t.from, to, subject, html, text: htmlToPlainText(html),
+          ...(replyTo ? { replyTo } : {}), ...(headers ? { headers } : {}), ...(attachments?.length ? { attachments } : {}),
+        });
+        void hook.report(storeId, true);
+        return true;
+      } catch (error) {
+        void hook.report(storeId, false, String((error as any)?.message ?? error));
+        return false;
+      }
+    } catch {
       return false;
     }
   }

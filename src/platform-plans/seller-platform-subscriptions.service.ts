@@ -785,7 +785,7 @@ export class SellerPlatformSubscriptionsService {
     const remaining = this.round(invoice.amountUSD - (invoice.refundedAmountUSD ?? 0));
     const refundAmount = amountUSD != null ? this.round(amountUSD) : remaining;
     if (refundAmount <= 0 || refundAmount > remaining) {
-      throw new BadRequestException(`Refund amount must be between $0.01 and $${remaining.toFixed(2)}`);
+      throw new BadRequestException(`Refund amount must be between $0.01 and $ ${remaining.toFixed(2)}`);
     }
 
     const result = await this.gateway.refund(invoice.providerChargeId, refundAmount, reason);
@@ -801,11 +801,11 @@ export class SellerPlatformSubscriptionsService {
 
     this.activityLogService.log({
       storeId: invoice.storeId, category: 'platform_plans', action: 'invoice_refunded',
-      description: `Platform-plan invoice ${invoice.invoiceNumber} — $${refundAmount.toFixed(2)} refunded${reason ? ` (${reason})` : ''}`,
+      description: `Platform-plan invoice ${invoice.invoiceNumber} — $ ${refundAmount.toFixed(2)} refunded${reason ? ` (${reason})` : ''}`,
       actorId: adminId, actorRole: 'admin', targetId: (invoice as any)._id.toString(), targetType: 'platform_plan_invoice',
     });
 
-    return { success: true, message: `$${refundAmount.toFixed(2)} refunded`, data: invoice };
+    return { success: true, message: `$ ${refundAmount.toFixed(2)} refunded`, data: invoice };
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -1202,14 +1202,14 @@ export class SellerPlatformSubscriptionsService {
         amountUSD: dueTotalUSD, failureReason: charge.success ? null : (charge.failureReason ?? 'Payment declined'),
         failureCode: charge.failureCode ?? null, invoiceId: invoice._id.toString(), providerChargeId: charge.providerChargeId,
       });
-      if (!charge.success) throw new BadRequestException(`Payment of $${dueTotalUSD.toFixed(2)} failed — plan was not changed`);
+      if (!charge.success) throw new BadRequestException(`Payment of $ ${dueTotalUSD.toFixed(2)} failed — plan was not changed`);
 
       sub.totalPaidUSD = this.round((sub.totalPaidUSD ?? 0) + dueTotalUSD);
       sub.creditBalanceUSD = 0;
-      message = `Changed to "${newPlan.name}" — $${dueTotalUSD.toFixed(2)} charged${dueTaxUSD > 0 ? ` (includes $${dueTaxUSD.toFixed(2)} ${dueQuote!.label ?? 'tax'})` : ''}`;
+      message = `Changed to "${newPlan.name}" — $ ${dueTotalUSD.toFixed(2)} charged${dueTaxUSD > 0 ? ` (includes $ ${dueTaxUSD.toFixed(2)} ${dueQuote!.label ?? 'tax'})` : ''}`;
     } else {
       sub.creditBalanceUSD = this.round(-netDue);
-      message = `Changed to "${newPlan.name}" — $${sub.creditBalanceUSD.toFixed(2)} credited to your account`;
+      message = `Changed to "${newPlan.name}" — $ ${sub.creditBalanceUSD.toFixed(2)} credited to your account`;
     }
 
     sub.platformPlanId = newPlanId;
@@ -1836,7 +1836,7 @@ export class SellerPlatformSubscriptionsService {
         recipientId: sub.sellerId, recipientRole: 'seller', storeId: sub.storeId,
         type: NOTIFICATION_TYPES.PLATFORM_PLAN_RENEWAL_REMINDER,
         title: 'Upcoming renewal',
-        body: `${storeName} will be charged $${sub.amountUSD.toFixed(2)} on ${sub.nextBillingDate.toDateString()}.`,
+        body: `${storeName} will be charged $ ${sub.amountUSD.toFixed(2)} on ${sub.nextBillingDate.toDateString()}.`,
         data: { subscriptionId: String(sub._id) },
       }).catch(() => {});
       sub.renewalReminderSentForDate = sub.nextBillingDate;
@@ -1912,7 +1912,7 @@ export class SellerPlatformSubscriptionsService {
 
     this.activityLogService.log({
       storeId: sub.storeId, category: 'platform_plans', action: 'plan_renewed',
-      description: `Platform-plan Stripe invoice ${invoice.id} paid — $${amountUSD.toFixed(2)}`,
+      description: `Platform-plan Stripe invoice ${invoice.id} paid — $ ${amountUSD.toFixed(2)}`,
       actorRole: 'system', targetId: sub._id.toString(), targetType: 'seller_platform_subscription',
     });
   }

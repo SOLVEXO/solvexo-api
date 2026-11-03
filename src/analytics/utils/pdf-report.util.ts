@@ -60,7 +60,7 @@ export class PdfReportBuilder {
       if (col === 0) this.ensureSpace(36);
       const x = this.margin + col * colWidth;
       this.page.drawText(label.toUpperCase(), { x, y: this.y, size: 8, font: this.font, color: rgb(0.5, 0.5, 0.5) });
-      this.page.drawText(value, { x, y: this.y - 14, size: 13, font: this.boldFont, color: rgb(0.1, 0.1, 0.1) });
+      this.page.drawText(this.safe(value, this.boldFont), { x, y: this.y - 14, size: 13, font: this.boldFont, color: rgb(0.1, 0.1, 0.1) });
       col = col === 0 ? 1 : 0;
       if (col === 0) this.y -= 36;
     }
@@ -68,10 +68,18 @@ export class PdfReportBuilder {
     this.y -= 6;
   }
 
+  /** Adds thousands commas to money-looking numbers ("1234.5" and "$ 12500" become "1,234.5" and "$ 12,500"); plain integers such as order numbers or years are left alone. */
+  private groupThousands(text: string): string {
+    const group = (int: string) => int.replace(/B(?=(d{3})+(?!d))/g, ',');
+    return text
+      .replace(/(^|[^d.,])(-?d{4,})(.d+)/g, (_m, pre, int, dec) => `${pre}${group(int)}${dec}`)
+      .replace(/(^|[^w])([$€£]|Rs|[A-Z]{3}) (-?d{4,})(?![d.,])/g, (_m, pre, cur, int) => `${pre}${cur} ${group(int)}`);
+  }
+
   /** The standard Helvetica font can only draw WinAnsi characters (Urdu, emoji, ... would throw), so anything it can't encode becomes "?". */
   private safe(text: string, font: PDFFont): string {
     let out = '';
-    for (const ch of text.replace(/\s+/g, ' ')) {
+    for (const ch of this.groupThousands(text.replace(/\s+/g, ' '))) {
       try { font.encodeText(ch); out += ch; } catch { out += '?'; }
     }
     return out;

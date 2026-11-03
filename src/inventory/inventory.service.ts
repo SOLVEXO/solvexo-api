@@ -20,6 +20,9 @@ import { consumeLots } from '@/common/lot-consumption.util';
 import { drainLocationStock } from '@/common/location-stock.util';
 import { refreshExpiredStock } from '@/common/expired-stock.util';
 
+/** "Black" or "Black / M" from a variant's options; null for a single-variant product. */
+const variantLabelOf = (v: any): string | null => (v?.options ?? []).map((o: any) => o?.value).filter(Boolean).join(' / ') || null;
+
 @Injectable()
 export class InventoryService {
   constructor(
@@ -75,6 +78,11 @@ export class InventoryService {
       variantMap[v.productId].push(v);
     }
 
+    // How many products sit in each status (all of the store's, not just this page), for the filter labels.
+    const statusRows: any[] = await productModel.aggregate([{ $match: { storeId, isDelete: false } }, { $group: { _id: '$status', n: { $sum: 1 } } }]);
+    const statusCounts: Record<string, number> = {};
+    for (const r of statusRows) statusCounts[String(r._id)] = r.n;
+
     // stats counters
     let inStock = 0;
     let lowStock = 0;
@@ -111,17 +119,17 @@ export class InventoryService {
 
         if (totalAvailable === 0) {
           stockStatus = 'out_of_stock';
-          outOfStock++;
+          if (product.status === 'active') outOfStock++;
         } else if (totalAvailable <= lowStockThreshold) {
           stockStatus = 'low_stock';
-          lowStock++;
-          inStock++;
+          if (product.status === 'active') lowStock++;
+          if (product.status === 'active') inStock++;
         } else {
           stockStatus = 'active';
-          inStock++;
+          if (product.status === 'active') inStock++;
         }
       } else {
-        inStock++; // digital, or has an unlimited-stock variant — always in stock
+        if (product.status === 'active') inStock++; // digital, or has an unlimited-stock variant — always in stock
       }
 
       // default variant ki price, fallback to min price
@@ -174,6 +182,7 @@ export class InventoryService {
     return {
       success: true,
       data: {
+        statusCounts,
         stats: {
           totalProducts,
           inStock,
@@ -1441,8 +1450,12 @@ export class InventoryService {
     const filter: any = { storeId };
     if (query.status && query.status !== 'all') filter.status = query.status;
 
-    const transfers = await stockTransferModel.find(filter).sort({ createdAt: -1 }).limit(200).lean();
-    return { success: true, data: transfers };
+    const transfers: any[] = await stockTransferModel.find(filter).sort({ createdAt: -1 }).limit(200).lean();
+    // Transfers only snapshot the product name: add the variant name so Black / Silver are not the same line.
+    const ids = [...new Set(transfers.map(t => t.variantId).filter(Boolean))];
+    const vs: any[] = ids.length ? await this.databaseService.repositories.productVariantModel.find({ _id: { $in: ids } }).select('options').lean() : [];
+    const labels = new Map<string, string | null>(vs.map(v => [String(v._id), variantLabelOf(v)]));
+    return { success: true, data: transfers.map(t => ({ ...t, variantLabel: labels.get(String(t.variantId)) ?? null })) };
   }
 
   /** GET api/inventory/:storeId/reorder-suggestions — every SKU at/below
@@ -1465,14 +1478,14 @@ export class InventoryService {
    *  actually used, so the UI never claims a "smart" prediction it didn't
    *  have enough data to make. */
   async getReorderSuggestions(sellerId: string, storeId: string) {
-    const { storeModel, productModel, productVariantModel, purchaseOrderModel, orderModel } = this.databaseService.repositories;
+    const { storeModel, productModel, productVariantModel, purchaseOrderModel, orderModel, supplierModel } = this.databaseService.repositories;
     const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false });
     if (!store) throw new ForbiddenException('Store not found or unauthorized');
     const lowStockThreshold = store.lowStockThreshold ?? 10;
 
     const products = await productModel
       .find({ storeId, sellerId, isDelete: false, type: { $ne: 'digital' } })
-      .select('name images')
+      .select('name images supplierId')
       .lean();
     const productIds = products.map((p: any) => p._id.toString());
     const productById = new Map<string, any>(products.map((p: any) => [p._id.toString(), p]));
@@ -1511,7 +1524,13 @@ export class InventoryService {
         },
       ]),
     ]);
-    const supplierByVariant = new Map(recentPoItems.map((r: any) => [r._id, { supplierId: r.supplierId, supplierName: r.supplierName }]));
+    const supplierByVariant = new Map<string, { supplierId: string | null; supplierName: string }>(recentPoItems.map((r: any) => [r._id, { supplierId: r.supplierId, supplierName: r.supplierName }]));
+    // A supplier chosen on the product wins over "last received from"; lead time and terms come from the supplier record.
+    const supplierIds = new Set<string>();
+    for (const p of products as any[]) if (p.supplierId) supplierIds.add(String(p.supplierId));
+    for (const r of supplierByVariant.values()) if (r.supplierId) supplierIds.add(String(r.supplierId));
+    const supplierDocs: any[] = supplierIds.size ? await supplierModel.find({ _id: { $in: [...supplierIds] }, storeId, isDelete: false }).select('name leadTimeDays paymentTerms').lean() : [];
+    const supplierById = new Map<string, any>(supplierDocs.map(d => [String(d._id), d]));
 
     // Per-variant daily-quantity maps (for the forecast) + a plain 30-day
     // sum (for the fallback average) — both derived from the same 90-day
@@ -1529,25 +1548,40 @@ export class InventoryService {
       }
     }
 
-    const groups = new Map<string, { supplierId: string | null; supplierName: string; items: any[] }>();
+    const groups = new Map<string, { supplierId: string | null; supplierName: string; items: any[]; leadTimeDays: number | null; paymentTerms: string | null }>();
     for (const v of lowVariants as any[]) {
       const product = productById.get(v.productId);
-      const supplier = supplierByVariant.get(v._id.toString());
-      const key = supplier?.supplierId ?? 'unassigned';
+      const preferred = product?.supplierId ? supplierById.get(String(product.supplierId)) : null;
+      const received = supplierByVariant.get(v._id.toString());
+      const supplierId: string | null = preferred ? String(preferred._id) : (received?.supplierId ?? null);
+      const supplierDoc = supplierId ? supplierById.get(String(supplierId)) : null;
+      const key = supplierId ?? 'unassigned';
       if (!groups.has(key)) {
-        groups.set(key, { supplierId: supplier?.supplierId ?? null, supplierName: supplier?.supplierName ?? 'No supplier yet', items: [] });
+        groups.set(key, {
+          supplierId, supplierName: supplierDoc?.name ?? received?.supplierName ?? 'No supplier yet', items: [],
+          leadTimeDays: supplierDoc?.leadTimeDays ?? null, paymentTerms: supplierDoc?.paymentTerms ?? null,
+        });
       }
       const available = Math.max(0, (v.stock || 0) - (v.committedStock || 0) - (v.damagedStock || 0) - (v.inTransitStock || 0));
       const variantId = v._id.toString();
       const forecast = forecastDailyDemand(dailyByVariant.get(variantId) ?? new Map());
       const simpleAvg = (thirtyDaySumByVariant.get(variantId) ?? 0) / 30;
       const perDay = forecast ?? simpleAvg;
-      groups.get(key)!.items.push({
+      const group = groups.get(key)!;
+      const lead = group.leadTimeDays;
+      const daysLeft = perDay > 0 ? Math.round(available / perDay) : null;
+      // Enough to cover the supplier's lead time plus two weeks of selling; without sales history, back up to twice the reorder point.
+      const reorderPoint = v.reorderPoint ?? lowStockThreshold;
+      const suggestedQty = perDay > 0 ? Math.min(100000, Math.max(1, Math.ceil(perDay * ((lead ?? 7) + 14)) - available)) : Math.max(1, reorderPoint * 2 - available);
+      group.items.push({
         productId: v.productId, variantId,
         productName: product?.name ?? '(deleted product)', image: product?.images?.[0] ?? null,
         sku: v.sku, available, reorderPoint: v.reorderPoint ?? lowStockThreshold,
-        daysOfStockLeft: perDay > 0 ? Math.round(available / perDay) : null,
+        daysOfStockLeft: daysLeft,
         forecastMethod: forecast != null ? 'trend_seasonal' : 'simple_average',
+        suggestedQty,
+        // Stock will run out before a new order could arrive.
+        urgent: daysLeft != null && lead != null && daysLeft <= lead,
       });
     }
 
@@ -1631,7 +1665,7 @@ export class InventoryService {
       .filter(v => ((v.stock || 0) - (v.expiredStock || 0)) > 0 && !soldVariantIds90.has(v._id.toString()))
       .map(v => ({
         productId: v.productId, variantId: v._id.toString(),
-        productName: productById.get(v.productId)?.name ?? '(deleted product)', sku: v.sku,
+        productName: productById.get(v.productId)?.name ?? '(deleted product)', variantLabel: variantLabelOf(v), sku: v.sku,
         stock: v.stock - (v.expiredStock || 0), value: v.costPrice != null ? Math.round((v.stock - (v.expiredStock || 0)) * v.costPrice * 100) / 100 : null,
       }))
       .sort((a, b) => b.stock - a.stock)
@@ -1644,7 +1678,7 @@ export class InventoryService {
       .map((s: any) => {
         const v = variantById.get(s._id);
         if (!v) return null;
-        return { variantId: s._id, productName: productById.get(v.productId)?.name ?? '(deleted product)', sku: v.sku, qty: s.qty };
+        return { variantId: s._id, productName: productById.get(v.productId)?.name ?? '(deleted product)', variantLabel: variantLabelOf(v), sku: v.sku, qty: s.qty };
       })
       .filter(Boolean);
 

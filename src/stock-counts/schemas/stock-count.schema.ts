@@ -51,6 +51,9 @@ export class StockCount {
   @Prop({ type: String, enum: STOCK_COUNT_STATUSES, default: 'open' }) status: StockCountStatus;
 
   @Prop({ type: String, required: true }) startedBy: string;
+  /** Who started / applied the count (a staff member when staff did it); shown on the printed report. */
+  @Prop({ type: String, default: null }) startedByName: string | null;
+  @Prop({ type: String, default: null }) completedByName: string | null;
   @Prop({ type: Date, default: Date.now }) startedAt: Date;
   @Prop({ type: Date, default: null }) completedAt: Date | null;
   @Prop({ type: Date, default: null }) cancelledAt: Date | null;

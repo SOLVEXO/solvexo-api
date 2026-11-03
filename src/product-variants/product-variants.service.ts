@@ -7,7 +7,7 @@ import {
 } from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
 import { ClientSession, Connection } from 'mongoose';
-import { assertMoney, assertStockQuantity, generateSkus, normalizeBarcode, normalizeImages, normalizeSku } from '../products/product-input.util';
+import { assertMoney, assertStockQuantity, generateSkus, normalizeBarcode, normalizeImages, normalizeSku, normalizeVideoUrl } from '../products/product-input.util';
 import { DatabaseService } from '@/database/databaseservice';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { buildDiffMetadata } from '@/common/activity-diff.util';
@@ -170,6 +170,7 @@ export class ProductVariantsService {
             ...customsForCreate,
             taxable: dto.taxable !== false,
             images: normalizeImages(dto.images),
+            videoUrl: normalizeVideoUrl(dto.videoUrl),
             isDefault: makeDefault,
           }],
           { session },
@@ -235,6 +236,7 @@ export class ProductVariantsService {
     }
     if (dto.taxable !== undefined) update.taxable = !!dto.taxable;
     if (dto.images !== undefined) update.images = normalizeImages(dto.images);
+    if (dto.videoUrl !== undefined) update.videoUrl = normalizeVideoUrl(dto.videoUrl);
     if (dto.sku !== undefined) {
       const sku = normalizeSku(dto.sku);
       if (!sku) throw new BadRequestException('SKU cannot be empty');
