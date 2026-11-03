@@ -20,5 +20,7 @@ Ongoing phased effort (Phase 5A–5H). Earlier phases are documented in the repo
 ### Where the docs are (`pos/docs/`)
 - `phase5_production_readiness_audit.md` — audit and the 30 gaps (#1–#30)
 - `phase5_decisions.md` — final decisions D1–D4 (money, web-only plan purchase, plan-only gating, shared-device model) and gap→phase map
-- `phase5{A,B,C,C1_and_5D,D1_and_5E,E1_and_5F,F1_and_5G}_summary.md` — per-phase results, in order
+- `phase5{A,B,C,C1_and_5D,D1_and_5E,E1_and_5F,F1_and_5G,G1_and_5H}_summary.md` — per-phase results, in order
 - `store_submission_checklist.md`, `web_pos_plan_purchase_spec.md`, `web_dashboard_changes.md`, `buyer_app_changes.md`
+- `deploy_runbook.md` (production order + rollback), `go_no_go.md` (blockers/verdict), `test_gap_matrix.md`
+- Local full stack for real end-to-end runs: `solvexo-api/dev/README.md`; POS real-backend tests: `pos/tool/run_real_e2e.sh`; portal: `solvexo-account-web` (`npm run e2e:real`)
