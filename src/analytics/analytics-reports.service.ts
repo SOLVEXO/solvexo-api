@@ -6,7 +6,7 @@ import { AnalyticsService } from './analytics.service';
 import { bucketExpr, enumerateBuckets, localDateKey, percentChange, rangeCacheKey, resolveDateRange, zonedParts, zonedStartOfDay } from './utils/analytics-date.util';
 import { round } from './utils/analytics-number.util';
 import { buildAnalyticsCacheKey, withAnalyticsCache } from './utils/analytics-cache.util';
-import { itemRefundSumField, rawRefundedField, taxFreeShareExpr, ReportingCurrency, sellerOrderMatchStage, sumUSD } from './utils/order-aggregation.util';
+import { itemRefundSumField, num, rawRefundedField, taxFreeShareExpr, ReportingCurrency, sellerOrderMatchStage, sumUSD } from './utils/order-aggregation.util';
 import { toCsv } from './utils/csv.util';
 import { availableStock } from '../common/stock-availability.util';
 
@@ -19,9 +19,9 @@ export const REPORT_EXPORT_SECTIONS = ['sales-summary', 'sales-by-variant', 'sal
 
 /** Sum over a sellerOrder's line items of an expression on `$$i` (each line). */
 // Items removed/cancelled on their own (order edit, partial cancel) are not sales — leave them out.
-const liveItems = { $filter: { input: { $ifNull: ['$sellerOrders.items', []] }, as: 'it', cond: { $ne: ['$it.status', 'cancelled'] } } };
+const liveItems = { $filter: { input: { $ifNull: ['$sellerOrders.items', []] }, as: 'it', cond: { $ne: ['$$it.status', 'cancelled'] } } };
 const sumItems = (inExpr: any) => ({ $sum: { $map: { input: liveItems, as: 'i', in: inExpr } } });
-const n = (field: string) => ({ $ifNull: [field, 0] });
+const n = (field: string) => num(field);
 /** Discounts Shopify reports as "Discounts": codes, automatic discounts, campaigns, member pricing. */
 const LINE_DISCOUNTS = { $add: [n('$$i.couponDiscountUSD'), n('$$i.campaignDiscountUSD'), n('$$i.autoDiscountUSD'), n('$$i.subscriberDiscountUSD')] };
 /**
@@ -70,7 +70,7 @@ export class AnalyticsReportsService {
       shipping: {
         $cond: [
           { $gt: [n('$subtotal'), 0] },
-          { $multiply: [n('$shippingFee'), { $divide: [n('$sellerOrders.subtotal'), '$subtotal'] }] },
+          { $multiply: [n('$shippingFee'), { $divide: [n('$sellerOrders.subtotal'), n('$subtotal')] }] },
           { $cond: [{ $eq: [{ $size: { $ifNull: ['$sellerOrders', []] } }, 1] }, n('$shippingFee'), 0] },
         ],
       },

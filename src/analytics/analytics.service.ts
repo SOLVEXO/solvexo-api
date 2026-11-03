@@ -657,7 +657,7 @@ export class AnalyticsService {
       const identityMap = await resolveCustomerIdentities(this.r.userModel, this.r.orderModel, topByLtv.map((c) => c.userId));
 
       const topCustomers = topByLtv.map((c) => {
-        const identity = identityMap.get(c.userId)!;
+        const identity = identityMap.get(c.userId) ?? { name: 'Deleted account', email: '' };
         return {
           userId: c.userId,
           name: identity.name,
@@ -1161,7 +1161,7 @@ export class AnalyticsService {
         return toCsv(
           ['Customer', 'Email', 'Total Orders', `Lifetime Value (${currency})`],
           allTime.map((c) => {
-            const identity = identityMap.get(c.userId)!;
+            const identity = identityMap.get(c.userId) ?? { name: 'Deleted account', email: '' };
             return [identity.name, identity.email, c.totalOrders, c.lifetimeValue.toFixed(2)];
           }),
         );
