@@ -531,6 +531,8 @@ export class AuthService {
       const matchers: any[] = [{ providerId: socialId, authProvider, ...storeScope }];
       if (verifiedEmail) matchers.unshift({ email: verifiedEmail, ...storeScope });
       let account = await accountModel.findOne({ $or: matchers });
+      // Lets the web app count a Google sign-up as a new account in Solvexo's own website analytics.
+      const isNewUser = !account;
 
       if (!account) {
         if (targetRole === 'user') {
@@ -610,6 +612,7 @@ export class AuthService {
         message: 'Social login successful',
         success: true,
         data: {
+          isNewUser,
           user: {
             id: account._id,
             name: account.name,
