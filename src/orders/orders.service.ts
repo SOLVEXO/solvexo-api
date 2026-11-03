@@ -439,6 +439,9 @@ export class OrdersService {
           // orders placed before this field existed.
           revenue: { $sum: { $cond: [{ $in: ['$so.status', ['completed', 'delivered']] }, { $ifNull: ['$so.settlementAmount', { $ifNull: ['$so.subtotal', 0] }] }, 0] } },
           pending: { $sum: { $cond: [{ $in: ['$so.status', ['pending', 'processing']] }, 1, 0] }, },
+          // Handed over (shipped / delivered / completed) but the money is not recorded yet — typically COD or a bank
+          // transfer the seller still has to mark as paid.
+          unpaidDelivered: { $sum: { $cond: [{ $and: [{ $ne: ['$isPaid', true] }, { $in: ['$so.status', ['shipped', 'delivered', 'completed']] }] }, 1, 0] } },
         },
       },
     ]);
@@ -504,6 +507,7 @@ export class OrdersService {
           totalOrders,
           revenue: totalRevenue,
           pending: pendingCount,
+          unpaidDelivered: statRow?.unpaidDelivered ?? 0,
           avgOrder: parseFloat(avgOrder.toFixed(2)),
         },
         pagination: {
