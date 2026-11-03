@@ -975,7 +975,7 @@ describe('FinanceService', () => {
 
     it('the processing-fee text is clean and follows the store currency', async () => {
       const usd: any = await service.getDashboard(SELLER_ID, STORE_ID);
-      expect(usd.feeBreakdown.paymentProcessing).toMatch(/^2\.9% \+ \$0\.30 /);
+      expect(usd.feeBreakdown.paymentProcessing).toMatch(/^2\.9% \+ \$ 0\.30 /);
 
       storeModel.findById.mockResolvedValue({ _id: STORE_ID, sellerId: SELLER_ID, isDelete: false, baseCurrency: 'PKR' });
       (service as any).db.repositories.exchangeRateModel = {

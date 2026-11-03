@@ -81,6 +81,7 @@ import { AdminUsersModule } from './admin-users/admin-users.module';
 import { AdminClientsModule } from './admin-clients/admin-clients.module';
 import { AdminDigestModule } from './admin-digest/admin-digest.module';
 import { SalesOpsModule } from './sales-ops/sales-ops.module';
+import { SiteAnalyticsModule } from './site-analytics/site-analytics.module';
 import { AdminMarketingModule } from './admin-marketing/admin-marketing.module';
 import { ShippingZonesModule } from './shipping-zones/shipping-zones.module';
 import { ShippingCarriersModule } from './shipping-carriers/shipping-carriers.module';
@@ -212,6 +213,7 @@ import { AppI18nModule } from './i18n/i18n.module';
     AdminClientsModule,
     AdminDigestModule,
     SalesOpsModule,
+    SiteAnalyticsModule,
     AdminMarketingModule,
     ShippingZonesModule,
     ShippingCarriersModule,
