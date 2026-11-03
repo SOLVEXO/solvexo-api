@@ -33,6 +33,8 @@ docker compose -f docker-compose.dev.yml --profile tools run --rm seed
 | Second store | **Expired Store** — POS plan expired 5 days ago (restricted mode / "plan not active" screen) |
 | Products | Dev Latte (stock 20, barcode 1000000000011) · Dev Refill (**unlimited**, …028) · Dev Croissant (**stock 2**, low-stock, …035) · Dev Beans 1kg (stock 8, $24, …042) |
 
+Portal e2e owners (`npm run dev:seed -- --extras-only`, ids in `dev/.logs/seed-e2e.json`, all password `DevPass#12345`): `owner2@` (active plan; Devices page), `owner3@` (in-session deletion), `owner4@` (public OTP deletion), `owner5@` (no plan; buy/extend). Re-running the extras resets them (incl. pending deletions, refresh families, devices) without touching the main owner.
+
 Plan-expiry flow: `npm run dev:expire-plan` (main store's plan → expired 2 days ago) and `npm run dev:restore-plan` (→ +30 days). No server restart needed.
 
 ## Test hooks (all dead in production)

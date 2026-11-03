@@ -4,6 +4,7 @@
  * "dev" (or --force). Uses the compiled production Mongoose schemas (run `npm run build` first) so defaults/validation apply.
  *
  *   npx ts-node --transpile-only dev/seed.ts                  seed (or re-seed) everything
+ *   npx ts-node --transpile-only dev/seed.ts --extras-only    only the portal-e2e owners (owner2..5@solvexo.dev, ids in dev/.logs/seed-e2e.json); leaves the main data untouched
  *   npx ts-node --transpile-only dev/seed.ts --expire-plan    make the main store's POS plan expired (plan-expiry / restricted-mode flow)
  *   npx ts-node --transpile-only dev/seed.ts --restore-plan   give it 30 days again
  */
@@ -52,6 +53,47 @@ async function main() {
     await conn.close();
     return;
   }
+
+  // --- portal e2e extras (--extras-only runs ONLY this block, so it never disturbs the main owner/store other runs use) ------
+  // owner2: store + active plan (Devices page) · owner3: in-session deletion · owner4: public OTP deletion · owner5: no plan (buy/extend)
+  const seedExtras = async () => {
+    const plan: any = await PosPlan.findOne({ name: 'Dev POS Monthly' });
+    if (!plan) throw new Error('Seed the main data first (plan "Dev POS Monthly" missing)');
+    const pw = await bcrypt.hash(DEV.ownerPassword, 10);
+    const res: any = {};
+    for (const x of [
+      { key: 'owner2', email: 'owner2@solvexo.dev', store: 'E2E Devices Shop', slug: 'e2e-devices-shop', planDays: 30 },
+      { key: 'owner3', email: 'owner3@solvexo.dev', store: 'E2E Delete Shop', slug: 'e2e-delete-shop', planDays: 30 },
+      { key: 'owner4', email: 'owner4@solvexo.dev', store: 'E2E Public Delete Shop', slug: 'e2e-public-delete-shop', planDays: 30 },
+      { key: 'owner5', email: 'owner5@solvexo.dev', store: 'E2E No Plan Shop', slug: 'e2e-no-plan-shop', planDays: 0 },
+    ]) {
+      let o: any = await Seller.findOne({ email: x.email });
+      if (!o) o = new Seller({ name: `E2E ${x.key}`, email: x.email, role: 'seller', isVerified: true });
+      o.password = pw; o.status = 'active'; o.isDelete = false; o.deletionRequestedAt = null; o.deletionScheduledFor = null; o.otp = null; o.otpExpiresAt = null; o.otpAttempts = 0;
+      await o.save();
+      const sid = String(o._id);
+      let s: any = await Store.findOne({ slug: x.slug });
+      if (!s) s = new Store({ sellerId: sid, name: x.store, slug: x.slug, baseCurrency: 'USD' });
+      s.sellerId = sid; s.name = x.store; s.status = 'active'; s.isDelete = false; s.baseCurrency = 'USD';
+      if (!s.registers?.length) s.registers = [{ name: 'Register 1', defaultFloatCash: 100, status: 'active' }];
+      await s.save();
+      await PosSettings.updateOne({ storeId: String(s._id) }, { $set: { taxRate: 0.1 }, $setOnInsert: { saleCounter: 0 } }, { upsert: true });
+      if (x.planDays > 0) {
+        const exp = new Date(Date.now() + x.planDays * DAY);
+        await PosPurchase.updateOne({ stripeCheckoutSessionId: `manual_dev_seed_${s._id}` }, { $set: { storeId: String(s._id), sellerId: sid, planId: String(plan._id), planNameSnapshot: plan.name, priceSnapshot: plan.price, currencySnapshot: plan.currency, durationInDaysSnapshot: plan.durationInDays, purchasedAt: new Date(exp.getTime() - 30 * DAY), expiresAt: exp, source: 'manual', grantReason: 'dev seed (e2e)', revokedAt: null, reversedAt: null } }, { upsert: true });
+      } else {
+        await PosPurchase.deleteMany({ storeId: String(s._id) });
+      }
+      // Keep a clean slate for the portal e2e: no refresh families / revoked devices left from earlier runs.
+      await conn.collection('refreshtokenfamilies').deleteMany({ userId: sid });
+      await conn.collection('posdevices').deleteMany({ storeId: String(s._id) });
+      res[x.key] = { email: x.email, password: DEV.ownerPassword, sellerId: sid, storeId: String(s._id), registerId: String(s.registers[0]._id) };
+    }
+    const f = path.join(__dirname, '.logs', 'seed-e2e.json');
+    fs.writeFileSync(f, JSON.stringify(res, null, 2));
+    console.log(JSON.stringify(res, null, 2));
+  };
+  if (process.argv.includes('--extras-only')) { await seedExtras(); await conn.close(); return; }
 
   // --- owner ---------------------------------------------------------------------------------------------
   let owner: any = await Seller.findOne({ email: DEV.ownerEmail });
@@ -120,6 +162,7 @@ async function main() {
   const out = { owner: { email: DEV.ownerEmail, password: DEV.ownerPassword, sellerId }, store: { id: storeId, slug: DEV.storeSlug, registerId: String(store.registers[0]._id) }, expiredStore: { id: String(expiredStore._id) }, manager: { email: DEV.managerEmail, pin: DEV.managerPin }, cashier: { email: DEV.cashierEmail, pin: DEV.cashierPin }, planId: String(plan._id) };
   fs.writeFileSync(path.join(__dirname, '.logs', 'seed.json'), JSON.stringify(out, null, 2));
   console.log(JSON.stringify(out, null, 2));
+  await seedExtras();
   await conn.close();
 }
 main().catch((e) => { console.error(e); process.exit(1); });
