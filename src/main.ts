@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { NestFactory } from '@nestjs/core';
+import { parsePortalOrigins } from './common/portal-origins.util';
 import { ValidationPipe } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
@@ -93,6 +94,10 @@ async function bootstrap() {
     'https://solvexo-web.vercel.app',
     'https://api.edudeen.com',
   ];
+
+  // Solvexo Account web portal origin(s): PORTAL_ORIGINS=https://account.example.com,https://preview.example.vercel.app
+  // Exact origins only (no wildcards); https required except for localhost.
+  for (const o of parsePortalOrigins(process.env.PORTAL_ORIGINS)) whitelist.push(o);
 
   // Every seller store is served from its OWN subdomain
   // (`<slug>.solvexo.store`) or, in dev, `<slug>.localhost:<port>` — there's

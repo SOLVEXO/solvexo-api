@@ -28,13 +28,13 @@ async function seedSeller(s: { sellerId: string }, password: string | null = 'pw
 const seller = async (id: string): Promise<any> => h.repos.sellerModel.collection.findOne({ _id: new Types.ObjectId(id) });
 
 describe('request', () => {
-  it('needs the right password; a social-only account is told to use the web', async () => {
+  it('needs the right password; a social-only account cannot use a password at all', async () => {
     const s = await seedStore(h); await seedSeller(s);
     await expect(svc().request(s.sellerId, 'wrong')).rejects.toMatchObject({ response: { code: 'INVALID_PASSWORD' } });
     await expect(svc().request(s.sellerId, undefined)).rejects.toMatchObject({ response: { code: 'INVALID_PASSWORD' } });
     expect((await seller(s.sellerId)).status).toBe('active');
     const t = await seedStore(h); await seedSeller(t, null);
-    await expect(svc().request(t.sellerId, 'anything')).rejects.toMatchObject({ response: { code: 'PASSWORD_REQUIRED_FOR_DELETION' } });
+    await expect(svc().request(t.sellerId, 'anything')).rejects.toMatchObject({ response: { code: 'INVALID_REAUTH' } });
   });
 
   it('is refused while a register shift is open', async () => {

@@ -1,8 +1,18 @@
 /* eslint-disable prettier/prettier */
-import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException, Optional } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, UnauthorizedException, Injectable, Logger, NotFoundException, Optional } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
 import { DatabaseService } from '@/database/databaseservice';
 import { PosTokenRevocationService } from '../pos/pos-token-revocation.service';
+import { AuthService } from '../auth/auth.service';
+import { OtpService } from '../otp/otp.service';
+import { generateOtp, assertOtpAttempt } from '../common/otp.util';
+
+/** Proof of identity for a deletion request: the account password OR a fresh Google/Apple sign-in. */
+export interface DeletionReauth { password?: string; authProvider?: string; socialId?: string; token?: string }
+
+const OTP_TTL_MS = 10 * 60 * 1000;
+const OTP_RESEND_COOLDOWN_MS = 60 * 1000;
+export const GENERIC_OTP_MESSAGE = 'If an account exists for that email, we have sent a verification code to it.';
 
 const DAY_MS = 86_400_000;
 /** How long a deleted account can still be restored before its personal data is erased. */
@@ -24,25 +34,85 @@ export class SellerAccountDeletionService {
   constructor(
     private readonly databaseService: DatabaseService,
     @Optional() private readonly revocations?: PosTokenRevocationService,
+    @Optional() private readonly auth?: AuthService,
+    @Optional() private readonly otpService?: OtpService,
   ) {}
 
   private get r() { return this.databaseService.repositories; }
 
   async status(sellerId: string) {
-    const s: any = await this.r.sellerModel.findById(sellerId).select('status deletionRequestedAt deletionScheduledFor').lean();
+    const s: any = await this.r.sellerModel.findById(sellerId).select('status deletionRequestedAt deletionScheduledFor password authProvider').lean();
     if (!s) throw new NotFoundException('Seller not found');
-    return { success: true, data: { pending: s.status === 'pending_deletion', requestedAt: s.deletionRequestedAt ?? null, scheduledFor: s.deletionScheduledFor ?? null, graceDays: DELETION_GRACE_DAYS } };
+    return { success: true, data: { pending: s.status === 'pending_deletion', requestedAt: s.deletionRequestedAt ?? null, scheduledFor: s.deletionScheduledFor ?? null, graceDays: DELETION_GRACE_DAYS, hasPassword: !!s.password, authProvider: s.authProvider ?? null } };
   }
 
-  async request(sellerId: string, password: string | undefined, ip?: string) {
+  /** Authenticated route: re-authenticate with the password or a fresh Google/Apple sign-in, then schedule the deletion. */
+  async request(sellerId: string, reauth: DeletionReauth | string | undefined, ip?: string) {
+    const creds: DeletionReauth = typeof reauth === 'string' || reauth === undefined ? { password: reauth } : reauth;
     const seller: any = await this.r.sellerModel.findById(sellerId);
     if (!seller || seller.isDelete) throw new NotFoundException('Seller not found');
-    if (!seller.password) {
-      throw new BadRequestException({ statusCode: 400, code: 'PASSWORD_REQUIRED_FOR_DELETION', message: 'This account signs in with a social login and has no password to confirm with. Delete it from the web (account settings) or set a password first.' });
+    await this.assertReauth(seller, creds);
+    return this.schedule(seller, ip, 'password_or_social');
+  }
+
+  private async assertReauth(seller: any, creds: DeletionReauth) {
+    if (creds.authProvider || creds.socialId || creds.token) {
+      if (!['google', 'apple'].includes(String(creds.authProvider)) || !creds.socialId || !creds.token || !this.auth) {
+        throw new ForbiddenException({ statusCode: 403, code: 'INVALID_REAUTH', message: 'Sign-in confirmation failed' });
+      }
+      let verifiedEmail: string | null;
+      try {
+        verifiedEmail = await this.auth.verifyProviderIdentity(creds.authProvider!, creds.socialId, creds.token);
+      } catch {
+        throw new ForbiddenException({ statusCode: 403, code: 'INVALID_REAUTH', message: 'Sign-in confirmation failed' });
+      }
+      const sameIdentity = seller.providerId && seller.providerId === creds.socialId && seller.authProvider === creds.authProvider;
+      const sameEmail = !!verifiedEmail && verifiedEmail === String(seller.email ?? '').toLowerCase();
+      if (!sameIdentity && !sameEmail) {
+        throw new ForbiddenException({ statusCode: 403, code: 'INVALID_REAUTH', message: 'That account does not match the one you are deleting' });
+      }
+      return;
     }
-    if (!password || !(await bcrypt.compare(password, seller.password))) {
+    if (!seller.password) {
+      throw new ForbiddenException({ statusCode: 403, code: 'INVALID_REAUTH', message: 'This account has no password. Confirm with Google or Apple sign-in instead.' });
+    }
+    if (!creds.password || !(await bcrypt.compare(creds.password, seller.password))) {
       throw new ForbiddenException({ statusCode: 403, code: 'INVALID_PASSWORD', message: 'Password is incorrect' });
     }
+  }
+
+  /** Signed-out web flow, step 1: mail a code. ALWAYS answers the same way — never reveals whether the email has an account. */
+  async requestPublicOtp(email: string) {
+    const normalized = String(email ?? '').trim().toLowerCase();
+    const seller: any = normalized ? await this.r.sellerModel.findOne({ email: normalized }) : null;
+    if (seller && !seller.isDelete && seller.status === 'active') {
+      const issuedAt = seller.otpExpiresAt ? new Date(seller.otpExpiresAt).getTime() - OTP_TTL_MS : 0;
+      if (Date.now() - issuedAt >= OTP_RESEND_COOLDOWN_MS) {
+        const otp = generateOtp();
+        seller.otp = otp; seller.otpAttempts = 0; seller.otpExpiresAt = new Date(Date.now() + OTP_TTL_MS);
+        await seller.save();
+        try { await this.otpService?.sendOtp(seller.email, otp); }
+        catch (e: any) { this.logger.error(`deletion OTP mail failed: ${e?.message}`); }
+      }
+    }
+    return { success: true, message: GENERIC_OTP_MESSAGE };
+  }
+
+  /** Signed-out web flow, step 2: the code proves control of the mailbox; then the same rules as the in-app request apply. */
+  async confirmPublic(email: string, otp: string, ip?: string) {
+    const normalized = String(email ?? '').trim().toLowerCase();
+    const seller: any = normalized ? await this.r.sellerModel.findOne({ email: normalized }) : null;
+    if (!seller || seller.isDelete || seller.status !== 'active') throw new UnauthorizedException('Invalid or expired code');
+    await assertOtpAttempt(this.r.sellerModel, seller._id, otp);
+    if (!seller.otpExpiresAt || new Date() > new Date(seller.otpExpiresAt)) throw new UnauthorizedException('Invalid or expired code');
+    const res: any = await this.schedule(seller, ip, 'email_otp');
+    await this.r.sellerModel.updateOne({ _id: seller._id }, { $set: { otp: null, otpExpiresAt: null, otpAttempts: 0 } });
+    return { ...res, hint: 'To keep your account, sign in again before the scheduled date and cancel the deletion.' };
+  }
+
+  /** The rules every route shares: open-shift block, pending state, revocations, suspension, audit. */
+  private async schedule(seller: any, ip: string | undefined, via: string) {
+    const sellerId = String(seller._id);
     if (seller.status === 'pending_deletion') return this.status(sellerId);
 
     const stores: any[] = await this.r.storeModel.find({ sellerId, isDelete: false }).select('_id').lean();
@@ -65,7 +135,7 @@ export class SellerAccountDeletionService {
     const employees: any[] = await this.r.employeeModel.find({ storeId: { $in: storeIds }, isDelete: false }).select('_id').lean();
     for (const e of employees) await this.revocations?.revokeEmployee(String(e._id));
     for (const storeId of storeIds) {
-      await this.r.posAuditLogModel.create({ storeId, employeeId: null, action: 'account_deletion_requested', targetId: sellerId, targetType: 'seller', metadata: { scheduledFor: scheduled, ip: ip ?? null } }).catch(() => {});
+      await this.r.posAuditLogModel.create({ storeId, employeeId: null, action: 'account_deletion_requested', targetId: sellerId, targetType: 'seller', metadata: { scheduledFor: scheduled, ip: ip ?? null, via } }).catch(() => {});
     }
     return { success: true, message: `Account scheduled for deletion on ${scheduled.toISOString().slice(0, 10)}. You can cancel until then.`, data: { scheduledFor: scheduled, graceDays: DELETION_GRACE_DAYS } };
   }
