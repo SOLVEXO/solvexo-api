@@ -95,6 +95,7 @@ import { DatabaseService } from './databaseservice';
         name: schema.SubscriptionNotificationPreference.name,
         schema: schema.SubscriptionNotificationPreferenceSchema,
       },
+      { name: schema.RefreshTokenFamily.name, schema: schema.RefreshTokenFamilySchema },
       {
         name: schema.IdempotencyRecord.name,
         schema: schema.IdempotencyRecordSchema,

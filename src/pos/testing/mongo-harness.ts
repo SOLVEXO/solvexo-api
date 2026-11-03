@@ -51,6 +51,7 @@ export async function startMongoHarness(): Promise<MongoHarness> {
     cartModel: m(schema.Cart, schema.CartSchema),
     posDeviceModel: m(schema.PosDevice, schema.PosDeviceSchema),
     variantPriceHistoryModel: m(schema.VariantPriceHistory, schema.VariantPriceHistorySchema),
+    refreshTokenFamilyModel: m(schema.RefreshTokenFamily, schema.RefreshTokenFamilySchema),
     idempotencyRecordModel: m(schema.IdempotencyRecord, schema.IdempotencyRecordSchema),
   };
   // Build every index now (unique sale key, unique open session per register, …) so tests hit the real constraints.

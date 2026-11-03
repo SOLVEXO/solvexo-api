@@ -68,6 +68,22 @@ export class Seller {
   @Prop({ type: Date, default: null })
   anonymizedAt: Date | null;
 
+  /** Sign in with Apple, no-email case: `email` is a unique non-deliverable placeholder — no mail path may send to it. */
+  @Prop({ type: Boolean, default: false })
+  emailIsPlaceholder: boolean;
+
+  /** Apple refresh token from the authorization-code exchange, AES-256-GCM encrypted (versioned envelope). Never selected by default, never returned. */
+  @Prop({ type: String, select: false, default: null })
+  appleRefreshTokenEnc: string | null;
+
+  /** Apple `client_id` (bundle id or Services ID) the token was issued for — needed again to revoke it. */
+  @Prop({ type: String, select: false, default: null })
+  appleClientId: string | null;
+
+  /** Revocation bookkeeping (no secrets): status pending → done | failed(gave up). */
+  @Prop({ type: Object, default: null })
+  appleRevocation: { status: 'pending' | 'done' | 'failed'; attempts: number; nextAttemptAt: Date | null; lastError: string | null; doneAt?: Date | null } | null;
+
     @Prop({required: true})
   role: string;
 

@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
-import { Body, Controller, Post, Req, Get, Patch, Query, ForbiddenException, HttpCode, UnauthorizedException } from '@nestjs/common';
+import { Body, Controller, Post, Req, Res, Get, Patch, Delete, Query, ForbiddenException, HttpCode, UnauthorizedException } from '@nestjs/common';
+import { REFRESH_COOKIE, assertCsrf, assertPortalOrigin, clearRefreshCookie, isCookieMode, issueCsrf, setRefreshCookie } from './portal-cookie.util';
 import { GuestSessionService } from './guest-session.service';
 import { GuestSessionDto, GuestContactDto } from './dto/guest-session.dto';
 import { Throttle } from '@nestjs/throttler';
@@ -82,10 +83,28 @@ export class AuthController {
   // down password-guessing against one account from one IP.
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Post('login')
-  async login(@Req() req: any, @Body() loginDto: LoginDto) {
+  async login(@Req() req: any, @Res({ passthrough: true }) res: any, @Body() loginDto: LoginDto) {
+    const cookie = isCookieMode(req);
+    if (cookie) assertCsrf(req);
     const result = await this.authService.login(loginDto, req.ip, req.headers['user-agent']);
     if (loginDto.role === 'user') await this.guestSessions.mergeFromAuthResult(result, loginDto.storeId);
-    return result;
+    return cookie ? this.finishCookieSession(req, res, result) : result;
+  }
+
+  /** Portal (cookie mode): the refresh token goes into the HttpOnly cookie, never the body; a rotated CSRF token comes back in the body. */
+  private async finishCookieSession(req: any, res: any, result: any) {
+    const { body, refreshToken } = await this.authService.toCookieSession(result);
+    setRefreshCookie(req, res, refreshToken);
+    return { ...body, data: { ...body.data, csrfToken: issueCsrf(req, res) } };
+  }
+
+  /** Step 1 of every cookie-mode flow: sets the signed double-submit cookie and returns its token. Only PORTAL_ORIGINS may call it. */
+  @Throttle({ default: { limit: 60, ttl: 60_000 } })
+  @Get('csrf')
+  csrf(@Req() req: any, @Res({ passthrough: true }) res: any) {
+    assertPortalOrigin(req);
+    res.setHeader('Cache-Control', 'no-store');
+    return { success: true, data: { csrfToken: issueCsrf(req, res) } };
   }
 
   // Shopify-style guest checkout: starts a password-less buyer session for this store (no account needed), unless the
@@ -107,18 +126,46 @@ export class AuthController {
 
   // ✅ Social login (Google / Facebook / Apple) — resolves to buyer or seller per dto.role (default 'user')
   @Post('social-login')
-  async socialLogin(@Body() socialLoginDto: SocialLoginDto) {
+  async socialLogin(@Req() req: any, @Res({ passthrough: true }) res: any, @Body() socialLoginDto: SocialLoginDto) {
+    const cookie = isCookieMode(req);
+    if (cookie) assertCsrf(req);
     const result = await this.authService.socialLogin(socialLoginDto);
     if ((socialLoginDto.role ?? 'user') === 'user') await this.guestSessions.mergeFromAuthResult(result, socialLoginDto.storeId);
-    return result;
+    return cookie ? this.finishCookieSession(req, res, result) : result;
   }
 
   @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @HttpCode(200)
   @Post('refresh')
-  async refresh(@Body() body: { refreshToken?: string }) {
+  async refresh(@Req() req: any, @Res({ passthrough: true }) res: any, @Body() body: { refreshToken?: string }) {
+    if (isCookieMode(req)) {
+      assertCsrf(req);
+      const token = req.cookies?.[REFRESH_COOKIE];
+      if (!token || typeof token !== 'string') throw new UnauthorizedException('Not signed in');
+      try {
+        const { body: out, refreshToken } = await this.authService.refreshCookie(token);
+        setRefreshCookie(req, res, refreshToken);
+        return { ...out, data: { ...out.data, csrfToken: issueCsrf(req, res) } };
+      } catch (e: any) {
+        // A retryable race must keep the (possibly just-rotated) cookie; every other failure ends the browser session.
+        if (e?.getResponse?.()?.code !== 'REFRESH_IN_PROGRESS') clearRefreshCookie(req, res);
+        throw e;
+      }
+    }
     if (!body?.refreshToken || typeof body.refreshToken !== 'string') throw new UnauthorizedException('Invalid refresh token');
     return this.authService.refresh(body.refreshToken);
+  }
+
+  /** Cookie-mode sign-out: revokes the refresh family and clears the cookie. Same CSRF rules as the other cookie endpoints. */
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  @HttpCode(200)
+  @Delete('refresh')
+  async signOutCookie(@Req() req: any, @Res({ passthrough: true }) res: any) {
+    assertCsrf(req);
+    const token = req.cookies?.[REFRESH_COOKIE];
+    if (token && typeof token === 'string') await this.authService.revokeFamilyFromToken(token);
+    clearRefreshCookie(req, res);
+    return { success: true, message: 'Signed out', data: null };
   }
 
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
@@ -132,11 +179,13 @@ export class AuthController {
   // limit here, that's brute-forceable well within the OTP's expiry window.
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Post('verifyOtp')
-  async verifyOtp(@Body() body: { email: string; role: string, otp: string; storeId?: string }) {
+  async verifyOtp(@Req() req: any, @Res({ passthrough: true }) res: any, @Body() body: { email: string; role: string, otp: string; storeId?: string }) {
     const { email, role, otp, storeId } = body;
+    const cookie = isCookieMode(req);
+    if (cookie) assertCsrf(req);
     const result = await this.authService.verifyOtp(email, role, otp, storeId);
     if (role === 'user') await this.guestSessions.mergeFromAuthResult(result, storeId);
-    return result;
+    return cookie ? this.finishCookieSession(req, res, result) : result;
   }
 
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
@@ -184,7 +233,7 @@ export class AuthController {
   @Post('logout')
   async logout(@Req() req: any) {
     const token = req.headers.authorization?.split(' ')[1];
-    return this.authService.logout(token);
+    return this.authService.logout(token, req.cookies?.[REFRESH_COOKIE]);
   }
 
   @UseGuards(JwtAuthGuard)

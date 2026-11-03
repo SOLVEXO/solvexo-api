@@ -137,6 +137,9 @@ export class DatabaseService {
     @InjectModel(schema.SubscriptionNotificationPreference.name)
     private subscriptionNotificationPreferenceModel: Model<schema.SubscriptionNotificationPreferenceDocument>,
 
+    @InjectModel(schema.RefreshTokenFamily.name)
+    private refreshTokenFamilyModel: Model<schema.RefreshTokenFamilyDocument>,
+
     @InjectModel(schema.IdempotencyRecord.name)
     private idempotencyRecordModel: Model<schema.IdempotencyRecordDocument>,
 
@@ -572,6 +575,7 @@ export class DatabaseService {
       subscriptionCreditWalletModel: this.subscriptionCreditWalletModel,
       subscriptionNotificationPreferenceModel: this.subscriptionNotificationPreferenceModel,
       idempotencyRecordModel: this.idempotencyRecordModel,
+      refreshTokenFamilyModel: this.refreshTokenFamilyModel,
       platformPlanModel: this.platformPlanModel,
       platformTrialSettingsModel: this.platformTrialSettingsModel,
       sellerPlatformSubscriptionModel: this.sellerPlatformSubscriptionModel,

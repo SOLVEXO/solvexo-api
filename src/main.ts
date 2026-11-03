@@ -140,7 +140,7 @@ async function bootstrap() {
     // mutation (plan change, add-ons, manual payment, stock counts, purchase orders…).
     // Without it the browser's CORS preflight is rejected and the call surfaces only as
     // a generic "Network Error" — no request ever reaches the API.
-    allowedHeaders: ['Content-Type','Authorization','X-Requested-With','Accept','Origin','Idempotency-Key','X-Storefront-Token'],
+    allowedHeaders: ['Content-Type','Authorization','X-Requested-With','Accept','Origin','Idempotency-Key','X-Storefront-Token','X-CSRF-Token','X-Auth-Mode'],
     exposedHeaders: ['Content-Length','X-Request-Id'],
     // Cache the preflight for a day so the browser doesn't spend an extra round trip (~300 ms) on every API call.
     maxAge: 86400,

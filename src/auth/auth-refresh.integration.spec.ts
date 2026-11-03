@@ -108,9 +108,11 @@ describe('Sign in with Apple', () => {
   it('does NOT link by email when the token does not say email_verified (no account is taken over)', async () => {
     const id = await seedSeller({ email: 'victim@x.com', password: 'hash' });
     appleToken = { sub: 'attacker-sub', email: 'victim@x.com', email_verified: false };
-    await expect(auth().socialLogin(dto({ socialId: 'attacker-sub' }) as any)).rejects.toThrow(/No email available/);
+    // 5G.1: the sign-in itself succeeds (Apple accounts are keyed by `sub`) but as its OWN account — never the victim's.
+    const res: any = await auth().socialLogin(dto({ socialId: 'attacker-sub' }) as any);
+    expect(res.data.user.id.toString()).not.toBe(id);
     expect((await h.repos.sellerModel.collection.findOne({ _id: new Types.ObjectId(id) }) as any).providerId).toBeUndefined();
-    expect(await h.repos.sellerModel.countDocuments({})).toBe(1);
+    expect(await h.repos.sellerModel.countDocuments({})).toBe(2);
   });
 
   it('later sign-ins with no email in the token and no client email still resolve by provider id', async () => {

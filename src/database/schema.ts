@@ -66,6 +66,7 @@ export { SubscriptionCounter, SubscriptionCounterDocument, SubscriptionCounterSc
 export { WebhookEvent, WebhookEventDocument, WebhookEventSchema } from '../subscriptions/schemas/webhook-event.schema';
 export { SubscriptionCreditWallet, SubscriptionCreditWalletDocument, SubscriptionCreditWalletSchema } from '../subscriptions/schemas/subscription-credit-wallet.schema';
 export { SubscriptionNotificationPreference, SubscriptionNotificationPreferenceDocument, SubscriptionNotificationPreferenceSchema } from '../subscriptions/schemas/subscription-notification-preference.schema';
+export { RefreshTokenFamily, RefreshTokenFamilyDocument, RefreshTokenFamilySchema } from '../auth/schemas/refresh-token-family.schema';
 export { IdempotencyRecord, IdempotencyRecordDocument, IdempotencyRecordSchema } from '../common/schemas/idempotency-key.schema';
 export { PlatformPlan, PlatformPlanDocument, PlatformPlanSchema } from '../platform-plans/schemas/platform-plan.schema';
 export { SellerPlatformSubscription, SellerPlatformSubscriptionDocument, SellerPlatformSubscriptionSchema } from '../platform-plans/schemas/seller-platform-subscription.schema';

@@ -59,6 +59,12 @@ export class EmailService {
     attachments?: { filename: string; content: Buffer | string; contentType?: string }[],
     fromName?: string | null,
   ): Promise<boolean> {
+    // `.invalid` is reserved (RFC 2606): placeholder addresses of Apple sign-ins that shared no email and purged
+    // accounts' de-identified addresses can never receive mail — never hand them to SMTP.
+    if (/\.invalid$/i.test(String(to ?? '').trim())) {
+      console.warn('Skipped email to a non-deliverable (.invalid) address');
+      return false;
+    }
     try {
       // `fromName` = the store's name for customer-facing mails (the mailbox
       // stays the platform's SMTP sender); omitted = the platform name.
