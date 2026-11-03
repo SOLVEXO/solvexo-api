@@ -1,0 +1,54 @@
+# ============================================================================================
+# DEV ONLY — local full-stack for end-to-end testing. NEVER use for staging/production.
+# MongoDB (single-node replica set) + Redis + the API, with fake secrets from dev/.env.dev and NO Stripe keys.
+#   docker compose -f docker-compose.dev.yml up --build
+#   docker compose -f docker-compose.dev.yml run --rm seed
+# NOTE: written without Docker available on the authoring machine — syntax-checked only, NOT run.
+#       dev/up.sh is the natively-run equivalent that was actually exercised.
+# ============================================================================================
+services:
+  mongo:
+    image: mongo:7
+    command: ["--replSet", "rsdev", "--bind_ip_all", "--port", "27017"]
+    ports: ["27118:27017"]
+    volumes: ["mongo-data:/data/db"]
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "try{rs.status().ok}catch(e){rs.initiate({_id:'rsdev',members:[{_id:0,host:'mongo:27017'}]}).ok}"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports: ["6479:6379"]
+  api:
+    image: node:22-alpine
+    working_dir: /app
+    depends_on:
+      mongo: { condition: service_healthy }
+      redis: { condition: service_started }
+    env_file: dev/.env.dev
+    environment:
+      MONGO_URI: mongodb://mongo:27017/solvexo_dev?replicaSet=rsdev
+      REDIS_URL: redis://redis:6379
+      DEV_MAIL_LOG_FILE: /app/dev/.logs/mail.log
+    volumes:
+      - ./:/app
+      - api-node-modules:/app/node_modules
+    ports: ["3102:3102"]
+    command: sh -c "npm ci && npm run build && node dist/main.js"
+  seed:
+    image: node:22-alpine
+    profiles: ["tools"]
+    working_dir: /app
+    depends_on: [mongo]
+    env_file: dev/.env.dev
+    environment:
+      MONGO_URI: mongodb://mongo:27017/solvexo_dev?replicaSet=rsdev
+    volumes:
+      - ./:/app
+      - api-node-modules:/app/node_modules
+    command: npx ts-node --transpile-only dev/seed.ts
+volumes:
+  mongo-data:
+  api-node-modules:

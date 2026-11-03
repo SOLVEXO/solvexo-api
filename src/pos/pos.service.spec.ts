@@ -33,54 +33,50 @@ describe('PosService — employee token verification', () => {
   }
 
   describe('verifyEmployeeToken', () => {
-    it('returns null when no token is provided', () => {
-      expect((service as any).verifyEmployeeToken(undefined, 'store1')).toBeNull();
+    it('returns null when no token is provided', async () => {
+      expect(await (service as any).verifyEmployeeToken(undefined, 'store1')).toBeNull();
     });
 
-    it('returns null for a token signed with the wrong secret', () => {
+    it('returns null for a token signed with the wrong secret', async () => {
       const forged = jwt.sign(
         { employeeId: 'emp1', storeId: 'store1', role: 'manager', type: 'pos_employee' },
         'wrong-secret',
       );
-      expect((service as any).verifyEmployeeToken(forged, 'store1')).toBeNull();
+      expect(await (service as any).verifyEmployeeToken(forged, 'store1')).toBeNull();
     });
 
-    it('returns null when the token was minted for a different store', () => {
+    it('returns null when the token was minted for a different store', async () => {
       const token = signEmployeeToken({ storeId: 'store1' });
-      expect((service as any).verifyEmployeeToken(token, 'store2')).toBeNull();
+      expect(await (service as any).verifyEmployeeToken(token, 'store2')).toBeNull();
     });
 
-    it('returns null for a token that is not a pos_employee token', () => {
+    it('returns null for a token that is not a pos_employee token', async () => {
       const token = jwt.sign(
         { employeeId: 'emp1', storeId: 'store1', role: 'manager', type: 'seller' },
         'test-secret',
       );
-      expect((service as any).verifyEmployeeToken(token, 'store1')).toBeNull();
+      expect(await (service as any).verifyEmployeeToken(token, 'store1')).toBeNull();
     });
 
-    it('returns the employeeId and role for a valid token', () => {
+    it('returns the employeeId and role for a valid token', async () => {
       const token = signEmployeeToken({ role: 'cashier' });
-      expect((service as any).verifyEmployeeToken(token, 'store1')).toEqual({ employeeId: 'emp1', role: 'cashier' });
+      expect(await (service as any).verifyEmployeeToken(token, 'store1')).toEqual({ employeeId: 'emp1', role: 'cashier' });
     });
   });
 
   describe('requireManagerEmployee', () => {
-    it('throws ForbiddenException when no token is provided', () => {
-      expect(() => (service as any).requireManagerEmployee(undefined, 'store1', 'do the thing')).toThrow(
-        ForbiddenException,
-      );
+    it('throws ForbiddenException when no token is provided', async () => {
+      await expect((service as any).requireManagerEmployee(undefined, 'store1', 'do the thing')).rejects.toBeInstanceOf(ForbiddenException);
     });
 
-    it('throws ForbiddenException when the verified role is cashier, not manager', () => {
+    it('throws ForbiddenException when the verified role is cashier, not manager', async () => {
       const token = signEmployeeToken({ role: 'cashier' });
-      expect(() => (service as any).requireManagerEmployee(token, 'store1', 'do the thing')).toThrow(
-        ForbiddenException,
-      );
+      await expect((service as any).requireManagerEmployee(token, 'store1', 'do the thing')).rejects.toBeInstanceOf(ForbiddenException);
     });
 
-    it('returns the actor when the verified role is manager', () => {
+    it('returns the actor when the verified role is manager', async () => {
       const token = signEmployeeToken({ role: 'manager' });
-      expect((service as any).requireManagerEmployee(token, 'store1', 'do the thing')).toEqual({
+      expect(await (service as any).requireManagerEmployee(token, 'store1', 'do the thing')).toEqual({
         employeeId: 'emp1',
         role: 'manager',
       });

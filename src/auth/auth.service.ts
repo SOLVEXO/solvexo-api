@@ -27,6 +27,9 @@ import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { generateOtp, assertOtpAttempt } from '@/common/otp.util';
 import { NotificationsService } from '@/notifications/notifications.service';
 import { NOTIFICATION_TYPES } from '@/notifications/notification.types';
+import { randomUUID } from 'crypto';
+import { AppleTokenService } from './apple-token.service';
+import { hashJti } from './portal-cookie.util';
 
 @Injectable()
 export class AuthService {
@@ -43,6 +46,8 @@ export class AuthService {
     // Appended last (optional) so existing positional construction in specs keeps working.
     @Optional() private readonly adminSecurity?: AdminSecurityService,
     @Optional() private readonly adminTwoFactor?: AdminTwoFactorService,
+    // Sign in with Apple token lifecycle (5G.1) — optional so specs that build AuthService positionally keep working.
+    @Optional() private readonly appleTokens?: AppleTokenService,
   ) {}
 
   /** Tells the platform admins a new seller joined (in-app + email per their preferences). Never throws. */
@@ -89,6 +94,10 @@ export class AuthService {
   /** OTP mail: a store's buyer gets it under that store's name (reply-to = store contact email);
    *  sellers/admins get the platform's own sender. */
   private async sendOtpMail(email: string, otp: string, role: string, storeId?: string | null): Promise<void> {
+    // Apple sign-ins that shared no email carry a `.invalid` placeholder: there is nowhere to send a code.
+    if (/\.invalid$/i.test(email)) {
+      throw new BadRequestException('This account has no deliverable email address. Sign in with Apple instead.');
+    }
     let sender: { fromName?: string | null; replyTo?: string | null } | undefined;
     if (role === 'user' && storeId) {
       const store: any = await this.databaseService.repositories.storeModel
@@ -119,8 +128,9 @@ export class AuthService {
   }
 
   /** Deletes the Redis session key for this access token so `JwtAuthGuard` rejects it immediately, instead of waiting out its TTL. */
-  async logout(token: string) {
+  async logout(token: string, refreshCookieToken?: string) {
     await this.redisService.del(token);
+    if (refreshCookieToken) await this.revokeFamilyFromToken(refreshCookieToken);
     return {
       success: true,
       message: 'Logged out successfully',
@@ -402,9 +412,7 @@ export class AuthService {
     );
 
     // ✅ Refresh Token (long expiry)
-    const refreshToken = this.jwtService.sign(payload, {
-      expiresIn: '7d',
-    });
+    const refreshToken = this.signRefreshToken(payload);
 
     return {
       message: 'Login successful',
@@ -428,11 +436,25 @@ export class AuthService {
     };
   }
 
+  /** Seam for tests; production verifies against Apple's published keys. */
+  protected async verifyAppleIdToken(token: string, audiences: string[]): Promise<any> {
+    return appleSignin.verifyIdToken(token, { audience: audiences.length === 1 ? audiences[0] : audiences });
+  }
+
+  /**
+   * Public wrapper for flows that need a fresh provider proof for an already-signed-in account (e.g. account-deletion
+   * re-authentication). Returns the provider-verified email (or null). Throws UnauthorizedException on a bad token.
+   */
+  async verifyProviderIdentity(authProvider: string, socialId: string, token?: string): Promise<string | null> {
+    return this.verifySocialToken(authProvider, socialId, token);
+  }
+
   /** Verifies the provider token server-side so a forged socialId/email pair can't be used to hijack an account. */
   private async verifySocialToken(
     authProvider: string,
     socialId: string,
     token?: string,
+    meta?: { aud?: string },
   ): Promise<string | null> {
     if (!token) {
       throw new UnauthorizedException(
@@ -460,23 +482,146 @@ export class AuthService {
       }
       return data.email ? String(data.email).toLowerCase() : null;
     } else if (authProvider === 'apple') {
-      const payload = await appleSignin.verifyIdToken(token, {
-        audience: process.env.APPLE_CLIENT_ID,
-      });
+      // APPLE_CLIENT_ID is a comma-separated list: the iOS bundle id (native sign-in) AND the web Services ID.
+      const audiences = (process.env.APPLE_CLIENT_ID ?? '').split(',').map((a) => a.trim()).filter(Boolean);
+      const payload: any = await this.verifyAppleIdToken(token, audiences);
       if (!payload || payload.sub !== socialId) {
         throw new UnauthorizedException('Invalid Apple token');
       }
-      return (payload as any).email ? String((payload as any).email).toLowerCase() : null;
+      if (meta) meta.aud = Array.isArray(payload.aud) ? payload.aud[0] : payload.aud;
+      // Apple's email only counts as verified when the token says so (relay addresses are verified too).
+      const emailVerified = payload.email_verified === true || payload.email_verified === 'true';
+      return emailVerified && payload.email ? String(payload.email).toLowerCase() : null;
     } else {
       throw new UnauthorizedException('Unsupported auth provider');
     }
   }
 
+  /** Refresh tokens carry `typ:'refresh'` so an access token can never be replayed as one (and vice versa). */
+  private signRefreshToken(payload: Record<string, any>): string {
+    return this.jwtService.sign({ ...payload, typ: 'refresh' }, { expiresIn: '7d' });
+  }
+
+  /** True when an account already exists for this provider id (lets an email-less Apple/Facebook login continue). */
+  private async hasProviderAccount(dto: SocialLoginDto): Promise<boolean> {
+    const m: any = dto.role === 'seller' ? this.databaseService.repositories.sellerModel : this.databaseService.repositories.userModel;
+    const storeScope = dto.role === 'seller' ? {} : { storeId: dto.storeId ?? null };
+    return !!(await m.findOne({ providerId: dto.socialId, authProvider: dto.authProvider, ...storeScope }));
+  }
+
+  /**
+   * Silent refresh: exchanges a valid refresh token for a new access token and a ROTATED refresh token.
+   * Rejects access tokens (no `typ`), tokens from before a tokenVersion bump, and suspended / deleted / pending-deletion accounts.
+   * (Refresh tokens issued before this endpoint existed have no `typ` and are refused — they were never usable anyway.)
+   */
+  async refresh(refreshToken: string) {
+    let payload: any;
+    try {
+      payload = this.jwtService.verify(refreshToken);
+    } catch {
+      throw new UnauthorizedException('Invalid refresh token');
+    }
+    if (payload?.typ !== 'refresh' || payload?.type || payload?.guest) throw new UnauthorizedException('Invalid refresh token');
+    // Portal (cookie-mode) refresh tokens belong to a rotating family and only work through the CSRF-protected cookie path.
+    if (payload?.fam) throw new UnauthorizedException('Invalid refresh token');
+    const repos: any = this.databaseService.repositories;
+    const model = payload.role === 'seller' ? repos.sellerModel : payload.role === 'user' ? repos.userModel : payload.role === 'admin' ? repos.adminModel : null;
+    if (!model) throw new UnauthorizedException('Invalid refresh token');
+    const account: any = await model.findById(payload.sub);
+    if (!account || account.isDelete || ['deleted', 'suspended', 'pending_deletion'].includes(account.status)) {
+      throw new UnauthorizedException('Session expired, please sign in again');
+    }
+    if ((account.tokenVersion ?? 0) !== (payload.tokenVersion ?? 0)) {
+      throw new UnauthorizedException('Session expired, please sign in again');
+    }
+    const { iat, exp, typ, ...claims } = payload;
+    const accessToken = this.jwtService.sign(claims);
+    await this.redisService.set(accessToken, String(account._id), 24 * 60 * 60);
+    return { success: true, data: { token: { accessToken, refreshToken: this.signRefreshToken(claims) } } };
+  }
+
+  // ─────────────────────────── portal cookie sessions (5G.1): rotating refresh-token families ───────────────────────────
+  private get families(): any { return (this.databaseService.repositories as any).refreshTokenFamilyModel; }
+  private static readonly ROTATION_GRACE_MS = 10_000;
+
+  /** Turns a freshly issued login result into a cookie session: a new family, a family-bound refresh JWT (for the cookie), and a body without the refresh token. */
+  async toCookieSession(result: any): Promise<{ body: any; refreshToken: string }> {
+    const issued = result?.data?.token?.refreshToken;
+    const claims: any = issued ? this.jwtService.decode(issued) : null;
+    if (!claims) throw new UnauthorizedException('Login failed');
+    if (claims.role !== 'seller') throw new BadRequestException({ statusCode: 400, code: 'COOKIE_MODE_UNSUPPORTED', message: 'Cookie sessions are for seller accounts only' });
+    const { iat, exp, typ, ...rest } = claims;
+    const familyId = randomUUID();
+    const jti = randomUUID();
+    await this.families.create({ familyId, userId: String(rest.sub), role: rest.role, currentJtiHash: hashJti(jti), expiresAt: new Date(Date.now() + 7 * 86_400_000) });
+    const refreshToken = this.jwtService.sign({ ...rest, typ: 'refresh', fam: familyId, jti }, { expiresIn: '7d' });
+    return { body: { ...result, data: { ...result.data, token: { accessToken: result.data.token.accessToken } } }, refreshToken };
+  }
+
+  private async revokeFamily(familyId: string, reason: string) {
+    await this.families.updateOne({ familyId, revokedAt: null }, { $set: { revokedAt: new Date(), revokedReason: reason } });
+  }
+  /** Revokes every portal session of this account (password reset, account deletion). */
+  async revokeFamiliesForUser(userId: string, reason: string) {
+    await this.families.updateMany({ userId, revokedAt: null }, { $set: { revokedAt: new Date(), revokedReason: reason } });
+  }
+  /** Logout from the cookie: revokes the family the token belongs to (silently ignores junk/expired tokens). */
+  async revokeFamilyFromToken(refreshToken: string) {
+    try {
+      const p: any = this.jwtService.verify(refreshToken);
+      if (p?.typ === 'refresh' && p?.fam) await this.revokeFamily(p.fam, 'logout');
+    } catch { /* expired or invalid: nothing to revoke */ }
+  }
+
+  /**
+   * Cookie-mode refresh: validates the family-bound refresh JWT, ROTATES it on every call and detects reuse.
+   * A jti that was already rotated away revokes the whole family (401 REFRESH_REUSE) — except the immediately previous jti inside a
+   * 10 s window (two tabs refreshing at once), which gets a retryable 401 REFRESH_IN_PROGRESS without revoking anything.
+   */
+  async refreshCookie(refreshToken: string) {
+    let payload: any;
+    try { payload = this.jwtService.verify(refreshToken); } catch { throw new UnauthorizedException('Invalid refresh token'); }
+    if (payload?.typ !== 'refresh' || payload?.type || payload?.guest || !payload?.fam || !payload?.jti || payload?.role !== 'seller') {
+      throw new UnauthorizedException('Invalid refresh token');
+    }
+    const fam: any = await this.families.findOne({ familyId: payload.fam });
+    if (!fam || fam.userId !== String(payload.sub) || fam.revokedAt || fam.expiresAt < new Date()) throw new UnauthorizedException('Session expired, please sign in again');
+    const h = hashJti(payload.jti);
+    if (h !== fam.currentJtiHash) {
+      const recent = fam.rotatedAt && Date.now() - new Date(fam.rotatedAt).getTime() < AuthService.ROTATION_GRACE_MS;
+      if (recent && h === fam.prevJtiHash) throw new UnauthorizedException({ statusCode: 401, code: 'REFRESH_IN_PROGRESS', message: 'Another refresh just completed; retry' });
+      await this.revokeFamily(fam.familyId, 'reuse');
+      throw new UnauthorizedException({ statusCode: 401, code: 'REFRESH_REUSE', message: 'Session revoked, please sign in again' });
+    }
+    const account: any = await this.databaseService.repositories.sellerModel.findById(payload.sub);
+    if (!account || account.isDelete || ['deleted', 'suspended', 'pending_deletion'].includes(account.status) || (account.tokenVersion ?? 0) !== (payload.tokenVersion ?? 0)) {
+      await this.revokeFamily(fam.familyId, 'account_state');
+      throw new UnauthorizedException('Session expired, please sign in again');
+    }
+    const newJti = randomUUID();
+    const rotated = await this.families.findOneAndUpdate(
+      { familyId: fam.familyId, currentJtiHash: h, revokedAt: null },
+      { $set: { currentJtiHash: hashJti(newJti), prevJtiHash: h, rotatedAt: new Date(), expiresAt: new Date(Date.now() + 7 * 86_400_000) }, $push: { usedJtis: { $each: [h], $slice: -50 } } },
+    );
+    if (!rotated) throw new UnauthorizedException({ statusCode: 401, code: 'REFRESH_IN_PROGRESS', message: 'Another refresh just completed; retry' });
+    const { iat, exp, typ, fam: _f, jti: _j, ...claims } = payload;
+    const accessToken = this.jwtService.sign(claims);
+    await this.redisService.set(accessToken, String(account._id), 24 * 60 * 60);
+    const newRefresh = this.jwtService.sign({ ...claims, typ: 'refresh', fam: fam.familyId, jti: newJti }, { expiresIn: '7d' });
+    return { body: { success: true, data: { token: { accessToken } } }, refreshToken: newRefresh };
+  }
+
   /** Social login resolves against the buyer (User) or seller (Seller) collection based on dto.role (default 'user') — same role-picks-the-model pattern as login()/signup(). */
   async socialLogin(dto: SocialLoginDto) {
     try {
-      const verifiedEmail = await this.verifySocialToken(dto.authProvider, dto.socialId, dto.token);
-      return await this.finishSocialLogin(dto, verifiedEmail);
+      const meta: { aud?: string } = {};
+      const verifiedEmail = await this.verifySocialToken(dto.authProvider, dto.socialId, dto.token, meta);
+      const result: any = await this.finishSocialLogin(dto, verifiedEmail);
+      // Apple: keep the Apple refresh token (encrypted) so the account's deletion can revoke it. Never fails the login.
+      if (dto.authProvider === 'apple' && dto.role === 'seller' && dto.authorizationCode && this.appleTokens) {
+        await this.appleTokens.storeFromAuthorizationCode(String(result?.data?.user?.id), dto.authorizationCode, meta.aud);
+      }
+      return result;
     } catch (error) {
       throw new UnauthorizedException(error.message || 'Social login failed');
     }
@@ -511,7 +656,13 @@ export class AuthService {
       if (verifiedEmail && claimedEmail && verifiedEmail !== claimedEmail) {
         throw new UnauthorizedException('Email does not match the verified provider account');
       }
-      const email = verifiedEmail ?? claimedEmail;
+      let email = verifiedEmail ?? claimedEmail;
+      const isAppleSeller = authProvider === 'apple' && role === 'seller';
+      // Non-Apple providers keep the old rule: no email at all can only continue into an account already tied to this provider id.
+      // Apple is keyed by `sub`: a brand-new Apple user can ALWAYS sign up (see the placeholder below).
+      if (!email && !isAppleSeller && !(await this.hasProviderAccount(dto))) {
+        throw new UnauthorizedException('No email available from the provider. Sign in with email, or share your email with the app.');
+      }
 
       const targetRole: 'user' | 'seller' = role === 'seller' ? 'seller' : 'user';
       let accountModel;
@@ -532,13 +683,25 @@ export class AuthService {
       if (verifiedEmail) matchers.unshift({ email: verifiedEmail, ...storeScope });
       let account = await accountModel.findOne({ $or: matchers });
 
+      let emailIsPlaceholder = false;
       if (!account) {
         if (targetRole === 'user') {
           await this.assertValidStoreId(storeId);
         }
+        if (isAppleSeller) {
+          // Hide My Email / no email claim: the relay (or client-sent) address from the FIRST authorization is stored as the
+          // account email. If it is missing, or already belongs to another account we are NOT allowed to link to (unverified
+          // claim), fall back to a unique non-deliverable placeholder — never take over, never fail the sign-up.
+          const taken = email ? !!(await accountModel.exists({ email })) : false;
+          if (!email || taken) {
+            email = `apple+${String(socialId).toLowerCase()}@apple-signin.invalid`;
+            emailIsPlaceholder = true;
+          }
+        }
         account = new accountModel({
           name: name || userName,
           email,
+          ...(emailIsPlaceholder ? { emailIsPlaceholder: true } : {}),
           role: targetRole,
           isVerified: true,
           authProvider,
@@ -604,7 +767,7 @@ export class AuthService {
         account._id.toString(),
         24 * 60 * 60,
       );
-      const refreshToken = this.jwtService.sign(payload, { expiresIn: '7d' });
+      const refreshToken = this.signRefreshToken(payload);
 
       return {
         message: 'Social login successful',
@@ -735,9 +898,7 @@ export class AuthService {
 
       await this.redisService.set(token, user._id.toString(), 24 * 60 * 60);
 
-      const refreshToken = this.jwtService.sign(payload, {
-        expiresIn: '7d',
-      });
+      const refreshToken = this.signRefreshToken(payload);
 
       return {
         message: 'OTP verified successfully',
@@ -859,6 +1020,7 @@ export class AuthService {
       // (Redis sessions are keyed by token, so they can't be enumerated).
       user.tokenVersion = (user.tokenVersion ?? 0) + 1;
       await user.save();
+      if (role === 'seller') await this.revokeFamiliesForUser(String(user._id), 'password_reset');
 
       return {
         message: 'Your password has been changed successfully',

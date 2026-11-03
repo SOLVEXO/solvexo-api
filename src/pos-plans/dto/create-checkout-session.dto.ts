@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsNotEmpty, IsString } from 'class-validator';
+import { IsNotEmpty, IsString, IsUrl } from 'class-validator';
 
 export class CreateCheckoutSessionDto {
   @ApiProperty()
@@ -10,10 +10,12 @@ export class CreateCheckoutSessionDto {
   @ApiProperty()
   @IsString()
   @IsNotEmpty()
+  @IsUrl({ require_tld: false, protocols: ['http', 'https'], require_protocol: true })
   successUrl: string;
 
   @ApiProperty()
   @IsString()
   @IsNotEmpty()
+  @IsUrl({ require_tld: false, protocols: ['http', 'https'], require_protocol: true })
   cancelUrl: string;
 }

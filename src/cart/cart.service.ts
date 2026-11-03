@@ -5,6 +5,7 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 
+import { isPurchasableOnline } from '@/common/stock-availability.util';
 import { DatabaseService } from '@/database/databaseservice';
 import { AddToCartDto } from './dto/add-to-cart.dto';
 
@@ -44,6 +45,11 @@ export class CartService {
         String(variant.productId) !== String(product._id)
       ) {
         throw new BadRequestException('Product variant not found');
+      }
+
+      // Sold out (or oversold negative) physical variants can't be put in a cart — checkout re-checks, but failing here is kinder.
+      if (product.type === 'physical' && !isPurchasableOnline(variant as any, quantity)) {
+        throw new BadRequestException('This item is out of stock');
       }
 
       // 3️⃣ find cart — scoped to this store, so the same buyer's cart on a

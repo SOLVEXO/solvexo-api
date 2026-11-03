@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { assertWithinPosPlanLimit } from '../pos-plans/pos-plan-limits.util';
 import { Injectable, NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
 import { DatabaseService } from '@/database/databaseservice';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
@@ -29,6 +30,7 @@ export class StoreLocationService {
   async createLocation(sellerId: string, storeId: string, dto: CreateStoreLocationDto) {
     await this.verifyStoreOwnership(storeId, sellerId);
     await this.entitlementsService.assertCanAddLocation(storeId);
+    await assertWithinPosPlanLimit(this.db.repositories, storeId, 'locations', await this.locationModel.countDocuments({ storeId, isDelete: false }));
 
     // The very first location a store creates becomes its default — the
     // one an existing variant's pre-multi-location stock is assigned to

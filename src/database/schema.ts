@@ -66,6 +66,7 @@ export { SubscriptionCounter, SubscriptionCounterDocument, SubscriptionCounterSc
 export { WebhookEvent, WebhookEventDocument, WebhookEventSchema } from '../subscriptions/schemas/webhook-event.schema';
 export { SubscriptionCreditWallet, SubscriptionCreditWalletDocument, SubscriptionCreditWalletSchema } from '../subscriptions/schemas/subscription-credit-wallet.schema';
 export { SubscriptionNotificationPreference, SubscriptionNotificationPreferenceDocument, SubscriptionNotificationPreferenceSchema } from '../subscriptions/schemas/subscription-notification-preference.schema';
+export { RefreshTokenFamily, RefreshTokenFamilyDocument, RefreshTokenFamilySchema } from '../auth/schemas/refresh-token-family.schema';
 export { IdempotencyRecord, IdempotencyRecordDocument, IdempotencyRecordSchema } from '../common/schemas/idempotency-key.schema';
 export { PlatformPlan, PlatformPlanDocument, PlatformPlanSchema } from '../platform-plans/schemas/platform-plan.schema';
 export { SellerPlatformSubscription, SellerPlatformSubscriptionDocument, SellerPlatformSubscriptionSchema } from '../platform-plans/schemas/seller-platform-subscription.schema';
@@ -191,6 +192,9 @@ export { PromotionClickEvent, PromotionClickEventDocument, PromotionClickEventSc
 export { StoreAppRequest, StoreAppRequestDocument, StoreAppRequestSchema } from '../store-app-requests/schemas/store-app-request.schema';
 export { PosPlan, PosPlanDocument, PosPlanSchema } from '../pos-plans/schemas/pos-plan.schema';
 export { PosPurchase, PosPurchaseDocument, PosPurchaseSchema } from '../pos-plans/schemas/pos-purchase.schema';
+export { PosDevice, PosDeviceDocument, PosDeviceSchema } from '../pos/schemas/pos-device.schema';
+export { VariantPriceHistory, VariantPriceHistoryDocument, VariantPriceHistorySchema } from '../pos/schemas/variant-price-history.schema';
+export { PosSettingsVersion, PosSettingsVersionDocument, PosSettingsVersionSchema } from '../pos/schemas/pos-settings-version.schema';
 // Phase 5 — Product Tracking Foundation (see product-view.schema.ts).
 export { ProductView, ProductViewDocument, ProductViewSchema } from '../product-views/schemas/product-view.schema';
 export { StorefrontSession, StorefrontSessionDocument, StorefrontSessionSchema } from '../storefront-analytics/schemas/storefront-session.schema';

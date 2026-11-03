@@ -107,6 +107,8 @@ export class InventoryController {
   }
 
   @RequirePermission('inventory.adjust')
+  // A delta is not naturally retry-safe — the optional Idempotency-Key header makes a retry replay the first result.
+  @UseInterceptors(IdempotencyInterceptor)
   @Patch(':storeId/variant/:variantId/adjust')
   async adjustStock(
     @Req() req: any,

@@ -60,3 +60,7 @@ config/firebase-service-account.json
 
 /stripe
 /stripe.exe
+# Local dev stack (dev/up.sh)
+dev/.data/
+dev/.logs/
+dev/.run/

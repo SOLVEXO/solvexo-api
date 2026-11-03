@@ -34,4 +34,14 @@ export class CreatePosPlanDto {
   @IsOptional()
   @IsString()
   description?: string;
+
+  @ApiProperty({ required: false, nullable: true, description: 'Max registers while this plan is active (null = unlimited)' })
+  @IsOptional() @IsInt() @Min(1)
+  maxRegisters?: number | null;
+
+  @ApiProperty({ required: false, nullable: true }) @IsOptional() @IsInt() @Min(1)
+  maxEmployees?: number | null;
+
+  @ApiProperty({ required: false, nullable: true }) @IsOptional() @IsInt() @Min(1)
+  maxLocations?: number | null;
 }
