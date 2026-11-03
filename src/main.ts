@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { NestFactory } from '@nestjs/core';
+import { parsePortalOrigins } from './common/portal-origins.util';
 import { ValidationPipe } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
@@ -94,6 +95,10 @@ async function bootstrap() {
     'https://api.edudeen.com',
   ];
 
+  // Solvexo Account web portal origin(s): PORTAL_ORIGINS=https://account.example.com,https://preview.example.vercel.app
+  // Exact origins only (no wildcards); https required except for localhost.
+  for (const o of parsePortalOrigins(process.env.PORTAL_ORIGINS)) whitelist.push(o);
+
   // Every seller store is served from its OWN subdomain
   // (`<slug>.solvexo.store`) or, in dev, `<slug>.localhost:<port>` — there's
   // no way to enumerate those individually in a static whitelist, so any
@@ -135,7 +140,7 @@ async function bootstrap() {
     // mutation (plan change, add-ons, manual payment, stock counts, purchase orders…).
     // Without it the browser's CORS preflight is rejected and the call surfaces only as
     // a generic "Network Error" — no request ever reaches the API.
-    allowedHeaders: ['Content-Type','Authorization','X-Requested-With','Accept','Origin','Idempotency-Key','X-Storefront-Token'],
+    allowedHeaders: ['Content-Type','Authorization','X-Requested-With','Accept','Origin','Idempotency-Key','X-Storefront-Token','X-CSRF-Token','X-Auth-Mode'],
     exposedHeaders: ['Content-Length','X-Request-Id'],
     // Cache the preflight for a day so the browser doesn't spend an extra round trip (~300 ms) on every API call.
     maxAge: 86400,

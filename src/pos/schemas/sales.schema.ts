@@ -22,7 +22,15 @@ export class SaleItem {
   image: string | null;         // product image snapshot
 
   @Prop({ type: Number, required: true })
-  price: number;                // snapshot — price at time of sale
+  price: number;                // the price actually CHARGED (for a synced offline sale: what the till collected)
+
+  // Offline sales only: the variant's list price when the sale was synced, and whether the charged price was a genuine
+  // price of that variant within the offline window (false → flagged for review).
+  @Prop({ type: Number, default: null })
+  listPrice: number | null;
+
+  @Prop({ type: Boolean, default: true })
+  priceVerified: boolean;
 
   @Prop({ type: Number, required: true })
   qty: number;
@@ -34,6 +42,54 @@ export class SaleItem {
   refundedQty: number;          // cumulative qty refunded from this line
 }
 export const SaleItemSchema = SchemaFactory.createForClass(SaleItem);
+
+/** One tender taken for a sale. `amount` is what was APPLIED to the total (cash net of change). */
+@Schema({ _id: false })
+export class SalePayment {
+  @Prop({ enum: ['cash', 'card', 'other'], required: true })
+  method: string;
+
+  @Prop({ type: Number, required: true })
+  amount: number;
+
+  // cash only — what the customer handed over; change = tendered − amount, stored once on the sale
+  @Prop({ type: Number })
+  tendered?: number;
+
+  // card auth code / bank transfer ref / etc.
+  @Prop({ type: String, default: null })
+  reference: string | null;
+}
+export const SalePaymentSchema = SchemaFactory.createForClass(SalePayment);
+
+/** One refund event against a sale — what came back, to which tenders, and in what currency. */
+@Schema({ _id: false })
+export class SaleRefund {
+  @Prop({ type: Number, required: true })
+  amount: number;
+
+  @Prop({ enum: ['full', 'partial'], required: true })
+  kind: string;
+
+  @Prop({ type: [{ _id: false, method: String, amount: Number }], default: [] })
+  tenders: Array<{ method: string; amount: number }>;
+
+  @Prop({ type: [{ _id: false, saleItemId: String, qty: Number }], default: [] })
+  items: Array<{ saleItemId: string; qty: number }>;
+
+  @Prop({ type: String, default: null })
+  employeeId: string | null;
+
+  @Prop({ type: String, default: null })
+  currency: string | null;
+
+  @Prop({ type: Number, default: null })
+  currencyExponent: number | null;
+
+  @Prop({ type: Date, default: () => new Date() })
+  createdAt: Date;
+}
+export const SaleRefundSchema = SchemaFactory.createForClass(SaleRefund);
 
 @Schema({ timestamps: true })
 export class Sale {
@@ -72,8 +128,91 @@ export class Sale {
   @Prop({ type: Number, required: true })
   total: number;
 
-  @Prop({ enum: ['cash', 'card', 'other'], default: 'cash' })
+  // ── Currency snapshot (Phase 5B / D1) ─────────────────────────────────────────────────────────
+  // The store's currency at the moment of sale and its ISO-4217 minor-unit exponent (JPY 0, USD/PKR 2,
+  // KWD 3). Every amount on this sale is rounded to that exponent. Sales created before 5B have neither
+  // field; readers fall back to the store's current baseCurrency.
+  @Prop({ type: String, default: null })
+  currency: string | null;
+
+  @Prop({ type: Number, default: null })
+  currencyExponent: number | null;
+
+  // What the cashier entered for the discount (the server computed `discount` from it) and the tax rate
+  // that was applied — kept so a receipt can say "10% off" / "Tax (8%)" without guessing.
+  @Prop({ type: String, enum: ['amount', 'percent', null], default: null })
+  discountType: string | null;
+
+  @Prop({ type: Number, default: null })
+  discountValue: number | null;
+
+  @Prop({ type: Number, default: null })
+  taxRate: number | null;
+
+  // 'split' when more than one tender was used. For old single-payment sales this is the only payment info.
+  @Prop({ enum: ['cash', 'card', 'other', 'split'], default: 'cash' })
   paymentMethod: string;
+
+  // Tender lines (empty for held sales and for sales made before split tender — see effectivePayments()).
+  @Prop({ type: [SalePaymentSchema], default: [] })
+  payments: SalePayment[];
+
+  // Cash handed back to the customer (computed server-side from the cash tendered).
+  @Prop({ type: Number, default: 0 })
+  changeGiven: number;
+
+  // Snapshot of who rang it up, so a receipt can print a cashier name without another lookup.
+  @Prop({ type: String, default: null })
+  employeeName: string | null;
+
+  @Prop({ type: [SaleRefundSchema], default: [] })
+  refunds: SaleRefund[];
+
+  // ── Offline sync (Phase 5C) ──────────────────────────────────────────────────────────────────
+  // A sale rung up while the device had no connection is replayed later with the time it was REALLY made.
+  // `createdAt` then carries that time (so reports, shifts and receipts are right); `receivedAt` is when the
+  // server actually got it, and `clientCreatedAt` the raw device timestamp.
+  // The manager whose verified PIN session authorised the discount (online or offline).
+  @Prop({ type: String, default: null })
+  approvedBy: string | null;
+
+  @Prop({ type: Date, default: null })
+  approvedAt: Date | null;
+
+  @Prop({ type: Boolean, default: false })
+  isOffline: boolean;
+
+  @Prop({ type: Date, default: null })
+  clientCreatedAt: Date | null;
+
+  @Prop({ type: Date, default: null })
+  receivedAt: Date | null;
+
+  // The settingsVersion (tax rate etc.) this sale was priced with.
+  @Prop({ type: Number, default: null })
+  settingsVersion: number | null;
+
+  // Something a manager should look at: oversell on sync, price changed while offline, sale into a closed
+  // session, a payment shortfall. Cleared by POST /pos/sales/:id/resolve-review.
+  @Prop({ type: [{ _id: false, type: { type: String }, detail: { type: Object } }], default: [] })
+  flags: Array<{ type: string; detail: Record<string, any> }>;
+
+  @Prop({ type: Boolean, default: false })
+  needsReview: boolean;
+
+  @Prop({ type: String, default: null })
+  reviewedBy: string | null;
+
+  @Prop({ type: Date, default: null })
+  reviewedAt: Date | null;
+
+  @Prop({ type: String, default: null })
+  reviewNote: string | null;
+
+  // Offline sales only: what the server priced minus what the customer was actually charged on the device (>0 =
+  // the shop is owed the difference). Never rejects money that already changed hands — it is recorded and flagged.
+  @Prop({ type: Number, default: 0 })
+  paymentShortfall: number;
 
   @Prop({ type: String, default: null })
   customerId: string | null;

@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import * as nodemailer from 'nodemailer';
 import { EventEmitter } from 'events';
 import { htmlToPlainText } from '../../common/html-to-text.util';
+import { isDevMailSinkEnabled, writeDevMail } from '../../common/dev-mail-sink.util';
 
 /** Every real send attempt, from every EmailService instance in the app — EmailHealthService records it for the admin Email health card and the "emails are failing" alert. */
 export const emailEvents = new EventEmitter();
@@ -70,6 +71,18 @@ export class EmailService {
      *  Bulk mail (campaigns, newsletters, automations, abandoned carts) deliberately does NOT pass this: it always goes through the platform sender, so a store's mailbox is never used for bulk sends. */
     storeId?: string | null,
   ): Promise<boolean> {
+    // `.invalid` is reserved (RFC 2606): placeholder addresses of Apple sign-ins that shared no email and purged
+    // accounts' de-identified addresses can never receive mail — never hand them to SMTP.
+    if (/\.invalid$/i.test(String(to ?? '').trim())) {
+      console.warn('Skipped email to a non-deliverable (.invalid) address');
+      return false;
+    }
+    // DEV-ONLY (NODE_ENV!=production AND DEV_OTP_LOG=true): log the mail for the local e2e stack instead of using SMTP.
+    if (isDevMailSinkEnabled()) {
+      writeDevMail({ to, subject, text: htmlToPlainText(html) });
+      emailEvents.emit('result', { ok: true } as EmailResultEvent);
+      return true;
+    }
     if (storeId && EmailService.storeMail) {
       const viaStore = await this.sendThroughStore(storeId, to, subject, html, replyTo, headers, attachments, fromName);
       if (viaStore) return true;

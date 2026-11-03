@@ -19,6 +19,7 @@ import { GuestSessionService } from './guest-session.service';
 import { AuthVisualService } from '../common/auth-visual.service';
 import { AdminAuthVisualController } from './admin-auth-visual.controller';
 import { AdminTwoFactorService } from './admin-two-factor.service';
+import { AppleTokenService, AppleAuthClient, FetchAppleAuthClient } from './apple-token.service';
 import { AdminTwoFactorController, AdminTwoFactorLoginController } from './admin-two-factor.controller';
 
 @Module({
@@ -43,7 +44,7 @@ import { AdminTwoFactorController, AdminTwoFactorLoginController } from './admin
     MongooseModule.forFeature([{ name: User.name, schema: UserSchema }]),
   ],
   controllers: [AuthController, AdminAuthVisualController, AdminTwoFactorLoginController, AdminTwoFactorController],
-  providers: [AuthService, GuestSessionService, JwtStrategy, JwtAuthGuard, PermissionsGuard, AuthVisualService, AdminSecurityService, AdminTwoFactorService],
-  exports: [JwtModule, AuthService, AuthVisualService, GuestSessionService, JwtAuthGuard, PermissionsGuard, AdminSecurityService, AdminTwoFactorService],
+  providers: [AuthService, AppleTokenService, { provide: AppleAuthClient, useClass: FetchAppleAuthClient }, GuestSessionService, JwtStrategy, JwtAuthGuard, PermissionsGuard, AuthVisualService, AdminSecurityService, AdminTwoFactorService],
+  exports: [JwtModule, AuthService, AppleTokenService, AuthVisualService, GuestSessionService, JwtAuthGuard, PermissionsGuard, AdminSecurityService, AdminTwoFactorService],
 })
 export class AuthModule {}

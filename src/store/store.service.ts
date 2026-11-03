@@ -2012,6 +2012,8 @@ export class StoreService {
     // silently rendered every storefront product card as "PKR 0".
     const variantsByProduct = new Map<string, any[]>();
     for (const v of variants) {
+      // An offline POS oversell can leave stock negative; buyers never see (or can buy against) a negative number.
+      if (typeof v.stock === 'number' && v.stock < 0) v.stock = 0;
       if (!cheapestByProduct.has(v.productId)) cheapestByProduct.set(v.productId, v);
       if (!variantsByProduct.has(v.productId)) variantsByProduct.set(v.productId, []);
       variantsByProduct.get(v.productId)!.push(v);

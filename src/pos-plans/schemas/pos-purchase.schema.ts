@@ -32,6 +32,24 @@ export class PosPurchase {
 
   @Prop({ type: Date, required: true }) purchasedAt: Date;
   @Prop({ type: Date, required: true }) expiresAt: Date;
+
+  // ── Manual (admin) grants ───────────────────────────────────────────────────────────────────────
+  // A grant/extension is just another PosPurchase row (so "latest purchase wins" keeps working), flagged
+  // `manual` with the admin who made it and why. `stripeCheckoutSessionId` carries a synthetic
+  // `manual:<id>` value to satisfy the unique index. Revoking sets `expiresAt` to now and stamps these.
+  @Prop({ type: String, enum: ['stripe', 'manual'], default: 'stripe' }) source: 'stripe' | 'manual';
+  @Prop({ type: String, default: null }) grantedByAdminId: string | null;
+  @Prop({ type: String, default: null }) grantReason: string | null;
+  @Prop({ type: Date, default: null }) revokedAt: Date | null;
+  @Prop({ type: String, default: null }) revokedByAdminId: string | null;
+  @Prop({ type: String, default: null }) revokeReason: string | null;
+
+  // Stripe refund / dispute: the purchase's days were taken back (see PosPlansWebhookService).
+  @Prop({ type: Date, default: null }) reversedAt: Date | null;
+  @Prop({ type: String, default: null }) reversedReason: string | null;
+  // Exactly how many ms were taken off the store's expiry by the reversal, and whether a WON dispute gave them back.
+  @Prop({ type: Number, default: 0 }) reversedRemovedMs: number;
+  @Prop({ type: Date, default: null }) disputeRestoredAt: Date | null;
 }
 
 export const PosPurchaseSchema = SchemaFactory.createForClass(PosPurchase);

@@ -6,6 +6,7 @@ import { DatabaseService } from '../database/databaseservice';
 import { PaymentGatewayService } from '../subscriptions/payment-gateway/payment-gateway.service';
 import { verifyStoreOwnershipOrForbidden } from '../common/store-ownership.util';
 import { CreateCheckoutSessionDto } from './dto/create-checkout-session.dto';
+import { isPosEntitlementEnforced } from '../pos/guards/pos-entitlement.guard';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -33,6 +34,9 @@ export class PosPlansService {
         currency: p.currency,
         durationInDays: p.durationInDays,
         description: p.description,
+        maxRegisters: (p as any).maxRegisters ?? null,
+        maxEmployees: (p as any).maxEmployees ?? null,
+        maxLocations: (p as any).maxLocations ?? null,
       })),
     };
   }
@@ -47,7 +51,7 @@ export class PosPlansService {
 
     const purchase = await this.r.posPurchaseModel.findOne({ storeId }).sort({ purchasedAt: -1 });
     if (!purchase) {
-      return { success: true, data: { status: 'none' } };
+      return { success: true, data: { status: 'none', enforced: isPosEntitlementEnforced() } };
     }
 
     const now = Date.now();
@@ -58,6 +62,9 @@ export class PosPlansService {
       success: true,
       data: {
         status: isActive ? 'active' : 'expired',
+        // Whether the backend is actually blocking selling for a store without an active plan
+        // (POS_ENTITLEMENT_ENFORCED). Lets the app mirror the server instead of inventing a rule of its own.
+        enforced: isPosEntitlementEnforced(),
         planName: purchase.planNameSnapshot,
         purchasedAt: purchase.purchasedAt,
         expiresAt: purchase.expiresAt,
@@ -112,5 +119,29 @@ export class PosPlansService {
     });
 
     return { success: true, data: { url: session.url } };
+  }
+
+  /**
+   * PUBLIC (no auth) status of a POS plan Checkout Session, for the portal's success page when its session cookie has not been
+   * restored yet. The Stripe session id is itself the secret; the answer is limited to what the page needs. Anything that is not a
+   * POS-plan session (or cannot be retrieved) is a plain 'unknown' — no amounts, emails or customer data, no extra oracle.
+   */
+  async getCheckoutSessionStatus(sessionId: string) {
+    const unknown = { success: true, data: { status: 'unknown' as const, planActivated: false, storeId: null as string | null } };
+    if (typeof sessionId !== 'string' || !/^cs_(test|live)_[A-Za-z0-9]{10,200}$/.test(sessionId)) return unknown;
+    const stripe = this.paymentGatewayService.stripeClient;
+    if (!stripe) return unknown;
+    let session: any;
+    try {
+      session = await stripe.checkout.sessions.retrieve(sessionId);
+    } catch {
+      return unknown;
+    }
+    if (!session || session.mode !== 'payment' || session.metadata?.type !== 'pos_purchase') return unknown;
+    const status = session.status === 'expired' ? 'expired'
+      : session.status === 'complete' && (session.payment_status === 'paid' || session.payment_status === 'no_payment_required') ? 'paid'
+      : 'open';
+    const planActivated = !!(await this.r.posPurchaseModel.exists({ stripeCheckoutSessionId: sessionId }));
+    return { success: true, data: { status, planActivated, storeId: session.metadata?.storeId ? String(session.metadata.storeId) : null } };
   }
 }

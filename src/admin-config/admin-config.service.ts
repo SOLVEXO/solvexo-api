@@ -312,12 +312,12 @@ export class AdminConfigService {
    * all — that one still needs a manual admin rate via the FX override
    * endpoint, same as always.
    */
-  async enableAllCurrencies(meta: AuditMeta): Promise<{ success: true; message: string; added: string[]; alreadyEnabledCount: number }> {
+  async enableAllCurrencies(meta: AuditMeta): Promise<{ success: true; message: string; added: string[]; alreadyEnabledCount: number; data: { added: string[]; alreadyEnabledCount: number } }> {
     const existing = await this.getEnabledCurrencies();
     const existingCodes = new Set(existing.map((c) => c.code));
     const toAdd = ALL_CURRENCY_CODES.filter((code) => code !== 'USD' && !existingCodes.has(code));
     if (toAdd.length === 0) {
-      return { success: true, message: 'Every real currency is already enabled', added: [], alreadyEnabledCount: existingCodes.size };
+      return { success: true, message: 'Every real currency is already enabled', added: [], alreadyEnabledCount: existingCodes.size, data: { added: [] as string[], alreadyEnabledCount: existingCodes.size } };
     }
     const newEntries = toAdd.map((code) => ({ code, sanityBandMin: 0.0001, sanityBandMax: 1_000_000, enabledAt: new Date() }));
     await this.model.findOneAndUpdate(
@@ -327,7 +327,7 @@ export class AdminConfigService {
     );
     this.invalidateCache();
     await this.logChange('fx_currency_added', `Bulk-enabled ${toAdd.length} currencies for checkout/settlement: ${toAdd.join(', ')}`, meta);
-    return { success: true, message: `${toAdd.length} currencies enabled`, added: toAdd, alreadyEnabledCount: existingCodes.size };
+    return { success: true, message: `${toAdd.length} currencies enabled`, added: toAdd, alreadyEnabledCount: existingCodes.size, data: { added: toAdd, alreadyEnabledCount: existingCodes.size } };
   }
 
   private async logChange(action: string, description: string, meta: AuditMeta) {

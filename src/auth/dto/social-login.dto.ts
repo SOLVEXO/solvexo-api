@@ -38,10 +38,12 @@ export class SocialLoginDto {
   @IsString()
   name?: string;
 
-  @ApiProperty({ example: 'john@example.com' })
+  // Optional: Sign in with Apple may not share an email after the first sign-in. When the provider token carries a
+  // verified email that is used; otherwise login falls back to the verified provider id.
+  @ApiProperty({ example: 'john@example.com', required: false })
+  @IsOptional()
   @IsEmail()
-  @IsNotEmpty()
-  email: string;
+  email?: string;
 
   // Which account this social login should resolve against — 'user' (buyer,
   // default) or 'seller'. Buyer and seller are separate collections, so this
@@ -77,6 +79,13 @@ export class SocialLoginDto {
   @IsOptional()
   @IsString()
   token?: string;
+
+  // Sign in with Apple: the one-time authorization code from the same sign-in. The backend exchanges it for Apple's refresh
+  // token (stored encrypted) so deleting the account can revoke it. Optional: login never depends on it.
+  @ApiProperty({ required: false, description: 'Apple authorizationCode (apple only)' })
+  @IsOptional()
+  @IsString()
+  authorizationCode?: string;
 
   // Same store-scoping as RegisterDto/LoginDto.storeId — see User.storeId.
   // Backend-contract-complete; no storefront social-login UI sends this yet.

@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Injectable } from '@nestjs/common';
+import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { ConfigService } from '@nestjs/config';
@@ -15,7 +15,11 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   }
 
 async validate(payload: any) {
+  // A refresh token is only good for POST /api/auth/refresh, never as a bearer on any other route.
+  if (payload.typ === 'refresh') throw new UnauthorizedException('Refresh tokens cannot be used as access tokens');
   return {
+    // POS device / employee tokens share the secret but are NOT account sessions — see JwtAuthGuard.
+    tokenType: payload.type ?? null,
     userId: payload.sub,
     email: payload.email,
     role: payload.role || null,

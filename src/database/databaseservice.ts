@@ -137,6 +137,9 @@ export class DatabaseService {
     @InjectModel(schema.SubscriptionNotificationPreference.name)
     private subscriptionNotificationPreferenceModel: Model<schema.SubscriptionNotificationPreferenceDocument>,
 
+    @InjectModel(schema.RefreshTokenFamily.name)
+    private refreshTokenFamilyModel: Model<schema.RefreshTokenFamilyDocument>,
+
     @InjectModel(schema.IdempotencyRecord.name)
     private idempotencyRecordModel: Model<schema.IdempotencyRecordDocument>,
 
@@ -477,6 +480,12 @@ export class DatabaseService {
 
     @InjectModel(schema.PosPurchase.name)
     private posPurchaseModel: Model<schema.PosPurchaseDocument>,
+    @InjectModel(schema.PosSettingsVersion.name)
+    private posSettingsVersionModel: Model<schema.PosSettingsVersionDocument>,
+    @InjectModel(schema.PosDevice.name)
+    private posDeviceModel: Model<schema.PosDeviceDocument>,
+    @InjectModel(schema.VariantPriceHistory.name)
+    private variantPriceHistoryModel: Model<schema.VariantPriceHistoryDocument>,
 
     @InjectModel(schema.Bin.name)
     private binModel: Model<schema.BinDocument>,
@@ -566,6 +575,7 @@ export class DatabaseService {
       subscriptionCreditWalletModel: this.subscriptionCreditWalletModel,
       subscriptionNotificationPreferenceModel: this.subscriptionNotificationPreferenceModel,
       idempotencyRecordModel: this.idempotencyRecordModel,
+      refreshTokenFamilyModel: this.refreshTokenFamilyModel,
       platformPlanModel: this.platformPlanModel,
       platformTrialSettingsModel: this.platformTrialSettingsModel,
       sellerPlatformSubscriptionModel: this.sellerPlatformSubscriptionModel,
@@ -682,6 +692,9 @@ export class DatabaseService {
       stockTransferModel: this.stockTransferModel,
       posPlanModel: this.posPlanModel,
       posPurchaseModel: this.posPurchaseModel,
+      posSettingsVersionModel: this.posSettingsVersionModel,
+      variantPriceHistoryModel: this.variantPriceHistoryModel,
+      posDeviceModel: this.posDeviceModel,
       binModel: this.binModel,
       staffMemberModel: this.staffMemberModel,
       adminRoleModel: this.adminRoleModel,

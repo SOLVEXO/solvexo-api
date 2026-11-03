@@ -21,6 +21,10 @@ export class PosPlan {
   @Prop({ type: Number, required: true }) durationInDays: number;
   @Prop({ type: String, default: null }) description: string | null;
   @Prop({ type: Boolean, default: true }) isActive: boolean;
+  // Optional caps (null = unlimited), enforced when a register / employee / location is created — see pos-plan-limits.util.ts
+  @Prop({ type: Number, default: null, min: 1 }) maxRegisters: number | null;
+  @Prop({ type: Number, default: null, min: 1 }) maxEmployees: number | null;
+  @Prop({ type: Number, default: null, min: 1 }) maxLocations: number | null;
 }
 
 export const PosPlanSchema = SchemaFactory.createForClass(PosPlan);

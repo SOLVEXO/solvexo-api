@@ -51,3 +51,15 @@ export const AVAILABLE_STOCK_EXPR = {
     EXPIRED_UNITS_EXPR,
   ],
 };
+
+/**
+ * May an ONLINE buyer put `qty` of this variant in a cart / check it out? Unlimited and explicit backorder variants always
+ * can (the merchant chose that). Everything else needs `available >= qty` AND `available > 0` — so a variant whose stock went
+ * to zero or NEGATIVE (an offline POS oversell) is never purchasable online, whatever the quantity.
+ */
+export function isPurchasableOnline(v: { unlimitedStock?: boolean | null; allowBackorder?: boolean | null } & Parameters<typeof availableStock>[0], qty: number): boolean {
+  if (!v) return false;
+  if (v.unlimitedStock || v.allowBackorder) return true;
+  const available = availableStock(v);
+  return available > 0 && available >= qty;
+}
