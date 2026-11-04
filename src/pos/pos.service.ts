@@ -11,7 +11,7 @@ import {
 } from '@nestjs/common';
 import { availableStock, AVAILABLE_STOCK_EXPR } from '@/common/stock-availability.util';
 import { drainLocationStock, restoreLocationStock } from '@/common/location-stock.util';
-import { Types } from 'mongoose';
+import { ClientSession, Types } from 'mongoose';
 import { searchStoreCustomers } from '@/common/store-customer-search.util';
 import {
   allocateRefund, assertClientTotal, byTender, computeTotals, DiscountType, effectivePayments, exponentOf, fromMinor,
@@ -326,7 +326,7 @@ export class PosService {
         );
         // A locked-out employee must not be able to keep working on a session opened before the lock.
         await this.revocations?.revokeEmployee(String(employee._id));
-        this.writeAuditLog({ storeId: dto.storeId, employeeId: String(employee._id), action: 'pin_locked', targetId: String(employee._id), targetType: 'employee' }).catch(() => {});
+        await this.writeAuditLog({ storeId: dto.storeId, employeeId: String(employee._id), action: 'pin_locked', targetId: String(employee._id), targetType: 'employee' });
       }
       throw new BadRequestException('Invalid credentials');
     }
@@ -355,7 +355,7 @@ export class PosService {
     );
     await this.revocations?.clearPinFailures(rlKey);
 
-    this.writeAuditLog({ storeId: dto.storeId, employeeId: String(employee._id), action: 'pin_login', targetId: String(employee._id), targetType: 'employee' }).catch(() => {});
+    await this.writeAuditLog({ storeId: dto.storeId, employeeId: String(employee._id), action: 'pin_login', targetId: String(employee._id), targetType: 'employee' });
 
     return {
       success: true,
@@ -373,7 +373,7 @@ export class PosService {
     const actor = await this.verifyEmployeeToken(employeeToken, storeId);
     if (actor) {
       await this.revocations?.revokeToken(actor.jti); // the 12h token stops working server-side, not just on this device
-      this.writeAuditLog({ storeId, employeeId: actor.employeeId, action: 'pin_logout', targetId: actor.employeeId, targetType: 'employee' }).catch(() => {});
+      await this.writeAuditLog({ storeId, employeeId: actor.employeeId, action: 'pin_logout', targetId: actor.employeeId, targetType: 'employee' });
     }
     return { success: true, message: 'Logged out' };
   }
@@ -605,12 +605,12 @@ export class PosService {
       throw err;
     }
 
-    this.writeAuditLog({ storeId: dto.storeId, employeeId: dto.employeeId, action: 'session_opened', targetId: String(session._id), targetType: 'session', metadata: { registerId: dto.registerId, openingCash: dto.openingCash } }).catch(() => {});
+    await this.writeAuditLog({ storeId: dto.storeId, employeeId: dto.employeeId, action: 'session_opened', targetId: String(session._id), targetType: 'session', metadata: { registerId: dto.registerId, openingCash: dto.openingCash } });
 
     return { success: true, message: 'Register session opened', data: session };
   }
 
-  async closeSession(sellerId: string, dto: CloseSessionDto) {
+  async closeSession(sellerId: string, dto: CloseSessionDto, employeeToken?: string) {
     const session = await this.r.registerSessionModel.findOne({ _id: dto.sessionId, status: 'open' });
     if (!session) throw new NotFoundException('Open session not found');
 
@@ -626,15 +626,48 @@ export class PosService {
     const closingCash = roundMoney(dto.closingCash, closeExp);
     const cashDifference = roundMoney(closingCash - expectedCash, closeExp);
 
-    // status-guarded so two close requests (retry / two terminals) can't both close and double-audit
-    const updated = await this.r.registerSessionModel.findOneAndUpdate(
-      { _id: dto.sessionId, status: 'open' },
-      { $set: { closingCash, expectedCash, cashDifference, closedAt: new Date(), status: 'closed' } },
-      { new: true },
-    );
-    if (!updated) throw businessConflict('SESSION_ALREADY_CLOSED', 'This session was already closed');
+    // Card reconciliation (D2): card payments are only RECORDED by the cashier, so at close the cashier enters the card total
+    // printed on the terminal's settlement slip. Server compares it with the card total the till recorded (net of refunds).
+    // No slip total (old app build / skipped) → closes exactly as before, marked "not reconciled". A DIFFERENCE needs a manager
+    // PIN session and is audit-logged; nothing is closed without it.
+    const expectedCard = roundMoney((session as any).cardSales || 0, closeExp);
+    let cardRecon: any = { status: 'not_reconciled', slipTotal: null, expectedCard, variance: null, approvedBy: null, approvedAt: null };
+    let varianceApprover: { employeeId: string; role: string } | null = null;
+    if (dto.cardTotalFromSlip !== undefined && dto.cardTotalFromSlip !== null) {
+      const slipTotal = roundMoney(dto.cardTotalFromSlip, closeExp);
+      const variance = roundMoney(slipTotal - expectedCard, closeExp);
+      if (variance === 0) {
+        cardRecon = { status: 'matched', slipTotal, expectedCard, variance: 0, approvedBy: null, approvedAt: null };
+      } else {
+        varianceApprover = await this.verifyEmployeeToken(employeeToken, (session as any).storeId);
+        if (!varianceApprover || varianceApprover.role !== 'manager') {
+          throw new ForbiddenException({
+            statusCode: 403, code: 'CARD_VARIANCE_APPROVAL_REQUIRED',
+            message: 'The card total on the slip differs from the card total recorded at the till — a manager must approve closing the shift with this difference',
+            slipTotal, expectedCard, variance,
+          });
+        }
+        cardRecon = { status: 'variance_approved', slipTotal, expectedCard, variance, approvedBy: varianceApprover.employeeId, approvedAt: new Date() };
+      }
+    }
 
-    this.writeAuditLog({ storeId: (session as any).storeId, employeeId: (session as any).employeeId, action: 'session_closed', targetId: dto.sessionId, targetType: 'session', metadata: { closingCash, expectedCash, cashDifference } }).catch(() => {});
+    // status-guarded so two close requests (retry / two terminals) can't both close and double-audit; the close, the card
+    // reconciliation and its audit events commit together
+    const sessCtx = { sessionId: dto.sessionId, registerId: (session as any).registerId ?? null, shiftId: (session as any).shiftId ?? null };
+    const updated = await this.atomic(async (tx) => {
+      const u = await this.r.registerSessionModel.findOneAndUpdate(
+        { _id: dto.sessionId, status: 'open' },
+        { $set: { closingCash, expectedCash, cashDifference, closedAt: new Date(), status: 'closed', cardReconciliation: cardRecon } },
+        { new: true, ...(tx ? { session: tx } : {}) },
+      );
+      if (!u) return null;
+      await this.writeAuditLog({ storeId: (session as any).storeId, employeeId: (session as any).employeeId, action: 'session_closed', targetId: dto.sessionId, targetType: 'session', ...sessCtx, metadata: { closingCash, expectedCash, cashDifference, cardReconciliation: { status: cardRecon.status, slipTotal: cardRecon.slipTotal, expectedCard: cardRecon.expectedCard, variance: cardRecon.variance } } }, tx);
+      if (varianceApprover) {
+        await this.writeAuditLog({ storeId: (session as any).storeId, employeeId: varianceApprover.employeeId, action: 'card_variance_approved', targetId: dto.sessionId, targetType: 'session', ...sessCtx, metadata: { slipTotal: cardRecon.slipTotal, expectedCard: cardRecon.expectedCard, variance: cardRecon.variance, cashierId: (session as any).employeeId } }, tx);
+      }
+      return u;
+    });
+    if (!updated) throw businessConflict('SESSION_ALREADY_CLOSED', 'This session was already closed');
 
     return { success: true, message: 'Register session closed', data: updated };
   }
@@ -762,12 +795,10 @@ export class PosService {
     const { exp: adjExp } = await this.docMoney(session);
     const adjustment = { type: dto.type, amount: roundMoney(dto.amount, adjExp), reason: dto.reason, employeeId: actor.employeeId, createdAt: new Date() };
 
-    await this.r.registerSessionModel.findByIdAndUpdate(
-      sessionId,
-      { $push: { cashAdjustments: adjustment } },
-    );
-
-    this.writeAuditLog({ storeId: (session as any).storeId, employeeId: actor.employeeId, action: dto.type, targetId: sessionId, targetType: 'session', metadata: { amount: dto.amount, reason: dto.reason } }).catch(() => {});
+    await this.atomic(async (tx) => {
+      await this.r.registerSessionModel.findByIdAndUpdate(sessionId, { $push: { cashAdjustments: adjustment } }, tx ? { session: tx } : undefined);
+      await this.writeAuditLog({ storeId: (session as any).storeId, employeeId: actor.employeeId, action: dto.type, targetId: sessionId, targetType: 'session', sessionId, registerId: (session as any).registerId ?? null, shiftId: (session as any).shiftId ?? null, metadata: { amount: dto.amount, reason: dto.reason } }, tx);
+    });
 
     return {
       success: true,
@@ -942,7 +973,8 @@ export class PosService {
       for (let attempt = 0; attempt < 5; attempt++) {
         const saleNumber = await this.generateSaleNumber(dto.storeId);
         try {
-          sale = await this.r.saleModel.create({
+          sale = await this.atomic(async (tx) => {
+          const [created] = await this.r.saleModel.create([{
             saleNumber,
             storeId: dto.storeId,
             sessionId: dto.sessionId,
@@ -967,6 +999,8 @@ export class PosService {
             settingsVersion: money.settingsVersion,
             approvedBy: approver?.employeeId ?? null,
             approvedAt: approver ? (off.isOffline ? off.at : new Date()) : null,
+            shiftId: (session as any).shiftId ?? null,
+            deviceId: this.callerDeviceId(),
             receivedAt: new Date(),
             ...(off.isOffline ? { isOffline: true, clientCreatedAt: off.at, createdAt: off.at } : {}),
             flags: [...flags, ...oversold.map((o) => ({ type: 'oversold_on_sync', detail: o }))],
@@ -980,6 +1014,31 @@ export class PosService {
             // excludes documents where the field doesn't exist at all, not
             // ones where it's explicitly set to `null`.
             ...(dto.idempotencyKey ? { idempotencyKey: dto.idempotencyKey } : {}),
+          }], tx ? { session: tx } : undefined);
+
+          const auditCtx = { sessionId: dto.sessionId, registerId: dto.registerId, shiftId: (session as any).shiftId ?? null };
+          if (!isHeld) {
+            await this.recordPayments(created, settled!.lines, { ...auditCtx, employeeId: dto.employeeId }, tx);
+          }
+          await this.writeAuditLog({
+            storeId: dto.storeId,
+            employeeId: dto.employeeId,
+            action: isHeld ? 'sale_held' : 'sale_created',
+            targetId: String(created._id),
+            targetType: 'sale',
+            ...auditCtx,
+            metadata: { total, discount, itemCount: dto.items.length, ...(off.isOffline ? { offline: true, clientCreatedAt: off.at, settingsVersion: money.settingsVersion, sessionClosed: (session as any).status === 'closed' } : {}) },
+          }, tx);
+          if (off.isOffline) {
+            // Every flagged offline sale leaves a trail a manager can find: audit log (POS) + inventory activity (store).
+            for (const f of (created as any).flags ?? []) {
+              await this.writeAuditLog({ storeId: dto.storeId, employeeId: dto.employeeId, action: f.type === 'oversold_on_sync' ? 'sale_oversold_offline' : `sale_flag_${f.type}`, targetId: String(created._id), targetType: 'sale', ...auditCtx, metadata: f.detail }, tx);
+            }
+            if (approverGone) {
+              await this.writeAuditLog({ storeId: dto.storeId, employeeId: dto.employeeId, action: 'offline_approver_deactivated', targetId: String(created._id), targetType: 'sale', ...auditCtx, metadata: { approvedBy: approver!.employeeId, clientCreatedAt: off.at } }, tx);
+            }
+          }
+          return created;
           });
           break;
         } catch (err: any) {
@@ -1007,23 +1066,7 @@ export class PosService {
       await this.recordPosSaleInLedger(sale);
     }
 
-    this.writeAuditLog({
-      storeId: dto.storeId,
-      employeeId: dto.employeeId,
-      action: isHeld ? 'sale_held' : 'sale_created',
-      targetId: String(sale._id),
-      targetType: 'sale',
-      metadata: { total, discount, itemCount: dto.items.length, ...(off.isOffline ? { offline: true, clientCreatedAt: off.at, settingsVersion: money.settingsVersion, sessionClosed: (session as any).status === 'closed' } : {}) },
-    }).catch(() => {});
-
     if (off.isOffline) {
-      // Every flagged offline sale leaves a trail a manager can find: audit log (POS) + inventory activity (store).
-      for (const f of sale.flags ?? []) {
-        this.writeAuditLog({ storeId: dto.storeId, employeeId: dto.employeeId, action: f.type === 'oversold_on_sync' ? 'sale_oversold_offline' : `sale_flag_${f.type}`, targetId: String(sale._id), targetType: 'sale', metadata: f.detail }).catch(() => {});
-      }
-      if (approverGone) {
-        this.writeAuditLog({ storeId: dto.storeId, employeeId: dto.employeeId, action: 'offline_approver_deactivated', targetId: String(sale._id), targetType: 'sale', metadata: { approvedBy: approver!.employeeId, clientCreatedAt: off.at } }).catch(() => {});
-      }
       for (const o of oversold) {
         void this.activityLogService.log({
           storeId: dto.storeId, category: 'inventory', action: 'inventory_oversell',
@@ -1075,8 +1118,10 @@ export class PosService {
       locationId,
     );
 
-    const updated = await this.r.saleModel.findOneAndUpdate(
-      { _id: saleId, status: 'held' },
+    const completeCtx = { sessionId: String((sale as any).sessionId), registerId: (sale as any).registerId ?? null, shiftId: ((await this.r.registerSessionModel.findById((sale as any).sessionId)) as any)?.shiftId ?? null };
+    const updated = await this.atomic(async (tx) => {
+      const claimed = await this.r.saleModel.findOneAndUpdate(
+      { _id: saleId, status: 'held', deletedAt: null },
       {
         $set: {
           status: 'completed',
@@ -1095,10 +1140,17 @@ export class PosService {
           settingsVersion: money.settingsVersion,
           heldAt: null,
           notes: dto.notes ?? (sale as any).notes,
+          shiftId: completeCtx.shiftId,
+          deviceId: this.callerDeviceId(),
         },
       },
-      { new: true },
+      { new: true, ...(tx ? { session: tx } : {}) },
     );
+      if (!claimed) return null;
+      await this.recordPayments(claimed, settled.lines, { ...completeCtx, employeeId: (sale as any).employeeId }, tx);
+      await this.writeAuditLog({ storeId: (sale as any).storeId, employeeId: (sale as any).employeeId, action: 'sale_completed', targetId: saleId, targetType: 'sale', ...completeCtx, metadata: { total, discount } }, tx);
+      return claimed;
+    });
     if (!updated) {
       await this.releaseStock(reserved, locationId);
       throw businessConflict('HELD_SALE_ALREADY_RESOLVED', 'This held sale was already completed or discarded');
@@ -1112,15 +1164,13 @@ export class PosService {
     }
     await this.recordPosSaleInLedger(updated);
 
-    this.writeAuditLog({ storeId: (sale as any).storeId, employeeId: (sale as any).employeeId, action: 'sale_completed', targetId: saleId, targetType: 'sale', metadata: { total, discount } }).catch(() => {});
-
     return { success: true, message: 'Sale completed', data: updated };
   }
 
   async getHeldSales(sellerId: string, storeId: string, sessionId?: string) {
     await this.verifyStoreOwnership(storeId, sellerId);
 
-    const filter: any = { storeId, status: 'held' };
+    const filter: any = { storeId, status: 'held', deletedAt: null };
     if (sessionId) filter.sessionId = sessionId;
 
     const sales = await this.r.saleModel.find(filter).sort({ heldAt: -1 }).lean();
@@ -1148,7 +1198,7 @@ export class PosService {
     const limit = 20;
     const skip = (page - 1) * limit;
 
-    const filter: any = { storeId: query.storeId };
+    const filter: any = { storeId: query.storeId, deletedAt: null };
     if (query.sessionId) filter.sessionId = query.sessionId;
     if (query.employeeId) filter.employeeId = query.employeeId;
     if (query.paymentMethod) filter.paymentMethod = query.paymentMethod;
@@ -1175,9 +1225,23 @@ export class PosService {
     };
   }
 
-  async refundSale(sellerId: string, saleId: string, dto: RefundSaleDto | undefined, employeeToken: string | undefined) {
+  async refundSale(sellerId: string, saleId: string, dto: RefundSaleDto | undefined, employeeToken: string | undefined, idempotencyKey?: string) {
     const sale = await this.r.saleModel.findById(saleId);
     if (!sale) throw new NotFoundException('Sale not found');
+
+    // A retry of a refund that already went through (same Idempotency-Key) returns THAT refund — never a second one.
+    // Checked first (before the "already refunded" status guards below) and only after the caller proves they may see it.
+    if (idempotencyKey) {
+      const prior: any = await this.r.posRefundModel.findOne({ saleId, idempotencyKey }).lean();
+      if (prior) {
+        await this.verifyStoreOwnership((sale as any).storeId, sellerId);
+        await this.requireManagerEmployee(employeeToken, (sale as any).storeId, 'issue refunds');
+        return {
+          success: true, message: 'Refund already processed — returning the original result',
+          data: { refundedAmount: prior.amount, newStatus: (sale as any).status, tenders: prior.tenders, currency: prior.currency, currencyExponent: prior.currencyExponent, refundId: String(prior._id), reference: prior.reference, replayed: true },
+        };
+      }
+    }
     if ((sale as any).status === 'voided') throw new BadRequestException('Sale is voided — cannot refund');
     if ((sale as any).status === 'refunded') throw new BadRequestException('Sale is already fully refunded');
     if ((sale as any).status === 'held') throw new BadRequestException('Cannot refund a held sale — discard it instead');
@@ -1234,7 +1298,10 @@ export class PosService {
     }
 
     const tenders = allocateRefund(lines, alreadyRefunded, refundAmount, exp);
+    const refundId = new Types.ObjectId();
+    const refundSeq = ((sale as any).refunds ?? []).length;
     const refundRecord = {
+      refundId: String(refundId),
       amount: refundAmount, kind: isPartial ? 'partial' : 'full',
       tenders, items: itemUpdates.map((u) => ({ saleItemId: u.saleItemId, qty: u.qtyToRestore })),
       employeeId: actor.employeeId, currency, currencyExponent: exp, createdAt: new Date(),
@@ -1254,7 +1321,31 @@ export class PosService {
       });
       update.$inc = inc;
     }
-    const claimed = await this.r.saleModel.findOneAndUpdate(stateFilter, update, arrayFilters ? { arrayFilters } : undefined);
+    // The refund happens in the register's CURRENT shift (which can differ from the sale's own session).
+    const nowSession: any = (sale as any).registerId
+      ? await this.r.registerSessionModel.findOne({ registerId: (sale as any).registerId, status: 'open' })
+      : null;
+    const refundCtx = { sessionId: nowSession ? String(nowSession._id) : null, registerId: (sale as any).registerId ?? null, shiftId: nowSession?.shiftId ?? null };
+    const refundAuditAction = newStatus === 'refunded' ? 'sale_refunded_full' : 'sale_refunded_partial';
+    const claimed = await this.atomic(async (tx) => {
+      // The sale claim, the refund record and the audit event commit together or not at all.
+      const c = await this.r.saleModel.findOneAndUpdate(stateFilter, update, { ...(arrayFilters ? { arrayFilters } : {}), ...(tx ? { session: tx } : {}) });
+      if (!c) return null;
+      await this.r.posRefundModel.create([{
+        _id: refundId, saleId, saleNumber: (sale as any).saleNumber ?? null, seq: refundSeq, reference: `${(sale as any).saleNumber ?? saleId}-R${refundSeq + 1}`,
+        kind: isPartial ? 'partial' : 'full', amount: refundAmount, currency, currencyExponent: exp, tenders,
+        items: refundRecord.items, reason: dto?.reason?.trim() || null,
+        status: tenders.every((t: any) => t.method === 'cash') ? 'confirmed' : 'recorded_unverified', confirmationSource: null,
+        storeId: (sale as any).storeId, ...refundCtx, deviceId: this.callerDeviceId(), employeeId: actor.employeeId,
+        saleSessionId: (sale as any).sessionId ?? null, saleEmployeeId: (sale as any).employeeId ?? null,
+        ...(idempotencyKey ? { idempotencyKey } : {}),
+      }], tx ? { session: tx } : undefined);
+      await this.writeAuditLog({
+        storeId: (sale as any).storeId, employeeId: actor.employeeId, action: refundAuditAction, targetId: saleId, targetType: 'sale', ...refundCtx,
+        metadata: { refundAmount, tenders, currency, items: dto?.items, refundId: String(refundId), reference: `${(sale as any).saleNumber ?? saleId}-R${refundSeq + 1}`, reason: dto?.reason ?? null },
+      }, tx);
+      return c;
+    });
     if (!claimed) throw businessConflict('SALE_CHANGED_CONCURRENTLY', staleMessage);
 
     await this.restoreSoldStock(itemUpdates.map((u) => ({ variantId: u.variantId, qty: u.qtyToRestore })), locationId);
@@ -1272,28 +1363,48 @@ export class PosService {
     await this.r.registerSessionModel.findByIdAndUpdate((sale as any).sessionId, { $inc: sessionInc });
 
     await this.recordPosRefundInLedger(sale, refundAmount, newStatus === 'refunded' && !isPartial ? 'refund' : 'partial refund');
-    this.writeAuditLog({
-      storeId: (sale as any).storeId, employeeId: actor.employeeId,
-      action: newStatus === 'refunded' && !isPartial ? 'sale_refunded_full' : (newStatus === 'refunded' ? 'sale_refunded_full' : 'sale_refunded_partial'),
-      targetId: saleId, targetType: 'sale',
-      metadata: { refundAmount, tenders, currency, items: dto?.items },
-    }).catch(() => {});
 
-    if (!isPartial) return { success: true, message: 'Sale fully refunded and stock restored', data: { refundedAmount: refundAmount, newStatus, tenders, currency, currencyExponent: exp } };
-    return { success: true, message: `Partial refund of ${refundAmount.toFixed(exp)} processed`, data: { refundedAmount: refundAmount, newStatus, tenders, currency, currencyExponent: exp } };
+    if (!isPartial) return { success: true, message: 'Sale fully refunded and stock restored', data: { refundedAmount: refundAmount, newStatus, tenders, currency, currencyExponent: exp, refundId: String(refundId), reference: `${(sale as any).saleNumber ?? saleId}-R${refundSeq + 1}` } };
+    return { success: true, message: `Partial refund of ${refundAmount.toFixed(exp)} processed`, data: { refundedAmount: refundAmount, newStatus, tenders, currency, currencyExponent: exp, refundId: String(refundId), reference: `${(sale as any).saleNumber ?? saleId}-R${refundSeq + 1}` } };
   }
 
-  async discardHeldSale(sellerId: string, saleId: string) {
-    const sale = await this.r.saleModel.findById(saleId);
+  /**
+   * Soft delete (G1a): the held sale is kept, marked `discarded` with who / when / why, and an audit event is written in the
+   * same transaction. It disappears from every list (deletedAt is set) but is never physically deleted. `reason` is what the
+   * cashier typed; old app builds send none → "not provided". Idempotent: discarding an already-discarded sale succeeds.
+   */
+  async discardHeldSale(sellerId: string, saleId: string, opts: { reason?: string; employeeToken?: string } = {}) {
+    const sale: any = await this.r.saleModel.findById(saleId);
     if (!sale) throw new NotFoundException('Sale not found');
-    if ((sale as any).status !== 'held') throw new BadRequestException('Only held sales can be discarded');
+    await this.verifyStoreOwnership(sale.storeId, sellerId);
 
-    await this.verifyStoreOwnership((sale as any).storeId, sellerId);
+    if (sale.status === 'discarded') return { success: true, message: 'Held sale already discarded', data: { saleId, alreadyDiscarded: true } };
+    if (sale.status !== 'held') throw new BadRequestException('Only held sales can be discarded');
 
-    // status-guarded so a discard racing a completion can't delete a sale that just became real
-    const deleted = await this.r.saleModel.findOneAndDelete({ _id: saleId, status: 'held' });
-    if (!deleted) throw businessConflict('HELD_SALE_ALREADY_RESOLVED', 'This held sale was already completed or discarded');
+    const reason = (opts.reason ?? '').toString().trim().slice(0, 300) || 'not provided';
+    const actor = await this.verifyEmployeeToken(opts.employeeToken, sale.storeId); // optional: who at the till pressed it
+    const deletedBy = actor?.employeeId ?? sellerId;
 
+    // status-guarded so a discard racing a completion can't discard a sale that just became real
+    const discarded = await this.atomic(async (tx) => {
+      const d = await this.r.saleModel.findOneAndUpdate(
+        { _id: saleId, status: 'held', deletedAt: null },
+        { $set: { status: 'discarded', deletedAt: new Date(), deletedBy, deleteReason: reason, heldAt: null } },
+        { new: true, ...(tx ? { session: tx } : {}) },
+      );
+      if (!d) return null;
+      await this.writeAuditLog({
+        storeId: sale.storeId, employeeId: actor?.employeeId ?? sale.employeeId ?? null, action: 'held_sale_discarded', targetId: saleId, targetType: 'sale',
+        sessionId: sale.sessionId ?? null, registerId: sale.registerId ?? null, shiftId: sale.shiftId ?? null,
+        metadata: { reason, saleNumber: sale.saleNumber, total: sale.total, itemCount: (sale.items ?? []).length, deletedBy, byOwnerSession: !actor },
+      }, tx);
+      return d;
+    });
+    if (!discarded) {
+      const now: any = await this.r.saleModel.findById(saleId);
+      if (now?.status === 'discarded') return { success: true, message: 'Held sale already discarded', data: { saleId, alreadyDiscarded: true } };
+      throw businessConflict('HELD_SALE_ALREADY_RESOLVED', 'This held sale was already completed or discarded');
+    }
     return { success: true, message: 'Held sale discarded' };
   }
 
@@ -1338,7 +1449,7 @@ export class PosService {
   /** Sales a manager should look at: oversold on sync, price changed while offline, payment shortfall. Newest first. */
   async getSalesNeedingReview(sellerId: string, storeId: string) {
     await this.verifyStoreOwnership(storeId, sellerId);
-    const sales = await this.r.saleModel.find({ storeId, needsReview: true }).sort({ createdAt: -1 }).limit(200).lean();
+    const sales = await this.r.saleModel.find({ storeId, needsReview: true, deletedAt: null }).sort({ createdAt: -1 }).limit(200).lean();
     return { success: true, count: sales.length, data: sales };
   }
 
@@ -1355,7 +1466,7 @@ export class PosService {
       { new: true },
     );
     if (!done) throw businessConflict('SALE_ALREADY_REVIEWED', 'This sale was already resolved');
-    this.writeAuditLog({ storeId: sale.storeId, employeeId: actor.employeeId, action: 'sale_review_resolved', targetId: saleId, targetType: 'sale', metadata: { note: note.trim(), flags: sale.flags } }).catch(() => {});
+    await this.writeAuditLog({ storeId: sale.storeId, employeeId: actor.employeeId, action: 'sale_review_resolved', targetId: saleId, targetType: 'sale', metadata: { note: note.trim(), flags: sale.flags } });
     return { success: true, message: 'Sale marked as reviewed', data: done };
   }
 
@@ -1668,6 +1779,11 @@ export class PosService {
     }
   }
 
+  /**
+   * Durable audit write. ALWAYS awaited (never fire-and-forget); inside a business transaction it takes the transaction's
+   * session, so the audit event commits or rolls back TOGETHER with the sale / refund / void / close it describes.
+   * `deviceId` defaults to the authenticated POS device of this request (never from the request body).
+   */
   private async writeAuditLog(data: {
     storeId: string;
     employeeId?: string | null;
@@ -1675,15 +1791,82 @@ export class PosService {
     targetId?: string | null;
     targetType?: string | null;
     metadata?: object | null;
-  }): Promise<void> {
-    await this.r.posAuditLogModel.create({
-      storeId: data.storeId,
-      employeeId: data.employeeId ?? null,
-      action: data.action,
-      targetId: data.targetId ?? null,
-      targetType: data.targetType ?? null,
-      metadata: data.metadata ?? null,
-    });
+    sessionId?: string | null;
+    registerId?: string | null;
+    shiftId?: string | null;
+    deviceId?: string | null;
+  }, tx?: ClientSession): Promise<void> {
+    await this.r.posAuditLogModel.create(
+      [{
+        storeId: data.storeId,
+        employeeId: data.employeeId ?? null,
+        action: data.action,
+        targetId: data.targetId ?? null,
+        targetType: data.targetType ?? null,
+        metadata: data.metadata ?? null,
+        sessionId: data.sessionId ?? null,
+        registerId: data.registerId ?? null,
+        shiftId: data.shiftId ?? null,
+        deviceId: data.deviceId ?? currentDeviceScope()?.deviceId ?? null,
+      }],
+      tx ? { session: tx } : undefined,
+    );
+  }
+
+  private txUnsupported = false;
+
+  /**
+   * Runs `fn` inside a MongoDB transaction when the deployment supports one (Atlas, any replica set — every environment this
+   * API is deployed to; the dev stack is a replica set too). On a standalone mongod (some unit/integration harnesses) it runs
+   * `fn` without a transaction: writes are still awaited, just not atomic. `fn` may be retried by the driver on a transient
+   * transaction error, so it must only do database work through `tx`.
+   */
+  private async atomic<T>(fn: (tx?: ClientSession) => Promise<T>): Promise<T> {
+    const conn: any = (this.r as any).saleModel?.db;
+    if (!conn || typeof conn.transaction !== 'function' || this.txUnsupported) return fn(undefined);
+    try {
+      return await conn.transaction((session: ClientSession) => fn(session));
+    } catch (e: any) {
+      if (e?.code === 20 && /replica set|Transaction numbers/i.test(String(e?.message))) {
+        this.txUnsupported = true;
+        // eslint-disable-next-line no-console
+        console.warn('[PosService] this MongoDB does not support transactions — POS audit/payment records are awaited but not atomic with the sale');
+        return fn(undefined);
+      }
+      throw e;
+    }
+  }
+
+  /** The device (from the authenticated token), never from the request body. */
+  private callerDeviceId(): string | null {
+    return currentDeviceScope()?.deviceId ?? null;
+  }
+
+  /** card / other are only RECORDED by the cashier today (no terminal integration); cash the cashier physically took is confirmed. */
+  private paymentStatus(tender: string): 'confirmed' | 'recorded_unverified' {
+    return tender === 'cash' ? 'confirmed' : 'recorded_unverified';
+  }
+
+  /** One immutable PosPayment per tender line. (saleId, lineNo) and (store, idempotencyKey, lineNo) are unique → a retry cannot add a second row. */
+  private async recordPayments(
+    sale: any,
+    lines: Array<{ method: string; amount: number; tendered?: number | null; reference?: string | null }>,
+    ctx: { sessionId: string | null; registerId: string | null; shiftId: string | null; employeeId: string | null },
+    tx?: ClientSession,
+  ): Promise<void> {
+    if (!lines.length) return;
+    const deviceId = this.callerDeviceId();
+    await this.r.posPaymentModel.insertMany(
+      lines.map((l, i) => ({
+        saleId: String(sale._id), saleNumber: sale.saleNumber ?? null, lineNo: i,
+        tender: l.method, amount: l.amount, tendered: l.tendered ?? null,
+        currency: sale.currency ?? null, currencyExponent: sale.currencyExponent ?? null,
+        reference: l.reference ?? null, status: this.paymentStatus(l.method), confirmationSource: null, confirmedAt: null,
+        storeId: sale.storeId, registerId: ctx.registerId, sessionId: ctx.sessionId, shiftId: ctx.shiftId, deviceId, employeeId: ctx.employeeId,
+        ...(sale.idempotencyKey ? { idempotencyKey: sale.idempotencyKey } : {}),
+      })),
+      tx ? { session: tx, ordered: true } : { ordered: true },
+    );
   }
 
   // ── REGISTER CRUD EXTENSIONS ──────────────────────────────────────────────
@@ -1814,7 +1997,7 @@ export class PosService {
       .select('-pin');
 
     if (dto.pin || (dto as any).status === 'inactive') await this.revocations?.revokeEmployee(employeeId);
-    this.writeAuditLog({ storeId, employeeId: null, action: 'employee_updated', targetId: employeeId, targetType: 'employee', metadata: { fields: Object.keys(dto) } }).catch(() => {});
+    await this.writeAuditLog({ storeId, employeeId: null, action: 'employee_updated', targetId: employeeId, targetType: 'employee', metadata: { fields: Object.keys(dto) } });
 
     return { success: true, message: 'Employee updated', data: updated };
   }
@@ -1830,7 +2013,7 @@ export class PosService {
     await this.r.employeeModel.findByIdAndUpdate(employeeId, { isDelete: true, status: 'inactive' });
     await this.revocations?.revokeEmployee(employeeId);
 
-    this.writeAuditLog({ storeId, employeeId: null, action: 'employee_deactivated', targetId: employeeId, targetType: 'employee' }).catch(() => {});
+    await this.writeAuditLog({ storeId, employeeId: null, action: 'employee_deactivated', targetId: employeeId, targetType: 'employee' });
     return { success: true, message: 'Employee deactivated' };
   }
 
@@ -1843,7 +2026,7 @@ export class PosService {
     await this.r.employeeModel.findByIdAndUpdate(employeeId, { pin: hashedPin, pinFailedAttempts: 0, pinLockedUntil: null });
     await this.revocations?.revokeEmployee(employeeId); // sessions opened with the OLD pin end now
 
-    this.writeAuditLog({ storeId, employeeId: null, action: 'employee_pin_reset', targetId: employeeId, targetType: 'employee' }).catch(() => {});
+    await this.writeAuditLog({ storeId, employeeId: null, action: 'employee_pin_reset', targetId: employeeId, targetType: 'employee' });
     return { success: true, message: 'PIN reset successfully' };
   }
 
@@ -1880,7 +2063,7 @@ export class PosService {
     );
     if (!updated) throw businessConflict('SESSION_ALREADY_CLOSED', 'This session was already closed');
 
-    this.writeAuditLog({ storeId: (session as any).storeId, employeeId: null, action: 'session_force_closed', targetId: sessionId, targetType: 'session', metadata: { reason: dto.reason } }).catch(() => {});
+    await this.writeAuditLog({ storeId: (session as any).storeId, employeeId: null, action: 'session_force_closed', targetId: sessionId, targetType: 'session', metadata: { reason: dto.reason } });
     return { success: true, message: 'Session force-closed', data: updated };
   }
 
@@ -1939,10 +2122,19 @@ export class PosService {
 
     // Claim the void with a status-guarded update first; only the request that wins the
     // `completed → voided` transition restores stock and reverses the session totals.
-    const claimed = await this.r.saleModel.findOneAndUpdate(
-      { _id: saleId, status: 'completed' },
-      { $set: { status: 'voided', voidedAt: new Date(), voidedBy: actor.employeeId } },
-    );
+    const claimed = await this.atomic(async (tx) => {
+      const c = await this.r.saleModel.findOneAndUpdate(
+        { _id: saleId, status: 'completed' },
+        { $set: { status: 'voided', voidedAt: new Date(), voidedBy: actor.employeeId } },
+        tx ? { session: tx } : undefined,
+      );
+      if (!c) return null;
+      await this.writeAuditLog({
+        storeId: (sale as any).storeId, employeeId: actor.employeeId, action: 'sale_voided', targetId: saleId, targetType: 'sale',
+        sessionId: (sale as any).sessionId ?? null, registerId: (sale as any).registerId ?? null, shiftId: (sale as any).shiftId ?? null, metadata: { reason: dto.reason },
+      }, tx);
+      return c;
+    });
     if (!claimed) throw businessConflict('SALE_CHANGED_CONCURRENTLY', 'This sale was already voided or refunded');
 
     await this.restoreSoldStock(
@@ -1958,7 +2150,6 @@ export class PosService {
     });
 
     await this.recordPosRefundInLedger(sale, (sale as any).total - ((sale as any).refundedAmount || 0), 'void');
-    this.writeAuditLog({ storeId: (sale as any).storeId, employeeId: actor.employeeId, action: 'sale_voided', targetId: saleId, targetType: 'sale', metadata: { reason: dto.reason } }).catch(() => {});
     return { success: true, message: 'Sale voided and stock restored' };
   }
 
@@ -2237,7 +2428,7 @@ export class PosService {
       settings = await this.r.posSettingsModel.findOneAndUpdate({ storeId }, { $set: dto }, { new: true, upsert: true });
     }
 
-    this.writeAuditLog({ storeId, employeeId: null, action: 'settings_updated', targetId: storeId, targetType: 'settings', metadata: { fields: Object.keys(dto), settingsVersion: settings?.settingsVersion } }).catch(() => {});
+    await this.writeAuditLog({ storeId, employeeId: null, action: 'settings_updated', targetId: storeId, targetType: 'settings', metadata: { fields: Object.keys(dto), settingsVersion: settings?.settingsVersion } });
 
     return { success: true, message: 'POS settings updated', data: settings };
   }

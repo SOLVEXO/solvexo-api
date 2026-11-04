@@ -324,8 +324,8 @@ export class PosController {
   @Roles('seller')
   @UseInterceptors(IdempotencyInterceptor)
   @Post('sessions/close')
-  closeSession(@Req() req: any, @Body() dto: CloseSessionDto) {
-    return this.posService.closeSession(req.user.userId, dto);
+  closeSession(@Req() req: any, @Body() dto: CloseSessionDto, @Headers('x-pos-employee-token') employeeToken?: string) {
+    return this.posService.closeSession(req.user.userId, dto, employeeToken);
   }
 
   @UseGuards(PosAuthGuard, RolesGuard)
@@ -443,16 +443,17 @@ export class PosController {
   @Roles('seller')
   @UseInterceptors(IdempotencyInterceptor)
   @Post('sales/:saleId/refund')
-  refundSale(@Req() req: any, @Param('saleId') saleId: string, @Body() dto: RefundSaleDto, @Headers('x-pos-employee-token') employeeToken?: string) {
-    return this.posService.refundSale(req.user.userId, saleId, dto, employeeToken);
+  refundSale(@Req() req: any, @Param('saleId') saleId: string, @Body() dto: RefundSaleDto, @Headers('x-pos-employee-token') employeeToken?: string, @Headers('idempotency-key') idempotencyKey?: string) {
+    return this.posService.refundSale(req.user.userId, saleId, dto, employeeToken, idempotencyKey);
   }
 
   @UseGuards(PosAuthGuard, RolesGuard)
   @Roles('seller')
   @UseInterceptors(IdempotencyInterceptor)
   @Delete('sales/:saleId/discard')
-  discardHeldSale(@Req() req: any, @Param('saleId') saleId: string) {
-    return this.posService.discardHeldSale(req.user.userId, saleId);
+  discardHeldSale(@Req() req: any, @Param('saleId') saleId: string, @Body() body?: { reason?: string }, @Query('reason') reasonQuery?: string, @Headers('x-pos-employee-token') employeeToken?: string) {
+    // the reason may come in the body or the query string (DELETE bodies are dropped by some HTTP clients); old builds send none
+    return this.posService.discardHeldSale(req.user.userId, saleId, { reason: body?.reason ?? reasonQuery, employeeToken });
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

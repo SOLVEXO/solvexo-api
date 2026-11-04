@@ -88,6 +88,10 @@ export class SaleRefund {
 
   @Prop({ type: Date, default: () => new Date() })
   createdAt: Date;
+
+  // G1a: id of this refund's own PosRefund record (additive; absent on refunds that predate the backfill).
+  @Prop({ type: String, default: null })
+  refundId?: string | null;
 }
 export const SaleRefundSchema = SchemaFactory.createForClass(SaleRefund);
 
@@ -226,8 +230,29 @@ export class Sale {
   @Prop({ type: Date, default: null })
   heldAt: Date | null;          // timestamp when sale was put on hold
 
-  @Prop({ enum: ['completed', 'held', 'refunded', 'voided', 'partially_refunded'], default: 'completed' })
+  @Prop({ enum: ['completed', 'held', 'refunded', 'voided', 'partially_refunded', 'discarded'], default: 'completed' })
   status: string;
+
+  // G1a transaction context — always set server-side (session / authenticated device), never read from the request body.
+  @Prop({ type: String, default: null })
+  shiftId: string | null;
+
+  @Prop({ type: String, default: null })
+  deviceId: string | null;
+
+  // G1a soft delete of a held sale (status 'discarded'). Rows with deletedAt set are excluded from every list.
+  @Prop({ type: Date, default: null })
+  deletedAt: Date | null;
+
+  @Prop({ type: String, default: null })
+  deletedBy: string | null;     // employeeId (PIN session) or the owner's seller id
+
+  @Prop({ type: String, default: null })
+  deleteReason: string | null;
+
+  // set only by the G1a backfill so it can be reversed
+  @Prop({ type: Boolean })
+  shiftIdBackfilled?: boolean;
 
   // No `default: null` — a `sparse` index only excludes documents where
   // the field is truly absent, not ones where it's explicitly `null`.

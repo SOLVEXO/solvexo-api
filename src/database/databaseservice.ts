@@ -79,6 +79,10 @@ export class DatabaseService {
 
     @InjectModel(schema.PosAuditLog.name)
     private posAuditLogModel: Model<schema.PosAuditLogDocument>,
+    @InjectModel(schema.PosPayment.name)
+    private posPaymentModel: Model<schema.PosPaymentDocument>,
+    @InjectModel(schema.PosRefund.name)
+    private posRefundModel: Model<schema.PosRefundDocument>,
 
     @InjectModel(schema.PosSettings.name)
     private posSettingsModel: Model<schema.PosSettingsDocument>,
@@ -555,6 +559,8 @@ export class DatabaseService {
       registerSessionModel: this.registerSessionModel,
       saleModel: this.saleModel,
       posAuditLogModel: this.posAuditLogModel,
+      posPaymentModel: this.posPaymentModel,
+      posRefundModel: this.posRefundModel,
       posSettingsModel: this.posSettingsModel,
       conversationModel: this.conversationModel,
       messageModel: this.messageModel,

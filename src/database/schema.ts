@@ -47,6 +47,8 @@ export { Employee, EmployeeDocument, EmployeeSchema } from '../pos/schemas/emplo
 export { RegisterSession, RegisterSessionDocument, RegisterSessionSchema } from '../pos/schemas/register-session.schema';
 export { Sale, SaleDocument, SaleSchema } from '../pos/schemas/sales.schema';
 export { PosAuditLog, PosAuditLogDocument, PosAuditLogSchema } from '../pos/schemas/pos-audit-log.schema';
+export { PosPayment, PosPaymentDocument, PosPaymentSchema } from '../pos/schemas/pos-payment.schema';
+export { PosRefund, PosRefundDocument, PosRefundSchema } from '../pos/schemas/pos-refund.schema';
 export { PosSettings, PosSettingsDocument, PosSettingsSchema } from '../pos/schemas/pos-settings.schema';
 export { Conversation, ConversationDocument, ConversationSchema } from '../messaging/schemas/conversation.schema';
 export { Message, MessageDocument, MessageSchema } from '../messaging/schemas/message.schema';

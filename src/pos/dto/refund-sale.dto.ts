@@ -1,7 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { ApiProperty } from '@nestjs/swagger';
 import {
-  IsArray, IsNumber, IsOptional, IsString, Min, ValidateNested,
+  IsArray, IsNumber, IsOptional, IsString, MaxLength, Min, ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
@@ -24,4 +24,10 @@ export class RefundSaleDto {
   @ValidateNested({ each: true })
   @Type(() => RefundItemDto)
   items?: RefundItemDto[];
+
+  @ApiProperty({ required: false, description: 'Why the refund is being made (optional; recorded on the refund record)' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  reason?: string;
 }

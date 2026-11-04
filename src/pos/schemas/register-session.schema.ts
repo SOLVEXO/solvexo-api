@@ -99,6 +99,22 @@ export class RegisterSession {
 
   @Prop({ type: Date, default: null })
   forceCloseAt: Date | null;
+
+  // G1a card reconciliation at close. `status` is 'not_reconciled' whenever the cashier did not enter the terminal
+  // settlement-slip total (old app builds, or skipped) — the close itself works exactly as before.
+  @Prop({
+    type: {
+      _id: false,
+      status: { type: String, enum: ['not_reconciled', 'matched', 'variance_approved'], default: 'not_reconciled' },
+      slipTotal: { type: Number, default: null },
+      expectedCard: { type: Number, default: null },
+      variance: { type: Number, default: null },
+      approvedBy: { type: String, default: null },
+      approvedAt: { type: Date, default: null },
+    },
+    default: null,
+  })
+  cardReconciliation: { status: string; slipTotal: number | null; expectedCard: number | null; variance: number | null; approvedBy: string | null; approvedAt: Date | null } | null;
 }
 
 export const RegisterSessionSchema = SchemaFactory.createForClass(RegisterSession);
