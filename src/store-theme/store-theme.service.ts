@@ -85,10 +85,17 @@ export class StoreThemeService {
     if (!footer?.menuId) return footer;
     const menu = await this.menusService.getRaw(storeId, footer.menuId);
     if (!menu) return footer;
+    // A footer column is one flat list: an item with no link of its own is replaced by its sub-items
+    // (otherwise it would show as dead text), and nested levels are dropped.
+    const flatten = (items: any[]): any[] => (items ?? []).flatMap((it: any) => {
+      if (it?.linkType === 'none') return flatten(it.children ?? []);
+      const { children: _children, ...rest } = it ?? {};
+      return [rest];
+    });
     const menuColumn = {
       _id: `menu-${menu._id}`,
       type: 'footer_column',
-      settings: { heading: menu.name, links: menu.items },
+      settings: { heading: menu.name, links: flatten(menu.items) },
       enabled: true,
     };
     const blocks: any[] = footer.blocks ?? [];
