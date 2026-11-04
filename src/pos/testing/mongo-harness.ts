@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { MongoMemoryServer } from 'mongodb-memory-server';
+import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import mongoose, { Connection, Types } from 'mongoose';
 import * as schema from '@/database/schema';
 
@@ -25,7 +25,7 @@ export async function startMongoHarness(): Promise<MongoHarness> {
   // Normal path: the ONE shared mongod started by test/jest-global-setup.ts, with a database of our own so
   // suites can't see each other's data. Fallback (e.g. running a spec outside jest's globalSetup): our own mongod.
   const sharedUri = process.env.TEST_MONGO_URI;
-  const own = sharedUri ? null : await MongoMemoryServer.create();
+  const own = sharedUri ? null : await MongoMemoryReplSet.create({ replSet: { count: 1 } });
   const dbName = `pos_test_${process.pid}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const conn = await mongoose.createConnection(sharedUri ?? own!.getUri(), { dbName }).asPromise();
 
@@ -41,6 +41,8 @@ export async function startMongoHarness(): Promise<MongoHarness> {
     variantLocationStockModel: m(schema.VariantLocationStock, schema.VariantLocationStockSchema),
     storeLocationModel: m(schema.StoreLocation, schema.StoreLocationSchema),
     posAuditLogModel: m(schema.PosAuditLog, schema.PosAuditLogSchema),
+    posPaymentModel: m(schema.PosPayment, schema.PosPaymentSchema),
+    posRefundModel: m(schema.PosRefund, schema.PosRefundSchema),
     orderModel: m(schema.Order, schema.OrderSchema),
     userModel: m(schema.User, schema.UserSchema),
     storeCustomerMetaModel: m(schema.StoreCustomerMeta, schema.StoreCustomerMetaSchema),
@@ -66,7 +68,8 @@ export async function startMongoHarness(): Promise<MongoHarness> {
       if (own) await own.stop();
     },
     reset: async () => {
-      for (const model of Object.values(repos)) await model.deleteMany({});
+      // raw collection delete: the audit / payment / refund models are append-only through Mongoose (that is the point)
+      for (const model of Object.values(repos)) await model.collection.deleteMany({});
     },
   };
 }
