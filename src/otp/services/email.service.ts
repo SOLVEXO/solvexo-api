@@ -1,3 +1,4 @@
+import { repairMojibake } from '@/common/repair-mojibake.util';
 import { Injectable } from '@nestjs/common';
 import * as nodemailer from 'nodemailer';
 import { EventEmitter } from 'events';
@@ -71,6 +72,8 @@ export class EmailService {
      *  Bulk mail (campaigns, newsletters, automations, abandoned carts) deliberately does NOT pass this: it always goes through the platform sender, so a store's mailbox is never used for bulk sends. */
     storeId?: string | null,
   ): Promise<boolean> {
+    subject = repairMojibake(String(subject ?? ''));
+    if (fromName) fromName = repairMojibake(fromName);
     // `.invalid` is reserved (RFC 2606): placeholder addresses of Apple sign-ins that shared no email and purged
     // accounts' de-identified addresses can never receive mail — never hand them to SMTP.
     if (/\.invalid$/i.test(String(to ?? '').trim())) {
