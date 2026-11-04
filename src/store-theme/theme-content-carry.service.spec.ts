@@ -66,7 +66,7 @@ describe('ThemeContentCarryService.carry', () => {
     expect(res.data).toEqual({ header: true, footer: true, pages: 2, templates: 1, skippedSections: 1 });
     const $set = themeUpdates[0].$set;
     expect($set['header.blocks']).toHaveLength(1);
-    expect($set['draft.header.blocks']).toHaveLength(2);
+    expect($set['draft.header.blocks']).toHaveLength(1);
     expect($set['header.customLogoUrl']).toBe('https://x/logo.png');
     expect($set['header.headerStyle'] === undefined).toBe(true);
     expect($set['footer.footerStyle'] === undefined).toBe(true);

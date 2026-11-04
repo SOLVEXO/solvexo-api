@@ -7,6 +7,7 @@ import { filterSectionsToTheme } from '../common/store-content/theme-section-cap
  * Switching theme keeps what the seller WROTE (logos, menus, links, texts, page and product layouts) and
  * leaves what the theme DESIGNS (colours come from the Brand Kit, shapes, fonts, header/footer layout style,
  * `themeSettings`) to the new theme. Works between any two installed themes, in both directions.
+ * What is copied is what is LIVE on the source theme (its unpublished drafts stay with it), and it lands in the target's live and draft copies.
  * Nothing of the source theme is touched; the target's previous content is kept as a version so it can be restored.
  */
 
@@ -82,14 +83,13 @@ export class ThemeContentCarryService {
     const result: CarryResult = { header: false, footer: false, pages: 0, templates: 0, skippedSections: 0 };
     const now = new Date();
     const srcLive = { header: source.header ?? {}, footer: source.footer ?? {} };
-    const srcDraft = { header: source.draft?.header ?? srcLive.header, footer: source.draft?.footer ?? srcLive.footer };
 
     // Header + footer content (live and draft), after keeping the target's current look as a restorable version.
     const $set: Record<string, any> = {};
     for (const [k, v] of Object.entries(pick(srcLive.header, HEADER_CONTENT_KEYS))) $set[`header.${k}`] = v;
-    for (const [k, v] of Object.entries(pick(srcDraft.header, HEADER_CONTENT_KEYS))) $set[`draft.header.${k}`] = v;
+    for (const [k, v] of Object.entries(pick(srcLive.header, HEADER_CONTENT_KEYS))) $set[`draft.header.${k}`] = v;
     for (const [k, v] of Object.entries(pick(srcLive.footer, FOOTER_CONTENT_KEYS))) $set[`footer.${k}`] = v;
-    for (const [k, v] of Object.entries(pick(srcDraft.footer, FOOTER_CONTENT_KEYS))) $set[`draft.footer.${k}`] = v;
+    for (const [k, v] of Object.entries(pick(srcLive.footer, FOOTER_CONTENT_KEYS))) $set[`draft.footer.${k}`] = v;
     if (Object.keys($set).length) {
       await this.themeModel.updateOne({ _id: target._id }, {
         $set,
@@ -110,10 +110,9 @@ export class ThemeContentCarryService {
       const srcT = page.themeTemplates?.find((t: any) => String(t.installedThemeId) === sId);
       // A theme that never had its own copy shows the page's legacy sections.
       const liveRaw = srcT ? srcT.sections : page.sections;
-      const draftRaw = srcT ? (srcT.draftSections ?? srcT.sections) : (page.draft?.sections ?? page.sections);
       const live = carrySections(liveRaw, target.themeDefinitionId);
-      const draft = carrySections(draftRaw, target.themeDefinitionId);
-      result.skippedSections += Math.max(live.skipped, draft.skipped);
+      const draft = live;
+      result.skippedSections += live.skipped;
       const existing = page.themeTemplates?.find((t: any) => String(t.installedThemeId) === tId);
       if (existing) {
         const upd: any = { $set: { 'themeTemplates.$.sections': live.kept, 'themeTemplates.$.draftSections': draft.kept, 'themeTemplates.$.lastPublishedAt': srcT?.lastPublishedAt ?? page.lastPublishedAt ?? now } };
@@ -134,8 +133,8 @@ export class ThemeContentCarryService {
     const srcTemplates: any[] = await this.templateModel.find({ storeId, installedThemeId: sId }).lean();
     for (const tpl of srcTemplates) {
       const live = carrySections(tpl.sections, target.themeDefinitionId);
-      const draft = carrySections(tpl.draft?.sections ?? tpl.sections, target.themeDefinitionId);
-      result.skippedSections += Math.max(live.skipped, draft.skipped);
+      const draft = live;
+      result.skippedSections += live.skipped;
       const filter = { storeId, installedThemeId: tId, resourceType: tpl.resourceType, templateKey: tpl.templateKey };
       const existing: any = await this.templateModel.findOne(filter).lean();
       if (existing) {
