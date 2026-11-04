@@ -90,6 +90,8 @@ export class ThemeContentCarryService {
     for (const [k, v] of Object.entries(pick(srcLive.header, HEADER_CONTENT_KEYS))) $set[`draft.header.${k}`] = v;
     for (const [k, v] of Object.entries(pick(srcLive.footer, FOOTER_CONTENT_KEYS))) $set[`footer.${k}`] = v;
     for (const [k, v] of Object.entries(pick(srcLive.footer, FOOTER_CONTENT_KEYS))) $set[`draft.footer.${k}`] = v;
+    // The store-identity banner (logo, name, rating toggles on the home page) is content too.
+    if (source.identityBanner && Object.keys(source.identityBanner).length) { $set['identityBanner'] = source.identityBanner; $set['draft.identityBanner'] = source.identityBanner; }
     if (Object.keys($set).length) {
       await this.themeModel.updateOne({ _id: target._id }, {
         $set,
