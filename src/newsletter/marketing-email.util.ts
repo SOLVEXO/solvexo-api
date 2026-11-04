@@ -1,3 +1,4 @@
+import { repairMojibake } from '@/common/repair-mojibake.util';
 /* eslint-disable prettier/prettier */
 
 /** Shared building blocks for every store-branded marketing/automation email
@@ -5,7 +6,7 @@
  *  carry the same footer — who is sending, why, and how to unsubscribe. */
 
 export function escapeHtml(value: string): string {
-  return String(value ?? '')
+  return repairMojibake(String(value ?? ''))
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')

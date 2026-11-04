@@ -1,3 +1,4 @@
+import { repairMojibake } from '@/common/repair-mojibake.util';
 import { emailUiStrings, isRtlLocale } from '../customer-email-locales';
 
 const APP_NAME = process.env.APP_NAME || 'Solvexo';
@@ -30,7 +31,7 @@ export function notificationEmailShell(
   /** A STORE's name: customer-facing mails (shipped, delivered, ...) are branded as the store, not the platform. */
   storeBrand?: string | EmailStoreBrand | null,
 ): string {
-  const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const esc = (s: string) => repairMojibake(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   const b: EmailStoreBrand | null = typeof storeBrand === 'string' ? { name: storeBrand } : storeBrand ?? null;
   const brand = b ? esc(b.name) : APP_NAME;
   const accent = b?.accent && HEX.test(b.accent) ? b.accent : BRAND_COLOR;
