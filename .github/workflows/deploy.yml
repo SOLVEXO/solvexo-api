@@ -1,25 +1,52 @@
 name: Deploy solvexo-api
 
+# Two ways to reach the VPS, chosen by the repository variable DEPLOY_VIA
+# (Settings → Secrets and variables → Actions → Variables):
+#   - "runner": a self-hosted GitHub Actions runner installed on the VPS (labels: self-hosted, solvexo-vps).
+#     It connects out to GitHub, so a firewall or Cloudflare in front of the server can't block it.
+#     Setup: docs/deploy.md.
+#   - anything else / unset: SSH from GitHub into the VPS (VPS_HOST, VPS_PORT, VPS_USER, VPS_SSH_KEY secrets).
+# Both run scripts/deploy.sh, which stops on the first failure and checks /health/live after the restart.
+
 on:
   push:
     branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-solvexo-api-main
+  cancel-in-progress: false
 
 jobs:
-  deploy:
-    runs-on: ubuntu-latest
+  deploy-runner:
+    if: vars.DEPLOY_VIA == 'runner'
+    runs-on: [self-hosted, solvexo-vps]
+    timeout-minutes: 20
     steps:
-      - name: Deploy to VPS
+      - uses: actions/checkout@v4
+      - name: Deploy on the VPS
+        run: bash scripts/deploy.sh main solvexo-api-staging
+
+  deploy-ssh:
+    if: vars.DEPLOY_VIA != 'runner'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Deploy to VPS over SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
           port: ${{ secrets.VPS_PORT }}
+          timeout: 60s
+          command_timeout: 15m
           script: |
+            set -e
             cd /home/deploy/apps/solvexo-api
-            git pull origin main
-            npm ci
-            npm run build
-            pm2 restart solvexo-api-staging || pm2 start dist/main.js --name "solvexo-api-staging"
-            pm2 save
-            echo "solvexo-api deployed"
+            git pull --ff-only origin main
+            bash scripts/deploy.sh main solvexo-api-staging
+      - name: Explain an SSH timeout
+        if: failure()
+        run: |
+          echo "::error title=Could not reach the VPS over SSH::If the log above says 'dial tcp ...: i/o timeout', GitHub's machine never reached SSH on the server: VPS_HOST may be a Cloudflare-proxied domain (use the server's IP), VPS_PORT may be wrong, or a firewall only allows known IPs. The reliable fix is the self-hosted runner in docs/deploy.md (then set the repository variable DEPLOY_VIA=runner)."
