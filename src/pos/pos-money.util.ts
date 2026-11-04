@@ -1,6 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { BadRequestException } from '@nestjs/common';
-import { getCurrencyDecimals } from '@/common/currency-metadata.const';
+import { fromMinor, isoExponent, roundMoney, toMinor } from '@/common/money-minor.util';
 
 /**
  * POS money rules (Phase 5B, decision D1).
@@ -21,23 +21,10 @@ export function moneyError(code: string, message: string, extra: object = {}): B
   return new BadRequestException({ statusCode: 400, code, message, ...extra });
 }
 
-export const exponentOf = (currency: string | null | undefined): number => getCurrencyDecimals((currency || 'USD').toUpperCase());
+export const exponentOf = (currency: string | null | undefined): number => isoExponent(currency); // ISO 4217, never the storefront display decimals
 
-/** Round half away from zero to `exp` decimals, immune to binary-float noise (1.005 → 1.01 at 2dp). */
-export function roundMoney(n: number, exp: number): number {
-  return fromMinor(toMinor(n, exp), exp);
-}
-
-/** Major units → integer minor units. */
-export function toMinor(n: number, exp: number): number {
-  const f = 10 ** exp;
-  const scaled = Number((Math.abs(Number(n) || 0) * f).toPrecision(15));
-  return Math.sign(n || 0) * Math.round(scaled);
-}
-
-export function fromMinor(m: number, exp: number): number {
-  return Number((m / 10 ** exp).toFixed(exp));
-}
+// The conversion itself lives in common/money-minor.util.ts (G1b: moved unchanged; re-exported so every import keeps working).
+export { roundMoney, toMinor, fromMinor } from '@/common/money-minor.util';
 
 /** Half-away-from-zero rounding of an already-minor-unit fractional value (e.g. 12.5 → 13). */
 const roundHalfUp = (x: number): number => Math.sign(x) * Math.round(Number(Math.abs(x).toPrecision(15)));
@@ -49,6 +36,8 @@ export type DiscountType = 'amount' | 'percent';
 export interface Totals {
   exp: number;
   lineTotals: number[];
+  /** G1b: the same line totals in integer minor units (`toMinor(price × qty)` — authoritative, see G1B_PLAN §6). */
+  lineTotalsMinor: number[];
   subtotal: number;
   discount: number;
   tax: number;
@@ -95,6 +84,7 @@ export function computeTotals(
   return {
     exp,
     lineTotals: lineM.map((m) => fromMinor(m, exp)),
+    lineTotalsMinor: lineM,
     subtotal: fromMinor(subtotalM, exp),
     discount: fromMinor(discountM, exp),
     tax: fromMinor(taxM, exp),
