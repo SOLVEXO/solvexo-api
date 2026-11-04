@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { sellerAppUrl } from '@/common/app-urls.util';
 import {
   Injectable,
   BadRequestException,
@@ -200,12 +201,11 @@ export class StaffService {
    *  lands in spam. */
   private inviteLinkFor(actorRole: string, token: string) {
     if (actorRole === 'staff') return {};
-    return { inviteUrl: `${(process.env.FRONTEND_URL || '').replace(/\/$/, '')}/staff-invite/${token}` };
+    return { inviteUrl: `${sellerAppUrl()}/staff-invite/${token}` };
   }
 
   private async sendInviteEmail(storeName: string, staffName: string, email: string, token: string, storeContactEmail: string | null, storeId?: string): Promise<boolean> {
-    const frontendBase = (process.env.FRONTEND_URL || '').replace(/\/$/, '');
-    const inviteUrl = `${frontendBase}/staff-invite/${token}`;
+    const inviteUrl = `${sellerAppUrl()}/staff-invite/${token}`;
     const rawStoreName = storeName;
     storeName = escapeHtml(storeName);
     staffName = escapeHtml(staffName);
@@ -437,7 +437,7 @@ export class StaffService {
     await staff.save();
 
     const store = await this.repos.storeModel.findById(storeId).select('name contactEmail').lean() as any;
-    const url = `${(process.env.FRONTEND_URL || '').replace(/\/$/, '')}/staff-reset-password/${token}`;
+    const url = `${sellerAppUrl()}/staff-reset-password/${token}`;
     const html = `
       <div style="font-family:sans-serif;max-width:520px;margin:0 auto;">
         <h2>Reset your password</h2>

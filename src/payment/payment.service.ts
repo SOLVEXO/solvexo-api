@@ -1,3 +1,4 @@
+import { sellerAppUrl } from '@/common/app-urls.util';
 import { emitOrdersDisputed } from '../common/order-events';
 import {
   Injectable,
@@ -2929,7 +2930,7 @@ export class PaymentService {
         // Shopify's "New order" staff notification: the store owner gets an email too (their own
         // email on/off preference still applies inside notify()).
         const soStore: any = await storeModel.findById(so.storeId).select('name').lean().catch(() => null);
-        const orderLink = `${process.env.FRONTEND_URL ?? ''}/store/${so.storeId}/orders/detail/${createdOrder._id}`;
+        const orderLink = `${sellerAppUrl()}/store/${so.storeId}/orders/detail/${createdOrder._id}`;
         const itemCount = so.items.length;
         const newOrderEmail = {
           subject: `[${soStore?.name ?? 'Your store'}] New order #${createdOrder.orderNumber}`,
