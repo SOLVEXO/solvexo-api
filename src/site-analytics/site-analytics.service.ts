@@ -3,7 +3,9 @@ import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { SeoIntegrationsService } from '../seo/services/seo-integrations.service';
+import { JWT } from 'google-auth-library';
 import { SiteAnalyticsSettings, SiteAnalyticsSettingsDocument } from './schemas/site-analytics-settings.schema';
+import { GaEnv, readGaEnv, ServiceAccountKey } from './site-analytics.env';
 import {
   change, consentRequired, dateRanges, Ga4Report, isNotSet, isoDay, lastDays, MEASUREMENT_ID_RE, rangeDays,
   reportRows, reportTotals, SiteRange,
@@ -14,7 +16,7 @@ const ADMIN_API = 'https://analyticsadmin.googleapis.com/v1beta';
 const CACHE_MS = 10 * 60_000;
 const REALTIME_CACHE_MS = 30_000;
 const NOT_CONNECTED =
-  'Connect Solvexo\'s Google Analytics property first: Super Admin → SEO → Integrations → Google Analytics.';
+  'Google Analytics reports are not connected. Set GA4_SERVICE_ACCOUNT_JSON (and GA4_PROPERTY_ID) in the API server environment, or connect Google Analytics in Super Admin → SEO → Integrations.';
 
 /** Funnel steps, in order. The web app sends the three events from the sign-up and onboarding pages. */
 export const FUNNEL_STEPS = [
@@ -36,6 +38,20 @@ export class SiteAnalyticsService {
   private readonly cache = new Map<string, { at: number; value: unknown }>();
   /** Overridable in tests. */
   fetchImpl: typeof fetch = (input, init) => fetch(input, init);
+  /** Server environment (VPS .env); overridable in tests. */
+  envImpl: () => GaEnv = () => readGaEnv();
+  /** Access token for a service account (Analytics read-only); overridable in tests. */
+  serviceAccountTokenImpl = async (key: ServiceAccountKey): Promise<string> => {
+    let client = this.jwtClients.get(key.client_email);
+    if (!client) {
+      client = new JWT({ email: key.client_email, key: key.private_key, scopes: ['https://www.googleapis.com/auth/analytics.readonly'] });
+      this.jwtClients.set(key.client_email, client);
+    }
+    const { token } = await client.getAccessToken();
+    if (!token) throw new Error('Google did not return an access token for the service account');
+    return token;
+  };
+  private readonly jwtClients = new Map<string, JWT>();
 
   constructor(
     private readonly integrations: SeoIntegrationsService,
@@ -51,22 +67,68 @@ export class SiteAnalyticsService {
   /** What the public site needs: the id to load (null = don't track) and whether to ask for consent first. */
   async getPublicConfig(country: string | null) {
     const s = await this.settings();
+    const id = s.measurementId || this.envImpl().measurementId?.value || null;
     return {
       success: true,
       data: {
-        measurementId: s.enabled !== false && s.measurementId ? s.measurementId : null,
+        measurementId: s.enabled !== false && id ? id : null,
+        /** False when an admin switched tracking off (the web app must not fall back to a build-time id then). */
+        enabled: s.enabled !== false,
         consentRequired: consentRequired(country),
       },
     };
   }
 
-  async getSettings() {
-    const [s, ga4] = await Promise.all([this.settings(), this.integrations.platformGa4Status()]);
+  /**
+   * Settings plus where each value comes from. With `check`, also makes one small live request to Google so the
+   * page can say exactly what is wrong (no access, wrong property, bad key) instead of failing later.
+   */
+  async getSettings(check = false) {
+    const [s, sso] = await Promise.all([this.settings(), this.integrations.platformGa4Status()]);
+    const env = this.envImpl();
+    const sa = env.serviceAccount;
+    const source: 'service_account' | 'google_sign_in' | null = sa ? 'service_account' : sso.connected ? 'google_sign_in' : null;
+    let propertyId = sa ? env.propertyId?.value ?? null : sso.propertyId;
+    let lastError = sa ? null : sso.lastError;
+    let ok: boolean | null = null;
+    if (check && source) {
+      try {
+        const access = await this.access();
+        propertyId = access?.propertyId ?? propertyId;
+        await this.call('runRealtimeReport', { metrics: [{ name: 'activeUsers' }] });
+        ok = true;
+        lastError = null;
+      } catch (e: any) {
+        ok = false;
+        lastError = e?.response?.message ?? e?.message ?? 'Google Analytics request failed';
+      }
+    }
+    const envMeasurementId = env.measurementId?.value ?? null;
     let detectedMeasurementId: string | null = null;
-    if (!s.measurementId && ga4.connected) detectedMeasurementId = await this.detectMeasurementId().catch(() => null);
+    if (!s.measurementId && !envMeasurementId && source) detectedMeasurementId = await this.detectMeasurementId().catch(() => null);
     return {
       success: true,
-      data: { measurementId: s.measurementId ?? null, enabled: s.enabled !== false, ga4, detectedMeasurementId },
+      data: {
+        measurementId: s.measurementId || envMeasurementId,
+        measurementIdSource: s.measurementId ? 'settings' : envMeasurementId ? `env:${env.measurementId!.variable}` : null,
+        enabled: s.enabled !== false,
+        ga4: {
+          connected: !!source && ok !== false,
+          source,
+          status: source === 'service_account' ? (ok === false ? 'error' : 'connected') : sso.status,
+          propertyId,
+          lastError,
+          ok,
+          serviceAccountEmail: sa?.key.client_email ?? null,
+        },
+        env: {
+          measurementIdVariable: env.measurementId?.variable ?? null,
+          propertyIdVariable: env.propertyId?.variable ?? null,
+          serviceAccountVariable: sa?.variable ?? null,
+          problems: env.problems,
+        },
+        detectedMeasurementId,
+      },
     };
   }
 
@@ -88,7 +150,7 @@ export class SiteAnalyticsService {
   private async detectMeasurementId(): Promise<string | null> {
     const cached = this.cached<string | null>('detect', CACHE_MS);
     if (cached !== undefined) return cached;
-    const access = await this.integrations.platformGa4Access();
+    const access = await this.access();
     if (!access) return null;
     const res = await this.fetchImpl(`${ADMIN_API}/${access.propertyId}/dataStreams`, {
       headers: { Authorization: `Bearer ${access.accessToken}` },
@@ -240,10 +302,52 @@ export class SiteAnalyticsService {
     return body?.reports ?? [];
   }
 
-  private async call(method: 'batchRunReports' | 'runRealtimeReport', payload: Record<string, unknown>): Promise<any> {
-    const access = await this.integrations.platformGa4Access().catch(() => {
+  /** Who reads the reports: the service account from the server environment, else the SEO page's Google sign-in. */
+  private async access(): Promise<{ accessToken: string; propertyId: string; source: 'service_account' | 'google_sign_in'; email?: string } | null> {
+    const env = this.envImpl();
+    if (env.serviceAccount) {
+      const { key } = env.serviceAccount;
+      let accessToken: string;
+      try {
+        accessToken = await this.serviceAccountTokenImpl(key);
+      } catch (e: any) {
+        throw new BadRequestException(`Google refused the service account key (${key.client_email}): ${e?.message ?? 'sign-in failed'}. Check the JSON key in the server environment.`);
+      }
+      const propertyId = env.propertyId?.value ?? (await this.discoverProperty(accessToken, key.client_email, env.measurementId?.value ?? null));
+      return { accessToken, propertyId, source: 'service_account', email: key.client_email };
+    }
+    const sso = await this.integrations.platformGa4Access().catch(() => {
       throw new BadRequestException('Google Analytics access has expired. Reconnect it in Super Admin → SEO → Integrations.');
     });
+    return sso ? { ...sso, source: 'google_sign_in' } : null;
+  }
+
+  /** No property id configured: use the property the service account can see (the one whose web stream matches the measurement id, if several). */
+  private async discoverProperty(accessToken: string, email: string, measurementId: string | null): Promise<string> {
+    const cached = this.cached<string>(`property:${email}`, CACHE_MS);
+    if (cached) return cached;
+    const res = await this.fetchImpl(`${ADMIN_API}/accountSummaries?pageSize=200`, { headers: { Authorization: `Bearer ${accessToken}` } });
+    const body: any = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new BadRequestException(`Could not list Google Analytics properties for ${email}: ${body?.error?.message ?? `HTTP ${res.status}`}. Enable the "Google Analytics Admin API" for the key's Google Cloud project, or set GA4_PROPERTY_ID.`);
+    }
+    const properties: string[] = (body?.accountSummaries ?? []).flatMap((a: any) => (a?.propertySummaries ?? []).map((p: any) => String(p?.property ?? ''))).filter((p: string) => /^properties\/\d+$/.test(p));
+    if (!properties.length) {
+      throw new BadRequestException(`The service account ${email} has no access to any Google Analytics property. In Google Analytics → Admin → Property access management, add it with the Viewer role.`);
+    }
+    let chosen = properties[0];
+    if (measurementId && properties.length > 1) {
+      for (const p of properties.slice(0, 20)) {
+        const r = await this.fetchImpl(`${ADMIN_API}/${p}/dataStreams`, { headers: { Authorization: `Bearer ${accessToken}` } });
+        const streams: any = await r.json().catch(() => ({}));
+        if ((streams?.dataStreams ?? []).some((d: any) => d?.webStreamData?.measurementId === measurementId)) { chosen = p; break; }
+      }
+    }
+    return this.remember(`property:${email}`, chosen);
+  }
+
+  private async call(method: 'batchRunReports' | 'runRealtimeReport', payload: Record<string, unknown>): Promise<any> {
+    const access = await this.access();
     if (!access) throw new BadRequestException(NOT_CONNECTED);
     const res = await this.fetchImpl(`${DATA_API}/${access.propertyId}:${method}`, {
       method: 'POST',
@@ -253,7 +357,16 @@ export class SiteAnalyticsService {
     const body: any = await res.json().catch(() => ({}));
     if (res.ok) return body;
     const message = String(body?.error?.message ?? `HTTP ${res.status}`);
-    this.logger.warn(`GA4 ${method} failed: ${message}`);
+    this.logger.warn(`GA4 ${method} failed (${access.source}, ${access.propertyId}): ${message}`);
+    if (access.source === 'service_account') {
+      if (res.status === 403 && /has not been used|is disabled|SERVICE_DISABLED/i.test(message)) {
+        throw new BadRequestException(`The Google Analytics Data API is not enabled for the service account's Google Cloud project. Enable "Google Analytics Data API" in Google Cloud Console, then try again. (${message})`);
+      }
+      if (res.status === 403 || res.status === 401) {
+        throw new BadRequestException(`Google Analytics refused access to ${access.propertyId} for ${access.email}. In Google Analytics → Admin → Property access management, add that email with the Viewer role. (${message})`);
+      }
+      throw new BadRequestException(`Google Analytics: ${message}`);
+    }
     if (res.status === 401 || res.status === 403) {
       await this.integrations.markPlatformGa4NeedsReauth(message);
       throw new BadRequestException('Google Analytics refused access. Reconnect it in Super Admin → SEO → Integrations.');
