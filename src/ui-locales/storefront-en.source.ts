@@ -107,6 +107,7 @@ export const STOREFRONT_EN: Record<string, any> = {
    "comment": "Failed to submit comment."
   },
   "journal": "Journal",
+  "label": "Blog",
   "loadMore": "Load more",
   "loadingComments": "Loading comments…",
   "noComments": "No comments yet — be the first to share your thoughts.",
@@ -1056,6 +1057,7 @@ export const STOREFRONT_EN: Record<string, any> = {
   "my_account": "My account",
   "my_reviews": "My reviews",
   "name_added_to_your_bag": "{{name}} added to your bag",
+  "name_added_to_your_cart": "{{name}} added to your cart",
   "name_is_too_large_the_limit_is_size": "\"{{name}}\" is too large. The limit is {{size}}.",
   "name_no_longer_available": "{{name}}: no longer available",
   "never_shown_publicly": "Never shown publicly",
@@ -1139,6 +1141,7 @@ export const STOREFRONT_EN: Record<string, any> = {
   "re_enter_code": "Re-enter code",
   "react_emoji": "React {{emoji}}",
   "reactions": "Reactions",
+  "read_more": "Read more",
   "recent_searches": "Recent searches",
   "redeem_name": "Redeem {{name}}",
   "redeemed_name": "Redeemed {{name}}.",
