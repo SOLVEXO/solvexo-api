@@ -9,6 +9,8 @@ import { RequirePermission } from '../auth/decorators/require-permission.decorat
 import { actingSellerId } from '../common/acting-seller-id.util';
 import { IdempotencyInterceptor } from '../common/idempotency.interceptor';
 import { StoreThemeService } from './store-theme.service';
+import { ThemeContentCarryService } from './theme-content-carry.service';
+import { CarryContentDto } from './dto/carry-content.dto';
 import { UpdateThemeDto } from './dto/update-theme.dto';
 import { UpdateHeaderDto } from './dto/update-header.dto';
 import { UpdateFooterDto } from './dto/update-footer.dto';
@@ -28,7 +30,10 @@ import { SetBrandKitLockDto, UpdateBrandKitDto } from './dto/brand-kit.dto';
 @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
 @Controller('api/store-theme')
 export class StoreThemeController {
-  constructor(private readonly storeThemeService: StoreThemeService) {}
+  constructor(
+    private readonly storeThemeService: StoreThemeService,
+    private readonly carryService: ThemeContentCarryService,
+  ) {}
 
   // ── Theme Library (installed theme instances) — declared as static
   // segments ahead of the `:storeId/theme` etc. dynamic routes below is not
@@ -74,6 +79,12 @@ export class StoreThemeController {
     @Body('name') name: string,
   ) {
     return this.storeThemeService.renameTheme(storeId, actingSellerId(req.user), installedThemeId, name);
+  }
+
+  /** Copies the seller's own content (logo, menus, links, texts, page and product layouts) from another installed theme; the look stays the target theme's. */
+  @Post(':storeId/installed/:installedThemeId/carry-content')
+  carryContent(@Req() req: any, @Param('storeId') storeId: string, @Param('installedThemeId') installedThemeId: string, @Body() dto: CarryContentDto) {
+    return this.carryService.carry(storeId, actingSellerId(req.user), installedThemeId, dto.fromInstalledThemeId);
   }
 
   @Post(':storeId/installed/:installedThemeId/activate')
