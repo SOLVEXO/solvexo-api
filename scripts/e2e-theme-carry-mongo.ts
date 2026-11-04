@@ -56,7 +56,7 @@ const check = (name: string, ok: boolean, extra = '') => { console.log((ok ? 'OK
 
     const home: any = await storePageModel.findOne({ storeId, slug: 'home' }).lean();
     const ht = home.themeTemplates.find((x: any) => x.installedThemeId === tId);
-    check('home page sections replaced with Maison\'s (minus foreign theme section)', ht.sections.length === 2 && ht.sections[0].settings.heading === "Maison hero" && ht.draftSections.length === 2);
+    check('home page sections replaced with Maison\'s (minus foreign theme section)', ht.sections.length === 2 && ht.sections[0].settings.heading === "Maison hero" && ht.draftSections.length === 1 && ht.draftSections[0].settings.heading === "Maison draft");
     check('home page: old Tech sections kept as a version', ht.versions.length === 1 && ht.versions[0].sections[0].settings.heading === 'Tech starter');
     check('home page: Maison copy untouched', home.themeTemplates.find((x: any) => x.installedThemeId === mId).sections.length === 3);
     const about: any = await storePageModel.findOne({ storeId, slug: 'about' }).lean();

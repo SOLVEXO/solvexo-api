@@ -7,7 +7,7 @@ import { filterSectionsToTheme } from '../common/store-content/theme-section-cap
  * Switching theme keeps what the seller WROTE (logos, menus, links, texts, page and product layouts) and
  * leaves what the theme DESIGNS (colours come from the Brand Kit, shapes, fonts, header/footer layout style,
  * `themeSettings`) to the new theme. Works between any two installed themes, in both directions.
- * What is copied is what is LIVE on the source theme (its unpublished drafts stay with it), and it lands in the target's live and draft copies.
+ * Header and footer content is what is LIVE on the source theme. Page and product layouts also bring their unpublished draft (an empty draft follows what is live).
  * Nothing of the source theme is touched; the target's previous content is kept as a version so it can be restored.
  */
 
@@ -111,8 +111,10 @@ export class ThemeContentCarryService {
       // A theme that never had its own copy shows the page's legacy sections.
       const liveRaw = srcT ? srcT.sections : page.sections;
       const live = carrySections(liveRaw, target.themeDefinitionId);
-      const draft = live;
-      result.skippedSections += live.skipped;
+      // Unpublished page edits travel too; a page whose draft is empty simply follows what is live.
+      const draftSrc = Array.isArray(srcT?.draftSections) && srcT.draftSections.length ? srcT.draftSections : liveRaw;
+      const draft = carrySections(draftSrc, target.themeDefinitionId);
+      result.skippedSections += Math.max(live.skipped, draft.skipped);
       const existing = page.themeTemplates?.find((t: any) => String(t.installedThemeId) === tId);
       if (existing) {
         const upd: any = { $set: { 'themeTemplates.$.sections': live.kept, 'themeTemplates.$.draftSections': draft.kept, 'themeTemplates.$.lastPublishedAt': srcT?.lastPublishedAt ?? page.lastPublishedAt ?? now } };
@@ -133,8 +135,9 @@ export class ThemeContentCarryService {
     const srcTemplates: any[] = await this.templateModel.find({ storeId, installedThemeId: sId }).lean();
     for (const tpl of srcTemplates) {
       const live = carrySections(tpl.sections, target.themeDefinitionId);
-      const draft = live;
-      result.skippedSections += live.skipped;
+      const draftSrc = Array.isArray(tpl.draft?.sections) && tpl.draft.sections.length ? tpl.draft.sections : tpl.sections;
+      const draft = carrySections(draftSrc, target.themeDefinitionId);
+      result.skippedSections += Math.max(live.skipped, draft.skipped);
       const filter = { storeId, installedThemeId: tId, resourceType: tpl.resourceType, templateKey: tpl.templateKey };
       const existing: any = await this.templateModel.findOne(filter).lean();
       if (existing) {
