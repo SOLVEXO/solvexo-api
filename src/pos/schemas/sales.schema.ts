@@ -1,6 +1,8 @@
 /* eslint-disable prettier/prettier */
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Document } from 'mongoose';
+import '../../common/schema-types/minor-money';
+
 
 export type SaleDocument = Sale & Document;
 
@@ -36,7 +38,18 @@ export class SaleItem {
   qty: number;
 
   @Prop({ type: Number, required: true })
-  lineTotal: number;            // price × qty
+  lineTotal: number;
+
+  // G1b: integer minor-unit twins (see common/schema-types/minor-money.ts). lineTotalMinor = toMinor(price × qty) is AUTHORITATIVE;
+  // priceMinor × qty can differ from it only for a price with sub-minor decimals.
+  @Prop({ type: 'MinorMoney' })
+  priceMinor?: number;
+
+  @Prop({ type: 'MinorMoney' })
+  listPriceMinor?: number;
+
+  @Prop({ type: 'MinorMoney' })
+  lineTotalMinor?: number;
 
   @Prop({ type: Number, default: 0 })
   refundedQty: number;          // cumulative qty refunded from this line
@@ -51,10 +64,17 @@ export class SalePayment {
 
   @Prop({ type: Number, required: true })
   amount: number;
+  // G1b: integer minor-unit twins
+
+  @Prop({ type: 'MinorMoney' })
+  amountMinor?: number;
 
   // cash only — what the customer handed over; change = tendered − amount, stored once on the sale
   @Prop({ type: Number })
   tendered?: number;
+
+  @Prop({ type: 'MinorMoney' })
+  tenderedMinor?: number;
 
   // card auth code / bank transfer ref / etc.
   @Prop({ type: String, default: null })
@@ -67,12 +87,16 @@ export const SalePaymentSchema = SchemaFactory.createForClass(SalePayment);
 export class SaleRefund {
   @Prop({ type: Number, required: true })
   amount: number;
+  // G1b: integer minor-unit twin
+
+  @Prop({ type: 'MinorMoney' })
+  amountMinor?: number;
 
   @Prop({ enum: ['full', 'partial'], required: true })
   kind: string;
 
-  @Prop({ type: [{ _id: false, method: String, amount: Number }], default: [] })
-  tenders: Array<{ method: string; amount: number }>;
+  @Prop({ type: [{ _id: false, method: String, amount: Number, amountMinor: { type: 'MinorMoney' } }], default: [] })
+  tenders: Array<{ method: string; amount: number; amountMinor?: number }>;
 
   @Prop({ type: [{ _id: false, saleItemId: String, qty: Number }], default: [] })
   items: Array<{ saleItemId: string; qty: number }>;
@@ -122,15 +146,28 @@ export class Sale {
 
   @Prop({ type: Number, default: 0 })
   subtotal: number;
+  // G1b: integer minor-unit twin
+
+  @Prop({ type: 'MinorMoney' })
+  subtotalMinor?: number;
 
   @Prop({ type: Number, default: 0 })
   discount: number;
 
+  @Prop({ type: 'MinorMoney' })
+  discountMinor?: number;
+
   @Prop({ type: Number, default: 0 })
   tax: number;
 
+  @Prop({ type: 'MinorMoney' })
+  taxMinor?: number;
+
   @Prop({ type: Number, required: true })
   total: number;
+
+  @Prop({ type: 'MinorMoney' })
+  totalMinor?: number;
 
   // ── Currency snapshot (Phase 5B / D1) ─────────────────────────────────────────────────────────
   // The store's currency at the moment of sale and its ISO-4217 minor-unit exponent (JPY 0, USD/PKR 2,
@@ -150,6 +187,9 @@ export class Sale {
   @Prop({ type: Number, default: null })
   discountValue: number | null;
 
+  @Prop({ type: 'MinorMoney' })
+  discountValueMinor?: number;
+
   @Prop({ type: Number, default: null })
   taxRate: number | null;
 
@@ -164,6 +204,9 @@ export class Sale {
   // Cash handed back to the customer (computed server-side from the cash tendered).
   @Prop({ type: Number, default: 0 })
   changeGiven: number;
+
+  @Prop({ type: 'MinorMoney' })
+  changeGivenMinor?: number;
 
   // Snapshot of who rang it up, so a receipt can print a cashier name without another lookup.
   @Prop({ type: String, default: null })
@@ -218,6 +261,9 @@ export class Sale {
   @Prop({ type: Number, default: 0 })
   paymentShortfall: number;
 
+  @Prop({ type: 'MinorMoney' })
+  paymentShortfallMinor?: number;
+
   @Prop({ type: String, default: null })
   customerId: string | null;
 
@@ -254,6 +300,14 @@ export class Sale {
   @Prop({ type: Boolean })
   shiftIdBackfilled?: boolean;
 
+  // G1b backfill markers (so `down` removes only what the backfill added; live dual-written rows never carry them)
+  @Prop({ type: Date })
+  minorBackfilledAt?: Date;
+
+  /** The currency/exponent snapshot was missing (pre-5B) and was inferred from the store's baseCurrency by the backfill. */
+  @Prop({ type: Boolean })
+  currencyInferred?: boolean;
+
   // No `default: null` — a `sparse` index only excludes documents where
   // the field is truly absent, not ones where it's explicitly `null`.
   // Mongoose applies a schema `default` even when the field is omitted
@@ -272,9 +326,15 @@ export class Sale {
 
   @Prop({ type: Number, default: 0 })
   refundedAmount: number;       // cumulative amount refunded (for partial refunds)
+
+  @Prop({ type: 'MinorMoney' })
+  refundedAmountMinor?: number;
 }
 
 export const SaleSchema = SchemaFactory.createForClass(Sale);
+// MinorMoney fields are stored as BSON long and read back through a getter: serialise documents with getters so JSON carries plain numbers.
+SaleSchema.set('toJSON', { getters: true, virtuals: false });
+SaleSchema.set('toObject', { getters: true, virtuals: false });
 
 SaleSchema.index({ storeId: 1, createdAt: -1 });
 SaleSchema.index({ storeId: 1, status: 1 });

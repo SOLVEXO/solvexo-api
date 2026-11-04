@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsArray, IsEnum, IsInt, IsOptional, IsNumber, IsString, Min, ValidateNested } from 'class-validator';
+import { IsArray, IsEnum, IsInt, IsOptional, IsNumber, IsString, Max, Min, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
 import { PaymentLineDto } from './payment.dto';
 
@@ -21,6 +21,12 @@ export class CompleteSaleDto {
   @IsNumber()
   @Min(0)
   amountTendered?: number;
+  @ApiProperty({ required: false, description: `G1b: integer twin (minor units). Cross-check only.` })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(Number.MAX_SAFE_INTEGER)
+  amountTenderedMinor?: number;
 
   @ApiProperty({ required: false })
   @IsOptional()
@@ -45,6 +51,12 @@ export class CompleteSaleDto {
   @IsNumber()
   @Min(0)
   discountValue?: number;
+  @ApiProperty({ required: false, description: `G1b: integer twin of discountValue — only for an 'amount' discount. Cross-check only.` })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(Number.MAX_SAFE_INTEGER)
+  discountValueMinor?: number;
 
   @ApiProperty({ required: false, deprecated: true, description: 'IGNORED — tax is computed by the server' })
   @IsOptional()
@@ -59,6 +71,12 @@ export class CompleteSaleDto {
   @IsNumber()
   @Min(0)
   clientTotal?: number;
+  @ApiProperty({ required: false, description: `G1b: integer twin (minor units). Cross-check only.` })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(Number.MAX_SAFE_INTEGER)
+  clientTotalMinor?: number;
 
   @ApiProperty({ required: false, description: 'The settingsVersion the device priced this with' })
   @IsOptional()

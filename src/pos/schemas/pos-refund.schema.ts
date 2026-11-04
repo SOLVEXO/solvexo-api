@@ -2,6 +2,7 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Document } from 'mongoose';
 import { makeAppendOnly } from './pos-immutable.util';
+import '../../common/schema-types/minor-money';
 
 export type PosRefundDocument = PosRefund & Document;
 
@@ -17,11 +18,13 @@ export class PosRefund {
 
   @Prop({ enum: ['full', 'partial'], required: true }) kind: string;
   @Prop({ type: Number, required: true }) amount: number;
+  // G1b: integer minor-unit twin
+  @Prop({ type: 'MinorMoney' }) amountMinor?: number;
   @Prop({ type: String, default: null }) currency: string | null;
   @Prop({ type: Number, default: null }) currencyExponent: number | null;
   /** Per-tender split of the refund. Card / other tenders are only recorded, never confirmed by a terminal today. */
-  @Prop({ type: [{ _id: false, method: String, amount: Number }], default: [] })
-  tenders: Array<{ method: string; amount: number }>;
+  @Prop({ type: [{ _id: false, method: String, amount: Number, amountMinor: { type: 'MinorMoney' } }], default: [] })
+  tenders: Array<{ method: string; amount: number; amountMinor?: number }>;
   @Prop({ type: [{ _id: false, saleItemId: String, qty: Number }], default: [] })
   items: Array<{ saleItemId: string; qty: number }>;
   @Prop({ type: String, default: null }) reason: string | null;
@@ -45,9 +48,12 @@ export class PosRefund {
   /** The request's Idempotency-Key, when sent. Unique per sale. */
   @Prop({ type: String }) idempotencyKey?: string | null;
   @Prop({ type: Boolean }) backfilled?: boolean;
+  @Prop({ type: Date }) minorBackfilledAt?: Date;
 }
 
 export const PosRefundSchema = SchemaFactory.createForClass(PosRefund);
+PosRefundSchema.set('toJSON', { getters: true, virtuals: false });
+PosRefundSchema.set('toObject', { getters: true, virtuals: false });
 
 PosRefundSchema.index({ saleId: 1, seq: 1 }, { unique: true, name: 'uniq_refund_seq_per_sale' });
 PosRefundSchema.index(

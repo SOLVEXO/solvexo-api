@@ -2,7 +2,7 @@
 import { ApiProperty } from '@nestjs/swagger';
 import {
   IsString, IsNotEmpty, IsArray, ValidateNested,
-  IsNumber, IsOptional, IsEnum, Min, IsInt, IsDateString, IsBoolean,
+  IsNumber, IsOptional, IsEnum, Min, Max, IsInt, IsDateString, IsBoolean,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { PaymentLineDto } from './payment.dto';
@@ -30,6 +30,13 @@ export class SaleItemDto {
   @IsNumber()
   @Min(0)
   unitPrice?: number;
+
+  @ApiProperty({ required: false, example: 5876, description: `G1b: integer twin of unitPrice in the currency's minor unit. Cross-check only: if both are sent and disagree the sale is rejected (MONEY_FIELD_MISMATCH).` })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(Number.MAX_SAFE_INTEGER)
+  unitPriceMinor?: number;
 }
 
 export class CreateSaleDto {
@@ -77,6 +84,12 @@ export class CreateSaleDto {
   @IsNumber()
   @Min(0)
   discountValue?: number;
+  @ApiProperty({ required: false, example: 5876, description: `G1b: integer twin of discountValue — only when discountType is 'amount' (a percentage is not money). Cross-check only.` })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(Number.MAX_SAFE_INTEGER)
+  discountValueMinor?: number;
 
   @ApiProperty({ required: false, deprecated: true, description: 'IGNORED. Tax is computed by the server from the store tax rate.' })
   @IsOptional()
@@ -91,6 +104,12 @@ export class CreateSaleDto {
   @IsNumber()
   @Min(0)
   clientTotal?: number;
+  @ApiProperty({ required: false, example: 5876, description: `G1b: integer twin of clientTotal (minor units). Cross-check only.` })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(Number.MAX_SAFE_INTEGER)
+  clientTotalMinor?: number;
 
   @ApiProperty({ enum: ['cash', 'card', 'other'], default: 'cash', description: 'Single-payment form; ignored when `payments` is sent' })
   @IsEnum(['cash', 'card', 'other'])
@@ -109,6 +128,12 @@ export class CreateSaleDto {
   @IsNumber()
   @Min(0)
   amountTendered?: number;
+  @ApiProperty({ required: false, example: 5876, description: `G1b: integer twin of amountTendered (minor units). Cross-check only.` })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(Number.MAX_SAFE_INTEGER)
+  amountTenderedMinor?: number;
 
   @ApiProperty({ required: false, description: 'Single non-cash payment: card auth code / bank reference' })
   @IsOptional()

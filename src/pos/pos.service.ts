@@ -12,6 +12,9 @@ import {
 import { availableStock, AVAILABLE_STOCK_EXPR } from '@/common/stock-availability.util';
 import { drainLocationStock, restoreLocationStock } from '@/common/location-stock.util';
 import { ClientSession, Types } from 'mongoose';
+import { Long } from 'mongodb';
+import { checkMinorPairs, isoExponent, MinorMismatch } from '@/common/money-minor.util';
+import { PosMinorMetrics } from './pos-minor-metrics';
 import { searchStoreCustomers } from '@/common/store-customer-search.util';
 import {
   allocateRefund, assertClientTotal, byTender, computeTotals, DiscountType, effectivePayments, exponentOf, fromMinor,
@@ -387,9 +390,11 @@ export class PosService {
     const store: any = await this.r.storeModel.findById(storeId).select('registers').lean();
     await assertWithinPosPlanLimit(this.r, storeId, 'registers', (store?.registers ?? []).filter((x: any) => x.status !== 'inactive').length);
 
+    const regExp = isoExponent(store?.baseCurrency ?? (await this.r.storeModel.findById(storeId).select('baseCurrency').lean() as any)?.baseCurrency);
+    const floatCash = body.defaultFloatCash ?? 100;
     const updated = await this.r.storeModel.findByIdAndUpdate(
       storeId,
-      { $push: { registers: { name: body.name, defaultFloatCash: body.defaultFloatCash ?? 100, status: 'active', locationId: body.locationId ?? null } } },
+      { $push: { registers: { name: body.name, defaultFloatCash: floatCash, defaultFloatCashMinor: toMinor(floatCash, regExp), status: 'active', locationId: body.locationId ?? null } } },
       { new: true },
     );
 
@@ -598,6 +603,9 @@ export class PosService {
         shiftId: dto.shiftId ?? null,
         openedAt: new Date(),
         openingCash: roundMoney(dto.openingCash, sessionMoney.exp),
+        openingCashMinor: toMinor(dto.openingCash, sessionMoney.exp),
+        // counters start at 0 in both forms
+        cashSalesMinor: 0, cardSalesMinor: 0, otherSalesMinor: 0, totalSalesMinor: 0, totalRefundsMinor: 0,
         status: 'open',
       });
     } catch (err: any) {
@@ -625,19 +633,22 @@ export class PosService {
     const expectedCash = roundMoney(session.openingCash + session.cashSales + cashIn - cashOut, closeExp);
     const closingCash = roundMoney(dto.closingCash, closeExp);
     const cashDifference = roundMoney(closingCash - expectedCash, closeExp);
+    const expectedCashMinor = toMinor(expectedCash, closeExp);
+    const closingCashMinor = toMinor(closingCash, closeExp);
 
     // Card reconciliation (D2): card payments are only RECORDED by the cashier, so at close the cashier enters the card total
     // printed on the terminal's settlement slip. Server compares it with the card total the till recorded (net of refunds).
     // No slip total (old app build / skipped) → closes exactly as before, marked "not reconciled". A DIFFERENCE needs a manager
     // PIN session and is audit-logged; nothing is closed without it.
     const expectedCard = roundMoney((session as any).cardSales || 0, closeExp);
-    let cardRecon: any = { status: 'not_reconciled', slipTotal: null, expectedCard, variance: null, approvedBy: null, approvedAt: null };
+    const expectedCardMinor = toMinor(expectedCard, closeExp);
+    let cardRecon: any = { status: 'not_reconciled', slipTotal: null, expectedCard, expectedCardMinor, variance: null, approvedBy: null, approvedAt: null };
     let varianceApprover: { employeeId: string; role: string } | null = null;
     if (dto.cardTotalFromSlip !== undefined && dto.cardTotalFromSlip !== null) {
       const slipTotal = roundMoney(dto.cardTotalFromSlip, closeExp);
       const variance = roundMoney(slipTotal - expectedCard, closeExp);
       if (variance === 0) {
-        cardRecon = { status: 'matched', slipTotal, expectedCard, variance: 0, approvedBy: null, approvedAt: null };
+        cardRecon = { status: 'matched', slipTotal, expectedCard, slipTotalMinor: toMinor(slipTotal, closeExp), expectedCardMinor, variance: 0, varianceMinor: 0, approvedBy: null, approvedAt: null };
       } else {
         varianceApprover = await this.verifyEmployeeToken(employeeToken, (session as any).storeId);
         if (!varianceApprover || varianceApprover.role !== 'manager') {
@@ -647,7 +658,7 @@ export class PosService {
             slipTotal, expectedCard, variance,
           });
         }
-        cardRecon = { status: 'variance_approved', slipTotal, expectedCard, variance, approvedBy: varianceApprover.employeeId, approvedAt: new Date() };
+        cardRecon = { status: 'variance_approved', slipTotal, expectedCard, slipTotalMinor: toMinor(slipTotal, closeExp), expectedCardMinor, variance, varianceMinor: toMinor(slipTotal, closeExp) - expectedCardMinor, approvedBy: varianceApprover.employeeId, approvedAt: new Date() };
       }
     }
 
@@ -657,7 +668,7 @@ export class PosService {
     const updated = await this.atomic(async (tx) => {
       const u = await this.r.registerSessionModel.findOneAndUpdate(
         { _id: dto.sessionId, status: 'open' },
-        { $set: { closingCash, expectedCash, cashDifference, closedAt: new Date(), status: 'closed', cardReconciliation: cardRecon } },
+        { $set: { closingCash, closingCashMinor, expectedCash, expectedCashMinor, cashDifference, cashDifferenceMinor: closingCashMinor - expectedCashMinor, closedAt: new Date(), status: 'closed', cardReconciliation: cardRecon } },
         { new: true, ...(tx ? { session: tx } : {}) },
       );
       if (!u) return null;
@@ -668,6 +679,7 @@ export class PosService {
       return u;
     });
     if (!updated) throw businessConflict('SESSION_ALREADY_CLOSED', 'This session was already closed');
+    await this.checkMinor('session', updated, closeExp);
 
     return { success: true, message: 'Register session closed', data: updated };
   }
@@ -767,6 +779,9 @@ export class PosService {
           splitSales,
           refundsCount: refunded.length + sales.filter((r: any) => (r.refundedAmount || 0) > 0).length,
           refundsTotal,
+          // G1b minor twins (from the shift's own integer counters when present, else derived from the decimals)
+          totalSalesMinor: (session as any).totalSalesMinor ?? toMinor((session as any).totalSales || 0, exp),
+          refundsTotalMinor: toMinor(refundsTotal, exp),
           byPaymentMethod: byPayment,
           cashFlow: {
             openingCash: (session as any).openingCash,
@@ -776,6 +791,13 @@ export class PosService {
             expectedCash: (session as any).expectedCash,
             closingCash: (session as any).closingCash ?? null,
             cashDifference: (session as any).cashDifference,
+            openingCashMinor: (session as any).openingCashMinor ?? toMinor((session as any).openingCash || 0, exp),
+            cashSalesMinor: (session as any).cashSalesMinor ?? toMinor((session as any).cashSales || 0, exp),
+            cashInMinor: toMinor(cashIn, exp),
+            cashOutMinor: toMinor(cashOut, exp),
+            expectedCashMinor: (session as any).expectedCashMinor ?? toMinor((session as any).expectedCash || 0, exp),
+            closingCashMinor: (session as any).closingCash === null || (session as any).closingCash === undefined ? null : ((session as any).closingCashMinor ?? toMinor((session as any).closingCash, exp)),
+            cashDifferenceMinor: (session as any).cashDifferenceMinor ?? toMinor((session as any).cashDifference || 0, exp),
           },
         },
       },
@@ -793,7 +815,7 @@ export class PosService {
     const actor = await this.requireManagerEmployee(employeeToken, (session as any).storeId, 'record cash movements');
 
     const { exp: adjExp } = await this.docMoney(session);
-    const adjustment = { type: dto.type, amount: roundMoney(dto.amount, adjExp), reason: dto.reason, employeeId: actor.employeeId, createdAt: new Date() };
+    const adjustment = { type: dto.type, amount: roundMoney(dto.amount, adjExp), amountMinor: toMinor(dto.amount, adjExp), reason: dto.reason, employeeId: actor.employeeId, createdAt: new Date() };
 
     await this.atomic(async (tx) => {
       await this.r.registerSessionModel.findByIdAndUpdate(sessionId, { $push: { cashAdjustments: adjustment } }, tx ? { session: tx } : undefined);
@@ -917,6 +939,7 @@ export class PosService {
     // beyond one minor unit is rejected (TOTAL_MISMATCH) rather than charging a number nobody saw.
     // The tax rate comes from the settingsVersion the device priced with (when still within the offline window).
     const money = await this.moneyContext(dto.storeId, { version: dto.settingsVersion });
+    this.reconcileClientMoney(dto, money.exp);
     const totals = computeTotals(saleItems, { exp: money.exp, discountType: discountReq.type, discountValue: discountReq.value, taxRate: money.taxRate });
     const flags: Array<{ type: string; detail: Record<string, any> }> = [];
     const unverified = saleItems.filter((it) => it.priceVerified === false);
@@ -981,18 +1004,19 @@ export class PosService {
             registerId: dto.registerId,
             locationId: sessionLocationId,
             employeeId: dto.employeeId,
-            items: saleItems,
+            items: this.itemsMinor(saleItems, totals, money.exp),
             subtotal,
             discount,
             tax,
             total,
+            ...this.saleMoneyMinor(totals, discountReq, money.exp, settled ? { change: settled.change, shortBy: settled.shortBy } : null),
             currency: money.currency,
             currencyExponent: money.exp,
             discountType: discountReq.value > 0 ? discountReq.type : null,
             discountValue: discountReq.value > 0 ? discountReq.value : null,
             taxRate: money.taxRate,
             paymentMethod: settled ? settled.method : dto.paymentMethod,
-            payments: settled ? settled.lines : [],
+            payments: settled ? this.paymentLinesMinor(settled.lines, money.exp) : [],
             changeGiven: settled ? settled.change : 0,
             paymentShortfall: settled ? settled.shortBy : 0,
             employeeName: (employee as any).name ?? null,
@@ -1076,6 +1100,7 @@ export class PosService {
       }
     }
 
+    await this.checkMinor('sale', sale, money.exp);
     return { success: true, message: isHeld ? 'Sale put on hold' : 'Sale completed', data: sale };
   }
 
@@ -1104,6 +1129,7 @@ export class PosService {
     }
 
     const money = await this.moneyContext(String((sale as any).storeId), { version: dto.settingsVersion });
+    this.reconcileClientMoney(dto, money.exp);
     const totals = computeTotals((sale as any).items, { exp: money.exp, discountType: discountReq.type, discountValue: discountReq.value, taxRate: money.taxRate });
     assertClientTotal(dto.clientTotal, totals);
     const settled = settlePayments(totals.minor.total, money.exp, { payments: dto.payments, paymentMethod: dto.paymentMethod, amountTendered: dto.amountTendered, reference: dto.paymentReference });
@@ -1126,12 +1152,13 @@ export class PosService {
         $set: {
           status: 'completed',
           paymentMethod: settled.method,
-          payments: settled.lines,
+          payments: this.paymentLinesMinor(settled.lines, money.exp),
           changeGiven: settled.change,
           subtotal: totals.subtotal,
           discount,
           tax,
           total,
+          ...this.saleMoneyMinor(totals, discountReq, money.exp, { change: settled.change, shortBy: 0 }),
           currency: money.currency,
           currencyExponent: money.exp,
           discountType: discountReq.value > 0 ? discountReq.type : null,
@@ -1148,7 +1175,7 @@ export class PosService {
     );
       if (!claimed) return null;
       await this.recordPayments(claimed, settled.lines, { ...completeCtx, employeeId: (sale as any).employeeId }, tx);
-      await this.writeAuditLog({ storeId: (sale as any).storeId, employeeId: (sale as any).employeeId, action: 'sale_completed', targetId: saleId, targetType: 'sale', ...completeCtx, metadata: { total, discount } }, tx);
+      await this.writeAuditLog({ storeId: (sale as any).storeId, employeeId: (sale as any).employeeId, action: 'sale_completed', targetId: saleId, targetType: 'sale', ...completeCtx, metadata: { total, discount, fromHeld: true } }, tx);
       return claimed;
     });
     if (!updated) {
@@ -1163,6 +1190,7 @@ export class PosService {
       console.error(`[completeSale] session totals update failed for sale ${saleId} — reconcile manually:`, e?.message);
     }
     await this.recordPosSaleInLedger(updated);
+    await this.checkMinor('sale', updated, money.exp);
 
     return { success: true, message: 'Sale completed', data: updated };
   }
@@ -1302,13 +1330,13 @@ export class PosService {
     const refundSeq = ((sale as any).refunds ?? []).length;
     const refundRecord = {
       refundId: String(refundId),
-      amount: refundAmount, kind: isPartial ? 'partial' : 'full',
-      tenders, items: itemUpdates.map((u) => ({ saleItemId: u.saleItemId, qty: u.qtyToRestore })),
+      amount: refundAmount, amountMinor: toMinor(refundAmount, exp), kind: isPartial ? 'partial' : 'full',
+      tenders: this.tendersMinor(tenders, exp), items: itemUpdates.map((u) => ({ saleItemId: u.saleItemId, qty: u.qtyToRestore })),
       employeeId: actor.employeeId, currency, currencyExponent: exp, createdAt: new Date(),
     };
 
     const update: any = {
-      $set: { status: newStatus, refundedAmount: roundMoney(alreadyRefunded + refundAmount, exp) },
+      $set: { status: newStatus, refundedAmount: roundMoney(alreadyRefunded + refundAmount, exp), refundedAmountMinor: toMinor(alreadyRefunded, exp) + toMinor(refundAmount, exp) },
       $push: { refunds: refundRecord },
     };
     let arrayFilters: any[] | undefined;
@@ -1329,11 +1357,11 @@ export class PosService {
     const refundAuditAction = newStatus === 'refunded' ? 'sale_refunded_full' : 'sale_refunded_partial';
     const claimed = await this.atomic(async (tx) => {
       // The sale claim, the refund record and the audit event commit together or not at all.
-      const c = await this.r.saleModel.findOneAndUpdate(stateFilter, update, { ...(arrayFilters ? { arrayFilters } : {}), ...(tx ? { session: tx } : {}) });
+      const c = await this.r.saleModel.findOneAndUpdate(stateFilter, update, { new: true, ...(arrayFilters ? { arrayFilters } : {}), ...(tx ? { session: tx } : {}) });
       if (!c) return null;
       await this.r.posRefundModel.create([{
         _id: refundId, saleId, saleNumber: (sale as any).saleNumber ?? null, seq: refundSeq, reference: `${(sale as any).saleNumber ?? saleId}-R${refundSeq + 1}`,
-        kind: isPartial ? 'partial' : 'full', amount: refundAmount, currency, currencyExponent: exp, tenders,
+        kind: isPartial ? 'partial' : 'full', amount: refundAmount, amountMinor: toMinor(refundAmount, exp), currency, currencyExponent: exp, tenders: this.tendersMinor(tenders, exp),
         items: refundRecord.items, reason: dto?.reason?.trim() || null,
         status: tenders.every((t: any) => t.method === 'cash') ? 'confirmed' : 'recorded_unverified', confirmationSource: null,
         storeId: (sale as any).storeId, ...refundCtx, deviceId: this.callerDeviceId(), employeeId: actor.employeeId,
@@ -1360,7 +1388,9 @@ export class PosService {
       ...this.tenderInc(split, -1),
     };
     if (newStatus === 'refunded') sessionInc.totalTransactions = -1;
-    await this.r.registerSessionModel.findByIdAndUpdate((sale as any).sessionId, { $inc: sessionInc });
+    const refundedSession = await this.incSessionCounters(String((sale as any).sessionId), sessionInc, exp);
+    await this.checkMinor('sale', claimed, exp);
+    await this.checkMinor('session', refundedSession, exp);
 
     await this.recordPosRefundInLedger(sale, refundAmount, newStatus === 'refunded' && !isPartial ? 'refund' : 'partial refund');
 
@@ -1434,8 +1464,10 @@ export class PosService {
     return {
       success: true,
       data: {
-        lines: lines.map((l, i) => ({ ...l, lineTotal: totals.lineTotals[i] })),
+        lines: lines.map((l, i) => ({ ...l, lineTotal: totals.lineTotals[i], lineTotalMinor: totals.lineTotalsMinor[i] })),
         subtotal: totals.subtotal, discount: totals.discount, tax: totals.tax, total: totals.total,
+        // G1b: the same figures in integer minor units (what the maths was done in)
+        subtotalMinor: totals.minor.subtotal, discountMinor: totals.minor.discount, taxMinor: totals.minor.tax, totalMinor: totals.minor.total,
         taxRate: money.taxRate, currency: money.currency, currencyExponent: money.exp,
         settingsVersion: money.settingsVersion,
         // the version asked for could not be honoured (unknown, or older than the offline window) → priced with current
@@ -1591,7 +1623,7 @@ export class PosService {
       }
     }
     const refundedValue = sum(reversed.map((x) => (x.status === 'voided' ? x.total : (x.refundedAmount || x.total))));
-    return {
+    const out = {
       totalTransactions: sales.length,
       totalRevenue,
       totalDiscount,
@@ -1602,6 +1634,19 @@ export class PosService {
       refundsCount: reversed.length + sales.filter((x) => (x.refundedAmount || 0) > 0).length,
       refundsTotal: roundMoney(refundedValue + partialRefunds, exp),
       byPayment,
+    };
+    return this.withSummaryMinor(out, exp);
+  }
+
+  /** G1b: minor twins of a report summary (derived from the same rounded decimals, so they agree by construction). */
+  private withSummaryMinor(s: any, exp: number): any {
+    const m = (v: number) => toMinor(v, exp);
+    const byPayment: Record<string, any> = {};
+    for (const [k, v] of Object.entries(s.byPayment ?? {}) as Array<[string, any]>) byPayment[k] = { ...v, totalMinor: m(v.total) };
+    return {
+      ...s, byPayment,
+      totalRevenueMinor: m(s.totalRevenue), totalDiscountMinor: m(s.totalDiscount), totalTaxMinor: m(s.totalTax), netRevenueMinor: m(s.netRevenue),
+      avgTransactionValueMinor: m(s.avgTransactionValue), refundsTotalMinor: m(s.refundsTotal),
     };
   }
 
@@ -1766,17 +1811,21 @@ export class PosService {
   private async _incrementSessionTotals(sessionId: string, sale: { total: number; payments?: any[]; paymentMethod?: string }, exp: number) {
     const nets = tenderNets({ ...sale, refundedAmount: 0, status: 'completed' }, exp);
     const inc: any = { totalSales: sale.total, totalTransactions: 1, ...this.tenderInc(nets, 1) };
-    const updated: any = await this.r.registerSessionModel.findByIdAndUpdate(sessionId, { $inc: inc }, { new: true });
+    const updated: any = await this.incSessionCounters(sessionId, inc, exp);
 
     // A sale synced into a session that has ALREADY been closed: its cash is real, so the session's stored close
     // figures must move with it — expected cash includes the sale, and the variance is re-derived from the count the
     // cashier entered at close (the drawer did hold that cash; the count simply pre-dated the sync).
     if (updated && updated.status === 'closed' && nets.cash) {
       const expectedCash = roundMoney((updated.expectedCash || 0) + nets.cash, exp);
-      const $set: Record<string, any> = { expectedCash };
-      if (updated.closingCash !== null && updated.closingCash !== undefined) $set.cashDifference = roundMoney(updated.closingCash - expectedCash, exp);
+      const $set: Record<string, any> = { expectedCash, expectedCashMinor: toMinor(expectedCash, exp) };
+      if (updated.closingCash !== null && updated.closingCash !== undefined) {
+        $set.cashDifference = roundMoney(updated.closingCash - expectedCash, exp);
+        $set.cashDifferenceMinor = toMinor(updated.closingCash, exp) - toMinor(expectedCash, exp);
+      }
       await this.r.registerSessionModel.updateOne({ _id: sessionId }, { $set });
     }
+    await this.checkMinor('session', updated, exp);
   }
 
   /**
@@ -1842,6 +1891,124 @@ export class PosService {
     return currentDeviceScope()?.deviceId ?? null;
   }
 
+  // ── G1b: integer minor-unit twins (dual-write) ──────────────────────────────────────────────────────────────────
+  // Every money figure is stored twice: the decimal (what old builds and every report read today) and a `...Minor` integer.
+  // Both come from the SAME calculation — computeTotals already works in minor units and derives the decimals with fromMinor — so
+  // they cannot disagree; the checker (checkMinor) proves it after every write. Reads still use the decimals until step f.
+
+  /** Items with their minor twins. `lineTotalMinor` is the engine's own `toMinor(price × qty)`; `priceMinor × qty` may differ only for a sub-minor price. */
+  private itemsMinor(items: any[], totals: { lineTotalsMinor: number[] }, exp: number): any[] {
+    return items.map((it, i) => ({
+      ...it,
+      priceMinor: toMinor(it.price, exp),
+      ...(it.listPrice !== null && it.listPrice !== undefined ? { listPriceMinor: toMinor(it.listPrice, exp) } : {}),
+      lineTotalMinor: totals.lineTotalsMinor[i],
+    }));
+  }
+
+  /** Sale-level minor figures. `discountValueMinor` exists only for an AMOUNT discount (a percentage is not money). */
+  private saleMoneyMinor(totals: { minor: { subtotal: number; discount: number; tax: number; total: number } }, discount: { type: string; value: number }, exp: number, settled?: { change: number; shortBy: number } | null): Record<string, number> {
+    return {
+      subtotalMinor: totals.minor.subtotal,
+      discountMinor: totals.minor.discount,
+      taxMinor: totals.minor.tax,
+      totalMinor: totals.minor.total,
+      ...(discount.value > 0 && discount.type === 'amount' ? { discountValueMinor: toMinor(discount.value, exp) } : {}),
+      ...(settled !== undefined ? { changeGivenMinor: settled ? toMinor(settled.change, exp) : 0, paymentShortfallMinor: settled ? toMinor(settled.shortBy, exp) : 0 } : {}),
+    };
+  }
+
+  private paymentLinesMinor(lines: Array<{ method: string; amount: number; tendered?: number; reference?: string | null }>, exp: number): any[] {
+    return lines.map((l) => ({ ...l, amountMinor: toMinor(l.amount, exp), ...(l.tendered !== undefined && l.tendered !== null ? { tenderedMinor: toMinor(l.tendered, exp) } : {}) }));
+  }
+
+  private tendersMinor(tenders: Array<{ method: string; amount: number }>, exp: number): any[] {
+    return tenders.map((t) => ({ ...t, amountMinor: toMinor(t.amount, exp) }));
+  }
+
+  /**
+   * Adds deltas to a shift's running counters: the decimal AND its integer twin, in ONE atomic update. An update pipeline, so a
+   * shift that was already OPEN when G1b was deployed (counters have no minor yet) starts its minor counter from the existing
+   * decimal in the same update — never from 0. `inc` holds decimal deltas keyed by counter name (`totalTransactions` is a plain count).
+   */
+  private async incSessionCounters(sessionId: string, inc: Record<string, number>, exp: number, tx?: ClientSession): Promise<any> {
+    const f = 10 ** exp;
+    const set: Record<string, any> = {};
+    for (const [k, d] of Object.entries(inc)) {
+      set[k] = { $add: [{ $ifNull: ['$' + k, 0] }, d] };
+      if (k === 'totalTransactions') continue;
+      const fromMajor = { $toLong: { $round: [{ $multiply: [{ $ifNull: ['$' + k, 0] }, f] }, 0] } };
+      set[k + 'Minor'] = { $add: [{ $ifNull: ['$' + k + 'Minor', fromMajor] }, Long.fromNumber(toMinor(d, exp))] };
+    }
+    return this.r.registerSessionModel.findByIdAndUpdate(sessionId, [{ $set: set }] as any, { new: true, updatePipeline: true, ...(tx ? { session: tx } : {}) } as any);
+  }
+
+  /**
+   * G1b: the server RECOMPUTES every amount; a client's decimal and its optional integer twin are only a cross-check. When both are
+   * present and they disagree (`toMinor(decimal) !== minor`) the request is rejected with a definite 400 `MONEY_FIELD_MISMATCH`
+   * (a client bug or tampering — never silently "fixed"). Requests that carry only the decimals (every build before G1b, and old
+   * offline queues) pass untouched.
+   */
+  private reconcileClientMoney(dto: any, exp: number): void {
+    const pair = (major: any, minor: any, field: string) => {
+      if (minor === undefined || minor === null || major === undefined || major === null) return;
+      if (toMinor(major, exp) !== minor) {
+        throw moneyError('MONEY_FIELD_MISMATCH', `${field} (${major}) and ${field}Minor (${minor}) disagree for a currency with ${exp} decimals — the app and the server must agree on the amount`, { field, major, minor, exponent: exp });
+      }
+    };
+    pair(dto.clientTotal, dto.clientTotalMinor, 'clientTotal');
+    pair(dto.amountTendered, dto.amountTenderedMinor, 'amountTendered');
+    if ((dto.discountType ?? 'amount') === 'amount') pair(dto.discountValue, dto.discountValueMinor, 'discountValue');
+    (dto.payments ?? []).forEach((p: any, i: number) => pair(p.amount, p.amountMinor, `payments[${i}].amount`));
+    (dto.items ?? []).forEach((it: any, i: number) => pair(it.unitPrice, it.unitPriceMinor, `items[${i}].unitPrice`));
+  }
+
+  /** Consistency checker (G1b b): `minor == toMinor(major)` for every pair of a just-written document. NEVER throws and never delays/fails the sale. */
+  private async checkMinor(kind: keyof typeof PosService.MINOR_PAIRS, doc: any, exp: number): Promise<MinorMismatch[]> {
+    try {
+      if (!doc) return [];
+      const plain = typeof doc.toObject === 'function' ? doc.toObject({ getters: true, virtuals: false }) : doc;
+      const mismatches = checkMinorPairs(plain, PosService.MINOR_PAIRS[kind], exp);
+      PosMinorMetrics.record(kind, mismatches.length);
+      if (mismatches.length === 0) return [];
+      // eslint-disable-next-line no-console
+      console.error(`[pos-minor-mismatch] ${kind} ${String(plain._id)}: ${JSON.stringify(mismatches.slice(0, 5))}`);
+      try {
+        await this.writeAuditLog({
+          storeId: String(plain.storeId ?? ''), employeeId: null, action: 'money_minor_mismatch', targetId: plain._id ? String(plain._id) : null, targetType: kind,
+          sessionId: plain.sessionId ?? (kind === 'session' ? String(plain._id) : null), registerId: plain.registerId ?? null, shiftId: plain.shiftId ?? null,
+          metadata: { exponent: exp, count: mismatches.length, mismatches: mismatches.slice(0, 10) },
+        });
+      } catch (e: any) {
+        // eslint-disable-next-line no-console
+        console.error('[pos-minor-mismatch] audit write failed:', e?.message);
+      }
+      return mismatches;
+    } catch (e: any) {
+      // eslint-disable-next-line no-console
+      console.error('[pos-minor-check] checker failed (ignored):', e?.message);
+      return [];
+    }
+  }
+
+  static readonly MINOR_PAIRS = {
+    sale: [
+      ['subtotal', 'subtotalMinor'], ['discount', 'discountMinor'], ['tax', 'taxMinor'], ['total', 'totalMinor'],
+      ['changeGiven', 'changeGivenMinor'], ['paymentShortfall', 'paymentShortfallMinor'], ['refundedAmount', 'refundedAmountMinor'],
+      ['items[].price', 'items[].priceMinor'], ['items[].listPrice', 'items[].listPriceMinor'], ['items[].lineTotal', 'items[].lineTotalMinor'],
+      ['payments[].amount', 'payments[].amountMinor'], ['payments[].tendered', 'payments[].tenderedMinor'],
+      ['refunds[].amount', 'refunds[].amountMinor'],
+    ],
+    session: [
+      ['openingCash', 'openingCashMinor'], ['closingCash', 'closingCashMinor'], ['expectedCash', 'expectedCashMinor'], ['cashDifference', 'cashDifferenceMinor'],
+      ['cashSales', 'cashSalesMinor'], ['cardSales', 'cardSalesMinor'], ['otherSales', 'otherSalesMinor'], ['totalSales', 'totalSalesMinor'], ['totalRefunds', 'totalRefundsMinor'],
+      ['cashAdjustments[].amount', 'cashAdjustments[].amountMinor'],
+      ['cardReconciliation.slipTotal', 'cardReconciliation.slipTotalMinor'], ['cardReconciliation.expectedCard', 'cardReconciliation.expectedCardMinor'], ['cardReconciliation.variance', 'cardReconciliation.varianceMinor'],
+    ],
+    payment: [['amount', 'amountMinor'], ['tendered', 'tenderedMinor']],
+    refund: [['amount', 'amountMinor'], ['tenders[].amount', 'tenders[].amountMinor']],
+  } as unknown as Record<'sale' | 'session' | 'payment' | 'refund', Array<[string, string]>>;
+
   /** card / other are only RECORDED by the cashier today (no terminal integration); cash the cashier physically took is confirmed. */
   private paymentStatus(tender: string): 'confirmed' | 'recorded_unverified' {
     return tender === 'cash' ? 'confirmed' : 'recorded_unverified';
@@ -1860,6 +2027,7 @@ export class PosService {
       lines.map((l, i) => ({
         saleId: String(sale._id), saleNumber: sale.saleNumber ?? null, lineNo: i,
         tender: l.method, amount: l.amount, tendered: l.tendered ?? null,
+        amountMinor: toMinor(l.amount, sale.currencyExponent ?? 2), ...(l.tendered !== undefined && l.tendered !== null ? { tenderedMinor: toMinor(l.tendered, sale.currencyExponent ?? 2) } : {}),
         currency: sale.currency ?? null, currencyExponent: sale.currencyExponent ?? null,
         reference: l.reference ?? null, status: this.paymentStatus(l.method), confirmationSource: null, confirmedAt: null,
         storeId: sale.storeId, registerId: ctx.registerId, sessionId: ctx.sessionId, shiftId: ctx.shiftId, deviceId, employeeId: ctx.employeeId,
@@ -1891,7 +2059,10 @@ export class PosService {
 
     const setFields: any = {};
     if (dto.name !== undefined) setFields['registers.$.name'] = dto.name;
-    if (dto.defaultFloatCash !== undefined) setFields['registers.$.defaultFloatCash'] = dto.defaultFloatCash;
+    if (dto.defaultFloatCash !== undefined) {
+      setFields['registers.$.defaultFloatCash'] = dto.defaultFloatCash;
+      setFields['registers.$.defaultFloatCashMinor'] = toMinor(dto.defaultFloatCash, isoExponent((store as any).baseCurrency));
+    }
     if (dto.status !== undefined) setFields['registers.$.status'] = dto.status;
     if (dto.locationId !== undefined) setFields['registers.$.locationId'] = dto.locationId;
 
@@ -2052,6 +2223,7 @@ export class PosService {
           status: 'closed',
           closedAt: new Date(),
           expectedCash,
+          expectedCashMinor: toMinor(expectedCash, forceExp),
           closingCash: null,
           cashDifference: null,
           forceClosedBy: sellerId,
@@ -2145,9 +2317,8 @@ export class PosService {
     // A void reverses the whole sale: total and per-tender nets (cash net of change) come out of the session.
     const { exp: voidExp } = await this.docMoney(sale);
     const voidNets = tenderNets({ ...(sale as any).toObject?.() ?? sale, refundedAmount: 0, status: 'completed' }, voidExp);
-    await this.r.registerSessionModel.findByIdAndUpdate((sale as any).sessionId, {
-      $inc: { totalSales: -(sale as any).total, totalTransactions: -1, ...this.tenderInc(voidNets, -1) },
-    });
+    const voidedSession = await this.incSessionCounters(String((sale as any).sessionId), { totalSales: -(sale as any).total, totalTransactions: -1, ...this.tenderInc(voidNets, -1) }, voidExp);
+    await this.checkMinor('session', voidedSession, voidExp);
 
     await this.recordPosRefundInLedger(sale, (sale as any).total - ((sale as any).refundedAmount || 0), 'void');
     return { success: true, message: 'Sale voided and stock restored' };
@@ -2195,7 +2366,8 @@ export class PosService {
       saleId,
       {
         $set: {
-          items: saleItems, subtotal: totals.subtotal, discount: totals.discount, tax: totals.tax, total: totals.total,
+          items: this.itemsMinor(saleItems, totals, money.exp), subtotal: totals.subtotal, discount: totals.discount, tax: totals.tax, total: totals.total,
+          ...this.saleMoneyMinor(totals, discountReq, money.exp),
           currency: money.currency, currencyExponent: money.exp, taxRate: money.taxRate,
           discountType: discountReq.value > 0 ? discountReq.type : null, discountValue: discountReq.value > 0 ? discountReq.value : null,
         },
@@ -2203,6 +2375,7 @@ export class PosService {
       { new: true },
     );
 
+    await this.checkMinor('sale', updated, money.exp);
     return { success: true, message: 'Held sale items updated', data: updated };
   }
 
