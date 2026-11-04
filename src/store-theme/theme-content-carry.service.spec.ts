@@ -1,4 +1,4 @@
-import { carrySections, ThemeContentCarryService } from './theme-content-carry.service';
+import { carrySections, draftOverLive, ThemeContentCarryService } from './theme-content-carry.service';
 
 describe('carrySections', () => {
   const sections = [
@@ -22,6 +22,17 @@ describe('carrySections', () => {
 
   it('handles missing input', () => {
     expect(carrySections(undefined, 'theme-04-tech')).toEqual({ kept: [], skipped: 0 });
+  });
+});
+
+describe('draftOverLive', () => {
+  const live = { ctaLabel: 'Shop', blocks: [{ type: 'nav_link' }], topBarEnabled: true };
+  it('takes real unpublished edits', () => {
+    expect(draftOverLive(live, { ctaLabel: 'Sale', blocks: [{ type: 'nav_link' }], topBarEnabled: false }, ['ctaLabel', 'blocks', 'topBarEnabled'])).toEqual({ ctaLabel: 'Sale', blocks: [{ type: 'nav_link' }], topBarEnabled: false });
+  });
+  it('follows live when the draft is empty, identical or missing', () => {
+    expect(draftOverLive(live, { ctaLabel: null, blocks: [], topBarEnabled: true }, ['ctaLabel', 'blocks', 'topBarEnabled'])).toEqual(live);
+    expect(draftOverLive(live, undefined, ['ctaLabel', 'blocks'])).toEqual({ ctaLabel: 'Shop', blocks: [{ type: 'nav_link' }] });
   });
 });
 
@@ -66,7 +77,7 @@ describe('ThemeContentCarryService.carry', () => {
     expect(res.data).toEqual({ header: true, footer: true, pages: 2, templates: 1, skippedSections: 1 });
     const $set = themeUpdates[0].$set;
     expect($set['header.blocks']).toHaveLength(1);
-    expect($set['draft.header.blocks']).toHaveLength(1);
+    expect($set['draft.header.blocks']).toHaveLength(2);
     expect($set['header.customLogoUrl']).toBe('https://x/logo.png');
     expect($set['header.headerStyle'] === undefined).toBe(true);
     expect($set['footer.footerStyle'] === undefined).toBe(true);

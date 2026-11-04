@@ -32,6 +32,7 @@ const check = (name: string, ok: boolean, extra = '') => { console.log((ok ? 'OK
     const tech: any = await storeThemeModel.create({ storeId, themeDefinitionId: 'theme-04-tech', status: 'installed', baseThemeId: 'theme-04-tech',
       header: { headerStyle: 'standard', blocks: [] }, footer: { footerStyle: 'columns' } });
     const mId = String(maison._id), tId = String(tech._id);
+    await storeThemeModel.updateOne({ _id: maison._id }, { $set: { 'draft.header.ctaLabel': 'Unpublished CTA' } });
 
     await storePageModel.create({ storeId, title: 'Home', slug: 'home', type: 'home', status: 'published', sections: [{ type: 'hero', settings: { heading: 'Legacy' }, blocks: [] }],
       themeTemplates: [
@@ -48,6 +49,7 @@ const check = (name: string, ok: boolean, extra = '') => { console.log((ok ? 'OK
     const t2: any = await storeThemeModel.findById(tId).lean();
     check('logo + nav + cta copied to live', t2.header.customLogoUrl === 'https://cdn/x.png' && t2.header.blocks.length === 1 && t2.header.ctaLabel === 'Shop');
     check('also copied to draft', t2.draft.header.customLogoUrl === 'https://cdn/x.png');
+    check('unpublished header edit travels to the draft only', t2.draft.header.ctaLabel === 'Unpublished CTA' && t2.header.ctaLabel === 'Shop');
     check('header layout stays Tech\'s own', t2.header.headerStyle === 'standard' && t2.footer.footerStyle === 'columns');
     check('footer content copied', t2.footer.newsletterHeading === 'Join us' && t2.footer.blocks.length === 1);
     check('previous Tech look kept as a version', Array.isArray(t2.versions) && t2.versions.length === 1);

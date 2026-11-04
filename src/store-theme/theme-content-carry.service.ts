@@ -7,7 +7,7 @@ import { filterSectionsToTheme } from '../common/store-content/theme-section-cap
  * Switching theme keeps what the seller WROTE (logos, menus, links, texts, page and product layouts) and
  * leaves what the theme DESIGNS (colours come from the Brand Kit, shapes, fonts, header/footer layout style,
  * `themeSettings`) to the new theme. Works between any two installed themes, in both directions.
- * Header and footer content is what is LIVE on the source theme. Page and product layouts also bring their unpublished draft (an empty draft follows what is live).
+ * Live header/footer content goes to the target's live copy; its draft gets the source's unpublished edits where there are real ones (see draftOverLive). Page and product layouts bring their unpublished draft too (an empty draft follows what is live).
  * Nothing of the source theme is touched; the target's previous content is kept as a version so it can be restored.
  */
 
@@ -60,6 +60,21 @@ const pick = (src: Record<string, any> | undefined | null, keys: readonly string
   return out;
 };
 
+const isEmptyValue = (v: unknown) => v === null || v === undefined || v === '' || (Array.isArray(v) && v.length === 0) || (typeof v === 'object' && !Array.isArray(v) && v !== null && Object.keys(v as object).length === 0);
+
+/** Unpublished header/footer edits: a draft value that is filled in and differs from live is real work in progress; an empty or identical one just follows live (a never-edited draft holds schema defaults, which must not wipe real content). */
+export function draftOverLive(live: Record<string, any> | undefined | null, draft: Record<string, any> | undefined | null, keys: readonly string[]) {
+  const out: Record<string, any> = {};
+  for (const k of keys) {
+    const lv = live?.[k];
+    const dv = draft?.[k];
+    if (dv === undefined) { if (lv !== undefined) out[k] = lv; continue; }
+    out[k] = isEmptyValue(dv) || JSON.stringify(dv) === JSON.stringify(lv) ? lv : dv;
+    if (out[k] === undefined) delete out[k];
+  }
+  return out;
+}
+
 @Injectable()
 export class ThemeContentCarryService {
   constructor(private readonly databaseService: DatabaseService) {}
@@ -87,9 +102,9 @@ export class ThemeContentCarryService {
     // Header + footer content (live and draft), after keeping the target's current look as a restorable version.
     const $set: Record<string, any> = {};
     for (const [k, v] of Object.entries(pick(srcLive.header, HEADER_CONTENT_KEYS))) $set[`header.${k}`] = v;
-    for (const [k, v] of Object.entries(pick(srcLive.header, HEADER_CONTENT_KEYS))) $set[`draft.header.${k}`] = v;
+    for (const [k, v] of Object.entries(draftOverLive(srcLive.header, source.draft?.header, HEADER_CONTENT_KEYS))) $set[`draft.header.${k}`] = v;
     for (const [k, v] of Object.entries(pick(srcLive.footer, FOOTER_CONTENT_KEYS))) $set[`footer.${k}`] = v;
-    for (const [k, v] of Object.entries(pick(srcLive.footer, FOOTER_CONTENT_KEYS))) $set[`draft.footer.${k}`] = v;
+    for (const [k, v] of Object.entries(draftOverLive(srcLive.footer, source.draft?.footer, FOOTER_CONTENT_KEYS))) $set[`draft.footer.${k}`] = v;
     // The store-identity banner (logo, name, rating toggles on the home page) is content too.
     if (source.identityBanner && Object.keys(source.identityBanner).length) { $set['identityBanner'] = source.identityBanner; $set['draft.identityBanner'] = source.identityBanner; }
     if (Object.keys($set).length) {
