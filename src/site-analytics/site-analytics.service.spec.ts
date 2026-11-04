@@ -2,7 +2,7 @@
 import { BadRequestException } from '@nestjs/common';
 import { SiteAnalyticsService } from './site-analytics.service';
 
-function setup(opts: { connected?: boolean } = {}) {
+function setup(opts: { connected?: boolean; env?: any } = {}) {
   let doc: any = null;
   const settingsModel: any = {
     findOne: jest.fn(() => ({ lean: async () => doc })),
@@ -14,6 +14,8 @@ function setup(opts: { connected?: boolean } = {}) {
     markPlatformGa4NeedsReauth: jest.fn(async () => undefined),
   };
   const svc = new SiteAnalyticsService(integrations, settingsModel);
+  svc.envImpl = () => opts.env ?? { measurementId: null, propertyId: null, serviceAccount: null, problems: [] };
+  svc.serviceAccountTokenImpl = jest.fn(async () => 'sa-token');
   const calls: { url: string; body: any }[] = [];
   let reply: (url: string, body: any) => { status?: number; json: any } = () => ({ json: {} });
   svc.fetchImpl = (async (url: any, init: any) => {
@@ -30,10 +32,10 @@ const totalsReport = (metrics: string[], values: number[]) => ({ metricHeaders: 
 describe('SiteAnalyticsService', () => {
   it('saves a valid measurement id, refuses a bad one, and only gives the public site an id when tracking is on', async () => {
     const { svc } = setup();
-    expect((await svc.getPublicConfig('PK')).data).toEqual({ measurementId: null, consentRequired: false });
+    expect((await svc.getPublicConfig('PK')).data).toEqual({ measurementId: null, consentRequired: false, enabled: true });
     await expect(svc.saveSettings({ measurementId: 'UA-123-1' }, 'a1')).rejects.toBeInstanceOf(BadRequestException);
     await svc.saveSettings({ measurementId: ' g-ab12cd34ef ' }, 'a1');
-    expect((await svc.getPublicConfig('DE')).data).toEqual({ measurementId: 'G-AB12CD34EF', consentRequired: true });
+    expect((await svc.getPublicConfig('DE')).data).toEqual({ measurementId: 'G-AB12CD34EF', consentRequired: true, enabled: true });
     await svc.saveSettings({ enabled: false }, 'a1');
     expect((await svc.getPublicConfig('PK')).data.measurementId).toBeNull();
     const s = (await svc.getSettings()).data;
@@ -100,5 +102,52 @@ describe('SiteAnalyticsService', () => {
     setReply(() => ({ status: 403, json: { error: { message: 'User does not have sufficient permissions for this property.' } } }));
     await expect(svc.content('28d')).rejects.toThrow('Reconnect it');
     expect(integrations.markPlatformGa4NeedsReauth).toHaveBeenCalledWith('User does not have sufficient permissions for this property.');
+  });
+
+  describe('with a service account in the server environment', () => {
+    const key = { client_email: 'ga@solvexo.iam.gserviceaccount.com', private_key: 'k' };
+    const env = (over: any = {}) => ({ measurementId: { value: 'G-ENV12345', variable: 'GA_MEASUREMENT_ID' }, propertyId: null, serviceAccount: { key, variable: 'GA4_SERVICE_ACCOUNT_JSON' }, problems: [], ...over });
+
+    it('loads the measurement id from the environment when none is saved', async () => {
+      const { svc } = setup({ connected: false, env: env() });
+      expect((await svc.getPublicConfig('PK')).data.measurementId).toBe('G-ENV12345');
+    });
+
+    it('finds the property the service account can see, reads reports with it, and reports success', async () => {
+      const { svc, calls, setReply, integrations } = setup({ connected: false, env: env() });
+      setReply((url) => url.includes('accountSummaries')
+        ? { json: { accountSummaries: [{ propertySummaries: [{ property: 'properties/111' }, { property: 'properties/222' }] }] } }
+        : url.includes('/properties/111/dataStreams') ? { json: { dataStreams: [{ webStreamData: { measurementId: 'G-OTHER999' } }] } }
+          : url.includes('/properties/222/dataStreams') ? { json: { dataStreams: [{ webStreamData: { measurementId: 'G-ENV12345' } }] } }
+            : { json: { metricHeaders: [{ name: 'activeUsers' }], rows: [{ metricValues: [{ value: '3' }] }] } });
+      const s = (await svc.getSettings(true)).data;
+      expect(s.ga4).toMatchObject({ connected: true, ok: true, source: 'service_account', propertyId: 'properties/222', serviceAccountEmail: key.client_email });
+      expect(s.measurementIdSource).toBe('env:GA_MEASUREMENT_ID');
+      expect(calls.at(-1)!.url).toBe('https://analyticsdata.googleapis.com/v1beta/properties/222:runRealtimeReport');
+      expect(integrations.platformGa4Access).not.toHaveBeenCalled();
+    });
+
+    it('says exactly what to fix when Google refuses the service account', async () => {
+      const { svc, setReply, integrations } = setup({ connected: false, env: env({ propertyId: { value: 'properties/412', variable: 'GA4_PROPERTY_ID' } }) });
+      setReply(() => ({ status: 403, json: { error: { message: 'User does not have sufficient permissions for this property.' } } }));
+      const s = (await svc.getSettings(true)).data;
+      expect(s.ga4.ok).toBe(false);
+      expect(s.ga4.connected).toBe(false);
+      expect(s.ga4.lastError).toContain('add that email with the Viewer role');
+      expect(s.ga4.lastError).toContain(key.client_email);
+      expect(integrations.markPlatformGa4NeedsReauth).not.toHaveBeenCalled();
+
+      setReply(() => ({ status: 403, json: { error: { message: 'Google Analytics Data API has not been used in project 123 before or it is disabled.' } } }));
+      await expect(svc.overview('7d')).rejects.toThrow('Enable "Google Analytics Data API"');
+
+      svc.serviceAccountTokenImpl = jest.fn(async () => { throw new Error('invalid_grant: Invalid JWT Signature.'); });
+      await expect(svc.overview('28d')).rejects.toThrow('Google refused the service account key');
+    });
+
+    it('explains a service account without access to any property', async () => {
+      const { svc, setReply } = setup({ connected: false, env: env() });
+      setReply(() => ({ json: { accountSummaries: [] } }));
+      await expect(svc.funnel('28d')).rejects.toThrow('has no access to any Google Analytics property');
+    });
   });
 });

@@ -23,8 +23,8 @@ export class SiteAnalyticsAdminController {
 
   @RequirePermission('analytics.view')
   @Get('settings')
-  settings() {
-    return this.svc.getSettings();
+  settings(@Query('check') check?: string) {
+    return this.svc.getSettings(check === '1' || check === 'true');
   }
 
   @RequirePermission('config.manage')
