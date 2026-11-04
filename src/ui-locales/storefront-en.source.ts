@@ -240,7 +240,8 @@ export const STOREFRONT_EN: Record<string, any> = {
   "price": "Price",
   "qty": "Qty",
   "summary": "Summary",
-  "proceedToCheckout": "Proceed to checkout"
+  "proceedToCheckout": "Proceed to checkout",
+  "youMayLike": "You may also like"
  },
  "category": {
   "notFound": "Category not found",
@@ -835,6 +836,7 @@ export const STOREFRONT_EN: Record<string, any> = {
   "noContent": "This page has no content yet."
  },
  "pg": {
+  "add": "Add",
   "add_photos": "Add photos",
   "add_to_bag": "Add to bag",
   "add_to_cart": "Add to cart",
