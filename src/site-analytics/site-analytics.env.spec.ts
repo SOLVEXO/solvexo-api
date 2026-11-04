@@ -16,6 +16,10 @@ describe('Google Analytics settings from the environment', () => {
   it('accepts a base64 or quoted key and a key file path', () => {
     expect((parseServiceAccount(Buffer.from(JSON.stringify(KEY)).toString('base64')) as any).client_email).toBe(KEY.client_email);
     expect((parseServiceAccount(`'${JSON.stringify(KEY)}'`) as any).client_email).toBe(KEY.client_email);
+    // Same variable names as SmartVan's setup: GA4_PROPERTY_ID + GA4_SERVICE_ACCOUNT_BASE64.
+    const sv = readGaEnv({ GA4_PROPERTY_ID: '412345678', GA4_SERVICE_ACCOUNT_BASE64: Buffer.from(JSON.stringify(KEY)).toString('base64') });
+    expect(sv.serviceAccount).toMatchObject({ variable: 'GA4_SERVICE_ACCOUNT_BASE64', key: { client_email: KEY.client_email } });
+    expect(sv.propertyId?.value).toBe('properties/412345678');
     const env = readGaEnv({ GOOGLE_APPLICATION_CREDENTIALS: '/etc/solvexo/ga.json' }, () => JSON.stringify(KEY));
     expect(env.serviceAccount?.variable).toBe('GOOGLE_APPLICATION_CREDENTIALS');
   });
