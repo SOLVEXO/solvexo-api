@@ -1,3 +1,5 @@
+import { preorderPublicView } from '../common/preorder.util';
+import { availableStock } from '../common/stock-availability.util';
 import {
   Injectable,
   UnauthorizedException,
@@ -212,12 +214,22 @@ export class CartService {
       const products = productIds.length
         ? await this.databaseService.repositories.productModel
             .find({ _id: { $in: productIds } })
-            .select('images sellerId status isDelete orderMinQuantity orderMaxQuantity orderQuantityStep')
+            .select('images sellerId status isDelete orderMinQuantity orderMaxQuantity orderQuantityStep isBundle')
             .lean()
         : [];
       const productById = new Map(
         (products as any[]).map((p) => [p._id.toString(), p]),
       );
+
+      // Pre-order notice per line: only while the variant has an enabled pre-order AND is out of stock.
+      const variantIds = [...new Set(cart.items.map((item: any) => item.productVariantId).filter(Boolean))];
+      const variantRows: any[] = variantIds.length
+        ? await this.databaseService.repositories.productVariantModel
+            .find({ _id: { $in: variantIds } })
+            .select('stock committedStock damagedStock inTransitStock expiredStock expiryBuckets unlimitedStock preorder')
+            .lean()
+        : [];
+      const variantById = new Map(variantRows.map((v) => [String(v._id), v]));
 
       const sellerIds = [
         ...new Set(
@@ -278,6 +290,8 @@ export class CartService {
           orderMinQuantity: product?.orderMinQuantity ?? null,
           orderMaxQuantity: product?.orderMaxQuantity ?? null,
           orderQuantityStep: product?.orderQuantityStep ?? null,
+          isBundle: !!(product as any)?.isBundle,
+          preorder: (() => { const v = variantById.get(String(item.productVariantId)); return v && !v.unlimitedStock ? preorderPublicView(v.preorder, availableStock(v)) : null; })(),
           // Archived, draft or deleted since it was added: the buyer must remove it before checkout.
           unavailable: !product || (product as any).isDelete === true || (product as any).status !== 'active',
         };

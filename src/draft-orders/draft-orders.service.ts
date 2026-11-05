@@ -576,7 +576,14 @@ export class DraftOrdersService {
     // availability (`stock - committedStock`) so a Draft Order can't oversell
     // stock already reserved by a pending online order.
     const decremented: { variantId: string; quantity: number }[] = [];
-    for (const item of physicalItems) {
+    // Bundles: take the COMPONENTS' stock (qty x component qty); the order line keeps a snapshot of them.
+    const bundleProducts: any[] = await this.repos.productModel.find({ _id: { $in: physicalItems.map((i: any) => i.productId) }, storeId, isBundle: true }).select('bundleComponents').lean();
+    const bundleByProduct = new Map(bundleProducts.map((b) => [String(b._id), (b.bundleComponents ?? []) as any[]]));
+    const stockItems = physicalItems.flatMap((i: any) => {
+      const comps = bundleByProduct.get(String(i.productId));
+      return comps && comps.length > 0 ? comps.map((c: any) => ({ variantId: String(c.variantId), quantity: c.quantity * i.quantity, name: c.name ?? i.name })) : [i];
+    });
+    for (const item of stockItems) {
       const variant = await this.repos.productVariantModel.findOne({ _id: item.variantId, isDelete: false }).select('unlimitedStock').lean();
       if (!variant || (variant as any).unlimitedStock) continue;
       const res = await this.repos.productVariantModel.updateOne(
@@ -602,6 +609,7 @@ export class DraftOrdersService {
       productId: i.productId, variantId: i.variantId, type: i.type, productType: i.type,
       name: i.name, image: i.image, sku: i.sku, options: i.options, licenseType: null,
       quantity: i.quantity, price: i.unitPrice, totalPrice: round(i.unitPrice * i.quantity),
+      bundleComponents: (bundleByProduct.get(String(i.productId)) ?? []).map((c: any) => ({ productId: c.productId, variantId: c.variantId, quantity: c.quantity, name: c.name ?? null })),
       status: 'pending',
     });
 

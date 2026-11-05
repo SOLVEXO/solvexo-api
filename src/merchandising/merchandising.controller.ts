@@ -52,7 +52,7 @@ export class PublicMerchandisingController {
   @Get('recommendations/:productId')
   @Throttle({ default: { limit: 60, ttl: 60_000 } })
   async recs(@Param('storeId') st: string, @Param('productId') p: string, @Query('limit') limit?: string, @Query('exclude') exclude?: string) {
-    const items = await this.s.resolveRecommendations(st, p, { limit: parseInt(limit ?? '6', 10) || 6, excludeIds: (exclude ?? '').split(',').filter(Boolean).slice(0, 50) });
+    const items = await this.s.publicRecommendations(st, p, { limit: parseInt(limit ?? '6', 10) || 6, excludeIds: (exclude ?? '').split(',').filter(Boolean).slice(0, 50) });
     return { success: true, data: { items } };
   }
 

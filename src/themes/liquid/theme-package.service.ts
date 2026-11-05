@@ -1,4 +1,6 @@
 /* eslint-disable prettier/prettier */
+import { bundleAvailability } from '../../common/bundle.util';
+import { preorderPublicView } from '../../common/preorder.util';
 import { expiredUnits } from '../../common/stock-availability.util';
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
@@ -452,7 +454,7 @@ export class ThemePackageService {
     let productQuery = productModel.find(isManualPaginatedCollection
       ? { ...productFilter, _id: { $in: pagedManualIds } }
       : isPaginatedCollection ? collectionProductFilter : productFilter)
-      .select('_id name slug description type templateKey images tags categoryId subCategoryId averageRating totalRatings')
+      .select('_id name slug description type templateKey images tags categoryId subCategoryId averageRating totalRatings isBundle bundleComponents')
       .sort({ createdAt: -1 });
     if (isPaginatedCollection) {
       if (!isManualPaginatedCollection) productQuery = productQuery.skip((currentPage - 1) * collectionPageSize!).limit(collectionPageSize!);
@@ -467,9 +469,15 @@ export class ThemePackageService {
     const productIds = productRows.map((product: any) => String(product._id));
     const variants = productIds.length
       ? await productVariantModel.find({ productId: { $in: productIds }, isDelete: false })
-        .select('_id productId price compareAtPrice options sku stock committedStock damagedStock inTransitStock expiredStock expiryBuckets unlimitedStock allowBackorder')
+        .select('_id productId price compareAtPrice options sku stock committedStock damagedStock inTransitStock expiredStock expiryBuckets unlimitedStock allowBackorder preorder')
         .lean()
       : [];
+    // Bundles: derived availability from the COMPONENT variants (the bundle's own variant carries no stock).
+    const compVariantIds = productRows.filter((pr: any) => pr.isBundle).flatMap((pr: any) => (pr.bundleComponents ?? []).map((c: any) => c.variantId));
+    const compVariants: any[] = compVariantIds.length
+      ? await productVariantModel.find({ _id: { $in: compVariantIds }, isDelete: false }).lean()
+      : [];
+    const compVariantById = new Map(compVariants.map((v) => [String(v._id), v]));
     const variantsByProduct = new Map<string, any[]>();
     for (const variant of variants as any[]) {
       const key = String(variant.productId);
@@ -480,14 +488,17 @@ export class ThemePackageService {
       const firstVariant = productVariants[0];
       const optionNames = [...new Set(productVariants.flatMap((variant: any) =>
         (variant.options ?? []).map((option: any) => option.name)).filter(Boolean))];
+      const bundleAvail: number | null | undefined = product.isBundle && (product.bundleComponents?.length ?? 0) > 0 ? bundleAvailability(product.bundleComponents, compVariantById) : undefined;
       const storefrontVariants = productVariants.map((variant: any) => ({
         id: String(variant._id),
         title: variant.options?.map((option: any) => option.value).join(' / ') || 'Default',
         price: Math.round(Number(variant.price) * 100),
         compare_at_price: variant.compareAtPrice == null ? null : Math.round(Number(variant.compareAtPrice) * 100),
         sku: variant.sku,
-        available: variant.unlimitedStock || variant.allowBackorder || availableQuantity(variant) > 0,
-        inventory_quantity: availableQuantity(variant),
+        available: bundleAvail !== undefined ? (bundleAvail === null || bundleAvail > 0) : (variant.unlimitedStock || variant.allowBackorder || availableQuantity(variant) > 0 || (!!variant.preorder?.enabled && !(variant.preorder.limit > 0 && (variant.preorder.sold ?? 0) >= variant.preorder.limit))),
+        inventory_quantity: bundleAvail !== undefined ? (bundleAvail ?? 0) : availableQuantity(variant),
+        // Pre-order (Solvexo extension): only while the variant is out of stock.
+        preorder: bundleAvail === undefined ? preorderPublicView(variant.preorder, availableQuantity(variant)) : null,
         options: variant.options?.map((option: any) => option.value) ?? [],
         option1: variant.options?.[0]?.value ?? null,
         option2: variant.options?.[1]?.value ?? null,
@@ -515,7 +526,9 @@ export class ThemePackageService {
         has_only_default_variant: optionNames.length === 0,
         selected_or_first_available_variant: selectedVariant,
         first_available_variant: storefrontVariants.find((variant: any) => variant.available) ?? null,
-        available: productVariants.some((variant: any) => variant.unlimitedStock || variant.allowBackorder || availableQuantity(variant) > 0),
+        available: bundleAvail !== undefined ? (bundleAvail === null || bundleAvail > 0) : productVariants.some((variant: any) => variant.unlimitedStock || variant.allowBackorder || availableQuantity(variant) > 0 || !!variant.preorder?.enabled),
+        // Bundles (Solvexo extension): what the bundle includes.
+        bundle: bundleAvail !== undefined ? { components: (product.bundleComponents ?? []).map((c: any) => ({ name: c.name ?? null, quantity: c.quantity })), available: bundleAvail } : null,
         price: Math.round(Math.min(...(prices.length ? prices : [Number(firstVariant?.price ?? 0)])) * 100),
         price_min: Math.round(Math.min(...(prices.length ? prices : [0])) * 100),
         price_max: Math.round(Math.max(...(prices.length ? prices : [0])) * 100),

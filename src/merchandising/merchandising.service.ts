@@ -19,7 +19,28 @@ const SELECT_CARD = 'name slug images status isDelete storeId isBundle bundleCom
 /** Bundles + pre-order settings + manual recommendations + cart upsell (Shopify Bundles / purchase options / Search & Discovery parity). */
 @Injectable()
 export class MerchandisingService {
+  // Short-lived in-process cache for the PUBLIC recommendation reads (storefront traffic); any seller write to the
+  // store's merchandising/stock-facing settings drops that store's entries. Stock changes show up within the TTL.
+  private readonly recCache = new Map<string, { at: number; value: any[] }>();
+  static readonly REC_TTL_MS = 30_000;
+  private static readonly REC_CACHE_MAX = 1000;
+
   constructor(private readonly db: DatabaseService, private readonly activityLog: ActivityLogService) {}
+
+  private invalidate(storeId: string) {
+    for (const k of this.recCache.keys()) if (k.startsWith(`${storeId}|`)) this.recCache.delete(k);
+  }
+
+  /** Cached public variant of resolveRecommendations (same result shape). */
+  async publicRecommendations(storeId: string, productId: string, opts: { limit?: number; excludeIds?: string[] } = {}, now = Date.now()) {
+    const key = `${storeId}|${productId}|${opts.limit ?? 6}|${[...(opts.excludeIds ?? [])].sort().join(',')}`;
+    const hit = this.recCache.get(key);
+    if (hit && now - hit.at < MerchandisingService.REC_TTL_MS) return hit.value;
+    const value = await this.resolveRecommendations(storeId, productId, opts);
+    if (this.recCache.size >= MerchandisingService.REC_CACHE_MAX) this.recCache.clear();
+    this.recCache.set(key, { at: now, value });
+    return value;
+  }
 
   private get r() { return this.db.repositories; }
   private assertOwned(storeId: string, sellerId: string) { return verifyStoreOwnershipStrict(this.r.storeModel, storeId, sellerId); }
@@ -74,6 +95,7 @@ export class MerchandisingService {
     }
     // The bundle's own variant carries no stock — availability is derived from the components.
     await this.r.productVariantModel.updateOne({ productId, isDelete: false }, { $set: { unlimitedStock: true } });
+    this.invalidate(storeId);
     this.log(storeId, sellerId, 'bundle_updated', `"${product.name}" set as a bundle of ${snap.length} component(s)`, productId);
     return this.getBundle(storeId, sellerId, productId);
   }
@@ -83,6 +105,7 @@ export class MerchandisingService {
     const product = await this.product(storeId, productId);
     await this.r.productModel.updateOne({ _id: productId, storeId }, { $set: { isBundle: false, bundleComponents: [] } });
     await this.r.productVariantModel.updateOne({ productId, isDelete: false }, { $set: { unlimitedStock: false } });
+    this.invalidate(storeId);
     this.log(storeId, sellerId, 'bundle_removed', `"${product.name}" is no longer a bundle`, productId);
     return { success: true, message: 'Bundle removed' };
   }
@@ -122,6 +145,7 @@ export class MerchandisingService {
     if (product.isBundle) throw new BadRequestException('Bundles cannot be pre-ordered — set pre-order on their components');
     const pre = normalizePreorderInput(raw, variant.preorder?.sold ?? 0);
     await this.r.productVariantModel.updateOne({ _id: variantId }, { $set: { preorder: pre } });
+    this.invalidate(storeId);
     this.log(storeId, sellerId, 'preorder_updated', `Pre-order ${pre?.enabled ? 'enabled' : 'disabled'} for "${product.name}"`, String(variant.productId));
     return { success: true, data: { variantId, preorder: pre } };
   }
@@ -174,6 +198,7 @@ export class MerchandisingService {
       const ok: any[] = await this.r.productModel.find({ _id: { $in: all }, storeId, isDelete: false, status: 'active' }).select('_id').lean();
       if (ok.length !== all.length) throw new BadRequestException('Every recommended product must be an active product of this store');
     }
+    this.invalidate(storeId);
     await this.r.productModel.updateOne({ _id: productId, storeId }, { $set });
     return this.getRecommendations(storeId, sellerId, productId);
   }

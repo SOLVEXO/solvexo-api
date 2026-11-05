@@ -162,3 +162,21 @@ describe('bundle weight', () => {
     expect(variants[0].shippingWeight).toBe('2.5 kg');
   });
 });
+
+describe('public recommendations cache', () => {
+  it('serves repeat reads from cache within the TTL, refreshes after it, and drops on a seller write', async () => {
+    const { svc } = setup();
+    const spy = jest.spyOn(svc, 'resolveRecommendations');
+    const t0 = 1_000_000;
+    await svc.publicRecommendations('s1', id(2), {}, t0);
+    await svc.publicRecommendations('s1', id(2), {}, t0 + 5_000);
+    expect(spy).toHaveBeenCalledTimes(1);
+    await svc.publicRecommendations('s1', id(2), {}, t0 + 31_000);
+    expect(spy).toHaveBeenCalledTimes(2);
+    await svc.setRecommendations('s1', 'sel1', id(2), { relatedProductIds: [id(3)] });
+    await svc.publicRecommendations('s1', id(2), {}, t0 + 32_000);
+    expect(spy).toHaveBeenCalledTimes(4); // +1 from the write's own preview, +1 re-resolved because the write invalidated the cache
+    await svc.publicRecommendations('s1', id(2), { excludeIds: [id(3)] }, t0 + 32_000);
+    expect(spy).toHaveBeenCalledTimes(5); // different cart => different key
+  });
+});

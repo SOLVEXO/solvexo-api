@@ -48,6 +48,10 @@ export class Coupon {
   @Prop({ type: Number, default: null })
   usageLimit: number | null;
 
+  // Optional customer eligibility: only current members of this saved segment may redeem (null = everyone).
+  @Prop({ type: String, default: null })
+  customerSegmentId: string | null;
+
   @Prop({ type: Number, default: 0 })
   usageCount: number;
 

@@ -1726,6 +1726,13 @@ export class CheckoutService {
     if (coupon.usageLimit != null && coupon.usageCount >= coupon.usageLimit) {
       throw new BadRequestException('This coupon has reached its usage limit');
     }
+    // Segment-restricted coupon: only CURRENT members of that saved segment may redeem it (evaluated now, not a snapshot).
+    if ((coupon as any).customerSegmentId) {
+      const member = this.customerSegments && coupon.storeId
+        ? await this.customerSegments.isMember(String(coupon.storeId), String((coupon as any).customerSegmentId), userId).catch(() => false)
+        : false;
+      if (!member) throw new BadRequestException('This coupon is not available for your account');
+    }
 
     // Revert any previously-applied coupon first so re-applying (or
     // switching codes) always computes from a clean, undiscounted baseline.
