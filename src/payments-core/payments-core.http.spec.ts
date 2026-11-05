@@ -28,7 +28,10 @@ const routes = () => Object.getOwnPropertyNames(PaymentsCoreController.prototype
 describe('route guards of the POS payment routes', () => {
   it('every route needs POS auth; only creating a payment needs an active POS plan; money-moving routes are idempotent', () => {
     const r = routes();
-    expect(r.map((x) => x.key).sort()).toEqual(['GET attention', 'GET intents/:id', 'POST intents', 'POST intents/:id/cancel', 'POST intents/:id/presented', 'POST intents/:id/reconcile', 'POST intents/:id/refunds']);
+    expect(r.map((x) => x.key).sort()).toEqual(['GET attention', 'GET intents/:id', 'GET verification', 'POST attempts/:key/cancel', 'POST intents', 'POST intents/:id/cancel', 'POST intents/:id/presented', 'POST intents/:id/reconcile', 'POST intents/:id/refunds']);
+    // refunds, reconciliation and the verification status need a MANAGER PIN session at the guard, not only a role check inside the service
+    const pin = (name: string) => Reflect.getMetadata('posRequireManagerPin', (PaymentsCoreController.prototype as any)[name]) === true;
+    expect({ refund: pin('refund'), reconcile: pin('reconcile'), verification: pin('verification'), create: pin('create') }).toEqual({ refund: true, reconcile: true, verification: true, create: false });
     expect(r.every((x) => x.auth)).toBe(true);
     expect(r.filter((x) => x.plan).map((x) => x.key)).toEqual(['POST intents']); // a lapsed plan can still refund / reconcile what was already paid
     expect(r.filter((x) => x.idem).map((x) => x.key).sort()).toEqual(['POST intents', 'POST intents/:id/reconcile', 'POST intents/:id/refunds']);
