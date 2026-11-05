@@ -67,4 +67,5 @@ jobs:
       - name: AppModule resolves (test:di)
         env:
           DI_SMOKE_MONGO_URI: mongodb://127.0.0.1:27017/solvexo_di_smoke?directConnection=true
+          PAYMENT_PROVIDER: manual # no Stripe key in CI (the module refuses to start with provider=stripe and no key)
         run: npm run test:di
