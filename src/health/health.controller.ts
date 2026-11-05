@@ -4,6 +4,7 @@ import { SkipThrottle } from '@nestjs/throttler';
 import { ApiExcludeController } from '@nestjs/swagger';
 import { HealthCheckService, HealthCheck, MongooseHealthIndicator, HealthIndicatorResult } from '@nestjs/terminus';
 import { RedisService } from '@/redis/redis.service';
+import { readBuildInfo } from './build-info.util';
 
 /**
  * Liveness/readiness endpoints for load balancers and orchestrators
@@ -25,6 +26,16 @@ export class HealthController {
   @Get('live')
   live() {
     return { status: 'ok', timestamp: new Date().toISOString() };
+  }
+
+  /**
+   * Which build is this process running? (git commit, branch, build time, package version) — read from dist/build-info.json, which
+   * `npm run build` writes. Lets anyone verify what a server is really running after a deploy: `curl https://<api>/health/version`.
+   * Exposes no secrets or configuration.
+   */
+  @Get('version')
+  version() {
+    return { ...readBuildInfo(), startedAt: new Date(Date.now() - process.uptime() * 1000).toISOString() };
   }
 
   /** Readiness — are this instance's real dependencies (DB, cache) actually usable. */

@@ -6,7 +6,7 @@
   "private": true,
   "license": "UNLICENSED",
   "scripts": {
-    "build": "nest build && tsc-alias",
+    "build": "nest build && tsc-alias && node scripts/write-build-info.js",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "start": "npm run build && node dist/main",
     "start:dev": "cross-env CHOKIDAR_USEPOLLING=1 concurrently -k -n nest,alias -c blue,yellow \"nest start --watch\" \"tsc-alias -w\"",
