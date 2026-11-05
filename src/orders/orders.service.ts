@@ -58,6 +58,7 @@ import { buildDeliveredEmail, buildReadyForPickupEmail, buildReturnLabelEmail, b
  *  order-currency-denominated calculation only for orders placed before
  *  settlementAmount/settlementCurrency existed. */
 import { sellerTaxShare } from '../common/seller-tax-share.util';
+import { toBuyerCourierTracking } from '../common/buyer-safe-order.util';
 import { sellerCashBasis, sellerGiftCreditShare, sellerPayoutBasis, sellerPayoutCurrency, refundGiftCreditShare } from '../common/seller-payout-basis.util';
 import { computeOrderDocumentTotals } from '../order-documents/order-totals.util';
 
@@ -305,8 +306,21 @@ export class OrdersService {
 
     return {
       success: true,
-      data: toBuyerSafeOrder(enrichedOrder),
+      data: { ...toBuyerSafeOrder(enrichedOrder), courierTracking: await this.buyerCourierTracking(orderId, storeId) },
     };
+  }
+
+  /** Buyer-safe courier tracking timelines for an order (empty when none / not available). Never throws. */
+  private async buyerCourierTracking(orderId: string, storeId?: string): Promise<any[]> {
+    const model = this.databaseService.repositories.courierBookingModel;
+    if (!model) return [];
+    try {
+      const rows: any[] = await model
+        .find({ orderId, bookingStatus: 'booked', isActive: true, ...(storeId ? { storeId } : {}) }).sort({ createdAt: 1 }).lean();
+      return rows.map(toBuyerCourierTracking);
+    } catch {
+      return [];
+    }
   }
 
   /** Shopify order-status page: opens ONE order from a signed link, no login (how a guest tracks an order). */
@@ -320,7 +334,7 @@ export class OrdersService {
     const sellers = sellerIds.length ? await sellerModel.find({ _id: { $in: sellerIds } }).select('name').lean() : [];
     const nameById = new Map(sellers.map((x: any) => [String(x._id), x.name]));
     const enriched = { ...order, sellerOrders: (order.sellerOrders ?? []).map((so: any) => ({ ...so, sellerName: nameById.get(String(so.sellerId)) ?? null })) };
-    return { success: true, data: toBuyerSafeOrder(enriched) };
+    return { success: true, data: { ...toBuyerSafeOrder(enriched), courierTracking: await this.buyerCourierTracking(orderId) } };
   }
 
   /** A signed status-page link token for an order the caller owns. */

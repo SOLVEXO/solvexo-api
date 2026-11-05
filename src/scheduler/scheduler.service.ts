@@ -42,6 +42,7 @@ import { AdminAnnouncementsService } from '@/admin-announcements/admin-announcem
 import { AuthVisualService } from '@/common/auth-visual.service';
 import { ScheduledReportsService } from '@/analytics/scheduled-reports.service';
 import { GiftCardsService } from '@/gift-cards/gift-cards.service';
+import { CourierTrackingSyncService } from '@/orders/courier-tracking-sync.service';
 
 @Injectable()
 export class SchedulerService {
@@ -84,6 +85,7 @@ export class SchedulerService {
     private readonly stuckGatewayPaymentsService: StuckGatewayPaymentsService,
     private readonly scheduledReportsService: ScheduledReportsService,
     private readonly giftCardsService: GiftCardsService,
+    private readonly courierTrackingSyncService: CourierTrackingSyncService,
   ) {}
 
   /**
@@ -196,6 +198,16 @@ export class SchedulerService {
       if (result.recovered > 0 || result.alerted > 0) {
         this.logger.log(`Stuck gateway payments: ${result.recovered} recovered, ${result.alerted} seller alert(s) of ${result.checked} checked`);
       }
+    });
+  }
+
+  /** Every 10 minutes — pulls courier tracking for live bookings (per-booking 15 min spacing + failure back-off inside),
+   *  applies delivered / RTO through the existing order code. See CourierTrackingSyncService. No-op with no live bookings. */
+  @Cron('*/10 * * * *')
+  async syncCourierTracking() {
+    await this.runLocked('courier-tracking-sync', 9 * 60_000, async () => {
+      const r = await this.courierTrackingSyncService.syncDueBookings();
+      if (r.checked > 0) this.logger.log(`Courier tracking sync: ${r.checked} checked, ${r.updated} updated, ${r.failed} failed`);
     });
   }
 

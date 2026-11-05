@@ -39,3 +39,14 @@ export function toBuyerSafeOrder(order: any): any {
   });
   return safe;
 }
+
+/** Buyer-visible courier tracking timeline. Only status/description/location/time — never the courier name's internal
+ *  reference, raw status codes, COD/remittance info, RTO flag, booking ids or label links. */
+export function toBuyerCourierTracking(b: any): any {
+  return {
+    shipmentId: b?.shipmentId ?? null,
+    trackingNumber: b?.trackingNumber ?? null,
+    status: b?.courierStatus ?? null,
+    events: (b?.events ?? []).map((e: any) => ({ status: e.status, description: e.description ?? null, location: e.location ?? null, occurredAt: e.occurredAt })),
+  };
+}

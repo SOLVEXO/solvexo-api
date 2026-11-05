@@ -12,6 +12,7 @@ import { Module } from '@nestjs/common';
 import { OrderEditingService } from './order-editing.service';
 import { OrderExchangeService } from './order-exchange.service';
 import { OrderReturnsService } from './order-returns.service';
+import { CourierTrackingSyncService } from './courier-tracking-sync.service';
 import { OrdersController } from './orders.controller';
 import { OrdersService } from './orders.service';
 import { AuthModule } from '@/auth/auth.module';
@@ -49,7 +50,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
     }),
   ],
   controllers: [OrdersController],
-  providers: [OrdersService, OrderEditingService, OrderExchangeService, OrderReturnsService],
-  exports: [OrdersService, OrderEditingService, OrderExchangeService, OrderReturnsService],
+  providers: [OrdersService, OrderEditingService, OrderExchangeService, OrderReturnsService, CourierTrackingSyncService],
+  exports: [OrdersService, OrderEditingService, OrderExchangeService, OrderReturnsService, CourierTrackingSyncService],
 })
 export class OrdersModule {}

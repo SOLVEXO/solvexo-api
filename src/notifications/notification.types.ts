@@ -5,6 +5,8 @@ export const NOTIFICATION_TYPES = {
   ORDER_PLACED: 'order_placed',
   ORDER_SHIPPED: 'order_shipped',
   ORDER_DELIVERED: 'order_delivered',
+  // Seller-facing: a courier reported a parcel as returning to origin (RTO).
+  ORDER_COURIER_RTO: 'order_courier_rto',
   ORDER_CANCELLED: 'order_cancelled',
   ORDER_UPDATED: 'order_updated',
   REFUND_REQUESTED: 'refund_requested',
@@ -101,6 +103,7 @@ export const NOTIFICATION_CATEGORY: Record<string, 'orders' | 'messages' | 'prom
   [NOTIFICATION_TYPES.ORDER_PLACED]: 'orders',
   [NOTIFICATION_TYPES.ORDER_SHIPPED]: 'orders',
   [NOTIFICATION_TYPES.ORDER_DELIVERED]: 'orders',
+  [NOTIFICATION_TYPES.ORDER_COURIER_RTO]: 'orders',
   [NOTIFICATION_TYPES.ORDER_CANCELLED]: 'orders',
   [NOTIFICATION_TYPES.ORDER_UPDATED]: 'orders',
   [NOTIFICATION_TYPES.REFUND_REQUESTED]: 'orders',

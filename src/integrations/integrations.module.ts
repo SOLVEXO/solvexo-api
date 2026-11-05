@@ -38,6 +38,7 @@ import { CallcourierCourierProvider } from './couriers/providers/callcourier.pro
 import { SwyftCourierProvider } from './couriers/providers/swyft.provider';
 import { DaewooFastexCourierProvider } from './couriers/providers/daewoo_fastex.provider';
 import { CourierService } from './couriers/courier.service';
+import { CourierWebhooksController } from './couriers/courier-webhooks.controller';
 import { TaxService } from '../tax/tax.service';
 import { ShippingRatesService } from '../shipping-rates/shipping-rates.service';
 
@@ -50,6 +51,7 @@ import { ShippingRatesService } from '../shipping-rates/shipping-rates.service';
     PaymentWebhooksController,
     WhatsAppWebhookController,
     SellerIntegrationsController,
+    CourierWebhooksController,
     BuyerCheckoutPaymentsController,
   ],
   providers: [
