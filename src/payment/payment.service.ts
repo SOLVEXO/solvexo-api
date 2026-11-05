@@ -3066,7 +3066,7 @@ export class PaymentService {
     return {
       customerName: String(buyerName ?? '').trim().split(/\s+/)[0] ?? '',
       orderNumber: [...entry.orderNumbers].join(', '),
-      itemList: entry.items.map((i: any) => `${String(i.name ?? '')} × ${i.quantity} — ${money(i.totalPrice ?? 0)}`).join('\n'),
+      itemList: entry.items.map((i: any) => `${String(i.name ?? '')} × ${i.quantity} — ${money(i.totalPrice ?? 0)}${i.isPreorder ? ` (Pre-order${i.preorderExpectedDate ? ` — expected to ship around ${new Date(i.preorderExpectedDate).toISOString().slice(0, 10)}` : ''})` : ''}${(i.bundleComponents ?? []).length ? ` — includes: ${(i.bundleComponents as any[]).map((c) => `${c.name ?? 'item'} × ${c.quantity * i.quantity}`).join(', ')}` : ''}`).join('\n'),
       subtotal: money(entry.subtotal),
       shipping: entry.shipping > 0 ? money(entry.shipping) : null,
       tax: entry.tax > 0 ? money(entry.tax) : null,

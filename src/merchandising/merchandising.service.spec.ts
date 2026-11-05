@@ -1,6 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
-import { MerchandisingService } from './merchandising.service';
+import { MerchandisingService, weightKgFromText } from './merchandising.service';
 
 const q = (v: any) => { const o: any = { select: () => o, lean: () => o, sort: () => o, limit: () => o, then: (r: any, j: any) => Promise.resolve(v).then(r, j) }; return o; };
 const id = (n: number) => `507f1f77bcf86cd7994390${String(n).padStart(2, '0')}`;
@@ -143,5 +143,22 @@ describe('recommendations', () => {
     await expect(svc.setCartUpsell('s1', 'sel1', { maxItems: 99 })).rejects.toBeInstanceOf(BadRequestException);
     await expect(svc.setCartUpsell('s1', 'sel1', { mode: 'sql' })).rejects.toBeInstanceOf(BadRequestException);
     expect(await svc.cartSuggestions('s2', [id(2)])).toMatchObject({ enabled: false }); // other store has it off
+  });
+});
+
+describe('bundle weight', () => {
+  it('parses free-text weights to kg', () => {
+    expect(weightKgFromText('0.5')).toBe(0.5);
+    expect(weightKgFromText('500 g')).toBe(0.5);
+    expect(weightKgFromText('2kg')).toBe(2);
+    expect(weightKgFromText('1 lb')).toBeCloseTo(0.4536, 3);
+    expect(weightKgFromText('heavy')).toBe(0);
+    expect(weightKgFromText(null)).toBe(0);
+  });
+  it('a new bundle gets the sum of its components weights when it has none', async () => {
+    const { svc, variants } = setup();
+    variants[1].shippingWeight = '1 kg'; variants[2].shippingWeight = '500 g';
+    await svc.setBundle('s1', 'sel1', id(1), [comp(2, 22, 2), comp(3, 33, 1)]);
+    expect(variants[0].shippingWeight).toBe('2.5 kg');
   });
 });

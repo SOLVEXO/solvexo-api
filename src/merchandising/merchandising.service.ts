@@ -66,6 +66,12 @@ export class MerchandisingService {
     });
 
     await this.r.productModel.updateOne({ _id: productId, storeId }, { $set: { isBundle: true, bundleComponents: snap } });
+    // Shipping weight: the sum of the components' weights unless the seller already set one on the bundle itself.
+    const ownV: any = await this.r.productVariantModel.findOne({ productId, isDelete: false }).select('shippingWeight').lean();
+    if (!ownV?.shippingWeight) {
+      const total = components.reduce((s, c) => s + weightKgFromText(vById.get(c.variantId)?.shippingWeight) * c.quantity, 0);
+      if (total > 0) await this.r.productVariantModel.updateOne({ productId, isDelete: false }, { $set: { shippingWeight: `${Math.round(total * 1000) / 1000} kg` } });
+    }
     // The bundle's own variant carries no stock — availability is derived from the components.
     await this.r.productVariantModel.updateOne({ productId, isDelete: false }, { $set: { unlimitedStock: true } });
     this.log(storeId, sellerId, 'bundle_updated', `"${product.name}" set as a bundle of ${snap.length} component(s)`, productId);
@@ -207,7 +213,7 @@ export class MerchandisingService {
         : p.type !== 'physical' || vs.some((v) => v.unlimitedStock || v.allowBackorder || v.preorder?.enabled || availableStock(v) > 0);
       if (!purchasable) continue;
       const def = vs.find((v) => v.isDefault) ?? vs[0];
-      out.push({ id, slug: p.slug ?? null, name: p.name, image: p.images?.[0] ?? null, price: def.price, compareAtPrice: def.compareAtPrice ?? null, source });
+      out.push({ id, variantId: String(def._id), type: p.type, slug: p.slug ?? null, name: p.name, image: p.images?.[0] ?? null, price: def.price, compareAtPrice: def.compareAtPrice ?? null, source });
       if (out.length >= limit) break;
     }
     return out;
@@ -291,4 +297,14 @@ export class MerchandisingService {
     if (pre.length) extras.preorder = pre;
     return extras;
   }
+}
+
+/** Parses the free-text `shippingWeight` ("0.5", "500g", "1.2 lb", "2 kg") to kg; unparseable/empty = 0. */
+export function weightKgFromText(raw: unknown): number {
+  const m = /^\s*([\d.]+)\s*(kg|g|lb|lbs|oz)?\s*$/i.exec(typeof raw === 'string' ? raw : '');
+  if (!m) return 0;
+  const n = parseFloat(m[1]);
+  if (!Number.isFinite(n)) return 0;
+  const u = (m[2] ?? 'kg').toLowerCase();
+  return u === 'g' ? n / 1000 : u === 'lb' || u === 'lbs' ? n * 0.45359237 : u === 'oz' ? n * 0.0283495 : n;
 }

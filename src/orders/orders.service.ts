@@ -394,6 +394,8 @@ export class OrdersService {
     const subFilter: any = { storeId: { $in: storeIds } };
     if (query.type && query.type !== 'all') subFilter.fulfillmentType = String(query.type);
     if (query.status && query.status !== 'all') subFilter.status = String(query.status);
+    // "Pre-orders" view: sub-orders that contain at least one pre-order line.
+    if (query.preorder === 'true' || query.preorder === true) subFilter.items = { $elemMatch: { isPreorder: true } };
     if (Object.keys(subFilter).length > 1) matchFilter.sellerOrders = { $elemMatch: subFilter };
 
     if (query.time && query.time !== 'all') {
