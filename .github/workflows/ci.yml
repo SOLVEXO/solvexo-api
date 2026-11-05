@@ -2,7 +2,7 @@ name: CI (solvexo-api)
 on:
   pull_request:
   push:
-    branches-ignore: [main, staging]
+    branches-ignore: [main, staging, feature/jamibranch]   # feature/jamibranch is covered by tests.yml (the gate), so it is not run twice
 jobs:
   verify:
     runs-on: ubuntu-latest
