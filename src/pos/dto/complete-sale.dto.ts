@@ -23,9 +23,7 @@ export class CompleteSaleDto {
   amountTendered?: number;
   @ApiProperty({ required: false, description: `G1b: integer twin (minor units). Cross-check only.` })
   @IsOptional()
-  @IsInt()
-  @Min(0)
-  @Max(Number.MAX_SAFE_INTEGER)
+  // no strict validation on purpose: a malformed twin must never reject a sale — the server records it as a mismatch and uses its own values
   amountTenderedMinor?: number;
 
   @ApiProperty({ required: false })
@@ -53,9 +51,7 @@ export class CompleteSaleDto {
   discountValue?: number;
   @ApiProperty({ required: false, description: `G1b: integer twin of discountValue — only for an 'amount' discount. Cross-check only.` })
   @IsOptional()
-  @IsInt()
-  @Min(0)
-  @Max(Number.MAX_SAFE_INTEGER)
+  // no strict validation on purpose: a malformed twin must never reject a sale — the server records it as a mismatch and uses its own values
   discountValueMinor?: number;
 
   @ApiProperty({ required: false, deprecated: true, description: 'IGNORED — tax is computed by the server' })
@@ -73,9 +69,7 @@ export class CompleteSaleDto {
   clientTotal?: number;
   @ApiProperty({ required: false, description: `G1b: integer twin (minor units). Cross-check only.` })
   @IsOptional()
-  @IsInt()
-  @Min(0)
-  @Max(Number.MAX_SAFE_INTEGER)
+  // no strict validation on purpose: a malformed twin must never reject a sale — the server records it as a mismatch and uses its own values
   clientTotalMinor?: number;
 
   @ApiProperty({ required: false, description: 'The settingsVersion the device priced this with' })

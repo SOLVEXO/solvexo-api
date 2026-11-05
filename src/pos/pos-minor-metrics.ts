@@ -8,6 +8,7 @@ export class PosMinorMetrics {
   private static checks: Record<string, number> = {};
   private static mismatchedDocs: Record<string, number> = {};
   private static mismatchedFields: Record<string, number> = {};
+  private static clientMismatches = 0;
 
   static record(kind: string, mismatchCount: number): void {
     this.checks[kind] = (this.checks[kind] ?? 0) + 1;
@@ -17,14 +18,20 @@ export class PosMinorMetrics {
     }
   }
 
+  /** A client payload whose decimal and minor twin disagreed (the sale was accepted at the server's values). */
+  static recordClient(n: number): void {
+    this.clientMismatches += n;
+  }
+
   static snapshot() {
     const total = (o: Record<string, number>) => Object.values(o).reduce((a, b) => a + b, 0);
-    return { checks: { ...this.checks }, mismatchedDocs: { ...this.mismatchedDocs }, mismatchedFields: { ...this.mismatchedFields }, totalChecks: total(this.checks), totalMismatchedDocs: total(this.mismatchedDocs) };
+    return { checks: { ...this.checks }, mismatchedDocs: { ...this.mismatchedDocs }, mismatchedFields: { ...this.mismatchedFields }, clientPayloadMismatches: this.clientMismatches, totalChecks: total(this.checks), totalMismatchedDocs: total(this.mismatchedDocs) };
   }
 
   static reset(): void {
     this.checks = {};
     this.mismatchedDocs = {};
     this.mismatchedFields = {};
+    this.clientMismatches = 0;
   }
 }

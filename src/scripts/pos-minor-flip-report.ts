@@ -23,6 +23,7 @@ async function main() {
     if (a.includes('--json')) { console.log(JSON.stringify(r, null, 2)); return; }
     console.log(`G1b flip-criteria report  ${r.from} → ${r.to}   (needs ${r.minCleanDays} clean days + every path)`);
     console.log(`mismatches: ${r.mismatches.total}  (checker audit events ${r.mismatches.auditEvents}, re-scan violations ${r.mismatches.scanViolations})  by kind: ${JSON.stringify(r.mismatches.byKind)}`);
+    console.log(`client payload mismatches (informational, accepted at the server's values; do not block the flip): ${r.clientPayloadMismatches}`);
     console.log(`rows re-scanned (dual-written, created in the window): sales ${r.checkedRows.sales}, shifts ${r.checkedRows.sessions}, payments ${r.checkedRows.payments}, refunds ${r.checkedRows.refunds}`);
     console.log(`consecutive clean days ending ${r.to}: ${r.consecutiveCleanDaysEndingAtTo}`);
     console.log('paths exercised:');

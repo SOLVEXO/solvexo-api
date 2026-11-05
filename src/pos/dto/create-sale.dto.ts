@@ -33,9 +33,7 @@ export class SaleItemDto {
 
   @ApiProperty({ required: false, example: 5876, description: `G1b: integer twin of unitPrice in the currency's minor unit. Cross-check only: if both are sent and disagree the sale is rejected (MONEY_FIELD_MISMATCH).` })
   @IsOptional()
-  @IsInt()
-  @Min(0)
-  @Max(Number.MAX_SAFE_INTEGER)
+  // no strict validation on purpose: a malformed twin must never reject a sale — the server records it as a mismatch and uses its own values
   unitPriceMinor?: number;
 }
 
@@ -86,9 +84,7 @@ export class CreateSaleDto {
   discountValue?: number;
   @ApiProperty({ required: false, example: 5876, description: `G1b: integer twin of discountValue — only when discountType is 'amount' (a percentage is not money). Cross-check only.` })
   @IsOptional()
-  @IsInt()
-  @Min(0)
-  @Max(Number.MAX_SAFE_INTEGER)
+  // no strict validation on purpose: a malformed twin must never reject a sale — the server records it as a mismatch and uses its own values
   discountValueMinor?: number;
 
   @ApiProperty({ required: false, deprecated: true, description: 'IGNORED. Tax is computed by the server from the store tax rate.' })
@@ -106,9 +102,7 @@ export class CreateSaleDto {
   clientTotal?: number;
   @ApiProperty({ required: false, example: 5876, description: `G1b: integer twin of clientTotal (minor units). Cross-check only.` })
   @IsOptional()
-  @IsInt()
-  @Min(0)
-  @Max(Number.MAX_SAFE_INTEGER)
+  // no strict validation on purpose: a malformed twin must never reject a sale — the server records it as a mismatch and uses its own values
   clientTotalMinor?: number;
 
   @ApiProperty({ enum: ['cash', 'card', 'other'], default: 'cash', description: 'Single-payment form; ignored when `payments` is sent' })
@@ -130,9 +124,7 @@ export class CreateSaleDto {
   amountTendered?: number;
   @ApiProperty({ required: false, example: 5876, description: `G1b: integer twin of amountTendered (minor units). Cross-check only.` })
   @IsOptional()
-  @IsInt()
-  @Min(0)
-  @Max(Number.MAX_SAFE_INTEGER)
+  // no strict validation on purpose: a malformed twin must never reject a sale — the server records it as a mismatch and uses its own values
   amountTenderedMinor?: number;
 
   @ApiProperty({ required: false, description: 'Single non-cash payment: card auth code / bank reference' })

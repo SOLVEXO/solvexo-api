@@ -939,8 +939,8 @@ export class PosService {
     // beyond one minor unit is rejected (TOTAL_MISMATCH) rather than charging a number nobody saw.
     // The tax rate comes from the settingsVersion the device priced with (when still within the offline window).
     const money = await this.moneyContext(dto.storeId, { version: dto.settingsVersion });
-    this.reconcileClientMoney(dto, money.exp);
     const totals = computeTotals(saleItems, { exp: money.exp, discountType: discountReq.type, discountValue: discountReq.value, taxRate: money.taxRate });
+    const clientMismatches = this.reconcileClientMoney(dto, money.exp, totals.minor.total); // G1b: recorded, NEVER a rejection (see recordClientMismatches)
     const flags: Array<{ type: string; detail: Record<string, any> }> = [];
     const unverified = saleItems.filter((it) => it.priceVerified === false);
     if (unverified.length) {
@@ -1100,6 +1100,7 @@ export class PosService {
       }
     }
 
+    await this.recordClientMismatches(sale, clientMismatches, money.exp);
     await this.checkMinor('sale', sale, money.exp);
     return { success: true, message: isHeld ? 'Sale put on hold' : 'Sale completed', data: sale };
   }
@@ -1129,8 +1130,8 @@ export class PosService {
     }
 
     const money = await this.moneyContext(String((sale as any).storeId), { version: dto.settingsVersion });
-    this.reconcileClientMoney(dto, money.exp);
     const totals = computeTotals((sale as any).items, { exp: money.exp, discountType: discountReq.type, discountValue: discountReq.value, taxRate: money.taxRate });
+    const clientMismatches = this.reconcileClientMoney(dto, money.exp, totals.minor.total);
     assertClientTotal(dto.clientTotal, totals);
     const settled = settlePayments(totals.minor.total, money.exp, { payments: dto.payments, paymentMethod: dto.paymentMethod, amountTendered: dto.amountTendered, reference: dto.paymentReference });
     const { discount, tax, total } = totals;
@@ -1190,6 +1191,7 @@ export class PosService {
       console.error(`[completeSale] session totals update failed for sale ${saleId} — reconcile manually:`, e?.message);
     }
     await this.recordPosSaleInLedger(updated);
+    await this.recordClientMismatches(updated, clientMismatches, money.exp);
     await this.checkMinor('sale', updated, money.exp);
 
     return { success: true, message: 'Sale completed', data: updated };
@@ -1945,23 +1947,47 @@ export class PosService {
   }
 
   /**
-   * G1b: the server RECOMPUTES every amount; a client's decimal and its optional integer twin are only a cross-check. When both are
-   * present and they disagree (`toMinor(decimal) !== minor`) the request is rejected with a definite 400 `MONEY_FIELD_MISMATCH`
-   * (a client bug or tampering — never silently "fixed"). Requests that carry only the decimals (every build before G1b, and old
-   * offline queues) pass untouched.
+   * G1b: the server RECOMPUTES every amount from its own data; a client's decimal and its optional integer twin are only a
+   * cross-check — and a disagreement NEVER rejects the sale (an offline sale whose cash was already taken must always sync, and a
+   * client rounding bug must never stop checkout at the counter). Returns what disagreed, with the client's and the server's values;
+   * the caller stores the sale as the server computed it and calls `recordClientMismatches` once it is saved.
+   * `serverTotalMinor` is the server's own total, shown next to the client's `clientTotalMinor` / `clientTotal`.
    */
-  private reconcileClientMoney(dto: any, exp: number): void {
-    const pair = (major: any, minor: any, field: string) => {
-      if (minor === undefined || minor === null || major === undefined || major === null) return;
-      if (toMinor(major, exp) !== minor) {
-        throw moneyError('MONEY_FIELD_MISMATCH', `${field} (${major}) and ${field}Minor (${minor}) disagree for a currency with ${exp} decimals — the app and the server must agree on the amount`, { field, major, minor, exponent: exp });
+  private reconcileClientMoney(dto: any, exp: number, serverTotalMinor: number): Array<Record<string, any>> {
+    const out: Array<Record<string, any>> = [];
+    const pair = (major: any, minor: any, field: string, serverMinor: number | null) => {
+      if (minor === undefined || minor === null) return;
+      if (typeof minor !== 'number' || !Number.isSafeInteger(minor)) {
+        out.push({ field, clientDecimal: major ?? null, clientMinor: String(minor), serverMinor, reason: 'minor_not_a_safe_integer' });
+        return;
       }
+      if (major === undefined || major === null) return;
+      if (toMinor(major, exp) !== minor) out.push({ field, clientDecimal: major, clientMinor: minor, serverMinor: serverMinor ?? toMinor(major, exp), reason: 'decimal_and_minor_disagree' });
     };
-    pair(dto.clientTotal, dto.clientTotalMinor, 'clientTotal');
-    pair(dto.amountTendered, dto.amountTenderedMinor, 'amountTendered');
-    if ((dto.discountType ?? 'amount') === 'amount') pair(dto.discountValue, dto.discountValueMinor, 'discountValue');
-    (dto.payments ?? []).forEach((p: any, i: number) => pair(p.amount, p.amountMinor, `payments[${i}].amount`));
-    (dto.items ?? []).forEach((it: any, i: number) => pair(it.unitPrice, it.unitPriceMinor, `items[${i}].unitPrice`));
+    pair(dto.clientTotal, dto.clientTotalMinor, 'clientTotal', serverTotalMinor);
+    pair(dto.amountTendered, dto.amountTenderedMinor, 'amountTendered', null);
+    if ((dto.discountType ?? 'amount') === 'amount') pair(dto.discountValue, dto.discountValueMinor, 'discountValue', null);
+    (dto.payments ?? []).forEach((p: any, i: number) => pair(p.amount, p.amountMinor, `payments[${i}].amount`, null));
+    (dto.items ?? []).forEach((it: any, i: number) => pair(it.unitPrice, it.unitPriceMinor, `items[${i}].unitPrice`, null));
+    return out;
+  }
+
+  /** After the sale is saved: log + `money_minor_mismatch` audit event (source: client) + metric. NEVER throws and never changes the sale. */
+  private async recordClientMismatches(sale: any, mismatches: Array<Record<string, any>>, exp: number): Promise<void> {
+    if (!mismatches.length) return;
+    try {
+      PosMinorMetrics.recordClient(mismatches.length);
+      // eslint-disable-next-line no-console
+      console.warn(`[pos-minor-mismatch] client payload for sale ${String(sale?._id)} disagreed with itself: ${JSON.stringify(mismatches.slice(0, 5))}`);
+      await this.writeAuditLog({
+        storeId: String(sale?.storeId ?? ''), employeeId: sale?.employeeId ?? null, action: 'money_minor_mismatch', targetId: sale?._id ? String(sale._id) : null, targetType: 'sale',
+        sessionId: sale?.sessionId ?? null, registerId: sale?.registerId ?? null, shiftId: sale?.shiftId ?? null,
+        metadata: { source: 'client', exponent: exp, offline: !!sale?.isOffline, serverTotalMinor: sale?.totalMinor != null ? (typeof sale.totalMinor.toNumber === 'function' ? sale.totalMinor.toNumber() : sale.totalMinor) : null, count: mismatches.length, mismatches: mismatches.slice(0, 10) },
+      });
+    } catch (e: any) {
+      // eslint-disable-next-line no-console
+      console.error('[pos-minor-mismatch] could not record a client mismatch (ignored):', e?.message);
+    }
   }
 
   /** Consistency checker (G1b b): `minor == toMinor(major)` for every pair of a just-written document. NEVER throws and never delays/fails the sale. */

@@ -82,6 +82,15 @@ describe('flip-criteria report (read-only)', () => {
     expect(r.ready).toBe(false);
   });
 
+  it('a CLIENT-payload mismatch is reported separately and does NOT block the flip (the stored data is fine)', async () => {
+    const { s } = await exerciseEveryPath();
+    await h.repos.posAuditLogModel.collection.insertOne({ storeId: s.storeId, action: 'money_minor_mismatch', targetType: 'sale', targetId: 'x', createdAt: new Date(), metadata: { source: 'client', mismatches: [{ field: 'clientTotal' }] } });
+    const r = await buildFlipReport(h.conn.db!, { from: today(), to: today(), minCleanDays: 1 });
+    expect(r.clientPayloadMismatches).toBe(1);
+    expect(r.mismatches.total).toBe(0);
+    expect(r.ready).toBe(true);
+  });
+
   it('it never writes (read-only): document counts are identical before and after', async () => {
     await exerciseEveryPath();
     const counts = async () => Promise.all(['sales', 'registersessions', 'pospayments', 'posrefunds', 'posauditlogs'].map((c) => h.conn.db!.collection(c).countDocuments({})));

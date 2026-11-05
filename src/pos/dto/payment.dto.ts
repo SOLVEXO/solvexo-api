@@ -16,9 +16,7 @@ export class PaymentLineDto {
   amount: number;
   @ApiProperty({ required: false, example: 5876, description: `G1b: integer twin of amount (minor units). Cross-check only.` })
   @IsOptional()
-  @IsInt()
-  @Min(0)
-  @Max(Number.MAX_SAFE_INTEGER)
+  // no strict validation on purpose: a malformed twin must never reject a sale — the server records it as a mismatch and uses its own values
   amountMinor?: number;
 
   @ApiProperty({ required: false, example: 'AUTH-123456', description: 'Card authorisation code / bank transfer reference' })

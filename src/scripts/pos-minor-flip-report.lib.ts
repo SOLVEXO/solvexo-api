@@ -14,6 +14,8 @@ export type FlipPath = (typeof FLIP_PATHS)[number];
 
 export interface FlipReport {
   from: string; to: string; minCleanDays: number;
+  /** Client payloads whose decimal and minor twin disagreed (accepted at the server's values). Informational — the STORED data is fine — so it never blocks the flip. */
+  clientPayloadMismatches: number;
   mismatches: { auditEvents: number; scanViolations: number; total: number; byKind: Record<string, number>; firstExamples: any[] };
   checkedRows: { sales: number; sessions: number; payments: number; refunds: number };
   days: Array<{ day: string; mismatches: number }>;
@@ -42,7 +44,8 @@ export async function buildFlipReport(db: Db, opts: { from: Date; to: Date; minC
   for await (const s of db.collection('stores').find(opts.storeId ? { _id: opts.storeId as any } : {}, { projection: { baseCurrency: 1 } })) baseCurrency.set(String(s._id), String((s as any).baseCurrency ?? 'USD'));
 
   // 1) mismatches the checker recorded
-  const auditMismatch = await db.collection('posauditlogs').find({ ...store, action: 'money_minor_mismatch', createdAt: range }).sort({ createdAt: 1 }).toArray();
+  const auditMismatch = await db.collection('posauditlogs').find({ ...store, action: 'money_minor_mismatch', 'metadata.source': { $ne: 'client' }, createdAt: range }).sort({ createdAt: 1 }).toArray();
+  const clientPayloadMismatches = await db.collection('posauditlogs').countDocuments({ ...store, action: 'money_minor_mismatch', 'metadata.source': 'client', createdAt: range });
   const byDay = new Map<string, number>();
   const byKind: Record<string, number> = {};
   for (const a of auditMismatch as any[]) { byDay.set(dayKey(a.createdAt), (byDay.get(dayKey(a.createdAt)) ?? 0) + 1); byKind[a.targetType ?? 'unknown'] = (byKind[a.targetType ?? 'unknown'] ?? 0) + 1; }
@@ -99,7 +102,7 @@ export async function buildFlipReport(db: Db, opts: { from: Date; to: Date; minC
   if (consecutive < minCleanDays) reasons.push(`only ${consecutive} consecutive clean day(s) ending at ${dayKey(opts.to)}; ${minCleanDays} required`);
   if (missing.length) reasons.push(`paths never exercised in the window: ${missing.join(', ')}`);
   return {
-    from: dayKey(opts.from), to: dayKey(opts.to), minCleanDays,
+    from: dayKey(opts.from), to: dayKey(opts.to), minCleanDays, clientPayloadMismatches,
     mismatches: { auditEvents: auditMismatch.length, scanViolations, total, byKind, firstExamples: examples.length ? examples : (auditMismatch as any[]).slice(0, 3).map((a) => ({ id: a.targetId, kind: a.targetType, mismatches: a.metadata?.mismatches?.slice(0, 2) })) },
     checkedRows: scan, days, consecutiveCleanDaysEndingAtTo: consecutive, pathCounts: paths, pathsMissing: missing, ready: reasons.length === 0, reasons,
   };

@@ -254,17 +254,61 @@ describe('old payloads and new payloads side by side (server contract)', () => {
     expect(num((await rawSale(res.data._id)).totalMinor)).toBe(2100);
   });
 
-  it('a payload whose decimal and minor DISAGREE is rejected (MONEY_FIELD_MISMATCH, nothing stored, stock untouched)', async () => {
+  it('a LIVE sale whose decimal and minor DISAGREE is ACCEPTED at the server\'s own values, and the mismatch is recorded with both values', async () => {
     const svc = makeService(); const s = await seedStore(h, { stock: 20, price: 10 });
     const sid = await openSession(svc, s);
-    for (const bad of [{ clientTotal: 20, clientTotalMinor: 2100 }, { amountTendered: 20, amountTenderedMinor: 25 }, { payments: [{ method: 'cash', amount: 20, amountMinor: 1999 }] }, { items: [{ productId: s.productId, variantId: s.variantId, qty: 2, unitPrice: 10, unitPriceMinor: 999 }] }]) {
-      expect(await code(svc.createSale(s.sellerId, saleDto(s, sid, bad) as any, undefined))).toBe('MONEY_FIELD_MISMATCH');
-    }
-    expect(await h.repos.saleModel.countDocuments({ storeId: s.storeId })).toBe(0);
-    expect(((await h.repos.productVariantModel.collection.findOne({ _id: new Types.ObjectId(s.variantId) })) as any).stock).toBe(20);
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const res: any = await svc.createSale(s.sellerId, saleDto(s, sid, {
+      clientTotal: 20, clientTotalMinor: 2100,                       // the client's own twin is off by 1.00
+      amountTendered: 20, amountTenderedMinor: 25,
+      payments: [{ method: 'cash', amount: 20, amountMinor: 1999 }],
+      items: [{ productId: s.productId, variantId: s.variantId, qty: 2, unitPrice: 10, unitPriceMinor: 999 }],
+    }) as any, undefined);
+    expect(res.success).toBe(true);                                  // NEVER rejected
+    const doc = await rawSale(res.data._id);
+    expect([doc.status, doc.total, num(doc.totalMinor), num(doc.items[0].priceMinor), num(doc.payments[0].amountMinor)]).toEqual(['completed', 20, 2000, 1000, 2000]); // the server's values
+    expect(mismatches(doc, 'sale')).toEqual([]);                      // what is STORED is self-consistent
+    expect(await h.repos.saleModel.countDocuments({ storeId: s.storeId })).toBe(1);
+    expect(((await h.repos.productVariantModel.collection.findOne({ _id: new Types.ObjectId(s.variantId) })) as any).stock).toBe(18); // stock taken exactly once
+    const [ev]: any[] = await h.repos.posAuditLogModel.find({ storeId: s.storeId, action: 'money_minor_mismatch' }).lean();
+    expect(ev).toMatchObject({ targetType: 'sale', targetId: String(res.data._id) });
+    expect(ev.metadata).toMatchObject({ source: 'client', offline: false, serverTotalMinor: 2000, count: 4 });
+    const byField = Object.fromEntries(ev.metadata.mismatches.map((m: any) => [m.field, m]));
+    expect(byField['clientTotal']).toMatchObject({ clientDecimal: 20, clientMinor: 2100, serverMinor: 2000, reason: 'decimal_and_minor_disagree' });
+    expect(byField['amountTendered']).toMatchObject({ clientDecimal: 20, clientMinor: 25 });
+    expect(byField['payments[0].amount']).toMatchObject({ clientMinor: 1999 });
+    expect(byField['items[0].unitPrice']).toMatchObject({ clientMinor: 999 });
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('[pos-minor-mismatch] client payload'))).toBe(true);
+    expect(PosMinorMetrics.snapshot().clientPayloadMismatches).toBe(4);
+    expect(PosMinorMetrics.snapshot().totalMismatchedDocs).toBe(0);  // not a storage inconsistency
   });
 
-  it('an OLD offline payload (queued by an older build: decimals only, unitPrice, old shape) still syncs; a NEW offline payload with minor twins syncs too', async () => {
+  it('a malformed twin (a fraction, a string, NaN) never rejects a sale either — it is recorded', async () => {
+    const svc = makeService(); const s = await seedStore(h, { stock: 20, price: 10 });
+    const sid = await openSession(svc, s);
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+    for (const [i, bad] of ([5.5, '12', NaN, 2 ** 60] as any[]).entries()) {
+      const res: any = await svc.createSale(s.sellerId, saleDto(s, sid, { clientTotal: 20, clientTotalMinor: bad, idempotencyKey: `bad-${i}` }) as any, undefined);
+      expect(res.success).toBe(true);
+      expect(num((await rawSale(res.data._id)).totalMinor)).toBe(2000);
+    }
+    const evs: any[] = await h.repos.posAuditLogModel.find({ storeId: s.storeId, action: 'money_minor_mismatch' }).lean();
+    expect(evs).toHaveLength(4);
+    expect(evs.every((e) => e.metadata.mismatches[0].reason === 'minor_not_a_safe_integer')).toBe(true);
+  });
+
+  it('a held sale COMPLETED with a disagreeing twin is accepted at the server\'s values and recorded', async () => {
+    const svc = makeService(); const s = await seedStore(h, { stock: 20, price: 10 });
+    const sid = await openSession(svc, s);
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const held: any = await svc.createSale(s.sellerId, saleDto(s, sid, { status: 'held' }) as any, undefined);
+    const done: any = await svc.completeSale(s.sellerId, String(held.data._id), { paymentMethod: 'cash', amountTendered: 20, amountTenderedMinor: 2500, clientTotal: 20, clientTotalMinor: 2000 } as any, undefined);
+    expect(done.success).toBe(true);
+    expect(num((await rawSale(done.data._id)).totalMinor)).toBe(2000);
+    expect(await h.repos.posAuditLogModel.countDocuments({ storeId: s.storeId, action: 'money_minor_mismatch' })).toBe(1);
+  });
+
+  it('an OLD offline payload (queued by an older build: decimals only, unitPrice, old shape) still syncs; a NEW offline payload with minor twins syncs too — even with an injected client mismatch', async () => {
     const svc = makeService(); const s = await seedStore(h, { stock: 20, price: 10 });
     const sid = await openSession(svc, s);
     await h.repos.registerSessionModel.collection.updateOne({ _id: new Types.ObjectId(sid) }, { $set: { openedAt: new Date(Date.now() - 5 * 3600_000) } }); // the shift was already open when the offline sale was made
@@ -278,8 +322,15 @@ describe('old payloads and new payloads side by side (server contract)', () => {
       expect([doc.isOffline, doc.total, num(doc.totalMinor), num(doc.items[0].priceMinor)]).toEqual([true, 20, 2000, 1000]);
       expect(mismatches(doc, 'sale')).toEqual([]);
     }
-    // …and a queued NEW payload that carries a disagreeing twin is a definite rejection (the app keeps it in Needs attention)
-    expect(await code(svc.createSale(s.sellerId, { ...newQueued, idempotencyKey: 'new-2', clientTotalMinor: 2001 } as any, undefined))).toBe('MONEY_FIELD_MISMATCH');
+    // …and a queued NEW payload carrying a disagreeing twin STILL SYNCS — the cash was already taken, so it is never rejected: stored at the server's values, recorded with source=client, offline=true
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const c: any = await svc.createSale(s.sellerId, { ...newQueued, idempotencyKey: 'new-2', clientTotalMinor: 2001, items: [{ productId: s.productId, variantId: s.variantId, qty: 2, unitPrice: 10, unitPriceMinor: 1001 }] } as any, undefined);
+    expect(c.success).toBe(true);
+    const cdoc = await rawSale(c.data._id);
+    expect([cdoc.isOffline, cdoc.total, num(cdoc.totalMinor), num(cdoc.items[0].priceMinor)]).toEqual([true, 20, 2000, 1000]);
+    const [ev]: any[] = await h.repos.posAuditLogModel.find({ storeId: s.storeId, action: 'money_minor_mismatch', targetId: String(c.data._id) }).lean();
+    expect(ev.metadata).toMatchObject({ source: 'client', offline: true, serverTotalMinor: 2000, count: 2 });
+    expect(ev.metadata.mismatches.map((m: any) => m.field).sort()).toEqual(['clientTotal', 'items[0].unitPrice']);
   });
 
   it('quote and reports expose the minor twins next to the decimals', async () => {
