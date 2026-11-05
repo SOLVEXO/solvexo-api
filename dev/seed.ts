@@ -120,6 +120,14 @@ async function main() {
   // --- POS settings: 10% tax (exclusive, applied to subtotal), USD ----------------------------------------
   await PosSettings.updateOne({ storeId }, { $set: { taxRate: 0.1, businessName: 'Dev Coffee', businessAddress: '1 Dev Street', businessTaxId: 'DEV-TAX-1', currencySymbol: '$' }, $setOnInsert: { saleCounter: 0 } }, { upsert: true });
   await PosSettings.updateOne({ storeId: String(expiredStore._id) }, { $set: { taxRate: 0.1 }, $setOnInsert: { saleCounter: 0 } }, { upsert: true });
+  // G2.3: the main store is business-verified with a (mock) provider sub-merchant, so Raast QR works in the dev stack; the "Expired Store"
+  // has NO verification (digital payments refused there). Documents / identifiers are not seeded — only the status the gate reads.
+  await conn.collection('store_kybs').updateOne(
+    { storeId },
+    { $set: { storeId, sellerId, status: 'verified', businessType: 'sole_proprietor', legalBusinessName: 'Dev Coffee', subMerchant: { ref: 'SM-DEV-1', providerKey: 'mock', setAt: new Date(), setBy: 'dev-seed' }, purgedAt: null }, $setOnInsert: { documents: [], history: [] } },
+    { upsert: true },
+  );
+  await conn.collection('store_kybs').deleteMany({ storeId: String(expiredStore._id) });
 
   // --- catalog ---------------------------------------------------------------------------------------------
   let category: any = await Category.findOne({ name: 'Dev Drinks', storeId });
