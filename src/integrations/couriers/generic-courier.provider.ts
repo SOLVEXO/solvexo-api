@@ -4,7 +4,7 @@ import {
   CourierKey, CourierProvider, CourierTrackResult,
 } from './courier.types';
 import { CourierEndpoint, CourierMapping } from './courier-mapping';
-import { courierRequest } from './courier-http';
+import { courierRequest, redactSecrets } from './courier-http';
 
 /**
  * One implementation of the CourierProvider contract driven entirely by a per-courier CourierMapping. Each of the 9
@@ -21,7 +21,10 @@ export class GenericCourierProvider implements CourierProvider {
 
   get verified() { return this.mapping.verified; }
 
-  private guardVerified() {
+  private guardVerified(mode: string) {
+    // Sandbox-mode calls are always allowed — that is how a mapping gets verified. LIVE calls stay blocked until the
+    // mapping's `verified` flag is flipped after a sandbox run (or COURIER_ALLOW_UNVERIFIED=true for a controlled test).
+    if (mode !== 'live') return;
     if (!this.mapping.verified && process.env.COURIER_ALLOW_UNVERIFIED !== 'true') {
       throw new CourierError(
         'unverified',
@@ -36,7 +39,7 @@ export class GenericCourierProvider implements CourierProvider {
 
   /** Runs one endpoint of the mapping: builds the request, sends it, parses the result. */
   private async call<I, O>(ep: CourierEndpoint<I, O>, input: I, ctx: CourierContext, opts: { retries: number }): Promise<O> {
-    this.guardVerified();
+    this.guardVerified(ctx.mode);
     const m = this.mapping;
     const path = typeof ep.path === 'function' ? ep.path(input, ctx) : ep.path;
     const query = { ...(m.authQuery?.(ctx) ?? {}), ...(ep.query?.(input, ctx) ?? {}) };
@@ -59,7 +62,7 @@ export class GenericCourierProvider implements CourierProvider {
     const json = res.json;
     if (json === undefined || json === null) throw new CourierError('malformed', 'The courier returned an empty response.');
     const bodyErr = m.detectError?.(json);
-    if (bodyErr) throw bodyErr;
+    if (bodyErr) throw new CourierError(bodyErr.code, redactSecrets(bodyErr.message, this.secrets(ctx)), bodyErr.retryable);
     try {
       return ep.parse(json, input, ctx);
     } catch (err) {

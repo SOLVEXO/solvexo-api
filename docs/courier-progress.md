@@ -6,7 +6,7 @@ Run unit tests with the local, uncommitted `jest.unit.config.js` (the repo's own
 
 ## Phases
 - [x] Phase 1 — backend foundation (types, interface, registry, catalog + enablement gate, shared HTTP helper, schema enums)
-- [ ] Phase 2 — 9 provider adapters + mapping files + mocked-HTTP tests
+- [x] Phase 2 — 9 provider adapters + mapping files + mocked-HTTP tests (all mappings verified:false; live blocked until verified, sandbox allowed)
 - [ ] Phase 3 — booking flow (OrdersService), store courier settings, endpoints, permission, entitlements, audit
 - [ ] Phase 4 — tracking sync job, events, RTO flag, COD status refresh, optional webhook (stubbed)
 - [ ] Phase 5 — frontend (solvexo)
