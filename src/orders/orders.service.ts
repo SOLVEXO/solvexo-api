@@ -26,7 +26,7 @@ import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { LoyaltyService } from '@/loyalty/loyalty.service';
 import { NotificationsService } from '@/notifications/notifications.service';
 import { ShippingRatesService } from '@/shipping-rates/shipping-rates.service';
-import { CourierService } from '@/integrations/couriers/courier.service';
+import { CourierService, courierErrorToHttp } from '@/integrations/couriers/courier.service';
 import { COURIER_CATALOG } from '@/integrations/couriers/courier-catalog';
 import type { BookedShipment, BookShipmentInput } from '@/integrations/couriers/courier.types';
 import { codForShipment, lineKeyFor, orderDueInOrderCurrency, roundCod } from '@/integrations/couriers/courier-booking.util';
@@ -1461,6 +1461,22 @@ export class OrdersService {
     const courier = this.requireCourier();
     await this.databaseService.repositories.storeModel.findOne({ _id: storeId, sellerId, isDelete: false }).select('_id').lean().then((s) => { if (!s) throw new ForbiddenException('Store not found or unauthorized'); });
     return { success: true, data: { providers: await courier.listBookableProviders(storeId), settings: await courier.getSettings(storeId) } };
+  }
+
+  /** Pre-booking check: does this courier serve `city`? Never throws for "not served" — returns ok:false with the reason. */
+  async courierValidateCity(sellerId: string, storeId: string, provider: string, city: string) {
+    const courier = this.requireCourier();
+    const s = await this.databaseService.repositories.storeModel.findOne({ _id: storeId, sellerId, isDelete: false }).select('_id').lean();
+    if (!s) throw new ForbiddenException('Store not found or unauthorized');
+    if (!city || !city.trim()) throw new BadRequestException('city is required');
+    const conn = await courier.resolveConnection(storeId, provider);
+    try {
+      const hit = await conn.provider.validateCity(conn.ctx, city);
+      return { success: true, data: { ok: true, city: hit.name } };
+    } catch (err: any) {
+      if (err?.code === 'city_not_serviceable') return { success: true, data: { ok: false, message: err.message } };
+      return courierErrorToHttp(err);
+    }
   }
 
   async courierDocuments(sellerId: string, storeId: string, bookingIds: string[], kind: 'airway_bill' | 'load_sheet') {

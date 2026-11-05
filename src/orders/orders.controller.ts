@@ -249,6 +249,14 @@ export class OrdersController {
   @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('seller', 'staff')
   @RequirePermission('orders.buy_shipping_label')
+  @Get('courier/validate-city/:storeId')
+  async courierValidateCity(@Req() req: any, @Param('storeId') storeId: string, @Query('provider') provider: string, @Query('city') city: string) {
+    return this.ordersService.courierValidateCity(actingSellerId(req.user), storeId, provider, city);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('orders.buy_shipping_label')
   @Get('courier/order/:storeId/:orderId')
   async courierBookingsForOrder(@Req() req: any, @Param('storeId') storeId: string, @Param('orderId') orderId: string) {
     return this.ordersService.listCourierBookingsForOrder(actingSellerId(req.user), storeId, orderId);
