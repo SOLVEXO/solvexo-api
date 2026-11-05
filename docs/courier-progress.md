@@ -1,0 +1,19 @@
+# Courier module — progress (resume file)
+
+Branch: `feature/courier-integration` (both repos: `solvexo-api`, `solvexo`), branched from `uzair-branch`. Never commit to main.
+Run unit tests with the local, uncommitted `jest.unit.config.js` (the repo's own jest config needs `mongodb-memory-server`, which is not installed in this sandbox):
+`npx jest -c jest.unit.config.js <path>`.
+
+## Phases
+- [x] Phase 1 — backend foundation (types, interface, registry, catalog + enablement gate, shared HTTP helper, schema enums)
+- [ ] Phase 2 — 9 provider adapters + mapping files + mocked-HTTP tests
+- [ ] Phase 3 — booking flow (OrdersService), store courier settings, endpoints, permission, entitlements, audit
+- [ ] Phase 4 — tracking sync job, events, RTO flag, COD status refresh, optional webhook (stubbed)
+- [ ] Phase 5 — frontend (solvexo)
+- [ ] Phase 6 — service tests, docs/courier-module.md, final audit
+
+## Decisions
+- All code under `src/integrations/couriers/`. Adapters = `GenericCourierProvider` + one mapping file each.
+- Audit logging uses `ActivityLogService.log` (what orders/integrations already use); `writeAuditLog` is POS-only.
+- Permission reused: `orders.buy_shipping_label` (book/cancel/label/load sheet); connect/settings ride the existing integrations controller (`settings.payments.manage`).
+- Bookings are never auto-retried at HTTP level (double-booking risk); reads retry.
