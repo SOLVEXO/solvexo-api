@@ -1,19 +1,21 @@
 /* eslint-disable prettier/prettier */
 import {
-  BadRequestException, Body, Controller, ForbiddenException, Get, Headers, HttpCode, Param, Post, Query, Req, UseGuards, UseInterceptors,
+  BadRequestException, Body, Controller, ForbiddenException, forwardRef, Get, Headers, HttpCode, Inject, Param, Post, Query, Req, UseGuards, UseInterceptors,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiProperty, ApiTags } from '@nestjs/swagger';
 import { IsIn, IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { IdempotencyInterceptor } from '../common/idempotency.interceptor';
-import { PosAuthGuard } from '../pos/guards/pos-auth.guard';
+import { PosAuthGuard, RequireManagerPin } from '../pos/guards/pos-auth.guard';
 import { PosEntitlementGuard } from '../pos/guards/pos-entitlement.guard';
 import { PosDeviceScopeInterceptor } from '../pos/pos-device-scope';
 import { FeatureFlagGuard } from '../admin-config/guards/feature-flag.guard';
 import { RequireFeature } from '../admin-config/decorators/require-feature.decorator';
 import { PosService } from '../pos/pos.service';
 import { PaymentsCoreService } from './payments-core.service';
+import { DIGITAL_PAYMENTS_GATE, DigitalPaymentsGate } from './digital-payments-gate';
+import { KybService } from '../kyb/kyb.service';
 
 export class CreatePaymentIntentDto {
   @ApiProperty({ example: 150000, description: 'Amount to charge in the currency\'s MINOR unit (PKR 1,500.00 → 150000). Must equal the sale\'s server-computed share when the sale is completed.' })
@@ -35,8 +37,9 @@ export class RefundPaymentDto {
   @ApiProperty({ required: false }) @IsOptional() @IsString() storeId?: string;
 }
 export class ReconcilePaymentDto {
-  @ApiProperty({ enum: ['sale_recorded', 'refund', 'dismissed'] }) @IsIn(['sale_recorded', 'refund', 'dismissed']) resolution: 'sale_recorded' | 'refund' | 'dismissed';
+  @ApiProperty({ enum: ['sale_recorded', 'refund', 'resolved'], description: '`resolved` needs a note of at least 10 characters' }) @IsIn(['sale_recorded', 'refund', 'resolved']) resolution: 'sale_recorded' | 'refund' | 'resolved';
   @ApiProperty({ required: false }) @IsOptional() @IsString() saleId?: string;
+  @ApiProperty({ required: false, description: 'The receipt number (e.g. POS-00012) — alternative to saleId' }) @IsOptional() @IsString() @MaxLength(40) saleNumber?: string;
   @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(300) note?: string;
   @ApiProperty({ required: false }) @IsOptional() @IsString() storeId?: string;
 }
@@ -49,7 +52,12 @@ export class ReconcilePaymentDto {
 @RequireFeature('posMode')
 @Controller('api/pos/payments')
 export class PaymentsCoreController {
-  constructor(private readonly payments: PaymentsCoreService, private readonly pos: PosService) {}
+  constructor(
+    private readonly payments: PaymentsCoreService,
+    @Inject(forwardRef(() => PosService)) private readonly pos: PosService,
+    @Inject(DIGITAL_PAYMENTS_GATE) private readonly gate: DigitalPaymentsGate,
+    private readonly kyb: KybService,
+  ) {}
 
   /** The store this call is for: a device token pins it; an owner/staff JWT must name it and own it. */
   private async storeOf(req: any, asked?: string): Promise<string> {
@@ -81,6 +89,28 @@ export class PaymentsCoreController {
       { amountMinor: dto.amountMinor, sessionId: dto.sessionId, saleAttemptKey: dto.saleAttemptKey ?? null, idempotencyKey, mockScenario: process.env.NODE_ENV === 'production' ? null : dto.mockScenario ?? null },
     );
     return { success: true, data };
+  }
+
+  /** Business-verification status for the till's Home card. Manager PIN session only; nothing sensitive (no documents, no identifiers). */
+  @UseGuards(PosAuthGuard, RolesGuard)
+  @Roles('seller')
+  @RequireManagerPin()
+  @Get('verification')
+  async verification(@Req() req: any, @Query('storeId') storeId?: string) {
+    const sid = await this.storeOf(req, storeId);
+    const [status, enabled] = await Promise.all([this.kyb.posStatus(sid), this.gate.isEnabled(sid)]);
+    return { success: true, data: { ...status, digitalPaymentsEnabled: enabled } };
+  }
+
+  /** The cashier gave up the checkout: release its unpaid QR payments (paid ones are listed, never touched). */
+  @UseGuards(PosAuthGuard, RolesGuard)
+  @Roles('seller')
+  @HttpCode(200)
+  @Post('attempts/:key/cancel')
+  async cancelAttempt(@Req() req: any, @Param('key') key: string, @Query('storeId') storeId?: string, @Headers('x-pos-employee-token') token?: string) {
+    const sid = await this.storeOf(req, storeId);
+    const a = await this.actor(req, sid, token, false);
+    return { success: true, data: await this.payments.cancelAttempt(sid, key, a.employeeId) };
   }
 
   /** Static segment before `:id` routes. */
@@ -118,6 +148,7 @@ export class PaymentsCoreController {
 
   @UseGuards(PosAuthGuard, RolesGuard)
   @Roles('seller')
+  @RequireManagerPin()
   @UseInterceptors(IdempotencyInterceptor)
   @HttpCode(200)
   @Post('intents/:id/refunds')
@@ -129,6 +160,7 @@ export class PaymentsCoreController {
 
   @UseGuards(PosAuthGuard, RolesGuard)
   @Roles('seller')
+  @RequireManagerPin()
   @UseInterceptors(IdempotencyInterceptor)
   @HttpCode(200)
   @Post('intents/:id/reconcile')

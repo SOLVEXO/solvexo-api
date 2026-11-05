@@ -1,9 +1,9 @@
 /* eslint-disable prettier/prettier */
 import {
-  BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, InternalServerErrorException, Logger, NotFoundException,
+  BadRequestException, ConflictException, ForbiddenException, HttpException, Inject, Injectable, InternalServerErrorException, Logger, NotFoundException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model, Types } from 'mongoose';
+import { ClientSession, Model, Types } from 'mongoose';
 import { isoExponent, isSafeMinor } from '@/common/money-minor.util';
 import {
   PaymentProvider, PAYMENT_PROVIDERS, ProviderOutcome,
@@ -274,14 +274,16 @@ export class PaymentsCoreService {
   // ── refunds ────────────────────────────────────────────────────────────────────────────────────────────────────
 
   /** Provider refund as its own events: refund_requested → refund_succeeded | refund_failed (a pending refund finishes by webhook/poll). */
-  async refund(storeId: string, id: string, actor: { employeeId: string }, dto: { amountMinor: number; reason: string; refundKey: string }) {
+  async refund(storeId: string, id: string, actor: { employeeId: string }, dto: { amountMinor: number; reason: string; refundKey: string }, opts: { unconfirmedCapMinor?: number } = {}) {
     const intent = await this.getIntentOrThrow(storeId, id);
     if (!isSafeMinor(dto.amountMinor) || dto.amountMinor <= 0) throw new BadRequestException({ code: 'INVALID_AMOUNT', message: 'amountMinor must be a positive integer' });
     if (!dto.reason || !dto.reason.trim()) throw new BadRequestException({ code: 'REASON_REQUIRED', message: 'A refund reason is required' });
     if (!dto.refundKey) throw new BadRequestException({ code: 'IDEMPOTENCY_KEY_REQUIRED', message: 'refundKey is required' });
 
     const before = await this.derived(intent);
-    if (!before.d.confirmed) throw new ConflictException({ code: 'PAYMENT_NOT_CONFIRMED', message: 'Only a confirmed payment can be refunded' });
+    // an amount-mismatch anomaly is money the provider took that we never counted as paid: a manager may send back exactly what was received
+    const cap = before.d.confirmed ? intent.amountMinor : opts.unconfirmedCapMinor;
+    if (!before.d.confirmed && cap === undefined) throw new ConflictException({ code: 'PAYMENT_NOT_CONFIRMED', message: 'Only a confirmed payment can be refunded' });
     const existing = before.events.find((e: any) => e.type === 'refund_requested' && e.refundId === dto.refundKey);
     if (existing && existing.amountMinor !== dto.amountMinor) throw new ConflictException({ code: 'IDEMPOTENCY_KEY_REUSED', message: 'This refund key was used for a different amount' });
 
@@ -293,7 +295,7 @@ export class PaymentsCoreService {
     const events = await this.eventsOf(String(intent._id));
     const upToMe = events.filter((e: any) => e.seq <= req.event.seq);
     const committed = this.refundCommitted(upToMe);
-    if (committed > intent.amountMinor) {
+    if (committed > (cap as number)) {
       await this.appendEvent(intent, 'refund_failed', { source: 'system', refundId: dto.refundKey, amountMinor: dto.amountMinor, note: 'exceeds_refundable_amount' });
       throw new ConflictException({ code: 'REFUND_EXCEEDS_PAID', message: 'The refund is more than what is left to refund' });
     }
@@ -354,34 +356,114 @@ export class PaymentsCoreService {
     return { items };
   }
 
-  /** A manager closes an attention item: attach the payment to a sale that exists, refund it, or (anomaly on an UNPAID intent only) dismiss it. */
-  async reconcile(storeId: string, id: string, actor: { employeeId: string }, dto: { resolution: 'sale_recorded' | 'refund' | 'dismissed'; saleId?: string; note?: string }) {
+  /**
+   * A manager closes an attention item. Every action is audit-logged and needs a manager PIN session (checked by the route, again by
+   * the caller's role). Resolutions:
+   *  - `sale_recorded`: the payment belongs to a sale that exists (`saleId`, or the `saleNumber` printed on its receipt) — money received,
+   *    sale made, now linked;
+   *  - `refund`: send the money back through the provider (for an amount mismatch: exactly what was received);
+   *  - `resolved`: handled some other way — a written note of at least 10 characters is REQUIRED and goes to the audit log.
+   */
+  async reconcile(storeId: string, id: string, actor: { employeeId: string }, dto: { resolution: 'sale_recorded' | 'refund' | 'resolved'; saleId?: string; saleNumber?: string; note?: string }) {
     const intent = await this.getIntentOrThrow(storeId, id);
-    const { d } = await this.derived(intent);
+    const { d, events } = await this.derived(intent);
     if (d.reconciled) throw new ConflictException({ code: 'ALREADY_RECONCILED', message: 'This payment was already reconciled' });
     if (d.attention.length === 0) throw new ConflictException({ code: 'NOTHING_TO_RECONCILE', message: 'This payment does not need reconciliation' });
     const note = (dto.note ?? '').trim().slice(0, 300);
 
     if (dto.resolution === 'sale_recorded') {
       if (!d.confirmed) throw new ConflictException({ code: 'PAYMENT_NOT_CONFIRMED', message: 'Only a confirmed payment can be attached to a sale' });
-      if (!dto.saleId || !Types.ObjectId.isValid(dto.saleId)) throw new BadRequestException({ code: 'SALE_REQUIRED', message: 'saleId is required' });
-      const sale: any = await this.sales.findOne({ _id: dto.saleId, storeId }).select('_id saleNumber').lean();
+      let sale: any = null;
+      if (dto.saleId && Types.ObjectId.isValid(dto.saleId)) sale = await this.sales.findOne({ _id: dto.saleId, storeId }).select('_id saleNumber').lean();
+      else if (dto.saleNumber) sale = await this.sales.findOne({ saleNumber: String(dto.saleNumber).trim().toUpperCase(), storeId }).select('_id saleNumber').lean();
+      else throw new BadRequestException({ code: 'SALE_REQUIRED', message: 'saleId or saleNumber is required' });
       if (!sale) throw new NotFoundException({ code: 'SALE_NOT_FOUND', message: 'That sale does not exist in this store' });
-      await this.appendEvent(intent, 'reconciled', { source: 'manager', saleId: String(sale._id), employeeId: actor.employeeId, note: note || 'attached to sale', meta: { resolution: 'sale_recorded' } });
+      await this.appendEvent(intent, 'reconciled', { source: 'manager', saleId: String(sale._id), employeeId: actor.employeeId, note: note || 'attached to sale', meta: { resolution: 'sale_recorded', saleNumber: sale.saleNumber ?? null } });
     } else if (dto.resolution === 'refund') {
-      if (!d.confirmed) throw new ConflictException({ code: 'PAYMENT_NOT_CONFIRMED', message: 'Only a confirmed payment can be refunded' });
-      const remaining = intent.amountMinor - d.refundedMinor - d.refundPendingMinor;
+      const mismatch: any = [...events].reverse().find((e: any) => e.type === 'anomaly' && e.note === 'amount_mismatch');
+      const received = mismatch?.meta?.receivedMinor as number | undefined;
+      if (!d.confirmed && !(received && received > 0)) throw new ConflictException({ code: 'PAYMENT_NOT_CONFIRMED', message: 'There is no received money to refund on this payment' });
+      const basis = d.confirmed ? intent.amountMinor : (received as number);
+      const remaining = basis - d.refundedMinor - d.refundPendingMinor;
       if (remaining <= 0) throw new ConflictException({ code: 'NOTHING_TO_REFUND', message: 'Everything has already been refunded' });
-      const r = await this.refund(storeId, id, actor, { amountMinor: remaining, reason: note || 'reconciliation refund', refundKey: `reconcile-${id}` });
+      const r = await this.refund(storeId, id, actor, { amountMinor: remaining, reason: note || 'reconciliation refund', refundKey: `reconcile-${id}` }, d.confirmed ? {} : { unconfirmedCapMinor: basis });
       if (r.status === 'failed') throw new ConflictException({ code: 'REFUND_FAILED', message: 'The provider declined the refund; the item stays open' });
       await this.appendEvent(intent, 'reconciled', { source: 'manager', employeeId: actor.employeeId, note: note || 'refunded', meta: { resolution: 'refund', refundId: `reconcile-${id}`, refundStatus: r.status } });
     } else {
-      if (d.confirmed) throw new ConflictException({ code: 'MONEY_RECEIVED', message: 'Money was received for this payment; attach it to a sale or refund it' });
-      if (note.length < 10) throw new BadRequestException({ code: 'NOTE_REQUIRED', message: 'Explain why this is dismissed (at least 10 characters)' });
-      await this.appendEvent(intent, 'reconciled', { source: 'manager', employeeId: actor.employeeId, note, meta: { resolution: 'dismissed' } });
+      if (note.length < 10) throw new BadRequestException({ code: 'NOTE_REQUIRED', message: 'Explain how this was resolved (at least 10 characters)' });
+      await this.appendEvent(intent, 'reconciled', { source: 'manager', employeeId: actor.employeeId, note, meta: { resolution: 'resolved', hadMoney: d.confirmed } });
     }
-    await this.writeAudit(intent, 'payment_reconciled', actor.employeeId, { resolution: dto.resolution, saleId: dto.saleId ?? null, reasons: d.attention });
+    await this.writeAudit(intent, 'payment_reconciled', actor.employeeId, { resolution: dto.resolution, saleId: dto.saleId ?? null, saleNumber: dto.saleNumber ?? null, reasons: d.attention, note: note || null });
     return this.view(intent);
+  }
+
+  // ── attaching a confirmed payment to a sale (called by the sale path) ──────────────────────────────────────────
+
+  /**
+   * Is this payment fit to settle a sale line? It must be CONFIRMED, unused, unrefunded, unresolved, for this store and till session,
+   * in the sale's currency and for exactly the line's amount. Read-only: nothing is consumed here (see `consumeInTx`).
+   */
+  async verifyForSale(storeId: string, intentId: string, expect: { sessionId: string; amountMinor: number; currency: string }) {
+    const fail = (status: number, code: string, message: string, extra: object = {}) => new HttpException({ statusCode: status, code, message, ...extra }, status);
+    if (!Types.ObjectId.isValid(intentId)) throw fail(404, 'PAYMENT_NOT_FOUND', 'That payment does not exist');
+    const intent: any = await this.intents.findOne({ _id: intentId, storeId }).lean();
+    if (!intent) throw fail(404, 'PAYMENT_NOT_FOUND', 'That payment does not exist in this store');
+    const { d } = await this.derived(intent);
+    if (d.consumed) throw fail(409, 'PAYMENT_ALREADY_USED', 'This payment already belongs to another sale');
+    if (d.reconciled) throw fail(409, 'PAYMENT_ALREADY_RESOLVED', 'A manager already resolved this payment');
+    if (!d.confirmed) throw fail(409, 'PAYMENT_NOT_CONFIRMED', 'The payment has not been confirmed', { paymentStatus: d.status });
+    if (d.refundedMinor > 0 || d.refundPendingMinor > 0) throw fail(409, 'PAYMENT_REFUNDED', 'This payment is being or has been refunded');
+    if (String(intent.sessionId) !== String(expect.sessionId)) throw fail(409, 'PAYMENT_SESSION_MISMATCH', 'This payment was taken in a different shift');
+    if (String(intent.currency).toUpperCase() !== String(expect.currency).toUpperCase()) throw fail(409, 'PAYMENT_CURRENCY_MISMATCH', 'The payment is in a different currency than the sale', { paymentCurrency: intent.currency, saleCurrency: expect.currency });
+    if (intent.amountMinor !== expect.amountMinor) throw fail(409, 'PAYMENT_AMOUNT_MISMATCH', 'The payment amount does not match the amount on the sale', { paymentMinor: intent.amountMinor, saleLineMinor: expect.amountMinor });
+    return { intentId: String(intent._id), providerRef: intent.providerRef as string, confirmedAt: d.confirmedAt, amountMinor: intent.amountMinor as number };
+  }
+
+  /**
+   * Marks the payment as belonging to a sale — INSIDE the sale's transaction. `(intentId, 'consumed')` is unique, so of two sales (two
+   * tills, a retry racing another request) trying to take the same payment exactly one commits; the other's whole transaction fails.
+   */
+  async consumeInTx(storeId: string, intentId: string, sale: { id: string; number?: string | null }, tx?: ClientSession): Promise<void> {
+    const session = tx ?? undefined;
+    const last: any = await this.events.findOne({ intentId }).sort({ seq: -1 }).select('seq').session(session ?? null).lean();
+    const intent: any = await this.intents.findOne({ _id: intentId, storeId }).select('amountMinor').session(session ?? null).lean();
+    try {
+      await this.events.create([{ intentId, storeId, seq: (last?.seq ?? 0) + 1, type: 'consumed', source: 'system', saleId: sale.id, amountMinor: intent?.amountMinor, onceKey: `${intentId}:consumed`, meta: { saleNumber: sale.number ?? null }, at: new Date() }], session ? { session } : undefined);
+    } catch (e: any) {
+      if (e?.code === 11000) {
+        const kp = Object.keys(e?.keyPattern ?? {});
+        if (kp.includes('onceKey')) throw new HttpException({ statusCode: 409, code: 'PAYMENT_ALREADY_USED', message: 'This payment already belongs to another sale' }, 409);
+        throw new HttpException({ statusCode: 409, code: 'PAYMENT_BUSY', retryable: true, message: 'The payment changed at that moment — try again' }, 409);
+      }
+      throw e;
+    }
+  }
+
+  /** The checkout was given up at the till: release every QR payment of it that was not paid. Paid ones are reported (a manager must deal with them). */
+  async cancelAttempt(storeId: string, saleAttemptKey: string, employeeId?: string | null) {
+    const intents: any[] = await this.intents.find({ storeId, saleAttemptKey }).lean();
+    const cancelled: string[] = []; const confirmed: string[] = [];
+    for (const it of intents) {
+      const { d } = await this.derived(it);
+      if (d.confirmed) { if (!d.consumed) confirmed.push(String(it._id)); continue; }
+      if (isOpen(d.status)) { await this.cancel(storeId, String(it._id), employeeId).catch((e) => this.logger.warn(`cancelAttempt: ${e?.message}`)); cancelled.push(String(it._id)); }
+    }
+    return { cancelled, confirmed };
+  }
+
+  /** Provider refunds for the digital lines of a sale refund (after the sale-side refund is committed). One failing line never hides the others. */
+  async refundForSale(storeId: string, plan: Array<{ intentId: string; amountMinor: number }>, ctx: { employeeId: string; refundId: string; reason: string }) {
+    const out: Array<{ intentId: string; amountMinor: number; status: 'succeeded' | 'pending' | 'failed' | 'error'; code?: string }> = [];
+    for (const p of plan) {
+      try {
+        const r = await this.refund(storeId, p.intentId, { employeeId: ctx.employeeId }, { amountMinor: p.amountMinor, reason: `Sale refund: ${ctx.reason || 'refund'}`, refundKey: `${ctx.refundId}:${p.intentId}` });
+        out.push({ intentId: p.intentId, amountMinor: p.amountMinor, status: r.status as any });
+      } catch (e: any) {
+        this.logger.error(`[digital-refund-error] intent=${p.intentId} sale-refund=${ctx.refundId}: ${e?.message}`);
+        out.push({ intentId: p.intentId, amountMinor: p.amountMinor, status: 'error', code: e?.response?.code ?? 'REFUND_ERROR' });
+      }
+    }
+    return out;
   }
 
   async writeAudit(intent: any, action: string, employeeId: string | null | undefined, metadata: object) {

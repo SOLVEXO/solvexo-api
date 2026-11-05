@@ -4,6 +4,7 @@ import { MongooseModule } from '@nestjs/mongoose';
 import { AuthModule } from '@/auth/auth.module';
 import { RedisModule } from '@/redis/redis.module';
 import { AdminConfigModule } from '@/admin-config/admin-config.module';
+import { forwardRef } from '@nestjs/common';
 import { PosModule } from '@/pos/pos.module';
 import { KybModule } from '@/kyb/kyb.module';
 import { KybGateService } from '@/kyb/kyb-gate.service';
@@ -36,7 +37,7 @@ export function buildProviders(env: NodeJS.ProcessEnv = process.env): PaymentPro
 
 @Module({
   imports: [
-    AuthModule, RedisModule, AdminConfigModule, PosModule, KybModule,
+    AuthModule, RedisModule, AdminConfigModule, forwardRef(() => PosModule), KybModule,
     MongooseModule.forFeature([
       { name: PaymentIntent.name, schema: PaymentIntentSchema },
       { name: PaymentEvent.name, schema: PaymentEventSchema },

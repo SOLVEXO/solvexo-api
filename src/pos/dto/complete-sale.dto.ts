@@ -4,8 +4,8 @@ import { Type } from 'class-transformer';
 import { PaymentLineDto } from './payment.dto';
 
 export class CompleteSaleDto {
-  @ApiProperty({ enum: ['cash', 'card', 'other'], description: 'Single-payment form; ignored when `payments` is sent' })
-  @IsEnum(['cash', 'card', 'other'])
+  @ApiProperty({ enum: ['cash', 'card', 'other', 'raast_qr'], description: 'Single-payment form; ignored when `payments` is sent' })
+  @IsEnum(['cash', 'card', 'other', 'raast_qr'])
   paymentMethod: string;
 
   @ApiProperty({ type: [PaymentLineDto], required: false })

@@ -1,5 +1,7 @@
 /* eslint-disable prettier/prettier */
 import {
+  forwardRef,
+  Inject,
   Injectable,
   Optional,
   HttpException,
@@ -16,8 +18,9 @@ import { Long } from 'mongodb';
 import { checkMinorPairs, isoExponent, MinorMismatch } from '@/common/money-minor.util';
 import { PosMinorMetrics } from './pos-minor-metrics';
 import { searchStoreCustomers } from '@/common/store-customer-search.util';
+import { PaymentsCoreService } from '@/payments-core/payments-core.service';
 import {
-  allocateRefund, assertClientTotal, byTender, computeTotals, DiscountType, effectivePayments, exponentOf, fromMinor,
+  allocateRefund, assertClientTotal, byTender, computeTotals, digitalRefundPlan, DiscountType, effectivePayments, exponentOf, fromMinor, isDigitalTender,
   moneyError, partialRefundAmount, roundMoney, settlePayments, tenderNets, toMinor, Totals,
 } from './pos-money.util';
 import { CLOCK_SKEW_MS, offlineWindowMs, parseOffline } from './pos-offline.util';
@@ -76,6 +79,8 @@ export class PosService {
     private readonly financeService: FinanceService,
     // optional so unit tests that build the service by hand keep working (no revocation list → nothing revoked)
     @Optional() private readonly revocations?: PosTokenRevocationService,
+    // G2.3: digital (Raast QR) payments. Optional for the same reason; a sale with a QR line is refused when it is absent.
+    @Optional() @Inject(forwardRef(() => PaymentsCoreService)) private readonly payments?: PaymentsCoreService,
   ) {}
 
   private get r() {
@@ -605,7 +610,7 @@ export class PosService {
         openingCash: roundMoney(dto.openingCash, sessionMoney.exp),
         openingCashMinor: toMinor(dto.openingCash, sessionMoney.exp),
         // counters start at 0 in both forms
-        cashSalesMinor: 0, cardSalesMinor: 0, otherSalesMinor: 0, totalSalesMinor: 0, totalRefundsMinor: 0,
+        cashSalesMinor: 0, cardSalesMinor: 0, otherSalesMinor: 0, digitalSalesMinor: 0, totalSalesMinor: 0, totalRefundsMinor: 0,
         status: 'open',
       });
     } catch (err: any) {
@@ -752,8 +757,9 @@ export class PosService {
       const nets = tenderNets(sale as any, exp);
       const used = effectivePayments(sale as any);
       if (new Set(used.map((l) => l.method)).size > 1) splitSales++;
-      for (const method of ['cash', 'card', 'other'] as const) {
+      for (const method of ['cash', 'card', 'other', 'raast_qr'] as const) {
         if (used.some((l) => l.method === method)) {
+          byPayment[method] ??= { count: 0, total: 0 }; // raast_qr appears only for stores that sell with it
           byPayment[method].count++;
           byPayment[method].total = roundMoney(byPayment[method].total + nets[method], exp);
         }
@@ -960,9 +966,18 @@ export class PosService {
     const { subtotal, discount, tax, total } = totals;
 
     // Tender lines — validated against the server's total (a held sale has none yet; it is paid when completed).
-    const settled = isHeld
+    if (!isHeld && !(dto.payments?.length) && isDigitalTender(String(dto.paymentMethod))) throw moneyError('QR_REQUIRES_PAYMENT_LINES', 'A Raast QR sale must send its payment as a payment line carrying the confirmed payment (payments[].intentId)');
+    if (isHeld && (dto.payments ?? []).some((p) => isDigitalTender(p.method))) throw moneyError('DIGITAL_PAYMENT_ON_HELD_SALE', 'A held sale has no payments yet; pay it when it is completed');
+    let settled = isHeld
       ? null
       : settlePayments(totals.minor.total, money.exp, { payments: dto.payments, paymentMethod: dto.paymentMethod, amountTendered: dto.amountTendered, reference: dto.paymentReference }, { allowShort: off.isOffline });
+    // G2.3: every digital (QR) line must point at a CONFIRMED, unused payment of this shift for exactly its amount — before stock is touched
+    let digital: Array<{ intentId: string; providerRef: string }> = [];
+    if (settled) {
+      const v = await this.verifyDigitalLines(dto.storeId, dto.sessionId, settled.lines, money, off.isOffline);
+      settled = { ...settled, lines: v.lines };
+      digital = v.digital;
+    }
     if (settled && settled.shortBy > 0) flags.push({ type: 'payment_shortfall', detail: { shortBy: settled.shortBy, serverTotal: total } });
 
     // Take the stock first (all-or-nothing, floor-guarded). A completed sale only exists once its
@@ -1043,6 +1058,7 @@ export class PosService {
           const auditCtx = { sessionId: dto.sessionId, registerId: dto.registerId, shiftId: (session as any).shiftId ?? null };
           if (!isHeld) {
             await this.recordPayments(created, settled!.lines, { ...auditCtx, employeeId: dto.employeeId }, tx);
+            await this.consumeDigital(dto.storeId, digital, created, tx); // one sale per payment: the unique `consumed` event commits with the sale or not at all
           }
           await this.writeAuditLog({
             storeId: dto.storeId,
@@ -1133,7 +1149,11 @@ export class PosService {
     const totals = computeTotals((sale as any).items, { exp: money.exp, discountType: discountReq.type, discountValue: discountReq.value, taxRate: money.taxRate });
     const clientMismatches = this.reconcileClientMoney(dto, money.exp, totals.minor.total);
     assertClientTotal(dto.clientTotal, totals);
-    const settled = settlePayments(totals.minor.total, money.exp, { payments: dto.payments, paymentMethod: dto.paymentMethod, amountTendered: dto.amountTendered, reference: dto.paymentReference });
+    if (!(dto.payments?.length) && isDigitalTender(String(dto.paymentMethod))) throw moneyError('QR_REQUIRES_PAYMENT_LINES', 'A Raast QR sale must send its payment as a payment line carrying the confirmed payment (payments[].intentId)');
+    let settled = settlePayments(totals.minor.total, money.exp, { payments: dto.payments, paymentMethod: dto.paymentMethod, amountTendered: dto.amountTendered, reference: dto.paymentReference });
+    const verifiedDigital = await this.verifyDigitalLines(String((sale as any).storeId), String((sale as any).sessionId), settled.lines, money, false);
+    settled = { ...settled, lines: verifiedDigital.lines };
+    const digital = verifiedDigital.digital;
     const { discount, tax, total } = totals;
     const locationId: string | null = (sale as any).locationId ?? null;
 
@@ -1146,7 +1166,9 @@ export class PosService {
     );
 
     const completeCtx = { sessionId: String((sale as any).sessionId), registerId: (sale as any).registerId ?? null, shiftId: ((await this.r.registerSessionModel.findById((sale as any).sessionId)) as any)?.shiftId ?? null };
-    const updated = await this.atomic(async (tx) => {
+    let updated: any;
+    try {
+    updated = await this.atomic(async (tx) => {
       const claimed = await this.r.saleModel.findOneAndUpdate(
       { _id: saleId, status: 'held', deletedAt: null },
       {
@@ -1176,9 +1198,14 @@ export class PosService {
     );
       if (!claimed) return null;
       await this.recordPayments(claimed, settled.lines, { ...completeCtx, employeeId: (sale as any).employeeId }, tx);
+      await this.consumeDigital(String((sale as any).storeId), digital, claimed, tx);
       await this.writeAuditLog({ storeId: (sale as any).storeId, employeeId: (sale as any).employeeId, action: 'sale_completed', targetId: saleId, targetType: 'sale', ...completeCtx, metadata: { total, discount, fromHeld: true } }, tx);
       return claimed;
     });
+    } catch (e) {
+      await this.releaseStock(reserved, locationId); // the stock taken above goes back if the sale (or its digital payment) could not be committed
+      throw e;
+    }
     if (!updated) {
       await this.releaseStock(reserved, locationId);
       throw businessConflict('HELD_SALE_ALREADY_RESOLVED', 'This held sale was already completed or discarded');
@@ -1396,8 +1423,13 @@ export class PosService {
 
     await this.recordPosRefundInLedger(sale, refundAmount, newStatus === 'refunded' && !isPartial ? 'refund' : 'partial refund');
 
-    if (!isPartial) return { success: true, message: 'Sale fully refunded and stock restored', data: { refundedAmount: refundAmount, newStatus, tenders, currency, currencyExponent: exp, refundId: String(refundId), reference: `${(sale as any).saleNumber ?? saleId}-R${refundSeq + 1}` } };
-    return { success: true, message: `Partial refund of ${refundAmount.toFixed(exp)} processed`, data: { refundedAmount: refundAmount, newStatus, tenders, currency, currencyExponent: exp, refundId: String(refundId), reference: `${(sale as any).saleNumber ?? saleId}-R${refundSeq + 1}` } };
+    // G2.3: the Raast part of the refund goes back through the provider, as provider-refund EVENTS (never a typed-in record). The sale-side
+    // refund above is already committed; if a provider call fails the payment shows up under "Needs attention → refund failed" for a manager.
+    const digitalPlan = this.payments ? digitalRefundPlan(lines as any, alreadyRefunded, refundAmount, exp) : [];
+    const digitalRefunds = digitalPlan.length ? await this.payments!.refundForSale(String((sale as any).storeId), digitalPlan, { employeeId: actor.employeeId, refundId: String(refundId), reason: dto?.reason?.trim() ?? '' }) : undefined;
+
+    if (!isPartial) return { success: true, message: 'Sale fully refunded and stock restored', data: { ...(digitalRefunds ? { digitalRefunds } : {}), refundedAmount: refundAmount, newStatus, tenders, currency, currencyExponent: exp, refundId: String(refundId), reference: `${(sale as any).saleNumber ?? saleId}-R${refundSeq + 1}` } };
+    return { success: true, message: `Partial refund of ${refundAmount.toFixed(exp)} processed`, data: { ...(digitalRefunds ? { digitalRefunds } : {}), refundedAmount: refundAmount, newStatus, tenders, currency, currencyExponent: exp, refundId: String(refundId), reference: `${(sale as any).saleNumber ?? saleId}-R${refundSeq + 1}` } };
   }
 
   /**
@@ -1620,8 +1652,8 @@ export class PosService {
     for (const sale of sales) {
       const nets = tenderNets(sale, exp);
       const used = effectivePayments(sale);
-      for (const m of ['cash', 'card', 'other'] as const) {
-        if (used.some((l) => l.method === m)) { byPayment[m].count++; byPayment[m].total = roundMoney(byPayment[m].total + nets[m], exp); }
+      for (const m of ['cash', 'card', 'other', 'raast_qr'] as const) {
+        if (used.some((l) => l.method === m)) { byPayment[m] ??= { count: 0, total: 0 }; byPayment[m].count++; byPayment[m].total = roundMoney(byPayment[m].total + nets[m], exp); }
       }
     }
     const refundedValue = sum(reversed.map((x) => (x.status === 'voided' ? x.total : (x.refundedAmount || x.total))));
@@ -1721,11 +1753,12 @@ export class PosService {
   }
 
   /** `$inc` for the register session from a sale's tender nets (cash net of change; refunds already deducted). */
-  private tenderInc(nets: Record<'cash' | 'card' | 'other', number>, sign: 1 | -1): Record<string, number> {
+  private tenderInc(nets: Record<'cash' | 'card' | 'other' | 'raast_qr', number>, sign: 1 | -1): Record<string, number> {
     const inc: Record<string, number> = {};
     if (nets.cash) inc.cashSales = sign * nets.cash;
     if (nets.card) inc.cardSales = sign * nets.card;
     if (nets.other) inc.otherSales = sign * nets.other;
+    if (nets.raast_qr) inc.digitalSales = sign * nets.raast_qr;
     return inc;
   }
 
@@ -2028,7 +2061,7 @@ export class PosService {
     ],
     session: [
       ['openingCash', 'openingCashMinor'], ['closingCash', 'closingCashMinor'], ['expectedCash', 'expectedCashMinor'], ['cashDifference', 'cashDifferenceMinor'],
-      ['cashSales', 'cashSalesMinor'], ['cardSales', 'cardSalesMinor'], ['otherSales', 'otherSalesMinor'], ['totalSales', 'totalSalesMinor'], ['totalRefunds', 'totalRefundsMinor'],
+      ['cashSales', 'cashSalesMinor'], ['cardSales', 'cardSalesMinor'], ['otherSales', 'otherSalesMinor'], ['digitalSales', 'digitalSalesMinor'], ['totalSales', 'totalSalesMinor'], ['totalRefunds', 'totalRefundsMinor'],
       ['cashAdjustments[].amount', 'cashAdjustments[].amountMinor'],
       ['cardReconciliation.slipTotal', 'cardReconciliation.slipTotalMinor'], ['cardReconciliation.expectedCard', 'cardReconciliation.expectedCardMinor'], ['cardReconciliation.variance', 'cardReconciliation.varianceMinor'],
     ],
@@ -2038,13 +2071,46 @@ export class PosService {
 
   /** card / other are only RECORDED by the cashier today (no terminal integration); cash the cashier physically took is confirmed. */
   private paymentStatus(tender: string): 'confirmed' | 'recorded_unverified' {
-    return tender === 'cash' ? 'confirmed' : 'recorded_unverified';
+    return tender === 'cash' || isDigitalTender(tender) ? 'confirmed' : 'recorded_unverified'; // a digital payment is only ever attached once CONFIRMED
+  }
+
+  /**
+   * G2.3 — Raast QR lines. A QR line is accepted only when it points at a payment the provider has CONFIRMED (and nothing else):
+   * confirmed, unused, unrefunded, in this store and shift, in the sale's currency and for exactly the line's amount. Never offline
+   * (a digital payment is proven by the server, not by the till). Checked BEFORE stock is touched; the payment is then marked used
+   * inside the sale's transaction (`consumeDigital`). Returns the lines with the provider reference filled in.
+   */
+  private async verifyDigitalLines<L extends { method: string; amount: number; reference?: string | null; intentId?: string | null }>(
+    storeId: string, sessionId: string, lines: L[], money: { currency: string; exp: number }, isOffline: boolean,
+  ): Promise<{ lines: L[]; digital: Array<{ intentId: string; providerRef: string }> }> {
+    const digital: Array<{ intentId: string; providerRef: string }> = [];
+    const hasDigital = lines.some((l) => isDigitalTender(l.method));
+    if (!hasDigital) return { lines, digital };
+    if (isOffline) throw moneyError('DIGITAL_PAYMENT_ONLINE_ONLY', 'A Raast QR payment cannot be part of an offline sale: it needs the network');
+    if (!this.payments) throw new HttpException({ statusCode: 503, code: 'DIGITAL_PAYMENTS_UNAVAILABLE', message: 'Digital payments are not available' }, 503);
+    const seen = new Set<string>();
+    const out: L[] = [];
+    for (const l of lines) {
+      if (!isDigitalTender(l.method)) { out.push(l); continue; }
+      if (!l.intentId) throw moneyError('PAYMENT_INTENT_REQUIRED', 'A Raast QR line must carry the confirmed payment it settles (intentId)');
+      if (seen.has(String(l.intentId))) throw moneyError('PAYMENT_USED_TWICE', 'The same payment cannot settle two lines of one sale');
+      seen.add(String(l.intentId));
+      const v = await this.payments.verifyForSale(storeId, String(l.intentId), { sessionId, amountMinor: toMinor(l.amount, money.exp), currency: money.currency });
+      digital.push({ intentId: v.intentId, providerRef: v.providerRef });
+      out.push({ ...l, reference: v.providerRef });
+    }
+    return { lines: out, digital };
+  }
+
+  /** Marks the confirmed payments as belonging to this sale — inside the sale's transaction (one sale per payment, race-safe). */
+  private async consumeDigital(storeId: string, digital: Array<{ intentId: string }>, sale: any, tx?: ClientSession): Promise<void> {
+    for (const d of digital) await this.payments!.consumeInTx(storeId, d.intentId, { id: String(sale._id), number: sale.saleNumber ?? null }, tx);
   }
 
   /** One immutable PosPayment per tender line. (saleId, lineNo) and (store, idempotencyKey, lineNo) are unique → a retry cannot add a second row. */
   private async recordPayments(
     sale: any,
-    lines: Array<{ method: string; amount: number; tendered?: number | null; reference?: string | null }>,
+    lines: Array<{ method: string; amount: number; tendered?: number | null; reference?: string | null; intentId?: string | null }>,
     ctx: { sessionId: string | null; registerId: string | null; shiftId: string | null; employeeId: string | null },
     tx?: ClientSession,
   ): Promise<void> {
@@ -2056,7 +2122,8 @@ export class PosService {
         tender: l.method, amount: l.amount, tendered: l.tendered ?? null,
         amountMinor: toMinor(l.amount, sale.currencyExponent ?? 2), ...(l.tendered !== undefined && l.tendered !== null ? { tenderedMinor: toMinor(l.tendered, sale.currencyExponent ?? 2) } : {}),
         currency: sale.currency ?? null, currencyExponent: sale.currencyExponent ?? null,
-        reference: l.reference ?? null, status: this.paymentStatus(l.method), confirmationSource: null, confirmedAt: null,
+        reference: l.reference ?? null, status: this.paymentStatus(l.method), confirmationSource: isDigitalTender(l.method) ? 'raast' : null, confirmedAt: isDigitalTender(l.method) ? new Date() : null,
+        paymentIntentId: isDigitalTender(l.method) ? (l.intentId ?? null) : null,
         storeId: sale.storeId, registerId: ctx.registerId, sessionId: ctx.sessionId, shiftId: ctx.shiftId, deviceId, employeeId: ctx.employeeId,
         ...(sale.idempotencyKey ? { idempotencyKey: sale.idempotencyKey } : {}),
       })),
@@ -2348,7 +2415,11 @@ export class PosService {
     await this.checkMinor('session', voidedSession, voidExp);
 
     await this.recordPosRefundInLedger(sale, (sale as any).total - ((sale as any).refundedAmount || 0), 'void');
-    return { success: true, message: 'Sale voided and stock restored' };
+
+    // G2.3: voiding a sale that was paid by Raast QR sends that money back through the provider
+    const voidPlan = this.payments ? digitalRefundPlan(effectivePayments(sale as any) as any, 0, (sale as any).total, voidExp) : [];
+    const digitalRefunds = voidPlan.length ? await this.payments!.refundForSale(String((sale as any).storeId), voidPlan, { employeeId: actor.employeeId, refundId: `void-${saleId}`, reason: dto.reason?.trim() ?? 'void' }) : undefined;
+    return { success: true, message: 'Sale voided and stock restored', ...(digitalRefunds ? { data: { digitalRefunds } } : {}) };
   }
 
   async editHeldSaleItems(sellerId: string, saleId: string, dto: UpdateSaleItemsDto, employeeToken: string | undefined) {

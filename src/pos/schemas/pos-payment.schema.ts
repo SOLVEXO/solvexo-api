@@ -22,7 +22,7 @@ export class PosPayment {
   /** Index of this tender in the sale's `payments[]` — (saleId, lineNo) is unique, so a retry can never add a second row. */
   @Prop({ type: Number, required: true }) lineNo: number;
 
-  @Prop({ enum: ['cash', 'card', 'other'], required: true }) tender: string;
+  @Prop({ enum: ['cash', 'card', 'other', 'raast_qr'], required: true }) tender: string;
   /** What was APPLIED to the sale total (cash net of change), in the sale's currency (major units until G1b). */
   @Prop({ type: Number, required: true }) amount: number;
   // G1b: integer minor-unit twin (minor-native from step a; the decimal stays in step with it)
@@ -38,6 +38,8 @@ export class PosPayment {
   /** What confirmed it: null today; later 'terminal' | 'gateway' | 'raast' | 'shift_reconciliation'. */
   @Prop({ type: String, default: null }) confirmationSource: string | null;
   @Prop({ type: Date, default: null }) confirmedAt: Date | null;
+  /** raast_qr: the payment_intents id this row settles (the row is written when the sale is, already confirmed). */
+  @Prop({ type: String, default: null }) paymentIntentId: string | null;
 
   // transaction context — always derived server-side (token / session / device), never trusted from the request body
   @Prop({ required: true }) storeId: string;

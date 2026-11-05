@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { forwardRef, Module } from '@nestjs/common';
 import { PosController } from './pos.controller';
 import { PosService } from './pos.service';
 import { StoreLocationService } from './store-location.service';
@@ -9,11 +9,12 @@ import { FinanceModule } from '@/finance/finance.module';
 import { InventoryModule } from '@/inventory/inventory.module';
 import { PosPlansModule } from '@/pos-plans/pos-plans.module';
 import { KybModule } from '@/kyb/kyb.module';
+import { PaymentsCoreModule } from '@/payments-core/payments-core.module';
 import { PosDeviceService } from './pos-device.service';
 import { PosTokenRevocationService } from './pos-token-revocation.service';
 
 @Module({
-  imports: [AuthModule, RedisModule, AdminConfigModule, FinanceModule, InventoryModule, PosPlansModule, KybModule],
+  imports: [AuthModule, RedisModule, AdminConfigModule, FinanceModule, InventoryModule, PosPlansModule, KybModule, forwardRef(() => PaymentsCoreModule)],
   controllers: [PosController],
   providers: [PosService, StoreLocationService, PosDeviceService, PosTokenRevocationService],
   exports: [PosService],

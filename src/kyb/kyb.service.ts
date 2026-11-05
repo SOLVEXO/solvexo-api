@@ -78,6 +78,12 @@ export class KybService {
     };
   }
 
+  /** What the till may show a manager: the status and, if it was sent back, why. No identifiers, no documents. */
+  async posStatus(storeId: string) {
+    const k: any = await this.model.findOne({ storeId }).select('status rejectionReason submittedAt').lean();
+    return { status: k?.status ?? 'not_started', rejectionReason: k?.status === 'rejected' ? (k.rejectionReason ?? null) : null, submittedAt: k?.submittedAt ?? null };
+  }
+
   async getOwn(sellerId: string, storeId: string) {
     await this.ownStoreOrThrow(sellerId, storeId);
     return this.view(await this.ensureDoc(sellerId, storeId));

@@ -203,21 +203,21 @@ describe('refund allocation against split tender (documented order: non-cash fir
 describe('tenderNets — what the reports and the drawer count', () => {
   const sale = (over: any) => ({ payments: [{ method: 'cash', amount: 40 }, { method: 'card', amount: 60 }], total: 100, status: 'completed', refundedAmount: 0, ...over });
   it('un-refunded: the full amount per tender', () => {
-    expect(tenderNets(sale({}), 2)).toEqual({ cash: 40, card: 60, other: 0 });
+    expect(tenderNets(sale({}), 2)).toEqual({ cash: 40, card: 60, other: 0, raast_qr: 0 });
   });
   it('a partial refund reduces the right tender (card first), leaving cash untouched until card is gone', () => {
-    expect(tenderNets(sale({ status: 'partially_refunded', refundedAmount: 25 }), 2)).toEqual({ cash: 40, card: 35, other: 0 });
-    expect(tenderNets(sale({ status: 'partially_refunded', refundedAmount: 70 }), 2)).toEqual({ cash: 30, card: 0, other: 0 });
+    expect(tenderNets(sale({ status: 'partially_refunded', refundedAmount: 25 }), 2)).toEqual({ cash: 40, card: 35, other: 0, raast_qr: 0 });
+    expect(tenderNets(sale({ status: 'partially_refunded', refundedAmount: 70 }), 2)).toEqual({ cash: 30, card: 0, other: 0, raast_qr: 0 });
   });
   it('a CASH-only partial refund lowers the cash the drawer should hold (expected-cash fix)', () => {
-    expect(tenderNets({ paymentMethod: 'cash', total: 50, status: 'partially_refunded', refundedAmount: 12.5 }, 2)).toEqual({ cash: 37.5, card: 0, other: 0 });
+    expect(tenderNets({ paymentMethod: 'cash', total: 50, status: 'partially_refunded', refundedAmount: 12.5 }, 2)).toEqual({ cash: 37.5, card: 0, other: 0, raast_qr: 0 });
   });
   it('voided / fully refunded sales net to zero', () => {
-    expect(tenderNets(sale({ status: 'voided' }), 2)).toEqual({ cash: 0, card: 0, other: 0 });
-    expect(tenderNets(sale({ status: 'refunded', refundedAmount: 100 }), 2)).toEqual({ cash: 0, card: 0, other: 0 });
+    expect(tenderNets(sale({ status: 'voided' }), 2)).toEqual({ cash: 0, card: 0, other: 0, raast_qr: 0 });
+    expect(tenderNets(sale({ status: 'refunded', refundedAmount: 100 }), 2)).toEqual({ cash: 0, card: 0, other: 0, raast_qr: 0 });
   });
   it('byTender folds a breakdown into a record', () => {
-    expect(byTender([{ method: 'card', amount: 5 }, { method: 'card', amount: 2 }, { method: 'cash', amount: 1 }])).toEqual({ cash: 1, card: 7, other: 0 });
+    expect(byTender([{ method: 'card', amount: 5 }, { method: 'card', amount: 2 }, { method: 'cash', amount: 1 }])).toEqual({ cash: 1, card: 7, other: 0, raast_qr: 0 });
   });
 });
 

@@ -13,8 +13,12 @@ import { fromMinor, isoExponent, roundMoney, toMinor } from '@/common/money-mino
  * trusts client-sent totals.
  */
 
-export type Tender = 'cash' | 'card' | 'other';
-export const TENDERS: Tender[] = ['cash', 'card', 'other'];
+export type Tender = 'cash' | 'card' | 'other' | 'raast_qr';
+export const TENDERS: Tender[] = ['cash', 'card', 'other', 'raast_qr'];
+
+/** Tenders whose money arrives through a payment provider and must be CONFIRMED before the sale exists (never cash in the drawer). */
+export const DIGITAL_TENDERS: Tender[] = ['raast_qr'];
+export const isDigitalTender = (m: string): boolean => (DIGITAL_TENDERS as string[]).includes(m);
 
 /** Rejection with a machine-readable `code` (the app switches on it). */
 export function moneyError(code: string, message: string, extra: object = {}): BadRequestException {
@@ -109,10 +113,10 @@ export function assertClientTotal(clientTotal: number | undefined | null, totals
 
 // ── Split tender ──────────────────────────────────────────────────────────────────────────────────
 
-export interface PaymentInput { method: string; amount: number; reference?: string | null }
+export interface PaymentInput { method: string; amount: number; reference?: string | null; /** digital tenders: the confirmed payment (payment_intents id) this line settles */ intentId?: string | null }
 
 /** A stored payment line. `amount` is what was APPLIED to the sale; for cash `tendered` is what was handed over. */
-export interface PaymentLine { method: Tender; amount: number; tendered?: number; reference?: string | null }
+export interface PaymentLine { method: Tender; amount: number; tendered?: number; reference?: string | null; intentId?: string | null }
 
 export interface SettledPayments {
   lines: PaymentLine[];
@@ -156,7 +160,7 @@ export function settlePayments(
     if (!TENDERS.includes(p.method as Tender)) throw moneyError('INVALID_PAYMENT_METHOD', `Unknown payment method "${p.method}"`);
     const m = toMinor(p.amount, exp);
     if (!(m > 0) && !(totalM === 0 && m === 0)) throw moneyError('INVALID_PAYMENT_AMOUNT', 'Every payment line must be more than zero');
-    return { method: p.method as Tender, amountM: m, reference: p.reference ? String(p.reference).slice(0, 120) : null };
+    return { method: p.method as Tender, amountM: m, reference: p.reference ? String(p.reference).slice(0, 120) : null, intentId: p.intentId ? String(p.intentId) : null };
   });
 
   const nonCashM = given.filter((g) => g.method !== 'cash').reduce((s, g) => s + g.amountM, 0);
@@ -180,7 +184,7 @@ export function settlePayments(
   const lines: PaymentLine[] = [];
   for (const g of given) {
     if (g.method !== 'cash') {
-      lines.push({ method: g.method, amount: fromMinor(g.amountM, exp), reference: g.reference });
+      lines.push({ method: g.method, amount: fromMinor(g.amountM, exp), reference: g.reference, ...(g.intentId ? { intentId: g.intentId } : {}) });
       continue;
     }
     const applied = Math.min(g.amountM, remainingCash);
@@ -251,14 +255,14 @@ export function tenderNets(
   const refundedM = sale.status === 'voided' ? Number.MAX_SAFE_INTEGER : toMinor(sale.refundedAmount ?? 0, exp);
   const ordered = refundOrder(lines);
   const gone = absorbedPerLine(ordered, refundedM, exp);
-  const net: Record<Tender, number> = { cash: 0, card: 0, other: 0 };
+  const net: Record<Tender, number> = { cash: 0, card: 0, other: 0, raast_qr: 0 };
   ordered.forEach((l, i) => { net[l.method] += toMinor(l.amount, exp) - gone[i]; });
-  return { cash: fromMinor(net.cash, exp), card: fromMinor(net.card, exp), other: fromMinor(net.other, exp) };
+  return { cash: fromMinor(net.cash, exp), card: fromMinor(net.card, exp), other: fromMinor(net.other, exp), raast_qr: fromMinor(net.raast_qr, exp) };
 }
 
-/** Per-tender amounts as a plain object (`{cash, card, other}`), from a list of `{method, amount}`. */
+/** Per-tender amounts as a plain object (`{cash, card, other, raast_qr}`), from a list of `{method, amount}`. */
 export function byTender(parts: Array<{ method: Tender; amount: number }>): Record<Tender, number> {
-  const out: Record<Tender, number> = { cash: 0, card: 0, other: 0 };
+  const out: Record<Tender, number> = { cash: 0, card: 0, other: 0, raast_qr: 0 };
   for (const p of parts) out[p.method] += p.amount;
   return out;
 }
@@ -286,4 +290,17 @@ export function partialRefundAmount(
   if (subtotalM <= 0) return 0;
   const shareM = lines.reduce((s, l) => s + roundHalfUp((toMinor(l.price * l.qty, exp) * totalM) / subtotalM), 0);
   return fromMinor(Math.min(shareM, remainingM), exp);
+}
+
+/**
+ * How a cumulative refund splits across the sale's DIGITAL lines (one provider refund per payment). Same documented order as
+ * `allocateRefund` (non-cash first in the order taken, cash last), so the two always agree. Returns minor units per payment.
+ */
+export function digitalRefundPlan(lines: PaymentLine[], alreadyRefunded: number, amount: number, exp: number): Array<{ intentId: string; amountMinor: number }> {
+  const ordered = refundOrder(lines);
+  const before = absorbedPerLine(ordered, toMinor(alreadyRefunded, exp), exp);
+  const after = absorbedPerLine(ordered, toMinor(alreadyRefunded, exp) + toMinor(amount, exp), exp);
+  const out: Array<{ intentId: string; amountMinor: number }> = [];
+  ordered.forEach((l, i) => { const d = after[i] - before[i]; if (d > 0 && isDigitalTender(l.method) && l.intentId) out.push({ intentId: String(l.intentId), amountMinor: d }); });
+  return out;
 }

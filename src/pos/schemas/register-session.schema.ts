@@ -87,6 +87,11 @@ export class RegisterSession {
   otherSales: number;
   @Prop({ type: 'MinorMoney' }) otherSalesMinor?: number;
 
+  // Raast QR: settles to the store's bank account — never in the drawer and not part of the card slip
+  @Prop({ type: Number, default: 0 })
+  digitalSales: number;
+  @Prop({ type: 'MinorMoney' }) digitalSalesMinor?: number;
+
   @Prop({ type: Number, default: 0 })
   totalSales: number;
   @Prop({ type: 'MinorMoney' }) totalSalesMinor?: number;

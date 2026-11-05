@@ -59,7 +59,7 @@ export const SaleItemSchema = SchemaFactory.createForClass(SaleItem);
 /** One tender taken for a sale. `amount` is what was APPLIED to the total (cash net of change). */
 @Schema({ _id: false })
 export class SalePayment {
-  @Prop({ enum: ['cash', 'card', 'other'], required: true })
+  @Prop({ enum: ['cash', 'card', 'other', 'raast_qr'], required: true })
   method: string;
 
   @Prop({ type: Number, required: true })
@@ -79,6 +79,10 @@ export class SalePayment {
   // card auth code / bank transfer ref / etc.
   @Prop({ type: String, default: null })
   reference: string | null;
+
+  // digital tenders (raast_qr): the confirmed payment (payment_intents id) this line settles; `reference` holds the provider's reference
+  @Prop({ type: String, default: null })
+  intentId?: string | null;
 }
 export const SalePaymentSchema = SchemaFactory.createForClass(SalePayment);
 
@@ -194,7 +198,7 @@ export class Sale {
   taxRate: number | null;
 
   // 'split' when more than one tender was used. For old single-payment sales this is the only payment info.
-  @Prop({ enum: ['cash', 'card', 'other', 'split'], default: 'cash' })
+  @Prop({ enum: ['cash', 'card', 'other', 'raast_qr', 'split'], default: 'cash' })
   paymentMethod: string;
 
   // Tender lines (empty for held sales and for sales made before split tender — see effectivePayments()).
