@@ -1,3 +1,5 @@
+import { assertPreorderShippable } from '../common/preorder.util';
+import { expandForStock, stockLinesForItem } from '../common/bundle.util';
 import { Optional } from '@nestjs/common';
 import { ShippingProfilesService } from '@/shipping-zones/shipping-profiles.service';
 import {
@@ -1611,6 +1613,21 @@ export class OrdersService {
 
     // saare items same status — except cancelled/refunded lines, which are final
     const soItems = order.sellerOrders[sellerOrderIndex].items;
+    // Pre-order guard: shipping a pre-order line before its stock has arrived needs an explicit, audited override.
+    if (status === 'shipped' && !isPickup) {
+      const g = await assertPreorderShippable(
+        this.databaseService.repositories.productVariantModel,
+        unshippedLines(soItems, priorShipments).map((l: any) => ({ item: soItems[l.itemIndex], quantity: l.quantity })),
+        body.overridePreorder === true,
+      );
+      if (g.overridden) {
+        this.activityLogService.log({
+        storeId, category: 'orders', action: 'preorder_fulfil_override',
+        description: `Order #${orderId} — shipped pre-order item(s) before stock arrived: ${g.names.join(', ')}`,
+        actorId: sellerId, actorRole: 'seller', targetId: orderId, targetType: 'order', ip, userAgent,
+      });
+      }
+    }
     soItems.forEach((item: any, itemIndex: number) => {
       if (item.status === 'cancelled' || item.status === 'refunded') return;
       updateData[`${soBase}.items.${itemIndex}.status`] = status;
@@ -1850,18 +1867,23 @@ export class OrdersService {
   private async deductShippedStock(so: any, soIndex: number, lines: FulfilLine[]): Promise<Record<string, any>> {
     const { productVariantModel } = this.databaseService.repositories;
     const cogsUpdate: Record<string, any> = {};
-    for (const line of lines) {
+    // Bundles: one line per component (qty x component qty); a normal line stays as it is.
+    const expanded: any[] = lines.flatMap((l) => {
+      const it = so.items[l.itemIndex];
+      return it?.bundleComponents?.length ? stockLinesForItem({ ...it, quantity: l.quantity }).map((sl) => ({ itemIndex: l.itemIndex, quantity: sl.quantity, variantId: sl.variantId })) : [l as any];
+    });
+    for (const line of expanded) {
       const item = so.items[line.itemIndex];
       if (!item || item.type !== 'physical' || !item.variantId) continue;
       const variant = await productVariantModel
-        .findOne({ _id: item.variantId })
+        .findOne({ _id: line.variantId ?? item.variantId })
         .select('unlimitedStock stock committedStock trackLots')
         .lean();
       if (!variant || (variant as any).unlimitedStock) continue;
       // One atomic, relative update (the old read-then-$set overwrote any receipt/adjustment that landed in between),
       // then the same movement on the per-location rows.
       await productVariantModel.updateOne(
-        { _id: item.variantId },
+        { _id: line.variantId ?? item.variantId },
         [{
           $set: {
             stock: { $max: [0, { $subtract: ['$stock', line.quantity] }] },
@@ -1870,15 +1892,15 @@ export class OrdersService {
         }],
         { updatePipeline: true } as any,
       );
-      await drainLocationStock(this.databaseService.repositories, String(item.variantId), line.quantity);
+      await drainLocationStock(this.databaseService.repositories, String(line.variantId ?? item.variantId), line.quantity);
 
       // Real FIFO/FEFO cost-of-goods-sold — only for a lot-tracked variant (see StockLot schema /
       // consumeLotsFifo). This is the ACTUAL moment the unit leaves the building.
       if ((variant as any).trackLots) {
-        const cogs = await this.consumeLotsFifo(item.variantId, line.quantity);
+        const cogs = await this.consumeLotsFifo(line.variantId ?? item.variantId, line.quantity);
         if (cogs != null) {
           cogsUpdate[`sellerOrders.${soIndex}.items.${line.itemIndex}.costOfGoodsSold`] =
-            Math.round(((Number(item.costOfGoodsSold) || 0) + cogs) * 100) / 100;
+            Math.round((((cogsUpdate[`sellerOrders.${soIndex}.items.${line.itemIndex}.costOfGoodsSold`] as number) ?? (Number(item.costOfGoodsSold) || 0)) + cogs) * 100) / 100;
         }
       }
     }
@@ -1914,6 +1936,20 @@ export class OrdersService {
     const priorShipments: any[] = so.shipments ?? [];
     const check = validateFulfilRequest(so.items, priorShipments, dto.items);
     if (!check.ok) throw new BadRequestException(check.error);
+    {
+      const g = await assertPreorderShippable(
+        this.databaseService.repositories.productVariantModel,
+        check.lines.map((l) => ({ item: so.items[l.itemIndex], quantity: l.quantity })),
+        dto.overridePreorder === true,
+      );
+      if (g.overridden) {
+        this.activityLogService.log({
+        storeId, category: 'orders', action: 'preorder_fulfil_override',
+        description: `Order #${orderId} — shipped pre-order item(s) before stock arrived: ${g.names.join(', ')}`,
+        actorId: sellerId, actorRole: 'seller', targetId: orderId, targetType: 'order', ip, userAgent,
+      });
+      }
+    }
 
     // Same safety net as the whole-order path: an authorized-only card payment is captured when the seller commits to ship.
     if (order.paymentStatus === 'authorized') {
@@ -3033,7 +3069,8 @@ export class OrdersService {
     // physical items — release the reservation (never a real `stock` restore here): `BLOCKED` above already
     // guarantees these items were still 'pending'/'processing', i.e. only ever reserved via `committedStock`
     // at checkout, never shipped/decremented from real `stock` — see ProductVariant.committedStock's doc comment.
-    for (const { item, soIndex: tSoIndex } of targetItems as any[]) {
+    for (const { item: rawItem, soIndex: tSoIndex } of targetItems as any[]) {
+      for (const item of expandForStock(rawItem)) {
       if (item.type === 'physical' && item.variantId) {
         if (order.sellerOrders[tSoIndex]?.stockAlreadyDeducted) {
           // Draft-order sales already took the units out of on-hand stock when they were completed (no reservation exists),
@@ -3048,6 +3085,15 @@ export class OrdersService {
           [{ $set: { committedStock: { $max: [0, { $subtract: ['$committedStock', item.quantity] }] } } }],
           { updatePipeline: true } as any,
         );
+        if (rawItem.isPreorder) {
+          // Free the pre-order slot (the limit counts units still on open orders).
+          await productVariantModel.updateOne(
+            { _id: item.variantId, preorder: { $ne: null } },
+            [{ $set: { 'preorder.sold': { $max: [0, { $subtract: [{ $ifNull: ['$preorder.sold', 0] }, item.quantity] }] } } }],
+            { updatePipeline: true } as any,
+          );
+        }
+      }
       }
     }
 

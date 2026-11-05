@@ -1,3 +1,4 @@
+import { stockLinesForItem } from '../common/bundle.util';
 /* eslint-disable prettier/prettier */
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { createHash } from 'crypto';
@@ -122,6 +123,14 @@ export class OrderReturnsService {
    * Shared by "mark received" and by exchanges that restock at creation.
    */
   async restockReturnedUnits(storeId: string, item: any, choice: 'restock' | 'damaged', note: string, adjustedBy: string, adjustedByName: string | null): Promise<boolean> {
+    // Bundle line: put each COMPONENT back (returned qty x component qty) — the bundle's own variant holds no stock.
+    if (Array.isArray(item.bundleComponents) && item.bundleComponents.length > 0) {
+      let moved = false;
+      for (const l of stockLinesForItem(item)) {
+        moved = (await this.restockReturnedUnits(storeId, { variantId: l.variantId, quantity: l.quantity }, choice, note, adjustedBy, adjustedByName)) || moved;
+      }
+      return moved;
+    }
     const variant: any = await this.r.productVariantModel.findOne({ _id: item.variantId, isDelete: false });
     if (!variant || variant.unlimitedStock) return false;
     const qty = item.quantity;

@@ -190,6 +190,17 @@ export class Product {
   @Prop({ type: String, required: true })
   categoryId: string;
 
+  // Product bundles: when true this product's own variant holds no stock; selling it sells `bundleComponents`.
+  @Prop({ type: Boolean, default: false })
+  isBundle: boolean;
+
+  @Prop({ type: [{ _id: false, productId: String, variantId: String, quantity: Number, name: { type: String, default: null } }], default: [] })
+  bundleComponents: { productId: string; variantId: string; quantity: number; name?: string | null }[];
+
+  // Manual recommendations (Search & Discovery parity): ordered product ids, same store, max 12 each.
+  @Prop({ type: [String], default: [] })
+  relatedProductIds: string[];
+
   @Prop({ type: String, default: null })
   subCategoryId: string | null;
 

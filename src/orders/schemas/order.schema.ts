@@ -28,6 +28,21 @@ export class OrderItem {
   @Prop({ type: String, default: null })
   variantId: string | null;
 
+  // Product bundles (common/bundle.util.ts): snapshot of the components at purchase time (per ONE bundle).
+  @Prop({ type: [{ _id: false, productId: String, variantId: String, quantity: Number, name: { type: String, default: null } }], default: [] })
+  bundleComponents: { productId: string; variantId: string; quantity: number; name?: string | null }[];
+
+  // Pre-order (variant `preorder`): this unit was sold as a pre-order; the expected date/message are snapshots.
+  @Prop({ type: Boolean, default: false })
+  isPreorder: boolean;
+
+  @Prop({ type: Date, default: null })
+  preorderExpectedDate: Date | null;
+
+  @Prop({ type: String, default: null })
+  preorderMessage: string | null;
+
+
   @Prop({ type: String, enum: ['physical', 'digital'], required: true })
   type: string;
 

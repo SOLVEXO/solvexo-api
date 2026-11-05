@@ -134,6 +134,11 @@ export class ProductVariant {
   @Prop({ default: false })
   allowBackorder: boolean;
 
+  // Pre-order (Shopify purchase-option parity, no deposits): sellable at 0 stock until `expectedDate`; `sold` counts units
+  // sold under it (race-safe $inc against `limit`). null on every pre-existing variant.
+  @Prop({ type: Object, default: null })
+  preorder: { enabled: boolean; expectedDate: Date | null; limit: number | null; message: string | null; sold: number } | null;
+
   // Opt-in real batch/lot tracking (see StockLot schema) — when true,
   // Purchase Order receiving creates real lot rows instead of only updating
   // this variant's weighted-average `costPrice`, and stock-leaving actions

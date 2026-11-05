@@ -1,3 +1,4 @@
+import { MerchandisingModule } from './merchandising/merchandising.module';
 import { CustomerSegmentsModule } from './customer-segments/customer-segments.module';
 import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
@@ -124,6 +125,7 @@ import { AppI18nModule } from './i18n/i18n.module';
 
 @Module({
   imports: [
+    MerchandisingModule,
     CustomerSegmentsModule,
     ConfigModule.forRoot({ isGlobal: true }),
     EventEmitterModule.forRoot(),

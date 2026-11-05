@@ -21,4 +21,7 @@ export class FulfilOrderDto {
 
   /** Default true — email/notify the buyer. */
   @IsOptional() @IsBoolean() notifyCustomer?: boolean;
+
+  /** Ship pre-order items whose stock has not arrived yet (audited). */
+  @IsOptional() @IsBoolean() overridePreorder?: boolean;
 }

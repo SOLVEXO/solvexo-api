@@ -1,3 +1,5 @@
+import { preorderCanFill } from '../common/preorder.util';
+import { assertBundleInStock } from '../common/bundle.util';
 import { CustomerSegmentsService } from '../customer-segments/customer-segments.service';
 import { assertOrderQuantity } from '@/products/selling-options.util';
 import { isValidObjectId } from 'mongoose';
@@ -509,10 +511,13 @@ export class CheckoutService {
         // when out of stock") never fails this pre-flight check — the real
         // atomic reserve at order-placement time (PaymentService.createOrder)
         // is the only place that decides whether it's genuinely oversold.
-        if (!isPurchasableOnline(variant as any, cartItem.quantity)) {
+        if (!isPurchasableOnline(variant as any, cartItem.quantity) && !((variant as any).preorder?.enabled && preorderCanFill((variant as any).preorder))) {
           throw new BadRequestException(
             `Insufficient stock for: ${product.name}`,
           );
+        }
+        if (product.isBundle && (product.bundleComponents?.length ?? 0) > 0) {
+          await assertBundleInStock(this.databaseService.repositories.productVariantModel, product.bundleComponents as any, cartItem.quantity, product.name, (v, q) => isPurchasableOnline(v as any, q));
         }
       }
 
@@ -543,6 +548,7 @@ export class CheckoutService {
       checkoutItems.push({
         productId: product._id.toString(),
         variantId: variant._id.toString(),
+        bundleComponents: product.isBundle ? (product.bundleComponents ?? []).map((c: any) => ({ productId: c.productId, variantId: c.variantId, quantity: c.quantity, name: c.name ?? null })) : [],
         sellerId: product.sellerId,
         sellerName: seller ? seller.name : null,
         sellerVerified: seller ? !!seller.isVerified : false,

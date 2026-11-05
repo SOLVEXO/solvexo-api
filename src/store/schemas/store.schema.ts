@@ -414,6 +414,10 @@ export class Store {
   @Prop({ type: Number, default: 10, min: 1 })
   lowStockThreshold!: number;
 
+  // Cart upsell block (merchandising/): null = off. Written only via PUT api/merchandising/:storeId/cart-upsell.
+  @Prop({ type: Object, default: null })
+  cartUpsell!: { enabled: boolean; title: string; maxItems: number; mode: string } | null;
+
   // Pakistani courier booking defaults (integrations/couriers/): pickup + return address, preferred courier, default
   // parcel weight. Written ONLY through PUT api/store/:storeId/integrations/couriers/settings (validated there) —
   // never by the generic update-store route.

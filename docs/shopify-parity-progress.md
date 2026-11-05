@@ -4,6 +4,6 @@ Run unit tests: `npx jest -c jest.unit.config.js <path>` (repo jest config needs
 
 - [x] TASK 0 courier cleanup — `npm run build` exit 0; docs line fixed. Broader regression was started but stopped before completion (see report).
 - [~] TASK 1 customer segments — DONE: backend module (filter util + 46 tests, service, controller, CRUD/preview/members/export/duplicate), Customers list `segmentId`, email-campaign `segmentId`, automatic-discount `customerSegmentId` (checkout eligibility at redeem time), web UI (SegmentsBar/builder/SegmentSelect, en+ur). NOT DONE: product_purchased picker in UI (API supports ids), coupon (code) segment eligibility, no browser/Mongo run of the aggregation.
-- [ ] TASK 2 bundles
-- [ ] TASK 3 pre-order
-- [ ] TASK 4 upsell / cross-sell
+- [x] TASK 2 bundles (backend + tests; UI see below)
+- [x] TASK 3 pre-order (backend + tests)
+- [x] TASK 4 upsell / recommendations (backend + tests)

@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { MerchandisingService } from '@/merchandising/merchandising.service';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { MEMBERSHIP_BILLING_JOB, QUEUE_NAMES } from '../queues/queue.constants';
@@ -86,6 +87,7 @@ export class SchedulerService {
     private readonly scheduledReportsService: ScheduledReportsService,
     private readonly giftCardsService: GiftCardsService,
     private readonly courierTrackingSyncService: CourierTrackingSyncService,
+    private readonly merchandisingService: MerchandisingService,
   ) {}
 
   /**
@@ -198,6 +200,15 @@ export class SchedulerService {
       if (result.recovered > 0 || result.alerted > 0) {
         this.logger.log(`Stuck gateway payments: ${result.recovered} recovered, ${result.alerted} seller alert(s) of ${result.checked} checked`);
       }
+    });
+  }
+
+  /** Every 30 minutes — a pre-order whose expected date passed AND which is back in stock turns itself off (idempotent). */
+  @Cron('*/30 * * * *')
+  async expirePreorders() {
+    await this.runLocked('preorder-expiry', 25 * 60_000, async () => {
+      const r = await this.merchandisingService.expirePreorders();
+      if (r.expired > 0) this.logger.log(`Pre-order expiry: ${r.expired} of ${r.checked} switched off`);
     });
   }
 

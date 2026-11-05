@@ -1,3 +1,6 @@
+import { bundleAvailability } from '../common/bundle.util';
+import { preorderPublicView } from '../common/preorder.util';
+import { availableStock } from '../common/stock-availability.util';
 import { normalizeDigital } from './digital-input.util';
 
 const pickNewFile = (b: any) => ({ url: b?.url, name: b?.name, size: b?.size, mimeType: b?.mimeType });
@@ -908,8 +911,25 @@ export class ProductsService {
     // Same real fix as getVariantById — a fully public route, and until now
     // every variant's `costPrice` (the seller's own margin data) leaked
     // straight through with no sanitization.
-    const publicVariants = variants.map((v: any) => { const { costPrice: _c, ...rest } = v; return rest; });
-    const publicDefaultVariant = defaultVariant ? (() => { const { costPrice: _c, ...rest } = defaultVariant as any; return rest; })() : null;
+    // Pre-order: expose only what a buyer needs (label, date, message, remaining) — never the raw sold counter/limit.
+    const publicVariants = variants.map((v: any) => { const { costPrice: _c, preorder, ...rest } = v; return { ...rest, preorder: preorderPublicView(preorder, availableStock(v)) }; });
+    const publicDefaultVariant = defaultVariant ? (() => { const { costPrice: _c, preorder, ...rest } = defaultVariant as any; return { ...rest, preorder: preorderPublicView(preorder, availableStock(defaultVariant as any)) }; })() : null;
+
+    // Bundles: "includes" list + derived availability (min over components of floor(available / qty)); null = unlimited.
+    let bundle: { components: { name: string; image: string | null; quantity: number }[]; available: number | null } | null = null;
+    if ((product as any).isBundle && ((product as any).bundleComponents?.length ?? 0) > 0) {
+      const comps: any[] = (product as any).bundleComponents;
+      const [compVariants, compProducts] = await Promise.all([
+        productVariantModel.find({ _id: { $in: comps.map((c) => c.variantId) }, isDelete: false }).lean(),
+        productModel.find({ _id: { $in: comps.map((c) => c.productId) } }).select('name images').lean(),
+      ]);
+      const vById = new Map((compVariants as any[]).map((v) => [String(v._id), v]));
+      const pById = new Map((compProducts as any[]).map((x) => [String(x._id), x]));
+      bundle = {
+        components: comps.map((c) => ({ name: pById.get(String(c.productId))?.name ?? c.name ?? 'Item', image: pById.get(String(c.productId))?.images?.[0] ?? null, quantity: c.quantity })),
+        available: bundleAvailability(comps, vById),
+      };
+    }
 
     return {
       message: 'Product fetched successfully',
@@ -918,6 +938,7 @@ export class ProductsService {
         product: productWithSeller,
         variants: publicVariants,
         defaultVariant: publicDefaultVariant,
+        bundle,
       },
     };
   }

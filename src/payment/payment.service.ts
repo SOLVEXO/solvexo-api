@@ -1,3 +1,5 @@
+import { preorderCanFill } from '../common/preorder.util';
+import { stockLinesForItem } from '../common/bundle.util';
 import { sellerAppUrl } from '@/common/app-urls.util';
 import { emitOrdersDisputed } from '../common/order-events';
 import {
@@ -1436,12 +1438,14 @@ export class PaymentService {
       if (order.paymentStatus !== 'authorized') continue; // already resolved some other way
 
       for (const so of order.sellerOrders) {
-        for (const item of so.items) {
-          if (item.type !== 'physical' || !item.variantId) continue;
-          await productVariantModel.updateOne(
-            { _id: item.variantId },
-            { $inc: { committedStock: -item.quantity } },
-          );
+        for (const rawItem of so.items) {
+          if (rawItem.type !== 'physical' || !rawItem.variantId) continue;
+          for (const line of stockLinesForItem(rawItem)) {
+            await productVariantModel.updateOne(
+              { _id: line.variantId },
+              { $inc: { committedStock: -line.quantity } },
+            );
+          }
         }
         so.status = 'cancelled';
         so.cancelledAt = new Date();
@@ -2462,17 +2466,21 @@ export class PaymentService {
     // Guard is `stock - committedStock >= quantity` (i.e. real availability),
     // via `$expr` since Mongo can't compare two of a document's own fields
     // in a plain query filter.
-    const reserved: { variantId: string; quantity: number }[] = [];
+    const reserved: { variantId: string; quantity: number; preorder?: boolean }[] = [];
+    // Pre-order (common/preorder.util.ts): variants reserved beyond stock under an active pre-order, with snapshots for the order line.
+    const preorderVariantIds = new Set<string>();
+    const preorderInfo = new Map<string, { expectedDate: Date | null; message: string | null }>();
+    const preVariantOf = (i: any) => stockLinesForItem(i).find((l) => preorderVariantIds.has(l.variantId))?.variantId;
     // See ProductVariant.allowBackorder — a checkout-only, per-variant
     // "continue selling when out of stock" toggle. A variant reserved here
     // while genuinely short is recorded so the built order line can be
     // flagged `isBackordered: true` below (informational only).
     const backorderedVariantIds = new Set<string>();
 
-    for (const item of physicalItems) {
+    for (const item of physicalItems.flatMap((it: any) => stockLinesForItem(it))) {
       const variant = await productVariantModel
         .findOne({ _id: item.variantId, isDelete: false })
-        .select('unlimitedStock allowBackorder stock committedStock damagedStock inTransitStock expiredStock expiryBuckets')
+        .select('unlimitedStock allowBackorder preorder stock committedStock damagedStock inTransitStock expiredStock expiryBuckets')
         .lean();
       if (!variant || (variant as any).unlimitedStock) continue;
 
@@ -2490,6 +2498,30 @@ export class PaymentService {
         continue;
       }
 
+      // Pre-order: stock cannot fill the line but an enabled pre-order is active -> reserve beyond stock, counting the units
+      // against the pre-order limit in the SAME atomic update (two buyers can never both take the last pre-order slot).
+      const pre = (variant as any).preorder;
+      if (pre?.enabled && availableStock(variant as any) < item.quantity && preorderCanFill(pre)) {
+        const limit = typeof pre.limit === 'number' && pre.limit > 0 ? pre.limit : 1e12;
+        const preRes = await productVariantModel.updateOne(
+          {
+            _id: item.variantId, isDelete: false, 'preorder.enabled': true,
+            $expr: { $lte: [{ $add: [{ $ifNull: ['$preorder.sold', 0] }, item.quantity] }, limit] },
+          },
+          { $inc: { committedStock: item.quantity, 'preorder.sold': item.quantity } },
+        );
+        if (preRes.modifiedCount === 0) {
+          for (const d of reserved) {
+            await productVariantModel.updateOne({ _id: d.variantId }, { $inc: { committedStock: -d.quantity, ...(d.preorder ? { 'preorder.sold': -d.quantity } : {}) } });
+          }
+          throw new StockUnavailableException(`Pre-order limit reached for item: ${item.name}`);
+        }
+        preorderVariantIds.add(String(item.variantId));
+        preorderInfo.set(String(item.variantId), { expectedDate: pre.expectedDate ? new Date(pre.expectedDate) : null, message: pre.message ?? null });
+        reserved.push({ variantId: item.variantId, quantity: item.quantity, preorder: true });
+        continue;
+      }
+
       const res = await productVariantModel.updateOne(
         {
           _id: item.variantId,
@@ -2503,7 +2535,7 @@ export class PaymentService {
         for (const d of reserved) {
           await productVariantModel.updateOne(
             { _id: d.variantId },
-            { $inc: { committedStock: -d.quantity } },
+            { $inc: { committedStock: -d.quantity, ...(d.preorder ? { 'preorder.sold': -d.quantity } : {}) } },
           );
         }
         throw new StockUnavailableException(
@@ -2626,6 +2658,10 @@ export class PaymentService {
             taxUSD: convFrom(i.taxUSD ?? 0, storeCurrency),
             includedTaxUSD: convFrom(i.includedTaxUSD ?? 0, storeCurrency),
             isBackordered: i.variantId ? backorderedVariantIds.has(i.variantId) : false,
+            bundleComponents: (i.bundleComponents ?? []).map((c: any) => ({ productId: c.productId, variantId: c.variantId, quantity: c.quantity, name: c.name ?? null })),
+            isPreorder: !!preVariantOf(i),
+            preorderExpectedDate: preVariantOf(i) ? (preorderInfo.get(preVariantOf(i)!)?.expectedDate ?? null) : null,
+            preorderMessage: preVariantOf(i) ? (preorderInfo.get(preVariantOf(i)!)?.message ?? null) : null,
             status: 'pending',
           })),
           subtotal: convFrom(subtotalNative, storeCurrency),
