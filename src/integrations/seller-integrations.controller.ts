@@ -120,6 +120,17 @@ export class SellerIntegrationsController {
     return this.service.connect(storeId, actingSellerId(req.user), type as StoreIntegrationType, provider as StoreIntegrationProvider, body ?? {});
   }
 
+  /** Pakistani courier defaults: pickup/return address, preferred courier, default parcel weight. */
+  @Get('couriers/settings')
+  courierSettings(@Param('storeId') storeId: string, @Req() req: any) {
+    return this.service.getCourierSettings(storeId, actingSellerId(req.user));
+  }
+
+  @Put('couriers/settings')
+  saveCourierSettings(@Param('storeId') storeId: string, @Body() body: any, @Req() req: any) {
+    return this.service.saveCourierSettings(storeId, actingSellerId(req.user), body ?? {});
+  }
+
   /** Shopify "Packages" + live-rate handling fee for the connected Shippo account. */
   @Put('shipping/settings')
   updateShippingSettings(@Param('storeId') storeId: string, @Body() body: ShippingSettingsDto, @Req() req: any) {

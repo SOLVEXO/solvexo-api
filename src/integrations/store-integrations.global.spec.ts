@@ -23,7 +23,7 @@ function build(storeOverrides: Record<string, any> = {}, integrations: any[] = [
     getStatus: jest.fn().mockResolvedValue({ data: { connected: false, chargesEnabled: false, payoutsEnabled: false } }),
     isTestMode: jest.fn().mockReturnValue(true),
   };
-  const service = new StoreIntegrationsService(db, { log: jest.fn() } as any, registry, {} as any, stripeConnect, {} as any, {} as any);
+  const service = new StoreIntegrationsService(db, { log: jest.fn() } as any, registry, {} as any, stripeConnect, {} as any, {} as any, {} as any, {} as any);
   return { service, storeIntegrationModel, registry };
 }
 

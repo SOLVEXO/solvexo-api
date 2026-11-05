@@ -26,6 +26,10 @@ import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { LoyaltyService } from '@/loyalty/loyalty.service';
 import { NotificationsService } from '@/notifications/notifications.service';
 import { ShippingRatesService } from '@/shipping-rates/shipping-rates.service';
+import { CourierService } from '@/integrations/couriers/courier.service';
+import { COURIER_CATALOG } from '@/integrations/couriers/courier-catalog';
+import type { BookedShipment, BookShipmentInput } from '@/integrations/couriers/courier.types';
+import { codForShipment, lineKeyFor, orderDueInOrderCurrency, roundCod } from '@/integrations/couriers/courier-booking.util';
 import type { CustomsLine } from '@/shipping-rates/customs.util';
 import { fulfilStockForSellerOrders } from '@/common/fulfil-stock.util';
 import { drainLocationStock, restoreLocationStock } from '@/common/location-stock.util';
@@ -86,6 +90,8 @@ export class OrdersService {
     private readonly storeCreditService: StoreCreditService,
     // Optional: only used to ship labels from the product's shipping-profile origin location.
     @Optional() private readonly shippingProfilesService?: ShippingProfilesService,
+    // Optional so existing positional-constructor specs keep working; always provided by OrdersModule (IntegrationsModule exports it).
+    @Optional() private readonly courierService?: CourierService,
   ) {}
 
   /** Awards loyalty points for a completed order (the store's own loyalty program rate). */
@@ -1162,6 +1168,298 @@ export class OrdersService {
       );
       throw err;
     }
+  }
+
+  // ── Pakistani courier booking (integrations/couriers) ───────────────────────────────────────────────────────────
+
+  private requireCourier(): CourierService {
+    if (!this.courierService) throw new BadRequestException('Courier booking is not available');
+    return this.courierService;
+  }
+
+  /** What the courier must collect for THIS booking, in the store's currency (0 when already paid). */
+  private async courierCodAmount(order: any, ctx: any, storeId: string, storeCurrency: string): Promise<number> {
+    const { orderPaymentRecordModel } = this.databaseService.repositories;
+    let recorded = 0;
+    if (order.paymentStatus === 'partially_paid') {
+      const rows: any[] = await orderPaymentRecordModel.find({ orderId: String(order._id) }).select('amount').lean();
+      recorded = rows.reduce((s, r) => s + (r.amount ?? 0), 0);
+    }
+    const dueOrderCcy = orderDueInOrderCurrency({
+      isPaid: !!order.isPaid, paymentStatus: order.paymentStatus, totalAmount: order.totalAmount ?? 0, recordedPayments: recorded,
+      orderSubtotal: order.subtotal, sellerOrderSubtotal: ctx.sellerOrder.subtotal, sellerOrderCount: order.sellerOrders?.length ?? 1,
+    });
+    if (dueOrderCcy <= 0) return 0;
+    const orderCcy: string = order.currency || storeCurrency;
+    const dueStore = orderCcy === storeCurrency ? dueOrderCcy : await this.exchangeRateService.convert(dueOrderCcy, orderCcy, storeCurrency);
+    const due = roundCod(dueStore, storeCurrency);
+    const items: any[] = (ctx.sellerOrder.items ?? []).filter((i: any) => i.status !== 'cancelled' && i.status !== 'refunded');
+    const value = (i: any, q: number) => (Number(i?.price) || 0) * q;
+    const allValue = items.reduce((s, i) => s + value(i, i.quantity ?? 1), 0);
+    const selectedValue = ctx.partial
+      ? ctx.partial.lines.reduce((s: number, l: any) => s + value(ctx.sellerOrder.items[l.itemIndex], l.quantity), 0)
+      : allValue;
+    return codForShipment({
+      due, selectedValue, allValue, alreadyAssigned: await this.requireCourier().codAlreadyAssigned(storeId, String(order._id)),
+      isFinal: ctx.partial ? ctx.partial.allShipped : true, currency: storeCurrency,
+    });
+  }
+
+  /** After a cancelled courier booking, swaps the new courier tracking onto the SAME (undelivered) shipment. */
+  private async replaceShipmentTracking(orderId: string, storeId: string, sellerId: string, shipmentId: string, tracking: any, notify: boolean) {
+    const { orderModel } = this.databaseService.repositories;
+    const order: any = await orderModel.findOne({ _id: orderId, isDelete: false });
+    if (!order) throw new NotFoundException('Order not found');
+    const soIndex = order.sellerOrders.findIndex((so: any) => so.storeId === storeId && so.sellerId === sellerId);
+    if (soIndex === -1) throw new ForbiddenException('Unauthorized');
+    const shipments: any[] = order.sellerOrders[soIndex].shipments ?? [];
+    const shIdx = shipments.findIndex((s: any) => String(s._id) === shipmentId);
+    if (shIdx === -1) throw new NotFoundException('The shipment of the cancelled booking no longer exists');
+    if (shipments[shIdx].deliveredAt) throw new BadRequestException('That shipment is already delivered.');
+    const base = `sellerOrders.${soIndex}`;
+    const set: Record<string, any> = { [`${base}.shipments.${shIdx}.tracking`]: tracking };
+    if (shIdx === shipments.length - 1) set[`${base}.tracking`] = tracking; // legacy mirror = latest shipment
+    const res = await orderModel.updateOne({ _id: orderId, [`${base}.shipments.${shIdx}._id`]: shipments[shIdx]._id, [`${base}.shipments.${shIdx}.deliveredAt`]: null }, { $set: set });
+    if (!res.matchedCount) throw new ConflictException('This order was just updated — refresh and try again.');
+    if (notify) {
+      this.notificationsService.notify({
+        recipientId: order.userId, recipientRole: 'user', storeId, type: NOTIFICATION_TYPES.ORDER_SHIPPED,
+        title: 'Tracking updated', body: `Order #${order.orderNumber ?? orderId} tracking: ${[tracking.carrier, tracking.trackingNumber].filter(Boolean).join(' ')}.`, data: { orderId },
+      }).catch(() => {});
+    }
+  }
+
+  private async shipmentIdForTracking(orderId: string, storeId: string, trackingNumber: string): Promise<string | null> {
+    const order: any = await this.databaseService.repositories.orderModel.findOne({ _id: orderId }).select('sellerOrders').lean();
+    const so = order?.sellerOrders?.find((s: any) => s.storeId === storeId);
+    const sh = (so?.shipments ?? []).find((s: any) => s?.tracking?.trackingNumber === trackingNumber);
+    return sh ? String(sh._id) : null;
+  }
+
+  /**
+   * Books one order (or a subset of its lines) with a Pakistani courier AND fulfils it through the existing shipment
+   * path (stock, status, shipped email/WhatsApp, timeline, partial shipments) using the courier's tracking as trusted
+   * tracking — the same shape purchaseShippingLabel uses.
+   *
+   * Idempotent per (order, sub-order, lines): a repeat call returns the existing booking; a booking that reached the
+   * courier but whose fulfil step failed ("paid but fulfil failed") keeps its tracking on the booking/timeline and is
+   * resumed by calling this again — the courier is NOT called a second time. After a CANCELLED booking, calling it
+   * again books anew and swaps the tracking onto the same shipment.
+   *
+   * Money: the courier is told to collect the order's authoritative total in the store currency, or 0 if already paid.
+   * Nothing here touches ledger/balance/fees/payout.
+   */
+  async bookCourierShipment(
+    sellerId: string,
+    orderId: string,
+    storeId: string,
+    ip?: string,
+    userAgent?: string,
+    opts: { provider?: string; items?: { itemId: string; quantity: number }[]; weightKg?: number; pieces?: number; notifyCustomer?: boolean } = {},
+  ) {
+    const courier = this.requireCourier();
+    const { orderModel, storeModel, courierBookingModel } = this.databaseService.repositories;
+    if (!isValidObjectId(orderId)) throw new BadRequestException('Invalid order id');
+    await courier.assertBookingAllowed(storeId);
+
+    const lineKey = lineKeyFor(opts.items);
+    const active: any = await courierBookingModel.findOne({ storeId, orderId, lineKey, isActive: true });
+    if (active?.bookingStatus === 'booked') {
+      return { success: true, message: 'Already booked with the courier', data: { booking: courier.toSellerView(active.toObject()), alreadyBooked: true } };
+    }
+    if (active?.bookingStatus === 'pending') throw new ConflictException('A courier booking for this order is already in progress.');
+    const resume = active?.bookingStatus === 'fulfil_failed' ? active : null;
+    const rebookOf: any = !active
+      ? await courierBookingModel.findOne({ storeId, orderId, lineKey, bookingStatus: 'cancelled', shipmentId: { $ne: null } }).sort({ createdAt: -1 }).lean()
+      : null;
+
+    const settings = await courier.getSettings(storeId);
+    const providerKey = resume?.provider ?? opts.provider ?? settings.defaultProvider;
+    if (!providerKey) throw new BadRequestException('Choose a courier to book with');
+    if (!settings.pickup) throw new BadRequestException('Set your pickup address in Courier settings before booking');
+    const conn = await courier.resolveConnection(storeId, providerKey);
+
+    const ctxItems = rebookOf ? undefined : resume ? (resume.lineKey === 'all' ? undefined : resume.items) : opts.items;
+    const ctx = await this.prepareLabelContext(sellerId, orderId, storeId, ctxItems);
+    const order: any = await orderModel.findOne({ _id: orderId, isDelete: false }).lean();
+    if (order.fulfillmentMethod === 'pickup') throw new BadRequestException('This is a pickup order — mark it ready for pickup instead of shipping it.');
+    if (!ctx.partial && !rebookOf && !isAllowedSellerOrderTransition(ctx.sellerOrder.status, 'shipped')) {
+      throw new BadRequestException(`Cannot book a courier for an order that is "${ctx.sellerOrder.status}".`);
+    }
+    const store: any = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false }).select('baseCurrency').lean();
+    const storeCurrency: string = store?.baseCurrency || order.currency || 'PKR';
+    const d = ctx.destination;
+    if (!d.phone) throw new BadRequestException('The buyer has no phone number on this order — a courier needs one.');
+
+    let booking: any = resume;
+    let trackingNumber: string | null = resume?.trackingNumber ?? null;
+    let booked: BookedShipment | null = null;
+    if (!resume) {
+      const weightKg = opts.weightKg ?? rebookOf?.weightKg ?? (ctx.totalWeightKg > 0 ? ctx.totalWeightKg : settings.defaultWeightKg);
+      const pieces = opts.pieces ?? rebookOf?.pieces ?? 1;
+      const isPaidNow = !!order.isPaid || order.paymentStatus === 'paid';
+      const codAmount = rebookOf ? (isPaidNow ? 0 : rebookOf.codAmount ?? 0) : await this.courierCodAmount(order, ctx, storeId, storeCurrency);
+      const n = await courier.countForOrder(storeId, orderId);
+      const orderNo = String(order.orderNumber ?? orderId);
+      const claimed = await courier.claim({
+        storeId, sellerId, orderId, provider: conn.key, mode: conn.mode, lineKey,
+        items: (opts.items ?? []).map((i) => ({ itemId: i.itemId, quantity: i.quantity })),
+        referenceNumber: n === 0 ? orderNo : `${orderNo}-${n + 1}`, weightKg, pieces, codAmount, currency: storeCurrency,
+      });
+      if (!claimed.created) {
+        if (claimed.booking.bookingStatus === 'booked') return { success: true, message: 'Already booked with the courier', data: { booking: courier.toSellerView(claimed.booking.toObject()), alreadyBooked: true } };
+        throw new ConflictException('A courier booking for this order is already in progress.');
+      }
+      booking = claimed.booking;
+
+      const lines = ctx.partial ? ctx.partial.lines.map((l: any) => ctx.sellerOrder.items[l.itemIndex]?.name) : (ctx.sellerOrder.items ?? []).map((i: any) => i.name);
+      const input: BookShipmentInput = {
+        referenceNumber: booking.referenceNumber,
+        consignee: { name: d.name, phone: d.phone, address: [d.street1, d.street2].filter(Boolean).join(', '), city: d.city },
+        pickup: settings.pickup as any,
+        returnAddress: (settings.returnAddress as any) ?? undefined,
+        weightKg, pieces, codAmount, currency: storeCurrency,
+        description: lines.filter(Boolean).join(', ').slice(0, 200) || 'Order',
+      };
+      try {
+        booked = await courier.bookAtCourier(conn, input);
+      } catch (err: any) {
+        await courier.markFailed(String(booking._id), err?.message ?? 'Booking failed');
+        throw err;
+      }
+      booking = await courier.markBooked(String(booking._id), booked, {});
+      trackingNumber = booked.trackingNumber;
+    }
+
+    const label = COURIER_CATALOG[conn.key].label;
+    const tracking = {
+      carrier: label, trackingNumber: trackingNumber as string, trackingUrl: booking?.trackingUrl ?? null,
+      labelUrl: booking?.labelUrl ?? null, labelRateId: null, labelCost: null, labelCurrency: null, labelPurchasedAt: new Date(),
+    };
+    await this.pushTimeline(
+      orderId, 'status',
+      `Booked with ${label} — tracking ${trackingNumber}${booking?.codAmount ? ` · COD ${booking.codAmount} ${booking.currency ?? ''}`.trimEnd() : ' · no COD (prepaid)'}${rebookOf ? ' (re-booked after cancellation)' : ''}`,
+      sellerId, 'seller',
+    );
+
+    try {
+      if (rebookOf) {
+        await this.replaceShipmentTracking(orderId, storeId, sellerId, rebookOf.shipmentId, tracking, opts.notifyCustomer !== false);
+      } else if (ctx.partial) {
+        await this.fulfilItems(sellerId, storeId, orderId, { items: (resume?.items?.length ? resume.items : opts.items)!, notifyCustomer: opts.notifyCustomer } as FulfilOrderDto, ip, userAgent, tracking);
+      } else {
+        await this.updateSellerOrderStatus(sellerId, { orderId, storeId, status: 'shipped' }, ip, userAgent, tracking);
+      }
+    } catch (err: any) {
+      // The courier booking exists — never lose its tracking. Keep it on the booking (resumable) and on the merchant timeline.
+      await courier.markFulfilFailed(String(booking._id), err?.message ?? 'Fulfil failed');
+      await this.pushTimeline(orderId, 'status', `Courier booking ${label} ${trackingNumber} was created but the order could not be marked shipped — open the order and retry the booking to finish it.`, sellerId, 'seller');
+      if (!ctx.partial && !rebookOf) {
+        await orderModel.updateOne({ _id: orderId, [`sellerOrders.${ctx.sellerOrderIndex}.storeId`]: storeId }, { $set: { [`sellerOrders.${ctx.sellerOrderIndex}.tracking`]: tracking } });
+      }
+      throw err;
+    }
+
+    const shipmentId = rebookOf?.shipmentId ?? (await this.shipmentIdForTracking(orderId, storeId, trackingNumber as string));
+    await courier.markFulfilled(String(booking._id), shipmentId);
+    this.activityLogService.log({
+      storeId, category: 'orders', action: 'courier_booked',
+      description: `Order #${order.orderNumber ?? orderId} booked with ${label} (tracking ${trackingNumber})`,
+      actorId: sellerId, actorRole: 'seller', targetId: orderId, targetType: 'order', ip, userAgent,
+      metadata: { provider: conn.key, mode: conn.mode, codAmount: booking?.codAmount ?? 0, lineKey },
+    });
+    const fresh: any = await courierBookingModel.findById(booking._id).lean();
+    return { success: true, message: `Booked with ${label}`, data: { booking: courier.toSellerView(fresh), alreadyBooked: false } };
+  }
+
+  /** One courier, many orders. Each order goes through bookCourierShipment (own idempotency/claim); a bad order never stops the rest. */
+  async bulkBookCourierShipments(
+    sellerId: string, storeId: string, orderIds: string[], ip?: string, userAgent?: string,
+    opts: { provider?: string; notifyCustomer?: boolean } = {},
+  ) {
+    const courier = this.requireCourier();
+    const ids = [...new Set(orderIds)].slice(0, 50);
+    await courier.assertBookingAllowed(storeId);
+    const settings = await courier.getSettings(storeId);
+    const providerKey = opts.provider ?? settings.defaultProvider;
+    if (!providerKey) throw new BadRequestException('Choose a courier to book with');
+    await courier.resolveConnection(storeId, providerKey); // fail fast for the whole batch if the courier is unusable
+    const results: Array<{ orderId: string; ok: boolean; trackingNumber?: string | null; bookingId?: string; alreadyBooked?: boolean; error?: string }> = [];
+    for (const orderId of ids) {
+      try {
+        const r: any = await this.bookCourierShipment(sellerId, orderId, storeId, ip, userAgent, { provider: providerKey, notifyCustomer: opts.notifyCustomer });
+        results.push({ orderId, ok: true, trackingNumber: r.data.booking.trackingNumber, bookingId: r.data.booking.id, alreadyBooked: r.data.alreadyBooked });
+      } catch (err: any) {
+        const msg = err?.response?.message ?? err?.message ?? 'Booking failed';
+        results.push({ orderId, ok: false, error: Array.isArray(msg) ? msg.join(', ') : String(msg) });
+      }
+    }
+    const succeeded = results.filter((r) => r.ok).length;
+    this.activityLogService.log({
+      storeId, category: 'orders', action: 'courier_bulk_booked', description: `Bulk courier booking: ${succeeded}/${results.length} booked with ${providerKey}`,
+      actorId: sellerId, actorRole: 'seller', targetId: storeId, targetType: 'store', ip, userAgent, metadata: { provider: providerKey, total: results.length, succeeded },
+    });
+    return {
+      success: true,
+      message: `${succeeded} of ${results.length} booked`,
+      data: { provider: providerKey, total: results.length, succeeded, failed: results.length - succeeded, results, bookingIds: results.filter((r) => r.bookingId).map((r) => r.bookingId) },
+    };
+  }
+
+  /** Cancels a courier booking at the courier (only while the courier has not picked it up) and records it on the order. */
+  async cancelCourierBooking(sellerId: string, storeId: string, orderId: string, bookingId: string, ip?: string, userAgent?: string) {
+    const courier = this.requireCourier();
+    const { orderModel } = this.databaseService.repositories;
+    if (!isValidObjectId(orderId) || !isValidObjectId(bookingId)) throw new BadRequestException('Invalid id');
+    const order: any = await orderModel.findOne({ _id: orderId, isDelete: false }).select('orderNumber sellerOrders').lean();
+    if (!order) throw new NotFoundException('Order not found');
+    if (!order.sellerOrders?.some((so: any) => so.storeId === storeId && so.sellerId === sellerId)) throw new ForbiddenException('Unauthorized');
+    const booking: any = await courier.findOwned(storeId, bookingId);
+    if (booking.orderId !== orderId) throw new NotFoundException('Courier booking not found');
+    if (!booking.isActive || !['booked', 'fulfil_failed'].includes(booking.bookingStatus) || !booking.trackingNumber) {
+      throw new BadRequestException('This booking is not active.');
+    }
+    if (booking.courierStatus && booking.courierStatus !== 'booked') {
+      throw new BadRequestException(`The courier already has this parcel (${booking.courierStatus.replace(/_/g, ' ')}) — it can no longer be cancelled from here.`);
+    }
+    const conn = await courier.resolveConnection(storeId, booking.provider);
+    await courier.cancelAtCourier(conn, booking.trackingNumber);
+    await courier.markCancelled(String(booking._id));
+    await this.pushTimeline(orderId, 'status', `Courier booking cancelled (${COURIER_CATALOG[conn.key].label} ${booking.trackingNumber}) — book again to ship it`, sellerId, 'seller');
+    this.activityLogService.log({
+      storeId, category: 'orders', action: 'courier_cancelled', description: `Order #${order.orderNumber ?? orderId} courier booking ${booking.trackingNumber} cancelled`,
+      actorId: sellerId, actorRole: 'seller', targetId: orderId, targetType: 'order', ip, userAgent, metadata: { provider: booking.provider },
+    });
+    return { success: true, message: 'Courier booking cancelled', data: { bookingId } };
+  }
+
+  async listCourierBookingsForOrder(sellerId: string, storeId: string, orderId: string) {
+    const courier = this.requireCourier();
+    if (!isValidObjectId(orderId)) throw new BadRequestException('Invalid order id');
+    const order: any = await this.databaseService.repositories.orderModel.findOne({ _id: orderId, isDelete: false }).select('sellerOrders').lean();
+    if (!order) throw new NotFoundException('Order not found');
+    if (!order.sellerOrders?.some((so: any) => so.storeId === storeId && so.sellerId === sellerId)) throw new ForbiddenException('Unauthorized');
+    return { success: true, data: await courier.listForOrder(storeId, orderId) };
+  }
+
+  /** Bookable couriers for the order screen + the store's courier defaults. Requires store ownership. */
+  async courierBookingOptions(sellerId: string, storeId: string) {
+    const courier = this.requireCourier();
+    await this.databaseService.repositories.storeModel.findOne({ _id: storeId, sellerId, isDelete: false }).select('_id').lean().then((s) => { if (!s) throw new ForbiddenException('Store not found or unauthorized'); });
+    return { success: true, data: { providers: await courier.listBookableProviders(storeId), settings: await courier.getSettings(storeId) } };
+  }
+
+  async courierDocuments(sellerId: string, storeId: string, bookingIds: string[], kind: 'airway_bill' | 'load_sheet') {
+    const courier = this.requireCourier();
+    const s = await this.databaseService.repositories.storeModel.findOne({ _id: storeId, sellerId, isDelete: false }).select('_id').lean();
+    if (!s) throw new ForbiddenException('Store not found or unauthorized');
+    const ids = bookingIds.filter((i) => isValidObjectId(i));
+    const out = await courier.getDocuments(storeId, ids, kind);
+    this.activityLogService.log({
+      storeId, category: 'orders', action: kind === 'airway_bill' ? 'courier_airway_bill_printed' : 'courier_load_sheet_printed',
+      description: `${kind === 'airway_bill' ? 'Airway bills' : 'Load sheet'} downloaded for ${ids.length} booking(s)`, actorId: sellerId, actorRole: 'seller', targetId: storeId, targetType: 'store',
+    });
+    return out;
   }
 
   /** Real FIFO/FEFO consumption for a lot-tracked variant (see StockLot

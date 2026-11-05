@@ -88,7 +88,7 @@ describe('StoreIntegrationsService — Stripe Standard onboarding', () => {
       createAccountOnboardingUrl: jest.fn().mockResolvedValue('https://connect.stripe.com/setup/x'),
       retrieveAccountState: jest.fn().mockResolvedValue(account),
     };
-    const service = new StoreIntegrationsService({ repositories: repos } as unknown as DatabaseService, { log: jest.fn() } as any, {} as any, {} as any, stripeConnect, {} as any, {} as any);
+    const service = new StoreIntegrationsService({ repositories: repos } as unknown as DatabaseService, { log: jest.fn() } as any, {} as any, {} as any, stripeConnect, {} as any, {} as any, {} as any, {} as any);
     return { service, stripeConnect, storeIntegrationModel };
   }
 

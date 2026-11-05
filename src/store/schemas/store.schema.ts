@@ -414,6 +414,17 @@ export class Store {
   @Prop({ type: Number, default: 10, min: 1 })
   lowStockThreshold!: number;
 
+  // Pakistani courier booking defaults (integrations/couriers/): pickup + return address, preferred courier, default
+  // parcel weight. Written ONLY through PUT api/store/:storeId/integrations/couriers/settings (validated there) —
+  // never by the generic update-store route.
+  @Prop({ type: Object, default: null })
+  courierSettings!: {
+    defaultProvider: string | null;
+    defaultWeightKg: number;
+    pickup: { name: string; phone: string; email?: string; address: string; city: string; addressCode?: string } | null;
+    returnAddress: { name: string; phone: string; email?: string; address: string; city: string; addressCode?: string } | null;
+  } | null;
+
   // Real Staff RBAC (see StaffMember/ApprovalRequest schemas) — a staff
   // member WITHOUT `inventory.approve` who submits a stock adjustment at or
   // above this quantity, or with reason 'damaged'/'write_off' (any

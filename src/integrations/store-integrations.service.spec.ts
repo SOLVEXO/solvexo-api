@@ -40,7 +40,7 @@ describe('StoreIntegrationsService', () => {
     const taxService = {} as TaxService;
     const shippingRatesService = {} as ShippingRatesService;
 
-    service = new StoreIntegrationsService(db, activityLogService, registry, whatsAppProvider, stripeConnectService, taxService, shippingRatesService);
+    service = new StoreIntegrationsService(db, activityLogService, registry, whatsAppProvider, stripeConnectService, taxService, shippingRatesService, {} as any, {} as any);
   });
 
   afterAll(() => {

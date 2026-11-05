@@ -16,6 +16,7 @@ export { UserPaymentMethod, UserPaymentMethodDocument, UserPaymentMethodSchema }
 export { ShippingZone, ShippingZoneDocument, ShippingZoneSchema, ShippingProfile, ShippingProfileDocument, ShippingProfileSchema } from '../checkout/shipping.schema';   
 export { Checkout, CheckoutDocument, CheckoutSchema } from '../checkout/checkout.schema';
 export { Order, OrderDocument, OrderSchema } from '../orders/schemas/order.schema';
+export { CourierBooking, CourierBookingDocument, CourierBookingSchema } from '../integrations/couriers/schemas/courier-booking.schema';
 export { OrderPaymentRecord, OrderPaymentRecordDocument, OrderPaymentRecordSchema } from '../orders/schemas/order-payment-record.schema';
 export { SavedReport, SavedReportDocument, SavedReportSchema } from '../analytics/schemas/saved-report.schema';
 export { PaymentTransaction, PaymentTransactionDocument, PaymentTransactionSchema } from '../payment/paymentTransaction.Schema';

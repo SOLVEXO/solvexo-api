@@ -37,6 +37,7 @@ import { BlueexCourierProvider } from './couriers/providers/blueex.provider';
 import { CallcourierCourierProvider } from './couriers/providers/callcourier.provider';
 import { SwyftCourierProvider } from './couriers/providers/swyft.provider';
 import { DaewooFastexCourierProvider } from './couriers/providers/daewoo_fastex.provider';
+import { CourierService } from './couriers/courier.service';
 import { TaxService } from '../tax/tax.service';
 import { ShippingRatesService } from '../shipping-rates/shipping-rates.service';
 
@@ -76,6 +77,7 @@ import { ShippingRatesService } from '../shipping-rates/shipping-rates.service';
       ],
     },
     CourierProviderRegistry,
+    CourierService,
     IntegrationWebhookEventService,
     WhatsAppSenderService,
     StoreIntegrationsService,
@@ -84,6 +86,6 @@ import { ShippingRatesService } from '../shipping-rates/shipping-rates.service';
     TaxService,
     ShippingRatesService,
   ],
-  exports: [PaymentProviderRegistry, CourierProviderRegistry, StuckGatewayPaymentsService, IntegrationWebhookEventService, WhatsAppCloudProvider, WhatsAppSenderService, TaxService, ShippingRatesService],
+  exports: [PaymentProviderRegistry, CourierProviderRegistry, CourierService, StuckGatewayPaymentsService, IntegrationWebhookEventService, WhatsAppCloudProvider, WhatsAppSenderService, TaxService, ShippingRatesService],
 })
 export class IntegrationsModule {}
