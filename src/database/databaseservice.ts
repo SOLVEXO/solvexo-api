@@ -516,6 +516,8 @@ export class DatabaseService {
     private orderPaymentRecordModel: Model<schema.OrderPaymentRecordDocument>,
     @InjectModel(schema.CourierBooking.name)
     private courierBookingModel: Model<schema.CourierBookingDocument>,
+    @InjectModel(schema.CustomerSegment.name)
+    private customerSegmentModel: Model<schema.CustomerSegmentDocument>,
 
     // Phase 5 — Product Tracking Foundation.
     @InjectModel(schema.ProductView.name)
@@ -708,6 +710,7 @@ export class DatabaseService {
       translationModel: this.translationModel,
       orderPaymentRecordModel: this.orderPaymentRecordModel,
       courierBookingModel: this.courierBookingModel,
+      customerSegmentModel: this.customerSegmentModel,
       productViewModel: this.productViewModel,
       storefrontSessionModel: this.storefrontSessionModel,
       savedReportModel: this.savedReportModel,

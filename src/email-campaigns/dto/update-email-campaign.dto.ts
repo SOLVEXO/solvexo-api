@@ -1,6 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { ApiProperty } from '@nestjs/swagger';
 import { IsIn, IsObject, IsISO8601, IsOptional, IsString, MaxLength, ValidateNested } from 'class-validator';
+import { IsMongoId } from 'class-validator';
 import { Type } from 'class-transformer';
 import { CampaignSegmentDto } from './campaign-segment.dto';
 
@@ -34,6 +35,11 @@ export class UpdateEmailCampaignDto {
   @ValidateNested()
   @Type(() => CampaignSegmentDto)
   segment?: CampaignSegmentDto | null;
+
+  @ApiProperty({ required: false, description: 'Saved customer segment id (audience filter)' })
+  @IsOptional()
+  @IsMongoId()
+  segmentId?: string | null;
 
   @ApiProperty({ required: false, description: 'Editor block design (JSON); `message` is its rendered HTML' })
   @IsOptional()

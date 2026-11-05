@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { compileSegmentFilter, normalizeSegmentFilter, type CompiledSegment } from '../customer-segments/segment-filter.util';
 import {
   Injectable,
   BadRequestException,
@@ -2176,7 +2177,7 @@ export class StoreService {
     storeId: string,
     customerIds: string[],
     query: any,
-    opts: { includeSubscribers?: boolean; knownEmails?: string[] } = {},
+    opts: { includeSubscribers?: boolean; knownEmails?: string[]; segment?: CompiledSegment } = {},
   ) {
     const { userModel, storeCustomerMetaModel, newsletterSubscriberModel } = this.databaseService.repositories;
 
@@ -2184,6 +2185,8 @@ export class StoreService {
       { $match: { $or: [{ userId: { $in: customerIds } }, { customerId: { $in: customerIds } }], isDelete: false, 'sellerOrders.storeId': storeId } },
       { $unwind: '$sellerOrders' },
       { $match: { 'sellerOrders.storeId': storeId } },
+      // Segments only: "last shipping country/city" needs the orders oldest-first so $last is the latest.
+      ...(opts.segment?.needs.has('location') ? [{ $sort: { createdAt: 1 } }] : []),
       {
         $group: {
           // one customer per email (Shopify) — see resolveCustomerId
@@ -2193,6 +2196,9 @@ export class StoreService {
           // BUYER's currency, so summing it mixed dollars, euros and rupees into one number.
           totalSpent: { $sum: SUB_ORDER_SPEND_EXPR },
           lastOrderAt: { $max: '$createdAt' },
+          ...(opts.segment?.needs.has('firstOrder') ? { firstOrderAt: { $min: '$createdAt' } } : {}),
+          ...(opts.segment?.needs.has('location') ? { shipCountry: { $last: '$shippingAddress.country' }, shipCity: { $last: '$shippingAddress.city' } } : {}),
+          ...(opts.segment?.needs.has('products') ? { prodArrays: { $push: '$sellerOrders.items.productId' } } : {}),
         },
       },
       {
@@ -2368,6 +2374,7 @@ export class StoreService {
         },
       },
       { $addFields: { marketingOptIn: { $eq: ['$marketingStatus', 'subscribed'] } } },
+      ...(opts.segment ? this.segmentStages(opts.segment, storeId) : []),
     ];
 
     const filter: Record<string, unknown> = {};
@@ -2397,8 +2404,112 @@ export class StoreService {
     if (query.view === 'archived') filter.isArchived = true;
     else if (query.view !== 'all') filter.isArchived = false;
 
-    pipeline.push({ $match: filter });
+    pipeline.push({ $match: opts.segment ? { $and: [filter, opts.segment.match] } : filter });
     return pipeline;
+  }
+
+  /** Extra computed fields a saved segment's conditions reference — only what the compiled filter `needs`. */
+  private segmentStages(segment: CompiledSegment, storeId: string): any[] {
+    const { storeCreditTransactionModel, loyaltyMemberModel } = this.databaseService.repositories;
+    const has = (n: string) => (segment.needs as Set<string>).has(n);
+    const stages: any[] = [{
+      $addFields: {
+        accountStatus: {
+          $switch: {
+            branches: [
+              { case: { $eq: ['$isBlocked', true] }, then: 'blocked' },
+              { case: { $eq: ['$isSubscriberOnly', true] }, then: 'guest' },
+              { case: { $eq: ['$user.isGuest', true] }, then: 'guest' },
+            ],
+            default: 'account',
+          },
+        },
+        avgOrderValue: { $cond: [{ $gt: ['$orderCount', 0] }, { $divide: ['$totalSpent', '$orderCount'] }, 0] },
+        ...(has('location') ? {
+          shipCountryLower: { $toLower: { $ifNull: ['$shipCountry', ''] } },
+          shipCityLower: { $toLower: { $ifNull: ['$shipCity', ''] } },
+        } : {}),
+        ...(has('products') ? {
+          purchasedProductIds: { $reduce: { input: { $ifNull: ['$prodArrays', []] }, initialValue: [], in: { $setUnion: ['$$value', { $ifNull: ['$$this', []] }] } } },
+        } : {}),
+      },
+    }];
+    if (has('storeCredit')) {
+      stages.push(
+        {
+          $lookup: {
+            from: storeCreditTransactionModel.collection.name,
+            let: { uid: '$_id' },
+            pipeline: [
+              { $match: { storeId, remaining: { $gt: 0 }, $expr: { $and: [{ $eq: ['$customerId', '$$uid'] }, { $or: [{ $eq: ['$expiresAt', null] }, { $gt: ['$expiresAt', '$$NOW'] }] }] } } },
+              { $group: { _id: null, balance: { $sum: '$remaining' } } },
+            ],
+            as: '_sc',
+          },
+        },
+        { $addFields: { storeCreditBalance: { $ifNull: [{ $arrayElemAt: ['$_sc.balance', 0] }, 0] } } },
+      );
+    }
+    if (has('loyalty')) {
+      stages.push(
+        {
+          $lookup: {
+            from: loyaltyMemberModel.collection.name,
+            let: { uid: '$_id' },
+            pipeline: [{ $match: { storeId, $expr: { $eq: ['$userId', '$$uid'] } } }, { $limit: 1 }, { $project: { currentTier: 1 } }],
+            as: '_lm',
+          },
+        },
+        { $addFields: { loyaltyTierLower: { $toLower: { $ifNull: [{ $arrayElemAt: ['$_lm.currentTier', 0] }, ''] } } } },
+      );
+    }
+    return stages;
+  }
+
+  /**
+   * Members of a saved/previewed segment — same pipeline (and so the same customers) as the Customers page, narrowed
+   * by the compiled filter at call time (never a stored snapshot). The CALLER must already have verified store
+   * ownership / permission. `mode`: 'list' (paged rows) | 'count' | 'ids' (id + email, capped).
+   */
+  async querySegmentMembers(
+    storeId: string,
+    segment: CompiledSegment,
+    opts: { mode: 'list' | 'count' | 'ids'; page?: number; limit?: number; search?: string; includeArchived?: boolean; onlyCustomerId?: string },
+  ): Promise<any> {
+    const { orderModel } = this.databaseService.repositories;
+    // `onlyCustomerId` (discount eligibility at checkout): start the pipeline from that one customer, not the whole store.
+    const customerIds = opts.onlyCustomerId ? [String(opts.onlyCustomerId)] : await this.storeCustomerIdsFromOrders(storeId);
+    const knownEmails = opts.onlyCustomerId ? [] : await this.storeCustomerEmails(storeId, customerIds);
+    const pipeline = this.buildStoreCustomersPipeline(
+      storeId, customerIds, { search: opts.search, view: opts.includeArchived ? 'all' : 'active' },
+      { includeSubscribers: !opts.onlyCustomerId, knownEmails, segment },
+    );
+    if (opts.mode === 'count') {
+      const [row] = await orderModel.aggregate([...pipeline, { $count: 'n' }]);
+      return row?.n ?? 0;
+    }
+    if (opts.mode === 'ids') {
+      return orderModel.aggregate([...pipeline, { $project: { _id: 1, email: 1 } }, { $limit: 50_000 }]);
+    }
+    const page = Math.max(1, opts.page ?? 1);
+    const limit = Math.min(100, Math.max(1, opts.limit ?? 20));
+    const [rows, [count]] = await Promise.all([
+      orderModel.aggregate([
+        ...pipeline,
+        { $sort: { lastOrderAt: -1, _id: 1 } },
+        { $skip: (page - 1) * limit },
+        { $limit: limit },
+        {
+          $project: {
+            _id: 1, name: 1, email: 1, phone: 1, createdAt: 1, orderCount: 1, totalSpent: 1, lastOrderAt: 1,
+            tags: 1, marketingStatus: 1, isSubscriberOnly: 1, accountStatus: 1,
+          },
+        },
+      ]),
+      orderModel.aggregate([...pipeline, { $count: 'n' }]),
+    ]);
+    const total = count?.n ?? 0;
+    return { customers: rows, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } };
   }
 
   /** Real "this store actually knows this person" check — an order OR a
@@ -2529,7 +2640,14 @@ export class StoreService {
 
     const customerIds = await this.storeCustomerIdsFromOrders(storeId);
     const knownEmails = await this.storeCustomerEmails(storeId, customerIds);
-    const pipeline = this.buildStoreCustomersPipeline(storeId, customerIds, query, { includeSubscribers: true, knownEmails });
+    // `segmentId`: narrow the Customers list (and so its totals / bulk actions / export) to a saved segment of THIS store.
+    let segment: CompiledSegment | undefined;
+    if (typeof query.segmentId === 'string' && query.segmentId) {
+      const seg: any = await this.databaseService.repositories.customerSegmentModel.findOne({ _id: query.segmentId, storeId }).select('filter').lean();
+      if (!seg) throw new NotFoundException('Segment not found');
+      segment = compileSegmentFilter(normalizeSegmentFilter(seg.filter));
+    }
+    const pipeline = this.buildStoreCustomersPipeline(storeId, customerIds, query, { includeSubscribers: true, knownEmails, segment });
 
     const [customers, [totals]] = await Promise.all([
       orderModel.aggregate([

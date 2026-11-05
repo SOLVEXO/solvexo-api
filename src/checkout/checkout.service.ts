@@ -1,3 +1,4 @@
+import { CustomerSegmentsService } from '../customer-segments/customer-segments.service';
 import { assertOrderQuantity } from '@/products/selling-options.util';
 import { isValidObjectId } from 'mongoose';
 import { resolveZoneShippingPrice } from '@/shipping-zones/shipping-rate.util';
@@ -11,6 +12,7 @@ import {
   Injectable,
   BadRequestException,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { DatabaseService } from '@/database/databaseservice';
 import { availableStock, AVAILABLE_STOCK_EXPR, isPurchasableOnline } from '@/common/stock-availability.util';
@@ -70,6 +72,8 @@ export class CheckoutService {
     private readonly profilesService: ShippingProfilesService,
     private readonly marketsService: MarketsService,
     private readonly marketPricingService: MarketPricingService,
+    // Last + optional so positional-constructor specs keep working; provided by CheckoutModule.
+    @Optional() private readonly customerSegments?: CustomerSegmentsService,
   ) {}
 
   private round(n: number) {
@@ -635,6 +639,7 @@ export class CheckoutService {
     // each discount's own targeted subset of items (whole store / a set of
     // categories / a set of products).
     let autoDiscountSavingsUSD = 0;
+    const segmentMemberCache = new Map<string, boolean>();
     const activeDiscountsByStore = await this.discountsService.getActiveDiscountsForStores(cartStoreIds);
 
     for (const sId of cartStoreIds) {
@@ -662,6 +667,15 @@ export class CheckoutService {
         // the whole checkout's shipping fee, in addShippingInCheckout below
         // (shipping is a flat whole-checkout amount, never a per-item one).
         if (discount.discountType === 'free_shipping') continue;
+        // Customer eligibility: a segment-restricted discount only applies to CURRENT members of that saved segment
+        // (evaluated now, for this buyer, never a stored list). No segment service / not a member => skipped.
+        if (discount.customerSegmentId) {
+          const key = `${sId}:${discount.customerSegmentId}`;
+          if (!segmentMemberCache.has(key)) {
+            segmentMemberCache.set(key, this.customerSegments ? await this.customerSegments.isMember(sId, String(discount.customerSegmentId), userId).catch(() => false) : false);
+          }
+          if (!segmentMemberCache.get(key)) continue;
+        }
         if (discount.minOrderAmount != null && wholeStoreSubtotal < discount.minOrderAmount) continue;
 
         const eligible = discount.target === 'store'

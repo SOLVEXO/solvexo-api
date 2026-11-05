@@ -1,6 +1,6 @@
 # Courier module — progress (resume file)
 
-Branch: `feature/courier-integration` (both repos: `solvexo-api`, `solvexo`), branched from `uzair-branch`. Never commit to main.
+Branch: work lives directly on `uzair-branch` (both repos `solvexo-api`, `solvexo`). Never commit to main.
 Run unit tests with the local, uncommitted `jest.unit.config.js` (the repo's own jest config needs `mongodb-memory-server`, which is not installed in this sandbox):
 `npx jest -c jest.unit.config.js <path>`.
 

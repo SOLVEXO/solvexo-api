@@ -79,6 +79,11 @@ export class AutomaticDiscount {
   @Prop({ type: Date, default: null })
   endsAt: Date | null;
 
+  // Optional customer eligibility: only members of this saved segment get the discount (evaluated at checkout).
+  // null = everyone (every pre-existing discount).
+  @Prop({ type: String, default: null })
+  customerSegmentId: string | null;
+
   @Prop({ type: Boolean, default: true })
   isActive: boolean;
 

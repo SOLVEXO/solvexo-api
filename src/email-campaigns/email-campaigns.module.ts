@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { CustomerSegmentsModule } from '../customer-segments/customer-segments.module';
 import { Module } from '@nestjs/common';
 import { EmailCampaignsController } from './email-campaigns.controller';
 import { EmailCampaignsService } from './email-campaigns.service';
@@ -17,7 +18,7 @@ import { PlatformPlansModule } from '../platform-plans/platform-plans.module';
 // PlatformPlansModule for EntitlementsService — executeSend() gates on
 // emailCampaignsAllowed.
 @Module({
-  imports: [AuthModule, RedisModule, PlatformPlansModule],
+  imports: [AuthModule, RedisModule, PlatformPlansModule, CustomerSegmentsModule],
   controllers: [EmailCampaignsController],
   providers: [EmailCampaignsService, EmailCampaignsProcessor, EmailService],
   exports: [EmailCampaignsService],

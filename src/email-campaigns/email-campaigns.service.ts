@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { CustomerSegmentsService } from '../customer-segments/customer-segments.service';
 import { Injectable, Logger, ForbiddenException, NotFoundException, BadRequestException } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
@@ -32,6 +33,7 @@ export class EmailCampaignsService {
     private readonly entitlementsService: EntitlementsService,
     private readonly emailService: EmailService,
     @InjectQueue(QUEUE_NAMES.EMAIL_CAMPAIGNS) private readonly queue: Queue,
+    private readonly customerSegments: CustomerSegmentsService,
   ) {}
 
   private get r() {
@@ -107,7 +109,7 @@ export class EmailCampaignsService {
    *    - 'abandoned' subscribers with an unrecovered abandoned checkout
    *  Deduped by email, since the same person can hold more than one account
    *  with the same email across legacy/per-store rows. */
-  private async resolveAudience(storeId: string, audience: EmailCampaignAudience, segment?: EmailCampaignSegment | null) {
+  private async resolveAudience(storeId: string, audience: EmailCampaignAudience, segment?: EmailCampaignSegment | null, segmentId?: string | null) {
     const { userModel, orderModel, checkoutModel, newsletterSubscriberModel } = this.r;
 
     const subscribers = await newsletterSubscriberModel
@@ -166,7 +168,12 @@ export class EmailCampaignsService {
         unsubscribeToken: sub.unsubscribeToken,
       });
     }
-    return this.applySegment(storeId, recipients, segment);
+    const narrowed = await this.applySegment(storeId, recipients, segment);
+    if (!segmentId) return narrowed;
+    // Saved segment: membership is evaluated NOW (send/preview time), never snapshotted. A missing segment => nobody.
+    const members = await this.customerSegments.resolveMembers(storeId, segmentId);
+    if (!members) return [];
+    return narrowed.filter((r) => r.accountIds.some((id) => members.ids.has(id)) || members.emails.has(r.email.toLowerCase()));
   }
 
   private hasSegment(segment?: EmailCampaignSegment | null): segment is EmailCampaignSegment {
@@ -224,9 +231,9 @@ export class EmailCampaignsService {
 
   /** Lets the frontend show "~N recipients" before the seller actually
    *  commits to sending — same resolution logic, no side effects. */
-  async previewAudience(sellerId: string, storeId: string, audience: EmailCampaignAudience, segment?: EmailCampaignSegment | null) {
+  async previewAudience(sellerId: string, storeId: string, audience: EmailCampaignAudience, segment?: EmailCampaignSegment | null, segmentId?: string | null) {
     await this.verifyStoreOwnership(storeId, sellerId);
-    const recipients = await this.resolveAudience(storeId, audience, segment);
+    const recipients = await this.resolveAudience(storeId, audience, segment, segmentId);
     return { success: true, data: { recipientCount: recipients.length } };
   }
 
@@ -269,7 +276,7 @@ export class EmailCampaignsService {
     // thrown campaign 'failed', so this needs no extra error handling here).
     await this.entitlementsService.assertFeatureAllowed(campaign.storeId, 'emailCampaignsAllowed', 'Email Campaigns');
     const store = await this.r.storeModel.findById(campaign.storeId).select('name contactEmail').lean();
-    const recipients = await this.resolveAudience(campaign.storeId, campaign.audience, campaign.segment);
+    const recipients = await this.resolveAudience(campaign.storeId, campaign.audience, campaign.segment, campaign.segmentId);
 
     if (recipients.length === 0) {
       campaign.status = 'failed';
@@ -326,7 +333,7 @@ export class EmailCampaignsService {
     // Checked up front so an empty audience leaves the draft editable
     // instead of burning it as 'failed' (executeSend's own guard still
     // covers the scheduled path, where there's no one to tell).
-    if ((await this.resolveAudience(storeId, campaign.audience, campaign.segment)).length === 0) {
+    if ((await this.resolveAudience(storeId, campaign.audience, campaign.segment, campaign.segmentId)).length === 0) {
       throw new BadRequestException(
         'No subscribers in this audience yet. Only customers who opted in to marketing emails can receive campaigns.',
       );

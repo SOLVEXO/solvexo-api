@@ -1,6 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { ArrayMaxSize, IsArray, IsEmail, IsIn, IsInt, IsNumber, IsOptional, IsString, Max, Min, ValidateNested } from 'class-validator';
+import { IsMongoId } from 'class-validator';
 import { Type } from 'class-transformer';
 
 /** Optional filters layered on top of a campaign's `audience` — all are ANDed.
@@ -33,6 +34,9 @@ export class AudiencePreviewDto {
 
   @IsOptional() @ValidateNested() @Type(() => CampaignSegmentDto)
   segment?: CampaignSegmentDto | null;
+
+  @IsOptional() @IsMongoId()
+  segmentId?: string | null;
 }
 
 export class SendTestEmailDto {
