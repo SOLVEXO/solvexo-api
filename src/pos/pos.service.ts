@@ -782,7 +782,7 @@ export class PosService {
           // G1b minor twins (from the shift's own integer counters when present, else derived from the decimals)
           totalSalesMinor: (session as any).totalSalesMinor ?? toMinor((session as any).totalSales || 0, exp),
           refundsTotalMinor: toMinor(refundsTotal, exp),
-          byPaymentMethod: byPayment,
+          byPaymentMethod: Object.fromEntries(Object.entries(byPayment).map(([k, v]) => [k, { ...v, totalMinor: toMinor(v.total, exp) }])), // G1b minor twin per tender
           cashFlow: {
             openingCash: (session as any).openingCash,
             cashSales: (session as any).cashSales,
@@ -1913,6 +1913,7 @@ export class PosService {
       discountMinor: totals.minor.discount,
       taxMinor: totals.minor.tax,
       totalMinor: totals.minor.total,
+      refundedAmountMinor: 0, // a sale starts un-refunded (the decimal's schema default is 0); the refund path moves both
       ...(discount.value > 0 && discount.type === 'amount' ? { discountValueMinor: toMinor(discount.value, exp) } : {}),
       ...(settled !== undefined ? { changeGivenMinor: settled ? toMinor(settled.change, exp) : 0, paymentShortfallMinor: settled ? toMinor(settled.shortBy, exp) : 0 } : {}),
     };

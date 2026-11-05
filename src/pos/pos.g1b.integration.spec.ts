@@ -49,6 +49,7 @@ describe('dual-write: sales', () => {
     expect([doc.items[0].priceMinor, doc.items[0].lineTotalMinor].map(num)).toEqual([1000, 2000]);
     expect([doc.payments[0].amountMinor, doc.payments[0].tenderedMinor].map(num)).toEqual([2200, 5000]);
     expect(await bsonTypes(h.repos.saleModel.collection, doc._id, ['totalMinor', 'items.lineTotalMinor', 'payments.amountMinor'])).toEqual(['long', 'array', 'array']);
+    expect(num(doc.refundedAmountMinor)).toBe(0); // complete from the first write
     expect(mismatches(doc, 'sale')).toEqual([]);
     expect(JSON.parse(JSON.stringify(res.data)).totalMinor).toBe(2200); // a plain JSON number on the wire
     expect(PosMinorMetrics.snapshot().totalMismatchedDocs).toBe(0);

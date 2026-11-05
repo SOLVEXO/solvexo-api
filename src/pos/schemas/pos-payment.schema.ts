@@ -3,7 +3,6 @@ import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Document } from 'mongoose';
 import { makeAppendOnly } from './pos-immutable.util';
 import '../../common/schema-types/minor-money';
-import '../../common/schema-types/minor-money';
 
 export type PosPaymentDocument = PosPayment & Document;
 
