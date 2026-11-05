@@ -14,6 +14,10 @@ import {
 import { derivePayment, DerivedPayment, isOpen, isTerminalUnpaid } from './payment-status.util';
 import { DIGITAL_PAYMENTS_GATE, DigitalPaymentsGate } from './digital-payments-gate';
 import { paymentsConfig } from './payments-config';
+import { BUSY, JobLeaseService } from '../common/job-lease/job-lease.service';
+
+/** How long one instance may hold a per-payment lease before another may take over (renewed by a heartbeat while it works). */
+export const PAYMENT_LEASE_MS = 30_000;
 import { Store, StoreDocument } from '@/store/schemas/store.schema';
 import { RegisterSession, RegisterSessionDocument } from '@/pos/schemas/register-session.schema';
 import { Sale, SaleDocument } from '@/pos/schemas/sales.schema';
@@ -41,6 +45,7 @@ export class PaymentsCoreService {
     @InjectModel(PosAuditLog.name) private readonly audit: Model<PosAuditLogDocument>,
     @Inject(PAYMENT_PROVIDERS) private readonly providers: PaymentProvider[],
     @Inject(DIGITAL_PAYMENTS_GATE) private readonly gate: DigitalPaymentsGate,
+    readonly leases: JobLeaseService,
   ) {}
 
   provider(key: string): PaymentProvider {
@@ -198,7 +203,14 @@ export class PaymentsCoreService {
    *  • confirmed with the wrong amount → `anomaly` (NOT confirmed — a manager decides)
    *  • failed/expired after confirmed  → `anomaly` (a paid payment is never moved back)
    */
-  async applyOutcome(intent: any, o: ProviderOutcome, source: 'webhook' | 'poll'): Promise<{ wrote: PaymentEventType | null }> {
+  async applyOutcome(intent: any, o: ProviderOutcome, source: 'webhook' | 'poll'): Promise<{ wrote: PaymentEventType | null; busy?: boolean }> {
+    // one writer per payment at a time (across all server instances); `busy` = another instance is on it right now — the webhook path
+    // retries later, the poller simply skips this round. Idempotent regardless: if the lease ever expires mid-run, unique event keys hold.
+    const r = await this.leases.withLease(`payments:apply:${intent._id}`, PAYMENT_LEASE_MS, () => this.applyOutcomeLocked(intent, o, source));
+    return r === BUSY ? { wrote: null, busy: true } : r;
+  }
+
+  private async applyOutcomeLocked(intent: any, o: ProviderOutcome, source: 'webhook' | 'poll'): Promise<{ wrote: PaymentEventType | null }> {
     const { d, events } = await this.derived(intent);
     const base = { source, providerEventId: o.providerEventId ?? undefined, providerKey: o.providerEventId ? intent.providerKey : undefined, at: o.occurredAt };
 
@@ -248,7 +260,13 @@ export class PaymentsCoreService {
       const o = await provider.getStatus(intent.providerRef);
       if (o.kind === 'confirmed' || o.kind === 'failed') { await this.applyOutcome(intent, o, 'poll'); const again = await this.derived(intent, now); if (!isOpen(again.d.status)) return false; }
     } catch (e: any) { this.logger.warn(`last provider look failed for ${intent._id}: ${e?.message}`); }
-    await this.appendEvent(intent, 'expired', { source: 'system' });
+    const wrote = await this.leases.withLease(`payments:apply:${intent._id}`, PAYMENT_LEASE_MS, async () => {
+      const again = await this.derived(intent, now); // re-read under the lease: someone may have confirmed it meanwhile
+      if (!isOpen(again.d.status)) return false;
+      await this.appendEvent(intent, 'expired', { source: 'system' });
+      return true;
+    });
+    if (wrote !== true) return false;
     await provider.cancel(intent.providerRef).catch(() => undefined);
     return true;
   }

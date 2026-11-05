@@ -7,6 +7,7 @@ import { Store, StoreDocument } from '../store/schemas/store.schema';
 import { UploadService } from '../upload/upload.service';
 import { KybAuditService } from './kyb-audit.service';
 import { KybCrypto } from './kyb-field-crypto';
+import { BUSY, JobLeaseService } from '../common/job-lease/job-lease.service';
 import { failClosed } from './kyb.service';
 import { KybSettings, KybSettingsDocument, StoreKyb, StoreKybDocument } from './kyb.schemas';
 
@@ -25,6 +26,7 @@ export class KybMaintenanceService {
     @InjectModel(Store.name) private readonly stores: Model<StoreDocument>,
     private readonly audit: KybAuditService,
     private readonly upload: UploadService,
+    private readonly leases: JobLeaseService,
   ) {}
 
   // ── retention ───────────────────────────────────────────────────────────────────────────────────────────────────
@@ -49,7 +51,16 @@ export class KybMaintenanceService {
    * ago (closure time = the store's last update). `dryRun` (the default) changes nothing and reports who would be purged. Refuses to
    * run when deletion is disabled or no period is set. The submission row itself, its history and the audit trail are kept.
    */
-  async runRetention(opts: { dryRun?: boolean; now?: Date; actor?: { type: 'admin' | 'system'; id?: string | null } } = {}) {
+  async runRetention(opts: { dryRun?: boolean; now?: Date; actor?: { type: 'admin' | 'system'; id?: string | null } } = {}): Promise<any> {
+    if (opts.dryRun === false) {
+      // a real purge runs on ONE instance at a time (the cron on every server, plus a manual run from the admin UI)
+      const r = await this.leases.withLease('kyb:retention', 15 * 60_000, () => this.runRetentionLocked(opts));
+      return r === BUSY ? { skipped: true, reason: 'another_instance_is_running_it', dryRun: false, eligible: 0, purged: 0 } : r;
+    }
+    return this.runRetentionLocked(opts);
+  }
+
+  private async runRetentionLocked(opts: { dryRun?: boolean; now?: Date; actor?: { type: 'admin' | 'system'; id?: string | null } }) {
     const dryRun = opts.dryRun !== false; const now = opts.now ?? new Date(); const actor = opts.actor ?? { type: 'system' as const };
     const s = await this.getSettings();
     if (!s.purgeEnabled || s.afterClosureDays === null) return { skipped: true, reason: s.afterClosureDays === null ? 'no_retention_period_set' : 'purge_disabled', dryRun, eligible: 0, purged: 0 };
@@ -59,19 +70,22 @@ export class KybMaintenanceService {
     const report = { skipped: false, dryRun, cutoff, eligible: rows.length, purged: 0, failed: 0, stores: rows.map((r) => ({ storeId: r.storeId, documents: (r.documents ?? []).length })) };
     if (dryRun) { await this.audit.record(PLATFORM, actor, 'kyb_retention_dry_run', { eligible: rows.length, cutoff }); return report; }
     for (const r of rows) {
+      const mine = await this.leases.withLease(`kyb:purge:${r.storeId}`, 5 * 60_000, async () => {
       try {
-        for (const d of r.documents ?? []) await this.upload.deleteFile(d.publicId, d.resourceType); // a failed storage delete aborts THIS store's purge (retried next run)
+        for (const d of r.documents ?? []) await this.upload.deletePrivateFile(d.publicId, d.resourceType); // a failed storage delete aborts THIS store's purge (retried next run)
         await this.kyb.updateOne({ _id: r._id, purgedAt: null }, { $set: { cnicEnc: null, cnicLast4: null, ntnEnc: null, ntnLast4: null, ibanEnc: null, ibanLast4: null, accountTitleEnc: null, documents: [], purgedAt: now }, $push: { history: { action: 'purged', note: 'retention policy', actorId: null, actorRole: 'system', at: now } } });
         await this.audit.record(r.storeId, actor, 'kyb_purged', { documents: (r.documents ?? []).length, afterClosureDays: s.afterClosureDays });
         report.purged++;
       } catch (e: any) { report.failed++; this.logger.error(`KYB purge failed for ${r.storeId}: ${e?.message}`); }
+      });
+      if (mine === BUSY) continue;
     }
     await this.audit.record(PLATFORM, actor, 'kyb_retention_run', { eligible: rows.length, purged: report.purged, failed: report.failed });
     return report;
   }
 
   /** Daily at 03:30, only when KYB_RETENTION_JOB_ENABLED=true AND the setting `purgeEnabled` is true. Off by default. */
-  @Cron('30 3 * * *')
+  @Cron(process.env.KYB_RETENTION_CRON || '30 3 * * *')
   async retentionCron(): Promise<void> {
     if (process.env.KYB_RETENTION_JOB_ENABLED !== 'true') return;
     try { await this.runRetention({ dryRun: false, actor: { type: 'system' } }); } catch (e: any) { this.logger.error(`KYB retention job failed: ${e?.message}`); }
@@ -79,7 +93,15 @@ export class KybMaintenanceService {
 
   // ── key rotation ────────────────────────────────────────────────────────────────────────────────────────────────
   /** Re-encrypts every value that is not on the CURRENT key version. Idempotent; safe to stop and re-run; each write is guarded on the old ciphertext. */
-  async rotateKeys(opts: { dryRun?: boolean; batchSize?: number } = {}) {
+  async rotateKeys(opts: { dryRun?: boolean; batchSize?: number } = {}): Promise<any> {
+    if (opts.dryRun !== true) {
+      const r = await this.leases.withLease('kyb:rotation', 30 * 60_000, () => this.rotateKeysLocked(opts));
+      return r === BUSY ? { skipped: true, reason: 'another_rotation_is_running' } : r;
+    }
+    return this.rotateKeysLocked(opts);
+  }
+
+  private async rotateKeysLocked(opts: { dryRun?: boolean; batchSize?: number }) {
     const dryRun = opts.dryRun === true; const batch = opts.batchSize ?? 200;
     failClosed(() => this.crypto.assertReady());
     const current = this.crypto.currentVersion();

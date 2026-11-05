@@ -3,7 +3,8 @@ import { Injectable, Logger, NotFoundException, UnauthorizedException } from '@n
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { createHash } from 'crypto';
-import { PaymentsCoreService } from './payments-core.service';
+import { PaymentsCoreService, PAYMENT_LEASE_MS } from './payments-core.service';
+import { BUSY } from '../common/job-lease/job-lease.service';
 import { ProviderOutcome, WebhookReplayError, WebhookSignatureError } from './payment-provider.interface';
 import {
   PaymentWebhookInbox, PaymentWebhookInboxDocument, PaymentWebhookOutcome, PaymentWebhookOutcomeDocument,
@@ -65,6 +66,12 @@ export class PaymentsWebhookService {
 
   /** Processes one inbox row, recording the result. Never throws for a business/data problem (those become `error` outcomes). */
   async processInboxRow(row: any): Promise<'processed' | 'ignored' | 'error' | 'dead' | 'skipped'> {
+    // one processor per inbox row at a time (webhook request vs retry job vs another server); the row's outcome log decides what is left to do
+    const r = await this.core.leases.withLease(`payments:inbox:${row._id}`, PAYMENT_LEASE_MS, () => this.processInboxRowLocked(row));
+    return r === BUSY ? 'skipped' : r;
+  }
+
+  private async processInboxRowLocked(row: any): Promise<'processed' | 'ignored' | 'error' | 'dead' | 'skipped'> {
     const inboxId = String(row._id);
     const done = await this.outcomes.findOne({ inboxId, result: { $in: ['processed', 'ignored', 'dead'] } }).lean();
     if (done) return 'skipped';
@@ -75,6 +82,9 @@ export class PaymentsWebhookService {
       const intent: any = await this.core.intents.findOne({ providerKey: row.providerKey, providerRef: outcome.providerRef }).lean();
       if (!intent) throw new Error('intent_not_found');
       const r = await this.core.applyOutcome(intent, outcome, 'webhook');
+      // another instance is applying an outcome to this payment right now: that is not a failure. Record nothing and leave the row
+      // un-finished — the next retry pass picks it up (a 'busy' collision must not burn an attempt or lengthen the backoff).
+      if (r.busy) return 'skipped';
       const result = r.wrote ? 'processed' : 'ignored';
       await this.outcomes.create([{ inboxId, result, attempt, error: null }]);
       return result;

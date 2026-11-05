@@ -92,7 +92,7 @@ export class KybAdminService {
   async documentUrl(storeId: string, docId: string, actor: KybActor) {
     const d = await this.docAccess(storeId, docId, actor, 'kyb_document_viewed');
     const expiresInSeconds = 300;
-    return { url: this.upload.generateSignedUrl(d.publicId, d.resourceType, expiresInSeconds, d.fileName), expiresInSeconds, fileName: d.fileName, mimeType: d.mimeType };
+    return { url: this.upload.generateExpiringPrivateUrl(d.publicId, d.resourceType, expiresInSeconds, { inline: true }), expiresInSeconds, fileName: d.fileName, mimeType: d.mimeType };
   }
 
   async documentDownload(storeId: string, docId: string, actor: KybActor) {

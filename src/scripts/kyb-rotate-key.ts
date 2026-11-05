@@ -13,6 +13,8 @@ import { KybMaintenanceService } from '../kyb/kyb-maintenance.service';
 import { KybAuditService } from '../kyb/kyb-audit.service';
 import { KybAuditEvent, KybAuditEventSchema, KybSettings, KybSettingsSchema, StoreKyb, StoreKybSchema } from '../kyb/kyb.schemas';
 import { Store, StoreSchema } from '../store/schemas/store.schema';
+import { JobLease, JobLeaseSchema } from '../common/job-lease/job-lease.schema';
+import { JobLeaseService } from '../common/job-lease/job-lease.service';
 
 async function main() {
   const uri = process.env.MONGO_URI;
@@ -21,7 +23,7 @@ async function main() {
   try {
     const kyb = conn.model(StoreKyb.name, StoreKybSchema); const audit = conn.model(KybAuditEvent.name, KybAuditEventSchema);
     const settings = conn.model(KybSettings.name, KybSettingsSchema); const store = conn.model(Store.name, StoreSchema);
-    const svc = new KybMaintenanceService(kyb as any, settings as any, store as any, new KybAuditService(audit as any), {} as any);
+    const svc = new KybMaintenanceService(kyb as any, settings as any, store as any, new KybAuditService(audit as any), {} as any, new JobLeaseService(conn.model(JobLease.name, JobLeaseSchema) as any));
     const report = await svc.rotateKeys({ dryRun: process.argv.includes('--dry-run') });
     console.log(JSON.stringify(report, null, 2));
     if (report.failed > 0) process.exitCode = 1;

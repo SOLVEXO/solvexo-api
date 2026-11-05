@@ -152,9 +152,9 @@ export class KybService {
       { $pull: { documents: { type } }, ...(reopen ? { $set: { status: 'draft' } } : {}) },
       { new: true },
     ).lean();
-    if (!res) { await this.upload.deleteFile(up.publicId, up.resourceType).catch(() => undefined); throw new ConflictException({ code: KYB_LOCKED, message: 'This application can no longer be edited' }); }
+    if (!res) { await this.upload.deletePrivateFile(up.publicId, up.resourceType).catch(() => undefined); throw new ConflictException({ code: KYB_LOCKED, message: 'This application can no longer be edited' }); }
     const res2: any = await this.model.findOneAndUpdate({ storeId }, { $push: { documents: doc, history: { action: 'document_uploaded', note: type, actorId: sellerId, actorRole: 'owner', at: new Date() } } }, { new: true }).lean();
-    for (const o of old) await this.upload.deleteFile(o.publicId, o.resourceType).catch(() => undefined); // best-effort cleanup of the replaced file
+    for (const o of old) await this.upload.deletePrivateFile(o.publicId, o.resourceType).catch(() => undefined); // best-effort cleanup of the replaced file
     const added = (res2.documents ?? []).find((d: any) => d.publicId === up.publicId);
     await this.audit.record(storeId, { type: 'owner', id: sellerId, ...actor }, 'kyb_document_uploaded', { type, fileName: doc.fileName, fileSize: doc.fileSize, replaced: old.length }, { type: 'document', id: String(added?._id ?? '') });
     return this.view(res2);
@@ -168,7 +168,7 @@ export class KybService {
     if (!d) throw new NotFoundException('Document not found');
     const res = await this.model.findOneAndUpdate({ storeId, status: { $in: ['draft', 'rejected'] } }, { $pull: { documents: { _id: d._id } }, $push: { history: { action: 'document_removed', note: d.type, actorId: sellerId, actorRole: 'owner', at: new Date() } } }, { new: true }).lean();
     if (!res) throw new ConflictException({ code: KYB_LOCKED, message: 'This application can no longer be edited' });
-    await this.upload.deleteFile(d.publicId, d.resourceType).catch(() => undefined);
+    await this.upload.deletePrivateFile(d.publicId, d.resourceType).catch(() => undefined);
     await this.audit.record(storeId, { type: 'owner', id: sellerId, ...actor }, 'kyb_document_removed', { type: d.type }, { type: 'document', id: docId });
     return this.view(res);
   }

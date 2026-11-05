@@ -6,6 +6,8 @@ import {
   PaymentWebhookOutcome, PaymentWebhookOutcomeSchema,
 } from '../schemas/payments.schemas';
 import { KybAuditEvent, KybAuditEventSchema, KybSettings, KybSettingsSchema, StoreKyb, StoreKybSchema } from '../../kyb/kyb.schemas';
+import { JobLease, JobLeaseSchema } from '../../common/job-lease/job-lease.schema';
+import { JobLeaseService } from '../../common/job-lease/job-lease.service';
 import { MockPaymentProvider } from '../providers/mock.provider';
 import { PaymentsCoreService } from '../payments-core.service';
 import { PaymentsWebhookService } from '../payments-webhook.service';
@@ -31,30 +33,43 @@ export function fakeUpload() {
   return {
     files,
     uploadPrivateFile: jest.fn(async (file: any, folder: string) => { const publicId = `${folder}/${Math.random().toString(36).slice(2)}`; files.set(publicId, file.buffer ?? Buffer.from('x')); return { publicId, resourceType: 'raw', fileName: file.originalname, fileSize: file.size ?? 1, mimeType: file.mimetype }; }),
+    deletePrivateFile: jest.fn(async (publicId: string) => { files.delete(publicId); return 'ok'; }),
     deleteFile: jest.fn(async (publicId: string) => { files.delete(publicId); }),
+    generateExpiringPrivateUrl: jest.fn((publicId: string, _t: string, secs: number) => `https://signed.example/${publicId}?exp=${secs}`),
     generateSignedUrl: jest.fn((publicId: string, _t: string, secs: number) => `https://signed.example/${publicId}?exp=${secs}`),
     downloadPrivateFileBuffer: jest.fn(async (publicId: string) => files.get(publicId) ?? Buffer.from('missing')),
   } as any;
 }
 
-export async function makePaymentsFixture(opts: { supportsWebhooks?: boolean; qrValiditySeconds?: number; verified?: boolean } = {}) {
+type Opts = { supportsWebhooks?: boolean; qrValiditySeconds?: number; verified?: boolean; upload?: any };
+
+/** The expensive part, done ONCE per spec file: one throw-away database with every model and index built. */
+export async function makeBase() {
   const h: MongoHarness = await startMongoHarness();
   const m = (cls: any, sch: any) => { const model = h.conn.model(cls.name, sch); h.repos[`_${cls.name}`] = model; return model; };
+  const leaseModel = m(JobLease, JobLeaseSchema);
   const intents = m(PaymentIntent, PaymentIntentSchema); const events = m(PaymentEvent, PaymentEventSchema);
   const inbox = m(PaymentWebhookInbox, PaymentWebhookInboxSchema); const outcomes = m(PaymentWebhookOutcome, PaymentWebhookOutcomeSchema);
   const kybModel = m(StoreKyb, StoreKybSchema); const kybAuditModel = m(KybAuditEvent, KybAuditEventSchema); const kybSettings = m(KybSettings, KybSettingsSchema);
-  await Promise.all([intents, events, inbox, outcomes, kybModel, kybAuditModel, kybSettings].map((x: any) => x.init()));
+  await Promise.all([leaseModel, intents, events, inbox, outcomes, kybModel, kybAuditModel, kybSettings].map((x: any) => x.init()));
+  return { h, leaseModel, intents, events, inbox, outcomes, kybModel, kybAuditModel, kybSettings };
+}
+export type Base = Awaited<ReturnType<typeof makeBase>>;
 
+/** Cheap: new provider + services (no database work) and a NEW store / register session / KYB, so tests sharing one database never see each other's data. */
+export async function buildFixture(base: Base, opts: Opts = {}, ownsBase = false) {
+  const { h, leaseModel, intents, events, inbox, outcomes, kybModel, kybAuditModel, kybSettings } = base;
   const mock = new MockPaymentProvider({ webhookSecret: 'unit-test-secret', supportsWebhooks: opts.supportsWebhooks ?? true, qrValiditySeconds: opts.qrValiditySeconds });
   const gate = new KybGateService(kybModel as any);
-  const core = new PaymentsCoreService(intents as any, events as any, h.repos.storeModel, h.repos.registerSessionModel, h.repos.saleModel, h.repos.posAuditLogModel, [mock], gate);
+  const leases = new JobLeaseService(leaseModel as any);
+  const core = new PaymentsCoreService(intents as any, events as any, h.repos.storeModel, h.repos.registerSessionModel, h.repos.saleModel, h.repos.posAuditLogModel, [mock], gate, leases);
   const webhooks = new PaymentsWebhookService(core, inbox as any, outcomes as any);
   const poller = new PaymentsPollerService(core, webhooks);
-  const upload = fakeUpload();
+  const upload = opts.upload ?? fakeUpload();
   const kybAudit = new KybAuditService(kybAuditModel as any);
   const kyb = new KybService(kybModel as any, h.repos.storeModel, kybAudit, upload);
   const kybAdmin = new KybAdminService(kybModel as any, h.repos.storeModel, kyb, kybAudit, upload);
-  const maintenance = new KybMaintenanceService(kybModel as any, kybSettings as any, h.repos.storeModel, kybAudit, upload);
+  const maintenance = new KybMaintenanceService(kybModel as any, kybSettings as any, h.repos.storeModel, kybAudit, upload, leases);
 
   const s = await seedStore(h, { baseCurrency: 'PKR' });
   const sessionId = String(new Types.ObjectId());
@@ -65,10 +80,6 @@ export async function makePaymentsFixture(opts: { supportsWebhooks?: boolean; qr
   const manager = { employeeId: s.managerId };
   let n = 0;
   const create = (extra: any = {}, amountMinor = 150000) => core.createIntent(actor, { amountMinor, sessionId, idempotencyKey: `k-${++n}`, saleAttemptKey: `attempt-${n}`, ...extra });
-  const hook = (kind: any, intentView: any, extra: any = {}) => {
-    const w = mock.buildWebhook({ kind, providerRef: (intentView as any).providerRef ?? extra.providerRef, amountMinor: extra.amountMinor === undefined ? intentView.amountMinor : extra.amountMinor, ...extra });
-    return w;
-  };
   const providerRefOf = async (id: string) => ((await intents.findById(id).lean()) as any).providerRef as string;
   const send = async (kind: any, id: string, extra: any = {}) => {
     const providerRef = await providerRefOf(id); const intent: any = await intents.findById(id).lean();
@@ -78,13 +89,37 @@ export async function makePaymentsFixture(opts: { supportsWebhooks?: boolean; qr
     return webhooks.receive('mock', w.body, w.headers, extra.now);
   };
   return {
-    h, mock, core, webhooks, poller, gate, intents, events, inbox, outcomes, kybModel, kybAuditModel, kybSettings, kyb, kybAdmin, maintenance, kybAudit, upload,
-    s, sessionId, actor, manager, create, send, hook, providerRefOf,
-    stop: async () => h.stop(),
+    h, mock, leases, leaseModel, core, webhooks, poller, gate, intents, events, inbox, outcomes, kybModel, kybAuditModel, kybSettings, kyb, kybAdmin, maintenance, kybAudit, upload,
+    s, sessionId, actor, manager, create, send, providerRefOf,
+    /** A fork shares the database: stopping it is a no-op (the spec stops the base once). */
+    stop: async () => { if (ownsBase) await h.stop(); },
     eventTypes: async (id: string) => ((await events.find({ intentId: id }).sort({ seq: 1 }).lean()) as any[]).map((e) => e.type + (e.late ? '(late)' : '')),
+  };
+}
+
+/** One fixture that owns its own database (kept for specs that need exactly one). */
+export async function makePaymentsFixture(opts: Opts = {}) { return buildFixture(await makeBase(), opts, true); }
+
+/** The cheap way for a spec with many tests: `const f = fixtureFactory(); beforeAll(f.start); afterAll(f.stop); const x = await f.fresh({...})`. */
+export function fixtureFactory() {
+  let base: Base | undefined;
+  return {
+    start: async () => { base = await makeBase(); },
+    stop: async () => { await base?.h.stop(); },
+    fresh: (opts: Opts = {}) => buildFixture(base!, opts, false),
   };
 }
 
 export async function verifyStore(h: MongoHarness, kybModel: any, storeId: string, sellerId: string, ref = 'SM-TEST-1', providerKey = 'mock') {
   await kybModel.collection.updateOne({ storeId }, { $set: { storeId, sellerId, status: 'verified', subMerchant: { ref, providerKey, setAt: new Date(), setBy: 'admin-1' }, documents: [], history: [] } }, { upsert: true });
+}
+
+/** A SECOND server instance sharing the same database, provider state and storage: its own lease identity, services and poller. */
+export function secondInstance(x: Awaited<ReturnType<typeof buildFixture>>) {
+  const leases = new JobLeaseService(x.leaseModel as any);
+  const core = new PaymentsCoreService(x.intents as any, x.events as any, x.h.repos.storeModel, x.h.repos.registerSessionModel, x.h.repos.saleModel, x.h.repos.posAuditLogModel, [x.mock], x.gate, leases);
+  const webhooks = new PaymentsWebhookService(core, x.inbox as any, x.outcomes as any);
+  const poller = new PaymentsPollerService(core, webhooks);
+  const maintenance = new KybMaintenanceService(x.kybModel as any, x.kybSettings as any, x.h.repos.storeModel, x.kybAudit, x.upload, leases);
+  return { leases, core, webhooks, poller, maintenance };
 }

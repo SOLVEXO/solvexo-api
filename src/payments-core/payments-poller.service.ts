@@ -1,7 +1,8 @@
 /* eslint-disable prettier/prettier */
 import { Injectable, Logger } from '@nestjs/common';
-import { Cron } from '@nestjs/schedule';
-import { PaymentsCoreService } from './payments-core.service';
+import { Interval } from '@nestjs/schedule';
+import { PaymentsCoreService, PAYMENT_LEASE_MS } from './payments-core.service';
+import { BUSY } from '../common/job-lease/job-lease.service';
 import { PaymentsWebhookService } from './payments-webhook.service';
 import { isOpen, isTerminalUnpaid } from './payment-status.util';
 import { paymentsConfig } from './payments-config';
@@ -28,9 +29,10 @@ export class PaymentsPollerService {
 
   constructor(private readonly core: PaymentsCoreService, private readonly webhooks: PaymentsWebhookService) {}
 
-  @Cron('*/3 * * * * *')
+  // every 3 s by default; PAYMENTS_TICK_MS shortens it (tests). Off with PAYMENTS_POLLER_ENABLED=false on a server that must not run jobs.
+  @Interval('payments-tick', Number(process.env.PAYMENTS_TICK_MS) || 3000)
   async tick(): Promise<void> {
-    if (process.env.PAYMENTS_POLLER_ENABLED === 'false' || process.env.NODE_ENV === 'test' || this.running) return;
+    if (process.env.PAYMENTS_POLLER_ENABLED === 'false' || this.running) return;
     this.running = true;
     try { await this.pollOnce(); await this.webhooks.retryPending(); } catch (e: any) { this.logger.error(`payments tick failed: ${e?.message}`); } finally { this.running = false; }
   }
@@ -42,6 +44,17 @@ export class PaymentsPollerService {
     const intents: any[] = await this.core.intents.find({ createdAt: { $gte: since } }).sort({ createdAt: 1 }).limit(300).lean();
     let calls = 0;
     for (const intent of intents) {
+      // one poller per payment at a time across ALL instances: the instance that holds this lease makes the provider calls
+      const r = await this.core.leases.withLease(`payments:poll:${intent._id}`, PAYMENT_LEASE_MS, async () => { calls += await this.pollIntent(intent, now); return 0; });
+      if (r === BUSY) continue;
+    }
+    if (this.lastPolled.size > 5000) this.lastPolled.clear();
+    return calls;
+  }
+
+  private async pollIntent(intent: any, now: Date): Promise<number> {
+    let calls = 0;
+    {
       const provider = this.core.provider(intent.providerKey);
       const { d, events } = await this.core.derived(intent, now);
       const age = now.getTime() - new Date(intent.createdAt).getTime();
@@ -49,10 +62,10 @@ export class PaymentsPollerService {
 
       // 1) open charges and the late-payment watch (expired / cancelled, not yet paid)
       if (!d.confirmed && (isOpen(d.status) || isTerminalUnpaid(d.status))) {
-        if (isOpen(d.status) && past) { await this.core.expireIfDue(intent, now); continue; }
+        if (isOpen(d.status) && past) { await this.core.expireIfDue(intent, now); return calls; }
         const key = String(intent._id);
         const due = (this.lastPolled.get(key) ?? 0) + pollIntervalMs(age, past || isTerminalUnpaid(d.status), provider.supportsWebhooks) <= now.getTime();
-        if (!due) continue;
+        if (!due) return calls;
         this.lastPolled.set(key, now.getTime());
         calls++;
         try {
@@ -72,7 +85,6 @@ export class PaymentsPollerService {
         } catch (e: any) { this.logger.warn(`refund poll failed for ${intent._id}/${req.refundId}: ${e?.message}`); }
       }
     }
-    if (this.lastPolled.size > 5000) this.lastPolled.clear();
     return calls;
   }
 }

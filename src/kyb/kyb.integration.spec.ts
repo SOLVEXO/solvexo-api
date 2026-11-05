@@ -1,11 +1,15 @@
 /* eslint-disable prettier/prettier */
 import { Types } from 'mongoose';
-import { makePaymentsFixture, setKybKeys, TEST_KEY_V1, TEST_KEY_V2 } from '../payments-core/testing/payments-harness';
+import { fixtureFactory, makePaymentsFixture, setKybKeys, TEST_KEY_V1, TEST_KEY_V2 } from '../payments-core/testing/payments-harness';
 
 jest.setTimeout(120_000);
 
 type F = Awaited<ReturnType<typeof makePaymentsFixture>>;
-const fresh = (verified = false) => makePaymentsFixture({ verified });
+// shared database for the per-store tests; the sweeps (key rotation, retention) look at EVERY application, so those get a database of their own
+const factory = fixtureFactory();
+beforeAll(factory.start); afterAll(factory.stop);
+let ownDb = false;
+const fresh = (verified = false) => (ownDb ? makePaymentsFixture({ verified }) : factory.fresh({ verified }));
 const PDF = (name = 'doc.pdf', size = 1000) => ({ originalname: name, mimetype: 'application/pdf', size, buffer: Buffer.alloc(8, 1) }) as any;
 const IBAN = 'PK36SCBL0000001123456702';
 const CNIC = '3520212345671';
@@ -156,7 +160,7 @@ describe('KYB: owner flow draft → submitted, locking, documents', () => {
 
 describe('KYB: admin review, audited document access, approve/reject, sub-merchant, gate', () => {
   it('list: default queue is "submitted"; filters, search and pagination work; rows are masked (no decryption, no key needed)', async () => {
-    const x = await fresh();
+    const x = await makePaymentsFixture({ verified: false }); // a list sees every application: its own database
     await fill(x); await x.kyb.submit(x.s.sellerId, x.s.storeId);
     setKybKeys({ v1: false, current: null }); // listing must not need the key
     const q = await x.kybAdmin.list({});
@@ -176,7 +180,7 @@ describe('KYB: admin review, audited document access, approve/reject, sub-mercha
     const d: any = await x.kybAdmin.detail(x.s.storeId, admin('adm-7'));
     expect(d).toMatchObject({ cnic: CNIC, ntn: NTN, iban: IBAN, accountTitle: ACCT, status: 'submitted', documents: expect.any(Array) });
     expect(JSON.stringify(d.documents)).not.toMatch(/publicId|private\/kyb/); // storage ids never leave the server
-    const row: any = await x.kybAuditModel.findOne({ action: 'kyb_viewed' }).lean();
+    const row: any = await x.kybAuditModel.findOne({ storeId: x.s.storeId, action: 'kyb_viewed' }).lean();
     expect(row).toMatchObject({ storeId: x.s.storeId, actorType: 'admin', actorId: 'adm-7', ip: '10.0.0.1' });
     // fail closed: if the audit write fails, nothing is decrypted or returned
     const spy = jest.spyOn(x.kybAudit, 'record').mockRejectedValueOnce(new Error('audit down'));
@@ -194,15 +198,15 @@ describe('KYB: admin review, audited document access, approve/reject, sub-mercha
     expect(u.url).toMatch(/^https:\/\/signed\.example\/private\/kyb\//); expect(u.expiresInSeconds).toBe(300);
     const dl: any = await x.kybAdmin.documentDownload(x.s.storeId, doc.id, admin());
     expect(dl.buffer).toBeInstanceOf(Buffer); expect(dl.fileName).toBe('owner_cnic.pdf');
-    const rows: any[] = await x.kybAuditModel.find({ action: { $in: ['kyb_document_viewed', 'kyb_document_downloaded'] } }).sort({ at: 1 }).lean();
+    const rows: any[] = await x.kybAuditModel.find({ storeId: x.s.storeId, action: { $in: ['kyb_document_viewed', 'kyb_document_downloaded'] } }).sort({ at: 1 }).lean();
     expect(rows.map((r) => r.action)).toEqual(['kyb_document_viewed', 'kyb_document_downloaded']);
     expect(rows[0]).toMatchObject({ targetType: 'document', targetId: doc.id, meta: { type: 'owner_cnic' }, actorId: 'admin-1' });
     // fail closed
-    x.upload.generateSignedUrl.mockClear(); x.upload.downloadPrivateFileBuffer.mockClear();
+    x.upload.generateExpiringPrivateUrl.mockClear(); x.upload.downloadPrivateFileBuffer.mockClear();
     const spy = jest.spyOn(x.kybAudit, 'record').mockRejectedValue(new Error('audit down'));
     await expect(x.kybAdmin.documentUrl(x.s.storeId, doc.id, admin())).rejects.toThrow('audit down');
     await expect(x.kybAdmin.documentDownload(x.s.storeId, doc.id, admin())).rejects.toThrow('audit down');
-    expect(x.upload.generateSignedUrl).not.toHaveBeenCalled(); expect(x.upload.downloadPrivateFileBuffer).not.toHaveBeenCalled();
+    expect(x.upload.generateExpiringPrivateUrl).not.toHaveBeenCalled(); expect(x.upload.downloadPrivateFileBuffer).not.toHaveBeenCalled();
     spy.mockRestore();
     await expect(x.kybAdmin.documentUrl(x.s.storeId, String(new Types.ObjectId()), admin())).rejects.toMatchObject({ response: { code: 'KYB_DOCUMENT_NOT_FOUND' } });
     await x.stop();
@@ -263,6 +267,7 @@ describe('KYB: admin review, audited document access, approve/reject, sub-mercha
 });
 
 describe('KYB: key rotation', () => {
+  beforeAll(() => { ownDb = true; }); afterAll(() => { ownDb = false; });
   it('re-encrypts every value to the current key version, idempotently, without changing what admins read', async () => {
     const x = await fresh();
     await fill(x);
@@ -305,6 +310,7 @@ describe('KYB: key rotation', () => {
 });
 
 describe('KYB: retention (configurable, NO default deletion, dry-run capable, disabled by default)', () => {
+  beforeAll(() => { ownDb = true; }); afterAll(() => { ownDb = false; });
   const closeStore = async (x: F, daysAgo: number) => x.h.repos.storeModel.collection.updateOne({ _id: new Types.ObjectId(x.s.storeId) }, { $set: { isDelete: true, updatedAt: new Date(Date.now() - daysAgo * 86400_000) } });
 
   it('by default there is no retention period and nothing is ever deleted', async () => {
@@ -313,7 +319,7 @@ describe('KYB: retention (configurable, NO default deletion, dry-run capable, di
     expect(await x.maintenance.getSettings()).toMatchObject({ afterClosureDays: null, purgeEnabled: false });
     expect(await x.maintenance.runRetention({ dryRun: false })).toMatchObject({ skipped: true, reason: 'no_retention_period_set', purged: 0 });
     expect(((await x.kybModel.findOne({ storeId: x.s.storeId }).lean()) as any).documents).toHaveLength(4);
-    expect(x.upload.deleteFile).not.toHaveBeenCalledWith(expect.stringContaining('private/kyb'), expect.anything());
+    expect(x.upload.deletePrivateFile).not.toHaveBeenCalledWith(expect.stringContaining('private/kyb'), expect.anything());
     await x.stop();
   });
 
@@ -358,7 +364,7 @@ describe('KYB: retention (configurable, NO default deletion, dry-run capable, di
     await x.h.repos.storeModel.collection.updateOne({ _id: new Types.ObjectId(x.s.storeId) }, { $set: { updatedAt: new Date(Date.now() - 5000 * 86400_000) } });
     expect(await x.maintenance.runRetention({ dryRun: false })).toMatchObject({ eligible: 0, purged: 0 });
     await closeStore(x, 100);
-    x.upload.deleteFile.mockRejectedValueOnce(new Error('cloud down'));
+    x.upload.deletePrivateFile.mockRejectedValueOnce(new Error('cloud down'));
     expect(await x.maintenance.runRetention({ dryRun: false })).toMatchObject({ eligible: 1, purged: 0, failed: 1 });
     expect(((await x.kybModel.findOne({ storeId: x.s.storeId }).lean()) as any).purgedAt).toBeNull();
     expect(await x.maintenance.runRetention({ dryRun: false })).toMatchObject({ purged: 1, failed: 0 });

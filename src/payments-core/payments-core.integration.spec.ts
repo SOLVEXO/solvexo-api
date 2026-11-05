@@ -1,18 +1,23 @@
 /* eslint-disable prettier/prettier */
 import { Types } from 'mongoose';
-import { makePaymentsFixture } from './testing/payments-harness';
+import { fixtureFactory, makePaymentsFixture } from './testing/payments-harness';
 
 jest.setTimeout(120_000);
 
 type F = Awaited<ReturnType<typeof makePaymentsFixture>>;
-// every test gets its OWN fixture (own database, own store/session/KYB) so tests cannot see each other's data
-async function fresh(opts: Parameters<typeof makePaymentsFixture>[0] = {}) { const x = await makePaymentsFixture(opts); return x; }
+// ONE database for the file (building a database with ~35 models and their indexes is the slow part, and many of them at once starved other
+// suites on the shared mongod). Every test still gets its OWN store / session / KYB, so tests cannot see each other's data.
+// Tests that run a whole-database sweep (poller, webhook retry queue) use `own(...)`: a database of their own, because a sweep sees every payment.
+const factory = fixtureFactory();
+beforeAll(factory.start); afterAll(factory.stop);
+const fresh = factory.fresh;
+const own = makePaymentsFixture;
 
 describe('create: gate, amount, idempotency, expiry cap', () => {
   it('a store that is not KYB-verified cannot create a QR payment (403 STORE_NOT_VERIFIED) and nothing is created', async () => {
     const x = await fresh({ verified: false });
     await expect(x.create()).rejects.toMatchObject({ response: { code: 'STORE_NOT_VERIFIED' } });
-    expect(await x.intents.countDocuments()).toBe(0);
+    expect(await x.intents.countDocuments({ storeId: x.s.storeId })).toBe(0);
     await x.stop();
   });
 
@@ -37,7 +42,7 @@ describe('create: gate, amount, idempotency, expiry cap', () => {
     const a = await x.create({ idempotencyKey: 'same' });
     const b = await x.create({ idempotencyKey: 'same' });
     expect(b.id).toBe(a.id);
-    expect(await x.intents.countDocuments()).toBe(1);
+    expect(await x.intents.countDocuments({ storeId: x.s.storeId })).toBe(1);
     await expect(x.create({ idempotencyKey: 'same' }, 999)).rejects.toMatchObject({ response: { code: 'IDEMPOTENCY_KEY_REUSED' } });
     // two taps racing: still ONE payment
     const [c, d] = await Promise.all([x.create({ idempotencyKey: 'race' }), x.create({ idempotencyKey: 'race' })]);
@@ -86,7 +91,7 @@ describe('webhook: signature, replay, duplicates, idempotent processing', () => 
   });
 
   it('a DUPLICATE webhook (same provider event id) answers 2xx and writes nothing new', async () => {
-    const x = await fresh();
+    const x = await own();
     const v = await x.create();
     const providerRef = await x.providerRefOf(v.id);
     const w = x.mock.buildWebhook({ kind: 'confirmed', providerRef, amountMinor: 150000, eventId: 'evt_dup' });
@@ -109,7 +114,7 @@ describe('webhook: signature, replay, duplicates, idempotent processing', () => 
   });
 
   it('an INVALID signature, a TAMPERED body and a MALFORMED header are all 401 and leave no trace (no inbox row, no event)', async () => {
-    const x = await fresh();
+    const x = await own();
     const v = await x.create();
     const ref = await x.providerRefOf(v.id);
     const bad = x.mock.buildWebhook({ kind: 'confirmed', providerRef: ref, amountMinor: 150000, badSignature: true });
@@ -173,7 +178,7 @@ describe('webhook: signature, replay, duplicates, idempotent processing', () => 
 
 describe('processing errors go to a retry queue (the provider always gets a 2xx once the notification is durable)', () => {
   it('an error while processing is recorded, answered 2xx, and retried with backoff until it succeeds', async () => {
-    const x = await fresh();
+    const x = await own();
     const v = await x.create();
     const spy = jest.spyOn(x.core, 'applyOutcome').mockRejectedValueOnce(new Error('db blip'));
     const r = await x.send('confirmed', v.id);
@@ -193,7 +198,7 @@ describe('processing errors go to a retry queue (the provider always gets a 2xx 
   });
 
   it('a notification for an unknown charge is kept, retried, and finally marked dead — never dropped silently', async () => {
-    const x = await fresh();
+    const x = await own();
     const w = x.mock.buildWebhook({ kind: 'confirmed', providerRef: 'mock_unknown', amountMinor: 5 });
     await x.webhooks.receive('mock', w.body, w.headers);
     let t = Date.now();
@@ -208,7 +213,7 @@ describe('processing errors go to a retry queue (the provider always gets a 2xx 
 
 describe('expiry, cancel and LATE payments (money is never lost)', () => {
   it('an unpaid QR expires after its time; the poller does one last provider look first', async () => {
-    const x = await fresh();
+    const x = await own();
     const v = await x.create();
     const later = new Date(Date.now() + 200_000);
     await x.poller.pollOnce(later);
@@ -218,7 +223,7 @@ describe('expiry, cancel and LATE payments (money is never lost)', () => {
   });
 
   it('a payment made JUST in time is found by the last look instead of being expired', async () => {
-    const x = await fresh();
+    const x = await own();
     const v = await x.create();
     x.mock.simulate(await x.providerRefOf(v.id), 'confirm'); // customer paid; the webhook has not arrived
     await x.poller.pollOnce(new Date(Date.now() + 200_000));
@@ -250,7 +255,7 @@ describe('expiry, cancel and LATE payments (money is never lost)', () => {
   });
 
   it('a late payment is found by POLLING too, for a provider without webhooks (late-window watch)', async () => {
-    const x = await fresh({ supportsWebhooks: false });
+    const x = await own({ supportsWebhooks: false });
     const v = await x.create();
     await x.poller.pollOnce(new Date(Date.now() + 200_000)); // expires
     x.mock.simulate(await x.providerRefOf(v.id), 'confirm');
@@ -306,7 +311,7 @@ describe('expiry, cancel and LATE payments (money is never lost)', () => {
 
 describe('polling for providers without webhooks', () => {
   it('confirms via poll; spaces calls with a backoff; a failed charge is recorded', async () => {
-    const x = await fresh({ supportsWebhooks: false });
+    const x = await own({ supportsWebhooks: false });
     const ok = await x.create({ mockScenario: 'auto_confirm' });
     const bad = await x.create({ mockScenario: 'auto_fail' });
     const pending = await x.create();
@@ -323,7 +328,7 @@ describe('polling for providers without webhooks', () => {
   });
 
   it('webhook providers get only a slow safety-net poll', async () => {
-    const x = await fresh({ supportsWebhooks: true });
+    const x = await own({ supportsWebhooks: true });
     await x.create();
     const t0 = new Date();
     expect(await x.poller.pollOnce(t0)).toBe(1);
@@ -374,7 +379,7 @@ describe('provider refunds are their own events', () => {
   });
 
   it('a PENDING provider refund finishes by poll or by webhook; a DECLINED one is recorded and needs attention', async () => {
-    const x = await fresh();
+    const x = await own();
     const v = await confirmed(x);
     const ref = await x.providerRefOf(v.id);
     const p = await x.core.refund(x.s.storeId, v.id, x.manager, { amountMinor: 30000, reason: 'mock:pending please', refundKey: 'rp' });
