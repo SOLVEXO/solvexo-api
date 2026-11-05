@@ -37,6 +37,12 @@ jobs:
           docker exec mongo mongosh --quiet --eval 'rs.initiate({_id:"rs0",members:[{_id:0,host:"127.0.0.1:27017"}]})'
           for i in $(seq 1 30); do [ "$(docker exec mongo mongosh --quiet --eval 'db.hello().isWritablePrimary')" = "true" ] && break; sleep 1; done
 
+      # Redis: the device / PIN-session guards of the POS routes use it (the security + route suites need a real one)
+      - name: Redis
+        run: |
+          docker run -d --name redis -p 6379:6379 redis:7
+          for i in $(seq 1 20); do docker exec redis redis-cli ping | grep -q PONG && break; sleep 1; done
+
       - run: npm ci
 
       - name: Build (production entry must be dist/main.js)
