@@ -30,4 +30,10 @@ export class RefundSaleDto {
   @IsString()
   @MaxLength(300)
   reason?: string;
+
+  @ApiProperty({ required: false, description: 'G2.4 reason code (picker): wrong_item, damaged_or_defective, customer_changed_mind, price_error, duplicate_charge, other' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  reasonCode?: string;
 }

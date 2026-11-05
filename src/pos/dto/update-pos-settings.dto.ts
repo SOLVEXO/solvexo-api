@@ -1,6 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { ApiProperty } from '@nestjs/swagger';
-import { IsNumber, IsOptional, IsString, Max, Min } from 'class-validator';
+import { IsInt, IsNumber, IsOptional, IsString, Max, Min } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class UpdatePosSettingsDto {
@@ -19,6 +19,12 @@ export class UpdatePosSettingsDto {
   @Min(0)
   @Max(1)
   taxRate?: number;
+
+  @ApiProperty({ required: false, nullable: true, example: 5000, description: 'G2.4: a cashier may add a custom item whose line total is at most this many minor units; above it a manager must approve. null = every custom item needs a manager.' })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  customItemApprovalAboveMinor?: number | null;
 
   @ApiProperty({ required: false, example: 'Thank you for shopping with us!' })
   @IsOptional()

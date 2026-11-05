@@ -25,6 +25,11 @@ export class UpdateCouponDto {
   @Min(0)
   minOrderAmount?: number;
 
+  @ApiProperty({ required: false, description: 'G2.4: honour this coupon at the POS till' })
+  @IsOptional()
+  @IsBoolean()
+  posEnabled?: boolean;
+
   @ApiProperty({ required: false })
   @IsOptional()
   @IsNumber()

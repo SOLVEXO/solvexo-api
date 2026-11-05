@@ -12,6 +12,7 @@ import { Response } from 'express';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { PosService } from './pos.service';
 import { PosDeviceService } from './pos-device.service';
+import { PosReceiptService } from './pos-receipt.service';
 import { PosDeviceScopeInterceptor } from './pos-device-scope';
 import { RegisterDeviceDto } from './dto/register-device.dto';
 import { InventoryService } from '../inventory/inventory.service';
@@ -62,6 +63,7 @@ export class PosController {
     private readonly inventoryService: InventoryService,
     private readonly posPlansService: PosPlansService,
     private readonly kybGate: KybGateService,
+    private readonly receipts: PosReceiptService,
   ) {}
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -455,9 +457,9 @@ export class PosController {
   @Roles('seller')
   @UseInterceptors(IdempotencyInterceptor)
   @Delete('sales/:saleId/discard')
-  discardHeldSale(@Req() req: any, @Param('saleId') saleId: string, @Body() body?: { reason?: string }, @Query('reason') reasonQuery?: string, @Headers('x-pos-employee-token') employeeToken?: string) {
+  discardHeldSale(@Req() req: any, @Param('saleId') saleId: string, @Body() body?: { reason?: string; reasonCode?: string }, @Query('reason') reasonQuery?: string, @Query('reasonCode') reasonCodeQuery?: string, @Headers('x-pos-employee-token') employeeToken?: string) {
     // the reason may come in the body or the query string (DELETE bodies are dropped by some HTTP clients); old builds send none
-    return this.posService.discardHeldSale(req.user.userId, saleId, { reason: body?.reason ?? reasonQuery, employeeToken });
+    return this.posService.discardHeldSale(req.user.userId, saleId, { reason: body?.reason ?? reasonQuery, reasonCode: body?.reasonCode ?? reasonCodeQuery, employeeToken });
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -579,8 +581,25 @@ export class PosController {
   @Roles('seller')
   @UseInterceptors(IdempotencyInterceptor)
   @Post('sales/:saleId/void')
-  voidSale(@Req() req: any, @Param('saleId') saleId: string, @Body() dto: { reason?: string }, @Headers('x-pos-employee-token') employeeToken?: string) {
+  voidSale(@Req() req: any, @Param('saleId') saleId: string, @Body() dto: { reason?: string; reasonCode?: string }, @Headers('x-pos-employee-token') employeeToken?: string) {
     return this.posService.voidSale(req.user.userId, saleId, dto, employeeToken);
+  }
+
+  /** G2.4 digital receipt link (same link every time until a manager revokes it). Any till of the store may ask; it is not a plan-gated action. */
+  @UseGuards(PosAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Get('sales/:saleId/receipt-link')
+  receiptLink(@Req() req: any, @Param('saleId') saleId: string) {
+    return this.receipts.getLink(req.user.userId, saleId);
+  }
+
+  @UseGuards(PosAuthGuard, RolesGuard)
+  @Roles('seller')
+  @RequireManagerPin()
+  @Post('sales/:saleId/receipt-link/revoke')
+  async revokeReceiptLink(@Req() req: any, @Param('saleId') saleId: string, @Headers('x-pos-employee-token') employeeToken?: string) {
+    const m = await this.posService.requireManagerEmployee(employeeToken, req.user.storeId ?? (await this.posService.storeIdOfSale(saleId)), 'revoke a receipt link');
+    return this.receipts.revoke(req.user.userId, saleId, m.employeeId);
   }
 
   @UseGuards(PosAuthGuard, RolesGuard, PosEntitlementGuard)

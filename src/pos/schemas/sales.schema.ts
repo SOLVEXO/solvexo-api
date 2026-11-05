@@ -8,17 +8,17 @@ export type SaleDocument = Sale & Document;
 
 @Schema({ _id: true })
 export class SaleItem {
-  @Prop({ required: true })
-  productId: string;
+  @Prop({ type: String, default: null })
+  productId: string | null;   // null for a CUSTOM item (a sale line with no catalog product)
 
-  @Prop({ required: true })
-  variantId: string;
+  @Prop({ type: String, default: null })
+  variantId: string | null;
 
   @Prop({ required: true })
   name: string;                 // snapshot — "Ceramic Mug (Blue)"
 
   @Prop({ required: true })
-  sku: string;
+  sku: string;                  // 'CUSTOM' for a custom item
 
   @Prop({ type: String, default: null })
   image: string | null;         // product image snapshot
@@ -53,6 +53,20 @@ export class SaleItem {
 
   @Prop({ type: Number, default: 0 })
   refundedQty: number;          // cumulative qty refunded from this line
+
+  // G2.4 custom item: a line with no product — never touches stock; `taxCategory` 'exempt' = no tax on this line;
+  // `customApprovedBy` = the manager who approved it (or null when under the store's no-approval limit)
+  @Prop({ type: Boolean, default: false })
+  isCustom?: boolean;
+
+  @Prop({ type: String, enum: ['standard', 'exempt'], default: 'standard' })
+  taxCategory?: string;
+
+  @Prop({ type: String, default: null })
+  customApprovedBy?: string | null;
+
+  @Prop({ type: String, default: null })
+  note?: string | null;
 }
 export const SaleItemSchema = SchemaFactory.createForClass(SaleItem);
 
@@ -201,6 +215,20 @@ export class Sale {
   @Prop({ enum: ['cash', 'card', 'other', 'raast_qr', 'split'], default: 'cash' })
   paymentMethod: string;
 
+  // G2.4 digital receipt: an unguessable capability token (192 bits). `revokedAt` set = the link no longer works.
+  @Prop({ type: Object, default: null })
+  receipt?: { token: string; createdAt: Date; revokedAt: Date | null; revokedBy?: string | null } | null;
+
+  // G2.4 coupon (storefront Coupon model, POS channel): the code, its id, and the discount it gave (minor units)
+  @Prop({ type: String, default: null })
+  couponCode?: string | null;
+
+  @Prop({ type: String, default: null })
+  couponId?: string | null;
+
+  @Prop({ type: 'MinorMoney' })
+  couponDiscountMinor?: number;
+
   // Tender lines (empty for held sales and for sales made before split tender — see effectivePayments()).
   @Prop({ type: [SalePaymentSchema], default: [] })
   payments: SalePayment[];
@@ -300,6 +328,15 @@ export class Sale {
   @Prop({ type: String, default: null })
   deleteReason: string | null;
 
+  @Prop({ type: String, default: null })
+  deleteReasonCode?: string | null;
+
+  @Prop({ type: String, default: null })
+  voidReason?: string | null;
+
+  @Prop({ type: String, default: null })
+  voidReasonCode?: string | null;
+
   // set only by the G1a backfill so it can be reversed
   @Prop({ type: Boolean })
   shiftIdBackfilled?: boolean;
@@ -353,3 +390,5 @@ SaleSchema.index({ 'items.variantId': 1 });
 // sales on a retried checkout. See PosService.createSale's duplicate-key
 // catch, which now relies on this constraint to detect that race.
 SaleSchema.index({ idempotencyKey: 1 }, { unique: true, sparse: true });
+// the public receipt page looks a sale up by its token (unique; only sales that have one are indexed)
+SaleSchema.index({ 'receipt.token': 1 }, { unique: true, partialFilterExpression: { 'receipt.token': { $type: 'string' } } });

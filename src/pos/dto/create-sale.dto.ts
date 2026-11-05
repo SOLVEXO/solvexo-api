@@ -2,21 +2,46 @@
 import { ApiProperty } from '@nestjs/swagger';
 import {
   IsString, IsNotEmpty, IsArray, ValidateNested,
-  IsNumber, IsOptional, IsEnum, Min, Max, IsInt, IsDateString, IsBoolean,
+  IsNumber, IsOptional, IsEnum, Min, Max, IsInt, IsDateString, IsBoolean, ValidateIf, MaxLength,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { PaymentLineDto } from './payment.dto';
 
 export class SaleItemDto {
-  @ApiProperty({ example: '664product1' })
+  @ApiProperty({ example: '664product1', required: false, description: 'Required unless isCustom' })
+  @ValidateIf((o) => !o.isCustom)
   @IsString()
   @IsNotEmpty()
   productId: string;
 
-  @ApiProperty({ example: '664variant1' })
+  @ApiProperty({ example: '664variant1', required: false, description: 'Required unless isCustom' })
+  @ValidateIf((o) => !o.isCustom)
   @IsString()
   @IsNotEmpty()
   variantId: string;
+
+  @ApiProperty({ required: false, description: 'G2.4 custom item: a line with no catalog product. Needs `customName` and `unitPrice`; never touches stock; needs a manager above the store\'s limit.' })
+  @IsOptional()
+  @IsBoolean()
+  isCustom?: boolean;
+
+  @ApiProperty({ required: false, example: 'Gift wrapping' })
+  @ValidateIf((o) => !!o.isCustom)
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(120)
+  customName?: string;
+
+  @ApiProperty({ required: false, enum: ['standard', 'exempt'], description: 'custom item: standard = the store tax rate, exempt = no tax on this line' })
+  @IsOptional()
+  @IsEnum(['standard', 'exempt'])
+  taxCategory?: 'standard' | 'exempt';
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  customNote?: string;
 
   @ApiProperty({ example: 2 })
   @Type(() => Number)
@@ -38,6 +63,12 @@ export class SaleItemDto {
 }
 
 export class CreateSaleDto {
+  @ApiProperty({ required: false, description: 'G2.4: a POS-enabled seller coupon code. Validated server-side; cannot be combined with a manual discount; not on offline or held sales.' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  couponCode?: string;
+
   @ApiProperty({ example: '664abc123' })
   @IsString()
   @IsNotEmpty()

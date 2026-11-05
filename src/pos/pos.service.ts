@@ -17,6 +17,7 @@ import { ClientSession, Types } from 'mongoose';
 import { Long } from 'mongodb';
 import { checkMinorPairs, isoExponent, MinorMismatch } from '@/common/money-minor.util';
 import { PosMinorMetrics } from './pos-minor-metrics';
+import { normalizeReason } from './pos-reasons';
 import { searchStoreCustomers } from '@/common/store-customer-search.util';
 import { PaymentsCoreService } from '@/payments-core/payments-core.service';
 import {
@@ -783,6 +784,7 @@ export class PosService {
           completedSales: sales.length,
           heldSales: held,
           splitSales,
+          customItems: this.customItemsSummary(sales, exp),
           refundsCount: refunded.length + sales.filter((r: any) => (r.refundedAmount || 0) > 0).length,
           refundsTotal,
           // G1b minor twins (from the shift's own integer counters when present, else derived from the decimals)
@@ -883,7 +885,8 @@ export class PosService {
     // A discount requires a verified manager — the mobile UI already keeps
     // cashiers from entering one; this is the server-side backstop for
     // direct API calls. See requireManagerEmployee's doc comment.
-    const discountReq = this.discountSpec(dto);
+    let discountReq = this.discountSpec(dto);
+    if (dto.couponCode && discountReq.value > 0) throw moneyError('COUPON_WITH_DISCOUNT', 'A coupon and a manual discount cannot be combined on one sale');
     let approver: { employeeId: string; role: string } | null = null;
     if (discountReq.value > 0) {
       approver = await this.requireManagerEmployee(employeeToken, dto.storeId, 'apply a discount', off.isOffline ? off.at : undefined);
@@ -901,6 +904,7 @@ export class PosService {
     const isHeld = dto.status === 'held';
 
     for (const item of dto.items) {
+      if (item.isCustom) { saleItems.push(this.customLine(item)); continue; }
       const variant = await this.r.productVariantModel.findOne({ _id: item.variantId, productId: item.productId, isDelete: false });
       if (!variant) throw new BadRequestException(`Variant not found: ${item.variantId}`);
 
@@ -945,7 +949,20 @@ export class PosService {
     // beyond one minor unit is rejected (TOTAL_MISMATCH) rather than charging a number nobody saw.
     // The tax rate comes from the settingsVersion the device priced with (when still within the offline window).
     const money = await this.moneyContext(dto.storeId, { version: dto.settingsVersion });
-    const totals = computeTotals(saleItems, { exp: money.exp, discountType: discountReq.type, discountValue: discountReq.value, taxRate: money.taxRate });
+    // custom items: manager approval above the store's limit (judged as of the sale's time for an offline replay)
+    const customApproval = await this.approveCustomItems(dto.storeId, saleItems, money.exp, employeeToken, off.isOffline ? off.at : undefined);
+    // coupon: validated here against THIS sale's subtotal; its usage is counted inside the sale transaction
+    let couponUsed: any = null;
+    if (dto.couponCode && !isHeld) {
+      if (off.isOffline) throw moneyError('COUPON_ONLINE_ONLY', 'A coupon needs a live check and cannot be used on an offline sale');
+      const pre = computeTotals(this.taxLines(saleItems), { exp: money.exp, taxRate: money.taxRate });
+      const r = await this.resolveCoupon(dto.storeId, dto.couponCode, pre.minor.subtotal, money);
+      discountReq = { type: r.type, value: r.value };
+      couponUsed = r.coupon;
+    } else if (dto.couponCode && isHeld) {
+      throw moneyError('COUPON_ON_HELD_SALE', 'Apply the coupon when the sale is completed, not on a held sale');
+    }
+    const totals = computeTotals(this.taxLines(saleItems), { exp: money.exp, discountType: discountReq.type, discountValue: discountReq.value, taxRate: money.taxRate });
     const clientMismatches = this.reconcileClientMoney(dto, money.exp, totals.minor.total); // G1b: recorded, NEVER a rejection (see recordClientMismatches)
     const flags: Array<{ type: string; detail: Record<string, any> }> = [];
     const unverified = saleItems.filter((it) => it.priceVerified === false);
@@ -987,7 +1004,7 @@ export class PosService {
     const oversold: Array<{ variantId: string; sku?: string; requested: number; available: number }> = [];
     if (!isHeld) {
       try {
-        reserved = await this.reserveStock(dto.items.map((i, idx) => ({ variantId: i.variantId, qty: i.qty, sku: saleItems[idx].sku })), sessionLocationId, { allowNegative: off.isOffline, oversold });
+        reserved = await this.reserveStock(dto.items.map((i, idx) => ({ variantId: i.variantId, qty: i.qty, sku: saleItems[idx].sku })).filter((x) => !!x.variantId), sessionLocationId, { allowNegative: off.isOffline, oversold });
       } catch (err) {
         // A concurrent duplicate of THIS checkout may have just taken the last units and written the sale;
         // that is the same sale, not a shortage — hand back the winner instead of "insufficient stock".
@@ -1034,6 +1051,7 @@ export class PosService {
             payments: settled ? this.paymentLinesMinor(settled.lines, money.exp) : [],
             changeGiven: settled ? settled.change : 0,
             paymentShortfall: settled ? settled.shortBy : 0,
+            ...(couponUsed ? { couponCode: couponUsed.code, couponId: String(couponUsed._id), couponDiscountMinor: totals.minor.discount } : {}),
             employeeName: (employee as any).name ?? null,
             settingsVersion: money.settingsVersion,
             approvedBy: approver?.employeeId ?? null,
@@ -1059,6 +1077,7 @@ export class PosService {
           if (!isHeld) {
             await this.recordPayments(created, settled!.lines, { ...auditCtx, employeeId: dto.employeeId }, tx);
             await this.consumeDigital(dto.storeId, digital, created, tx); // one sale per payment: the unique `consumed` event commits with the sale or not at all
+            if (couponUsed) await this.consumeCoupon(String(couponUsed._id), tx); // race-safe usage count, in the same transaction
           }
           await this.writeAuditLog({
             storeId: dto.storeId,
@@ -1067,8 +1086,11 @@ export class PosService {
             targetId: String(created._id),
             targetType: 'sale',
             ...auditCtx,
-            metadata: { total, discount, itemCount: dto.items.length, ...(off.isOffline ? { offline: true, clientCreatedAt: off.at, settingsVersion: money.settingsVersion, sessionClosed: (session as any).status === 'closed' } : {}) },
+            metadata: { total, discount, itemCount: dto.items.length, ...(couponUsed ? { couponCode: couponUsed.code, couponDiscountMinor: totals.minor.discount } : {}), ...(customApproval.count ? { customItems: customApproval.count, customItemsTotalMinor: customApproval.totalMinor, customItemsApprovedBy: customApproval.approver } : {}), ...(off.isOffline ? { offline: true, clientCreatedAt: off.at, settingsVersion: money.settingsVersion, sessionClosed: (session as any).status === 'closed' } : {}) },
           }, tx);
+          for (const ci of (created as any).items.filter((x: any) => x.isCustom)) {
+            await this.writeAuditLog({ storeId: dto.storeId, employeeId: dto.employeeId, action: 'custom_item_sold', targetId: String(created._id), targetType: 'sale', ...auditCtx, metadata: { name: ci.name, qty: ci.qty, priceMinor: toMinor(ci.price, money.exp), taxCategory: ci.taxCategory, approvedBy: ci.customApprovedBy ?? null, saleNumber: (created as any).saleNumber } }, tx);
+          }
           if (off.isOffline) {
             // Every flagged offline sale leaves a trail a manager can find: audit log (POS) + inventory activity (store).
             for (const f of (created as any).flags ?? []) {
@@ -1137,6 +1159,7 @@ export class PosService {
     // friendly pre-check against real availability (see ProductVariant.committedStock); the
     // authoritative, race-proof check is the atomic reserveStock below
     for (const item of (sale as any).items) {
+      if (item.isCustom) continue; // a custom item has no stock
       const variant = await this.r.productVariantModel.findOne({ _id: item.variantId, isDelete: false });
       if (!variant) throw new BadRequestException(`Variant no longer available: ${item.sku}`);
       const availableForPos = availableStock(variant as any);
@@ -1146,7 +1169,7 @@ export class PosService {
     }
 
     const money = await this.moneyContext(String((sale as any).storeId), { version: dto.settingsVersion });
-    const totals = computeTotals((sale as any).items, { exp: money.exp, discountType: discountReq.type, discountValue: discountReq.value, taxRate: money.taxRate });
+    const totals = computeTotals(this.taxLines((sale as any).items), { exp: money.exp, discountType: discountReq.type, discountValue: discountReq.value, taxRate: money.taxRate });
     const clientMismatches = this.reconcileClientMoney(dto, money.exp, totals.minor.total);
     assertClientTotal(dto.clientTotal, totals);
     if (!(dto.payments?.length) && isDigitalTender(String(dto.paymentMethod))) throw moneyError('QR_REQUIRES_PAYMENT_LINES', 'A Raast QR sale must send its payment as a payment line carrying the confirmed payment (payments[].intentId)');
@@ -1161,7 +1184,7 @@ export class PosService {
     // retry) both get here, exactly one wins the `held → completed` transition; the loser gives
     // its stock back and is told the sale is already gone. No double decrement, no double count.
     const reserved = await this.reserveStock(
-      (sale as any).items.map((i: any) => ({ variantId: String(i.variantId), qty: i.qty, sku: i.sku })),
+      (sale as any).items.filter((i: any) => !i.isCustom).map((i: any) => ({ variantId: String(i.variantId), qty: i.qty, sku: i.sku })),
       locationId,
     );
 
@@ -1330,7 +1353,7 @@ export class PosService {
       refundAmount = roundMoney((sale as any).total - alreadyRefunded, exp);
       (sale as any).items.forEach((item: any) => {
         const left = item.qty - (item.refundedQty || 0);
-        if (left > 0) itemUpdates.push({ variantId: String(item.variantId), qtyToRestore: left, saleItemId: String(item._id) });
+        if (left > 0) itemUpdates.push({ variantId: item.variantId ? String(item.variantId) : '', qtyToRestore: left, saleItemId: String(item._id) });
       });
     } else {
       const refundLines: Array<{ price: number; qty: number }> = [];
@@ -1343,7 +1366,7 @@ export class PosService {
           throw new BadRequestException(`Cannot refund ${refundItem.qty} of "${saleItem.name}" — only ${available} unreturned`);
         }
         refundLines.push({ price: saleItem.price, qty: refundItem.qty });
-        itemUpdates.push({ variantId: String(saleItem.variantId), qtyToRestore: refundItem.qty, saleItemId: refundItem.saleItemId });
+        itemUpdates.push({ variantId: saleItem.variantId ? String(saleItem.variantId) : '', qtyToRestore: refundItem.qty, saleItemId: refundItem.saleItemId });
       }
       const completesSale = (sale as any).items.every((item: any) => {
         const u = itemUpdates.find((x) => x.saleItemId === item._id.toString());
@@ -1355,6 +1378,7 @@ export class PosService {
     }
 
     const tenders = allocateRefund(lines, alreadyRefunded, refundAmount, exp);
+    const reason = normalizeReason('refund', dto?.reasonCode, dto?.reason);
     const refundId = new Types.ObjectId();
     const refundSeq = ((sale as any).refunds ?? []).length;
     const refundRecord = {
@@ -1391,7 +1415,7 @@ export class PosService {
       await this.r.posRefundModel.create([{
         _id: refundId, saleId, saleNumber: (sale as any).saleNumber ?? null, seq: refundSeq, reference: `${(sale as any).saleNumber ?? saleId}-R${refundSeq + 1}`,
         kind: isPartial ? 'partial' : 'full', amount: refundAmount, amountMinor: toMinor(refundAmount, exp), currency, currencyExponent: exp, tenders: this.tendersMinor(tenders, exp),
-        items: refundRecord.items, reason: dto?.reason?.trim() || null,
+        items: refundRecord.items, reason: reason.note, reasonCode: reason.code,
         status: tenders.every((t: any) => t.method === 'cash') ? 'confirmed' : 'recorded_unverified', confirmationSource: null,
         storeId: (sale as any).storeId, ...refundCtx, deviceId: this.callerDeviceId(), employeeId: actor.employeeId,
         saleSessionId: (sale as any).sessionId ?? null, saleEmployeeId: (sale as any).employeeId ?? null,
@@ -1399,13 +1423,13 @@ export class PosService {
       }], tx ? { session: tx } : undefined);
       await this.writeAuditLog({
         storeId: (sale as any).storeId, employeeId: actor.employeeId, action: refundAuditAction, targetId: saleId, targetType: 'sale', ...refundCtx,
-        metadata: { refundAmount, tenders, currency, items: dto?.items, refundId: String(refundId), reference: `${(sale as any).saleNumber ?? saleId}-R${refundSeq + 1}`, reason: dto?.reason ?? null },
+        metadata: { refundAmount, tenders, currency, items: dto?.items, refundId: String(refundId), reference: `${(sale as any).saleNumber ?? saleId}-R${refundSeq + 1}`, reason: reason.note, reasonCode: reason.code },
       }, tx);
       return c;
     });
     if (!claimed) throw businessConflict('SALE_CHANGED_CONCURRENTLY', staleMessage);
 
-    await this.restoreSoldStock(itemUpdates.map((u) => ({ variantId: u.variantId, qty: u.qtyToRestore })), locationId);
+    await this.restoreSoldStock(itemUpdates.filter((u) => !!u.variantId).map((u) => ({ variantId: u.variantId, qty: u.qtyToRestore })), locationId);
 
     // Session: the refund comes OUT of sales and out of the right tender — so a cash refund lowers the
     // cash the drawer should now hold (expected cash = opening + cashSales + cashIn − cashOut). The
@@ -1437,7 +1461,7 @@ export class PosService {
    * same transaction. It disappears from every list (deletedAt is set) but is never physically deleted. `reason` is what the
    * cashier typed; old app builds send none → "not provided". Idempotent: discarding an already-discarded sale succeeds.
    */
-  async discardHeldSale(sellerId: string, saleId: string, opts: { reason?: string; employeeToken?: string } = {}) {
+  async discardHeldSale(sellerId: string, saleId: string, opts: { reason?: string; reasonCode?: string; employeeToken?: string } = {}) {
     const sale: any = await this.r.saleModel.findById(saleId);
     if (!sale) throw new NotFoundException('Sale not found');
     await this.verifyStoreOwnership(sale.storeId, sellerId);
@@ -1445,7 +1469,8 @@ export class PosService {
     if (sale.status === 'discarded') return { success: true, message: 'Held sale already discarded', data: { saleId, alreadyDiscarded: true } };
     if (sale.status !== 'held') throw new BadRequestException('Only held sales can be discarded');
 
-    const reason = (opts.reason ?? '').toString().trim().slice(0, 300) || 'not provided';
+    const rsn = normalizeReason('discard', opts.reasonCode, opts.reason);
+    const reason = rsn.note || (rsn.code !== 'not_provided' ? rsn.code.replace(/_/g, ' ') : 'not provided');
     const actor = await this.verifyEmployeeToken(opts.employeeToken, sale.storeId); // optional: who at the till pressed it
     const deletedBy = actor?.employeeId ?? sellerId;
 
@@ -1453,14 +1478,14 @@ export class PosService {
     const discarded = await this.atomic(async (tx) => {
       const d = await this.r.saleModel.findOneAndUpdate(
         { _id: saleId, status: 'held', deletedAt: null },
-        { $set: { status: 'discarded', deletedAt: new Date(), deletedBy, deleteReason: reason, heldAt: null } },
+        { $set: { status: 'discarded', deletedAt: new Date(), deletedBy, deleteReason: reason, deleteReasonCode: rsn.code, heldAt: null } },
         { new: true, ...(tx ? { session: tx } : {}) },
       );
       if (!d) return null;
       await this.writeAuditLog({
         storeId: sale.storeId, employeeId: actor?.employeeId ?? sale.employeeId ?? null, action: 'held_sale_discarded', targetId: saleId, targetType: 'sale',
         sessionId: sale.sessionId ?? null, registerId: sale.registerId ?? null, shiftId: sale.shiftId ?? null,
-        metadata: { reason, saleNumber: sale.saleNumber, total: sale.total, itemCount: (sale.items ?? []).length, deletedBy, byOwnerSession: !actor },
+        metadata: { reason, reasonCode: rsn.code, saleNumber: sale.saleNumber, total: sale.total, itemCount: (sale.items ?? []).length, deletedBy, byOwnerSession: !actor },
       }, tx);
       return d;
     });
@@ -1486,15 +1511,24 @@ export class PosService {
 
     const lines: any[] = [];
     for (const item of dto.items) {
+      if (item.isCustom) { lines.push(this.customLine(item)); continue; }
       const variant: any = await this.r.productVariantModel.findOne({ _id: item.variantId, productId: item.productId, isDelete: false }).lean();
       if (!variant) throw new BadRequestException(`Variant not found: ${item.variantId}`);
       const product: any = await this.r.productModel.findOne({ _id: item.productId, isDelete: false }).select('name').lean();
       if (!product) throw new BadRequestException(`Product not found: ${item.productId}`);
       lines.push({ productId: item.productId, variantId: item.variantId, name: `${product.name}${formatOptionsSuffix(variant.options)}`, sku: variant.sku, price: variant.price, qty: item.qty });
     }
-    const discountReq = this.discountSpec(dto);
+    let discountReq = this.discountSpec(dto);
     const money = await this.moneyContext(dto.storeId, { version: dto.settingsVersion });
-    const totals = computeTotals(lines, { exp: money.exp, discountType: discountReq.type, discountValue: discountReq.value, taxRate: money.taxRate });
+    let couponInfo: any = null;
+    if (dto.couponCode) {
+      if (discountReq.value > 0) throw moneyError('COUPON_WITH_DISCOUNT', 'A coupon and a manual discount cannot be combined on one sale');
+      const pre = computeTotals(this.taxLines(lines), { exp: money.exp, taxRate: money.taxRate });
+      const r = await this.resolveCoupon(dto.storeId, dto.couponCode, pre.minor.subtotal, money);
+      discountReq = { type: r.type, value: r.value };
+      couponInfo = { code: r.coupon.code, discountType: r.coupon.discountType, discountValue: r.coupon.discountValue };
+    }
+    const totals = computeTotals(this.taxLines(lines), { exp: money.exp, discountType: discountReq.type, discountValue: discountReq.value, taxRate: money.taxRate });
     return {
       success: true,
       data: {
@@ -1603,9 +1637,11 @@ export class PosService {
       const hour = new Date((sale as any).createdAt).getHours();
       hourlyMap[hour] = roundMoney((hourlyMap[hour] || 0) + (sale as any).total, exp);
       for (const item of (sale as any).items) {
-        if (!productSales[item.productId]) productSales[item.productId] = { name: item.name, qty: 0, revenue: 0 };
-        productSales[item.productId].qty += item.qty;
-        productSales[item.productId].revenue = roundMoney(productSales[item.productId].revenue + item.lineTotal, exp);
+        // custom items (no product) are grouped under one row, "Custom item"
+        const key = item.isCustom ? 'custom' : item.productId;
+        if (!productSales[key]) productSales[key] = { name: item.isCustom ? 'Custom item' : item.name, qty: 0, revenue: 0 };
+        productSales[key].qty += item.qty;
+        productSales[key].revenue = roundMoney(productSales[key].revenue + item.lineTotal, exp);
       }
     }
 
@@ -1627,6 +1663,7 @@ export class PosService {
         date: date.toISOString().split('T')[0],
         currency,
         currencyExponent: exp,
+        customItems: this.customItemsSummary(sales, exp),
         summary: flat,
         byPaymentMethod: byPayment,
         topProducts,
@@ -1742,6 +1779,91 @@ export class PosService {
     }
     const ctx = await this.moneyContext(String(doc.storeId));
     return { currency: ctx.currency, exp: ctx.exp };
+  }
+
+  // ── G2.4: custom items and coupons ────────────────────────────────────────────────────────────────────
+
+  async storeIdOfSale(saleId: string): Promise<string> {
+    const s: any = await this.r.saleModel.findById(saleId).select('storeId').lean();
+    if (!s) throw new NotFoundException('Sale not found');
+    return String(s.storeId);
+  }
+
+  /** A custom item as a sale line: no product, no variant, never stocked. The price is whatever the till says (a manager approves it above the store's limit). */
+  private customLine(item: any): any {
+    const price = Number(item.unitPrice);
+    if (!(price > 0) || !Number.isFinite(price)) throw moneyError('CUSTOM_ITEM_PRICE_REQUIRED', 'A custom item needs a price above zero');
+    const name = String(item.customName ?? '').trim();
+    if (!name) throw moneyError('CUSTOM_ITEM_NAME_REQUIRED', 'A custom item needs a name');
+    return {
+      productId: null, variantId: null, name: name.slice(0, 120), sku: 'CUSTOM', image: null, price, listPrice: null, priceVerified: true,
+      qty: item.qty, lineTotal: 0, refundedQty: 0, isCustom: true, taxCategory: item.taxCategory === 'exempt' ? 'exempt' : 'standard',
+      customApprovedBy: null, note: item.customNote ? String(item.customNote).slice(0, 200) : null,
+    };
+  }
+
+  /** "Custom item" in reports: how many were sold and for how much. */
+  private customItemsSummary(sales: any[], exp: number): { count: number; total: number; totalMinor: number } {
+    let count = 0; let totalMinor = 0;
+    for (const sale of sales) for (const it of sale.items ?? []) if (it.isCustom) { count += it.qty; totalMinor += it.lineTotalMinor ?? toMinor(it.lineTotal, exp); }
+    return { count, total: fromMinor(totalMinor, exp), totalMinor };
+  }
+
+  /** Lines for computeTotals: an exempt custom item carries no tax. */
+  private taxLines(items: any[]): Array<{ price: number; qty: number; taxable: boolean }> {
+    return items.map((i) => ({ price: i.price, qty: i.qty, taxable: i.taxCategory !== 'exempt' }));
+  }
+
+  /**
+   * A custom item (no catalog product) needs a manager unless its line total is within the store's `customItemApprovalAboveMinor`
+   * (null = every custom item needs one). The manager's PIN session is verified server-side (for an offline replay: as of the sale's time).
+   * Stamps `customApprovedBy` on the lines and returns the approver (audited by the caller).
+   */
+  private async approveCustomItems(storeId: string, items: any[], exp: number, employeeToken: string | undefined, at?: Date): Promise<{ approver: string | null; count: number; totalMinor: number }> {
+    const custom = items.filter((i) => i.isCustom);
+    if (!custom.length) return { approver: null, count: 0, totalMinor: 0 };
+    const settings: any = await this.r.posSettingsModel.findOne({ storeId }).select('customItemApprovalAboveMinor').lean();
+    const limit: number | null = settings?.customItemApprovalAboveMinor ?? null;
+    const totalMinor = custom.reduce((s2, i) => s2 + toMinor(i.price * i.qty, exp), 0);
+    const needsManager = limit === null || custom.some((i) => toMinor(i.price * i.qty, exp) > limit);
+    let approver: string | null = null;
+    if (needsManager) {
+      const m = await this.verifyEmployeeToken(employeeToken, storeId, at);
+      if (!m || m.role !== 'manager') throw new ForbiddenException({ statusCode: 403, code: 'CUSTOM_ITEM_NEEDS_MANAGER', message: 'A manager must approve this custom item', limitMinor: limit });
+      approver = m.employeeId;
+    }
+    custom.forEach((i) => { i.customApprovedBy = approver; });
+    return { approver, count: custom.length, totalMinor };
+  }
+
+  /**
+   * POS coupon check (reuses the storefront's `Coupon` model; only a `posEnabled` seller coupon of THIS store counts). Rules: active, not
+   * deleted, started, not expired, usage limit not reached, minimum spend met, same currency for fixed-amount / minimum-spend coupons.
+   * Returns the discount in the form `computeTotals` takes. Usage is NOT counted here — see `consumeCoupon` (inside the sale transaction).
+   */
+  private async resolveCoupon(storeId: string, rawCode: string, subtotalMinor: number, money: { currency: string; exp: number }, now = new Date()) {
+    const code = String(rawCode ?? '').trim().toUpperCase();
+    if (!code) throw moneyError('COUPON_INVALID', 'Enter a coupon code');
+    const c: any = await this.r.couponModel.findOne({ code, scope: 'seller', storeId, isDelete: { $ne: true } }).lean();
+    if (!c || c.isActive === false || c.posEnabled !== true) throw moneyError('COUPON_INVALID', 'This coupon code is not valid at the till');
+    if (c.startsAt && new Date(c.startsAt) > now) throw moneyError('COUPON_NOT_STARTED', 'This coupon is not active yet', { startsAt: c.startsAt });
+    if (c.expiresAt && new Date(c.expiresAt) < now) throw moneyError('COUPON_EXPIRED', 'This coupon has expired');
+    if (c.usageLimit != null && (c.usageCount ?? 0) >= c.usageLimit) throw moneyError('COUPON_LIMIT_REACHED', 'This coupon has been used the maximum number of times');
+    const cur = String(c.currency ?? money.currency).toUpperCase();
+    if ((c.discountType === 'fixed' || c.minOrderAmount != null) && cur !== String(money.currency).toUpperCase()) throw moneyError('COUPON_CURRENCY_MISMATCH', 'This coupon is in a different currency than this store');
+    if (c.minOrderAmount != null && subtotalMinor < toMinor(c.minOrderAmount, money.exp)) throw moneyError('COUPON_MIN_SPEND', 'The sale is below this coupon\'s minimum spend', { minSpend: c.minOrderAmount });
+    if (c.discountType === 'percentage') return { coupon: c, type: 'percent' as DiscountType, value: Number(c.discountValue) };
+    const off = Math.min(toMinor(c.discountValue, money.exp), subtotalMinor); // a fixed coupon larger than the sale takes the whole subtotal, never more
+    return { coupon: c, type: 'amount' as DiscountType, value: fromMinor(off, money.exp) };
+  }
+
+  /** Counts one use of the coupon, race-safe, inside the sale's transaction: the update only matches while the limit has room. */
+  private async consumeCoupon(couponId: string, tx?: ClientSession): Promise<void> {
+    const r: any = await this.r.couponModel.updateOne(
+      { _id: couponId, $or: [{ usageLimit: null }, { $expr: { $lt: ['$usageCount', '$usageLimit'] } }] },
+      { $inc: { usageCount: 1 } }, tx ? { session: tx } : undefined,
+    );
+    if ((r?.modifiedCount ?? r?.nModified ?? 0) === 0) throw moneyError('COUPON_LIMIT_REACHED', 'This coupon has just been used the maximum number of times');
   }
 
   /** What discount the request asks for: the new type+value form, else the legacy flat `discount`, else (completing/editing a held sale) what's already on it. */
@@ -2375,7 +2497,8 @@ export class PosService {
 
   // ── SALES EXTENSIONS ──────────────────────────────────────────────────────
 
-  async voidSale(sellerId: string, saleId: string, dto: { reason?: string }, employeeToken: string | undefined) {
+  async voidSale(sellerId: string, saleId: string, dto: { reason?: string; reasonCode?: string }, employeeToken: string | undefined) {
+    const voidReason = normalizeReason('void', dto?.reasonCode, dto?.reason);
     const sale = await this.r.saleModel.findById(saleId);
     if (!sale) throw new NotFoundException('Sale not found');
     if ((sale as any).status !== 'completed') {
@@ -2391,20 +2514,20 @@ export class PosService {
     const claimed = await this.atomic(async (tx) => {
       const c = await this.r.saleModel.findOneAndUpdate(
         { _id: saleId, status: 'completed' },
-        { $set: { status: 'voided', voidedAt: new Date(), voidedBy: actor.employeeId } },
+        { $set: { status: 'voided', voidedAt: new Date(), voidedBy: actor.employeeId, voidReason: voidReason.note, voidReasonCode: voidReason.code } },
         tx ? { session: tx } : undefined,
       );
       if (!c) return null;
       await this.writeAuditLog({
         storeId: (sale as any).storeId, employeeId: actor.employeeId, action: 'sale_voided', targetId: saleId, targetType: 'sale',
-        sessionId: (sale as any).sessionId ?? null, registerId: (sale as any).registerId ?? null, shiftId: (sale as any).shiftId ?? null, metadata: { reason: dto.reason },
+        sessionId: (sale as any).sessionId ?? null, registerId: (sale as any).registerId ?? null, shiftId: (sale as any).shiftId ?? null, metadata: { reason: voidReason.note, reasonCode: voidReason.code },
       }, tx);
       return c;
     });
     if (!claimed) throw businessConflict('SALE_CHANGED_CONCURRENTLY', 'This sale was already voided or refunded');
 
     await this.restoreSoldStock(
-      (sale as any).items.map((item: any) => ({ variantId: String(item.variantId), qty: item.qty })),
+      (sale as any).items.filter((item: any) => !item.isCustom).map((item: any) => ({ variantId: String(item.variantId), qty: item.qty })),
       (sale as any).locationId ?? null,
     );
 
@@ -2437,6 +2560,7 @@ export class PosService {
     const saleItems: any[] = [];
 
     for (const item of dto.items) {
+      if (item.isCustom) { saleItems.push(this.customLine(item)); continue; }
       const variant = await this.r.productVariantModel.findOne({ _id: item.variantId, productId: item.productId, isDelete: false });
       if (!variant) throw new BadRequestException(`Variant not found: ${item.variantId}`);
 
@@ -2457,7 +2581,8 @@ export class PosService {
     }
 
     const money = await this.moneyContext(String((sale as any).storeId));
-    const totals = computeTotals(saleItems, { exp: money.exp, discountType: discountReq.type, discountValue: discountReq.value, taxRate: money.taxRate });
+    await this.approveCustomItems(String((sale as any).storeId), saleItems, money.exp, employeeToken);
+    const totals = computeTotals(this.taxLines(saleItems), { exp: money.exp, discountType: discountReq.type, discountValue: discountReq.value, taxRate: money.taxRate });
     saleItems.forEach((it, i) => { it.lineTotal = totals.lineTotals[i]; });
 
     const updated = await this.r.saleModel.findByIdAndUpdate(

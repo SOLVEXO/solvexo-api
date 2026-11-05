@@ -28,6 +28,8 @@ export class PosRefund {
   @Prop({ type: [{ _id: false, saleItemId: String, qty: Number }], default: [] })
   items: Array<{ saleItemId: string; qty: number }>;
   @Prop({ type: String, default: null }) reason: string | null;
+  /** G2.4: the picker code ('not_provided' for an older build that sent only text) */
+  @Prop({ type: String, default: null }) reasonCode: string | null;
 
   @Prop({ enum: ['confirmed', 'recorded_unverified'], required: true }) status: string;
   @Prop({ type: String, default: null }) confirmationSource: string | null;

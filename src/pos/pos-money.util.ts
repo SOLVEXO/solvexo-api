@@ -56,7 +56,7 @@ export interface Totals {
  * Tax-exclusive pricing, same base the cashier sees on the receipt.
  */
 export function computeTotals(
-  lines: Array<{ price: number; qty: number }>,
+  lines: Array<{ price: number; qty: number; /** false = tax-exempt line (G2.4 custom item with taxCategory 'exempt'); default true */ taxable?: boolean }>,
   opts: { exp: number; discountType?: DiscountType; discountValue?: number; taxRate: number },
 ): Totals {
   const { exp } = opts;
@@ -80,9 +80,12 @@ export function computeTotals(
     });
   }
 
+  // tax base = the taxable lines minus THEIR share of the discount (all lines taxable → exactly subtotal − discount, as before)
+  const taxableSubtotalM = lines.reduce((sum, l, i) => sum + (l.taxable === false ? 0 : lineM[i]), 0);
+  const discountOnTaxableM = subtotalM > 0 ? (taxableSubtotalM === subtotalM ? discountM : roundHalfUp((discountM * taxableSubtotalM) / subtotalM)) : 0;
   const taxableM = subtotalM - discountM;
   const rate = Number(opts.taxRate) || 0;
-  const taxM = roundHalfUp(taxableM * rate);
+  const taxM = roundHalfUp((taxableSubtotalM - discountOnTaxableM) * rate);
   const totalM = taxableM + taxM;
 
   return {

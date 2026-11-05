@@ -38,6 +38,7 @@ export async function startMongoHarness(): Promise<MongoHarness> {
     productVariantModel: m(schema.ProductVariant, schema.ProductVariantSchema),
     productModel: m(schema.Product, schema.ProductSchema),
     posSettingsModel: m(schema.PosSettings, schema.PosSettingsSchema),
+    couponModel: m(schema.Coupon, schema.CouponSchema),
     variantLocationStockModel: m(schema.VariantLocationStock, schema.VariantLocationStockSchema),
     storeLocationModel: m(schema.StoreLocation, schema.StoreLocationSchema),
     posAuditLogModel: m(schema.PosAuditLog, schema.PosAuditLogSchema),

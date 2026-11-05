@@ -44,6 +44,7 @@ export class MarketingService {
       discountValue: dto.discountValue,
       minOrderAmount: dto.minOrderAmount ?? null,
       usageLimit: dto.usageLimit ?? null,
+      posEnabled: dto.posEnabled === true,
       startsAt: dto.startsAt ? new Date(dto.startsAt) : null,
       expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : null,
     });
@@ -101,6 +102,7 @@ export class MarketingService {
     if (dto.discountValue !== undefined) update.discountValue = dto.discountValue;
     if (dto.minOrderAmount !== undefined) update.minOrderAmount = dto.minOrderAmount;
     if (dto.usageLimit !== undefined) update.usageLimit = dto.usageLimit;
+    if (dto.posEnabled !== undefined) update.posEnabled = dto.posEnabled;
     if (dto.startsAt !== undefined) update.startsAt = dto.startsAt ? new Date(dto.startsAt) : null;
     if (dto.expiresAt !== undefined) update.expiresAt = new Date(dto.expiresAt);
     if (dto.isActive !== undefined) update.isActive = dto.isActive;

@@ -12,11 +12,13 @@ import { KybModule } from '@/kyb/kyb.module';
 import { PaymentsCoreModule } from '@/payments-core/payments-core.module';
 import { PosDeviceService } from './pos-device.service';
 import { PosTokenRevocationService } from './pos-token-revocation.service';
+import { PosReceiptService } from './pos-receipt.service';
+import { PublicReceiptController } from './public-receipt.controller';
 
 @Module({
   imports: [AuthModule, RedisModule, AdminConfigModule, FinanceModule, InventoryModule, PosPlansModule, KybModule, forwardRef(() => PaymentsCoreModule)],
-  controllers: [PosController],
-  providers: [PosService, StoreLocationService, PosDeviceService, PosTokenRevocationService],
+  controllers: [PosController, PublicReceiptController],
+  providers: [PosService, StoreLocationService, PosDeviceService, PosTokenRevocationService, PosReceiptService],
   exports: [PosService],
 })
 export class PosModule {}

@@ -40,6 +40,10 @@ export class PosSettings {
   @Prop({ type: Number, default: 1 })
   settingsVersion: number;
 
+  // G2.4: a cashier may add a custom item whose line total is at most this (minor units); above it — or ALWAYS when null — a manager must approve
+  @Prop({ type: Number, default: null, min: 0 })
+  customItemApprovalAboveMinor: number | null;
+
   @Prop({ type: Number, default: 0 })
   saleCounter: number;         // atomically incremented to mint saleNumber ("POS-00001") per store
 }
