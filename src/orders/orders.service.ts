@@ -1199,9 +1199,11 @@ export class OrdersService {
       const rows: any[] = await orderPaymentRecordModel.find({ orderId: String(order._id) }).select('amount').lean();
       recorded = rows.reduce((s, r) => s + (r.amount ?? 0), 0);
     }
+    // The authoritative cash figure is the one the invoice/order screen already print: this sub-order's total minus the part
+    // paid with a gift card / store credit (`payable`) — never the gross total, or the courier would over-collect.
+    const payable = computeOrderDocumentTotals(order, ctx.sellerOrder).payable;
     const dueOrderCcy = orderDueInOrderCurrency({
-      isPaid: !!order.isPaid, paymentStatus: order.paymentStatus, totalAmount: order.totalAmount ?? 0, recordedPayments: recorded,
-      orderSubtotal: order.subtotal, sellerOrderSubtotal: ctx.sellerOrder.subtotal, sellerOrderCount: order.sellerOrders?.length ?? 1,
+      isPaid: !!order.isPaid, paymentStatus: order.paymentStatus, totalAmount: payable, recordedPayments: recorded,
     });
     if (dueOrderCcy <= 0) return 0;
     const orderCcy: string = order.currency || storeCurrency;

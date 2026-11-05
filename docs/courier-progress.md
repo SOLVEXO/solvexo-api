@@ -10,7 +10,7 @@ Run unit tests with the local, uncommitted `jest.unit.config.js` (the repo's own
 - [x] Phase 3 — booking flow: CourierService, CourierBooking schema, Store.courierSettings, OrdersService.bookCourierShipment/bulk/cancel/docs, controller routes (orders.buy_shipping_label), connect/test/list in integrations. Service tests are in Phase 6.
 - [x] Phase 4 — CourierTrackingSyncService (cron every 10 min via SchedulerService), events, delivered-once, RTO flag+notify only, COD read-only, buyer-safe courierTracking on buyer order views, push webhook STUBBED (501). Sync tests done (11).
 - [x] Phase 5 — frontend (solvexo repo): Integrations courier cards + defaults, order-detail CourierBookingsCard, BookCourierModal, BulkCourierModal, en+ur strings, 8 component tests. Backend added GET orders/courier/validate-city.
-- [ ] Phase 6 — service tests, docs/courier-module.md, final audit
+- [x] Phase 6 — tests (62 courier tests + 8 web), docs/courier-module.md; COD uses invoice `payable` (gift card/store credit aware).
 
 ## Decisions
 - All code under `src/integrations/couriers/`. Adapters = `GenericCourierProvider` + one mapping file each.

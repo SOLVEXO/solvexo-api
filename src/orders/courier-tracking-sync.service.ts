@@ -6,7 +6,7 @@ import { NotificationsService } from '@/notifications/notifications.service';
 import { NOTIFICATION_TYPES } from '@/notifications/notification.types';
 import { CourierService, CourierConnection } from '@/integrations/couriers/courier.service';
 import { COURIER_CATALOG } from '@/integrations/couriers/courier-catalog';
-import { canAdvanceCourierStatus, CourierError, CourierKey, CourierTrackResult, isTerminalCourierStatus } from '@/integrations/couriers/courier.types';
+import { canAdvanceCourierStatus, CourierError, CourierKey, CourierTrackResult } from '@/integrations/couriers/courier.types';
 import { OrdersService } from './orders.service';
 
 const SYNC_INTERVAL_MS = 15 * 60_000;

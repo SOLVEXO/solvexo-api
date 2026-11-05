@@ -52,7 +52,7 @@ export interface CourierMapping {
 
 /** Normalizes a raw courier status string; anything unrecognised stays live as `in_transit` rather than being dropped. */
 export function mapRawStatus(map: Record<string, CourierStatus>, raw: unknown): CourierStatus {
-  const key = String(raw ?? '').trim().toLowerCase();
+  const key = (typeof raw === 'string' || typeof raw === 'number' ? String(raw) : '').trim().toLowerCase();
   if (map[key]) return map[key];
   return 'in_transit';
 }
