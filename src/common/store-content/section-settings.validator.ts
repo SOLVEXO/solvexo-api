@@ -493,6 +493,9 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
       oneOf(settings.speed, ['slow', 'medium', 'fast'] as const, 'settings.speed');
       oneOf(settings.direction, ['left', 'right'] as const, 'settings.direction');
       oneOf(settings.fontSize, ['small', 'medium', 'large'] as const, 'settings.fontSize');
+      if (settings.fontSizePx !== undefined && settings.fontSizePx !== null && (!Number.isFinite(settings.fontSizePx) || settings.fontSizePx < 8 || settings.fontSizePx > 300)) {
+        throw new BadRequestException('settings.fontSizePx must be a number from 8 to 300');
+      }
       if (settings.pauseOnHover !== undefined && typeof settings.pauseOnHover !== 'boolean') {
         throw new BadRequestException('settings.pauseOnHover must be true or false');
       }
@@ -690,7 +693,6 @@ export function validateBlockSettings(blockType: string, settings: Record<string
       // own static text — the real value is resolved at render time instead.
       const boundToMetafield = !!settings.dynamicSourceNamespace && !!settings.dynamicSourceKey;
       if (!boundToMetafield) required(settings.text, 'text');
-      maxLen(settings.text, 10000, 'text');
       assertDynamicSource(settings.dynamicSourceNamespace, settings.dynamicSourceKey, 'dynamicSource');
       break;
     }
