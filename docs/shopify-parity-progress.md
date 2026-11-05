@@ -7,3 +7,6 @@ Run unit tests: `npx jest -c jest.unit.config.js <path>` (repo jest config needs
 - [x] TASK 2 bundles (backend + tests; UI see below)
 - [x] TASK 3 pre-order (backend + tests)
 - [x] TASK 4 upsell / recommendations (backend + tests)
+
+## Status after Tasks 2-4 (backend + web committed)
+NOT done / partial: bundle in draft orders + POS; bundle weight = sum of components; packing-slip/order-document component lines; order-list "Pre-orders" filter; pre-order wording in buyer confirmation email/WhatsApp; Liquid theme context + storefront theme rendering of bundle/pre-order/upsell (public API exposes `bundle`, variant `preorder`, `api/public/merchandising/*`); recommendations cache; bundle component picker uses each product's default variant (API supports any variant). Concurrency/no-oversell relies on the existing atomic reserve + new atomic pre-order $inc (not run against real MongoDB).
