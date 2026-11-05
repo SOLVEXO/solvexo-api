@@ -33,7 +33,7 @@ import { hashJti } from './portal-cookie.util';
 
 @Injectable()
 export class AuthService {
-  private googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID); // 👈 Google Client
+  private googleClient = new OAuth2Client(); // verifies Google ID tokens; audiences come from GOOGLE_CLIENT_ID
   constructor(
     private databaseService: DatabaseService,
     private readonly otpService: OtpService,
@@ -463,9 +463,12 @@ export class AuthService {
     }
 
     if (authProvider === 'google') {
+      // GOOGLE_CLIENT_ID may be a comma-separated list, so a new web client can be rolled out while apps that
+      // still sign in with the old one keep working.
+      const audiences = (process.env.GOOGLE_CLIENT_ID ?? '').split(',').map((a) => a.trim()).filter(Boolean);
       const ticket = await this.googleClient.verifyIdToken({
         idToken: token,
-        audience: process.env.GOOGLE_CLIENT_ID,
+        audience: audiences.length === 1 ? audiences[0] : audiences,
       });
       const payload = ticket.getPayload();
       if (!payload || payload.sub !== socialId) {
