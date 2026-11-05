@@ -8,12 +8,10 @@ import { Schema } from 'mongoose';
  * is closed at the database with a role that has only `insert`/`find` on these collections (see
  * docs/pos-blueprint/G1A_SUMMARY.md, "Immutability").
  *
- * `allowSetFields` lets a collection permit `$set` on a short list of fields (e.g. a payment's `status` moving from
- * `recorded_unverified` to `confirmed` once a terminal integration confirms it) — everything else stays frozen, and
- * deletes are never allowed.
+ * There is no "allowed fields" escape hatch (the G1a `allowSetFields` hook was removed in G2.1): state that changes over time is
+ * modelled as appended status events (see `payment_events`), never as an update.
  */
-export function makeAppendOnly(schema: Schema, opts: { allowSetFields?: string[] } = {}): void {
-  const allowed = new Set(opts.allowSetFields ?? []);
+export function makeAppendOnly(schema: Schema): void {
   const deny = (what: string) => {
     throw new Error(`${what} is not allowed: this collection is append-only (audit-grade record)`);
   };
@@ -35,13 +33,6 @@ export function makeAppendOnly(schema: Schema, opts: { allowSetFields?: string[]
 
   schema.pre(['updateOne', 'updateMany', 'findOneAndUpdate'] as any, function (this: any) {
     const update = this.getUpdate?.() ?? {};
-    // Mongoose adds `$setOnInsert: { createdAt }` to every update when timestamps are on; with no upsert it can never apply.
-    const ops = Object.keys(update).filter((k) => !(k === '$setOnInsert' && Object.keys(update.$setOnInsert ?? {}).every((f) => f === 'createdAt')));
-    const onlyAllowedSet =
-      allowed.size > 0 &&
-      ops.length > 0 &&
-      ops.every((k) => k === '$set') &&
-      Object.keys(update.$set ?? {}).every((f) => allowed.has(f));
-    if (!onlyAllowedSet) deny(`Updating a record (update keys: ${JSON.stringify(update)})`);
+    deny(`Updating a record (update keys: ${JSON.stringify(update)})`);
   });
 }

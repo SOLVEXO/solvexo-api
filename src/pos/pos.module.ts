@@ -8,12 +8,14 @@ import { AdminConfigModule } from '@/admin-config/admin-config.module';
 import { FinanceModule } from '@/finance/finance.module';
 import { InventoryModule } from '@/inventory/inventory.module';
 import { PosPlansModule } from '@/pos-plans/pos-plans.module';
+import { KybModule } from '@/kyb/kyb.module';
 import { PosDeviceService } from './pos-device.service';
 import { PosTokenRevocationService } from './pos-token-revocation.service';
 
 @Module({
-  imports: [AuthModule, RedisModule, AdminConfigModule, FinanceModule, InventoryModule, PosPlansModule],
+  imports: [AuthModule, RedisModule, AdminConfigModule, FinanceModule, InventoryModule, PosPlansModule, KybModule],
   controllers: [PosController],
   providers: [PosService, StoreLocationService, PosDeviceService, PosTokenRevocationService],
+  exports: [PosService],
 })
 export class PosModule {}

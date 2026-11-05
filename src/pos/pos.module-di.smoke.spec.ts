@@ -1,6 +1,10 @@
 /* eslint-disable prettier/prettier */
 import { Test } from '@nestjs/testing';
 import { PosController } from './pos.controller';
+import { PaymentsCoreController } from '../payments-core/payments-core.controller';
+import { PaymentsWebhookController } from '../payments-core/payments-webhook.controller';
+import { KybController } from '../kyb/kyb.controller';
+import { KybAdminController } from '../kyb/kyb-admin.controller';
 
 /**
  * The whole application's module graph resolves with the 5D wiring (PosController now injects InventoryService,
@@ -22,5 +26,7 @@ run('AppModule resolves, including the POS controller', async () => {
   const { AppModule } = require('../app.module'); // lazy (a static import loads the whole app even when skipped): see the note above
   const mod = await Test.createTestingModule({ imports: [AppModule] }).compile();
   expect(mod.get(PosController, { strict: false })).toBeTruthy();
+  // G2.1 / G2.2: the payment and KYB controllers (and everything they inject, incl. the payment-provider registry and the KYB gate) resolve too
+  for (const c of [PaymentsCoreController, PaymentsWebhookController, KybController, KybAdminController]) expect(mod.get(c, { strict: false })).toBeTruthy();
   await mod.close().catch(() => {}); // RedisService.onModuleDestroy throws when it never connected
 });

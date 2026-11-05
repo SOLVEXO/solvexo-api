@@ -31,7 +31,7 @@ export class SaleItemDto {
   @Min(0)
   unitPrice?: number;
 
-  @ApiProperty({ required: false, example: 5876, description: `G1b: integer twin of unitPrice in the currency's minor unit. Cross-check only: if both are sent and disagree the sale is rejected (MONEY_FIELD_MISMATCH).` })
+  @ApiProperty({ required: false, example: 5876, description: `G1b: integer twin of unitPrice in the currency's minor unit. Cross-check only: if both are sent and disagree the sale is still accepted at the server's values and the mismatch is recorded (never a rejection).` })
   @IsOptional()
   // no strict validation on purpose: a malformed twin must never reject a sale — the server records it as a mismatch and uses its own values
   unitPriceMinor?: number;

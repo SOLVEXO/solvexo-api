@@ -215,7 +215,7 @@ describe('durable audit', () => {
     expect(((await A.findById(ev._id).lean()) as any).action).toBe('sale_created');
   });
 
-  it('payment and refund records are immutable too — except a payment\'s confirmation fields (for a future terminal integration)', async () => {
+  it('payment and refund records are fully immutable — a payment\'s lifecycle lives in payment_events (G2.1), so even its status fields cannot be set', async () => {
     const svc = makeService(); const s = await seedStore(h, { stock: 10 });
     const sid = await openSession(svc, s);
     const sale: any = await svc.createSale(s.sellerId, saleDto(s, sid, { payments: [{ method: 'card', amount: 20 }] }) as any, undefined);
@@ -225,8 +225,9 @@ describe('durable audit', () => {
     await expect(P.deleteMany({})).rejects.toThrow(/append-only/);
     await expect(R.updateOne({}, { $set: { amount: 1 } })).rejects.toThrow(/append-only/);
     await expect(R.deleteMany({})).rejects.toThrow(/append-only/);
-    await P.updateOne({}, { $set: { status: 'confirmed', confirmationSource: 'terminal', confirmedAt: new Date() } });
-    expect(((await P.findOne({}).lean()) as any)).toMatchObject({ status: 'confirmed', confirmationSource: 'terminal', amount: 20 });
+    // G2.1: the G1a allowSetFields hook is gone — status moves only by appending a payment event, never by updating the row
+    await expect(P.updateOne({}, { $set: { status: 'confirmed', confirmationSource: 'terminal', confirmedAt: new Date() } })).rejects.toThrow(/append-only/);
+    expect(((await P.findOne({}).lean()) as any)).toMatchObject({ status: 'recorded_unverified', confirmationSource: null, amount: 20 });
   });
 });
 

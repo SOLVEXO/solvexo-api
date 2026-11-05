@@ -24,6 +24,7 @@
     "dev:stack:up": "bash dev/up.sh",
     "dev:stack:down": "bash dev/down.sh",
     "dev:seed": "ts-node --transpile-only dev/seed.ts",
+    "kyb:rotate-key": "ts-node -r tsconfig-paths/register src/scripts/kyb-rotate-key.ts",
     "dev:expire-plan": "ts-node --transpile-only dev/seed.ts --expire-plan",
     "dev:restore-plan": "ts-node --transpile-only dev/seed.ts --restore-plan"
   },

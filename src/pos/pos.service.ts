@@ -117,7 +117,7 @@ export class PosService {
 
   // ── HELPERS ───────────────────────────────────────────────────────────────
 
-  private async verifyStoreOwnership(storeId: string, sellerId: string) {
+  async verifyStoreOwnership(storeId: string, sellerId: string) {
     // A POS device is bound to ONE store: whatever route/id it came in through, any other store is off limits.
     const scope = currentDeviceScope();
     if (scope && String(storeId) !== scope.storeId) {
@@ -140,7 +140,7 @@ export class PosService {
   // employee's _id/role via GET /pos/employees/:storeId and just pass one
   // through). This is the actual employee currently PIN-logged-in on the
   // device, proven by a signature only the server could have issued.
-  private async verifyEmployeeToken(token: string | undefined, storeId: string, at?: Date): Promise<{ employeeId: string; role: string; jti?: string } | null> {
+  async verifyEmployeeToken(token: string | undefined, storeId: string, at?: Date): Promise<{ employeeId: string; role: string; jti?: string } | null> {
     if (!token) return null;
     try {
       // For an offline sale replayed later, the token may have expired since — what matters is that it was a valid,
@@ -164,7 +164,7 @@ export class PosService {
   // by every privileged action (refund, void, cash in/out, discounts).
   // Mandatory, unlike the old actingEmployeeId check it replaces: there is
   // no "skip the check if the field is omitted" path anymore.
-  private async requireManagerEmployee(token: string | undefined, storeId: string, actionLabel: string, at?: Date): Promise<{ employeeId: string; role: string }> {
+  async requireManagerEmployee(token: string | undefined, storeId: string, actionLabel: string, at?: Date): Promise<{ employeeId: string; role: string }> {
     const actor = await this.verifyEmployeeToken(token, storeId, at);
     if (!actor) throw new ForbiddenException(`A valid employee PIN session is required to ${actionLabel}`);
     if (actor.role !== 'manager') throw new ForbiddenException(`Only managers can ${actionLabel}`);

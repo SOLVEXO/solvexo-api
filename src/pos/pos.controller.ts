@@ -16,6 +16,7 @@ import { PosDeviceScopeInterceptor } from './pos-device-scope';
 import { RegisterDeviceDto } from './dto/register-device.dto';
 import { InventoryService } from '../inventory/inventory.service';
 import { PosPlansService } from '../pos-plans/pos-plans.service';
+import { KybGateService } from '../kyb/kyb-gate.service';
 import { StoreLocationService } from './store-location.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -60,6 +61,7 @@ export class PosController {
     private readonly devices: PosDeviceService,
     private readonly inventoryService: InventoryService,
     private readonly posPlansService: PosPlansService,
+    private readonly kybGate: KybGateService,
   ) {}
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -126,8 +128,10 @@ export class PosController {
   @UseGuards(PosAuthGuard, RolesGuard)
   @Roles('seller')
   @Get('subscription/:storeId')
-  posSubscription(@Req() req: any, @Param('storeId') storeId: string) {
-    return this.posPlansService.getStatus(storeId, req.user.userId);
+  async posSubscription(@Req() req: any, @Param('storeId') storeId: string) {
+    const res: any = await this.posPlansService.getStatus(storeId, req.user.userId);
+    // G2.2 (additive): lets the app hide the QR option for a store that is not KYB-verified. Old builds ignore the field.
+    return { ...res, data: { ...res.data, digitalPaymentsEnabled: await this.kybGate.isEnabled(storeId) } };
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

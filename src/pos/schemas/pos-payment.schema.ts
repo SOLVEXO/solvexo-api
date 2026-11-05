@@ -7,7 +7,7 @@ import '../../common/schema-types/minor-money';
 export type PosPaymentDocument = PosPayment & Document;
 
 /**
- * Payment status. Cash that the cashier physically took is `confirmed`; card / other tenders are only RECORDED by the
+ * Payment status AT INSERT. Cash that the cashier physically took is `confirmed`; card / other tenders are only RECORDED by the
  * cashier today (no terminal or gateway integration yet), so they are `recorded_unverified` until something with
  * authority — a reconciled shift close, a terminal, Raast — says otherwise (`confirmationSource`, null for now).
  */
@@ -67,4 +67,6 @@ PosPaymentSchema.index(
 PosPaymentSchema.index({ storeId: 1, sessionId: 1, tender: 1 });
 PosPaymentSchema.index({ storeId: 1, createdAt: -1 });
 
-makeAppendOnly(PosPaymentSchema, { allowSetFields: ['status', 'confirmationSource', 'confirmedAt'] });
+// G2.1: fully append-only, no allowSetFields. A digital payment's lifecycle lives in the `payment_events` collection
+// (current status = latest event), so no payment row is ever updated after insert and an insert-only DB role works.
+makeAppendOnly(PosPaymentSchema);
