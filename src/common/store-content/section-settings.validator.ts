@@ -294,6 +294,10 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
       if (s.columns !== undefined && ![2, 3, 4].includes(s.columns)) {
         throw new BadRequestException('settings.columns must be 2, 3, or 4');
       }
+      oneOf((s as any).tileStyle, ['card', 'simple'] as const, 'settings.tileStyle');
+      oneOf((s as any).imageRatio, IMAGE_RATIOS, 'settings.imageRatio');
+      oneOf((s as any).textAlign, ['left', 'center'] as const, 'settings.textAlign');
+      if ((s as any).showArrows !== undefined && typeof (s as any).showArrows !== 'boolean') throw new BadRequestException('settings.showArrows must be true or false');
       break;
     }
     case 'product_catalog': {
@@ -459,6 +463,9 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
         throw new BadRequestException('settings.limit must be a whole number from 1 to 24');
       }
       oneOf(settings.imageRatio, IMAGE_RATIOS, 'settings.imageRatio');
+      oneOf(settings.layout, ['grid', 'carousel'] as const, 'settings.layout');
+      oneOf(settings.tileStyle, ['card', 'simple'] as const, 'settings.tileStyle');
+      oneOf(settings.textAlign, ['left', 'center'] as const, 'settings.textAlign');
       if (settings.showDescription !== undefined && typeof settings.showDescription !== 'boolean') {
         throw new BadRequestException('settings.showDescription must be true or false');
       }
@@ -485,6 +492,7 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
     case 'marquee': {
       oneOf(settings.speed, ['slow', 'medium', 'fast'] as const, 'settings.speed');
       oneOf(settings.direction, ['left', 'right'] as const, 'settings.direction');
+      oneOf(settings.fontSize, ['small', 'medium', 'large'] as const, 'settings.fontSize');
       if (settings.pauseOnHover !== undefined && typeof settings.pauseOnHover !== 'boolean') {
         throw new BadRequestException('settings.pauseOnHover must be true or false');
       }
@@ -682,7 +690,7 @@ export function validateBlockSettings(blockType: string, settings: Record<string
       // own static text — the real value is resolved at render time instead.
       const boundToMetafield = !!settings.dynamicSourceNamespace && !!settings.dynamicSourceKey;
       if (!boundToMetafield) required(settings.text, 'text');
-      maxLen(settings.text, 2000, 'text');
+      maxLen(settings.text, 10000, 'text');
       assertDynamicSource(settings.dynamicSourceNamespace, settings.dynamicSourceKey, 'dynamicSource');
       break;
     }
@@ -821,6 +829,7 @@ export function validateBlockSettings(blockType: string, settings: Record<string
     case 'gallery_image':
       assertHttpsUrl(settings.imageUrl, 'imageUrl');
       maxLen(settings.alt, 150, 'alt');
+      maxLen(settings.caption, 200, 'caption');
       if (settings.link) assertLinkTarget(settings.link, 'link');
       break;
 
