@@ -98,6 +98,7 @@ import { DigitalAccessModule } from './digital-access/digital-access.module';
 import { MembershipsModule } from './memberships/memberships.module';
 import { LicensesModule } from './licenses/licenses.module';
 import { B2BModule } from './b2b/b2b.module';
+import { KhataModule } from './khata/khata.module';
 import { CodProtectionModule } from './cod-protection/cod-protection.module';
 import { MessagingChannelsModule } from './messaging-channels/messaging-channels.module';
 import { CoursesModule } from './courses/courses.module';
@@ -235,6 +236,7 @@ import { AppI18nModule } from './i18n/i18n.module';
     MembershipsModule,
     LicensesModule,
     B2BModule,
+    KhataModule,
     CodProtectionModule,
     MessagingChannelsModule,
     CoursesModule,

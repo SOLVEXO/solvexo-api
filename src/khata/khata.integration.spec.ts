@@ -1,0 +1,144 @@
+/* eslint-disable prettier/prettier */
+/**
+ * Khata: pure rules + a real-MongoDB run (balance integrity under concurrency, limit, reversal, isolation, idempotency).
+ * Real-DB part skipped unless MONGO_TEST_URI is set (needs a replica set for transactions), e.g.
+ *   MONGO_TEST_URI="mongodb://127.0.0.1:27096/?directConnection=true" npx jest --runInBand --forceExit khata
+ */
+import mongoose, { Connection } from 'mongoose';
+import { KhataService } from './khata.service';
+import { KhataAccountSchema, KhataEntrySchema } from './khata.schema';
+import { agingOf, bucketOf, csvCell, exceedsLimit, validateAmount } from './khata-rules.util';
+
+const DAY = 86_400_000;
+const now = new Date('2026-03-10T10:00:00Z');
+const ago = (d: number) => new Date(now.getTime() - d * DAY);
+
+describe('khata rules', () => {
+  it('amount validation', () => {
+    expect(validateAmount('12.345')).toBe(12.35);
+    expect(() => validateAmount(0)).toThrow();
+    expect(() => validateAmount(-5)).toThrow();
+    expect(() => validateAmount('abc')).toThrow();
+    expect(validateAmount(-5, { allowNegative: true })).toBe(-5);
+  });
+  it('limit: null = none; exactly at the limit is allowed; credits never exceed', () => {
+    expect(exceedsLimit(100, 50, null)).toBe(false);
+    expect(exceedsLimit(100, 50, 150)).toBe(false);
+    expect(exceedsLimit(100, 50.01, 150)).toBe(true);
+    expect(exceedsLimit(500, -50, 100)).toBe(false);
+  });
+  it('buckets by days past due', () => {
+    expect([0, 1, 30, 31, 60, 61, 90, 91].map(bucketOf)).toEqual(['current', 'd1_30', 'd1_30', 'd31_60', 'd31_60', 'd61_90', 'd61_90', 'd90_plus']);
+  });
+  it('payments are applied to the oldest debits first', () => {
+    const r = agingOf([
+      { type: 'sale', amount: 100, date: ago(80) }, { type: 'sale', amount: 100, date: ago(40) }, { type: 'sale', amount: 100, date: ago(5) },
+      { type: 'payment', amount: -130, date: ago(2) },
+    ], now);
+    expect(r.buckets).toEqual({ current: 0, d1_30: 100, d31_60: 70, d61_90: 0, d90_plus: 0 });
+    expect(r.total).toBe(170);
+  });
+  it('a due date in the future is current', () => {
+    expect(agingOf([{ type: 'sale', amount: 50, date: ago(1), dueDate: new Date(now.getTime() + 5 * DAY) }], now).buckets.current).toBe(50);
+  });
+  it('csv cells are quoted and formula-guarded', () => {
+    expect(csvCell('a,b')).toBe('"a,b"');
+    expect(csvCell('=SUM(1)')).toBe("'=SUM(1)");
+  });
+});
+
+const URI = process.env.MONGO_TEST_URI;
+const d = URI ? describe : describe.skip;
+
+d('KhataService on a real MongoDB', () => {
+  let conn: Connection; let svc: KhataService; let acc: any;
+  const actor = { id: 'u1', role: 'seller' };
+  const S1 = 'store1'; const S2 = 'store2';
+
+  beforeAll(async () => {
+    conn = await mongoose.createConnection(URI as string, { dbName: `khata_it_${Date.now()}` }).asPromise();
+    const accounts = conn.model('KhataAccount', KhataAccountSchema); const entries = conn.model('KhataEntry', KhataEntrySchema);
+    await accounts.init(); await entries.init();
+    svc = new KhataService(accounts as any, entries as any, conn as any, { log: async () => undefined } as any);
+  });
+  afterAll(async () => { await conn.dropDatabase(); await conn.close(); });
+  beforeEach(async () => { acc = await svc.ensureAccount(S1, { customerId: `c${Math.random()}`, name: 'Ali', currency: 'PKR' }); });
+
+  it('sale then payment keeps a running balance and a gapless sequence', async () => {
+    await svc.post(S1, String(acc._id), { type: 'sale', amount: 1000 }, actor);
+    const p = await svc.post(S1, String(acc._id), { type: 'payment', amount: 400, method: 'cash' }, actor);
+    expect(p.entry.balanceAfter).toBe(600);
+    const list = await svc.listEntries(S1, String(acc._id), {});
+    expect(list.items.map((e: any) => e.seq)).toEqual([2, 1]);
+    expect((await svc.getAccount(S1, String(acc._id))).balance).toBe(600);
+  });
+
+  it('20 concurrent postings never lose an update: balance equals the sum of entries', async () => {
+    await Promise.all(Array.from({ length: 20 }, (_, i) => svc.post(S1, String(acc._id), { type: i % 2 ? 'payment' : 'sale', amount: 10 + i }, actor)));
+    const rows = await svc.listEntries(S1, String(acc._id), { limit: 100 });
+    const sum = rows.items.reduce((s: number, e: any) => s + e.amount, 0);
+    expect(rows.total).toBe(20);
+    expect((await svc.getAccount(S1, String(acc._id))).balance).toBeCloseTo(sum, 2);
+    expect(new Set(rows.items.map((e: any) => e.seq)).size).toBe(20);
+  });
+
+  it('the credit limit blocks a sale above it, even when two arrive together', async () => {
+    await svc.setLimit(S1, String(acc._id), 1000, actor);
+    const res = await Promise.allSettled([1, 2, 3].map(() => svc.post(S1, String(acc._id), { type: 'sale', amount: 400 }, actor)));
+    expect(res.filter((r) => r.status === 'fulfilled')).toHaveLength(2);
+    expect(res.filter((r) => r.status === 'rejected')).toHaveLength(1);
+    expect((await svc.getAccount(S1, String(acc._id))).balance).toBe(800);
+  });
+
+  it('a reversal restores the balance, only once, and cannot itself be reversed', async () => {
+    const s = await svc.post(S1, String(acc._id), { type: 'sale', amount: 300 }, actor);
+    const r = await svc.reverse(S1, String(s.entry._id), 'wrong customer', actor);
+    expect(r.entry.balanceAfter).toBe(0);
+    await expect(svc.reverse(S1, String(s.entry._id), undefined, actor)).rejects.toThrow(/already reversed/);
+    await expect(svc.reverse(S1, String(r.entry._id), undefined, actor)).rejects.toThrow(/cannot be reversed/);
+    expect((await svc.listEntries(S1, String(acc._id), {})).items.find((e: any) => String(e._id) === String(s.entry._id)).reversed).toBe(true);
+    expect((await svc.getAccount(S1, String(acc._id))).balance).toBe(0);
+  });
+
+  it('an adjustment needs a note; a payment cannot be negative', async () => {
+    await expect(svc.post(S1, String(acc._id), { type: 'adjustment', amount: 50 }, actor)).rejects.toThrow(/note/);
+    await expect(svc.post(S1, String(acc._id), { type: 'payment', amount: -5 }, actor)).rejects.toThrow(/valid amount/);
+    const a = await svc.post(S1, String(acc._id), { type: 'adjustment', amount: -20, note: 'discount' }, actor);
+    expect(a.entry.balanceAfter).toBe(-20);
+  });
+
+  it('another store cannot read or post to the account', async () => {
+    await expect(svc.getAccount(S2, String(acc._id))).rejects.toThrow(/not found/);
+    await expect(svc.post(S2, String(acc._id), { type: 'sale', amount: 5 }, actor)).rejects.toThrow(/not found/);
+    await expect(svc.listEntries(S2, String(acc._id), {})).rejects.toThrow(/not found/);
+    const e = await svc.post(S1, String(acc._id), { type: 'sale', amount: 5 }, actor);
+    await expect(svc.reverse(S2, String(e.entry._id), undefined, actor)).rejects.toThrow(/not found/);
+  });
+
+  it('a source key makes automatic entries idempotent, even in parallel', async () => {
+    const run = () => svc.post(S1, String(acc._id), { type: 'sale', amount: 70, sourceKey: 'order:abc', source: 'order' }, actor);
+    const [a, b] = await Promise.all([run(), run()]);
+    expect([a.duplicate, b.duplicate].filter(Boolean)).toHaveLength(1);
+    expect((await svc.getAccount(S1, String(acc._id))).balance).toBe(70);
+  });
+
+  it('statement: opening balance, closing balance and csv', async () => {
+    await svc.post(S1, String(acc._id), { type: 'sale', amount: 500, entryDate: '2026-01-05' }, actor);
+    await svc.post(S1, String(acc._id), { type: 'payment', amount: 200, entryDate: '2026-02-10', reference: '=HACK' }, actor);
+    const s = await svc.statement(S1, String(acc._id), '2026-02-01', '2026-02-28');
+    expect(s.openingBalance).toBe(500); expect(s.closingBalance).toBe(300); expect(s.items).toHaveLength(1);
+    const csv = await svc.statementCsv(S1, String(acc._id), '2026-02-01', '2026-02-28');
+    expect(csv).toContain('Opening balance'); expect(csv).toContain("'=HACK");
+  });
+
+  it('listing only shows this store; totals count what customers owe', async () => {
+    const a = await svc.ensureAccount('store3', { customerId: 'y1', name: 'Yan', currency: 'PKR' });
+    const b = await svc.ensureAccount('store4', { customerId: 'z1', name: 'Zed', currency: 'PKR' });
+    await svc.post('store3', String(a._id), { type: 'sale', amount: 11 }, actor);
+    await svc.post('store4', String(b._id), { type: 'sale', amount: 999 }, actor);
+    const l = await svc.listAccounts('store3', { owing: 'true' });
+    expect(l.items).toHaveLength(1);
+    expect(l.totalOwed).toBe(11);
+    expect(l.customersOwing).toBe(1);
+  });
+});

@@ -42,6 +42,8 @@ const PRESET_ROLES: { name: string; description: string; permissions: string[] }
       'digital.view', 'digital.manage', 'members.manage', 'courses.manage', 'licenses.manage',
       // Added with PRESET_VERSION 3
       'b2b.view', 'b2b.manage',
+      // Added with PRESET_VERSION 4
+      'khata.view', 'khata.manage',
     ],
   },
   {
@@ -57,7 +59,7 @@ const PRESET_ROLES: { name: string; description: string; permissions: string[] }
 ];
 
 /** Bump when PRESET_ROLES gains permissions; list what each preset gets in PRESET_ADDITIONS for that version. */
-const PRESET_VERSION = 3;
+const PRESET_VERSION = 4;
 const PRESET_ADDITIONS: Record<number, Record<string, string[]>> = {
   1: {
     'Store Manager': ['products.create', 'collections.manage', 'categories.manage', 'draft_orders.manage', 'reviews.manage', 'activity_log.view'],
@@ -70,6 +72,10 @@ const PRESET_ADDITIONS: Record<number, Record<string, string[]>> = {
   3: {
     'Store Manager': ['b2b.view', 'b2b.manage'],
     'Support Staff': ['b2b.view'],
+  },
+  4: {
+    'Store Manager': ['khata.view', 'khata.manage'],
+    'Support Staff': ['khata.view'],
   },
 };
 
