@@ -144,6 +144,41 @@ describe('SiteAnalyticsService', () => {
       await expect(svc.overview('28d')).rejects.toThrow('Google refused the service account key');
     });
 
+    // The bug behind an empty Visitors page: reports read a property the site never sends visits to.
+    const twoProperties = (realtime = 3) => (url: string) => url.includes('accountSummaries')
+      ? { json: { accountSummaries: [{ propertySummaries: [{ property: 'properties/111' }, { property: 'properties/222' }] }] } }
+      : url.includes('/properties/111/dataStreams') ? { json: { dataStreams: [{ webStreamData: { measurementId: 'G-OTHER999' } }] } }
+        : url.includes('/properties/222/dataStreams') ? { json: { dataStreams: [{ webStreamData: { measurementId: 'G-SAVED777' } }] } }
+          : { json: { metricHeaders: [{ name: 'activeUsers' }], rows: [{ metricValues: [{ value: String(realtime) }] }] } };
+
+    it('uses the property that owns the measurement id saved in Super Admin, not just the first one it can see', async () => {
+      const { svc, calls, setReply } = setup({ connected: false, env: env({ measurementId: null }) });
+      await svc.saveSettings({ measurementId: 'G-SAVED777' }, 'a1');
+      setReply(twoProperties());
+      const s = (await svc.getSettings(true)).data;
+      expect(s.ga4.propertyId).toBe('properties/222');
+      expect(calls.at(-1)!.url).toContain('/properties/222:runRealtimeReport');
+      expect(s.env.problems).toEqual([]);
+    });
+
+    it('reads the right property and says so when GA4_PROPERTY_ID points at a property without the site\'s stream', async () => {
+      const { svc, calls, setReply } = setup({ connected: false, env: env({ measurementId: null, propertyId: { value: 'properties/111', variable: 'GA4_PROPERTY_ID' } }) });
+      await svc.saveSettings({ measurementId: 'G-SAVED777' }, 'a1');
+      setReply(twoProperties());
+      const s = (await svc.getSettings(true)).data;
+      expect(s.ga4.propertyId).toBe('properties/222');
+      expect(calls.at(-1)!.url).toContain('/properties/222:runRealtimeReport');
+      expect(s.env.problems.join(' ')).toContain('update GA4_PROPERTY_ID to 222');
+    });
+
+    it('explains an id that no visible property owns', async () => {
+      const { svc, setReply } = setup({ connected: false, env: env({ measurementId: null }) });
+      await svc.saveSettings({ measurementId: 'G-NOWHERE1' }, 'a1');
+      setReply(twoProperties());
+      const s = (await svc.getSettings(true)).data;
+      expect(s.env.problems.join(' ')).toContain('has a web stream with G-NOWHERE1');
+    });
+
     it('explains a service account without access to any property', async () => {
       const { svc, setReply } = setup({ connected: false, env: env() });
       setReply(() => ({ json: { accountSummaries: [] } }));

@@ -64,6 +64,12 @@ export class SiteAnalyticsService {
     return (await this.settingsModel.findOne({ key: 'platform' }).lean()) ?? { measurementId: null, enabled: true };
   }
 
+  /** The measurement id the public site actually loads (saved setting first, then the server environment). */
+  private async activeMeasurementId(): Promise<string | null> {
+    const s = await this.settings();
+    return s.measurementId || this.envImpl().measurementId?.value || null;
+  }
+
   /** What the public site needs: the id to load (null = don't track) and whether to ask for consent first. */
   async getPublicConfig(country: string | null) {
     const s = await this.settings();
@@ -98,6 +104,14 @@ export class SiteAnalyticsService {
         await this.call('runRealtimeReport', { metrics: [{ name: 'activeUsers' }] });
         ok = true;
         lastError = null;
+        // The Google sign-in path reads the property chosen on the SEO page: check it holds the site's stream too.
+        const mid = await this.activeMeasurementId();
+        if (access && access.source === 'google_sign_in' && mid) {
+          const ids = await this.streamIds(access.accessToken, access.propertyId).catch(() => null);
+          this.propertyNote = ids && !ids.includes(mid)
+            ? `The site sends visits to ${mid}, but the connected property ${access.propertyId} only has ${ids.length ? ids.join(', ') : 'no web streams'}, so its reports stay empty. Pick the property that owns ${mid} in Super Admin → SEO → Integrations.`
+            : null;
+        }
       } catch (e: any) {
         ok = false;
         lastError = e?.response?.message ?? e?.message ?? 'Google Analytics request failed';
@@ -125,7 +139,7 @@ export class SiteAnalyticsService {
           measurementIdVariable: env.measurementId?.variable ?? null,
           propertyIdVariable: env.propertyId?.variable ?? null,
           serviceAccountVariable: sa?.variable ?? null,
-          problems: env.problems,
+          problems: this.propertyNote ? [...env.problems, this.propertyNote] : env.problems,
         },
         detectedMeasurementId,
       },
@@ -313,7 +327,8 @@ export class SiteAnalyticsService {
       } catch (e: any) {
         throw new BadRequestException(`Google refused the service account key (${key.client_email}): ${e?.message ?? 'sign-in failed'}. Check the JSON key in the server environment.`);
       }
-      const propertyId = env.propertyId?.value ?? (await this.discoverProperty(accessToken, key.client_email, env.measurementId?.value ?? null));
+      const measurementId = await this.activeMeasurementId();
+      const propertyId = await this.reportingProperty(accessToken, key.client_email, env.propertyId?.value ?? null, measurementId);
       return { accessToken, propertyId, source: 'service_account', email: key.client_email };
     }
     const sso = await this.integrations.platformGa4Access().catch(() => {
@@ -322,10 +337,60 @@ export class SiteAnalyticsService {
     return sso ? { ...sso, source: 'google_sign_in' } : null;
   }
 
-  /** No property id configured: use the property the service account can see (the one whose web stream matches the measurement id, if several). */
-  private async discoverProperty(accessToken: string, email: string, measurementId: string | null): Promise<string> {
-    const cached = this.cached<string>(`property:${email}`, CACHE_MS);
-    if (cached) return cached;
+  /** Measurement ids of a property's web streams (null when Google won't list them). */
+  private async streamIds(accessToken: string, property: string): Promise<string[] | null> {
+    const key = `streams:${property}`;
+    const cached = this.cached<string[] | null>(key, CACHE_MS);
+    if (cached !== undefined) return cached;
+    const r = await this.fetchImpl(`${ADMIN_API}/${property}/dataStreams`, { headers: { Authorization: `Bearer ${accessToken}` } });
+    if (!r.ok) return null;
+    const body: any = await r.json().catch(() => ({}));
+    const ids = (body?.dataStreams ?? []).map((d: any) => String(d?.webStreamData?.measurementId ?? '')).filter((m: string) => MEASUREMENT_ID_RE.test(m));
+    return this.remember(key, ids);
+  }
+
+  /** Why reports may stay empty although the site is tracked (shown on the Visitors page); null when all is well. */
+  private propertyNote: string | null = null;
+
+  /**
+   * The property to read reports from: the one whose web stream is the measurement id the site sends visits to.
+   * A configured GA4_PROPERTY_ID is used when it holds that stream; when it doesn't, the property that does is used
+   * instead (and the Visitors page says so), because reading a property the site never sends to only ever shows 0.
+   */
+  private async reportingProperty(accessToken: string, email: string, configured: string | null, measurementId: string | null): Promise<string> {
+    const cacheKey = `property:${email}:${configured ?? '-'}:${measurementId ?? '-'}`;
+    const cached = this.cached<{ property: string; note: string | null }>(cacheKey, CACHE_MS);
+    if (cached) { this.propertyNote = cached.note; return cached.property; }
+
+    let property = configured;
+    let note: string | null = null;
+    if (configured && measurementId) {
+      const ids = await this.streamIds(accessToken, configured).catch(() => null);
+      if (ids && !ids.includes(measurementId)) {
+        const match = await this.findPropertyFor(accessToken, email, measurementId).catch(() => null);
+        if (match?.property) {
+          note = `GA4_PROPERTY_ID is ${configured}, but the site sends visits to ${measurementId}, which belongs to ${match.property}. Reports are read from ${match.property}; update GA4_PROPERTY_ID to ${match.property.replace('properties/', '')}.`;
+          property = match.property;
+        } else {
+          note = `The site sends visits to ${measurementId}, but ${configured} only has ${ids.length ? ids.join(', ') : 'no web streams'}, so its reports stay empty. Use the measurement ID of ${configured}'s web stream, or give ${email} Viewer access to the property that owns ${measurementId}.`;
+        }
+      }
+    }
+    if (!property) {
+      const match = await this.findPropertyFor(accessToken, email, measurementId);
+      property = match.property ?? match.first;
+      if (measurementId && !match.property) {
+        note = `None of the Google Analytics properties ${email} can see has a web stream with ${measurementId}, so reports read ${property} and stay empty. In Google Analytics → Admin → Property access management of the property that owns ${measurementId}, add ${email} as Viewer.`;
+      }
+    }
+    if (note) this.logger.warn(note);
+    this.propertyNote = note;
+    this.remember(cacheKey, { property, note });
+    return property;
+  }
+
+  /** Lists the properties the account can see; `property` is the one owning `measurementId` (if any). */
+  private async findPropertyFor(accessToken: string, email: string, measurementId: string | null): Promise<{ property: string | null; first: string }> {
     const res = await this.fetchImpl(`${ADMIN_API}/accountSummaries?pageSize=200`, { headers: { Authorization: `Bearer ${accessToken}` } });
     const body: any = await res.json().catch(() => ({}));
     if (!res.ok) {
@@ -335,15 +400,13 @@ export class SiteAnalyticsService {
     if (!properties.length) {
       throw new BadRequestException(`The service account ${email} has no access to any Google Analytics property. In Google Analytics → Admin → Property access management, add it with the Viewer role.`);
     }
-    let chosen = properties[0];
-    if (measurementId && properties.length > 1) {
+    if (measurementId) {
       for (const p of properties.slice(0, 20)) {
-        const r = await this.fetchImpl(`${ADMIN_API}/${p}/dataStreams`, { headers: { Authorization: `Bearer ${accessToken}` } });
-        const streams: any = await r.json().catch(() => ({}));
-        if ((streams?.dataStreams ?? []).some((d: any) => d?.webStreamData?.measurementId === measurementId)) { chosen = p; break; }
+        const ids = await this.streamIds(accessToken, p).catch(() => null);
+        if (ids?.includes(measurementId)) return { property: p, first: properties[0] };
       }
     }
-    return this.remember(`property:${email}`, chosen);
+    return { property: null, first: properties[0] };
   }
 
   private async call(method: 'batchRunReports' | 'runRealtimeReport', payload: Record<string, unknown>): Promise<any> {
