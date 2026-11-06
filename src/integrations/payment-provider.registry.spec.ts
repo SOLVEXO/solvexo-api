@@ -21,8 +21,8 @@ describe('PaymentProviderRegistry', () => {
     jazzcash = { providerKey: 'jazzcash' } as any;
     payfast = { providerKey: 'payfast' } as any;
     easypaisa = { providerKey: 'easypaisa' } as any;
-    const extra = ['stripe_own', 'paypal', 'razorpay', 'paystack', 'flutterwave', 'mollie', 'stripe_standard'].map((providerKey) => ({ providerKey } as any));
-    registry = new PaymentProviderRegistry(safepay, stripe, jazzcash, payfast, easypaisa, extra[0], extra[1], extra[2], extra[3], extra[4], extra[5], extra[6]);
+    const extra = ['stripe_own', 'paypal', 'razorpay', 'paystack', 'flutterwave', 'mollie', 'stripe_standard', 'qisstpay'].map((providerKey) => ({ providerKey } as any));
+    registry = new PaymentProviderRegistry(safepay, stripe, jazzcash, payfast, easypaisa, extra[0], extra[1], extra[2], extra[3], extra[4], extra[5], extra[6], extra[7]);
   });
 
   it('resolves a registered provider to its concrete implementation', () => {

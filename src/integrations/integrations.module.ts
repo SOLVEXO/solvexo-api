@@ -13,6 +13,7 @@ import { StripeOwnPaymentProvider } from './providers/stripe-own.provider';
 import { StripeStandardPaymentProvider } from './providers/stripe-standard.provider';
 import { PayPalPaymentProvider } from './providers/paypal.provider';
 import { RazorpayPaymentProvider } from './providers/razorpay.provider';
+import { QisstpayPaymentProvider } from './providers/qisstpay.provider';
 import { PaystackPaymentProvider } from './providers/paystack.provider';
 import { FlutterwavePaymentProvider } from './providers/flutterwave.provider';
 import { MolliePaymentProvider } from './providers/mollie.provider';
@@ -63,6 +64,7 @@ import { ShippingRatesService } from '../shipping-rates/shipping-rates.service';
     StripeStandardPaymentProvider,
     PayPalPaymentProvider,
     RazorpayPaymentProvider,
+    QisstpayPaymentProvider,
     PaystackPaymentProvider,
     FlutterwavePaymentProvider,
     MolliePaymentProvider,

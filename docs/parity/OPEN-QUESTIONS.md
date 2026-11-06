@@ -22,3 +22,6 @@
 (Filled in as phases are built.)
 - P4: a WhatsApp Business test number (Meta developer app + System User token) to run the first real template submit / send / webhook; set `WHATSAPP_WEBHOOK_VERIFY_TOKEN` and the app secret; set `MESSAGING_CAMPAIGNS_ENABLED=true` only when ready.
 - P4: API documentation and test credentials of at least one Pakistani SMS gateway.
+
+## P7 Qisstpay
+- Official merchant integration guide + sandbox credentials needed: auth, create-checkout/redirect call, webhook signature, status names, refund, minimum/maximum order value, installment plans. The adapter (providers/qisstpay.provider.ts) is registered but disabled, unverified, not connectable, and never charges; fill the mapping from the guide and test in sandbox before enabling. "Pay in installments" storefront wording (installmentMessage) is not shown anywhere until then.

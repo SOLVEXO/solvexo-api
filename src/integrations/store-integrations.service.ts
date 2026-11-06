@@ -559,6 +559,7 @@ export class StoreIntegrationsService implements OnModuleInit {
   /** Connect form for the catalog-driven global gateways (Stripe own keys, PayPal, Razorpay, Paystack, Flutterwave, Mollie). */
   private async connectGeneric(storeId: string, sellerId: string, provider: StoreIntegrationProvider, body: Record<string, any>, store: { baseCurrency?: string | null }) {
     const entry = catalogEntry(provider)!;
+    if (entry.unverified) throw new BadRequestException(`${entry.label} is not available yet: it has not been verified with the provider.`);
     const credentials: Record<string, string> = {};
     const missing: string[] = [];
     for (const f of entry.fields) {

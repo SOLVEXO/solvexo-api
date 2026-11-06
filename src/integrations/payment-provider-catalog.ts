@@ -53,6 +53,8 @@ export interface GatewayCatalogEntry {
   /** Mode is taken from the key itself when it carries one (sk_test_..., rzp_live_...); else the seller picks. */
   modeFromKey?: Array<{ field: string; sandboxPrefix: string[]; livePrefix: string[] }>;
   docsUrl?: string;
+  /** True = the adapter exists but was never checked against the provider's official docs or sandbox: it cannot be connected. */
+  unverified?: boolean;
 }
 
 const PK = ['PK'];
@@ -137,6 +139,12 @@ export const PAYMENT_PROVIDER_CATALOG: Record<string, GatewayCatalogEntry> = {
     fields: [{ key: 'apiKey', label: 'API key', secret: true, placeholder: 'live_… or test_…', help: 'Mollie Dashboard → Developers → API keys.' }],
     webhook: 'none', refunds: 'api', modeFromKey: [{ field: 'apiKey', sandboxPrefix: ['test_'], livePrefix: ['live_'] }],
     docsUrl: 'https://docs.mollie.com/reference/create-payment',
+  },
+  // VERIFY AGAINST OFFICIAL DOC: the fields below are placeholders, not Qisstpay's real credential names. Not connectable.
+  qisstpay: {
+    key: 'qisstpay', label: 'Qisstpay (pay in installments)', countries: ['PK'], currencies: ['PKR'], generic: false, unverified: true,
+    fields: [{ key: 'merchantId', label: 'Merchant ID', secret: false }, { key: 'apiKey', label: 'API key', secret: true }],
+    webhook: 'url', refunds: 'manual',
   },
 };
 

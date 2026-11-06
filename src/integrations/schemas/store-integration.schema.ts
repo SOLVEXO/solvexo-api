@@ -21,6 +21,8 @@ export const STORE_INTEGRATION_PROVIDERS = [
   'paystack',
   'flutterwave',
   'mollie',
+  // Buy-now-pay-later (Pakistan). Built as a disabled, UNVERIFIED adapter: see providers/qisstpay.provider.ts.
+  'qisstpay',
   // Manual bank transfer — the seller's own bank account details, shown to
   // the buyer at checkout (not a secret, unlike every other provider here:
   // no credentialsEncrypted, the account number IS what gets displayed).
