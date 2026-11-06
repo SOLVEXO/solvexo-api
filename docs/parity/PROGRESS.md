@@ -5,7 +5,7 @@ Read MASTER.md first. Update this table after every phase.
 | phase | status | commit | not-verified |
 |---|---|---|---|
 | P0 Theme parity | done (code) | web b7030f45 | no browser check of mini-cart notices |
-| P1 Real-DB tests + money-path hardening | PARTIAL (stock reservation, pre-order, duplicate placement) | see git log | coupon, gift card, webhook idempotency, finance, POS, cancel restock not yet covered |
+| P1 Real-DB tests + money-path hardening | PARTIAL (stock reservation, pre-order, duplicate placement, coupon race) | see git log | gift card, webhook idempotency, finance, POS, cancel restock not yet covered |
 | P2 B2B (+ addendum) | not started | - | - |
 | P3 COD protection | not started | - | - |
 | P4 Messaging channels (WhatsApp/SMS) | not started | - | - |

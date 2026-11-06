@@ -170,3 +170,41 @@ d('PaymentService.createOrder failure after reserving (real MongoDB)', () => {
     await conn2.close();
   });
 });
+
+d('PaymentService.createOrder coupon usage count (real MongoDB)', () => {
+  it('two orders racing for the last use of a 1-use coupon: usageCount ends at 1 and the overshoot is logged for the merchant', async () => {
+    const conn3 = await mongoose.createConnection(URI as string, { dbName: `payment_it_c_${Date.now()}` }).asPromise();
+    const storeId = String(new Types.ObjectId());
+    const mk = (name: string, schema: any) => conn3.model(name, schema);
+    const repos: any = {
+      orderModel: mk('Order', OrderSchema), addressModel: mk('Address', AddressSchema), productModel: mk('Product', ProductSchema),
+      productVariantModel: mk('ProductVariant', ProductVariantSchema), storeModel: mk('Store', StoreSchema), couponModel: mk('Coupon', CouponSchema),
+      checkoutModel: mk('Checkout', CheckoutSchema), userModel: mk('User', new mongoose.Schema({}, { strict: false })),
+    };
+    await repos.storeModel.collection.insertOne({ _id: new Types.ObjectId(storeId), baseCurrency: 'USD', isDelete: false });
+    await repos.couponModel.collection.insertOne({ storeId, code: 'ONCE', scope: 'seller', usageLimit: 1, usageCount: 0 });
+    const vid = new Types.ObjectId();
+    const PID = String(new Types.ObjectId());
+    await repos.productVariantModel.collection.insertOne({ _id: vid, productId: PID, storeId, sku: 'S', price: 10, stock: 10, committedStock: 0, damagedStock: 0, inTransitStock: 0, isDelete: false, options: [], unlimitedStock: false });
+    const log = jest.fn().mockResolvedValue(undefined);
+    const s: any = Object.create(PaymentService.prototype);
+    for (const k of ['notificationsService', 'financeService', 'giftCardsService', 'abandonedCartService', 'affiliateService', 'storeCreditService']) s[k] = stub();
+    s.activityLogService = { log };
+    s.exchangeRateService = { convertWithSnapshots: (n: number) => n };
+    s.databaseService = { repositories: repos };
+    s.round = (n: number) => Math.round(n * 100) / 100;
+    const mkCo = () => ({ _id: new Types.ObjectId(), userId: String(new Types.ObjectId()), currency: 'USD', fxSnapshots: [], addressId: null, totalAmount: 10,
+      couponCode: 'ONCE', couponStoreId: storeId, couponSourceType: 'coupon',
+      items: [{ type: 'physical', productId: PID, variantId: String(vid), storeId, sellerId: 's', name: 'P', quantity: 1, unitPrice: 10, price: 10, totalPrice: 10, currency: 'USD', taxUSD: 0, options: [] }] });
+    const cos = [mkCo(), mkCo()];
+    for (const c of cos) await repos.checkoutModel.collection.insertOne({ _id: c._id, userId: c.userId, status: 'pending' });
+
+    await Promise.all(cos.map((c) => s.createOrder(c.userId, c, repos.orderModel, repos.addressModel, { paymentType: 'cash_on_delivery', isPaid: false, paymentStatus: 'unpaid' })));
+
+    const coupon: any = await repos.couponModel.collection.findOne({ code: 'ONCE' });
+    expect(coupon.usageCount).toBe(1);
+    expect(log.mock.calls.filter((c) => c[0]?.action === 'coupon_usage_limit_exceeded')).toHaveLength(1);
+    await conn3.dropDatabase();
+    await conn3.close();
+  });
+});
