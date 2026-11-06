@@ -45,6 +45,7 @@ export async function startMongoHarness(): Promise<MongoHarness> {
     posPaymentModel: m(schema.PosPayment, schema.PosPaymentSchema),
     posRefundModel: m(schema.PosRefund, schema.PosRefundSchema),
     posCreditNoteModel: m(schema.PosCreditNote, schema.PosCreditNoteSchema),
+    categoryModel: m(schema.Category, schema.CategorySchema),
     orderModel: m(schema.Order, schema.OrderSchema),
     userModel: m(schema.User, schema.UserSchema),
     storeCustomerMetaModel: m(schema.StoreCustomerMeta, schema.StoreCustomerMetaSchema),

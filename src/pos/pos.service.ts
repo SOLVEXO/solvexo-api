@@ -905,7 +905,7 @@ export class PosService {
     const isHeld = dto.status === 'held';
 
     for (const item of dto.items) {
-      if (item.isCustom) { saleItems.push(this.customLine(item)); continue; }
+      if (item.isCustom) { saleItems.push(this.customLine(item, await this.defaultTaxCategory(dto.storeId))); continue; }
       const variant = await this.r.productVariantModel.findOne({ _id: item.variantId, productId: item.productId, isDelete: false });
       if (!variant) throw new BadRequestException(`Variant not found: ${item.variantId}`);
 
@@ -1471,7 +1471,7 @@ export class PosService {
       : null;
     const refundCtx = { sessionId: nowSession ? String(nowSession._id) : null, registerId: (sale as any).registerId ?? null, shiftId: nowSession?.shiftId ?? null };
     // a cash refund comes out of a drawer: it needs an open shift on this register
-    if (tenders.some((t: any) => t.method === 'cash' && t.amount > 0) && !nowSession) {
+    if ((sale as any).registerId && tenders.some((t: any) => t.method === 'cash' && t.amount > 0) && !nowSession) {
       throw businessConflict('OPEN_SHIFT_REQUIRED', 'Open a shift on this register before paying a cash refund');
     }
     const refundAuditAction = newStatus === 'refunded' ? 'sale_refunded_full' : 'sale_refunded_partial';
@@ -1585,7 +1585,7 @@ export class PosService {
 
     const lines: any[] = [];
     for (const item of dto.items) {
-      if (item.isCustom) { lines.push(this.customLine(item)); continue; }
+      if (item.isCustom) { lines.push(this.customLine(item, await this.defaultTaxCategory(dto.storeId))); continue; }
       const variant: any = await this.r.productVariantModel.findOne({ _id: item.variantId, productId: item.productId, isDelete: false }).lean();
       if (!variant) throw new BadRequestException(`Variant not found: ${item.variantId}`);
       const product: any = await this.r.productModel.findOne({ _id: item.productId, isDelete: false }).select('name').lean();
@@ -1748,6 +1748,70 @@ export class PosService {
     };
   }
 
+  // ── G2.6 HOME DASHBOARD ────────────────────────────────────────────────────────────────────────────────────────
+  /**
+   * The Home "business pulse". ROLE-BASED: a cashier sees ONLY their own open shift; a manager / the owner see the whole store for today.
+   * The sales figures come from the SAME `summarizeSales` the daily report uses over the SAME window, so they match that report to the
+   * minor unit (tested). Reads use the (storeId, createdAt) / (sessionId) indexes and a projection (no images / notes / flags).
+   */
+  async getDashboard(sellerId: string, storeId: string, employeeToken: string | undefined) {
+    await this.verifyStoreOwnership(storeId, sellerId);
+    const who = await this.verifyEmployeeToken(employeeToken, storeId);
+    const role: 'cashier' | 'manager' | 'owner' = who?.role === 'cashier' ? 'cashier' : who?.role === 'manager' ? 'manager' : 'owner';
+    const { currency, exp } = await this.moneyContext(storeId);
+    const now = new Date();
+    const start = new Date(now); start.setHours(0, 0, 0, 0);
+    const end = new Date(now); end.setHours(23, 59, 59, 999);
+
+    let scope: any = { storeId, createdAt: { $gte: start, $lte: end } };
+    let shifts: any[];
+    if (role === 'cashier') {
+      shifts = await this.r.registerSessionModel.find({ storeId, employeeId: who!.employeeId, status: 'open' }).sort({ openedAt: -1 }).limit(1).lean();
+      scope = { storeId, sessionId: shifts.length ? String(shifts[0]._id) : '__no_open_shift__' };
+    } else {
+      shifts = await this.r.registerSessionModel.find({ storeId, status: 'open' }).sort({ openedAt: -1 }).limit(20).lean();
+    }
+
+    const proj = '-items.image -notes -flags -idempotencyKey -receipt';
+    const [sales, reversed]: any[][] = await Promise.all([
+      this.r.saleModel.find({ ...scope, status: { $in: ['completed', 'partially_refunded'] } }).select(proj).lean(),
+      this.r.saleModel.find({ ...scope, status: { $in: ['refunded', 'voided'] } }).select(proj).lean(),
+    ]);
+    const summary = this.summarizeSales(sales, reversed, exp);
+    const productSales: Record<string, { name: string; qty: number; revenue: number }> = {};
+    for (const sale of sales) {
+      for (const item of sale.items ?? []) {
+        const key = item.isCustom ? 'custom' : item.productId;
+        if (!productSales[key]) productSales[key] = { name: item.isCustom ? 'Custom item' : item.name, qty: 0, revenue: 0 };
+        productSales[key].qty += item.qty;
+        productSales[key].revenue = roundMoney(productSales[key].revenue + item.lineTotal, exp);
+      }
+    }
+    const topProducts = Object.entries(productSales).map(([productId, d]) => ({ productId, ...d })).sort((a, b) => b.revenue - a.revenue).slice(0, 5);
+
+    const names = new Map<string, string>();
+    const empIds = [...new Set(shifts.map((s2) => String(s2.employeeId)))];
+    if (empIds.length) for (const e of await this.r.employeeModel.find({ _id: { $in: empIds } }).select('name').lean()) names.set(String((e as any)._id), (e as any).name);
+
+    const { byPayment, ...flat } = summary as any;
+    const manager = role !== 'cashier';
+    const [needsReview, digital] = manager
+      ? await Promise.all([
+          this.r.saleModel.countDocuments({ storeId, needsReview: true, deletedAt: null }),
+          this.payments ? this.payments.listAttention(storeId).then((x: any) => (x?.items ?? []).length).catch(() => 0) : Promise.resolve(0),
+        ])
+      : [0, 0];
+    return {
+      success: true,
+      data: {
+        role, scope: role === 'cashier' ? 'shift' : 'store', date: start.toISOString().split('T')[0], currency, currencyExponent: exp,
+        summary: flat, byPaymentMethod: byPayment, topProducts, customItems: this.customItemsSummary(sales, exp),
+        shifts: shifts.map((s2) => ({ sessionId: String(s2._id), registerId: s2.registerId ?? null, employeeId: String(s2.employeeId), employeeName: names.get(String(s2.employeeId)) ?? null, openedAt: s2.openedAt, openingCash: s2.openingCash ?? 0, totalSales: s2.totalSales ?? 0, totalTransactions: s2.totalTransactions ?? 0 })),
+        needsAttention: manager ? { salesNeedingReview: needsReview, digitalPayments: digital, total: needsReview + digital } : null,
+      },
+    };
+  }
+
   // ── REPORT SUMMARY (shared by the daily and range reports) ─────────────────────
 
   /**
@@ -1866,14 +1930,20 @@ export class PosService {
   }
 
   /** A custom item as a sale line: no product, no variant, never stocked. The price is whatever the till says (a manager approves it above the store's limit). */
-  private customLine(item: any): any {
+  /** G2.6: the store's default tax category for a custom item that does not say (owner-set in the store tax profile). */
+  private async defaultTaxCategory(storeId: string): Promise<string> {
+    const s: any = await this.r.posSettingsModel.findOne({ storeId }).select('defaultTaxCategory').lean();
+    return s?.defaultTaxCategory === 'exempt' ? 'exempt' : 'standard';
+  }
+
+  private customLine(item: any, defaultTaxCategory: string = 'standard'): any {
     const price = Number(item.unitPrice);
     if (!(price > 0) || !Number.isFinite(price)) throw moneyError('CUSTOM_ITEM_PRICE_REQUIRED', 'A custom item needs a price above zero');
     const name = String(item.customName ?? '').trim();
     if (!name) throw moneyError('CUSTOM_ITEM_NAME_REQUIRED', 'A custom item needs a name');
     return {
       productId: null, variantId: null, name: name.slice(0, 120), sku: 'CUSTOM', image: null, price, listPrice: null, priceVerified: true,
-      qty: item.qty, lineTotal: 0, refundedQty: 0, isCustom: true, taxCategory: item.taxCategory === 'exempt' ? 'exempt' : 'standard',
+      qty: item.qty, lineTotal: 0, refundedQty: 0, isCustom: true, taxCategory: item.taxCategory === 'exempt' ? 'exempt' : item.taxCategory === 'standard' ? 'standard' : (defaultTaxCategory === 'exempt' ? 'exempt' : 'standard'),
       customApprovedBy: null, note: item.customNote ? String(item.customNote).slice(0, 200) : null,
     };
   }
@@ -2139,13 +2209,13 @@ export class PosService {
     const stored = items.length > 0 && items.every((i) => i.netMinor !== undefined && i.netMinor !== null && i.taxMinor !== undefined && i.taxMinor !== null);
     if (stored) {
       return items.map((i) => {
-        const gross = Number(i.lineTotalMinor ?? toMinor(i.lineTotal, exp));
+        const gross = Number(i.lineTotalMinor ?? toMinor(i.lineTotal ?? Number(i.price) * Number(i.qty), exp));
         const disc = Number(i.discountShareMinor ?? gross - Number(i.netMinor));
         return { grossMinor: gross, discountMinor: disc, netMinor: Number(i.netMinor), taxMinor: Number(i.taxMinor), totalMinor: Number(i.netMinor) + Number(i.taxMinor) };
       });
     }
     return lineBreakdown(
-      items.map((i) => ({ grossMinor: Number(i.lineTotalMinor ?? toMinor(i.lineTotal, exp)), taxable: i.taxCategory !== 'exempt' })),
+      items.map((i) => ({ grossMinor: Number(i.lineTotalMinor ?? toMinor(i.lineTotal ?? Number(i.price) * Number(i.qty), exp)), taxable: i.taxCategory !== 'exempt' })),
       Number(sale.discountMinor ?? toMinor(sale.discount ?? 0, exp)), Number(sale.taxMinor ?? toMinor(sale.tax ?? 0, exp)),
     );
   }
@@ -2619,17 +2689,15 @@ export class PosService {
   async getProductByBarcode(sellerId: string, storeId: string, barcode: string) {
     await this.verifyStoreOwnership(storeId, sellerId);
 
-    const variant = await this.r.productVariantModel
-      .findOne({ barcode, isDelete: false, status: 'active' })
-      .lean();
-
-    if (!variant) throw new NotFoundException(`No product found with barcode: ${barcode}`);
-
-    const product = await this.r.productModel
-      .findOne({ _id: (variant as any).productId, storeId, isDelete: false, status: 'active' })
-      .select('_id name type gallery coverImages')
-      .lean();
-
+    // G2.6: a barcode is unique per STORE, not globally — several stores may use the same code, so pick the match that belongs to THIS store
+    const candidates: any[] = await this.r.productVariantModel.find({ barcode, isDelete: false, status: 'active' }).limit(50).lean();
+    if (!candidates.length) throw new NotFoundException(`No product found with barcode: ${barcode}`);
+    let variant: any = null; let product: any = null;
+    for (const c of candidates) {
+      if (c.storeId && String(c.storeId) !== storeId) continue;
+      const p = await this.r.productModel.findOne({ _id: c.productId, storeId, isDelete: false, status: 'active' }).select('_id name type gallery coverImages').lean();
+      if (p) { variant = c; product = p; break; }
+    }
     if (!product) throw new NotFoundException('Product not found in this store');
 
     return {
@@ -2730,7 +2798,7 @@ export class PosService {
     const saleItems: any[] = [];
 
     for (const item of dto.items) {
-      if (item.isCustom) { saleItems.push(this.customLine(item)); continue; }
+      if (item.isCustom) { saleItems.push(this.customLine(item, await this.defaultTaxCategory(String((sale as any).storeId)))); continue; }
       const variant = await this.r.productVariantModel.findOne({ _id: item.variantId, productId: item.productId, isDelete: false });
       if (!variant) throw new BadRequestException(`Variant not found: ${item.variantId}`);
 

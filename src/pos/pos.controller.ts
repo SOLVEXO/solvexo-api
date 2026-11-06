@@ -38,6 +38,8 @@ import { QuoteSaleDto } from './dto/quote-sale.dto';
 import { CompleteSaleDto } from './dto/complete-sale.dto';
 import { CashAdjustmentDto } from './dto/cash-adjustment.dto';
 import { RefundSaleDto } from './dto/refund-sale.dto';
+import { PosCatalogService } from './pos-catalog.service';
+import { AdjustCatalogStockDto, UpdateCatalogVariantDto } from './dto/catalog.dto';
 import { ForceCloseSessionDto } from './dto/force-close-session.dto';
 import { UpdateRegisterDto } from './dto/update-register.dto';
 import { UpdateShiftDto } from './dto/update-shift.dto';
@@ -64,6 +66,7 @@ export class PosController {
     private readonly posPlansService: PosPlansService,
     private readonly kybGate: KybGateService,
     private readonly receipts: PosReceiptService,
+    private readonly catalog: PosCatalogService,
   ) {}
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -583,6 +586,40 @@ export class PosController {
   @Post('sales/:saleId/void')
   voidSale(@Req() req: any, @Param('saleId') saleId: string, @Body() dto: { reason?: string; reasonCode?: string }, @Headers('x-pos-employee-token') employeeToken?: string) {
     return this.posService.voidSale(req.user.userId, saleId, dto, employeeToken);
+  }
+
+  // ── G2.6 POS catalog edits (D3): a manager's PIN session; audited with before/after; the storefront reads the same documents ──
+  @UseGuards(PosAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Patch('catalog/:storeId/variants/:variantId')
+  updateCatalogVariant(@Req() req: any, @Param('storeId') storeId: string, @Param('variantId') variantId: string, @Body() dto: UpdateCatalogVariantDto, @Headers('x-pos-employee-token') employeeToken?: string) {
+    return this.catalog.updateVariant(req.user.userId, storeId, variantId, dto, employeeToken);
+  }
+
+  @UseGuards(PosAuthGuard, RolesGuard)
+  @Roles('seller')
+  @UseInterceptors(IdempotencyInterceptor)
+  @Post('catalog/:storeId/variants/:variantId/stock')
+  adjustCatalogStock(@Req() req: any, @Param('storeId') storeId: string, @Param('variantId') variantId: string, @Body() dto: AdjustCatalogStockDto, @Headers('x-pos-employee-token') employeeToken?: string) {
+    return this.catalog.adjustStock(req.user.userId, storeId, variantId, dto, employeeToken);
+  }
+
+  /**
+   * G2.6 Home dashboard (role-based): a cashier gets only their own open shift; a manager / owner get the store for today, plus low stock
+   * and what needs attention. Read-only, so it stays available when the POS plan has lapsed (like the reports).
+   */
+  @UseGuards(PosAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Get('dashboard/:storeId')
+  async dashboard(@Req() req: any, @Param('storeId') storeId: string, @Headers('x-pos-employee-token') employeeToken?: string) {
+    const res: any = await this.posService.getDashboard(req.user.userId, storeId, employeeToken);
+    if (res.data.role !== 'cashier') {
+      const low: any = await this.inventoryService.getLowStockSummary(req.user.userId, storeId).catch(() => null);
+      res.data.lowStock = low?.data ?? null;
+    } else {
+      res.data.lowStock = null; // a cashier does not see store-wide stock figures
+    }
+    return res;
   }
 
   /** G2.5: the tax invoice and every credit note of a sale (for the till's order detail / print / share). */

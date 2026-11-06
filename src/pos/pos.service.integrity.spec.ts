@@ -46,7 +46,8 @@ function makeRepos(over: Record<string, any> = {}) {
       find: jest.fn().mockReturnValue(chain([])),
     },
     productModel: { findOne: jest.fn().mockReturnValue({ select: () => Promise.resolve({ name: 'Tea', gallery: [] }) }) },
-    posSettingsModel: { findOneAndUpdate: jest.fn().mockResolvedValue({ saleCounter: 1 }), findOne: jest.fn().mockReturnValue(lean(null)) },
+    posSettingsModel: { findOneAndUpdate: jest.fn().mockResolvedValue({ saleCounter: 1, invoiceCounter: 1, creditNoteCounter: 1 }), findOne: jest.fn().mockReturnValue(lean(null)), updateOne: jest.fn().mockResolvedValue({}) },
+    posCreditNoteModel: { create: jest.fn().mockImplementation((d: any) => Promise.resolve((Array.isArray(d) ? d : [d]).map((x: any) => ({ _id: 'cn1', ...x })))) },
     variantLocationStockModel: { find: jest.fn().mockReturnValue(chain([])) },
     posAuditLogModel: { create: jest.fn().mockResolvedValue([{}]) },
     posPaymentModel: { insertMany: jest.fn().mockResolvedValue([]) },
@@ -136,7 +137,7 @@ describe('PosService — Phase 5A sale integrity', () => {
 
       await expect(build(r).completeSale('seller1', 'sale1', { paymentMethod: 'cash' } as any, undefined)).rejects.toBeInstanceOf(ConflictException);
 
-      expect(r.saleModel.findOneAndUpdate).toHaveBeenCalledWith({ _id: 'sale1', status: 'held', deletedAt: null }, expect.anything(), expect.anything());
+      expect(r.saleModel.findOneAndUpdate).toHaveBeenCalledWith({ _id: 'sale1', status: 'held', deletedAt: null, 'invoice.number': null }, expect.anything(), expect.anything()); // (G2.5: the invoice is issued only once)
       expect(r.productVariantModel.updateOne).toHaveBeenCalledWith({ _id: 'v1' }, { $inc: { stock: 2 } });
       expect(r.registerSessionModel.findByIdAndUpdate).not.toHaveBeenCalled(); // no double count
     });
