@@ -84,6 +84,10 @@ export class DraftOrder {
   @Prop({ type: String, default: null })
   customerId: string | null;
 
+  /** Wholesale company snapshot (company, location, PO number, terms, tax exemption). Null = a normal draft. */
+  @Prop({ type: Object, default: null })
+  b2b?: Record<string, any> | null;
+
   @Prop({ type: String, required: true })
   customerName: string;
 

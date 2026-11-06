@@ -1,7 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { Type } from 'class-transformer';
 import {
-  IsArray, IsIn, IsNotEmpty, IsNumber, IsOptional, IsString, Min, ValidateNested, ArrayMinSize,
+  IsArray, IsIn, IsNotEmpty, IsNumber, IsOptional, IsString, MaxLength, Min, ValidateNested, ArrayMinSize,
 } from 'class-validator';
 
 class DraftOrderItemDto {
@@ -44,6 +44,14 @@ export class DraftOrderShippingAddressDto {
 }
 
 export class CreateDraftOrderDto {
+  // Wholesale: a draft for an approved company. Prices follow the company's catalog, tax follows its exemption, and the order
+  // is placed on its payment terms. The customer must be one of the company's buyers (omit to use its first location admin).
+  @IsOptional() @IsString() @MaxLength(40)
+  companyId?: string;
+
+  @IsOptional() @IsString() @MaxLength(60)
+  poNumber?: string;
+
   // Either a real registered buyer id, or omit and describe a guest below
   // (a guest draft can be saved/priced/invoiced but not converted to a real
   // Order until a registered account is attached — see DraftOrder.customerId).

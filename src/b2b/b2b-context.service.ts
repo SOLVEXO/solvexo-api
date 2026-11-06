@@ -55,6 +55,27 @@ export class B2BContextService {
       this.locations.findOne({ _id: buyer.locationId, storeId, companyId: buyer.companyId, isDelete: false }).lean(),
     ]);
     if (!company || !location) return null;
+    return this.build(storeId, userId, buyer.role, company, location);
+  }
+
+  /**
+   * Seller side (draft orders for a company): the context of an approved company, for a customer who is one of its active buyers.
+   * Without a customer the company's first location and its first active location admin (else any active buyer) are used.
+   */
+  async getCompanyContext(storeId: string, companyId: string, customerUserId?: string | null): Promise<{ ctx: BuyerContext; buyerUserId: string; buyerEmail: string } | null> {
+    if (!isOid(companyId)) return null;
+    const company: any = await this.companies.findOne({ _id: companyId, storeId, status: 'approved', isDelete: false }).lean();
+    if (!company) return null;
+    let buyer: any = null;
+    if (customerUserId) buyer = await this.buyers.findOne({ storeId, companyId, userId: customerUserId, status: 'active' }).lean();
+    else buyer = (await this.buyers.findOne({ storeId, companyId, role: 'location_admin', status: 'active' }).sort({ createdAt: 1 }).lean()) ?? (await this.buyers.findOne({ storeId, companyId, status: 'active' }).sort({ createdAt: 1 }).lean());
+    if (!buyer) return null;
+    const location: any = await this.locations.findOne({ _id: buyer.locationId, storeId, companyId, isDelete: false }).lean();
+    if (!location) return null;
+    return { ctx: await this.build(storeId, buyer.userId, buyer.role, company, location), buyerUserId: String(buyer.userId), buyerEmail: buyer.email };
+  }
+
+  private async build(storeId: string, userId: string, role: string, company: any, location: any): Promise<BuyerContext> {
     const settings = effectiveCompanySettings(company, location);
     let catalog: BuyerContext['catalog'] = null;
     if (settings.catalogId && isOid(settings.catalogId)) {
@@ -63,7 +84,7 @@ export class B2BContextService {
     }
     return {
       storeId, userId, companyId: String(company._id), companyName: company.name, locationId: String(location._id), locationName: location.name,
-      role: buyer.role, taxExempt: !!company.taxExempt, depositPercent: company.depositPercent ?? 0, settings, catalog,
+      role, taxExempt: !!company.taxExempt, depositPercent: company.depositPercent ?? 0, settings, catalog,
     };
   }
 

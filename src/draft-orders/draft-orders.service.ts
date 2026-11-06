@@ -2,7 +2,9 @@
 import { searchStoreCustomers } from '../common/store-customer-search.util';
 import { emailUiStrings, isRtlLocale } from '../notifications/customer-email-locales';
 import { buildInvoiceItemsHtml, buildInvoicePdf, invoiceNumber } from './draft-order-invoice.util';
-import { Injectable, BadRequestException, NotFoundException, ForbiddenException } from '@nestjs/common';
+import { Injectable, BadRequestException, NotFoundException, ForbiddenException, Optional } from '@nestjs/common';
+import { B2BContextService, type BuyerContext } from '../b2b/b2b-context.service';
+import { buildOrderB2B } from '../b2b/b2b-order.util';
 import { toStripeAmount } from '@/common/stripe-amount.util';
 import { availableStock, AVAILABLE_STOCK_EXPR } from '@/common/stock-availability.util';
 import { drainLocationStock, restoreLocationStock } from '@/common/location-stock.util';
@@ -56,6 +58,8 @@ export class DraftOrdersService {
     private readonly commissionRulesService: CommissionRulesService,
     private readonly notificationsService: NotificationsService,
     private readonly financeService: FinanceService,
+    // Wholesale drafts (company prices, rules, terms); plain drafts never touch it.
+    @Optional() private readonly b2bContext?: B2BContextService,
   ) {
     const secretKey = this.configService.get<string>('STRIPE_SECRET_KEY')?.trim();
     if (secretKey) {
@@ -78,8 +82,9 @@ export class DraftOrdersService {
    *  options/type snapshot + current price as the default), same "snapshot at
    *  the moment it's added" convention every other order-shaped document in
    *  this app already follows — never a live join read at display time. */
-  private async resolveItems(storeId: string, items: { productId: string; variantId: string; quantity: number; unitPrice?: number }[]) {
+  private async resolveItems(storeId: string, items: { productId: string; variantId: string; quantity: number; unitPrice?: number }[], b2bCtx?: BuyerContext | null) {
     const resolved: any[] = [];
+    const entries = b2bCtx && this.b2bContext ? await this.b2bContext.loadEntries(b2bCtx, items.map((i) => String(i.variantId))) : null;
     for (const item of items) {
       const [product, variant] = await Promise.all([
         this.repos.productModel.findOne({ _id: item.productId, storeId, isDelete: { $ne: true } }).lean(),
@@ -95,7 +100,10 @@ export class DraftOrdersService {
         sku: (variant as any).sku ?? null,
         options: (variant as any).options ?? [],
         quantity: item.quantity,
-        unitPrice: item.unitPrice ?? (variant as any).price,
+        // Wholesale draft: the company's catalog price and quantity/availability rules, unless the seller typed a price.
+        unitPrice: item.unitPrice ?? (b2bCtx && this.b2bContext && entries
+          ? this.b2bContext.resolveLine(b2bCtx, entries, { productName: (product as any).name, product, variantId: String(item.variantId), basePrice: (variant as any).price, quantity: item.quantity }).unitPrice
+          : (variant as any).price),
       });
     }
     return resolved;
@@ -114,21 +122,29 @@ export class DraftOrdersService {
 
   async create(storeId: string, sellerId: string, dto: CreateDraftOrderDto) {
     const store = await verifyStoreOwnershipStrict(this.repos.storeModel, storeId, sellerId);
-    const items = await this.resolveItems(storeId, dto.items);
+    // Wholesale draft: resolve the company (this store, approved) and the customer it is for.
+    let company: { ctx: BuyerContext; buyerUserId: string; buyerEmail: string } | null = null;
+    if (dto.companyId) {
+      if (!this.b2bContext) throw new BadRequestException('Wholesale is not available.');
+      company = await this.b2bContext.getCompanyContext(storeId, dto.companyId, dto.customerId ?? null);
+      if (!company) throw new BadRequestException('Company not found, not approved, or the customer is not one of its buyers.');
+    }
+    const items = await this.resolveItems(storeId, dto.items, company?.ctx);
     const base = {
       discountType: dto.discountType ?? null,
       discountValue: dto.discountValue ?? 0,
       shippingAmount: dto.shippingAmount ?? 0,
-      taxAmount: dto.taxAmount ?? 0,
+      // A tax-exempt company is never charged tax.
+      taxAmount: company?.ctx.taxExempt ? 0 : dto.taxAmount ?? 0,
     };
     const { subtotal, discountAmount, total } = this.recalculate({ items, ...base });
 
     const draft = await this.repos.draftOrderModel.create({
       storeId,
       sellerId,
-      customerId: dto.customerId ?? null,
+      customerId: company ? company.buyerUserId : dto.customerId ?? null,
       customerName: dto.customerName,
-      customerEmail: dto.customerEmail ?? null,
+      customerEmail: dto.customerEmail ?? (company ? company.buyerEmail : null),
       customerPhone: dto.customerPhone ?? null,
       items,
       ...base,
@@ -137,8 +153,10 @@ export class DraftOrdersService {
       subtotal, discountAmount, total,
       status: 'open',
       shippingAddress: dto.shippingAddress ?? null,
-      paymentTerms: dto.paymentTerms ?? null,
-      dueDate: computeDueDate(dto.paymentTerms, new Date()),
+      // A wholesale draft is placed on the COMPANY's terms (see b2b below), never on the draft invoice terms.
+      paymentTerms: company ? null : dto.paymentTerms ?? null,
+      dueDate: company ? null : computeDueDate(dto.paymentTerms, new Date()),
+      b2b: company && this.b2bContext ? this.b2bContext.snapshot(company.ctx, dto.poNumber) : null,
     });
 
     await this.activityLogService.log({
@@ -178,12 +196,15 @@ export class DraftOrdersService {
     const draft = await this.getOwned(storeId, sellerId, id);
     if (draft.status !== 'open') throw new BadRequestException('Only an open draft order can be edited.');
 
-    const items = dto.items ? await this.resolveItems(storeId, dto.items) : draft.items;
+    // A wholesale draft keeps pricing its new items from the company's catalog.
+    const draftCompanyId = (draft as any).b2b?.companyId as string | undefined;
+    const company = draftCompanyId && this.b2bContext ? await this.b2bContext.getCompanyContext(storeId, draftCompanyId, draft.customerId ?? null) : null;
+    const items = dto.items ? await this.resolveItems(storeId, dto.items, company?.ctx) : draft.items;
     const merged = {
       discountType: dto.discountType !== undefined ? dto.discountType : draft.discountType,
       discountValue: dto.discountValue !== undefined ? dto.discountValue : draft.discountValue,
       shippingAmount: dto.shippingAmount !== undefined ? dto.shippingAmount : draft.shippingAmount,
-      taxAmount: dto.taxAmount !== undefined ? dto.taxAmount : draft.taxAmount,
+      taxAmount: (draft as any).b2b?.taxExempt ? 0 : dto.taxAmount !== undefined ? dto.taxAmount : draft.taxAmount,
     };
     const { subtotal, discountAmount, total } = this.recalculate({ items, ...merged });
 
@@ -639,7 +660,12 @@ export class DraftOrdersService {
     // invoice-on-delivery) — 'pending_verification' is the same real
     // convention the manual-bank-transfer checkout path already uses for
     // "awaiting confirmation."
-    const paymentInfo = connectInfo
+    const b2bSnap: any = (draft as any).b2b;
+    const onTerms = !!(b2bSnap?.companyId && b2bSnap.paymentTerms && !connectInfo && !draft.isPaid);
+    const paymentInfo = onTerms
+      // Wholesale draft on the company's payment terms: unpaid, tracked as a receivable (installments, reminders, credit notes).
+      ? { paymentType: 'b2b_terms', paymentStatus: 'unpaid', isPaid: false, paidAt: null }
+      : connectInfo
       ? { paymentType: 'stripe', paymentStatus: 'paid', isPaid: true, paidAt: draft.paidAt ?? new Date() }
       : draft.isPaid
         ? { paymentType: 'manual_bank_transfer', paymentStatus: 'paid', isPaid: true, paidAt: draft.paidAt ?? new Date() }
@@ -681,6 +707,7 @@ export class DraftOrdersService {
       dueDate: draft.dueDate ?? null,
       ...paymentInfo,
       orderStatus: 'processing',
+      b2b: b2bSnap?.companyId ? buildOrderB2B(b2bSnap, { total: draft.total, currency: draft.currency }, { withTerms: onTerms }) : null,
     });
 
     for (const item of draft.items) {
