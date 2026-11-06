@@ -8,6 +8,7 @@ import {
 } from './messaging.schema';
 import { SmsGatewayService } from './sms-gateway.service';
 import { PublicSmsController } from './public-sms.controller';
+import { MessagingStorefrontController } from './messaging-storefront.controller';
 import { MessagingConsentService } from './messaging-consent.service';
 import { WhatsAppTemplatesService } from './whatsapp-templates.service';
 import { MessagingCampaignsService } from './messaging-campaigns.service';
@@ -28,7 +29,7 @@ import { MessagingController } from './messaging.controller';
       { name: SmsGatewayConfig.name, schema: SmsGatewayConfigSchema },
     ]),
   ],
-  controllers: [MessagingController, PublicSmsController],
+  controllers: [MessagingController, PublicSmsController, MessagingStorefrontController],
   providers: [SmsGatewayService, MessagingConsentService, WhatsAppTemplatesService, MessagingCampaignsService, MessagingWebhookService, MessagingSendProcessor],
   exports: [MessagingConsentService, MessagingCampaignsService],
 })
