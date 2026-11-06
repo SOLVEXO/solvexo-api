@@ -1,4 +1,4 @@
-# P4 Messaging channels (IN PROGRESS, slices 1-2: WhatsApp + SMS marketing backend)
+# P4 Messaging channels (backend slices 1-2 + web slice 3 done; live providers not run)
 
 Run: `MONGO_TEST_URI="mongodb://127.0.0.1:27096/?directConnection=true" npx jest --runInBand --forceExit messaging.integration` (pure rules: `messaging-rules`).
 The whole feature is OFF until the platform owner sets `MESSAGING_CAMPAIGNS_ENABLED=true` (seller endpoints answer 403 otherwise). No live Meta call was ever made.
@@ -17,6 +17,11 @@ The whole feature is OFF until the platform owner sets `MESSAGING_CAMPAIGNS_ENAB
 - Seller API: `GET/PUT api/messaging/:storeId/sms-gateway`, `POST .../test`, `.../enable`, `.../webhook-secret`; consent endpoints take `channel: 'sms'`.
 - Tests: 11 pure + 30 real-Mongo in total (SMS: save/encrypt, enable-after-test, consent separation, footer, limits, gateway off, webhook secret, STOP, delivery order) + a mocked-fetch provider test incl. internal-address refusal.
 
+## Done (slice 3: web, commit 8e1dfa03 in solvexo-web)
+- Seller page `/store/:id/messaging` (sidebar "WhatsApp & SMS", perm `marketing.manage`): channel tabs WhatsApp / SMS; Campaigns (create, launch, cancel, stats, message log), Contacts (consent list, add, opt out, import with attestation), Templates (WhatsApp: refresh, submit for review, delete), SMS provider (form, test to own phone, switch on, webhook addresses). Shows "Not available yet" while the platform flag is off.
+- Buyer page `/messaging-preferences` (theme-neutral `DefaultMessagingPrefsPage`, route key `messagingPrefs`, also in Liquid native routes): signed-in customers see only channels the store enabled, must type a number and tick an explicit box, can stop at any time. Guests are asked to sign in.
+- Tests: 4 vitest for the buyer page; web `tsc -b` clean, eslint clean on the new files. No browser run.
+
 ## Not done
-- Slice 3: seller UI (consent list/import, templates, SMS gateway form, campaign builder + stats), opt-in checkboxes at checkout/storefront (the consent records exist; nothing collects them from buyers yet), en/ur strings, plan entitlement.
+- Opt-in checkbox at checkout (only the preferences page collects consent), phone numbers are not verified by a code, en/ur strings (English literals), plan entitlement, a link to the preferences page from the storefront account menu, vitest for the seller tabs.
 - Not verified: Meta's exact webhook fields, the template create/list calls beyond what the existing provider already does, messaging-tier limits of a real account (the default 1000 is Meta's published starting tier from memory), pricing.
