@@ -25,6 +25,10 @@ Pure rules: `npx jest b2b-pricing`.
 
 Known gaps in this slice: partial fulfilment (`orders/fulfil`) does not check the deposit; due-on-fulfilment due date is approximated by the order's last update once shipped; the credit-limit check ignores shipping; reminders (email/WhatsApp) not built; an order paid in full through Mark as paid by hand is not reconciled with installments.
 
+## Done (slice 4: seller web UI)
+- Seller sidebar > Orders > **Wholesale** (`/store/:id/wholesale`, perms `b2b.view`/`b2b.manage`): Companies (list, add/edit incl. terms, credit limit, deposit %, tax exempt, allowed payment methods, catalog; detail with locations and buyers + roles), Applications (approve with catalog/terms, reject with reason), Catalogs (settings, variants with fixed price / %, quantity rules, up to 10 volume prices), Orders & balances (wholesale orders with PO, overdue flag, record/void installments, outstanding report + CSV).
+- 4 component tests (list, application approve dialog, balances/orders, error + retry). NOT checked in a real browser or on a phone; web `tsc -b` shows one error from another session (`navigation/socialLinks.ts`), none in these files.
+
 ## Not done yet (next slices)
 1. Storefront UI: wholesale application page, B2B price display in themes (via the prices endpoint), PO number field at checkout, quick order list / CSV, reorder, company addresses, hide-prices-for-visitors store setting, shared theme components, Liquid context. NOT tested: the createCheckout hook itself against a real database (it is only exercised through the context service and type-checked).
 2. Reminders for due/overdue invoices (email/WhatsApp), deposit check on partial fulfilment.
