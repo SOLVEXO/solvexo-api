@@ -6,7 +6,7 @@ Read MASTER.md first. Update this table after every phase.
 |---|---|---|---|
 | P0 Theme parity | done (code) | web b7030f45 | no browser check of mini-cart notices |
 | P1 Real-DB tests + money-path hardening | DONE for order placement, webhook idempotency, cancel restock (13 real-DB tests); remaining items listed in P1 doc | see git log | gift card, store credit, tax totals, finance ledger, return restock, POS bundle stock not covered |
-| P2 B2B (+ addendum) | IN PROGRESS: slices 1-7 (backend, terms/installments, seller hub, storefront, wholesale-only store, receivable credit notes, reminders, plan feature) | see git log | company draft orders, B2B-only sections, company addresses at checkout, WhatsApp reminders, i18n (en/ur), Liquid, wholesale price on cards, admin UI label for the plan feature, entitlements, createCheckout hook not run on real DB |
+| P2 B2B (+ addendum) | MOSTLY DONE: slices 1-8 (incl. company draft orders) (backend, terms/installments, seller hub, storefront, wholesale-only store, receivable credit notes, reminders, plan feature) | see git log | B2B-only sections, company addresses at checkout, WhatsApp reminders, i18n (en/ur), Liquid, wholesale price on cards, admin UI label for the plan feature, entitlements, createCheckout hook not run on real DB |
 | P3 COD protection | not started | - | - |
 | P4 Messaging channels (WhatsApp/SMS) | not started | - | - |
 | P5 Khata | not started | - | - |
