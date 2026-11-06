@@ -271,7 +271,7 @@ export class Checkout {
   @Prop({ type: String, default: null })
   liveShippingService: string | null;
 
-  @Prop({ type: String, enum: ['cash_on_delivery', 'stripe', 'manual_bank_transfer', 'store_credit', 'manual'], default: null })
+  @Prop({ type: String, enum: ['cash_on_delivery', 'stripe', 'manual_bank_transfer', 'store_credit', 'manual', 'b2b_terms'], default: null })
   paymentType: string | null;
 
   @Prop({ type: String, default: null })

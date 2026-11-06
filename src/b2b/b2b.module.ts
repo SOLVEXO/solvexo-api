@@ -9,6 +9,8 @@ import {
 import { B2BAdminService } from './b2b-admin.service';
 import { B2BAdminController } from './b2b-admin.controller';
 import { B2BContextService } from './b2b-context.service';
+import { B2BOrdersService } from './b2b-orders.service';
+import { B2BOrdersController } from './b2b-orders.controller';
 import { B2BStorefrontController } from './b2b-storefront.controller';
 
 @Module({
@@ -24,8 +26,8 @@ import { B2BStorefrontController } from './b2b-storefront.controller';
       { name: B2BCatalogItem.name, schema: B2BCatalogItemSchema },
     ]),
   ],
-  controllers: [B2BAdminController, B2BStorefrontController],
-  providers: [B2BAdminService, B2BContextService],
+  controllers: [B2BAdminController, B2BOrdersController, B2BStorefrontController],
+  providers: [B2BAdminService, B2BContextService, B2BOrdersService],
   exports: [B2BAdminService, B2BContextService, MongooseModule],
 })
 export class B2BModule {}

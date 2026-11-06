@@ -636,6 +636,7 @@ export class Order {
       'paystack',
       'flutterwave',
       'mollie',
+      'b2b_terms',
     ],
     required: true,
   })
@@ -773,6 +774,10 @@ export class Order {
   @Prop({ type: String, default: null })
   trafficSource: string | null;
 
+  /** Wholesale (B2B) buyer + receivable (PO number, payment terms, installments). Null for retail orders. Seller records only: no money moves through Solvexo. */
+  @Prop({ type: Object, default: null })
+  b2b?: Record<string, any> | null;
+
   @Prop({ default: false })
   isDelete: boolean;
 
@@ -806,6 +811,7 @@ OrderSchema.index({ 'sellerOrders.items.status': 1 });
 OrderSchema.index({ 'sellerOrders.items.returnStatus': 1 });
 OrderSchema.index({ reviewRequestSentAt: 1, 'sellerOrders.deliveredAt': 1 }); // review-request cron // sidebar "returns to review" count (store-badges)
 OrderSchema.index({ paymentStatus: 1 });
+OrderSchema.index({ 'b2b.companyId': 1, isDelete: 1 }, { sparse: true });
 OrderSchema.index({ customerId: 1 });
 OrderSchema.index({ createdAt: -1 });
 // Every analytics aggregation (order-aggregation.util.ts#sellerOrderMatchStage,

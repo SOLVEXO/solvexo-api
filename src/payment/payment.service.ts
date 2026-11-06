@@ -43,7 +43,8 @@ import { markStorefrontSession } from '../common/storefront-session.util';
 import { GATEWAY_PAYMENT_TYPES, catalogEntry } from '../integrations/payment-provider-catalog';
 import { toDecryptedPaymentConfig } from '../integrations/integration-credentials.helper';
 import { PaymentProviderRegistry } from '../integrations/payment-provider.registry';
-import { isPaymentMethodAllowed } from '../b2b/b2b-pricing.util';
+import { creditLimitCheck, isPaymentMethodAllowed } from '../b2b/b2b-pricing.util';
+import { buildOrderB2B, companyOutstanding } from '../b2b/b2b-order.util';
 
 /** Thrown by createOrder when the atomic stock reservation loses (the last unit was sold between the buyer paying
  *  and the order being created). Distinct type so the payment-finalize paths can auto-refund instead of retrying forever. */
@@ -2419,11 +2420,85 @@ export class PaymentService {
       throw new BadRequestException('This checkout is already being placed. Please check your orders.');
     }
     try {
-      return await this.createOrderUnclaimed(userId, checkout, ...(rest as [any, any]));
+      const created = await this.createOrderUnclaimed(userId, checkout, ...(rest as [any, any]));
+      await this.stampB2B(checkout, created, orderModel, rest[2]?.paymentType);
+      return created;
     } catch (err) {
       await checkoutModel.updateOne({ _id: checkout._id }, { $set: { orderPlacementClaimedAt: null } }).catch(() => undefined);
       throw err;
     }
+  }
+
+  /**
+   * Wholesale orders remember their company, location and PO number; an order placed on payment terms also gets its receivable
+   * (due date, deposit, installments). A failed stamp never fails an order that is already placed: the orders stay retail-shaped
+   * and the failure is logged.
+   */
+  private async stampB2B(checkout: any, orders: any[], orderModel: any, paymentType?: string) {
+    const snap = checkout?.b2b;
+    if (!snap?.companyId || !Array.isArray(orders)) return;
+    try {
+      for (const o of orders) {
+        if (o.b2b) continue;
+        const b2b = buildOrderB2B(snap, { total: o.totalAmount, currency: o.currency }, { withTerms: paymentType === 'b2b_terms' });
+        await orderModel.updateOne({ _id: o._id }, { $set: { b2b } });
+        o.b2b = b2b;
+      }
+    } catch (e: any) {
+      console.error('B2B order stamp failed (order placed):', e?.message, { checkoutId: String(checkout?._id) });
+    }
+  }
+
+  /**
+   * Places a wholesale order on the company's payment terms (net 15/30/60 or due on fulfilment): the order is created UNPAID
+   * (rail `manual`: no fee, no ledger credit) and the seller records what the company pays, in installments. Solvexo holds no
+   * money. Requires a B2B checkout whose terms allow it, a single store, and respects the seller's credit limit for the company.
+   */
+  async b2bTermsPayment(userId: string, checkoutId: string) {
+    if (!checkoutId) throw new BadRequestException('checkoutId is required');
+    const { checkoutModel, paymentTransactionModel, orderModel, addressModel, cartModel, storeModel } = this.databaseService.repositories;
+
+    const checkout = await checkoutModel.findOne({ _id: checkoutId, userId, isDelete: false });
+    if (!checkout) throw new NotFoundException('Checkout not found');
+    if (checkout.status === 'completed') throw new BadRequestException('Checkout already completed');
+    if (checkout.status === 'cancelled') throw new BadRequestException('Checkout is cancelled');
+    if (checkout.status === 'expired') throw new BadRequestException('Checkout has expired');
+    if (checkout.expiredAt && checkout.expiredAt < new Date()) {
+      await checkoutModel.findByIdAndUpdate(checkout._id, { status: 'expired' });
+      throw new BadRequestException('Checkout has expired');
+    }
+    const snap: any = checkout.b2b;
+    if (!snap?.companyId || !snap.paymentTerms) throw new BadRequestException('Payment terms are not available for your account.');
+    await this.assertDiscountsStillValid(checkout, 'b2b_terms');
+    const storeIds = [...new Set((checkout.items as any[]).map((i) => String(i.storeId)))];
+    if (storeIds.length !== 1) throw new BadRequestException('Payment terms apply to one store at a time. Please check out each store separately.');
+
+    // Seller-set credit limit: what the company already owes + this order (goods + tax, store currency) must fit.
+    if (snap.creditLimit) {
+      const store: any = await storeModel.findById(storeIds[0]).select('baseCurrency').lean();
+      const storeCurrency = store?.baseCurrency ?? 'USD';
+      const owed = await companyOutstanding(orderModel, (a, f, t, s) => this.exchangeRateService.convertWithSnapshots(a, f, t, s), storeIds[0], snap.companyId, storeCurrency);
+      const newOrder = (checkout.items as any[]).reduce((s, i) => s + (i.totalPrice ?? 0) + (i.taxUSD ?? 0), 0);
+      const check = creditLimitCheck(snap.creditLimit, owed, newOrder);
+      if (!check.ok) {
+        throw new BadRequestException({
+          message: `This order would put your company over its credit limit. Available credit: ${check.available}. Pay an open invoice or choose another payment method.`,
+          code: 'B2B_CREDIT_LIMIT', available: check.available,
+        });
+      }
+    }
+
+    await checkoutModel.findByIdAndUpdate(checkoutId, { paymentType: 'b2b_terms', status: 'payment_pending' });
+    const info = { paymentType: 'b2b_terms', isPaid: false, paymentStatus: 'unpaid', paymentMethodName: 'Payment terms' };
+    const orders = await this.createOrder(userId, checkout, orderModel, addressModel, info, info);
+
+    await paymentTransactionModel.create({
+      userId, checkoutId: checkout._id.toString(), orderIds: orders.map((o: any) => o._id.toString()), paymentType: 'b2b_terms', paymentMethodName: 'Payment terms',
+      amount: checkout.totalAmount, currency: checkout.currency, fxSnapshots: checkout.fxSnapshots, status: 'completed', stripePaymentIntentId: null, stripeClientSecret: null, paidAt: null,
+    });
+    await checkoutModel.findByIdAndUpdate(checkoutId, { status: 'completed' });
+    await this.removeCheckedOutItemsFromCart(userId, checkout, cartModel);
+    return { success: true, message: 'Order placed on payment terms', data: { orders: orders.map((o: any) => this.formatOrder(o)) } };
   }
 
   private async createOrderUnclaimed(

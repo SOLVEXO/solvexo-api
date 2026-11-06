@@ -1566,6 +1566,11 @@ export class OrdersService {
     );
     if (sellerOrderIndex === -1) throw new ForbiddenException('Unauthorized');
 
+    // Wholesale deposit (seller-set): the required deposit must be recorded before the order leaves the shop.
+    if (['shipped', 'delivered', 'completed'].includes(status) && (order as any).b2b?.terms && ((order as any).b2b.depositRequired ?? 0) > ((order as any).b2b.paidTotal ?? 0) + 0.004) {
+      throw new BadRequestException('Record the required deposit for this wholesale order before shipping it.');
+    }
+
     // Real safety net for Store.paymentCaptureMethod === 'manual' orders —
     // mirrors Shopify's own "Automatically when order is fulfilled" capture
     // option. `recordSale` below only ever fires once a sellerOrder reaches
