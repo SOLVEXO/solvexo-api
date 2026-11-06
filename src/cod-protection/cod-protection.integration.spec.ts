@@ -120,6 +120,21 @@ d('CodProtectionService on a real MongoDB', () => {
     expect(((await m.orders.collection.findOne({ _id: o3._id })) as any).codProtection).toMatchObject({ decision: 'allow', confirmation: null });
   });
 
+  it('stats: confirmation rate, RTO rate and the value saved, store-scoped and within the period', async () => {
+    const S = oid();
+    await m.stores.collection.insertOne({ _id: new Types.ObjectId(S), baseCurrency: 'PKR' });
+    const mk = (status: string | null, total: number, extra: any = {}) => order(S, oid(), { totalAmount: total, currency: 'PKR', createdAt: new Date(), codProtection: status ? { confirmation: { status } } : null, ...extra });
+    await mk('confirmed', 1000); await mk('confirmed', 1000); await mk('cancelled', 500); await mk('expired', 700); await mk('awaiting', 300); await mk(null, 200);
+    await mk('cancelled', 9999, { createdAt: new Date(Date.now() - 90 * 86_400_000) }); // outside 30 days
+    const booked1 = await mk(null, 100); const booked2 = await mk(null, 100);
+    await m.couriers.collection.insertMany([{ storeId: S, orderId: String(booked1), rto: true }, { storeId: S, orderId: String(booked2), rto: false }]);
+    await order(B, oid(), { totalAmount: 5000, currency: 'PKR', createdAt: new Date(), codProtection: { confirmation: { status: 'cancelled' } } }); // other store
+    const st = await svc.stats(S, 30);
+    expect(st).toMatchObject({ days: 30, currency: 'PKR', asked: 5, confirmed: 2, cancelled: 1, expired: 1, awaiting: 1, confirmationRate: 0.5, savedAmount: 1200, bookedOrders: 2, rtoOrders: 1, rtoRate: 0.5 });
+    expect((await svc.stats(S, 365)).savedAmount).toBe(1200 + 9999);
+    expect((await svc.stats(oid(), 30))).toMatchObject({ confirmationRate: null, rtoRate: null, savedAmount: 0 });
+  });
+
   it('manual confirmation: once, only for the right store, audited; then fulfilment is allowed', async () => {
     const S = oid();
     const id = await order(S, oid(), { codProtection: { decision: 'confirm', confirmation: { status: 'awaiting', expiresAt: new Date(Date.now() + 3600_000) } } });

@@ -142,6 +142,44 @@ export class CodProtectionService {
     }
   }
 
+  /**
+   * Numbers for the dashboard card. Confirmation rate = confirmed / (confirmed + cancelled + expired) among COD orders that asked for
+   * confirmation; RTO rate = COD orders with a courier booking that came back / COD orders with a courier booking; saved amount = value
+   * of orders the customer cancelled or never confirmed (store currency), i.e. parcels that were never shipped.
+   */
+  async stats(storeId: string, days = 30) {
+    const d = Math.min(Math.max(Math.round(days) || 30, 1), 365);
+    const since = new Date(Date.now() - d * 86_400_000);
+    const store: any = await this.db.repositories.storeModel.findById(storeId).select('baseCurrency').lean();
+    const currency = store?.baseCurrency ?? 'USD';
+    const rows: any[] = await this.orders.find({ isDelete: false, 'sellerOrders.storeId': storeId, paymentType: 'cash_on_delivery', createdAt: { $gte: since } })
+      .select('totalAmount currency fxSnapshots codProtection.confirmation.status').limit(5000).lean();
+    let asked = 0; let confirmed = 0; let cancelled = 0; let expired = 0; let awaiting = 0; let saved = 0;
+    for (const o of rows) {
+      const st = o.codProtection?.confirmation?.status;
+      if (!st) continue;
+      asked++;
+      if (st === 'confirmed') confirmed++;
+      else if (st === 'awaiting') awaiting++;
+      else {
+        if (st === 'cancelled') cancelled++; else expired++;
+        saved += o.currency === currency ? o.totalAmount : this.exchange.convertWithSnapshots(o.totalAmount, o.currency, currency, o.fxSnapshots ?? []);
+      }
+    }
+    const ids = rows.map((r) => String(r._id));
+    const bookings: any[] = ids.length ? await (this.db.repositories as any).courierBookingModel.find({ storeId, orderId: { $in: ids } }).select('orderId rto').lean() : [];
+    const booked = new Set(bookings.map((b) => String(b.orderId)));
+    const rto = new Set(bookings.filter((b) => b.rto).map((b) => String(b.orderId)));
+    const resolved = confirmed + cancelled + expired;
+    const round = (n: number) => Math.round(n * 100) / 100;
+    return {
+      days: d, currency, codOrders: rows.length, asked, confirmed, cancelled, expired, awaiting,
+      confirmationRate: resolved > 0 ? round(confirmed / resolved) : null,
+      bookedOrders: booked.size, rtoOrders: rto.size, rtoRate: booked.size > 0 ? round(rto.size / booked.size) : null,
+      savedAmount: round(saved),
+    };
+  }
+
   /** 404 unless this order belongs to the store (used before acting on an order id from the URL). */
   async assertOrderOfStore(storeId: string, orderId: string) {
     if (!isOid(orderId) || !(await this.orders.exists({ _id: orderId, isDelete: false, 'sellerOrders.storeId': storeId }))) throw new NotFoundException('Order not found');

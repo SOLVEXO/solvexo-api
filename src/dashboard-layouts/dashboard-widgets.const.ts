@@ -34,6 +34,7 @@ export const STORE_WIDGETS: Record<string, WidgetSpec> = {
   recent_orders: { sizes: ['third', 'medium', 'large'], settings: { limit: LIMIT } },
   traffic_sources: { sizes: ['third', 'medium', 'large'], settings: { range: { type: 'enum', values: RANGES } } },
   top_products: { sizes: ['third', 'medium', 'large'], settings: { limit: LIMIT } },
+  cod_protection: { sizes: ['third', 'medium'], settings: { range: { type: 'enum', values: RANGES } } },
 };
 
 /** Widgets for the Super Admin Home. Keep ids in sync with solvexo-web `features/admin/pages/adminDashboardWidgets.tsx`. */

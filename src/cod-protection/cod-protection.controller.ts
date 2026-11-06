@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Body, Controller, Get, Param, Post, Put, Req, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Put, Query, Req, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -31,6 +31,9 @@ export class CodProtectionController {
 
   @Put('settings') @RequirePermission('settings.payments.manage')
   async update(@Req() req: any, @Param('storeId') s: string, @Body() b: any) { return this.svc.updateSettings(s, await this.own(req, s), b); }
+
+  @Get('stats') @RequirePermission('orders.view')
+  async stats(@Req() req: any, @Param('storeId') s: string, @Query('days') days?: string) { await this.own(req, s); return this.svc.stats(s, Number(days) || 30); }
 
   /** Send the confirmation message again (a new link; older links stop working). Only while the order waits. */
   @Post('orders/:orderId/resend-confirmation') @RequirePermission('orders.edit')
