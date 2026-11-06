@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { isPaymentMethodAllowed } from '../b2b/b2b-pricing.util';
 import { isValidObjectId } from 'mongoose';
 import { DatabaseService } from '../database/databaseservice';
 import { ActivityLogService } from '../activity-log/activity-log.service';
@@ -110,7 +111,10 @@ export class CheckoutPaymentMethodsService {
       currency,
     }));
 
-    return { success: true, data: { currency, methods: [...methods, ...manualViews] } };
+    // A wholesale company's allow-list also narrows the seller's own gateways ('provider key') and custom methods ('manual').
+    const b2bAllow = (checkout as any).b2b?.allowedPaymentMethods as string[] | undefined;
+    const visible = [...methods, ...manualViews].filter((m: any) => isPaymentMethodAllowed(b2bAllow, m.provider));
+    return { success: true, data: { currency, methods: visible } };
   }
 
   /** Places the order(s) for a seller-defined custom manual payment method — unpaid until the seller marks it paid. */

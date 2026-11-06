@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { creditLimitCheck, isOverdue, outstandingBalance, paidTotal, paymentDueDate, paymentStatusOf, round2 } from './b2b-pricing.util';
+import { creditLimitCheck, isOverdue, isPaymentMethodAllowed, outstandingBalance, paidTotal, paymentDueDate, paymentStatusOf, round2 } from './b2b-pricing.util';
 
 /** What an order remembers about its wholesale buyer and receivable. Seller records only: Solvexo moves no money. */
 export interface OrderB2B {
@@ -69,3 +69,20 @@ export async function companyOutstanding(
 }
 
 export { creditLimitCheck };
+
+/**
+ * Payment methods a wholesale company may see at checkout: the store's list narrowed by the company's allow-list (an empty list
+ * allows everything), plus `b2b_terms` when the company has payment terms and the cart is from one store. "split" (online + COD)
+ * needs both halves allowed. Retail checkouts (no snapshot) are returned unchanged.
+ */
+export function filterPaymentMethodsForB2B(
+  methods: string[],
+  b2b: { allowedPaymentMethods?: string[] | null; paymentTerms?: unknown } | null | undefined,
+  singleStore: boolean,
+): string[] {
+  if (!b2b) return methods;
+  const allow = (m: string) => isPaymentMethodAllowed(b2b.allowedPaymentMethods, m);
+  const out = methods.filter((m) => (m === 'split' ? allow('stripe') && allow('cash_on_delivery') : allow(m)));
+  if (b2b.paymentTerms && singleStore && allow('b2b_terms')) out.push('b2b_terms');
+  return out;
+}

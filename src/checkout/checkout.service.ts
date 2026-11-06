@@ -1,6 +1,7 @@
 import { preorderCanFill } from '../common/preorder.util';
 import { assertBundleInStock } from '../common/bundle.util';
 import { B2BContextService } from '../b2b/b2b-context.service';
+import { filterPaymentMethodsForB2B } from '../b2b/b2b-order.util';
 import { CustomerSegmentsService } from '../customer-segments/customer-segments.service';
 import { assertOrderQuantity } from '@/products/selling-options.util';
 import { isValidObjectId } from 'mongoose';
@@ -1056,11 +1057,12 @@ export class CheckoutService {
         // 'stripe' and 'cash_on_delivery' as before — unless COD isn't
         // eligible (see codEligible above), in which case 'stripe' (pay
         // everything online) is always the safe fallback.
-        allowedPaymentMethods: withoutCardIfNoProvider(withoutUnsupportedStripe(
+        // Wholesale companies: narrowed by the company's allow-list, plus payment terms when they have them (single store only).
+        allowedPaymentMethods: filterPaymentMethodsForB2B(withoutCardIfNoProvider(withoutUnsupportedStripe(
           hasDigital
             ? withManualTransfer(hasPhysical && codEligible ? ['stripe', 'split'] : ['stripe'])
             : withManualTransfer(codEligible ? ['stripe', 'cash_on_delivery'] : ['stripe']),
-        )),
+        )), (checkout as any).b2b, cardStoreIds.length === 1),
         cardPaymentAvailable: cardAvailable,
         summary: {
           subtotal,
@@ -2188,6 +2190,16 @@ export class CheckoutService {
     const note = String(body?.note ?? '').trim().slice(0, 500);
     await checkoutModel.updateOne({ _id: checkout._id }, { $set: { customerNote: note } });
     return { success: true, message: 'Note saved', data: { customerNote: note } };
+  }
+
+  /** Wholesale buyers: the purchase-order number printed on their order and invoice. Only for a checkout that carries a company snapshot. */
+  async setB2BPoNumber(userId: string, body: any) {
+    const { checkout, checkoutModel } = await this.loadOpenCheckoutForCredit(userId, body?.checkoutId);
+    if (!(checkout as any).b2b?.companyId) throw new BadRequestException('Purchase order numbers are only for wholesale accounts.');
+    if (body?.poNumber != null && typeof body.poNumber !== 'string') throw new BadRequestException('poNumber must be text');
+    const poNumber = String(body?.poNumber ?? '').trim().slice(0, 60) || null;
+    await checkoutModel.updateOne({ _id: checkout._id }, { $set: { 'b2b.poNumber': poNumber } });
+    return { success: true, message: 'Purchase order number saved', data: { poNumber } };
   }
 
   private async persistStoreCredit(checkoutModel: any, checkout: any, items: any[], flag: { storeCreditApplied: boolean; storeCreditStoreId: string | null }) {

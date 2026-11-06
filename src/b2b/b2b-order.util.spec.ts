@@ -55,3 +55,25 @@ describe('companyOutstanding', () => {
     expect(find.mock.calls[0][0]).toMatchObject({ 'b2b.companyId': 'c1', 'sellerOrders.storeId': 's1', isDelete: false, orderStatus: { $nin: ['cancelled', 'refunded'] } });
   });
 });
+
+import { filterPaymentMethodsForB2B } from './b2b-order.util';
+describe('filterPaymentMethodsForB2B', () => {
+  const terms = { type: 'net', netDays: 30 };
+  it('leaves retail checkouts alone', () => {
+    expect(filterPaymentMethodsForB2B(['stripe', 'cash_on_delivery'], null, true)).toEqual(['stripe', 'cash_on_delivery']);
+  });
+  it('adds terms for a single-store company with terms, never for multi-store or without terms', () => {
+    expect(filterPaymentMethodsForB2B(['stripe'], { paymentTerms: terms }, true)).toEqual(['stripe', 'b2b_terms']);
+    expect(filterPaymentMethodsForB2B(['stripe'], { paymentTerms: terms }, false)).toEqual(['stripe']);
+    expect(filterPaymentMethodsForB2B(['stripe'], { paymentTerms: null }, true)).toEqual(['stripe']);
+  });
+  it('narrows by the allow-list (bank transfer + terms only)', () => {
+    const b2b = { paymentTerms: terms, allowedPaymentMethods: ['manual_bank_transfer', 'b2b_terms'] };
+    expect(filterPaymentMethodsForB2B(['stripe', 'cash_on_delivery', 'manual_bank_transfer'], b2b, true)).toEqual(['manual_bank_transfer', 'b2b_terms']);
+  });
+  it('terms excluded by the list are not added; split needs both halves', () => {
+    expect(filterPaymentMethodsForB2B(['stripe'], { paymentTerms: terms, allowedPaymentMethods: ['stripe'] }, true)).toEqual(['stripe']);
+    expect(filterPaymentMethodsForB2B(['stripe', 'split'], { allowedPaymentMethods: ['stripe'] }, true)).toEqual(['stripe']);
+    expect(filterPaymentMethodsForB2B(['split'], { allowedPaymentMethods: ['stripe', 'cash_on_delivery'] }, true)).toEqual(['split']);
+  });
+});

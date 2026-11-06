@@ -11,6 +11,7 @@ import { DatabaseService } from '../database/databaseservice';
 import { B2BContextService } from './b2b-context.service';
 
 const MAX_LINES = 50;
+const MAX_QUICK_LINES = 100;
 
 /** Storefront (buyer) side of B2B: apply for a wholesale account, see my standing, and ask the SERVER for my prices and rules. */
 @ApiTags('B2B (storefront)')
@@ -74,5 +75,45 @@ export class B2BStorefrontController {
       }
     });
     return { b2b: true, company: ctx.companyName, lines: out };
+  }
+
+  /**
+   * Quick order list: up to 100 {sku, quantity} lines resolved on the server (this store only) with the buyer's wholesale price and
+   * rules. Lines that cannot be bought come back with an error; the browser then adds the good ones to the cart.
+   */
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  @Post('quick-order')
+  async quickOrder(@Req() req: any, @Body() body: any) {
+    const storeId = resolveBuyerStoreScope(req.user.storeId, body?.storeId);
+    const lines: any[] = Array.isArray(body?.lines) ? body.lines : [];
+    if (lines.length === 0 || lines.length > MAX_QUICK_LINES) throw new BadRequestException(`Send between 1 and ${MAX_QUICK_LINES} lines`);
+    const ctx = await this.ctxSvc.getContext(storeId, String(req.user.userId));
+    if (!ctx) throw new BadRequestException('Quick order is for approved wholesale accounts.');
+    const skus = [...new Set(lines.map((l) => (typeof l?.sku === 'string' ? l.sku.trim() : '')).filter(Boolean))].slice(0, MAX_QUICK_LINES);
+    const { productVariantModel, productModel } = this.db.repositories as any;
+    const candidates: any[] = await productVariantModel.find({ sku: { $in: skus }, isDelete: false }).select('_id productId sku price').lean();
+    const products: any[] = await productModel.find({ _id: { $in: [...new Set(candidates.map((v) => v.productId))] }, storeId, isDelete: false, status: 'active' })
+      .select('_id name type orderMinQuantity orderMaxQuantity orderQuantityStep').lean();
+    const productById = new Map(products.map((p) => [String(p._id), p]));
+    // The same SKU may exist in other stores: only variants of this store's active products count.
+    const variants = candidates.filter((v) => productById.has(String(v.productId)));
+    const bySku = new Map(variants.map((v) => [v.sku, v]));
+    const entries = await this.ctxSvc.loadEntries(ctx, variants.map((v) => String(v._id)));
+    const out = lines.map((l) => {
+      const sku = typeof l?.sku === 'string' ? l.sku.trim() : '';
+      const quantity = Number.isInteger(l?.quantity) && l.quantity > 0 ? l.quantity : 0;
+      const variant = bySku.get(sku);
+      const product = variant ? productById.get(String(variant.productId)) : null;
+      if (!sku || !quantity) return { sku, quantity, ok: false, error: 'Enter a SKU and a whole quantity of 1 or more' };
+      if (!variant || !product) return { sku, quantity, ok: false, error: 'SKU not found' };
+      try {
+        const r = this.ctxSvc.resolveLine(ctx, entries, { productName: product.name, product, variantId: String(variant._id), basePrice: variant.price, quantity });
+        return { sku, quantity, ok: true, productId: String(product._id), variantId: String(variant._id), name: product.name, type: product.type, unitPrice: r.unitPrice };
+      } catch (e: any) {
+        const res = e?.getResponse?.();
+        return { sku, quantity, ok: false, name: product.name, error: typeof res === 'object' ? res.message : e?.message, suggested: typeof res === 'object' ? res.suggested : undefined };
+      }
+    });
+    return { lines: out };
   }
 }

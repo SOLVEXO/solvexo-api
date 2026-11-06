@@ -218,6 +218,13 @@ export class CheckoutController {
 
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('user')
+  @Post('b2b-po-number')
+  async setB2BPoNumber(@Req() req: any, @Body() body: any) {
+    return this.checkoutService.setB2BPoNumber(req.user.userId, body);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('user')
   @Post('apply-store-credit')
   async applyStoreCredit(@Req() req: any, @Body() body: any) {
     const { userId } = req.user;
