@@ -1941,6 +1941,10 @@ export class OrdersService {
     if (!OrdersService.FULFILLABLE_STATUSES.includes(current)) {
       throw new BadRequestException(`Cannot fulfil an order that is "${current}".`);
     }
+    // Wholesale deposit (seller-set): the required deposit must be recorded before anything ships, partial shipments included.
+    if (order.b2b?.terms && (order.b2b.depositRequired ?? 0) > (order.b2b.paidTotal ?? 0) + 0.004) {
+      throw new BadRequestException('Record the required deposit for this wholesale order before shipping it.');
+    }
     const priorShipments: any[] = so.shipments ?? [];
     const check = validateFulfilRequest(so.items, priorShipments, dto.items);
     if (!check.ok) throw new BadRequestException(check.error);

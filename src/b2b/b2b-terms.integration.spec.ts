@@ -199,6 +199,21 @@ d('B2B payment terms on a real MongoDB', () => {
     expect(((await repos.productVariantModel.collection.findOne({ _id: v2 })) as any).committedStock).toBe(1);
   });
 
+  it('deposit: neither whole-order status changes nor partial fulfilment ship the order until the deposit is recorded', async () => {
+    const ord: any = Object.create(OrdersService.prototype);
+    for (const k of ['notificationsService', 'financeService', 'activityLogService', 'giftCardsService', 'storeCreditService']) ord[k] = stub();
+    ord.paymentService = stub();
+    ord.exchangeRateService = { convertWithSnapshots: (n: number) => n };
+    ord.databaseService = { repositories: repos };
+    const { id } = await terms(1000, { depositPercent: 20 });
+    const o: any = await repos.orderModel.collection.findOne({ _id: new Types.ObjectId(id) });
+    const itemId = String(o.sellerOrders[0].items[0]._id);
+    await expect(ord.updateSellerOrderStatus(SELLER, { orderId: id, storeId: STORE, status: 'shipped' })).rejects.toThrow(/required deposit/);
+    await expect(ord.fulfilItems(SELLER, STORE, id, { items: [{ itemId, quantity: 1 }] })).rejects.toThrow(/required deposit/);
+    await ordersSvc.recordPayment(STORE, SELLER, actor, id, { amount: 200, method: 'bank' });
+    await expect(ord.fulfilItems(SELLER, STORE, id, { items: [{ itemId, quantity: 1 }] })).rejects.not.toThrow(/required deposit/);
+  });
+
   it('overdue filter and outstanding report/CSV (per company, formula-safe)', async () => {
     const company = String(new Types.ObjectId());
     const a = await terms(100, { companyId: company, companyName: '=HYPERLINK("x")' });

@@ -45,8 +45,15 @@ Not done in slice 5: wholesale price shown on product/cart pages in the themes (
 
 Limits: wholesale price is not shown on product cards or in search/collection grids (cards only hide retail when locked); no B2B-only sections/pages; checkout pages themselves do not re-check the lock in the UI (the server does).
 
+## Done (slice 7: returns/cancel/edit, reminders, plan feature, deposit)
+- **Returns / cancel / edit on terms orders (checked and fixed):** an unpaid terms order that gets a return refund, a partial cancel or an order edit now lowers the receivable (`creditReceivable`, atomic, never below what is recorded as paid, adjustments kept in `b2b.adjustments`) and re-syncs the status. Before this the company still owed the full original total. Exchanges stay paid-orders only (as before); a terms order becomes exchangeable once fully paid and marked paid. Money the company already paid on a cancelled order is the seller's to refund by hand (Solvexo moves none).
+- **Reminders:** catalog email event `b2b_invoice_reminder` (group invoices, on by default, editable per store): one "due soon" 3 days before, then weekly "overdue" (max 4), to the orderer + location admins; hourly cron `40 * * * *` with Redis lock; atomic claim per order so no double mail.
+- **Plan feature `b2bWholesaleAllowed`** (default on for every plan; admin can turn it off per plan): seller changes (companies, catalogs, applications, buyers) and wholesale applications are refused without it; reading and recording payments on existing receivables always stays allowed.
+- **Deposit:** also enforced on partial fulfilment (`fulfilItems`), not only on the whole-order status change.
+- Tests: real-Mongo credit notes + partial cancel + deposit (13 in the terms spec), 7 reminder tests, apply gate; staff/plan specs still pass.
+
 ## Not done yet (next slices)
 1. Storefront UI: wholesale application page, B2B price display in themes (via the prices endpoint), PO number field at checkout, quick order list / CSV, reorder, company addresses, hide-prices-for-visitors store setting, shared theme components, Liquid context. NOT tested: the createCheckout hook itself against a real database (it is only exercised through the context service and type-checked).
-2. Reminders for due/overdue invoices (email/WhatsApp), deposit check on partial fulfilment.
+2. Draft orders for a company (seller creates an order for a company with its prices and terms).
 4. Plan limits via entitlements (not added yet).
 5. Returns/exchange check on B2B orders; en/ur strings; email/WhatsApp notices for application decisions.
