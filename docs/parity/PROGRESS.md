@@ -4,7 +4,7 @@ Read MASTER.md first. Update this table after every phase.
 
 | phase | status | commit | not-verified |
 |---|---|---|---|
-| P0 Theme parity | not started | - | - |
+| P0 Theme parity | done (code) | web b7030f45 | no browser check of mini-cart notices |
 | P1 Real-DB tests + money-path hardening | not started | - | - |
 | P2 B2B (+ addendum) | not started | - | - |
 | P3 COD protection | not started | - | - |
