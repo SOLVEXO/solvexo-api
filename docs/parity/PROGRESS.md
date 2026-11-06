@@ -6,7 +6,7 @@ Read MASTER.md first. Update this table after every phase.
 |---|---|---|---|
 | P0 Theme parity | done (code) | web b7030f45 | no browser check of mini-cart notices |
 | P1 Real-DB tests + money-path hardening | DONE for order placement, webhook idempotency, cancel restock (13 real-DB tests); remaining items listed in P1 doc | see git log | gift card, store credit, tax totals, finance ledger, return restock, POS bundle stock not covered |
-| P2 B2B (+ addendum) | IN PROGRESS: slice 1 (backend admin foundation + rules) | see git log | storefront, checkout rules, payment terms, web admin, entitlements not built |
+| P2 B2B (+ addendum) | IN PROGRESS: slices 1-2 (backend admin, rules, checkout enforcement) | see git log | storefront UI, payment terms/installments/credit limit, web admin, entitlements, createCheckout hook not run on real DB |
 | P3 COD protection | not started | - | - |
 | P4 Messaging channels (WhatsApp/SMS) | not started | - | - |
 | P5 Khata | not started | - | - |

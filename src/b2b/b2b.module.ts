@@ -8,6 +8,8 @@ import {
 } from './b2b.schema';
 import { B2BAdminService } from './b2b-admin.service';
 import { B2BAdminController } from './b2b-admin.controller';
+import { B2BContextService } from './b2b-context.service';
+import { B2BStorefrontController } from './b2b-storefront.controller';
 
 @Module({
   imports: [
@@ -22,8 +24,8 @@ import { B2BAdminController } from './b2b-admin.controller';
       { name: B2BCatalogItem.name, schema: B2BCatalogItemSchema },
     ]),
   ],
-  controllers: [B2BAdminController],
-  providers: [B2BAdminService],
-  exports: [B2BAdminService, MongooseModule],
+  controllers: [B2BAdminController, B2BStorefrontController],
+  providers: [B2BAdminService, B2BContextService],
+  exports: [B2BAdminService, B2BContextService, MongooseModule],
 })
 export class B2BModule {}

@@ -416,6 +416,10 @@ export class Checkout {
   @Prop({ type: Date, default: null })
   orderPlacementClaimedAt?: Date | null;
 
+  /** Wholesale buyer snapshot taken at checkout creation (company, PO number, allowed payment methods, terms, tax exemption). Null = retail. */
+  @Prop({ type: Object, default: null })
+  b2b?: Record<string, any> | null;
+
   @Prop({ type: Date, default: null })
   expiredAt: Date | null;
 

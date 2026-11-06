@@ -10,8 +10,15 @@ Pure rules: `npx jest b2b-pricing`.
 - `B2BAdminService` + `/api/b2b/:storeId/*` controller, perms `b2b.view` / `b2b.manage` (staff registry, preset version 3, web list). Companies/locations/buyers CRUD, application approve (atomic claim) / reject, catalogs + items upsert. Buyer must be a customer of the same store; approved buyers get the `b2b` customer tag. Audit via activity log. Whitelisted input only.
 - 8 real-Mongo tests: tenant isolation, no mass assignment, atomic double approval, variant ownership, break/rule validation, catalog in-use guard, location guards.
 
+## Done (slice 2: storefront + checkout enforcement, backend only)
+- `B2BContextService`: buyer context from the logged-in user (never the request): approved company + active buyer + location overrides + active catalog. Server-side `resolveLine` = availability, quantity rule, price. Visitors, retail customers, disabled buyers, suspended/pending companies, other stores = retail (null).
+- `CheckoutService.createCheckout`: wholesale unit price per line, catalog availability and quantity rules (replace the retail product rule), market price rule does not stack on a wholesale price, tax-exempt company pays no item or shipping tax, `Checkout.b2b` snapshot (company, location, role, PO number from `body.poNumber`, allowed payment methods, terms, credit limit, deposit %, tax exemption).
+- Payment-method restriction: `PaymentService.assertDiscountsStillValid(checkout, method)` is called at every entry (card=`stripe`, `cash_on_delivery`, `manual`, `manual_bank_transfer`, seller gateway = provider key); store credit never blocked. The allow-list uses those keys.
+- Storefront endpoints (buyer JWT, store-scoped): `GET api/b2b/storefront/me`, `POST apply` (throttled, one open application, refused for existing buyers), `POST prices` (<=50 lines: server price/rule/availability for themes to display).
+- 11 real-Mongo tests + 2 gate tests; existing checkout/payment specs still pass (102 in the combined run).
+
 ## Not done yet (next slices)
-1. Storefront: wholesale application endpoint + page, buyer context, B2B price/rules in cart + checkout (server recompute), PO number, quick order list / CSV, reorder, company addresses, hide prices/cart for visitors setting, theme components (P0 shared pieces), Liquid context.
+1. Storefront UI: wholesale application page, B2B price display in themes (via the prices endpoint), PO number field at checkout, quick order list / CSV, reorder, company addresses, hide-prices-for-visitors store setting, shared theme components, Liquid context. NOT tested: the createCheckout hook itself against a real database (it is only exercised through the context service and type-checked).
 2. Payment terms on orders: order due date, partial payments (installments), deposit, overdue flag, reminders (email/WhatsApp), credit-limit enforcement at checkout, per-company payment-method restriction at checkout. (Shares data with P5 Khata: no second ledger.)
 3. Seller admin web pages (companies, catalogs, applications, company order list, outstanding report, CSV export), draft orders for a company.
 4. Plan limits via entitlements (not added yet).

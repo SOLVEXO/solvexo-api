@@ -43,6 +43,7 @@ import { markStorefrontSession } from '../common/storefront-session.util';
 import { GATEWAY_PAYMENT_TYPES, catalogEntry } from '../integrations/payment-provider-catalog';
 import { toDecryptedPaymentConfig } from '../integrations/integration-credentials.helper';
 import { PaymentProviderRegistry } from '../integrations/payment-provider.registry';
+import { isPaymentMethodAllowed } from '../b2b/b2b-pricing.util';
 
 /** Thrown by createOrder when the atomic stock reservation loses (the last unit was sold between the buyer paying
  *  and the order being created). Distinct type so the payment-finalize paths can auto-refund instead of retrying forever. */
@@ -313,7 +314,7 @@ export class PaymentService {
       throw new BadRequestException('Checkout has expired');
     }
 
-    await this.assertDiscountsStillValid(checkout);
+    await this.assertDiscountsStillValid(checkout, 'stripe');
 
     const physicalItems = checkout.items.filter(
       (i: any) => i.type === 'physical',
@@ -1903,9 +1904,13 @@ export class PaymentService {
    * when an order is placed), and store credit may have been spent elsewhere. Throws a readable error so the buyer can
    * remove the discount and continue — they are never charged a discounted total that can no longer be honored.
    */
-  async assertDiscountsStillValid(checkout: any) {
+  async assertDiscountsStillValid(checkout: any, method?: string) {
     await this.assertCouponStillUsable(checkout);
     await this.assertStoreCreditStillCovers(checkout);
+    // Wholesale companies may be limited to certain payment methods (seller setting, snapshotted on the checkout). Store credit is never blocked.
+    if (method && method !== 'store_credit' && !isPaymentMethodAllowed(checkout?.b2b?.allowedPaymentMethods, method)) {
+      throw new BadRequestException('This payment method is not available for your company. Please choose another one.');
+    }
   }
 
   private async assertCouponStillUsable(checkout: any) {
@@ -1963,7 +1968,7 @@ export class PaymentService {
     if (checkout.totalAmount > 0.005) {
       throw new BadRequestException('Your store credit does not cover the full amount — choose a payment method for the rest.');
     }
-    await this.assertDiscountsStillValid(checkout);
+    await this.assertDiscountsStillValid(checkout, 'store_credit');
 
     for (const item of checkout.items) {
       if (item.type !== 'physical') continue;
@@ -2036,7 +2041,7 @@ export class PaymentService {
       throw new BadRequestException('Checkout has expired');
     }
 
-    await this.assertDiscountsStillValid(checkout);
+    await this.assertDiscountsStillValid(checkout, 'cash_on_delivery');
 
     const hasDigital = checkout.items.some((i: any) => i.type === 'digital');
     if (hasDigital)
@@ -2130,7 +2135,7 @@ export class PaymentService {
       await checkoutModel.findByIdAndUpdate(checkout._id, { status: 'expired' });
       throw new BadRequestException('Checkout has expired');
     }
-    await this.assertDiscountsStillValid(checkout);
+    await this.assertDiscountsStillValid(checkout, 'manual');
 
     await checkoutModel.findByIdAndUpdate(checkoutId, { paymentType: 'manual', status: 'payment_pending' });
     const info = { paymentType: 'manual', isPaid: false, paymentStatus: 'unpaid', paymentMethodName: method.name };
@@ -2206,7 +2211,7 @@ export class PaymentService {
       throw new BadRequestException('Bank transfer is only available for checkouts in PKR');
     }
 
-    await this.assertDiscountsStillValid(checkout);
+    await this.assertDiscountsStillValid(checkout, 'manual_bank_transfer');
 
     // Bank transfer settles into ONE seller's own bank account (see
     // StoreIntegrationsService — 'bank_transfer' provider), so a cart that

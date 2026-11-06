@@ -1,5 +1,6 @@
 import { preorderCanFill } from '../common/preorder.util';
 import { assertBundleInStock } from '../common/bundle.util';
+import { B2BContextService } from '../b2b/b2b-context.service';
 import { CustomerSegmentsService } from '../customer-segments/customer-segments.service';
 import { assertOrderQuantity } from '@/products/selling-options.util';
 import { isValidObjectId } from 'mongoose';
@@ -76,6 +77,8 @@ export class CheckoutService {
     private readonly marketPricingService: MarketPricingService,
     // Last + optional so positional-constructor specs keep working; provided by CheckoutModule.
     @Optional() private readonly customerSegments?: CustomerSegmentsService,
+    // Wholesale (B2B) prices, rules and payment restrictions for approved company buyers; retail buyers are unaffected.
+    @Optional() private readonly b2bContext?: B2BContextService,
   ) {}
 
   private round(n: number) {
@@ -444,6 +447,10 @@ export class CheckoutService {
       return storeStatusCache.get(storeId)!;
     };
 
+    // Wholesale: resolved from the logged-in buyer on the server (never from the request). Null = retail rules.
+    const b2bCtx = this.b2bContext ? await this.b2bContext.getContext(storeId, String(userId)) : null;
+    const b2bPricedVariants = new Set<string>();
+
     // Pass 1: resolve product/variant and validate stock.
     const rawItems: Array<{ product: any; variant: any; cartItem: any }> = [];
 
@@ -466,7 +473,8 @@ export class CheckoutService {
           `An item in your cart is no longer available. Please remove it and try again.`,
         );
 
-      assertOrderQuantity(product as any, cartItem.quantity);
+      // A wholesale buyer's quantity rule (catalog entry, falling back to the product's) is enforced in pass 2 by the B2B resolver.
+      if (!b2bCtx) assertOrderQuantity(product as any, cartItem.quantity);
 
       // Shopify catalog availability: a product the buyer's market doesn't sell can't be checked out there.
       if (!isProductAvailableInMarket(market, String(product._id))) {
@@ -538,10 +546,18 @@ export class CheckoutService {
       : [];
     const sellerMap = new Map(sellers.map((s: any) => [s._id.toString(), s]));
 
-    // Pass 2: build the checkout lines at the variant's list price.
+    // Pass 2: build the checkout lines at the variant's list price (or the buyer's wholesale price).
+    const b2bEntries = b2bCtx && this.b2bContext ? await this.b2bContext.loadEntries(b2bCtx, rawItems.map((r) => String(r.variant._id))) : new Map();
     const checkoutItems: any[] = [];
     for (const { product, variant, cartItem } of rawItems) {
-      const unitPrice = variant.price;
+      let unitPrice = variant.price;
+      if (b2bCtx && this.b2bContext) {
+        // Wholesale price, availability and quantity rule, recomputed here. A violation throws a buyer-readable 400.
+        unitPrice = this.b2bContext.resolveLine(b2bCtx, b2bEntries, {
+          productName: product.name, product, variantId: String(variant._id), basePrice: variant.price, quantity: cartItem.quantity,
+        }).unitPrice;
+        b2bPricedVariants.add(String(variant._id));
+      }
 
       const seller = sellerMap.get(product.sellerId?.toString());
 
@@ -586,6 +602,8 @@ export class CheckoutService {
       for (const item of checkoutItems) {
         const fixed = fixedPriceFor(marketFixedPrices, item.productId, item.variantId);
         if (!marketRule && !fixed) continue;
+        // A wholesale price is final: the market's price rule does not stack on it.
+        if (b2bPricedVariants.has(String(item.variantId))) continue;
         const unit = marketAdjustedNativeAmount(item.price, item.currency, checkoutCurrency, marketRule, marketSnapshots, fixed?.fixedPrice ?? null);
         item.price = unit;
         item.totalPrice = Math.round(unit * item.quantity * 1e6) / 1e6;
@@ -864,7 +882,8 @@ export class CheckoutService {
       const cfg = taxCfgByStore.get(sid) ?? {};
       const storeItems = checkoutItems.filter((item: any) => item.storeId === sid);
       // A seller who is not tax-registered collects no tax at all (rates stay saved for when they register).
-      if (isTaxCollectionOff(cfg as any)) {
+      // A seller who is not tax-registered, or a tax-exempt wholesale company, is charged no tax (rates stay saved).
+      if (isTaxCollectionOff(cfg as any) || (b2bCtx?.taxExempt && sid === storeId)) {
         for (const item of storeItems) { item.taxUSD = 0; item.includedTaxUSD = 0; }
         continue;
       }
@@ -952,6 +971,7 @@ export class CheckoutService {
       attributedBannerId: body.attributedBannerId ?? null,
       attributedStoreBannerId: body.attributedStoreBannerId ?? null,
       attributedAffiliateCode: body.attributedAffiliateCode ?? null,
+      b2b: b2bCtx && this.b2bContext ? this.b2bContext.snapshot(b2bCtx, body.poNumber) : null,
       expiredAt: new Date(Date.now() + 30 * 60 * 1000),
       isDelete: false,
     });
@@ -1443,7 +1463,7 @@ export class CheckoutService {
       .findById(storeId)
       .select('taxRate taxRegions taxShipping taxPricesIncludeTax taxRegistered')
       .lean();
-    if (!store?.taxShipping || isTaxCollectionOff(store)) return { added: 0, included: 0 };
+    if (!store?.taxShipping || isTaxCollectionOff(store) || checkout?.b2b?.taxExempt) return { added: 0, included: 0 };
     if (address?.country) {
       const storeSubtotal = items
         .filter((i) => i.storeId === storeId)
