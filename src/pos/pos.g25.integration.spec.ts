@@ -110,6 +110,7 @@ describe('tax-invoice numbers: per store, gap-free, immutable', () => {
     expect(((await h.repos.saleModel.findById(a._id).lean()) as any).items[0].hsCode).toBe('09024090');
     await refund(x, String(a._id));
     expect((await cns(x.s.storeId))[0].lines[0].hsCode).toBe('09024090');
+    expect(((await h.repos.saleModel.findById(a._id).lean()) as any).items[0].refundedQty).toBe(1); // a FULL refund counts the returned unit too
   });
 });
 
@@ -212,6 +213,7 @@ describe('partial returns: rules, races, stock', () => {
     const sale: any = await h.repos.saleModel.findById(a._id).lean();
     expect(sale.items[0].refundedQty).toBe(2);
     expect(sale.status).toBe('refunded');
+    expect(sale.items[0].refundedQty).toBe(2); // whichever request won (a 2-unit return or the full refund), the line says 2 came back
     expect(await stockOf(h, x.s.variantId)).toBe(stockAfterSale + 2);
     expect((await cns(x.s.storeId)).length).toBe(1);
   });

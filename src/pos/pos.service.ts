@@ -1459,8 +1459,9 @@ export class PosService {
       $set: { status: newStatus, refundedAmount: roundMoney(alreadyRefunded + refundAmount, exp), refundedAmountMinor: toMinor(alreadyRefunded, exp) + toMinor(refundAmount, exp) },
       $push: { refunds: refundRecord },
     };
+    // every line's returned quantity is counted — for a full refund too (the units still on the sale), so refundedQty is always the truth
     let arrayFilters: any[] | undefined;
-    if (isPartial) {
+    if (itemUpdates.length) {
       const inc: Record<string, number> = {};
       arrayFilters = [];
       itemUpdates.forEach((u, idx) => {
