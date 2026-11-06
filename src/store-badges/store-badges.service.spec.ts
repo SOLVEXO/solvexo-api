@@ -13,6 +13,7 @@ function makeService(counts: Partial<Record<string, number | 'throw'>>) {
     orderModel: { countDocuments: count('returns') },
     paymentTransactionModel: { countDocuments: count('disputes') },
     manualPaymentProofModel: { countDocuments: count('payment-proofs') },
+    storeIntegrationModel: { countDocuments: count('bank-transfer') },
     conversationModel: { countDocuments: count('messages') },
     storeContactMessageModel: { countDocuments: count('online-store-contact') },
     ratingModel: { countDocuments: count('reviews') },
@@ -25,7 +26,7 @@ describe('StoreBadgesService', () => {
   it('a seller gets every non-zero count and zero counts are left out', async () => {
     const svc = makeService({ returns: 3, disputes: 0, 'payment-proofs': 2, messages: 7, inventory: 4 });
     const res = await svc.get({ role: 'seller' }, 'seller-1', 'store-1');
-    expect(res.data).toEqual({ returns: 3, 'payment-proofs': 2, messages: 7, inventory: 4 });
+    expect(res.data).toEqual({ returns: 3, 'payment-proofs': 2, 'payment-proofs-shown': 1, messages: 7, inventory: 4 });
   });
 
   it('a staff member only gets the areas their role may open', async () => {
@@ -38,6 +39,13 @@ describe('StoreBadgesService', () => {
     const svc = makeService({ returns: 'throw', messages: 2 });
     const res = await svc.get({ role: 'seller' }, 'seller-1', 'store-1');
     expect(res.data).toEqual({ messages: 2 });
+  });
+
+  it('payment proofs are shown only when the store has proofs or a connected bank transfer', async () => {
+    const none = await makeService({ messages: 1 }).get({ role: 'seller' }, 'seller-1', 'store-1');
+    expect('payment-proofs-shown' in none.data).toBe(false);
+    const bank = await makeService({ 'bank-transfer': 1 }).get({ role: 'seller' }, 'seller-1', 'store-1');
+    expect(bank.data['payment-proofs-shown']).toBe(1);
   });
 
   it('refuses a store that belongs to someone else', async () => {
