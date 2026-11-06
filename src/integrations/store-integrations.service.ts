@@ -1,6 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { BadRequestException, Injectable, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
 import { randomBytes } from 'crypto';
+import { isValidObjectId } from 'mongoose';
 import { DatabaseService } from '../database/databaseservice';
 import { ActivityLogService } from '../activity-log/activity-log.service';
 import { StripeConnectService } from '../stripe-connect/stripe-connect.service';
@@ -131,6 +132,7 @@ export class StoreIntegrationsService implements OnModuleInit {
 
   async updateManualMethod(storeId: string, sellerId: string, methodId: string, body: Record<string, any>) {
     await this.assertOwnedStore(storeId, sellerId);
+    if (!isValidObjectId(methodId)) throw new NotFoundException('Payment method not found');
     const data = this.parseManualBody(body ?? {}, true);
     try {
       const doc: any = await this.repos.manualPaymentMethodModel
@@ -146,6 +148,7 @@ export class StoreIntegrationsService implements OnModuleInit {
 
   async deleteManualMethod(storeId: string, sellerId: string, methodId: string) {
     await this.assertOwnedStore(storeId, sellerId);
+    if (!isValidObjectId(methodId)) throw new NotFoundException('Payment method not found');
     const res = await this.repos.manualPaymentMethodModel.updateOne({ _id: methodId, storeId, isDelete: false }, { $set: { isDelete: true, isActive: false } });
     if (!res.matchedCount) throw new NotFoundException('Payment method not found');
     return { success: true };
@@ -839,7 +842,7 @@ export class StoreIntegrationsService implements OnModuleInit {
     const modeChange = (patch.mode === 'live' || patch.mode === 'sandbox') && patch.mode !== integration.mode ? patch.mode : null;
     if (modeChange && integration.type !== 'payment' && integration.type !== 'courier') throw new BadRequestException('Only payment and courier integrations have a test mode');
     const effectiveMode = modeChange ?? integration.mode;
-    if (patch.isEnabledForCheckout && effectiveMode === 'live' && (modeChange || !integration.lastVerifiedAt)) {
+    if (patch.isEnabledForCheckout && effectiveMode === 'live' && integration.provider !== 'bank_transfer' && (modeChange || !integration.lastVerifiedAt)) {
       throw new BadRequestException('Run a successful test before enabling a live-mode integration for checkout');
     }
 

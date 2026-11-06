@@ -2516,6 +2516,7 @@ export class OrdersService {
     const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false }).select('_id').lean();
     if (!store) throw new ForbiddenException('Store not found or unauthorized');
 
+    if (!isValidObjectId(orderId)) throw new NotFoundException('Order not found');
     const order = await orderModel.findOne({ _id: orderId, isDelete: false });
     if (!order) throw new NotFoundException('Order not found');
 
