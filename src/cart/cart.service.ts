@@ -2,6 +2,7 @@ import { preorderPublicView } from '../common/preorder.util';
 import { availableStock } from '../common/stock-availability.util';
 import {
   Injectable,
+  Optional,
   UnauthorizedException,
   BadRequestException,
   ForbiddenException,
@@ -10,10 +11,15 @@ import {
 import { isPurchasableOnline } from '@/common/stock-availability.util';
 import { DatabaseService } from '@/database/databaseservice';
 import { AddToCartDto } from './dto/add-to-cart.dto';
+import { B2BContextService } from '../b2b/b2b-context.service';
 
 @Injectable()
 export class CartService {
-  constructor(private readonly databaseService: DatabaseService) {}
+  constructor(
+    private readonly databaseService: DatabaseService,
+    // Wholesale prices in the cart view and the wholesale-only store gate; retail buyers are unaffected.
+    @Optional() private readonly b2bContext?: B2BContextService,
+  ) {}
 
   async addToCart(userId: string, storeId: string, dto: AddToCartDto) {
     try {
@@ -25,6 +31,14 @@ export class CartService {
       const quantity = dto.quantity ?? 1;
       if (!Number.isInteger(quantity) || quantity < 1) {
         throw new BadRequestException('Quantity must be a positive whole number');
+      }
+
+      // Wholesale-only store: only approved company buyers can buy.
+      if (this.b2bContext) {
+        const st: any = await this.databaseService.repositories.storeModel.findById(storeId).select('wholesaleOnly').lean();
+        if (st?.wholesaleOnly && !(await this.b2bContext.getContext(storeId, String(userId)))) {
+          throw new BadRequestException('This store sells to approved wholesale customers only. Apply for a wholesale account first.');
+        }
       }
 
       // 1️⃣ Get product — must be live and belong to THIS store, otherwise a
@@ -226,7 +240,7 @@ export class CartService {
       const variantRows: any[] = variantIds.length
         ? await this.databaseService.repositories.productVariantModel
             .find({ _id: { $in: variantIds } })
-            .select('stock committedStock damagedStock inTransitStock expiredStock expiryBuckets unlimitedStock preorder')
+            .select('stock committedStock damagedStock inTransitStock expiredStock expiryBuckets unlimitedStock preorder price')
             .lean()
         : [];
       const variantById = new Map(variantRows.map((v) => [String(v._id), v]));
@@ -246,10 +260,31 @@ export class CartService {
         sellers.map((s: any) => [s._id.toString(), s]),
       );
 
+      // Wholesale buyers see THEIR price (catalog price, volume break, quantity rules) computed on the server from the live variant
+      // price; checkout recomputes the same numbers. A line the company may not buy keeps its retail price and carries `b2bError`.
+      const b2bCtx = this.b2bContext ? await this.b2bContext.getContext(storeId, String(userId)) : null;
+      const b2bEntries = b2bCtx && this.b2bContext ? await this.b2bContext.loadEntries(b2bCtx, variantIds.map(String)) : new Map();
+
       // Cart items map karo
       const items = cart.items.map((item) => {
+        let unitPrice = item.price;
+        let b2bError: string | null = null;
+        let b2bBlocked = false;
+        if (b2bCtx && this.b2bContext) {
+          const variant = variantById.get(String(item.productVariantId));
+          const product = productById.get(item.productId);
+          if (variant && typeof variant.price === 'number') {
+            try {
+              unitPrice = this.b2bContext.resolveLine(b2bCtx, b2bEntries, { productName: item.name, product, variantId: String(item.productVariantId), basePrice: variant.price, quantity: item.quantity }).unitPrice;
+            } catch (e: any) {
+              const res = e?.getResponse?.();
+              b2bError = typeof res === 'object' ? res.message : e?.message ?? 'Not available';
+              b2bBlocked = !(typeof res === 'object' && res.code === 'B2B_QUANTITY_RULE');
+            }
+          }
+        }
         // Ek item ka total
-        const itemTotal = item.price * item.quantity;
+        const itemTotal = unitPrice * item.quantity;
 
         // Overall totals me add karo
         totalItems += item.quantity;
@@ -276,7 +311,9 @@ export class CartService {
           image: images,
           options: (item as any).options ?? [],
 
-          unitPrice: item.price, // single product price
+          unitPrice, // single product price (the buyer's wholesale price for approved company buyers)
+          b2bPriced: !!b2bCtx && !b2bError,
+          b2bError,
           // Denominated in `item.currency` below (the owning store's
           // baseCurrency at add-to-cart time) — never the buyer's display
           // currency. Was missing from this response entirely, which made
@@ -293,7 +330,7 @@ export class CartService {
           isBundle: !!(product as any)?.isBundle,
           preorder: (() => { const v = variantById.get(String(item.productVariantId)); return v && !v.unlimitedStock ? preorderPublicView(v.preorder, availableStock(v)) : null; })(),
           // Archived, draft or deleted since it was added: the buyer must remove it before checkout.
-          unavailable: !product || (product as any).isDelete === true || (product as any).status !== 'active',
+          unavailable: !product || (product as any).isDelete === true || (product as any).status !== 'active' || b2bBlocked,
         };
       });
 

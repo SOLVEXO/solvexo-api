@@ -1301,6 +1301,10 @@ export class StoreService {
       if (customerAccounts !== 'optional' && customerAccounts !== 'required') throw new BadRequestException("customerAccounts must be 'optional' or 'required'");
       updateData.customerAccounts = customerAccounts;
     }
+    if (body.wholesaleOnly !== undefined) {
+      if (typeof body.wholesaleOnly !== 'boolean') throw new BadRequestException('wholesaleOnly must be true or false');
+      updateData.wholesaleOnly = body.wholesaleOnly;
+    }
     if (cookieBannerEnabled !== undefined) updateData.cookieBannerEnabled = !!cookieBannerEnabled;
     if (cookieBannerMessage !== undefined) updateData.cookieBannerMessage = cookieBannerMessage || null;
     if (showDoNotSellLink !== undefined) updateData.showDoNotSellLink = !!showDoNotSellLink;
@@ -1518,6 +1522,8 @@ export class StoreService {
         canonicalHost: store.primaryDomain ?? (store.slug ? `${store.slug}.solvexo.store` : null),
         // Shopify "Customer accounts": whether a visitor may check out as a guest.
         guestCheckoutEnabled: store.customerAccounts !== 'required',
+        // Only approved wholesale buyers may buy (the storefront hides prices and buy buttons from everyone else).
+        wholesaleOnly: !!store.wholesaleOnly,
         // Purely cosmetic — no effect on consent/enforcement, just how the
         // banner looks/where it sits (see `CookieConsentBanner.tsx`).
         cookieBannerPosition: store.cookieBannerPosition ?? 'bottom_bar',

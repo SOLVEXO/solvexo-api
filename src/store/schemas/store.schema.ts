@@ -671,6 +671,11 @@ export class Store {
   @Prop({ type: String, enum: ['optional', 'required'], default: 'optional' })
   customerAccounts: 'optional' | 'required';
 
+  // Wholesale-only store: only approved B2B company buyers may add to cart or check out (enforced on the server; the
+  // storefront also hides prices and buy buttons from everyone else). Retail stores leave this off.
+  @Prop({ type: Boolean, default: false })
+  wholesaleOnly: boolean;
+
   // Stripe Connect (Express) account that receives THIS store's card payments — one per store, like each
   // Shopify store's own Shopify Payments account. Replaces the old per-seller account (Seller.stripeConnect*,
   // kept only as the migration source). The id is `select: false` so no public store read can ever leak it —

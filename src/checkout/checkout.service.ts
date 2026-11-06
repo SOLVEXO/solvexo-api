@@ -373,7 +373,7 @@ export class CheckoutService {
     // always single-store today (the marketplace-to-standalone-store
     // pivot), so this one store's enabledCurrencies is authoritative for
     // the whole checkout.
-    const targetStore = await storeModel.findById(storeId).select('baseCurrency enabledCurrencies').lean();
+    const targetStore = await storeModel.findById(storeId).select('baseCurrency enabledCurrencies wholesaleOnly').lean();
     // Shopify Markets: the buyer's country picks the store's market (delivery address first, else the country the
     // storefront reported). A buyer who explicitly chose a currency keeps it; otherwise the market's currency is the
     // default. The store's enabled-currency list (and plan cap) still has the last word.
@@ -451,6 +451,10 @@ export class CheckoutService {
     // Wholesale: resolved from the logged-in buyer on the server (never from the request). Null = retail rules.
     const b2bCtx = this.b2bContext ? await this.b2bContext.getContext(storeId, String(userId)) : null;
     const b2bPricedVariants = new Set<string>();
+    // Wholesale-only store: nobody but an approved company buyer may check out.
+    if ((targetStore as any)?.wholesaleOnly && !b2bCtx) {
+      throw new BadRequestException({ message: 'This store sells to approved wholesale customers only.', code: 'B2B_ONLY' });
+    }
 
     // Pass 1: resolve product/variant and validate stock.
     const rawItems: Array<{ product: any; variant: any; cartItem: any }> = [];
