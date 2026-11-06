@@ -15,6 +15,9 @@ import { QUEUE_NAMES } from '../queues/queue.constants';
 import { pageOf } from '../common/paging';
 import { MessagingCampaign, MessagingCampaignDocument, MessagingConsent, MessagingConsentDocument, MessagingMessage, MessagingMessageDocument, WhatsAppTemplate, WhatsAppTemplateDocument } from './messaging.schema';
 import { WhatsAppTemplatesService } from './whatsapp-templates.service';
+import { SmsGatewayService } from './sms-gateway.service';
+import { MAX_SMS_TEXT, smsSegments, withStopFooter } from './sms.util';
+import type { Channel } from './messaging-rules.util';
 import { MessagingConsentService } from './messaging-consent.service';
 import { canSendTemplate, chunk, contactKey, countsFromStatuses, DEFAULT_DAILY_LIMIT, isTransientSendError, MAX_BATCH, remainingToday } from './messaging-rules.util';
 
@@ -41,6 +44,7 @@ export class MessagingCampaignsService {
     private readonly templatesSvc: WhatsAppTemplatesService,
     private readonly segments: CustomerSegmentsService,
     private readonly moduleRef: ModuleRef,
+    private readonly sms: SmsGatewayService,
   ) {}
 
   private audit(storeId: string, actor: { id: string; role: string }, action: string, description: string, targetId: string) {
@@ -50,8 +54,15 @@ export class MessagingCampaignsService {
   // ── CRUD ──────────────────────────────────────────────────────────────────
   private async input(storeId: string, body: any, partial: boolean) {
     const data: any = {};
+    const channel: Channel = body.channel === 'sms' ? 'sms' : 'whatsapp';
+    if (!partial) data.channel = channel;
     if (body.name !== undefined || !partial) { data.name = clean(body.name, 120); if (!data.name) throw new BadRequestException('Campaign name is required'); }
-    if (body.templateId !== undefined || !partial) {
+    if (channel === 'sms' && (body.smsText !== undefined || !partial)) {
+      const text = clean(body.smsText, MAX_SMS_TEXT);
+      if (!text) throw new BadRequestException('Write the SMS text');
+      data.smsText = text;
+    }
+    if (channel === 'whatsapp' && (body.templateId !== undefined || !partial)) {
       if (!isOid(body.templateId)) throw new BadRequestException('Choose an approved template');
       const t: any = await this.templates.findOne({ _id: body.templateId, storeId }).lean();
       if (!t) throw new BadRequestException('Template not found in this store');
@@ -75,15 +86,15 @@ export class MessagingCampaignsService {
 
   async create(storeId: string, actor: { id: string; role: string }, body: any) {
     const data = await this.input(storeId, body ?? {}, false);
-    const c = await this.campaigns.create({ ...data, storeId, channel: 'whatsapp', status: 'draft', createdBy: actor.id });
-    await this.audit(storeId, actor, 'messaging_campaign_created', `WhatsApp campaign "${c.name}" created`, String(c._id));
+    const c = await this.campaigns.create({ ...data, storeId, status: 'draft', createdBy: actor.id });
+    await this.audit(storeId, actor, 'messaging_campaign_created', `${data.channel === 'sms' ? 'SMS' : 'WhatsApp'} campaign "${c.name}" created`, String(c._id));
     return c.toObject();
   }
 
   async update(storeId: string, actor: { id: string; role: string }, id: string, body: any) {
     const c = await this.find(storeId, id);
     if (c.status !== 'draft') throw new BadRequestException('Only a draft campaign can be edited');
-    const data = await this.input(storeId, body ?? {}, true);
+    const data = await this.input(storeId, { ...(body ?? {}), channel: c.channel }, true);
     const r = await this.campaigns.findOneAndUpdate({ _id: id, storeId, status: 'draft' }, { $set: data }, { new: true }).lean();
     if (!r) throw new ConflictException('This campaign was just started');
     await this.audit(storeId, actor, 'messaging_campaign_updated', `Campaign "${(r as any).name}" updated`, id);
@@ -118,37 +129,41 @@ export class MessagingCampaignsService {
   async launch(storeId: string, actor: { id: string; role: string }, id: string) {
     const campaign = await this.find(storeId, id);
     if (campaign.status !== 'draft') throw new BadRequestException('This campaign was already started');
-    const template: any = await this.templates.findOne({ _id: campaign.templateId, storeId }).lean();
-    if (!template || !canSendTemplate(template.status)) throw new BadRequestException('Marketing messages can only use a template that WhatsApp has approved. Sync your templates, or wait for approval.');
-    await this.templatesSvc.access(storeId); // a connected WhatsApp account is required
+    if (campaign.channel === 'sms') {
+      if (!(await this.sms.activeConfig(storeId))) throw new BadRequestException('Set up, test and switch on your SMS gateway first.');
+    } else {
+      const template: any = await this.templates.findOne({ _id: campaign.templateId, storeId }).lean();
+      if (!template || !canSendTemplate(template.status)) throw new BadRequestException('Marketing messages can only use a template that WhatsApp has approved. Sync your templates, or wait for approval.');
+      await this.templatesSvc.access(storeId); // a connected WhatsApp account is required
+    }
 
     // Atomic claim: two clicks start it once.
     const claimed = await this.campaigns.findOneAndUpdate({ _id: id, storeId, status: 'draft' }, { $set: { status: 'sending', startedAt: new Date() } }, { new: true }).lean();
     if (!claimed) throw new ConflictException('This campaign was just started');
     try {
-      const rows = await this.recipients(storeId, campaign.segmentId);
+      const rows = await this.recipients(storeId, campaign.segmentId, campaign.channel);
       if (rows.length === 0) throw new BadRequestException('No opted-in contacts to message');
-      await this.messages.insertMany(rows.map((r) => ({ storeId, campaignId: id, channel: 'whatsapp', contactKey: r.key, customerId: r.customerId, customerName: r.name, status: r.status })), { ordered: false }).catch((e: any) => { if (e?.code !== 11000 && !e?.writeErrors) throw e; });
+      await this.messages.insertMany(rows.map((r) => ({ storeId, campaignId: id, channel: campaign.channel, contactKey: r.key, customerId: r.customerId, customerName: r.name, status: r.status })), { ordered: false }).catch((e: any) => { if (e?.code !== 11000 && !e?.writeErrors) throw e; });
     } catch (e) {
       await this.campaigns.updateOne({ _id: id }, { $set: { status: 'draft', startedAt: null } });
       throw e;
     }
-    await this.audit(storeId, actor, 'messaging_campaign_started', `WhatsApp campaign "${campaign.name}" started`, id);
+    await this.audit(storeId, actor, 'messaging_campaign_started', `${campaign.channel === 'sms' ? 'SMS' : 'WhatsApp'} campaign "${campaign.name}" started`, id);
     await this.dispatch(id);
     return this.stats(storeId, id);
   }
 
   /** Contacts to message with their starting status. No segment: every opted-in contact. A segment: its members with a phone, split by consent. */
-  private async recipients(storeId: string, segmentId: string | null): Promise<{ key: string; customerId: string | null; name: string | null; status: string }[]> {
+  private async recipients(storeId: string, segmentId: string | null, channel: Channel = 'whatsapp'): Promise<{ key: string; customerId: string | null; name: string | null; status: string }[]> {
     if (!segmentId) {
-      const rows: any[] = await this.consents.find({ storeId, channel: 'whatsapp', status: 'opted_in' }).select('contactKey customerId name').limit(50_000).lean();
+      const rows: any[] = await this.consents.find({ storeId, channel, status: 'opted_in' }).select('contactKey customerId name').limit(50_000).lean();
       return rows.map((r) => ({ key: r.contactKey, customerId: r.customerId ?? null, name: r.name ?? null, status: 'queued' }));
     }
     const members = (await this.segments.resolveContacts(storeId, segmentId)) ?? [];
     const keyed = members.map((m) => ({ ...m, key: contactKey(m.phone) })).filter((m): m is typeof m & { key: string } => !!m.key);
     const seen = new Set<string>();
     const unique = keyed.filter((m) => (seen.has(m.key) ? false : (seen.add(m.key), true)));
-    const status = await this.consentSvc.statusFor(storeId, 'whatsapp', unique.map((m) => m.key));
+    const status = await this.consentSvc.statusFor(storeId, channel, unique.map((m) => m.key));
     return unique.map((m) => ({ key: m.key, customerId: m.customerId, name: m.name, status: status.get(m.key) === 'opted_in' ? 'queued' : status.get(m.key) === 'opted_out' ? 'skipped_opted_out' : 'skipped_no_consent' }));
   }
 
@@ -162,8 +177,8 @@ export class MessagingCampaignsService {
 
   // ── sending (throttled) ───────────────────────────────────────────────────
   /** Distinct contacts of this store already messaged on this channel in the last 24 h (the unit Meta's daily limit counts). */
-  async contactedLast24h(storeId: string, now = new Date()): Promise<number> {
-    const rows = await this.messages.aggregate([{ $match: { storeId, channel: 'whatsapp', sentAt: { $gte: new Date(now.getTime() - 86_400_000) } } }, { $group: { _id: '$contactKey' } }, { $count: 'n' }]);
+  async contactedLast24h(storeId: string, now = new Date(), channel: Channel = 'whatsapp'): Promise<number> {
+    const rows = await this.messages.aggregate([{ $match: { storeId, channel, sentAt: { $gte: new Date(now.getTime() - 86_400_000) } } }, { $group: { _id: '$contactKey' } }, { $count: 'n' }]);
     return rows[0]?.n ?? 0;
   }
 
@@ -171,7 +186,9 @@ export class MessagingCampaignsService {
   async claimBatches(campaignId: string, now = new Date()): Promise<string[][]> {
     const c: any = await this.campaigns.findOne({ _id: campaignId, status: 'sending' }).lean();
     if (!c) return [];
-    const room = remainingToday(c.dailyLimit ?? DEFAULT_DAILY_LIMIT, await this.contactedLast24h(c.storeId, now));
+    const gatewayLimit = c.channel === 'sms' ? (await this.sms.activeConfig(c.storeId))?.dailyLimit : undefined;
+    if (c.channel === 'sms' && gatewayLimit === undefined) return []; // gateway switched off: nothing leaves, the campaign waits
+    const room = remainingToday(Math.min(c.dailyLimit ?? Number.MAX_SAFE_INTEGER, gatewayLimit ?? c.dailyLimit ?? DEFAULT_DAILY_LIMIT), await this.contactedLast24h(c.storeId, now, c.channel));
     if (room <= 0) return [];
     const queued: any[] = await this.messages.find({ campaignId, status: 'queued' }).sort({ _id: 1 }).limit(room).select('_id').lean();
     if (queued.length === 0) return [];
@@ -217,17 +234,24 @@ export class MessagingCampaignsService {
       touched.add(msg.campaignId);
       const campaign: any = await this.campaigns.findById(msg.campaignId).lean();
       if (!campaign || campaign.status !== 'sending') { await this.messages.updateOne({ _id: id, status: 'sending' }, { $set: { status: 'canceled' } }); continue; }
-      const consent = await this.consentSvc.statusFor(msg.storeId, 'whatsapp', [msg.contactKey]);
+      const consent = await this.consentSvc.statusFor(msg.storeId, campaign.channel, [msg.contactKey]);
       if (consent.get(msg.contactKey) !== 'opted_in') {
         await this.messages.updateOne({ _id: id, status: 'sending' }, { $set: { status: consent.get(msg.contactKey) === 'opted_out' ? 'skipped_opted_out' : 'skipped_no_consent' } });
         continue;
       }
       try {
-        const ctx = await this.sendContext(campaign);
-        if (!canSendTemplate(ctx.template?.status)) { await this.messages.updateOne({ _id: id, status: 'sending' }, { $set: { status: 'failed', error: 'Template is not approved any more' } }); continue; }
-        const res = await this.moduleRef.get(WhatsAppCloudProvider, { strict: false }).sendTemplateMessage(ctx.access, msg.contactKey, {
-          templateName: ctx.template.name, languageCode: ctx.template.language, bodyParams: this.render(campaign.params ?? [], { customerName: msg.customerName ?? '', storeName: ctx.storeName }),
-        });
+        let res: { success: boolean; messageId?: string | null; error?: string };
+        if (campaign.channel === 'sms') {
+          const store: any = await this.db.repositories.storeModel.findById(msg.storeId).select('name').lean();
+          const [text] = this.render([campaign.smsText ?? ''], { customerName: msg.customerName ?? '', storeName: store?.name ?? '' });
+          res = await this.sms.sendMarketing(msg.storeId, msg.contactKey, text);
+        } else {
+          const ctx = await this.sendContext(campaign);
+          if (!canSendTemplate(ctx.template?.status)) { await this.messages.updateOne({ _id: id, status: 'sending' }, { $set: { status: 'failed', inFlight: false, error: 'Template is not approved any more' } }); continue; }
+          res = await this.moduleRef.get(WhatsAppCloudProvider, { strict: false }).sendTemplateMessage(ctx.access, msg.contactKey, {
+            templateName: ctx.template.name, languageCode: ctx.template.language, bodyParams: this.render(campaign.params ?? [], { customerName: msg.customerName ?? '', storeName: ctx.storeName }),
+          });
+        }
         if (res.success) {
           await this.messages.updateOne({ _id: id, status: 'sending' }, { $set: { status: 'sent', inFlight: false, sentAt: new Date(), providerMessageId: res.messageId ?? null, error: null }, $inc: { attempts: 1 } });
         } else if (isTransientSendError(res.error) && (msg.attempts ?? 0) + 1 < MAX_ATTEMPTS) {
@@ -270,6 +294,10 @@ export class MessagingCampaignsService {
     const campaign = await this.find(storeId, id);
     const rows = await this.messages.aggregate([{ $match: { storeId, campaignId: id } }, { $group: { _id: '$status', n: { $sum: 1 } } }]);
     const counts = countsFromStatuses(Object.fromEntries(rows.map((r: any) => [r._id, r.n])));
+    if (campaign.channel === 'sms') {
+      const seg = smsSegments(withStopFooter(campaign.smsText ?? ''));
+      return { campaign, ...counts, billing: { billedUnit: 'SMS part sent through your own gateway', partsPerMessage: seg.segments, encoding: seg.encoding, estimatedParts: seg.segments * counts.sent, note: 'Your SMS provider bills you per SMS part. A message with Urdu or emoji is sent as unicode (70 characters per part). The opt-out line is added to every message.' } };
+    }
     return {
       campaign, ...counts,
       // Meta bills per delivered template message; the rate depends on the country and category. No price is stated here: see Meta's pricing page.

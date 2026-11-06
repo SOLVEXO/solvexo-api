@@ -8,6 +8,7 @@ import { MessagingMessage, MessagingMessageDocument } from './messaging.schema';
 import { MessagingConsentService } from './messaging-consent.service';
 import { advanceStatus, contactKey, isStopKeyword } from './messaging-rules.util';
 import { mapWhatsAppWebhook } from './whatsapp-webhook.mapping';
+import { mapSmsDelivery, mapSmsInbound } from './sms.util';
 
 /**
  * Applies Meta's delivery reports to the send log and honours a STOP reply immediately. The platform webhook is already signature-verified
@@ -26,6 +27,30 @@ export class MessagingWebhookService {
   @OnEvent('whatsapp.webhook')
   async onWebhook(evt: { phoneNumberId: string | null; payload: any }) {
     try { await this.handle(evt?.payload, evt?.phoneNumberId ?? null); } catch (e: any) { this.log.warn(`WhatsApp webhook handling failed: ${e?.message}`); }
+  }
+
+  /** An SMS reply (the gateway posts it to the store's webhook URL). STOP opts the person out of SMS for this store at once. */
+  async handleSmsInbound(storeId: string, body: any) {
+    const m = mapSmsInbound(body);
+    if (!m || !isStopKeyword(m.text)) return { optedOut: 0 };
+    const key = contactKey(m.from);
+    if (!key) return { optedOut: 0 };
+    await this.consent.optOut(storeId, 'sms', m.from, 'inbound_stop');
+    await this.messages.updateMany({ storeId, channel: 'sms', contactKey: key, status: { $in: ['queued', 'sending'] } }, { $set: { status: 'skipped_opted_out' } });
+    return { optedOut: 1 };
+  }
+
+  /** An SMS delivery report: only moves a message of THIS store forward. */
+  async handleSmsDelivery(storeId: string, body: any) {
+    const d = mapSmsDelivery(body);
+    if (!d) return { updated: 0 };
+    const msg: any = await this.messages.findOne({ storeId, channel: 'sms', providerMessageId: d.id }).select('status').lean();
+    if (!msg) return { updated: 0 };
+    const next = advanceStatus(msg.status, d.status);
+    if (next === msg.status) return { updated: 0 };
+    const now = new Date();
+    const r = await this.messages.updateOne({ _id: msg._id, status: msg.status }, { $set: { status: next, ...(next === 'delivered' ? { deliveredAt: now } : {}), ...(next === 'failed' ? { error: 'Delivery failed' } : {}) } });
+    return { updated: r.modifiedCount ?? 0 };
   }
 
   async handle(payload: any, phoneNumberId?: string | null) {

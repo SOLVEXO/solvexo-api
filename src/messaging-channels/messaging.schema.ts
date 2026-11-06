@@ -91,3 +91,20 @@ MessagingMessageSchema.index({ campaignId: 1, contactKey: 1 }, { unique: true })
 MessagingMessageSchema.index({ storeId: 1, campaignId: 1, status: 1 });
 MessagingMessageSchema.index({ storeId: 1, providerMessageId: 1 }, { sparse: true });
 MessagingMessageSchema.index({ storeId: 1, channel: 1, sentAt: -1 });
+
+/** A store's SMS gateway (generic HTTP). Off until a real test message succeeds; any change to the request switches it off again. */
+@Schema({ timestamps: true, collection: 'smsgatewayconfigs' })
+export class SmsGatewayConfig {
+  @Prop({ required: true, unique: true }) storeId: string;
+  @Prop({ type: String, default: null }) presetKey: string | null;
+  @Prop({ type: Object, default: null }) http: Record<string, any> | null;
+  @Prop({ type: String, default: '' }) senderId: string;
+  @Prop({ type: String, default: null, select: false }) secretEnc: string | null;
+  @Prop({ type: String, default: null, select: false }) webhookSecretHash: string | null;
+  @Prop({ type: Number, default: 1000, min: 1 }) dailyLimit: number;
+  @Prop({ type: Boolean, default: false }) enabled: boolean;
+  @Prop({ type: Date, default: null }) verifiedAt: Date | null;
+  @Prop({ type: String, default: null }) lastError: string | null;
+}
+export type SmsGatewayConfigDocument = SmsGatewayConfig & Document;
+export const SmsGatewayConfigSchema = SchemaFactory.createForClass(SmsGatewayConfig);

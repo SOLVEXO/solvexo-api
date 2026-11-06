@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Body, Controller, Delete, ForbiddenException, Get, Param, Patch, Post, Query, Req, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
+import { Body, Controller, Delete, ForbiddenException, Get, Param, Patch, Post, Put, Query, Req, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -12,6 +12,7 @@ import { DatabaseService } from '../database/databaseservice';
 import { MessagingConsentService } from './messaging-consent.service';
 import { WhatsAppTemplatesService } from './whatsapp-templates.service';
 import { MessagingCampaignsService } from './messaging-campaigns.service';
+import { SmsGatewayService } from './sms-gateway.service';
 
 /**
  * Seller: WhatsApp marketing (consent list, templates, campaigns). OFF until the platform owner sets MESSAGING_CAMPAIGNS_ENABLED=true:
@@ -28,6 +29,7 @@ export class MessagingController {
     private readonly consent: MessagingConsentService,
     private readonly templates: WhatsAppTemplatesService,
     private readonly campaigns: MessagingCampaignsService,
+    private readonly sms: SmsGatewayService,
     private readonly db: DatabaseService,
   ) {}
 
@@ -41,11 +43,23 @@ export class MessagingController {
   @Get('consents') @RequirePermission('marketing.manage')
   async consents(@Req() req: any, @Param('storeId') s: string, @Query() q: any) { await this.own(req, s); return this.consent.list(s, q); }
   @Post('consents/opt-in') @RequirePermission('marketing.manage')
-  async optIn(@Req() req: any, @Param('storeId') s: string, @Body() b: any) { await this.own(req, s); return this.consent.optIn(s, 'whatsapp', b?.phone, { source: 'manual', name: b?.name }); }
+  async optIn(@Req() req: any, @Param('storeId') s: string, @Body() b: any) { await this.own(req, s); return this.consent.optIn(s, b?.channel === 'sms' ? 'sms' : 'whatsapp', b?.phone, { source: 'manual', name: b?.name }); }
   @Post('consents/opt-out') @RequirePermission('marketing.manage')
-  async optOut(@Req() req: any, @Param('storeId') s: string, @Body() b: any) { await this.own(req, s); return this.consent.optOut(s, 'whatsapp', b?.phone, 'seller'); }
+  async optOut(@Req() req: any, @Param('storeId') s: string, @Body() b: any) { await this.own(req, s); return this.consent.optOut(s, b?.channel === 'sms' ? 'sms' : 'whatsapp', b?.phone, 'seller'); }
   @Post('consents/import') @RequirePermission('marketing.manage')
-  async importConsents(@Req() req: any, @Param('storeId') s: string, @Body() b: any) { await this.own(req, s); return this.consent.importOptIns(s, 'whatsapp', b?.rows, b?.attested); }
+  async importConsents(@Req() req: any, @Param('storeId') s: string, @Body() b: any) { await this.own(req, s); return this.consent.importOptIns(s, b?.channel === 'sms' ? 'sms' : 'whatsapp', b?.rows, b?.attested); }
+
+  // SMS gateway
+  @Get('sms-gateway') @RequirePermission('marketing.manage')
+  async smsGet(@Req() req: any, @Param('storeId') s: string) { await this.own(req, s); return this.sms.get(s); }
+  @Put('sms-gateway') @RequirePermission('marketing.manage')
+  async smsSave(@Req() req: any, @Param('storeId') s: string, @Body() b: any) { return this.sms.save(s, await this.own(req, s), b); }
+  @Post('sms-gateway/test') @RequirePermission('marketing.manage')
+  async smsTest(@Req() req: any, @Param('storeId') s: string, @Body() b: any) { return this.sms.test(s, await this.own(req, s), b?.phone); }
+  @Post('sms-gateway/enable') @RequirePermission('marketing.manage')
+  async smsEnable(@Req() req: any, @Param('storeId') s: string, @Body() b: any) { await this.own(req, s); return this.sms.setEnabled(s, b?.enabled === true); }
+  @Post('sms-gateway/webhook-secret') @RequirePermission('marketing.manage')
+  async smsSecret(@Req() req: any, @Param('storeId') s: string) { await this.own(req, s); return this.sms.rotateWebhookSecret(s); }
 
   // templates
   @Get('templates') @RequirePermission('marketing.manage')

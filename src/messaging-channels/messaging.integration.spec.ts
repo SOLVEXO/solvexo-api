@@ -11,7 +11,10 @@ import { MessagingCampaignsService } from './messaging-campaigns.service';
 import { MessagingWebhookService } from './messaging-webhook.service';
 import { WhatsAppTemplatesService } from './whatsapp-templates.service';
 import { WhatsAppCloudProvider } from '../integrations/providers/whatsapp-cloud.provider';
-import { MessagingCampaignSchema, MessagingConsentSchema, MessagingMessageSchema, WhatsAppTemplateSchema } from './messaging.schema';
+import { MessagingCampaignSchema, MessagingConsentSchema, MessagingMessageSchema, SmsGatewayConfigSchema, WhatsAppTemplateSchema } from './messaging.schema';
+import { HttpSmsProvider, SmsGatewayService } from './sms-gateway.service';
+
+jest.mock('dns/promises', () => ({ lookup: jest.fn().mockResolvedValue([{ address: '203.0.113.10', family: 4 }]) }));
 import { encryptCredential } from '../common/credential-encryption.util';
 
 const URI = process.env.MONGO_TEST_URI;
@@ -26,6 +29,8 @@ d('WhatsApp marketing on a real MongoDB', () => {
   let camp: MessagingCampaignsService;
   let hook: MessagingWebhookService;
   let tpl: WhatsAppTemplatesService;
+  let sms: SmsGatewayService;
+  const smsProvider = { key: 'generic_http', send: jest.fn() };
   let db: any;
   const queued: string[][] = [];
   const provider = { sendTemplateMessage: jest.fn(), listTemplates: jest.fn(), createTemplate: jest.fn(), deleteTemplate: jest.fn() };
@@ -42,6 +47,7 @@ d('WhatsApp marketing on a real MongoDB', () => {
     m = {
       consents: conn.model('MessagingConsent', MessagingConsentSchema), templates: conn.model('WhatsAppTemplate', WhatsAppTemplateSchema),
       campaigns: conn.model('MessagingCampaign', MessagingCampaignSchema), messages: conn.model('MessagingMessage', MessagingMessageSchema),
+      smsConfigs: conn.model('SmsGatewayConfig', SmsGatewayConfigSchema),
       integrations: conn.model('StoreIntegration', new mongoose.Schema({}, { strict: false })), stores: conn.model('Store', new mongoose.Schema({}, { strict: false })),
     };
     await Promise.all([m.consents.init(), m.templates.init(), m.campaigns.init(), m.messages.init()]);
@@ -51,10 +57,13 @@ d('WhatsApp marketing on a real MongoDB', () => {
     const moduleRef: any = { get: () => provider };
     const activity = { log: jest.fn().mockResolvedValue(undefined) } as any;
     consent = new MessagingConsentService(m.consents);
+    sms = new SmsGatewayService(m.smsConfigs, db, activity);
+    sms.setProvider(smsProvider as any);
     tpl = new WhatsAppTemplatesService(m.templates, db, moduleRef);
-    camp = new MessagingCampaignsService(m.campaigns, m.messages, m.consents, m.templates, { add: jest.fn(async (_n: string, data: { ids: string[] }) => { queued.push(data.ids); }) } as any, db, activity, {} as any, consent, tpl, segments as any, moduleRef);
+    camp = new MessagingCampaignsService(m.campaigns, m.messages, m.consents, m.templates, { add: jest.fn(async (_n: string, data: { ids: string[] }) => { queued.push(data.ids); }) } as any, db, activity, {} as any, consent, tpl, segments as any, moduleRef, sms);
     hook = new MessagingWebhookService(m.messages, db, consent);
   });
+  beforeEach(() => { smsProvider.send.mockReset(); });
   afterAll(async () => { await conn.dropDatabase(); await conn.close(); });
   beforeEach(() => { provider.sendTemplateMessage.mockReset(); provider.listTemplates.mockReset(); provider.createTemplate.mockReset(); segments.loadFilter.mockReset(); segments.resolveContacts.mockReset(); queued.length = 0; });
 
@@ -278,6 +287,152 @@ d('WhatsApp marketing on a real MongoDB', () => {
       expect((await camp.messageLog(STORE, String(c._id), { limit: 1 })).items).toHaveLength(1);
       await expect(camp.stats(OTHER, String(c._id))).rejects.toThrow(/not found/i);
       await expect(camp.messageLog(OTHER, String(c._id), {})).rejects.toThrow(/not found/i);
+    });
+  });
+
+
+  describe('sms', () => {
+    const gw = { presetKey: 'pk_aggregator', senderId: 'MYSHOP', secret: 'super-secret-key', dailyLimit: 2, http: { url: 'https://api.smsgateway.pk/send', method: 'POST', contentType: 'json', headers: { Authorization: 'Bearer {{secret}}' }, body: '{"to":"{{to}}","text":"{{text}}","from":"{{sender}}"}', successMatch: null, messageIdPath: 'id' } };
+    const wipeSms = async () => { await wipe(); await m.smsConfigs.deleteMany({}); };
+    beforeEach(wipeSms);
+    const goLive = async () => {
+      await sms.save(STORE, actor, gw);
+      smsProvider.send.mockResolvedValueOnce({ success: true, messageId: 'test' });
+      await sms.test(STORE, actor, '0300-5555555');
+      await sms.setEnabled(STORE, true);
+      smsProvider.send.mockReset();
+    };
+    const smsCampaign = async (over: any = {}) => (await camp.create(STORE, actor, { channel: 'sms', name: 'Eid SMS', smsText: 'Hi {customer_name}, sale at {store_name}!', ...over })) as any;
+    const optInsSms = async (n: number) => { for (let i = 0; i < n; i++) await consent.optIn(STORE, 'sms', phone(i), { source: 'manual', name: 'S' + i }); };
+
+    it('save validates the gateway, encrypts the secret (never returned) and switches the gateway off', async () => {
+      await expect(sms.save(STORE, actor, { ...gw, http: { ...gw.http, url: 'http://x.com' } })).rejects.toThrow(/https/);
+      await expect(sms.save(STORE, actor, { ...gw, senderId: 'Bad!!' })).rejects.toThrow(/Sender name/);
+      await expect(sms.save(STORE, actor, { ...gw, dailyLimit: 0 })).rejects.toThrow(/Daily limit/);
+      const saved: any = await sms.save(STORE, actor, gw);
+      expect(saved).toMatchObject({ configured: true, enabled: false, verified: false, hasSecret: true, senderId: 'MYSHOP' });
+      expect(JSON.stringify(saved)).not.toContain('super-secret-key');
+      const raw: any = await m.smsConfigs.findOne({ storeId: STORE }).select('+secretEnc').lean();
+      expect(raw.secretEnc).toBeTruthy();
+      expect(raw.secretEnc).not.toContain('super-secret-key');
+      expect((await sms.get(OTHER)).configured).toBe(false);
+    });
+
+    it('the gateway can only be switched on after a successful real test, and any change switches it off again', async () => {
+      await sms.save(STORE, actor, gw);
+      await expect(sms.setEnabled(STORE, true)).rejects.toThrow(/successful test/);
+      smsProvider.send.mockResolvedValueOnce({ success: false, error: 'HTTP 401 bad key' });
+      await expect(sms.test(STORE, actor, '0300-5555555')).rejects.toThrow(/did not accept/);
+      expect(((await sms.get(STORE)) as any).lastError).toMatch(/401/);
+      await expect(sms.test(STORE, actor, 'abc')).rejects.toThrow(/phone number/);
+      smsProvider.send.mockResolvedValueOnce({ success: true });
+      await sms.test(STORE, actor, '0300-5555555');
+      expect(smsProvider.send.mock.calls[1][1]).toEqual({ secret: 'super-secret-key', sender: 'MYSHOP' });
+      expect(((await sms.setEnabled(STORE, true)) as any).enabled).toBe(true);
+      await sms.save(STORE, actor, { ...gw, senderId: 'OTHER' });
+      expect(((await sms.get(STORE)) as any)).toMatchObject({ enabled: false, verified: false });
+    });
+
+    it('a campaign needs a working gateway, only SMS-consented contacts (WhatsApp consent does not count), and appends the opt-out line', async () => {
+      await optInsSms(2); await optIns(3); // 3 WhatsApp opt-ins that must not receive SMS
+      const c = await smsCampaign();
+      await expect(camp.launch(STORE, actor, String(c._id))).rejects.toThrow(/SMS gateway/);
+      await goLive();
+      smsProvider.send.mockResolvedValue({ success: true, messageId: 'sm1' });
+      await camp.launch(STORE, actor, String(c._id));
+      await sendAll();
+      expect(smsProvider.send).toHaveBeenCalledTimes(2);
+      const texts = smsProvider.send.mock.calls.map((x: any) => x[3]);
+      expect(texts.every((x: string) => x.endsWith('\nReply STOP to opt out') && x.includes('sale at Shop A'))).toBe(true);
+      expect(texts.some((x: string) => x.startsWith('Hi S0,'))).toBe(true);
+      expect((await m.messages.find({ campaignId: String(c._id) }).lean()).every((x: any) => x.channel === 'sms')).toBe(true);
+    });
+
+    it('SMS campaigns use the gateway daily limit (shared across campaigns); with the gateway off nothing leaves', async () => {
+      await goLive();
+      await optInsSms(4);
+      smsProvider.send.mockResolvedValue({ success: true, messageId: 'sm' });
+      const c = await smsCampaign();
+      await camp.launch(STORE, actor, String(c._id)); await sendAll();
+      expect(smsProvider.send).toHaveBeenCalledTimes(2); // gateway limit 2
+      await sms.setEnabled(STORE, false);
+      await m.messages.updateMany({ status: 'sent' }, { $set: { sentAt: new Date(Date.now() - 25 * 3600_000) } });
+      expect(await camp.dispatch(String(c._id))).toBe(0);
+      await sms.setEnabled(STORE, true);
+      expect(await camp.dispatch(String(c._id))).toBe(1);
+    });
+
+    it('create validates SMS text; stats describe SMS parts without inventing a price', async () => {
+      await expect(camp.create(STORE, actor, { channel: 'sms', name: 'X', smsText: '  ' })).rejects.toThrow(/SMS text/);
+      await goLive(); await optInsSms(1);
+      smsProvider.send.mockResolvedValue({ success: true, messageId: 'sm' });
+      const c = await smsCampaign({ smsText: 'سلام {customer_name}' });
+      await camp.launch(STORE, actor, String(c._id)); await sendAll();
+      const s: any = await camp.stats(STORE, String(c._id));
+      expect(s.billing).toMatchObject({ encoding: 'UCS-2', partsPerMessage: 1, estimatedParts: 1 });
+      expect(JSON.stringify(s.billing)).not.toMatch(/\$|usd|rs\.?\s?\d/i);
+    });
+
+    it('webhook secret: shown once, wrong or missing secrets are refused; STOP by SMS opts out of SMS only; delivery reports go forward only', async () => {
+      await goLive(); await optInsSms(1); await optIns(1);
+      expect(await sms.verifyWebhookSecret(STORE, 'x'.repeat(40))).toBe(false);
+      const { secret, inboundPath } = await sms.rotateWebhookSecret(STORE);
+      expect(inboundPath).toContain(secret);
+      expect(await sms.verifyWebhookSecret(STORE, secret)).toBe(true);
+      expect(await sms.verifyWebhookSecret(OTHER, secret)).toBe(false);
+      expect(await sms.verifyWebhookSecret(STORE, secret + 'x')).toBe(false);
+      const raw: any = await m.smsConfigs.findOne({ storeId: STORE }).select('+webhookSecretHash').lean();
+      expect(raw.webhookSecretHash).not.toBe(secret);
+
+      smsProvider.send.mockResolvedValue({ success: true, messageId: 'sm-9' });
+      const c = await smsCampaign();
+      await camp.launch(STORE, actor, String(c._id)); await sendAll();
+      await hook.handleSmsDelivery(STORE, { id: 'sm-9', status: 'DELIVERED' });
+      await hook.handleSmsDelivery(STORE, { id: 'sm-9', status: 'sent' });
+      expect(((await m.messages.findOne({ providerMessageId: 'sm-9' }).lean()) as any).status).toBe('delivered');
+      expect(await hook.handleSmsDelivery(OTHER, { id: 'sm-9', status: 'failed' })).toEqual({ updated: 0 });
+
+      await hook.handleSmsInbound(STORE, { from: '03001000000', text: 'stop' });
+      expect((await consent.statusFor(STORE, 'sms', [keyOf(0)])).get(keyOf(0))).toBe('opted_out');
+      expect((await consent.statusFor(STORE, 'whatsapp', [keyOf(0)])).get(keyOf(0))).toBe('opted_in');
+      expect(await hook.handleSmsInbound(STORE, { from: '03001000000', text: 'thanks' })).toEqual({ optedOut: 0 });
+    });
+  });
+
+  describe('HttpSmsProvider (fetch mocked, no network)', () => {
+    const provider2 = new HttpSmsProvider();
+    const cfg = { url: 'https://api.smsgateway.pk/send?key={{secret}}', method: 'POST' as const, contentType: 'json' as const, headers: { 'X-Key': '{{secret}}' }, body: '{"to":"{{to}}","text":"{{text}}","from":"{{sender}}"}', successMatch: 'OK', messageIdPath: 'data.id' };
+    const ctx = { secret: 'k&1', sender: 'SHOP' };
+    let fetchMock: jest.SpyInstance;
+    beforeEach(() => { fetchMock = jest.spyOn(global, 'fetch' as any); });
+    afterEach(() => fetchMock.mockRestore());
+    const resp = (status: number, body: string) => ({ status, ok: status >= 200 && status < 300, text: async () => body }) as any;
+
+    it('renders url, headers and an escaped json body; reads the message id; requires the success text', async () => {
+      fetchMock.mockResolvedValue(resp(200, '{"status":"OK","data":{"id":77}}'));
+      const r = await provider2.send(cfg, ctx, '923001234567', 'Say "hi"\nnow');
+      expect(r).toEqual({ success: true, messageId: '77' });
+      const [url, init] = fetchMock.mock.calls[0];
+      expect(url).toBe('https://api.smsgateway.pk/send?key=k%261');
+      expect(init).toMatchObject({ method: 'POST', redirect: 'manual', headers: { 'X-Key': 'k&1', 'Content-Type': 'application/json' } });
+      expect(JSON.parse(init.body)).toEqual({ to: '923001234567', text: 'Say "hi"\nnow', from: 'SHOP' });
+      fetchMock.mockResolvedValue(resp(200, '{"status":"ERROR"}'));
+      expect((await provider2.send(cfg, ctx, '9230', 'x')).success).toBe(false);
+    });
+    it('HTTP errors, redirects and network failures are failures (redirects are never followed)', async () => {
+      fetchMock.mockResolvedValue(resp(401, 'bad key'));
+      expect(await provider2.send(cfg, ctx, '9230', 'x')).toMatchObject({ success: false, error: expect.stringContaining('401') });
+      fetchMock.mockResolvedValue(resp(302, ''));
+      expect(await provider2.send(cfg, ctx, '9230', 'x')).toMatchObject({ success: false, error: expect.stringContaining('redirect') });
+      fetchMock.mockRejectedValue(new Error('ECONNRESET'));
+      expect(await provider2.send(cfg, ctx, '9230', 'x')).toMatchObject({ success: false, error: 'ECONNRESET' });
+    });
+    it('a host that resolves to an internal address is refused before any request is made', async () => {
+      const dns = require('dns/promises');
+      dns.lookup.mockResolvedValueOnce([{ address: '10.0.0.7', family: 4 }]);
+      const r = await provider2.send(cfg, ctx, '9230', 'x');
+      expect(r).toMatchObject({ success: false, error: expect.stringContaining('not a public address') });
+      expect(fetchMock).not.toHaveBeenCalled();
     });
   });
 

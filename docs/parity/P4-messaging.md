@@ -1,4 +1,4 @@
-# P4 Messaging channels (IN PROGRESS, slice 1: WhatsApp marketing backend)
+# P4 Messaging channels (IN PROGRESS, slices 1-2: WhatsApp + SMS marketing backend)
 
 Run: `MONGO_TEST_URI="mongodb://127.0.0.1:27096/?directConnection=true" npx jest --runInBand --forceExit messaging.integration` (pure rules: `messaging-rules`).
 The whole feature is OFF until the platform owner sets `MESSAGING_CAMPAIGNS_ENABLED=true` (seller endpoints answer 403 otherwise). No live Meta call was ever made.
@@ -9,7 +9,14 @@ The whole feature is OFF until the platform owner sets `MESSAGING_CAMPAIGNS_ENAB
 - Meta's webhook payload shape is isolated in `whatsapp-webhook.mapping.ts` (marked VERIFY AGAINST OFFICIAL DOC).
 - Tests: 11 pure + 21 real-Mongo (consent rules, store isolation, templates submit/sync, launch rules, segment skips, throttling across campaigns, consent withdrawn mid-queue, redelivery sends once, retries, cancel, stuck sends, report ordering, STOP). A real bug was caught on the way: two workers handling the same batch both sent (fixed with a per-message in-flight claim).
 
+## Done (slice 2: SMS)
+- `sms-gateway.service.ts`: **generic HTTPS gateway** the seller describes once (URL, GET/POST, json/form, headers, body with {{to}} {{text}} {{sender}} {{secret}}, optional "success text", message-id path). Validation: https only, public host NAME (no IPs, no credentials in the URL, restricted headers), placeholders required. Secret stored AES-GCM encrypted and never returned. Send: DNS result must be public (checked right before the call), 10 s timeout, redirects never followed, response capped, success = 2xx and the success text when set. Escaping per place (json / form / url / raw); no template evaluation.
+- **Off until tested:** the gateway can be switched on only after a real test message to the seller's own number succeeded; any change to the request or secret switches it off again. Pakistani providers (Jazz, Telenor, Zong, Ufone, other aggregators) are **presets without endpoints** (verified:false): the seller pastes the API details from their provider's documentation. Nothing about their APIs is invented here (see OPEN-QUESTIONS).
+- SMS campaigns reuse the same engine (channel `sms`): own consent (WhatsApp consent never counts), segment narrowing, daily limit = gateway limit shared across campaigns, consent re-checked at send time, merge fields {customer_name}/{store_name}, the opt-out line "Reply STOP to opt out" appended to every message, parts estimate (GSM-7 160/153, Urdu/emoji UCS-2 70/67) in the stats; **no price stated**.
+- Webhooks per store: `POST api/public/sms/:storeId/:secret/inbound|delivery` (per-store secret, shown once, only its hash kept; wrong secret = 404). Inbound STOP opts out of SMS for that store only and cancels waiting SMS; delivery reports only move a message forward. Field names accepted are the common ones, isolated in `sms.util.ts` (VERIFY per gateway).
+- Seller API: `GET/PUT api/messaging/:storeId/sms-gateway`, `POST .../test`, `.../enable`, `.../webhook-secret`; consent endpoints take `channel: 'sms'`.
+- Tests: 11 pure + 30 real-Mongo in total (SMS: save/encrypt, enable-after-test, consent separation, footer, limits, gateway off, webhook secret, STOP, delivery order) + a mocked-fetch provider test incl. internal-address refusal.
+
 ## Not done
-- Slice 2: SMS (provider interface + generic HTTP gateway adapter + Pakistani adapters, unverified; sender-id config; opt-out link/keyword; log).
-- Slice 3: seller UI (consent list/import, templates, campaign builder + stats), opt-in checkbox at checkout/storefront (the consent records exist; nothing collects them from buyers yet), en/ur strings, plan entitlement.
+- Slice 3: seller UI (consent list/import, templates, SMS gateway form, campaign builder + stats), opt-in checkboxes at checkout/storefront (the consent records exist; nothing collects them from buyers yet), en/ur strings, plan entitlement.
 - Not verified: Meta's exact webhook fields, the template create/list calls beyond what the existing provider already does, messaging-tier limits of a real account (the default 1000 is Meta's published starting tier from memory), pricing.
