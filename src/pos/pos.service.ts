@@ -1540,6 +1540,8 @@ export class PosService {
         settingsVersion: money.settingsVersion,
         // the version asked for could not be honoured (unknown, or older than the offline window) → priced with current
         settingsVersionReplaced: !money.usedRequestedVersion,
+        // G2.4: the coupon that was applied (code + how it discounts) — null when none
+        coupon: couponInfo,
       },
     };
   }

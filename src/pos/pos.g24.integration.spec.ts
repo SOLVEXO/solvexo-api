@@ -175,6 +175,7 @@ describe('POS coupons (storefront Coupon model, POS channel)', () => {
     const c = await coupon(s, { code: 'Q10' });
     const q: any = await svc.quoteSale(s.sellerId, { storeId: s.storeId, items: [{ productId: s.productId, variantId: s.variantId, qty: 2 }], couponCode: 'q10' } as any);
     expect(q.data.totals ?? q.data).toMatchObject({ discount: 2 });
+    expect(q.data.coupon).toMatchObject({ code: 'Q10' }); // the app shows which coupon applied and how it discounts
     expect(((await h.repos.couponModel.findById(c._id).lean()) as any).usageCount).toBe(0);
     expect(await code(svc.quoteSale(s.sellerId, { storeId: s.storeId, items: [{ productId: s.productId, variantId: s.variantId, qty: 1 }], couponCode: 'NOPE' } as any))).toBe('COUPON_INVALID');
   });
