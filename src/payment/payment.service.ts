@@ -2390,7 +2390,38 @@ export class PaymentService {
     }
   }
 
-  private async createOrder(
+  /**
+   * Places the orders of one checkout exactly once. `createOrderUnclaimed` only de-duplicates with a read, so two parallel
+   * placements (double-click on "Place order", a webhook retry racing the poller) both passed it and created two orders and
+   * reserved the stock twice. The claim is one atomic update on the checkout document; a loser waits for the winner's
+   * orders and returns them. A claim from a crashed process expires after 2 minutes.
+   */
+  private async createOrder(userId: string, checkout: any, ...rest: any[]) {
+    const checkoutModel = this.databaseService.repositories.checkoutModel;
+    const orderModel = rest[0];
+    if (!checkoutModel) return this.createOrderUnclaimed(userId, checkout, ...(rest as [any, any]));
+    const staleBefore = new Date(Date.now() - 2 * 60_000);
+    const claim = await checkoutModel.updateOne(
+      { _id: checkout._id, $or: [{ orderPlacementClaimedAt: null }, { orderPlacementClaimedAt: { $exists: false } }, { orderPlacementClaimedAt: { $lt: staleBefore } }] },
+      { $set: { orderPlacementClaimedAt: new Date() } },
+    );
+    if (claim.modifiedCount === 0) {
+      for (let i = 0; i < 40; i++) {
+        const existing = await orderModel.find({ checkoutId: String(checkout._id), isDelete: false });
+        if (existing.length > 0) return existing;
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      throw new BadRequestException('This checkout is already being placed. Please check your orders.');
+    }
+    try {
+      return await this.createOrderUnclaimed(userId, checkout, ...(rest as [any, any]));
+    } catch (err) {
+      await checkoutModel.updateOne({ _id: checkout._id }, { $set: { orderPlacementClaimedAt: null } }).catch(() => undefined);
+      throw err;
+    }
+  }
+
+  private async createOrderUnclaimed(
     userId: string,
     checkout: any,
     orderModel: any,
@@ -2695,6 +2726,7 @@ export class PaymentService {
 
     // === PHYSICAL ORDER ===
     if (physicalItems.length > 0) {
+      try {
       const sellerOrders = buildSellerOrders(physicalItems, physicalPayment.paymentType === 'stripe' && physicalPayment.isPaid);
       // Spans potentially multiple sellers/currencies — each item is
       // converted from its OWN native currency into orderCurrency before
@@ -2764,6 +2796,16 @@ export class PaymentService {
         isDelete: false,
       });
       createdOrders.push(physicalOrder);
+      } catch (err) {
+        // The reservation above was real; a failed order insert must hand it back or the stock stays committed forever.
+        for (const d of reserved) {
+          await productVariantModel.updateOne(
+            { _id: d.variantId },
+            { $inc: { committedStock: -d.quantity, ...(d.preorder ? { 'preorder.sold': -d.quantity } : {}) } },
+          ).catch(() => undefined);
+        }
+        throw err;
+      }
     }
 
     // === DIGITAL ORDER ===

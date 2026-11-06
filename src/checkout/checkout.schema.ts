@@ -412,6 +412,10 @@ export class Checkout {
   })
   status: string;
 
+  /** Set atomically while an order is being created from this checkout (PaymentService.createOrder) so two parallel placements cannot both create one. Stale after 2 minutes. */
+  @Prop({ type: Date, default: null })
+  orderPlacementClaimedAt?: Date | null;
+
   @Prop({ type: Date, default: null })
   expiredAt: Date | null;
 
