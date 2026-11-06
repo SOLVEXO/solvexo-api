@@ -15,6 +15,8 @@ import { ProductVariantSchema } from '../products/schemas/productVariant.schema'
 import { StoreSchema } from '../store/schemas/store.schema';
 import { CouponSchema } from '../marketing/schemas/coupon.schema';
 import { CheckoutSchema } from '../checkout/checkout.schema';
+import { PaymentTransactionSchema } from './paymentTransaction.Schema';
+import { OrdersService } from '../orders/orders.service';
 
 const URI = process.env.MONGO_TEST_URI;
 const d = URI ? describe : describe.skip;
@@ -206,5 +208,161 @@ d('PaymentService.createOrder coupon usage count (real MongoDB)', () => {
     expect(log.mock.calls.filter((c) => c[0]?.action === 'coupon_usage_limit_exceeded')).toHaveLength(1);
     await conn3.dropDatabase();
     await conn3.close();
+  });
+});
+
+d('PaymentService.finalizePaymentIntent idempotency (real MongoDB)', () => {
+  let conn4: Connection;
+  let repos: any;
+  let s: any;
+  const storeId = String(new Types.ObjectId());
+  const PID = String(new Types.ObjectId());
+
+  beforeAll(async () => {
+    conn4 = await mongoose.createConnection(URI as string, { dbName: `payment_it_w_${Date.now()}` }).asPromise();
+    const mk = (name: string, schema: any) => conn4.model(name, schema);
+    repos = {
+      orderModel: mk('Order', OrderSchema), addressModel: mk('Address', AddressSchema), productModel: mk('Product', ProductSchema),
+      productVariantModel: mk('ProductVariant', ProductVariantSchema), storeModel: mk('Store', StoreSchema), couponModel: mk('Coupon', CouponSchema),
+      checkoutModel: mk('Checkout', CheckoutSchema), paymentTransactionModel: mk('PaymentTransaction', PaymentTransactionSchema),
+      cartModel: mk('Cart', new mongoose.Schema({}, { strict: false })), userModel: mk('User', new mongoose.Schema({}, { strict: false })),
+    };
+    await repos.storeModel.collection.insertOne({ _id: new Types.ObjectId(storeId), baseCurrency: 'USD', isDelete: false });
+    s = Object.create(PaymentService.prototype);
+    for (const k of ['notificationsService', 'financeService', 'giftCardsService', 'abandonedCartService', 'affiliateService', 'storeCreditService', 'activityLogService']) s[k] = stub();
+    s.exchangeRateService = { convertWithSnapshots: (n: number) => n };
+    s.databaseService = { repositories: repos };
+    s.round = (n: number) => Math.round(n * 100) / 100;
+    s.removeCheckedOutItemsFromCart = jest.fn().mockResolvedValue(undefined);
+  });
+  afterAll(async () => { await conn4.dropDatabase(); await conn4.close(); });
+
+  const seed = async (stock: number) => {
+    const vid = new Types.ObjectId();
+    await repos.productVariantModel.collection.insertOne({ _id: vid, productId: PID, storeId, sku: 'S' + vid, price: 10, stock, committedStock: 0, damagedStock: 0, inTransitStock: 0, isDelete: false, options: [], unlimitedStock: false });
+    const checkoutId = new Types.ObjectId();
+    const userId = String(new Types.ObjectId());
+    await repos.checkoutModel.collection.insertOne({ _id: checkoutId, userId, status: 'payment_pending', currency: 'USD', fxSnapshots: [], addressId: null, totalAmount: 10, isDelete: false,
+      items: [{ type: 'physical', productId: PID, variantId: String(vid), storeId, sellerId: 's', name: 'P', quantity: 1, unitPrice: 10, price: 10, totalPrice: 10, currency: 'USD', taxUSD: 0, options: [] }] });
+    const pi = 'pi_' + checkoutId;
+    await repos.paymentTransactionModel.collection.insertOne({ stripePaymentIntentId: pi, status: 'pending', isDelete: false, orderIds: [], checkoutId: String(checkoutId), userId, amount: 10, currency: 'USD', paymentType: 'stripe' });
+    return { vid, checkoutId, pi };
+  };
+  const event = (pi: string) => ({ id: pi, amount: 1000, currency: 'usd' });
+
+  it('the same payment_intent.succeeded delivered 5x in parallel -> one order, stock reserved once, transaction completed', async () => {
+    const { vid, checkoutId, pi } = await seed(5);
+    const res = await Promise.allSettled(Array.from({ length: 5 }, () => s.finalizePaymentIntent(event(pi))));
+
+    expect(res.every((r) => r.status === 'fulfilled')).toBe(true);
+    expect(await repos.orderModel.countDocuments({ checkoutId: String(checkoutId) })).toBe(1);
+    expect(((await repos.productVariantModel.collection.findOne({ _id: vid })) as any).committedStock).toBe(1);
+    const tx: any = await repos.paymentTransactionModel.collection.findOne({ stripePaymentIntentId: pi });
+    expect(tx.status).toBe('completed');
+    expect(tx.orderIds).toHaveLength(1);
+  });
+
+  it('a late/out-of-order redelivery after completion returns the same order and creates nothing', async () => {
+    const { checkoutId, pi } = await seed(5);
+    const first: any = await s.finalizePaymentIntent(event(pi));
+    const again: any = await s.finalizePaymentIntent(event(pi));
+
+    expect(again.orderIds).toEqual(first.orderIds);
+    expect(await repos.orderModel.countDocuments({ checkoutId: String(checkoutId) })).toBe(1);
+  });
+
+  it('paid but the last unit is gone -> auto refund path, no order, nothing reserved', async () => {
+    const { vid, checkoutId, pi } = await seed(0);
+    s.autoRefundUnfulfillable = jest.fn().mockResolvedValue({ orderIds: [] });
+    await s.finalizePaymentIntent(event(pi));
+
+    expect(s.autoRefundUnfulfillable).toHaveBeenCalledTimes(1);
+    expect(await repos.orderModel.countDocuments({ checkoutId: String(checkoutId) })).toBe(0);
+    expect(((await repos.productVariantModel.collection.findOne({ _id: vid })) as any).committedStock).toBe(0);
+  });
+
+  it('a wrong amount from Stripe is refused and the transaction goes back to pending', async () => {
+    const { checkoutId, pi } = await seed(5);
+    await expect(s.finalizePaymentIntent({ id: pi, amount: 1, currency: 'usd' })).rejects.toThrow(/mismatch/);
+
+    expect(await repos.orderModel.countDocuments({ checkoutId: String(checkoutId) })).toBe(0);
+    expect(((await repos.paymentTransactionModel.collection.findOne({ stripePaymentIntentId: pi })) as any).status).toBe('pending');
+  });
+});
+
+d('Order cancellation restock (real MongoDB)', () => {
+  let conn5: Connection;
+  let repos: any;
+  let pay: any;
+  let ord: any;
+  const storeId = String(new Types.ObjectId());
+  const sellerId = String(new Types.ObjectId());
+  const PID = String(new Types.ObjectId());
+
+  beforeAll(async () => {
+    conn5 = await mongoose.createConnection(URI as string, { dbName: `payment_it_x_${Date.now()}` }).asPromise();
+    const mk = (name: string, schema: any) => conn5.model(name, schema);
+    repos = {
+      orderModel: mk('Order', OrderSchema), addressModel: mk('Address', AddressSchema), productModel: mk('Product', ProductSchema),
+      productVariantModel: mk('ProductVariant', ProductVariantSchema), storeModel: mk('Store', StoreSchema), couponModel: mk('Coupon', CouponSchema),
+      checkoutModel: mk('Checkout', CheckoutSchema), paymentTransactionModel: mk('PaymentTransaction', PaymentTransactionSchema),
+      userModel: mk('User', new mongoose.Schema({}, { strict: false })),
+      variantLocationStockModel: mk('VariantLocationStock', new mongoose.Schema({}, { strict: false })),
+    };
+    await repos.storeModel.collection.insertOne({ _id: new Types.ObjectId(storeId), sellerId, baseCurrency: 'USD', isDelete: false });
+    pay = Object.create(PaymentService.prototype);
+    for (const k of ['notificationsService', 'financeService', 'giftCardsService', 'abandonedCartService', 'affiliateService', 'storeCreditService', 'activityLogService']) pay[k] = stub();
+    pay.exchangeRateService = { convertWithSnapshots: (n: number) => n };
+    pay.databaseService = { repositories: repos };
+    pay.round = (n: number) => Math.round(n * 100) / 100;
+    ord = Object.create(OrdersService.prototype);
+    for (const k of ['notificationsService', 'financeService', 'activityLogService', 'giftCardsService', 'storeCreditService']) ord[k] = stub();
+    ord.paymentService = stub();
+    ord.exchangeRateService = { convertWithSnapshots: (n: number) => n };
+    ord.databaseService = { repositories: repos };
+    ord.pushTimeline = jest.fn().mockResolvedValue(undefined);
+  });
+  afterAll(async () => { await conn5.dropDatabase(); await conn5.close(); });
+
+  const place = async (vid: Types.ObjectId, userId: string) => {
+    const cid = new Types.ObjectId();
+    await repos.checkoutModel.collection.insertOne({ _id: cid, userId, status: 'pending' });
+    const co = { _id: cid, userId, currency: 'USD', fxSnapshots: [], addressId: null, totalAmount: 10,
+      items: [{ type: 'physical', productId: PID, variantId: String(vid), storeId, sellerId, name: 'P', quantity: 1, unitPrice: 10, price: 10, totalPrice: 10, currency: 'USD', taxUSD: 0, options: [] }] };
+    const [o] = await pay.createOrder(userId, co, repos.orderModel, repos.addressModel, { paymentType: 'cash_on_delivery', isPaid: false, paymentStatus: 'unpaid' });
+    return String(o._id);
+  };
+
+  it('seller cancelling the same order twice at once releases its unit ONCE (other open orders keep their reservation)', async () => {
+    const vid = new Types.ObjectId();
+    await repos.productVariantModel.collection.insertOne({ _id: vid, productId: PID, storeId, sku: 'S' + vid, price: 10, stock: 5, committedStock: 0, damagedStock: 0, inTransitStock: 0, isDelete: false, options: [], unlimitedStock: false });
+    const a = await place(vid, String(new Types.ObjectId()));
+    await place(vid, String(new Types.ObjectId()));
+
+    const res = await Promise.allSettled([
+      ord.cancelOrderAsSeller(sellerId, storeId, a, { reason: 'test' }),
+      ord.cancelOrderAsSeller(sellerId, storeId, a, { reason: 'test' }),
+    ]);
+
+    expect(res.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    const v: any = await repos.productVariantModel.collection.findOne({ _id: vid });
+    expect(v.committedStock).toBe(1);
+    expect(v.stock).toBe(5);
+    const order: any = await repos.orderModel.collection.findOne({ _id: new Types.ObjectId(a) });
+    expect(order.sellerOrders[0].items[0].status).toBe('cancelled');
+  });
+
+  it('cancelling a pre-order line frees its pre-order slot', async () => {
+    const vid = new Types.ObjectId();
+    await repos.productVariantModel.collection.insertOne({ _id: vid, productId: PID, storeId, sku: 'S' + vid, price: 10, stock: 0, committedStock: 0, damagedStock: 0, inTransitStock: 0, isDelete: false, options: [], unlimitedStock: false,
+      preorder: { enabled: true, limit: 1, sold: 0, expectedDate: new Date(Date.now() + 864e5 * 9), message: null } });
+    const a = await place(vid, String(new Types.ObjectId()));
+    expect(((await repos.productVariantModel.collection.findOne({ _id: vid })) as any).preorder.sold).toBe(1);
+
+    await ord.cancelOrderAsSeller(sellerId, storeId, a, { reason: 'test' });
+
+    const v: any = await repos.productVariantModel.collection.findOne({ _id: vid });
+    expect(v.preorder.sold).toBe(0);
+    expect(v.committedStock).toBe(0);
   });
 });
