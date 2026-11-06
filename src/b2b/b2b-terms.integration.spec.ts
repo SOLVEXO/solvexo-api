@@ -8,6 +8,8 @@
 import mongoose, { Connection, Types } from 'mongoose';
 import { PaymentService } from '../payment/payment.service';
 import { B2BOrdersService } from './b2b-orders.service';
+import { creditReceivable } from './b2b-order.util';
+import { OrdersService } from '../orders/orders.service';
 import { OrderSchema } from '../orders/schemas/order.schema';
 import { AddressSchema } from '../address/adress.schema';
 import { ProductSchema } from '../products/schemas/product.schema';
@@ -161,6 +163,40 @@ d('B2B payment terms on a real MongoDB', () => {
     await expect(ordersSvc.listOrders(OTHER_STORE, {}).then((r) => r.items.some((i: any) => String(i._id) === id))).resolves.toBe(false);
     await repos.orderModel.collection.updateOne({ _id: new Types.ObjectId(id) }, { $set: { orderStatus: 'cancelled' } });
     await expect(ordersSvc.recordPayment(STORE, SELLER, actor, id, { amount: 10, method: 'bank' })).rejects.toThrow(/cancelled or refunded/);
+  });
+
+
+  it('a credit note lowers what is owed, never below what is paid, and fixes the status', async () => {
+    const { id } = await terms(1000);
+    await creditReceivable(repos.orderModel, id, 300, 'Return of 1 item(s)');
+    let o: any = await repos.orderModel.collection.findOne({ _id: new Types.ObjectId(id) });
+    expect(o.b2b.total).toBe(700);
+    expect(o.b2b.adjustments).toHaveLength(1);
+    await ordersSvc.recordPayment(STORE, SELLER, actor, id, { amount: 500, method: 'bank' });
+    await creditReceivable(repos.orderModel, id, 600, 'Cancelled');
+    o = await repos.orderModel.collection.findOne({ _id: new Types.ObjectId(id) });
+    expect(o.b2b.total).toBe(500);
+    expect(o.b2b.status).toBe('paid');
+    await creditReceivable(repos.orderModel, id, 0, 'nothing');
+    expect(((await repos.orderModel.collection.findOne({ _id: new Types.ObjectId(id) })) as any).b2b.adjustments).toHaveLength(2);
+  });
+
+  it('cancelling ONE line of an unpaid terms order lowers the receivable by that line (and its stock reservation is released)', async () => {
+    const ord: any = Object.create(OrdersService.prototype);
+    for (const k of ['notificationsService', 'financeService', 'activityLogService', 'giftCardsService', 'storeCreditService']) ord[k] = stub();
+    ord.paymentService = stub();
+    ord.exchangeRateService = { convertWithSnapshots: (n: number) => n };
+    ord.databaseService = { repositories: repos };
+    ord.pushTimeline = jest.fn().mockResolvedValue(undefined);
+    const v1 = await variant(); const v2 = await variant();
+    const res = await place([{ vid: v1, total: 600 }, { vid: v2, total: 400 }], snap());
+    const created: any = await orderOf(res);
+    const itemId = String(created.sellerOrders[0].items.find((i: any) => i.variantId === String(v1))._id);
+    await ord.cancelOrderAsSeller(SELLER, STORE, String(created._id), { reason: 'oos', itemIds: [itemId] });
+    const o: any = await repos.orderModel.collection.findOne({ _id: created._id });
+    expect(o.b2b.total).toBe(created.b2b.total - 600);
+    expect(((await repos.productVariantModel.collection.findOne({ _id: v1 })) as any).committedStock).toBe(0);
+    expect(((await repos.productVariantModel.collection.findOne({ _id: v2 })) as any).committedStock).toBe(1);
   });
 
   it('overdue filter and outstanding report/CSV (per company, formula-safe)', async () => {

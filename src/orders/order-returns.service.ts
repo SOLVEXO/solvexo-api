@@ -1,5 +1,6 @@
 import { stockLinesForItem } from '../common/bundle.util';
 /* eslint-disable prettier/prettier */
+import { creditReceivable } from '../b2b/b2b-order.util';
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { createHash } from 'crypto';
 import { Types } from 'mongoose';
@@ -314,6 +315,11 @@ export class OrderReturnsService {
       await this.r.orderModel.updateOne({ _id: orderId }, { $set: undo }).catch(() => undefined);
       await releaseRefundCapacity(this.r.orderModel, orderId, soIndex, granted).catch(() => undefined);
     };
+
+    // Wholesale order on payment terms, still unpaid: the returned items come off what the company owes.
+    if (!order.isPaid && (order as any).b2b?.terms) {
+      await creditReceivable(this.r.orderModel, orderId, wanted, `Return of ${lines.length} item(s)`).catch((e: any) => console.error('B2B receivable credit failed (return):', e?.message));
+    }
 
     let refundProcessed = false;
     let refundNote = order.isPaid ? '' : 'The order was not paid, so there was nothing to refund.';

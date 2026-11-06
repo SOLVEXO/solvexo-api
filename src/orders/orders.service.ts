@@ -1,4 +1,5 @@
 import { assertPreorderShippable } from '../common/preorder.util';
+import { creditReceivable } from '../b2b/b2b-order.util';
 import { expandForStock, stockLinesForItem } from '../common/bundle.util';
 import { Optional } from '@nestjs/common';
 import { ShippingProfilesService } from '@/shipping-zones/shipping-profiles.service';
@@ -3063,6 +3064,12 @@ export class OrdersService {
       throw new BadRequestException(
         'This order was just modified by someone else — please refresh and try again.',
       );
+    }
+
+    // Wholesale order on payment terms, still unpaid: cancelled items come off what the company owes.
+    if (!order.isPaid && (order as any).b2b?.terms) {
+      const cancelledValue = targetItems.reduce((s, { item }) => s + (item.totalPrice ?? 0) + (item.taxUSD ?? 0), 0);
+      await creditReceivable(orderModel, orderId, cancelledValue, `Cancelled ${targetItems.length} item(s)`).catch((e: any) => console.error('B2B receivable credit failed (cancel):', e?.message));
     }
 
     // Shopify: cancelling an EXCHANGE order (every line) reopens the return it resolved on the original order.

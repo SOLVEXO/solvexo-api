@@ -70,6 +70,34 @@ export async function companyOutstanding(
 
 export { creditLimitCheck };
 
+/** Recomputes `b2b.paidTotal` and `b2b.status` from the recorded (non-voided) installments. */
+export async function syncReceivableStatus(orderModel: any, orderId: string) {
+  const o: any = await orderModel.findById(orderId).select('b2b').lean();
+  if (!o?.b2b?.terms) return null;
+  const live = (o.b2b.payments ?? []).filter((p: any) => !p.voided);
+  const status = paymentStatusOf(o.b2b.total, live);
+  await orderModel.updateOne({ _id: orderId }, { $set: { 'b2b.status': status, 'b2b.paidTotal': paidTotal(live) } });
+  return status;
+}
+
+/**
+ * A return or a partial cancellation on a terms order that is still unpaid lowers what the company owes (a credit note on the
+ * receivable). The total never drops below what was already recorded as paid (that would be a refund the seller handles). Atomic.
+ */
+export async function creditReceivable(orderModel: any, orderId: string, amount: number, note: string) {
+  const credit = round2(amount);
+  if (!(credit > 0)) return;
+  await orderModel.updateOne(
+    { _id: orderId, 'b2b.terms': { $ne: null } },
+    [{ $set: {
+      'b2b.total': { $max: [{ $ifNull: ['$b2b.paidTotal', 0] }, { $subtract: ['$b2b.total', credit] }] },
+      'b2b.adjustments': { $concatArrays: [{ $ifNull: ['$b2b.adjustments', []] }, [{ amount: -credit, note, date: '$$NOW' }]] },
+    } }],
+    { updatePipeline: true } as any,
+  );
+  await syncReceivableStatus(orderModel, orderId);
+}
+
 /**
  * Payment methods a wholesale company may see at checkout: the store's list narrowed by the company's allow-list (an empty list
  * allows everything), plus `b2b_terms` when the company has payment terms and the cart is from one store. "split" (online + COD)
