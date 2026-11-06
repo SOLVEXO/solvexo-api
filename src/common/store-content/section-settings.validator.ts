@@ -616,7 +616,11 @@ export function validateBlockSettings(blockType: string, settings: Record<string
     case 'social_link':
       required(settings.platform, 'platform');
       oneOf(settings.platform, ['facebook', 'instagram', 'x', 'tiktok', 'youtube', 'linkedin', 'whatsapp'] as const, 'platform');
-      assertHttpsUrl(settings.url, 'url');
+      // An empty link is allowed (the storefront simply hides that icon). WhatsApp may hold a phone number.
+      if (typeof settings.url === 'string' && settings.url.trim() !== '') {
+        if (settings.platform === 'whatsapp' && /^\+?[\d\s\-()]{7,20}$/.test(settings.url.trim())) break;
+        assertHttpsUrl(settings.url, 'url');
+      }
       break;
     case 'copyright_text':
       required(settings.text, 'text');
