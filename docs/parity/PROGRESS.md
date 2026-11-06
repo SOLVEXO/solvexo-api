@@ -1,0 +1,22 @@
+# Parity run progress
+
+Read MASTER.md first. Update this table after every phase.
+
+| phase | status | commit | not-verified |
+|---|---|---|---|
+| P0 Theme parity | not started | - | - |
+| P1 Real-DB tests + money-path hardening | not started | - | - |
+| P2 B2B (+ addendum) | not started | - | - |
+| P3 COD protection | not started | - | - |
+| P4 Messaging channels (WhatsApp/SMS) | not started | - | - |
+| P5 Khata | not started | - | - |
+| P6 Product feeds | not started | - | - |
+| P7 Qisstpay | not started | - | - |
+| P8 Webhooks + API tokens | not started | - | - |
+| P9 Search & discovery | not started | - | - |
+| P10 Notification templates | not started | - | - |
+| P11 AI Studio honesty | not started | - | - |
+| P12 Seller + staff 2FA | not started | - | - |
+
+Notes:
+- Docs live in the API repo (`solvexo-api/docs/parity/`); the web repo (`solvexo-web`) is a separate git repo, so web changes for a phase are committed there on `uzair-branch` with the same `feat(<phase>): ...` message.
