@@ -9,7 +9,7 @@ Read MASTER.md first. Update this table after every phase.
 | P2 B2B (+ addendum) | MOSTLY DONE: slices 1-8 (incl. company draft orders) (backend, terms/installments, seller hub, storefront, wholesale-only store, receivable credit notes, reminders, plan feature) | see git log | B2B-only sections, company addresses at checkout, WhatsApp reminders, i18n (en/ur), Liquid, wholesale price on cards, admin UI label for the plan feature, entitlements, createCheckout hook not run on real DB |
 | P3 COD protection | DONE in code (rules, score, guard, confirmation link, auto-cancel, UI, widget) | api 322ade8, web 8fc04ce4 | no browser/SMTP/WhatsApp run; en/ur strings; WhatsApp template needs Meta approval |
 | P4 Messaging channels (WhatsApp/SMS) | DONE in code (backend + seller UI + buyer preferences page), flag-gated OFF | see git log | no browser run, live Meta / SMS gateways never run, no checkout opt-in, no en/ur, no entitlement |
-| P5 Khata | not started | - | - |
+| P5 Khata (customer ledger) | DONE in code (ledger, aging, statements, B2B mirror, POS udhaar, SMS reminders, seller page) | see git log, docs/parity/P5-khata.md | no browser/DI-boot run, no WhatsApp reminders, no native POS tender, no en/ur |
 | P6 Product feeds | not started | - | - |
 | P7 Qisstpay | not started | - | - |
 | P8 Webhooks + API tokens | not started | - | - |
