@@ -103,7 +103,7 @@ function looksLikePlainText(b: Buffer): boolean {
 
 /** Per-category size ceilings (multer's own limit is the outer cap for video/archives). */
 export function maxBytesForExtension(ext: string): number {
-  if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'avif'].includes(ext)) return 10 * 1024 * 1024;
+  if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'avif'].includes(ext)) return 20 * 1024 * 1024;
   if (['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'csv'].includes(ext)) return 50 * 1024 * 1024;
   return Number.POSITIVE_INFINITY;
 }
@@ -122,5 +122,6 @@ export function assertFileSignature(file: { originalname?: string; mimetype?: st
     const ok = expected ? expected.includes(kind) : kind !== null && kind !== 'zip' && kind !== 'ole' && kind !== 'pdf';
     if (!ok) throw new BadRequestException('File content does not match its type');
   }
-  if (buf.length > maxBytesForExtension(ext)) throw new BadRequestException('File is too large for its type');
+  const maxBytes = maxBytesForExtension(ext);
+  if (buf.length > maxBytes) throw new BadRequestException(`File is too large. The limit is ${Math.round(maxBytes / (1024 * 1024))} MB for this file type.`);
 }
