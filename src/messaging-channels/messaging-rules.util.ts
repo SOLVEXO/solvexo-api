@@ -71,6 +71,9 @@ export const templateParamCount = (bodyText: string): number => new Set([...(bod
 /** A marketing campaign may only use an approved template (Meta refuses anything else; we refuse before spending a send). */
 export const canSendTemplate = (status: string | null | undefined): boolean => String(status ?? '').toUpperCase() === 'APPROVED';
 
+/** A send that failed for a reason that may pass (rate limit, provider or network trouble) is retried; a refused number or content is not. */
+export const isTransientSendError = (error: unknown): boolean => /\b(429|5\d\d)\b|timeout|timed out|ETIMEDOUT|ECONN|fetch failed|rate limit|temporar/i.test(String(error ?? ''));
+
 export type MessageStatus = 'queued' | 'sending' | 'sent' | 'delivered' | 'read' | 'failed' | 'skipped_no_consent' | 'skipped_opted_out' | 'skipped_invalid';
 const RANK: Record<string, number> = { queued: 0, sending: 1, sent: 2, delivered: 3, read: 4 };
 
@@ -87,7 +90,7 @@ export interface CampaignCounts { queued: number; sent: number; delivered: numbe
 export function countsFromStatuses(byStatus: Record<string, number>): CampaignCounts & { total: number } {
   const g = (k: string) => byStatus[k] ?? 0;
   const read = g('read'); const delivered = g('delivered') + read; const sent = g('sent') + delivered;
-  const skipped = g('skipped_no_consent') + g('skipped_opted_out') + g('skipped_invalid');
+  const skipped = g('skipped_no_consent') + g('skipped_opted_out') + g('skipped_invalid') + g('canceled');
   const queued = g('queued') + g('sending');
   const failed = g('failed');
   return { queued, sent, delivered, read, failed, skipped, total: queued + sent + failed + skipped };

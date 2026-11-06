@@ -99,6 +99,7 @@ import { MembershipsModule } from './memberships/memberships.module';
 import { LicensesModule } from './licenses/licenses.module';
 import { B2BModule } from './b2b/b2b.module';
 import { CodProtectionModule } from './cod-protection/cod-protection.module';
+import { MessagingChannelsModule } from './messaging-channels/messaging-channels.module';
 import { CoursesModule } from './courses/courses.module';
 import { DashboardLayoutsModule } from './dashboard-layouts/dashboard-layouts.module';
 import { StoreContactModule } from './store-contact/store-contact.module';
@@ -235,6 +236,7 @@ import { AppI18nModule } from './i18n/i18n.module';
     LicensesModule,
     B2BModule,
     CodProtectionModule,
+    MessagingChannelsModule,
     CoursesModule,
     DashboardLayoutsModule,
     StoreContactModule,

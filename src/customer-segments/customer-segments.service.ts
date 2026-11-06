@@ -173,6 +173,20 @@ export class CustomerSegmentsService {
     return { ids: new Set(rows.map((r) => String(r._id))), emails: new Set(rows.map((r) => String(r.email ?? '').toLowerCase()).filter(Boolean)) };
   }
 
+  /** Members with a phone number (up to `max`), for messaging campaigns. Empty when the segment no longer exists for this store. */
+  async resolveContacts(storeId: string, segmentId: string, max = 20_000): Promise<{ customerId: string; name: string | null; phone: string }[] | null> {
+    const filter = await this.loadFilter(storeId, segmentId);
+    if (!filter) return null;
+    const compiled = compileSegmentFilter(normalizeSegmentFilter(filter));
+    const out: { customerId: string; name: string | null; phone: string }[] = [];
+    for (let page = 1; out.length < max; page++) {
+      const res: any = await this.storeService.querySegmentMembers(storeId, compiled, { mode: 'list', page, limit: 100 });
+      for (const c of res.customers ?? []) if (typeof c.phone === 'string' && c.phone.trim()) out.push({ customerId: String(c._id), name: c.name ?? null, phone: c.phone });
+      if (page >= (res.pagination?.totalPages ?? 0)) break;
+    }
+    return out.slice(0, max);
+  }
+
   /** Whether ONE customer is currently in the segment (discount eligibility at redeem time). */
   async isMember(storeId: string, segmentId: string, customerId: string): Promise<boolean> {
     const filter = await this.loadFilter(storeId, segmentId);

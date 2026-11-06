@@ -1,0 +1,15 @@
+# P4 Messaging channels (IN PROGRESS, slice 1: WhatsApp marketing backend)
+
+Run: `MONGO_TEST_URI="mongodb://127.0.0.1:27096/?directConnection=true" npx jest --runInBand --forceExit messaging.integration` (pure rules: `messaging-rules`).
+The whole feature is OFF until the platform owner sets `MESSAGING_CAMPAIGNS_ENABLED=true` (seller endpoints answer 403 otherwise). No live Meta call was ever made.
+
+## Done (slice 1)
+- `src/messaging-channels/`: per-store, per-channel **consent** (explicit opt-in with source, STOP/opt-out recorded at once with history, import needs the seller's attestation and never re-subscribes a STOP), WhatsApp **templates** (local copy, sync from Meta, submit as category MARKETING only, validation of name/language/length/numbered placeholders/examples), **campaigns** (draft -> sending -> completed/canceled; only an APPROVED template; recipients = opted-in contacts, optionally narrowed by a customer segment; one row per contact so nobody is messaged twice; contacts without consent / who opted out are recorded as skipped), **throttle** (unique contacts per 24 h per store across all campaigns, default 1000 = Meta tier 1, per-campaign lower limit; the rest continues after 24 h through an hourly job), **queue** `messaging-send` (batches of 50, claimed before sending; consent re-checked at send time; transient errors retried up to 3x, permanent ones fail at once; a message stuck in `sending` is failed, never re-sent), **delivery reports** (sent -> delivered -> read only forward, failures never overwrite a delivered message, store found through the phone number id) and **STOP** replies (English keywords incl. button replies) that opt the person out of THAT store and cancel their waiting messages.
+- Per-campaign stats + message log (paged). Billing note: states that WhatsApp charges per delivered template message and that the rate depends on the country; **no price is stated** (unverified).
+- Meta's webhook payload shape is isolated in `whatsapp-webhook.mapping.ts` (marked VERIFY AGAINST OFFICIAL DOC).
+- Tests: 11 pure + 21 real-Mongo (consent rules, store isolation, templates submit/sync, launch rules, segment skips, throttling across campaigns, consent withdrawn mid-queue, redelivery sends once, retries, cancel, stuck sends, report ordering, STOP). A real bug was caught on the way: two workers handling the same batch both sent (fixed with a per-message in-flight claim).
+
+## Not done
+- Slice 2: SMS (provider interface + generic HTTP gateway adapter + Pakistani adapters, unverified; sender-id config; opt-out link/keyword; log).
+- Slice 3: seller UI (consent list/import, templates, campaign builder + stats), opt-in checkbox at checkout/storefront (the consent records exist; nothing collects them from buyers yet), en/ur strings, plan entitlement.
+- Not verified: Meta's exact webhook fields, the template create/list calls beyond what the existing provider already does, messaging-tier limits of a real account (the default 1000 is Meta's published starting tier from memory), pricing.
