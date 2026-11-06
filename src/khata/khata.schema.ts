@@ -18,6 +18,7 @@ export class KhataAccount {
   @Prop({ type: Number, default: 0 }) entryCount: number;
   @Prop({ type: Date, default: null }) lastEntryAt: Date | null;
   @Prop({ default: false }) archived: boolean;
+  @Prop({ type: Date, default: null }) lastReminderAt: Date | null;
 }
 export type KhataAccountDocument = HydratedDocument<KhataAccount>;
 export const KhataAccountSchema = SchemaFactory.createForClass(KhataAccount);

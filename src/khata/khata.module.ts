@@ -5,11 +5,13 @@ import { RedisModule } from '../redis/redis.module';
 import { KhataAccount, KhataAccountSchema, KhataEntry, KhataEntrySchema } from './khata.schema';
 import { KhataController } from './khata.controller';
 import { KhataService } from './khata.service';
+import { KhataRemindersService } from './khata-reminders.service';
+import { MessagingChannelsModule } from '../messaging-channels/messaging-channels.module';
 
 @Module({
-  imports: [AuthModule, RedisModule, MongooseModule.forFeature([{ name: KhataAccount.name, schema: KhataAccountSchema }, { name: KhataEntry.name, schema: KhataEntrySchema }])],
+  imports: [AuthModule, RedisModule, MessagingChannelsModule, MongooseModule.forFeature([{ name: KhataAccount.name, schema: KhataAccountSchema }, { name: KhataEntry.name, schema: KhataEntrySchema }])],
   controllers: [KhataController],
-  providers: [KhataService],
+  providers: [KhataService, KhataRemindersService],
   exports: [KhataService],
 })
 export class KhataModule {}

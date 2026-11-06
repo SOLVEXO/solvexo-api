@@ -224,6 +224,35 @@ export class KhataService implements OnModuleInit {
     }
   }
 
+  /**
+   * "Sell on udhaar": puts a finished POS sale (tender "other", i.e. nothing was collected at the till) on a customer's khata account.
+   * Idempotent per sale; the seller's credit limit applies. A sale that was later voided/refunded is taken back with releasePosSale.
+   */
+  async putPosSaleOnAccount(storeId: string, saleId: string, accountId: string, actor: Actor) {
+    const sale = await this.loadPosSale(storeId, saleId);
+    if (sale.status !== 'completed') throw new BadRequestException('Only a completed sale can be put on a customer account');
+    if (sale.paymentMethod !== 'other') throw new BadRequestException('Take the sale with the payment type "Other" (nothing collected), then put it on the account');
+    const acc = await this.getAccount(storeId, accountId);
+    if (sale.currency && sale.currency !== acc.currency) throw new BadRequestException('The sale currency differs from the account currency');
+    if (sale.customerId && acc.customerId && String(sale.customerId) !== String(acc.customerId)) throw new BadRequestException('This sale belongs to a different customer');
+    return this.post(storeId, accountId, { type: 'sale', amount: sale.total, note: `POS sale ${sale.saleNumber}`, reference: sale.saleNumber, source: 'pos', sourceKey: `pos:${saleId}` }, actor);
+  }
+
+  async releasePosSale(storeId: string, saleId: string, actor: Actor) {
+    const sale = await this.loadPosSale(storeId, saleId);
+    if (!['voided', 'refunded'].includes(sale.status)) throw new BadRequestException('Only a voided or fully refunded sale can be taken off the account');
+    const e: any = await this.entries.findOne({ storeId, sourceKey: `pos:${saleId}` }).select('_id').lean();
+    if (!e) throw new NotFoundException('This sale is not on any account');
+    return this.reverse(storeId, String(e._id), `POS sale ${sale.saleNumber} ${sale.status}`, actor);
+  }
+
+  private async loadPosSale(storeId: string, saleId: string) {
+    if (!Types.ObjectId.isValid(saleId)) throw new NotFoundException('Sale not found');
+    const sale: any = await this.db?.repositories.saleModel.findOne({ _id: saleId, storeId }).select('status paymentMethod total currency customerId saleNumber').lean();
+    if (!sale) throw new NotFoundException('Sale not found');
+    return sale;
+  }
+
   /** Checks (without posting) whether a new debit would stay inside the seller's limit. For checkout and the POS. */
   async canTakeOnCredit(storeId: string, customerKey: string, amount: number) {
     const acc: any = await this.accounts.findOne({ storeId, customerKey, archived: false }).select('balance creditLimit').lean();

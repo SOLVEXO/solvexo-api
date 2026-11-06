@@ -6,6 +6,7 @@
  */
 import mongoose, { Connection } from 'mongoose';
 import { KhataService } from './khata.service';
+import { KhataRemindersService, reminderText } from './khata-reminders.service';
 import { KhataAccountSchema, KhataEntrySchema } from './khata.schema';
 import { agingOf, bucketOf, csvCell, exceedsLimit, validateAmount } from './khata-rules.util';
 
@@ -182,5 +183,83 @@ d('KhataService on a real MongoDB', () => {
       order.b2b.terms = null; await mirror.syncB2BOrder('o1');
       expect((await svc.listAccounts(SB, {})).total).toBe(0);
     });
+  });
+
+  describe('POS udhaar', () => {
+    let sale: any; let pos: KhataService; let store: string; let n = 0;
+    beforeEach(() => {
+      store = `storePos${++n}`;
+      sale = { _id: '665f1f77bcf86cd799439011', status: 'completed', paymentMethod: 'other', total: 250, currency: 'PKR', customerId: null, saleNumber: 'POS-00007' };
+      const db: any = { repositories: { saleModel: { findOne: (q: any) => ({ select: () => ({ lean: async () => (q.storeId === store ? sale : null) }) }) } } };
+      pos = new KhataService(conn.model('KhataAccount') as any, conn.model('KhataEntry') as any, conn as any, { log: async () => undefined } as any, db);
+    });
+    const mk = () => pos.ensureAccount(store, { customerId: 'cust1', name: 'Bilal', currency: 'PKR' });
+    it('puts a finished sale on the account once; the limit applies', async () => {
+      const a: any = await mk();
+      await pos.putPosSaleOnAccount(store, sale._id, String(a._id), actor);
+      const again = await pos.putPosSaleOnAccount(store, sale._id, String(a._id), actor);
+      expect(again.duplicate).toBe(true);
+      expect((await pos.getAccount(store, String(a._id))).balance).toBe(250);
+      await pos.setLimit(store, String(a._id), 300, actor);
+      sale._id = '665f1f77bcf86cd799439012';
+      await expect(pos.putPosSaleOnAccount(store, sale._id, String(a._id), actor)).rejects.toThrow(/credit limit/);
+    });
+    it('refuses sales that are not "other" tender, not completed, or of another store/customer', async () => {
+      const a: any = await mk();
+      sale.paymentMethod = 'cash'; await expect(pos.putPosSaleOnAccount(store, sale._id, String(a._id), actor)).rejects.toThrow(/Other/);
+      sale.paymentMethod = 'other'; sale.status = 'held'; await expect(pos.putPosSaleOnAccount(store, sale._id, String(a._id), actor)).rejects.toThrow(/completed/);
+      sale.status = 'completed'; sale.customerId = 'someone-else'; await expect(pos.putPosSaleOnAccount(store, sale._id, String(a._id), actor)).rejects.toThrow(/different customer/);
+      await expect(pos.putPosSaleOnAccount('otherStore', sale._id, String(a._id), actor)).rejects.toThrow(/not found/);
+    });
+    it('a voided sale can be taken off the account, once', async () => {
+      const a: any = await mk();
+      await pos.putPosSaleOnAccount(store, sale._id, String(a._id), actor);
+      await expect(pos.releasePosSale(store, sale._id, actor)).rejects.toThrow(/voided or fully refunded/);
+      sale.status = 'voided';
+      await pos.releasePosSale(store, sale._id, actor);
+      expect((await pos.getAccount(store, String(a._id))).balance).toBe(0);
+      await expect(pos.releasePosSale(store, sale._id, actor)).rejects.toThrow(/already reversed/);
+    });
+  });
+
+  describe('SMS reminder', () => {
+    let consent: any; let sms: any; let rem: KhataRemindersService; let store: string; let n = 0; let id: string;
+    beforeEach(async () => {
+      process.env.MESSAGING_CAMPAIGNS_ENABLED = 'true';
+      store = `storeRem${++n}`;
+      consent = { statusFor: jest.fn(async () => new Map([['923001234567', 'opted_in']])) };
+      sms = { activeConfig: jest.fn(async () => ({ dailyLimit: 10 })), sendMarketing: jest.fn(async () => ({ success: true })) };
+      const db: any = { repositories: { storeModel: { findById: () => ({ select: () => ({ lean: async () => ({ name: 'Shop' }) }) }) } } };
+      rem = new KhataRemindersService(conn.model('KhataAccount') as any, consent, sms, db);
+      const a: any = await svc.ensureAccount(store, { customerId: 'c', name: 'Cara', phone: '0300 1234567', currency: 'PKR' });
+      id = String(a._id);
+      await svc.post(store, id, { type: 'sale', amount: 800 }, actor);
+    });
+    afterAll(() => { delete process.env.MESSAGING_CAMPAIGNS_ENABLED; });
+    it('sends one SMS to an opted-in customer and not a second one within a day', async () => {
+      await rem.remind(store, id);
+      expect(sms.sendMarketing).toHaveBeenCalledTimes(1);
+      expect(sms.sendMarketing.mock.calls[0][2]).toContain('800');
+      await expect(rem.remind(store, id)).rejects.toThrow(/last 24 hours/);
+    });
+    it('no consent, no gateway, nothing owed, flag off: nothing is sent', async () => {
+      consent.statusFor.mockResolvedValueOnce(new Map());
+      await expect(rem.remind(store, id)).rejects.toThrow(/not agreed/);
+      sms.activeConfig.mockResolvedValueOnce(null);
+      await expect(rem.remind(store, id)).rejects.toThrow(/not switched on/);
+      process.env.MESSAGING_CAMPAIGNS_ENABLED = 'false';
+      await expect(rem.remind(store, id)).rejects.toThrow(/not available/);
+      process.env.MESSAGING_CAMPAIGNS_ENABLED = 'true';
+      await svc.post(store, id, { type: 'payment', amount: 800 }, actor);
+      await expect(rem.remind(store, id)).rejects.toThrow(/owes nothing/);
+      expect(sms.sendMarketing).not.toHaveBeenCalled();
+    });
+    it('a failed send does not use up the daily reminder', async () => {
+      sms.sendMarketing.mockResolvedValueOnce({ success: false, error: 'timeout' });
+      await expect(rem.remind(store, id)).rejects.toThrow(/not sent/);
+      await rem.remind(store, id);
+      expect(sms.sendMarketing).toHaveBeenCalledTimes(2);
+    });
+    it('reminder text names the store and the amount', () => { expect(reminderText('Shop', 1234.5, 'PKR')).toContain('PKR 1,234.5'); });
   });
 });

@@ -31,6 +31,6 @@ import { MessagingController } from './messaging.controller';
   ],
   controllers: [MessagingController, PublicSmsController, MessagingStorefrontController],
   providers: [SmsGatewayService, MessagingConsentService, WhatsAppTemplatesService, MessagingCampaignsService, MessagingWebhookService, MessagingSendProcessor],
-  exports: [MessagingConsentService, MessagingCampaignsService],
+  exports: [MessagingConsentService, MessagingCampaignsService, SmsGatewayService],
 })
 export class MessagingChannelsModule {}

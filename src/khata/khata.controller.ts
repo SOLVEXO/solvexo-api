@@ -1,6 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { Body, Controller, Get, Header, Param, Patch, Post, Query, Req, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -10,6 +11,7 @@ import { actingSellerId } from '../common/acting-seller-id.util';
 import { verifyStoreOwnershipOrForbidden } from '../common/store-ownership.util';
 import { DatabaseService } from '../database/databaseservice';
 import { KhataService } from './khata.service';
+import { KhataRemindersService } from './khata-reminders.service';
 
 /** Seller customer ledger (khata). Permissions: khata.view (read) / khata.manage (post, reverse, limits). */
 @ApiTags('Khata (seller)')
@@ -19,7 +21,7 @@ import { KhataService } from './khata.service';
 @UsePipes(new ValidationPipe({ transform: false }))
 @Controller('api/khata/:storeId')
 export class KhataController {
-  constructor(private readonly svc: KhataService, private readonly db: DatabaseService) {}
+  constructor(private readonly svc: KhataService, private readonly db: DatabaseService, private readonly reminders: KhataRemindersService) {}
   private async own(req: any, storeId: string) {
     const store: any = await verifyStoreOwnershipOrForbidden(this.db.repositories.storeModel as any, storeId, actingSellerId(req.user));
     return { store, actor: { id: String(req.user.userId ?? req.user.sub ?? req.user.id ?? ''), role: String(req.user.role) } };
@@ -63,6 +65,16 @@ export class KhataController {
 
   @Post('entries/:entryId/reverse') @RequirePermission('khata.manage')
   async reverse(@Req() req: any, @Param('storeId') s: string, @Param('entryId') id: string, @Body() b: any) { const { actor } = await this.own(req, s); return this.svc.reverse(s, id, b?.note, actor); }
+
+  @Post('accounts/:accountId/pos-sales/:saleId') @RequirePermission('khata.manage')
+  async posSale(@Req() req: any, @Param('storeId') s: string, @Param('accountId') id: string, @Param('saleId') sale: string) { const { actor } = await this.own(req, s); return this.svc.putPosSaleOnAccount(s, sale, id, actor); }
+
+  @Post('pos-sales/:saleId/release') @RequirePermission('khata.manage')
+  async releasePos(@Req() req: any, @Param('storeId') s: string, @Param('saleId') sale: string) { const { actor } = await this.own(req, s); return this.svc.releasePosSale(s, sale, actor); }
+
+  @Post('accounts/:accountId/remind') @RequirePermission('khata.manage')
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  async remind(@Req() req: any, @Param('storeId') s: string, @Param('accountId') id: string) { await this.own(req, s); return this.reminders.remind(s, id); }
 
   @Patch('accounts/:accountId/limit') @RequirePermission('khata.manage')
   async limit(@Req() req: any, @Param('storeId') s: string, @Param('accountId') id: string, @Body() b: any) { const { actor } = await this.own(req, s); return this.svc.setLimit(s, id, b?.creditLimit, actor); }
