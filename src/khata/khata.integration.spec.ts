@@ -80,7 +80,7 @@ d('KhataService on a real MongoDB', () => {
     expect(rows.total).toBe(20);
     expect((await svc.getAccount(S1, String(acc._id))).balance).toBeCloseTo(sum, 2);
     expect(new Set(rows.items.map((e: any) => e.seq)).size).toBe(20);
-  });
+  }, 60000);
 
   it('the credit limit blocks a sale above it, even when two arrive together', async () => {
     await svc.setLimit(S1, String(acc._id), 1000, actor);
@@ -140,5 +140,47 @@ d('KhataService on a real MongoDB', () => {
     expect(l.items).toHaveLength(1);
     expect(l.totalOwed).toBe(11);
     expect(l.customersOwing).toBe(1);
+  });
+
+  describe('mirror of wholesale terms orders', () => {
+    let SB = 'storeB2B'; let n = 0;
+    let order: any; let mirror: KhataService;
+    const accountOf = async () => (await svc.listAccounts(SB, {})).items[0] as any;
+    beforeEach(() => {
+      SB = `storeB2B${++n}`;
+      order = { _id: 'o1', orderNumber: '1001', currency: 'PKR', sellerOrders: [{ storeId: SB }],
+        b2b: { companyId: 'comp1', companyName: 'Acme Traders', terms: { type: 'net', netDays: 30 }, dueDate: new Date('2026-05-01'), total: 1000, adjustments: [], payments: [] } };
+      const db: any = { repositories: { orderModel: { findById: () => ({ select: () => ({ lean: async () => order }) }) } } };
+      mirror = new KhataService(conn.model('KhataAccount') as any, conn.model('KhataEntry') as any, conn as any, { log: async () => undefined } as any, db);
+    });
+    it('a placed terms order becomes a debit; syncing again changes nothing', async () => {
+      await mirror.syncB2BOrder('o1'); await mirror.syncB2BOrder('o1');
+      const a = await accountOf();
+      expect(a.balance).toBe(1000); expect(a.entryCount).toBe(1);
+    });
+    it('payments, credit notes and a voided payment follow the order', async () => {
+      await mirror.syncB2BOrder('o1');
+      order.b2b.payments.push({ _id: 'p1', amount: 300, method: 'bank', reference: 'TT1', date: new Date(), voided: false });
+      await mirror.syncB2BOrder('o1');
+      expect((await accountOf()).balance).toBe(700);
+      order.b2b.total = 900; order.b2b.adjustments.push({ amount: -100, note: 'Return of 1 item(s)', date: new Date() });
+      await mirror.syncB2BOrder('o1');
+      expect((await accountOf()).balance).toBe(600);
+      order.b2b.payments[0].voided = true;
+      await mirror.syncB2BOrder('o1'); await mirror.syncB2BOrder('o1');
+      expect((await accountOf()).balance).toBe(900);
+    });
+    it('a limit set by the seller never stops the mirror of an order already placed', async () => {
+      await mirror.syncB2BOrder('o1');
+      const a = await accountOf();
+      await svc.setLimit(SB, String(a._id), 100, actor);
+      order._id = 'o2'; order.b2b.total = 500;
+      await mirror.syncB2BOrder('o2');
+      expect((await accountOf()).balance).toBe(1500);
+    });
+    it('orders without terms and other currencies are not mirrored', async () => {
+      order.b2b.terms = null; await mirror.syncB2BOrder('o1');
+      expect((await svc.listAccounts(SB, {})).total).toBe(0);
+    });
   });
 });

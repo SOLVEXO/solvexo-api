@@ -44,7 +44,7 @@ import { GATEWAY_PAYMENT_TYPES, catalogEntry } from '../integrations/payment-pro
 import { toDecryptedPaymentConfig } from '../integrations/integration-credentials.helper';
 import { PaymentProviderRegistry } from '../integrations/payment-provider.registry';
 import { creditLimitCheck, isPaymentMethodAllowed } from '../b2b/b2b-pricing.util';
-import { buildOrderB2B, companyOutstanding } from '../b2b/b2b-order.util';
+import { buildOrderB2B, companyOutstanding, notifyB2BOrderChanged } from '../b2b/b2b-order.util';
 import { CodProtectionService } from '../cod-protection/cod-protection.service';
 
 /** Thrown by createOrder when the atomic stock reservation loses (the last unit was sold between the buyer paying
@@ -2451,6 +2451,7 @@ export class PaymentService {
         const b2b = buildOrderB2B(snap, { total: o.totalAmount, currency: o.currency }, { withTerms: paymentType === 'b2b_terms' });
         await orderModel.updateOne({ _id: o._id }, { $set: { b2b } });
         o.b2b = b2b;
+        if (b2b.terms) await notifyB2BOrderChanged(String(o._id));
       }
     } catch (e: any) {
       console.error('B2B order stamp failed (order placed):', e?.message, { checkoutId: String(checkout?._id) });

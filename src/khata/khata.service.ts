@@ -1,8 +1,10 @@
 /* eslint-disable prettier/prettier */
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException, OnModuleInit, Optional } from '@nestjs/common';
 import { InjectConnection, InjectModel } from '@nestjs/mongoose';
 import { Connection, Model, Types } from 'mongoose';
 import { ActivityLogService } from '../activity-log/activity-log.service';
+import { DatabaseService } from '../database/databaseservice';
+import { b2bOrderChanged } from '../b2b/b2b-order.util';
 import { KhataAccount, KhataAccountDocument, KhataEntry, KhataEntryDocument } from './khata.schema';
 import { agingOf, csvCell, exceedsLimit, round2, validateAmount, type KhataEntryType } from './khata-rules.util';
 
@@ -10,6 +12,8 @@ export interface Actor { id: string; role: string }
 export interface PostInput {
   type: KhataEntryType; amount: number; orderId?: string | null; method?: string | null; reference?: string | null; note?: string;
   dueDate?: Date | string | null; entryDate?: Date | string | null; source?: 'manual' | 'order' | 'b2b' | 'pos'; sourceKey?: string | null; reversesEntryId?: string | null;
+  /** For entries that mirror something already agreed elsewhere (a placed order): recorded even above the limit, so the ledger stays true. */
+  skipLimit?: boolean;
 }
 const str = (v: unknown, max: number) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
 const isDup = (e: any) => e?.code === 11000;
@@ -20,13 +24,17 @@ const rx = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
  * transaction, through a single atomic update of the account (so two clerks posting at once can neither lose an update nor pass a limit).
  */
 @Injectable()
-export class KhataService {
+export class KhataService implements OnModuleInit {
+  private readonly log = new Logger(KhataService.name);
   constructor(
     @InjectModel(KhataAccount.name) private readonly accounts: Model<KhataAccountDocument>,
     @InjectModel(KhataEntry.name) private readonly entries: Model<KhataEntryDocument>,
     @InjectConnection() private readonly connection: Connection,
     private readonly activity: ActivityLogService,
+    @Optional() private readonly db?: DatabaseService,
   ) {}
+
+  onModuleInit() { b2bOrderChanged.fn = (orderId) => this.syncB2BOrder(orderId); }
 
   private audit(storeId: string, actor: Actor, action: string, description: string, targetId: string) {
     return this.activity.log({ storeId, category: 'khata', action, description, actorId: actor.id, actorRole: actor.role, targetId, targetType: 'khata_account' } as any).catch(() => undefined);
@@ -63,7 +71,7 @@ export class KhataService {
     const sourceKey = input.sourceKey ?? null;
     if (sourceKey) { const hit = await this.entries.findOne({ storeId, sourceKey }).lean(); if (hit) return { entry: hit as any, duplicate: true }; }
 
-    const limitGuard = signed > 0 && type !== 'reversal';
+    const limitGuard = signed > 0 && type !== 'reversal' && !input.skipLimit;
     const filter: any = { _id: accountId, storeId, ...(type === 'reversal' ? {} : { archived: false }) };
     if (limitGuard) filter.$expr = { $lte: [{ $add: ['$balance', signed] }, { $ifNull: ['$creditLimit', 1e15] }] };
     const session = await this.connection.startSession();
@@ -178,6 +186,42 @@ export class KhataService {
       out.push({ accountId: String(a._id), name: a.name, phone: a.phone, balance: a.balance, creditLimit: a.creditLimit, buckets: r.buckets });
     }
     return { currency: accs[0]?.currency ?? null, accounts: out, totals };
+  }
+
+  /**
+   * Mirrors a wholesale terms order into the company's khata account, from the order itself (so it is idempotent and order-independent):
+   * the sale at its original total, each credit note as an adjustment, each recorded payment, and a reversal for a voided payment.
+   * The B2B receivable stays the source of truth; this is the same debt seen in the customer ledger. Skipped when the order currency
+   * differs from the account currency (one account = one currency).
+   */
+  async syncB2BOrder(orderId: string) {
+    const o: any = await this.db?.repositories.orderModel.findById(orderId).select('b2b orderNumber currency sellerOrders.storeId').lean();
+    const b = o?.b2b;
+    if (!b?.terms) return;
+    const storeId = o.sellerOrders?.[0]?.storeId ? String(o.sellerOrders[0].storeId) : null;
+    if (!storeId) return;
+    const sys: Actor = { id: 'system', role: 'system' };
+    const acc: any = await this.ensureAccount(storeId, { customerId: `co:${b.companyId}`, name: b.companyName || 'Company', currency: o.currency });
+    if (acc.currency !== o.currency) { this.log.warn(`Khata mirror skipped for order ${orderId}: currency ${o.currency} differs from account ${acc.currency}`); return; }
+    const id = String(acc._id);
+    const adjustments: any[] = b.adjustments ?? [];
+    const original = round2(b.total - adjustments.reduce((s, a) => s + Number(a.amount || 0), 0));
+    const label = `Order #${o.orderNumber ?? orderId}`;
+    await this.post(storeId, id, { type: 'sale', amount: original, orderId: String(orderId), dueDate: b.dueDate ?? null, note: label, source: 'b2b', sourceKey: `order:${orderId}`, skipLimit: true }, sys);
+    for (let i = 0; i < adjustments.length; i++) {
+      const a = adjustments[i];
+      if (!(Number(a.amount) < 0)) continue;
+      await this.post(storeId, id, { type: 'adjustment', amount: Number(a.amount), orderId: String(orderId), note: `${label}: ${a.note || 'credit note'}`, source: 'b2b', sourceKey: `order:${orderId}:adj:${i}`, skipLimit: true, entryDate: a.date }, sys);
+    }
+    for (const p of b.payments ?? []) {
+      const key = `pay:${p._id}`;
+      if (!p.voided) {
+        await this.post(storeId, id, { type: 'payment', amount: p.amount, orderId: String(orderId), method: p.method, reference: p.reference, note: label, source: 'b2b', sourceKey: key, skipLimit: true, entryDate: p.date }, sys);
+      } else {
+        const e: any = await this.entries.findOne({ storeId, sourceKey: key }).select('_id').lean();
+        if (e) await this.reverse(storeId, String(e._id), `Payment voided on ${label}`, sys).catch((err: any) => { if (!(err instanceof ConflictException)) throw err; });
+      }
+    }
   }
 
   /** Checks (without posting) whether a new debit would stay inside the seller's limit. For checkout and the POS. */

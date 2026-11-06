@@ -20,6 +20,12 @@ export interface OrderB2B {
 
 const OPEN_STATUSES_EXCLUDED = ['cancelled', 'refunded'];
 
+/** Set by the khata module: called after a terms order's receivable changed, so the customer ledger mirrors it. Never throws into the order flow. */
+export const b2bOrderChanged: { fn?: (orderId: string) => Promise<void> } = {};
+export async function notifyB2BOrderChanged(orderId: string) {
+  try { await b2bOrderChanged.fn?.(String(orderId)); } catch (e: any) { console.error('Khata mirror failed:', e?.message); }
+}
+
 export function buildOrderB2B(
   snapshot: { companyId: string; companyName: string; locationId: string; poNumber?: string | null; paymentTerms?: { type: string; netDays?: number | null } | null; depositPercent?: number | null },
   order: { total: number; currency: string },
@@ -96,6 +102,7 @@ export async function creditReceivable(orderModel: any, orderId: string, amount:
     { updatePipeline: true } as any,
   );
   await syncReceivableStatus(orderModel, orderId);
+  await notifyB2BOrderChanged(orderId);
 }
 
 /**

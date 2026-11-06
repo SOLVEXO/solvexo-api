@@ -7,7 +7,7 @@ import { ActivityLogService } from '../activity-log/activity-log.service';
 import { pageOf } from '../common/paging';
 import { OrdersService } from '../orders/orders.service';
 import { outstandingBalance, paymentStatusOf, round2, validateInstallment } from './b2b-pricing.util';
-import { receivableOf } from './b2b-order.util';
+import { notifyB2BOrderChanged, receivableOf } from './b2b-order.util';
 
 const isOid = (v: any) => typeof v === 'string' && Types.ObjectId.isValid(v);
 const DEAD = ['cancelled', 'refunded'];
@@ -69,6 +69,7 @@ export class B2BOrdersService {
     );
     if (res.modifiedCount === 0) throw new ConflictException('The order balance changed while you were saving. Refresh and try again.');
     const status = await this.syncStatus(orderId);
+    await notifyB2BOrderChanged(orderId);
     await this.audit(storeId, actor, 'b2b_payment_recorded', `${amount} ${order.currency} recorded (${method}) on order ${order.orderNumber}`, orderId);
 
     let markedPaid = false; let markError: string | undefined;
@@ -93,6 +94,7 @@ export class B2BOrdersService {
     );
     if (res.modifiedCount === 0) throw new ConflictException('Payment was already voided');
     const status = await this.syncStatus(orderId);
+    await notifyB2BOrderChanged(orderId);
     await this.audit(storeId, actor, 'b2b_payment_voided', `Payment of ${p.amount} voided on order ${order.orderNumber}`, orderId);
     return { status };
   }
