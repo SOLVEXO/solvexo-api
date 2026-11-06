@@ -45,6 +45,7 @@ import { toDecryptedPaymentConfig } from '../integrations/integration-credential
 import { PaymentProviderRegistry } from '../integrations/payment-provider.registry';
 import { creditLimitCheck, isPaymentMethodAllowed } from '../b2b/b2b-pricing.util';
 import { buildOrderB2B, companyOutstanding } from '../b2b/b2b-order.util';
+import { CodProtectionService } from '../cod-protection/cod-protection.service';
 
 /** Thrown by createOrder when the atomic stock reservation loses (the last unit was sold between the buyer paying
  *  and the order being created). Distinct type so the payment-finalize paths can auto-refund instead of retrying forever. */
@@ -91,6 +92,8 @@ export class PaymentService {
     private readonly storeCreditService: StoreCreditService,
     // Lazily resolves the gateway registry (IntegrationsModule imports this module, so it cannot be injected directly).
     @Optional() private readonly moduleRef?: ModuleRef,
+    // Store COD rules (limit, block list, confirmation); stores without protection are unaffected.
+    @Optional() private readonly codProtection?: CodProtectionService,
   ) {
     const secretKey = this.configService
       .get<string>('STRIPE_SECRET_KEY')
@@ -316,6 +319,8 @@ export class PaymentService {
     }
 
     await this.assertDiscountsStillValid(checkout, 'stripe');
+    // A mixed cart paid in two parts ('split') leaves the physical part as COD: the store's COD rules apply to it too.
+    if (paymentMode === 'split') await this.codProtection?.assertCodAllowed(checkout, userId);
 
     const physicalItems = checkout.items.filter(
       (i: any) => i.type === 'physical',
@@ -2043,6 +2048,8 @@ export class PaymentService {
     }
 
     await this.assertDiscountsStillValid(checkout, 'cash_on_delivery');
+    // The store's COD rules (amount limit, block list, high risk) can refuse cash on delivery for this order.
+    await this.codProtection?.assertCodAllowed(checkout, userId);
 
     const hasDigital = checkout.items.some((i: any) => i.type === 'digital');
     if (hasDigital)
@@ -2422,6 +2429,7 @@ export class PaymentService {
     try {
       const created = await this.createOrderUnclaimed(userId, checkout, ...(rest as [any, any]));
       await this.stampB2B(checkout, created, orderModel, rest[2]?.paymentType);
+      if (rest[2]?.paymentType === 'cash_on_delivery') await this.codProtection?.stampOrders(checkout, created, userId).catch((e: any) => console.error('COD protection stamp failed (order placed):', e?.message));
       return created;
     } catch (err) {
       await checkoutModel.updateOne({ _id: checkout._id }, { $set: { orderPlacementClaimedAt: null } }).catch(() => undefined);

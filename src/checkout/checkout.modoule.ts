@@ -29,9 +29,10 @@ import { ShippingZonesModule } from '@/shipping-zones/shipping-zones.module';
 import { MarketsModule } from '@/markets/markets.module';
 import { CustomerSegmentsModule } from '@/customer-segments/customer-segments.module';
 import { B2BModule } from '@/b2b/b2b.module';
+import { CodProtectionModule } from '@/cod-protection/cod-protection.module';
 
 @Module({
-  imports: [AuthModule, RedisModule, MarketingModule, AdminConfigModule, ExchangeRateModule, GiftCardsModule, DiscountsModule, IntegrationsModule, StripeConnectModule, ShippingZonesModule, MarketsModule, CustomerSegmentsModule, B2BModule],
+  imports: [AuthModule, RedisModule, MarketingModule, AdminConfigModule, ExchangeRateModule, GiftCardsModule, DiscountsModule, IntegrationsModule, StripeConnectModule, ShippingZonesModule, MarketsModule, CustomerSegmentsModule, B2BModule, CodProtectionModule],
   controllers: [CheckoutController],
   providers: [CheckoutService],
   exports: [CheckoutService],

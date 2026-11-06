@@ -1,7 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { withEffectiveReturnStatus } from './return-status.util';
 
-const INTERNAL_ORDER_FIELDS = ['fxSnapshots', 'platformSponsoredDiscountTotal', 'attributedBannerId', 'attributedStoreBannerId', 'attributionSource', 'overdueReminderSentAt', 'checkoutId', 'isDelete', 'ratePerUSD', 'timeline', 'note'];
+const INTERNAL_ORDER_FIELDS = ['codProtection', 'fxSnapshots', 'platformSponsoredDiscountTotal', 'attributedBannerId', 'attributedStoreBannerId', 'attributionSource', 'overdueReminderSentAt', 'checkoutId', 'isDelete', 'ratePerUSD', 'timeline', 'note'];
 const INTERNAL_SELLER_ORDER_FIELDS = ['platformSponsoredDiscountUSD', 'settlementCurrency', 'settlementAmount', 'settledViaConnect', 'stripeConnectedAccountId', 'stockAlreadyDeducted'];
 // Shipping-label purchase details are merchant-only (the label PDF URL must never reach a buyer).
 const INTERNAL_TRACKING_FIELDS = ['labelUrl', 'labelRateId', 'labelCost', 'labelCurrency', 'labelPurchasedAt'];

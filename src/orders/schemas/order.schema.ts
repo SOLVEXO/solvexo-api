@@ -774,6 +774,10 @@ export class Order {
   @Prop({ type: String, default: null })
   trafficSource: string | null;
 
+  /** Cash-on-delivery protection verdict (risk score, reasons, confirmation state). Merchant-only: never sent to buyers. */
+  @Prop({ type: Object, default: null })
+  codProtection?: Record<string, any> | null;
+
   /** Wholesale (B2B) buyer + receivable (PO number, payment terms, installments). Null for retail orders. Seller records only: no money moves through Solvexo. */
   @Prop({ type: Object, default: null })
   b2b?: Record<string, any> | null;

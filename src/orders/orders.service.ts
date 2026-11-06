@@ -1,5 +1,6 @@
 import { assertPreorderShippable } from '../common/preorder.util';
 import { creditReceivable } from '../b2b/b2b-order.util';
+import { assertCodConfirmedForFulfilment } from '../cod-protection/cod-protection.service';
 import { expandForStock, stockLinesForItem } from '../common/bundle.util';
 import { Optional } from '@nestjs/common';
 import { ShippingProfilesService } from '@/shipping-zones/shipping-profiles.service';
@@ -1567,6 +1568,9 @@ export class OrdersService {
     );
     if (sellerOrderIndex === -1) throw new ForbiddenException('Unauthorized');
 
+    // COD protection: nothing ships while the customer has not confirmed a cash-on-delivery order that asked for it.
+    assertCodConfirmedForFulfilment(order as any);
+
     // Wholesale deposit (seller-set): the required deposit must be recorded before the order leaves the shop.
     if (['shipped', 'delivered', 'completed'].includes(status) && (order as any).b2b?.terms && ((order as any).b2b.depositRequired ?? 0) > ((order as any).b2b.paidTotal ?? 0) + 0.004) {
       throw new BadRequestException('Record the required deposit for this wholesale order before shipping it.');
@@ -1941,6 +1945,7 @@ export class OrdersService {
     if (!OrdersService.FULFILLABLE_STATUSES.includes(current)) {
       throw new BadRequestException(`Cannot fulfil an order that is "${current}".`);
     }
+    assertCodConfirmedForFulfilment(order);
     // Wholesale deposit (seller-set): the required deposit must be recorded before anything ships, partial shipments included.
     if (order.b2b?.terms && (order.b2b.depositRequired ?? 0) > (order.b2b.paidTotal ?? 0) + 0.004) {
       throw new BadRequestException('Record the required deposit for this wholesale order before shipping it.');

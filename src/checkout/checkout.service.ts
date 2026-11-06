@@ -2,6 +2,7 @@ import { preorderCanFill } from '../common/preorder.util';
 import { assertBundleInStock } from '../common/bundle.util';
 import { B2BContextService } from '../b2b/b2b-context.service';
 import { filterPaymentMethodsForB2B } from '../b2b/b2b-order.util';
+import { CodProtectionService } from '../cod-protection/cod-protection.service';
 import { CustomerSegmentsService } from '../customer-segments/customer-segments.service';
 import { assertOrderQuantity } from '@/products/selling-options.util';
 import { isValidObjectId } from 'mongoose';
@@ -80,6 +81,8 @@ export class CheckoutService {
     @Optional() private readonly customerSegments?: CustomerSegmentsService,
     // Wholesale (B2B) prices, rules and payment restrictions for approved company buyers; retail buyers are unaffected.
     @Optional() private readonly b2bContext?: B2BContextService,
+    // Hides cash on delivery up front when the store's COD rules already refuse this order (placement re-checks it).
+    @Optional() private readonly codProtection?: CodProtectionService,
   ) {}
 
   private round(n: number) {
@@ -1049,6 +1052,8 @@ export class CheckoutService {
       cardStoreIds.length === 1 &&
       !!(await this.stripeConnectService.getEligibleConnectAccountForStore(cardStoreIds[0]));
     const withoutCardIfNoProvider = (methods: string[]) => stripCardMethodsIfNoProvider(methods, cardAvailable);
+    const codVerdict = this.codProtection ? await this.codProtection.evaluateCheckout(checkout, userId).catch(() => null) : null;
+    const withoutBlockedCod = (methods: string[]) => (codVerdict?.evaluation.decision === 'block_cod' ? methods.filter((m) => m !== 'cash_on_delivery' && m !== 'split') : methods);
 
     return {
       success: true,
@@ -1062,11 +1067,11 @@ export class CheckoutService {
         // eligible (see codEligible above), in which case 'stripe' (pay
         // everything online) is always the safe fallback.
         // Wholesale companies: narrowed by the company's allow-list, plus payment terms when they have them (single store only).
-        allowedPaymentMethods: filterPaymentMethodsForB2B(withoutCardIfNoProvider(withoutUnsupportedStripe(
+        allowedPaymentMethods: withoutBlockedCod(filterPaymentMethodsForB2B(withoutCardIfNoProvider(withoutUnsupportedStripe(
           hasDigital
             ? withManualTransfer(hasPhysical && codEligible ? ['stripe', 'split'] : ['stripe'])
             : withManualTransfer(codEligible ? ['stripe', 'cash_on_delivery'] : ['stripe']),
-        )), (checkout as any).b2b, cardStoreIds.length === 1),
+        )), (checkout as any).b2b, cardStoreIds.length === 1)),
         cardPaymentAvailable: cardAvailable,
         summary: {
           subtotal,
