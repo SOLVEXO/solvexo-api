@@ -464,8 +464,12 @@ export const STOREFRONT_EN: Record<string, any> = {
   "sec": "Sec"
  },
  "credit": {
+  "activity": "Activity",
   "added": "Credit added",
+  "amount": "Amount",
   "available": "Available balance",
+  "balance": "Balance",
+  "date": "Date",
   "err": {
    "load": "Could not load your store credit."
   },
@@ -784,6 +788,7 @@ export const STOREFRONT_EN: Record<string, any> = {
   },
   "goToCart": "Go to cart",
   "items": "Items",
+  "lineTotal": "Total",
   "next": "Next",
   "noShippingAddress": "No shipping address.",
   "none": "No orders yet",
@@ -795,7 +800,11 @@ export const STOREFRONT_EN: Record<string, any> = {
   "pickupDetailsLater": "Pickup details will be shared by the store.",
   "pickupLocation": "Pickup location",
   "previous": "Previous",
+  "price": "Price",
+  "product": "Product",
+  "progress": "Order progress",
   "promoSavings": "Includes {{amount}} in promotional savings",
+  "qty": "Qty",
   "readyPickup": "Your order is ready for pickup.",
   "refundedAmount": "Refunded {{amount}}",
   "requestReturn": "Request a return",
@@ -1167,6 +1176,7 @@ export const STOREFRONT_EN: Record<string, any> = {
   "review_a_product_from_one_of_your_orders": "Review a product from one of your orders.",
   "reviews_count": "Reviews ({{count}})",
   "reviews_pages": "Reviews pages",
+  "sale": "Sale",
   "save": "Save",
   "save_an_address_to_check_out_faster": "Save an address to check out faster.",
   "save_changes": "Save changes",
@@ -1458,7 +1468,8 @@ export const STOREFRONT_EN: Record<string, any> = {
   "zoomImage": "Zoom image",
   "description": "Description",
   "details": "Product details",
-  "onSaleFrom": "On sale from"
+  "onSaleFrom": "On sale from",
+  "bundleBadge": "Bundle"
  },
  "returns": {
   "approved": "Return approved",
@@ -1570,5 +1581,17 @@ export const STOREFRONT_EN: Record<string, any> = {
    "directions": "Get directions",
    "title": "Visit our showroom"
   }
+ },
+ "b2b": {
+  "apply_link": "Apply for wholesale",
+  "locked_apply": "Prices and ordering are for approved wholesale accounts. Apply for one to start buying.",
+  "locked_signin": "Sign in with your wholesale account to see prices and order.",
+  "locked_title": "Wholesale customers only",
+  "place_order_on_terms": "Place order on terms",
+  "po_hint": "Ordering for {{company}}. This number is printed on your order and invoice.",
+  "po_number": "Purchase order number (optional)",
+  "signin_link": "Sign in",
+  "terms_notice": "Your order is placed now and your invoice is due on your payment terms{{terms}}. The store will record your payments.",
+  "your_price": "Your wholesale price: {{price}} each"
  }
 };
