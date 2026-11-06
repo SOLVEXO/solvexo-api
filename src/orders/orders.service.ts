@@ -623,6 +623,9 @@ export class OrdersService {
         timeline: [...((order as any).timeline ?? [])].sort((a: any, b: any) => +new Date(b.createdAt) - +new Date(a.createdAt)),
         note: (order as any).note ?? '',
         customerNote: (order as any).customerNote ?? '',
+        // Merchant-only: COD protection verdict (risk score, reasons, confirmation) and the wholesale company / PO / receivable.
+        codProtection: (order as any).codProtection ?? null,
+        b2b: (order as any).b2b ?? null,
       },
     };
   }
