@@ -24,4 +24,29 @@ export class PublicReceiptController {
     const html = await this.receipts.renderPublic(token);
     res.status(html ? 200 : 404).type('html').send(html ?? NOT_FOUND_PAGE); // one answer for unknown / revoked / malformed: nothing to probe
   }
+
+  // G2.5: the tax invoice and credit notes behind the same unguessable link (same headers, same single 404)
+  @Get(':token/invoice')
+  @Throttle({ default: { limit: 40, ttl: 60_000 } })
+  @Header('Cache-Control', 'no-store')
+  @Header('X-Robots-Tag', 'noindex, nofollow')
+  @Header('Referrer-Policy', 'no-referrer')
+  @Header('X-Content-Type-Options', 'nosniff')
+  @Header('Content-Security-Policy', "default-src 'none'; img-src https: data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+  async invoice(@Param('token') token: string, @Res() res: Response) {
+    const html = await this.receipts.renderPublicInvoice(token);
+    res.status(html ? 200 : 404).type('html').send(html ?? NOT_FOUND_PAGE);
+  }
+
+  @Get(':token/credit-note/:number')
+  @Throttle({ default: { limit: 40, ttl: 60_000 } })
+  @Header('Cache-Control', 'no-store')
+  @Header('X-Robots-Tag', 'noindex, nofollow')
+  @Header('Referrer-Policy', 'no-referrer')
+  @Header('X-Content-Type-Options', 'nosniff')
+  @Header('Content-Security-Policy', "default-src 'none'; img-src https: data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+  async creditNote(@Param('token') token: string, @Param('number') number: string, @Res() res: Response) {
+    const html = await this.receipts.renderPublicCreditNote(token, number);
+    res.status(html ? 200 : 404).type('html').send(html ?? NOT_FOUND_PAGE);
+  }
 }

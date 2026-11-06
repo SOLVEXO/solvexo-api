@@ -60,6 +60,7 @@ import { DatabaseService } from './databaseservice';
       { name: schema.PosAuditLog.name, schema: schema.PosAuditLogSchema },
       { name: schema.PosPayment.name, schema: schema.PosPaymentSchema },
       { name: schema.PosRefund.name, schema: schema.PosRefundSchema },
+      { name: schema.PosCreditNote.name, schema: schema.PosCreditNoteSchema },
       { name: schema.PosSettings.name, schema: schema.PosSettingsSchema },
       { name: schema.Conversation.name, schema: schema.ConversationSchema },
       { name: schema.Message.name, schema: schema.MessageSchema },

@@ -86,8 +86,8 @@ describe('KYB HTTP: admin endpoints are admin-only; owner endpoints are seller-o
     expect(put.body.data).toMatchObject({ status: 'draft', cnicMasked: '•••••••••5671' });
     await request(app.getHttpServer()).put(`/api/kyb/${storeId}/draft`).set(as(OWNER)).send({ evil: 'field', iban: 'PK36SCBL0000001123456702' }).expect(200); // unknown field stripped
     await request(app.getHttpServer()).put(`/api/kyb/${storeId}/draft`).set(as(OWNER)).send({ iban: 'bad' }).expect(400);
-    await x.kyb.uploadDocument(sellerId, storeId, 'owner_cnic', { originalname: 'a.pdf', mimetype: 'application/pdf', size: 10, buffer: Buffer.from('x') } as any);
-    await x.kyb.uploadDocument(sellerId, storeId, 'bank_proof', { originalname: 'b.pdf', mimetype: 'application/pdf', size: 10, buffer: Buffer.from('x') } as any);
+    await x.kyb.uploadDocument(sellerId, storeId, 'owner_cnic', { originalname: 'a.pdf', mimetype: 'application/pdf', size: 10, buffer: Buffer.from('%PDF-1.4 x') } as any);
+    await x.kyb.uploadDocument(sellerId, storeId, 'bank_proof', { originalname: 'b.pdf', mimetype: 'application/pdf', size: 10, buffer: Buffer.from('%PDF-1.4 x') } as any);
     await request(app.getHttpServer()).post(`/api/kyb/${storeId}/submit`).set(as(OWNER)).expect(201);
     const list = await request(app.getHttpServer()).get('/api/admin/kyb/submissions').set(as(ADMIN)).expect(200);
     expect(list.body.data.items).toHaveLength(1);

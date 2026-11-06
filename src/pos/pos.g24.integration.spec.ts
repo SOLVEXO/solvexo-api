@@ -140,12 +140,11 @@ describe('POS coupons (storefront Coupon model, POS channel)', () => {
     expect(await stockOf(h, s.variantId)).toBe(10);
   });
 
-  it('one coupon per sale and never with a manual discount; not on offline or held sales', async () => {
+  it('one coupon per sale and never with a manual discount; not on offline sales', async () => {
     const { s, svc, sid } = await fresh();
     await coupon(s, { code: 'ONE' });
     expect(await code(svc.createSale(s.sellerId, dto(s, sid, { couponCode: 'ONE', discountType: 'amount', discountValue: 1 }) as any, tok(s, 'manager')))).toBe('COUPON_WITH_DISCOUNT');
     expect(await code(svc.createSale(s.sellerId, dto(s, sid, { couponCode: 'ONE', offline: true, clientCreatedAt: new Date().toISOString() }) as any, undefined))).toBe('COUPON_ONLINE_ONLY');
-    expect(await code(svc.createSale(s.sellerId, dto(s, sid, { couponCode: 'ONE', status: 'held' }) as any, undefined))).toBe('COUPON_ON_HELD_SALE');
   });
 
   it('a sale that fails after the coupon check (not enough stock) does not use the coupon up', async () => {

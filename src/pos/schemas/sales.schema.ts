@@ -67,6 +67,12 @@ export class SaleItem {
 
   @Prop({ type: String, default: null })
   note?: string | null;
+
+  // ── G2.5 per-line tax breakdown (minor units; Σ over the lines = the sale's discount / tax) and the PCT / HS code SNAPSHOT at sale time ──
+  @Prop({ type: 'MinorMoney' }) discountShareMinor?: number;
+  @Prop({ type: 'MinorMoney' }) netMinor?: number;
+  @Prop({ type: 'MinorMoney' }) taxMinor?: number;
+  @Prop({ type: String, default: null }) hsCode?: string | null;
 }
 export const SaleItemSchema = SchemaFactory.createForClass(SaleItem);
 
@@ -137,8 +143,30 @@ export class SaleRefund {
 }
 export const SaleRefundSchema = SchemaFactory.createForClass(SaleRefund);
 
+/** The tax invoice header of a completed sale: immutable number + seller snapshot + (empty) fiscal placeholders. */
+@Schema({ _id: false })
+export class SaleInvoice {
+  @Prop({ required: true }) number: string;            // INV-000123 — per-store, gap-free, never reused
+  @Prop({ type: Number, required: true }) seq: number;
+  @Prop({ type: Date, required: true }) issuedAt: Date; // the sale's own time (an offline sale keeps its device time)
+  @Prop({ type: String, default: null }) offlineRef: string | null; // the provisional OFF-… number the till printed before the sale synced
+  @Prop({ type: Object, default: null }) seller: { legalName: string | null; address: string | null; ntn: string | null; strn: string | null } | null;
+  @Prop({ type: Object, default: () => ({ status: 'not_enabled', externalInvoiceNumber: null, qrPayload: null, attempts: 0, lastError: null }) })
+  fiscal: { status: string; externalInvoiceNumber: string | null; qrPayload: string | null; attempts: number; lastError: string | null };
+}
+export const SaleInvoiceSchema = SchemaFactory.createForClass(SaleInvoice);
+
 @Schema({ timestamps: true })
 export class Sale {
+  /** G2.5 tax invoice (absent on a held sale — the number is minted when the sale completes — and on sales that predate G2.5) */
+  @Prop({ type: SaleInvoiceSchema, default: null })
+  invoice: SaleInvoice | null;
+
+  /** G2.4: a HELD sale remembers the coupon CODE the cashier had (not a reservation — nothing is counted or discounted until it is completed;
+   *  the code is checked again, server-side, when the sale is resumed / completed). */
+  @Prop({ type: String, default: null })
+  heldCouponCode: string | null;
+
   @Prop({ required: true })
   saleNumber: string;           // human-readable receipt number e.g. "POS-00001" — unique per store, see compound index below
 
@@ -376,6 +404,22 @@ export const SaleSchema = SchemaFactory.createForClass(Sale);
 // MinorMoney fields are stored as BSON long and read back through a getter: serialise documents with getters so JSON carries plain numbers.
 SaleSchema.set('toJSON', { getters: true, virtuals: false });
 SaleSchema.set('toObject', { getters: true, virtuals: false });
+
+// G2.5: the invoice number is unique per store and never reused (partial: held sales and pre-G2.5 sales have none)
+SaleSchema.index({ storeId: 1, 'invoice.seq': 1 }, { unique: true, partialFilterExpression: { 'invoice.seq': { $type: 'number' } }, name: 'uniq_invoice_seq_per_store' });
+SaleSchema.index({ storeId: 1, 'invoice.number': 1 }, { unique: true, partialFilterExpression: { 'invoice.number': { $type: 'string' } }, name: 'uniq_invoice_number_per_store' });
+
+// G2.5: an invoice number, once written, is immutable. The only update that may set `invoice` is the one that first issues it
+// (its filter asks for `invoice.number: null` — i.e. the sale does not have one yet); every other update touching it is refused.
+const INVOICE_KEYS = /^invoice(\.|$)/;
+SaleSchema.pre(['updateOne', 'updateMany', 'findOneAndUpdate'] as any, function (this: any) {
+  const u = this.getUpdate?.() ?? {};
+  const keys = [...Object.keys(u.$set ?? {}), ...Object.keys(u.$unset ?? {}), ...Object.keys(u).filter((k) => !k.startsWith('$'))];
+  if (!keys.some((k) => INVOICE_KEYS.test(k))) return;
+  const f = this.getFilter?.() ?? {};
+  const issuing = Object.prototype.hasOwnProperty.call(f, 'invoice.number') && (f['invoice.number'] === null || (f['invoice.number'] && f['invoice.number'].$exists === false));
+  if (!issuing) throw new Error('The invoice of a sale is immutable: it can only be issued once, never changed');
+});
 
 SaleSchema.index({ storeId: 1, createdAt: -1 });
 SaleSchema.index({ storeId: 1, status: 1 });

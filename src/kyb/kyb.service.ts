@@ -9,15 +9,13 @@ import { UploadService } from '../upload/upload.service';
 import { KybAuditService } from './kyb-audit.service';
 import { KybCrypto, KybKeyUnavailableError, lastN, maskTail } from './kyb-field-crypto';
 import { getKybRequirements } from './kyb-requirements.config';
-import { isValidCnic, isValidNtn, isValidPkIban, normalizeCnic, normalizeIban, normalizeNtn } from './kyb-validators';
+import { detectKybMime, isValidCnic, isValidNtn, isValidPkIban, kybMaxFileBytes, normalizeCnic, normalizeIban, normalizeNtn } from './kyb-validators';
 import {
   KYB_BUSINESS_TYPES, KYB_DOCUMENT_TYPES, KybBusinessType, KybDocumentType, StoreKyb, StoreKybDocument,
 } from './kyb.schemas';
 
 export const KYB_ENCRYPTION_UNAVAILABLE = 'KYB_ENCRYPTION_UNAVAILABLE';
 export const KYB_LOCKED = 'KYB_LOCKED';
-const MAX_DOC_BYTES = 10 * 1024 * 1024;
-const ALLOWED_MIME = ['application/pdf', 'image/jpeg', 'image/png'];
 
 export interface KybDraftInput {
   businessType?: string | null; legalBusinessName?: string | null; businessAddress?: string | null;
@@ -143,8 +141,12 @@ export class KybService {
     await this.ownStoreOrThrow(sellerId, storeId);
     if (!KYB_DOCUMENT_TYPES.includes(type as KybDocumentType)) throw new BadRequestException({ code: 'KYB_INVALID_DOCUMENT_TYPE', message: 'Unknown document type' });
     if (!file) throw new BadRequestException({ code: 'KYB_FILE_REQUIRED', message: 'A file is required' });
-    if (file.size > MAX_DOC_BYTES) throw new BadRequestException({ code: 'KYB_FILE_TOO_LARGE', message: 'Files can be at most 10 MB' });
-    if (!ALLOWED_MIME.includes(file.mimetype)) throw new BadRequestException({ code: 'KYB_FILE_TYPE', message: 'Only PDF, JPEG or PNG files are accepted' });
+    const maxBytes = kybMaxFileBytes();
+    if (file.size > maxBytes) throw new BadRequestException({ code: 'KYB_FILE_TOO_LARGE', message: `Files can be at most ${Math.round((maxBytes / 1024 / 1024) * 10) / 10} MB`, maxBytes });
+    // validated by CONTENT (magic bytes): a renamed file, or a wrong Content-Type, is refused; the detected type replaces what the client claimed
+    const detected = detectKybMime(file.buffer);
+    if (!detected) throw new BadRequestException({ code: 'KYB_FILE_TYPE', message: 'Only PDF, JPEG or PNG files are accepted' });
+    file = { ...file, mimetype: detected } as Express.Multer.File;
     const cur = await this.ensureDoc(sellerId, storeId);
     if (!['draft', 'rejected'].includes(cur.status)) throw new ConflictException({ code: KYB_LOCKED, message: 'This application can no longer be edited' });
 

@@ -10,6 +10,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { KybService } from './kyb.service';
+import { kybMaxFileBytes } from './kyb-validators';
 import { KYB_DOCUMENT_TYPES } from './kyb.schemas';
 
 export class SaveKybDraftDto {
@@ -41,7 +42,7 @@ export class KybController {
   @Put('draft') save(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: SaveKybDraftDto) { return this.wrap(this.kyb.saveDraft(req.user.userId, storeId, dto, this.ctx(req))); }
 
   @Post('documents')
-  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } }))
+  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: kybMaxFileBytes() } }))
   upload(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: UploadKybDocumentDto, @UploadedFile() file: Express.Multer.File) {
     return this.wrap(this.kyb.uploadDocument(req.user.userId, storeId, dto.type, file, this.ctx(req)));
   }

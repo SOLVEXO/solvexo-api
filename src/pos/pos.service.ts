@@ -53,6 +53,7 @@ import { ResetPinDto } from './dto/reset-pin.dto';
 import { UpdateSaleItemsDto } from './dto/update-sale-items.dto';
 import { UpdatePosSettingsDto } from './dto/update-pos-settings.dto';
 import { QuoteSaleDto } from './dto/quote-sale.dto';
+import { CREDIT_NOTE_PREFIX, INVOICE_PREFIX, daysBetween, formatDocNumber, lineBreakdown, returnApprovalReasons, returnLineAmounts } from './pos-documents.util';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { FinanceService } from '@/finance/finance.service';
 import { EntitlementsService } from '@/platform-plans/entitlements.service';
@@ -940,6 +941,7 @@ export class PosService {
         listPrice,
         priceVerified,
         qty: item.qty,
+        hsCode: (variant as any).hsCode ?? null, // G2.5: PCT/HS code snapshot at sale time
         lineTotal: 0, // set below from the server-computed, exponent-rounded line totals
       });
     }
@@ -959,9 +961,9 @@ export class PosService {
       const r = await this.resolveCoupon(dto.storeId, dto.couponCode, pre.minor.subtotal, money);
       discountReq = { type: r.type, value: r.value };
       couponUsed = r.coupon;
-    } else if (dto.couponCode && isHeld) {
-      throw moneyError('COUPON_ON_HELD_SALE', 'Apply the coupon when the sale is completed, not on a held sale');
     }
+    // a held sale keeps the CODE only (no discount, no usage count); it is validated again when the sale is resumed / completed
+    const heldCouponCode = dto.couponCode && isHeld ? String(dto.couponCode).trim().toUpperCase().slice(0, 40) : null;
     const totals = computeTotals(this.taxLines(saleItems), { exp: money.exp, discountType: discountReq.type, discountValue: discountReq.value, taxRate: money.taxRate });
     const clientMismatches = this.reconcileClientMoney(dto, money.exp, totals.minor.total); // G1b: recorded, NEVER a rejection (see recordClientMismatches)
     const flags: Array<{ type: string; detail: Record<string, any> }> = [];
@@ -1025,12 +1027,17 @@ export class PosService {
     // winner (after giving back the stock this loser took).
     let sale: any;
     try {
+      await this.ensureSettings(dto.storeId);
       for (let attempt = 0; attempt < 5; attempt++) {
         const saleNumber = await this.generateSaleNumber(dto.storeId);
         try {
           sale = await this.atomic(async (tx) => {
+          // G2.5: a COMPLETED sale gets its tax-invoice number inside this transaction (a held sale gets one when it is completed)
+          const invoice = isHeld ? null : await this.issueInvoice(dto.storeId, off.isOffline ? off.at : new Date(), dto.offlineRef, tx);
           const [created] = await this.r.saleModel.create([{
             saleNumber,
+            ...(invoice ? { invoice } : {}),
+            ...(heldCouponCode ? { heldCouponCode } : {}),
             storeId: dto.storeId,
             sessionId: dto.sessionId,
             registerId: dto.registerId,
@@ -1151,7 +1158,7 @@ export class PosService {
     await this.verifyStoreOwnership((sale as any).storeId, sellerId);
 
     // Completion re-prices from the held lines with the CURRENT tax rate and the (possibly changed) discount.
-    const discountReq = this.discountSpec(dto, sale);
+    let discountReq = this.discountSpec(dto, sale);
     if (discountReq.value > 0) {
       await this.requireManagerEmployee(employeeToken, (sale as any).storeId, 'apply a discount');
     }
@@ -1169,6 +1176,15 @@ export class PosService {
     }
 
     const money = await this.moneyContext(String((sale as any).storeId), { version: dto.settingsVersion });
+    // G2.4: a coupon is applied now (checked live against THIS cart), whatever code the held sale remembered
+    let couponUsed: any = null;
+    if (dto.couponCode) {
+      if (discountReq.value > 0) throw moneyError('COUPON_WITH_DISCOUNT', 'A coupon and a manual discount cannot be combined on one sale');
+      const pre = computeTotals(this.taxLines((sale as any).items), { exp: money.exp, taxRate: money.taxRate });
+      const rc = await this.resolveCoupon(String((sale as any).storeId), dto.couponCode, pre.minor.subtotal, money);
+      discountReq = { type: rc.type, value: rc.value };
+      couponUsed = rc.coupon;
+    }
     const totals = computeTotals(this.taxLines((sale as any).items), { exp: money.exp, discountType: discountReq.type, discountValue: discountReq.value, taxRate: money.taxRate });
     const clientMismatches = this.reconcileClientMoney(dto, money.exp, totals.minor.total);
     assertClientTotal(dto.clientTotal, totals);
@@ -1191,11 +1207,20 @@ export class PosService {
     const completeCtx = { sessionId: String((sale as any).sessionId), registerId: (sale as any).registerId ?? null, shiftId: ((await this.r.registerSessionModel.findById((sale as any).sessionId)) as any)?.shiftId ?? null };
     let updated: any;
     try {
+    await this.ensureSettings(String((sale as any).storeId));
     updated = await this.atomic(async (tx) => {
+      const invoice = await this.issueInvoice(String((sale as any).storeId), new Date(), null, tx);
+      const bdItems = this.itemsMinor((sale as any).items.map((i: any) => ({ price: i.price, taxCategory: i.taxCategory })), totals, money.exp);
+      const itemSet: Record<string, any> = {};
+      bdItems.forEach((b: any, i: number) => { itemSet[`items.${i}.lineTotalMinor`] = b.lineTotalMinor; itemSet[`items.${i}.discountShareMinor`] = b.discountShareMinor; itemSet[`items.${i}.netMinor`] = b.netMinor; itemSet[`items.${i}.taxMinor`] = b.taxMinor; });
       const claimed = await this.r.saleModel.findOneAndUpdate(
-      { _id: saleId, status: 'held', deletedAt: null },
+      { _id: saleId, status: 'held', deletedAt: null, 'invoice.number': null },
       {
         $set: {
+          ...itemSet,
+          invoice,
+          ...(couponUsed ? { couponCode: couponUsed.code, couponId: String(couponUsed._id), couponDiscountMinor: totals.minor.discount } : {}),
+          heldCouponCode: null,
           status: 'completed',
           paymentMethod: settled.method,
           payments: this.paymentLinesMinor(settled.lines, money.exp),
@@ -1222,6 +1247,7 @@ export class PosService {
       if (!claimed) return null;
       await this.recordPayments(claimed, settled.lines, { ...completeCtx, employeeId: (sale as any).employeeId }, tx);
       await this.consumeDigital(String((sale as any).storeId), digital, claimed, tx);
+      if (couponUsed) await this.consumeCoupon(String(couponUsed._id), tx); // race-safe usage count, in the same transaction
       await this.writeAuditLog({ storeId: (sale as any).storeId, employeeId: (sale as any).employeeId, action: 'sale_completed', targetId: saleId, targetType: 'sale', ...completeCtx, metadata: { total, discount, fromHeld: true } }, tx);
       return claimed;
     });
@@ -1328,9 +1354,11 @@ export class PosService {
 
     await this.verifyStoreOwnership((sale as any).storeId, sellerId);
 
-    const actor = await this.requireManagerEmployee(employeeToken, (sale as any).storeId, 'issue refunds');
+    // WHO is returning is decided below, once the amount is known (a cashier may return within the store's limits; anything else needs a manager)
+    const who = await this.verifyEmployeeToken(employeeToken, (sale as any).storeId);
+    if (!who) throw new ForbiddenException('A valid employee PIN session is required to issue refunds');
 
-    const isPartial = dto?.items && dto.items.length > 0;
+    const isPartial = !!(dto?.items && dto.items.length > 0);
     const locationId: string | null = (sale as any).locationId ?? null;
     const { currency, exp } = await this.docMoney(sale);
     const lines = effectivePayments(sale as any);
@@ -1343,44 +1371,79 @@ export class PosService {
     const stateFilter = { _id: saleId, status: (sale as any).status, refundedAmount: alreadyRefunded };
     const staleMessage = 'This sale was changed by another refund or terminal — reload it and check before refunding again';
 
-    // Money for this refund and how it splits across the sale's tenders. See pos-money.util.ts#refundOrder for
-    // the documented order (card/other first, cash last; cash change is not refundable).
-    let refundAmount: number;
-    let itemUpdates: Array<{ variantId: string; qtyToRestore: number; saleItemId: string }> = [];
-    let newStatus: 'refunded' | 'partially_refunded' = 'refunded';
-
+    // G2.5: every line is credited with ITS OWN part of what the customer paid (net of its share of the discount, plus its tax),
+    // by cumulative proration — see pos-documents.util.ts. The credits of all returns of a line add up to exactly what the line cost.
+    const saleItems: any[] = (sale as any).items;
+    const bd = this.saleBreakdown(sale as any, exp);
+    const wanted: Array<{ idx: number; qty: number; restock: boolean; restockReason: string | null }> = [];
     if (!isPartial) {
-      refundAmount = roundMoney((sale as any).total - alreadyRefunded, exp);
-      (sale as any).items.forEach((item: any) => {
+      saleItems.forEach((item: any, idx: number) => {
         const left = item.qty - (item.refundedQty || 0);
-        if (left > 0) itemUpdates.push({ variantId: item.variantId ? String(item.variantId) : '', qtyToRestore: left, saleItemId: String(item._id) });
+        if (left > 0) wanted.push({ idx, qty: left, restock: !item.isCustom, restockReason: null });
       });
     } else {
-      const refundLines: Array<{ price: number; qty: number }> = [];
+      const seen = new Set<string>();
       for (const refundItem of dto!.items!) {
-        const saleItem = (sale as any).items.find((i: any) => i._id.toString() === refundItem.saleItemId);
-        if (!saleItem) throw new BadRequestException(`Sale item not found: ${refundItem.saleItemId}`);
-
+        if (seen.has(refundItem.saleItemId)) throw new BadRequestException(`Sale item listed twice: ${refundItem.saleItemId}`);
+        seen.add(refundItem.saleItemId);
+        const idx = saleItems.findIndex((i: any) => i._id.toString() === refundItem.saleItemId);
+        if (idx < 0) throw new BadRequestException(`Sale item not found: ${refundItem.saleItemId}`);
+        const saleItem = saleItems[idx];
         const available = saleItem.qty - (saleItem.refundedQty || 0);
         if (refundItem.qty > available) {
           throw new BadRequestException(`Cannot refund ${refundItem.qty} of "${saleItem.name}" — only ${available} unreturned`);
         }
-        refundLines.push({ price: saleItem.price, qty: refundItem.qty });
-        itemUpdates.push({ variantId: saleItem.variantId ? String(saleItem.variantId) : '', qtyToRestore: refundItem.qty, saleItemId: refundItem.saleItemId });
+        const restock = saleItem.isCustom ? false : refundItem.restock !== false;
+        const restockReason = (refundItem.restockReason ?? '').trim() || null;
+        if (!restock && !saleItem.isCustom && !restockReason) throw moneyError('RESTOCK_REASON_REQUIRED', `Say why "${saleItem.name}" is not going back on the shelf`);
+        wanted.push({ idx, qty: refundItem.qty, restock, restockReason: restock ? null : restockReason });
       }
-      const completesSale = (sale as any).items.every((item: any) => {
-        const u = itemUpdates.find((x) => x.saleItemId === item._id.toString());
-        return (item.refundedQty || 0) + (u?.qtyToRestore || 0) >= item.qty;
-      });
-      // pro-rated: each line's share of what the customer actually PAID (net of discount, incl. tax)
-      refundAmount = partialRefundAmount(sale as any, refundLines, exp, completesSale);
-      newStatus = completesSale ? 'refunded' : 'partially_refunded';
     }
+    const credit = wanted.map((w) => ({ ...w, a: returnLineAmounts(bd[w.idx], saleItems[w.idx].qty, saleItems[w.idx].refundedQty || 0, w.qty) }));
+    let creditMinor = credit.reduce((sum, c) => sum + c.a.totalMinor, 0);
+    const itemUpdates: Array<{ variantId: string; qtyToRestore: number; saleItemId: string; restock: boolean }> = wanted.map((w) => ({
+      variantId: saleItems[w.idx].variantId ? String(saleItems[w.idx].variantId) : '', qtyToRestore: w.qty, saleItemId: String(saleItems[w.idx]._id), restock: w.restock,
+    }));
+    const completesSale = saleItems.every((item: any, idx: number) => (item.refundedQty || 0) + (wanted.find((w) => w.idx === idx)?.qty || 0) >= item.qty);
+    const newStatus: 'refunded' | 'partially_refunded' = completesSale ? 'refunded' : 'partially_refunded';
+
+    // The amount. A sale issued under G2.5 (it has an invoice) is fully on the new proration. An older sale had its earlier
+    // refunds priced the old way, so its amount keeps the old rule (the last refund returns the exact remainder) and the credit note's
+    // lines are nudged by the rounding difference so the note always equals what was paid out.
+    let refundAmount: number;
+    if ((sale as any).invoice) {
+      refundAmount = fromMinor(creditMinor, exp);
+    } else if (!isPartial) {
+      refundAmount = roundMoney((sale as any).total - alreadyRefunded, exp);
+    } else {
+      refundAmount = partialRefundAmount(sale as any, wanted.map((w) => ({ price: saleItems[w.idx].price, qty: w.qty })), exp, completesSale);
+    }
+    if (credit.length && toMinor(refundAmount, exp) !== creditMinor) {
+      const delta = toMinor(refundAmount, exp) - creditMinor;
+      const last = credit[credit.length - 1].a;
+      last.netMinor += delta; last.totalMinor += delta;
+      creditMinor += delta;
+    }
+
+    // Who may do it: a manager always; a cashier only when the store allows it and the return is within every limit.
+    const settingsDoc: any = await this.r.posSettingsModel.findOne({ storeId: (sale as any).storeId }).select('cashierReturnsEnabled returnApprovalAboveMinor returnApprovalAfterDays').lean();
+    const needs = returnApprovalReasons({
+      amountMinor: toMinor(refundAmount, exp), aboveMinor: settingsDoc?.returnApprovalAboveMinor ?? null,
+      daysSinceSale: daysBetween(new Date((sale as any).createdAt ?? Date.now()), new Date()), afterDays: settingsDoc?.returnApprovalAfterDays ?? null,
+      receiptPresented: dto?.receiptPresented !== false, cashierReturnsEnabled: settingsDoc?.cashierReturnsEnabled === true,
+    });
+    const isManager = who.role === 'manager';
+    if (!isManager && needs.length) {
+      throw new ForbiddenException({ statusCode: 403, code: 'RETURN_NEEDS_MANAGER', reasons: needs, message: needs.includes('store_requires_manager') ? 'Only managers can issue refunds' : 'A manager must approve this return' });
+    }
+    const actor = { employeeId: who.employeeId, role: who.role };
+    const approvedBy = isManager && needs.length ? who.employeeId : null;
 
     const tenders = allocateRefund(lines, alreadyRefunded, refundAmount, exp);
     const reason = normalizeReason('refund', dto?.reasonCode, dto?.reason);
     const refundId = new Types.ObjectId();
     const refundSeq = ((sale as any).refunds ?? []).length;
+    await this.ensureSettings(String((sale as any).storeId));
     const refundRecord = {
       refundId: String(refundId),
       amount: refundAmount, amountMinor: toMinor(refundAmount, exp), kind: isPartial ? 'partial' : 'full',
@@ -1407,7 +1470,12 @@ export class PosService {
       ? await this.r.registerSessionModel.findOne({ registerId: (sale as any).registerId, status: 'open' })
       : null;
     const refundCtx = { sessionId: nowSession ? String(nowSession._id) : null, registerId: (sale as any).registerId ?? null, shiftId: nowSession?.shiftId ?? null };
+    // a cash refund comes out of a drawer: it needs an open shift on this register
+    if (tenders.some((t: any) => t.method === 'cash' && t.amount > 0) && !nowSession) {
+      throw businessConflict('OPEN_SHIFT_REQUIRED', 'Open a shift on this register before paying a cash refund');
+    }
     const refundAuditAction = newStatus === 'refunded' ? 'sale_refunded_full' : 'sale_refunded_partial';
+    let createdCreditNote: any = null;
     const claimed = await this.atomic(async (tx) => {
       // The sale claim, the refund record and the audit event commit together or not at all.
       const c = await this.r.saleModel.findOneAndUpdate(stateFilter, update, { new: true, ...(arrayFilters ? { arrayFilters } : {}), ...(tx ? { session: tx } : {}) });
@@ -1421,15 +1489,21 @@ export class PosService {
         saleSessionId: (sale as any).sessionId ?? null, saleEmployeeId: (sale as any).employeeId ?? null,
         ...(idempotencyKey ? { idempotencyKey } : {}),
       }], tx ? { session: tx } : undefined);
+      const creditNote = await this.createCreditNote(tx, {
+        sale: sale as any, kind: 'return', scope: completesSale ? 'full' : 'partial', refundId: String(refundId), reason, exp, currency,
+        lines: credit.map((c2) => ({ idx: c2.idx, qty: c2.qty, a: c2.a, restock: c2.restock, restockReason: c2.restockReason })),
+        tenders: this.tendersMinor(tenders, exp), actorId: actor.employeeId, approvedBy, approvalReasons: needs, ctx: refundCtx,
+      });
+      createdCreditNote = creditNote;
       await this.writeAuditLog({
         storeId: (sale as any).storeId, employeeId: actor.employeeId, action: refundAuditAction, targetId: saleId, targetType: 'sale', ...refundCtx,
-        metadata: { refundAmount, tenders, currency, items: dto?.items, refundId: String(refundId), reference: `${(sale as any).saleNumber ?? saleId}-R${refundSeq + 1}`, reason: reason.note, reasonCode: reason.code },
+        metadata: { refundAmount, tenders, currency, items: dto?.items, refundId: String(refundId), reference: `${(sale as any).saleNumber ?? saleId}-R${refundSeq + 1}`, reason: reason.note, reasonCode: reason.code, creditNote: creditNote.number, approvedBy, approvalReasons: needs },
       }, tx);
       return c;
     });
     if (!claimed) throw businessConflict('SALE_CHANGED_CONCURRENTLY', staleMessage);
 
-    await this.restoreSoldStock(itemUpdates.filter((u) => !!u.variantId).map((u) => ({ variantId: u.variantId, qty: u.qtyToRestore })), locationId);
+    await this.restoreSoldStock(itemUpdates.filter((u) => !!u.variantId && u.restock).map((u) => ({ variantId: u.variantId, qty: u.qtyToRestore })), locationId);
 
     // Session: the refund comes OUT of sales and out of the right tender — so a cash refund lowers the
     // cash the drawer should now hold (expected cash = opening + cashSales + cashIn − cashOut). The
@@ -1452,8 +1526,8 @@ export class PosService {
     const digitalPlan = this.payments ? digitalRefundPlan(lines as any, alreadyRefunded, refundAmount, exp) : [];
     const digitalRefunds = digitalPlan.length ? await this.payments!.refundForSale(String((sale as any).storeId), digitalPlan, { employeeId: actor.employeeId, refundId: String(refundId), reason: dto?.reason?.trim() ?? '' }) : undefined;
 
-    if (!isPartial) return { success: true, message: 'Sale fully refunded and stock restored', data: { ...(digitalRefunds ? { digitalRefunds } : {}), refundedAmount: refundAmount, newStatus, tenders, currency, currencyExponent: exp, refundId: String(refundId), reference: `${(sale as any).saleNumber ?? saleId}-R${refundSeq + 1}` } };
-    return { success: true, message: `Partial refund of ${refundAmount.toFixed(exp)} processed`, data: { ...(digitalRefunds ? { digitalRefunds } : {}), refundedAmount: refundAmount, newStatus, tenders, currency, currencyExponent: exp, refundId: String(refundId), reference: `${(sale as any).saleNumber ?? saleId}-R${refundSeq + 1}` } };
+    if (!isPartial) return { success: true, message: 'Sale fully refunded and stock restored', data: { ...(digitalRefunds ? { digitalRefunds } : {}), refundedAmount: refundAmount, newStatus, tenders, currency, currencyExponent: exp, refundId: String(refundId), reference: `${(sale as any).saleNumber ?? saleId}-R${refundSeq + 1}`, creditNote: createdCreditNote ? { id: String(createdCreditNote._id), number: createdCreditNote.number, totalMinor: createdCreditNote.totalMinor } : null } };
+    return { success: true, message: `Partial refund of ${refundAmount.toFixed(exp)} processed`, data: { ...(digitalRefunds ? { digitalRefunds } : {}), refundedAmount: refundAmount, newStatus, tenders, currency, currencyExponent: exp, refundId: String(refundId), reference: `${(sale as any).saleNumber ?? saleId}-R${refundSeq + 1}`, creditNote: createdCreditNote ? { id: String(createdCreditNote._id), number: createdCreditNote.number, totalMinor: createdCreditNote.totalMinor } : null } };
   }
 
   /**
@@ -2056,13 +2130,96 @@ export class PosService {
   // they cannot disagree; the checker (checkMinor) proves it after every write. Reads still use the decimals until step f.
 
   /** Items with their minor twins. `lineTotalMinor` is the engine's own `toMinor(price × qty)`; `priceMinor × qty` may differ only for a sub-minor price. */
-  private itemsMinor(items: any[], totals: { lineTotalsMinor: number[] }, exp: number): any[] {
+  /**
+   * Per-line gross / discount / net / tax of a sale, aligned with `sale.items`. Uses what was stored at sale time (G2.5) and, for an
+   * older sale, derives the same split from the sale's own figures (deterministic, so the same answer every time).
+   */
+  private saleBreakdown(sale: any, exp: number) {
+    const items: any[] = sale.items ?? [];
+    const stored = items.length > 0 && items.every((i) => i.netMinor !== undefined && i.netMinor !== null && i.taxMinor !== undefined && i.taxMinor !== null);
+    if (stored) {
+      return items.map((i) => {
+        const gross = Number(i.lineTotalMinor ?? toMinor(i.lineTotal, exp));
+        const disc = Number(i.discountShareMinor ?? gross - Number(i.netMinor));
+        return { grossMinor: gross, discountMinor: disc, netMinor: Number(i.netMinor), taxMinor: Number(i.taxMinor), totalMinor: Number(i.netMinor) + Number(i.taxMinor) };
+      });
+    }
+    return lineBreakdown(
+      items.map((i) => ({ grossMinor: Number(i.lineTotalMinor ?? toMinor(i.lineTotal, exp)), taxable: i.taxCategory !== 'exempt' })),
+      Number(sale.discountMinor ?? toMinor(sale.discount ?? 0, exp)), Number(sale.taxMinor ?? toMinor(sale.tax ?? 0, exp)),
+    );
+  }
+
+  /** Writes the CREDIT NOTE of a return / void inside the caller's transaction (own gap-free number, linked to the invoice and lines). */
+  private async createCreditNote(tx: ClientSession | undefined, a: {
+    sale: any; kind: 'return' | 'void'; scope: 'partial' | 'full'; refundId: string | null; reason: { note: string | null; code: string | null }; exp: number; currency: string;
+    lines: Array<{ idx: number; qty: number; a: { grossMinor: number; discountMinor: number; netMinor: number; taxMinor: number; totalMinor: number }; restock: boolean; restockReason: string | null }>;
+    tenders: Array<{ method: string; amountMinor?: number; amount?: number }>; actorId: string; approvedBy: string | null; approvalReasons: string[];
+    ctx: { sessionId: string | null; registerId: string | null; shiftId?: string | null };
+  }) {
+    const n = await this.nextDocNumber(String(a.sale.storeId), 'creditNote', tx);
+    const lines = a.lines.map((l) => {
+      const it = a.sale.items[l.idx];
+      return {
+        saleItemId: String(it._id), productId: it.productId ?? null, variantId: it.variantId ?? null, name: it.name, sku: it.sku, hsCode: it.hsCode ?? null,
+        taxCategory: it.taxCategory ?? 'standard', qty: l.qty, unitPriceMinor: Number(it.priceMinor ?? toMinor(it.price, a.exp)),
+        grossMinor: l.a.grossMinor, discountMinor: l.a.discountMinor, netMinor: l.a.netMinor, taxMinor: l.a.taxMinor, totalMinor: l.a.totalMinor,
+        restock: l.restock, restockReason: l.restockReason,
+      };
+    });
+    const sum = (k: 'grossMinor' | 'discountMinor' | 'netMinor' | 'taxMinor' | 'totalMinor') => lines.reduce((s2, l) => s2 + l[k], 0);
+    const [doc] = await this.r.posCreditNoteModel.create([{
+      storeId: a.sale.storeId, number: n.number, seq: n.seq, saleId: String(a.sale._id), saleNumber: a.sale.saleNumber ?? null,
+      invoiceNumber: a.sale.invoice?.number ?? null, invoiceIssuedAt: a.sale.invoice?.issuedAt ?? null,
+      kind: a.kind, scope: a.scope, refundId: a.refundId, reasonCode: a.reason.code, reason: a.reason.note,
+      lines, grossMinor: sum('grossMinor'), discountMinor: sum('discountMinor'), netMinor: sum('netMinor'), taxMinor: sum('taxMinor'), totalMinor: sum('totalMinor'),
+      currency: a.currency, currencyExponent: a.exp,
+      tenders: a.tenders.map((t) => ({ method: t.method, amountMinor: t.amountMinor ?? toMinor(t.amount ?? 0, a.exp) })),
+      seller: a.sale.invoice?.seller ?? (await this.sellerSnapshot(String(a.sale.storeId), tx)), customerName: a.sale.customerName ?? null,
+      employeeId: a.actorId, approvedBy: a.approvedBy, approvalReasons: a.approvalReasons,
+      registerId: a.ctx.registerId ?? null, sessionId: a.ctx.sessionId ?? null,
+    }], tx ? { session: tx } : undefined);
+    return doc as any;
+  }
+
+  private itemsMinor(items: any[], totals: { lineTotalsMinor: number[]; minor?: { discount: number; tax: number } }, exp: number): any[] {
+    // G2.5: every line carries its own share of the discount and tax (Σ lines = the sale), so a return can reverse exactly its part
+    const bd = totals.minor ? lineBreakdown(items.map((it, i) => ({ grossMinor: totals.lineTotalsMinor[i], taxable: it.taxCategory !== 'exempt' })), totals.minor.discount, totals.minor.tax) : null;
     return items.map((it, i) => ({
       ...it,
       priceMinor: toMinor(it.price, exp),
       ...(it.listPrice !== null && it.listPrice !== undefined ? { listPriceMinor: toMinor(it.listPrice, exp) } : {}),
       lineTotalMinor: totals.lineTotalsMinor[i],
+      ...(bd ? { discountShareMinor: bd[i].discountMinor, netMinor: bd[i].netMinor, taxMinor: bd[i].taxMinor } : {}),
     }));
+  }
+
+  // ── G2.5: tax invoice numbers + seller snapshot ─────────────────────────────────────────────────────────────────
+  /** Makes sure the store's settings document exists BEFORE a transaction opens (a first-ever upsert inside two concurrent transactions would collide). */
+  private async ensureSettings(storeId: string): Promise<void> {
+    await this.r.posSettingsModel.updateOne({ storeId }, { $setOnInsert: { storeId } }, { upsert: true });
+  }
+
+  /**
+   * The next number of a per-store document sequence. Called INSIDE the transaction that creates the document: if that transaction aborts
+   * the increment aborts with it, so the sequence has no holes; two tills contend on the same counter document and one retries.
+   */
+  private async nextDocNumber(storeId: string, kind: 'invoice' | 'creditNote', tx?: ClientSession): Promise<{ seq: number; number: string }> {
+    const field = kind === 'invoice' ? 'invoiceCounter' : 'creditNoteCounter';
+    const s: any = await this.r.posSettingsModel.findOneAndUpdate({ storeId }, { $inc: { [field]: 1 } }, { new: true, upsert: true, ...(tx ? { session: tx } : {}) });
+    const seq = Number(s[field]);
+    return { seq, number: formatDocNumber(kind === 'invoice' ? INVOICE_PREFIX : CREDIT_NOTE_PREFIX, seq) };
+  }
+
+  /** The seller as registered (store tax profile), snapshotted onto every invoice and credit note. */
+  private async sellerSnapshot(storeId: string, tx?: ClientSession) {
+    const s: any = await this.r.posSettingsModel.findOne({ storeId }, null, tx ? { session: tx } : undefined).select('taxNtn taxStrn taxLegalName taxRegisteredAddress businessName businessAddress').lean();
+    return { legalName: s?.taxLegalName ?? s?.businessName ?? null, address: s?.taxRegisteredAddress ?? s?.businessAddress ?? null, ntn: s?.taxNtn ?? null, strn: s?.taxStrn ?? null };
+  }
+
+  private async issueInvoice(storeId: string, issuedAt: Date, offlineRef: string | null | undefined, tx?: ClientSession) {
+    const n = await this.nextDocNumber(storeId, 'invoice', tx);
+    return { number: n.number, seq: n.seq, issuedAt, offlineRef: offlineRef ?? null, seller: await this.sellerSnapshot(storeId, tx), fiscal: { status: 'not_enabled', externalInvoiceNumber: null, qrPayload: null, attempts: 0, lastError: null } };
   }
 
   /** Sale-level minor figures. `discountValueMinor` exists only for an AMOUNT discount (a percentage is not money). */
@@ -2513,6 +2670,9 @@ export class PosService {
 
     // Claim the void with a status-guarded update first; only the request that wins the
     // `completed → voided` transition restores stock and reverses the session totals.
+    await this.ensureSettings(String((sale as any).storeId));
+    const { exp: cnExp, currency: cnCurrency } = await this.docMoney(sale);
+    let voidCreditNote: any = null;
     const claimed = await this.atomic(async (tx) => {
       const c = await this.r.saleModel.findOneAndUpdate(
         { _id: saleId, status: 'completed' },
@@ -2520,6 +2680,14 @@ export class PosService {
         tx ? { session: tx } : undefined,
       );
       if (!c) return null;
+      // G2.5: a void is a full return — it produces a credit note too (every line, restocked)
+      const bdv = this.saleBreakdown(sale as any, cnExp);
+      voidCreditNote = await this.createCreditNote(tx, {
+        sale: sale as any, kind: 'void', scope: 'full', refundId: null, reason: voidReason, exp: cnExp, currency: cnCurrency,
+        lines: (sale as any).items.map((it: any, idx: number) => ({ idx, qty: it.qty, a: returnLineAmounts(bdv[idx], it.qty, 0, it.qty), restock: !it.isCustom, restockReason: null })),
+        tenders: effectivePayments(sale as any).map((l: any) => ({ method: l.method, amountMinor: toMinor(l.amount, cnExp) })), actorId: actor.employeeId, approvedBy: actor.employeeId, approvalReasons: [],
+        ctx: { sessionId: (sale as any).sessionId ?? null, registerId: (sale as any).registerId ?? null, shiftId: (sale as any).shiftId ?? null },
+      });
       await this.writeAuditLog({
         storeId: (sale as any).storeId, employeeId: actor.employeeId, action: 'sale_voided', targetId: saleId, targetType: 'sale',
         sessionId: (sale as any).sessionId ?? null, registerId: (sale as any).registerId ?? null, shiftId: (sale as any).shiftId ?? null, metadata: { reason: voidReason.note, reasonCode: voidReason.code },
@@ -2544,7 +2712,7 @@ export class PosService {
     // G2.3: voiding a sale that was paid by Raast QR sends that money back through the provider
     const voidPlan = this.payments ? digitalRefundPlan(effectivePayments(sale as any) as any, 0, (sale as any).total, voidExp) : [];
     const digitalRefunds = voidPlan.length ? await this.payments!.refundForSale(String((sale as any).storeId), voidPlan, { employeeId: actor.employeeId, refundId: `void-${saleId}`, reason: dto.reason?.trim() ?? 'void' }) : undefined;
-    return { success: true, message: 'Sale voided and stock restored', ...(digitalRefunds ? { data: { digitalRefunds } } : {}) };
+    return { success: true, message: 'Sale voided and stock restored', data: { ...(digitalRefunds ? { digitalRefunds } : {}), creditNote: voidCreditNote ? { id: String(voidCreditNote._id), number: voidCreditNote.number, totalMinor: voidCreditNote.totalMinor } : null } };
   }
 
   async editHeldSaleItems(sellerId: string, saleId: string, dto: UpdateSaleItemsDto, employeeToken: string | undefined) {

@@ -83,6 +83,8 @@ export class DatabaseService {
     private posPaymentModel: Model<schema.PosPaymentDocument>,
     @InjectModel(schema.PosRefund.name)
     private posRefundModel: Model<schema.PosRefundDocument>,
+    @InjectModel(schema.PosCreditNote.name)
+    private posCreditNoteModel: Model<schema.PosCreditNoteDocument>,
 
     @InjectModel(schema.PosSettings.name)
     private posSettingsModel: Model<schema.PosSettingsDocument>,
@@ -561,6 +563,7 @@ export class DatabaseService {
       posAuditLogModel: this.posAuditLogModel,
       posPaymentModel: this.posPaymentModel,
       posRefundModel: this.posRefundModel,
+      posCreditNoteModel: this.posCreditNoteModel,
       posSettingsModel: this.posSettingsModel,
       conversationModel: this.conversationModel,
       messageModel: this.messageModel,

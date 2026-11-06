@@ -44,6 +44,24 @@ export class PosSettings {
   @Prop({ type: Number, default: null, min: 0 })
   customItemApprovalAboveMinor: number | null;
 
+  // ── G2.5: documents + return policy ──
+  /** per-store gap-free counters (incremented INSIDE the sale / return transaction, so a rolled-back document leaves no hole) */
+  @Prop({ type: Number, default: 0 }) invoiceCounter: number;
+  @Prop({ type: Number, default: 0 }) creditNoteCounter: number;
+  /** may a cashier process a return at all? (false = every return needs a manager, the behaviour before G2.5) */
+  @Prop({ type: Boolean, default: false }) cashierReturnsEnabled: boolean;
+  /** a return above this amount (minor units) needs a manager; null = no amount limit */
+  @Prop({ type: Number, default: null, min: 0 }) returnApprovalAboveMinor: number | null;
+  /** a return later than this many days after the sale needs a manager; null = no day limit */
+  @Prop({ type: Number, default: null, min: 0 }) returnApprovalAfterDays: number | null;
+
+  // ── G2.6: store tax profile (as registered with the tax authority) — optional now, required later when fiscal integration is enabled ──
+  @Prop({ type: String, default: null }) taxNtn: string | null;
+  @Prop({ type: String, default: null }) taxStrn: string | null;
+  @Prop({ type: String, default: null }) taxLegalName: string | null;
+  @Prop({ type: String, default: null }) taxRegisteredAddress: string | null;
+  @Prop({ type: String, enum: ['standard', 'exempt'], default: 'standard' }) defaultTaxCategory: string;
+
   @Prop({ type: Number, default: 0 })
   saleCounter: number;         // atomically incremented to mint saleNumber ("POS-00001") per store
 }

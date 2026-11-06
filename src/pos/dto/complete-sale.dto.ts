@@ -1,9 +1,15 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsArray, IsEnum, IsInt, IsOptional, IsNumber, IsString, Max, Min, ValidateNested } from 'class-validator';
+import { IsArray, IsEnum, IsInt, IsOptional, IsNumber, IsString, Max, MaxLength, Min, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
 import { PaymentLineDto } from './payment.dto';
 
 export class CompleteSaleDto {
+  @ApiProperty({ required: false, description: 'G2.4: a POS coupon code to apply when the held sale is completed (validated live; cannot be combined with a discount)' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  couponCode?: string;
+
   @ApiProperty({ enum: ['cash', 'card', 'other', 'raast_qr'], description: 'Single-payment form; ignored when `payments` is sent' })
   @IsEnum(['cash', 'card', 'other', 'raast_qr'])
   paymentMethod: string;

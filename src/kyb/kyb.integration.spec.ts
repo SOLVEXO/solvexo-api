@@ -10,7 +10,7 @@ const factory = fixtureFactory();
 beforeAll(factory.start); afterAll(factory.stop);
 let ownDb = false;
 const fresh = (verified = false) => (ownDb ? makePaymentsFixture({ verified }) : factory.fresh({ verified }));
-const PDF = (name = 'doc.pdf', size = 1000) => ({ originalname: name, mimetype: 'application/pdf', size, buffer: Buffer.alloc(8, 1) }) as any;
+const PDF = (name = 'doc.pdf', size = 1000) => ({ originalname: name, mimetype: 'application/pdf', size, buffer: Buffer.concat([Buffer.from('%PDF-1.4\n'), Buffer.alloc(32, 1)]) }) as any;
 const IBAN = 'PK36SCBL0000001123456702';
 const CNIC = '3520212345671';
 const NTN = '7654321'; // deliberately not a substring of the CNIC, so the "no plaintext" scan is meaningful
@@ -131,7 +131,7 @@ describe('KYB: owner flow draft → submitted, locking, documents', () => {
     const x = await fresh();
     const { sellerId, storeId } = x.s;
     await expect(x.kyb.uploadDocument(sellerId, storeId, 'selfie', PDF())).rejects.toMatchObject({ response: { code: 'KYB_INVALID_DOCUMENT_TYPE' } });
-    await expect(x.kyb.uploadDocument(sellerId, storeId, 'owner_cnic', { ...PDF(), mimetype: 'application/zip' })).rejects.toMatchObject({ response: { code: 'KYB_FILE_TYPE' } });
+    await expect(x.kyb.uploadDocument(sellerId, storeId, 'owner_cnic', { ...PDF(), mimetype: 'application/zip', buffer: Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(32, 1)]) })).rejects.toMatchObject({ response: { code: 'KYB_FILE_TYPE' } });
     await expect(x.kyb.uploadDocument(sellerId, storeId, 'owner_cnic', PDF('big.pdf', 11 * 1024 * 1024))).rejects.toMatchObject({ response: { code: 'KYB_FILE_TOO_LARGE' } });
     await expect(x.kyb.uploadDocument(sellerId, storeId, 'owner_cnic', undefined)).rejects.toMatchObject({ response: { code: 'KYB_FILE_REQUIRED' } });
     await x.kyb.uploadDocument(sellerId, storeId, 'owner_cnic', PDF('a.pdf'));
@@ -141,6 +141,43 @@ describe('KYB: owner flow draft → submitted, locking, documents', () => {
     expect(v.documents).toHaveLength(1); expect(v.documents[0].fileName).toBe('b.pdf');
     expect(x.upload.files.has(first)).toBe(false);
     expect(x.upload.files.size).toBe(1);
+    await x.stop();
+  });
+
+  it('documents are validated by CONTENT (magic bytes), not by extension or Content-Type; the detected type is what is stored', async () => {
+    const x = await fresh();
+    const { sellerId, storeId } = x.s;
+    const JPG = (name: string, mimetype: string) => ({ originalname: name, mimetype, size: 2000, buffer: Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(32, 1)]) }) as any;
+    const PNG = () => ({ originalname: 'scan.png', mimetype: 'image/png', size: 2000, buffer: Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(32, 1)]) }) as any;
+    // a ZIP renamed .pdf and sent as application/pdf is refused
+    const zip = { originalname: 'cnic.pdf', mimetype: 'application/pdf', size: 100, buffer: Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(32, 1)]) } as any;
+    await expect(x.kyb.uploadDocument(sellerId, storeId, 'owner_cnic', zip)).rejects.toMatchObject({ response: { code: 'KYB_FILE_TYPE' } });
+    // so is plain text, an HTML page, an empty-ish file
+    for (const buffer of [Buffer.from('<html><script>alert(1)</script></html>'), Buffer.from('hello world, I am text'), Buffer.from([1, 2, 3])]) {
+      await expect(x.kyb.uploadDocument(sellerId, storeId, 'owner_cnic', { originalname: 'a.pdf', mimetype: 'application/pdf', size: buffer.length, buffer } as any)).rejects.toMatchObject({ response: { code: 'KYB_FILE_TYPE' } });
+    }
+    // a JPEG with a wrong name and a wrong Content-Type is accepted — and stored as what it is
+    const v: any = await x.kyb.uploadDocument(sellerId, storeId, 'owner_cnic', JPG('front.pdf', 'application/octet-stream'));
+    expect(v.documents.find((d: any) => d.type === 'owner_cnic').mimeType).toBe('image/jpeg');
+    await x.kyb.uploadDocument(sellerId, storeId, 'bank_proof', PNG());
+    const v2: any = await x.kyb.uploadDocument(sellerId, storeId, 'address_proof', PDF('x.bin'));
+    expect(v2.documents.find((d: any) => d.type === 'address_proof').mimeType).toBe('application/pdf');
+    await x.stop();
+  });
+
+  it('the size limit is configurable (KYB_MAX_FILE_BYTES) and defaults to 10 MB', async () => {
+    const x = await fresh();
+    const { sellerId, storeId } = x.s;
+    const old = process.env.KYB_MAX_FILE_BYTES;
+    try {
+      process.env.KYB_MAX_FILE_BYTES = String(2048);
+      await expect(x.kyb.uploadDocument(sellerId, storeId, 'owner_cnic', PDF('a.pdf', 3000))).rejects.toMatchObject({ response: { code: 'KYB_FILE_TOO_LARGE', maxBytes: 2048 } });
+      await x.kyb.uploadDocument(sellerId, storeId, 'owner_cnic', PDF('a.pdf', 2000));
+      delete process.env.KYB_MAX_FILE_BYTES;
+      await expect(x.kyb.uploadDocument(sellerId, storeId, 'owner_cnic', PDF('b.pdf', 11 * 1024 * 1024))).rejects.toMatchObject({ response: { code: 'KYB_FILE_TOO_LARGE', maxBytes: 10 * 1024 * 1024 } });
+    } finally {
+      if (old === undefined) delete process.env.KYB_MAX_FILE_BYTES; else process.env.KYB_MAX_FILE_BYTES = old;
+    }
     await x.stop();
   });
 

@@ -195,6 +195,12 @@ export class CreateSaleDto {
   @IsDateString()
   clientCreatedAt?: string;
 
+  @ApiProperty({ required: false, description: 'Offline sales: the provisional OFF-… receipt number the till printed; kept on the invoice so the paper copy stays linked to the final invoice number' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(60)
+  offlineRef?: string;
+
   @ApiProperty({ required: false, description: 'true when this is a queued sale being replayed after the device was offline' })
   @IsOptional()
   @IsBoolean()

@@ -585,6 +585,14 @@ export class PosController {
     return this.posService.voidSale(req.user.userId, saleId, dto, employeeToken);
   }
 
+  /** G2.5: the tax invoice and every credit note of a sale (for the till's order detail / print / share). */
+  @UseGuards(PosAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Get('sales/:saleId/documents')
+  saleDocuments(@Req() req: any, @Param('saleId') saleId: string) {
+    return this.receipts.documentsOf(req.user.userId, saleId);
+  }
+
   /** G2.4 digital receipt link (same link every time until a manager revokes it). Any till of the store may ask; it is not a plan-gated action. */
   @UseGuards(PosAuthGuard, RolesGuard)
   @Roles('seller')
