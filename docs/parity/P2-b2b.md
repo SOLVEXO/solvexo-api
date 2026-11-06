@@ -37,6 +37,14 @@ Known gaps in this slice: partial fulfilment (`orders/fulfil`) does not check th
 
 Not done in slice 5: wholesale price shown on product/cart pages in the themes (the `prices` endpoint exists but no theme calls it yet, so the cart shows retail prices until checkout), hidden prices for visitors, B2B-only sections, company addresses at checkout, a nav link to /wholesale (the seller adds it as a menu link), en/ur and other-language strings (English fallback), Liquid context. Reorder = the existing Buy again on order pages.
 
+## Done (slice 6: prices in themes, wholesale-only store)
+- Cart view (`CartService.getCart`) returns the company buyer's wholesale unit price and total, recomputed from the live variant price and the line quantity (volume breaks), with `b2bPriced` / `b2bError`; a line the company may not buy is `unavailable` (blocks checkout), a quantity-rule break only warns. Both themes show the reason in cart page and mini cart.
+- `Store.wholesaleOnly`: server refuses add-to-cart (`CartService`) and checkout creation (`B2B_ONLY`) for anyone but an approved company buyer; public store data carries the flag; seller switch on the Wholesale page. Themes (Maison + Tech): product cards hide prices, product page hides price/quantity/buy buttons and shows a sign-in / apply link. Honest limit: the public product API still returns retail prices (a hidden price, not a secret).
+- Product page (both themes): "Your wholesale price" with volume tiers from the server `prices` endpoint; headless `core/b2b/useWholesale.ts` (`useWholesaleGate`, `useWholesalePrice`, standing cached 30 s).
+- Tests: 4 backend real-Mongo cart tests; 5 hook tests; wholesale hub tests still pass.
+
+Limits: wholesale price is not shown on product cards or in search/collection grids (cards only hide retail when locked); no B2B-only sections/pages; checkout pages themselves do not re-check the lock in the UI (the server does).
+
 ## Not done yet (next slices)
 1. Storefront UI: wholesale application page, B2B price display in themes (via the prices endpoint), PO number field at checkout, quick order list / CSV, reorder, company addresses, hide-prices-for-visitors store setting, shared theme components, Liquid context. NOT tested: the createCheckout hook itself against a real database (it is only exercised through the context service and type-checked).
 2. Reminders for due/overdue invoices (email/WhatsApp), deposit check on partial fulfilment.
