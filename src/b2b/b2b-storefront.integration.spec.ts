@@ -22,6 +22,7 @@ d('B2B storefront endpoints on a real MongoDB', () => {
   let conn: Connection;
   let m: any;
   let ctl: B2BStorefrontController;
+  const entitlements = { assertFeatureAllowed: jest.fn().mockResolvedValue(undefined) };
   const A = oid();
   const B = oid();
 
@@ -34,7 +35,7 @@ d('B2B storefront endpoints on a real MongoDB', () => {
       users: conn.model('User', new mongoose.Schema({}, { strict: false })), stores: conn.model('Store', new mongoose.Schema({}, { strict: false })),
     };
     const ctx = new B2BContextService(m.companies, m.locations, m.buyers, m.applications, m.catalogs, m.items);
-    ctl = new B2BStorefrontController(ctx, { repositories: { productModel: m.products, productVariantModel: m.variants, userModel: m.users, storeModel: m.stores } } as any);
+    ctl = new B2BStorefrontController(ctx, { repositories: { productModel: m.products, productVariantModel: m.variants, userModel: m.users, storeModel: m.stores } } as any, entitlements as any);
   });
   afterAll(async () => { await conn.dropDatabase(); await conn.close(); });
 
@@ -96,6 +97,16 @@ d('B2B storefront endpoints on a real MongoDB', () => {
     const res: any = await ctl.quickOrder(b.req, { lines: [{ sku: 'QO-ARCH', quantity: 1 }] });
     expect(res.lines[0]).toMatchObject({ ok: false, error: 'SKU not found' });
     await expect(ctl.quickOrder(b.req, { lines: Array.from({ length: 101 }, () => ({ sku: 'x', quantity: 1 })) })).rejects.toThrow(/between 1 and 100/);
+  });
+
+  it('apply is refused when the store plan does not include wholesale, and allowed otherwise', async () => {
+    const uid = oid();
+    await m.users.collection.insertOne({ _id: new Types.ObjectId(uid), storeId: A, email: 'ap@x.com' });
+    await m.stores.collection.updateOne({ _id: new Types.ObjectId(A) }, { $set: { isDelete: false } }, { upsert: true });
+    entitlements.assertFeatureAllowed.mockRejectedValueOnce(new Error('Your plan does not include Wholesale (B2B)'));
+    await expect(ctl.apply({ user: { userId: uid, storeId: A } } as any, { companyName: 'Co' })).rejects.toThrow(/does not include Wholesale/);
+    await expect(ctl.apply({ user: { userId: uid, storeId: A } } as any, { companyName: 'Co' })).resolves.toMatchObject({ status: 'pending' });
+    expect(entitlements.assertFeatureAllowed).toHaveBeenCalledWith(A, 'b2bWholesaleAllowed', 'Wholesale (B2B)');
   });
 
   describe('checkout PO number', () => {

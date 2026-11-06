@@ -85,7 +85,7 @@ export class PlatformPlan {
       abandonedCartRecoveryAllowed: false,
       emailCampaignsAllowed: false,
       digitalMembershipsAllowed: true,
-      digitalLicensesAllowed: true,
+      digitalLicensesAllowed: true, b2bWholesaleAllowed: true,
       apiWebhooksAllowed: false,
       dedicatedAccountManager: false,
       prioritySupport: false,
@@ -115,6 +115,7 @@ export class PlatformPlan {
     emailCampaignsAllowed: boolean;
     digitalMembershipsAllowed: boolean;
     digitalLicensesAllowed: boolean;
+    b2bWholesaleAllowed: boolean;
     apiWebhooksAllowed: boolean;
     dedicatedAccountManager: boolean;
     prioritySupport: boolean;

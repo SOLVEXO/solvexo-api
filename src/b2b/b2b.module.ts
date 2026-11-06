@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 import { AuthModule } from '../auth/auth.module';
 import { RedisModule } from '../redis/redis.module';
+import { PlatformPlansModule } from '../platform-plans/platform-plans.module';
 import {
   B2BApplication, B2BApplicationSchema, B2BBuyer, B2BBuyerSchema, B2BCatalog, B2BCatalogItem, B2BCatalogItemSchema, B2BCatalogSchema,
   B2BCompany, B2BCompanySchema, B2BLocation, B2BLocationSchema,
@@ -18,6 +19,7 @@ import { B2BStorefrontController } from './b2b-storefront.controller';
   imports: [
     AuthModule,
     RedisModule,
+    PlatformPlansModule,
     MongooseModule.forFeature([
       { name: B2BCompany.name, schema: B2BCompanySchema },
       { name: B2BLocation.name, schema: B2BLocationSchema },

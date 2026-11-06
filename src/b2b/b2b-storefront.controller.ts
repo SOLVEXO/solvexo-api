@@ -9,6 +9,7 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { resolveBuyerStoreScope } from '../common/store-scope.util';
 import { DatabaseService } from '../database/databaseservice';
 import { B2BContextService } from './b2b-context.service';
+import { EntitlementsService } from '../platform-plans/entitlements.service';
 
 const MAX_LINES = 50;
 const MAX_QUICK_LINES = 100;
@@ -21,7 +22,7 @@ const MAX_QUICK_LINES = 100;
 @UsePipes(new ValidationPipe({ transform: false }))
 @Controller('api/b2b/storefront')
 export class B2BStorefrontController {
-  constructor(private readonly ctxSvc: B2BContextService, private readonly db: DatabaseService) {}
+  constructor(private readonly ctxSvc: B2BContextService, private readonly db: DatabaseService, private readonly entitlements: EntitlementsService) {}
 
   @Get('me')
   me(@Req() req: any, @Query('storeId') storeId?: string) {
@@ -36,6 +37,8 @@ export class B2BStorefrontController {
     if (!user || user.isGuest) throw new BadRequestException('Sign in with a customer account to apply for wholesale.');
     const store: any = await this.db.repositories.storeModel.findOne({ _id: storeId, isDelete: false }).select('_id').lean();
     if (!store) throw new NotFoundException('Store not found');
+    // A store whose plan does not include wholesale does not take applications.
+    await this.entitlements.assertFeatureAllowed(storeId, 'b2bWholesaleAllowed', 'Wholesale (B2B)');
     return this.ctxSvc.apply(storeId, { userId: String(req.user.userId), email: user.email ?? user.contactEmail }, body);
   }
 

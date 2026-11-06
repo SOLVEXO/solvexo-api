@@ -10,6 +10,7 @@ import { actingSellerId } from '../common/acting-seller-id.util';
 import { verifyStoreOwnershipOrForbidden } from '../common/store-ownership.util';
 import { DatabaseService } from '../database/databaseservice';
 import { B2BOrdersService } from './b2b-orders.service';
+import { EntitlementsService } from '../platform-plans/entitlements.service';
 
 /** Seller wholesale receivables. Permissions: b2b.view (read) / b2b.manage (record or void payments). */
 @ApiTags('B2B orders (seller)')
@@ -19,10 +20,11 @@ import { B2BOrdersService } from './b2b-orders.service';
 @UsePipes(new ValidationPipe({ transform: false }))
 @Controller('api/b2b/:storeId')
 export class B2BOrdersController {
-  constructor(private readonly svc: B2BOrdersService, private readonly db: DatabaseService) {}
-  private async own(req: any, storeId: string) {
+  constructor(private readonly svc: B2BOrdersService, private readonly db: DatabaseService, private readonly entitlements: EntitlementsService) {}
+  private async own(req: any, storeId: string, write = false) {
     const sellerId = actingSellerId(req.user);
     await verifyStoreOwnershipOrForbidden(this.db.repositories.storeModel as any, storeId, sellerId);
+    if (write) await this.entitlements.assertFeatureAllowed(storeId, 'b2bWholesaleAllowed', 'Wholesale (B2B)');
     return { sellerId, actor: { id: String(req.user.userId ?? req.user.sub ?? req.user.id ?? ''), role: String(req.user.role) } };
   }
 
