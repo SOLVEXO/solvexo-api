@@ -4,12 +4,12 @@
  * Order events a store can send to its customers over its own WhatsApp Business number, each with its own
  * on/off switch and its own (Meta-approved) template. Stored on `StoreIntegration.config.notifications`.
  */
-export const WHATSAPP_EVENTS = ['order_confirmed', 'order_cancelled', 'order_refunded', 'order_shipped', 'order_delivered'] as const;
+export const WHATSAPP_EVENTS = ['order_confirmed', 'order_cancelled', 'order_refunded', 'order_shipped', 'order_delivered', 'cod_confirmation'] as const;
 export type WhatsAppEvent = (typeof WHATSAPP_EVENTS)[number];
 
 /** Values a template body variable ({{1}}, {{2}}...) can be mapped to. */
 export const WHATSAPP_PARAM_TOKENS = [
-  'order_id', 'order_number', 'customer_name', 'store_name', 'total', 'currency', 'carrier', 'tracking_number', 'refund_amount',
+  'order_id', 'order_number', 'customer_name', 'store_name', 'total', 'currency', 'carrier', 'tracking_number', 'refund_amount', 'confirm_url',
 ] as const;
 export type WhatsAppParamToken = (typeof WHATSAPP_PARAM_TOKENS)[number];
 
@@ -31,6 +31,8 @@ export const DEFAULT_WHATSAPP_EVENT_SETTINGS: Record<WhatsAppEvent, WhatsAppEven
   order_refunded: { enabled: false, templateName: 'order_refunded', languageCode: 'en_US', params: ['order_number', 'refund_amount'] },
   order_shipped: { enabled: true, templateName: 'order_shipped', languageCode: 'en_US', params: ['order_id', 'carrier'] },
   order_delivered: { enabled: true, templateName: 'order_delivered', languageCode: 'en_US', params: ['order_id'] },
+  // Asks a cash-on-delivery customer to confirm the order (COD protection); off until the store has an approved template.
+  cod_confirmation: { enabled: false, templateName: 'cod_order_confirmation', languageCode: 'en_US', params: ['customer_name', 'order_number', 'total', 'confirm_url'] },
 };
 
 export function isWhatsAppEvent(v: unknown): v is WhatsAppEvent {

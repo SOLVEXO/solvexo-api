@@ -1,11 +1,12 @@
 /* eslint-disable prettier/prettier */
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { DatabaseService } from '../database/databaseservice';
 import { ActivityLogService } from '../activity-log/activity-log.service';
 import { ExchangeRateService } from '../exchange-rate/exchange-rate.service';
 import { CodProtectionSettings, CodProtectionSettingsDocument } from './cod-protection.schema';
+import { CodConfirmationService } from './cod-confirmation.service';
 import { cleanCodSettings, CodEvaluation, CodHistory, CodSettings, DEFAULT_COD_SETTINGS, evaluateCodOrder, normalizePhone } from './cod-risk.util';
 
 const isOid = (v: any) => typeof v === 'string' && Types.ObjectId.isValid(v);
@@ -40,6 +41,8 @@ export class CodProtectionService {
     private readonly db: DatabaseService,
     private readonly activity: ActivityLogService,
     private readonly exchange: ExchangeRateService,
+    // Sends the confirmation request once an order is stamped as waiting for the customer.
+    @Optional() private readonly confirmation?: CodConfirmationService,
   ) {}
 
   private get orders() { return this.db.repositories.orderModel as any; }
@@ -134,7 +137,14 @@ export class CodProtectionService {
       };
       await this.orders.updateOne({ _id: o._id }, { $set: { codProtection: stamp } });
       o.codProtection = stamp;
+      // A failed message never fails the order: the seller sees it as waiting and can resend or confirm by hand.
+      if (stamp.confirmation && this.confirmation) await this.confirmation.send(String(o._id)).catch((e: any) => console.error('COD confirmation send failed (order placed):', e?.message));
     }
+  }
+
+  /** 404 unless this order belongs to the store (used before acting on an order id from the URL). */
+  async assertOrderOfStore(storeId: string, orderId: string) {
+    if (!isOid(orderId) || !(await this.orders.exists({ _id: orderId, isDelete: false, 'sellerOrders.storeId': storeId }))) throw new NotFoundException('Order not found');
   }
 
   /** The seller reached the customer another way (phone call): confirm the order by hand. Audited. */
