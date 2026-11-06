@@ -506,6 +506,8 @@ export class PosService {
       variants: (variantMap[p._id.toString()] || []).map((v: any) => ({
         variantId: v._id,
         sku: v.sku,
+        barcode: v.barcode ?? null, // lets the till find a scanned item in its own catalogue (no round trip)
+        hsCode: v.hsCode ?? null,
         price: v.price,
         compareAtPrice: v.compareAtPrice,
         stock: v.stock,
@@ -558,6 +560,8 @@ export class PosService {
       variants: (variantMap[p._id.toString()] || []).map((v: any) => ({
         variantId: v._id,
         sku: v.sku,
+        barcode: v.barcode ?? null, // lets the till find a scanned item in its own catalogue (no round trip)
+        hsCode: v.hsCode ?? null,
         price: v.price,
         compareAtPrice: v.compareAtPrice,
         stock: v.stock,
