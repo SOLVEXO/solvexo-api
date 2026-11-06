@@ -79,6 +79,33 @@ export class MediaLibraryController {
     return { success: true, data: result };
   }
 
+  @Post(':storeId/upload-signature')
+  @Roles('seller', 'staff')
+  @RequirePermission('files.manage')
+  @UseGuards(RolesGuard, PermissionsGuard)
+  async uploadSignature(@Req() req: any, @Param('storeId') storeId: string) {
+    await verifyStoreOwnershipStrict(this.databaseService.repositories.storeModel, storeId, actingSellerId(req.user));
+    return { success: true, data: this.mediaLibraryService.signDirectUpload(storeId) };
+  }
+
+  @Post(':storeId/register-upload')
+  @Roles('seller', 'staff')
+  @RequirePermission('files.manage')
+  @UseGuards(RolesGuard, PermissionsGuard)
+  async registerUpload(
+    @Req() req: any,
+    @Param('storeId') storeId: string,
+    @Body() body: { publicId: string; filename?: string; altText?: string; tags?: string },
+  ) {
+    const sellerId = actingSellerId(req.user);
+    await verifyStoreOwnershipStrict(this.databaseService.repositories.storeModel, storeId, sellerId);
+    const tags = body.tags ? body.tags.split(',').map(t => t.trim()).filter(Boolean) : [];
+    const result = await this.mediaLibraryService.registerDirectUpload(storeId, sellerId, {
+      publicId: String(body.publicId ?? ''), filename: body.filename, altText: body.altText, tags,
+    });
+    return { success: true, data: result };
+  }
+
   @Post(':storeId/upload-from-url')
   @Roles('seller', 'staff')
   @RequirePermission('files.manage')
