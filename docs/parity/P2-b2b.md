@@ -29,6 +29,14 @@ Known gaps in this slice: partial fulfilment (`orders/fulfil`) does not check th
 - Seller sidebar > Orders > **Wholesale** (`/store/:id/wholesale`, perms `b2b.view`/`b2b.manage`): Companies (list, add/edit incl. terms, credit limit, deposit %, tax exempt, allowed payment methods, catalog; detail with locations and buyers + roles), Applications (approve with catalog/terms, reject with reason), Catalogs (settings, variants with fixed price / %, quantity rules, up to 10 volume prices), Orders & balances (wholesale orders with PO, overdue flag, record/void installments, outstanding report + CSV).
 - 4 component tests (list, application approve dialog, balances/orders, error + retry). NOT checked in a real browser or on a phone; web `tsc -b` shows one error from another session (`navigation/socialLinks.ts`), none in these files.
 
+## Done (slice 5: storefront, both themes)
+- Backend: checkout `allowedPaymentMethods` is narrowed by the company allow-list and gets `b2b_terms` (single store + terms); seller gateways / custom methods are filtered by the same list; `POST api/checkout/b2b-po-number`; `POST api/b2b/storefront/quick-order` (<=100 SKU lines, this store only, wholesale price + rules per line).
+- Web, headless (`core/checkout`): `terms` pay option, `placeTerms`, PO number saved (debounced + before any order is placed), `b2bTerms.ts` (terms text, quick-order parser). Maison and Tech `PaymentStep`: PO field for wholesale checkouts and the pay-on-terms panel (both use the shared hook, each in its own style).
+- `/wholesale` page (route key `wholesale`, neutral `DefaultWholesalePage` fallback for every theme incl. Liquid): apply form, pending / rejected (reason) / approved status with terms, quick order (paste or CSV, per-line errors, add good lines to cart).
+- Tests: 17 backend (real Mongo: prices, quick order, store isolation, PO endpoint, method filter), web 5 page tests + 3 payOptions + 4 parser tests.
+
+Not done in slice 5: wholesale price shown on product/cart pages in the themes (the `prices` endpoint exists but no theme calls it yet, so the cart shows retail prices until checkout), hidden prices for visitors, B2B-only sections, company addresses at checkout, a nav link to /wholesale (the seller adds it as a menu link), en/ur and other-language strings (English fallback), Liquid context. Reorder = the existing Buy again on order pages.
+
 ## Not done yet (next slices)
 1. Storefront UI: wholesale application page, B2B price display in themes (via the prices endpoint), PO number field at checkout, quick order list / CSV, reorder, company addresses, hide-prices-for-visitors store setting, shared theme components, Liquid context. NOT tested: the createCheckout hook itself against a real database (it is only exercised through the context service and type-checked).
 2. Reminders for due/overdue invoices (email/WhatsApp), deposit check on partial fulfilment.
