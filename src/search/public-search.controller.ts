@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
-import { BadRequestException, Controller, Get, Query } from '@nestjs/common';
+import { BadRequestException, Controller, Get, Optional, Query } from '@nestjs/common';
+import { SearchDiscoveryService } from '@/search-discovery/search-discovery.service';
 import { DatabaseService } from '@/database/databaseservice';
 
 const MIN_QUERY = 2;
@@ -16,7 +17,7 @@ const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
  *  storefront/storefront-access.service.ts). */
 @Controller('api/public/search')
 export class PublicSearchController {
-  constructor(private readonly db: DatabaseService) {}
+  constructor(private readonly db: DatabaseService, @Optional() private readonly discovery?: SearchDiscoveryService) {}
 
   private async activeStore(storeId: string) {
     if (!storeId || typeof storeId !== 'string') throw new BadRequestException('storeId is required');
@@ -56,7 +57,8 @@ export class PublicSearchController {
     const q = this.cleanQuery(qRaw);
     if (q.length < MIN_QUERY) return { success: true, data: { query: q, products: [], collections: [], articles: [], pages: [], queries: [] } };
     const limit = Math.min(10, Math.max(1, parseInt(limitRaw as string) || 4));
-    const rx = new RegExp(escapeRegex(q), 'i');
+    // Seller synonyms widen the product match (a typed word also finds its synonyms).
+    const rx = new RegExp((await this.discovery?.regexSource(storeId, q)) ?? escapeRegex(q), 'i');
     const { productModel, productVariantModel, collectionModel } = this.db.repositories;
 
     // A variant SKU also finds its product (SKUs live on the variants).

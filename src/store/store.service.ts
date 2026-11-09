@@ -2,10 +2,12 @@
 import { compileSegmentFilter, normalizeSegmentFilter, type CompiledSegment } from '../customer-segments/segment-filter.util';
 import {
   Injectable,
+  Optional,
   BadRequestException,
   NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
+import { SearchDiscoveryService } from '../search-discovery/search-discovery.service';
 import { availableStock, AVAILABLE_STOCK_EXPR } from '@/common/stock-availability.util';
 import { importCustomersCsv } from './customer-bulk-import';
 import { isSupportedLanguage } from '@/common/supported-languages.const';
@@ -99,6 +101,7 @@ export class StoreService {
     private readonly configService: ConfigService,
     private readonly exchangeRateService: ExchangeRateService,
     private readonly marketPricingService: MarketPricingService,
+    @Optional() private readonly searchDiscovery?: SearchDiscoveryService,
   ) {}
 
   /** Thin passthrough — AdminConfigService is already injected here for
@@ -1777,7 +1780,7 @@ export class StoreService {
     if (query.tag && query.tag !== 'all') filter.tags = query.tag;
     if (query.search && String(query.search).trim()) {
       // Like Shopify: the term matches the title, vendor, product type and tags.
-      const searchRx = { $regex: String(query.search).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' };
+      const searchRx = { $regex: (await this.searchDiscovery?.regexSource(storeId, String(query.search))) ?? String(query.search).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' };
       // ...and a variant SKU (SKUs live on the variants, so look the products up through them).
       const skuProductIds = await this.databaseService.repositories.productVariantModel.distinct('productId', { storeId, isDelete: false, sku: searchRx });
       filter.$and = [...(filter.$and ?? []), { $or: [{ name: searchRx }, { vendor: searchRx }, { productType: searchRx }, { tags: searchRx }, ...(skuProductIds.length ? [{ _id: { $in: skuProductIds.slice(0, 500) } }] : [])] }];
@@ -1789,6 +1792,11 @@ export class StoreService {
     // collections module.
     // A collection keeps the seller's own product order unless the buyer picked another sort.
     let collectionOrder: string[] | null = null;
+    // Products the seller pinned for this exact search come first (only when no other sort was chosen).
+    if (query.search && [undefined, null, '', 'newest', 'manual', 'default'].includes(query.sort)) {
+      const pins = await this.searchDiscovery?.pinned(storeId, String(query.search));
+      if (pins?.length) collectionOrder = pins;
+    }
     if (query.collectionId && query.collectionId !== 'all') {
       const ids = await this.collectionsService.resolveProductIds(storeId, query.collectionId);
       filter._id = { $in: ids.length ? ids : ['__none__'] };
@@ -2002,6 +2010,9 @@ export class StoreService {
         .limit(limit)
         .lean();
     }
+
+    // A search that found nothing is counted for the seller's "no results" report (first page only, fire-and-forget).
+    if (total === 0 && query.search && (Number(query.page) || 1) === 1) void this.searchDiscovery?.recordMiss(storeId, String(query.search));
 
     // Cheapest active variant per product — powers the card price and, when
     // the buyer has an active subscription to this store, the member price.
