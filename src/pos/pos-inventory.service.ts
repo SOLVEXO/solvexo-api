@@ -33,8 +33,13 @@ export class PosInventoryService {
     return this.auth.authorize(req, { storeId, action, ctx, employeeToken: t.employee, approverToken: t.approver });
   }
   private async exp(storeId: string): Promise<number> {
+    return (await this.cur(storeId)).currencyExponent;
+  }
+  /** Contract: EVERY response that carries money states its currency code and exponent (the app never falls back to a configured one). */
+  private async cur(storeId: string): Promise<{ currency: string; currencyExponent: number }> {
     const s: any = await this.r.storeModel.findById(storeId).select('baseCurrency').lean();
-    return isoExponent(s?.baseCurrency);
+    const currency = String(s?.baseCurrency || 'USD').toUpperCase();
+    return { currency, currencyExponent: isoExponent(currency) };
   }
   private audit(storeId: string, employeeId: string | null, action: string, targetId: string | null, metadata: object) {
     return this.r.posAuditLogModel.create([{ storeId, employeeId, action, targetId, targetType: 'inventory', metadata }]);
@@ -90,7 +95,7 @@ export class PosInventoryService {
     const openCount: any = await this.r.stockCountModel.findOne({ storeId, status: 'open' }).select('_id createdAt locationId').lean();
     return { success: true, data: { role: a.role, skuCount: skus, lowStockCount: low, outOfStockCount: out, expiredLots: expired, expiringIn7Days: exp7, expiringIn30Days: exp30,
       openStockCount: openCount ? { id: String(openCount._id), startedAt: openCount.createdAt } : null,
-      ...(this.seesCost(a.role) ? { stockValueMinor: value, variantsWithoutCost: noCost, currencyExponent: exp } : {}) } };
+      ...(await this.cur(storeId)), ...(this.seesCost(a.role) ? { stockValueMinor: value, variantsWithoutCost: noCost } : {}) } };
   }
 
   async stock(req: Req, storeId: string, q: { search?: string; filter?: string; page?: string; limit?: string }, t: Tokens) {
@@ -111,7 +116,7 @@ export class PosInventoryService {
     ]);
     const names = await this.productNames([...new Set(rows.map((v) => String(v.productId)))]);
     const exp = await this.exp(storeId);
-    return { success: true, data: { items: rows.map((v) => this.row(v, names.get(String(v.productId)), this.seesCost(a.role), exp)), total, page, hasMore: page * limit < total } };
+    return { success: true, data: { ...(await this.cur(storeId)), items: rows.map((v) => this.row(v, names.get(String(v.productId)), this.seesCost(a.role), exp)), total, page, hasMore: page * limit < total } };
   }
 
   async lookup(req: Req, storeId: string, code: string, t: Tokens) {
@@ -121,7 +126,8 @@ export class PosInventoryService {
     const rows: any[] = await this.r.productVariantModel.find({ storeId, isDelete: false, $or: [{ barcode: term }, { sku: term }] }).limit(5).lean();
     const names = await this.productNames([...new Set(rows.map((v) => String(v.productId)))]);
     const exp = await this.exp(storeId);
-    return { success: true, data: rows.map((v) => this.row(v, names.get(String(v.productId)), this.seesCost(a.role), exp)) };
+    const c = await this.cur(storeId);
+    return { success: true, data: rows.map((v) => ({ ...this.row(v, names.get(String(v.productId)), this.seesCost(a.role), exp), ...c })) };
   }
 
   async detail(req: Req, storeId: string, variantId: string, t: Tokens) {
@@ -144,7 +150,7 @@ export class PosInventoryService {
       lots: lots.map((l: any) => ({ lotId: String(l._id), lotNumber: l.lotNumber, expiryDate: l.expiryDate ?? null, remaining: l.quantityRemaining, ...(cost ? { costMinor: l.costPriceMinor ?? toMinor(l.costPrice, exp) } : {}) })),
       recentMovements: moves.map((m: any) => this.moveRow(m, cost)),
       ledgerStartsAt: first?.createdAt ?? null, // before this moment the history is not in the ledger (never guessed)
-      currencyExponent: exp,
+      ...(await this.cur(storeId)),
     } };
   }
 
@@ -164,7 +170,7 @@ export class PosInventoryService {
       this.r.stockMovementModel.find(f).sort({ createdAt: -1, _id: -1 }).skip((page - 1) * limit).limit(limit).lean(),
       this.r.stockMovementModel.countDocuments(f),
     ]);
-    return { success: true, data: { items: rows.map((m) => this.moveRow(m, this.seesCost(a.role))), total, page, hasMore: page * limit < total } };
+    return { success: true, data: { ...(await this.cur(storeId)), items: rows.map((m) => this.moveRow(m, this.seesCost(a.role))), total, page, hasMore: page * limit < total } };
   }
 
   async lowStock(req: Req, storeId: string, t: Tokens) {
@@ -235,7 +241,7 @@ export class PosInventoryService {
     await this.gate(req, storeId, 'settings.approvalLimits.view', t);
     const resolved = await this.auth.limitsFor(storeId);
     const exp = await this.exp(storeId);
-    return { success: true, data: { currencyExponent: exp, limits: Object.entries(APPROVAL_LIMITS).map(([key, d]: [string, any]) => ({ key, label: d.label, kind: d.kind, value: (resolved as any)[key], defaultValue: d.kind === 'minor' ? Math.round(d.default * 10 ** exp) : d.default })) } };
+    return { success: true, data: { ...(await this.cur(storeId)), limits: Object.entries(APPROVAL_LIMITS).map(([key, d]: [string, any]) => ({ key, label: d.label, kind: d.kind, value: (resolved as any)[key], defaultValue: d.kind === 'minor' ? Math.round(d.default * 10 ** exp) : d.default })) } };
   }
   async setLimits(req: Req, storeId: string, body: Record<string, number>, t: Tokens) {
     const a = await this.gate(req, storeId, 'settings.approvalLimits.edit', t);

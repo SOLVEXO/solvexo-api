@@ -18,6 +18,7 @@ import { ApprovalRequestSchema } from '../staff/schemas/approval-request.schema'
 import { InventoryService } from '../inventory/inventory.service';
 import { StockCountsService } from '../stock-counts/stock-counts.service';
 import { PurchaseOrdersService } from '../purchase-orders/purchase-orders.service';
+import { moneyContractViolations } from './testing/money-contract';
 
 /** G3.1 on a real replica-set MongoDB: the stock ledger, the cost snapshot, the permission matrix on the till-facing inventory routes, counts by scan. */
 jest.setTimeout(300_000);
@@ -261,4 +262,39 @@ describe('stock count by scan', () => {
     expect(m.map((x) => [x.type, x.qtyDelta, x.unitCostMinor])).toEqual([['count', -3, 100]]);
     expect(await r.posAuditLogModel.countDocuments({ storeId: s.storeId, action: { $in: ['stock_count_started', 'stock_count_finished'] } })).toBe(2);
   });
+});
+
+describe('money contract: every G3 response that carries an amount states its currency and exponent', () => {
+  it('the checker itself: an amount without currency / exponent is reported, with them (here or on an ancestor) it is not', () => {
+    expect(moneyContractViolations({ data: { stockValueMinor: 5 } })).toEqual(['$.data.stockValueMinor']);
+    expect(moneyContractViolations({ data: { currency: 'USD', stockValueMinor: 5 } })).toEqual(['$.data.stockValueMinor']); // exponent missing
+    expect(moneyContractViolations({ data: { currency: 'USD', currencyExponent: 2, items: [{ costMinor: 1 }] } })).toEqual([]);
+    expect(moneyContractViolations({ data: { items: [{ currency: 'JPY', currencyExponent: 0, costMinor: 1 }, { costMinor: 2 }] } })).toEqual(['$.data.items[1].costMinor']);
+  });
+
+  for (const [cur, exp] of [['USD', 2], ['JPY', 0], ['KWD', 3]] as const) {
+    it(`${cur} (exponent ${exp}): overview, stock list, low stock, lookup, detail, movements, adjust, counts and limits — manager and owner views, no violations`, async () => {
+      const { s, sell } = await fresh({ cost: 1.5, stock: 20, baseCurrency: cur });
+      await r.productVariantModel.collection.updateOne({ _id: new Types.ObjectId(s.variantId) }, { $set: { barcode: '8964000099999', costPrice: 2, costPriceMinor: 2 * 10 ** exp } });
+      await sell(1);
+      const m = { employee: tok(s, 'manager') };
+      const all: Array<[string, any]> = [
+        ['overview', await inv.overview(device(s), s.storeId, m)],
+        ['stock', await inv.stock(device(s), s.storeId, {}, m)],
+        ['lowStock', await inv.lowStock(device(s), s.storeId, m)],
+        ['lookup', await inv.lookup(device(s), s.storeId, '8964000099999', m)],
+        ['detail', await inv.detail(device(s), s.storeId, s.variantId, m)],
+        ['movements', await inv.movements(device(s), s.storeId, {}, m)],
+        ['limits', await inv.limits(device(s), s.storeId, m)],
+        ['owner overview', await inv.overview(owner(s), s.storeId, {})],
+        ['owner stock', await inv.stock(owner(s), s.storeId, {}, {})],
+      ];
+      for (const [name, res] of all) expect([name, moneyContractViolations(res)]).toEqual([name, []]);
+      // and the declared exponent is the currency's ISO one
+      expect((all[1][1] as any).data).toMatchObject({ currency: cur, currencyExponent: exp });
+      expect((all[0][1] as any).data.stockValueMinor).toBe(Math.round(2 * 10 ** exp) * 19);
+      const started: any = (await inv.countStart(device(s), s.storeId, undefined, m)).data;
+      expect(moneyContractViolations({ data: started })).toEqual([]);
+    });
+  }
 });
