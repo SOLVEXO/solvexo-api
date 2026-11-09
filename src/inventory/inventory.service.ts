@@ -32,6 +32,48 @@ export class InventoryService {
     @InjectConnection() private readonly connection: Connection,
   ) {}
 
+  /** ONE rule for "is this product sellable": real AVAILABLE stock (on hand minus committed, damaged, in transit and
+   *  expired), summed over its variants. Digital products and products with an unlimited variant are never out of stock. */
+  static classifyStock(product: any, variants: any[], lowStockThreshold: number): 'unlimited' | 'out_of_stock' | 'low_stock' | 'in_stock' {
+    if (product.type === 'digital' || variants.some((v: any) => v.unlimitedStock)) return 'unlimited';
+    const totalAvailable = Math.max(0, variants.reduce((sum: number, v: any) => sum + availableStock(v), 0));
+    if (totalAvailable === 0) return 'out_of_stock';
+    return totalAvailable <= lowStockThreshold ? 'low_stock' : 'in_stock';
+  }
+
+  /** In / low / out-of-stock counts over ALL active products matching `filter` (not one page). A low-stock product is
+   *  still in stock, so `inStock` includes it (same as before). Read in chunks so a big catalogue never loads at once. */
+  private async countStockStats(filter: any, lowStockThreshold: number) {
+    const { productModel, productVariantModel } = this.databaseService.repositories;
+    const rows: any[] = await productModel.find({ ...filter, status: 'active' }).select('_id type').lean();
+    let inStock = 0;
+    let lowStock = 0;
+    let outOfStock = 0;
+    const CHUNK = 500;
+    for (let i = 0; i < rows.length; i += CHUNK) {
+      const chunk = rows.slice(i, i + CHUNK);
+      const variants: any[] = await productVariantModel
+        .find({ productId: { $in: chunk.map((p) => String(p._id)) }, isDelete: false })
+        .select('productId stock committedStock damagedStock inTransitStock expiredStock expiryBuckets unlimitedStock')
+        .lean();
+      const byProduct = new Map<string, any[]>();
+      for (const v of variants) {
+        const list = byProduct.get(v.productId) ?? [];
+        list.push(v);
+        byProduct.set(v.productId, list);
+      }
+      for (const p of chunk) {
+        const cls = InventoryService.classifyStock(p, byProduct.get(String(p._id)) ?? [], lowStockThreshold);
+        if (cls === 'out_of_stock') outOfStock++;
+        else {
+          inStock++;
+          if (cls === 'low_stock') lowStock++;
+        }
+      }
+    }
+    return { inStock, lowStock, outOfStock };
+  }
+
   async getStoreInventory(sellerId: string, storeId: string, query: any) {
     if (!storeId) throw new BadRequestException('storeId is required');
 
@@ -83,10 +125,8 @@ export class InventoryService {
     const statusCounts: Record<string, number> = {};
     for (const r of statusRows) statusCounts[String(r._id)] = r.n;
 
-    // stats counters
-    let inStock = 0;
-    let lowStock = 0;
-    let outOfStock = 0;
+    // Stats cards cover EVERY product the filters match (all pages), not just the page on screen.
+    const { inStock, lowStock, outOfStock } = await this.countStockStats(filter, lowStockThreshold);
 
     const productList = products.map((product: any) => {
       const variants = variantMap[product._id.toString()] || [];
@@ -94,7 +134,6 @@ export class InventoryService {
       const hasUnlimitedVariant = variants.some((v: any) => v.unlimitedStock);
 
       let stockDisplay: string | number = '∞ Unlimited';
-      let stockStatus = 'active';
       let price = 0;
 
       if (!isDigital && !hasUnlimitedVariant) {
@@ -104,33 +143,9 @@ export class InventoryService {
         );
         // an offline POS oversell can leave stock negative — shown as 0 (stockStatus is already out_of_stock)
         stockDisplay = Math.max(0, totalStock);
-
-        // Status/stats classification uses real AVAILABLE stock (stock -
-        // committed) — a product showing "10 in stock" here while all 10
-        // are already reserved by pending orders has nothing left to
-        // actually sell, and the In/Low/Out-of-Stock counters exist to
-        // reflect that real sellability, not raw on-hand count (which is
-        // still what the `stock` number itself displays, matching a real
-        // Products list's convention). See ProductVariant.committedStock.
-        const totalAvailable = Math.max(
-          0,
-          variants.reduce((sum: number, v: any) => sum + ((v.stock || 0) - (v.committedStock || 0) - (v.damagedStock || 0) - (v.inTransitStock || 0)), 0),
-        );
-
-        if (totalAvailable === 0) {
-          stockStatus = 'out_of_stock';
-          if (product.status === 'active') outOfStock++;
-        } else if (totalAvailable <= lowStockThreshold) {
-          stockStatus = 'low_stock';
-          if (product.status === 'active') lowStock++;
-          if (product.status === 'active') inStock++;
-        } else {
-          stockStatus = 'active';
-          if (product.status === 'active') inStock++;
-        }
-      } else {
-        if (product.status === 'active') inStock++; // digital, or has an unlimited-stock variant — always in stock
       }
+      const cls = InventoryService.classifyStock(product, variants, lowStockThreshold);
+      const stockStatus = cls === 'in_stock' || cls === 'unlimited' ? 'active' : cls;
 
       // default variant ki price, fallback to min price
       const defaultVariant =
@@ -513,7 +528,7 @@ export class InventoryService {
     const variants = productIds.length
       ? await productVariantModel
           .find({ productId: { $in: productIds }, isDelete: false })
-          .select('productId stock committedStock damagedStock inTransitStock unlimitedStock')
+          .select('productId stock committedStock damagedStock inTransitStock expiredStock expiryBuckets unlimitedStock')
           .lean()
       : [];
 
@@ -530,7 +545,7 @@ export class InventoryService {
         unlimitedProducts.add(v.productId);
         continue;
       }
-      const available = Math.max(0, (v.stock || 0) - ((v as any).committedStock || 0) - ((v as any).damagedStock || 0) - ((v as any).inTransitStock || 0));
+      const available = Math.max(0, availableStock(v as any));
       availableByProduct.set(v.productId, (availableByProduct.get(v.productId) ?? 0) + available);
     }
 
