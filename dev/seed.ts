@@ -24,6 +24,43 @@ export const DEV = {
   storeSlug: 'dev-coffee', expiredStoreSlug: 'dev-expired-store',
 };
 
+/**
+ * G3.2 / G3.3 dev data: a lot-tracked product with an EXPIRED lot, one expiring in 3 days and one in 25 days; two till customers (one with 20.00 store credit and loyalty
+ * points, in the NEW ledger), and the loyalty rates (1 point per 10.00 spent, a point is worth 0.50). Idempotent.
+ */
+async function seedG3(conn: any, storeId: string, sellerId: string) {
+  const db = conn.db!;
+  const day = 86_400_000;
+  const prod: any = await db.collection('products').findOne({ storeId, name: 'Dev Yogurt (lots)' });
+  let pid = prod ? String(prod._id) : null;
+  if (!pid) {
+    const ins = await db.collection('products').insertOne({ sellerId, storeId, name: 'Dev Yogurt (lots)', slug: 'dev-yogurt', productType: 'physical', type: 'physical', isDelete: false, status: 'active', createdAt: new Date(), updatedAt: new Date() } as any);
+    pid = String(ins.insertedId);
+  }
+  await db.collection('productvariants').updateOne({ productId: pid, sku: 'DEV-YOGURT' }, { $set: { productId: pid, storeId, sku: 'DEV-YOGURT', price: 4, barcode: '1000000000059', stock: 12, committedStock: 0, damagedStock: 0, inTransitStock: 0, unlimitedStock: false, trackLots: true, reorderPoint: 3, costPrice: 2, costPriceMinor: 200, isDefault: true, status: 'active', isDelete: false, options: [], expiredStock: 0, expiryBuckets: [] }, $setOnInsert: { createdAt: new Date() } }, { upsert: true });
+  const variant: any = await db.collection('productvariants').findOne({ productId: pid, sku: 'DEV-YOGURT' });
+  const vid = String(variant._id);
+  await db.collection('stocklots').deleteMany({ variantId: vid });
+  const lot = (lotNumber: string, qty: number, days: number | null) => ({ storeId, productId: pid, variantId: vid, locationId: null, lotNumber, quantityReceived: qty, quantityRemaining: qty, costPrice: 2, costPriceMinor: 200, expiryDate: days === null ? null : new Date(Date.now() + days * day), supplierId: null, purchaseOrderId: null, receivedAt: new Date(Date.now() - 10 * day), status: 'active', createdAt: new Date(), updatedAt: new Date() });
+  await db.collection('stocklots').insertMany([lot('LOT-OLD', 4, -3), lot('LOT-SOON', 5, 3), lot('LOT-LATER', 3, 25)] as any[]);
+  await db.collection('productvariants').updateOne({ _id: variant._id }, { $set: { expiredStock: 4, expiryBuckets: [{ at: new Date(Date.now() + 3 * day), units: 5 }, { at: new Date(Date.now() + 25 * day), units: 3 }] } });
+
+  // loyalty rates (the program itself must be enabled) + two till customers
+  await db.collection('loyaltyprograms').updateOne({ storeId }, { $set: { storeId, isEnabled: true, posEarnSpendMinor: 1000, posRedeemMinorPerPoint: 50 }, $setOnInsert: { pointsPerDollar: 1, pointsPerReview: 0, pointsPerReferral: 0, birthdayBonusPoints: 0, pointsExpiryMonths: null, tiers: [{ name: 'Bronze', minPoints: 0, benefits: [] }, { name: 'Silver', minPoints: 100, benefits: [] }] } }, { upsert: true });
+  const mkCust = async (name: string, phone: string) => {
+    await db.collection('poscustomers').updateOne({ storeId, phone }, { $set: { storeId, name, phone, isDelete: false, source: 'dev-seed', marketingConsent: false }, $setOnInsert: { email: null, address: null, ntn: null, cnic: null, registrationType: null, group: null, notes: null, userId: null, createdAt: new Date(), updatedAt: new Date() } }, { upsert: true });
+    return String((await db.collection('poscustomers').findOne({ storeId, phone }))!._id);
+  };
+  const a = await mkCust('Dev Customer (credit)', '03001112222');
+  await mkCust('Dev Customer (new)', '03004445555');
+  if (!(await db.collection('storecreditentries').findOne({ storeId, customerId: a, legacyId: null }))) {
+    const entryId = new mongoose.Types.ObjectId(); const lotId = new mongoose.Types.ObjectId();
+    await db.collection('storecreditlots').insertOne({ _id: lotId, storeId, customerId: a, currency: 'USD', currencyExponent: 2, amountMinor: 2000, remainingMinor: 2000, expiresAt: null, expiredHandled: false, entryId: String(entryId), source: 'issue', legacyId: null, createdAt: new Date(), updatedAt: new Date() } as any);
+    await db.collection('storecreditentries').insertOne({ _id: entryId, storeId, customerId: a, currency: 'USD', currencyExponent: 2, type: 'issue', amountMinor: 2000, balanceAfterMinor: 2000, lotId: String(lotId), expiresAt: null, consumed: [], note: 'dev seed', idemKey: 'dev-seed-credit', actorId: 'seed', actorRole: 'seller', legacyId: null, createdAt: new Date() } as any);
+  }
+  await db.collection('loyaltymembers').updateOne({ storeId, userId: a }, { $set: { storeId, userId: a, pointsBalance: 40, lifetimePoints: 40, currentTier: 'Bronze', lastActivityAt: new Date() } }, { upsert: true });
+}
+
 async function main() {
   const envFile = path.join(__dirname, '.env.dev');
   const parsed = dotenv.parse(fs.readFileSync(envFile));
@@ -184,6 +221,7 @@ async function main() {
   fs.writeFileSync(path.join(__dirname, '.logs', 'seed.json'), JSON.stringify(out, null, 2));
   console.log(JSON.stringify(out, null, 2));
   await seedExtras();
+  await seedG3(conn, storeId, sellerId);
   await conn.close();
 }
 main().catch((e) => { console.error(e); process.exit(1); });
