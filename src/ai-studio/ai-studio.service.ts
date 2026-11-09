@@ -44,7 +44,8 @@ export class AiStudioService {
   /** Balance + usage for the "N credits remaining" UI (ownership-checked). */
   async getCredits(sellerId: string, storeId: string) {
     await this.verifyStore(storeId, sellerId);
-    return this.credits.getCreditsOverview(storeId, sellerId);
+    const overview: any = await this.credits.getCreditsOverview(storeId, sellerId);
+    return { ...overview, data: { ...overview.data, imageEnhancerAvailable: this.imageEnhance.isAvailable } };
   }
 
   // ---------------------------------------------------------------- tools
@@ -297,6 +298,7 @@ export class AiStudioService {
    * is a one-file swap (see providers/image-enhance.service.ts).
    */
   async startImageEnhance(sellerId: string, storeId: string, dto: GenerateImageEnhanceDto) {
+    this.imageEnhance.assertAvailable(); // the stub returns the original image: never hold or charge credits for it
     await this.verifyStore(storeId, sellerId);
 
     const generation = await this.createGeneration({

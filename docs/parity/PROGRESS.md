@@ -13,9 +13,9 @@ Read MASTER.md first. Update this table after every phase.
 | P6 Product feeds | DONE in code (Google XML + Meta CSV, health, Sales channels page) | docs/parity/P6-P8.md | feed never uploaded to Google/Meta; Meta columns from memory |
 | P7 Qisstpay | ADAPTER ONLY: disabled, unverified, not connectable | docs/parity/P7-qisstpay.md | needs official guide + sandbox (OPEN-QUESTIONS) |
 | P8 Webhooks + API tokens | DONE in code for order events + read-only API; product/inventory/customer events and write endpoints NOT wired | docs/parity/P6-P8.md | no real receiver, no DI boot, DB-backed retry (not BullMQ) |
-| P9 Search & discovery | not started | - | - |
+| P9 Search & discovery | DONE in code (synonyms, pins, filter settings, no-results report, seller page) | docs/parity/P9-P11.md | themes do not read filter settings yet; no browser run |
 | P10 Notification templates | not started | - | - |
-| P11 AI Studio honesty | not started | - | - |
+| P11 AI Studio honesty | DONE: stub enhancer hidden + refuses without billing | docs/parity/P9-P11.md | no real provider; other tools' wallet/ledger tests not written |
 | P12 Seller + staff 2FA | not started | - | - |
 
 Notes:

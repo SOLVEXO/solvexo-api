@@ -25,3 +25,6 @@
 
 ## P7 Qisstpay
 - Official merchant integration guide + sandbox credentials needed: auth, create-checkout/redirect call, webhook signature, status names, refund, minimum/maximum order value, installment plans. The adapter (providers/qisstpay.provider.ts) is registered but disabled, unverified, not connectable, and never charges; fill the mapping from the guide and test in sandbox before enabling. "Pay in installments" storefront wording (installmentMessage) is not shown anywhere until then.
+
+## P11 Image Enhancer
+- Needs a real image-enhancement/upscale vendor + API key (Claude cannot edit images). Until then the tool is hidden and refuses without billing.

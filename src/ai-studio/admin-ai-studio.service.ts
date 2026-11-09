@@ -288,6 +288,7 @@ export class AdminAiStudioService {
   }
 
   async startPlatformImageEnhance(adminId: string, dto: AdminGenerateImageEnhanceDto) {
+    this.imageEnhance.assertAvailable();
     const generation = await this.createPlatformGeneration({
       adminId, tool: 'image_enhancer', regenerateFromId: dto.regenerateFromId,
       inputPayload: { imageUrl: dto.imageUrl, enhancementType: dto.enhancementType },
