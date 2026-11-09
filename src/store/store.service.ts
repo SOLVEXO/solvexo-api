@@ -1589,7 +1589,7 @@ export class StoreService {
     const { storeModel, productModel } = this.databaseService.repositories;
 
     const page = Math.max(1, parseInt(query.page) || 1);
-    const limit = Math.min(50, parseInt(query.limit) || 20);
+    const limit = Math.min(100, parseInt(query.limit) || 20);
     const skip = (page - 1) * limit;
 
     const filter: any = { status: 'active', isDelete: false, privacyMode: { $nin: ['password', 'coming_soon'] } };
@@ -1762,7 +1762,7 @@ export class StoreService {
     // unpaginated query. Clamped to the same 50 ceiling `OrdersService`'s
     // own seller-orders pagination already uses.
     const page  = Math.max(1, parseInt(query.page) || 1);
-    const limit = Math.min(50, parseInt(query.limit) || 12);
+    const limit = Math.min(100, parseInt(query.limit) || 12);
     const skip  = (page - 1) * limit;
 
     const filter: any = { storeId, isDelete: false, status: 'active' };
