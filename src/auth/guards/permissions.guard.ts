@@ -35,10 +35,13 @@ const NOT_SCOPED = 'This staff account is not scoped to that store';
  *      `query.storeId = user.storeId`.
  *  A seller/admin caller has no such restriction — store ownership itself is checked separately inside each
  *  service method (e.g. `storeModel.findOne({_id, sellerId})`). */
+/** staff -> verdict of the store's two-factor policy, cached up to a minute per person (and cleared at once when the policy or someone's 2FA changes). */
+export const staffTwoFactorCache = new Map<string, { at: number; blocked: boolean; message?: string }>();
+export const clearStaffTwoFactorCache = () => staffTwoFactorCache.clear();
+
 @Injectable()
 export class PermissionsGuard implements CanActivate {
-  /** staff -> { checked at, refused }: the store policy is read at most once a minute per person. */
-  private readonly tfCache = new Map<string, { at: number; blocked: boolean; message?: string }>();
+  private readonly tfCache = staffTwoFactorCache;
 
   constructor(private reflector: Reflector, private db: DatabaseService, @Optional() private memberTwoFactor?: MemberTwoFactorService) {}
 

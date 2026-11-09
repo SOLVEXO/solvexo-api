@@ -1,6 +1,6 @@
 /* eslint-disable prettier/prettier */
 /** "Require two-factor for staff": grace period, then a real block until the person turns it on. Owner and admin are never blocked. */
-import { PermissionsGuard } from './permissions.guard';
+import { PermissionsGuard, clearStaffTwoFactorCache } from './permissions.guard';
 import { REQUIRE_PERMISSION_KEY } from '../decorators/require-permission.decorator';
 
 const DAY = 86_400_000;
@@ -15,6 +15,7 @@ function setup(store: any, enabledStaff: string[] = []) {
 const staff = (id = 'st1') => ({ role: 'staff', userId: id, sellerId: 'own', storeId: 'S1', permissions: ['orders.view'] });
 
 describe('staff two-factor policy in PermissionsGuard', () => {
+  beforeEach(() => clearStaffTwoFactorCache());
   it('policy off: nobody is blocked and two-factor is not even looked up', async () => {
     const { run, tf } = setup({ requireStaffTwoFactor: false });
     await expect(run(staff())).resolves.toBe(true); expect(tf.isEnabled).not.toHaveBeenCalled();
@@ -38,5 +39,15 @@ describe('staff two-factor policy in PermissionsGuard', () => {
   it('the owner (seller) is never blocked by the staff policy', async () => {
     const { run } = setup({ requireStaffTwoFactor: true, requireStaffTwoFactorSince: new Date(0), staffTwoFactorGraceDays: 0 });
     await expect(run({ role: 'seller', userId: 'own' })).resolves.toBe(true);
+  });
+  it('REGRESSION (smoke): a policy change applies at once (the per-minute verdict cache is cleared), not up to a minute later', async () => {
+    clearStaffTwoFactorCache();
+    const store: any = { requireStaffTwoFactor: false };
+    const { run } = setup(store);
+    await expect(run(staff('stX'))).resolves.toBe(true); // verdict cached: allowed
+    Object.assign(store, { requireStaffTwoFactor: true, requireStaffTwoFactorSince: new Date(0), staffTwoFactorGraceDays: 0 });
+    await expect(run(staff('stX'))).resolves.toBe(true); // still the cached verdict
+    clearStaffTwoFactorCache();
+    await expect(run(staff('stX'))).rejects.toMatchObject({ response: { code: 'TWO_FACTOR_REQUIRED' } });
   });
 });

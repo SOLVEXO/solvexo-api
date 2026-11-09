@@ -7,6 +7,7 @@ import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { RolesGuard } from './guards/roles.guard';
 import { Roles } from './decorators/roles.decorator';
 import { MemberKind, MemberTwoFactorService } from './member-two-factor.service';
+import { clearStaffTwoFactorCache } from './guards/permissions.guard';
 import { AuthService } from './auth.service';
 import { ActivityLogService } from '../activity-log/activity-log.service';
 import { DatabaseService } from '../database/databaseservice';
@@ -49,10 +50,10 @@ export class MemberTwoFactorController {
   async setup(@Req() req: any) { const m = this.me(req); return { success: true, data: await this.svc.startSetup(m.kind, m.id, String(req.user.email ?? 'account')) }; }
 
   @Roles('seller', 'staff') @Post('me/enable') @Throttle({ default: { limit: 10, ttl: 60_000 } })
-  async enable(@Req() req: any, @Body() dto: CodeDto) { const m = this.me(req); return { success: true, message: 'Two-factor sign-in is on.', data: await this.svc.confirmSetup(m.kind, m.id, dto.code) }; }
+  async enable(@Req() req: any, @Body() dto: CodeDto) { const m = this.me(req); const data = await this.svc.confirmSetup(m.kind, m.id, dto.code); clearStaffTwoFactorCache(); return { success: true, message: 'Two-factor sign-in is on.', data }; }
 
   @Roles('seller', 'staff') @Post('me/disable') @Throttle({ default: { limit: 10, ttl: 60_000 } })
-  async disable(@Req() req: any, @Body() dto: PasswordCodeDto) { const m = this.me(req); await this.svc.disable(m.kind, m.id, dto.password, dto.code); return { success: true, message: 'Two-factor sign-in is off.' }; }
+  async disable(@Req() req: any, @Body() dto: PasswordCodeDto) { const m = this.me(req); await this.svc.disable(m.kind, m.id, dto.password, dto.code); clearStaffTwoFactorCache(); return { success: true, message: 'Two-factor sign-in is off.' }; }
 
   @Roles('seller', 'staff') @Post('me/recovery-codes') @Throttle({ default: { limit: 10, ttl: 60_000 } })
   async codes(@Req() req: any, @Body() dto: PasswordCodeDto) { const m = this.me(req); return { success: true, data: await this.svc.regenerate(m.kind, m.id, dto.password, dto.code) }; }
@@ -72,6 +73,7 @@ export class MemberTwoFactorController {
     if (dto.requireStaffTwoFactor && !before?.requireStaffTwoFactor) set.requireStaffTwoFactorSince = new Date();
     if (!dto.requireStaffTwoFactor) set.requireStaffTwoFactorSince = null;
     await this.db.repositories.storeModel.updateOne({ _id: storeId }, { $set: set });
+    clearStaffTwoFactorCache();
     void this.activity.log({ storeId, category: 'security', action: 'staff_2fa_policy', description: `Require two-factor for staff: ${dto.requireStaffTwoFactor}`, actorId: String(req.user.userId ?? req.user.sub), actorRole: 'seller', targetId: storeId, targetType: 'store' } as any).catch(() => undefined);
     return { success: true, data: { requireStaffTwoFactor: dto.requireStaffTwoFactor, graceDays: dto.graceDays ?? before?.staffTwoFactorGraceDays ?? 7 } };
   }
@@ -96,6 +98,7 @@ export class MemberTwoFactorController {
     if (!staff) throw new NotFoundException('Staff member not found');
     if (!(await this.svc.isEnabled('staff', staffId))) throw new BadRequestException('This person has not turned on two-factor.');
     await this.svc.reset('staff', staffId);
+    clearStaffTwoFactorCache();
     void this.activity.log({ storeId, category: 'security', action: 'staff_2fa_reset', description: `Two-factor reset for ${staff.email}`, actorId: String(req.user.userId ?? req.user.sub), actorRole: req.user.role, targetId: staffId, targetType: 'staff' } as any).catch(() => undefined);
     return { success: true, message: 'Two-factor was reset. They can set it up again.' };
   }
