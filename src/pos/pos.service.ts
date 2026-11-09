@@ -1850,6 +1850,17 @@ export class PosService {
     return { success: true, message: 'Employee deactivated' };
   }
 
+  /** Owner lifts a PIN lockout WITHOUT changing the PIN (the employee just forgot / mistyped). Audited; the failed-attempt counter restarts. */
+  async unlockPin(sellerId: string, storeId: string, employeeId: string) {
+    await this.verifyStoreOwnership(storeId, sellerId);
+    const employee: any = await this.r.employeeModel.findOne({ _id: employeeId, storeId, isDelete: false }).select('+pinFailedAttempts +pinLockedUntil');
+    if (!employee) throw new NotFoundException('Employee not found');
+    const wasLocked = !!employee.pinLockedUntil && new Date(employee.pinLockedUntil).getTime() > Date.now();
+    await this.r.employeeModel.updateOne({ _id: employeeId }, { $set: { pinFailedAttempts: 0, pinLockedUntil: null } });
+    this.writeAuditLog({ storeId, employeeId: null, action: 'employee_pin_unlocked', targetId: employeeId, targetType: 'employee' }).catch(() => {});
+    return { success: true, message: wasLocked ? 'PIN unlocked. The employee can sign in again.' : 'This employee was not locked.', data: { wasLocked } };
+  }
+
   async resetPin(sellerId: string, storeId: string, employeeId: string, dto: ResetPinDto) {
     await this.verifyStoreOwnership(storeId, sellerId);
     const employee = await this.r.employeeModel.findOne({ _id: employeeId, storeId, isDelete: false });

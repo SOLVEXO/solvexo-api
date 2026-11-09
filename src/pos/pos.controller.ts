@@ -539,6 +539,13 @@ export class PosController {
 
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('seller')
+  @Post('employees/:storeId/:employeeId/unlock-pin')
+  unlockPin(@Req() req: any, @Param('storeId') storeId: string, @Param('employeeId') employeeId: string) {
+    return this.posService.unlockPin(req.user.userId, storeId, employeeId);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
   @Post('employees/:storeId/:employeeId/reset-pin')
   resetPin(@Req() req: any, @Param('storeId') storeId: string, @Param('employeeId') employeeId: string, @Body() dto: ResetPinDto) {
     return this.posService.resetPin(req.user.userId, storeId, employeeId, dto);
