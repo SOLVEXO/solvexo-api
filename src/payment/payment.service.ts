@@ -1981,7 +1981,7 @@ export class PaymentService {
       const variant = await productVariantModel.findOne({ _id: item.variantId, isDelete: false });
       if (!variant) throw new BadRequestException(`Item not available: ${item.name}`);
       const availablePreCheck = availableStock(variant as any);
-      if (!variant.unlimitedStock && !(variant as any).allowBackorder && availablePreCheck < item.quantity) {
+      if (!variant.unlimitedStock && !(variant as any).allowBackorder && !preorderCanFill((variant as any).preorder) && availablePreCheck < item.quantity) {
         throw new BadRequestException(`Insufficient stock for ${item.name}. Available: ${availablePreCheck}, required: ${item.quantity}`);
       }
     }
@@ -2085,7 +2085,7 @@ export class PaymentService {
       const availablePreCheck = availableStock(variant as any);
       // See ProductVariant.allowBackorder — never fails this friendly
       // pre-check; the real gate is createOrder's atomic reserve below.
-      if (!variant.unlimitedStock && !(variant as any).allowBackorder && availablePreCheck < item.quantity) {
+      if (!variant.unlimitedStock && !(variant as any).allowBackorder && !preorderCanFill((variant as any).preorder) && availablePreCheck < item.quantity) {
         throw new BadRequestException(
           `Insufficient stock for ${item.name}. Available: ${availablePreCheck}, required: ${item.quantity}`,
         );
@@ -2246,7 +2246,7 @@ export class PaymentService {
       // Same real-availability pre-check as the COD path above — see
       // ProductVariant.allowBackorder for why it's skipped here too.
       const availablePreCheck = availableStock(variant as any);
-      if (!variant.unlimitedStock && !(variant as any).allowBackorder && availablePreCheck < item.quantity) {
+      if (!variant.unlimitedStock && !(variant as any).allowBackorder && !preorderCanFill((variant as any).preorder) && availablePreCheck < item.quantity) {
         throw new BadRequestException(`Insufficient stock for ${item.name}. Available: ${availablePreCheck}, required: ${item.quantity}`);
       }
     }
