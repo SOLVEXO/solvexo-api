@@ -28,7 +28,7 @@ export const FOOTER_CONTENT_KEYS = [
 ] as const;
 
 /** Namespace a theme uses for its own `theme_section` keys (`maison.lookbook`, `tech.bento_grid`). */
-const THEME_NAMESPACE: Record<string, string> = { 'theme-03-fashion': 'maison', 'theme-04-tech': 'tech' };
+const THEME_NAMESPACE: Record<string, string> = { 'theme-03-fashion': 'maison', 'theme-04-tech': 'tech', 'theme-05-ledup': 'ledup' };
 
 export interface CarryResult {
   header: boolean;
