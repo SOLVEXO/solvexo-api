@@ -1,5 +1,7 @@
 /* eslint-disable prettier/prettier */
-import { Body, Controller, Delete, Get, Param, Patch, Post, Put, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Headers, Param, Patch, Post, Put, Req, UseGuards } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
+import { MemberTwoFactorService } from '../auth/member-two-factor.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
@@ -13,12 +15,19 @@ import { ChangeOwnStaffPasswordDto, StaffForgotPasswordDto, StaffResetPasswordDt
 
 @Controller('api/staff')
 export class StaffController {
-  constructor(private readonly staffService: StaffService) {}
+  constructor(private readonly staffService: StaffService, private readonly memberTwoFactor: MemberTwoFactorService) {}
 
   // Public — a staff member has no seller/buyer JWT to present yet.
   @Post(':storeId/login')
   async login(@Param('storeId') storeId: string, @Body() body: { email: string; password: string }) {
     return this.staffService.login(storeId, body.email, body.password);
+  }
+
+  // Public: second step of a staff sign-in when two-factor is on.
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Post('2fa/verify')
+  verifyTwoFactor(@Body() body: { challengeToken: string; code: string }) {
+    return this.staffService.completeTwoFactorLogin(String(body?.challengeToken ?? ''), String(body?.code ?? ''));
   }
 
   @Get('permissions')
@@ -113,8 +122,10 @@ export class StaffController {
   @Roles('seller', 'admin', 'staff')
   @RequirePermission('staff.manage')
   @Delete(':storeId/:staffId')
-  async remove(@Req() req: any, @Param('storeId') storeId: string, @Param('staffId') staffId: string) {
+  async remove(@Req() req: any, @Param('storeId') storeId: string, @Param('staffId') staffId: string, @Headers('x-step-up') stepUp?: string) {
     const { userId, role, permissions } = req.user;
+    // Removing a person is a sensitive action: members who use two-factor must have just proved it (x-step-up token).
+    if (role !== 'admin') await this.memberTwoFactor.assertStepUp(role === 'staff' ? 'staff' : 'seller', String(userId), stepUp);
     return this.staffService.remove(userId, role, permissions, storeId, staffId);
   }
 

@@ -19,6 +19,12 @@ const SRC = path.join(__dirname, '..');
 const NO_PERMISSION_BY_DESIGN = new Set([
   'api/staff/me', // a staff member editing their own profile
   'api/staff/me/password',
+  'api/2fa/me', // a member managing their OWN two-factor
+  'api/2fa/me/setup',
+  'api/2fa/me/enable',
+  'api/2fa/me/disable',
+  'api/2fa/me/recovery-codes',
+  'api/2fa/me/step-up',
   'api/pos/pin-login', // PIN login for the POS app
 ]);
 /** Permissions that gate UI only (no dedicated backend route). */

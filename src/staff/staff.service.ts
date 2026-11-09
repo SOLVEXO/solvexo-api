@@ -2,6 +2,7 @@
 import { sellerAppUrl } from '@/common/app-urls.util';
 import {
   Injectable,
+  Optional,
   BadRequestException,
   ForbiddenException,
   NotFoundException,
@@ -15,6 +16,7 @@ import { JwtService } from '@nestjs/jwt';
 import { DatabaseService } from '../database/databaseservice';
 import { RedisService } from '../redis/redis.service';
 import { ActivityLogService } from '../activity-log/activity-log.service';
+import { MemberTwoFactorService } from '../auth/member-two-factor.service';
 import { EmailService } from '../otp/services/email.service';
 import { CreateStaffDto } from './dto/create-staff.dto';
 import { UpdateStaffDto } from './dto/update-staff.dto';
@@ -37,6 +39,7 @@ export class StaffService {
     private readonly activityLogService: ActivityLogService,
     private readonly emailService: EmailService,
     private readonly entitlementsService: EntitlementsService,
+    @Optional() private readonly memberTwoFactor?: MemberTwoFactorService,
   ) {}
 
   private get repos() {
@@ -67,7 +70,7 @@ export class StaffService {
    *  `storeId` claim, and `permissions` (resolved from the staff member's
    *  assigned `Role` at THIS moment, not cached anywhere) embedded directly
    *  (see JwtStrategy/PermissionsGuard). */
-  async login(storeId: string, email: string, password: string) {
+  async login(storeId: string, email: string, password: string): Promise<any> {
     const staff = await this.repos.staffMemberModel
       .findOne({ storeId, email: email.toLowerCase().trim(), isDelete: false })
       .select('+passwordHash');
@@ -103,7 +106,33 @@ export class StaffService {
       await this.repos.staffMemberModel.updateOne({ _id: staff._id }, { $set: { failedLoginCount: 0, lockedUntil: null } });
     }
 
+    if (this.memberTwoFactor && (await this.memberTwoFactor.isEnabled('staff', String(staff._id)))) {
+      return { success: true, message: 'Enter the code from your authenticator app', data: { twoFactorRequired: true, challengeToken: this.memberTwoFactor.signChallenge('staff', String(staff._id), { tokenVersion: staff.tokenVersion ?? 0, storeId }) } };
+    }
+    return this.issueStaffSession(staff, storeId);
+  }
+
+  /** Second login step for staff with two-factor on. */
+  async completeTwoFactorLogin(challengeToken: string, code: string) {
+    if (!this.memberTwoFactor) throw new UnauthorizedException('Two-factor sign-in is unavailable');
+    const c = this.memberTwoFactor.verifyChallenge(challengeToken);
+    if (c.kind !== 'staff' || !c.storeId) throw new UnauthorizedException('Your sign-in step expired. Enter your email and password again.');
+    const staff: any = await this.repos.staffMemberModel.findOne({ _id: c.memberId, storeId: c.storeId, isDelete: false });
+    if (!staff || staff.status !== 'active' || (staff.tokenVersion ?? 0) !== c.tokenVersion) throw new UnauthorizedException('Your sign-in step expired. Enter your email and password again.');
+    const owner: any = await this.repos.sellerModel.findById(staff.sellerId).select('status isDelete').lean();
+    if (!owner || owner.isDelete || (owner.status && owner.status !== 'active')) throw new UnauthorizedException('This staff account is inactive');
+    const r = await this.memberTwoFactor.verifyCode('staff', c.memberId, code);
+    if (!r.ok) throw new UnauthorizedException("That code didn't match. Use the newest code from your app, or a recovery code.");
+    const session: any = await this.issueStaffSession(staff, c.storeId);
+    session.data.twoFactor = { usedRecoveryCode: r.usedRecoveryCode, recoveryCodesLeft: r.recoveryCodesLeft };
+    return session;
+  }
+
+  private async issueStaffSession(staff: any, storeId: string) {
     const permissions = await this.resolvePermissions(storeId, (staff as any).roleId);
+    // The owner can ask staff to use two-factor: until they have, the login says so and the app sends them to the setup page.
+    const store: any = await this.repos.storeModel.findById(storeId).select('requireStaffTwoFactor').lean();
+    const twoFactorSetupRequired = !!store?.requireStaffTwoFactor && !(await this.memberTwoFactor?.isEnabled('staff', String(staff._id)));
 
     const payload = {
       sub: staff._id,
@@ -126,6 +155,7 @@ export class StaffService {
       success: true,
       data: {
         accessToken,
+        twoFactorSetupRequired,
         staff: {
           id: staff._id, name: staff.name, email: staff.email,
           role: staff.role, roleId: (staff as any).roleId, permissions, storeId,

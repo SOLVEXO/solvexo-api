@@ -502,6 +502,10 @@ export class Store {
   @Prop({ type: String, enum: ['off', 'soft-flag', 'block'], default: 'soft-flag' })
   digitalAbuseMode!: string;
 
+  // Owner setting: staff of this store are expected to use two-factor sign-in (staff login answers `twoFactorSetupRequired` until they do).
+  @Prop({ type: Boolean, default: false })
+  requireStaffTwoFactor!: boolean;
+
   // Set by a platform admin (abuse / piracy handling): stops downloads, course media and license validation for the store.
   @Prop({ type: Boolean, default: false })
   digitalDisabled!: boolean;

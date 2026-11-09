@@ -244,14 +244,15 @@ describe('RoleService preset upgrade', () => {
     // Version 1, 2 and 3 additions all arrive in one update.
     expect(mgr[1].$set.permissions).toEqual(expect.arrayContaining(['orders.view', 'products.create', 'collections.manage', 'categories.manage', 'draft_orders.manage', 'reviews.manage', 'activity_log.view', 'digital.view', 'digital.manage', 'members.manage', 'courses.manage', 'licenses.manage']));
     expect(mgr[1].$set.permissions).toEqual(expect.arrayContaining(["b2b.view", "b2b.manage"]));
-    expect(mgr[1].$set.presetVersion).toBe(3);
+    expect(mgr[1].$set.permissions).toEqual(expect.arrayContaining(['khata.view', 'khata.manage']));
+    expect(mgr[1].$set.presetVersion).toBe(4);
     const warehouse = (roleModel.updateOne as jest.Mock).mock.calls.find((c: any[]) => c[0]._id === 'r1')!;
     expect(warehouse[1].$set.permissions).toEqual(['orders.view']); // nothing new for Warehouse
     expect(staffMemberModel.updateMany).toHaveBeenCalled();
   });
 
   it('does nothing for presets that are already up to date', async () => {
-    const { svc, roleModel } = setup(presets(3));
+    const { svc, roleModel } = setup(presets(4));
     await svc.list('o', 'seller', 'st');
     expect(roleModel.updateOne).not.toHaveBeenCalled();
   });

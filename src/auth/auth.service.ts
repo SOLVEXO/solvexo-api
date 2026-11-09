@@ -1,5 +1,6 @@
 import { AdminSecurityService } from './admin-security.service';
 import { AdminTwoFactorService } from './admin-two-factor.service';
+import { MemberTwoFactorService } from './member-two-factor.service';
 import { buildStaffProfile } from '../common/staff-profile.util';
 import {
   Injectable,
@@ -48,6 +49,7 @@ export class AuthService {
     @Optional() private readonly adminTwoFactor?: AdminTwoFactorService,
     // Sign in with Apple token lifecycle (5G.1) — optional so specs that build AuthService positionally keep working.
     @Optional() private readonly appleTokens?: AppleTokenService,
+    @Optional() private readonly memberTwoFactor?: MemberTwoFactorService,
   ) {}
 
   /** Tells the platform admins a new seller joined (in-app + email per their preferences). Never throws. */
@@ -348,6 +350,15 @@ export class AuthService {
         };
       }
 
+      // Sellers with two-factor on also get a challenge first (completeSellerTwoFactorLogin finishes it).
+      if (role === 'seller' && this.memberTwoFactor && (await this.memberTwoFactor.isEnabled('seller', String(existingUser._id)))) {
+        return {
+          message: 'Enter the code from your authenticator app',
+          success: true,
+          data: { twoFactorRequired: true, challengeToken: this.memberTwoFactor.signChallenge('seller', String(existingUser._id), { tokenVersion: existingUser.tokenVersion ?? 0 }) },
+        };
+      }
+
       if (role === 'seller') {
         this.logSellerSecurityEvent(
           existingUser._id.toString(),
@@ -382,6 +393,26 @@ export class AuthService {
       throw new UnauthorizedException("That code didn't match. Use the newest code from your app, or a recovery code.");
     }
     const session: any = await this.issueLoginSession(admin, 'admin', ip, userAgent);
+    session.data.twoFactor = { usedRecoveryCode: result.usedRecoveryCode, recoveryCodesLeft: result.recoveryCodesLeft };
+    return session;
+  }
+
+  /** Second login step for a seller with two-factor on. Wrong codes count toward a 15-minute lock; a used code cannot be replayed. */
+  async completeSellerTwoFactorLogin(challengeToken: string, code: string, ip?: string, userAgent?: string) {
+    if (!this.memberTwoFactor) throw new UnauthorizedException('Two-factor sign-in is unavailable');
+    const c = this.memberTwoFactor.verifyChallenge(challengeToken);
+    if (c.kind !== 'seller') throw new UnauthorizedException('Your sign-in step expired. Enter your email and password again.');
+    const seller: any = await this.databaseService.repositories.sellerModel.findById(c.memberId);
+    if (!seller || seller.isDelete || seller.status === 'deleted' || seller.status === 'suspended' || (seller.tokenVersion ?? 0) !== c.tokenVersion) {
+      throw new UnauthorizedException('Your sign-in step expired. Enter your email and password again.');
+    }
+    const result = await this.memberTwoFactor.verifyCode('seller', c.memberId, code);
+    if (!result.ok) {
+      this.logSellerSecurityEvent(c.memberId, 'security', 'two_factor_failed', `Wrong two-factor code from ${ip ?? 'unknown IP'}`, ip, userAgent, true);
+      throw new UnauthorizedException("That code didn't match. Use the newest code from your app, or a recovery code.");
+    }
+    this.logSellerSecurityEvent(c.memberId, 'security', 'login_success', `Login (two-factor) from ${ip ?? 'unknown IP'}`, ip, userAgent, false);
+    const session: any = await this.issueLoginSession(seller, 'seller', ip, userAgent);
     session.data.twoFactor = { usedRecoveryCode: result.usedRecoveryCode, recoveryCodesLeft: result.recoveryCodesLeft };
     return session;
   }
