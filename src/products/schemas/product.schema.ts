@@ -346,6 +346,8 @@ ProductSchema.index({ storeId: 1, shippingProfileId: 1 });
 ProductSchema.index({ storeId: 1, slug: 1 }, { unique: true, partialFilterExpression: { isDelete: false } });
 ProductSchema.index({ name: 1 });
 ProductSchema.index({ categoryId: 1 });
+// Per-store category product counts (category tree) — keeps that aggregate on an index.
+ProductSchema.index({ storeId: 1, status: 1, isDelete: 1, categoryId: 1 });
 ProductSchema.index({ productType: 1 });
 ProductSchema.index({ educationLevel: 1 });
 ProductSchema.index({ normalizedCustomLevel: 1 });
