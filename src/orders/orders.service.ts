@@ -1885,7 +1885,9 @@ export class OrdersService {
     // Bundles: one line per component (qty x component qty); a normal line stays as it is.
     const expanded: any[] = lines.flatMap((l) => {
       const it = so.items[l.itemIndex];
-      return it?.bundleComponents?.length ? stockLinesForItem({ ...it, quantity: l.quantity }).map((sl) => ({ itemIndex: l.itemIndex, quantity: sl.quantity, variantId: sl.variantId })) : [l as any];
+      // `{ ...it }` of a hydrated sub-document loses its schema getters (bundleComponents), so a bundle shipped without its components' stock moving: go through a plain object.
+      const plain = it && typeof it.toObject === 'function' ? it.toObject() : it;
+      return plain?.bundleComponents?.length ? stockLinesForItem({ ...plain, quantity: l.quantity }).map((sl) => ({ itemIndex: l.itemIndex, quantity: sl.quantity, variantId: sl.variantId })) : [l as any];
     });
     for (const line of expanded) {
       const item = so.items[line.itemIndex];
