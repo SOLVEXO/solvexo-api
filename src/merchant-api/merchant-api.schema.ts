@@ -53,3 +53,17 @@ export class ApiToken {
 }
 export type ApiTokenDocument = HydratedDocument<ApiToken>;
 export const ApiTokenSchema = SchemaFactory.createForClass(ApiToken);
+
+/** One row per write request (token + Idempotency-Key): a retry returns the stored answer instead of repeating the effect. */
+@Schema({ timestamps: { createdAt: true, updatedAt: false }, collection: 'api_idempotency' })
+export class ApiIdempotency {
+  @Prop({ required: true }) tokenId: string;
+  @Prop({ required: true }) key: string;
+  @Prop({ required: true }) requestHash: string;
+  @Prop({ enum: ['processing', 'done'], default: 'processing' }) status: string;
+  @Prop({ type: Object, default: null }) response: Record<string, unknown> | null;
+}
+export type ApiIdempotencyDocument = HydratedDocument<ApiIdempotency>;
+export const ApiIdempotencySchema = SchemaFactory.createForClass(ApiIdempotency);
+ApiIdempotencySchema.index({ tokenId: 1, key: 1 }, { unique: true });
+ApiIdempotencySchema.index({ createdAt: 1 }, { expireAfterSeconds: 24 * 3600 });

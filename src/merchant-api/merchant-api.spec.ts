@@ -73,7 +73,7 @@ d('webhooks and tokens on a real MongoDB', () => {
   });
   afterEach(() => jest.restoreAllMocks());
   const mk = async (store: string, events = ['order.paid']) => { const c = await svc.create(store, actor, { url: 'https://hooks.example.com/in', events }); return c; };
-  const settle = () => new Promise((r) => setTimeout(r, 250)); // emit() starts the first attempt in the background
+  const settle = () => new Promise((r) => setTimeout(r, 700)); // emit() starts the first attempt in the background
   const deliveriesOf = async (store: string) => conn.model('WebhookDelivery').find({ storeId: store }).lean() as any;
 
   it('a delivery is signed with the store secret, sent once per event, and recorded as success', async () => {

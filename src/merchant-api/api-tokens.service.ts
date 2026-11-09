@@ -58,7 +58,7 @@ export class ApiTokenGuard implements CanActivate {
     const needed = this.reflector.get<ApiScope | undefined>(API_SCOPE_KEY, ctx.getHandler());
     if (needed && !scopeAllows(tok.scopes, needed)) throw new ForbiddenException(`This token does not have the "${needed}" permission`);
     if (!tok.lastUsedAt || Date.now() - new Date(tok.lastUsedAt).getTime() > 60_000) void this.svc.tokens.updateOne({ _id: tok._id }, { $set: { lastUsedAt: new Date() } }).catch(() => undefined);
-    req.apiToken = { storeId: String(tok.storeId), scopes: tok.scopes };
+    req.apiToken = { id: String(tok._id), storeId: String(tok.storeId), scopes: tok.scopes };
     return true;
   }
 }

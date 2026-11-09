@@ -7,6 +7,7 @@ import { Model, Types } from 'mongoose';
 import { ActivityLogService } from '../activity-log/activity-log.service';
 import { decryptCredential, encryptCredential } from '../common/credential-encryption.util';
 import { ORDER_CHANGED, orderEvents } from '../common/order-events';
+import { RESOURCE_CHANGED, resourceEvents, type ResourceChange } from '../common/resource-events';
 import { DatabaseService } from '../database/databaseservice';
 import { RedisService } from '../redis/redis.service';
 import { isPrivateIp } from '../messaging-channels/sms.util';
@@ -27,7 +28,48 @@ export class MerchantWebhooksService implements OnModuleInit {
     @Optional() private readonly redis?: RedisService,
   ) {}
 
-  onModuleInit() { orderEvents.on(ORDER_CHANGED, (id: string) => { void this.fromOrder(id).catch((e) => this.log.warn(`order webhook: ${e?.message}`)); }); }
+  private readonly pendingResource = new Map<string, NodeJS.Timeout>();
+
+  onModuleInit() {
+    orderEvents.on(ORDER_CHANGED, (id: string) => { void this.fromOrder(id).catch((e) => this.log.warn(`order webhook: ${e?.message}`)); });
+    resourceEvents.on(RESOURCE_CHANGED, (c: ResourceChange) => this.onResourceChanged(c));
+  }
+
+  /** New customers fire at once; product / stock writes are coalesced (a burst of writes to one record becomes one event). */
+  private onResourceChanged(c: ResourceChange) {
+    const run = () => { void this.fromResource(c).catch((e) => this.log.warn(`resource webhook: ${e?.message}`)); };
+    if (c.created) return run();
+    const key = `${c.kind}:${c.id}`;
+    if (this.pendingResource.has(key)) return;
+    const timer = setTimeout(() => { this.pendingResource.delete(key); run(); }, 1500);
+    (timer as any).unref?.();
+    this.pendingResource.set(key, timer);
+  }
+
+  /** product.updated / inventory.changed / customer.created, routed by the record's OWN store (never by anything the client sent). */
+  async fromResource(c: ResourceChange) {
+    const r = this.db.repositories as any;
+    const bucket = Math.floor(Date.now() / 30_000);
+    if (c.kind === 'product') {
+      const p: any = await r.productModel.findById(c.id).select('storeId name slug status isDelete').lean();
+      if (!p?.storeId) return;
+      return this.emit(String(p.storeId), 'product.updated', { product_id: c.id, name: p.name, slug: p.slug, status: p.status, deleted: !!p.isDelete }, `product.updated:${c.id}:${bucket}`);
+    }
+    if (c.kind === 'variant_stock') {
+      const v: any = await r.productVariantModel.findById(c.id).select('productId storeId sku stock committedStock damagedStock inTransitStock expiredStock unlimitedStock').lean();
+      if (!v) return;
+      let storeId = v.storeId ? String(v.storeId) : null;
+      if (!storeId) storeId = String((await r.productModel.findById(v.productId).select('storeId').lean())?.storeId ?? '') || null;
+      if (!storeId) return;
+      const available = v.unlimitedStock ? null : Math.max(0, (v.stock ?? 0) - (v.committedStock ?? 0) - (v.damagedStock ?? 0) - (v.inTransitStock ?? 0) - (v.expiredStock ?? 0));
+      return this.emit(storeId, 'inventory.changed', { variant_id: c.id, product_id: v.productId, sku: v.sku ?? null, on_hand: v.stock ?? 0, committed: v.committedStock ?? 0, available }, `inventory.changed:${c.id}:${bucket}`);
+    }
+    if (c.kind === 'customer' && c.created) {
+      const u: any = await r.userModel.findById(c.id).select('storeId name email phone isGuest').lean();
+      if (!u?.storeId || u.isGuest) return;
+      return this.emit(String(u.storeId), 'customer.created', { customer_id: c.id, name: u.name ?? null, email: u.email ?? null, phone: u.phone ?? null }, `customer.created:${c.id}`);
+    }
+  }
 
   private audit(storeId: string, actor: { id: string; role: string }, action: string, description: string, targetId: string) {
     return this.activity.log({ storeId, category: 'webhooks', action, description, actorId: actor.id, actorRole: actor.role, targetId, targetType: 'webhook' } as any).catch(() => undefined);
@@ -103,17 +145,22 @@ export class MerchantWebhooksService implements OnModuleInit {
   }
 
   async fromOrder(orderId: string) {
-    const o: any = await (this.db.repositories as any).orderModel.findById(orderId).select('isPaid orderStatus orderNumber totalAmount currency createdAt sellerOrders.storeId').lean();
+    const o: any = await (this.db.repositories as any).orderModel.findById(orderId).select('isPaid orderStatus orderNumber totalAmount currency createdAt sellerOrders.storeId sellerOrders.refundedTotal').lean();
     if (!o) return;
     const stores = [...new Set((o.sellerOrders ?? []).map((s: any) => String(s.storeId)))] as string[];
     const data = { order_id: String(orderId), order_number: o.orderNumber ?? null, status: o.orderStatus, paid: !!o.isPaid, total: o.totalAmount, currency: o.currency };
     const events: WebhookEvent[] = [];
+    const refundedMinor = Math.round(((o.sellerOrders ?? []).reduce((s: number, so: any) => s + (Number(so.refundedTotal) || 0), 0)) * 100);
     if (o.createdAt && Date.now() - new Date(o.createdAt).getTime() < 10 * 60_000) events.push('order.created');
     if (o.isPaid) events.push('order.paid');
     if (['shipped', 'delivered', 'completed'].includes(o.orderStatus)) events.push('order.fulfilled');
     if (o.orderStatus === 'cancelled') events.push('order.cancelled');
-    if (o.orderStatus === 'refunded') events.push('refund.created');
-    for (const s of stores) for (const e of events) await this.emit(s, e, data, `${e}:${orderId}`);
+    for (const s of stores) {
+      for (const e of events) await this.emit(s, e, data, `${e}:${orderId}`);
+      // A refund event per refunded AMOUNT (each partial refund raises the running total), plus the full refund when the order ends refunded.
+      if (refundedMinor > 0) await this.emit(s, 'refund.created', { ...data, refunded_total: refundedMinor / 100 }, `refund.created:${orderId}:${refundedMinor}`);
+      else if (o.orderStatus === 'refunded') await this.emit(s, 'refund.created', data, `refund.created:${orderId}:full`);
+    }
   }
 
   private async assertPublic(url: string) {

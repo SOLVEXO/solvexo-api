@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
+import { attachResourceHooks, stockUpdateMatters } from '../../common/resource-events';
 import { Document } from 'mongoose';
 
 export type ProductVariantDocument = ProductVariant & Document;
@@ -216,3 +217,6 @@ ProductVariantSchema.index(
   { unique: true, partialFilterExpression: { isDelete: false, storeId: { $type: 'string' }, sku: { $gt: '' } }, name: 'storeId_1_sku_1_unique_live' },
 );
 ProductVariantSchema.index({ barcode: 1 }, { sparse: true });
+
+// Merchant webhooks: stock movements signal inventory.changed (common/resource-events.ts).
+attachResourceHooks(ProductVariantSchema, 'variant_stock', { matters: stockUpdateMatters, onUpdate: true });

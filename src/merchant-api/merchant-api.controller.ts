@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Headers, Param, Patch, Post, Query, Req, Res, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
+import type { Response } from 'express';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -12,6 +13,7 @@ import { DatabaseService } from '../database/databaseservice';
 import { EntitlementsService } from '../platform-plans/entitlements.service';
 import { ApiTokenGuard, ApiTokensService, NeedsApiScope } from './api-tokens.service';
 import { MerchantWebhooksService } from './merchant-webhooks.service';
+import { ApiWritesService } from './api-writes.service';
 
 /** Seller settings: webhooks + API tokens. Permission: settings.general.manage. Needs the plan's API & webhooks feature to create. */
 @ApiTags('Webhooks and API tokens (seller)')
@@ -46,7 +48,7 @@ export class MerchantApiSettingsController {
 @UseGuards(ApiTokenGuard)
 @Controller('api/merchant/v1')
 export class MerchantApiV1Controller {
-  constructor(private readonly db: DatabaseService) {}
+  constructor(private readonly db: DatabaseService, private readonly writes: ApiWritesService) {}
   private page(q: any) { const page = Math.max(1, Number(q?.page) || 1); const limit = Math.min(50, Math.max(1, Number(q?.limit) || 20)); return { page, limit, skip: (page - 1) * limit }; }
 
   @Get('orders') @NeedsApiScope('read_orders')
@@ -65,5 +67,19 @@ export class MerchantApiV1Controller {
     const m = (this.db.repositories as any).productModel;
     const [items, total] = await Promise.all([m.find(f).select('name slug status vendor tags images createdAt updatedAt').sort({ _id: -1 }).skip(skip).limit(limit).lean(), m.countDocuments(f)]);
     return { items, total, page, limit };
+  }
+
+  /** WRITE: product status / tags. Needs the write_products scope and an Idempotency-Key header; answers with `Idempotent-Replayed: true` on a retry. */
+  @Patch('products/:id') @NeedsApiScope('write_products')
+  async patchProduct(@Req() req: any, @Param('id') id: string, @Body() body: any, @Headers('idempotency-key') key: string | undefined, @Res({ passthrough: true }) res: Response) {
+    const r = await this.writes.once(req.apiToken, key, { id, body }, () => this.writes.updateProduct(req.apiToken, id, body));
+    res.setHeader('Idempotent-Replayed', String(r.replayed)); return r.result;
+  }
+
+  /** WRITE: relative stock change of one variant. Needs write_inventory + Idempotency-Key. */
+  @Post('inventory/adjust') @NeedsApiScope('write_inventory')
+  async adjustInventory(@Req() req: any, @Body() body: any, @Headers('idempotency-key') key: string | undefined, @Res({ passthrough: true }) res: Response) {
+    const r = await this.writes.once(req.apiToken, key, body, () => this.writes.adjustInventory(req.apiToken, body));
+    res.setHeader('Idempotent-Replayed', String(r.replayed)); return r.result;
   }
 }

@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
+import { attachResourceHooks } from '../../common/resource-events';
 import { Document, Types } from 'mongoose';
 
 export type UserDocument = User & Document;
@@ -121,3 +122,6 @@ UserSchema.index({ storeId: 1, email: 1 }, { unique: true });
 // Guest checkout (see GuestSessionService): a password-less session row; `email` is a synthetic un-guessable address,
 // the buyer's real email lives in `contactEmail`.
 UserSchema.index({ storeId: 1, isGuest: 1, contactEmail: 1 });
+
+// Merchant webhooks: a new store customer (not a guest-checkout session, not a platform-wide account) signals customer.created.
+attachResourceHooks(UserSchema, 'customer', { onCreate: true, onUpdate: false, createFilter: (d: any) => !!d.storeId && !d.isGuest && (d.role === 'user' || !d.role) });

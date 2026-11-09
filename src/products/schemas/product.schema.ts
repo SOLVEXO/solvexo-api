@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
+import { attachResourceHooks, productUpdateMatters } from '../../common/resource-events';
 import { Document } from 'mongoose';
 import { SeoMeta, SeoMetaSchema } from '@/seo/schemas/seo-meta.schema';
 import { Translation, TranslationSchema } from '@/common/schemas/translation.schema';
@@ -358,3 +359,6 @@ ProductSchema.index({ tags: 1 });
 ProductSchema.index({ storeId: 1, vendor: 1 });
 ProductSchema.index({ status: 1 });
 ProductSchema.index({ scheduledAt: 1 });
+
+// Merchant webhooks: every real product write (not view/rating counters) is signalled (common/resource-events.ts).
+attachResourceHooks(ProductSchema, 'product', { matters: productUpdateMatters });
