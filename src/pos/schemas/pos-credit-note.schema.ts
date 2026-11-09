@@ -74,8 +74,14 @@ export class PosCreditNote {
   @Prop({ type: String, default: null }) approvedBy: string | null;
   /** why a manager was needed (empty when none) */
   @Prop({ type: [String], default: [] }) approvalReasons: string[];
+  /** the REFUNDING till and shift — the drawer / terminal that paid (G3.0). Null when no shift was open (card-only fallback). */
   @Prop({ type: String, default: null }) registerId: string | null;
   @Prop({ type: String, default: null }) sessionId: string | null;
+  /** the ORIGINAL sale's till and shift (G3.0) — can differ from the refunding ones */
+  @Prop({ type: String, default: null }) saleRegisterId: string | null;
+  @Prop({ type: String, default: null }) saleSessionId: string | null;
+  /** set only on a note created by the one-off backfill of pre-G2.5 refunds / voids (series `CN-B…`, negative `seq`) */
+  @Prop({ type: Object, default: null }) backfill: { backfilledAt: Date; originalType: 'refund' | 'void'; originalId: string; batchId: string; amountDeltaMinor?: number } | null;
 
   /** FBR placeholders — empty / pending for now (FBR_PLAN.md). */
   @Prop({ type: Object, default: () => ({ status: 'not_enabled', externalInvoiceNumber: null, qrPayload: null, attempts: 0, lastError: null }) })

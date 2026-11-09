@@ -1518,11 +1518,14 @@ export class PosService {
     const nowSession: any = returnRegisterId
       ? await this.r.registerSessionModel.findOne({ registerId: returnRegisterId, storeId: (sale as any).storeId, status: 'open' })
       : null;
-    const refundCtx = { sessionId: nowSession ? String(nowSession._id) : null, registerId: returnRegisterId, shiftId: nowSession?.shiftId ?? null };
     // a cash refund comes out of a drawer: it needs an open shift on the register that pays it
     if (returnRegisterId && tenders.some((t: any) => t.method === 'cash' && t.amount > 0) && !nowSession) {
       throw businessConflict('OPEN_SHIFT_REQUIRED', 'Open a shift on this register before paying a cash refund');
     }
+    // G3.0: the refund belongs to the shift whose drawer / terminal paid it. Only when the returning register has NO open shift (card / other
+    // tenders only — cash was refused above) does it fall back to the sale's own shift, and only if that one is still open; a CLOSED shift is never touched.
+    const refundShift = await this.refundShiftFor(sale, nowSession);
+    const refundCtx = { sessionId: refundShift ? String(refundShift._id) : null, registerId: returnRegisterId, shiftId: refundShift?.shiftId ?? null };
     const refundAuditAction = newStatus === 'refunded' ? 'sale_refunded_full' : 'sale_refunded_partial';
     let createdCreditNote: any = null;
     const claimed = await this.atomic(async (tx) => {
@@ -1557,16 +1560,19 @@ export class PosService {
     // Session: the refund comes OUT of sales and out of the right tender — so a cash refund lowers the
     // cash the drawer should now hold (expected cash = opening + cashSales + cashIn − cashOut). The
     // transaction count drops only when the sale becomes fully refunded, and exactly once.
+    // G3.0: the counters (refunds, net sales, the paying tender → expected cash / expected card) move on the REFUNDING shift. When that is another
+    // shift than the sale's own, the sale's shift is left exactly as it closed or stands (and the transaction count stays where the sale was made).
     const split = byTender(tenders);
     const sessionInc: any = {
       totalRefunds: refundAmount,
       totalSales: -refundAmount,
       ...this.tenderInc(split, -1),
     };
-    if (newStatus === 'refunded') sessionInc.totalTransactions = -1;
-    const refundedSession = await this.incSessionCounters(String((sale as any).sessionId), sessionInc, exp);
+    const sameShift = !!refundShift && String(refundShift._id) === String((sale as any).sessionId);
+    if (newStatus === 'refunded' && sameShift) sessionInc.totalTransactions = -1;
+    const refundedSession = refundShift ? await this.incSessionCounters(String(refundShift._id), sessionInc, exp) : null;
     await this.checkMinor('sale', claimed, exp);
-    await this.checkMinor('session', refundedSession, exp);
+    if (refundedSession) await this.checkMinor('session', refundedSession, exp);
 
     await this.recordPosRefundInLedger(sale, refundAmount, newStatus === 'refunded' && !isPartial ? 'refund' : 'partial refund');
 
@@ -2159,6 +2165,17 @@ export class PosService {
     }
   }
 
+  /**
+   * G3.0: the shift a refund / void is booked on — the one whose drawer (or terminal) physically paid it. [returning] is the open shift of the
+   * register the customer is standing at (null when that register has none). Fallback for tenders that need no drawer: the sale's own shift, but
+   * ONLY while it is still open — a closed shift is never changed after the fact. Null = no shift (the refund row still carries every id).
+   */
+  private async refundShiftFor(sale: any, returning: any | null): Promise<any | null> {
+    if (returning) return returning;
+    if (!sale?.sessionId) return null;
+    return this.r.registerSessionModel.findOne({ _id: sale.sessionId, status: 'open' });
+  }
+
   /** Counts a completed sale into its register session: total, one transaction, and each tender's NET amount (cash net of change). */
   private async _incrementSessionTotals(sessionId: string, sale: { total: number; payments?: any[]; paymentMethod?: string }, exp: number) {
     const nets = tenderNets({ ...sale, refundedAmount: 0, status: 'completed' }, exp);
@@ -2296,7 +2313,10 @@ export class PosService {
       tenders: a.tenders.map((t) => ({ method: t.method, amountMinor: t.amountMinor ?? toMinor(t.amount ?? 0, a.exp) })),
       seller: a.sale.invoice?.seller ?? (await this.sellerSnapshot(String(a.sale.storeId), tx)), customerName: a.sale.customerName ?? null,
       employeeId: a.actorId, approvedBy: a.approvedBy, approvalReasons: a.approvalReasons,
+      // the REFUNDING till / shift (whose drawer paid) …
       registerId: a.ctx.registerId ?? null, sessionId: a.ctx.sessionId ?? null,
+      // … and the ORIGINAL sale's till / shift — both are kept (G3.0)
+      saleRegisterId: a.sale.registerId ?? null, saleSessionId: a.sale.sessionId ?? null,
     }], tx ? { session: tx } : undefined);
     return doc as any;
   }
@@ -2773,7 +2793,7 @@ export class PosService {
 
   // ── SALES EXTENSIONS ──────────────────────────────────────────────────────
 
-  async voidSale(sellerId: string, saleId: string, dto: { reason?: string; reasonCode?: string }, employeeToken: string | undefined) {
+  async voidSale(sellerId: string, saleId: string, dto: { reason?: string; reasonCode?: string; registerId?: string }, employeeToken: string | undefined) {
     const voidReason = normalizeReason('void', dto?.reasonCode, dto?.reason);
     const sale = await this.r.saleModel.findById(saleId);
     if (!sale) throw new NotFoundException('Sale not found');
@@ -2789,6 +2809,13 @@ export class PosService {
     // `completed → voided` transition restores stock and reverses the session totals.
     await this.ensureSettings(String((sale as any).storeId));
     const { exp: cnExp, currency: cnCurrency } = await this.docMoney(sale);
+    // G3.0: a void pays the customer back at the till the manager is standing at — same shift rule as a refund
+    const voidRegisterId: string | null = dto?.registerId ?? (sale as any).registerId ?? null;
+    const voidNow: any = voidRegisterId ? await this.r.registerSessionModel.findOne({ registerId: voidRegisterId, storeId: (sale as any).storeId, status: 'open' }) : null;
+    const voidCash = effectivePayments(sale as any).some((l: any) => l.method === 'cash' && l.amount > 0);
+    if (voidRegisterId && dto?.registerId && voidCash && !voidNow) throw businessConflict('OPEN_SHIFT_REQUIRED', 'Open a shift on this register before paying a cash refund');
+    const voidShift = await this.refundShiftFor(sale, voidNow);
+    const voidCtx = { sessionId: voidShift ? String(voidShift._id) : null, registerId: voidRegisterId, shiftId: voidShift?.shiftId ?? null };
     let voidCreditNote: any = null;
     const claimed = await this.atomic(async (tx) => {
       const c = await this.r.saleModel.findOneAndUpdate(
@@ -2803,11 +2830,11 @@ export class PosService {
         sale: sale as any, kind: 'void', scope: 'full', refundId: null, reason: voidReason, exp: cnExp, currency: cnCurrency,
         lines: (sale as any).items.map((it: any, idx: number) => ({ idx, qty: it.qty, a: returnLineAmounts(bdv[idx], it.qty, 0, it.qty), restock: !it.isCustom, restockReason: null })),
         tenders: effectivePayments(sale as any).map((l: any) => ({ method: l.method, amountMinor: toMinor(l.amount, cnExp) })), actorId: actor.employeeId, approvedBy: actor.employeeId, approvalReasons: [],
-        ctx: { sessionId: (sale as any).sessionId ?? null, registerId: (sale as any).registerId ?? null, shiftId: (sale as any).shiftId ?? null },
+        ctx: voidCtx,
       });
       await this.writeAuditLog({
         storeId: (sale as any).storeId, employeeId: actor.employeeId, action: 'sale_voided', targetId: saleId, targetType: 'sale',
-        sessionId: (sale as any).sessionId ?? null, registerId: (sale as any).registerId ?? null, shiftId: (sale as any).shiftId ?? null, metadata: { reason: voidReason.note, reasonCode: voidReason.code },
+        ...voidCtx, metadata: { reason: voidReason.note, reasonCode: voidReason.code, saleSessionId: (sale as any).sessionId ?? null, saleRegisterId: (sale as any).registerId ?? null },
       }, tx);
       return c;
     });
@@ -2821,8 +2848,13 @@ export class PosService {
     // A void reverses the whole sale: total and per-tender nets (cash net of change) come out of the session.
     const { exp: voidExp } = await this.docMoney(sale);
     const voidNets = tenderNets({ ...(sale as any).toObject?.() ?? sale, refundedAmount: 0, status: 'completed' }, voidExp);
-    const voidedSession = await this.incSessionCounters(String((sale as any).sessionId), { totalSales: -(sale as any).total, totalTransactions: -1, ...this.tenderInc(voidNets, -1) }, voidExp);
-    await this.checkMinor('session', voidedSession, voidExp);
+    // On the shift that paid it. Same shift as the sale: exactly as before. Another shift: it books a refund there and the sale's own shift is untouched.
+    const voidSame = !!voidShift && String(voidShift._id) === String((sale as any).sessionId);
+    const voidInc: any = voidSame
+      ? { totalSales: -(sale as any).total, totalTransactions: -1, ...this.tenderInc(voidNets, -1) }
+      : { totalRefunds: (sale as any).total, totalSales: -(sale as any).total, ...this.tenderInc(voidNets, -1) };
+    const voidedSession = voidShift ? await this.incSessionCounters(String(voidShift._id), voidInc, voidExp) : null;
+    if (voidedSession) await this.checkMinor('session', voidedSession, voidExp);
 
     await this.recordPosRefundInLedger(sale, (sale as any).total - ((sale as any).refundedAmount || 0), 'void');
 

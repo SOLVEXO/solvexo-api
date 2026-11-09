@@ -592,7 +592,7 @@ export class PosController {
   @Roles('seller')
   @UseInterceptors(IdempotencyInterceptor)
   @Post('sales/:saleId/void')
-  voidSale(@Req() req: any, @Param('saleId') saleId: string, @Body() dto: { reason?: string; reasonCode?: string }, @Headers('x-pos-employee-token') employeeToken?: string) {
+  voidSale(@Req() req: any, @Param('saleId') saleId: string, @Body() dto: { reason?: string; reasonCode?: string; registerId?: string }, @Headers('x-pos-employee-token') employeeToken?: string) {
     return this.posService.voidSale(req.user.userId, saleId, dto, employeeToken);
   }
 
