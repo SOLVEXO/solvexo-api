@@ -50,6 +50,8 @@ export class PosSettings {
   @Prop({ type: Number, default: 0 }) creditNoteCounter: number;
   /** may a cashier process a return at all? (false = every return needs a manager, the behaviour before G2.5) */
   @Prop({ type: Boolean, default: false }) cashierReturnsEnabled: boolean;
+  /** G3.0 (D6): per-store overrides of the approval limits (money in the store currency's MINOR units, counts as numbers); a key not present uses the documented default — see pos-permissions.config.ts */
+  @Prop({ type: Object, default: {} }) approvalLimits: Record<string, number>;
   /** a return above this amount (minor units) needs a manager; null = no amount limit */
   @Prop({ type: Number, default: null, min: 0 }) returnApprovalAboveMinor: number | null;
   /** a return later than this many days after the sale needs a manager; null = no day limit */

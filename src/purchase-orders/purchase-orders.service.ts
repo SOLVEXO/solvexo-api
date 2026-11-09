@@ -583,6 +583,7 @@ export class PurchaseOrdersService {
 
       if (goodQty > 0) {
         await (this.repos.stockAdjustmentModel as any).create([{
+          unitCostMinor: costTwin(item.unitCost, expOf(po.currency)),
           storeId, productId: item.productId, variantId: item.variantId, locationId: po.locationId ?? null,
           productName: item.name, sku: item.sku,
           previousStock, newStock: previousStock + goodQty, delta: goodQty,

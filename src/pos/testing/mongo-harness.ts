@@ -58,6 +58,7 @@ export async function startMongoHarness(): Promise<MongoHarness> {
     variantPriceHistoryModel: m(schema.VariantPriceHistory, schema.VariantPriceHistorySchema),
     refreshTokenFamilyModel: m(schema.RefreshTokenFamily, schema.RefreshTokenFamilySchema),
     idempotencyRecordModel: m(schema.IdempotencyRecord, schema.IdempotencyRecordSchema),
+    stockMovementModel: m(schema.StockMovement, schema.StockMovementSchema),
   };
   // Build every index now (unique sale key, unique open session per register, …) so tests hit the real constraints.
   await Promise.all(Object.values(repos).map((model) => model.init()));
@@ -101,8 +102,8 @@ export async function seedStore(
   await r.productModel.collection.insertOne({ _id: new Types.ObjectId(productId), storeId: String(storeId), sellerId, name: 'Tea', type: 'physical', isDelete: false, status: 'active', gallery: [] });
   const variantId = oidStr();
   await r.productVariantModel.collection.insertOne({
-    _id: new Types.ObjectId(variantId), productId, sku: 'TEA-1', price: opts.price ?? 10,
-    stock: opts.stock ?? 5, committedStock: 0, unlimitedStock: opts.unlimited === true,
+    _id: new Types.ObjectId(variantId), productId, storeId: String(storeId), sku: 'TEA-1', price: opts.price ?? 10,
+    stock: opts.stock ?? 5, committedStock: 0, damagedStock: 0, inTransitStock: 0, unlimitedStock: opts.unlimited === true,
     isDelete: false, status: 'active', options: [], isDefault: true,
   });
   const managerId = oidStr();

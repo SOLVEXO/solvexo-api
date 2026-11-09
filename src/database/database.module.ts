@@ -273,6 +273,7 @@ import { DatabaseService } from './databaseservice';
       { name: schema.ReconciliationRun.name, schema: schema.ReconciliationRunSchema },
       { name: schema.StoreAppRequest.name, schema: schema.StoreAppRequestSchema },
       { name: schema.StockAdjustment.name, schema: schema.StockAdjustmentSchema },
+      { name: schema.StockMovement.name, schema: schema.StockMovementSchema },
       { name: schema.VariantLocationStock.name, schema: schema.VariantLocationStockSchema },
       { name: schema.StockTransfer.name, schema: schema.StockTransferSchema },
       { name: schema.PosPlan.name, schema: schema.PosPlanSchema },

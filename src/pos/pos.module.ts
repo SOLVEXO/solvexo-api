@@ -15,11 +15,15 @@ import { PosTokenRevocationService } from './pos-token-revocation.service';
 import { PosReceiptService } from './pos-receipt.service';
 import { PosCatalogService } from './pos-catalog.service';
 import { PublicReceiptController } from './public-receipt.controller';
+import { StockCountsModule } from '@/stock-counts/stock-counts.module';
+import { PosAuthorizer } from './pos-authorizer.service';
+import { PosInventoryService } from './pos-inventory.service';
+import { PosInventoryController } from './pos-inventory.controller';
 
 @Module({
-  imports: [AuthModule, RedisModule, AdminConfigModule, FinanceModule, InventoryModule, PosPlansModule, KybModule, forwardRef(() => PaymentsCoreModule)],
-  controllers: [PosController, PublicReceiptController],
-  providers: [PosService, StoreLocationService, PosDeviceService, PosTokenRevocationService, PosReceiptService, PosCatalogService],
-  exports: [PosService],
+  imports: [AuthModule, RedisModule, AdminConfigModule, FinanceModule, InventoryModule, StockCountsModule, PosPlansModule, KybModule, forwardRef(() => PaymentsCoreModule)],
+  controllers: [PosController, PublicReceiptController, PosInventoryController],
+  providers: [PosService, StoreLocationService, PosDeviceService, PosTokenRevocationService, PosReceiptService, PosCatalogService, PosAuthorizer, PosInventoryService],
+  exports: [PosService, PosAuthorizer],
 })
 export class PosModule {}

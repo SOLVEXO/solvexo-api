@@ -946,6 +946,9 @@ export class PosService {
         priceVerified,
         qty: item.qty,
         hsCode: (variant as any).hsCode ?? null, // G2.5: PCT/HS code snapshot at sale time
+        // G3.1 (D5): the cost at the moment of sale — the minor twin when the variant has one, else its decimal converted below (once the currency exponent is known)
+        unitCostMinor: (variant as any).costPriceMinor ?? null,
+        _costDecimal: (variant as any).costPrice ?? null,
         lineTotal: 0, // set below from the server-computed, exponent-rounded line totals
       });
     }
@@ -955,6 +958,10 @@ export class PosService {
     // beyond one minor unit is rejected (TOTAL_MISMATCH) rather than charging a number nobody saw.
     // The tax rate comes from the settingsVersion the device priced with (when still within the offline window).
     const money = await this.moneyContext(dto.storeId, { version: dto.settingsVersion });
+    for (const it of saleItems as any[]) {
+      if (it.unitCostMinor == null && it._costDecimal != null) it.unitCostMinor = toMinor(Number(it._costDecimal), money.exp);
+      delete it._costDecimal;
+    }
     // custom items: manager approval above the store's limit (judged as of the sale's time for an offline replay)
     const customApproval = await this.approveCustomItems(dto.storeId, saleItems, money.exp, employeeToken, off.isOffline ? off.at : undefined);
     // coupon: validated here against THIS sale's subtotal; its usage is counted inside the sale transaction
@@ -1096,6 +1103,8 @@ export class PosService {
 
           const auditCtx = { sessionId: dto.sessionId, registerId: dto.registerId, shiftId: (session as any).shiftId ?? null };
           if (!isHeld) {
+            await this.recordMovements(tx, { type: 'sale', refType: 'sale', refId: String((created as any)._id), storeId: dto.storeId, locationId: sessionLocationId, ctx: { employeeId: dto.employeeId, registerId: dto.registerId, sessionId: dto.sessionId },
+              lines: ((created as any).items as any[]).map((it: any, idx: number) => ({ lineKey: String(idx), variantId: it.variantId, productId: it.productId, name: it.name, sku: it.sku, qty: it.qty, unitCostMinor: it.unitCostMinor ?? null, isCustom: !!it.isCustom })) });
             await this.recordPayments(created, settled!.lines, { ...auditCtx, employeeId: dto.employeeId }, tx);
             await this.consumeDigital(dto.storeId, digital, created, tx); // one sale per payment: the unique `consumed` event commits with the sale or not at all
             if (couponUsed) await this.consumeCoupon(String(couponUsed._id), tx); // race-safe usage count, in the same transaction
@@ -1547,6 +1556,9 @@ export class PosService {
         tenders: this.tendersMinor(tenders, exp), actorId: actor.employeeId, approvedBy, approvalReasons: needs, ctx: refundCtx,
       });
       createdCreditNote = creditNote;
+      // G3.1: the units that really went back on the shelf are a stock movement, at the cost the sale snapshotted
+      await this.recordMovements(tx, { type: 'return', refType: 'refund', refId: String(refundId), storeId: String((sale as any).storeId), locationId, ctx: { employeeId: actor.employeeId, registerId: returnRegisterId, sessionId: refundShift ? String(refundShift._id) : null },
+        lines: itemUpdates.filter((u) => !!u.variantId && u.restock).map((u) => { const it = saleItems.find((x: any) => String(x._id) === u.saleItemId); return { lineKey: u.saleItemId, variantId: u.variantId, productId: it?.productId, name: it?.name, sku: it?.sku, qty: u.qtyToRestore, unitCostMinor: it?.unitCostMinor ?? null, isCustom: false }; }) });
       await this.writeAuditLog({
         storeId: (sale as any).storeId, employeeId: actor.employeeId, action: refundAuditAction, targetId: saleId, targetType: 'sale', ...refundCtx,
         metadata: { refundAmount, tenders, currency, items: dto?.items, refundId: String(refundId), reference: `${(sale as any).saleNumber ?? saleId}-R${refundSeq + 1}`, reason: reason.note, reasonCode: reason.code, creditNote: creditNote.number, approvedBy, approvalReasons: needs },
@@ -2174,6 +2186,30 @@ export class PosService {
     if (returning) return returning;
     if (!sale?.sessionId) return null;
     return this.r.registerSessionModel.findOne({ _id: sale.sessionId, status: 'open' });
+  }
+
+  /**
+   * G3.1: the stock-ledger rows of a sale / return / void, INSIDE the caller's transaction (so they exist exactly when the document does). Custom items and unlimited-stock
+   * variants never moved stock and write nothing. Idempotent per (type, document, line). A deployment without the ledger model (older unit-test doubles) writes nothing.
+   */
+  private async recordMovements(tx: ClientSession | undefined, a: {
+    type: 'sale' | 'return' | 'void'; refType: string; refId: string; storeId: string; locationId: string | null;
+    ctx: { employeeId?: string | null; registerId?: string | null; sessionId?: string | null };
+    lines: Array<{ lineKey: string; variantId?: string | null; productId?: string | null; name?: string | null; sku?: string | null; qty: number; unitCostMinor: number | null; isCustom: boolean }>;
+  }): Promise<void> {
+    const model = this.r.stockMovementModel;
+    if (!model) return;
+    const lines = a.lines.filter((l) => !l.isCustom && l.variantId && l.qty > 0);
+    if (!lines.length) return;
+    const unlimited = new Set((await this.r.productVariantModel.find({ _id: { $in: lines.map((l) => String(l.variantId)) }, unlimitedStock: true }).select('_id').lean()).map((v: any) => String(v._id)));
+    const sign = a.type === 'sale' ? -1 : 1;
+    const docs = lines.filter((l) => !unlimited.has(String(l.variantId))).map((l) => ({
+      storeId: a.storeId, variantId: String(l.variantId), productId: l.productId ?? null, sku: l.sku ?? null, productName: l.name ?? null, locationId: a.locationId,
+      type: a.type, qtyDelta: sign * l.qty, unitCostMinor: l.unitCostMinor, refType: a.refType, refId: a.refId,
+      employeeId: a.ctx.employeeId ?? null, registerId: a.ctx.registerId ?? null, sessionId: a.ctx.sessionId ?? null, deviceId: this.callerDeviceId(),
+      dedupeKey: `${a.type}:${a.refId}:${l.lineKey}`,
+    }));
+    if (docs.length) await model.insertMany(docs, { ...(tx ? { session: tx } : {}), ordered: true });
   }
 
   /** Counts a completed sale into its register session: total, one transaction, and each tender's NET amount (cash net of change). */
@@ -2832,6 +2868,8 @@ export class PosService {
         tenders: effectivePayments(sale as any).map((l: any) => ({ method: l.method, amountMinor: toMinor(l.amount, cnExp) })), actorId: actor.employeeId, approvedBy: actor.employeeId, approvalReasons: [],
         ctx: voidCtx,
       });
+      await this.recordMovements(tx, { type: 'void', refType: 'void', refId: saleId, storeId: String((sale as any).storeId), locationId: (sale as any).locationId ?? null, ctx: { employeeId: actor.employeeId, registerId: voidRegisterId, sessionId: voidShift ? String(voidShift._id) : null },
+        lines: ((sale as any).items as any[]).map((it: any, idx: number) => ({ lineKey: String(idx), variantId: it.variantId, productId: it.productId, name: it.name, sku: it.sku, qty: it.qty - 0, unitCostMinor: it.unitCostMinor ?? null, isCustom: !!it.isCustom })) });
       await this.writeAuditLog({
         storeId: (sale as any).storeId, employeeId: actor.employeeId, action: 'sale_voided', targetId: saleId, targetType: 'sale',
         ...voidCtx, metadata: { reason: voidReason.note, reasonCode: voidReason.code, saleSessionId: (sale as any).sessionId ?? null, saleRegisterId: (sale as any).registerId ?? null },

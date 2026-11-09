@@ -24,6 +24,7 @@ export { StripeWebhookEvent, StripeWebhookEventDocument, StripeWebhookEventSchem
 export { RefundRequest, RefundRequestDocument, RefundRequestSchema } from '../refund-request/schemas/refund-request.schema';
 export { ReconciliationRun, ReconciliationRunDocument, ReconciliationRunSchema } from '../admin-finance/schemas/reconciliation-run.schema';
 export { StockAdjustment, StockAdjustmentDocument, StockAdjustmentSchema } from '../inventory/schemas/stock-adjustment.schema';
+export { StockMovement, StockMovementDocument, StockMovementSchema } from '../inventory/schemas/stock-movement.schema';
 export { VariantLocationStock, VariantLocationStockDocument, VariantLocationStockSchema } from '../inventory/schemas/variant-location-stock.schema';
 export { StockTransfer, StockTransferDocument, StockTransferSchema } from '../inventory/schemas/stock-transfer.schema';
 export { Bin, BinDocument, BinSchema } from '../inventory/schemas/bin.schema';

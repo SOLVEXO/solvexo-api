@@ -474,6 +474,8 @@ export class DatabaseService {
 
     @InjectModel(schema.StockAdjustment.name)
     private stockAdjustmentModel: Model<schema.StockAdjustmentDocument>,
+    @InjectModel(schema.StockMovement.name)
+    private stockMovementModel: Model<schema.StockMovementDocument>,
 
     @InjectModel(schema.VariantLocationStock.name)
     private variantLocationStockModel: Model<schema.VariantLocationStockDocument>,
@@ -697,6 +699,7 @@ export class DatabaseService {
       reconciliationRunModel: this.reconciliationRunModel,
       storeAppRequestModel: this.storeAppRequestModel,
       stockAdjustmentModel: this.stockAdjustmentModel,
+      stockMovementModel: this.stockMovementModel,
       variantLocationStockModel: this.variantLocationStockModel,
       stockTransferModel: this.stockTransferModel,
       posPlanModel: this.posPlanModel,

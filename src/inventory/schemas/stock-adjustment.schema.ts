@@ -1,6 +1,8 @@
 /* eslint-disable prettier/prettier */
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Document } from 'mongoose';
+import '../../common/schema-types/minor-money';
+import { isoExponent, toMinor } from '../../common/money-minor.util';
 
 export type StockAdjustmentDocument = StockAdjustment & Document;
 
@@ -53,8 +55,46 @@ export class StockAdjustment {
 
   @Prop({ type: String, required: true }) adjustedBy: string;
   @Prop({ type: String, default: null }) adjustedByName: string | null;
+
+  /** G3.1 (D5): unit cost to record on the stock-ledger row (e.g. a purchase receipt's own cost); when absent the variant's weighted-average cost at that moment is used */
+  @Prop({ type: 'MinorMoney', default: null }) unitCostMinor?: number | null;
 }
 
 export const StockAdjustmentSchema = SchemaFactory.createForClass(StockAdjustment);
 StockAdjustmentSchema.index({ variantId: 1, createdAt: -1 });
 StockAdjustmentSchema.index({ storeId: 1, createdAt: -1 });
+
+const MOVEMENT_TYPE: Record<string, string> = { restocked: 'adjustment', damaged: 'adjustment', correction: 'adjustment', other: 'adjustment', return: 'return', purchase_received: 'receive', write_off: 'write_off', supplier_return: 'supplier_return', expired: 'expired' };
+
+/**
+ * G3.1: every stock adjustment — manual, purchase receipt, supplier return, write-off, expiry, count posting — also writes its row in the stock ledger (`StockMovement`),
+ * in the adjustment's OWN session, so the two commit or abort together. Skipped only when the ledger model is not registered on this connection.
+ */
+StockAdjustmentSchema.post('save', async function (doc: any) {
+  const models = doc?.db?.models;
+  const Movement = models?.StockMovement;
+  if (!Movement || !doc.delta) return;
+  // the ON-HAND effect is what the adjustment really did to `stock` (a 'damaged' adjustment moves units to the damaged pool and leaves `stock` alone)
+  const stockEffect = typeof doc.newStock === 'number' && typeof doc.previousStock === 'number' ? doc.newStock - doc.previousStock : doc.delta;
+  const damagedDelta = doc.reason === 'damaged' ? Math.abs(doc.delta) : doc.reason === 'write_off' ? -Math.abs(doc.delta) : 0;
+  let cost: number | null = doc.unitCostMinor ?? null;
+  if (cost === null && models.ProductVariant) {
+    const q = models.ProductVariant.findById(doc.variantId).select('costPrice costPriceMinor');
+    const sess = typeof doc.$session === 'function' ? doc.$session() : null;
+    const v: any = await (sess ? q.session(sess) : q).lean();
+    if (v?.costPriceMinor !== null && v?.costPriceMinor !== undefined) cost = Number(v.costPriceMinor);
+    else if (v?.costPrice !== null && v?.costPrice !== undefined) {
+      const st: any = models.Store ? await models.Store.findById(doc.storeId).select('baseCurrency').lean() : null;
+      cost = toMinor(Number(v.costPrice), isoExponent(st?.baseCurrency));
+    }
+  }
+  try {
+    await Movement.create([{
+      storeId: doc.storeId, variantId: doc.variantId, productId: doc.productId, sku: doc.sku ?? null, productName: doc.productName ?? null, locationId: doc.locationId ?? null,
+      type: MOVEMENT_TYPE[doc.reason] ?? 'adjustment', qtyDelta: stockEffect, damagedDelta, unitCostMinor: cost, refType: 'adjustment', refId: String(doc._id), reason: doc.reason, note: doc.note ?? null,
+      employeeId: doc.adjustedBy ?? null, dedupeKey: `adjustment:${String(doc._id)}`,
+    }], typeof doc.$session === 'function' && doc.$session() ? { session: doc.$session() } : undefined);
+  } catch (e: any) {
+    if (e?.code !== 11000) throw e; // a duplicate = already written
+  }
+});

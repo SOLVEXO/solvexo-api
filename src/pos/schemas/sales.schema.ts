@@ -51,6 +51,10 @@ export class SaleItem {
   @Prop({ type: 'MinorMoney' })
   lineTotalMinor?: number;
 
+  // G3.1 (D5): the unit COST at the moment of sale (weighted average, minor units) — snapshotted so profit reports never change retroactively; null = no cost was recorded
+  @Prop({ type: 'MinorMoney', default: null })
+  unitCostMinor?: number | null;
+
   @Prop({ type: Number, default: 0 })
   refundedQty: number;          // cumulative qty refunded from this line
 
