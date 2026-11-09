@@ -37,3 +37,10 @@ Notes:
 
 ## ONE next task
 Boot the API against a throw-away staging database and walk one order end to end (checkout -> webhook delivery -> khata mirror -> feed item), fixing whatever the real run breaks.
+
+## Smoke runs (local throw-away stack)
+- Run 1 (docs/parity/SMOKE-RUN.md): boot, COD order end to end, bundle/pre-order stock, khata/feeds/search/2FA over HTTP, Chrome pages. 3 bugs fixed.
+- Run 2: pre-order wording fixed (both themes), hydrated sub-document spreads fixed (`plain()`), B2B walked for real (volume breaks, rules, net-30 due date, partial payment, khata mirror, credit limit), P8 token + read API + webhook subscription walked on a seeded plan.
+- Run 3 (docs/parity/SMOKE-RUN-3.md): 375/768px storefront (Maison, Tech) and seller pages, 3 fixes (page title, bundle component names, pre-order wording confirmed live in Tech). Redis and Stripe skipped (not present).
+- VERIFIED FOR REAL: API boot/DI, COD order + ship + deliver + return/restock with stock numbers, bundle/pre-order stock, B2B pricing/rules/terms/credit limit/khata mirror, feeds XML, synonyms search + no-results, 2FA login + step-up, P8 token/scope/webhook subscription, storefront + seller pages in Chrome at 375/768.
+- NOT VERIFIED: real Redis/BullMQ (courier sync, COD auto-cancel, campaign send, schedulers, webhook retry through the cron), Stripe paid order/refund/duplicate webhooks, email/WhatsApp/SMS delivery, B2B payment-terms emails, real courier booking, Tech theme at 768 (3 pages), Safari/Firefox/real phones, Atlas.
