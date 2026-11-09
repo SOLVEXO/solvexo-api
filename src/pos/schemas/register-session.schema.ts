@@ -21,6 +21,11 @@ export class CashAdjustment {
   @Prop({ required: true })
   employeeId: string;
 
+  /** G3.4: why the money moved, when it is not a plain float change (reused by G3.5) */
+  @Prop({ type: String, default: null }) category?: string | null;
+  @Prop({ type: String, default: null }) refType?: string | null;
+  @Prop({ type: String, default: null }) refId?: string | null;
+
   @Prop({ type: Date, default: () => new Date() })
   createdAt: Date;
 }

@@ -80,8 +80,8 @@ export class PurchaseOrdersService {
       { $group: {
         _id: '$supplierId',
         poCount: { $sum: 1 },
-        openPoCount: { $sum: { $cond: [{ $in: ['$status', ['draft', 'ordered', 'partially_received']] }, 1, 0] } },
-        spent: { $sum: { $cond: [{ $in: ['$status', ['ordered', 'partially_received', 'received', 'closed_short']] }, '$total', 0] } },
+        openPoCount: { $sum: { $cond: [{ $in: ['$status', ['draft', 'approved', 'sent', 'ordered', 'partially_received']] }, 1, 0] } },
+        spent: { $sum: { $cond: [{ $in: ['$status', ['approved', 'sent', 'ordered', 'partially_received', 'received', 'closed_short']] }, '$total', 0] } },
         lastOrderAt: { $max: { $ifNull: ['$orderedAt', '$createdAt'] } },
       } },
     ]);
@@ -620,7 +620,7 @@ export class PurchaseOrdersService {
    *  own supplier, not an aggregate count. */
   async sendOverdueAlerts(): Promise<void> {
     const overdue = await this.repos.purchaseOrderModel
-      .find({ status: { $in: ['ordered', 'partially_received'] }, expectedAt: { $lt: new Date() }, overdueAlertSentAt: null })
+      .find({ status: { $in: ['approved', 'sent', 'ordered', 'partially_received'] }, expectedAt: { $lt: new Date() }, overdueAlertSentAt: null })
       .lean();
 
     for (const po of overdue) {

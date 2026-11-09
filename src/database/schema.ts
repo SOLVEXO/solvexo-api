@@ -187,6 +187,8 @@ export { DraftOrder, DraftOrderDocument, DraftOrderSchema } from '../draft-order
 export { Supplier, SupplierDocument, SupplierSchema } from '../purchase-orders/schemas/supplier.schema';
 export { PurchaseOrder, PurchaseOrderDocument, PurchaseOrderSchema } from '../purchase-orders/schemas/purchase-order.schema';
 export { SupplierReturn, SupplierReturnDocument, SupplierReturnSchema } from '../purchase-orders/schemas/supplier-return.schema';
+export { PurchaseReceipt, PurchaseReceiptDocument, PurchaseReceiptSchema } from '../purchase-orders/schemas/purchase-receipt.schema';
+export { SupplierLedgerEntry, SupplierLedgerEntryDocument, SupplierLedgerEntrySchema } from '../purchase-orders/schemas/supplier-ledger-entry.schema';
 export { StockCount, StockCountDocument, StockCountSchema } from '../stock-counts/schemas/stock-count.schema';
 export { StoreCustomerMeta, StoreCustomerMetaDocument, StoreCustomerMetaSchema } from '../store/schemas/store-customer-meta.schema';
 export { BlogPost, BlogPostDocument, BlogPostSchema } from '../store-blog/schemas/blog-post.schema';

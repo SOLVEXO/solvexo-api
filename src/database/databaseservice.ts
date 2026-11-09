@@ -476,6 +476,10 @@ export class DatabaseService {
     private stockAdjustmentModel: Model<schema.StockAdjustmentDocument>,
     @InjectModel(schema.StockMovement.name)
     private stockMovementModel: Model<schema.StockMovementDocument>,
+    @InjectModel(schema.PurchaseReceipt.name)
+    private purchaseReceiptModel: Model<schema.PurchaseReceiptDocument>,
+    @InjectModel(schema.SupplierLedgerEntry.name)
+    private supplierLedgerEntryModel: Model<schema.SupplierLedgerEntryDocument>,
     @InjectModel(schema.PosCustomer.name)
     private posCustomerModel: Model<schema.PosCustomerDocument>,
     @InjectModel(schema.StoreCreditEntry.name)
@@ -706,6 +710,8 @@ export class DatabaseService {
       storeAppRequestModel: this.storeAppRequestModel,
       stockAdjustmentModel: this.stockAdjustmentModel,
       stockMovementModel: this.stockMovementModel,
+      purchaseReceiptModel: this.purchaseReceiptModel,
+      supplierLedgerEntryModel: this.supplierLedgerEntryModel,
       posCustomerModel: this.posCustomerModel,
       storeCreditEntryModel: this.storeCreditEntryModel,
       storeCreditLotModel: this.storeCreditLotModel,

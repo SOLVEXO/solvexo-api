@@ -22,6 +22,7 @@ export const APPROVAL_LIMITS = {
   stockAdjustValueMinor:     { kind: 'minor', default: 20,   label: 'Stock adjustment a cashier may make alone — value at cost' },
   cashOutMinor:              { kind: 'minor', default: 100,  label: 'Cash out / safe drop' },
   expenseMinor:              { kind: 'minor', default: 100,  label: 'Expense' },
+  purchaseOrderMinor:        { kind: 'minor', default: 1000, label: 'Purchase order a manager may approve alone' },
   supplierPaymentManagerMinor: { kind: 'minor', default: 500,  label: 'Supplier payment a manager may make alone' },
   supplierPaymentOwnerMinor:   { kind: 'minor', default: 2000, label: 'Supplier payment that needs the owner' },
   storeCreditRefundMinor:    { kind: 'minor', default: 50,   label: 'Refund to store credit' },
@@ -72,7 +73,11 @@ export const POS_PERMISSIONS = {
   // ── supply (G3.4)
   'supply.view':               { label: 'See suppliers and purchase orders', roles: MGR },
   'supply.po.write':           { label: 'Create / edit a purchase order', roles: MGR },
-  'supply.po.receive':         { label: 'Receive stock against a purchase order', roles: MGR },
+  'supply.po.approve':         { label: 'Approve a purchase order (above the limit the owner approves)', roles: MGR, approval: [{ limit: 'purchaseOrderMinor', ctx: 'amountMinor', approver: 'owner' }] },
+  'supply.po.receive':         { label: 'Receive stock against an approved purchase order', roles: ALL },
+  'supply.receive.direct':     { label: 'Receive stock without a purchase order', roles: MGR },
+  'supply.return':             { label: 'Return stock to a supplier', roles: MGR },
+  'supply.costs.view':         { label: 'See costs, payables and payments', roles: MGR },
   'supply.payment':            { label: 'Pay a supplier', roles: MGR, approval: [{ limit: 'supplierPaymentManagerMinor', ctx: 'amountMinor', approver: 'owner' }] },
   // ── cash (G3.5)
   'cash.in':                   { label: 'Cash in (float top-up)', roles: ALL },

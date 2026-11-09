@@ -42,7 +42,11 @@ const T: Record<PosAction, { below: [Exp, Exp, Exp]; above?: [Exp, Exp, Exp] }> 
   'loyalty.adjust':               { below: ['deny', 'allow', 'allow'], above: ['deny', 'owner', 'allow'] },
   'supply.view':                  { below: ['deny', 'allow', 'allow'] },
   'supply.po.write':              { below: ['deny', 'allow', 'allow'] },
-  'supply.po.receive':            { below: ['deny', 'allow', 'allow'] },
+  'supply.po.approve':            { below: ['deny', 'allow', 'allow'], above: ['deny', 'owner', 'allow'] },
+  'supply.po.receive':            { below: ['allow', 'allow', 'allow'] }, // a cashier may receive against an APPROVED PO (costs stay hidden from them)
+  'supply.receive.direct':        { below: ['deny', 'allow', 'allow'] },
+  'supply.return':                { below: ['deny', 'allow', 'allow'] },
+  'supply.costs.view':            { below: ['deny', 'allow', 'allow'] },
   'supply.payment':               { below: ['deny', 'allow', 'allow'], above: ['deny', 'owner', 'allow'] },
   'cash.in':                      { below: ['allow', 'allow', 'allow'] },
   'cash.out':                     { below: ['allow', 'allow', 'allow'], above: ['manager', 'allow', 'allow'] },

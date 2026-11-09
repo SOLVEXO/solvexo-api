@@ -46,6 +46,8 @@ export class StockLot {
 
   @Prop({ type: String, default: null }) supplierId: string | null;
   @Prop({ type: String, default: null }) purchaseOrderId: string | null;
+  /** G3.4: the goods receipt this lot came in on */
+  @Prop({ type: String, default: null }) receiptId: string | null;
 
   @Prop({ type: Date, default: Date.now }) receivedAt: Date;
   @Prop({ type: String, enum: STOCK_LOT_STATUSES, default: 'active' }) status: StockLotStatus;

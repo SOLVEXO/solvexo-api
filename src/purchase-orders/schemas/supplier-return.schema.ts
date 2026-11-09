@@ -41,6 +41,8 @@ export class SupplierReturn {
   @Prop({ type: String, required: true }) supplierName: string;
   @Prop({ type: String, default: null }) purchaseOrderId: string | null;
   @Prop({ type: String, default: null }) locationId: string | null;
+  /** G3.4: the goods receipt the units came in on (links the return to receipts and lots) */
+  @Prop({ type: String, default: null }) receiptId: string | null;
   @Prop({ type: String, enum: SUPPLIER_RETURN_REASONS, default: 'other' }) reason: SupplierReturnReason;
   @Prop({ type: String, default: null }) note: string | null;
   @Prop({ type: [SupplierReturnItemSchema], default: [] }) items: SupplierReturnItem[];
