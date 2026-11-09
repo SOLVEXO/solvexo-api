@@ -100,6 +100,7 @@ import { LicensesModule } from './licenses/licenses.module';
 import { B2BModule } from './b2b/b2b.module';
 import { KhataModule } from './khata/khata.module';
 import { ProductFeedsModule } from './product-feeds/product-feeds.module';
+import { MerchantApiModule } from './merchant-api/merchant-api.module';
 import { CodProtectionModule } from './cod-protection/cod-protection.module';
 import { MessagingChannelsModule } from './messaging-channels/messaging-channels.module';
 import { CoursesModule } from './courses/courses.module';
@@ -239,6 +240,7 @@ import { AppI18nModule } from './i18n/i18n.module';
     B2BModule,
     KhataModule,
     ProductFeedsModule,
+    MerchantApiModule,
     CodProtectionModule,
     MessagingChannelsModule,
     CoursesModule,
