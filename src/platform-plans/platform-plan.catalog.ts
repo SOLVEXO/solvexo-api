@@ -43,6 +43,13 @@ export const yearlyPriceFor = (monthlyPriceUSD: number): number => Math.round(mo
  *  inconsistent, e.g. Grow billed $66/mo yearly vs $49 monthly); after that the admin owns the yearly price. */
 export const YEARLY_ALIGN_FROM_VERSION = 4;
 
+/** Launch offer: every self-serve core plan's price is cut by this share ONCE (see
+ *  PlatformPlanCatalogService.applyLaunchDiscount). The old price becomes the crossed-out
+ *  "was" price; what Stripe charges is the new, lower price. Admins can change either later. */
+export const LAUNCH_DISCOUNT = 0.4;
+/** The launch price, rounded DOWN to a whole dollar so the cut is never less than LAUNCH_DISCOUNT ($49 → $29). */
+export const launchPriceFor = (priceUSD: number): number => Math.floor(Math.round(priceUSD * (1 - LAUNCH_DISCOUNT) * 100) / 100);
+
 export interface CatalogPlan {
   key: PlanKey;
   name: string;
@@ -229,6 +236,7 @@ export function validatePlanPricing(p: {
   isFree?: boolean; isCustomPricing?: boolean;
   monthlyPriceUSD: number | null; yearlyPriceUSD: number | null;
   introOfferEnabled?: boolean; introPriceUSD?: number | null; introDurationCycles?: number | null;
+  compareAtMonthlyPriceUSD?: number | null; compareAtYearlyPriceUSD?: number | null;
 }): string[] {
   const problems: string[] = [];
   const selfServe = !p.isFree && !p.isCustomPricing;
@@ -244,6 +252,12 @@ export function validatePlanPricing(p: {
     if (p.introPriceUSD == null || p.introDurationCycles == null) problems.push('The intro offer needs both a price and a number of months.');
     else if (typeof p.monthlyPriceUSD === 'number' && p.introPriceUSD >= p.monthlyPriceUSD) problems.push('The intro price must be lower than the regular monthly price.');
     else if (p.introDurationCycles < 1) problems.push('The intro offer must last at least 1 month.');
+  }
+  if (p.compareAtMonthlyPriceUSD != null && !(typeof p.monthlyPriceUSD === 'number' && p.compareAtMonthlyPriceUSD > p.monthlyPriceUSD)) {
+    problems.push('The "was" monthly price must be higher than the monthly price.');
+  }
+  if (p.compareAtYearlyPriceUSD != null && !(typeof p.yearlyPriceUSD === 'number' && p.compareAtYearlyPriceUSD > p.yearlyPriceUSD)) {
+    problems.push('The "was" yearly price must be higher than the yearly price.');
   }
   return problems;
 }
