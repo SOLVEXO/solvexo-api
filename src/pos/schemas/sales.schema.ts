@@ -58,6 +58,14 @@ export class SaleItem {
   @Prop({ type: Number, default: 0 })
   refundedQty: number;          // cumulative qty refunded from this line
 
+  // G3.2 (D4): the lots this line's units were taken from (FEFO), in the order taken — a return goes back to the SAME lots. Empty for variants that do not track lots.
+  @Prop({ type: [{ _id: false, lotId: String, lotNumber: String, qty: Number, expiryDate: { type: Date, default: null }, expired: { type: Boolean, default: false }, costPriceMinor: { type: 'MinorMoney', default: null } }], default: undefined })
+  lots?: Array<{ lotId: string; lotNumber: string; qty: number; expiryDate: Date | null; expired: boolean; costPriceMinor: number | null }>;
+
+  // G3.2: units of this line came from an expired lot (manager override online, or an offline sale whose goods had already left)
+  @Prop({ type: Boolean, default: false })
+  soldExpired?: boolean;
+
   // G2.4 custom item: a line with no product — never touches stock; `taxCategory` 'exempt' = no tax on this line;
   // `customApprovedBy` = the manager who approved it (or null when under the store's no-approval limit)
   @Prop({ type: Boolean, default: false })

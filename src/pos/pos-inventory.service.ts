@@ -8,6 +8,8 @@ import { PosService } from './pos.service';
 import { PosAuthorizer } from './pos-authorizer.service';
 import { APPROVAL_LIMITS, PosAction } from './pos-permissions.config';
 import { STOCK_MOVEMENT_TYPES } from '../inventory/schemas/stock-movement.schema';
+import { previewLotsFefo } from '../common/lot-allocation.util';
+import { expiredUnits } from '../common/stock-availability.util';
 
 export const POS_ADJUST_REASONS = ['restocked', 'damaged', 'correction', 'other'] as const;
 type Req = any;
@@ -67,6 +69,7 @@ export class PosInventoryService {
     return {
       variantId: String(v._id), productId: v.productId, productName: p?.name ?? '', image: p?.images?.[0] ?? null, sku: v.sku ?? null, barcode: v.barcode ?? null, options: v.options ?? [],
       stock, committed: v.committedStock ?? 0, damaged: v.damagedStock ?? 0, unlimited: !!v.unlimitedStock, trackLots: !!v.trackLots, reorderPoint: reorder,
+      expiredUnits: v.trackLots ? expiredUnits(v) : 0, nextExpiryAt: v.trackLots ? (v.expiryBuckets ?? []).find((b: any) => b?.at && new Date(b.at).getTime() > Date.now())?.at ?? null : null,
       out: !v.unlimitedStock && stock <= 0, low: !v.unlimitedStock && reorder > 0 && stock <= reorder,
       ...(cost ? { costMinor, valueMinor: costMinor != null ? costMinor * stock : null } : {}),
     };
@@ -109,6 +112,7 @@ export class PosInventoryService {
       filter.$or = [{ sku: rx }, { barcode: term }, { productId: { $in: prods.map((p) => String(p._id)) } }];
     }
     if (q.filter === 'out') { filter.unlimitedStock = { $ne: true }; filter.stock = { $lte: 0 }; }
+    if (q.filter === 'expiring') { filter.trackLots = true; filter.$or = [...(filter.$or ? [] : []), { expiredStock: { $gt: 0 } }, { 'expiryBuckets.0.at': { $lte: new Date(Date.now() + 30 * 86400_000) } }]; }
     if (q.filter === 'low') { filter.unlimitedStock = { $ne: true }; filter.reorderPoint = { $gt: 0 }; filter.$expr = { $lte: ['$stock', '$reorderPoint'] }; }
     const [rows, total]: [any[], number] = await Promise.all([
       this.r.productVariantModel.find(filter).sort({ updatedAt: -1, _id: 1 }).skip((page - 1) * limit).limit(limit).lean(),
@@ -171,6 +175,33 @@ export class PosInventoryService {
       this.r.stockMovementModel.countDocuments(f),
     ]);
     return { success: true, data: { ...(await this.cur(storeId)), items: rows.map((m) => this.moveRow(m, this.seesCost(a.role))), total, page, hasMore: page * limit < total } };
+  }
+
+  /** Expired / expiring lots of the store (counts) — Home and the overview. */
+  async expiringSummary(storeId: string) {
+    const now = new Date(); const lots = this.r.stockLotModel;
+    const base = { storeId, status: 'active', quantityRemaining: { $gt: 0 }, expiryDate: { $type: 'date' } };
+    const [expired, in7, in30] = await Promise.all([
+      lots.countDocuments({ ...base, expiryDate: { $lt: now } }),
+      lots.countDocuments({ ...base, expiryDate: { $gte: now, $lte: new Date(now.getTime() + 7 * 86400_000) } }),
+      lots.countDocuments({ ...base, expiryDate: { $gte: now, $lte: new Date(now.getTime() + 30 * 86400_000) } }),
+    ]);
+    return { expiredLots: expired, expiringIn7Days: in7, expiringIn30Days: in30 };
+  }
+
+  /**
+   * FEFO suggestion for [qty] units of a lot-tracked variant (read-only): which lots a sale or a transfer would take, soonest expiry first; expired lots are NOT offered
+   * (selling them is the manager override of the sale). The till shows it at the line; the SERVER re-allocates when the sale is recorded (and for an offline sale, at sync).
+   */
+  async lotsSuggest(req: Req, storeId: string, variantId: string, qty: number, t: Tokens) {
+    await this.gate(req, storeId, 'inventory.view', t);
+    const v: any = await this.loadVariant(storeId, variantId);
+    const q = Math.max(1, Math.min(100_000, Math.trunc(Number(qty) || 1)));
+    if (!v.trackLots) return { success: true, data: { variantId, trackLots: false, qty: q, allocations: [], shortBy: 0, expiredUnits: 0, serverTime: new Date() } };
+    const { allocations, shortBy } = await previewLotsFefo(this.r as any, variantId, q);
+    const now = Date.now();
+    return { success: true, data: { variantId, trackLots: true, qty: q, serverTime: new Date(), shortBy, expiredUnits: expiredUnits(v),
+      allocations: allocations.map((a) => ({ lotId: a.lotId, lotNumber: a.lotNumber, take: a.qty, expiryDate: a.expiryDate, daysLeft: a.expiryDate ? Math.ceil((new Date(a.expiryDate).getTime() - now) / 86400_000) : null })) } };
   }
 
   async lowStock(req: Req, storeId: string, t: Tokens) {

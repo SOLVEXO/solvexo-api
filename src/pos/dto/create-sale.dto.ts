@@ -21,6 +21,11 @@ export class SaleItemDto {
   @IsNotEmpty()
   variantId: string;
 
+  @ApiProperty({ required: false, description: 'G3.2: knowingly sell units of an EXPIRED lot. Needs a manager (PIN in x-pos-approver-token); audited. Ignored on offline sales (the server never blocks those).' })
+  @IsOptional()
+  @IsBoolean()
+  sellExpired?: boolean;
+
   @ApiProperty({ required: false, description: 'G2.4 custom item: a line with no catalog product. Needs `customName` and `unitPrice`; never touches stock; needs a manager above the store\'s limit.' })
   @IsOptional()
   @IsBoolean()

@@ -39,6 +39,8 @@ import { CompleteSaleDto } from './dto/complete-sale.dto';
 import { CashAdjustmentDto } from './dto/cash-adjustment.dto';
 import { RefundSaleDto } from './dto/refund-sale.dto';
 import { PosCatalogService } from './pos-catalog.service';
+import { PosAuthorizer } from './pos-authorizer.service';
+import { PosInventoryService } from './pos-inventory.service';
 import { AdjustCatalogStockDto, UpdateCatalogVariantDto } from './dto/catalog.dto';
 import { ForceCloseSessionDto } from './dto/force-close-session.dto';
 import { UpdateRegisterDto } from './dto/update-register.dto';
@@ -67,6 +69,8 @@ export class PosController {
     private readonly kybGate: KybGateService,
     private readonly receipts: PosReceiptService,
     private readonly catalog: PosCatalogService,
+    private readonly authorizer: PosAuthorizer,
+    private readonly posInv: PosInventoryService,
   ) {}
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -382,8 +386,14 @@ export class PosController {
   // and the `Idempotency-Key` header (replays the first response on an exact retry).
   @UseInterceptors(IdempotencyInterceptor)
   @Post('sales')
-  createSale(@Req() req: any, @Body() dto: CreateSaleDto, @Headers('x-pos-employee-token') employeeToken?: string) {
-    return this.posService.createSale(req.user.userId, dto, employeeToken);
+  async createSale(@Req() req: any, @Body() dto: CreateSaleDto, @Headers('x-pos-employee-token') employeeToken?: string, @Headers('x-pos-approver-token') approverToken?: string) {
+    // G3.2: "sell the expired units" is a permission-matrix action (a cashier needs a manager's PIN, audited); offline replays are never blocked and never ask
+    let expiredApproval: { employeeId: string; role: string } | undefined;
+    if (!dto.offline && dto.status !== 'held' && (dto.items ?? []).some((i) => i.sellExpired)) {
+      const a = await this.authorizer.authorize(req, { storeId: dto.storeId, action: 'inventory.lot.sellExpired', employeeToken, approverToken });
+      expiredApproval = { employeeId: a.approvedBy?.employeeId ?? a.employeeId ?? req.user.userId, role: a.approvedBy ? 'manager' : a.role };
+    }
+    return this.posService.createSale(req.user.userId, dto, employeeToken, { expiredApproval });
   }
 
   // Price a cart without selling it — gated exactly like selling (it is part of ringing a sale), no side effects.
@@ -624,8 +634,10 @@ export class PosController {
     if (res.data.role !== 'cashier') {
       const low: any = await this.inventoryService.getLowStockSummary(req.user.userId, storeId).catch(() => null);
       res.data.lowStock = low?.data ?? null;
+      res.data.expiring = await this.posInv.expiringSummary(storeId).catch(() => null); // G3.2: expired / expiring-soon lots on Home
     } else {
       res.data.lowStock = null; // a cashier does not see store-wide stock figures
+      res.data.expiring = null;
     }
     return res;
   }

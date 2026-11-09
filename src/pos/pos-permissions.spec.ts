@@ -29,7 +29,7 @@ const T: Record<PosAction, { below: [Exp, Exp, Exp]; above?: [Exp, Exp, Exp] }> 
   'inventory.count.finish':       { below: ['deny', 'allow', 'allow'] },
   'inventory.transfer.create':    { below: ['deny', 'allow', 'allow'] },
   'inventory.transfer.receive':   { below: ['deny', 'allow', 'allow'] },
-  'inventory.lot.sellExpired':    { below: ['deny', 'allow', 'allow'] }, // cashier: not in the role list; a manager is their own approver (audited)
+  'inventory.lot.sellExpired':    { below: ['manager', 'allow', 'allow'] }, // every use needs a manager: a cashier asks for the PIN, a manager is their own approver (audited)
   'catalog.edit':                 { below: ['deny', 'allow', 'allow'] },
   'customers.view':               { below: ['allow', 'allow', 'allow'] },
   'customers.create':             { below: ['allow', 'allow', 'allow'] },
@@ -73,8 +73,8 @@ describe('the permission matrix: every action × every role', () => {
     });
   }
 
-  it('an action that needs approval ALWAYS (an expired lot) is allowed for a manager acting as their own approver, denied for a cashier', () => {
-    expect(out('inventory.lot.sellExpired', 'cashier', {})).toBe('deny');
+  it('an action that needs approval ALWAYS (an expired lot) is allowed for a manager acting as their own approver; a cashier needs the manager', () => {
+    expect(out('inventory.lot.sellExpired', 'cashier', {})).toBe('manager');
     expect(out('inventory.lot.sellExpired', 'manager', {})).toBe('allow');
   });
 

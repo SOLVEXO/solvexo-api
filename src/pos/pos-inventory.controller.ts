@@ -34,6 +34,9 @@ export class PosInventoryController {
   @UseGuards(PosAuthGuard, RolesGuard) @Roles('seller') @Get('low-stock/:storeId')
   lowStock(@Req() req: any, @Param('storeId') storeId: string, @Headers('x-pos-employee-token') e?: string) { return this.svc.lowStock(req, storeId, this.t(e)); }
 
+  @UseGuards(PosAuthGuard, RolesGuard) @Roles('seller') @Get('lots/:storeId/:variantId')
+  lots(@Req() req: any, @Param('storeId') storeId: string, @Param('variantId') variantId: string, @Query('qty') qty: string, @Headers('x-pos-employee-token') e?: string) { return this.svc.lotsSuggest(req, storeId, variantId, Number(qty), this.t(e)); }
+
   @UseGuards(PosAuthGuard, RolesGuard) @Roles('seller') @Get('lookup/:storeId')
   lookup(@Req() req: any, @Param('storeId') storeId: string, @Query('code') code: string, @Headers('x-pos-employee-token') e?: string) { return this.svc.lookup(req, storeId, code, this.t(e)); }
 

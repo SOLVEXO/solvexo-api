@@ -11,7 +11,8 @@ import {
   ForbiddenException,
   ConflictException,
 } from '@nestjs/common';
-import { availableStock, AVAILABLE_STOCK_EXPR } from '@/common/stock-availability.util';
+import { availableStock, AVAILABLE_STOCK_EXPR, AVAILABLE_STOCK_INCL_EXPIRED_EXPR, expiredUnits } from '@/common/stock-availability.util';
+import { allocateLotsFefo, restoreToLots, returnPartsFor, LotAllocation } from '@/common/lot-allocation.util';
 import { drainLocationStock, restoreLocationStock } from '@/common/location-stock.util';
 import { ClientSession, Types } from 'mongoose';
 import { Long } from 'mongodb';
@@ -855,7 +856,7 @@ export class PosService {
     return rows.some((r) => same(Number(r.price), charged));
   }
 
-  async createSale(sellerId: string, dto: CreateSaleDto, employeeToken: string | undefined) {
+  async createSale(sellerId: string, dto: CreateSaleDto, employeeToken: string | undefined, opts: { expiredApproval?: { employeeId: string; role: string } } = {}) {
     await this.verifyStoreOwnership(dto.storeId, sellerId);
 
     if (dto.idempotencyKey) {
@@ -916,10 +917,12 @@ export class PosService {
       // Checked against `stock - committedStock` (real availability), not
       // raw `stock` — some of it may already be reserved by a paid-but-
       // unshipped online order (see ProductVariant.committedStock).
-      const availableForPos = availableStock(variant as any);
+      // G3.2: a manager-approved "sell the expired units" counts them as available for THIS line (the controller verified the approval; offline sales are never blocked)
+      const availableForPos = availableStock(variant as any) + (item.sellExpired && !off.isOffline ? expiredUnits(variant as any) : 0);
       if (!isHeld && !off.isOffline && !variant.unlimitedStock && availableForPos < item.qty) {
         throw new BadRequestException(`Insufficient stock for "${variant.sku}" — available: ${availableForPos}`);
       }
+      if (item.sellExpired && !off.isOffline && !opts.expiredApproval) throw new ForbiddenException({ statusCode: 403, code: 'EXPIRED_LOT_APPROVAL_REQUIRED', message: 'Selling expired stock needs a manager' });
 
       const product = await this.r.productModel.findOne({ _id: item.productId, isDelete: false }).select('name gallery coverImages');
       if (!product) throw new BadRequestException(`Product not found: ${item.productId}`);
@@ -949,6 +952,8 @@ export class PosService {
         // G3.1 (D5): the cost at the moment of sale — the minor twin when the variant has one, else its decimal converted below (once the currency exponent is known)
         unitCostMinor: (variant as any).costPriceMinor ?? null,
         _costDecimal: (variant as any).costPrice ?? null,
+        _trackLots: !!(variant as any).trackLots,
+        _sellExpired: !!item.sellExpired && !off.isOffline && !!opts.expiredApproval,
         lineTotal: 0, // set below from the server-computed, exponent-rounded line totals
       });
     }
@@ -993,6 +998,8 @@ export class PosService {
       assertClientTotal(dto.clientTotal, totals);
     }
     saleItems.forEach((it, i) => { it.lineTotal = totals.lineTotals[i]; });
+    const expiredOverrides = saleItems.filter((it) => it._sellExpired).map((it) => ({ variantId: String(it.variantId), sku: it.sku, qty: it.qty }));
+    // (the lots are attached after the stock is taken, below; the temporary markers never reach the stored sale)
     const { subtotal, discount, tax, total } = totals;
 
     // Tender lines — validated against the server's total (a held sale has none yet; it is paid when completed).
@@ -1014,10 +1021,13 @@ export class PosService {
     // stock has genuinely been taken; if recording the sale then fails, the stock is handed back.
     const sessionLocationId: string | null = (session as any).locationId ?? null;
     let reserved: Array<{ variantId: string; qty: number }> = [];
+    let lotPlan: { all: Array<{ variantId: string; lotId: string; qty: number }>; flags: Array<{ type: string; detail: Record<string, any> }> } = { all: [], flags: [] };
     const oversold: Array<{ variantId: string; sku?: string; requested: number; available: number }> = [];
     if (!isHeld) {
       try {
-        reserved = await this.reserveStock(dto.items.map((i, idx) => ({ variantId: i.variantId, qty: i.qty, sku: saleItems[idx].sku })).filter((x) => !!x.variantId), sessionLocationId, { allowNegative: off.isOffline, oversold });
+        reserved = await this.reserveStock(dto.items.map((i, idx) => ({ variantId: i.variantId, qty: i.qty, sku: saleItems[idx].sku })).filter((x) => !!x.variantId), sessionLocationId, { allowNegative: off.isOffline, oversold, includeExpired: new Set(saleItems.filter((it) => it._sellExpired).map((it) => String(it.variantId))) });
+        lotPlan = await this.allocateSaleLots(saleItems, { offline: off.isOffline });
+        lotPlan.flags.forEach((f) => flags.push(f));
       } catch (err) {
         // A concurrent duplicate of THIS checkout may have just taken the last units and written the sale;
         // that is the same sale, not a shortage — hand back the winner instead of "insufficient stock".
@@ -1104,7 +1114,10 @@ export class PosService {
           const auditCtx = { sessionId: dto.sessionId, registerId: dto.registerId, shiftId: (session as any).shiftId ?? null };
           if (!isHeld) {
             await this.recordMovements(tx, { type: 'sale', refType: 'sale', refId: String((created as any)._id), storeId: dto.storeId, locationId: sessionLocationId, ctx: { employeeId: dto.employeeId, registerId: dto.registerId, sessionId: dto.sessionId },
-              lines: ((created as any).items as any[]).map((it: any, idx: number) => ({ lineKey: String(idx), variantId: it.variantId, productId: it.productId, name: it.name, sku: it.sku, qty: it.qty, unitCostMinor: it.unitCostMinor ?? null, isCustom: !!it.isCustom })) });
+              lines: ((created as any).items as any[]).flatMap((it: any, idx: number) => this.movementLines(it, idx, it.qty, it.lots ?? [])) });
+            for (const it of ((created as any).items as any[]).filter((x: any) => x.soldExpired)) {
+              await this.writeAuditLog({ storeId: dto.storeId, employeeId: dto.employeeId, action: 'expired_lot_sold', targetId: String((created as any)._id), targetType: 'sale', sessionId: dto.sessionId, registerId: dto.registerId, shiftId: (session as any).shiftId ?? null, metadata: { variantId: String(it.variantId), sku: it.sku, qty: it.qty, lots: (it.lots ?? []).filter((l: any) => l.expired).map((l: any) => ({ lotId: l.lotId, lotNumber: l.lotNumber, qty: l.qty })), approvedBy: opts.expiredApproval?.employeeId ?? null, offline: off.isOffline } }, tx);
+            }
             await this.recordPayments(created, settled!.lines, { ...auditCtx, employeeId: dto.employeeId }, tx);
             await this.consumeDigital(dto.storeId, digital, created, tx); // one sale per payment: the unique `consumed` event commits with the sale or not at all
             if (couponUsed) await this.consumeCoupon(String(couponUsed._id), tx); // race-safe usage count, in the same transaction
@@ -1141,6 +1154,7 @@ export class PosService {
       }
     } catch (err: any) {
       await this.releaseStock(reserved, sessionLocationId);
+      await this.restoreSaleLots(lotPlan.all);
       if (err?.code === 11000 && err?.keyPattern?.idempotencyKey && dto.idempotencyKey) {
         const existing = await this.r.saleModel.findOne({ idempotencyKey: dto.idempotencyKey, storeId: dto.storeId }).lean();
         if (existing) return { success: true, message: 'Duplicate request — returning existing sale', data: existing };
@@ -1228,6 +1242,12 @@ export class PosService {
       locationId,
     );
 
+    // G3.2: lot-tracked lines take their units from the lots (FEFO) — expired lots are never used here (a manager's override is a sale-time decision)
+    const trackedIds = new Set((await this.r.productVariantModel.find({ _id: { $in: (sale as any).items.filter((i: any) => !i.isCustom).map((i: any) => String(i.variantId)) }, trackLots: true }).select('_id').lean()).map((v: any) => String(v._id)));
+    const lotItems = (sale as any).items.map((i: any) => ({ variantId: String(i.variantId), qty: i.qty, isCustom: !!i.isCustom, sku: i.sku, _trackLots: trackedIds.has(String(i.variantId)) }));
+    let lotPlan: { all: Array<{ variantId: string; lotId: string; qty: number }>; flags: any[] } = { all: [], flags: [] };
+    try { lotPlan = await this.allocateSaleLots(lotItems, { offline: false }); } catch (e) { await this.releaseStock(reserved, locationId); throw e; }
+
     const completeCtx = { sessionId: String((sale as any).sessionId), registerId: (sale as any).registerId ?? null, shiftId: ((await this.r.registerSessionModel.findById((sale as any).sessionId)) as any)?.shiftId ?? null };
     let updated: any;
     try {
@@ -1236,6 +1256,7 @@ export class PosService {
       const invoice = await this.issueInvoice(String((sale as any).storeId), new Date(), null, tx);
       const bdItems = this.itemsMinor((sale as any).items.map((i: any) => ({ price: i.price, taxCategory: i.taxCategory })), totals, money.exp);
       const itemSet: Record<string, any> = {};
+      lotItems.forEach((li: any, i: number) => { if (li.lots) { itemSet[`items.${i}.lots`] = li.lots; itemSet[`items.${i}.soldExpired`] = !!li.soldExpired; } });
       bdItems.forEach((b: any, i: number) => { itemSet[`items.${i}.lineTotalMinor`] = b.lineTotalMinor; itemSet[`items.${i}.discountShareMinor`] = b.discountShareMinor; itemSet[`items.${i}.netMinor`] = b.netMinor; itemSet[`items.${i}.taxMinor`] = b.taxMinor; });
       const claimed = await this.r.saleModel.findOneAndUpdate(
       { _id: saleId, status: 'held', deletedAt: null, 'invoice.number': null },
@@ -1269,6 +1290,9 @@ export class PosService {
       { new: true, ...(tx ? { session: tx } : {}) },
     );
       if (!claimed) return null;
+      // G3.1/G3.2: the held sale's units leave stock NOW — the ledger rows (per lot) are written with the completion
+      await this.recordMovements(tx, { type: 'sale', refType: 'sale', refId: saleId, storeId: String((sale as any).storeId), locationId, ctx: { employeeId: (sale as any).employeeId, registerId: completeCtx.registerId, sessionId: completeCtx.sessionId },
+        lines: ((sale as any).items as any[]).flatMap((it: any, idx: number) => this.movementLines({ variantId: it.variantId, productId: it.productId, name: it.name, sku: it.sku, unitCostMinor: it.unitCostMinor ?? null, isCustom: !!it.isCustom }, idx, it.qty, lotItems[idx]?.lots ?? [])) });
       await this.recordPayments(claimed, settled.lines, { ...completeCtx, employeeId: (sale as any).employeeId }, tx);
       await this.consumeDigital(String((sale as any).storeId), digital, claimed, tx);
       if (couponUsed) await this.consumeCoupon(String(couponUsed._id), tx); // race-safe usage count, in the same transaction
@@ -1277,10 +1301,12 @@ export class PosService {
     });
     } catch (e) {
       await this.releaseStock(reserved, locationId); // the stock taken above goes back if the sale (or its digital payment) could not be committed
+      await this.restoreSaleLots(lotPlan.all);
       throw e;
     }
     if (!updated) {
       await this.releaseStock(reserved, locationId);
+      await this.restoreSaleLots(lotPlan.all);
       throw businessConflict('HELD_SALE_ALREADY_RESOLVED', 'This held sale was already completed or discarded');
     }
 
@@ -1558,7 +1584,7 @@ export class PosService {
       createdCreditNote = creditNote;
       // G3.1: the units that really went back on the shelf are a stock movement, at the cost the sale snapshotted
       await this.recordMovements(tx, { type: 'return', refType: 'refund', refId: String(refundId), storeId: String((sale as any).storeId), locationId, ctx: { employeeId: actor.employeeId, registerId: returnRegisterId, sessionId: refundShift ? String(refundShift._id) : null },
-        lines: itemUpdates.filter((u) => !!u.variantId && u.restock).map((u) => { const it = saleItems.find((x: any) => String(x._id) === u.saleItemId); return { lineKey: u.saleItemId, variantId: u.variantId, productId: it?.productId, name: it?.name, sku: it?.sku, qty: u.qtyToRestore, unitCostMinor: it?.unitCostMinor ?? null, isCustom: false }; }) });
+        lines: itemUpdates.filter((u) => !!u.variantId && u.restock).flatMap((u) => { const it = saleItems.find((x: any) => String(x._id) === u.saleItemId); return this.movementLines({ ...(it?.toObject?.() ?? it ?? {}), variantId: u.variantId, isCustom: false }, u.saleItemId, u.qtyToRestore, returnPartsFor(it?.lots ?? [], it?.refundedQty || 0, u.qtyToRestore)); }) });
       await this.writeAuditLog({
         storeId: (sale as any).storeId, employeeId: actor.employeeId, action: refundAuditAction, targetId: saleId, targetType: 'sale', ...refundCtx,
         metadata: { refundAmount, tenders, currency, items: dto?.items, refundId: String(refundId), reference: `${(sale as any).saleNumber ?? saleId}-R${refundSeq + 1}`, reason: reason.note, reasonCode: reason.code, creditNote: creditNote.number, approvedBy, approvalReasons: needs },
@@ -1568,6 +1594,12 @@ export class PosService {
     if (!claimed) throw businessConflict('SALE_CHANGED_CONCURRENTLY', staleMessage);
 
     await this.restoreSoldStock(itemUpdates.filter((u) => !!u.variantId && u.restock).map((u) => ({ variantId: u.variantId, qty: u.qtyToRestore })), locationId);
+    // G3.2: the units go back to the LOTS they were sold from (cumulative, in the order sold)
+    for (const u of itemUpdates.filter((x) => !!x.variantId && x.restock)) {
+      const it: any = saleItems.find((x: any) => String(x._id) === u.saleItemId);
+      const parts = returnPartsFor(it?.lots ?? [], it?.refundedQty || 0, u.qtyToRestore);
+      if (parts.length) await restoreToLots(this.r as any, u.variantId, parts).catch(() => undefined);
+    }
 
     // Session: the refund comes OUT of sales and out of the right tender — so a cash refund lowers the
     // cash the drawer should now hold (expected cash = opening + cashSales + cashIn − cashOut). The
@@ -2107,7 +2139,7 @@ export class PosService {
   private async reserveStock(
     items: Array<{ variantId: string; qty: number; sku?: string }>,
     locationId: string | null,
-    opts: { allowNegative?: boolean; oversold?: Array<{ variantId: string; sku?: string; requested: number; available: number }> } = {},
+    opts: { allowNegative?: boolean; oversold?: Array<{ variantId: string; sku?: string; requested: number; available: number }>; includeExpired?: Set<string> } = {},
   ): Promise<Array<{ variantId: string; qty: number }>> {
     const taken: Array<{ variantId: string; qty: number }> = [];
     for (const item of items) {
@@ -2115,7 +2147,7 @@ export class PosService {
         {
           _id: item.variantId,
           unlimitedStock: { $ne: true },
-          $expr: { $gte: [AVAILABLE_STOCK_EXPR, item.qty] },
+          $expr: { $gte: [opts.includeExpired?.has(String(item.variantId)) ? AVAILABLE_STOCK_INCL_EXPIRED_EXPR : AVAILABLE_STOCK_EXPR, item.qty] },
         },
         { $inc: { stock: -item.qty } },
       );
@@ -2188,6 +2220,44 @@ export class PosService {
     return this.r.registerSessionModel.findOne({ _id: sale.sessionId, status: 'open' });
   }
 
+  /** One ledger row per lot a line was taken from (+ one for units no lot covered). A line without lots yields exactly one row, as before (same dedupe key). */
+  private movementLines(it: any, idx: number | string, qty: number, lots: Array<{ lotId: string; qty: number }>) {
+    const base = { variantId: it.variantId, productId: it.productId, name: it.name, sku: it.sku, unitCostMinor: it.unitCostMinor ?? null, isCustom: !!it.isCustom };
+    const covered = lots.reduce((s, l) => s + l.qty, 0);
+    return [
+      ...lots.map((l) => ({ ...base, lineKey: `${idx}:${l.lotId}`, qty: l.qty, lotId: l.lotId })),
+      ...(qty - covered > 0 ? [{ ...base, lineKey: String(idx), qty: qty - covered, lotId: null as string | null }] : []),
+    ];
+  }
+
+  /**
+   * G3.2 (D4): takes the units of every LOT-TRACKED line from its lots, FEFO (expiring soonest first; expired lots only for a manager-approved line or an OFFLINE sale whose goods
+   * already left — which is flagged for review, never blocked). Writes `lots` / `soldExpired` onto the sale lines. Units no lot covers are simply not attributed to a lot
+   * (stock that predates lot tracking, or an oversold offline sale — flagged `lots_short` offline).
+   */
+  private async allocateSaleLots(items: any[], o: { offline: boolean }) {
+    const all: Array<{ variantId: string; lotId: string; qty: number }> = [];
+    const flags: Array<{ type: string; detail: Record<string, any> }> = [];
+    for (const it of items) {
+      if (it.isCustom || !it._trackLots || !it.variantId) continue;
+      const includeExpired = o.offline || !!it._sellExpired;
+      const { allocations, shortBy } = await allocateLotsFefo(this.r as any, String(it.variantId), it.qty, { includeExpired });
+      allocations.forEach((a) => all.push({ variantId: String(it.variantId), lotId: a.lotId, qty: a.qty }));
+      it.lots = allocations.map((a) => ({ lotId: a.lotId, lotNumber: a.lotNumber, qty: a.qty, expiryDate: a.expiryDate, expired: a.expired, costPriceMinor: a.costPriceMinor }));
+      it.soldExpired = allocations.some((a) => a.expired);
+      if (o.offline && it.soldExpired) flags.push({ type: 'expired_lot_sold_offline', detail: { variantId: String(it.variantId), sku: it.sku, lots: allocations.filter((a) => a.expired).map((a) => ({ lotId: a.lotId, lotNumber: a.lotNumber, qty: a.qty })) } });
+      if (o.offline && shortBy > 0) flags.push({ type: 'lots_short', detail: { variantId: String(it.variantId), sku: it.sku, units: shortBy } });
+    }
+    return { all, flags };
+  }
+
+  /** Compensation: a sale that could not be recorded gives its lot units back. */
+  private async restoreSaleLots(all: Array<{ variantId: string; lotId: string; qty: number }>): Promise<void> {
+    const byVariant = new Map<string, Array<{ lotId: string; qty: number }>>();
+    for (const a of all) (byVariant.get(a.variantId) ?? byVariant.set(a.variantId, []).get(a.variantId)!).push({ lotId: a.lotId, qty: a.qty });
+    for (const [variantId, parts] of byVariant) { try { await restoreToLots(this.r as any, variantId, parts); } catch (e: any) { /* eslint-disable-next-line no-console */ console.error(`[pos] lot restore failed for variant ${variantId} — manual lot correction needed:`, e?.message); } }
+  }
+
   /**
    * G3.1: the stock-ledger rows of a sale / return / void, INSIDE the caller's transaction (so they exist exactly when the document does). Custom items and unlimited-stock
    * variants never moved stock and write nothing. Idempotent per (type, document, line). A deployment without the ledger model (older unit-test doubles) writes nothing.
@@ -2195,7 +2265,7 @@ export class PosService {
   private async recordMovements(tx: ClientSession | undefined, a: {
     type: 'sale' | 'return' | 'void'; refType: string; refId: string; storeId: string; locationId: string | null;
     ctx: { employeeId?: string | null; registerId?: string | null; sessionId?: string | null };
-    lines: Array<{ lineKey: string; variantId?: string | null; productId?: string | null; name?: string | null; sku?: string | null; qty: number; unitCostMinor: number | null; isCustom: boolean }>;
+    lines: Array<{ lineKey: string; variantId?: string | null; productId?: string | null; name?: string | null; sku?: string | null; qty: number; unitCostMinor: number | null; isCustom: boolean; lotId?: string | null }>;
   }): Promise<void> {
     const model = this.r.stockMovementModel;
     if (!model) return;
@@ -2205,7 +2275,7 @@ export class PosService {
     const sign = a.type === 'sale' ? -1 : 1;
     const docs = lines.filter((l) => !unlimited.has(String(l.variantId))).map((l) => ({
       storeId: a.storeId, variantId: String(l.variantId), productId: l.productId ?? null, sku: l.sku ?? null, productName: l.name ?? null, locationId: a.locationId,
-      type: a.type, qtyDelta: sign * l.qty, unitCostMinor: l.unitCostMinor, refType: a.refType, refId: a.refId,
+      type: a.type, qtyDelta: sign * l.qty, unitCostMinor: l.unitCostMinor, lotId: l.lotId ?? null, refType: a.refType, refId: a.refId,
       employeeId: a.ctx.employeeId ?? null, registerId: a.ctx.registerId ?? null, sessionId: a.ctx.sessionId ?? null, deviceId: this.callerDeviceId(),
       dedupeKey: `${a.type}:${a.refId}:${l.lineKey}`,
     }));
@@ -2360,13 +2430,13 @@ export class PosService {
   private itemsMinor(items: any[], totals: { lineTotalsMinor: number[]; minor?: { discount: number; tax: number } }, exp: number): any[] {
     // G2.5: every line carries its own share of the discount and tax (Σ lines = the sale), so a return can reverse exactly its part
     const bd = totals.minor ? lineBreakdown(items.map((it, i) => ({ grossMinor: totals.lineTotalsMinor[i], taxable: it.taxCategory !== 'exempt' })), totals.minor.discount, totals.minor.tax) : null;
-    return items.map((it, i) => ({
+    return items.map((raw, i) => { const { _trackLots: _t, _sellExpired: _s, ...it } = raw as any; return {
       ...it,
       priceMinor: toMinor(it.price, exp),
       ...(it.listPrice !== null && it.listPrice !== undefined ? { listPriceMinor: toMinor(it.listPrice, exp) } : {}),
       lineTotalMinor: totals.lineTotalsMinor[i],
       ...(bd ? { discountShareMinor: bd[i].discountMinor, netMinor: bd[i].netMinor, taxMinor: bd[i].taxMinor } : {}),
-    }));
+    }; });
   }
 
   // ── G2.5: tax invoice numbers + seller snapshot ─────────────────────────────────────────────────────────────────
@@ -2869,7 +2939,7 @@ export class PosService {
         ctx: voidCtx,
       });
       await this.recordMovements(tx, { type: 'void', refType: 'void', refId: saleId, storeId: String((sale as any).storeId), locationId: (sale as any).locationId ?? null, ctx: { employeeId: actor.employeeId, registerId: voidRegisterId, sessionId: voidShift ? String(voidShift._id) : null },
-        lines: ((sale as any).items as any[]).map((it: any, idx: number) => ({ lineKey: String(idx), variantId: it.variantId, productId: it.productId, name: it.name, sku: it.sku, qty: it.qty - 0, unitCostMinor: it.unitCostMinor ?? null, isCustom: !!it.isCustom })) });
+        lines: ((sale as any).items as any[]).flatMap((it: any, idx: number) => this.movementLines(it, idx, it.qty, it.lots ?? [])) });
       await this.writeAuditLog({
         storeId: (sale as any).storeId, employeeId: actor.employeeId, action: 'sale_voided', targetId: saleId, targetType: 'sale',
         ...voidCtx, metadata: { reason: voidReason.note, reasonCode: voidReason.code, saleSessionId: (sale as any).sessionId ?? null, saleRegisterId: (sale as any).registerId ?? null },
@@ -2882,6 +2952,10 @@ export class PosService {
       (sale as any).items.filter((item: any) => !item.isCustom).map((item: any) => ({ variantId: String(item.variantId), qty: item.qty })),
       (sale as any).locationId ?? null,
     );
+    // G3.2: a void puts every unit back into the lots it came from
+    for (const it of ((sale as any).items as any[]).filter((x: any) => !x.isCustom && (x.lots ?? []).length)) {
+      await restoreToLots(this.r as any, String(it.variantId), (it.lots as any[]).map((l: any) => ({ lotId: l.lotId, qty: l.qty }))).catch(() => undefined);
+    }
 
     // A void reverses the whole sale: total and per-tender nets (cash net of change) come out of the session.
     const { exp: voidExp } = await this.docMoney(sale);
