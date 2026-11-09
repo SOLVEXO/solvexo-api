@@ -39,6 +39,15 @@ export async function migrateStoreCredit(db: Db, opts: MigrateOptions): Promise<
   for await (const l of db.collection(SCM.lots).find({ legacyId: { $type: 'string' } }, { projection: { legacyId: 1 } })) newLotOf.set(String((l as any).legacyId), l._id as ObjectId);
   const customers = new Map<string, Set<string>>();
   let budget = opts.maxRows ?? Infinity;
+  // writes go in batches of 1000 (lots → entries → markers): a re-run after a crash is safe because `legacyId` is unique in both collections (a duplicate is the row already written) and unmarked rows are simply tried again
+  const lotBuf: any[] = []; const entryBuf: any[] = []; const markBuf: ObjectId[] = [];
+  const insertIgnoringDup = async (col: string, docs: any[]) => { if (!docs.length) return; try { await db.collection(col).insertMany(docs, { ordered: false }); } catch (e: any) { if (!(e?.code === 11000 || e?.writeErrors?.every((w: any) => w.code === 11000))) throw e; } };
+  const flush = async () => {
+    await insertIgnoringDup(SCM.lots, lotBuf.splice(0));
+    await insertIgnoringDup(SCM.entries, entryBuf.splice(0));
+    const ids = markBuf.splice(0);
+    if (ids.length) await legacy.updateMany({ _id: { $in: ids } }, { $set: { [MARK]: now } });
+  };
 
   for (const row of rows as any[]) {
     if (budget <= 0) break;
@@ -71,15 +80,16 @@ export async function migrateStoreCredit(db: Db, opts: MigrateOptions): Promise<
     };
     if (!opts.dryRun) {
       if (lotId) {
-        await db.collection(SCM.lots).insertOne({ _id: lotId, storeId: row.storeId, customerId: row.customerId, currency: row.currency, currencyExponent: exp, amountMinor: L(floorMinor(row.amount, exp)), remainingMinor: L(floorMinor(row.remaining, exp)), expiresAt: row.expiresAt ?? null, expiredHandled: false, entryId: String(entry._id), source: row.type, legacyId: id, createdAt: row.createdAt, updatedAt: row.createdAt, __v: 0 } as any);
+        lotBuf.push({ _id: lotId, storeId: row.storeId, customerId: row.customerId, currency: row.currency, currencyExponent: exp, amountMinor: L(floorMinor(row.amount, exp)), remainingMinor: L(floorMinor(row.remaining, exp)), expiresAt: row.expiresAt ?? null, expiredHandled: false, entryId: String(entry._id), source: row.type, legacyId: id, createdAt: row.createdAt, updatedAt: row.createdAt, __v: 0 });
         rep.lotsWritten++;
       }
-      await db.collection(SCM.entries).insertOne(entry);
-      await legacy.updateOne({ _id: row._id }, { $set: { [MARK]: now } });
+      entryBuf.push(entry); markBuf.push(row._id);
+      if (entryBuf.length >= 1000) await flush();
     } else if (lotId) rep.lotsWritten++;
     rep.entriesWritten++;
     budget--;
   }
+  if (!opts.dryRun) await flush();
 
   // self-check: the new spendable balance of every (store, customer, currency) = the old one, floored per lot
   if (!opts.dryRun) {

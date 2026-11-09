@@ -273,6 +273,28 @@ describe('loyalty (D2): earn per spend, redeem as a discount (online only), reve
     expect(await f.points(c.id)).toBe(12);
   });
 
+  it('OFFLINE: a sale rung up offline with a customer earns its points WHEN IT SYNCS, exactly once even if the queue replays it; a return after the sync reverses them', async () => {
+    const f = await fresh({ price: 10, taxRate: 0.1 });
+    const c: any = await f.person(); await f.loyalty(500, 50); // 1 point per 5.00 of net spend
+    const off = { offline: true, clientCreatedAt: new Date(Date.now() - 3_600_000).toISOString(), customerId: c.id, idempotencyKey: 'offline-loyalty-1', amountTendered: 40 };
+    const first = await f.sell(3, off); // net 30.00 → 6 points
+    expect(first.isOffline).toBe(true);
+    expect(first.loyalty).toMatchObject({ earnedPoints: 6, ledgerId: c.id });
+    expect(await f.points(c.id)).toBe(6);
+    await f.sell(3, off).catch(() => undefined); // the queue replays the same sale (retry / app killed after the answer)
+    await f.sell(3, off).catch(() => undefined);
+    expect(await f.points(c.id)).toBe(6);
+    expect(await r.loyaltyTransactionModel.countDocuments({ storeId: f.s.storeId, userId: c.id, type: 'purchase' })).toBe(1);
+    expect(await r.saleModel.countDocuments({ storeId: f.s.storeId })).toBe(1);
+    // returned AFTER the sync: the points reverse proportionally (1 of 3 units → 2 of 6, then the rest)
+    await svc.refundSale(f.s.sellerId, String(first._id), { items: [{ saleItemId: String(first.items[0]._id), qty: 1 }] } as any, tok(f.s, 'manager'));
+    expect(await f.points(c.id)).toBe(4);
+    await svc.refundSale(f.s.sellerId, String(first._id), { items: [{ saleItemId: String(first.items[0]._id), qty: 2 }] } as any, tok(f.s, 'manager'));
+    expect(await f.points(c.id)).toBe(0);
+    // an offline sale that tried to REDEEM points is refused (the app never queues it; the server never trusts it)
+    expect(await code(f.sell(1, { ...off, idempotencyKey: 'offline-loyalty-2', redeemPoints: 1 }))).toBe('LOYALTY_ONLINE_ONLY');
+  });
+
   it('the owner sets the rates (audited); a manager cannot; junk is refused; config reports credit on/off', async () => {
     const f = await fresh();
     expect(await code(cust.setLoyaltyConfig(dev(f.s), f.s.storeId, { earnSpendMinor: 500 }, { employee: tok(f.s, 'manager') }))).toBe('POS_ACTION_FORBIDDEN');
