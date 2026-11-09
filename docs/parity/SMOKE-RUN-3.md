@@ -6,3 +6,9 @@ Nothing answers on 127.0.0.1:6379 (connection refused). Only the in-memory fake 
 
 ## Item 3: Stripe: SKIPPED (no keys)
 No Stripe-named variable exists in the local environment. Not verified: paid order, refund, duplicate / out-of-order webhook delivery against real Stripe test mode.
+
+## Item 1a: storefront at 375px (real Chrome, vite dev, local API)
+Pages per theme: product, pre-order product, bundle, empty cart, cart with item, checkout, wholesale-only store seen by a visitor (prices hidden), /wholesale. First attempt rendered blank pages (cold vite compile); the script now waits for real content.
+- Maison (theme-03-fashion): all 8 pages render, no horizontal overflow, no clipped buttons, no 5xx. Checkout and wholesale-only visitor view checked by eye: clean.
+- Tech (theme-04-tech): all 8 pages render, no overflow, no 5xx. Pre-order product page shows "Pre-order" and NOT "Sold out" (regression fix (a) confirmed live in Tech; Maison check was run with stock 200, so only Tech confirmed live).
+- Layout breaks found: none so far at 375 on the storefront.
