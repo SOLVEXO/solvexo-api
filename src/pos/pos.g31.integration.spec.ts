@@ -258,7 +258,7 @@ describe('stock count by scan', () => {
     await inv.countFinish(device(s), s.storeId, id, { employee: tok(s, 'manager') });
     expect(await stock(s.variantId)).toBe(7);
     const m: any[] = await moves(s.storeId);
-    expect(m.map((x) => [x.type, x.qtyDelta, x.unitCostMinor])).toEqual([['adjustment', -3, 100]]);
+    expect(m.map((x) => [x.type, x.qtyDelta, x.unitCostMinor])).toEqual([['count', -3, 100]]);
     expect(await r.posAuditLogModel.countDocuments({ storeId: s.storeId, action: { $in: ['stock_count_started', 'stock_count_finished'] } })).toBe(2);
   });
 });

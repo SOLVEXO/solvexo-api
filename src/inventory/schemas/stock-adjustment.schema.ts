@@ -91,7 +91,7 @@ StockAdjustmentSchema.post('save', async function (doc: any) {
   try {
     await Movement.create([{
       storeId: doc.storeId, variantId: doc.variantId, productId: doc.productId, sku: doc.sku ?? null, productName: doc.productName ?? null, locationId: doc.locationId ?? null,
-      type: MOVEMENT_TYPE[doc.reason] ?? 'adjustment', qtyDelta: stockEffect, damagedDelta, unitCostMinor: cost, refType: 'adjustment', refId: String(doc._id), reason: doc.reason, note: doc.note ?? null,
+      type: typeof doc.note === 'string' && doc.note.startsWith('Stock count #') ? 'count' : (MOVEMENT_TYPE[doc.reason] ?? 'adjustment'), qtyDelta: stockEffect, damagedDelta, unitCostMinor: cost, refType: 'adjustment', refId: String(doc._id), reason: doc.reason, note: doc.note ?? null,
       employeeId: doc.adjustedBy ?? null, dedupeKey: `adjustment:${String(doc._id)}`,
     }], typeof doc.$session === 'function' && doc.$session() ? { session: doc.$session() } : undefined);
   } catch (e: any) {
