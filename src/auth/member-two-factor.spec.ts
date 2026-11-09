@@ -89,7 +89,7 @@ d('MemberTwoFactorService', () => {
     await svc.disable('seller', id, PASSWORD, await code('seller', id, 1));
     expect(await svc.isEnabled('seller', id)).toBe(false);
     await enable(); await svc.reset('seller', id);
-    expect(await svc.isEnabled('seller', id)).toBe(false); expect(await svc.model.countDocuments({ memberId: id })).toBe(0);
+    expect(await svc.isEnabled('seller', id)).toBe(false); expect(await (svc as any).model.countDocuments({ memberId: id })).toBe(0);
   });
 
   it('the login challenge is signed, short-lived to its purpose, and not a step-up token', async () => {

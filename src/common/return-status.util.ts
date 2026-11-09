@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { plain } from './plain.util';
 
 /**
  * Shopify-style return lifecycle of ONE order line (`OrderItem.returnStatus`):
@@ -37,5 +38,5 @@ export function effectiveReturnStatus(item: ReturnLineLike): string {
 export function withEffectiveReturnStatus<T extends ReturnLineLike>(item: T): T {
   if (!item) return item;
   const eff = effectiveReturnStatus(item);
-  return eff === (item.returnStatus || 'none') ? item : { ...item, returnStatus: eff };
+  return eff === (item.returnStatus || 'none') ? item : { ...plain(item), returnStatus: eff };
 }

@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { withEffectiveReturnStatus } from './return-status.util';
+import { plain } from './plain.util';
 
 const INTERNAL_ORDER_FIELDS = ['codProtection', 'fxSnapshots', 'platformSponsoredDiscountTotal', 'attributedBannerId', 'attributedStoreBannerId', 'attributionSource', 'overdueReminderSentAt', 'checkoutId', 'isDelete', 'ratePerUSD', 'timeline', 'note'];
 const INTERNAL_SELLER_ORDER_FIELDS = ['platformSponsoredDiscountUSD', 'settlementCurrency', 'settlementAmount', 'settledViaConnect', 'stripeConnectedAccountId', 'stockAlreadyDeducted'];
@@ -22,10 +23,10 @@ export function toBuyerReturnLabel(l: any): any {
 }
 
 export function toBuyerSafeOrder(order: any): any {
-  const safe: any = { ...order };
+  const safe: any = { ...plain(order) };
   for (const k of INTERNAL_ORDER_FIELDS) delete safe[k];
   safe.sellerOrders = (safe.sellerOrders ?? []).map((so: any) => {
-    const out: any = { ...so };
+    const out: any = { ...plain(so) };
     for (const k of INTERNAL_SELLER_ORDER_FIELDS) delete out[k];
     if (out.tracking && typeof out.tracking === 'object') {
       out.tracking = { ...out.tracking };

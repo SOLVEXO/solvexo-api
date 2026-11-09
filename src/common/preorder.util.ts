@@ -1,6 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { BadRequestException } from '@nestjs/common';
 import { stockLinesForItem } from './bundle.util';
+import { plain } from './plain.util';
 
 /**
  * Pre-order (Shopify purchase-option parity, WITHOUT deposits): payment is taken normally at checkout. A variant with
@@ -63,7 +64,7 @@ export function preorderBlockers(lines: { item: any; quantity: number }[], varia
   const out: { name: string; expectedDate: Date | null }[] = [];
   for (const { item, quantity } of lines) {
     if (!item?.isPreorder) continue;
-    for (const sl of stockLinesForItem({ ...item, quantity })) {
+    for (const sl of stockLinesForItem({ ...plain(item), quantity })) {
       const v = variants.get(sl.variantId);
       if (v && !v.unlimitedStock && (Number(v.stock) || 0) < sl.quantity) { out.push({ name: item.name, expectedDate: item.preorderExpectedDate ?? null }); break; }
     }
@@ -78,7 +79,7 @@ export function preorderBlockers(lines: { item: any; quantity: number }[], varia
 export async function assertPreorderShippable(productVariantModel: any, lines: { item: any; quantity: number }[], override: boolean): Promise<{ overridden: boolean; names: string[] }> {
   const pre = lines.filter((l) => l.item?.isPreorder);
   if (pre.length === 0) return { overridden: false, names: [] };
-  const ids = [...new Set(pre.flatMap((l) => stockLinesForItem({ ...l.item, quantity: l.quantity }).map((s) => s.variantId)))];
+  const ids = [...new Set(pre.flatMap((l) => stockLinesForItem({ ...plain(l.item), quantity: l.quantity }).map((s) => s.variantId)))];
   const rows: any[] = await productVariantModel.find({ _id: { $in: ids } }).select('stock unlimitedStock').lean();
   const blockers = preorderBlockers(pre, new Map(rows.map((r) => [String(r._id), r])));
   if (blockers.length === 0) return { overridden: false, names: [] };

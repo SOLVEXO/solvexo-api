@@ -618,7 +618,11 @@ export function validateBlockSettings(blockType: string, settings: Record<string
       oneOf(settings.platform, ['facebook', 'instagram', 'x', 'tiktok', 'youtube', 'linkedin', 'whatsapp'] as const, 'platform');
       // An empty link is allowed (the storefront simply hides that icon). WhatsApp may hold a phone number.
       if (typeof settings.url === 'string' && settings.url.trim() !== '') {
-        if (settings.platform === 'whatsapp' && /^\+?[\d\s\-()]{7,20}$/.test(settings.url.trim())) break;
+        const typed = settings.url.trim();
+        if (settings.platform === 'whatsapp' && /^\+?[\d\s\-()]{7,20}$/.test(typed)) break;
+        // Also accepted (the storefront turns them into https links): `instagram.com/store` and a plain `@username`.
+        if (/^(www\.)?(instagram\.com|facebook\.com|fb\.com|fb\.me|x\.com|twitter\.com|tiktok\.com|youtube\.com|youtu\.be|linkedin\.com|wa\.me|linktr\.ee)\/\S*$/i.test(typed)) break;
+        if (settings.platform !== 'whatsapp' && /^@?[A-Za-z0-9._-]{1,60}$/.test(typed)) break;
         assertHttpsUrl(settings.url, 'url');
       }
       break;

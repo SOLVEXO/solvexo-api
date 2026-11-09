@@ -2,6 +2,7 @@ import { assertPreorderShippable } from '../common/preorder.util';
 import { creditReceivable } from '../b2b/b2b-order.util';
 import { assertCodConfirmedForFulfilment } from '../cod-protection/cod-protection.service';
 import { expandForStock, stockLinesForItem } from '../common/bundle.util';
+import { plain as plainOf } from '../common/plain.util';
 import { Optional } from '@nestjs/common';
 import { ShippingProfilesService } from '@/shipping-zones/shipping-profiles.service';
 import {
@@ -1886,8 +1887,8 @@ export class OrdersService {
     const expanded: any[] = lines.flatMap((l) => {
       const it = so.items[l.itemIndex];
       // `{ ...it }` of a hydrated sub-document loses its schema getters (bundleComponents), so a bundle shipped without its components' stock moving: go through a plain object.
-      const plain = it && typeof it.toObject === 'function' ? it.toObject() : it;
-      return plain?.bundleComponents?.length ? stockLinesForItem({ ...plain, quantity: l.quantity }).map((sl) => ({ itemIndex: l.itemIndex, quantity: sl.quantity, variantId: sl.variantId })) : [l as any];
+      const flat = plainOf(it);
+      return flat?.bundleComponents?.length ? stockLinesForItem({ ...flat, quantity: l.quantity }).map((sl) => ({ itemIndex: l.itemIndex, quantity: sl.quantity, variantId: sl.variantId })) : [l as any];
     });
     for (const line of expanded) {
       const item = so.items[line.itemIndex];

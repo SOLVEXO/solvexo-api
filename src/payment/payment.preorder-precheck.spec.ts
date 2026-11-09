@@ -16,7 +16,7 @@ function build(variant: any) {
   svc.assertDiscountsStillValid = async () => undefined;
   svc.codProtection = undefined;
   svc.createOrder = jest.fn(async () => []);
-  return svc as PaymentService & { createOrder: jest.Mock };
+  return svc as any;
 }
 
 describe('codPayment stock pre-check', () => {
