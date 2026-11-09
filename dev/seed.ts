@@ -133,6 +133,19 @@ async function main() {
   let category: any = await Category.findOne({ name: 'Dev Drinks', storeId });
   if (!category) category = await Category.create({ name: 'Dev Drinks', storeId, sellerId });
   const categoryId = String(category._id);
+  // G2.7: a small platform category TREE (storeId null, like the real marketplace tree) so the POS catalog "Category" dropdown can be tested.
+  const ensureCategory = async (name: string, parent: any | null, sortOrder: number) => {
+    let c: any = await Category.findOne({ name, storeId: null, parentId: parent ? String(parent._id) : null });
+    if (!c) c = await Category.create({ name, slug: `dev-${name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`, parentId: parent ? String(parent._id) : null, storeId: null, sortOrder, status: 'active', isDelete: false, createdByRole: 'admin' });
+    return c;
+  };
+  const catBeverages = await ensureCategory('Beverages', null, 1);
+  await ensureCategory('Hot drinks', catBeverages, 1);
+  await ensureCategory('Cold drinks', catBeverages, 2);
+  const catBakery = await ensureCategory('Bakery', null, 2);
+  await ensureCategory('Pastries', catBakery, 1);
+  const catPantry = await ensureCategory('Pantry', null, 3);
+  await ensureCategory('Coffee beans', catPantry, 1);
   const upsertProduct = async (name: string, sku: string, price: number, v: { stock: number; unlimited?: boolean; reorderPoint?: number; barcode?: string }) => {
     let p: any = await Product.findOne({ storeId, name });
     if (!p) p = new Product({ sellerId, storeId, name, slug: sku.toLowerCase(), productType: 'physical', type: 'physical', categoryId });
