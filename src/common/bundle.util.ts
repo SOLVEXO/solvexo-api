@@ -76,3 +76,11 @@ export function expandForStock<T extends { type?: string; variantId?: string | n
   }
   return [item];
 }
+
+/** Display name of a bundle component for order lines: "Product name (Size M)". The bundle definition stores ids only, so the snapshot used to carry name: null ("Item x 2" on the order). */
+export function componentDisplayName(productName: string | null | undefined, options?: { name?: string; value?: string }[] | null): string | null {
+  const base = (productName ?? '').trim();
+  if (!base) return null;
+  const opts = (options ?? []).map((o) => o?.value).filter((v): v is string => !!v);
+  return opts.length ? `${base} (${opts.join(' / ')})` : base;
+}

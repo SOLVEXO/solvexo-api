@@ -1,5 +1,5 @@
 import { preorderCanFill } from '../common/preorder.util';
-import { assertBundleInStock } from '../common/bundle.util';
+import { assertBundleInStock, componentDisplayName } from '../common/bundle.util';
 import { B2BContextService } from '../b2b/b2b-context.service';
 import { filterPaymentMethodsForB2B } from '../b2b/b2b-order.util';
 import { CodProtectionService } from '../cod-protection/cod-protection.service';
@@ -185,6 +185,19 @@ export class CheckoutService {
    *  currency (or null if unknown), passed in rather than re-queried per
    *  zone; falls back to SHIPPING_ZONE_CURRENCY only if that's missing. */
   /** Total shipping weight (kg) of checkout/cart lines; lines are matched to variants by `variantKey`. */
+  /** Bundle components for the order line, with a readable name per component (looked up once here, frozen on the order). */
+  private async snapshotBundleComponents(components: any[]) {
+    if (components.length === 0) return [];
+    const { productModel, productVariantModel } = this.databaseService.repositories as any;
+    const [products, variants] = await Promise.all([
+      productModel.find({ _id: { $in: components.map((c) => c.productId) } }).select('name').lean(),
+      productVariantModel.find({ _id: { $in: components.map((c) => c.variantId) } }).select('options').lean(),
+    ]);
+    const pName = new Map<string, string>(products.map((p: any) => [String(p._id), p.name]));
+    const vOpts = new Map<string, any[]>(variants.map((v: any) => [String(v._id), v.options ?? []]));
+    return components.map((c: any) => ({ productId: c.productId, variantId: c.variantId, quantity: c.quantity, name: c.name ?? componentDisplayName(pName.get(String(c.productId)), vOpts.get(String(c.variantId))) }));
+  }
+
   private async totalWeightKgForLines(lines: { variantId?: string | null; quantity?: number }[]): Promise<number> {
     const ids = [...new Set(lines.map((l) => l.variantId).filter(Boolean) as string[])];
     if (ids.length === 0) return 0;
@@ -572,7 +585,7 @@ export class CheckoutService {
       checkoutItems.push({
         productId: product._id.toString(),
         variantId: variant._id.toString(),
-        bundleComponents: product.isBundle ? (product.bundleComponents ?? []).map((c: any) => ({ productId: c.productId, variantId: c.variantId, quantity: c.quantity, name: c.name ?? null })) : [],
+        bundleComponents: product.isBundle ? await this.snapshotBundleComponents(product.bundleComponents ?? []) : [],
         sellerId: product.sellerId,
         sellerName: seller ? seller.name : null,
         sellerVerified: seller ? !!seller.isVerified : false,
