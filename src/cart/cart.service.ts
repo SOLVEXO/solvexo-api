@@ -1,4 +1,4 @@
-import { preorderPublicView } from '../common/preorder.util';
+import { preorderCanFill, preorderPublicView } from '../common/preorder.util';
 import { availableStock } from '../common/stock-availability.util';
 import {
   Injectable,
@@ -64,7 +64,8 @@ export class CartService {
       }
 
       // Sold out (or oversold negative) physical variants can't be put in a cart — checkout re-checks, but failing here is kinder.
-      if (product.type === 'physical' && !isPurchasableOnline(variant as any, quantity)) {
+      // ...except a pre-order variant: checkout lets it fill what stock cannot (and the cart already shows the pre-order notice).
+      if (product.type === 'physical' && !isPurchasableOnline(variant as any, quantity) && !preorderCanFill((variant as any).preorder)) {
         throw new BadRequestException('This item is out of stock');
       }
 
