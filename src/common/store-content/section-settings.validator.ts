@@ -57,9 +57,28 @@ function required(value: unknown, field: string): void {
   }
 }
 
+/** Grid columns: a whole number from 1 to 8 (the editor's Columns box). */
+function assertColumns(value: unknown): void {
+  if (value === undefined || value === null) return;
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 8) {
+    throw new BadRequestException('settings.columns must be a whole number from 1 to 8');
+  }
+}
+
 function maxLen(value: unknown, max: number, field: string): void {
   if (typeof value === 'string' && value.length > max) {
     throw new BadRequestException(`${field} must be ${max} characters or fewer`);
+  }
+}
+
+/** Seller rich text (paragraphs, headings, lists, links — stored as HTML by the editor, or older plain text). The storefront sanitises it
+ *  again when it draws it; this is the save-time guard so an API call cannot store scripts, frames, forms or event handlers. */
+function assertSafeRichText(value: unknown, field: string): void {
+  if (value === undefined || value === null) return;
+  if (typeof value !== 'string') throw new BadRequestException(`${field} must be text`);
+  maxLen(value, 20000, field);
+  if (/<\s*(script|iframe|object|embed|link|meta|base|form|style|svg)\b|\son[a-z]+\s*=|href\s*=\s*["']?\s*(javascript|data|vbscript)\s*:/i.test(value)) {
+    throw new BadRequestException(`${field} cannot contain scripts, frames, forms, event handlers or unsafe links`);
   }
 }
 
@@ -291,9 +310,7 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
       if (s.limit !== undefined && (typeof s.limit !== 'number' || s.limit < 1 || s.limit > 24)) {
         throw new BadRequestException('settings.limit must be between 1 and 24');
       }
-      if (s.columns !== undefined && ![2, 3, 4].includes(s.columns)) {
-        throw new BadRequestException('settings.columns must be 2, 3, or 4');
-      }
+      assertColumns(s.columns);
       oneOf((s as any).tileStyle, ['card', 'simple'] as const, 'settings.tileStyle');
       oneOf((s as any).imageRatio, IMAGE_RATIOS, 'settings.imageRatio');
       oneOf((s as any).textAlign, ['left', 'center'] as const, 'settings.textAlign');
@@ -303,9 +320,7 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
     case 'product_catalog': {
       const s = settings as ProductCatalogSectionSettings;
       oneOf(s.defaultSort, ['newest', 'price_asc', 'price_desc', 'best_rated', 'best_selling'] as const, 'settings.defaultSort');
-      if (s.columns !== undefined && ![2, 3, 4].includes(s.columns)) {
-        throw new BadRequestException('settings.columns must be 2, 3, or 4');
-      }
+      assertColumns(s.columns);
       if (s.showFilters !== undefined && typeof s.showFilters !== 'boolean') {
         throw new BadRequestException('settings.showFilters must be a boolean');
       }
@@ -332,9 +347,7 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
       }
       if (!Array.isArray(s.categoryIds)) s.categoryIds = [];
       if (s.categoryIds.length > 12) throw new BadRequestException('settings.categoryIds cannot exceed 12 categories');
-      if (s.columns !== undefined && ![2, 3, 4].includes(s.columns)) {
-        throw new BadRequestException('settings.columns must be 2, 3, or 4');
-      }
+      assertColumns(s.columns);
       oneOf(s.imageRatio, IMAGE_RATIOS, 'settings.imageRatio');
       break;
     }
@@ -387,9 +400,7 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
     case 'store_locations':
       break; // content lives entirely in blocks, no section-level settings beyond heading
     case 'gallery_grid': {
-      if (settings.columns !== undefined && ![2, 3, 4, 5].includes(settings.columns)) {
-        throw new BadRequestException('settings.columns must be 2, 3, 4 or 5');
-      }
+      assertColumns(settings.columns);
       oneOf(settings.imageRatio, IMAGE_RATIOS, 'settings.imageRatio');
       break;
     }
@@ -402,9 +413,7 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
       }
       if (settings.source === 'category') required(settings.categoryId, 'settings.categoryId');
       if (settings.source === 'collection') required(settings.collectionId, 'settings.collectionId');
-      if (settings.columns !== undefined && ![2, 3, 4].includes(settings.columns)) {
-        throw new BadRequestException('settings.columns must be 2, 3 or 4');
-      }
+      assertColumns(settings.columns);
       const limit = settings.limit;
       if (limit !== undefined && (!Number.isInteger(limit) || limit < 2 || limit > 12)) {
         throw new BadRequestException('settings.limit must be a whole number from 2 to 12');
@@ -452,12 +461,10 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
       if (settings.limit !== undefined && (!Number.isInteger(settings.limit) || settings.limit < 2 || settings.limit > 12)) {
         throw new BadRequestException('settings.limit must be a whole number from 2 to 12');
       }
-      if (settings.columns !== undefined && ![2, 3, 4].includes(settings.columns)) throw new BadRequestException('settings.columns must be 2, 3 or 4');
+      assertColumns(settings.columns);
       break;
     case 'collection_list': {
-      if (settings.columns !== undefined && ![2, 3, 4].includes(settings.columns)) {
-        throw new BadRequestException('settings.columns must be 2, 3 or 4');
-      }
+      assertColumns(settings.columns);
       const limit = settings.limit;
       if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 24)) {
         throw new BadRequestException('settings.limit must be a whole number from 1 to 24');
@@ -472,9 +479,7 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
       break;
     }
     case 'multicolumn': {
-      if (settings.columns !== undefined && ![1, 2, 3, 4].includes(settings.columns)) {
-        throw new BadRequestException('settings.columns must be 1, 2, 3, or 4');
-      }
+      assertColumns(settings.columns);
       oneOf(settings.textAlign, ['left', 'center'] as const, 'settings.textAlign');
       oneOf(settings.imageRatio, IMAGE_RATIOS, 'settings.imageRatio');
       break;
@@ -533,9 +538,7 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
     case 'collection_product_grid': {
       const s = settings as CollectionProductGridSectionSettings;
       oneOf(s.defaultSort, ['newest', 'price_asc', 'price_desc', 'best_rated', 'best_selling'] as const, 'settings.defaultSort');
-      if (s.columns !== undefined && ![2, 3, 4].includes(s.columns)) {
-        throw new BadRequestException('settings.columns must be 2, 3, or 4');
-      }
+      assertColumns(s.columns);
       if (s.showFilters !== undefined && typeof s.showFilters !== 'boolean') {
         throw new BadRequestException('settings.showFilters must be a boolean');
       }
@@ -701,6 +704,7 @@ export function validateBlockSettings(blockType: string, settings: Record<string
       // own static text — the real value is resolved at render time instead.
       const boundToMetafield = !!settings.dynamicSourceNamespace && !!settings.dynamicSourceKey;
       if (!boundToMetafield) required(settings.text, 'text');
+      assertSafeRichText(settings.text, 'text');
       assertDynamicSource(settings.dynamicSourceNamespace, settings.dynamicSourceKey, 'dynamicSource');
       break;
     }
@@ -737,7 +741,7 @@ export function validateBlockSettings(blockType: string, settings: Record<string
     case 'image_text_pair':
       assertHttpsUrl(settings.imageUrl, 'imageUrl');
       maxLen(settings.heading, 120, 'heading');
-      maxLen(settings.body, 1000, 'body');
+      assertSafeRichText(settings.body, 'body');
       maxLen(settings.ctaText, 40, 'ctaText');
       assertLinkTarget(settings.ctaLink, 'ctaLink');
       oneOf(settings.imagePosition, ['left', 'right'] as const, 'imagePosition');
@@ -859,7 +863,7 @@ export function validateBlockSettings(blockType: string, settings: Record<string
     case 'multicolumn_column':
       if (settings.imageUrl) assertHttpsUrl(settings.imageUrl, 'imageUrl');
       maxLen(settings.heading, 120, 'heading');
-      maxLen(settings.body, 1000, 'body');
+      assertSafeRichText(settings.body, 'body');
       maxLen(settings.ctaText, 40, 'ctaText');
       assertLinkTarget(settings.ctaLink, 'ctaLink');
       break;
@@ -884,7 +888,7 @@ export function validateBlockSettings(blockType: string, settings: Record<string
     case 'multirow_row':
       if (settings.imageUrl) assertHttpsUrl(settings.imageUrl, 'imageUrl');
       maxLen(settings.heading, 120, 'heading');
-      maxLen(settings.body, 1000, 'body');
+      assertSafeRichText(settings.body, 'body');
       maxLen(settings.ctaText, 40, 'ctaText');
       assertLinkTarget(settings.ctaLink, 'ctaLink');
       break;
