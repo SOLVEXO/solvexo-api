@@ -1029,6 +1029,15 @@ export class PosService {
     // concurrent retry of the same logical checkout that loses the race
     // hits that instead of creating a second sale; re-fetch and return the
     // winner (after giving back the stock this loser took).
+    // The provisional number the offline till printed (offline replays only): kept as a lookup reference, unique per store. If another sale of
+    // this store already holds it (a different device with the same short id), the sale is still recorded — money has changed hands — without it,
+    // flagged for a manager.
+    let provisional: string | null = null;
+    if (off.isOffline && dto.provisionalNumber && !isHeld) {
+      const wanted = String(dto.provisionalNumber).trim().toUpperCase();
+      if (await this.r.saleModel.exists({ storeId: dto.storeId, provisionalNumber: wanted })) flags.push({ type: 'provisional_number_clash', detail: { number: wanted } });
+      else provisional = wanted;
+    }
     let sale: any;
     try {
       await this.ensureSettings(dto.storeId);
@@ -1037,10 +1046,11 @@ export class PosService {
         try {
           sale = await this.atomic(async (tx) => {
           // G2.5: a COMPLETED sale gets its tax-invoice number inside this transaction (a held sale gets one when it is completed)
-          const invoice = isHeld ? null : await this.issueInvoice(dto.storeId, off.isOffline ? off.at : new Date(), dto.offlineRef, tx);
+          const invoice = isHeld ? null : await this.issueInvoice(dto.storeId, off.isOffline ? off.at : new Date(), provisional, tx);
           const [created] = await this.r.saleModel.create([{
             saleNumber,
             ...(invoice ? { invoice } : {}),
+            ...(provisional ? { provisionalNumber: provisional } : {}),
             ...(heldCouponCode ? { heldCouponCode } : {}),
             storeId: dto.storeId,
             sessionId: dto.sessionId,
@@ -1116,6 +1126,7 @@ export class PosService {
           break;
         } catch (err: any) {
           if (err?.code === 11000 && err?.keyPattern?.saleNumber && attempt < 4) continue;
+          if (err?.code === 11000 && err?.keyPattern?.provisionalNumber && provisional && attempt < 4) { flags.push({ type: 'provisional_number_clash', detail: { number: provisional } }); provisional = null; continue; }
           throw err;
         }
       }
@@ -1299,6 +1310,33 @@ export class PosService {
     return { success: true, data: { ...(sale as any), currency: m.currency, currencyExponent: m.exp } };
   }
 
+  /**
+   * Finds sales by what a CUSTOMER or a receipt shows: the offline `OFF-…` number printed on the first receipt, the tax invoice number, the sale
+   * (receipt) number, or a credit note number — exact match, upper-cased; a bare number (`123`) is also tried as `INV-000123` / `POS-00123`.
+   * (A return at another till starts here.)
+   */
+  private async salesMatchingReference(storeId: string, raw: string): Promise<string[]> {
+    const ref = String(raw ?? '').trim().toUpperCase();
+    if (ref.length > 40 || !/^[A-Z0-9-]+$/.test(ref) || (ref.length < 2 && !/^\d$/.test(ref))) return [];
+    const candidates = [ref];
+    if (/^\d{1,6}$/.test(ref)) candidates.push(`INV-${ref.padStart(6, '0')}`, `POS-${ref.padStart(5, '0')}`);
+    const or: any[] = [{ provisionalNumber: { $in: candidates } }, { 'invoice.number': { $in: candidates } }, { saleNumber: { $in: candidates } }];
+    const ids = new Set<string>((await this.r.saleModel.find({ storeId, deletedAt: null, $or: or }).select('_id').limit(10).lean()).map((s: any) => String(s._id)));
+    if (/^CN-\d+$/.test(ref)) {
+      const cn: any = await this.r.posCreditNoteModel.findOne({ storeId, number: ref }).select('saleId').lean();
+      if (cn?.saleId) ids.add(String(cn.saleId));
+    }
+    return [...ids];
+  }
+
+  async lookupSales(sellerId: string, storeId: string, ref: string) {
+    await this.verifyStoreOwnership(storeId, sellerId);
+    const ids = await this.salesMatchingReference(storeId, ref);
+    const found = ids.length ? await this.r.saleModel.find({ _id: { $in: ids } }).sort({ createdAt: -1 }).limit(5).lean() : [];
+    const m = await this.moneyContext(storeId);
+    return { success: true, data: found.map((x: any) => ({ ...x, currency: x.currency ?? m.currency, currencyExponent: x.currencyExponent ?? m.exp })) };
+  }
+
   async getSales(sellerId: string, query: any) {
     if (!query.storeId) throw new BadRequestException('storeId is required');
 
@@ -1313,6 +1351,10 @@ export class PosService {
     if (query.employeeId) filter.employeeId = query.employeeId;
     if (query.paymentMethod) filter.paymentMethod = query.paymentMethod;
     if (query.status) filter.status = query.status;
+    if (query.search) {
+      const ids = await this.salesMatchingReference(query.storeId, String(query.search));
+      filter._id = { $in: ids };
+    }
     if (query.from || query.to) {
       filter.createdAt = {};
       if (query.from) filter.createdAt.$gte = new Date(query.from);
@@ -1470,13 +1512,15 @@ export class PosService {
       });
       update.$inc = inc;
     }
-    // The refund happens in the register's CURRENT shift (which can differ from the sale's own session).
-    const nowSession: any = (sale as any).registerId
-      ? await this.r.registerSessionModel.findOne({ registerId: (sale as any).registerId, status: 'open' })
+    // The refund happens at the till the customer is standing at — its register's CURRENT shift — which can be another register (or shift)
+    // than the sale's own (a return with a receipt printed offline, or at a second till). `registerId` in the request names that till.
+    const returnRegisterId: string | null = dto?.registerId ?? (sale as any).registerId ?? null;
+    const nowSession: any = returnRegisterId
+      ? await this.r.registerSessionModel.findOne({ registerId: returnRegisterId, storeId: (sale as any).storeId, status: 'open' })
       : null;
-    const refundCtx = { sessionId: nowSession ? String(nowSession._id) : null, registerId: (sale as any).registerId ?? null, shiftId: nowSession?.shiftId ?? null };
-    // a cash refund comes out of a drawer: it needs an open shift on this register
-    if ((sale as any).registerId && tenders.some((t: any) => t.method === 'cash' && t.amount > 0) && !nowSession) {
+    const refundCtx = { sessionId: nowSession ? String(nowSession._id) : null, registerId: returnRegisterId, shiftId: nowSession?.shiftId ?? null };
+    // a cash refund comes out of a drawer: it needs an open shift on the register that pays it
+    if (returnRegisterId && tenders.some((t: any) => t.method === 'cash' && t.amount > 0) && !nowSession) {
       throw businessConflict('OPEN_SHIFT_REQUIRED', 'Open a shift on this register before paying a cash refund');
     }
     const refundAuditAction = newStatus === 'refunded' ? 'sale_refunded_full' : 'sale_refunded_partial';

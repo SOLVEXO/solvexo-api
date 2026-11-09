@@ -312,7 +312,9 @@ export class StoreService {
    *  URL) — a signed, short-lived URL is generated fresh on every read so a
    *  sensitive document (ID, tax cert) is never permanently link-shareable. */
   private signedDocumentUrl(d: VerificationDocument) {
-    return this.uploadService.generateSignedUrl(d.publicId, d.resourceType, 600, d.fileName);
+    // Cloudinary's signed download API: the expiry is ENFORCED (≤ 5 min), the link is for viewing (inline) and works for any file name.
+    // (The older `generateSignedUrl` produced a delivery URL that never expired and failed for a file name with an extension.)
+    return this.uploadService.generateExpiringPrivateUrl(d.publicId, d.resourceType, 300, { inline: true });
   }
 
   /** THE evaluation used by getVerification (seller view), getLeadDetail
@@ -477,6 +479,7 @@ export class StoreService {
     // clean plain-object snapshot of just the real field values.
     const current: any = (store.verification as any)?.toObject?.() ?? store.verification ?? {};
     const next: Record<string, unknown> = { ...current };
+    const replacedDocuments: VerificationDocument[] = [];
     if (body.legalBusinessName !== undefined) next.legalBusinessName = body.legalBusinessName;
     if (body.registrationNumber !== undefined) next.registrationNumber = body.registrationNumber;
     if (body.taxId !== undefined) next.taxId = body.taxId;
@@ -496,6 +499,8 @@ export class StoreService {
         (current.documents ?? []).map((d: VerificationDocument) => [d.type, d]),
       );
       for (const d of body.documents) {
+        const old = byType.get(d.type);
+        if (old && old.publicId !== d.publicId) replacedDocuments.push(old); // the replaced private file is removed after the new one is saved
         byType.set(d.type, { type: d.type, publicId: d.publicId, resourceType: d.resourceType ?? 'raw', fileName: d.fileName, uploadedAt: new Date() });
       }
       next.documents = [...byType.values()];
@@ -513,6 +518,8 @@ export class StoreService {
     }
 
     await this.databaseService.repositories.storeModel.findByIdAndUpdate(storeId, { $set: update });
+    // seller verification documents only: delete the private file a re-upload replaced (best effort — a storage failure never fails the save)
+    for (const old of replacedDocuments) await this.uploadService.deletePrivateFile(old.publicId, old.resourceType).catch(() => undefined);
     return { success: true, message: 'Verification details saved' };
   }
 

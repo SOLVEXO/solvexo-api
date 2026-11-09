@@ -394,6 +394,14 @@ export class PosController {
     return this.posService.quoteSale(req.user.userId, dto);
   }
 
+  /** G2.7: find a sale by the number on the customer's receipt: OFF-… (offline), INV-…, the receipt number or a credit note (a return at another till). */
+  @UseGuards(PosAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Get('sales/lookup/:storeId')
+  lookupSales(@Req() req: any, @Param('storeId') storeId: string, @Query('ref') ref: string) {
+    return this.posService.lookupSales(req.user.userId, storeId, ref);
+  }
+
   // Offline-sync review queue — static segments, declared before the parameterised `sales/:saleId` routes.
   @UseGuards(PosAuthGuard, RolesGuard)
   @Roles('seller')

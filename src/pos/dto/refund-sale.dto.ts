@@ -42,6 +42,12 @@ export class RefundSaleDto {
   @MaxLength(300)
   reason?: string;
 
+  @ApiProperty({ required: false, description: 'G2.7: the register of the till doing the return (its open shift pays a cash refund). Defaults to the register the sale was made on.' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  registerId?: string;
+
   @ApiProperty({ required: false, default: true, description: 'G2.5: did the customer bring the original receipt? false makes the return need a manager' })
   @IsOptional()
   @IsBoolean()

@@ -162,6 +162,13 @@ export class Sale {
   @Prop({ type: SaleInvoiceSchema, default: null })
   invoice: SaleInvoice | null;
 
+  /**
+   * The provisional `OFF-<device>-<n>` number an offline till printed on the customer's receipt, sent when the sale syncs. A LOOKUP reference only:
+   * unique per store (partial index), searchable in Orders / Returns, never used for sequencing, never the invoice number.
+   */
+  @Prop({ type: String, default: null })
+  provisionalNumber: string | null;
+
   /** G2.4: a HELD sale remembers the coupon CODE the cashier had (not a reservation — nothing is counted or discounted until it is completed;
    *  the code is checked again, server-side, when the sale is resumed / completed). */
   @Prop({ type: String, default: null })
@@ -407,6 +414,7 @@ SaleSchema.set('toObject', { getters: true, virtuals: false });
 
 // G2.5: the invoice number is unique per store and never reused (partial: held sales and pre-G2.5 sales have none)
 SaleSchema.index({ storeId: 1, 'invoice.seq': 1 }, { unique: true, partialFilterExpression: { 'invoice.seq': { $type: 'number' } }, name: 'uniq_invoice_seq_per_store' });
+SaleSchema.index({ storeId: 1, provisionalNumber: 1 }, { unique: true, partialFilterExpression: { provisionalNumber: { $type: 'string' } }, name: 'uniq_provisional_number_per_store' });
 SaleSchema.index({ storeId: 1, 'invoice.number': 1 }, { unique: true, partialFilterExpression: { 'invoice.number': { $type: 'string' } }, name: 'uniq_invoice_number_per_store' });
 
 // G2.5: an invoice number, once written, is immutable. The only update that may set `invoice` is the one that first issues it

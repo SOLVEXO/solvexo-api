@@ -3,6 +3,7 @@ import { ApiProperty } from '@nestjs/swagger';
 import {
   IsString, IsNotEmpty, IsArray, ValidateNested,
   IsNumber, IsOptional, IsEnum, Min, Max, IsInt, IsDateString, IsBoolean, ValidateIf, MaxLength,
+  Matches,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { PaymentLineDto } from './payment.dto';
@@ -195,11 +196,11 @@ export class CreateSaleDto {
   @IsDateString()
   clientCreatedAt?: string;
 
-  @ApiProperty({ required: false, description: 'Offline sales: the provisional OFF-… receipt number the till printed; kept on the invoice so the paper copy stays linked to the final invoice number' })
+  @ApiProperty({ required: false, example: 'OFF-3FA9C1-0007', description: 'Offline replays only: the provisional receipt number the till PRINTED before the sale synced. Stored as a LOOKUP reference (unique per store, searchable in Orders / Returns) — never used for sequencing and never the invoice number.' })
   @IsOptional()
   @IsString()
-  @MaxLength(60)
-  offlineRef?: string;
+  @Matches(/^OFF-[A-Za-z0-9]{1,12}-\d{1,8}$/, { message: 'provisionalNumber must look like OFF-<device>-<number>' })
+  provisionalNumber?: string;
 
   @ApiProperty({ required: false, description: 'true when this is a queued sale being replayed after the device was offline' })
   @IsOptional()

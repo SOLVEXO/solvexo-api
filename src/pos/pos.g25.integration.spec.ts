@@ -85,8 +85,9 @@ describe('tax-invoice numbers: per store, gap-free, immutable', () => {
     await sell(x);
     const at = new Date(Date.now() - 3_600_000);
     await h.repos.registerSessionModel.collection.updateOne({ _id: new Types.ObjectId(x.sid) }, { $set: { openedAt: new Date(Date.now() - 7_200_000) } }); // the shift was open when the offline sale was made
-    const off = await sell(x, { offline: true, clientCreatedAt: at.toISOString(), offlineRef: 'OFF-DEV-0007' }, 'manager');
+    const off = await sell(x, { offline: true, clientCreatedAt: at.toISOString(), provisionalNumber: 'OFF-DEV-0007' }, 'manager');
     expect(off.invoice).toMatchObject({ number: 'INV-000002', offlineRef: 'OFF-DEV-0007' });
+    expect(off.provisionalNumber).toBe('OFF-DEV-0007'); // and as a unique, searchable reference on the sale (G2.7)
     expect(new Date(off.invoice.issuedAt).getTime()).toBe(at.getTime());
     expect((await sell(x)).invoice.number).toBe('INV-000003'); // numbers follow SYNC order; the issue date keeps the real time
   });
