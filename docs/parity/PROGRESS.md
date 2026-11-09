@@ -44,3 +44,7 @@ Boot the API against a throw-away staging database and walk one order end to end
 - Run 3 (docs/parity/SMOKE-RUN-3.md): 375/768px storefront (Maison, Tech) and seller pages, 3 fixes (page title, bundle component names, pre-order wording confirmed live in Tech). Redis and Stripe skipped (not present).
 - VERIFIED FOR REAL: API boot/DI, COD order + ship + deliver + return/restock with stock numbers, bundle/pre-order stock, B2B pricing/rules/terms/credit limit/khata mirror, feeds XML, synonyms search + no-results, 2FA login + step-up, P8 token/scope/webhook subscription, storefront + seller pages in Chrome at 375/768.
 - NOT VERIFIED: real Redis/BullMQ (courier sync, COD auto-cancel, campaign send, schedulers, webhook retry through the cron), Stripe paid order/refund/duplicate webhooks, email/WhatsApp/SMS delivery, B2B payment-terms emails, real courier booking, Tech theme at 768 (3 pages), Safari/Firefox/real phones, Atlas.
+
+## Gaps close (docs/parity/GAPS-CLOSE.md)
+Done: phone order action bar with a More menu; P8 topics product/inventory/customer/refund + scoped idempotent audited write API; P12 step-up on password change, Reset 2FA button, real staff 2FA enforcement with grace period, local QR image, Google sign-in code step; Tech theme 768 re-check. Also fixed: audit entries of khata/webhooks/API tokens/B2B were silently dropped (missing activity-log categories).
+Still not done: POS PIN 2FA (not suitable, lockout needed instead), real Redis/queues, Stripe, write endpoints beyond product status/tags and stock adjust.
