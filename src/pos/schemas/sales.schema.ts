@@ -91,7 +91,7 @@ export const SaleItemSchema = SchemaFactory.createForClass(SaleItem);
 /** One tender taken for a sale. `amount` is what was APPLIED to the total (cash net of change). */
 @Schema({ _id: false })
 export class SalePayment {
-  @Prop({ enum: ['cash', 'card', 'other', 'raast_qr'], required: true })
+  @Prop({ enum: ['cash', 'card', 'other', 'raast_qr', 'store_credit'], required: true })
   method: string;
 
   @Prop({ type: Number, required: true })
@@ -259,7 +259,7 @@ export class Sale {
   taxRate: number | null;
 
   // 'split' when more than one tender was used. For old single-payment sales this is the only payment info.
-  @Prop({ enum: ['cash', 'card', 'other', 'raast_qr', 'split'], default: 'cash' })
+  @Prop({ enum: ['cash', 'card', 'other', 'raast_qr', 'store_credit', 'split'], default: 'cash' })
   paymentMethod: string;
 
   // G2.4 digital receipt: an unguessable capability token (192 bits). `revokedAt` set = the link no longer works.
@@ -342,6 +342,10 @@ export class Sale {
 
   @Prop({ type: 'MinorMoney' })
   paymentShortfallMinor?: number;
+
+  /** G3.3: loyalty at the till — earned / redeemed points and what returns have reversed / restored since (see pos-loyalty.util.ts) */
+  @Prop({ type: Object, default: null })
+  loyalty?: { ledgerId: string; earnedPoints: number; earnSpendMinor: number; redeemedPoints: number; redeemValueMinor: number; reversedPoints: number; restoredPoints: number; refundedNetMinor: number } | null;
 
   @Prop({ type: String, default: null })
   customerId: string | null;

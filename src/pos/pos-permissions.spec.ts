@@ -38,6 +38,7 @@ const T: Record<PosAction, { below: [Exp, Exp, Exp]; above?: [Exp, Exp, Exp] }> 
   'storeCredit.refundIssue':      { below: ['allow', 'allow', 'allow'], above: ['manager', 'allow', 'allow'] },
   'storeCredit.adjust':           { below: ['deny', 'allow', 'allow'], above: ['deny', 'owner', 'allow'] },
   'loyalty.redeem':               { below: ['allow', 'allow', 'allow'] },
+  'loyalty.configure':            { below: ['deny', 'deny', 'allow'] },
   'loyalty.adjust':               { below: ['deny', 'allow', 'allow'], above: ['deny', 'owner', 'allow'] },
   'supply.view':                  { below: ['deny', 'allow', 'allow'] },
   'supply.po.write':              { below: ['deny', 'allow', 'allow'] },

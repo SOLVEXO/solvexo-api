@@ -19,6 +19,9 @@ import { Long } from 'mongodb';
 import { checkMinorPairs, isoExponent, MinorMismatch } from '@/common/money-minor.util';
 import { PosMinorMetrics } from './pos-minor-metrics';
 import { normalizeReason } from './pos-reasons';
+import { PosCustomerCore } from './pos-customer-core.service';
+import { earnPoints, pointsToReverse, pointsToRestore, redeemValueMinor } from './pos-loyalty.util';
+import { resolveLimits } from './pos-permissions.config';
 import { searchStoreCustomers } from '@/common/store-customer-search.util';
 import { PaymentsCoreService } from '@/payments-core/payments-core.service';
 import {
@@ -84,6 +87,8 @@ export class PosService {
     @Optional() private readonly revocations?: PosTokenRevocationService,
     // G2.3: digital (Raast QR) payments. Optional for the same reason; a sale with a QR line is refused when it is absent.
     @Optional() @Inject(forwardRef(() => PaymentsCoreService)) private readonly payments?: PaymentsCoreService,
+    // G3.3: customers / store credit / loyalty at the till. Optional for the same reason; without it a store-credit tender or points redemption is refused.
+    @Optional() private readonly customers?: PosCustomerCore,
   ) {}
 
   private get r() {
@@ -764,7 +769,7 @@ export class PosService {
       const nets = tenderNets(sale as any, exp);
       const used = effectivePayments(sale as any);
       if (new Set(used.map((l) => l.method)).size > 1) splitSales++;
-      for (const method of ['cash', 'card', 'other', 'raast_qr'] as const) {
+      for (const method of ['cash', 'card', 'other', 'raast_qr', 'store_credit'] as const) {
         if (used.some((l) => l.method === method)) {
           byPayment[method] ??= { count: 0, total: 0 }; // raast_qr appears only for stores that sell with it
           byPayment[method].count++;
@@ -980,6 +985,24 @@ export class PosService {
     }
     // a held sale keeps the CODE only (no discount, no usage count); it is validated again when the sale is resumed / completed
     const heldCouponCode = dto.couponCode && isHeld ? String(dto.couponCode).trim().toUpperCase().slice(0, 40) : null;
+    // G3.3: who is the customer for store credit / loyalty? (a till customer, or a storefront buyer of this store)
+    const custInfo = !isHeld && dto.customerId && this.customers ? await this.customers.resolve(dto.storeId, dto.customerId) : null;
+    const loyaltyCfg = custInfo && this.customers ? await this.customers.loyaltyConfig(dto.storeId) : null;
+    let loyaltyRedeem = { points: 0, valueMinor: 0 };
+    if (dto.redeemPoints) {
+      if (off.isOffline) throw moneyError('LOYALTY_ONLINE_ONLY', 'Points can only be redeemed on a live sale (the balance is checked on the server)');
+      if (isHeld) throw moneyError('LOYALTY_ON_HELD_SALE', 'Redeem points when the sale is paid');
+      if (!custInfo) throw moneyError('CUSTOMER_REQUIRED', 'Attach the customer to redeem points');
+      if (!loyaltyCfg?.enabled || !loyaltyCfg.redeemMinorPerPoint) throw moneyError('LOYALTY_NOT_ENABLED', 'Points cannot be redeemed at the till for this store');
+      if (couponUsed || discountReq.value > 0) throw moneyError('LOYALTY_WITH_DISCOUNT', 'Points cannot be combined with a coupon or a manual discount on one sale');
+      const pre = computeTotals(this.taxLines(saleItems), { exp: money.exp, taxRate: money.taxRate });
+      const valueMinor = redeemValueMinor(dto.redeemPoints, loyaltyCfg.redeemMinorPerPoint);
+      if (valueMinor > pre.minor.subtotal) throw moneyError('LOYALTY_EXCEEDS_SALE', 'The points are worth more than the sale');
+      const mem: any = await this.r.loyaltyMemberModel.findOne({ storeId: dto.storeId, userId: custInfo.ledgerId }).select('pointsBalance').lean();
+      if (!mem || mem.pointsBalance < dto.redeemPoints) throw moneyError('LOYALTY_INSUFFICIENT_POINTS', 'The customer does not have that many points');
+      discountReq = { type: 'amount', value: fromMinor(valueMinor, money.exp) };
+      loyaltyRedeem = { points: dto.redeemPoints, valueMinor };
+    }
     const totals = computeTotals(this.taxLines(saleItems), { exp: money.exp, discountType: discountReq.type, discountValue: discountReq.value, taxRate: money.taxRate });
     const clientMismatches = this.reconcileClientMoney(dto, money.exp, totals.minor.total); // G1b: recorded, NEVER a rejection (see recordClientMismatches)
     const flags: Array<{ type: string; detail: Record<string, any> }> = [];
@@ -1016,6 +1039,20 @@ export class PosService {
       digital = v.digital;
     }
     if (settled && settled.shortBy > 0) flags.push({ type: 'payment_shortfall', detail: { shortBy: settled.shortBy, serverTotal: total } });
+    // G3.3 (D3): a store-credit tender — online only, needs the customer, needs the new ledger (the check that the balance covers it is the guarded spend inside the sale transaction)
+    const creditLine: any = settled?.lines.find((l: any) => l.method === 'store_credit') ?? null;
+    if (creditLine) {
+      if (off.isOffline) throw moneyError('STORE_CREDIT_ONLINE_ONLY', 'Store credit needs a live check and cannot be used on an offline sale');
+      if (!custInfo) throw moneyError('CUSTOMER_REQUIRED', 'Attach the customer to pay with store credit');
+      if (!this.customers) throw businessConflict('STORE_CREDIT_NOT_ENABLED', 'Store credit is not switched on');
+      this.customers.requireLedger();
+    }
+    // loyalty: points earned on what the customer paid for the goods (after discount, before tax); recorded on the sale so returns can reverse them proportionally
+    const loyaltyNetMinor = totals.minor.total - totals.minor.tax;
+    const earnedPoints = custInfo && loyaltyCfg?.enabled ? earnPoints(loyaltyNetMinor, loyaltyCfg.earnSpendMinor) : 0;
+    const loyaltyBlock = custInfo && (earnedPoints > 0 || loyaltyRedeem.points > 0)
+      ? { ledgerId: custInfo.ledgerId, earnedPoints, earnSpendMinor: loyaltyNetMinor, redeemedPoints: loyaltyRedeem.points, redeemValueMinor: loyaltyRedeem.valueMinor, reversedPoints: 0, restoredPoints: 0, refundedNetMinor: 0 }
+      : null;
 
     // Take the stock first (all-or-nothing, floor-guarded). A completed sale only exists once its
     // stock has genuinely been taken; if recording the sale then fails, the stock is handed back.
@@ -1101,6 +1138,7 @@ export class PosService {
             flags: [...flags, ...oversold.map((o) => ({ type: 'oversold_on_sync', detail: o }))],
             needsReview: flags.length > 0 || oversold.length > 0,
             customerId: dto.customerId ?? null,
+            ...(loyaltyBlock ? { loyalty: loyaltyBlock } : {}),
             customerName: dto.customerName ?? 'Walk-in',
             notes: dto.notes ?? null,
             heldAt: isHeld ? new Date() : null,
@@ -1118,6 +1156,13 @@ export class PosService {
             for (const it of ((created as any).items as any[]).filter((x: any) => x.soldExpired)) {
               await this.writeAuditLog({ storeId: dto.storeId, employeeId: dto.employeeId, action: 'expired_lot_sold', targetId: String((created as any)._id), targetType: 'sale', sessionId: dto.sessionId, registerId: dto.registerId, shiftId: (session as any).shiftId ?? null, metadata: { variantId: String(it.variantId), sku: it.sku, qty: it.qty, lots: (it.lots ?? []).filter((l: any) => l.expired).map((l: any) => ({ lotId: l.lotId, lotNumber: l.lotNumber, qty: l.qty })), approvedBy: opts.expiredApproval?.employeeId ?? null, offline: off.isOffline } }, tx);
             }
+            // G3.3: store credit spent, points redeemed and earned — in THIS transaction (all or nothing with the sale)
+            if (creditLine) {
+              const sp = await this.customers!.ledger.spend({ storeId: dto.storeId, customerId: custInfo!.ledgerId, amountMinor: toMinor(creditLine.amount, money.exp), type: 'spend', idemKey: `sale:${String((created as any)._id)}`, note: `Sale ${(created as any).saleNumber}`, actor: { actorId: dto.employeeId, actorRole: 'cashier' }, refs: { saleId: String((created as any)._id), deviceId: this.callerDeviceId(), registerId: dto.registerId, sessionId: dto.sessionId } }, tx);
+              if (!sp.ok) throw businessConflict('STORE_CREDIT_INSUFFICIENT', 'The customer\'s store credit does not cover this payment');
+            }
+            if (loyaltyRedeem.points) await this.customers!.redeemPointsInTx(tx, { storeId: dto.storeId, ledgerId: custInfo!.ledgerId, points: loyaltyRedeem.points, saleId: String((created as any)._id), description: `Redeemed at the till — sale ${(created as any).saleNumber}` });
+            if (earnedPoints > 0) await this.customers!.earnInTx(tx, { storeId: dto.storeId, ledgerId: custInfo!.ledgerId, points: earnedPoints, saleId: String((created as any)._id), description: `Sale ${(created as any).saleNumber}`, tiers: loyaltyCfg!.tiers });
             await this.recordPayments(created, settled!.lines, { ...auditCtx, employeeId: dto.employeeId }, tx);
             await this.consumeDigital(dto.storeId, digital, created, tx); // one sale per payment: the unique `consumed` event commits with the sale or not at all
             if (couponUsed) await this.consumeCoupon(String(couponUsed._id), tx); // race-safe usage count, in the same transaction
@@ -1233,6 +1278,17 @@ export class PosService {
     const digital = verifiedDigital.digital;
     const { discount, tax, total } = totals;
     const locationId: string | null = (sale as any).locationId ?? null;
+    // G3.3: the held sale's customer — store credit as a tender and points earned, when it is paid
+    const custInfo = this.customers && (sale as any).customerId ? await this.customers.resolve(String((sale as any).storeId), String((sale as any).customerId)) : null;
+    const loyaltyCfg = custInfo && this.customers ? await this.customers.loyaltyConfig(String((sale as any).storeId)) : null;
+    const creditLine: any = settled.lines.find((l: any) => l.method === 'store_credit') ?? null;
+    if (creditLine) {
+      if (!custInfo || !this.customers) throw moneyError('CUSTOMER_REQUIRED', 'Attach the customer to pay with store credit');
+      this.customers.requireLedger();
+    }
+    const loyaltyNetMinor = totals.minor.total - totals.minor.tax;
+    const earnedPoints = custInfo && loyaltyCfg?.enabled ? earnPoints(loyaltyNetMinor, loyaltyCfg.earnSpendMinor) : 0;
+    const loyaltyBlock = custInfo && earnedPoints > 0 ? { ledgerId: custInfo.ledgerId, earnedPoints, earnSpendMinor: loyaltyNetMinor, redeemedPoints: 0, redeemValueMinor: 0, reversedPoints: 0, restoredPoints: 0, refundedNetMinor: 0 } : null;
 
     // Stock first, then claim the held sale with a status-guarded update: if two terminals (or a
     // retry) both get here, exactly one wins the `held → completed` transition; the loser gives
@@ -1282,6 +1338,7 @@ export class PosService {
           taxRate: money.taxRate,
           settingsVersion: money.settingsVersion,
           heldAt: null,
+          ...(loyaltyBlock ? { loyalty: loyaltyBlock } : {}),
           notes: dto.notes ?? (sale as any).notes,
           shiftId: completeCtx.shiftId,
           deviceId: this.callerDeviceId(),
@@ -1293,6 +1350,11 @@ export class PosService {
       // G3.1/G3.2: the held sale's units leave stock NOW — the ledger rows (per lot) are written with the completion
       await this.recordMovements(tx, { type: 'sale', refType: 'sale', refId: saleId, storeId: String((sale as any).storeId), locationId, ctx: { employeeId: (sale as any).employeeId, registerId: completeCtx.registerId, sessionId: completeCtx.sessionId },
         lines: ((sale as any).items as any[]).flatMap((it: any, idx: number) => this.movementLines({ variantId: it.variantId, productId: it.productId, name: it.name, sku: it.sku, unitCostMinor: it.unitCostMinor ?? null, isCustom: !!it.isCustom }, idx, it.qty, lotItems[idx]?.lots ?? [])) });
+      if (creditLine) {
+        const sp = await this.customers!.ledger.spend({ storeId: String((sale as any).storeId), customerId: custInfo!.ledgerId, amountMinor: toMinor(creditLine.amount, money.exp), type: 'spend', idemKey: `sale:${saleId}`, note: `Sale ${(sale as any).saleNumber}`, actor: { actorId: (sale as any).employeeId, actorRole: 'cashier' }, refs: { saleId, deviceId: this.callerDeviceId(), registerId: completeCtx.registerId, sessionId: completeCtx.sessionId } }, tx);
+        if (!sp.ok) throw businessConflict('STORE_CREDIT_INSUFFICIENT', 'The customer\'s store credit does not cover this payment');
+      }
+      if (earnedPoints > 0) await this.customers!.earnInTx(tx, { storeId: String((sale as any).storeId), ledgerId: custInfo!.ledgerId, points: earnedPoints, saleId, description: `Sale ${(sale as any).saleNumber}`, tiers: loyaltyCfg!.tiers });
       await this.recordPayments(claimed, settled.lines, { ...completeCtx, employeeId: (sale as any).employeeId }, tx);
       await this.consumeDigital(String((sale as any).storeId), digital, claimed, tx);
       if (couponUsed) await this.consumeCoupon(String(couponUsed._id), tx); // race-safe usage count, in the same transaction
@@ -1507,12 +1569,19 @@ export class PosService {
     }
 
     // Who may do it: a manager always; a cashier only when the store allows it and the return is within every limit.
-    const settingsDoc: any = await this.r.posSettingsModel.findOne({ storeId: (sale as any).storeId }).select('cashierReturnsEnabled returnApprovalAboveMinor returnApprovalAfterDays').lean();
+    const settingsDoc: any = await this.r.posSettingsModel.findOne({ storeId: (sale as any).storeId }).select('cashierReturnsEnabled returnApprovalAboveMinor returnApprovalAfterDays approvalLimits').lean();
     const needs = returnApprovalReasons({
       amountMinor: toMinor(refundAmount, exp), aboveMinor: settingsDoc?.returnApprovalAboveMinor ?? null,
       daysSinceSale: daysBetween(new Date((sale as any).createdAt ?? Date.now()), new Date()), afterDays: settingsDoc?.returnApprovalAfterDays ?? null,
       receiptPresented: dto?.receiptPresented !== false, cashierReturnsEnabled: settingsDoc?.cashierReturnsEnabled === true,
     });
+    // G3.3 (D3): a refund AS store credit above the store's limit needs a manager (the same approval rule as a big return)
+    const refundToCredit = dto?.refundTo === 'store_credit';
+    const refundCust = this.customers && (sale as any).customerId ? await this.customers.resolve(String((sale as any).storeId), String((sale as any).customerId)) : null;
+    const limitsNow = resolveLimits(settingsDoc?.approvalLimits ?? null, exp);
+    const preTenders = allocateRefund(lines, alreadyRefunded, refundAmount, exp);
+    const convertMinor = refundToCredit ? preTenders.filter((t: any) => t.method === 'cash' || t.method === 'card' || t.method === 'other').reduce((s2: number, t: any) => s2 + toMinor(t.amount, exp), 0) : 0;
+    if (refundToCredit && convertMinor > limitsNow.storeCreditRefundMinor) needs.push('store_credit_refund_above_limit');
     const isManager = who.role === 'manager';
     if (!isManager && needs.length) {
       throw new ForbiddenException({ statusCode: 403, code: 'RETURN_NEEDS_MANAGER', reasons: needs, message: needs.includes('store_requires_manager') ? 'Only managers can issue refunds' : 'A manager must approve this return' });
@@ -1520,7 +1589,18 @@ export class PosService {
     const actor = { employeeId: who.employeeId, role: who.role };
     const approvedBy = isManager && needs.length ? who.employeeId : null;
 
-    const tenders = allocateRefund(lines, alreadyRefunded, refundAmount, exp);
+    let tenders: Array<{ method: any; amount: number }> = preTenders;
+    if (refundToCredit && convertMinor > 0) {
+      const keep = preTenders.filter((t: any) => !(t.method === 'cash' || t.method === 'card' || t.method === 'other'));
+      const existingCredit = keep.filter((t: any) => t.method === 'store_credit').reduce((s2: number, t: any) => s2 + toMinor(t.amount, exp), 0);
+      tenders = [...keep.filter((t: any) => t.method !== 'store_credit'), { method: 'store_credit', amount: fromMinor(existingCredit + convertMinor, exp) }];
+    }
+    const creditBackMinor = tenders.filter((t: any) => t.method === 'store_credit').reduce((s2: number, t: any) => s2 + toMinor(t.amount, exp), 0);
+    if (creditBackMinor > 0) {
+      if (!this.customers) throw businessConflict('STORE_CREDIT_NOT_ENABLED', 'Store credit is not switched on');
+      this.customers.requireLedger();
+      if (!refundCust) throw moneyError('CUSTOMER_REQUIRED_FOR_CREDIT', 'Store credit needs a customer on the sale — attach the customer first');
+    }
     const reason = normalizeReason('refund', dto?.reasonCode, dto?.reason);
     const refundId = new Types.ObjectId();
     const refundSeq = ((sale as any).refunds ?? []).length;
@@ -1561,6 +1641,15 @@ export class PosService {
     // tenders only — cash was refused above) does it fall back to the sale's own shift, and only if that one is still open; a CLOSED shift is never touched.
     const refundShift = await this.refundShiftFor(sale, nowSession);
     const refundCtx = { sessionId: refundShift ? String(refundShift._id) : null, registerId: returnRegisterId, shiftId: refundShift?.shiftId ?? null };
+    // G3.3 (D2): points earned on this sale reverse proportionally to what is returned; redeemed points come back in proportion to the money returned (cumulative, exact)
+    const loy: any = (sale as any).loyalty;
+    let loyaltyRev = 0, loyaltyRest = 0;
+    if (loy && refundCust) {
+      const netNow = credit.reduce((s2, c2) => s2 + c2.a.netMinor, 0);
+      loyaltyRev = pointsToReverse(loy.earnedPoints ?? 0, loy.earnSpendMinor ?? 0, (loy.refundedNetMinor ?? 0) + netNow, loy.reversedPoints ?? 0);
+      loyaltyRest = pointsToRestore(loy.redeemedPoints ?? 0, toMinor((sale as any).total, exp), toMinor(alreadyRefunded, exp) + toMinor(refundAmount, exp), loy.restoredPoints ?? 0);
+      update.$inc = { ...(update.$inc ?? {}), 'loyalty.refundedNetMinor': netNow, 'loyalty.reversedPoints': loyaltyRev, 'loyalty.restoredPoints': loyaltyRest };
+    }
     const refundAuditAction = newStatus === 'refunded' ? 'sale_refunded_full' : 'sale_refunded_partial';
     let createdCreditNote: any = null;
     const claimed = await this.atomic(async (tx) => {
@@ -1582,6 +1671,15 @@ export class PosService {
         tenders: this.tendersMinor(tenders, exp), actorId: actor.employeeId, approvedBy, approvalReasons: needs, ctx: refundCtx,
       });
       createdCreditNote = creditNote;
+      // G3.3: store credit goes back (a refund AS credit, or a sale that was PAID with credit), and the points move — in this transaction
+      if (creditBackMinor > 0) {
+        await this.customers!.ledger.addLot({ storeId: String((sale as any).storeId), customerId: refundCust!.ledgerId, amountMinor: creditBackMinor, type: convertMinor > 0 ? 'refund_credit' : 'spend_reversal', idemKey: `pos-refund:${String(refundId)}`, note: `Return of sale ${(sale as any).saleNumber}`, actor: { actorId: actor.employeeId, actorRole: who.role }, refs: { saleId, refundId: String(refundId), creditNoteNumber: creditNote.number, approvedBy, deviceId: this.callerDeviceId(), registerId: returnRegisterId, sessionId: refundShift ? String(refundShift._id) : null } }, tx);
+      }
+      if (loyaltyRev > 0 || loyaltyRest > 0) {
+        const cfg = await this.customers!.loyaltyConfig(String((sale as any).storeId));
+        if (loyaltyRev > 0) await this.customers!.earnInTx(tx, { storeId: String((sale as any).storeId), ledgerId: refundCust!.ledgerId, points: -loyaltyRev, saleId, description: `Return — sale ${(sale as any).saleNumber}`, tiers: cfg.tiers, type: 'adjustment' });
+        if (loyaltyRest > 0) await this.customers!.earnInTx(tx, { storeId: String((sale as any).storeId), ledgerId: refundCust!.ledgerId, points: loyaltyRest, saleId, description: `Points restored — return of sale ${(sale as any).saleNumber}`, tiers: cfg.tiers, type: 'adjustment' });
+      }
       // G3.1: the units that really went back on the shelf are a stock movement, at the cost the sale snapshotted
       await this.recordMovements(tx, { type: 'return', refType: 'refund', refId: String(refundId), storeId: String((sale as any).storeId), locationId, ctx: { employeeId: actor.employeeId, registerId: returnRegisterId, sessionId: refundShift ? String(refundShift._id) : null },
         lines: itemUpdates.filter((u) => !!u.variantId && u.restock).flatMap((u) => { const it = saleItems.find((x: any) => String(x._id) === u.saleItemId); return this.movementLines({ ...(it?.toObject?.() ?? it ?? {}), variantId: u.variantId, isCustom: false }, u.saleItemId, u.qtyToRestore, returnPartsFor(it?.lots ?? [], it?.refundedQty || 0, u.qtyToRestore)); }) });
@@ -1928,7 +2026,7 @@ export class PosService {
     for (const sale of sales) {
       const nets = tenderNets(sale, exp);
       const used = effectivePayments(sale);
-      for (const m of ['cash', 'card', 'other', 'raast_qr'] as const) {
+      for (const m of ['cash', 'card', 'other', 'raast_qr', 'store_credit'] as const) {
         if (used.some((l) => l.method === m)) { byPayment[m] ??= { count: 0, total: 0 }; byPayment[m].count++; byPayment[m].total = roundMoney(byPayment[m].total + nets[m], exp); }
       }
     }
@@ -2120,11 +2218,12 @@ export class PosService {
   }
 
   /** `$inc` for the register session from a sale's tender nets (cash net of change; refunds already deducted). */
-  private tenderInc(nets: Record<'cash' | 'card' | 'other' | 'raast_qr', number>, sign: 1 | -1): Record<string, number> {
+  private tenderInc(nets: Record<'cash' | 'card' | 'other' | 'raast_qr' | 'store_credit', number>, sign: 1 | -1): Record<string, number> {
     const inc: Record<string, number> = {};
     if (nets.cash) inc.cashSales = sign * nets.cash;
     if (nets.card) inc.cardSales = sign * nets.card;
-    if (nets.other) inc.otherSales = sign * nets.other;
+    // store credit is not drawer money: it is counted with 'other' in the shift totals (the payment line itself keeps its own method)
+    if (nets.other || nets.store_credit) inc.otherSales = sign * ((nets.other || 0) + (nets.store_credit || 0));
     if (nets.raast_qr) inc.digitalSales = sign * nets.raast_qr;
     return inc;
   }
@@ -2922,6 +3021,10 @@ export class PosService {
     if (voidRegisterId && dto?.registerId && voidCash && !voidNow) throw businessConflict('OPEN_SHIFT_REQUIRED', 'Open a shift on this register before paying a cash refund');
     const voidShift = await this.refundShiftFor(sale, voidNow);
     const voidCtx = { sessionId: voidShift ? String(voidShift._id) : null, registerId: voidRegisterId, shiftId: voidShift?.shiftId ?? null };
+    // G3.3: a void gives back what the sale took from the customer's store credit and points
+    const voidCust = this.customers && (sale as any).customerId ? await this.customers.resolve(String((sale as any).storeId), String((sale as any).customerId)) : null;
+    const voidCreditMinor = effectivePayments(sale as any).filter((l: any) => l.method === 'store_credit').reduce((s2: number, l: any) => s2 + toMinor(l.amount, cnExp), 0);
+    if (voidCreditMinor > 0 && (!this.customers || !voidCust)) throw moneyError('CUSTOMER_REQUIRED_FOR_CREDIT', 'The customer of this sale could not be found — the store credit cannot be given back');
     let voidCreditNote: any = null;
     const claimed = await this.atomic(async (tx) => {
       const c = await this.r.saleModel.findOneAndUpdate(
@@ -2938,6 +3041,14 @@ export class PosService {
         tenders: effectivePayments(sale as any).map((l: any) => ({ method: l.method, amountMinor: toMinor(l.amount, cnExp) })), actorId: actor.employeeId, approvedBy: actor.employeeId, approvalReasons: [],
         ctx: voidCtx,
       });
+      if (voidCreditMinor > 0) await this.customers!.ledger.addLot({ storeId: String((sale as any).storeId), customerId: voidCust!.ledgerId, amountMinor: voidCreditMinor, type: 'spend_reversal', idemKey: `pos-void:${saleId}`, note: `Void of sale ${(sale as any).saleNumber}`, actor: { actorId: actor.employeeId, actorRole: 'manager' }, refs: { saleId, creditNoteNumber: voidCreditNote?.number ?? null, deviceId: this.callerDeviceId(), registerId: voidRegisterId, sessionId: voidShift ? String(voidShift._id) : null } }, tx);
+      const vloy: any = (sale as any).loyalty;
+      if (vloy && voidCust) {
+        const cfg = await this.customers!.loyaltyConfig(String((sale as any).storeId));
+        const rev = Math.max(0, (vloy.earnedPoints ?? 0) - (vloy.reversedPoints ?? 0)); const rest = Math.max(0, (vloy.redeemedPoints ?? 0) - (vloy.restoredPoints ?? 0));
+        if (rev > 0) await this.customers!.earnInTx(tx, { storeId: String((sale as any).storeId), ledgerId: voidCust.ledgerId, points: -rev, saleId, description: `Void — sale ${(sale as any).saleNumber}`, tiers: cfg.tiers, type: 'adjustment' });
+        if (rest > 0) await this.customers!.earnInTx(tx, { storeId: String((sale as any).storeId), ledgerId: voidCust.ledgerId, points: rest, saleId, description: `Points restored — void of sale ${(sale as any).saleNumber}`, tiers: cfg.tiers, type: 'adjustment' });
+      }
       await this.recordMovements(tx, { type: 'void', refType: 'void', refId: saleId, storeId: String((sale as any).storeId), locationId: (sale as any).locationId ?? null, ctx: { employeeId: actor.employeeId, registerId: voidRegisterId, sessionId: voidShift ? String(voidShift._id) : null },
         lines: ((sale as any).items as any[]).flatMap((it: any, idx: number) => this.movementLines(it, idx, it.qty, it.lots ?? [])) });
       await this.writeAuditLog({

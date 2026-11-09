@@ -5,8 +5,8 @@ import { Type } from 'class-transformer';
 
 /** One tender collected for a sale. For cash, `amount` is what the customer HANDED OVER (may exceed what is owed — the server computes the change). */
 export class PaymentLineDto {
-  @ApiProperty({ enum: ['cash', 'card', 'other', 'raast_qr'] })
-  @IsEnum(['cash', 'card', 'other', 'raast_qr'])
+  @ApiProperty({ enum: ['cash', 'card', 'other', 'raast_qr', 'store_credit'] })
+  @IsEnum(['cash', 'card', 'other', 'raast_qr', 'store_credit'])
   method: string;
 
   @ApiProperty({ example: 40 })

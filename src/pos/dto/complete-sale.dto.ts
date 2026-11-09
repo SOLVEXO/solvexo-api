@@ -10,8 +10,8 @@ export class CompleteSaleDto {
   @MaxLength(40)
   couponCode?: string;
 
-  @ApiProperty({ enum: ['cash', 'card', 'other', 'raast_qr'], description: 'Single-payment form; ignored when `payments` is sent' })
-  @IsEnum(['cash', 'card', 'other', 'raast_qr'])
+  @ApiProperty({ enum: ['cash', 'card', 'other', 'raast_qr', 'store_credit'], description: 'Single-payment form; ignored when `payments` is sent' })
+  @IsEnum(['cash', 'card', 'other', 'raast_qr', 'store_credit'])
   paymentMethod: string;
 
   @ApiProperty({ type: [PaymentLineDto], required: false })

@@ -142,8 +142,8 @@ export class CreateSaleDto {
   // no strict validation on purpose: a malformed twin must never reject a sale — the server records it as a mismatch and uses its own values
   clientTotalMinor?: number;
 
-  @ApiProperty({ enum: ['cash', 'card', 'other', 'raast_qr'], default: 'cash', description: 'Single-payment form; ignored when `payments` is sent' })
-  @IsEnum(['cash', 'card', 'other', 'raast_qr'])
+  @ApiProperty({ enum: ['cash', 'card', 'other', 'raast_qr', 'store_credit'], default: 'cash', description: 'Single-payment form; ignored when `payments` is sent' })
+  @IsEnum(['cash', 'card', 'other', 'raast_qr', 'store_credit'])
   paymentMethod: string;
 
   @ApiProperty({ type: [PaymentLineDto], required: false, description: 'Split tender: one entry per tender. Overrides paymentMethod.' })
@@ -195,6 +195,12 @@ export class CreateSaleDto {
   @IsInt()
   @Min(1)
   settingsVersion?: number;
+
+  @ApiProperty({ required: false, description: 'G3.3 (D2): redeem this many loyalty points as a discount (whole points, online only, needs customerId; cannot be combined with a coupon or manual discount). The server prices it.' })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  redeemPoints?: number;
 
   @ApiProperty({ required: false, description: 'ISO time the sale was really made on the device (offline sales)' })
   @IsOptional()

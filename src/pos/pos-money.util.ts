@@ -13,8 +13,8 @@ import { fromMinor, isoExponent, roundMoney, toMinor } from '@/common/money-mino
  * trusts client-sent totals.
  */
 
-export type Tender = 'cash' | 'card' | 'other' | 'raast_qr';
-export const TENDERS: Tender[] = ['cash', 'card', 'other', 'raast_qr'];
+export type Tender = 'cash' | 'card' | 'other' | 'raast_qr' | 'store_credit';
+export const TENDERS: Tender[] = ['cash', 'card', 'other', 'raast_qr', 'store_credit'];
 
 /** Tenders whose money arrives through a payment provider and must be CONFIRMED before the sale exists (never cash in the drawer). */
 export const DIGITAL_TENDERS: Tender[] = ['raast_qr'];
@@ -258,14 +258,14 @@ export function tenderNets(
   const refundedM = sale.status === 'voided' ? Number.MAX_SAFE_INTEGER : toMinor(sale.refundedAmount ?? 0, exp);
   const ordered = refundOrder(lines);
   const gone = absorbedPerLine(ordered, refundedM, exp);
-  const net: Record<Tender, number> = { cash: 0, card: 0, other: 0, raast_qr: 0 };
+  const net: Record<Tender, number> = { cash: 0, card: 0, other: 0, raast_qr: 0, store_credit: 0 };
   ordered.forEach((l, i) => { net[l.method] += toMinor(l.amount, exp) - gone[i]; });
-  return { cash: fromMinor(net.cash, exp), card: fromMinor(net.card, exp), other: fromMinor(net.other, exp), raast_qr: fromMinor(net.raast_qr, exp) };
+  return { cash: fromMinor(net.cash, exp), card: fromMinor(net.card, exp), other: fromMinor(net.other, exp), raast_qr: fromMinor(net.raast_qr, exp), store_credit: fromMinor(net.store_credit, exp) };
 }
 
 /** Per-tender amounts as a plain object (`{cash, card, other, raast_qr}`), from a list of `{method, amount}`. */
 export function byTender(parts: Array<{ method: Tender; amount: number }>): Record<Tender, number> {
-  const out: Record<Tender, number> = { cash: 0, card: 0, other: 0, raast_qr: 0 };
+  const out: Record<Tender, number> = { cash: 0, card: 0, other: 0, raast_qr: 0, store_credit: 0 };
   for (const p of parts) out[p.method] += p.amount;
   return out;
 }

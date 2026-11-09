@@ -59,6 +59,7 @@ export async function startMongoHarness(): Promise<MongoHarness> {
     refreshTokenFamilyModel: m(schema.RefreshTokenFamily, schema.RefreshTokenFamilySchema),
     idempotencyRecordModel: m(schema.IdempotencyRecord, schema.IdempotencyRecordSchema),
     stockMovementModel: m(schema.StockMovement, schema.StockMovementSchema),
+    posCustomerModel: m(schema.PosCustomer, schema.PosCustomerSchema),
     storeCreditEntryModel: m(schema.StoreCreditEntry, schema.StoreCreditEntrySchema),
     storeCreditLotModel: m(schema.StoreCreditLot, schema.StoreCreditLotSchema),
   };

@@ -67,6 +67,7 @@ export const POS_PERMISSIONS = {
   'storeCredit.refundIssue':   { label: 'Refund to store credit', roles: ALL, approval: [{ limit: 'storeCreditRefundMinor', ctx: 'amountMinor', approver: 'manager' }] },
   'storeCredit.adjust':        { label: 'Adjust a customer\'s store credit by hand', roles: MGR, approval: [{ limit: 'storeCreditAdjustMinor', ctx: 'amountMinor', approver: 'owner' }] },
   'loyalty.redeem':            { label: 'Redeem loyalty points at checkout', roles: ALL },
+  'loyalty.configure':         { label: 'Set the loyalty earn / redeem rates for the till', roles: OWN },
   'loyalty.adjust':            { label: 'Adjust loyalty points by hand', roles: MGR, approval: [{ limit: 'loyaltyAdjustPoints', ctx: 'points', approver: 'owner' }] },
   // ── supply (G3.4)
   'supply.view':               { label: 'See suppliers and purchase orders', roles: MGR },
