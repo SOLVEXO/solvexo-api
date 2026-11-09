@@ -23,6 +23,7 @@ export { ExchangeRate, ExchangeRateDocument, ExchangeRateSchema } from '../excha
 export { StripeWebhookEvent, StripeWebhookEventDocument, StripeWebhookEventSchema } from '../payment/schemas/stripe-webhook-event.schema';
 export { RefundRequest, RefundRequestDocument, RefundRequestSchema } from '../refund-request/schemas/refund-request.schema';
 export { ReconciliationRun, ReconciliationRunDocument, ReconciliationRunSchema } from '../admin-finance/schemas/reconciliation-run.schema';
+export { StoreCreditEntry, StoreCreditEntryDocument, StoreCreditEntrySchema, StoreCreditLot, StoreCreditLotDocument, StoreCreditLotSchema } from '../store-credit/schemas/store-credit-ledger.schema';
 export { StockAdjustment, StockAdjustmentDocument, StockAdjustmentSchema } from '../inventory/schemas/stock-adjustment.schema';
 export { StockMovement, StockMovementDocument, StockMovementSchema } from '../inventory/schemas/stock-movement.schema';
 export { VariantLocationStock, VariantLocationStockDocument, VariantLocationStockSchema } from '../inventory/schemas/variant-location-stock.schema';
