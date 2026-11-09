@@ -10,9 +10,9 @@ Read MASTER.md first. Update this table after every phase.
 | P3 COD protection | DONE in code (rules, score, guard, confirmation link, auto-cancel, UI, widget) | api 322ade8, web 8fc04ce4 | no browser/SMTP/WhatsApp run; en/ur strings; WhatsApp template needs Meta approval |
 | P4 Messaging channels (WhatsApp/SMS) | DONE in code (backend + seller UI + buyer preferences page), flag-gated OFF | see git log | no browser run, live Meta / SMS gateways never run, no checkout opt-in, no en/ur, no entitlement |
 | P5 Khata (customer ledger) | DONE in code (ledger, aging, statements, B2B mirror, POS udhaar, SMS reminders, seller page) | see git log, docs/parity/P5-khata.md | no browser/DI-boot run, no WhatsApp reminders, no native POS tender, no en/ur |
-| P6 Product feeds | not started | - | - |
-| P7 Qisstpay | not started | - | - |
-| P8 Webhooks + API tokens | not started | - | - |
+| P6 Product feeds | DONE in code (Google XML + Meta CSV, health, Sales channels page) | docs/parity/P6-P8.md | feed never uploaded to Google/Meta; Meta columns from memory |
+| P7 Qisstpay | ADAPTER ONLY: disabled, unverified, not connectable | docs/parity/P7-qisstpay.md | needs official guide + sandbox (OPEN-QUESTIONS) |
+| P8 Webhooks + API tokens | DONE in code for order events + read-only API; product/inventory/customer events and write endpoints NOT wired | docs/parity/P6-P8.md | no real receiver, no DI boot, DB-backed retry (not BullMQ) |
 | P9 Search & discovery | not started | - | - |
 | P10 Notification templates | not started | - | - |
 | P11 AI Studio honesty | not started | - | - |
