@@ -19,6 +19,7 @@ import { UpdateSupplierDto } from './dto/update-supplier.dto';
 import { importSuppliersCsv } from './supplier-bulk-import';
 import { buildPurchaseOrderPdf, type PoPdfBrand, type PoPdfData } from './po-pdf.util';
 import { buildPurchaseOrderEmailHtml } from './po-email.util';
+import { costTwin, expOf, recordCostMinor } from '../common/cost-minor.util';
 
 function round(n: number) {
   return Math.round(n * 100) / 100;
@@ -534,7 +535,7 @@ export class PurchaseOrdersService {
       }
       await this.repos.productVariantModel.updateOne(
         { _id: item.variantId },
-        { $inc: { stock: totalThisReceipt, damagedStock: damagedQty }, $set: { costPrice: round(newCost) } },
+        { $inc: { stock: totalThisReceipt, damagedStock: damagedQty }, $set: { costPrice: round(newCost), costPriceMinor: costTwin(round(newCost), expOf(po.currency)) } },
         { session },
       );
 
@@ -548,7 +549,7 @@ export class PurchaseOrdersService {
           storeId, productId: item.productId, variantId: item.variantId, locationId: po.locationId ?? null,
           lotNumber: line.lotNumber?.trim() || `LOT-${po.poNumber}-${item._id.toString().slice(-4).toUpperCase()}`,
           expiryDate: line.expiryDate ? new Date(line.expiryDate) : null,
-          quantityReceived: goodQty, quantityRemaining: goodQty, costPrice: item.unitCost,
+          quantityReceived: goodQty, quantityRemaining: goodQty, costPrice: item.unitCost, costPriceMinor: costTwin(item.unitCost, expOf(po.currency)),
           supplierId: po.supplierId ?? null, purchaseOrderId: po._id.toString(),
           status: 'active',
         }], { session });
@@ -606,6 +607,7 @@ export class PurchaseOrdersService {
     if (fullyReceived) po.receivedAt = new Date();
     if (dto.requestId) po.receivedRequestIds = [...(po.receivedRequestIds ?? []).slice(-49), dto.requestId];
     await po.save({ session });
+    recordCostMinor('purchaseOrder', po, expOf(po.currency));
 
     return { po: po.toObject(), discrepancies, duplicate: false };
   }

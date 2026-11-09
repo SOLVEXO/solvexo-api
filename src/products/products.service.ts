@@ -908,8 +908,8 @@ export class ProductsService {
     // Same real fix as getVariantById — a fully public route, and until now
     // every variant's `costPrice` (the seller's own margin data) leaked
     // straight through with no sanitization.
-    const publicVariants = variants.map((v: any) => { const { costPrice: _c, ...rest } = v; return rest; });
-    const publicDefaultVariant = defaultVariant ? (() => { const { costPrice: _c, ...rest } = defaultVariant as any; return rest; })() : null;
+    const publicVariants = variants.map((v: any) => { const { costPrice: _c, costPriceMinor: _cm, ...rest } = v; return rest; });
+    const publicDefaultVariant = defaultVariant ? (() => { const { costPrice: _c, costPriceMinor: _cm, ...rest } = defaultVariant as any; return rest; })() : null;
 
     return {
       message: 'Product fetched successfully',
@@ -991,7 +991,7 @@ export class ProductsService {
     // while building the staff-facing `products.view_cost` permission split
     // — that split would have been cosmetic if the same cost figure leaked
     // to any anonymous caller regardless of permission.
-    const { costPrice: _costPrice, ...publicVariant } = variant as any;
+    const { costPrice: _costPrice, costPriceMinor: _costPriceMinor, ...publicVariant } = variant as any;
 
     return {
       message: 'Variant & Product fetched successfully',

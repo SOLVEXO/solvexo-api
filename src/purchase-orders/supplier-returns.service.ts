@@ -13,6 +13,7 @@ import { drainLocationStock } from '../common/location-stock.util';
 import { consumeLots } from '../common/lot-consumption.util';
 import { refreshExpiredStock } from '../common/expired-stock.util';
 import { SUPPLIER_RETURN_REASONS } from './schemas/supplier-return.schema';
+import { costTwin, expOf, recordCostMinor } from '../common/cost-minor.util';
 import { toCsv } from '../analytics/utils/csv.util';
 
 const round = (n: number) => Math.round(n * 100) / 100;
@@ -133,6 +134,9 @@ export class SupplierReturnsService implements OnModuleInit {
       }
     }
 
+    // G3.0: the store's currency (all costs here are in it) → the integer twins
+    const returnCurrency: string = ((await this.r.storeModel.findById(storeId).select('baseCurrency').lean()) as any)?.baseCurrency ?? 'USD';
+    const returnExp = expOf(returnCurrency);
     const returnNumber = `SR-${Date.now()}-${Math.floor(Math.random() * 9000 + 1000)}`;
     const reason = (dto.reason as any) ?? 'other';
 
@@ -211,7 +215,7 @@ export class SupplierReturnsService implements OnModuleInit {
           const newStock = (before.stock ?? 0) - qty;
           if (variant.costPrice != null && newStock > 0) {
             const newAvg = ((before.stock ?? 0) * variant.costPrice - qty * finalCost) / newStock;
-            if (Number.isFinite(newAvg) && newAvg >= 0) await productVariantModel.updateOne({ _id: variant._id }, { $set: { costPrice: round(newAvg) } }, { session });
+            if (Number.isFinite(newAvg) && newAvg >= 0) await productVariantModel.updateOne({ _id: variant._id }, { $set: { costPrice: round(newAvg), costPriceMinor: costTwin(round(newAvg), returnExp) } }, { session });
           }
 
           if (poItem) await purchaseOrderModel.updateOne({ _id: poId, 'items._id': poItem._id }, { $inc: { 'items.$.quantityReturned': qty } }, { session });
@@ -234,8 +238,9 @@ export class SupplierReturnsService implements OnModuleInit {
 
         const [doc] = await (supplierReturnModel as any).create([{
           storeId, sellerId, returnNumber, supplierId, supplierName, purchaseOrderId: poId, locationId: dto.locationId ?? null,
-          reason, note: dto.note?.trim() || null, items, totalCredit: round(totalCredit), requestId: dto.requestId ?? null, createdBy: actorId ?? sellerId,
+          reason, note: dto.note?.trim() || null, items, totalCredit: round(totalCredit), currency: returnCurrency, requestId: dto.requestId ?? null, createdBy: actorId ?? sellerId,
         }], { session });
+        recordCostMinor('supplierReturn', doc, returnExp);
         return doc;
       });
     } catch (err: any) {

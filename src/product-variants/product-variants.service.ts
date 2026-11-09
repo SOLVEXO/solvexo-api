@@ -14,6 +14,7 @@ import { buildDiffMetadata } from '@/common/activity-diff.util';
 import { CreateVariantDto } from './dto/create-variant.dto';
 import { parseCustomsInput } from '@/shipping-rates/customs.util';
 import { UpdateVariantDto } from './dto/update-variant.dto';
+import { costTwin, expOf } from '../common/cost-minor.util';
 import { importVariantsCsv as importVariantsCsvRows } from './variant-bulk-import';
 import {
   optionNameSet,
@@ -247,7 +248,12 @@ export class ProductVariantsService {
     }
     if (dto.barcode !== undefined) update.barcode = normalizeBarcode(dto.barcode);
     if (dto.reorderPoint !== undefined) update.reorderPoint = assertStockQuantity(dto.reorderPoint);
-    if (dto.costPrice !== undefined) update.costPrice = dto.costPrice === null ? null : assertMoney(dto.costPrice, 'Cost price');
+    if (dto.costPrice !== undefined) {
+      update.costPrice = dto.costPrice === null ? null : assertMoney(dto.costPrice, 'Cost price');
+      // G3.0 dual-write: the integer twin from the SAME value, in the store's currency
+      const costStore: any = await this.databaseService.repositories.storeModel.findById(product.storeId).select('baseCurrency').lean();
+      update.costPriceMinor = costTwin(update.costPrice, expOf(costStore?.baseCurrency));
+    }
     if (dto.allowBackorder !== undefined) update.allowBackorder = !!dto.allowBackorder;
     if (dto.trackLots !== undefined) update.trackLots = !!dto.trackLots;
     if (dto.trackSerials !== undefined) update.trackSerials = !!dto.trackSerials;

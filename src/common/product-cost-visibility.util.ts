@@ -15,14 +15,15 @@ export function canViewProductCost(user: any): boolean {
 /** Strips `costPrice` from a single variant-shaped object — a shallow,
  *  new-object copy (never mutates the original), safe to call on a lean
  *  Mongo doc/plain object either way. */
-export function omitCostPrice<T extends Record<string, any>>(variant: T): Omit<T, 'costPrice'> {
+export function omitCostPrice<T extends Record<string, any>>(variant: T): Omit<T, 'costPrice' | 'costPriceMinor'> {
   if (!variant) return variant;
-  const { costPrice, ...rest } = variant;
+  // G3.0: the integer twin is the same margin data — it goes with the decimal
+  const { costPrice, costPriceMinor, ...rest } = variant;
   return rest;
 }
 
 /** Applies `omitCostPrice` across every variant in an array, in place of a
  *  bare `.map()` at every call site. */
-export function omitCostPriceFromVariants<T extends Record<string, any>>(variants: T[]): Omit<T, 'costPrice'>[] {
+export function omitCostPriceFromVariants<T extends Record<string, any>>(variants: T[]): Omit<T, 'costPrice' | 'costPriceMinor'>[] {
   return (variants ?? []).map(omitCostPrice);
 }
