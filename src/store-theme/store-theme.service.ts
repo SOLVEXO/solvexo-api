@@ -863,9 +863,12 @@ export class StoreThemeService {
       // A custom logo needs a real image; otherwise the footer would silently show nothing.
       throw new BadRequestException('Upload a footer logo or choose another logo option');
     }
+    if (dto.wordmarkSource === 'custom' && !(dto.wordmarkUrl ?? '').trim()) {
+      throw new BadRequestException('Upload the big footer logo or choose another option');
+    }
     const footerKeys = ['logoSource', 'logoUrl', 'logoWidth', 'showNewsletter', 'newsletterHeading', 'newsletterText',
       'showDefaultColumns', 'shopColumnHeading', 'accountColumnHeading', 'blogLinkLabel', 'bgColor', 'textColor', 'blockLayout', 'paddingY', 'bgImageUrl', 'bgOverlay', 'align', 'headingUppercase', 'socialStyle', 'socialColor', 'socialCustomColor', 'socialFilled', 'socialSize',
-      'newsletterTop', 'mobileAccordion', 'showPolicyLinks', 'showCurrency', 'showBackToTop', 'preset'] as const;
+      'newsletterTop', 'mobileAccordion', 'showPolicyLinks', 'showCurrency', 'showBackToTop', 'footerShape', 'wordmarkSource', 'wordmarkUrl', 'wordmarkWidth', 'bottomLayout', 'preset'] as const;
     for (const key of footerKeys) {
       if (dto[key] === undefined) continue;
       const v = dto[key];

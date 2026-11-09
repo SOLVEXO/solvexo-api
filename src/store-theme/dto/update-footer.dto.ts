@@ -60,6 +60,13 @@ export class UpdateFooterDto {
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() showPolicyLinks?: boolean;
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() showCurrency?: boolean;
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() showBackToTop?: boolean;
+  @ApiProperty({ required: false, nullable: true, enum: ['panel', 'full'], description: 'Rounded panel inside the page width, or edge to edge. null = theme default' })
+  @ValidateIf((_, v) => v !== null && v !== undefined) @IsIn(['panel', 'full']) footerShape?: 'panel' | 'full' | null;
+  @ApiProperty({ required: false, enum: ['none', 'store', 'custom'], description: 'A big logo across the very bottom of the footer' })
+  @IsOptional() @IsIn(['none', 'store', 'custom']) wordmarkSource?: 'none' | 'store' | 'custom';
+  @ApiProperty({ required: false, nullable: true }) @ValidateIf((_, v) => v !== null && v !== undefined && v !== '') @Matches(/^https:\/\//i, { message: 'Wordmark image must be an https:// URL' }) @MaxLength(2048) wordmarkUrl?: string | null;
+  @ApiProperty({ required: false, description: 'Width of the big logo, 20-100 % of the footer' }) @IsOptional() @IsInt() @Min(20) @Max(100) wordmarkWidth?: number;
+  @ApiProperty({ required: false, enum: ['classic', 'stacked'] }) @IsOptional() @IsIn(['classic', 'stacked']) bottomLayout?: 'classic' | 'stacked';
   @ApiProperty({ required: false, nullable: true }) @IsOptional() @IsString() @MaxLength(40) preset?: string | null;
 
   @ApiProperty({ required: false, type: [SectionInputDto], description: 'Extra sections shown with the header/footer (validated per type in the service)' })

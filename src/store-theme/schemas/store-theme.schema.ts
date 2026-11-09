@@ -317,6 +317,14 @@ export class StorefrontFooter {
   @Prop({ type: Boolean, default: true }) showPolicyLinks: boolean;
   @Prop({ type: Boolean, default: false }) showCurrency: boolean;
   @Prop({ type: Boolean, default: false }) showBackToTop: boolean;
+  // Footer shape: 'panel' = the theme's rounded panel inside the page width; 'full' = edge to edge, no rounded corners. null = theme default.
+  @Prop({ type: String, enum: ['panel', 'full'], default: null }) footerShape: 'panel' | 'full' | null;
+  // A big logo/wordmark across the very bottom of the footer. 'store' = the store logo, 'custom' = wordmarkUrl.
+  @Prop({ type: String, enum: ['none', 'store', 'custom'], default: 'none' }) wordmarkSource: 'none' | 'store' | 'custom';
+  @Prop({ type: String, default: null }) wordmarkUrl: string | null;
+  @Prop({ type: Number, default: 60 }) wordmarkWidth: number;          // 20–100 % of the footer width
+  // Bottom bar: 'classic' = copyright + links in one row; 'stacked' = currency/language left and payment icons right, copyright centred below.
+  @Prop({ type: String, enum: ['classic', 'stacked'], default: 'classic' }) bottomLayout: 'classic' | 'stacked';
   @Prop({ type: String, default: null }) preset: string | null;
 }
 export const StorefrontFooterSchema = SchemaFactory.createForClass(StorefrontFooter);
