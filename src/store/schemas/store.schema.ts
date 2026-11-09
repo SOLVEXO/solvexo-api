@@ -506,6 +506,13 @@ export class Store {
   @Prop({ type: Boolean, default: false })
   requireStaffTwoFactor!: boolean;
 
+  // When the policy was switched on, and how many days staff get to set it up before admin routes are refused (0 = at once).
+  @Prop({ type: Date, default: null })
+  requireStaffTwoFactorSince!: Date | null;
+
+  @Prop({ type: Number, default: 7, min: 0, max: 30 })
+  staffTwoFactorGraceDays!: number;
+
   // Set by a platform admin (abuse / piracy handling): stops downloads, course media and license validation for the store.
   @Prop({ type: Boolean, default: false })
   digitalDisabled!: boolean;

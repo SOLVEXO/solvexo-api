@@ -651,6 +651,12 @@ export class AuthService {
       const meta: { aud?: string } = {};
       const verifiedEmail = await this.verifySocialToken(dto.authProvider, dto.socialId, dto.token, meta);
       const result: any = await this.finishSocialLogin(dto, verifiedEmail);
+      // A seller with two-factor on must still pass the code step: hand back the challenge, not the session that was just created.
+      const sellerId = result?.data?.user?.id;
+      if (dto.role === 'seller' && sellerId && this.memberTwoFactor && (await this.memberTwoFactor.isEnabled('seller', String(sellerId)))) {
+        const seller: any = await this.databaseService.repositories.sellerModel.findById(sellerId).select('tokenVersion').lean();
+        return { message: 'Enter the code from your authenticator app', success: true, data: { twoFactorRequired: true, challengeToken: this.memberTwoFactor.signChallenge('seller', String(sellerId), { tokenVersion: seller?.tokenVersion ?? 0 }) } };
+      }
       // Apple: keep the Apple refresh token (encrypted) so the account's deletion can revoke it. Never fails the login.
       if (dto.authProvider === 'apple' && dto.role === 'seller' && dto.authorizationCode && this.appleTokens) {
         await this.appleTokens.storeFromAuthorizationCode(String(result?.data?.user?.id), dto.authorizationCode, meta.aud);

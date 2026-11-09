@@ -2,7 +2,7 @@
 import { BadRequestException, Body, Controller, Get, NotFoundException, Param, Post, Put, Req, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
-import { IsBoolean, IsString, MaxLength, MinLength } from 'class-validator';
+import { IsBoolean, IsInt, IsOptional, IsString, Max, MaxLength, Min, MinLength } from 'class-validator';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { RolesGuard } from './guards/roles.guard';
 import { Roles } from './decorators/roles.decorator';
@@ -15,7 +15,11 @@ import { verifyStoreOwnershipOrForbidden } from '../common/store-ownership.util'
 class CodeDto { @IsString() @MinLength(6) @MaxLength(20) code: string; }
 class PasswordCodeDto extends CodeDto { @IsString() @MinLength(1) @MaxLength(128) password: string; }
 class ChallengeDto extends CodeDto { @IsString() @MinLength(20) @MaxLength(2000) challengeToken: string; }
-class PolicyDto { @IsBoolean() requireStaffTwoFactor: boolean; }
+class PolicyDto {
+  @IsBoolean() requireStaffTwoFactor: boolean;
+  /** Days staff get to set it up before admin routes are refused (0 to 30, default 7). */
+  @IsOptional() @IsInt() @Min(0) @Max(30) graceDays?: number;
+}
 
 /** Public: second step of a SELLER sign-in when two-factor is on (staff use `POST api/staff/2fa/verify`). */
 @ApiTags('Seller Two-Factor')
@@ -61,9 +65,26 @@ export class MemberTwoFactorController {
   @Roles('seller') @Put('store/:storeId/policy')
   async policy(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: PolicyDto) {
     await verifyStoreOwnershipOrForbidden(this.db.repositories.storeModel as any, storeId, String(req.user.userId ?? req.user.sub));
-    await this.db.repositories.storeModel.updateOne({ _id: storeId }, { $set: { requireStaffTwoFactor: dto.requireStaffTwoFactor } });
+    const before: any = await this.db.repositories.storeModel.findById(storeId).select('requireStaffTwoFactor staffTwoFactorGraceDays').lean();
+    const set: Record<string, unknown> = { requireStaffTwoFactor: dto.requireStaffTwoFactor };
+    if (dto.graceDays !== undefined) set.staffTwoFactorGraceDays = dto.graceDays;
+    // The grace period runs from the moment the policy is switched on.
+    if (dto.requireStaffTwoFactor && !before?.requireStaffTwoFactor) set.requireStaffTwoFactorSince = new Date();
+    if (!dto.requireStaffTwoFactor) set.requireStaffTwoFactorSince = null;
+    await this.db.repositories.storeModel.updateOne({ _id: storeId }, { $set: set });
     void this.activity.log({ storeId, category: 'security', action: 'staff_2fa_policy', description: `Require two-factor for staff: ${dto.requireStaffTwoFactor}`, actorId: String(req.user.userId ?? req.user.sub), actorRole: 'seller', targetId: storeId, targetType: 'store' } as any).catch(() => undefined);
-    return { success: true, data: { requireStaffTwoFactor: dto.requireStaffTwoFactor } };
+    return { success: true, data: { requireStaffTwoFactor: dto.requireStaffTwoFactor, graceDays: dto.graceDays ?? before?.staffTwoFactorGraceDays ?? 7 } };
+  }
+
+  /** Owner: the policy and which staff members already use two-factor (for the Security and Staff pages). */
+  @Roles('seller') @Get('store/:storeId/policy')
+  async policyState(@Req() req: any, @Param('storeId') storeId: string) {
+    await verifyStoreOwnershipOrForbidden(this.db.repositories.storeModel as any, storeId, String(req.user.userId ?? req.user.sub));
+    const store: any = await this.db.repositories.storeModel.findById(storeId).select('requireStaffTwoFactor requireStaffTwoFactorSince staffTwoFactorGraceDays').lean();
+    const staff: any[] = await this.db.repositories.staffMemberModel.find({ storeId, isDelete: false }).select('_id').lean();
+    const enabled = new Set((await Promise.all(staff.map(async (s) => ((await this.svc.isEnabled('staff', String(s._id))) ? String(s._id) : null)))).filter(Boolean) as string[]);
+    const graceEnds = store?.requireStaffTwoFactor && store.requireStaffTwoFactorSince ? new Date(new Date(store.requireStaffTwoFactorSince).getTime() + (store.staffTwoFactorGraceDays ?? 7) * 86_400_000) : null;
+    return { success: true, data: { requireStaffTwoFactor: !!store?.requireStaffTwoFactor, graceDays: store?.staffTwoFactorGraceDays ?? 7, graceEndsAt: graceEnds, staffWithTwoFactor: [...enabled] } };
   }
 
   /** Owner (or a platform admin) resets a staff member's two-factor after a lost phone. Audited. */

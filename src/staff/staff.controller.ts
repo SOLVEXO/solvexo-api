@@ -72,7 +72,8 @@ export class StaffController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('staff')
   @Put('me/password')
-  async changeMyPassword(@Req() req: any, @Body() dto: ChangeOwnStaffPasswordDto) {
+  async changeMyPassword(@Req() req: any, @Body() dto: ChangeOwnStaffPasswordDto, @Headers('x-step-up') stepUp?: string) {
+    await this.memberTwoFactor.assertStepUp('staff', String(req.user.userId), stepUp);
     const token = req.headers.authorization?.split(' ')[1];
     return this.staffService.changeOwnPassword(req.user.userId, dto.currentPassword, dto.newPassword, token);
   }
