@@ -87,6 +87,8 @@ export const POS_PERMISSIONS = {
   'daybook.view':              { label: 'See the daybook (a cashier only the shifts they worked)', roles: ALL },
   // ── team (G3.6)
   'team.attendance.own':       { label: 'Clock in / out', roles: ALL },
+  'team.attendance.view':      { label: 'See everyone\'s attendance, anomalies and reports', roles: MGR },
+  'team.roster.view':          { label: 'See the shift roster', roles: ALL },
   'team.attendance.edit':      { label: 'Edit someone\'s attendance', roles: MGR },
   'team.roster.edit':          { label: 'Edit the shift roster', roles: MGR },
   // ── settings

@@ -476,6 +476,12 @@ export class DatabaseService {
     private stockAdjustmentModel: Model<schema.StockAdjustmentDocument>,
     @InjectModel(schema.StockMovement.name)
     private stockMovementModel: Model<schema.StockMovementDocument>,
+    @InjectModel(schema.PosAttendanceEvent.name)
+    private posAttendanceEventModel: Model<schema.PosAttendanceEventDocument>,
+    @InjectModel(schema.PosAttendanceState.name)
+    private posAttendanceStateModel: Model<schema.PosAttendanceStateDocument>,
+    @InjectModel(schema.PosRosterShift.name)
+    private posRosterShiftModel: Model<schema.PosRosterShiftDocument>,
     @InjectModel(schema.PosExpense.name)
     private posExpenseModel: Model<schema.PosExpenseDocument>,
     @InjectModel(schema.PosExpenseEvent.name)
@@ -714,6 +720,9 @@ export class DatabaseService {
       storeAppRequestModel: this.storeAppRequestModel,
       stockAdjustmentModel: this.stockAdjustmentModel,
       stockMovementModel: this.stockMovementModel,
+      posAttendanceEventModel: this.posAttendanceEventModel,
+      posAttendanceStateModel: this.posAttendanceStateModel,
+      posRosterShiftModel: this.posRosterShiftModel,
       posExpenseModel: this.posExpenseModel,
       posExpenseEventModel: this.posExpenseEventModel,
       purchaseReceiptModel: this.purchaseReceiptModel,
