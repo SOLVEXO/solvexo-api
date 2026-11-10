@@ -1,4 +1,6 @@
 /* eslint-disable prettier/prettier */
+import { localDay, localHour, localKey, localRange } from './pos-day.util';
+import { resolveStoreTimeZone } from '../common/store-timezone.util';
 import {
   forwardRef,
   Inject,
@@ -129,6 +131,13 @@ export class PosService {
   }
 
   // ── HELPERS ───────────────────────────────────────────────────────────────
+
+  /** G4.0: the store's time zone (its own setting, else its country's only zone, else UTC) — every day boundary uses it. */
+  async storeTz(storeId: string | null | undefined): Promise<string> {
+    if (!storeId) return 'UTC';
+    const st: any = await this.r.storeModel.findById(storeId).select('timezone country').lean().catch(() => null);
+    return resolveStoreTimeZone(st);
+  }
 
   async verifyStoreOwnership(storeId: string, sellerId: string) {
     // A POS device is bound to ONE store: whatever route/id it came in through, any other store is off limits.
@@ -724,11 +733,7 @@ export class PosService {
     if (query.registerId) filter.registerId = query.registerId;
     if (query.employeeId) filter.employeeId = query.employeeId;
     if (query.status) filter.status = query.status;
-    if (query.from || query.to) {
-      filter.createdAt = {};
-      if (query.from) filter.createdAt.$gte = new Date(query.from);
-      if (query.to) { const t = new Date(query.to); t.setHours(23, 59, 59, 999); filter.createdAt.$lte = t; }
-    }
+    if (query.from || query.to) filter.createdAt = localRange(query.from, query.to, await this.storeTz(query.storeId ?? filter.storeId));
 
     const total = await this.r.registerSessionModel.countDocuments(filter);
     const sessions = await this.r.registerSessionModel
@@ -1452,11 +1457,7 @@ export class PosService {
       const ids = await this.salesMatchingReference(query.storeId, String(query.search));
       filter._id = { $in: ids };
     }
-    if (query.from || query.to) {
-      filter.createdAt = {};
-      if (query.from) filter.createdAt.$gte = new Date(query.from);
-      if (query.to) { const t = new Date(query.to); t.setHours(23, 59, 59, 999); filter.createdAt.$lte = t; }
-    }
+    if (query.from || query.to) filter.createdAt = localRange(query.from, query.to, await this.storeTz(query.storeId ?? filter.storeId));
 
     const total = await this.r.saleModel.countDocuments(filter);
     const found = await this.r.saleModel.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean();
@@ -1889,13 +1890,10 @@ export class PosService {
     await this.verifyStoreOwnership(storeId, sellerId);
     const { currency, exp } = await this.moneyContext(storeId);
 
-    const date = query.date ? new Date(query.date) : new Date();
-    const startOfDay = new Date(date);
-    startOfDay.setHours(0, 0, 0, 0);
-    const endOfDay = new Date(date);
-    endOfDay.setHours(23, 59, 59, 999);
-
-    const scope: any = { storeId, createdAt: { $gte: startOfDay, $lte: endOfDay } };
+    const tz = await this.storeTz(storeId);
+    const day = localDay(query.date, tz);
+    const date = day.start;
+    const scope: any = { storeId, createdAt: { $gte: day.start, $lt: day.end } };
     if (query.registerId) scope.registerId = query.registerId;
     if (query.locationId) scope.locationId = query.locationId;
 
@@ -1907,7 +1905,7 @@ export class PosService {
     const hourlyMap: Record<number, number> = {};
     const productSales: Record<string, { name: string; qty: number; revenue: number }> = {};
     for (const sale of sales) {
-      const hour = new Date((sale as any).createdAt).getHours();
+      const hour = localHour((sale as any).createdAt, tz);
       hourlyMap[hour] = roundMoney((hourlyMap[hour] || 0) + (sale as any).total, exp);
       for (const item of (sale as any).items) {
         // custom items (no product) are grouped under one row, "Custom item"
@@ -1933,7 +1931,7 @@ export class PosService {
     return {
       success: true,
       data: {
-        date: date.toISOString().split('T')[0],
+        date: day.key, timeZone: tz,
         currency,
         currencyExponent: exp,
         customItems: this.customItemsSummary(sales, exp),
@@ -1956,9 +1954,10 @@ export class PosService {
     const who = await this.verifyEmployeeToken(employeeToken, storeId);
     const role: 'cashier' | 'manager' | 'owner' = who?.role === 'cashier' ? 'cashier' : who?.role === 'manager' ? 'manager' : 'owner';
     const { currency, exp } = await this.moneyContext(storeId);
-    const now = new Date();
-    const start = new Date(now); start.setHours(0, 0, 0, 0);
-    const end = new Date(now); end.setHours(23, 59, 59, 999);
+    const dashTz = await this.storeTz(storeId);
+    const today = localDay(undefined, dashTz);
+    const start = today.start;
+    const end = new Date(today.end.getTime() - 1);
 
     let scope: any = { storeId, createdAt: { $gte: start, $lte: end } };
     let shifts: any[];
@@ -2001,7 +2000,7 @@ export class PosService {
     return {
       success: true,
       data: {
-        role, scope: role === 'cashier' ? 'shift' : 'store', date: start.toISOString().split('T')[0], currency, currencyExponent: exp,
+        role, scope: role === 'cashier' ? 'shift' : 'store', date: today.key, timeZone: dashTz, currency, currencyExponent: exp,
         summary: flat, byPaymentMethod: byPayment, topProducts, customItems: this.customItemsSummary(sales, exp),
         shifts: shifts.map((s2) => ({ sessionId: String(s2._id), registerId: s2.registerId ?? null, employeeId: String(s2.employeeId), employeeName: names.get(String(s2.employeeId)) ?? null, openedAt: s2.openedAt, openingCash: s2.openingCash ?? 0, totalSales: s2.totalSales ?? 0, totalTransactions: s2.totalTransactions ?? 0 })),
         needsAttention: manager ? { salesNeedingReview: needsReview, digitalPayments: digital, total: needsReview + digital } : null,
@@ -3152,11 +3151,8 @@ export class PosService {
 
     if (!query.from || !query.to) throw new BadRequestException('from and to date are required');
 
-    const from = new Date(query.from);
-    const to = new Date(query.to);
-    to.setHours(23, 59, 59, 999);
-
-    const scope: any = { storeId, createdAt: { $gte: from, $lte: to }, ...(query.locationId ? { locationId: query.locationId } : {}) };
+    const rangeTz = await this.storeTz(storeId);
+    const scope: any = { storeId, createdAt: localRange(query.from, query.to, rangeTz), ...(query.locationId ? { locationId: query.locationId } : {}) };
     const sales = await this.r.saleModel.find({ ...scope, status: { $in: ['completed', 'partially_refunded'] } }).lean();
     const reversed = await this.r.saleModel.find({ ...scope, status: { $in: ['refunded', 'voided'] } }).lean();
     const summary = this.summarizeSales(sales, reversed, exp);
@@ -3164,7 +3160,7 @@ export class PosService {
     const dailyMap: Record<string, number> = {};
     const productSales: Record<string, { name: string; qty: number; revenue: number }> = {};
     for (const sale of sales) {
-      const day = new Date((sale as any).createdAt).toISOString().split('T')[0];
+      const day = localKey((sale as any).createdAt, rangeTz);
       dailyMap[day] = roundMoney((dailyMap[day] || 0) + (sale as any).total, exp);
       for (const item of (sale as any).items) {
         if (!productSales[item.productId]) productSales[item.productId] = { name: item.name, qty: 0, revenue: 0 };
@@ -3198,17 +3194,14 @@ export class PosService {
     const store = await this.r.storeModel.findOne({ sellerId, isDelete: false, 'registers._id': registerId });
     if (!store) throw new NotFoundException('Register not found or unauthorized');
 
-    const from = query.from ? new Date(query.from) : null;
-    const to = query.to ? (() => { const d = new Date(query.to); d.setHours(23, 59, 59, 999); return d; })() : null;
-
     const sessionFilter: any = { registerId };
-    if (from || to) { sessionFilter.createdAt = {}; if (from) sessionFilter.createdAt.$gte = from; if (to) sessionFilter.createdAt.$lte = to; }
+    if (query.from || query.to) sessionFilter.createdAt = localRange(query.from, query.to, await this.storeTz(String((store as any)._id)));
 
     const sessions = await this.r.registerSessionModel.find(sessionFilter).lean();
     const sessionIds = sessions.map((s: any) => s._id.toString());
 
     const salesFilter: any = { registerId, status: { $in: ['completed', 'partially_refunded'] } };
-    if (from || to) { salesFilter.createdAt = {}; if (from) salesFilter.createdAt.$gte = from; if (to) salesFilter.createdAt.$lte = to; }
+    if (sessionFilter.createdAt) salesFilter.createdAt = sessionFilter.createdAt;
 
     const sales = await this.r.saleModel.find(salesFilter).lean();
 
@@ -3247,18 +3240,15 @@ export class PosService {
     const employee = await this.r.employeeModel.findOne({ _id: employeeId, storeId: query.storeId, isDelete: false }).select('-pin').lean();
     if (!employee) throw new NotFoundException('Employee not found');
 
-    const from = query.from ? new Date(query.from) : null;
-    const to = query.to ? (() => { const d = new Date(query.to); d.setHours(23, 59, 59, 999); return d; })() : null;
-
     const filter: any = { employeeId, storeId: query.storeId, status: { $in: ['completed', 'partially_refunded'] } };
-    if (from || to) { filter.createdAt = {}; if (from) filter.createdAt.$gte = from; if (to) filter.createdAt.$lte = to; }
+    if (query.from || query.to) filter.createdAt = localRange(query.from, query.to, await this.storeTz(query.storeId));
 
     const sales = await this.r.saleModel.find(filter).lean();
     const empMoney = await this.moneyContext(query.storeId);
     const totalRevenue = roundMoney(sales.reduce((s: number, sale: any) => s + sale.total, 0), empMoney.exp);
 
     const sessionFilter: any = { employeeId, storeId: query.storeId };
-    if (from || to) { sessionFilter.createdAt = {}; if (from) sessionFilter.createdAt.$gte = from; if (to) sessionFilter.createdAt.$lte = to; }
+    if (filter.createdAt) sessionFilter.createdAt = filter.createdAt;
     const sessions = await this.r.registerSessionModel.find(sessionFilter).lean();
 
     return {
@@ -3281,9 +3271,9 @@ export class PosService {
     await this.verifyStoreOwnership(storeId, sellerId);
     const { currency, exp } = await this.moneyContext(storeId);
 
-    const date = query.date ? new Date(query.date) : new Date();
-    const startOfDay = new Date(date); startOfDay.setHours(0, 0, 0, 0);
-    const endOfDay = new Date(date); endOfDay.setHours(23, 59, 59, 999);
+    const csvDay = localDay(query.date, await this.storeTz(storeId));
+    const startOfDay = csvDay.start;
+    const endOfDay = new Date(csvDay.end.getTime() - 1);
 
     const sales = await this.r.saleModel.find({
       storeId,
@@ -3384,11 +3374,7 @@ export class PosService {
     if (query.employeeId) filter.employeeId = query.employeeId;
     if (query.action) filter.action = query.action;
     if (query.targetType) filter.targetType = query.targetType;
-    if (query.from || query.to) {
-      filter.createdAt = {};
-      if (query.from) filter.createdAt.$gte = new Date(query.from);
-      if (query.to) { const t = new Date(query.to); t.setHours(23, 59, 59, 999); filter.createdAt.$lte = t; }
-    }
+    if (query.from || query.to) filter.createdAt = localRange(query.from, query.to, await this.storeTz(query.storeId ?? filter.storeId));
 
     const total = await this.r.posAuditLogModel.countDocuments(filter);
     const logs = await this.r.posAuditLogModel

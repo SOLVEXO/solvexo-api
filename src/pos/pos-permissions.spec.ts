@@ -58,6 +58,9 @@ const T: Record<PosAction, { below: [Exp, Exp, Exp]; above?: [Exp, Exp, Exp] }> 
   'team.roster.view':             { below: ['allow', 'allow', 'allow'] },
   'team.attendance.edit':         { below: ['deny', 'allow', 'allow'] },
   'team.roster.edit':             { below: ['deny', 'allow', 'allow'] },
+  'reports.view':                 { below: ['deny', 'allow', 'allow'] },
+  'reports.cashier.own':          { below: ['allow', 'allow', 'allow'] },
+  'settings.store.edit':          { below: ['deny', 'deny', 'allow'] },
   'settings.approvalLimits.view': { below: ['deny', 'allow', 'allow'] },
   'settings.approvalLimits.edit': { below: ['deny', 'deny', 'allow'] },
 };

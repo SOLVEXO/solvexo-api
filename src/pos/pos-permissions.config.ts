@@ -91,6 +91,11 @@ export const POS_PERMISSIONS = {
   'team.roster.view':          { label: 'See the shift roster', roles: ALL },
   'team.attendance.edit':      { label: 'Edit someone\'s attendance', roles: MGR },
   'team.roster.edit':          { label: 'Edit the shift roster', roles: MGR },
+  // ── reports (G4.1)
+  'reports.view':              { label: 'See the business reports (sales, profit, products, tax, payments, hours)', roles: MGR },
+  'reports.cashier.own':       { label: 'See the cashier report (a cashier only their own figures)', roles: ALL },
+  // ── store settings (G4.0)
+  'settings.store.edit':       { label: 'Change the store settings (time zone …)', roles: OWN },
   // ── settings
   'settings.approvalLimits.view': { label: 'See the approval limits', roles: MGR },
   'settings.approvalLimits.edit': { label: 'Change the approval limits', roles: OWN },

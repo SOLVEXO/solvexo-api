@@ -10,6 +10,7 @@ import { PosAuthorizer } from './pos-authorizer.service';
 import { PosAction } from './pos-permissions.config';
 import { recordCashMovement } from './pos-cash-out.util';
 import { tenderNets } from './pos-money.util';
+import { localDay } from './pos-day.util';
 import { EXPENSE_CATEGORIES, EXPENSE_METHODS } from './schemas/pos-expense.schema';
 
 type Req = any;
@@ -253,8 +254,11 @@ export class PosCashService {
   async daybook(req: Req, storeId: string, q: any, t: Tokens) {
     const a = await this.gate(req, storeId, 'daybook.view', t);
     const { currency, currencyExponent: exp } = await this.cur(storeId);
-    const from = dateOf(q?.from, 'from'); const to = dateOf(q?.to, 'to');
-    if (!from || !to || to <= from) throw err(400, 'RANGE_REQUIRED', 'Send from and to (ISO times) for the day');
+    // G4.0: `date=YYYY-MM-DD` is a day in the STORE's time zone (preferred); `from` / `to` ISO instants still work
+    let from = dateOf(q?.from, 'from'); let to = dateOf(q?.to, 'to');
+    const tz = await this.pos.storeTz(storeId);
+    if (q?.date) { const d = localDay(String(q.date), tz); from = d.start; to = d.end; }
+    if (!from || !to || to <= from) throw err(400, 'RANGE_REQUIRED', 'Send date=YYYY-MM-DD (or from and to) for the day');
     if (to.getTime() - from.getTime() > 32 * 86_400_000) throw err(400, 'RANGE_TOO_LONG', 'A daybook covers at most 31 days');
     const filter: any = { storeId, openedAt: { $gte: from, $lt: to } };
     if (q?.registerId) filter.registerId = String(q.registerId);
@@ -311,6 +315,6 @@ export class PosCashService {
       shifts.push(sh);
       totals.cashSalesMinor += sh.cashSalesMinor; totals.cashRefundsMinor += sh.cashRefundsMinor; totals.cashInMinor += sh.cashInMinor; totals.cashOutMinor += sh.cashOutMinor; totals.expensesMinor += sh.expensesMinor; totals.supplierPaymentsMinor += sh.supplierPaymentsMinor; totals.varianceMinor += variance ?? 0;
     }
-    return { success: true, data: { currency, currencyExponent: exp, from, to, ownShiftsOnly: a.role === 'cashier', shifts, totals } };
+    return { success: true, data: { currency, currencyExponent: exp, timeZone: tz, date: localDay(from, tz).key, from, to, ownShiftsOnly: a.role === 'cashier', shifts, totals } };
   }
 }

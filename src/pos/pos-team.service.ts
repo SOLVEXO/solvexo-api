@@ -5,6 +5,7 @@ import { DatabaseService } from '@/database/databaseservice';
 import { PosService } from './pos.service';
 import { PosAuthorizer } from './pos-authorizer.service';
 import { PosAction } from './pos-permissions.config';
+import { localDay, localKey } from './pos-day.util';
 import { AttEvent, LATE_GRACE_MINUTES, deriveRecords, effectiveTime, isLive } from './pos-attendance.util';
 
 type Req = any;
@@ -257,7 +258,8 @@ export class PosTeamService {
     const clash: any = await this.r.posRosterShiftModel.findOne({ storeId, employeeId, status: 'active', startAt: { $lt: endAt }, endAt: { $gt: startAt }, ...(selfId ? { _id: { $ne: selfId } } : {}) }).lean();
     if (clash) throw err(409, 'ROSTER_OVERLAP', 'This person already has a shift at that time.', { conflictWith: String(clash._id), conflictStartAt: clash.startAt, conflictEndAt: clash.endAt });
     // a long week is a warning, not a block
-    const dow = (startAt.getUTCDay() + 6) % 7; const weekStart = new Date(Date.UTC(startAt.getUTCFullYear(), startAt.getUTCMonth(), startAt.getUTCDate() - dow)); const weekEnd = new Date(weekStart.getTime() + 7 * 86_400_000);
+    const zone = await this.pos.storeTz(storeId); const day0 = localDay(startAt, zone); const dow = (new Date(`${day0.key}T12:00:00Z`).getUTCDay() + 6) % 7;
+    const weekStart = localDay(new Date(day0.start.getTime() - dow * 86_400_000 + 12 * 3_600_000), zone).start; const weekEnd = localDay(new Date(weekStart.getTime() + 7 * 86_400_000 + 12 * 3_600_000), zone).start; // Monday 00:00 → next Monday, local
     const week: any[] = await this.r.posRosterShiftModel.find({ storeId, employeeId, status: 'active', startAt: { $gte: weekStart, $lt: weekEnd }, ...(selfId ? { _id: { $ne: selfId } } : {}) }).select('startAt endAt').lean();
     const total = week.reduce((n, x) => n + (x.endAt.getTime() - x.startAt.getTime()) / 60_000, 0) + (endAt.getTime() - startAt.getTime()) / 60_000;
     return { employeeId, startAt, endAt, locationId, note: str(body?.note, 200), warnings: total > WEEK_WARN_MINUTES ? ['OVER_60_HOURS_WEEK'] : [] };
@@ -292,7 +294,7 @@ export class PosTeamService {
     const a = await this.gate(req, storeId, 'team.attendance.own', t);
     const from = dateOf(q?.from, 'from', true)!; const to = dateOf(q?.to, 'to', true)!;
     if (to <= from || to.getTime() - from.getTime() > 93 * 86_400_000) throw err(400, 'RANGE_REQUIRED', 'Send a period of at most 93 days');
-    const tz = Math.max(-840, Math.min(840, Number(q?.tzOffsetMinutes) || 0));
+    const zone = await this.pos.storeTz(storeId); // G4.0: days are the STORE's days (the old tzOffsetMinutes parameter is ignored)
     const emp = this.scope(a, q);
     const by = await this.eventsOf(storeId, from, to, emp);
     const shiftFilter: any = { storeId, status: 'active', startAt: { $gte: new Date(from.getTime() - 86_400_000), $lt: new Date(to.getTime() + 86_400_000) } };
@@ -311,13 +313,13 @@ export class PosTeamService {
         const late = Math.round((rec.clockInAt.getTime() - sh.startAt.getTime()) / 60_000);
         if (late > LATE_GRACE_MINUTES) { lateCount++; lateMinutes += late; }
       }
-      const days = new Set(recs.map((x) => new Date(x.clockInAt.getTime() - tz * 60_000).toISOString().slice(0, 10)));
+      const days = new Set(recs.map((x) => localKey(x.clockInAt, zone)));
       return {
         employeeId: id, employeeName: names.get(id) ?? null, daysWorked: days.size, records: recs.length, workedMinutes: recs.reduce((n, x) => n + x.workedMinutes, 0), breakMinutes: recs.reduce((n, x) => n + x.breakMinutes, 0),
         lateCount, lateMinutes, missingClockOuts: recs.filter((x) => x.flags.includes('missing_clock_out')).length, corrections: recs.filter((x) => x.corrected).length,
         rosteredMinutes: mine.filter((x) => x.startAt >= from && x.startAt < to).reduce((n, x) => n + Math.round((x.endAt.getTime() - x.startAt.getTime()) / 60_000), 0),
       };
     }).sort((x, y) => (x.employeeName ?? '').localeCompare(y.employeeName ?? ''));
-    return { success: true, data: { from, to, lateGraceMinutes: LATE_GRACE_MINUTES, people, totals: { workedMinutes: people.reduce((n, x) => n + x.workedMinutes, 0), lateCount: people.reduce((n, x) => n + x.lateCount, 0), missingClockOuts: people.reduce((n, x) => n + x.missingClockOuts, 0) } } };
+    return { success: true, data: { from, to, timeZone: zone, lateGraceMinutes: LATE_GRACE_MINUTES, people, totals: { workedMinutes: people.reduce((n, x) => n + x.workedMinutes, 0), lateCount: people.reduce((n, x) => n + x.lateCount, 0), missingClockOuts: people.reduce((n, x) => n + x.missingClockOuts, 0) } } };
   }
 }
