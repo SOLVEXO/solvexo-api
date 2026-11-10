@@ -93,6 +93,8 @@ export class PlatformPlansService {
       plan.yearlyPriceUSD = dto.yearlyPriceUSD != null ? this.round(dto.yearlyPriceUSD) : null;
       plan.stripeYearlyPriceId = null;
     }
+    if (dto.compareAtMonthlyPriceUSD !== undefined) plan.compareAtMonthlyPriceUSD = dto.compareAtMonthlyPriceUSD != null ? this.round(dto.compareAtMonthlyPriceUSD) : null;
+    if (dto.compareAtYearlyPriceUSD !== undefined) plan.compareAtYearlyPriceUSD = dto.compareAtYearlyPriceUSD != null ? this.round(dto.compareAtYearlyPriceUSD) : null;
     if (dto.trialDays !== undefined) plan.trialDays = dto.trialDays;
     // A core plan's bullets are generated from its limits — never typed — so text can't disagree with enforcement.
     if (!isCatalog && dto.featureBullets !== undefined) plan.featureBullets = dto.featureBullets;
@@ -117,6 +119,7 @@ export class PlatformPlansService {
       isFree: plan.isFree, isCustomPricing: plan.isCustomPricing,
       monthlyPriceUSD: plan.monthlyPriceUSD, yearlyPriceUSD: plan.yearlyPriceUSD,
       introOfferEnabled: plan.introOfferEnabled, introPriceUSD: plan.introPriceUSD, introDurationCycles: plan.introDurationCycles,
+      compareAtMonthlyPriceUSD: plan.compareAtMonthlyPriceUSD ?? null, compareAtYearlyPriceUSD: plan.compareAtYearlyPriceUSD ?? null,
     }));
     if (dto.limits !== undefined) {
       problems.push(...validatePlanLimits(plan.limits));
@@ -379,6 +382,8 @@ export class PlatformPlansService {
         introOfferEnabled: p.introOfferEnabled ?? false,
         introPriceUSD: p.introPriceUSD ?? null,
         introDurationCycles: p.introDurationCycles ?? null,
+        compareAtMonthlyPriceUSD: p.compareAtMonthlyPriceUSD ?? null,
+        compareAtYearlyPriceUSD: p.compareAtYearlyPriceUSD ?? null,
       })),
     };
   }
