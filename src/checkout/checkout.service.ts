@@ -1,6 +1,8 @@
 import { preorderCanFill } from '../common/preorder.util';
 import { assertBundleInStock, componentDisplayName } from '../common/bundle.util';
 import { B2BContextService } from '../b2b/b2b-context.service';
+import { CheckoutRulesService, buildContext as buildRuleContext } from '../checkout-rules/checkout-rules.service';
+import { applyShippingRules as applyRuleShipping, filterPaymentMethods as filterRulePaymentMethods } from '../checkout-rules/checkout-rules.util';
 import { filterPaymentMethodsForB2B } from '../b2b/b2b-order.util';
 import { CodProtectionService } from '../cod-protection/cod-protection.service';
 import { CustomerSegmentsService } from '../customer-segments/customer-segments.service';
@@ -83,6 +85,8 @@ export class CheckoutService {
     @Optional() private readonly b2bContext?: B2BContextService,
     // Hides cash on delivery up front when the store's COD rules already refuse this order (placement re-checks it).
     @Optional() private readonly codProtection?: CodProtectionService,
+    // The store's own declarative checkout rules (discounts, payment / shipping filters, validation blocks).
+    @Optional() private readonly checkoutRules?: CheckoutRulesService,
   ) {}
 
   private round(n: number) {
@@ -769,6 +773,29 @@ export class CheckoutService {
       }
     }
 
+    // Checkout rules (store-owned, declarative): cart-level discounts + validation blocks. Same evaluation the cart preview uses.
+    let ruleDiscountTotal = 0;
+    const ruleDiscountLabels: string[] = [];
+    if (this.checkoutRules) {
+      for (const sId of cartStoreIds) {
+        if (!(await this.checkoutRules.hasActiveRules(sId))) continue;
+        const storeItems = checkoutItems.filter((i) => i.storeId === sId);
+        const facts = await this.checkoutRules.customerFacts(sId, userId);
+        const ev = await this.checkoutRules.evaluate(sId, buildRuleContext({ lines: storeItems.map((i) => ({ productId: i.productId, quantity: i.quantity, total: i.totalPrice, type: i.type })), ...facts }));
+        this.checkoutRules.throwIfBlocked(ev);
+        for (const d of ev.discount.applied) {
+          const eligible = d.productIds.length ? storeItems.filter((i) => d.productIds.includes(String(i.productId))) : storeItems;
+          this.proportionallyDistribute(eligible, d.amount, (item, share) => {
+            if (item.originalPrice == null) item.originalPrice = item.price;
+            item.totalPrice = this.round(item.totalPrice - share);
+            item.price = item.quantity > 0 ? this.round(item.totalPrice / item.quantity) : item.totalPrice;
+          });
+          ruleDiscountTotal = this.round(ruleDiscountTotal + d.amount);
+          if (!ruleDiscountLabels.includes(d.label)) ruleDiscountLabels.push(d.label);
+        }
+      }
+    }
+
     let defaultAddressId: string | null = null;
     // Hoisted out of the `if (hasPhysical)` block below (not just the id) —
     // the real live tax (TaxJar) and live shipping-rate (Shippo) quotes both
@@ -986,6 +1013,8 @@ export class CheckoutService {
       includedTaxAmount,
       campaignDiscountTotalUSD: campaignSavingsUSD,
       autoDiscountTotalUSD: autoDiscountSavingsUSD,
+      ruleDiscountTotal,
+      ruleDiscountLabels,
       totalAmount,
       status: 'pending',
       attributionSource,
@@ -1080,11 +1109,11 @@ export class CheckoutService {
         // eligible (see codEligible above), in which case 'stripe' (pay
         // everything online) is always the safe fallback.
         // Wholesale companies: narrowed by the company's allow-list, plus payment terms when they have them (single store only).
-        allowedPaymentMethods: withoutBlockedCod(filterPaymentMethodsForB2B(withoutCardIfNoProvider(withoutUnsupportedStripe(
+        allowedPaymentMethods: await this.applyPaymentRules(checkout, userId, cardStoreIds, withoutBlockedCod(filterPaymentMethodsForB2B(withoutCardIfNoProvider(withoutUnsupportedStripe(
           hasDigital
             ? withManualTransfer(hasPhysical && codEligible ? ['stripe', 'split'] : ['stripe'])
             : withManualTransfer(codEligible ? ['stripe', 'cash_on_delivery'] : ['stripe']),
-        )), (checkout as any).b2b, cardStoreIds.length === 1)),
+        )), (checkout as any).b2b, cardStoreIds.length === 1))),
         cardPaymentAvailable: cardAvailable,
         summary: {
           subtotal,
@@ -1283,6 +1312,16 @@ export class CheckoutService {
     let shippingFxSnapshots: FxSnapshot[] = (checkout.fxSnapshots as any) ?? [];
     const storeCurrencyCache = new Map<string, string | null>();
     const feeByStore = new Map<string, number>();
+    // Checkout rules: validation blocks + hidden delivery options, enforced here so a hidden option cannot be forced by hand.
+    if (this.checkoutRules) {
+      const zonesOfStore: Record<string, any[]> = {};
+      for (const sid of storeIdsInCheckout) zonesOfStore[String(sid)] = await shippingZoneModel.find({ storeId: sid, isDelete: false, status: 'active' }).select('name zoneType').lean();
+      await this.checkoutRules.enforceCheckout(
+        { ...(checkout as any).toObject(), addressId: deliveryAddress ? String(deliveryAddress._id) : (checkout as any).addressId ?? null },
+        userId, { zoneIds: selectedZones.map((s) => String(s.zone._id)), zonesOfStore },
+      );
+    }
+
     const selections: { profileId: string | null; shippingZoneId: string; fee: number; storeId: string }[] = [];
 
     if (liveRate) {
@@ -1622,7 +1661,7 @@ export class CheckoutService {
         profileId: k === GENERAL_GROUP_KEY ? null : k,
         name: k === GENERAL_GROUP_KEY ? 'General' : groupNames.get(k) ?? 'Shipping',
       }));
-      return { message: 'Shipping zones fetched successfully', data, groups };
+      return { message: 'Shipping zones fetched successfully', data: await this.applyShippingRulesToZones(storeId, userId, data), groups };
     } catch (error) {
       throw error;
     }
@@ -2586,6 +2625,24 @@ export class CheckoutService {
   /** Distributes a seller's own AutomaticDiscount (DiscountsService) across
    *  the subset of items it targets — same math as distributeCampaignDiscount,
    *  writing to the discount-specific fields instead. */
+  /** Store rules that hide / rename / reorder payment methods (single-store checkouts only). */
+  private async applyPaymentRules(checkout: any, userId: string, storeIds: string[], methods: string[]): Promise<string[]> {
+    if (!this.checkoutRules || storeIds.length !== 1) return methods;
+    try {
+      const r = await this.checkoutRules.evaluateCheckoutStore(checkout, userId, storeIds[0]);
+      return r ? filterRulePaymentMethods(methods, r.ev).methods : methods;
+    } catch { return methods; }
+  }
+
+  /** Store rules that hide / rename / reorder delivery options for this buyer's cart. */
+  private async applyShippingRulesToZones(storeId: string, userId: string | null | undefined, zones: any[]): Promise<any[]> {
+    if (!this.checkoutRules || !userId || zones.length === 0) return zones;
+    try {
+      const ev = await this.checkoutRules.evaluateUserCart(storeId, userId);
+      return ev ? applyRuleShipping(zones, ev).zones : zones;
+    } catch { return zones; }
+  }
+
   private distributeAutoDiscount(items: any[], totalDiscount: number, discountId: string) {
     this.proportionallyDistribute(items, totalDiscount, (item, share) => {
       if (item.originalPrice == null) item.originalPrice = item.price;

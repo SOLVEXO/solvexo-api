@@ -28,6 +28,7 @@ export const ACTIVITY_LOG_CATEGORIES = [
   'b2b',
   'khata',
   'fulfillment',
+  'checkout_rules',
   'webhooks',
   'api_tokens',
   'api_token',

@@ -17,6 +17,7 @@ import { escapeHtml } from '@/newsletter/marketing-email.util';
 import { buyerEmail } from '@/common/buyer-email.util';
 import { buildStoreEmailTotals } from '@/common/order-email-total.util';
 import { DatabaseService } from '@/database/databaseservice';
+import { CheckoutRulesService } from '../checkout-rules/checkout-rules.service';
 import { NotificationsService } from '@/notifications/notifications.service';
 import { NOTIFICATION_TYPES } from '@/notifications/notification.types';
 import { PromotionsService } from '@/promotions/promotions.service';
@@ -1917,6 +1918,9 @@ export class PaymentService {
     if (method && method !== 'store_credit' && !isPaymentMethodAllowed(checkout?.b2b?.allowedPaymentMethods, method)) {
       throw new BadRequestException('This payment method is not available for your company. Please choose another one.');
     }
+    // The store's own checkout rules (validation blocks, hidden payment methods) are enforced here too, never only in the UI.
+    const rules = this.moduleRef?.get(CheckoutRulesService, { strict: false });
+    if (rules && checkout?.userId) await rules.enforceCheckout(checkout, String(checkout.userId), method && method !== 'store_credit' ? { paymentMethod: method } : {});
   }
 
   private async assertCouponStillUsable(checkout: any) {

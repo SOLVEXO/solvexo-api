@@ -252,6 +252,13 @@ export class Checkout {
   @Prop({ type: Boolean, default: false })
   localDelivery: boolean;
 
+  // Total taken off by the store's own checkout rules (already inside the item totals); labels shown to the buyer.
+  @Prop({ type: Number, default: 0 })
+  ruleDiscountTotal: number;
+
+  @Prop({ type: [String], default: [] })
+  ruleDiscountLabels: string[];
+
   // Delivery window text of the chosen local-delivery zone (e.g. "Same day, 2-4 pm"), snapshotted.
   @Prop({ type: String, default: null, maxlength: 120 })
   localDeliveryEta: string | null;

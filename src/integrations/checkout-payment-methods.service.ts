@@ -1,5 +1,7 @@
 /* eslint-disable prettier/prettier */
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException, Optional } from '@nestjs/common';
+import { CheckoutRulesService } from '../checkout-rules/checkout-rules.service';
+import { filterPaymentMethods as filterRulePaymentMethods } from '../checkout-rules/checkout-rules.util';
 import { isPaymentMethodAllowed } from '../b2b/b2b-pricing.util';
 import { isValidObjectId } from 'mongoose';
 import { DatabaseService } from '../database/databaseservice';
@@ -36,6 +38,7 @@ export class CheckoutPaymentMethodsService {
     private readonly paymentService: PaymentService,
     private readonly activityLogService: ActivityLogService,
     private readonly stuckPayments: StuckGatewayPaymentsService,
+    @Optional() private readonly checkoutRules?: CheckoutRulesService,
   ) {}
 
   private get repos() {
@@ -113,7 +116,12 @@ export class CheckoutPaymentMethodsService {
 
     // A wholesale company's allow-list also narrows the seller's own gateways ('provider key') and custom methods ('manual').
     const b2bAllow = (checkout as any).b2b?.allowedPaymentMethods as string[] | undefined;
-    const visible = [...methods, ...manualViews].filter((m: any) => isPaymentMethodAllowed(b2bAllow, m.provider));
+    let visible = [...methods, ...manualViews].filter((m: any) => isPaymentMethodAllowed(b2bAllow, m.provider));
+    // The store's own checkout rules may hide gateways too (same evaluation as at payment time).
+    if (this.checkoutRules && storeId) {
+      const r = await this.checkoutRules.evaluateCheckoutStore(checkout, userId, storeId).catch(() => null);
+      if (r) visible = filterRulePaymentMethods(visible, r.ev, (m: any) => String(m.provider === 'manual' ? 'manual' : m.provider)).methods;
+    }
     return { success: true, data: { currency, methods: visible } };
   }
 
