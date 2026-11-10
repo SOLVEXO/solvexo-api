@@ -1,9 +1,10 @@
 /* eslint-disable prettier/prettier */
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { DatabaseService } from '../database/databaseservice';
 import { ActivityLogService } from '../activity-log/activity-log.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { pageOf } from '../common/paging';
 import {
   B2BApplication, B2BApplicationDocument, B2BBuyer, B2BBuyerDocument, B2BCatalog, B2BCatalogDocument, B2BCatalogItem, B2BCatalogItemDocument,
@@ -29,6 +30,7 @@ export class B2BAdminService {
     @InjectModel(B2BCatalogItem.name) private readonly items: Model<B2BCatalogItemDocument>,
     private readonly db: DatabaseService,
     private readonly activity: ActivityLogService,
+    @Optional() private readonly notifications?: NotificationsService,
   ) {}
 
   private audit(storeId: string, actor: { id: string; role: string }, action: string, description: string, targetId?: string, targetType = 'b2b') {
@@ -256,6 +258,7 @@ export class B2BAdminService {
       await this.tagB2B(storeId, app.userId);
       await this.applications.updateOne({ _id: id }, { $set: { companyId: String(company._id) } });
       await this.audit(storeId, actor, 'b2b_application_approved', `Wholesale application from ${app.email} approved`, id, 'b2b_application');
+      await this.notifyDecision(storeId, app, 'b2b_application_approved');
       return { companyId: String(company._id) };
     } catch (e) {
       await this.applications.updateOne({ _id: id, storeId }, { $set: { status: 'pending', decidedAt: null } }).catch(() => undefined);
@@ -268,7 +271,22 @@ export class B2BAdminService {
     const app = await this.applications.findOneAndUpdate({ _id: id, storeId, status: 'pending' }, { $set: { status: 'rejected', decidedAt: new Date(), decisionNote: str(body?.note, 500) ?? null } }, { new: true }).lean();
     if (!app) throw new ConflictException('Application not found or already decided');
     await this.audit(storeId, actor, 'b2b_application_rejected', `Wholesale application from ${(app as any).email} rejected`, id, 'b2b_application');
+    await this.notifyDecision(storeId, app, 'b2b_application_rejected');
     return { success: true };
+  }
+
+  /** Tells the applicant the decision (store-branded mail, seller can switch it off). Never fails the decision itself. */
+  private async notifyDecision(storeId: string, app: any, event: 'b2b_application_approved' | 'b2b_application_rejected') {
+    try {
+      if (!this.notifications || !app?.email) return;
+      const store: any = await this.db.repositories.storeModel.findById(storeId).select('name').lean();
+      const user: any = await this.db.repositories.userModel.findById(app.userId).select('name').lean();
+      const note = typeof app.decisionNote === 'string' && app.decisionNote.trim() ? app.decisionNote.trim() : '';
+      await this.notifications.sendCustomerEmail({
+        to: app.email, storeId, event,
+        vars: { storeName: store?.name ?? '', customerName: user?.name ?? '', companyName: app.companyName ?? '', decisionNote: note ? `Note from the store: ${note}` : '' },
+      });
+    } catch { /* a mail problem must never undo the decision */ }
   }
 
   // ── catalogs ──────────────────────────────────────────────────────────────

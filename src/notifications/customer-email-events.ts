@@ -17,6 +17,8 @@ export const CUSTOMER_EMAIL_EVENTS = [
   'return_update',
   'review_request',
   'b2b_invoice_reminder',
+  'b2b_application_approved',
+  'b2b_application_rejected',
   'cod_confirmation',
   'draft_order_invoice',
   'draft_order_overdue',
@@ -119,6 +121,26 @@ export const CUSTOMER_EMAIL_CATALOG: Record<CustomerEmailEvent, CustomerEmailEve
     defaultBody:
       'Hi {{customerName}},\n\n{{reminderNote}}\n\nOrder #{{orderNumber}} (PO {{poNumber}}) from {{storeName}}\nAmount due: {{amountDue}}\nDue date: {{dueDate}}\n\nIf you have already paid, please ignore this email.',
     variables: [...COMMON, 'poNumber', 'amountDue', 'dueDate', 'reminderNote'],
+    resendable: false,
+  },
+  b2b_application_approved: {
+    group: 'invoices',
+    label: 'Wholesale application approved',
+    description: 'Sent to a customer when you approve their wholesale application.',
+    defaultSubject: 'Your wholesale account at {{storeName}} is approved',
+    defaultBody:
+      'Hi {{customerName}},\n\nGood news: your wholesale application for {{companyName}} was approved. Sign in to see your wholesale prices and start ordering.\n\n{{decisionNote}}',
+    variables: [...COMMON.filter((v) => v !== 'orderNumber' && v !== 'orderUrl'), 'companyName', 'decisionNote'],
+    resendable: false,
+  },
+  b2b_application_rejected: {
+    group: 'invoices',
+    label: 'Wholesale application declined',
+    description: 'Sent to a customer when you decline their wholesale application.',
+    defaultSubject: 'About your wholesale application at {{storeName}}',
+    defaultBody:
+      'Hi {{customerName}},\n\nThank you for applying for a wholesale account for {{companyName}}. We are not able to approve it right now.\n\n{{decisionNote}}',
+    variables: [...COMMON.filter((v) => v !== 'orderNumber' && v !== 'orderUrl'), 'companyName', 'decisionNote'],
     resendable: false,
   },
   cod_confirmation: {
@@ -372,6 +394,8 @@ export const CUSTOMER_EMAIL_SAMPLE_VARS: Record<string, string> = {
   confirmHours: '24',
   amountDue: 'Rs 125,000.00',
   reminderNote: 'This invoice is due soon.',
+  companyName: 'Khan Traders',
+  decisionNote: 'Reason: please send your business registration number.',
   refundAmount: 'Rs 1,200.00',
   refundMethod: 'Original payment method',
   newTotal: 'Rs 4,200.00',

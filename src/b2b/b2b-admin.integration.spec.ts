@@ -95,6 +95,27 @@ d('B2BAdminService on a real MongoDB', () => {
     await expect(svc.rejectApplication(STORE_A, actor, String(app._id), {})).rejects.toThrow(/already decided/);
   });
 
+  it('the applicant is told the decision (with the seller note); a mail failure never undoes it', async () => {
+    const sent: any[] = [];
+    const db2: any = { repositories: { userModel: m.users, productVariantModel: m.variants, storeModel: { findById: () => ({ select: () => ({ lean: async () => ({ name: 'Shop A' }) }) }) } } };
+    const mk = (notifications: any) => new B2BAdminService(m.companies, m.locations, m.buyers, m.applications, m.catalogs, m.items, db2, { log: jest.fn().mockResolvedValue(undefined) } as any, notifications);
+    const ok = mk({ sendCustomerEmail: async (a: any) => { sent.push(a); return 'sent'; } });
+    const u1 = await mkUser(STORE_A, 'notice1@a.com');
+    const a1: any = await m.applications.create({ storeId: STORE_A, userId: u1, email: 'notice1@a.com', companyName: 'Notice One' });
+    await ok.approveApplication(STORE_A, actor, String(a1._id), { note: 'Welcome aboard' });
+    const u2 = await mkUser(STORE_A, 'notice2@a.com');
+    const a2: any = await m.applications.create({ storeId: STORE_A, userId: u2, email: 'notice2@a.com', companyName: 'Notice Two' });
+    await ok.rejectApplication(STORE_A, actor, String(a2._id), { note: 'Need a registration number' });
+    expect(sent.map((s) => [s.event, s.to, s.storeId])).toEqual([['b2b_application_approved', 'notice1@a.com', STORE_A], ['b2b_application_rejected', 'notice2@a.com', STORE_A]]);
+    expect(sent[0].vars.decisionNote).toContain('Welcome aboard');
+    expect(sent[1].vars.companyName).toBe('Notice Two');
+    const bad = mk({ sendCustomerEmail: async () => { throw new Error('smtp down'); } });
+    const u3 = await mkUser(STORE_A, 'notice3@a.com');
+    const a3: any = await m.applications.create({ storeId: STORE_A, userId: u3, email: 'notice3@a.com', companyName: 'Notice Three' });
+    await expect(bad.rejectApplication(STORE_A, actor, String(a3._id), {})).resolves.toEqual({ success: true });
+    expect(((await m.applications.findById(a3._id)) as any).status).toBe('rejected');
+  });
+
   it('an application of another store cannot be approved from this store', async () => {
     const uid = await mkUser(STORE_B, 'b-apply@b.com');
     const app = await m.applications.create({ storeId: STORE_B, userId: uid, email: 'b-apply@b.com', companyName: 'B Applicant' });
