@@ -97,6 +97,8 @@ export const POS_PERMISSIONS = {
   // ── store settings (G4.0)
   'settings.store.edit':       { label: 'Change the store settings (time zone …)', roles: OWN },
   // ── settings
+  'settings.permissions.view':   { label: 'See who may do what (the permission matrix)', roles: MGR },
+  'settings.permissions.edit':   { label: 'Change who may do what (owner only, always)', roles: OWN },
   'settings.approvalLimits.view': { label: 'See the approval limits', roles: MGR },
   'settings.approvalLimits.edit': { label: 'Change the approval limits', roles: OWN },
 } as const satisfies Record<string, PermissionRule>;
@@ -124,8 +126,8 @@ export type Decision =
   | { decision: 'needs_approval'; approver: 'manager' | 'owner'; reasons: string[] };
 
 /** PURE: may [role] do [action] with [ctx] under [limits]? */
-export function evaluate(action: string, role: PosRole | null | undefined, ctx: ActionContext, limits: ResolvedLimits): Decision {
-  const rule = (POS_PERMISSIONS as Record<string, PermissionRule>)[action];
+export function evaluate(action: string, role: PosRole | null | undefined, ctx: ActionContext, limits: ResolvedLimits, rules: Record<string, PermissionRule> = POS_PERMISSIONS as Record<string, PermissionRule>): Decision {
+  const rule = rules[action];
   if (!rule) return { decision: 'deny', reason: 'unknown_action' };
   if (!role || !rule.roles.includes(role)) return { decision: 'deny', reason: 'role_not_allowed' };
   const reasons: string[] = [];
@@ -138,4 +140,69 @@ export function evaluate(action: string, role: PosRole | null | undefined, ctx: 
     if (!needed || roleRank(a.approver) > roleRank(needed)) needed = a.approver;
   }
   return needed ? { decision: 'needs_approval', approver: needed, reasons } : { decision: 'allow' };
+}
+
+// ── G4.2: the matrix becomes editable per store (owner only) ──────────────────────────────────────────────────────────────────────────
+/**
+ * A store's override of one action: which roles may do it, and per DEFAULT approval rule (same order) whether it is on and who approves.
+ * Overrides never add new approval rules or new limits — the documented rules are the menu, the owner picks from it.
+ */
+export interface RuleOverride { roles?: PosRole[]; approval?: Array<{ enabled?: boolean; approver?: 'manager' | 'owner' }> }
+export type PermissionOverrides = Partial<Record<PosAction, RuleOverride>>;
+/** Never editable: who may change the permissions (and see them) — so nobody can lock the owner out or grant themself the editor. */
+export const PINNED_ACTIONS: readonly PosAction[] = ['settings.permissions.edit', 'settings.permissions.view'];
+
+/** The effective rule of [action] for a store with [overrides] (the documented default when there is none). PURE. */
+export function effectiveRule(action: PosAction, ov: RuleOverride | undefined): PermissionRule {
+  const base = (POS_PERMISSIONS as Record<string, PermissionRule>)[action];
+  if (!ov || PINNED_ACTIONS.includes(action)) return base;
+  const roles = ov.roles ? POS_ROLES.filter((r) => r === 'owner' || ov.roles!.includes(r)) : base.roles; // the owner can never be removed
+  const approval = (base.approval ?? []).flatMap((rule, i) => {
+    const o = ov.approval?.[i];
+    if (o?.enabled === false) return [];
+    return [{ ...rule, approver: o?.approver ?? rule.approver }];
+  });
+  return { label: base.label, roles, approval };
+}
+export function effectiveTable(overrides: PermissionOverrides | null | undefined): Record<string, PermissionRule> {
+  const out: Record<string, PermissionRule> = {};
+  for (const a of POS_ACTIONS) out[a] = effectiveRule(a, overrides?.[a]);
+  return out;
+}
+/** What is wrong with a proposed override set (empty = fine). */
+export function overrideErrors(overrides: Record<string, any>): string[] {
+  const errs: string[] = [];
+  for (const [action, ov] of Object.entries(overrides ?? {})) {
+    const base = (POS_PERMISSIONS as Record<string, PermissionRule>)[action];
+    if (!base) { errs.push(`${action}: unknown action`); continue; }
+    if (PINNED_ACTIONS.includes(action as PosAction)) { errs.push(`${action}: cannot be changed (pinned)`); continue; }
+    if (ov == null || typeof ov !== 'object') { errs.push(`${action}: invalid`); continue; }
+    if (ov.roles !== undefined) {
+      if (!Array.isArray(ov.roles) || ov.roles.some((r: any) => !(POS_ROLES as readonly string[]).includes(r))) errs.push(`${action}: roles must be cashier / manager / owner`);
+      else if (!ov.roles.includes('owner')) errs.push(`${action}: the owner can always do everything`);
+    }
+    if (ov.approval !== undefined) {
+      if (!Array.isArray(ov.approval) || ov.approval.length > (base.approval ?? []).length) errs.push(`${action}: approval must follow the default rules (${(base.approval ?? []).length})`);
+      else ov.approval.forEach((a: any, i: number) => {
+        if (a == null || typeof a !== 'object') errs.push(`${action}: approval ${i} invalid`);
+        else if (a.approver !== undefined && a.approver !== 'manager' && a.approver !== 'owner') errs.push(`${action}: approval ${i} approver must be manager or owner`);
+        else if (a.enabled !== undefined && typeof a.enabled !== 'boolean') errs.push(`${action}: approval ${i} enabled must be true / false`);
+      });
+    }
+  }
+  return errs;
+}
+/** Drops everything equal to the default, so "no override" and "an override that says the default" are the same thing (and reset = {}). */
+export function normalizeOverrides(overrides: Record<string, any>): PermissionOverrides {
+  const out: PermissionOverrides = {};
+  for (const [action, ov] of Object.entries(overrides ?? {})) {
+    const base = (POS_PERMISSIONS as Record<string, PermissionRule>)[action];
+    if (!base || PINNED_ACTIONS.includes(action as PosAction)) continue;
+    const eff = effectiveRule(action as PosAction, ov);
+    const sameRoles = [...eff.roles].sort().join() === [...base.roles].sort().join();
+    const sameApproval = JSON.stringify(eff.approval ?? []) === JSON.stringify(base.approval ?? []);
+    if (sameRoles && sameApproval) continue;
+    out[action as PosAction] = { ...(sameRoles ? {} : { roles: [...eff.roles] }), ...(sameApproval ? {} : { approval: (base.approval ?? []).map((rule, i) => ({ enabled: (ov.approval?.[i]?.enabled ?? true) !== false, approver: ov.approval?.[i]?.approver ?? rule.approver })) }) };
+  }
+  return out;
 }

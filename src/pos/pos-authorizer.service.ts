@@ -3,7 +3,7 @@ import { ForbiddenException, Injectable } from '@nestjs/common';
 import { DatabaseService } from '@/database/databaseservice';
 import { isoExponent } from '@/common/money-minor.util';
 import { PosService } from './pos.service';
-import { ActionContext, Decision, evaluate, PosAction, PosRole, POS_PERMISSIONS, ResolvedLimits, resolveLimits, roleRank } from './pos-permissions.config';
+import { ActionContext, Decision, effectiveTable, evaluate, PermissionRule, PosAction, PosRole, POS_PERMISSIONS, ResolvedLimits, resolveLimits, roleRank } from './pos-permissions.config';
 
 export interface AuthorizedActor {
   role: PosRole;
@@ -27,11 +27,16 @@ export class PosAuthorizer {
   private get r() { return this.db.repositories; }
 
   async limitsFor(storeId: string): Promise<ResolvedLimits> {
+    return (await this.policyFor(storeId)).limits;
+  }
+
+  /** G4.2: the store's effective policy — its approval limits AND its permission matrix (the defaults with the owner's overrides). Read fresh on every check, so a change applies at once. */
+  async policyFor(storeId: string): Promise<{ limits: ResolvedLimits; rules: Record<string, PermissionRule>; version: number }> {
     const [settings, store]: any[] = await Promise.all([
-      this.r.posSettingsModel.findOne({ storeId }).select('approvalLimits').lean(),
+      this.r.posSettingsModel.findOne({ storeId }).select('approvalLimits permissionOverrides permissionsVersion').lean(),
       this.r.storeModel.findById(storeId).select('baseCurrency').lean(),
     ]);
-    return resolveLimits(settings?.approvalLimits ?? null, isoExponent(store?.baseCurrency));
+    return { limits: resolveLimits(settings?.approvalLimits ?? null, isoExponent(store?.baseCurrency)), rules: effectiveTable(settings?.permissionOverrides ?? null), version: settings?.permissionsVersion ?? 0 };
   }
 
   /** The caller's POS role (null = none: staff JWT, no PIN session…). */
@@ -53,8 +58,8 @@ export class PosAuthorizer {
   /** Throws a 403 with a machine code, or returns who acted and who (if anyone) approved. */
   async authorize(req: any, a: { storeId: string; action: PosAction; ctx?: ActionContext; employeeToken?: string; approverToken?: string }): Promise<AuthorizedActor> {
     const who = await this.roleOf(req, a.storeId, a.employeeToken);
-    const limits = await this.limitsFor(a.storeId);
-    const decision = evaluate(a.action, who.role, a.ctx ?? {}, limits);
+    const policy = await this.policyFor(a.storeId);
+    const decision = evaluate(a.action, who.role, a.ctx ?? {}, policy.limits, policy.rules);
     const label = (POS_PERMISSIONS as any)[a.action]?.label ?? a.action;
 
     if (decision.decision === 'deny') {
