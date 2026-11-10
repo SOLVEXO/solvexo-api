@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
-import { Controller, Get, Post, Patch, Delete, Param, Body, Req, UseGuards, UsePipes, ValidationPipe, UseInterceptors, UploadedFile } from '@nestjs/common';
+import { IsArray, IsString } from 'class-validator';
+import { Controller, Get, Post, Patch, Put, Delete, Param, Body, Req, UseGuards, UsePipes, ValidationPipe, UseInterceptors, UploadedFile } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
 import { buildTemplatePayload, readUploadedCsv } from '../common/bulk-import/bulk-import.util';
@@ -16,6 +17,12 @@ import { UpdateCollectionProductsDto } from './dto/update-collection-products.dt
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { RequirePermission } from '../auth/decorators/require-permission.decorator';
 import { actingSellerId } from '../common/acting-seller-id.util';
+class SetProductCollectionsDto {
+  @IsArray()
+  @IsString({ each: true })
+  collectionIds: string[];
+}
+
 @ApiTags('Collections')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -57,6 +64,22 @@ export class CollectionsController {
   @Get(':storeId')
   list(@Req() req: any, @Param('storeId') storeId: string) {
     return this.collectionsService.listForSeller(storeId, actingSellerId(req.user));
+  }
+
+  @UseGuards(PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('products.view', 'collections.manage')
+  @Get(':storeId/for-product/:productId')
+  forProduct(@Req() req: any, @Param('storeId') storeId: string, @Param('productId') productId: string) {
+    return this.collectionsService.collectionIdsForProduct(storeId, actingSellerId(req.user), productId);
+  }
+
+  @UseGuards(PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('collections.manage')
+  @Put(':storeId/for-product/:productId')
+  setForProduct(@Req() req: any, @Param('storeId') storeId: string, @Param('productId') productId: string, @Body() dto: SetProductCollectionsDto) {
+    return this.collectionsService.setCollectionsForProduct(storeId, actingSellerId(req.user), productId, dto.collectionIds);
   }
 
   @UseGuards(PermissionsGuard)

@@ -62,9 +62,7 @@ export class CollectionsService {
 
   async create(storeId: string, sellerId: string, dto: CreateCollectionDto) {
     await verifyStoreOwnershipStrict(this.r.storeModel, storeId, sellerId);
-    if (dto.type === 'manual' && (!dto.productIds || dto.productIds.length === 0)) {
-      throw new BadRequestException('A manual collection needs at least one product — add products after creating it, or switch to automatic.');
-    }
+    // A manual collection may start empty (like Shopify): products are added later, here or from each product's form.
     const slug = await this.generateStoreScopedSlug(storeId, dto.name);
 
     const collection = await this.r.collectionModel.create({
@@ -169,6 +167,32 @@ export class CollectionsService {
       { new: true },
     );
     return { success: true, message: 'Collection products updated', data: updated };
+  }
+
+  /** Product form: the MANUAL collections this product is in (automatic ones follow their rules, not a list). */
+  async collectionIdsForProduct(storeId: string, sellerId: string, productId: string) {
+    await verifyStoreOwnershipStrict(this.r.storeModel, storeId, sellerId);
+    const rows = await this.r.collectionModel.find({ storeId, isDelete: false, type: 'manual', productIds: productId }).select('_id').lean();
+    return { success: true, data: { collectionIds: rows.map((c: any) => String(c._id)) } };
+  }
+
+  /** Product form: put the product in exactly the chosen manual collections (adds to the chosen ones, removes from the rest). */
+  async setCollectionsForProduct(storeId: string, sellerId: string, productId: string, collectionIds: string[]) {
+    await verifyStoreOwnershipStrict(this.r.storeModel, storeId, sellerId);
+    if (!isValidObjectId(productId) || !(await this.r.productModel.exists({ _id: productId, storeId, isDelete: false }))) {
+      throw new NotFoundException('Product not found');
+    }
+    const wanted = [...new Set((collectionIds ?? []).map(String))];
+    if (wanted.some((id) => !isValidObjectId(id))) throw new BadRequestException('Invalid collection id');
+    if (wanted.length > 200) throw new BadRequestException('Too many collections');
+    const valid = await this.r.collectionModel.find({ _id: { $in: wanted }, storeId, isDelete: false, type: 'manual' }).select('_id').lean();
+    if (valid.length !== wanted.length) throw new BadRequestException('Only manual collections of this store can be chosen');
+    await this.r.collectionModel.updateMany({ _id: { $in: wanted }, storeId }, { $addToSet: { productIds: productId } });
+    await this.r.collectionModel.updateMany(
+      { storeId, isDelete: false, type: 'manual', _id: { $nin: wanted }, productIds: productId },
+      { $pull: { productIds: productId } },
+    );
+    return { success: true, message: 'Collections updated', data: { collectionIds: wanted } };
   }
 
   async delete(storeId: string, sellerId: string, collectionId: string) {
