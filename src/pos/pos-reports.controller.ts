@@ -9,6 +9,7 @@ import { PosAuthGuard } from './guards/pos-auth.guard';
 import { PosEntitlementGuard } from './guards/pos-entitlement.guard';
 import { PosDeviceScopeInterceptor } from './pos-device-scope';
 import { PosReportsService } from './pos-reports.service';
+import { PosStoreSettingsService } from './pos-store-settings.service';
 
 /** G4.0 / G4.1 — business pulse and the eight reports (read-only, live from the ledgers, store time zone). Reads stay available on a lapsed plan. */
 @ApiTags('POS reports')
@@ -57,7 +58,16 @@ export class PosReportsController {
 @RequireFeature('posMode')
 @Controller('api/pos/store')
 export class PosStoreController {
-  constructor(private readonly svc: PosReportsService) {}
+  constructor(private readonly svc: PosReportsService, private readonly settings: PosStoreSettingsService) {}
+
+  @UseGuards(PosAuthGuard, RolesGuard) @Roles('seller') @Get('settings/:storeId')
+  getSettings(@Req() req: any, @Param('storeId') s: string, @Headers('x-pos-employee-token') e?: string) { return this.settings.get(req, s, { employee: e }); }
+
+  @UseGuards(PosAuthGuard, RolesGuard, PosEntitlementGuard) @Roles('seller') @Patch('settings/:storeId')
+  setSettings(@Req() req: any, @Param('storeId') s: string, @Body() body: any, @Headers('x-pos-employee-token') e?: string) { return this.settings.update(req, s, body, { employee: e }); }
+
+  @UseGuards(PosAuthGuard, RolesGuard) @Roles('seller') @Get('sync-status/:storeId')
+  syncStatus(@Req() req: any, @Param('storeId') s: string, @Headers('x-pos-employee-token') e?: string) { return this.settings.syncStatus(req, s, { employee: e }); }
 
   @UseGuards(PosAuthGuard, RolesGuard) @Roles('seller') @Get('time-zone/:storeId')
   timeZone(@Req() req: any, @Param('storeId') s: string) { return this.svc.timeZone(req, s); }

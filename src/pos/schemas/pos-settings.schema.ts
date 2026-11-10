@@ -60,6 +60,10 @@ export class PosSettings {
   /** G4.2: the owner's per-store changes to the permission matrix (only what differs from the defaults) and its version (bumped on every change) */
   @Prop({ type: Object, default: {} }) permissionOverrides: Record<string, any>;
   @Prop({ type: Number, default: 0 }) permissionsVersion: number;
+  /** G4.4: receipt designer, in-app alerts and security knobs (missing keys = the defaults in pos-store-settings.service.ts, i.e. today's behaviour) */
+  @Prop({ type: Object, default: {} }) receiptOptions: Record<string, any>;
+  @Prop({ type: Object, default: {} }) alertPrefs: Record<string, boolean>;
+  @Prop({ type: Object, default: {} }) securityPrefs: Record<string, any>;
   /** a return above this amount (minor units) needs a manager; null = no amount limit */
   @Prop({ type: Number, default: null, min: 0 }) returnApprovalAboveMinor: number | null;
   /** a return later than this many days after the sale needs a manager; null = no day limit */

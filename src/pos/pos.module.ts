@@ -31,6 +31,7 @@ import { PosPermissionsStoreService } from './pos-permissions-store.service';
 import { PosPermissionsStoreController } from './pos-permissions-store.controller';
 import { PosAuditSealService } from './pos-audit-seal.service';
 import { PosAuditController } from './pos-audit.controller';
+import { PosStoreSettingsService } from './pos-store-settings.service';
 import { PosReportsController, PosStoreController } from './pos-reports.controller';
 import { PosCashController } from './pos-cash.controller';
 import { UploadModule } from '@/upload/upload.module';
@@ -40,7 +41,7 @@ import { PurchaseOrdersModule } from '@/purchase-orders/purchase-orders.module';
 @Module({
   imports: [AuthModule, RedisModule, AdminConfigModule, FinanceModule, InventoryModule, PurchaseOrdersModule, UploadModule, StockCountsModule, PosPlansModule, KybModule, forwardRef(() => PaymentsCoreModule)],
   controllers: [PosController, PublicReceiptController, PosInventoryController, PosCustomersController, PosSupplyController, PosCashController, PosTeamController, PosReportsController, PosStoreController, PosPermissionsStoreController, PosAuditController],
-  providers: [PosService, StoreLocationService, PosDeviceService, PosTokenRevocationService, PosReceiptService, PosCatalogService, PosAuthorizer, PosInventoryService, PosCustomerCore, PosCustomersService, PosSupplyService, PosCashService, PosTeamService, PosReportsService, PosPermissionsStoreService, PosAuditSealService],
+  providers: [PosService, StoreLocationService, PosDeviceService, PosTokenRevocationService, PosReceiptService, PosCatalogService, PosAuthorizer, PosInventoryService, PosCustomerCore, PosCustomersService, PosSupplyService, PosCashService, PosTeamService, PosReportsService, PosPermissionsStoreService, PosAuditSealService, PosStoreSettingsService],
   exports: [PosService, PosAuthorizer],
 })
 export class PosModule {}
