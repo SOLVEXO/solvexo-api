@@ -28,3 +28,6 @@
 
 ## P11 Image Enhancer
 - Needs a real image-enhancement/upscale vendor + API key (Claude cannot edit images). Until then the tool is hidden and refuses without billing.
+
+## Q3 fulfilment services
+- Real 3PL vendors (Shipbob-style etc.) use their own payload and signing. Our generic adapter sends `{event, requestId, orderNumber, items[{itemId,sku,title,quantity}], shippingAddress, shippingMethod}` signed with HMAC-SHA256 and accepts callbacks `{eventId,type,requestId,tracking?,stock?}`. Map the vendor's fields ONLY in `src/fulfillment-services/fulfillment.util.ts`.
