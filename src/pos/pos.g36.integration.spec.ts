@@ -162,6 +162,13 @@ describe('corrections (never overwrite) + audit', () => {
     const audit: any = await r.posAuditLogModel.findOne({ storeId: w.s.storeId, action: 'attendance_corrected' }).lean();
     expect([audit.employeeId, audit.metadata.reason, audit.metadata.before.status, audit.metadata.after.clockOutAt != null]).toEqual([w.s.managerId, 'forgot to clock out', 'open', true]);
     expect((await team.anomalies(device(w.s), w.s.storeId, w.M)).data.anomalies.map((x: any) => x.kind)).not.toContain('missing_clock_out');
+    // the audit trail behind the hours: raw punches (device + server time) and who corrected what, why
+    const d = (await team.recordDetail(device(w.s), w.s.storeId, w.s.cashierId, rec.recordId, w.C)).data; // the person themself may read it
+    expect(d.punches.map((x: any) => x.type)).toEqual(['clock_in']);
+    expect(d.corrections).toHaveLength(1);
+    expect([d.corrections[0].reason, d.corrections[0].byName, d.corrections[0].clockOutAt != null, d.record.corrected]).toEqual(['forgot to clock out', 'Mia Manager', true, true]);
+    expect(await code(team.recordDetail(device(w.s), w.s.storeId, w.s.managerId, rec.recordId, w.C))).toBe('POS_ACTION_FORBIDDEN'); // not someone else's
+    expect(await code(team.recordDetail(device(w.s), w.s.storeId, w.s.cashierId, 'nope', w.M))).toBe('RECORD_NOT_FOUND');
   });
 
   it('set the times on a closed record, then void it: the hours follow, each is a new row', async () => {

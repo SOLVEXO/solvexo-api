@@ -159,6 +159,23 @@ export class PosTeamService {
     return { success: true, data: { records: out } };
   }
 
+  /** One record with its raw punches and its correction history (who changed what, why) — the audit trail behind the derived hours. A cashier only their own. */
+  async recordDetail(req: Req, storeId: string, employeeId: string, recordId: string, t: Tokens) {
+    const a = await this.gate(req, storeId, 'team.attendance.own', t);
+    this.scope(a, { employeeId });
+    const now = new Date();
+    const rows: any[] = await this.r.posAttendanceEventModel.find({ storeId, employeeId, at: { $gte: new Date(now.getTime() - 120 * 86_400_000) } }).sort({ at: 1, _id: 1 }).lean();
+    const rec = deriveRecords(rows.map((e) => this.toEvent(e)), now).records.find((x) => x.recordId === recordId);
+    if (!rec) throw err(404, 'RECORD_NOT_FOUND', 'Attendance record not found');
+    const mine = rows.filter((e) => e.recordId === recordId);
+    const names = await this.names(storeId, [employeeId, ...mine.map((e) => e.actorId).filter(Boolean)]);
+    return { success: true, data: {
+      record: this.recordView(rec, employeeId, names.get(employeeId) ?? null),
+      punches: mine.filter((e) => e.type !== 'correction').map((e) => ({ id: String(e._id), type: e.type, at: e.at, deviceAt: e.deviceAt, serverAt: e.serverAt, flags: e.flags ?? [], deviceId: e.deviceId ?? null })),
+      corrections: mine.filter((e) => e.type === 'correction').map((e) => ({ id: String(e._id), at: e.serverAt, reason: e.reason ?? null, byId: e.actorId ?? null, byName: names.get(e.actorId) ?? null, clockInAt: e.correction?.clockInAt ?? null, clockOutAt: e.correction?.clockOutAt ?? null, voided: e.correction?.voided === true })),
+    } };
+  }
+
   /** What needs a manager: missing clock-outs, overlaps, double clock-ins, device-clock gaps, late syncs — except what was already acknowledged. */
   async anomalies(req: Req, storeId: string, t: Tokens) {
     await this.gate(req, storeId, 'team.attendance.view', t);

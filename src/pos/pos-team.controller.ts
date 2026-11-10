@@ -31,6 +31,9 @@ export class PosTeamController {
   @UseGuards(PosAuthGuard, RolesGuard) @Roles('seller') @Get('records/:storeId')
   records(@Req() req: any, @Param('storeId') s: string, @Query() q: any, @Headers('x-pos-employee-token') e?: string) { return this.svc.records(req, s, q, this.t(e)); }
 
+  @UseGuards(PosAuthGuard, RolesGuard) @Roles('seller') @Get('records/:storeId/:employeeId/:recordId')
+  recordDetail(@Req() req: any, @Param('storeId') s: string, @Param('employeeId') emp: string, @Param('recordId') rec: string, @Headers('x-pos-employee-token') e?: string) { return this.svc.recordDetail(req, s, emp, rec, this.t(e)); }
+
   @UseGuards(PosAuthGuard, RolesGuard) @Roles('seller') @Get('anomalies/:storeId')
   anomalies(@Req() req: any, @Param('storeId') s: string, @Headers('x-pos-employee-token') e?: string) { return this.svc.anomalies(req, s, this.t(e)); }
 
