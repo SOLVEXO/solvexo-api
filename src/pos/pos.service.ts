@@ -907,6 +907,14 @@ export class PosService {
     if (!res.ok) { if (strict) throw moneyError(res.error.code, res.error.message); return null; }
     return res;
   }
+  /** The major-unit price a line records: a book price is already whole minor units; otherwise the variant's EXACT list price (possibly sub-minor, so
+   *  lineTotalMinor = toMinor(price × qty) stays authoritative) plus the modifier deltas. */
+  private pricedMajor(priced: { fromBook: boolean; unitPriceMinor: number; modifiers: { priceDeltaMinor: number }[] } | null, listPrice: number, exp: number): number {
+    if (!priced) return listPrice;
+    if (priced.fromBook) return fromMinor(priced.unitPriceMinor, exp);
+    const deltas = priced.modifiers.reduce((n, m) => n + m.priceDeltaMinor, 0);
+    return deltas ? listPrice + fromMinor(deltas, exp) : listPrice;
+  }
   private async storeExponent(storeId: string): Promise<number> {
     const st: any = await this.r.storeModel.findById(storeId).select('baseCurrency').lean();
     return isoExponent(st?.baseCurrency);
@@ -1000,7 +1008,7 @@ export class PosService {
       // Offline replay: the till collected `unitPrice`. Record THAT (money in the drawer must equal the sale) and judge it:
       // genuine = the variant's current price, or one it had since the sale was made (variant price history).
       const priced = this.priceOneLine(pctx, item, variant, pexp, !off.isOffline);
-      let charged = priced ? fromMinor(priced.unitPriceMinor, pexp) : variant.price;
+      let charged = this.pricedMajor(priced, variant.price, pexp);
       let listPrice: number | null = null;
       let priceVerified = true;
       if (off.isOffline && item.unitPrice !== undefined && item.unitPrice !== null) {
@@ -1858,7 +1866,7 @@ export class PosService {
       const product: any = await this.r.productModel.findOne({ _id: item.productId, isDelete: false }).select('name').lean();
       if (!product) throw new BadRequestException(`Product not found: ${item.productId}`);
       const qp = this.priceOneLine(qctx, item, variant, qexp, true)!;
-      lines.push({ productId: item.productId, variantId: item.variantId, name: `${product.name}${formatOptionsSuffix(variant.options)}${modifierSuffix(qp.modifiers)}`, sku: variant.sku, price: fromMinor(qp.unitPriceMinor, qexp), qty: item.qty, ...(qp.modifiers.length ? { modifiers: qp.modifiers } : {}), ...(qp.fromBook ? { basePriceMinor: qp.baseMinor } : {}) });
+      lines.push({ productId: item.productId, variantId: item.variantId, name: `${product.name}${formatOptionsSuffix(variant.options)}${modifierSuffix(qp.modifiers)}`, sku: variant.sku, price: this.pricedMajor(qp, variant.price, qexp), qty: item.qty, ...(qp.modifiers.length ? { modifiers: qp.modifiers } : {}), ...(qp.fromBook ? { basePriceMinor: qp.baseMinor } : {}) });
     }
     let discountReq = this.discountSpec(dto);
     const money = await this.moneyContext(dto.storeId, { version: dto.settingsVersion });

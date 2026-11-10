@@ -53,6 +53,20 @@ describe('modifiers at sale (server-priced)', () => {
     expect([sale.subtotal, sale.tax, sale.total]).toEqual([13.6, 1.36, 14.96]);
     expect(q.total ?? q.totals?.total).toBe(14.96);
   });
+  it('a sub-minor list price keeps lineTotalMinor = toMinor(price × qty) authoritative with or without a modifier (no early rounding of the list price)', async () => {
+    const s = await seedStore(h, { stock: 50, price: 0.125, baseCurrency: 'USD' });
+    const sid = String(new Types.ObjectId());
+    await r.registerSessionModel.collection.insertOne({ _id: new Types.ObjectId(sid), storeId: s.storeId, registerId: s.registerId, employeeId: s.cashierId, status: 'open', openedAt: new Date(), openingCash: 10, totalSales: 0, totalTransactions: 0 });
+    const g = (await admin.modifierCreate(device(s), s.storeId, { name: 'Wrap', minSelect: 0, maxSelect: 1, productIds: [s.productId], options: [{ name: 'Gift wrap', priceDeltaMinor: 100 }] }, { employee: tok(s, 'manager') })).data.group;
+    const sell = async (mods: any[]) => ((await svc.createSale(s.sellerId, { storeId: s.storeId, sessionId: sid, registerId: s.registerId, employeeId: s.cashierId, items: [{ productId: s.productId, variantId: s.variantId, qty: 3, modifiers: mods }], paymentMethod: 'card' } as any, tok(s, 'manager'))) as any).data;
+    const raw = async (id: any) => r.saleModel.collection.findOne({ _id: new Types.ObjectId(String(id)) });
+    const plain = await raw((await sell([]))._id);
+    expect(Number(plain.items[0].lineTotalMinor)).toBe(38); // 0.375 → 38, not 13 × 3 = 39
+    const res = await sell([{ groupId: g.id, optionIds: [g.options[0].id] }]);
+    const wrapped = await raw(res._id);
+    expect(Number(wrapped.items[0].lineTotalMinor)).toBe(338); // (0.125 + 1.00) × 3 = 3.375 → 338
+    expect(moneyContractViolations(JSON.parse(JSON.stringify(res)))).toEqual([]);
+  });
   it('rules are enforced online: a required size, at most two extras, an option of another product', async () => {
     const w = await world();
     expect(await code(w.sell([w.line([])]))).toBe('MODIFIER_REQUIRED');
