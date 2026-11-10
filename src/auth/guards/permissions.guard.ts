@@ -35,9 +35,11 @@ const NOT_SCOPED = 'This staff account is not scoped to that store';
  *      `query.storeId = user.storeId`.
  *  A seller/admin caller has no such restriction — store ownership itself is checked separately inside each
  *  service method (e.g. `storeModel.findOne({_id, sellerId})`). */
-/** staff -> verdict of the store's two-factor policy, cached up to a minute per person (and cleared at once when the policy or someone's 2FA changes). */
+/** staff -> verdict of the store's two-factor policy, cached up to 10 s per person (and cleared at once when the policy or someone's 2FA changes). */
 export const staffTwoFactorCache = new Map<string, { at: number; blocked: boolean; message?: string }>();
 export const clearStaffTwoFactorCache = () => staffTwoFactorCache.clear();
+/** Other API instances cannot be told to clear their map, so a verdict is trusted for at most 10 s: a policy change reaches every instance within that. */
+export const STAFF_2FA_CACHE_TTL_MS = 10_000;
 
 @Injectable()
 export class PermissionsGuard implements CanActivate {
@@ -105,7 +107,7 @@ export class PermissionsGuard implements CanActivate {
     const staffId = String(user.userId ?? user.sub ?? '');
     const key = `${user.storeId}:${staffId}`;
     let hit = this.tfCache.get(key);
-    if (!hit || Date.now() - hit.at > 60_000) {
+    if (!hit || Date.now() - hit.at > STAFF_2FA_CACHE_TTL_MS) {
       hit = { at: Date.now(), blocked: false };
       const store: any = await this.db.repositories.storeModel.findById(user.storeId).select('requireStaffTwoFactor requireStaffTwoFactorSince staffTwoFactorGraceDays').lean();
       if (store?.requireStaffTwoFactor) {
