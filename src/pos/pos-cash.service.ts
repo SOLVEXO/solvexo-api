@@ -62,6 +62,11 @@ export class PosCashService {
   private audit(storeId: string, employeeId: string | null, action: string, targetId: string | null, metadata: object, tx?: ClientSession) {
     return this.r.posAuditLogModel.create([{ storeId, employeeId, action, targetId, targetType: 'cash', metadata }], tx ? { session: tx } : undefined);
   }
+  private async names(storeId: string, ids: string[]): Promise<Map<string, string>> {
+    const valid = [...new Set(ids)].filter((i) => Types.ObjectId.isValid(i));
+    const rows: any[] = valid.length ? await this.r.employeeModel.find({ _id: { $in: valid }, storeId }).select('name').lean() : [];
+    return new Map(rows.map((e) => [String(e._id), e.name]));
+  }
   private deviceOf = (req: Req): string | null => req?.user?.posDevice?.deviceId ?? null;
   private atomic<T>(fn: (tx: ClientSession) => Promise<T>): Promise<T> { return this.r.registerSessionModel.db.transaction(fn); }
   private async ensureSettings(storeId: string) { await this.r.posSettingsModel.updateOne({ storeId }, { $setOnInsert: { storeId } }, { upsert: true }); }
@@ -105,19 +110,19 @@ export class PosCashService {
   }
 
   // ── expenses ──────────────────────────────────────────────────────────────────
-  private async statusOf(storeId: string, ids: string[]): Promise<Map<string, { status: string; note: string | null; hasReceipt: boolean; decidedBy: string | null }>> {
-    const out = new Map<string, any>(ids.map((i) => [i, { status: 'recorded', note: null, hasReceipt: false, decidedBy: null }]));
+  private async statusOf(storeId: string, ids: string[]): Promise<Map<string, { status: string; note: string | null; hasReceipt: boolean; decidedBy: string | null; receiptMimeType?: string | null }>> {
+    const out = new Map<string, any>(ids.map((i) => [i, { status: 'recorded', note: null, hasReceipt: false, decidedBy: null, receiptMimeType: null }]));
     if (!ids.length) return out;
     const ev: any[] = await this.r.posExpenseEventModel.find({ storeId, expenseId: { $in: ids } }).sort({ createdAt: 1, _id: 1 }).lean();
     for (const e of ev) {
       const o = out.get(e.expenseId); if (!o) continue;
-      if (e.type === 'receipt_attached') o.hasReceipt = true;
+      if (e.type === 'receipt_attached') { o.hasReceipt = true; o.receiptMimeType = e.receipt?.mimeType ?? null; }
       else { o.status = e.type; o.note = e.note ?? null; o.decidedBy = e.employeeId ?? null; }
     }
     return out;
   }
-  private expenseView(x: any, st: { status: string; note: string | null; hasReceipt: boolean; decidedBy: string | null } | undefined) {
-    return { id: String(x._id), number: x.number, category: x.category, amountMinor: x.amountMinor, currency: x.currency, currencyExponent: x.currencyExponent, payee: x.payee ?? null, method: x.method, note: x.note ?? null, occurredAt: x.occurredAt, sessionId: x.sessionId ?? null, employeeId: x.employeeId ?? null, approvedBy: x.approvedBy ?? null, createdAt: x.createdAt ?? null, status: st?.status ?? 'recorded', decisionNote: st?.note ?? null, hasReceipt: st?.hasReceipt ?? false };
+  private expenseView(x: any, st: { status: string; note: string | null; hasReceipt: boolean; decidedBy: string | null; receiptMimeType?: string | null } | undefined, names?: Map<string, string>) {
+    return { id: String(x._id), number: x.number, category: x.category, amountMinor: x.amountMinor, currency: x.currency, currencyExponent: x.currencyExponent, payee: x.payee ?? null, method: x.method, note: x.note ?? null, occurredAt: x.occurredAt, sessionId: x.sessionId ?? null, employeeId: x.employeeId ?? null, approvedBy: x.approvedBy ?? null, createdAt: x.createdAt ?? null, status: st?.status ?? 'recorded', decisionNote: st?.note ?? null, hasReceipt: st?.hasReceipt ?? false, receiptMimeType: st?.receiptMimeType ?? null, employeeName: x.employeeId ? (names?.get(x.employeeId) ?? null) : null };
   }
 
   /** Record an expense. A drawer expense takes the money out of the open shift in the SAME transaction (and needs that shift); bank / other are recorded only. */
@@ -138,7 +143,7 @@ export class PosCashService {
     const a = await this.gate(req, storeId, 'expenses.record', t, { amountMinor });
     const { currency, currencyExponent: exp } = await this.cur(storeId);
     const existing: any = await this.r.posExpenseModel.findOne({ storeId, requestId }).lean();
-    const view = async (x: any, duplicate: boolean) => ({ success: true, data: { currency, currencyExponent: exp, duplicate, expense: this.expenseView(x, (await this.statusOf(storeId, [String(x._id)])).get(String(x._id))) } });
+    const view = async (x: any, duplicate: boolean) => ({ success: true, data: { currency, currencyExponent: exp, duplicate, expense: this.expenseView(x, (await this.statusOf(storeId, [String(x._id)])).get(String(x._id)), await this.names(storeId, [x.employeeId].filter(Boolean))) } });
     if (existing) return view(existing, true);
     await this.ensureSettings(storeId);
     const by = a.approvedBy?.employeeId ?? null;
@@ -183,7 +188,8 @@ export class PosCashService {
     if (from || to) filter.occurredAt = { ...(from ? { $gte: from } : {}), ...(to ? { $lt: to } : {}) };
     const rows: any[] = await this.r.posExpenseModel.find(filter).sort({ occurredAt: -1, _id: -1 }).limit(Math.min(Number(q?.limit) || 100, 300)).lean();
     const st = await this.statusOf(storeId, rows.map((x) => String(x._id)));
-    let list = rows.map((x) => this.expenseView(x, st.get(String(x._id))));
+    const nm = await this.names(storeId, rows.map((x) => x.employeeId).filter(Boolean));
+    let list = rows.map((x) => this.expenseView(x, st.get(String(x._id)), nm));
     if (q?.status && q.status !== 'all') list = list.filter((x) => x.status === q.status);
     const byCat: Record<string, number> = {};
     for (const x of list) if (x.status !== 'rejected') byCat[x.category] = (byCat[x.category] ?? 0) + x.amountMinor;
@@ -194,7 +200,7 @@ export class PosCashService {
     const x = await this.loadExpense(storeId, id);
     await this.mayTouch(a, x);
     const st = (await this.statusOf(storeId, [id])).get(id);
-    return { success: true, data: { ...(await this.cur(storeId)), expense: this.expenseView(x, st) } };
+    return { success: true, data: { ...(await this.cur(storeId)), expense: this.expenseView(x, st, await this.names(storeId, [x.employeeId].filter(Boolean))) } };
   }
   /** A manager approves or rejects an expense after the fact (a rejection needs a reason). It never moves cash: the money already left the drawer — a rejection flags it for follow-up. */
   async expenseDecide(req: Req, storeId: string, id: string, body: any, t: Tokens) {
@@ -256,14 +262,14 @@ export class PosCashService {
     const sessions: any[] = await this.r.registerSessionModel.find(filter).sort({ openedAt: 1 }).lean();
     const store: any = await this.r.storeModel.findById(storeId).select('registers').lean();
     const regName = new Map<string, string>((store?.registers ?? []).map((g: any) => [String(g._id), g.name]));
-    const empIds = [...new Set(sessions.map((s) => s.employeeId).filter(Boolean))];
-    const emps: any[] = empIds.length ? await this.r.employeeModel.find({ _id: { $in: empIds } }).select('name').lean() : [];
-    const empName = new Map(emps.map((e) => [String(e._id), e.name]));
+    const lineEmp = new Set<string>(sessions.map((s) => s.employeeId).filter(Boolean));
+    for (const s of sessions) for (const ad of (s.cashAdjustments ?? []) as any[]) if (ad.employeeId) lineEmp.add(ad.employeeId);
+    const empName = await this.names(storeId, [...lineEmp]);
     const shifts: any[] = [];
     const totals = { cashSalesMinor: 0, cashRefundsMinor: 0, cashInMinor: 0, cashOutMinor: 0, expensesMinor: 0, supplierPaymentsMinor: 0, varianceMinor: 0 };
     for (const s of sessions) {
       const sid = String(s._id);
-      const lines: { at: Date; sort: number; type: string; label: string; refType: string | null; refId: string | null; amountMinor: number; employeeId: string | null }[] = [];
+      const lines: { at: Date; sort: number; type: string; label: string; refType: string | null; refId: string | null; saleId?: string | null; amountMinor: number; employeeId: string | null }[] = [];
       const openingMinor = s.openingCashMinor ?? toMinor(s.openingCash ?? 0, exp);
       lines.push({ at: s.openedAt, sort: 0, type: 'opening', label: 'Opening float', refType: 'session', refId: sid, amountMinor: openingMinor, employeeId: s.employeeId ?? null });
       const sales: any[] = await this.r.saleModel.find({ storeId, sessionId: sid, status: { $in: ['completed', 'partially_refunded', 'refunded', 'voided'] } }).sort({ createdAt: 1 }).lean();
@@ -274,7 +280,7 @@ export class PosCashService {
       const refunds: any[] = await this.r.posRefundModel.find({ storeId, sessionId: sid }).sort({ createdAt: 1 }).lean();
       for (const rf of refunds) {
         const cash = (rf.tenders ?? []).filter((x: any) => x.method === 'cash').reduce((n: number, x: any) => n + (x.amountMinor ?? toMinor(x.amount ?? 0, exp)), 0);
-        if (cash > 0) lines.push({ at: rf.createdAt, sort: 1, type: 'cash_refund', label: `Refund ${rf.reference ?? ''}`.trim(), refType: 'refund', refId: String(rf._id), amountMinor: -cash, employeeId: rf.employeeId ?? null });
+        if (cash > 0) lines.push({ at: rf.createdAt, sort: 1, type: 'cash_refund', label: `Refund ${rf.reference ?? ''}`.trim(), refType: 'refund', refId: String(rf._id), saleId: rf.saleId ?? null, amountMinor: -cash, employeeId: rf.employeeId ?? null });
       }
       const voids: any[] = await this.r.posCreditNoteModel.find({ storeId, sessionId: sid, kind: 'void', backfill: null }).sort({ createdAt: 1 }).lean();
       for (const v of voids) {
@@ -288,7 +294,7 @@ export class PosCashService {
       }
       lines.sort((x, y) => (x.sort === 0 || y.sort === 0 ? x.sort - y.sort : new Date(x.at).getTime() - new Date(y.at).getTime()));
       let run = 0;
-      const out = lines.map((l) => { run += l.amountMinor; return { ...l, runningMinor: run }; });
+      const out = lines.map((l) => { run += l.amountMinor; return { ...l, employeeName: l.employeeId ? (empName.get(l.employeeId) ?? null) : null, runningMinor: run }; });
       const expectedMinor = run;
       const closed = s.status === 'closed';
       const reportExpected = s.expectedCashMinor != null && closed ? s.expectedCashMinor : null;

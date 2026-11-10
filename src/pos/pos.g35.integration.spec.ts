@@ -122,6 +122,7 @@ describe('expenses', () => {
     const w = await world();
     const a = (await w.expense({ amountMinor: 1250, category: 'transport', payee: 'Taxi' })).data;
     expect([a.expense.number, a.expense.status, a.expense.method, a.expense.amountMinor, a.duplicate]).toEqual(['EXP-000001', 'recorded', 'cash', 1250, false]);
+    expect(a.expense.employeeName).toBe('Mia Manager');
     const sh = await w.session();
     expect(sh.cashAdjustments).toHaveLength(1);
     expect(sh.cashAdjustments[0]).toMatchObject({ type: 'cash_out', amountMinor: 1250, category: 'expense', refType: 'expense', refId: a.expense.id });
@@ -184,6 +185,7 @@ describe('receipt photos: private, by content, expiring links, audited', () => {
     expect(uploaded).toHaveLength(0); // nothing reached storage
     const out = (await cash.receiptUpload(device(w.s), w.s.storeId, mine.id, file(PNG, 'whatever.txt'), w.C)).data.expense;
     expect(out.hasReceipt).toBe(true);
+    expect(out.receiptMimeType).toBe('image/png');
     expect(uploaded[0]).toMatchObject({ folder: `private/expense-receipts/${w.s.storeId}`, mimetype: 'image/png' });
     expect(JSON.stringify(out)).not.toMatch(/publicId|signed|http/); // never exposed
     const link = (await cash.receiptLink(device(w.s), w.s.storeId, mine.id, w.M)).data;
@@ -239,6 +241,8 @@ describe('the daybook equals the shift close figures — exactly', () => {
       const one = book.shifts.find((x: any) => x.sessionId === w.sid);
       const two = book.shifts.find((x: any) => x.sessionId === sid2);
       expect(one.cashRefundsMinor).toBeGreaterThan(0); // the partial refund + the void
+      expect(one.lines.filter((l: any) => l.type === 'cash_refund' && l.refType === 'refund').every((l: any) => !!l.saleId)).toBe(true); // a refund line names its sale so the app can open it
+      expect(one.lines.find((l: any) => l.type === 'cash_in').employeeName).toBe('Mia Manager');
       expect(two.cashRefundsMinor).toBeGreaterThan(0); // the cross-till refund is on the PAYING till
       expect(two.cashSalesMinor).toBe(0);
       expect(one.expensesMinor).toBeGreaterThan(0); expect(one.supplierPaymentsMinor).toBeGreaterThan(0); expect(one.cashInMinor).toBeGreaterThan(0); expect(one.cashOutMinor).toBeGreaterThan(0);
