@@ -57,6 +57,14 @@ function required(value: unknown, field: string): void {
   }
 }
 
+/** An optional whole number (px) inside min..max. */
+function assertWholeNumberInRange(value: unknown, min: number, max: number, field: string): void {
+  if (value === undefined || value === null) return;
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < min || value > max) {
+    throw new BadRequestException(`${field} must be a whole number from ${min} to ${max}`);
+  }
+}
+
 /** Grid columns: a whole number from 1 to 8 (the editor's Columns box). */
 function assertColumns(value: unknown): void {
   if (value === undefined || value === null) return;
@@ -266,8 +274,12 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
   switch (type) {
     case 'hero': {
       const s = settings as HeroSectionSettings;
-      oneOf(s.heightPreset, ['small', 'medium', 'large', 'adapt'] as const, 'settings.heightPreset');
-      oneOf(s.mobileHeightPreset, ['same', 'small', 'medium', 'large', 'adapt'] as const, 'settings.mobileHeightPreset');
+      oneOf(s.heightPreset, ['small', 'medium', 'large', 'adapt', 'custom'] as const, 'settings.heightPreset');
+      oneOf(s.mobileHeightPreset, ['same', 'small', 'medium', 'large', 'adapt', 'custom'] as const, 'settings.mobileHeightPreset');
+      oneOf(s.imageFit, ['fill', 'whole'] as const, 'settings.imageFit');
+      assertWholeNumberInRange(s.customHeight, 150, 1400, 'settings.customHeight');
+      assertWholeNumberInRange(s.mobileCustomHeight, 150, 1400, 'settings.mobileCustomHeight');
+      assertWholeNumberInRange(s.maxWidth, 320, 2400, 'settings.maxWidth');
       oneOf(s.mobileTextLayout, ['overlay', 'below'] as const, 'settings.mobileTextLayout');
       oneOf(s.pagination, ['dots', 'counter', 'none'] as const, 'settings.pagination');
       oneOf(s.transition, ['slide', 'fade'] as const, 'settings.transition');

@@ -251,6 +251,13 @@ describe('section-settings.validator', () => {
       expect(() => validateSectionSettings('category_product_grid', { defaultSort: 'random' })).toThrow(BadRequestException);
     });
 
+    it('hero: custom height, image fit and max width', () => {
+      expect(() => validateSectionSettings('hero', { heightPreset: 'custom', customHeight: 600, mobileHeightPreset: 'custom', mobileCustomHeight: 380, imageFit: 'whole', maxWidth: 1200 })).not.toThrow();
+      for (const bad of [{ customHeight: 100 }, { customHeight: 1500 }, { customHeight: 600.5 }, { mobileCustomHeight: '400' }, { maxWidth: 100 }, { maxWidth: 3000 }, { imageFit: 'stretch' }, { heightPreset: 'huge' }]) {
+        expect(() => validateSectionSettings('hero', bad as never)).toThrow(BadRequestException);
+      }
+    });
+
     it('video: accepts any https:// link, rejects non-https schemes', () => {
       expect(() => validateSectionSettings('video', { videoUrl: 'https://example.com/clip.mp4' })).not.toThrow();
       expect(() => validateSectionSettings('video', { videoUrl: 'http://example.com/clip.mp4' })).toThrow(BadRequestException);
