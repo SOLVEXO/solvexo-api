@@ -52,7 +52,7 @@ const T: Record<PosAction, { below: [Exp, Exp, Exp]; above?: [Exp, Exp, Exp] }> 
   'cash.out':                     { below: ['allow', 'allow', 'allow'], above: ['manager', 'allow', 'allow'] },
   'expenses.record':              { below: ['allow', 'allow', 'allow'], above: ['manager', 'allow', 'allow'] },
   'expenses.approve':             { below: ['deny', 'allow', 'allow'] },
-  'daybook.view':                 { below: ['deny', 'allow', 'allow'] },
+  'daybook.view':                 { below: ['allow', 'allow', 'allow'] }, // a cashier sees only their own shifts: the service filters
   'team.attendance.own':          { below: ['allow', 'allow', 'allow'] },
   'team.attendance.edit':         { below: ['deny', 'allow', 'allow'] },
   'team.roster.edit':             { below: ['deny', 'allow', 'allow'] },

@@ -51,6 +51,8 @@ export class PosSettings {
   /** G3.4: per-store purchase-order and goods-receipt numbers (incremented inside the creating transaction — no holes) */
   @Prop({ type: Number, default: 0 }) poCounter: number;
   @Prop({ type: Number, default: 0 }) receiptCounter: number;
+  /** G3.5: per-store expense numbers */
+  @Prop({ type: Number, default: 0 }) expenseCounter: number;
   /** may a cashier process a return at all? (false = every return needs a manager, the behaviour before G2.5) */
   @Prop({ type: Boolean, default: false }) cashierReturnsEnabled: boolean;
   /** G3.0 (D6): per-store overrides of the approval limits (money in the store currency's MINOR units, counts as numbers); a key not present uses the documented default — see pos-permissions.config.ts */

@@ -23,13 +23,16 @@ import { PosCustomerCore } from './pos-customer-core.service';
 import { PosCustomersService } from './pos-customers.service';
 import { PosCustomersController } from './pos-customers.controller';
 import { PosSupplyService } from './pos-supply.service';
+import { PosCashService } from './pos-cash.service';
+import { PosCashController } from './pos-cash.controller';
+import { UploadModule } from '@/upload/upload.module';
 import { PosSupplyController } from './pos-supply.controller';
 import { PurchaseOrdersModule } from '@/purchase-orders/purchase-orders.module';
 
 @Module({
-  imports: [AuthModule, RedisModule, AdminConfigModule, FinanceModule, InventoryModule, PurchaseOrdersModule, StockCountsModule, PosPlansModule, KybModule, forwardRef(() => PaymentsCoreModule)],
-  controllers: [PosController, PublicReceiptController, PosInventoryController, PosCustomersController, PosSupplyController],
-  providers: [PosService, StoreLocationService, PosDeviceService, PosTokenRevocationService, PosReceiptService, PosCatalogService, PosAuthorizer, PosInventoryService, PosCustomerCore, PosCustomersService, PosSupplyService],
+  imports: [AuthModule, RedisModule, AdminConfigModule, FinanceModule, InventoryModule, PurchaseOrdersModule, UploadModule, StockCountsModule, PosPlansModule, KybModule, forwardRef(() => PaymentsCoreModule)],
+  controllers: [PosController, PublicReceiptController, PosInventoryController, PosCustomersController, PosSupplyController, PosCashController],
+  providers: [PosService, StoreLocationService, PosDeviceService, PosTokenRevocationService, PosReceiptService, PosCatalogService, PosAuthorizer, PosInventoryService, PosCustomerCore, PosCustomersService, PosSupplyService, PosCashService],
   exports: [PosService, PosAuthorizer],
 })
 export class PosModule {}

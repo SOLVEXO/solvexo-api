@@ -84,7 +84,7 @@ export const POS_PERMISSIONS = {
   'cash.out':                  { label: 'Cash out / safe drop', roles: ALL, approval: [{ limit: 'cashOutMinor', ctx: 'amountMinor', approver: 'manager' }] },
   'expenses.record':           { label: 'Record an expense', roles: ALL, approval: [{ limit: 'expenseMinor', ctx: 'amountMinor', approver: 'manager' }] },
   'expenses.approve':          { label: 'Approve / reject an expense', roles: MGR },
-  'daybook.view':              { label: 'See the daybook', roles: MGR },
+  'daybook.view':              { label: 'See the daybook (a cashier only the shifts they worked)', roles: ALL },
   // ── team (G3.6)
   'team.attendance.own':       { label: 'Clock in / out', roles: ALL },
   'team.attendance.edit':      { label: 'Edit someone\'s attendance', roles: MGR },

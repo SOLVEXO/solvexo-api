@@ -25,6 +25,11 @@ export class CashAdjustment {
   @Prop({ type: String, default: null }) category?: string | null;
   @Prop({ type: String, default: null }) refType?: string | null;
   @Prop({ type: String, default: null }) refId?: string | null;
+  /** G3.5: a client-made id so a retried / replayed (offline) movement is applied once; the device's own time; who approved it above the limit; a note */
+  @Prop({ type: String, default: null }) requestId?: string | null;
+  @Prop({ type: Date, default: null }) occurredAt?: Date | null;
+  @Prop({ type: String, default: null }) approvedBy?: string | null;
+  @Prop({ type: String, default: null }) note?: string | null;
 
   @Prop({ type: Date, default: () => new Date() })
   createdAt: Date;

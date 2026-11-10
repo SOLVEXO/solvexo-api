@@ -275,6 +275,8 @@ import { DatabaseService } from './databaseservice';
       { name: schema.StockAdjustment.name, schema: schema.StockAdjustmentSchema },
       { name: schema.StockMovement.name, schema: schema.StockMovementSchema },
       { name: schema.PurchaseReceipt.name, schema: schema.PurchaseReceiptSchema },
+      { name: schema.PosExpense.name, schema: schema.PosExpenseSchema },
+      { name: schema.PosExpenseEvent.name, schema: schema.PosExpenseEventSchema },
       { name: schema.SupplierLedgerEntry.name, schema: schema.SupplierLedgerEntrySchema },
       { name: schema.PosCustomer.name, schema: schema.PosCustomerSchema },
       { name: schema.StoreCreditEntry.name, schema: schema.StoreCreditEntrySchema },

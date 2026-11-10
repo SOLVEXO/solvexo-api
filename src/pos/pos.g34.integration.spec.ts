@@ -17,6 +17,7 @@ import { ApprovalRequestSchema } from '../staff/schemas/approval-request.schema'
 import { InventoryService } from '../inventory/inventory.service';
 import { SupplierReturnsService } from '../purchase-orders/supplier-returns.service';
 import { moneyContractViolations } from './testing/money-contract';
+import { computeAging } from '../purchase-orders/supplier-aging.util';
 
 /** G3.4 on a real replica-set MongoDB: purchase-order lifecycle + approvals, partial receipts, weighted-average cost at exponent 0 / 2 / 3, lots → FEFO, supplier returns + credit, payables, cash payments. */
 jest.setTimeout(300_000);
@@ -179,15 +180,21 @@ describe('receiving: partial receipts, caps, lots, bills', () => {
   });
 
   it('a receipt without a PO is manager-only, needs a supplier and unit costs, and bills the supplier; the optional supplier invoice number / date are stored', async () => {
-    const w = await world({ stock: 0 });
+    const w = await world({ stock: 10, costMinor: 100 });
     const line = { variantId: w.s.variantId, qtyGood: 5, unitCostMinor: 300 };
     expect(await code(sup.receive(device(w.s), w.s.storeId, { supplierId: w.supplier.id, lines: [line] }, w.C))).toBe('POS_ACTION_FORBIDDEN');
     expect(await code(sup.receive(device(w.s), w.s.storeId, { lines: [line] }, w.M))).toBe('SUPPLIER_REQUIRED');
     expect(await code(sup.receive(device(w.s), w.s.storeId, { supplierId: w.supplier.id, lines: [{ variantId: w.s.variantId, qtyGood: 5 }] }, w.M))).toBe('INVALID_AMOUNT');
     const out = (await sup.receive(device(w.s), w.s.storeId, { supplierId: w.supplier.id, requestId: rid(), supplierInvoiceNumber: 'INV-77', supplierInvoiceDate: '2026-10-01', lines: [line] }, w.M)).data;
     expect([out.receipt.purchaseOrderId, out.receipt.totalMinor, out.receipt.supplierInvoiceNumber, out.receipt.receiptNumber]).toEqual([null, 1500, 'INV-77', 'GRN-000001']);
-    expect((await w.variant()).stock).toBe(5);
-    const entry = (await w.bal()).entries[0];
+    expect((await w.variant()).stock).toBe(15);
+    expect((await w.variant()).costPriceMinor).toBe(167); // WAC: (10 × 100 + 5 × 300) / 15 = 166.67 → 167
+    const mv: any[] = await r.stockMovementModel.find({ storeId: w.s.storeId, type: 'receive' }).lean();
+    expect([mv.length, mv[0].qtyDelta, mv[0].unitCostMinor]).toEqual([1, 5, 300]); // its own stock-ledger row
+    expect(await r.purchaseOrderModel.countDocuments({ storeId: w.s.storeId })).toBe(0); // no ad-hoc / fake PO
+    const out2 = (await sup.receive(device(w.s), w.s.storeId, { supplierId: w.supplier.id, requestId: rid(), lines: [line] }, w.M)).data;
+    expect(out2.receipt.receiptNumber).toBe('GRN-000002'); // the per-store number sequence
+    const entry = (await w.bal()).entries[1];
     expect([entry.type, entry.amountMinor, entry.supplierInvoiceNumber]).toEqual(['bill', 1500, 'INV-77']);
   });
 
@@ -302,7 +309,6 @@ describe('supplier returns, credit and payables', () => {
   });
 
   it('aging: payments settle the OLDEST bills first; the rest sits in current / 30 / 60 / 90+ by the bill date', async () => {
-    const { computeAging } = await import('../purchase-orders/supplier-aging.util');
     const now = new Date('2026-11-01T12:00:00Z');
     const ago = (d: number) => new Date(now.getTime() - d * 86_400_000);
     const a = computeAging([
