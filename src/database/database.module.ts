@@ -278,6 +278,7 @@ import { DatabaseService } from './databaseservice';
       { name: schema.PosAttendanceEvent.name, schema: schema.PosAttendanceEventSchema },
       { name: schema.PosAttendanceState.name, schema: schema.PosAttendanceStateSchema },
       { name: schema.PosRosterShift.name, schema: schema.PosRosterShiftSchema },
+      { name: schema.PosAuditSeal.name, schema: schema.PosAuditSealSchema },
       { name: schema.PosExpense.name, schema: schema.PosExpenseSchema },
       { name: schema.PosExpenseEvent.name, schema: schema.PosExpenseEventSchema },
       { name: schema.SupplierLedgerEntry.name, schema: schema.SupplierLedgerEntrySchema },

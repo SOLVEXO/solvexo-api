@@ -61,6 +61,7 @@ const T: Record<PosAction, { below: [Exp, Exp, Exp]; above?: [Exp, Exp, Exp] }> 
   'reports.view':                 { below: ['deny', 'allow', 'allow'] },
   'reports.cashier.own':          { below: ['allow', 'allow', 'allow'] },
   'settings.store.edit':          { below: ['deny', 'deny', 'allow'] },
+  'audit.verify':                 { below: ['deny', 'allow', 'allow'] },
   'settings.permissions.view':    { below: ['deny', 'allow', 'allow'] },
   'settings.permissions.edit':    { below: ['deny', 'deny', 'allow'] },
   'settings.approvalLimits.view': { below: ['deny', 'allow', 'allow'] },

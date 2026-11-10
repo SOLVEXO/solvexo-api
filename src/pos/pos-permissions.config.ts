@@ -97,6 +97,7 @@ export const POS_PERMISSIONS = {
   // ── store settings (G4.0)
   'settings.store.edit':       { label: 'Change the store settings (time zone …)', roles: OWN },
   // ── settings
+  'audit.verify':                { label: 'Check that sealed audit records were not changed', roles: MGR },
   'settings.permissions.view':   { label: 'See who may do what (the permission matrix)', roles: MGR },
   'settings.permissions.edit':   { label: 'Change who may do what (owner only, always)', roles: OWN },
   'settings.approvalLimits.view': { label: 'See the approval limits', roles: MGR },
