@@ -119,6 +119,9 @@ describe('the reports (G4.1)', () => {
     expect(d.byDay.map((x: any) => [x.day, x.transactions])).toEqual([['2026-11-02', 2], ['2026-11-03', 2], ['2026-11-04', 0]]);
     expect(d.previous!.period).toEqual({ from: '2026-10-30', to: '2026-11-01' });
     expect(d.previous!.totals.transactions).toBe(0);
+    expect(d.previous!.byDay.map((x: any) => x.day)).toEqual(['2026-10-30', '2026-10-31', '2026-11-01']); // the dashed line needs no second request
+    const day3: any = (await svc.getSales(w.s.sellerId, { storeId: w.s.storeId, date: '2026-11-03' })).data;
+    expect(day3.sales.length).toBe(2); // a day bar drills into the Orders list by store day
   });
 
   it('profit: gross margin over lines WITH a cost (coverage shown), returns at the sale\'s cost, after expenses (rejected excluded) — supplier payments NEVER subtracted', async () => {

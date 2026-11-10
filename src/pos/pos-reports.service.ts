@@ -140,18 +140,19 @@ export class PosReportsService {
       const all = (await this.lineAgg(c, p, null)).get('null') ?? zeroLine();
       return { ...tot, netSalesMinor: all.netMinor - tot.returnsNetMinor, netSalesInclTaxMinor: tot.grossSalesMinor - tot.returnsMinor };
     };
-    const daily: any[] = await this.r.saleModel.aggregate([
-      { $match: this.saleMatch(c, c.period) },
+    return { success: true, data: { ...this.head(c), totals: await block(c.period), previous: c.previous ? { period: { from: c.previous.from, to: c.previous.to }, totals: await block(c.previous), byDay: await this.daily(c, c.previous) } : null, byDay: await this.daily(c, c.period) } };
+  }
+  /** One row per store day of [p] (empty days included up to 120 days). */
+  private async daily(c: Ctx, p: Period) {
+    const rows: any[] = await this.r.saleModel.aggregate([
+      { $match: this.saleMatch(c, p) },
       { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt', timezone: c.tz } }, transactions: { $sum: 1 }, totalMinor: { $sum: { $ifNull: ['$totalMinor', 0] } } } },
       { $sort: { _id: 1 } },
     ]);
-    return { success: true, data: { ...this.head(c), totals: await block(c.period), previous: c.previous ? { period: { from: c.previous.from, to: c.previous.to }, totals: await block(c.previous) } : null, byDay: this.fillDays(c, daily.map((d) => ({ day: d._id, transactions: d.transactions, totalMinor: d.totalMinor }))) } };
-  }
-  private fillDays(c: Ctx, rows: { day: string; [k: string]: any }[]) {
-    if (c.period.days > 120) return rows;
-    const have = new Map(rows.map((r) => [r.day, r]));
+    const have = new Map(rows.map((r) => [r._id, { day: r._id, transactions: r.transactions, totalMinor: r.totalMinor }]));
+    if (p.days > 120) return [...have.values()];
     const out: any[] = [];
-    for (let d = localDay(c.period.from, c.tz); d.start < c.period.end; d = localDay(new Date(d.end.getTime() + 3_600_000), c.tz)) out.push(have.get(d.key) ?? { day: d.key, transactions: 0, totalMinor: 0 });
+    for (let d = localDay(p.from, c.tz); d.start < p.end; d = localDay(new Date(d.end.getTime() + 3_600_000), c.tz)) out.push(have.get(d.key) ?? { day: d.key, transactions: 0, totalMinor: 0 });
     return out;
   }
 

@@ -1495,7 +1495,9 @@ export class PosService {
       const ids = await this.salesMatchingReference(query.storeId, String(query.search));
       filter._id = { $in: ids };
     }
-    if (query.from || query.to) filter.createdAt = localRange(query.from, query.to, await this.storeTz(query.storeId ?? filter.storeId));
+    // G4.1: `date=YYYY-MM-DD` = one STORE day (the reports' day bars drill down here); from / to still work
+    if (query.date) filter.createdAt = localRange(String(query.date), String(query.date), await this.storeTz(query.storeId ?? filter.storeId));
+    else if (query.from || query.to) filter.createdAt = localRange(query.from, query.to, await this.storeTz(query.storeId ?? filter.storeId));
 
     const total = await this.r.saleModel.countDocuments(filter);
     const found = await this.r.saleModel.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean();
