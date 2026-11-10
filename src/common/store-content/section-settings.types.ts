@@ -135,7 +135,7 @@ export interface MetaobjectListSectionSettings extends BaseSectionSettings {
 /** No `collectionId`/`heading` here (unlike `ProductCatalogSectionSettings`) — this section is contextual, always the collection the visitor is currently on. See `SECTION_TYPES`'s comment for why it's excluded from the general "Add Section" picker. */
 export interface CollectionProductGridSectionSettings {
   defaultSort?: 'newest' | 'price_asc' | 'price_desc' | 'best_rated' | 'best_selling';
-  columns?: 2 | 3 | 4;
+  columns?: number;
   showFilters?: boolean;
 }
 
@@ -291,6 +291,7 @@ export type SectionSettingsMap = RequireAllKeys<SectionType, {
   blog_posts: BlogPostsSectionSettings;
   metaobject_list: MetaobjectListSectionSettings;
   collection_product_grid: CollectionProductGridSectionSettings;
+  category_product_grid: CollectionProductGridSectionSettings;
   editorial_lookbook: EditorialLookbookSectionSettings;
   farm_story: FarmStorySectionSettings;
   drop_countdown: DropCountdownSectionSettings;

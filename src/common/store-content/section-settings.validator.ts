@@ -535,7 +535,8 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
       }
       break;
     }
-    case 'collection_product_grid': {
+    case 'collection_product_grid':
+    case 'category_product_grid': {
       const s = settings as CollectionProductGridSectionSettings;
       oneOf(s.defaultSort, ['newest', 'price_asc', 'price_desc', 'best_rated', 'best_selling'] as const, 'settings.defaultSort');
       assertColumns(s.columns);
@@ -1075,6 +1076,7 @@ export const SECTION_ALLOWED_BLOCK_TYPES: AllowedBlockTypesMap = {
   blog_posts: [],
   metaobject_list: [],
   collection_product_grid: [],
+  category_product_grid: [],
   editorial_lookbook: ['lookbook_item'],
   farm_story: ['farm_story_step'],
   drop_countdown: [],

@@ -82,6 +82,7 @@ const PRODUCT_MAIN_BLOCK_LABELS: Record<ProductMainBlockType, string> = {
 export const CORE_SECTION_TYPES: readonly SectionType[] = [
   'product_main',
   'search_results',
+  'category_product_grid',
   'cart_items',
   'cart_summary',
   'blog_post_list',
@@ -109,6 +110,7 @@ export function requiredCoreSectionTypesFor(resourceType: ResourceTemplateType, 
   if (resourceType === 'product') return ['product_main'];
   if (resourceType === 'page') {
     if (templateKey === 'search') return ['search_results'];
+    if (templateKey === 'category') return ['category_product_grid'];
     if (templateKey === 'cart') return ['cart_items', 'cart_summary'];
     if (templateKey === 'blog-index') return ['blog_post_list'];
     if (templateKey === 'blog-article') return ['article_content'];
@@ -133,6 +135,8 @@ function buildCoreSection(type: SectionType) {
       ],
     };
   }
+  // The category page's product grid starts like the page always looked (4 columns, tag filters on).
+  if (type === 'category_product_grid') return { type, settings: { columns: 4, showFilters: true }, blocks: [] as { type: string; settings: Record<string, any> }[] };
   return { type, settings: {}, blocks: [] as { type: string; settings: Record<string, any> }[] };
 }
 

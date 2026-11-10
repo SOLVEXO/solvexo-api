@@ -245,6 +245,12 @@ describe('section-settings.validator', () => {
       expect(() => validateBlockSettings('paragraph', { text: 'Learn javascript: it is fun' })).not.toThrow();
     });
 
+    it('category_product_grid (the Category page grid): same settings as the collection grid, columns 1 to 8', () => {
+      expect(() => validateSectionSettings('category_product_grid', { defaultSort: 'price_asc', columns: 6, showFilters: false })).not.toThrow();
+      expect(() => validateSectionSettings('category_product_grid', { columns: 9 })).toThrow(BadRequestException);
+      expect(() => validateSectionSettings('category_product_grid', { defaultSort: 'random' })).toThrow(BadRequestException);
+    });
+
     it('video: accepts any https:// link, rejects non-https schemes', () => {
       expect(() => validateSectionSettings('video', { videoUrl: 'https://example.com/clip.mp4' })).not.toThrow();
       expect(() => validateSectionSettings('video', { videoUrl: 'http://example.com/clip.mp4' })).toThrow(BadRequestException);
