@@ -32,6 +32,11 @@ import { PosPermissionsStoreController } from './pos-permissions-store.controlle
 import { PosAuditSealService } from './pos-audit-seal.service';
 import { PosAuditController } from './pos-audit.controller';
 import { PosStoreSettingsService } from './pos-store-settings.service';
+import { PosCatalogAdminService } from './pos-catalog-admin.service';
+import { PosCatalogAdminController } from './pos-catalog-admin.controller';
+import { ProductsModule } from '@/products/product.module';
+import { ProductVariantsModule } from '@/product-variants/product-variants.module';
+import { categoryModule as CategoriesModule } from '@/categories/categories.module';
 import { PosReportsController, PosStoreController } from './pos-reports.controller';
 import { PosCashController } from './pos-cash.controller';
 import { UploadModule } from '@/upload/upload.module';
@@ -39,9 +44,9 @@ import { PosSupplyController } from './pos-supply.controller';
 import { PurchaseOrdersModule } from '@/purchase-orders/purchase-orders.module';
 
 @Module({
-  imports: [AuthModule, RedisModule, AdminConfigModule, FinanceModule, InventoryModule, PurchaseOrdersModule, UploadModule, StockCountsModule, PosPlansModule, KybModule, forwardRef(() => PaymentsCoreModule)],
-  controllers: [PosController, PublicReceiptController, PosInventoryController, PosCustomersController, PosSupplyController, PosCashController, PosTeamController, PosReportsController, PosStoreController, PosPermissionsStoreController, PosAuditController],
-  providers: [PosService, StoreLocationService, PosDeviceService, PosTokenRevocationService, PosReceiptService, PosCatalogService, PosAuthorizer, PosInventoryService, PosCustomerCore, PosCustomersService, PosSupplyService, PosCashService, PosTeamService, PosReportsService, PosPermissionsStoreService, PosAuditSealService, PosStoreSettingsService],
+  imports: [AuthModule, RedisModule, AdminConfigModule, FinanceModule, InventoryModule, PurchaseOrdersModule, UploadModule, ProductsModule, ProductVariantsModule, CategoriesModule, StockCountsModule, PosPlansModule, KybModule, forwardRef(() => PaymentsCoreModule)],
+  controllers: [PosController, PublicReceiptController, PosInventoryController, PosCustomersController, PosSupplyController, PosCashController, PosTeamController, PosReportsController, PosStoreController, PosPermissionsStoreController, PosAuditController, PosCatalogAdminController],
+  providers: [PosService, StoreLocationService, PosDeviceService, PosTokenRevocationService, PosReceiptService, PosCatalogService, PosAuthorizer, PosInventoryService, PosCustomerCore, PosCustomersService, PosSupplyService, PosCashService, PosTeamService, PosReportsService, PosPermissionsStoreService, PosAuditSealService, PosStoreSettingsService, PosCatalogAdminService],
   exports: [PosService, PosAuthorizer],
 })
 export class PosModule {}

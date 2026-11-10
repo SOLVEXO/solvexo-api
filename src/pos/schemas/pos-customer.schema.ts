@@ -28,6 +28,8 @@ export class PosCustomer {
   @Prop({ type: String, default: null }) userId: string | null;
   @Prop({ type: String, default: null }) createdBy: string | null;
   @Prop({ type: String, default: 'pos' }) source: string;
+  /** G4.5: the price book this customer buys at (applied automatically when they are on the sale) */
+  @Prop({ type: String, default: null }) priceBookId: string | null;
   @Prop({ type: Boolean, default: false }) isDelete: boolean;
   createdAt?: Date;
   updatedAt?: Date;

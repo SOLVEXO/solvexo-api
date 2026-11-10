@@ -30,6 +30,11 @@ const T: Record<PosAction, { below: [Exp, Exp, Exp]; above?: [Exp, Exp, Exp] }> 
   'inventory.transfer.create':    { below: ['deny', 'allow', 'allow'] },
   'inventory.transfer.receive':   { below: ['deny', 'allow', 'allow'] },
   'inventory.lot.sellExpired':    { below: ['manager', 'allow', 'allow'] }, // every use needs a manager: a cashier asks for the PIN, a manager is their own approver (audited)
+  'catalog.create':               { below: ['deny', 'allow', 'allow'] },
+  'catalog.categories.edit':      { below: ['deny', 'allow', 'allow'] },
+  'catalog.import':               { below: ['deny', 'allow', 'allow'] },
+  'catalog.modifiers.edit':       { below: ['deny', 'allow', 'allow'] },
+  'catalog.pricebooks.edit':      { below: ['deny', 'allow', 'allow'] },
   'catalog.edit':                 { below: ['deny', 'allow', 'allow'] },
   'customers.view':               { below: ['allow', 'allow', 'allow'] },
   'customers.create':             { below: ['allow', 'allow', 'allow'] },

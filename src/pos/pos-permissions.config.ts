@@ -59,6 +59,11 @@ export const POS_PERMISSIONS = {
   'inventory.transfer.create': { label: 'Create / ship a stock transfer', roles: MGR },
   'inventory.transfer.receive':{ label: 'Receive a stock transfer', roles: MGR },
   'inventory.lot.sellExpired': { label: 'Sell stock from an expired lot (override)', roles: ALL, approval: [{ always: true, approver: 'manager' }] },
+  'catalog.create':            { label: 'Create products and variants from the till', roles: MGR },
+  'catalog.categories.edit':   { label: 'Create / rename / delete categories', roles: MGR },
+  'catalog.import':            { label: 'Import products or categories from a CSV file', roles: MGR },
+  'catalog.modifiers.edit':    { label: 'Edit modifier groups (sizes, extras …)', roles: MGR },
+  'catalog.pricebooks.edit':   { label: 'Edit price books and assign them to customers', roles: MGR },
   'catalog.edit':              { label: 'Edit price, barcode, category, HS code', roles: MGR },
   // ── customers / credit / loyalty (G3.3)
   'customers.view':            { label: 'Find customers and see their balance', roles: ALL },

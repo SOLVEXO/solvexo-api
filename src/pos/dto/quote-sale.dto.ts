@@ -12,6 +12,14 @@ export class QuoteSaleDto {
 
   @ApiProperty() @IsString() @IsNotEmpty() storeId: string;
 
+  @ApiProperty({ required: false, description: 'G4.5: price with this price book' })
+  @IsOptional() @IsString() @MaxLength(40)
+  priceBookId?: string;
+
+  @ApiProperty({ required: false, description: 'G4.5: the customer (their price book applies)' })
+  @IsOptional() @IsString() @MaxLength(40)
+  customerId?: string;
+
   @ApiProperty({ type: [SaleItemDto] })
   @IsArray() @ValidateNested({ each: true }) @Type(() => SaleItemDto)
   items: SaleItemDto[];

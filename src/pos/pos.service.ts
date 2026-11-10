@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { localDay, localHour, localKey, localRange } from './pos-day.util';
+import { bookActive, ModifierGroup, modifierSuffix, priceLine } from './pos-pricing.util';
 import { resolveStoreTimeZone } from '../common/store-timezone.util';
 import {
   forwardRef,
@@ -855,6 +856,35 @@ export class PosService {
 
   // ── SALES ─────────────────────────────────────────────────────────────────
 
+  // ── G4.5: price books + modifiers ─────────────────────────────────────────────────────────────────────────
+  /** Which price book prices this sale (an explicit one must exist and be in force; else the customer's, if in force) and the modifier groups of the cart's products. */
+  private async pricingContext(storeId: string, dto: { priceBookId?: string | null; customerId?: string | null; items: any[] }, at: Date, strict: boolean) {
+    const books: any = (this.r as any).posPriceBookModel; const groupsModel: any = (this.r as any).posModifierGroupModel;
+    let book: any = null;
+    if (dto.priceBookId) {
+      book = books && Types.ObjectId.isValid(dto.priceBookId) ? await books.findOne({ _id: dto.priceBookId, storeId }).lean() : null;
+      if (!bookActive(book, at)) { if (strict) throw moneyError('PRICE_BOOK_NOT_ACTIVE', 'That price book is not available now'); book = null; }
+    } else if (dto.customerId && books && Types.ObjectId.isValid(dto.customerId)) {
+      const c: any = await (this.r as any).posCustomerModel?.findOne({ _id: dto.customerId, storeId }).select('priceBookId').lean();
+      if (c?.priceBookId && Types.ObjectId.isValid(c.priceBookId)) { const b = await books.findOne({ _id: c.priceBookId, storeId }).lean(); if (bookActive(b, at)) book = b; }
+    }
+    const productIds = [...new Set(dto.items.filter((i: any) => !i.isCustom && i.productId).map((i: any) => String(i.productId)))];
+    const groups: any[] = groupsModel && productIds.length ? await groupsModel.find({ storeId, active: true, productIds: { $in: productIds } }).sort({ sortOrder: 1, _id: 1 }).lean() : [];
+    const groupsOf = (productId: string): ModifierGroup[] => groups.filter((g) => (g.productIds ?? []).includes(productId)).map((g) => ({ id: String(g._id), name: g.name, minSelect: g.minSelect ?? 0, maxSelect: g.maxSelect ?? 1, active: g.active !== false, options: (g.options ?? []).map((o: any) => ({ id: String(o._id), name: o.name, priceDeltaMinor: Number(o.priceDeltaMinor ?? 0), active: o.active !== false })) }));
+    const bookPrice = new Map<string, number>((book?.entries ?? []).map((e: any) => [String(e.variantId), Number(e.priceMinor)]));
+    return { book, groupsOf, bookPrice };
+  }
+  /** The server's unit price of one line (book + modifiers), or a 400 with the modifier rule that was broken. */
+  private priceOneLine(ctx: Awaited<ReturnType<PosService['pricingContext']>>, item: any, variant: any, exp: number, strict: boolean) {
+    const res = priceLine({ listPriceMinor: toMinor(variant.price, exp), bookPriceMinor: ctx.bookPrice.get(String(item.variantId)) ?? null, groups: ctx.groupsOf(String(item.productId)), choices: item.modifiers ?? null });
+    if (!res.ok) { if (strict) throw moneyError(res.error.code, res.error.message); return null; }
+    return res;
+  }
+  private async storeExponent(storeId: string): Promise<number> {
+    const st: any = await this.r.storeModel.findById(storeId).select('baseCurrency').lean();
+    return isoExponent(st?.baseCurrency);
+  }
+
   /** Was `charged` a genuine price of the variant while an offline sale made at `at` was being rung up? */
   private async isGenuineOfflinePrice(variantId: string, current: number, charged: number, at: Date): Promise<boolean> {
     const same = (a: number, b: number) => Math.abs(a - b) < 1e-9;
@@ -918,6 +948,9 @@ export class PosService {
     // resolve items — fetch variant snapshots + check stock
     const saleItems: any[] = [];
     const isHeld = dto.status === 'held';
+    // G4.5: price book + modifiers (an offline replay is never refused for them: the till's price is recorded and judged below)
+    const pexp = await this.storeExponent(dto.storeId);
+    const pctx = await this.pricingContext(dto.storeId, dto as any, off.isOffline ? off.at : new Date(), !off.isOffline);
 
     for (const item of dto.items) {
       if (item.isCustom) { saleItems.push(this.customLine(item, await this.defaultTaxCategory(dto.storeId))); continue; }
@@ -939,22 +972,26 @@ export class PosService {
 
       // Offline replay: the till collected `unitPrice`. Record THAT (money in the drawer must equal the sale) and judge it:
       // genuine = the variant's current price, or one it had since the sale was made (variant price history).
-      let charged = variant.price;
+      const priced = this.priceOneLine(pctx, item, variant, pexp, !off.isOffline);
+      let charged = priced ? fromMinor(priced.unitPriceMinor, pexp) : variant.price;
       let listPrice: number | null = null;
       let priceVerified = true;
       if (off.isOffline && item.unitPrice !== undefined && item.unitPrice !== null) {
+        const expected = charged;
         charged = item.unitPrice;
-        listPrice = variant.price;
-        priceVerified = await this.isGenuineOfflinePrice(item.variantId, variant.price, item.unitPrice, off.at);
+        listPrice = expected;
+        const deltas = priced ? priced.modifiers.reduce((n, m) => n + m.priceDeltaMinor, 0) : 0;
+        priceVerified = toMinor(item.unitPrice, pexp) === toMinor(expected, pexp) || await this.isGenuineOfflinePrice(item.variantId, variant.price, fromMinor(toMinor(item.unitPrice, pexp) - deltas, pexp), off.at);
       }
 
       saleItems.push({
         productId: item.productId,
         variantId: item.variantId,
-        name: `${product.name}${formatOptionsSuffix(variant.options)}`,
+        name: `${product.name}${formatOptionsSuffix(variant.options)}${modifierSuffix(priced?.modifiers ?? [])}`,
         sku: variant.sku,
         image: (product as any).gallery?.[0] ?? (product as any).coverImages?.[0] ?? null,
         price: charged,
+        ...(priced && (priced.modifiers.length || priced.fromBook) ? { modifiers: priced.modifiers.length ? priced.modifiers : undefined, basePriceMinor: priced.baseMinor } : {}),
         listPrice,
         priceVerified,
         qty: item.qty,
@@ -1108,6 +1145,7 @@ export class PosService {
           const invoice = isHeld ? null : await this.issueInvoice(dto.storeId, off.isOffline ? off.at : new Date(), provisional, tx);
           const [created] = await this.r.saleModel.create([{
             saleNumber,
+            priceBookId: pctx.book ? String(pctx.book._id) : null, priceBookName: pctx.book?.name ?? null,
             ...(invoice ? { invoice } : {}),
             ...(provisional ? { provisionalNumber: provisional } : {}),
             ...(heldCouponCode ? { heldCouponCode } : {}),
@@ -1782,13 +1820,16 @@ export class PosService {
     if (!dto.items?.length) throw new BadRequestException('Add at least one item to price');
 
     const lines: any[] = [];
+    const qexp = await this.storeExponent(dto.storeId);
+    const qctx = await this.pricingContext(dto.storeId, dto as any, new Date(), true);
     for (const item of dto.items) {
       if (item.isCustom) { lines.push(this.customLine(item, await this.defaultTaxCategory(dto.storeId))); continue; }
       const variant: any = await this.r.productVariantModel.findOne({ _id: item.variantId, productId: item.productId, isDelete: false }).lean();
       if (!variant) throw new BadRequestException(`Variant not found: ${item.variantId}`);
       const product: any = await this.r.productModel.findOne({ _id: item.productId, isDelete: false }).select('name').lean();
       if (!product) throw new BadRequestException(`Product not found: ${item.productId}`);
-      lines.push({ productId: item.productId, variantId: item.variantId, name: `${product.name}${formatOptionsSuffix(variant.options)}`, sku: variant.sku, price: variant.price, qty: item.qty });
+      const qp = this.priceOneLine(qctx, item, variant, qexp, true)!;
+      lines.push({ productId: item.productId, variantId: item.variantId, name: `${product.name}${formatOptionsSuffix(variant.options)}${modifierSuffix(qp.modifiers)}`, sku: variant.sku, price: fromMinor(qp.unitPriceMinor, qexp), qty: item.qty, ...(qp.modifiers.length ? { modifiers: qp.modifiers } : {}), ...(qp.fromBook ? { basePriceMinor: qp.baseMinor } : {}) });
     }
     let discountReq = this.discountSpec(dto);
     const money = await this.moneyContext(dto.storeId, { version: dto.settingsVersion });

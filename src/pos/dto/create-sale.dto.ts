@@ -8,7 +8,16 @@ import {
 import { Type } from 'class-transformer';
 import { PaymentLineDto } from './payment.dto';
 
+export class ModifierChoiceDto {
+  @ApiProperty({ example: '665group1' }) @IsString() @IsNotEmpty() @MaxLength(40) groupId: string;
+  @ApiProperty({ type: [String] }) @IsArray() @IsString({ each: true }) @MaxLength(40, { each: true }) optionIds: string[];
+}
+
 export class SaleItemDto {
+  @ApiProperty({ required: false, type: [ModifierChoiceDto], description: 'G4.5: the modifier options chosen for this line (ids only — the SERVER prices them)' })
+  @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => ModifierChoiceDto)
+  modifiers?: ModifierChoiceDto[];
+
   @ApiProperty({ example: '664product1', required: false, description: 'Required unless isCustom' })
   @ValidateIf((o) => !o.isCustom)
   @IsString()
@@ -195,6 +204,10 @@ export class CreateSaleDto {
   @IsInt()
   @Min(1)
   settingsVersion?: number;
+
+  @ApiProperty({ required: false, description: 'G4.5: price the sale with this price book (else the customer\'s book, else list prices)' })
+  @IsOptional() @IsString() @MaxLength(40)
+  priceBookId?: string;
 
   @ApiProperty({ required: false, description: 'G3.3 (D2): redeem this many loyalty points as a discount (whole points, online only, needs customerId; cannot be combined with a coupon or manual discount). The server prices it.' })
   @IsOptional()

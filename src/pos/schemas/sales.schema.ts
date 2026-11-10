@@ -85,6 +85,9 @@ export class SaleItem {
   @Prop({ type: 'MinorMoney' }) netMinor?: number;
   @Prop({ type: 'MinorMoney' }) taxMinor?: number;
   @Prop({ type: String, default: null }) hsCode?: string | null;
+  // ── G4.5: the modifiers chosen on this line (their deltas are already in `price`) and the line's list/base price before them ──
+  @Prop({ type: [{ _id: false, groupId: String, groupName: String, optionId: String, name: String, priceDeltaMinor: { type: 'MinorMoney' } }], default: undefined }) modifiers?: Array<{ groupId: string; groupName: string; optionId: string; name: string; priceDeltaMinor: number }>;
+  @Prop({ type: 'MinorMoney' }) basePriceMinor?: number;
 }
 export const SaleItemSchema = SchemaFactory.createForClass(SaleItem);
 
@@ -349,6 +352,10 @@ export class Sale {
 
   @Prop({ type: String, default: null })
   customerId: string | null;
+
+  /** G4.5: the price book the sale was priced with (picked at checkout, or the customer's) and its name at the time */
+  @Prop({ type: String, default: null }) priceBookId?: string | null;
+  @Prop({ type: String, default: null }) priceBookName?: string | null;
 
   @Prop({ default: 'Walk-in' })
   customerName: string;
