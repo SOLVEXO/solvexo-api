@@ -582,6 +582,10 @@ export class Store {
   @Prop({ type: String, default: null })
   faviconUrl: string | null;
 
+  // Checkout branding shown on every theme's checkout pages (validated by store/checkout-branding.util.ts).
+  @Prop({ type: { _id: false, logoUrl: { type: String, default: null }, accentColor: { type: String, default: null }, footerLinks: { type: [{ _id: false, label: String, url: String }], default: [] } }, default: null })
+  checkoutBranding: { logoUrl: string | null; accentColor: string | null; footerLinks: { label: string; url: string }[] } | null;
+
   // Store-level Brand Kit — the seller's own brand colors, deliberately NOT
   // inside any one `StoreTheme` instance so they survive installing /
   // activating / applying a different theme. When `locked`, every theme

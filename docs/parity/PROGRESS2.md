@@ -9,7 +9,7 @@ Read MASTER2.md first. Update after every phase. Docs live in the API repo; web 
 | Q2 Shopify small gaps | done (local-delivery order tag + filter; rest verified) | next commit | browser, wallets on real Stripe |
 | Q3 3PL / fulfillment services | done (registry, queue, signed callbacks, stock sync, UI) | next commit | real 3PL, Redis worker, browser |
 | Q4 Product subscriptions | done (manual-pay renewals only; plans, contracts, engine, dunning, UI) | next commit | card-on-file recurring (not built), browser, real cron |
-| Q5 Checkout rules | not started | - | - |
+| Q5 Checkout rules | done (4 rule types, enforcement, test tool, branding in 3 themes) | next commit | real checkout run, browser, cart preview UI |
 | Q6 A/B experiments | not started | - | - |
 | Q7 App platform | not started | - | - |
 | Q8 Social creatives | not started | - | - |

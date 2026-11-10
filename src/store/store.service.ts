@@ -8,6 +8,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { SearchDiscoveryService } from '../search-discovery/search-discovery.service';
+import { cleanCheckoutBranding } from './checkout-branding.util';
 import { availableStock, AVAILABLE_STOCK_EXPR } from '@/common/stock-availability.util';
 import { importCustomersCsv } from './customer-bulk-import';
 import { isSupportedLanguage } from '@/common/supported-languages.const';
@@ -1149,6 +1150,10 @@ export class StoreService {
 
     if (logo !== undefined) updateData.logo = logo;
     if (faviconUrl !== undefined) updateData.faviconUrl = faviconUrl;
+    if (body.checkoutBranding !== undefined) {
+      try { updateData.checkoutBranding = cleanCheckoutBranding(body.checkoutBranding); }
+      catch (e: any) { throw new BadRequestException(e?.message ?? 'Invalid checkout branding'); }
+    }
     if (description !== undefined) updateData.description = description;
     if (tagline !== undefined) updateData.tagline = tagline;
     if (contactEmail !== undefined) updateData.contactEmail = contactEmail;
@@ -1469,6 +1474,7 @@ export class StoreService {
         slug: store.slug,
         logo: store.logo,
         faviconUrl: store.faviconUrl ?? null,
+        checkoutBranding: store.checkoutBranding ?? null,
         description: store.description,
         tagline: store.tagline ?? null,
         contactEmail: store.contactEmail ?? null,
