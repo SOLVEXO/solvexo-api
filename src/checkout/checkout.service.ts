@@ -1427,6 +1427,8 @@ export class CheckoutService {
       // legacy readers; `shippingSelections` carries one pick per delivery group.
       shippingZoneId: legacyZoneId,
       shippingSelections: savedSelections,
+      localDelivery: !isPickup && !liveRate && selectedZones.some((s) => s.zone.zoneType === 'local_delivery'),
+      localDeliveryEta: (() => { const z = selectedZones.find((s) => s.zone.zoneType === 'local_delivery'); const e = z && typeof z.zone.estimatedDeliveryTime === 'string' ? z.zone.estimatedDeliveryTime.trim().slice(0, 120) : ''; return !isPickup && !liveRate && e ? e : null; })(),
       liveShippingRateId: liveRate ? liveRateId : null,
       liveShippingCarrier: liveRate ? liveRate.carrier : null,
       liveShippingService: liveRate ? liveRate.service : null,

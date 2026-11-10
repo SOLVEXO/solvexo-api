@@ -2855,6 +2855,8 @@ export class PaymentService {
         shippingAddress,
         fulfillmentMethod: checkout.fulfillmentMethod === 'pickup' ? 'pickup' : 'ship',
         pickupLocation: checkout.fulfillmentMethod === 'pickup' ? (checkout.pickupLocation ?? null) : null,
+        localDelivery: checkout.fulfillmentMethod !== 'pickup' && checkout.localDelivery === true,
+        localDeliveryEta: checkout.fulfillmentMethod !== 'pickup' && checkout.localDelivery === true ? (checkout.localDeliveryEta ?? null) : null,
         customerNote: typeof checkout.customerNote === 'string' ? checkout.customerNote.slice(0, 500) : '',
         subtotal,
         shippingFee,

@@ -6,7 +6,7 @@ Read MASTER2.md first. Update after every phase. Docs live in the API repo; web 
 |---|---|---|---|
 | Q0 Housekeeping | done (a-d; scheduler-job tests open) | web 41c63698, api 94c87b7 + next | browser, Redis pub/sub, scheduler locks |
 | Q1 B2B completion | done (gaps: decision notice, strings; rest already built) | next commit | browser, real SMTP |
-| Q2 Shopify small gaps | not started | - | - |
+| Q2 Shopify small gaps | done (local-delivery order tag + filter; rest verified) | next commit | browser, wallets on real Stripe |
 | Q3 3PL / fulfillment services | not started | - | - |
 | Q4 Product subscriptions | not started | - | - |
 | Q5 Checkout rules | not started | - | - |

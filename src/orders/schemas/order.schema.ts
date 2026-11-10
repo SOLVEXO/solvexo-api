@@ -538,6 +538,13 @@ export class Order {
   @Prop({ type: String, enum: ['ship', 'pickup'], default: 'ship' })
   fulfillmentMethod: 'ship' | 'pickup';
 
+  // Local delivery by the store itself (Shopify "Local delivery" order tag) + the promised window.
+  @Prop({ type: Boolean, default: false })
+  localDelivery: boolean;
+
+  @Prop({ type: String, default: null, maxlength: 120 })
+  localDeliveryEta: string | null;
+
   @Prop({ type: { _id: false, name: { type: String, default: null }, address: { type: String, default: null }, instructions: { type: String, default: null } }, default: null })
   pickupLocation: { name: string | null; address: string | null; instructions: string | null } | null;
 

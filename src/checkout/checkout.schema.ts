@@ -248,6 +248,14 @@ export class Checkout {
   @Prop({ type: String, default: null })
   shippingZoneId: string | null;
 
+  // Set when the chosen delivery is a store's own local delivery (not a carrier). Copied onto the order.
+  @Prop({ type: Boolean, default: false })
+  localDelivery: boolean;
+
+  // Delivery window text of the chosen local-delivery zone (e.g. "Same day, 2-4 pm"), snapshotted.
+  @Prop({ type: String, default: null, maxlength: 120 })
+  localDeliveryEta: string | null;
+
   // One selected rate per shipping-profile group (Shopify). `shippingZoneId` above mirrors the first entry for
   // legacy readers. Empty on checkouts that never picked a flat zone.
   @Prop({

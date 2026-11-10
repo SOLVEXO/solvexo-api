@@ -205,6 +205,8 @@ export class OrdersService {
       currency: order.currency,
       shippingAddress: order.shippingAddress,
       fulfillmentMethod: order.fulfillmentMethod ?? 'ship',
+      localDelivery: order.localDelivery === true,
+      localDeliveryEta: order.localDeliveryEta ?? null,
       pickupLocation: order.pickupLocation ?? null,
       exchangeOf: order.exchangeOf ?? null,
       stores: (order.sellerOrders ?? [])
@@ -399,6 +401,8 @@ export class OrdersService {
     if (query.status && query.status !== 'all') subFilter.status = String(query.status);
     // "Pre-orders" view: sub-orders that contain at least one pre-order line.
     if (query.preorder === 'true' || query.preorder === true) subFilter.items = { $elemMatch: { isPreorder: true } };
+    // "Local delivery" view: orders the store delivers itself.
+    if (query.localDelivery === 'true' || query.localDelivery === true) matchFilter.localDelivery = true;
     if (Object.keys(subFilter).length > 1) matchFilter.sellerOrders = { $elemMatch: subFilter };
 
     if (query.time && query.time !== 'all') {
@@ -604,6 +608,8 @@ export class OrdersService {
         paidAt: order.paidAt,
         shippingAddress: order.shippingAddress ?? null,
         fulfillmentMethod: (order as any).fulfillmentMethod ?? 'ship',
+        localDelivery: (order as any).localDelivery === true,
+        localDeliveryEta: (order as any).localDeliveryEta ?? null,
         pickupLocation: (order as any).pickupLocation ?? null,
         // Set when this order is the replacement order of an exchange (link back to the original).
         exchangeOf: (order as any).exchangeOf ?? null,
