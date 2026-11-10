@@ -2,7 +2,7 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { DatabaseService } from '@/database/databaseservice';
 import {
-  CATALOG_VERSION, PLAN_CATALOG, YEARLY_ALIGN_FROM_VERSION, assertCatalogValid, buildFeatureBullets, validatePlanPricing,
+  CATALOG_VERSION, PLAN_CATALOG, YEARLY_ALIGN_FROM_VERSION, launchPriceFor, assertCatalogValid, buildFeatureBullets, validatePlanPricing,
   type CatalogPlan,
 } from './platform-plan.catalog';
 
@@ -45,7 +45,41 @@ export class PlatformPlanCatalogService implements OnModuleInit {
   async syncCatalog(): Promise<void> {
     const sorted = [...PLAN_CATALOG].sort((a, b) => a.sortOrder - b.sortOrder);
     for (const plan of sorted) await this.syncOne(plan);
+    await this.applyLaunchDiscount();
     await this.refreshBullets();
+  }
+
+  /**
+   * One-time launch offer (LAUNCH_DISCOUNT): each self-serve core plan's current price becomes its
+   * crossed-out "was" price and the real price drops to launchPriceFor(...). Runs once per plan
+   * (`launchDiscountApplied`), so an admin's later price edits are never overwritten. Existing
+   * subscribers keep the price their subscription already has; new subscriptions get the new one.
+   */
+  async applyLaunchDiscount(): Promise<void> {
+    const docs: any[] = await this.planModel.find({ key: { $type: 'string' }, isDelete: false, launchDiscountApplied: { $ne: true } });
+    for (const doc of docs) {
+      if (!doc.isFree && !doc.isCustomPricing && typeof doc.monthlyPriceUSD === 'number' && doc.monthlyPriceUSD > 0) {
+        const monthly = launchPriceFor(doc.monthlyPriceUSD);
+        const yearly = typeof doc.yearlyPriceUSD === 'number' && doc.yearlyPriceUSD > 0 ? launchPriceFor(doc.yearlyPriceUSD) : null;
+        const next = {
+          monthlyPriceUSD: monthly, yearlyPriceUSD: yearly ?? doc.yearlyPriceUSD ?? null,
+          compareAtMonthlyPriceUSD: doc.monthlyPriceUSD, compareAtYearlyPriceUSD: yearly != null ? doc.yearlyPriceUSD : null,
+        };
+        const problems = validatePlanPricing({
+          ...next, introOfferEnabled: !!doc.introOfferEnabled, introPriceUSD: doc.introPriceUSD ?? null, introDurationCycles: doc.introDurationCycles ?? null,
+        });
+        if (problems.length) {
+          this.logger.warn(`Launch discount skipped for "${doc.name}": ${problems.join(' ')}`);
+          continue; // flag stays unset, so a corrected price can still get it on a later boot
+        }
+        Object.assign(doc, next);
+        // Stripe Prices/Coupons are immutable and mirror the old amounts — the next subscribe creates fresh ones.
+        doc.stripeMonthlyPriceId = null; doc.stripeYearlyPriceId = null; doc.stripeIntroCouponId = null;
+        this.logger.log(`Launch discount applied to "${doc.name}": $${next.compareAtMonthlyPriceUSD} → $${monthly}/month`);
+      }
+      doc.launchDiscountApplied = true;
+      await doc.save();
+    }
   }
 
   private async syncOne(plan: CatalogPlan): Promise<void> {
