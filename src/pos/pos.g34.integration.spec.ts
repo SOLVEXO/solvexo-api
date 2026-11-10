@@ -195,6 +195,7 @@ describe('receiving: partial receipts, caps, lots, bills', () => {
     const w = await world({ trackLots: true });
     const po = await w.approved(20, 400);
     expect(await code(sup.receive(device(w.s), w.s.storeId, { purchaseOrderId: po.id, lines: [{ poItemId: po.items[0].id, qtyGood: 5 }] }, w.M))).toBe('LOT_REQUIRED');
+    expect((await sup.order(device(w.s), w.s.storeId, po.id, w.C)).data.order.items[0].trackLots).toBe(true); // the till can ask for the lot up front
     await w.recv(po, 8, {}, w.M, { lotNumber: 'L-LATE', expiryDate: day(90).toISOString() });
     await w.recv(po, 6, {}, w.M, { lotNumber: 'L-SOON', expiryDate: day(20).toISOString() });
     const lots: any[] = await r.stockLotModel.find({ storeId: w.s.storeId }).sort({ expiryDate: 1 }).lean();

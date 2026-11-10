@@ -73,12 +73,13 @@ export class PosSupplyService {
   private supplierView(s: any, extra: object = {}) {
     return { id: String(s._id), name: s.name, contactName: s.contactName ?? null, phone: s.phone ?? null, email: s.email ?? null, address: s.address ?? null, ntn: s.ntn ?? null, strn: s.strn ?? null, paymentTerms: s.paymentTerms ?? null, leadTimeDays: s.leadTimeDays ?? null, notes: s.notes ?? null, status: s.status, ...extra };
   }
-  private poView(po: any, exp: number, costs: boolean, receivedByLine?: Map<string, number>) {
+  private poView(po: any, exp: number, costs: boolean, lotVariants?: Set<string>) {
     const items = (po.items ?? []).map((i: any) => {
       const unitCostMinor = i.unitCostMinor ?? toMinor(i.unitCost ?? 0, exp);
       const done = (i.quantityReceived ?? 0) + (i.quantityDamaged ?? 0);
       return {
         id: String(i._id), productId: i.productId, variantId: i.variantId, name: i.name, sku: i.sku ?? null, image: i.image ?? null, options: i.options ?? [],
+        trackLots: lotVariants?.has(String(i.variantId)) ?? false,
         quantityOrdered: i.quantityOrdered, quantityReceived: i.quantityReceived ?? 0, quantityDamaged: i.quantityDamaged ?? 0, quantityReturned: i.quantityReturned ?? 0, quantityRemaining: Math.max(0, i.quantityOrdered - done),
         ...(costs ? { unitCostMinor, lineTotalMinor: unitCostMinor * i.quantityOrdered } : {}),
       };
@@ -187,7 +188,9 @@ export class PosSupplyService {
     if (!costs && !RECEIVABLE.includes(po.status)) throw err(404, 'PO_NOT_FOUND', 'Purchase order not found');
     const c = await this.cur(storeId);
     const receipts: any[] = await this.r.purchaseReceiptModel.find({ storeId, purchaseOrderId: id }).sort({ createdAt: 1 }).lean();
-    return { success: true, data: { ...c, order: this.poView(po.toObject ? po.toObject() : po, c.currencyExponent, costs), receipts: receipts.map((x) => this.receiptView(x, costs)) } };
+    const lotRows: any[] = await this.r.productVariantModel.find({ _id: { $in: po.items.map((i: any) => i.variantId) }, trackLots: true }).select('_id').lean();
+    const lots = new Set(lotRows.map((v) => String(v._id)));
+    return { success: true, data: { ...c, order: this.poView(po.toObject ? po.toObject() : po, c.currencyExponent, costs, lots), receipts: receipts.map((x) => this.receiptView(x, costs)) } };
   }
   private async resolveLines(storeId: string, items: any, exp: number) {
     if (!Array.isArray(items) || items.length === 0) throw err(400, 'ITEMS_REQUIRED', 'A purchase order needs at least one line');
