@@ -10,6 +10,7 @@ export const QUEUE_NAMES = {
   THEME_IMPORT: 'theme-import',
   MEMBERSHIP_BILLING: 'membership-billing',
   MESSAGING_SEND: 'messaging-send',
+  FULFILLMENT_SEND: 'fulfillment-send',
 } as const;
 
 export const STRIPE_WEBHOOK_JOB = 'process-stripe-event';

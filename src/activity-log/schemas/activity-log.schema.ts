@@ -27,6 +27,7 @@ export const ACTIVITY_LOG_CATEGORIES = [
   // Written by newer modules whose entries were silently dropped before these were listed (the enum rejected them).
   'b2b',
   'khata',
+  'fulfillment',
   'webhooks',
   'api_tokens',
   'api_token',

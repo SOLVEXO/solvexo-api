@@ -98,6 +98,7 @@ import { DigitalAccessModule } from './digital-access/digital-access.module';
 import { MembershipsModule } from './memberships/memberships.module';
 import { LicensesModule } from './licenses/licenses.module';
 import { B2BModule } from './b2b/b2b.module';
+import { FulfillmentServicesModule } from './fulfillment-services/fulfillment.module';
 import { KhataModule } from './khata/khata.module';
 import { ProductFeedsModule } from './product-feeds/product-feeds.module';
 import { MerchantApiModule } from './merchant-api/merchant-api.module';
@@ -239,6 +240,7 @@ import { AppI18nModule } from './i18n/i18n.module';
     MembershipsModule,
     LicensesModule,
     B2BModule,
+    FulfillmentServicesModule,
     KhataModule,
     ProductFeedsModule,
     MerchantApiModule,

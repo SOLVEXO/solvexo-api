@@ -89,6 +89,8 @@ export const STAFF_PERMISSIONS = [
   'b2b.view', 'b2b.manage',
   // Khata (customer ledger)
   'khata.view', 'khata.manage',
+  // 3PL / fulfilment services
+  'fulfillment.view', 'fulfillment.manage',
   // Finance
   'finance.payouts.view', 'finance.payments.manage', 'finance.tax_documents.manage',
   // Messaging — no dedicated `:storeId` route param on this controller

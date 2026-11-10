@@ -39,6 +39,8 @@ export class StoreLocation {
   // 'geocoded' (looked up from the address, re-done when the address changes). null = no coordinates.
   @Prop({ type: String, enum: ['manual', 'geocoded', null], default: null }) coordsSource: 'manual' | 'geocoded' | null;
   @Prop({ type: String, default: null }) phone: string | null;
+  // Set when this location is owned by a fulfilment service (3PL): it is not a POS branch and the service reports its stock.
+  @Prop({ type: String, default: null }) fulfillmentServiceId: string | null;
 
   // 'store' (retail floor / POS-facing) vs 'warehouse' (fulfillment-only,
   // never a POS register). Default 'store' reproduces every pre-existing
