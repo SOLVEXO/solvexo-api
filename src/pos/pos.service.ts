@@ -618,9 +618,11 @@ export class PosService {
     // The check above gives a friendly message; the unique partial index on (registerId, status:'open')
     // is what actually guarantees one open session per register when two terminals open at once.
     const sessionMoney = await this.moneyContext(dto.storeId);
+    const openingDenoms = this.denominationsOf(dto.denominations, toMinor(dto.openingCash, sessionMoney.exp), 'openingCash');
     let session: any;
     try {
       session = await this.r.registerSessionModel.create({
+        ...(openingDenoms ? { openingDenominations: openingDenoms } : {}),
         storeId: dto.storeId,
         registerId: dto.registerId,
         currency: sessionMoney.currency,
@@ -645,6 +647,30 @@ export class PosService {
     return { success: true, message: 'Register session opened', data: session };
   }
 
+  /** G4.6: notes / coins → the stored breakdown, refusing a count whose total is not the amount typed (the money is the money). */
+  private denominationsOf(list: Array<{ valueMinor: number; count: number }> | undefined, totalMinor: number, field: string) {
+    if (!list || !list.length) return null;
+    const seen = new Set<number>();
+    const rows = list.filter((d) => d.count > 0).map((d) => { if (seen.has(d.valueMinor)) throw moneyError('DENOMINATION_TWICE', 'The same note / coin appears twice'); seen.add(d.valueMinor); return { valueMinor: d.valueMinor, count: d.count }; });
+    const sum = rows.reduce((n, d) => n + d.valueMinor * d.count, 0);
+    if (sum !== totalMinor) throw moneyError('DENOMINATION_MISMATCH', `The notes and coins add up to a different amount than ${field}`, { countedMinor: sum, amountMinor: totalMinor });
+    return rows.sort((a, b) => b.valueMinor - a.valueMinor);
+  }
+
+  /** G4.6: what the last CLOSED shift of a register left behind — shown when the next shift opens (counted, expected, variance, who, when). */
+  async lastClose(sellerId: string, storeId: string, registerId: string) {
+    await this.verifyStoreOwnership(storeId, sellerId);
+    const { currency, exp } = await this.moneyContext(storeId);
+    const s: any = await this.r.registerSessionModel.findOne({ storeId, registerId, status: 'closed' }).sort({ closedAt: -1 }).lean();
+    if (!s) return { success: true, data: { currency, currencyExponent: exp, lastClose: null } };
+    const emp: any = s.closedBy || s.employeeId ? await this.r.employeeModel.findById(s.closedBy ?? s.employeeId).select('name').lean().catch(() => null) : null;
+    return { success: true, data: { currency, currencyExponent: exp, lastClose: {
+      sessionId: String(s._id), closedAt: s.closedAt ?? null, closedByName: emp?.name ?? null,
+      countedMinor: s.closingCashMinor ?? (s.closingCash != null ? toMinor(s.closingCash, exp) : null), expectedMinor: s.expectedCashMinor ?? (s.expectedCash != null ? toMinor(s.expectedCash, exp) : null),
+      varianceMinor: s.cashDifferenceMinor ?? (s.cashDifference != null ? toMinor(s.cashDifference, exp) : null), denominations: s.closingDenominations ?? null, forced: s.forceClosed === true,
+    } } };
+  }
+
   async closeSession(sellerId: string, dto: CloseSessionDto, employeeToken?: string) {
     const session = await this.r.registerSessionModel.findOne({ _id: dto.sessionId, status: 'open' });
     if (!session) throw new NotFoundException('Open session not found');
@@ -662,6 +688,7 @@ export class PosService {
     const cashDifference = roundMoney(closingCash - expectedCash, closeExp);
     const expectedCashMinor = toMinor(expectedCash, closeExp);
     const closingCashMinor = toMinor(closingCash, closeExp);
+    const closingDenoms = this.denominationsOf((dto as any).denominations, closingCashMinor, 'closingCash'); // G4.6
 
     // Card reconciliation (D2): card payments are only RECORDED by the cashier, so at close the cashier enters the card total
     // printed on the terminal's settlement slip. Server compares it with the card total the till recorded (net of refunds).
@@ -695,7 +722,7 @@ export class PosService {
     const updated = await this.atomic(async (tx) => {
       const u = await this.r.registerSessionModel.findOneAndUpdate(
         { _id: dto.sessionId, status: 'open' },
-        { $set: { closingCash, closingCashMinor, expectedCash, expectedCashMinor, cashDifference, cashDifferenceMinor: closingCashMinor - expectedCashMinor, closedAt: new Date(), status: 'closed', cardReconciliation: cardRecon } },
+        { $set: { closingCash, closingCashMinor, expectedCash, expectedCashMinor, cashDifference, cashDifferenceMinor: closingCashMinor - expectedCashMinor, closedAt: new Date(), status: 'closed', cardReconciliation: cardRecon, ...(closingDenoms ? { closingDenominations: closingDenoms } : {}) } },
         { new: true, ...(tx ? { session: tx } : {}) },
       );
       if (!u) return null;

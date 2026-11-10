@@ -77,4 +77,23 @@ export class PosInventoryController {
 
   @UseGuards(PosAuthGuard, RolesGuard, PosEntitlementGuard) @Roles('seller') @Patch('limits/:storeId')
   setLimits(@Req() req: any, @Param('storeId') storeId: string, @Body() body: Record<string, number>, @Headers('x-pos-employee-token') e?: string) { return this.svc.setLimits(req, storeId, body, this.t(e)); }
+
+  // ── G4.6: transfers, expiry, write-off
+  @UseGuards(PosAuthGuard, RolesGuard) @Roles('seller') @Get('transfers/:storeId')
+  transfers(@Req() req: any, @Param('storeId') storeId: string, @Query() q: any, @Headers('x-pos-employee-token') e?: string) { return this.svc.transfers(req, storeId, q, this.t(e)); }
+
+  @UseGuards(PosAuthGuard, RolesGuard, PosEntitlementGuard) @Roles('seller') @UseInterceptors(IdempotencyInterceptor) @Post('transfers/:storeId')
+  transferShip(@Req() req: any, @Param('storeId') storeId: string, @Body() body: any, @Headers('x-pos-employee-token') e?: string) { return this.svc.transferShip(req, storeId, body, this.t(e)); }
+
+  @UseGuards(PosAuthGuard, RolesGuard, PosEntitlementGuard) @Roles('seller') @UseInterceptors(IdempotencyInterceptor) @Post('transfers/:storeId/:id/receive')
+  transferReceive(@Req() req: any, @Param('storeId') storeId: string, @Param('id') id: string, @Body() body: any, @Headers('x-pos-employee-token') e?: string) { return this.svc.transferReceive(req, storeId, id, body, this.t(e)); }
+
+  @UseGuards(PosAuthGuard, RolesGuard, PosEntitlementGuard) @Roles('seller') @Post('transfers/:storeId/:id/cancel')
+  transferCancel(@Req() req: any, @Param('storeId') storeId: string, @Param('id') id: string, @Headers('x-pos-employee-token') e?: string) { return this.svc.transferCancel(req, storeId, id, this.t(e)); }
+
+  @UseGuards(PosAuthGuard, RolesGuard) @Roles('seller') @Get('expiry/:storeId')
+  expiry(@Req() req: any, @Param('storeId') storeId: string, @Headers('x-pos-employee-token') e?: string) { return this.svc.expiry(req, storeId, this.t(e)); }
+
+  @UseGuards(PosAuthGuard, RolesGuard, PosEntitlementGuard) @Roles('seller') @UseInterceptors(IdempotencyInterceptor) @Post('lots/:storeId/:lotId/write-off')
+  writeOff(@Req() req: any, @Param('storeId') storeId: string, @Param('lotId') lotId: string, @Body() body: any, @Headers('x-pos-employee-token') e?: string) { return this.svc.writeOffLot(req, storeId, lotId, body, this.t(e)); }
 }

@@ -239,6 +239,24 @@ export class PosSupplyService {
     });
     return { success: true, data: { ...(await this.cur(storeId)), order: this.poView(po.toObject(), exp, true) } };
   }
+  /**
+   * G4.6: low stock → a DRAFT purchase order for one supplier: the store's reorder suggestions (forecast-based, the dashboard's) for that supplier — or the
+   * variants named — at their suggested quantity and the variant's current average cost. Nothing is approved or sent; the manager edits the draft as usual.
+   */
+  async draftFromLowStock(req: Req, storeId: string, body: any, t: Tokens) {
+    await this.gate(req, storeId, 'supply.po.write', t);
+    const sup = await this.loadSupplier(storeId, String(body?.supplierId ?? ''));
+    const sug: any = await this.inventory.getReorderSuggestions(req.user.userId, storeId);
+    const all: any[] = (sug?.data?.groups ?? []).flatMap((g: any) => (g.items ?? []).map((i: any) => ({ ...i, supplierId: g.supplierId })));
+    const wanted = Array.isArray(body?.variantIds) && body.variantIds.length ? new Set(body.variantIds.map(String)) : null;
+    const picked = all.filter((i) => (wanted ? wanted.has(String(i.variantId)) : String(i.supplierId) === String(sup._id)));
+    if (!picked.length) throw err(400, 'NOTHING_LOW', wanted ? 'None of those products is low on stock' : `Nothing from ${sup.name} is low on stock`);
+    const { currencyExponent: exp } = await this.cur(storeId);
+    const vs: any[] = await this.r.productVariantModel.find({ _id: { $in: picked.map((i) => i.variantId) } }).select('costPriceMinor costPrice').lean();
+    const cost = new Map(vs.map((v) => [String(v._id), v.costPriceMinor ?? (v.costPrice != null ? toMinor(v.costPrice, exp) : 0)]));
+    return this.createOrder(req, storeId, { supplierId: String(sup._id), notes: 'Drafted from low stock', items: picked.slice(0, 200).map((i) => ({ variantId: String(i.variantId), quantityOrdered: Math.max(1, Math.round(i.suggestedQty)), unitCostMinor: cost.get(String(i.variantId)) ?? 0 })) }, t);
+  }
+
   private async receiptCount(storeId: string, poId: string): Promise<number> { return this.r.purchaseReceiptModel.countDocuments({ storeId, purchaseOrderId: poId }); }
   /** Edits are allowed only before any receiving started; an approved / sent PO that is edited goes back to draft and needs approving again. */
   async updateOrder(req: Req, storeId: string, id: string, body: any, t: Tokens) {

@@ -348,6 +348,14 @@ export class PosController {
     return this.posService.getActiveSession(req.user.userId, storeId, registerId);
   }
 
+  /** G4.6: the register's last closed shift (counted, expected, variance, by whom) — shown when the next shift opens. */
+  @UseGuards(PosAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Get('sessions/last-close')
+  getLastClose(@Req() req: any, @Query('storeId') storeId: string, @Query('registerId') registerId: string) {
+    return this.posService.lastClose(req.user.userId, storeId, registerId);
+  }
+
   @UseGuards(PosAuthGuard, RolesGuard)
   @Roles('seller')
   @Get('sessions/history')

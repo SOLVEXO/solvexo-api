@@ -113,6 +113,10 @@ export class RegisterSession {
   totalRefunds: number;
   @Prop({ type: 'MinorMoney' }) totalRefundsMinor?: number;
 
+  /** G4.6: the notes / coins counted into the float and at close ([{ valueMinor, count }], largest first) */
+  @Prop({ type: [{ _id: false, valueMinor: { type: 'MinorMoney' }, count: Number }], default: undefined }) openingDenominations?: Array<{ valueMinor: number; count: number }>;
+  @Prop({ type: [{ _id: false, valueMinor: { type: 'MinorMoney' }, count: Number }], default: undefined }) closingDenominations?: Array<{ valueMinor: number; count: number }>;
+
   @Prop({ type: [CashAdjustmentSchema], default: [] })
   cashAdjustments: CashAdjustment[];
 

@@ -78,4 +78,7 @@ export class PosSupplyController {
 
   @UseGuards(PosAuthGuard, RolesGuard, PosEntitlementGuard) @Roles('seller') @UseInterceptors(IdempotencyInterceptor) @Post('payments/:storeId/:id')
   pay(@Req() req: any, @Param('storeId') s: string, @Param('id') id: string, @Body() body: any, @Headers('x-pos-employee-token') e?: string, @Headers('x-pos-approver-token') a?: string) { return this.svc.pay(req, s, id, body, this.t(e, a)); }
+
+  @UseGuards(PosAuthGuard, RolesGuard, PosEntitlementGuard) @Roles('seller') @UseInterceptors(IdempotencyInterceptor) @Post('orders/:storeId/from-low-stock')
+  draftFromLowStock(@Req() req: any, @Param('storeId') s: string, @Body() body: any, @Headers('x-pos-employee-token') e?: string) { return this.svc.draftFromLowStock(req, s, body, this.t(e)); }
 }

@@ -1,6 +1,8 @@
 /* eslint-disable prettier/prettier */
 import { ApiProperty } from '@nestjs/swagger';
 import { IsString, IsNotEmpty, IsNumber, IsOptional, Min } from 'class-validator';
+import { IsArray, ValidateNested } from 'class-validator';
+import { DenominationDto } from './open-session.dto';
 import { Type } from 'class-transformer';
 
 export class CloseSessionDto {
@@ -21,4 +23,8 @@ export class CloseSessionDto {
   @IsNumber()
   @Min(0)
   cardTotalFromSlip?: number;
+
+  @ApiProperty({ required: false, type: [Object], description: 'G4.6: the notes / coins counted at close, [{ valueMinor, count }]. When sent, their total must equal closingCash.' })
+  @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => DenominationDto)
+  denominations?: DenominationDto[];
 }

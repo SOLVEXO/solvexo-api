@@ -287,4 +287,58 @@ export class PosInventoryService {
     await this.audit(storeId, a.employeeId, 'approval_limits_changed', storeId, { before: before?.approvalLimits ?? {}, changes: clean });
     return this.limits(req, storeId, t);
   }
+
+  // ── G4.6: transfers, expiry buckets + write-off ───────────────────────────────
+  /** The dashboard's transfers (ship → in transit → received / cancelled) behind the matrix. Errors keep the inventory service's wording. */
+  async transfers(req: Req, storeId: string, q: any, t: Tokens) {
+    await this.gate(req, storeId, 'inventory.view', t);
+    return this.inventory.listTransfers(req.user.userId, storeId, { status: q?.status ?? 'all' });
+  }
+  async transferShip(req: Req, storeId: string, body: any, t: Tokens) {
+    const a = await this.gate(req, storeId, 'inventory.transfer.create', t);
+    const qty = Number(body?.quantity);
+    const out: any = await this.inventory.shipTransfer(req.user.userId, storeId, String(body?.variantId ?? ''), String(body?.fromLocationId ?? ''), String(body?.toLocationId ?? ''), qty, typeof body?.note === 'string' ? body.note.slice(0, 300) : undefined);
+    await this.audit(storeId, a.employeeId, 'transfer_shipped', String(out?.data?._id ?? ''), { variantId: body?.variantId, quantity: qty, from: body?.fromLocationId, to: body?.toLocationId });
+    return out;
+  }
+  async transferReceive(req: Req, storeId: string, transferId: string, body: any, t: Tokens) {
+    const a = await this.gate(req, storeId, 'inventory.transfer.receive', t);
+    const qty = Number(body?.receivedQty);
+    const out: any = await this.inventory.receiveTransfer(req.user.userId, storeId, transferId, qty, typeof body?.binId === 'string' ? body.binId : undefined);
+    await this.audit(storeId, a.employeeId, 'transfer_received', transferId, { receivedQty: qty });
+    return out;
+  }
+  async transferCancel(req: Req, storeId: string, transferId: string, t: Tokens) {
+    const a = await this.gate(req, storeId, 'inventory.transfer.create', t);
+    const out: any = await this.inventory.cancelTransfer(req.user.userId, storeId, transferId);
+    await this.audit(storeId, a.employeeId, 'transfer_cancelled', transferId, {});
+    return out;
+  }
+  /** Lots by how soon they expire: expired / within 7 days / within 30 days (store time zone), with value at cost for managers. */
+  async expiry(req: Req, storeId: string, t: Tokens) {
+    const a = await this.gate(req, storeId, 'inventory.view', t);
+    const c = await this.cur(storeId);
+    const now = new Date(); const in7 = new Date(now.getTime() + 7 * 86_400_000); const in30 = new Date(now.getTime() + 30 * 86_400_000);
+    const lots: any[] = await this.r.stockLotModel.find({ storeId, status: 'active', quantityRemaining: { $gt: 0 }, expiryDate: { $ne: null, $lt: in30 } }).sort({ expiryDate: 1 }).limit(500).lean();
+    const vIds = [...new Set(lots.map((l) => l.variantId))];
+    const vs: any[] = vIds.length ? await this.r.productVariantModel.find({ _id: { $in: vIds } }).select('sku productId options').lean() : [];
+    const vm = new Map(vs.map((v) => [String(v._id), v]));
+    const names = await this.productNames([...new Set(vs.map((v) => String(v.productId)))]);
+    const cost = this.seesCost(a.role);
+    const row = (l: any) => { const v = vm.get(String(l.variantId)); return { lotId: String(l._id), lotNumber: l.lotNumber, variantId: l.variantId, sku: v?.sku ?? null, productName: names.get(String(v?.productId))?.name ?? '', expiryDate: l.expiryDate, remaining: l.quantityRemaining, daysLeft: Math.ceil((new Date(l.expiryDate).getTime() - now.getTime()) / 86_400_000), ...(cost ? { valueMinor: (l.costPriceMinor ?? 0) * l.quantityRemaining } : {}) }; };
+    const expired = lots.filter((l) => new Date(l.expiryDate) <= now).map(row);
+    const within7 = lots.filter((l) => new Date(l.expiryDate) > now && new Date(l.expiryDate) <= in7).map(row);
+    const within30 = lots.filter((l) => new Date(l.expiryDate) > in7).map(row);
+    return { success: true, data: { ...c, expired, within7, within30 } };
+  }
+  /** Write off (part of) a lot: expired or damaged. Managers (matrix `inventory.writeoff`); goes through the inventory service (stock, lot, location, adjustment → ledger). */
+  async writeOffLot(req: Req, storeId: string, lotId: string, body: any, t: Tokens) {
+    const a = await this.gate(req, storeId, 'inventory.writeoff', t);
+    const reason = body?.reason === 'damaged' ? 'damaged' : 'expired';
+    const quantity = body?.quantity === undefined || body?.quantity === null ? undefined : Number(body.quantity);
+    const out: any = await this.inventory.writeOffLot(req.user.userId, storeId, lotId, { quantity, reason, note: typeof body?.note === 'string' ? body.note.slice(0, 300) : undefined });
+    await this.audit(storeId, a.employeeId, 'lot_written_off', lotId, { quantity: out?.data?.written, reason });
+    const c = await this.cur(storeId);
+    return { success: true, data: { ...c, lotId, lotNumber: out?.data?.lotNumber, written: out?.data?.written, remaining: out?.data?.remaining, newStock: out?.data?.newStock } };
+  }
 }
