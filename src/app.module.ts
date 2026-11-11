@@ -94,6 +94,7 @@ import { StorePagesModule } from './store-pages/store-pages.module';
 import { AppsModule } from './apps/apps.module';
 import { StoreFaqModule } from './store-faq/store-faq.module';
 import { StoreChatSettingsModule } from './store-chat-settings/store-chat-settings.module';
+import { FbrDiModule } from './fbr-di/fbr-di.module';
 import { DigitalAccessModule } from './digital-access/digital-access.module';
 import { MembershipsModule } from './memberships/memberships.module';
 import { LicensesModule } from './licenses/licenses.module';
@@ -101,6 +102,7 @@ import { B2BModule } from './b2b/b2b.module';
 import { FulfillmentServicesModule } from './fulfillment-services/fulfillment.module';
 import { SellingPlansModule } from './selling-plans/selling-plans.module';
 import { CheckoutRulesModule } from './checkout-rules/checkout-rules.module';
+import { ExperimentsModule } from './experiments/experiments.module';
 import { KhataModule } from './khata/khata.module';
 import { ProductFeedsModule } from './product-feeds/product-feeds.module';
 import { MerchantApiModule } from './merchant-api/merchant-api.module';
@@ -238,6 +240,7 @@ import { AppI18nModule } from './i18n/i18n.module';
     AppsModule,
     StoreFaqModule,
     StoreChatSettingsModule,
+    FbrDiModule,
     DigitalAccessModule,
     MembershipsModule,
     LicensesModule,
@@ -245,6 +248,7 @@ import { AppI18nModule } from './i18n/i18n.module';
     FulfillmentServicesModule,
     SellingPlansModule,
     CheckoutRulesModule,
+    ExperimentsModule,
     KhataModule,
     ProductFeedsModule,
     MerchantApiModule,
