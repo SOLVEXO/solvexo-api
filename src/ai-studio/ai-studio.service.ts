@@ -45,7 +45,7 @@ export class AiStudioService {
   async getCredits(sellerId: string, storeId: string) {
     await this.verifyStore(storeId, sellerId);
     const overview: any = await this.credits.getCreditsOverview(storeId, sellerId);
-    return { ...overview, data: { ...overview.data, imageEnhancerAvailable: this.imageEnhance.isAvailable } };
+    return { ...overview, data: { ...overview.data, imageEnhancerAvailable: this.imageEnhance.isAvailable, textAvailable: this.textGeneration.isAvailable } };
   }
 
   // ---------------------------------------------------------------- tools
@@ -469,6 +469,8 @@ export class AiStudioService {
     sellerId: string; storeId: string; tool: AiToolType; productId: string | null;
     regenerateFromId?: string; inputPayload: Record<string, any>;
   }) {
+    // Never hold or charge credits for canned text (no provider/key): refuse first. The Image Enhancer has its own guard.
+    if (params.tool !== 'image_enhancer') this.textGeneration.assertAvailable();
     // Regenerate = new row in the SAME session, never an overwrite.
     let sessionId = new Types.ObjectId().toString();
     let regeneratedFromId: string | null = null;

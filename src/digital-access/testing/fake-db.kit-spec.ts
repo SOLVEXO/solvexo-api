@@ -99,8 +99,12 @@ export class FakeModel {
     return { matchedCount: hit.length, modifiedCount: hit.length };
   }
   async findOneAndUpdate(f: any, u: any, opts: any = {}) {
+    // Like Mongo: without `new: true` the document found by the filter BEFORE the update comes back (the update may change the very
+    // field the filter checks); with `new: true` it is the document after the update (an upsert has just created it).
+    const before = this.rows.find((r) => matches(r, f)) ?? null;
     await this.updateOne(f, u, opts);
-    return this.rows.find((r) => matches(r, f)) ?? null;
+    if (opts.new) return this.rows.find((r) => matches(r, f)) ?? before;
+    return before;
   }
 }
 function set(obj: any, path: string, value: any) {

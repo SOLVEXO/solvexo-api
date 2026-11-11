@@ -1,10 +1,16 @@
-import { Injectable, NotFoundException, Optional } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import {
+  CONTACT_SOURCES,
   ContactSubmission,
   ContactSubmissionDocument,
+  SUPPORT_TIERS,
 } from './schemas/contact-submission.schema';
+import { sortSubmissions } from './support.util';
+import { DatabaseService } from '../database/databaseservice';
+import { notificationEmailShell } from '../notifications/templates/notification-email.template';
+import { textToParagraphs } from '../notifications/customer-email-template.util';
 import {
   CreateContactSubmissionDto,
   UpdateContactStatusDto,
@@ -52,6 +58,7 @@ export class ContactService {
     private readonly emailService: EmailService,
     private readonly notificationsService: NotificationsService,
     @Optional() private readonly salesCapture?: SalesCaptureService,
+    @Optional() private readonly databaseService?: DatabaseService,
   ) {}
 
   async submit(dto: CreateContactSubmissionDto) {
@@ -88,24 +95,98 @@ export class ContactService {
     };
   }
 
-  async findAll() {
-    const submissions = await this.contactModel
-      .find()
-      .sort({ createdAt: -1 })
-      .exec();
+  /**
+   * Admin inbox. Open items first by support tier (dedicated, priority, standard) and oldest first; resolved ones
+   * follow. `tier` / `source` narrow the list; `stats` always count everything. Seller requests carry `storeName`.
+   */
+  async findAll(filters: { tier?: string; source?: string } = {}) {
+    const all: any[] = await this.contactModel.find().lean();
 
     const stats = {
-      new: submissions.filter((s) => s.status === 'new').length,
-      read: submissions.filter((s) => s.status === 'read').length,
-      resolved: submissions.filter((s) => s.status === 'resolved').length,
+      new: all.filter((s) => s.status === 'new').length,
+      read: all.filter((s) => s.status === 'read').length,
+      resolved: all.filter((s) => s.status === 'resolved').length,
     };
+
+    const tier = (SUPPORT_TIERS as readonly string[]).includes(String(filters.tier)) ? String(filters.tier) : null;
+    const source = (CONTACT_SOURCES as readonly string[]).includes(String(filters.source)) ? String(filters.source) : null;
+    const narrowed = all.filter(
+      (s) =>
+        (!tier || (s.tier ?? 'standard') === tier) &&
+        (!source || (s.source ?? 'public') === source),
+    );
+    const sorted = sortSubmissions(narrowed);
+
+    const storeIds = [...new Set(sorted.map((s) => s.storeId).filter(Boolean))] as string[];
+    const names = new Map<string, string>();
+    if (storeIds.length && this.databaseService) {
+      const stores: any[] = await this.databaseService.repositories.storeModel
+        .find({ _id: { $in: storeIds } })
+        .select('name')
+        .lean();
+      for (const st of stores) names.set(String(st._id), st.name);
+    }
+
+    const data = sorted.map((s) => ({
+      ...s,
+      source: s.source ?? 'public',
+      tier: s.tier ?? 'standard',
+      replies: s.replies ?? [],
+      storeName: s.storeId ? (names.get(String(s.storeId)) ?? null) : null,
+    }));
 
     return {
       success: true,
-      count: submissions.length,
+      count: data.length,
       stats,
-      data: submissions,
+      data,
     };
+  }
+
+  /**
+   * An admin answers by email (platform sender, like every contact acknowledgement). For a request that came from a
+   * store dashboard the owner also gets an in-app notice. The reply is kept on the message for the seller to read.
+   */
+  async reply(id: string, message: string, sentBy: string) {
+    const text = String(message ?? '').trim();
+    if (!text) throw new BadRequestException('Write your reply');
+    const msg: any = await this.contactModel.findById(id).lean();
+    if (!msg) throw new NotFoundException('Contact submission not found');
+
+    const subject = `Re: ${String(msg.topic).slice(0, 150)} — ${APP_NAME}`;
+    const quoted = `<blockquote style="margin:16px 0 0;padding:8px 12px;border-left:3px solid #ddd;color:#666;font-size:13px;">${textToParagraphs(String(msg.message))}</blockquote>`;
+    const html = notificationEmailShell(
+      escapeHtml(`Re: ${msg.topic}`),
+      `${textToParagraphs(text)}<p style="color:#888;font-size:12px;margin-top:18px;">Your message:</p>${quoted}`,
+    );
+    const ok = await this.emailService.sendMail(String(msg.email), subject, html);
+    if (!ok) throw new BadRequestException('The reply could not be emailed. Try again.');
+
+    const updated = await this.contactModel
+      .findOneAndUpdate(
+        { _id: id },
+        {
+          $push: { replies: { message: text, sentAt: new Date(), sentBy: String(sentBy).slice(0, 80) } },
+          ...(msg.status === 'new' ? { $set: { status: 'read' } } : {}),
+        },
+        { new: true },
+      );
+
+    if (msg.source === 'seller' && msg.sellerId) {
+      this.notificationsService
+        .notify({
+          recipientId: String(msg.sellerId),
+          recipientRole: 'seller',
+          storeId: msg.storeId ?? undefined,
+          type: NOTIFICATION_TYPES.SUPPORT_REPLY,
+          title: 'Solvexo replied to your help request',
+          body: String(msg.topic).slice(0, 160),
+          data: { storeId: msg.storeId, requestId: String(msg._id) },
+        })
+        .catch(() => undefined);
+    }
+
+    return { success: true, data: updated };
   }
 
   async updateStatus(id: string, dto: UpdateContactStatusDto) {

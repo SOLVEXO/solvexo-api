@@ -54,6 +54,9 @@ const NEW_FIELD_DEFAULTS: Pick<PlatformPlanLimits, 'calculatedShippingRatesAllow
   monthlyEmailSends: 10000,
 };
 
+/** AI credits a store gets while it is still on its free trial (no plan yet): enough to try the tools, small enough to cost little. */
+export const TRIAL_AI_CREDITS = 50;
+
 /** First day of the calendar month (UTC) a monthly allowance counts from. */
 export function startOfMonthUTC(d = new Date()): Date {
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
@@ -161,14 +164,15 @@ export class EntitlementsService {
    * location/banner/promotion cap and most boolean features — same
    * philosophy as Shopify's own trial (no plan needs to be chosen to use
    * the store-building features, only to keep selling once the trial
-   * ends). Deliberately does NOT touch `transactionFeeRate`, `monthlyEmailSends` or
-   * `aiCreditsPerMonth`: those aren't restrictions being tested, they're
-   * real revenue/cost mechanics that must stay exactly what the assigned
-   * plan defines whether trialing or not — a trial sale still owes Solvexo
-   * its real commission, and `aiCreditsPerMonth` also isn't a `-1`-aware
-   * field (`AiCreditsService.deduct` treats a negative balance as
-   * "insufficient", not "unlimited"), so overriding it here would silently
-   * break AI credits instead of opening them up.
+   * ends). Deliberately does NOT touch `transactionFeeRate` or `monthlyEmailSends`:
+   * those aren't restrictions being tested, they're real revenue/cost
+   * mechanics that must stay exactly what the assigned plan defines whether
+   * trialing or not — a trial sale still owes Solvexo its real commission.
+   * `aiCreditsPerMonth` gets a small fixed trial allowance (TRIAL_AI_CREDITS)
+   * when the plan gives less: a trialing store has no plan row, so it would
+   * otherwise get a wallet with 0 credits and AI Studio would be unusable all
+   * trial long. It is never `-1` because `AiCreditsService.deduct` treats a
+   * negative balance as "insufficient", not "unlimited".
    *
    * `customDomainAllowed` is the one deliberate EXCEPTION, always forced
    * `false` here regardless of the underlying plan — verified against
@@ -209,6 +213,7 @@ export class EntitlementsService {
       maxMarkets: -1,
       digitalCoursesAllowed: true,
       maxB2BCatalogs: -1,
+      aiCreditsPerMonth: Math.max(limits.aiCreditsPerMonth, TRIAL_AI_CREDITS),
     };
   }
 
@@ -416,7 +421,11 @@ export class EntitlementsService {
       },
       aiCredits: {
         monthlyAllowance: limits.aiCreditsPerMonth,
-        balance: (aiWallet as any)?.balance ?? 0,
+        // A store that has not used AI yet has no wallet row: it will be created with the full allowance, so show that (not 0 = "all used").
+        // A wallet that has not seen its plan change yet is shown with the extra allowance it will get on its next use.
+        balance: aiWallet
+          ? ((aiWallet as any).balance ?? 0) + Math.max(0, limits.aiCreditsPerMonth - ((aiWallet as any).monthlyAllowance ?? 0))
+          : limits.aiCreditsPerMonth,
       },
       transactionFeeRate: limits.transactionFeeRate,
       maxMarkets: limits.maxMarkets,

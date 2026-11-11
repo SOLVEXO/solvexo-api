@@ -5,13 +5,8 @@ import { Document } from 'mongoose';
 export type AiCreditsWalletDocument = AiCreditsWallet & Document;
 
 /**
- * Store-scoped AI-feature credit balance. NOTE: this is infrastructure only —
- * there is no actual "AI Studio" feature implemented anywhere in this
- * codebase yet to consume these credits. This wallet + AiCreditsService exist
- * so that whenever a real AI feature is built, it has a ready-made
- * grant/deduct/reset mechanism (and the pricing page's advertised
- * "AI credits/mo" figure has a real backing store) rather than being purely
- * cosmetic marketing copy.
+ * Store-scoped AI credit balance, spent by AI Studio and the AI SEO suggestions (AiCreditsService owns the rules).
+ * `balance` is everything the store can spend now; `bonusBalance` is the part of it the seller BOUGHT (kept at the monthly reset).
  */
 @Schema({ timestamps: true })
 export class AiCreditsWallet {
@@ -20,6 +15,7 @@ export class AiCreditsWallet {
 
   @Prop({ type: Number, default: 0 }) balance: number;
   @Prop({ type: Number, default: 0 }) monthlyAllowance: number; // from the store's current PlatformPlan
+  @Prop({ type: Number, default: 0 }) bonusBalance: number; // bought credits still unspent (a part of `balance`)
   @Prop({ type: Date, default: null }) lastResetAt: Date | null;
 
   @Prop({ type: [Object], default: [] }) ledger: Array<{

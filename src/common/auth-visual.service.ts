@@ -328,7 +328,7 @@ export class AuthVisualService {
     ].join('\n');
     try {
       const msg = await client.messages.create({
-        model: process.env.AUTH_VISUAL_VETTING_MODEL || 'claude-haiku-4-5-20251001',
+        model: process.env.AUTH_VISUAL_VETTING_MODEL || 'claude-haiku-4-5',
         max_tokens: 60,
         messages: [{
           role: 'user',

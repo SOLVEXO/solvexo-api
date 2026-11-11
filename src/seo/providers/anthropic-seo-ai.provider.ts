@@ -20,10 +20,12 @@ const SUGGESTION_SCHEMA = {
  * than free-text parsing, so a malformed response is a hard API error
  * (caught below) instead of a silent bad-JSON parse downstream.
  *
- * Model is fixed to `claude-opus-4-8` — this is a short, low-volume,
- * cost-insensitive task (one call per seller-initiated suggestion), so there
- * is no reason to trade quality for a cheaper tier.
+ * The model defaults to `claude-opus-4-8` (a valid model id) and can be changed with the `AI_SEO_MODEL` env var - this is a
+ * short, low-volume task (one call per seller-initiated suggestion), so quality comes before cost. Thinking is not requested:
+ * on Opus 4.8 omitting it means none, and `max_tokens` leaves room in case a model with always-on thinking is configured.
  */
+export const DEFAULT_SEO_AI_MODEL = 'claude-opus-4-8';
+
 @Injectable()
 export class AnthropicSeoAiProvider implements ISeoAiProvider {
   private readonly logger = new Logger(AnthropicSeoAiProvider.name);
@@ -33,18 +35,33 @@ export class AnthropicSeoAiProvider implements ISeoAiProvider {
     this.client = new Anthropic();
   }
 
+  /** False until an API key is configured: the caller refuses BEFORE charging any credits. */
+  get isConfigured(): boolean {
+    return !!(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN);
+  }
+
   async generateSuggestion(input: SeoAiSuggestionInput): Promise<SeoAiSuggestion> {
     const prompt = buildPrompt(input);
 
-    const response = await this.client.messages.create({
-      model: 'claude-opus-4-8',
-      max_tokens: 1024,
-      output_config: { format: { type: 'json_schema', schema: SUGGESTION_SCHEMA } },
-      messages: [{ role: 'user', content: prompt }],
-    });
+    let response: Anthropic.Message;
+    try {
+      response = await this.client.messages.create({
+        model: process.env.AI_SEO_MODEL || DEFAULT_SEO_AI_MODEL,
+        max_tokens: 4096,
+        output_config: { format: { type: 'json_schema', schema: SUGGESTION_SCHEMA } },
+        messages: [{ role: 'user', content: prompt }],
+      });
+    } catch (err: any) {
+      // Any API / network / credential failure: log the real reason, show the seller a short message (the credits are refunded by the caller).
+      this.logger.error(`AI SEO call failed${err?.status ? ` (${err.status})` : ''}: ${err?.message ?? err}`);
+      throw new ServiceUnavailableException('AI SEO is not available right now. No credits were used - please try again in a moment.');
+    }
 
     if (response.stop_reason === 'refusal') {
       throw new ServiceUnavailableException('AI SEO suggestion request was declined by the safety classifier.');
+    }
+    if (response.stop_reason === 'max_tokens') {
+      throw new ServiceUnavailableException('AI SEO suggestion was cut off before it finished. No credits were used - please try again.');
     }
 
     const textBlock = response.content.find((b): b is Anthropic.TextBlock => b.type === 'text');
