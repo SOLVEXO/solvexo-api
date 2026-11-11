@@ -63,7 +63,11 @@ export class B2BAdminController {
   @Get('catalogs') @RequirePermission('b2b.view')
   async catalogs(@Req() req: any, @Param('storeId') s: string) { await this.own(req, s); return this.svc.listCatalogs(s); }
   @Post('catalogs') @RequirePermission('b2b.manage')
-  async createCatalog(@Req() req: any, @Param('storeId') s: string, @Body() b: any) { return this.svc.createCatalog(s, await this.own(req, s, true), b); }
+  async createCatalog(@Req() req: any, @Param('storeId') s: string, @Body() b: any) {
+    const actor = await this.own(req, s, true);
+    await this.entitlements.assertCanCreateB2BCatalog(s, await this.svc.countCatalogs(s)); // the plan's number of wholesale catalogs
+    return this.svc.createCatalog(s, actor, b);
+  }
   @Patch('catalogs/:id') @RequirePermission('b2b.manage')
   async updateCatalog(@Req() req: any, @Param('storeId') s: string, @Param('id') id: string, @Body() b: any) { return this.svc.updateCatalog(s, await this.own(req, s, true), id, b); }
   @Delete('catalogs/:id') @RequirePermission('b2b.manage')

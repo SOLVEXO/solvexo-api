@@ -201,10 +201,22 @@ export class LoyaltyService {
     return tx;
   }
 
+  /** True when the store's CURRENT plan still includes loyalty. The program flag alone is not enough: a store that
+   *  downgraded from Grow must stop earning (the points already earned stay on the customers' balances). Never throws,
+   *  because earning runs inside order completion and must not break it. */
+  private async planAllowsLoyalty(storeId: string): Promise<boolean> {
+    try {
+      return !!(await this.entitlementsService.getLimits(storeId)).loyaltyProgramAllowed;
+    } catch {
+      return false;
+    }
+  }
+
   /** Called by RatingService after a verified-purchase review with a star rating is created. */
   async awardReviewPoints(storeId: string, userId: string) {
     const program = await this.getOrCreateProgram(storeId);
     if (!program.isEnabled || program.pointsPerReview <= 0) return null;
+    if (!(await this.planAllowsLoyalty(storeId))) return null;
     return this.awardPoints(storeId, userId, 'review', program.pointsPerReview, { description: 'Verified purchase review' });
   }
 
@@ -213,6 +225,7 @@ export class LoyaltyService {
   async awardPurchasePoints(storeId: string, userId: string, orderId: string, subtotal: number, multiplier = 1) {
     const program = await this.getOrCreateProgram(storeId);
     if (!program.isEnabled) return null;
+    if (!(await this.planAllowsLoyalty(storeId))) return null;
     const points = Math.round(subtotal * program.pointsPerDollar * multiplier);
     if (points <= 0) return null;
     const description = multiplier > 1
@@ -298,6 +311,7 @@ export class LoyaltyService {
 
   async createReward(sellerId: string, storeId: string, dto: CreateRewardDto) {
     await this.verifyStoreOwnership(storeId, sellerId);
+    await this.entitlementsService.assertFeatureAllowed(storeId, 'loyaltyProgramAllowed', 'The Loyalty & Rewards program');
 
     if (dto.type === 'fixed_discount' && dto.discountValue === undefined) {
       throw new BadRequestException('discountValue is required for fixed_discount rewards');
@@ -377,6 +391,7 @@ export class LoyaltyService {
    * sessions). If stock runs out after points were deducted, the points are refunded.
    */
   async redeemReward(storeId: string, userId: string, rewardId: string) {
+    await this.entitlementsService.assertFeatureAllowed(storeId, 'loyaltyProgramAllowed', 'The Loyalty & Rewards program');
     const reward = await this.r.rewardModel.findOne({ _id: rewardId, storeId, isActive: true, isDelete: false });
     if (!reward) throw new NotFoundException('Reward not found or inactive');
 

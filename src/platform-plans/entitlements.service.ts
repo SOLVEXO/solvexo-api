@@ -34,15 +34,30 @@ export interface PlatformPlanLimits {
   /** Shopify "markets" — how many checkout currencies a store may enable
    *  (Store.enabledCurrencies, base currency always included). -1 = unlimited. */
   maxMarkets: number;
+  /** Gates creating courses (Digital hub). */
+  digitalCoursesAllowed: boolean;
+  /** Wholesale catalogs per store (Shopify caps non-Plus plans at 3). -1 = unlimited. */
+  maxB2BCatalogs: number;
+  /** Marketing-campaign emails per calendar month. Automations and abandoned-cart mails are not counted (Shopify does not count abandoned checkout mails either). */
+  monthlyEmailSends: number;
 }
 
 /** Values used for any field an OLDER plan document doesn't have yet (a plan
  *  saved before that field existed). Merged under the plan's own limits so
- *  a missing field never reads as `undefined`. */
-const NEW_FIELD_DEFAULTS: Pick<PlatformPlanLimits, 'calculatedShippingRatesAllowed' | 'maxMarkets'> = {
+ *  a missing field never reads as `undefined`. Deliberately generous: an old
+ *  plan document must not suddenly lose something it never had a limit on. */
+const NEW_FIELD_DEFAULTS: Pick<PlatformPlanLimits, 'calculatedShippingRatesAllowed' | 'maxMarkets' | 'digitalCoursesAllowed' | 'maxB2BCatalogs' | 'monthlyEmailSends'> = {
   calculatedShippingRatesAllowed: false,
   maxMarkets: 3,
+  digitalCoursesAllowed: true,
+  maxB2BCatalogs: -1,
+  monthlyEmailSends: 10000,
 };
+
+/** First day of the calendar month (UTC) a monthly allowance counts from. */
+export function startOfMonthUTC(d = new Date()): Date {
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
+}
 
 /** Keeps a store's checkout currencies within its plan's market limit —
  *  base currency always kept first, extras dropped in their saved order. */
@@ -71,8 +86,10 @@ const FALLBACK_LIMITS: PlatformPlanLimits = {
   digitalMembershipsAllowed: true, digitalLicensesAllowed: true, b2bWholesaleAllowed: true,
   dedicatedAccountManager: false, prioritySupport: false, marketplaceFeaturedBadge: false, slaUptimePercent: null,
   advancedSeoToolsAllowed: false, seoAiSuggestionsAllowed: false, searchConsoleIntegrationAllowed: false, customRedirectsAllowed: false,
-  maxActiveStoreBanners: 4, maxActivePromotions: 1,
+  maxActiveStoreBanners: -1, maxActivePromotions: -1,
   calculatedShippingRatesAllowed: false, maxMarkets: 1,
+  // A store with no resolvable plan (e.g. a standalone trial) can try wholesale and courses, but sends only a few campaign emails.
+  digitalCoursesAllowed: true, maxB2BCatalogs: 3, monthlyEmailSends: 500,
 };
 
 const BOOLEAN_FEATURES: Array<{ key: keyof PlatformPlanLimits; label: string }> = [
@@ -83,7 +100,8 @@ const BOOLEAN_FEATURES: Array<{ key: keyof PlatformPlanLimits; label: string }> 
   { key: 'abandonedCartRecoveryAllowed', label: 'Abandoned cart recovery' },
   { key: 'emailCampaignsAllowed', label: 'Email campaigns' },
   { key: 'digitalMembershipsAllowed', label: 'Memberships & access plans' },
-  { key: 'digitalLicensesAllowed', label: 'License keys' }, { key: 'b2bWholesaleAllowed', label: 'Wholesale (B2B)' },
+  { key: 'digitalLicensesAllowed', label: 'License keys' }, { key: 'digitalCoursesAllowed', label: 'Courses' },
+  { key: 'b2bWholesaleAllowed', label: 'Wholesale (B2B)' },
   { key: 'apiWebhooksAllowed', label: 'API access & webhooks' },
   { key: 'advancedSeoToolsAllowed', label: 'Advanced SEO tools (audit, score, checklist)' },
   { key: 'seoAiSuggestionsAllowed', label: 'AI-generated SEO suggestions' },
@@ -143,7 +161,7 @@ export class EntitlementsService {
    * location/banner/promotion cap and most boolean features — same
    * philosophy as Shopify's own trial (no plan needs to be chosen to use
    * the store-building features, only to keep selling once the trial
-   * ends). Deliberately does NOT touch `transactionFeeRate` or
+   * ends). Deliberately does NOT touch `transactionFeeRate`, `monthlyEmailSends` or
    * `aiCreditsPerMonth`: those aren't restrictions being tested, they're
    * real revenue/cost mechanics that must stay exactly what the assigned
    * plan defines whether trialing or not — a trial sale still owes Solvexo
@@ -189,6 +207,8 @@ export class EntitlementsService {
       marketplaceFeaturedBadge: true,
       calculatedShippingRatesAllowed: true,
       maxMarkets: -1,
+      digitalCoursesAllowed: true,
+      maxB2BCatalogs: -1,
     };
   }
 
@@ -300,6 +320,33 @@ export class EntitlementsService {
     }
   }
 
+  /** Marketing-campaign emails already queued this calendar month (UTC) by this store. Automations and abandoned-cart mails are not counted. */
+  async getMonthlyEmailUsage(storeId: string, now = new Date()): Promise<number> {
+    return this.db.repositories.emailCampaignSendModel.countDocuments({ storeId, createdAt: { $gte: startOfMonthUTC(now) } });
+  }
+
+  /** Throws if sending `recipients` more campaign emails would pass the plan's monthly allowance. Call BEFORE creating the send rows. */
+  async assertEmailAllowance(storeId: string, recipients: number, now = new Date()): Promise<void> {
+    const { monthlyEmailSends } = await this.getLimits(storeId);
+    const used = await this.getMonthlyEmailUsage(storeId, now);
+    if (used + recipients > monthlyEmailSends) {
+      const left = Math.max(0, monthlyEmailSends - used);
+      throw new BadRequestException(
+        `This campaign needs ${recipients.toLocaleString('en-US')} emails but your plan has ${left.toLocaleString('en-US')} left this month (${monthlyEmailSends.toLocaleString('en-US')} a month) — send to a smaller audience, wait for next month or upgrade your plan.`,
+      );
+    }
+  }
+
+  /** Throws if the store already has its plan's number of wholesale catalogs. `current` = how many it has now. */
+  async assertCanCreateB2BCatalog(storeId: string, current: number): Promise<void> {
+    const { maxB2BCatalogs } = await this.getLimits(storeId);
+    if (maxB2BCatalogs !== -1 && current >= maxB2BCatalogs) {
+      throw new BadRequestException(
+        `Your plan allows ${maxB2BCatalogs} wholesale catalog${maxB2BCatalogs === 1 ? '' : 's'} — upgrade your plan or delete one to add another.`,
+      );
+    }
+  }
+
   /** Generic boolean-feature gate — throws ForbiddenException with an upgrade hint if the store's plan doesn't include it. */
   async assertFeatureAllowed(storeId: string, feature: keyof PlatformPlanLimits, featureLabel: string): Promise<void> {
     const limits = await this.getLimits(storeId);
@@ -373,6 +420,8 @@ export class EntitlementsService {
       },
       transactionFeeRate: limits.transactionFeeRate,
       maxMarkets: limits.maxMarkets,
+      maxB2BCatalogs: limits.maxB2BCatalogs,
+      monthlyEmailSends: limits.monthlyEmailSends,
       ...booleanFeatures,
       dedicatedAccountManager: !!limits.dedicatedAccountManager,
       prioritySupport: !!limits.prioritySupport,

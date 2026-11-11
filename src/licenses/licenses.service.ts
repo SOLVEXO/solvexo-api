@@ -25,31 +25,50 @@ export class LicensesService {
 
   /** One key per paid digital order item of a product that has license keys switched on. Idempotent (unique orderItemId). */
   async ensureFromOrders(storeId: string, customerId: string): Promise<void> {
-    const { orderModel, productModel } = this.db.repositories;
+    const { orderModel } = this.db.repositories;
     const orders = await orderModel.find({ userId: customerId, isPaid: true, isDelete: false, 'sellerOrders.storeId': storeId }).limit(200).lean();
-    for (const o of orders as any[]) {
-      for (const so of o.sellerOrders ?? []) {
-        if (so.storeId !== storeId) continue;
-        for (const item of so.items ?? []) {
-          if (item.type !== 'digital' || DEAD_ITEM.includes(item.status)) continue;
-          const p: any = await productModel.findOne({ _id: item.productId, storeId }).select('digital').lean();
-          const cfg = p?.digital?.licenseKeys;
-          if (!cfg?.enabled) continue;
-          const exists = await this.keyModel.exists({ storeId, orderItemId: String(item._id) });
-          if (exists) continue;
-          const key = generateLicenseKey();
-          try {
-            await this.keyModel.create({
-              storeId, productId: String(item.productId), customerId, orderId: String(o._id), orderItemId: String(item._id),
-              keyHash: hashKey(key), keyEnc: encryptCredential(key, 'INTEGRATIONS'), keyHint: key.slice(-4),
-              activationLimit: Number(cfg.activationLimit) > 0 ? Number(cfg.activationLimit) : 1,
-            });
-          } catch (e: any) {
-            if (e?.code !== 11000) throw e; // a parallel call created it first
-          }
+    for (const o of orders as any[]) await this.issueForOrderDoc(o, storeId);
+  }
+
+  /** Called the moment an order is paid (through the order event hook): the buyer's keys exist at once, so the seller sees
+   *  them and the buyer's /licenses page shows them without anyone having to open it first. Idempotent. */
+  async issueForOrder(orderId: string): Promise<number> {
+    const order: any = await this.db.repositories.orderModel.findOne({ _id: orderId, isPaid: true, isDelete: false }).lean();
+    if (!order) return 0;
+    let issued = 0;
+    for (const storeId of new Set<string>((order.sellerOrders ?? []).map((so: any) => String(so.storeId)))) {
+      issued += await this.issueForOrderDoc(order, storeId);
+    }
+    return issued;
+  }
+
+  /** One key per paid digital item of one order for one store, when the product has license keys switched on. Returns how many were created. */
+  private async issueForOrderDoc(o: any, storeId: string): Promise<number> {
+    const { productModel } = this.db.repositories;
+    let created = 0;
+    for (const so of o.sellerOrders ?? []) {
+      if (so.storeId !== storeId) continue;
+      for (const item of so.items ?? []) {
+        if (item.type !== 'digital' || DEAD_ITEM.includes(item.status)) continue;
+        const p: any = await productModel.findOne({ _id: item.productId, storeId }).select('digital').lean();
+        const cfg = p?.digital?.licenseKeys;
+        if (!cfg?.enabled) continue;
+        const exists = await this.keyModel.exists({ storeId, orderItemId: String(item._id) });
+        if (exists) continue;
+        const key = generateLicenseKey();
+        try {
+          await this.keyModel.create({
+            storeId, productId: String(item.productId), customerId: String(o.userId), orderId: String(o._id), orderItemId: String(item._id),
+            keyHash: hashKey(key), keyEnc: encryptCredential(key, 'INTEGRATIONS'), keyHint: key.slice(-4),
+            activationLimit: Number(cfg.activationLimit) > 0 ? Number(cfg.activationLimit) : 1,
+          });
+          created++;
+        } catch (e: any) {
+          if (e?.code !== 11000) throw e; // a parallel call created it first
         }
       }
     }
+    return created;
   }
 
   /** An item that was cancelled / refunded kills its key (checked on every validation too). */

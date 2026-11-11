@@ -15,6 +15,7 @@ import { verifyStoreOwnershipOrForbidden } from '../common/store-ownership.util'
 import { DatabaseService } from '../database/databaseservice';
 import { pageOf } from '../common/paging';
 import { CoursesService } from './courses.service';
+import { EntitlementsService } from '../platform-plans/entitlements.service';
 
 class QuizDto { @IsArray() answers: number[]; }
 class EnrollDto { @IsString() @IsNotEmpty() customerId: string; }
@@ -67,11 +68,11 @@ export class LearnerCoursesController {
 @RequirePermission('courses.manage')
 @Controller('api/courses/store/:storeId')
 export class SellerCoursesController {
-  constructor(private readonly svc: CoursesService, private readonly db: DatabaseService) {}
+  constructor(private readonly svc: CoursesService, private readonly db: DatabaseService, private readonly entitlements: EntitlementsService) {}
   private own = (req: any, storeId: string) => verifyStoreOwnershipOrForbidden(this.db.repositories.storeModel as any, storeId, actingSellerId(req.user));
 
   @Get() async list(@Req() req: any, @Param('storeId') s: string, @Query('page') page?: string, @Query('limit') limit?: string) { await this.own(req, s); return this.svc.list(s, pageOf(page, limit)); }
-  @Post() async create(@Req() req: any, @Param('storeId') s: string, @Body() b: any) { await this.own(req, s); return this.svc.create(s, b); }
+  @Post() async create(@Req() req: any, @Param('storeId') s: string, @Body() b: any) { await this.own(req, s); await this.entitlements.assertFeatureAllowed(s, 'digitalCoursesAllowed', 'Courses'); return this.svc.create(s, b); }
   @Get(':id') async get(@Req() req: any, @Param('storeId') s: string, @Param('id') id: string) { await this.own(req, s); return this.svc.get(s, id); }
   @Patch(':id') async update(@Req() req: any, @Param('storeId') s: string, @Param('id') id: string, @Body() b: any) { await this.own(req, s); return this.svc.update(s, id, b); }
   @Get(':id/enrollments') async enrollments(@Req() req: any, @Param('storeId') s: string, @Param('id') id: string) { await this.own(req, s); return this.svc.enrollments(s, id); }

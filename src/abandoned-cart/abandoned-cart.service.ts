@@ -9,6 +9,7 @@ import { randomBytes } from 'crypto';
 import { UpdateAbandonedCartSettingsDto } from './dto/update-abandoned-cart-settings.dto';
 
 import { API_PUBLIC_ORIGIN } from '@/common/api-origin';
+import { storePublicUrl, textToHtml } from '@/newsletter/marketing-email.util';
 const DEFAULT_SETTINGS = { enabled: true, delayMinutes: 60, subject: 'You left something in your cart', message: "Hi {{customerName}}, you still have items waiting in your cart at {{storeName}}. Complete your order before they're gone: {{cartUrl}}" };
 const BATCH_SIZE = 200; // max emails sent per cron tick — never let one runaway backlog block the lock for too long
 const SCAN_PAGE_SIZE = 200; // checkouts examined per page (newest first)
@@ -255,20 +256,27 @@ export class AbandonedCartService {
 
         const store = await this.r.storeModel.findById(trigger.storeId).select('name contactEmail').lean();
         const token = randomBytes(16).toString('hex');
-        const cartUrl = `${API_PUBLIC_ORIGIN}/api/abandoned-cart/click/${token}`;
+        // `s` = the store whose cart the buyer should land on (checked against the checkout's own items when the link is clicked).
+        const cartUrl = `${API_PUBLIC_ORIGIN}/api/abandoned-cart/click/${token}?s=${encodeURIComponent(String(trigger.storeId))}`;
 
-        const subject = this.renderTemplate(trigger.subject, { customerName: (user as any)?.name ?? 'there', storeName: (store as any)?.name ?? 'the store' });
-        const message = this.renderTemplate(trigger.message, {
-          customerName: (user as any)?.name ?? 'there',
-          storeName: (store as any)?.name ?? 'the store',
-          cartUrl,
-        });
+        // Claim the checkout BEFORE sending, so two overlapping ticks/instances can never both mail it; released again if the send fails.
+        const claim = await this.r.checkoutModel.updateOne(
+          { _id: checkout._id, abandonedEmailSentAt: null },
+          { $set: { abandonedEmailSentAt: now, abandonedRecoveryToken: token } },
+        );
+        if (claim.modifiedCount === 0) return 0; // another tick/instance already took this checkout
+
+        const customerName = (user as any)?.name ?? 'there';
+        const storeName = (store as any)?.name ?? 'the store';
+        const subject = this.renderTemplate(trigger.subject, { customerName, storeName });
+        // The template is plain text typed by the seller and the buyer's name is buyer-controlled, so the whole message is escaped.
+        const message = textToHtml(this.renderTemplate(trigger.message, { customerName, storeName, cartUrl }));
 
         const sent = await this.emailService.sendMail(
           email,
           subject,
           `<div style="font-family:sans-serif;max-width:520px">
-            <p>${message}</p>
+            ${message}
             <p style="margin-top:24px"><a href="${cartUrl}" style="background:#141413;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;display:inline-block">Return to your cart</a></p>
           </div>`,
           (store as any)?.contactEmail ?? null,
@@ -276,13 +284,11 @@ export class AbandonedCartService {
           undefined,
           (store as any)?.name ?? null,
         );
-        if (!sent) return 0; // don't mark abandonedEmailSentAt if the send itself failed — retry next tick (bounded by the 7-day window)
-
-        const marked = await this.r.checkoutModel.updateOne(
-          { _id: checkout._id, abandonedEmailSentAt: null }, // still guards against a race with another tick/instance
-          { $set: { abandonedEmailSentAt: now, abandonedRecoveryToken: token } },
-        );
-        if (marked.modifiedCount === 0) return 0; // another tick/instance already recorded this checkout
+        if (!sent) {
+          // The send itself failed: release the claim so the next tick retries (bounded by the 7-day window).
+          await this.r.checkoutModel.updateOne({ _id: checkout._id }, { $set: { abandonedEmailSentAt: null, abandonedRecoveryToken: null } });
+          return 0;
+        }
 
         for (const storeId of storeIds) {
           this.activityLogService.log({
@@ -300,12 +306,23 @@ export class AbandonedCartService {
   }
 
   /** Public — hit when the buyer clicks the link in the recovery email.
-   *  Records the click once, then the caller redirects to the cart. */
-  async trackClick(token: string): Promise<void> {
+   *  Records the click once and returns the address of the STORE's own cart (its verified custom domain, else its
+   *  `<slug>.solvexo.store`), or null when the link is unknown so the caller can fall back. `storeId` comes from the
+   *  link, so it is only trusted when it is really one of the checkout's stores. */
+  async trackClick(token: string, storeId?: string): Promise<string | null> {
+    if (!token || typeof token !== 'string') return null;
     await this.r.checkoutModel.updateOne(
       { abandonedRecoveryToken: token, abandonedClickedAt: null },
       { $set: { abandonedClickedAt: new Date() } },
     );
+    const checkout: any = await this.r.checkoutModel.findOne({ abandonedRecoveryToken: token }).select('items.storeId').lean();
+    if (!checkout) return null;
+    const storeIds: string[] = [...new Set((checkout.items ?? []).map((i: any) => String(i.storeId)))] as string[];
+    const target = storeId && storeIds.includes(String(storeId)) ? String(storeId) : storeIds[0];
+    if (!target) return null;
+    const store = await this.r.storeModel.findOne({ _id: target, isDelete: { $ne: true } }).select('slug customDomain customDomainStatus').lean();
+    const base = storePublicUrl(store as any);
+    return base ? `${base}/cart` : null;
   }
 
   /** Called from PaymentService.createOrder right after a real order is

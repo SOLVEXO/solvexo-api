@@ -4,6 +4,7 @@ import { Model } from 'mongoose';
 import { DatabaseService } from '../database/databaseservice';
 import { DigitalAccess, DigitalAccessDocument, DeliveryLog, DeliveryDocument } from './digital-access.schema';
 import { DigitalMailerService } from './digital-mailer.service';
+import { LicensesService } from '../licenses/licenses.service';
 import { ORDER_CHANGED, ORDER_DISPUTED, orderEvents } from '../common/order-events';
 
 export interface CanResult {
@@ -24,6 +25,7 @@ export class DigitalAccessService implements OnModuleInit {
     @InjectModel(DigitalAccess.name) readonly accessModel: Model<DigitalAccessDocument>,
     @InjectModel(DeliveryLog.name) readonly logModel: Model<DeliveryDocument>,
     @Optional() private readonly mailer?: DigitalMailerService,
+    @Optional() private readonly licenses?: LicensesService,
   ) {}
 
   onModuleInit() {
@@ -54,6 +56,10 @@ export class DigitalAccessService implements OnModuleInit {
     if (!hasDigital) return;
     for (const storeId of new Set<string>((order.sellerOrders ?? []).map((so: any) => String(so.storeId)))) {
       await this.grantForOrder(order, storeId);
+    }
+    // License keys are issued at payment time too (not only when the buyer first opens /licenses). A failure here must not stop the revoke pass below.
+    if (order.isPaid && this.licenses) {
+      await this.licenses.issueForOrder(orderId).catch((e) => this.logger.warn(`license issue for order ${orderId} failed: ${e?.message}`));
     }
     await this.reconcileOrder(orderId);
   }

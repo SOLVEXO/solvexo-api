@@ -61,8 +61,9 @@ export class AbandonedCartController {
   /** No auth — the whole point is a buyer clicking a link straight out of
    *  their inbox. Records the click, then sends them on to their real cart. */
   @Get('click/:token')
-  async trackClick(@Param('token') token: string, @Res() res: Response) {
-    await this.abandonedCartService.trackClick(token);
-    return res.redirect(302, `${PLATFORM_ORIGIN}/cart`);
+  async trackClick(@Param('token') token: string, @Query('s') storeId: string | undefined, @Res() res: Response) {
+    // The cart lives on the STORE's own address (never on the platform site), so the redirect goes there; an unknown link falls back to the platform home.
+    const target = await this.abandonedCartService.trackClick(token, typeof storeId === 'string' ? storeId : undefined);
+    return res.redirect(302, target ?? PLATFORM_ORIGIN);
   }
 }
