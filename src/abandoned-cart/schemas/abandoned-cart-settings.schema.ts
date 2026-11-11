@@ -36,6 +36,28 @@ export class AbandonedCartSettings {
   })
   message: string;
 
+  // An existing coupon code of this store, shown in the reminder as "Your code". Null = no discount. Checked against the
+  // store's coupons when saved, so a typo is never mailed to shoppers.
+  @Prop({ type: String, default: null })
+  discountCode: string | null;
+
+  // Optional second reminder, sent once, `secondReminderDelayHours` after the first one, only if the shopper still has not
+  // ordered. Off until the seller switches it on.
+  @Prop({ type: Boolean, default: false })
+  secondReminderEnabled: boolean;
+
+  @Prop({ type: Number, default: 24, min: 6, max: 168 })
+  secondReminderDelayHours: number;
+
+  @Prop({ type: String, default: 'Still thinking it over?' })
+  secondSubject: string;
+
+  @Prop({
+    type: String,
+    default: "Hi {{customerName}}, your cart at {{storeName}} is still waiting for you. This is our last reminder: {{cartUrl}}",
+  })
+  secondMessage: string;
+
   @Prop({ default: false })
   isDelete: boolean;
 }

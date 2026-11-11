@@ -1,4 +1,6 @@
 /* eslint-disable prettier/prettier */
+import { buildDowngradeWarnings } from './downgrade-warnings.util';
+import { EntitlementsService } from './entitlements.service';
 import { Injectable, NotFoundException, BadRequestException, ForbiddenException, Logger, Optional } from '@nestjs/common';
 import { PlatformTaxService } from '@/platform-tax/platform-tax.service';
 import { invoiceTaxSnapshot } from '@/platform-tax/platform-tax.util';
@@ -44,6 +46,7 @@ export class SellerPlatformSubscriptionsService {
     private readonly criticalAlerts: CriticalAlertService,
     @InjectConnection() private readonly connection: Connection,
     @Optional() private readonly platformTax?: PlatformTaxService,
+    @Optional() private readonly entitlements?: EntitlementsService,
   ) {}
 
   /**
@@ -1321,30 +1324,30 @@ export class SellerPlatformSubscriptionsService {
     // just tells the seller up front what they'll be over-limit on, instead
     // of them discovering it later as a blocked "create product" error.
     let usageWarnings: Array<{ label: string; used: number; newLimit: number }> = [];
+    let lostFeatures: string[] = [];
     if (direction === 'downgrade') {
-      const newLimits = (newPlan as any).limits ?? {};
-      // Staff = active dashboard staff only (POS-only staff don't count —
-      // Shopify rule, same as EntitlementsService.countStaffSeats).
-      const [productCount, staffCount, locationCount, storeDoc] = await Promise.all([
+      // Staff = active dashboard staff only (POS-only staff don't count — Shopify rule, same as EntitlementsService.countStaffSeats).
+      const catalogModel: any = (this.connection as any).models?.['B2BCatalog'];
+      const [productCount, staffCount, locationCount, storeDoc, emailsThisMonth, catalogCount] = await Promise.all([
         this.db.repositories.productModel.countDocuments({ storeId, isDelete: false }),
         this.db.repositories.staffMemberModel.countDocuments({ storeId, isDelete: false, status: 'active' }),
         this.db.repositories.storeLocationModel.countDocuments({ storeId, status: 'active', isDelete: false }),
         this.db.repositories.storeModel.findById(storeId).select('enabledCurrencies').lean(),
+        this.entitlements ? this.entitlements.getMonthlyEmailUsage(storeId).catch(() => 0) : Promise.resolve(0),
+        catalogModel ? catalogModel.countDocuments({ storeId, isDelete: false }).catch(() => 0) : Promise.resolve(0),
       ]);
       const chosenCurrencies = (storeDoc as any)?.enabledCurrencies;
-      const checks: Array<{ label: string; used: number; limit: number }> = [
-        { label: 'Products', used: productCount, limit: newLimits.maxProducts },
-        { label: 'Staff accounts', used: staffCount, limit: newLimits.maxStaffAccounts },
-        { label: 'POS locations', used: locationCount, limit: newLimits.maxPosLocations },
-      ];
-      // Markets — only when the seller picked a specific list; buyers keep the
-      // store currency + the first extras that fit (trimToMarketsLimit).
-      if (Array.isArray(chosenCurrencies) && chosenCurrencies.length > 0 && typeof newLimits.maxMarkets === 'number') {
-        checks.push({ label: 'Checkout currencies (markets)', used: chosenCurrencies.length, limit: newLimits.maxMarkets });
-      }
-      usageWarnings = checks
-        .filter(c => c.limit !== -1 && c.used > c.limit)
-        .map(c => ({ label: c.label, used: c.used, newLimit: c.limit }));
+      const result = buildDowngradeWarnings(
+        {
+          products: productCount, staff: staffCount, locations: locationCount,
+          currencies: Array.isArray(chosenCurrencies) && chosenCurrencies.length > 0 ? chosenCurrencies.length : null,
+          emailsThisMonth, wholesaleCatalogs: catalogCount,
+        },
+        (currentPlan as any)?.limits ?? {},
+        (newPlan as any).limits ?? {},
+      );
+      usageWarnings = result.usageWarnings;
+      lostFeatures = result.lostFeatures;
     }
 
     // Shopify: a cheaper plan starts at the end of the current cycle, with nothing charged or credited now.
@@ -1368,6 +1371,7 @@ export class SellerPlatformSubscriptionsService {
         effectiveImmediately: !deferred,
         effectiveAt: deferred ? (sub as any).currentPeriodEnd : null,
         usageWarnings,
+        lostFeatures,
       },
     };
   }

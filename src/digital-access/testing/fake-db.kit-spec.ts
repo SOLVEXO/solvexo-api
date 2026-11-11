@@ -71,6 +71,7 @@ export class FakeModel {
   findOne(f: any = {}) { return this.chain(this.wrap(this.rows.find((r) => matches(r, f)) ?? null)); }
   findById(id: string) { return this.findOne({ _id: id }); }
   async exists(f: any) { return this.rows.find((r) => matches(r, f)) ? { _id: 'x' } : null; }
+  async distinct(field: string, f: any = {}) { return [...new Set(this.rows.filter((r) => matches(r, f)).map((r) => get(r, field)).filter((v) => v !== undefined))]; }
   async countDocuments(f: any = {}) { return this.rows.filter((r) => matches(r, f)).length; }
 
   private apply(r: any, u: any) {

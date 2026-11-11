@@ -325,9 +325,28 @@ export class EntitlementsService {
     }
   }
 
-  /** Marketing-campaign emails already queued this calendar month (UTC) by this store. Automations and abandoned-cart mails are not counted. */
+  /**
+   * Marketing emails this store has used this calendar month (UTC): campaign emails (queued), automation emails (welcome, back in
+   * stock, price drop, win-back: delivered ones) and abandoned-cart reminders. Order and account mails are not marketing and not counted.
+   */
   async getMonthlyEmailUsage(storeId: string, now = new Date()): Promise<number> {
-    return this.db.repositories.emailCampaignSendModel.countDocuments({ storeId, createdAt: { $gte: startOfMonthUTC(now) } });
+    const from = startOfMonthUTC(now);
+    const r = this.db.repositories as any;
+    const [campaign, automation, abandoned, abandonedSecond] = await Promise.all([
+      r.emailCampaignSendModel.countDocuments({ storeId, createdAt: { $gte: from } }),
+      r.automationSendLogModel ? r.automationSendLogModel.countDocuments({ storeId, delivered: true, createdAt: { $gte: from } }) : 0,
+      r.checkoutModel ? r.checkoutModel.countDocuments({ abandonedEmailStoreId: storeId, abandonedEmailSentAt: { $gte: from } }) : 0,
+      r.checkoutModel ? r.checkoutModel.countDocuments({ abandonedEmailStoreId: storeId, abandonedSecondEmailSentAt: { $gte: from } }) : 0,
+    ]);
+    return campaign + automation + abandoned + abandonedSecond;
+  }
+
+  /** How many more marketing emails this store may send this month (0 when the plan has no marketing emails or the allowance is used up). */
+  async getEmailRoom(storeId: string, feature: 'emailCampaignsAllowed' | 'abandonedCartRecoveryAllowed' = 'emailCampaignsAllowed', now = new Date()): Promise<number> {
+    const limits = await this.getLimits(storeId);
+    if (!limits[feature]) return 0;
+    const used = await this.getMonthlyEmailUsage(storeId, now);
+    return Math.max(0, limits.monthlyEmailSends - used);
   }
 
   /** Throws if sending `recipients` more campaign emails would pass the plan's monthly allowance. Call BEFORE creating the send rows. */

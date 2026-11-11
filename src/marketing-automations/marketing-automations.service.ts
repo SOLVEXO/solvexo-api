@@ -48,6 +48,27 @@ export class MarketingAutomationsService {
     if (String((store as any).sellerId) !== String(sellerId)) throw new ForbiddenException('Not your store');
   }
 
+  /**
+   * Marketing emails each store may still send this month (plan allowance minus campaigns, automations and abandoned-cart mails),
+   * looked up once per cron run and counted down locally. A plan without marketing emails has 0 room, so nothing goes out for it.
+   * `startRun` clears the numbers at the beginning of every run.
+   */
+  private runRoom = new Map<string, number>();
+  private startRun() { this.runRoom = new Map(); }
+  private async takeRoom(storeId: string): Promise<boolean> {
+    if (!this.runRoom.has(storeId)) {
+      let room = 0;
+      try { room = await this.entitlementsService.getEmailRoom(storeId); } catch { room = 0; }
+      this.runRoom.set(storeId, room);
+    }
+    const room = this.runRoom.get(storeId) ?? 0;
+    if (room < 1) return false;
+    this.runRoom.set(storeId, room - 1);
+    return true;
+  }
+  /** Gives a room back when a send that took it did not happen. */
+  private giveRoomBack(storeId: string) { this.runRoom.set(storeId, (this.runRoom.get(storeId) ?? 0) + 1); }
+
   private async loadStore(storeId: string): Promise<StoreLite | null> {
     return (await this.r.storeModel.findOne({ _id: storeId, isDelete: false })
       .select('name slug customDomain customDomainStatus contactEmail baseCurrency').lean().catch(() => null)) as any;
@@ -247,6 +268,10 @@ export class MarketingAutomationsService {
   async sendWelcome(storeId: string, email: string, unsubscribeToken: string, customerName?: string | null): Promise<boolean> {
     const [settings, store] = await Promise.all([this.getSettings(storeId), this.loadStore(storeId)]);
     if (!store || !settings.welcome.enabled) return false;
+    // Counts against the plan's monthly marketing emails; a plan without them (or a used-up month) sends no welcome mail.
+    let room = 0;
+    try { room = await this.entitlementsService.getEmailRoom(storeId); } catch { room = 0; }
+    if (room < 1) return false;
     const vars = { customerName: customerName || 'there', storeName: store.name };
     const unsubscribeUrl = newsletterUnsubscribeUrl(unsubscribeToken);
     const shopUrl = storePublicUrl(store);
@@ -359,6 +384,7 @@ export class MarketingAutomationsService {
   }
 
   async processBackInStock(): Promise<{ notified: number }> {
+    this.startRun();
     const variantIds: string[] = (await this.r.backInStockRequestModel.distinct('variantId', { status: 'pending' })).slice(0, BATCH).map(String);
     if (variantIds.length === 0) return { notified: 0 };
 
@@ -382,12 +408,14 @@ export class MarketingAutomationsService {
 
       const requests = await this.r.backInStockRequestModel.find({ variantId: String(v._id), status: 'pending' }).limit(BATCH).lean();
       for (const req of requests as any[]) {
+        // Plan allowance: no room (or no marketing emails in the plan) = leave the request pending for a later run.
+        if (!(await this.takeRoom(storeId))) break;
         // Flip first so an overlapping tick can't pick the same request up.
         const claimed = await this.r.backInStockRequestModel.updateOne(
           { _id: req._id, status: 'pending' },
           { $set: { status: 'notified', notifiedAt: new Date() } },
         );
-        if (!claimed.modifiedCount) continue;
+        if (!claimed.modifiedCount) { this.giveRoomBack(storeId); continue; }
 
         const vars = { customerName: 'there', storeName: store.name, productName };
         const subject = renderMergeTags(settings.backInStock.subject, vars);
@@ -410,6 +438,7 @@ export class MarketingAutomationsService {
         const sent = await this.emailService.sendMail(req.email, subject, html, store.contactEmail ?? null, undefined, undefined, store.name);
         if (!sent) {
           await this.r.backInStockRequestModel.updateOne({ _id: req._id }, { $set: { status: 'pending', notifiedAt: null } });
+          this.giveRoomBack(storeId);
           continue;
         }
         await this.log(storeId, 'back_in_stock', req.email, `req:${req._id}`, true);
@@ -438,6 +467,7 @@ export class MarketingAutomationsService {
   }
 
   async processPriceDrops(): Promise<{ notified: number }> {
+    this.startRun();
     const enabled = await this.r.marketingAutomationSettingsModel.find({ 'priceDrop.enabled': true }).select('storeId').lean();
     let notified = 0;
     for (const row of enabled as any[]) {
@@ -481,10 +511,15 @@ export class MarketingAutomationsService {
       if (dropPercent < settings.priceDrop.minDropPercent) continue; // keep baseline so small cuts add up
 
       const product = await this.r.productModel.findOne({ _id: v.productId, isDelete: false }).select('name slug images status').lean() as any;
+      let ranOutOfRoom = false;
       if (product && (!product.status || product.status === 'active')) {
-        notified += await this.sendPriceDrop(storeId, store, settings, v, product, last, price);
+        const r = await this.sendPriceDrop(storeId, store, settings, v, product, last, price);
+        notified += r.sent;
+        ranOutOfRoom = r.outOfRoom;
       }
-      await this.r.priceSnapshotModel.updateOne({ variantId }, { $set: { price } });
+      // Not everyone was reached because the month's allowance ran out: keep the old price as the baseline, so the next run
+      // (when there is room again) finishes the job. People who already got it are skipped by the dedupe log.
+      if (!ranOutOfRoom) await this.r.priceSnapshotModel.updateOne({ variantId }, { $set: { price } });
     }
     return notified;
   }
@@ -503,13 +538,15 @@ export class MarketingAutomationsService {
     const base = storePublicUrl(store);
     const productUrl = base && product.slug ? `${base}/product/${product.slug}` : base;
     let sent = 0;
+    let outOfRoom = false;
 
     for (const u of users as any[]) {
       const email = normalizeEmail(u.email);
       const token = subs.get(email);
       if (!token) continue; // not subscribed to this store's marketing
+      if (!(await this.takeRoom(storeId))) { outOfRoom = true; break; } // plan allowance used up for this month
       const logId = await this.claim(storeId, 'price_drop', email, `${v._id}:${newPrice}`);
-      if (!logId) continue;
+      if (!logId) { this.giveRoomBack(storeId); continue; }
       const personal = { ...vars, customerName: u.name || 'there' };
       const unsubscribeUrl = newsletterUnsubscribeUrl(token);
       const subject = renderMergeTags(settings.priceDrop.subject, personal);
@@ -533,14 +570,15 @@ export class MarketingAutomationsService {
       });
       const ok = await this.emailService.sendMail(email, subject, html, store.contactEmail ?? null, unsubscribeHeaders(unsubscribeUrl), undefined, store.name);
       await this.markDelivered(logId, ok);
-      if (ok) sent++;
+      if (ok) sent++; else this.giveRoomBack(storeId);
     }
-    return sent;
+    return { sent, outOfRoom };
   }
 
   // ── Win-back ─────────────────────────────────────────────────────────────
 
   async processWinBack(): Promise<{ notified: number }> {
+    this.startRun();
     const enabled = await this.r.marketingAutomationSettingsModel.find({ 'winBack.enabled': true }).select('storeId').lean();
     let notified = 0;
     for (const row of enabled as any[]) {
@@ -555,19 +593,34 @@ export class MarketingAutomationsService {
     return { notified };
   }
 
+  /** Lapsed customers are worked through in pages (newest lapse first), so a store with more than 500 of them is not stuck on the
+   *  first 500 forever: people already mailed are skipped by the dedupe log and the next page is read. */
   private async processWinBackForStore(storeId: string): Promise<number> {
     const [settings, store] = await Promise.all([this.getSettings(storeId), this.loadStore(storeId)]);
     if (!store || !settings.winBack.enabled) return 0;
     const cutoff = new Date(Date.now() - settings.winBack.afterDays * 86_400_000);
+    let sent = 0;
+    let skip = 0;
+    for (let page = 0; page < 20 && sent < BATCH; page++) {
+      const r = await this.winBackPage(storeId, store, settings, cutoff, skip);
+      sent += r.sent;
+      skip += r.scanned;
+      if (r.outOfRoom || r.scanned < BATCH) break;
+    }
+    return sent;
+  }
+
+  private async winBackPage(storeId: string, store: StoreLite, settings: AutomationSettingsShape, cutoff: Date, skip: number): Promise<{ sent: number; scanned: number; outOfRoom: boolean }> {
 
     const lapsed: { _id: string; lastOrderAt: Date }[] = await this.r.orderModel.aggregate([
       { $match: { 'sellerOrders.storeId': storeId, isDelete: false } },
       { $group: { _id: '$userId', lastOrderAt: { $max: '$createdAt' } } },
       { $match: { lastOrderAt: { $lt: cutoff } } },
-      { $sort: { lastOrderAt: -1 } },
+      { $sort: { lastOrderAt: -1, _id: 1 } },
+      { $skip: skip },
       { $limit: BATCH },
     ]);
-    if (lapsed.length === 0) return 0;
+    if (lapsed.length === 0) return { sent: 0, scanned: 0, outOfRoom: false };
 
     const lapsedIds = lapsed.map((l) => String(l._id)).filter((id) => isValidObjectId(id));
     const users = await this.r.userModel.find({ _id: { $in: lapsedIds }, isDelete: { $ne: true } }).select('name email').lean();
@@ -575,6 +628,7 @@ export class MarketingAutomationsService {
     const subs = await this.activeSubscribers(storeId, users.map((u: any) => normalizeEmail(u.email)));
     const shopUrl = storePublicUrl(store);
     let sent = 0;
+    let outOfRoom = false;
 
     for (const l of lapsed) {
       const u: any = userById.get(String(l._id));
@@ -584,8 +638,9 @@ export class MarketingAutomationsService {
       if (!token) continue;
       // One win-back per lapse: keyed on the order they lapsed after, so a
       // customer who comes back and lapses again gets a fresh one.
+      if (!(await this.takeRoom(storeId))) { outOfRoom = true; break; } // plan allowance used up for this month
       const logId = await this.claim(storeId, 'win_back', email, `last:${new Date(l.lastOrderAt).toISOString()}`);
-      if (!logId) continue;
+      if (!logId) { this.giveRoomBack(storeId); continue; }
       const vars = { customerName: u.name || 'there', storeName: store.name };
       const unsubscribeUrl = newsletterUnsubscribeUrl(token);
       const subject = renderMergeTags(settings.winBack.subject, vars);
@@ -607,8 +662,8 @@ export class MarketingAutomationsService {
       });
       const ok = await this.emailService.sendMail(email, subject, html, store.contactEmail ?? null, unsubscribeHeaders(unsubscribeUrl), undefined, store.name);
       await this.markDelivered(logId, ok);
-      if (ok) sent++;
+      if (ok) sent++; else this.giveRoomBack(storeId);
     }
-    return sent;
+    return { sent, scanned: lapsed.length, outOfRoom };
   }
 }

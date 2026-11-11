@@ -31,7 +31,14 @@ export class TransactionFeeBill {
   /** Per-sale-currency detail: what accrued natively and its USD value at billing time. */
   @Prop({ type: [Object], default: [] }) breakdown: Array<{ currency: string; amount: number; amountUSD: number; saleCount: number }>;
 
-  @Prop({ type: String, enum: ['creating', 'invoiced', 'paid', 'payment_failed', 'failed'], default: 'creating' }) status: string;
+  @Prop({ type: String, enum: ['creating', 'invoiced', 'awaiting_payment', 'paid', 'payment_failed', 'failed'], default: 'creating' }) status: string;
+
+  /** 'stripe' = charged to the seller's saved card; 'manual' = the seller has no card on file, so the bill waits for a bank transfer
+   *  (or for a card to be added) and the admin marks it paid. */
+  @Prop({ type: String, enum: ['stripe', 'manual'], default: 'stripe' }) collectionMode: string;
+  @Prop({ type: Date, default: null }) dueAt: Date | null;
+  @Prop({ type: String, default: null }) markedPaidBy: string | null;
+  @Prop({ type: String, default: null }) paymentNote: string | null;
   @Prop({ type: String, default: null }) stripeInvoiceId: string | null;
   @Prop({ type: String, default: null }) hostedInvoiceUrl: string | null;
   @Prop({ type: Date, default: null }) paidAt: Date | null;

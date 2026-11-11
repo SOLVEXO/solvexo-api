@@ -142,7 +142,7 @@ export class PlatformPlan {
     maxMarkets: number;                    // -1 = unlimited — max checkout currencies (Store.enabledCurrencies), base included
     digitalCoursesAllowed: boolean;        // gates creating courses (Digital hub)
     maxB2BCatalogs: number;                // -1 = unlimited — wholesale catalogs per store (Shopify caps non-Plus plans at 3)
-    monthlyEmailSends: number;             // marketing-campaign emails per calendar month (automations and abandoned-cart mails are not counted)
+    monthlyEmailSends: number;             // marketing emails per calendar month: campaigns, automations (welcome, back in stock, price drop, win-back) and abandoned-cart reminders
   };
 
   @Prop({ type: String, enum: ['active', 'archived'], default: 'active' }) status: string;
