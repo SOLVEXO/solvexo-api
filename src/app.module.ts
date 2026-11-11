@@ -103,6 +103,7 @@ import { FulfillmentServicesModule } from './fulfillment-services/fulfillment.mo
 import { SellingPlansModule } from './selling-plans/selling-plans.module';
 import { CheckoutRulesModule } from './checkout-rules/checkout-rules.module';
 import { ExperimentsModule } from './experiments/experiments.module';
+import { AppPlatformModule } from './app-platform/app-platform.module';
 import { KhataModule } from './khata/khata.module';
 import { ProductFeedsModule } from './product-feeds/product-feeds.module';
 import { MerchantApiModule } from './merchant-api/merchant-api.module';
@@ -249,6 +250,7 @@ import { AppI18nModule } from './i18n/i18n.module';
     SellingPlansModule,
     CheckoutRulesModule,
     ExperimentsModule,
+    AppPlatformModule,
     KhataModule,
     ProductFeedsModule,
     MerchantApiModule,

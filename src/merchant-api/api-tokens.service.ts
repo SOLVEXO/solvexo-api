@@ -24,7 +24,7 @@ export class ApiTokensService {
     const name = typeof body?.name === 'string' ? body.name.trim().slice(0, 80) : '';
     if (!name) throw new BadRequestException('Give the token a name');
     const scopes = validScopes(body?.scopes); if (!scopes) throw new BadRequestException('Choose at least one valid permission');
-    if ((await this.tokens.countDocuments({ storeId, revokedAt: null })) >= MAX_TOKENS) throw new BadRequestException(`At most ${MAX_TOKENS} active tokens per store`);
+    if ((await this.tokens.countDocuments({ storeId, revokedAt: null, appInstallId: null })) >= MAX_TOKENS) throw new BadRequestException(`At most ${MAX_TOKENS} active tokens per store`);
     const t = generateToken();
     const doc = await this.tokens.create({ storeId, name, tokenHash: t.hash, prefix: t.prefix, scopes, createdBy: actor.id });
     void this.audit(storeId, actor, 'api_token_created', `Token "${name}" created (${scopes.join(', ')})`, String(doc._id));

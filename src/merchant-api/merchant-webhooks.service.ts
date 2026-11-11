@@ -80,7 +80,7 @@ export class MerchantWebhooksService implements OnModuleInit {
   async create(storeId: string, actor: { id: string; role: string }, body: any) {
     const err = validateWebhookUrl(body?.url); if (err) throw new BadRequestException(err);
     const events = validEvents(body?.events); if (!events) throw new BadRequestException('Choose at least one valid event');
-    if ((await this.subs.countDocuments({ storeId })) >= MAX_SUBSCRIPTIONS) throw new BadRequestException(`At most ${MAX_SUBSCRIPTIONS} webhooks per store`);
+    if ((await this.subs.countDocuments({ storeId, appInstallId: null })) >= MAX_SUBSCRIPTIONS) throw new BadRequestException(`At most ${MAX_SUBSCRIPTIONS} webhooks per store`);
     const secret = newSecret();
     const doc = await this.subs.create({ storeId, url: String(body.url).trim(), events, secretEnc: encryptCredential(secret, 'INTEGRATIONS'), secretHint: hint(secret), description: typeof body?.description === 'string' ? body.description.slice(0, 120) : '' });
     void this.audit(storeId, actor, 'webhook_created', `Webhook created for ${events.join(', ')}`, String(doc._id));

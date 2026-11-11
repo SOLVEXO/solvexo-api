@@ -30,6 +30,7 @@ export const ACTIVITY_LOG_CATEGORIES = [
   'fulfillment',
   'checkout_rules',
   'experiments',
+  'apps',
   'webhooks',
   'api_tokens',
   'api_token',

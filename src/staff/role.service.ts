@@ -52,6 +52,8 @@ const PRESET_ROLES: { name: string; description: string; permissions: string[] }
       'checkout_rules.view', 'checkout_rules.manage',
       // Added with PRESET_VERSION 8
       'experiments.view', 'experiments.manage',
+      // Added with PRESET_VERSION 9
+      'apps.view', 'apps.manage',
     ],
   },
   {
@@ -67,7 +69,7 @@ const PRESET_ROLES: { name: string; description: string; permissions: string[] }
 ];
 
 /** Bump when PRESET_ROLES gains permissions; list what each preset gets in PRESET_ADDITIONS for that version. */
-const PRESET_VERSION = 8;
+const PRESET_VERSION = 9;
 const PRESET_ADDITIONS: Record<number, Record<string, string[]>> = {
   1: {
     'Store Manager': ['products.create', 'collections.manage', 'categories.manage', 'draft_orders.manage', 'reviews.manage', 'activity_log.view'],
@@ -100,6 +102,10 @@ const PRESET_ADDITIONS: Record<number, Record<string, string[]>> = {
   8: {
     'Store Manager': ['experiments.view', 'experiments.manage'],
     'Support Staff': ['experiments.view'],
+  },
+  9: {
+    'Store Manager': ['apps.view'],
+    'Support Staff': [],
   },
 };
 

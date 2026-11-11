@@ -97,6 +97,8 @@ export const STAFF_PERMISSIONS = [
   'checkout_rules.view', 'checkout_rules.manage',
   // A/B experiments
   'experiments.view', 'experiments.manage',
+  // Apps (admin-approved apps with API access)
+  'apps.view', 'apps.manage',
   // Finance
   'finance.payouts.view', 'finance.payments.manage', 'finance.tax_documents.manage',
   // Messaging — no dedicated `:storeId` route param on this controller
