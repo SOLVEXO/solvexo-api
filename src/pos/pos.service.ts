@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { offlineLinkBaseOf } from './pos-receipt-link.util';
 import { localDay, localHour, localKey, localRange } from './pos-day.util';
 import { bookActive, ModifierGroup, modifierSuffix, priceLine } from './pos-pricing.util';
 import { resolveStoreTimeZone } from '../common/store-timezone.util';
@@ -1239,8 +1240,11 @@ export class PosService {
               const sp = await this.customers!.ledger.spend({ storeId: dto.storeId, customerId: custInfo!.ledgerId, amountMinor: toMinor(creditLine.amount, money.exp), type: 'spend', idemKey: `sale:${String((created as any)._id)}`, note: `Sale ${(created as any).saleNumber}`, actor: { actorId: dto.employeeId, actorRole: 'cashier' }, refs: { saleId: String((created as any)._id), deviceId: this.callerDeviceId(), registerId: dto.registerId, sessionId: dto.sessionId } }, tx);
               if (!sp.ok) throw businessConflict('STORE_CREDIT_INSUFFICIENT', 'The customer\'s store credit does not cover this payment');
             }
-            if (loyaltyRedeem.points) await this.customers!.redeemPointsInTx(tx, { storeId: dto.storeId, ledgerId: custInfo!.ledgerId, points: loyaltyRedeem.points, saleId: String((created as any)._id), description: `Redeemed at the till — sale ${(created as any).saleNumber}` });
-            if (earnedPoints > 0) await this.customers!.earnInTx(tx, { storeId: dto.storeId, ledgerId: custInfo!.ledgerId, points: earnedPoints, saleId: String((created as any)._id), description: `Sale ${(created as any).saleNumber}`, tiers: loyaltyCfg!.tiers });
+            let pointsAfter: number | undefined;
+            if (loyaltyRedeem.points) pointsAfter = await this.customers!.redeemPointsInTx(tx, { storeId: dto.storeId, ledgerId: custInfo!.ledgerId, points: loyaltyRedeem.points, saleId: String((created as any)._id), description: `Redeemed at the till — sale ${(created as any).saleNumber}` });
+            if (earnedPoints > 0) pointsAfter = (await this.customers!.earnInTx(tx, { storeId: dto.storeId, ledgerId: custInfo!.ledgerId, points: earnedPoints, saleId: String((created as any)._id), description: `Sale ${(created as any).saleNumber}`, tiers: loyaltyCfg!.tiers })) ?? pointsAfter;
+            // G4.9: an ONLINE sale with a customer (loyalty on) keeps the points balance after it, from the ledger, in this transaction (offline replays: absent)
+            if (custInfo && loyaltyCfg?.enabled && !off.isOffline) await this.stampPointsAfter(tx, created, dto.storeId, custInfo.ledgerId, pointsAfter);
             await this.recordPayments(created, settled!.lines, { ...auditCtx, employeeId: dto.employeeId }, tx);
             await this.consumeDigital(dto.storeId, digital, created, tx); // one sale per payment: the unique `consumed` event commits with the sale or not at all
             if (couponUsed) await this.consumeCoupon(String(couponUsed._id), tx); // race-safe usage count, in the same transaction
@@ -1432,7 +1436,9 @@ export class PosService {
         const sp = await this.customers!.ledger.spend({ storeId: String((sale as any).storeId), customerId: custInfo!.ledgerId, amountMinor: toMinor(creditLine.amount, money.exp), type: 'spend', idemKey: `sale:${saleId}`, note: `Sale ${(sale as any).saleNumber}`, actor: { actorId: (sale as any).employeeId, actorRole: 'cashier' }, refs: { saleId, deviceId: this.callerDeviceId(), registerId: completeCtx.registerId, sessionId: completeCtx.sessionId } }, tx);
         if (!sp.ok) throw businessConflict('STORE_CREDIT_INSUFFICIENT', 'The customer\'s store credit does not cover this payment');
       }
-      if (earnedPoints > 0) await this.customers!.earnInTx(tx, { storeId: String((sale as any).storeId), ledgerId: custInfo!.ledgerId, points: earnedPoints, saleId, description: `Sale ${(sale as any).saleNumber}`, tiers: loyaltyCfg!.tiers });
+      const pointsAfter = earnedPoints > 0 ? await this.customers!.earnInTx(tx, { storeId: String((sale as any).storeId), ledgerId: custInfo!.ledgerId, points: earnedPoints, saleId, description: `Sale ${(sale as any).saleNumber}`, tiers: loyaltyCfg!.tiers }) : undefined;
+      // G4.9: a held sale paid now (online) keeps the points balance after it too
+      if (custInfo && loyaltyCfg?.enabled) await this.stampPointsAfter(tx, claimed, String((sale as any).storeId), custInfo.ledgerId, pointsAfter);
       await this.recordPayments(claimed, settled.lines, { ...completeCtx, employeeId: (sale as any).employeeId }, tx);
       await this.consumeDigital(String((sale as any).storeId), digital, claimed, tx);
       if (couponUsed) await this.consumeCoupon(String(couponUsed._id), tx); // race-safe usage count, in the same transaction
@@ -3389,6 +3395,13 @@ export class PosService {
 
   // ── POS SETTINGS ──────────────────────────────────────────────────────────
 
+  /** G4.9: `loyaltyBalanceAfterPoints` on the sale — the customer's points after this sale, read from the ledger inside the sale's transaction. */
+  private async stampPointsAfter(tx: any, sale: any, storeId: string, ledgerId: string, known?: number) {
+    const after = known ?? (await this.customers!.pointsBalanceInTx(tx, storeId, ledgerId));
+    await this.r.saleModel.updateOne({ _id: sale._id }, { $set: { loyaltyBalanceAfterPoints: after } }, tx ? { session: tx } : undefined);
+    if (typeof sale.set === 'function') sale.set('loyaltyBalanceAfterPoints', after); else sale.loyaltyBalanceAfterPoints = after;
+  }
+
   async getPosSettings(sellerId: string, storeId: string) {
     await this.verifyStoreOwnership(storeId, sellerId);
 
@@ -3400,7 +3413,9 @@ export class PosService {
     // The authoritative selling currency comes from the store, not from the free-text `currencySymbol`.
     await this.ensureVersionRow(storeId);
     const { currency, exp } = await this.moneyContext(storeId);
-    return { success: true, data: { ...settings, autoLockMinutes: settings.autoLockMinutes ?? 5, settingsVersion: settings.settingsVersion || 1, currency, currencyExponent: exp } };
+    // G4.9: the store's public id + the base of the receipt link a till builds offline (`<base><sale client key>`), cached with the settings
+    const store: any = await this.r.storeModel.findById(storeId).select('slug').lean();
+    return { success: true, data: { ...settings, autoLockMinutes: settings.autoLockMinutes ?? 5, settingsVersion: settings.settingsVersion || 1, currency, currencyExponent: exp, ...offlineLinkBaseOf(store?.slug) } };
   }
 
   async updatePosSettings(sellerId: string, storeId: string, dto: UpdatePosSettingsDto) {

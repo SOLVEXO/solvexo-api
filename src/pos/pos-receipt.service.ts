@@ -6,6 +6,8 @@ import { API_PUBLIC_ORIGIN } from '@/common/api-origin';
 import { PosService } from './pos.service';
 
 const esc = (v: unknown): string => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
+import { CLIENT_KEY, CLIENT_LINK_WINDOW_MS, PUBLIC_SLUG } from './pos-receipt-link.util';
+export { SYNCING_PAGE } from './pos-receipt-link.util';
 const METHOD_LABEL: Record<string, string> = { cash: 'Cash', card: 'Card', other: 'Bank / other', raast_qr: 'Raast' };
 
 /**
@@ -54,6 +56,32 @@ export class PosReceiptService {
     if (!/^[A-Za-z0-9_-]{30,40}$/.test(token ?? '')) return null;
     const sale: any = await this.r.saleModel.findOne({ 'receipt.token': token, 'receipt.revokedAt': null }).lean();
     if (!sale || sale.status === 'held' || sale.status === 'discarded') return null;
+    return this.receiptHtml(sale);
+  }
+
+  /**
+   * G4.9 `GET /r/s/:storePublicId/:clientKey` — the link a till can print BEFORE the sale reaches the server (offline, or at checkout before the
+   * token link is fetched): the store's public id (its slug, assigned once and never changed) + the sale's client key (the idempotency key the till
+   * generates when Charge is first tapped: `pos-<µs>-<96 random bits>`, the same key the offline queue replays with).
+   *   · malformed, unknown store, a key older than the offline window or from the future → null (the caller's single 404);
+   *   · a well-formed key with no sale yet → 'syncing' (a page with NOTHING about any sale; it refreshes itself);
+   *   · the sale → the same receipt as `/r/:token`. A link a manager revoked stops this one too.
+   */
+  async renderByClientKey(storePublicId: string, clientKey: string, now = new Date()): Promise<string | 'syncing' | null> {
+    if (!PUBLIC_SLUG.test(storePublicId ?? '')) return null;
+    const m = CLIENT_KEY.exec(clientKey ?? '');
+    if (!m) return null;
+    const madeAt = Number(m[1]) / 1000;
+    if (!Number.isFinite(madeAt) || madeAt > now.getTime() + 86_400_000 || madeAt < now.getTime() - CLIENT_LINK_WINDOW_MS) return null;
+    const store: any = await this.r.storeModel.findOne({ slug: storePublicId }).select('_id').lean();
+    if (!store) return null;
+    const sale: any = await this.r.saleModel.findOne({ storeId: String(store._id), idempotencyKey: clientKey }).lean();
+    if (!sale) return 'syncing';
+    if (sale.status === 'held' || sale.status === 'discarded' || sale.receipt?.revokedAt) return null;
+    return this.receiptHtml(sale);
+  }
+
+  private async receiptHtml(sale: any): Promise<string> {
     const [store, settings]: any[] = await Promise.all([
       this.r.storeModel.findById(sale.storeId).select('name logo').lean(),
       this.r.posSettingsModel.findOne({ storeId: sale.storeId }).select('businessName businessAddress businessTaxId receiptHeader receiptFooter').lean(),
@@ -144,14 +172,16 @@ body{margin:0;background:#f4f1ee;font:16px/1.45 -apple-system,BlinkMacSystemFont
     await this.pos.verifyStoreOwnership(sale.storeId, sellerId);
     const creditNotes = await this.r.posCreditNoteModel.find({ saleId }).sort({ seq: 1 }).lean();
     // G4.8: how many times each document was reprinted (the print says "REPRINT #n")
-    const counts: any[] = this.r.posReprintEventModel ? await this.r.posReprintEventModel.aggregate([{ $match: { saleId: String(saleId) } }, { $group: { _id: { t: '$documentType', d: '$documentId' }, n: { $max: '$reprintNumber' } } }]) : [];
+    const counts: any[] = this.r.posReprintEventModel ? await this.r.posReprintEventModel.aggregate([{ $match: { saleId: String(saleId) } }, { $group: { _id: { t: '$documentType', d: '$documentId' }, n: { $max: '$reprintNumber' }, prints: { $sum: 1 } } }]) : [];
     const n = (t: string, d: string) => counts.find((c) => c._id.t === t && c._id.d === d)?.n ?? 0;
+    // G4.9: `printed` = the document has been printed at least once (its original is out) — the next print is a reprint
+    const p = (t: string, d: string) => (counts.find((c) => c._id.t === t && c._id.d === d)?.prints ?? 0) > 0;
     return {
       success: true,
       data: {
         saleNumber: sale.saleNumber, status: sale.status,
-        invoice: sale.invoice ? { ...sale.invoice, reprintCount: n('invoice', String(saleId)) } : null,
-        creditNotes: creditNotes.map((c: any) => ({ ...c, reprintCount: n('credit_note', String(c._id)) })),
+        invoice: sale.invoice ? { ...sale.invoice, reprintCount: n('invoice', String(saleId)), printed: p('invoice', String(saleId)) } : null,
+        creditNotes: creditNotes.map((c: any) => ({ ...c, reprintCount: n('credit_note', String(c._id)), printed: p('credit_note', String(c._id)) })),
         receiptReprintCount: n('sale', String(saleId)),
       },
     };

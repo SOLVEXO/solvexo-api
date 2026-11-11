@@ -20,7 +20,7 @@ export const GLOBAL_COST_KEYS: ReadonlySet<string> = new Set([
   'grossMargin', 'grossMarginMinor', 'margin', 'marginPercent', 'profit', 'grossProfit', 'grossProfitMinor',
   'afterExpenses', 'afterExpensesMinor', 'costOfGoodsSoldMinor', 'cogs', 'cogsMinor',
   'netWithCostMinor', 'netNoCostMinor', 'costUnknownNetMinor', 'costCoveragePercent',
-  // caught by the source scan when the registry was built (supply cost twins)
+  // caught by the source scan when the registry was built; classified in G4.9 — see COST_FIELD_DECISIONS below for the trace and the reason
   'shippingCostMinor', 'taxCostMinor', 'itemUnitCostMinor',
   // payables in a report (the profit report's note on supplier payments) — found on the screenshot pass
   'supplierPaymentsMinor', 'supplierPayments', 'supplierPaymentsNote',
@@ -44,12 +44,32 @@ export const SCOPED_COST_KEYS: ReadonlyArray<{ prefix: string; keys: ReadonlySet
   },
 ];
 
+/**
+ * G4.9 — the three fields the G4.8 scan caught, traced to every write and read, and classified. Each has ONE meaning (none is used for both an
+ * inbound and a customer amount, so nothing was renamed). The customer-charged amounts have other names and stay visible: a sale's `taxMinor` /
+ * line tax and an order's shipping are not in GLOBAL_COST_KEYS (`taxMinor` / `shippingMinor` are cost only under /api/pos/supply/, as PO amounts).
+ */
+export const COST_FIELD_DECISIONS: Readonly<Record<string, { classified: 'cost' | 'visible'; reason: string }>> = {
+  itemUnitCostMinor: {
+    classified: 'cost',
+    reason: 'purchase-order line unit cost: purchaseOrderTwins() (common/cost-minor.util) derives it from items[].unitCost; the PO pre-validate hook writes it to items[].unitCostMinor. Never a customer price.',
+  },
+  shippingCostMinor: {
+    classified: 'cost',
+    reason: 'inbound: the shipping the SUPPLIER charges on a purchase order (CreatePurchaseOrderDto.shippingCost → PurchaseOrder.shippingCost + twin; part of the PO total and landed cost; read by pos-supply as the PO shippingMinor; printed on the PO PDF). Only on purchase orders.',
+  },
+  taxCostMinor: {
+    classified: 'cost',
+    reason: 'inbound: the tax on a purchase order / supplier bill (CreatePurchaseOrderDto.taxCost → PurchaseOrder.taxCost + twin; part of the PO total; read by pos-supply as the PO taxMinor). The tax charged to the CUSTOMER is the sale\'s taxMinor, a different field.',
+  },
+};
+
 /** Cost-looking names that are NOT cost (settings, sale values, discounts, loyalty) — the scan test accepts these. */
 export const NOT_COST: ReadonlySet<string> = new Set([
   'hideCostsFromManagers', 'costsHidden', 'discountValue', 'discountValueMinor', 'redeemValueMinor', 'avgTransactionValue', 'avgTransactionValueMinor',
   'valueRemaining', 'useValue', 'defaultValue', 'value', 'costStore', 'expenses', 'expensesMinor', 'expensesByCategoryMinor',
   // internal names, never a response key
-  'costMinorMetrics', '_costDecimal', 'GLOBAL_COST_KEYS', 'SCOPED_COST_KEYS', 'NOT_COST',
+  'costMinorMetrics', '_costDecimal', 'GLOBAL_COST_KEYS', 'SCOPED_COST_KEYS', 'NOT_COST', 'COST_FIELD_DECISIONS',
 ]);
 
 /** Which keys are cost on [path]: the global ones, plus the route's scoped keys and pattern. */

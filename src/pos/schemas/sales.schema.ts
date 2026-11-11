@@ -184,6 +184,11 @@ export class Sale {
   @Prop({ type: String, default: null })
   provisionalNumber: string | null;
 
+  /** G4.9: the customer's loyalty points balance right after this sale (from the ledger, in the sale's transaction). Set on sales made ONLINE with a
+   *  customer while loyalty is on; absent on older sales, walk-ins and offline replays (the receipt then shows points earned / redeemed). */
+  @Prop({ type: Number })
+  loyaltyBalanceAfterPoints?: number;
+
   /** G2.4: a HELD sale remembers the coupon CODE the cashier had (not a reservation — nothing is counted or discounted until it is completed;
    *  the code is checked again, server-side, when the sale is resumed / completed). */
   @Prop({ type: String, default: null })

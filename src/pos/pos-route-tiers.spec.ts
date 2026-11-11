@@ -40,7 +40,8 @@ function routes() {
 
 describe('POS route tiers', () => {
   const all = routes();
-  const required = all.filter((r) => r.path.startsWith('/api/pos') && (r.verb !== 'GET' || SENSITIVE_GET.test(r.path)));
+  // G4.9: the public receipt links (`/r/...`, no auth by design) are declared too, and must be `public`
+  const required = all.filter((r) => r.path.startsWith('/r/') || (r.path.startsWith('/api/pos') && (r.verb !== 'GET' || SENSITIVE_GET.test(r.path))));
 
   it('enumerates the controllers (sanity)', () => {
     expect(all.length).toBeGreaterThan(150);
@@ -53,6 +54,12 @@ describe('POS route tiers', () => {
 
   it('a route whose guard demands a manager PIN is never declared cashier or public', () => {
     expect(all.filter((r) => r.managerPin && ['cashier', 'public'].includes(POS_ROUTE_TIERS[r.key] ?? '')).map((r) => r.key)).toEqual([]);
+  });
+
+  it('G4.9: every public receipt link is declared public, including the offline-buildable /r/s/:store/:key', () => {
+    const links = all.filter((r) => r.path.startsWith('/r/'));
+    expect(links.map((r) => r.key)).toContain('GET /r/s/:store/:key');
+    expect(links.filter((r) => POS_ROUTE_TIERS[r.key] !== 'public').map((r) => r.key)).toEqual([]);
   });
 
   it('no stale declarations', () => {

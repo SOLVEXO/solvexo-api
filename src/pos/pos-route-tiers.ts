@@ -11,6 +11,11 @@
 export type PosTier = 'owner' | 'manager-with-limit' | 'cashier' | 'public';
 
 export const POS_ROUTE_TIERS: Readonly<Record<string, PosTier>> = {
+  // public receipt links: no auth by design — trust is the unguessable token / client key; rate-limited, one 404 for anything unknown
+  'GET /r/:token': 'public',
+  'GET /r/:token/invoice': 'public',
+  'GET /r/:token/credit-note/:number': 'public',
+  'GET /r/s/:store/:key': 'public', // G4.9 offline-buildable link (store public id + the sale's client key); "syncing" page until the sale arrives
   'GET /api/pos/audit-logs/:storeId': 'manager-with-limit',
   'GET /api/pos/audit/verify/:storeId': 'manager-with-limit',
   'GET /api/pos/cash/daybook/:storeId': 'cashier',

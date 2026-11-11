@@ -2,7 +2,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import mongoose from 'mongoose';
-import { GLOBAL_COST_KEYS, NOT_COST, SCOPED_COST_KEYS, carriesCost, costKeysFor, stripCost } from './cost-visibility.registry';
+import { COST_FIELD_DECISIONS, GLOBAL_COST_KEYS, NOT_COST, SCOPED_COST_KEYS, carriesCost, costKeysFor, stripCost } from './cost-visibility.registry';
 
 /** G4.8: every cost-looking key in the POS / inventory / product sources must be classified — a new DTO field cannot leak cost unnoticed. */
 describe('cost field registry', () => {
@@ -31,6 +31,19 @@ describe('cost field registry', () => {
       }
     }
     expect([...new Set(unclassified)]).toEqual([]);
+  });
+
+  it('G4.9: the three traced fields are classified as decided — cost everywhere; the customer tax / shipping names stay visible on sales', () => {
+    expect(Object.keys(COST_FIELD_DECISIONS).sort()).toEqual(['itemUnitCostMinor', 'shippingCostMinor', 'taxCostMinor']);
+    for (const [k, d] of Object.entries(COST_FIELD_DECISIONS)) {
+      expect(d.reason.length).toBeGreaterThan(20);
+      expect(GLOBAL_COST_KEYS.has(k)).toBe(d.classified === 'cost');
+      expect(NOT_COST.has(k)).toBe(d.classified === 'visible');
+    }
+    const sale = costKeysFor('/api/pos/sales/st1');
+    expect(['taxMinor', 'shippingMinor', 'totalMinor'].some(sale)).toBe(false);
+    const supply = costKeysFor('/api/pos/supply/st1/purchase-orders');
+    expect(['taxMinor', 'shippingMinor', 'shippingCostMinor', 'taxCostMinor'].every(supply)).toBe(true);
   });
 
   it('strips global keys everywhere and scoped keys only on their routes', () => {

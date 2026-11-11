@@ -61,12 +61,12 @@ export class PosCustomerCore {
   async redeemPointsInTx(tx: ClientSession | undefined, a: { storeId: string; ledgerId: string; points: number; saleId: string; description: string }) {
     const m: any = await this.r.loyaltyMemberModel.findOneAndUpdate({ storeId: a.storeId, userId: a.ledgerId, pointsBalance: { $gte: a.points } }, { $inc: { pointsBalance: -a.points }, $set: { lastActivityAt: new Date() } }, { new: true, ...(tx ? { session: tx } : {}) });
     if (!m) throw new ConflictException({ statusCode: 409, code: 'LOYALTY_INSUFFICIENT_POINTS', message: 'The customer does not have enough points' });
-    await this.r.loyaltyTransactionModel.create([{ storeId: a.storeId, memberId: String(m._id), userId: a.ledgerId, type: 'redeem', points: -a.points, orderId: a.saleId, balanceAfter: m.pointsBalance, description: a.description }], tx ? { session: tx } : undefined);
+    await this.r.loyaltyTransactionModel.create([{ storeId: a.storeId, memberId: String(m._id), userId: a.ledgerId, type: 'redeem', points: -a.points, orderId: a.saleId, balanceAfter: m.pointsBalance, description: a.description }], tx ? { session: tx } : undefined);    return m.pointsBalance as number; // G4.9: the ledger balance after this entry
   }
 
   /** Adds (or, negative, takes back) earned points; earned points also raise lifetime and the tier. Never below zero. */
-  async earnInTx(tx: ClientSession | undefined, a: { storeId: string; ledgerId: string; points: number; saleId: string; description: string; tiers: Array<{ name: string; minPoints: number }>; type?: 'purchase' | 'adjustment' | 'redeem' }) {
-    if (!a.points) return;
+  async earnInTx(tx: ClientSession | undefined, a: { storeId: string; ledgerId: string; points: number; saleId: string; description: string; tiers: Array<{ name: string; minPoints: number }>; type?: 'purchase' | 'adjustment' | 'redeem' }): Promise<number | undefined> {
+    if (!a.points) return undefined;
     const sess = tx ? { session: tx } : {};
     let m: any = await this.r.loyaltyMemberModel.findOne({ storeId: a.storeId, userId: a.ledgerId }).session(tx ?? null);
     if (!m) { [m] = await this.r.loyaltyMemberModel.create([{ storeId: a.storeId, userId: a.ledgerId, pointsBalance: 0, lifetimePoints: 0, currentTier: null }], sess); }
@@ -76,5 +76,12 @@ export class PosCustomerCore {
     if (a.points > 0 && (a.type ?? 'purchase') === 'purchase') upd.currentTier = tierFor(lifetime, a.tiers);
     await this.r.loyaltyMemberModel.updateOne({ _id: m._id }, { $set: upd }, sess);
     await this.r.loyaltyTransactionModel.create([{ storeId: a.storeId, memberId: String(m._id), userId: a.ledgerId, type: a.type ?? (a.points > 0 ? 'purchase' : 'adjustment'), points: a.points, orderId: a.saleId, balanceAfter: balance, description: a.description }], sess);
+    return balance; // G4.9: the ledger balance after this entry
+  }
+
+  /** G4.9: the member's points balance as the ledger stands inside [tx] (0 for a customer with no loyalty entries yet). */
+  async pointsBalanceInTx(tx: ClientSession | undefined, storeId: string, ledgerId: string): Promise<number> {
+    const m: any = await this.r.loyaltyMemberModel.findOne({ storeId, userId: ledgerId }).select('pointsBalance').session(tx ?? null).lean();
+    return m?.pointsBalance ?? 0;
   }
 }

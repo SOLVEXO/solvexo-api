@@ -147,6 +147,9 @@ describe('G4.8 · reprints (recorded; a PIN when the store requires it)', () => 
   it('on: a cashier needs a manager PIN (POS_APPROVAL_REQUIRED without one); a manager reprints directly', async () => {
     const s = await world(); const sale = await withSale(s);
     await st.update(owner(s) as any, s.storeId, { security: { requirePinForReprint: true } }, {});
+    // G4.9: the FIRST print of the tax invoice is the original — no PIN; every later print is a reprint and follows the rule
+    const orig: any = await reprints.reprint(device(s, 'cashier'), s.storeId, { documentType: 'invoice', documentId: sale }, C(s));
+    expect([orig.data.kind, orig.data.reprintNumber]).toEqual(['original', 0]);
     expect(await code(reprints.reprint(device(s, 'cashier'), s.storeId, { documentType: 'invoice', documentId: sale }, C(s)))).toBe('POS_APPROVAL_REQUIRED');
     expect(await code(reprints.reprint(device(s, 'cashier'), s.storeId, { documentType: 'invoice', documentId: sale }, { ...C(s), approver: tok(s, 'cashier') }))).toBe('POS_APPROVAL_REQUIRED');
     const ok: any = await reprints.reprint(device(s, 'cashier'), s.storeId, { documentType: 'invoice', documentId: sale }, { ...C(s), approver: tok(s, 'manager') });
