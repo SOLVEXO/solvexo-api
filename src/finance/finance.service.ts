@@ -1,7 +1,7 @@
 /* eslint-disable prettier/prettier */
 import {
   Injectable, NotFoundException, ForbiddenException,
-  BadRequestException, ConflictException, OnModuleInit,
+  BadRequestException, ConflictException, OnModuleInit, Optional,
 } from '@nestjs/common';
 import { toStripeAmount } from '@/common/stripe-amount.util';
 import { InjectConnection } from '@nestjs/mongoose';
@@ -22,6 +22,7 @@ import { NotificationsService } from '@/notifications/notifications.service';
 import { NOTIFICATION_TYPES } from '@/notifications/notification.types';
 import { StripeConnectService } from '@/stripe-connect/stripe-connect.service';
 import { PdfReportBuilder } from '@/analytics/utils/pdf-report.util';
+import { SellerTrustService } from '@/seller-trust/seller-trust.service';
 
 // ── Platform fee constants ───────────────────────────────────────────────────
 /** @deprecated NOT used anywhere — Solvexo follows Shopify: only the store's PLAN defines a (third-party gateway) transaction fee; there is no flat/hardcoded sale commission. Kept only so old imports keep compiling. */
@@ -55,6 +56,8 @@ export class FinanceService implements OnModuleInit {
     private readonly notificationsService: NotificationsService,
     private readonly stripeConnectService: StripeConnectService,
     @InjectConnection() private readonly connection: Connection,
+    // Seller trust: refuses payouts while a store is verification-limited or on a manual admin hold.
+    @Optional() private readonly sellerTrust?: SellerTrustService,
   ) {}
 
   // ── Shorthand repo getters ───────────────────────────────────────────────
@@ -890,6 +893,8 @@ export class FinanceService implements OnModuleInit {
 
   async requestPayout(sellerId: string, storeId: string, dto: RequestPayoutDto) {
     await this.verifyStoreOwnership(sellerId, storeId);
+    // Held until the business is verified (after its deadline) or while an admin hold is on — balances stay untouched.
+    await this.sellerTrust?.assertPayoutAllowed(storeId);
     await this.ensureStripeConnectPayoutMethod(storeId, sellerId);
 
     const method = await this.methodModel.findById(dto.payoutMethodId);
@@ -972,6 +977,8 @@ export class FinanceService implements OnModuleInit {
         ]);
         if (!payStore || payStore.isDelete || ['suspended', 'rejected'].includes(payStore.status)
           || !paySeller || paySeller.isDelete || ['suspended', 'deleted'].includes(paySeller.status)) { skipped++; continue; }
+        // Seller trust: verification-limited or admin-held stores are skipped (the balance just waits).
+        if (this.sellerTrust && await this.sellerTrust.getPayoutBlockReason(schedule.storeId, now)) { skipped++; continue; }
 
         await this.ensureStripeConnectPayoutMethod(schedule.storeId, schedule.sellerId);
 

@@ -10,6 +10,7 @@ import { SetFeaturedDto } from './dto/set-featured.dto';
 import { SetStoreBadgeDto } from './dto/set-store-badge.dto';
 import { LeadsQueryDto } from './dto/leads-query.dto';
 import { RejectLeadDto } from './dto/reject-lead.dto';
+import { RequestInfoDto } from './dto/request-info.dto';
 
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { RequirePermission } from '../auth/decorators/require-permission.decorator';
@@ -84,5 +85,11 @@ export class AdminMarketplaceController {
   @Patch('leads/:id/reject')
   rejectLead(@Req() req: any, @Param('id') id: string, @Body() dto: RejectLeadDto) {
     return this.adminMarketplaceService.rejectLead(id, dto.reason, this.meta(req));
+  }
+
+  @RequirePermission('marketplace.manage')
+  @Patch('leads/:id/request-info')
+  requestInfo(@Req() req: any, @Param('id') id: string, @Body() dto: RequestInfoDto) {
+    return this.adminMarketplaceService.requestInfo(id, dto.message, this.meta(req));
   }
 }

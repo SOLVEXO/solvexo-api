@@ -3,6 +3,13 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { DatabaseService } from '../database/databaseservice';
 import { ActivityLogService } from '../activity-log/activity-log.service';
 import { AdminUsersQueryDto } from './dto/admin-users-query.dto';
+import { HAS_NTN_FILTER, storeTrustSnapshot } from '../seller-trust/seller-trust.service';
+
+// "Worst" = furthest from verified — a seller row shows the store that needs attention most.
+const VERIFICATION_WORST_FIRST = ['rejected', 'needs_info', 'not_started', 'pending', 'under_review', 'verified'];
+const RISK_RANK: Record<string, number> = { low: 0, medium: 1, high: 2 };
+const STORE_TRUST_FIELDS = { sellerId: 1, categoryId: 1, country: 1, createdAt: 1, taxId: 1, 'verification.taxId': 1, verificationStatus: 1, verificationDueAt: 1, riskLevel: 1, riskReasons: 1, payoutHold: 1 };
+const csvEsc = (v: unknown) => { const s = v === null || v === undefined ? '' : String(v); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
 
 interface AuditMeta {
   adminId: string;
@@ -63,20 +70,79 @@ export class AdminUsersService {
     };
   }
 
-  private buildMatch(query: AdminUsersQueryDto) {
+  private async buildMatch(query: AdminUsersQueryDto) {
     const match: Record<string, unknown> = { isDelete: false };
     if (query.status) match.status = query.status;
     if (query.search) {
       const rx = { $regex: query.search, $options: 'i' };
       match.$or = [{ name: rx }, { email: rx }];
     }
+    // Store-level seller-trust filters → the sellers owning at least one matching store.
+    const storeAnd: Record<string, unknown>[] = [];
+    if (query.country) {
+      const c = query.country.trim().toUpperCase();
+      storeAnd.push(c === 'PK' ? { country: { $in: ['PK', null] } } : { country: c });
+    }
+    if (query.ntn === 'yes') storeAnd.push(HAS_NTN_FILTER);
+    if (query.ntn === 'no') storeAnd.push({ $nor: HAS_NTN_FILTER.$or });
+    if (query.verification) storeAnd.push(query.verification === 'not_started' ? { verificationStatus: { $in: ['not_started', null] } } : { verificationStatus: query.verification });
+    if (query.risk) storeAnd.push(query.risk === 'low' ? { riskLevel: { $in: ['low', null] } } : { riskLevel: query.risk });
+    if (storeAnd.length) {
+      const sellerIds: string[] = await this.r.storeModel.distinct('sellerId', { isDelete: false, $and: storeAnd });
+      match._id = { $in: sellerIds.filter(Boolean) };
+    }
     return match;
+  }
+
+  /** Per-seller trust columns from their stores (primary store = the oldest). */
+  private async trustBySeller(sellerIds: string[]) {
+    const stores: any[] = sellerIds.length
+      ? await this.r.storeModel.find({ sellerId: { $in: sellerIds }, isDelete: false }, STORE_TRUST_FIELDS).sort({ createdAt: 1 }).lean()
+      : [];
+    const categoryIds = [...new Set(stores.map((s) => s.categoryId).filter(Boolean))];
+    const categories: any[] = categoryIds.length ? await this.r.categoryModel.find({ _id: { $in: categoryIds } }, { name: 1 }).lean() : [];
+    const categoryById = new Map(categories.map((c) => [String(c._id), c.name as string]));
+    const out = new Map<string, { storeCount: number; country: string | null; hasNtn: boolean; ntn: string | null; verificationStatus: string | null; riskLevel: string | null; dueAt: Date | null; sells: string | null }>();
+    for (const s of stores) {
+      const key = String(s.sellerId);
+      const t = storeTrustSnapshot(s);
+      const cur = out.get(key);
+      // Earliest deadline among the seller's not-yet-verified stores.
+      const due = t.verificationStatus !== 'verified' ? t.dueAt : null;
+      if (!cur) {
+        out.set(key, { storeCount: 1, country: s.country ?? 'PK', hasNtn: t.hasNtn, ntn: t.ntn, verificationStatus: t.verificationStatus, riskLevel: t.riskLevel, dueAt: due, sells: s.categoryId ? categoryById.get(String(s.categoryId)) ?? null : null });
+        continue;
+      }
+      if (due && (!cur.dueAt || due < cur.dueAt)) cur.dueAt = due;
+      if (!cur.sells && s.categoryId) cur.sells = categoryById.get(String(s.categoryId)) ?? null;
+      cur.storeCount++;
+      cur.hasNtn = cur.hasNtn || t.hasNtn;
+      cur.ntn = cur.ntn ?? t.ntn;
+      if (VERIFICATION_WORST_FIRST.indexOf(t.verificationStatus) < VERIFICATION_WORST_FIRST.indexOf(cur.verificationStatus ?? 'verified')) cur.verificationStatus = t.verificationStatus;
+      if ((RISK_RANK[t.riskLevel] ?? 0) > (RISK_RANK[cur.riskLevel ?? 'low'] ?? 0)) cur.riskLevel = t.riskLevel;
+    }
+    return out;
+  }
+
+  /** CSV of the seller list (same filters, every page). */
+  async exportCsv(query: AdminUsersQueryDto): Promise<string> {
+    const match = await this.buildMatch(query);
+    const rows: any[] = await this.r.sellerModel.find(match, { name: 1, email: 1, phone: 1, status: 1, createdAt: 1 }).sort({ createdAt: -1 }).limit(20_000).lean();
+    const trust = await this.trustBySeller(rows.map((row) => String(row._id)));
+    const head = ['name', 'email', 'phone', 'status', 'stores', 'country', 'ntn', 'verification', 'risk', 'due_date', 'sells', 'created_at'];
+    const lines = rows.map((row) => {
+      const t = trust.get(String(row._id));
+      return [row.name, row.email, row.phone, row.status, t?.storeCount ?? 0, t?.country, t?.ntn ?? '', t?.verificationStatus, t?.riskLevel,
+        t?.dueAt ? new Date(t.dueAt).toISOString().slice(0, 10) : '', t?.sells ?? '',
+        row.createdAt ? new Date(row.createdAt).toISOString().slice(0, 10) : ''].map(csvEsc).join(',');
+    });
+    return [head.join(','), ...lines].join('\n');
   }
 
   async list(query: AdminUsersQueryDto) {
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
-    const match = this.buildMatch(query);
+    const match = await this.buildMatch(query);
 
     const [rows, total] = await Promise.all([
       this.r.sellerModel
@@ -95,23 +161,29 @@ export class AdminUsersService {
     // one, so store count/plan here is always computed fresh from the real
     // Store collection, never read off that field.
     const sellerIds = rows.map((row) => String(row._id));
-    const stores = sellerIds.length
-      ? await this.r.storeModel.find({ sellerId: { $in: sellerIds }, isDelete: false }, { sellerId: 1 }).lean()
-      : [];
-    const storeCountBySellerId = new Map<string, number>();
-    for (const s of stores) {
-      const key = String((s as any).sellerId);
-      storeCountBySellerId.set(key, (storeCountBySellerId.get(key) ?? 0) + 1);
-    }
+    const trust = await this.trustBySeller(sellerIds);
 
-    const items = rows.map((row: any) => ({
-      id: row._id,
-      name: row.name,
-      email: row.email,
-      status: row.status,
-      createdAt: row.createdAt,
-      storeCount: storeCountBySellerId.get(String(row._id)) ?? 0,
-    }));
+    const items = rows.map((row: any) => {
+      const t = trust.get(String(row._id));
+      return {
+        id: row._id,
+        name: row.name,
+        email: row.email,
+        status: row.status,
+        createdAt: row.createdAt,
+        storeCount: t?.storeCount ?? 0,
+        // Seller trust columns (additive): primary store country, NTN on any store, worst verification, max risk.
+        phone: row.phone ?? null,
+        country: t?.country ?? null,
+        hasNtn: t?.hasNtn ?? false,
+        ntn: t?.ntn ?? null,
+        verificationStatus: t?.verificationStatus ?? null,
+        riskLevel: t?.riskLevel ?? null,
+        dueAt: t?.dueAt ?? null,
+        // Primary store's category name.
+        sells: t?.sells ?? null,
+      };
+    });
 
     return { success: true, data: { items, total, page, limit } };
   }
