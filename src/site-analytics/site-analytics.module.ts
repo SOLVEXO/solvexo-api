@@ -6,6 +6,7 @@ import { RedisModule } from '../redis/redis.module';
 import { SeoModule } from '../seo/seo.module';
 import { SiteAnalyticsSettings, SiteAnalyticsSettingsSchema } from './schemas/site-analytics-settings.schema';
 import { SiteAnalyticsService } from './site-analytics.service';
+import { StoreJourneyService } from './store-journey.service';
 import { SiteAnalyticsAdminController, SiteAnalyticsPublicController } from './site-analytics.controller';
 
 @Module({
@@ -16,6 +17,6 @@ import { SiteAnalyticsAdminController, SiteAnalyticsPublicController } from './s
     MongooseModule.forFeature([{ name: SiteAnalyticsSettings.name, schema: SiteAnalyticsSettingsSchema }]),
   ],
   controllers: [SiteAnalyticsAdminController, SiteAnalyticsPublicController],
-  providers: [SiteAnalyticsService],
+  providers: [SiteAnalyticsService, StoreJourneyService],
 })
 export class SiteAnalyticsModule {}

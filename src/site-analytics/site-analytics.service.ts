@@ -27,6 +27,15 @@ export const FUNNEL_STEPS = [
   { key: 'store_created', label: 'Created a store', event: 'store_created' },
 ] as const;
 
+/** The store setup wizard's steps (`/onboard?step=…`), in order. Each is a page view, so no extra events are needed. */
+export const SETUP_STEPS = [
+  { key: 'store_info', label: 'Store details', slug: 'store-info' },
+  { key: 'checkout', label: 'Plan or free trial', slug: 'checkout' },
+  { key: 'seller_type', label: 'Seller type', slug: 'seller-type' },
+  { key: 'what_you_sell', label: 'What you sell', slug: 'what-you-sell' },
+  { key: 'store_created', label: 'Store created', event: 'store_created' },
+] as const;
+
 /**
  * Solvexo's own website visitors, from Google Analytics 4.
  * - The public site loads the GA tag with the measurement id saved here (`getPublicConfig`).
@@ -283,6 +292,33 @@ export class SiteAnalyticsService {
       return {
         range,
         steps: FUNNEL_STEPS.map((step, i) => ({
+          key: step.key,
+          label: step.label,
+          users: users[i],
+          fromPrevious: i === 0 ? null : pct(users[i], users[i - 1]),
+          fromStart: i === 0 ? null : pct(users[i], users[0]),
+        })),
+      };
+    });
+  }
+
+  /** Users who reached each store setup step, to show where sign-ups stop before a store exists. */
+  async setupSteps(range: SiteRange) {
+    return this.report(`setup:${range}`, CACHE_MS, async () => {
+      const { current } = dateRanges(range);
+      const reports = await this.batch(
+        SETUP_STEPS.map((step) => ({
+          dateRanges: [current],
+          metrics: [{ name: 'totalUsers' }],
+          dimensionFilter: 'event' in step
+            ? { filter: { fieldName: 'eventName', stringFilter: { matchType: 'EXACT', value: step.event } } }
+            : { filter: { fieldName: 'pagePathPlusQueryString', stringFilter: { matchType: 'CONTAINS', value: `onboard?step=${step.slug}` } } },
+        })),
+      );
+      const users = reports.map((r) => reportTotals(r).totalUsers ?? 0);
+      return {
+        range,
+        steps: SETUP_STEPS.map((step, i) => ({
           key: step.key,
           label: step.label,
           users: users[i],
