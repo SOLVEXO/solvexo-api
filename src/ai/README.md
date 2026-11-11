@@ -8,8 +8,8 @@ One service, `TextGenerationService`, writes text with Claude (or canned text in
 Other places that call Claude have their own small clients: **AI SEO suggestions** (`seo/providers/anthropic-seo-ai.provider.ts`, charged to the
 AI credits wallet in `platform-plans/ai-credits.service.ts`) and the **login / onboarding background photo check** (`common/auth-visual.service.ts`).
 
-(The seller "AI Studio" tools were removed on 2026-11-11 by the owner's decision. The `ai_generations` / `ai_credit_transactions` collections are
-no longer used by any code; their old data was left in the database.)
+(The seller "AI Studio" tools were removed on 2026-11-11 by the owner's decision. Its leftover data is removed with
+`npx ts-node src/scripts/remove-ai-studio-data.ts` (dry run first, `--apply` after a backup).)
 
 ## Environment
 

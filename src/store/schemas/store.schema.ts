@@ -37,7 +37,6 @@ export enum StoreTool {
   DIGITAL_DELIVERY = 'digital_delivery',
   // educational
   EDU_RESOURCE_TOOLS = 'edu_resource_tools',
-  AI_WORKSHEET_BUILDER = 'ai_worksheet_builder', // retired (AI Studio was removed): kept only so stores that already hold it still validate
   // services
   BOOKING_CALENDAR = 'booking_calendar',
   // subscriptions
@@ -45,7 +44,6 @@ export enum StoreTool {
   // pos
   POS_REGISTER = 'pos_register',
   // universal (hamesha on)
-  AI_STUDIO = 'ai_studio', // retired (AI Studio was removed): kept only so stores that already hold it still validate
   MARKETPLACE_LISTING = 'marketplace_listing',
 }
 
