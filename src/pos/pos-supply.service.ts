@@ -135,13 +135,30 @@ export class PosSupplyService {
   async supplier(req: Req, storeId: string, id: string, t: Tokens) {
     await this.gate(req, storeId, 'supply.view', t);
     const s = await this.loadSupplier(storeId, id);
-    const [aging, pos, receipts] = await Promise.all([
+    const [aging, pos, receipts, supplied] = await Promise.all([
       this.agingOf(storeId, id),
       this.r.purchaseOrderModel.find({ storeId, supplierId: id }).sort({ createdAt: -1 }).limit(10).lean(),
       this.r.purchaseReceiptModel.find({ storeId, supplierId: id }).sort({ createdAt: -1 }).limit(10).lean(),
+      this.productsSupplied(storeId, id),
     ]);
     const c = await this.cur(storeId);
-    return { success: true, data: { ...c, supplier: this.supplierView(s), aging, orders: (pos as any[]).map((p) => this.poView(p, c.currencyExponent, true)), receipts: (receipts as any[]).map((x) => this.receiptView(x, true)) } };
+    return { success: true, data: { ...c, supplier: this.supplierView(s), aging, orders: (pos as any[]).map((p) => this.poView(p, c.currencyExponent, true)), receipts: (receipts as any[]).map((x) => this.receiptView(x, true)), productsSupplied: supplied } };
+  }
+
+  /**
+   * G5.1: what this supplier has supplied — every variant on its purchase orders (cancelled ones excluded), newest first, at most 50: ordered / received
+   * quantities, when last ordered, and the last unit cost (`lastUnitCostMinor`: cost — hidden from managers with costs hidden, by the /supply pattern rule).
+   */
+  private async productsSupplied(storeId: string, supplierId: string) {
+    const rows: any[] = await this.r.purchaseOrderModel.aggregate([
+      { $match: { storeId, supplierId, status: { $ne: 'cancelled' } } },
+      { $sort: { createdAt: -1 } },
+      { $unwind: '$items' },
+      { $group: { _id: '$items.variantId', productId: { $first: '$items.productId' }, name: { $first: '$items.name' }, sku: { $first: '$items.sku' }, options: { $first: '$items.options' },
+        orderedQty: { $sum: '$items.quantityOrdered' }, receivedQty: { $sum: '$items.quantityReceived' }, orders: { $sum: 1 }, lastOrderedAt: { $first: '$createdAt' }, lastUnitCostMinor: { $first: '$items.unitCostMinor' } } },
+      { $sort: { lastOrderedAt: -1 } }, { $limit: 50 },
+    ]);
+    return rows.map((x) => ({ variantId: String(x._id), productId: x.productId ?? null, name: x.name, sku: x.sku ?? null, options: x.options ?? [], orderedQty: x.orderedQty ?? 0, receivedQty: x.receivedQty ?? 0, orders: x.orders, lastOrderedAt: x.lastOrderedAt ?? null, lastUnitCostMinor: typeof x.lastUnitCostMinor === 'number' ? x.lastUnitCostMinor : null }));
   }
   private supplierFields(b: any, partial: boolean) {
     const out: Record<string, any> = {};

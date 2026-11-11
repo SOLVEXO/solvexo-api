@@ -47,6 +47,18 @@ export class PosCashController {
   @Post('expenses/:storeId/:id/receipt')
   receipt(@Req() req: any, @Param('storeId') s: string, @Param('id') id: string, @UploadedFile() file: Express.Multer.File, @Headers('x-pos-employee-token') e?: string) { return this.svc.receiptUpload(req, s, id, file, this.t(e)); }
 
+  // G5.1: a receipt photo on a cash movement (its requestId)
+  @UseGuards(PosAuthGuard, RolesGuard, PosEntitlementGuard) @Roles('seller')
+  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: Number(process.env.EXPENSE_RECEIPT_MAX_BYTES) >= 1024 ? Number(process.env.EXPENSE_RECEIPT_MAX_BYTES) : 5 * 1024 * 1024 } }))
+  @Post('movements/:storeId/:requestId/receipt')
+  movementReceipt(@Req() req: any, @Param('storeId') s: string, @Param('requestId') id: string, @UploadedFile() file: Express.Multer.File, @Headers('x-pos-employee-token') e?: string) { return this.svc.movementReceiptUpload(req, s, id, file, this.t(e)); }
+
+  @UseGuards(PosAuthGuard, RolesGuard) @Roles('seller') @Get('movements/:storeId/:requestId/receipt')
+  async movementReceiptLink(@Req() req: any, @Res({ passthrough: true }) res: any, @Param('storeId') s: string, @Param('requestId') id: string, @Headers('x-pos-employee-token') e?: string) {
+    res.setHeader('Cache-Control', 'no-store');
+    return this.svc.movementReceiptLink(req, s, id, this.t(e));
+  }
+
   @UseGuards(PosAuthGuard, RolesGuard) @Roles('seller') @Get('expenses/:storeId/:id/receipt')
   async receiptLink(@Req() req: any, @Res({ passthrough: true }) res: any, @Param('storeId') s: string, @Param('id') id: string, @Headers('x-pos-employee-token') e?: string) {
     res.setHeader('Cache-Control', 'no-store');

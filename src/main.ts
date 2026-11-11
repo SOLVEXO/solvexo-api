@@ -11,6 +11,7 @@ import { AdminConfigService } from './admin-config/admin-config.service';
 import { createMaintenanceMiddleware } from './admin-config/maintenance.middleware';
 import { StorefrontAccessService, createStorefrontAccessMiddleware } from './storefront/storefront-access.service';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import { assertPublicUrl } from './common/public-url.check';
 
 // Make the real reason visible in the logs before the process dies.
 process.on('unhandledRejection', (reason) => {
@@ -21,6 +22,8 @@ process.on('uncaughtException', (err) => {
 });
 
 async function bootstrap() {
+  // G5.1: outside development, refuse to start with a missing / non-https / private API_PUBLIC_URL (it is printed in every receipt QR)
+  assertPublicUrl();
   // rawBody: true is required for every webhook route that verifies a
   // provider signature over the exact raw bytes (Stripe checkout, Stripe
   // subscriptions, and the new integrations-module gateway webhooks) — each

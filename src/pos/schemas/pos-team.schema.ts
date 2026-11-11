@@ -31,6 +31,10 @@ export class PosAttendanceEvent {
   @Prop({ type: String, default: null }) registerId: string | null;
   @Prop({ type: String, default: null }) locationId: string | null;
   @Prop({ type: String, default: null }) requestId: string | null;
+  /** G5.4 (optional): clocked ON BEHALF of `employeeId` by `actorId` — approved by the member's own PIN or a manager's PIN */
+  @Prop({ type: Boolean }) onBehalf?: boolean;
+  @Prop({ type: String }) approvedBy?: string;
+  @Prop({ type: String, enum: ['member_pin', 'manager_pin'] }) approval?: 'member_pin' | 'manager_pin';
 }
 export const PosAttendanceEventSchema = SchemaFactory.createForClass(PosAttendanceEvent);
 PosAttendanceEventSchema.index({ storeId: 1, employeeId: 1, at: 1 });

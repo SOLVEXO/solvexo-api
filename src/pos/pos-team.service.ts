@@ -6,6 +6,7 @@ import { PosService } from './pos.service';
 import { PosAuthorizer } from './pos-authorizer.service';
 import { PosAction } from './pos-permissions.config';
 import { localDay, localKey } from './pos-day.util';
+import { isoExponent } from '@/common/money-minor.util';
 import { AttEvent, LATE_GRACE_MINUTES, deriveRecords, effectiveTime, isLive } from './pos-attendance.util';
 
 type Req = any;
@@ -77,8 +78,8 @@ export class PosTeamService {
    * late (the offline queue) is recorded as it happened and any inconsistency becomes an anomaly for a manager instead of a refusal — hours are never lost to a bad connection.
    */
   async clock(req: Req, storeId: string, body: any, t: Tokens) {
-    const a = await this.gate(req, storeId, 'team.attendance.own', t);
-    const me = this.selfId(a);
+    const a = await this.gate(req, storeId, 'team.attendance.own', { employee: t.employee });
+    const actor = this.selfId(a);
     const action = String(body?.action ?? '');
     if (!(CLOCK_ACTIONS as readonly string[]).includes(action)) throw err(400, 'INVALID_ACTION', 'action must be clock_in, clock_out, break_start or break_end');
     const requestId = str(body?.requestId, 100);
@@ -86,6 +87,26 @@ export class PosTeamService {
     const serverAt = new Date();
     const deviceAt = dateOf(body?.deviceAt, 'deviceAt') ?? serverAt;
     const dup: any = await this.r.posAttendanceEventModel.findOne({ storeId, requestId }).lean();
+    // G5.4: on behalf of another member — that member's PIN or a manager's PIN (an approver token), checked here, recorded on the event and audited in the same write
+    const subject = str(body?.employeeId, 40);
+    const onBehalf = !!subject && subject !== actor && !dup;
+    let approval: { by: string; kind: 'member_pin' | 'manager_pin' } | null = null;
+    if (onBehalf) {
+      await this.auth.authorize(req, { storeId, action: 'team.attendance.onBehalf', employeeToken: t.employee });
+      if (!Types.ObjectId.isValid(subject!)) throw err(404, 'EMPLOYEE_NOT_FOUND', 'That team member was not found');
+      const emp: any = await this.r.employeeModel.findOne({ _id: subject, storeId, isDelete: { $ne: true } }).select('status').lean();
+      if (!emp) throw err(404, 'EMPLOYEE_NOT_FOUND', 'That team member was not found');
+      if (emp.status === 'inactive') throw err(409, 'EMPLOYEE_INACTIVE', 'That team member is deactivated');
+      // a late (offline-queued) event: the approver's PIN session must have been valid WHEN it happened — the same rule as offline sales
+      const ap = await this.pos.verifyEmployeeToken(t.approver, storeId, isLive(deviceAt, serverAt) ? undefined : deviceAt);
+      const kind = ap?.employeeId === subject ? 'member_pin' : ap?.role === 'manager' ? 'manager_pin' : null;
+      if (!ap || !kind) {
+        await this.audit(storeId, actor, 'pos_approval_missing', subject!, { action: 'team.attendance.onBehalf', clock: action, subjectId: subject });
+        throw new ForbiddenException({ statusCode: 403, code: 'POS_APPROVAL_REQUIRED', action: 'team.attendance.onBehalf', approver: 'member_or_manager', reasons: ['on_behalf_clock'], message: 'Clocking someone else needs their PIN or a manager\'s PIN' });
+      }
+      approval = { by: ap.employeeId, kind };
+    }
+    const me = dup ? dup.employeeId : onBehalf ? subject! : actor;
     const done = async (e: any, duplicate: boolean) => ({ success: true, data: { duplicate, event: { id: String(e._id), type: e.type, at: e.at, deviceAt: e.deviceAt, serverAt: e.serverAt, flags: e.flags }, state: this.stateView(await this.r.posAttendanceStateModel.findOne({ storeId, employeeId: me }).lean()) } });
     if (dup) return done(dup, true);
     const eff = effectiveTime(deviceAt, serverAt);
@@ -116,8 +137,9 @@ export class PosTeamService {
             if (strict) { const cur = await S.findOne({ storeId, employeeId: me }).session(tx).lean(); throw err(409, !cur?.openRecordId ? 'NOT_CLOCKED_IN' : want ? 'ALREADY_ON_BREAK' : 'NOT_ON_BREAK', !cur?.openRecordId ? 'You are not clocked in.' : want ? 'You are already on a break.' : 'You are not on a break.'); }
           } else recordId = before.openRecordId;
         }
-        const base = { storeId, employeeId: me, recordId, deviceAt, serverAt, at: eff.at, actorId: me, deviceId: this.deviceOf(req), registerId: str(body?.registerId, 40), locationId: str(body?.locationId, 40), reason: str(body?.note, 200) };
+        const base = { storeId, employeeId: me, recordId, deviceAt, serverAt, at: eff.at, actorId: actor, deviceId: this.deviceOf(req), registerId: str(body?.registerId, 40), locationId: str(body?.locationId, 40), reason: str(body?.note, 200), ...(approval ? { onBehalf: true, approvedBy: approval.by, approval: approval.kind } : {}) };
         const [e] = await this.r.posAttendanceEventModel.create([{ ...base, type: action, flags: eff.flags, requestId }], { session: tx });
+        if (approval) await this.audit(storeId, actor, 'attendance_clocked_on_behalf', me, { clock: action, actorId: actor, subjectId: me, approvedBy: approval.by, approval: approval.kind, eventId: String(e._id), late: !strict }, tx);
         if (extraBreakEnd) await this.r.posAttendanceEventModel.create([{ ...base, type: 'break_end', flags: [], requestId: `${requestId}:be` }], { session: tx });
         return e;
       });
@@ -129,6 +151,46 @@ export class PosTeamService {
       throw e;
     }
     return done(ev.toObject(), false);
+  }
+
+  // ── G5.1: staff profile ───────────────────────────────────────────────────────
+  /**
+   * One team member at a glance: role, status, last PIN login (from the audit log), clocked in now, and their sales today / last 7 / last 30 store days
+   * (completed + partly refunded sales they rang up; count and total in minor units with the store's currency + exponent). Managers / owner for anyone
+   * (`team.attendance.view`); a cashier for themself only.
+   */
+  async profile(req: Req, storeId: string, employeeId: string, t: Tokens) {
+    const a = await this.gate(req, storeId, 'team.attendance.own', t);
+    if (a.employeeId !== employeeId) await this.gate(req, storeId, 'team.attendance.view', t);
+    if (!Types.ObjectId.isValid(employeeId)) throw err(404, 'EMPLOYEE_NOT_FOUND', 'That team member was not found');
+    const emp: any = await this.r.employeeModel.findOne({ _id: employeeId, storeId, isDelete: { $ne: true } }).select('name email role status locationId').lean();
+    if (!emp) throw err(404, 'EMPLOYEE_NOT_FOUND', 'That team member was not found');
+    const zone = await this.pos.storeTz(storeId);
+    const today = localDay(new Date(), zone);
+    const since = (days: number) => new Date(today.start.getTime() - (days - 1) * 86_400_000);
+    const s: any = await this.r.storeModel.findById(storeId).select('baseCurrency').lean();
+    const currency = String(s?.baseCurrency || 'USD').toUpperCase();
+    const window = async (from: Date) => {
+      const [r]: any[] = await this.r.saleModel.aggregate([
+        { $match: { storeId, employeeId, status: { $in: ['completed', 'partially_refunded'] }, createdAt: { $gte: from } } },
+        { $group: { _id: null, sales: { $sum: 1 }, totalMinor: { $sum: { $ifNull: ['$totalMinor', 0] } } } },
+      ]);
+      return { sales: r?.sales ?? 0, totalMinor: r?.totalMinor ?? 0 };
+    };
+    const [login, st, d1, d7, d30]: any[] = await Promise.all([
+      this.r.posAuditLogModel.findOne({ storeId, employeeId, action: 'pin_login' }).sort({ createdAt: -1 }).select('createdAt').lean(),
+      this.r.posAttendanceStateModel.findOne({ storeId, employeeId }).lean(),
+      window(today.start), window(since(7)), window(since(30)),
+    ]);
+    return {
+      success: true,
+      data: {
+        employeeId, name: emp.name, email: emp.email ?? null, role: emp.role, status: emp.status ?? 'active', locationId: emp.locationId ?? null,
+        lastLoginAt: login?.createdAt ?? null, state: this.stateView(st),
+        currency, currencyExponent: isoExponent(currency), timeZone: zone,
+        sales: { today: d1, last7Days: d7, last30Days: d30 },
+      },
+    };
   }
 
   // ── reading + review ──────────────────────────────────────────────────────────

@@ -26,7 +26,12 @@ export class PosTeamController {
   me(@Req() req: any, @Param('storeId') s: string, @Headers('x-pos-employee-token') e?: string) { return this.svc.me(req, s, this.t(e)); }
 
   @UseGuards(PosAuthGuard, RolesGuard, PosEntitlementGuard) @Roles('seller') @UseInterceptors(IdempotencyInterceptor) @Post('clock/:storeId')
-  clock(@Req() req: any, @Param('storeId') s: string, @Body() body: any, @Headers('x-pos-employee-token') e?: string) { return this.svc.clock(req, s, body, this.t(e)); }
+  // G5.4: `employeeId` in the body clocks ANOTHER team member — needs `x-pos-approver-token` = that member's PIN session or a manager's
+  clock(@Req() req: any, @Param('storeId') s: string, @Body() body: any, @Headers('x-pos-employee-token') e?: string, @Headers('x-pos-approver-token') ap?: string) { return this.svc.clock(req, s, body, { employee: e, approver: ap }); }
+
+  // G5.1: a team member's profile (last login, clocked in, sales today / 7 / 30 days)
+  @UseGuards(PosAuthGuard, RolesGuard) @Roles('seller') @Get('profile/:storeId/:employeeId')
+  profile(@Req() req: any, @Param('storeId') s: string, @Param('employeeId') id: string, @Headers('x-pos-employee-token') e?: string) { return this.svc.profile(req, s, id, this.t(e)); }
 
   @UseGuards(PosAuthGuard, RolesGuard) @Roles('seller') @Get('records/:storeId')
   records(@Req() req: any, @Param('storeId') s: string, @Query() q: any, @Headers('x-pos-employee-token') e?: string) { return this.svc.records(req, s, q, this.t(e)); }

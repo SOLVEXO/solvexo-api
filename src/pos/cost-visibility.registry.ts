@@ -24,6 +24,8 @@ export const GLOBAL_COST_KEYS: ReadonlySet<string> = new Set([
   'shippingCostMinor', 'taxCostMinor', 'itemUnitCostMinor',
   // payables in a report (the profit report's note on supplier payments) — found on the screenshot pass
   'supplierPaymentsMinor', 'supplierPayments', 'supplierPaymentsNote',
+  // G5.1: the last unit cost a supplier charged (supplier detail → productsSupplied) — cost everywhere
+  'lastUnitCostMinor', 'lastUnitCost',
 ]);
 
 /** Route-scoped: [path prefix (after the host), keys that are cost on those routes only, and optionally a key PATTERN that is cost there]. */

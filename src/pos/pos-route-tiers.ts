@@ -23,6 +23,7 @@ export const POS_ROUTE_TIERS: Readonly<Record<string, PosTier>> = {
   'POST /api/pos/cash/expenses/:storeId/:id/decision': 'manager-with-limit',
   'POST /api/pos/cash/expenses/:storeId/:id/receipt': 'cashier',
   'POST /api/pos/cash/movements/:storeId': 'cashier',
+  'POST /api/pos/cash/movements/:storeId/:requestId/receipt': 'cashier', // G5.1: the person who recorded it, or a manager (service-enforced)
   'GET /api/pos/catalog-admin/categories/:storeId': 'cashier',
   'POST /api/pos/catalog-admin/categories/:storeId': 'manager-with-limit',
   'PATCH /api/pos/catalog-admin/categories/:storeId/:id': 'manager-with-limit',

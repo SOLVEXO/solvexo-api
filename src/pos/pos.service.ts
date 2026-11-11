@@ -1529,7 +1529,8 @@ export class PosService {
 
     const filter: any = { storeId: query.storeId, deletedAt: null };
     if (query.sessionId) filter.sessionId = query.sessionId;
-    if (query.employeeId) filter.employeeId = query.employeeId;
+    if (query.employeeId) filter.employeeId = String(query.employeeId); // G5.1: the Orders screen's cashier filter
+    if (query.registerId) filter.registerId = String(query.registerId); // G5.1: … and register filter
     if (query.paymentMethod) filter.paymentMethod = query.paymentMethod;
     if (query.status) filter.status = query.status;
     if (query.search) {

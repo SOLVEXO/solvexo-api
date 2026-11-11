@@ -234,6 +234,46 @@ export class PosCashService {
     await this.audit(storeId, a.employeeId, 'expense_receipt_attached', id, { number: x.number, mimeType: mime, fileSize: file.size });
     return this.expenseGet(req, storeId, id, t);
   }
+  // ── G5.1: a receipt photo on a CASH MOVEMENT ──────────────────────────────────
+  private async loadMovement(storeId: string, requestId: string) {
+    const rid = str(requestId, 100);
+    if (!rid) throw err(404, 'MOVEMENT_NOT_FOUND', 'Cash movement not found');
+    const s: any = await this.r.registerSessionModel.findOne({ storeId, 'cashAdjustments.requestId': rid }).select('_id cashAdjustments.$').lean();
+    const m = s?.cashAdjustments?.[0];
+    if (!m || (m.type !== 'cash_in' && m.type !== 'cash_out')) throw err(404, 'MOVEMENT_NOT_FOUND', 'Cash movement not found');
+    return { sessionId: String(s._id), requestId: rid, movement: m };
+  }
+  /** Managers (cash.out authority) and the person who recorded it. */
+  private async mayTouchMovement(req: Req, storeId: string, m: any, t: Tokens) {
+    const a = await this.gate(req, storeId, 'expenses.record', t);
+    if (a.role === 'cashier' && m.employeeId !== a.employeeId) throw err(403, 'POS_ACTION_FORBIDDEN', 'Only the person who recorded it or a manager can do this');
+    return a;
+  }
+  async movementReceiptUpload(req: Req, storeId: string, requestId: string, file: Express.Multer.File | undefined, t: Tokens) {
+    const mv = await this.loadMovement(storeId, requestId);
+    const a = await this.mayTouchMovement(req, storeId, mv.movement, t);
+    if (!file?.buffer) throw err(400, 'FILE_REQUIRED', 'A photo or PDF is required');
+    if (file.size > receiptMaxBytes()) throw err(400, 'FILE_TOO_LARGE', `Receipts can be at most ${Math.round(receiptMaxBytes() / 1024 / 1024 * 10) / 10} MB`, { maxBytes: receiptMaxBytes() });
+    const mime = detectKybMime(file.buffer);
+    if (!mime) throw err(400, 'FILE_TYPE', 'Only JPEG, PNG or PDF files are accepted');
+    const up = await this.upload.uploadPrivateFile({ ...file, mimetype: mime, originalname: `cash-${mv.requestId.slice(0, 40)}` } as Express.Multer.File, `private/cash-receipts/${storeId}`);
+    try {
+      await this.atomic(async (tx) => {
+        await this.r.posCashAttachmentModel.create([{ storeId, sessionId: mv.sessionId, requestId: mv.requestId, receipt: { publicId: up.publicId, resourceType: up.resourceType, mimeType: mime, fileSize: file.size }, employeeId: a.employeeId, deviceId: this.deviceOf(req) }], { session: tx });
+        await this.audit(storeId, a.employeeId, 'cash_movement_receipt_attached', mv.sessionId, { requestId: mv.requestId, type: mv.movement.type, mimeType: mime, fileSize: file.size }, tx);
+      });
+    } catch (e) { await this.upload.deletePrivateFile(up.publicId, up.resourceType).catch(() => undefined); throw e; }
+    return { success: true, data: { requestId: mv.requestId, hasReceipt: true, receiptMimeType: mime } };
+  }
+  async movementReceiptLink(req: Req, storeId: string, requestId: string, t: Tokens) {
+    const mv = await this.loadMovement(storeId, requestId);
+    const a = await this.mayTouchMovement(req, storeId, mv.movement, t);
+    const at: any = await this.r.posCashAttachmentModel.findOne({ storeId, requestId: mv.requestId }).sort({ createdAt: -1, _id: -1 }).lean();
+    if (!at?.receipt) throw err(404, 'NO_RECEIPT', 'This cash movement has no receipt photo');
+    await this.audit(storeId, a.employeeId, 'cash_movement_receipt_viewed', mv.sessionId, { requestId: mv.requestId });
+    return { success: true, data: { url: this.upload.generateExpiringPrivateUrl(at.receipt.publicId, at.receipt.resourceType, 300, { inline: true }), expiresInSeconds: 300, mimeType: at.receipt.mimeType } };
+  }
+
   /** A link that works for at most 5 minutes (Cloudinary enforces it); never logged, never cached on the device (the route answers `Cache-Control: no-store`). Managers and the person who recorded it. */
   async receiptLink(req: Req, storeId: string, id: string, t: Tokens) {
     const a = await this.gate(req, storeId, 'expenses.record', t);
@@ -264,6 +304,9 @@ export class PosCashService {
     if (q?.registerId) filter.registerId = String(q.registerId);
     if (a.role === 'cashier') filter.employeeId = a.employeeId;
     const sessions: any[] = await this.r.registerSessionModel.find(filter).sort({ openedAt: 1 }).lean();
+    // G5.1: which cash movements carry a receipt photo
+    const movIds = sessions.flatMap((x) => ((x.cashAdjustments ?? []) as any[]).map((ad) => ad.requestId).filter(Boolean));
+    const withPhoto = new Set<string>(movIds.length && this.r.posCashAttachmentModel ? (await this.r.posCashAttachmentModel.distinct('requestId', { storeId, requestId: { $in: movIds } })) as string[] : []);
     const store: any = await this.r.storeModel.findById(storeId).select('registers').lean();
     const regName = new Map<string, string>((store?.registers ?? []).map((g: any) => [String(g._id), g.name]));
     const lineEmp = new Set<string>(sessions.map((s) => s.employeeId).filter(Boolean));
@@ -294,7 +337,7 @@ export class PosCashService {
       for (const ad of (s.cashAdjustments ?? []) as any[]) {
         const m = ad.amountMinor ?? toMinor(ad.amount ?? 0, exp);
         const type = ad.category === 'expense' ? 'expense' : ad.category === 'supplier_payment' ? 'supplier_payment' : ad.type;
-        lines.push({ at: ad.occurredAt ?? ad.createdAt, sort: 2, type, label: ad.reason ?? type, refType: ad.refType ?? 'cash_movement', refId: ad.refId ?? null, amountMinor: ad.type === 'cash_in' ? m : -m, employeeId: ad.employeeId ?? null });
+        lines.push({ at: ad.occurredAt ?? ad.createdAt, sort: 2, type, label: ad.reason ?? type, refType: ad.refType ?? 'cash_movement', refId: ad.refId ?? null, amountMinor: ad.type === 'cash_in' ? m : -m, employeeId: ad.employeeId ?? null, ...((ad.type === 'cash_in' || ad.type === 'cash_out') && ad.requestId ? { requestId: ad.requestId, hasReceipt: withPhoto.has(ad.requestId) } : {}) });
       }
       lines.sort((x, y) => (x.sort === 0 || y.sort === 0 ? x.sort - y.sort : new Date(x.at).getTime() - new Date(y.at).getTime()));
       let run = 0;

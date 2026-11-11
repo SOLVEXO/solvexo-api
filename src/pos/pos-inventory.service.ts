@@ -101,7 +101,7 @@ export class PosInventoryService {
       ...(await this.cur(storeId)), ...(this.seesCost(a.role) ? { stockValueMinor: value, variantsWithoutCost: noCost } : {}) } };
   }
 
-  async stock(req: Req, storeId: string, q: { search?: string; filter?: string; page?: string; limit?: string }, t: Tokens) {
+  async stock(req: Req, storeId: string, q: { search?: string; filter?: string; page?: string; limit?: string; locationId?: string }, t: Tokens) {
     const a = await this.gate(req, storeId, 'inventory.view', t);
     const page = Math.max(1, Number(q.page) || 1); const limit = Math.min(100, Math.max(1, Number(q.limit) || 30));
     const filter: any = { storeId, isDelete: false };
@@ -114,13 +114,26 @@ export class PosInventoryService {
     if (q.filter === 'out') { filter.unlimitedStock = { $ne: true }; filter.stock = { $lte: 0 }; }
     if (q.filter === 'expiring') { filter.trackLots = true; filter.$or = [...(filter.$or ? [] : []), { expiredStock: { $gt: 0 } }, { 'expiryBuckets.0.at': { $lte: new Date(Date.now() + 30 * 86400_000) } }]; }
     if (q.filter === 'low') { filter.unlimitedStock = { $ne: true }; filter.reorderPoint = { $gt: 0 }; filter.$expr = { $lte: ['$stock', '$reorderPoint'] }; }
+    // G5.1: one location — the variants stocked there (bins summed), each row with that location's quantity; "out" = none left AT that location
+    let atLocation: Map<string, number> | null = null;
+    const locationId = typeof q.locationId === 'string' && /^[a-f0-9]{24}$/i.test(q.locationId) ? q.locationId : null;
+    if (q.locationId && !locationId) throw new BadRequestException({ statusCode: 400, code: 'LOCATION_INVALID', message: 'Unknown location' });
+    if (locationId) {
+      const loc: any = await this.r.storeLocationModel?.findOne({ _id: locationId, storeId }).select('_id').lean();
+      if (this.r.storeLocationModel && !loc) throw new BadRequestException({ statusCode: 400, code: 'LOCATION_INVALID', message: 'Unknown location' });
+      const sums: any[] = await this.r.variantLocationStockModel.aggregate([{ $match: { storeId, locationId } }, { $group: { _id: '$variantId', stock: { $sum: '$stock' } } }]);
+      atLocation = new Map(sums.map((x) => [String(x._id), Number(x.stock) || 0]));
+      const ids = [...atLocation.entries()].filter(([, n]) => (q.filter === 'out' ? n <= 0 : true)).map(([id]) => id);
+      if (q.filter === 'out') { delete filter.stock; }
+      filter._id = { $in: ids.filter((id) => /^[a-f0-9]{24}$/i.test(id)) };
+    }
     const [rows, total]: [any[], number] = await Promise.all([
       this.r.productVariantModel.find(filter).sort({ updatedAt: -1, _id: 1 }).skip((page - 1) * limit).limit(limit).lean(),
       this.r.productVariantModel.countDocuments(filter),
     ]);
     const names = await this.productNames([...new Set(rows.map((v) => String(v.productId)))]);
     const exp = await this.exp(storeId);
-    return { success: true, data: { ...(await this.cur(storeId)), items: rows.map((v) => this.row(v, names.get(String(v.productId)), this.seesCost(a.role), exp)), total, page, hasMore: page * limit < total } };
+    return { success: true, data: { ...(await this.cur(storeId)), ...(locationId ? { locationId } : {}), items: rows.map((v) => ({ ...this.row(v, names.get(String(v.productId)), this.seesCost(a.role), exp), ...(atLocation ? { locationStock: atLocation.get(String(v._id)) ?? 0 } : {}) })), total, page, hasMore: page * limit < total } };
   }
 
   async lookup(req: Req, storeId: string, code: string, t: Tokens) {
