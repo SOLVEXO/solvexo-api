@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
+import { aiModel } from '@/common/ai-model.util';
 import Anthropic from '@anthropic-ai/sdk';
 import { ISeoAiProvider, SeoAiSuggestion, SeoAiSuggestionInput } from './seo-ai-provider.interface';
 
@@ -20,10 +21,10 @@ const SUGGESTION_SCHEMA = {
  * than free-text parsing, so a malformed response is a hard API error
  * (caught below) instead of a silent bad-JSON parse downstream.
  *
- * The model defaults to `claude-opus-4-8` (a valid model id) and can be changed with the `AI_SEO_MODEL` env var - this is a
- * short, low-volume task (one call per seller-initiated suggestion), so quality comes before cost. Thinking is not requested:
- * on Opus 4.8 omitting it means none, and `max_tokens` leaves room in case a model with always-on thinking is configured.
+ * The model is the ONE shared AI model (`AI_MODEL`, see common/ai-model.util.ts); `AI_SEO_MODEL` still overrides it for this
+ * feature only. Thinking is not requested, and `max_tokens` leaves room in case a model with always-on thinking is configured.
  */
+/** Kept for older imports; the model actually used comes from `aiModel()`. */
 export const DEFAULT_SEO_AI_MODEL = 'claude-opus-4-8';
 
 @Injectable()
@@ -46,7 +47,7 @@ export class AnthropicSeoAiProvider implements ISeoAiProvider {
     let response: Anthropic.Message;
     try {
       response = await this.client.messages.create({
-        model: process.env.AI_SEO_MODEL || DEFAULT_SEO_AI_MODEL,
+        model: aiModel(process.env.AI_SEO_MODEL),
         max_tokens: 4096,
         output_config: { format: { type: 'json_schema', schema: SUGGESTION_SCHEMA } },
         messages: [{ role: 'user', content: prompt }],

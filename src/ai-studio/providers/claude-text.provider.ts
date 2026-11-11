@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { Logger } from '@nestjs/common';
+import { webSearchToolType } from '@/common/ai-model.util';
 import Anthropic from '@anthropic-ai/sdk';
 import {
   AiProviderError, TextGenerationAdapter, TextGenerationRequest, TextGenerationResult,
@@ -47,7 +48,7 @@ export class ClaudeTextGenerationProvider implements TextGenerationAdapter {
 
     if (useWebSearch) {
       params.tools = [{
-        type: 'web_search_20260209',
+        type: webSearchToolType(model),
         name: 'web_search',
         max_uses: request.webSearch?.maxUses ?? 3,
       } as any];

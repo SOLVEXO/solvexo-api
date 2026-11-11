@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { Injectable, Logger, OnModuleInit, ServiceUnavailableException } from '@nestjs/common';
+import { aiModel } from '@/common/ai-model.util';
 import { ConfigService } from '@nestjs/config';
 import {
   AiProviderError, TextGenerationAdapter, TextGenerationRequest, TextGenerationResult,
@@ -39,8 +40,8 @@ export class TextGenerationService implements TextGenerationAdapter, OnModuleIni
     this.keyMissing = this.providerName === 'claude' && !apiKey;
     if (this.providerName === 'claude' && apiKey) {
       this.provider = new ClaudeTextGenerationProvider(apiKey, {
-        standardModel: config.get<string>('AI_TEXT_MODEL_STANDARD') ?? 'claude-haiku-4-5',
-        advancedModel: config.get<string>('AI_TEXT_MODEL_ADVANCED') ?? 'claude-sonnet-5',
+        standardModel: aiModel(config.get<string>('AI_TEXT_MODEL_STANDARD')),
+        advancedModel: aiModel(config.get<string>('AI_TEXT_MODEL_ADVANCED')),
       });
     } else if (this.keyMissing) {
       // A missing key must not take the whole API down, and must never fall back to canned text: every call fails clearly instead.

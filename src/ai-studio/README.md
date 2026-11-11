@@ -61,6 +61,7 @@ with no API keys.
 # --- TextGenerationAdapter (providers/text-generation.service.ts) ---
 AI_PROVIDER=claude                        # default: mock (canned responses, no spend)
 ANTHROPIC_API_KEY=sk-ant-...              # required when AI_PROVIDER=claude
+AI_MODEL=claude-haiku-4-5                # ONE model for every AI feature (default); the next two lines are optional per-feature overrides
 AI_TEXT_MODEL_STANDARD=claude-haiku-4-5   # Listing Writer, Email Campaigns, SEO writing step
 AI_TEXT_MODEL_ADVANCED=claude-sonnet-5    # Worksheet Builder structured JSON + all web-search calls
 
