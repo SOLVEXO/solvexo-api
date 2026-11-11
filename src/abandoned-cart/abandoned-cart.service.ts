@@ -9,7 +9,8 @@ import { randomBytes } from 'crypto';
 import { UpdateAbandonedCartSettingsDto } from './dto/update-abandoned-cart-settings.dto';
 
 import { API_PUBLIC_ORIGIN } from '@/common/api-origin';
-import { storePublicUrl, textToHtml } from '@/newsletter/marketing-email.util';
+import { escapeHtml, storePublicUrl, textToHtml, unsubscribeHeaders } from '@/newsletter/marketing-email.util';
+import { signMarketingOptOutToken, verifyMarketingOptOutToken } from '@/common/marketing-optout-token.util';
 const DEFAULT_SETTINGS = { enabled: true, delayMinutes: 60, subject: 'You left something in your cart', message: "Hi {{customerName}}, you still have items waiting in your cart at {{storeName}}. Complete your order before they're gone: {{cartUrl}}" };
 const BATCH_SIZE = 200; // max emails sent per cron tick — never let one runaway backlog block the lock for too long
 const SCAN_PAGE_SIZE = 200; // checkouts examined per page (newest first)
@@ -272,15 +273,18 @@ export class AbandonedCartService {
         // The template is plain text typed by the seller and the buyer's name is buyer-controlled, so the whole message is escaped.
         const message = textToHtml(this.renderTemplate(trigger.message, { customerName, storeName, cartUrl }));
 
+        // Every marketing-type mail carries a one-click unsubscribe (link in the footer + List-Unsubscribe headers).
+        const unsubscribeUrl = `${API_PUBLIC_ORIGIN}/api/abandoned-cart/unsubscribe/${signMarketingOptOutToken(String(trigger.storeId), email)}`;
         const sent = await this.emailService.sendMail(
           email,
           subject,
           `<div style="font-family:sans-serif;max-width:520px">
             ${message}
             <p style="margin-top:24px"><a href="${cartUrl}" style="background:#141413;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;display:inline-block">Return to your cart</a></p>
+            <p style="margin-top:28px;padding-top:14px;border-top:1px solid #eee;color:#888;font-size:12px">You got this because you started a checkout at ${escapeHtml(storeName)}. <a href="${unsubscribeUrl}" style="color:#888">Unsubscribe</a> if you do not want reminders like this.</p>
           </div>`,
           (store as any)?.contactEmail ?? null,
-          undefined,
+          unsubscribeHeaders(unsubscribeUrl),
           undefined,
           (store as any)?.name ?? null,
         );
@@ -323,6 +327,35 @@ export class AbandonedCartService {
     const store = await this.r.storeModel.findOne({ _id: target, isDelete: { $ne: true } }).select('slug customDomain customDomainStatus').lean();
     const base = storePublicUrl(store as any);
     return base ? `${base}/cart` : null;
+  }
+
+  /** Public — the unsubscribe link of a recovery email. Records an explicit opt-out for THIS store and address (creating the
+   *  subscriber row as "unsubscribed" when the shopper was never on the list), which is exactly what `processOneCheckout`
+   *  and the campaigns check before sending. Idempotent. Returns whether the link was valid and the store name for the page. */
+  async unsubscribeByToken(token: string): Promise<{ ok: boolean; storeName: string | null }> {
+    const claim = verifyMarketingOptOutToken(token);
+    if (!claim) return { ok: false, storeName: null };
+    const store: any = await this.r.storeModel.findOne({ _id: claim.storeId }).select('name').lean();
+    const existing: any = await this.r.newsletterSubscriberModel.findOne({ storeId: claim.storeId, email: claim.email });
+    if (existing) {
+      if (existing.isActive || existing.pendingConfirmation) {
+        await this.r.newsletterSubscriberModel.updateOne(
+          { _id: existing._id },
+          { $set: { isActive: false, pendingConfirmation: false, confirmToken: null, unsubscribedAt: new Date() } },
+        );
+      }
+    } else {
+      try {
+        await this.r.newsletterSubscriberModel.create({
+          storeId: claim.storeId, email: claim.email, userId: null, source: 'abandoned_cart_optout',
+          unsubscribeToken: randomBytes(24).toString('hex'), isActive: false, pendingConfirmation: false,
+          consentAt: null, unsubscribedAt: new Date(),
+        });
+      } catch (e: any) {
+        if (e?.code !== 11000) throw e; // two clicks at once: the other one already recorded it
+      }
+    }
+    return { ok: true, storeName: store?.name ?? null };
   }
 
   /** Called from PaymentService.createOrder right after a real order is

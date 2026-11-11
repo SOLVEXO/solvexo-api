@@ -22,7 +22,9 @@ export class SupportController {
   constructor(private readonly service: SupportService) {}
 
   @Post(':storeId/requests')
-  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  // Counted per STORE, not per IP: the global throttle guard runs before the login guard, so the user id is not known yet, but the
+  // store id is in the path. One store (owner + all staff, any IP) can send at most 5 help requests a minute; the service also caps open requests per store.
+  @Throttle({ default: { limit: 5, ttl: 60_000, getTracker: (req: any) => `support:${String(req?.params?.storeId ?? req?.ip)}` } })
   @ApiOperation({ summary: 'Send a help request to Solvexo (tier is set from the store plan)' })
   create(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: CreateSupportRequestDto) {
     return this.service.create(storeId, req.user, actingSellerId(req.user), dto);

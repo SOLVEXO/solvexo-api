@@ -71,40 +71,54 @@ export class AiCreditsService {
   /** Call before running an AI feature. Throws if the store doesn't have enough credits. */
   async deduct(storeId: string, sellerId: string, amount: number, reason: string): Promise<void> {
     const wallet = await this.getOrCreateWallet(storeId, sellerId);
-    if (wallet.balance < amount) {
-      throw new BadRequestException(`Not enough AI credits (need ${amount}, have ${wallet.balance}) — upgrade your platform plan or buy more credits.`);
+    // ONE atomic conditional write: the balance is only lowered while it still covers the cost, so two generations started at the
+    // same moment can never both spend the same credits (the old read-modify-write let both pass the check).
+    const res: any = await this.walletModel.updateOne({ _id: wallet._id, balance: { $gte: amount } }, { $inc: { balance: -amount } });
+    if (!res?.modifiedCount) {
+      const now: any = await this.walletModel.findOne({ _id: wallet._id }).lean();
+      throw new BadRequestException(`Not enough AI credits (need ${amount}, have ${now?.balance ?? 0}) — upgrade your platform plan or buy more credits.`);
     }
-    wallet.balance -= amount;
-    wallet.ledger.push({ type: 'spend', amount: -amount, balanceAfter: wallet.balance, reason, createdAt: new Date() });
-    await wallet.save();
+    await this.writeLedger(wallet._id, { type: 'spend', amount: -amount, reason });
   }
 
   /** `purchased: true` marks credits the seller paid for (the extra-credits add-on): they survive the monthly reset until spent. */
   async grant(storeId: string, sellerId: string, amount: number, reason: string, opts?: { purchased?: boolean }): Promise<void> {
     const wallet = await this.getOrCreateWallet(storeId, sellerId);
-    wallet.balance += amount;
-    if (opts?.purchased) wallet.bonusBalance = (wallet.bonusBalance ?? 0) + amount;
-    wallet.ledger.push({ type: opts?.purchased ? 'purchase' : 'grant', amount, balanceAfter: wallet.balance, reason, createdAt: new Date() });
-    await wallet.save();
+    const inc: Record<string, number> = { balance: amount };
+    if (opts?.purchased) inc.bonusBalance = amount;
+    await this.walletModel.updateOne({ _id: wallet._id }, { $inc: inc });
+    await this.writeLedger(wallet._id, { type: opts?.purchased ? 'purchase' : 'grant', amount, reason });
+  }
+
+  /** The ledger line is a record, not the money: it is added after the balance moved, with the balance as it is then. */
+  private async writeLedger(walletId: any, line: { type: string; amount: number; reason: string }) {
+    const after: any = await this.walletModel.findOne({ _id: walletId }).lean();
+    await this.walletModel.updateOne({ _id: walletId }, { $push: { ledger: { ...line, balanceAfter: after?.balance ?? 0, createdAt: new Date() } } });
   }
 
   /** Runs monthly (cron) — resets every store's balance to its current plan's monthly allowance; credits the seller bought and has not spent are kept. */
   async resetAllMonthlyAllowances(): Promise<{ reset: number }> {
-    const wallets = await this.walletModel.find({});
+    const wallets = await this.walletModel.find({}).lean();
     let reset = 0;
-    for (const wallet of wallets) {
-      const limits = await this.entitlements.getLimits(wallet.storeId);
-      const after = balanceAfterReset(limits.aiCreditsPerMonth, wallet.balance, wallet.bonusBalance ?? 0);
-      wallet.monthlyAllowance = limits.aiCreditsPerMonth;
-      wallet.balance = after.balance;
-      wallet.bonusBalance = after.bonus;
-      wallet.lastResetAt = new Date();
-      wallet.ledger.push({
-        type: 'reset', amount: limits.aiCreditsPerMonth, balanceAfter: wallet.balance,
-        reason: after.bonus > 0 ? `Monthly allowance reset (${after.bonus} bought credits kept)` : 'Monthly allowance reset', createdAt: new Date(),
-      });
-      await wallet.save();
-      reset++;
+    for (const w of wallets as any[]) {
+      const limits = await this.entitlements.getLimits(w.storeId);
+      // Conditional on the balance that was read: if the store spent credits in the meantime, read again and recompute (never overwrite a newer balance).
+      let current: any = w;
+      for (let attempt = 0; attempt < 4 && current; attempt++) {
+        const after = balanceAfterReset(limits.aiCreditsPerMonth, current.balance, current.bonusBalance ?? 0);
+        const res: any = await this.walletModel.updateOne(
+          { _id: current._id, balance: current.balance },
+          {
+            $set: { monthlyAllowance: limits.aiCreditsPerMonth, balance: after.balance, bonusBalance: after.bonus, lastResetAt: new Date() },
+            $push: { ledger: {
+              type: 'reset', amount: limits.aiCreditsPerMonth, balanceAfter: after.balance,
+              reason: after.bonus > 0 ? `Monthly allowance reset (${after.bonus} bought credits kept)` : 'Monthly allowance reset', createdAt: new Date(),
+            } },
+          },
+        );
+        if (res?.modifiedCount) { reset++; break; }
+        current = await this.walletModel.findOne({ _id: w._id }).lean();
+      }
     }
     return { reset };
   }

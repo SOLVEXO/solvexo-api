@@ -129,3 +129,34 @@ describe('the billing summary shows the real AI credits', () => {
     expect(s.aiCredits.balance).toBe(37);
   });
 });
+
+describe('AI credits are spent atomically', () => {
+  it('two generations started together cannot both spend the same credits', async () => {
+    const { svc, wallets } = setup({ value: 100 }, { balance: 5, monthlyAllowance: 100 });
+    const results = await Promise.allSettled([svc.deduct('s1', 'sel1', 5, 'a'), svc.deduct('s1', 'sel1', 5, 'b')]);
+    expect(results.filter((r) => r.status === 'fulfilled').length).toBe(1);
+    expect(results.filter((r) => r.status === 'rejected').length).toBe(1);
+    expect(wallets.rows[0].balance).toBe(0);
+  });
+
+  it('refuses when the balance is too low and leaves it untouched', async () => {
+    const { svc, wallets } = setup({ value: 100 }, { balance: 3, monthlyAllowance: 100 });
+    await expect(svc.deduct('s1', 'sel1', 5, 'x')).rejects.toThrow();
+    expect(wallets.rows[0].balance).toBe(3);
+  });
+
+  it('writes a spend line with the balance after it', async () => {
+    const { svc, wallets } = setup({ value: 100 }, { balance: 20, monthlyAllowance: 100 });
+    await svc.deduct('s1', 'sel1', 5, 'AI Studio');
+    const line = wallets.rows[0].ledger[wallets.rows[0].ledger.length - 1];
+    expect(line.type).toBe('spend');
+    expect(line.amount).toBe(-5);
+    expect(line.balanceAfter).toBe(15);
+  });
+
+  it('a refund and a spend at the same time both land', async () => {
+    const { svc, wallets } = setup({ value: 100 }, { balance: 10, monthlyAllowance: 100 });
+    await Promise.all([svc.deduct('s1', 'sel1', 4, 'spend'), svc.grant('s1', 'sel1', 4, 'refund')]);
+    expect(wallets.rows[0].balance).toBe(10);
+  });
+});
