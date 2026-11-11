@@ -352,9 +352,25 @@ export class CategoriesService {
       // A store-scoped tree only has that store's own categories, so only
       // that store's products can sit in them: never scan the whole platform.
       { $match: { status: 'active', isDelete: false, ...(storeId ? { storeId } : {}) } },
-      { $group: { _id: '$categoryId', count: { $sum: 1 } } },
+      {
+        $facet: {
+          main: [{ $group: { _id: '$categoryId', count: { $sum: 1 } } }],
+          sub: [
+            { $match: { subCategoryId: { $nin: [null, ''] } } },
+            { $group: { _id: '$subCategoryId', count: { $sum: 1 } } },
+          ],
+        },
+      },
     ]);
-    return new Map(rows.map((r: { _id: string; count: number }) => [r._id, r.count]));
+    // A product stores its main category in `categoryId` and (optionally) its
+    // subcategory in `subCategoryId`. A main category's count therefore already
+    // covers its whole subtree; a subcategory only has its `subCategoryId` count.
+    const map = new Map<string, number>();
+    const facet = rows[0] ?? { main: [], sub: [] };
+    for (const r of [...facet.main, ...facet.sub] as { _id: string; count: number }[]) {
+      if (r._id) map.set(String(r._id), (map.get(String(r._id)) ?? 0) + r.count);
+    }
+    return map;
   }
 
   /** Mutates each node (and its nested `children`) in place, setting
@@ -367,7 +383,9 @@ export class CategoriesService {
       const childrenCount = node.children?.length
         ? this.attachProductCounts(node.children, countMap)
         : 0;
-      node.productCount = ownCount + childrenCount;
+      // The own count of a main category already includes its subcategories'
+      // products (they carry both ids), so never add the children on top.
+      node.productCount = Math.max(ownCount, childrenCount);
       total += node.productCount;
     }
     return total;
