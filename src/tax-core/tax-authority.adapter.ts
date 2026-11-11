@@ -24,6 +24,8 @@ export interface AuthorityCall { result: AuthorityResult; payload: Record<string
 export interface TaxAuthorityAdapter {
   /** Registry key, e.g. 'PK_FBR'. Matches `PlatformTaxRegistration.authority`. */
   readonly key: string;
+  /** Changes whenever the adapter's behaviour changes (see tax-core/adapter-versions.ts). */
+  readonly version?: string;
   /** Files an invoice. In production this must refuse while the production lock is on. */
   post(input: any, mode: AuthorityMode, token: string): Promise<AuthorityCall>;
   /** Asks the authority whether an invoice would be accepted, without filing it. */

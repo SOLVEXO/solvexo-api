@@ -17,10 +17,10 @@ export class PlatformTaxRule {
   @Prop({ type: String, enum: ['taxable', 'zero_rated', 'exempt', 'out_of_scope', 'unknown'], default: 'unknown' }) treatment: string;
   @Prop({ type: Number, default: null }) ratePercent: number | null;
   @Prop({
-    type: { _id: false, state: { type: String, enum: ['unverified', 'legacy_confirmed', 'verified'], default: 'unverified' }, source: { type: String, default: null }, verifiedBy: { type: String, default: null }, verifiedAt: { type: Date, default: null } },
+    type: { _id: false, state: { type: String, enum: ['unverified', 'legacy_confirmed', 'verified'], default: 'unverified' }, source: { type: String, default: null }, accountantName: { type: String, default: null }, verifiedBy: { type: String, default: null }, verifiedAt: { type: Date, default: null } },
     default: () => ({ state: 'unverified' }),
   })
-  verification: { state: 'unverified' | 'legacy_confirmed' | 'verified'; source: string | null; verifiedBy: string | null; verifiedAt: Date | null };
+  verification: { state: 'unverified' | 'legacy_confirmed' | 'verified'; source: string | null; accountantName?: string | null; verifiedBy: string | null; verifiedAt: Date | null };
 }
 
 export const PlatformTaxRuleSchema = SchemaFactory.createForClass(PlatformTaxRule);

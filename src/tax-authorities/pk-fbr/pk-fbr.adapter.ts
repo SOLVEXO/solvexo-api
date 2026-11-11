@@ -3,6 +3,7 @@ import { Injectable } from '@nestjs/common';
 import type { AuthorityCall, AuthorityMode, TaxAuthorityAdapter } from '../../tax-core/tax-authority.adapter';
 import { FbrDiClient } from '../../fbr-di/fbr-di.client';
 import { isValidFbrInvoiceNumber, qrText } from '../../fbr-di/fbr-di.util';
+import { ADAPTER_VERSIONS } from '../../tax-core/adapter-versions';
 
 /**
  * Pakistan, FBR digital invoicing (PRAL API v1.12). A thin adapter over the existing client: the client keeps the hard production
@@ -11,6 +12,7 @@ import { isValidFbrInvoiceNumber, qrText } from '../../fbr-di/fbr-di.util';
 @Injectable()
 export class PkFbrAdapter implements TaxAuthorityAdapter {
   readonly key = 'PK_FBR';
+  readonly version = ADAPTER_VERSIONS.PK_FBR;
   constructor(private readonly client: Pick<FbrDiClient, 'post' | 'validate'>) {}
 
   post(input: any, mode: AuthorityMode, token: string): Promise<AuthorityCall> { return this.client.post(input, mode, token); }

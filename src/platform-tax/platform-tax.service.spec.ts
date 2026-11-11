@@ -1,8 +1,8 @@
 /* eslint-disable prettier/prettier */
 import { PlatformTaxService } from './platform-tax.service';
 
-function build(opts: { storeCountry?: string | null; baseCurrency?: string; gatewayThrows?: boolean; stores?: any[] } = {}) {
-  let doc: any = null;
+function build(opts: { storeCountry?: string | null; baseCurrency?: string; gatewayThrows?: boolean; stores?: any[]; rates?: any[] } = {}) {
+  let doc: any = opts.rates ? { key: 'platform', rates: opts.rates } : null;
   const updates: any[] = [];
   const model: any = {
     findOne: () => ({ lean: async () => (doc ? JSON.parse(JSON.stringify(doc)) : null) }),
@@ -37,7 +37,9 @@ function build(opts: { storeCountry?: string | null; baseCurrency?: string; gate
   return { svc, created, updates, getDoc: () => doc };
 }
 
-const pk = (over: any = {}) => ({ country: 'PK', label: 'Sales Tax', ratePercent: 17, status: 'confirmed', effectiveFrom: null, ...over });
+const VERIFIED = { source: 'FBR notification (test)', accountantName: 'Test Accountant' };
+// A rate can only be Confirmed with a named source and accountant (Phase 4), so the helper carries them unless a test removes them.
+const pk = (over: any = {}) => ({ country: 'PK', label: 'Sales Tax', ratePercent: 17, status: 'confirmed', effectiveFrom: null, verification: VERIFIED, ...over });
 
 async function rejects(p: Promise<unknown>): Promise<string> {
   try { await p; } catch (e) { return (e as Error).message; }
@@ -62,6 +64,39 @@ describe('PlatformTaxService.update', () => {
     const { svc } = build();
     const msg = await rejects(svc.update({ rates: [pk({ id: 'a' }), pk({ id: 'b', ratePercent: 18 })] } as any, 'a1'));
     expect(msg.includes('same date')).toBe(true);
+  });
+});
+
+describe('PlatformTaxService.update: a new Confirmed rate needs a verification', () => {
+  it('refuses to confirm a rate without a source and an accountant', async () => {
+    const { svc } = build();
+    expect((await rejects(svc.update({ rates: [pk({ id: 'r1', verification: undefined })] } as any, 'a1'))).includes('source')).toBe(true);
+    expect((await rejects(svc.update({ rates: [pk({ id: 'r1', verification: { source: 'x', accountantName: '  ' } })] } as any, 'a1'))).includes('accountant')).toBe(true);
+    expect((await rejects(svc.update({ rates: [pk({ id: 'r1', verification: { source: '', accountantName: 'A' } })] } as any, 'a1'))).includes('source')).toBe(true);
+  });
+  it('stores who verified a newly confirmed rate, and when', async () => {
+    const { svc, getDoc } = build();
+    await svc.update({ rates: [pk({ id: 'r1' })] } as any, 'admin-7');
+    const v = getDoc().rates[0].verification;
+    expect(v.source).toBe(VERIFIED.source);
+    expect(v.accountantName).toBe(VERIFIED.accountantName);
+    expect(v.verifiedBy).toBe('admin-7');
+    expect(v.verifiedAt instanceof Date).toBe(true);
+  });
+  it('a DRAFT rate needs no verification', async () => {
+    const { svc, getDoc } = build();
+    await svc.update({ rates: [pk({ id: 'r1', status: 'draft', verification: undefined })] } as any, 'a1');
+    expect(getDoc().rates[0].verification).toBe(null);
+  });
+  it('a rate that was ALREADY confirmed (legacy, no verification) keeps charging when saved unchanged', async () => {
+    const { svc, getDoc } = build({ rates: [{ id: 'old', country: 'PK', label: 'Sales Tax', ratePercent: 17, status: 'confirmed', effectiveFrom: null, stripeTaxRateId: 'txr_x' }] });
+    await svc.update({ rates: [pk({ id: 'old', verification: undefined })] } as any, 'a1');
+    expect(getDoc().rates[0].status).toBe('confirmed');
+    expect(getDoc().rates[0].stripeTaxRateId).toBe('txr_x');
+  });
+  it('changing a confirmed rate (new percentage) needs a fresh verification', async () => {
+    const { svc } = build({ rates: [{ id: 'old', country: 'PK', label: 'Sales Tax', ratePercent: 17, status: 'confirmed', effectiveFrom: null, stripeTaxRateId: null }] });
+    expect((await rejects(svc.update({ rates: [pk({ id: 'old', ratePercent: 18, verification: undefined })] } as any, 'a1'))).includes('source')).toBe(true);
   });
 });
 

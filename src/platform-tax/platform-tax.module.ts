@@ -21,6 +21,9 @@ import { PlatformEntityService } from './platform-entity.service';
 import { PlatformTaxDeterminationService } from './platform-tax-determination.service';
 import { PlatformLedgerService } from './platform-ledger.service';
 import { PlatformLedgerController } from './platform-ledger.controller';
+import { PlatformTaxCompliance, PlatformTaxComplianceSchema } from './schemas/platform-tax-compliance.schema';
+import { PlatformComplianceService } from './platform-compliance.service';
+import { PlatformComplianceController } from './platform-compliance.controller';
 
 @Global()
 @Module({
@@ -36,13 +39,14 @@ import { PlatformLedgerController } from './platform-ledger.controller';
       { name: PlatformTaxRegistration.name, schema: PlatformTaxRegistrationSchema },
       { name: PlatformTaxRule.name, schema: PlatformTaxRuleSchema },
       { name: PlatformInvoice.name, schema: PlatformInvoiceSchema },
+      { name: PlatformTaxCompliance.name, schema: PlatformTaxComplianceSchema },
     ]),
     // RedisModule: JwtAuthGuard injects RedisService, which only resolves when this module imports it (AuthModule
     // doesn't re-export it). Without it every admin tax route returned 500 "reading 'isConnected'".
     AuthModule, RedisModule, SubscriptionsModule, ExchangeRateModule,
   ],
-  controllers: [PlatformTaxController, PlatformTaxQuoteController, PlatformLedgerController],
-  providers: [PlatformTaxService, PlatformEntityService, PlatformTaxDeterminationService, PlatformLedgerService],
-  exports: [PlatformTaxService, PlatformLedgerService, PlatformEntityService],
+  controllers: [PlatformTaxController, PlatformTaxQuoteController, PlatformLedgerController, PlatformComplianceController],
+  providers: [PlatformTaxService, PlatformEntityService, PlatformTaxDeterminationService, PlatformLedgerService, PlatformComplianceService],
+  exports: [PlatformTaxService, PlatformLedgerService, PlatformEntityService, PlatformComplianceService],
 })
 export class PlatformTaxModule {}

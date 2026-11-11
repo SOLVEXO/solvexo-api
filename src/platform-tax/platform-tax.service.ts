@@ -91,10 +91,22 @@ export class PlatformTaxService {
         const prev = old.get(id);
         // A Stripe TaxRate cannot be edited: keep its id only while percentage/label/country are unchanged.
         const sameAsPrev = prev && prev.ratePercent === r.ratePercent && prev.label === label && prev.country === country;
+        // A rate that is NEWLY Confirmed (or a confirmed rate that is changed) must say where it comes from and who confirmed it.
+        // A rate that was already confirmed and is unchanged keeps charging exactly as before (legacy confirmed, no new claim).
+        let verification: { source: string; accountantName: string; verifiedAt: Date; verifiedBy: string } | null = null;
+        if (r.status === 'confirmed') {
+          if (prev && prev.status === 'confirmed' && sameAsPrev) verification = prev.verification ?? null;
+          else {
+            const source = r.verification?.source?.trim(); const accountantName = r.verification?.accountantName?.trim();
+            if (!source || !accountantName) throw new BadRequestException(`A rate cannot be Confirmed without naming its source and the accountant who confirmed it (${country} ${r.ratePercent}%).`);
+            verification = { source, accountantName, verifiedAt: new Date(), verifiedBy: adminId };
+          }
+        }
         return {
           id, country, label, ratePercent: r.ratePercent, status: r.status,
           effectiveFrom: r.effectiveFrom ? new Date(r.effectiveFrom) : null,
           stripeTaxRateId: sameAsPrev ? prev.stripeTaxRateId ?? null : null,
+          verification,
         };
       });
       const confirmedKeys = new Set<string>();

@@ -19,6 +19,7 @@ import { TaxAuthorityRegistry } from '../tax-core/tax-authority.registry';
 import type { AuthorityResult, TaxAuthorityAdapter } from '../tax-core/tax-authority.adapter';
 import { decideOutcome } from '../tax-core/e-invoice-engine';
 import { PkFbrAdapter } from '../tax-authorities/pk-fbr/pk-fbr.adapter';
+import { PlatformComplianceService } from '../platform-tax/platform-compliance.service';
 import { FbrDiClient } from './fbr-di.client';
 import { assertProductionAllowed, PRODUCTION_LOCKED_MESSAGE } from './fbr-production-lock';
 import { buildOrderInput, buildPlanInvoiceInput } from './fbr-di.builders';
@@ -68,6 +69,7 @@ export class FbrDiService {
     @Optional() @InjectModel(StoreEinvoiceRecord.name) private readonly storeRecordModel?: Model<FbrInvoiceDocument>,
     @Optional() private readonly registry?: TaxAuthorityRegistry,
     @Optional() @InjectModel(PlatformInvoice.name) private readonly ledgerModel?: Model<PlatformInvoiceDocument>,
+    @Optional() private readonly compliance?: PlatformComplianceService,
   ) {}
 
   // ───────────────────────── records: two collections, never mixed ─────────────────────────
@@ -170,6 +172,8 @@ export class FbrDiService {
     const outcome = await this.runTest(input, token);
     await this.platformModel.updateOne({ key: 'platform' }, { $set: { lastTestAt: new Date(), lastTestOk: outcome.ok, lastTestMessage: outcome.message, lastTestTokenFp: fbrTokenFingerprint(token) }, $setOnInsert: { key: 'platform' } }, { upsert: true });
     this.activityLog.log({ category: 'platform_plans', action: 'fbr_di_test', description: `FBR sandbox test: ${outcome.message}`, actorId: adminId, actorRole: 'admin' });
+    // A PASSED test with this token lets the compliance state move rules_verified -> sandbox_tested. It can never raise anything further.
+    await this.compliance?.recordSandboxTest(outcome.ok, fbrTokenFingerprint(token)).catch((e: Error) => this.logger.error(`Compliance update after the FBR test failed: ${e.message}`));
     return outcome;
   }
 
