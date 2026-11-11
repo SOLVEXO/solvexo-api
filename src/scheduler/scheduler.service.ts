@@ -496,6 +496,19 @@ export class SchedulerService {
     });
   }
 
+  // Runs daily at 02:30 (before the 03:00 grace job, so a store locked here
+  // starts its storefront countdown normally) — locks stores whose renewal
+  // has been unpaid ('past_due') for PAST_DUE_LOCK_DAYS.
+  @Cron('30 2 * * *')
+  async lockOverduePlanPayments() {
+    await this.runLocked('platform-plan-past-due-lock', 10 * 60_000, async () => {
+      const result = await this.sellerPlatformSubscriptionsService.lockOverduePastDue();
+      if (result.locked > 0) {
+        this.logger.log(`Platform-plan past-due lock: ${result.locked} store(s) locked`);
+      }
+    });
+  }
+
   // Runs daily, after the trial/renewal jobs above (so a store locked/trial-
   // ended earlier in this same run is eligible immediately, not a day late)
   // — hides the storefront of any locked/trial-ended store whose own grace

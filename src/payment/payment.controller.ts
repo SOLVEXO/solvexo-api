@@ -21,6 +21,8 @@ import { RequirePermission } from '../auth/decorators/require-permission.decorat
 import { IdempotencyInterceptor } from '../common/idempotency.interceptor';
 import { actingSellerId } from '../common/acting-seller-id.util';
 import { PaymentService } from './payment.service';
+import { BillingAccessGuard } from '../platform-plans/guards/billing-access.guard';
+import { RequireActiveBilling } from '../platform-plans/decorators/require-active-billing.decorator';
 
 @Controller('api/payment')
 export class PaymentController {
@@ -28,8 +30,9 @@ export class PaymentController {
 
   // Idempotency-Key protection (previously missing) — a double-tap/retry
   // must never place two separate orders for the same buyer action.
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, BillingAccessGuard)
   @Roles('user')
+  @RequireActiveBilling({ blockDuringTrial: true, audience: 'buyer' })
   @UseInterceptors(IdempotencyInterceptor)
   @Post('cod-payment')
   async codPayment(@Req() req: any, @Body() body: any) {
@@ -38,8 +41,9 @@ export class PaymentController {
   }
 
   // Wholesale company buyers: place the order on the company's payment terms (net days / due on fulfilment).
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, BillingAccessGuard)
   @Roles('user')
+  @RequireActiveBilling({ blockDuringTrial: true, audience: 'buyer' })
   @UseInterceptors(IdempotencyInterceptor)
   @Post('b2b-terms-payment')
   async b2bTermsPayment(@Req() req: any, @Body() body: any) {
@@ -47,8 +51,9 @@ export class PaymentController {
     return this.paymentService.b2bTermsPayment(userId, body?.checkoutId);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, BillingAccessGuard)
   @Roles('user')
+  @RequireActiveBilling({ blockDuringTrial: true, audience: 'buyer' })
   @UseInterceptors(IdempotencyInterceptor)
   @Post('store-credit-payment')
   async storeCreditPayment(@Req() req: any, @Body() body: any) {
@@ -56,8 +61,9 @@ export class PaymentController {
     return this.paymentService.storeCreditPayment(userId, body);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, BillingAccessGuard)
   @Roles('user')
+  @RequireActiveBilling({ blockDuringTrial: true, audience: 'buyer' })
   @UseInterceptors(IdempotencyInterceptor)
   @Post('initiate-payment')
   async initiatePayment(@Req() req: any, @Body() body: any) {

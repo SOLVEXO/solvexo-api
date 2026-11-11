@@ -23,6 +23,8 @@ import { getInvoiceSubscriptionId, getInvoicePaymentIntentId } from '@/common/st
 // Shopify retries a failed subscription bill about every 4 days, 8 times over ~28 days, and only then freezes the store.
 const MAX_RENEWAL_ATTEMPTS = 8;
 const RETRY_INTERVAL_DAYS = 4;
+/** Days a store may stay 'past_due' (unpaid renewal) before it is locked, like Shopify freezing an unpaid store. */
+export const PAST_DUE_LOCK_DAYS = 7;
 // Fallback grace period (days a locked/trial-ended store's storefront stays
 // browsable before Store.privacyMode gates it — see expireGracePeriods())
 // for the one case with no PlatformPlan to read gracePeriodDays from: a
@@ -287,7 +289,7 @@ export class SellerPlatformSubscriptionsService {
     sub.amountUSD = 0;
     sub.scheduledPlanChange = null;
     sub.status = 'active';
-    sub.failedPaymentAttempts = 0;
+    sub.failedPaymentAttempts = 0; sub.pastDueSince = null;
     sub.cancelAtPeriodEnd = false;
     sub.canceledAt = null;
     sub.cancelReason = null;
@@ -321,7 +323,7 @@ export class SellerPlatformSubscriptionsService {
     sub.status = 'locked';
     sub.lockedAt = new Date();
     sub.scheduledPlanChange = null;
-    sub.failedPaymentAttempts = 0;
+    sub.failedPaymentAttempts = 0; sub.pastDueSince = null;
     sub.cancelAtPeriodEnd = false;
     sub.canceledAt = null;
     sub.cancelReason = null;
@@ -348,7 +350,7 @@ export class SellerPlatformSubscriptionsService {
    */
   private async markTrialEnded(sub: any): Promise<void> {
     sub.status = 'trial_ended';
-    sub.failedPaymentAttempts = 0;
+    sub.failedPaymentAttempts = 0; sub.pastDueSince = null;
     sub.cancelAtPeriodEnd = false;
     sub.canceledAt = null;
     sub.cancelReason = null;
@@ -415,7 +417,8 @@ export class SellerPlatformSubscriptionsService {
     }
   }
 
-  private async applyDunningFailure(sub: any, chargeAmount?: number) {
+  /** `stripeRetryAt`: undefined = our own (manual) billing, which retries every RETRY_INTERVAL_DAYS; a Date/null = Stripe-billed, where Stripe's real next attempt (or none) is used instead of a guess. */
+  private async applyDunningFailure(sub: any, chargeAmount?: number, stripeRetryAt?: Date | null) {
     sub.failedPaymentAttempts = (sub.failedPaymentAttempts ?? 0) + 1;
     const { sellerName, sellerEmail, billingRecipients, storeName } = await this.getSellerAndStoreNames(sub.sellerId, sub.storeId);
 
@@ -484,16 +487,24 @@ export class SellerPlatformSubscriptionsService {
     }
 
     sub.status = 'past_due';
-    const retryAt = new Date();
-    retryAt.setDate(retryAt.getDate() + RETRY_INTERVAL_DAYS);
-    sub.nextBillingDate = retryAt;
+    if (!sub.pastDueSince) sub.pastDueSince = new Date();
+    let retryAt: Date | null;
+    if (stripeRetryAt === undefined) {
+      retryAt = new Date();
+      retryAt.setDate(retryAt.getDate() + RETRY_INTERVAL_DAYS);
+      sub.nextBillingDate = retryAt;
+    } else {
+      retryAt = stripeRetryAt;
+      if (retryAt) sub.nextBillingDate = retryAt;
+    }
+    const lockDate = new Date(new Date(sub.pastDueSince).getTime() + PAST_DUE_LOCK_DAYS * 24 * 60 * 60 * 1000);
 
     if (sellerEmail) {
       const plan = await this.planModel.findById(sub.platformPlanId).select('name').lean();
       await this.notifications.sendPaymentFailed(billingRecipients, {
         sellerName, storeName, planName: (plan as any)?.name ?? 'your plan',
         amountUSD: chargeAmount ?? sub.amountUSD, attemptNumber: sub.failedPaymentAttempts,
-        maxAttempts: MAX_RENEWAL_ATTEMPTS, nextRetryDate: retryAt,
+        maxAttempts: MAX_RENEWAL_ATTEMPTS, nextRetryDate: retryAt, lockDate,
       });
     }
     this.notificationsService.notify({
@@ -502,7 +513,7 @@ export class SellerPlatformSubscriptionsService {
       storeId: sub.storeId,
       type: NOTIFICATION_TYPES.PLATFORM_PLAN_PAYMENT_FAILED,
       title: 'Plan payment failed',
-      body: `We couldn't process your ${storeName} plan payment — we'll retry on ${retryAt.toDateString()}.`,
+      body: `We couldn't process your ${storeName} plan payment${retryAt ? ` — we'll retry on ${retryAt.toDateString()}` : ''}. Pay by ${lockDate.toDateString()} or the store will be locked.`,
       data: { subscriptionId: String(sub._id) },
     }).catch(() => {});
   }
@@ -730,7 +741,11 @@ export class SellerPlatformSubscriptionsService {
     }
     if (!sub) throw new NotFoundException('This store has no platform-plan record yet — no free plan is configured. Contact support.');
     const plan = await this.planModel.findById((sub as any).platformPlanId).lean();
-    return { success: true, data: { ...sub, plan } };
+    // While unpaid (past_due) tell the seller WHEN the store gets locked, so the UI never has to guess.
+    const s: any = sub;
+    const since = s.status === 'past_due' ? (s.pastDueSince ?? s.currentPeriodEnd ?? null) : null;
+    const lockDate = since ? new Date(new Date(since).getTime() + PAST_DUE_LOCK_DAYS * 24 * 60 * 60 * 1000) : null;
+    return { success: true, data: { ...sub, plan, lockDate } };
   }
 
   /** Seller's own platform-plan billing history for one store — invoice list + download links. */
@@ -830,7 +845,7 @@ export class SellerPlatformSubscriptionsService {
     }
 
     sub.status = 'active';
-    sub.failedPaymentAttempts = 0;
+    sub.failedPaymentAttempts = 0; sub.pastDueSince = null;
     sub.gracePeriodEndsAt = null;
     sub.storefrontGatedAt = null;
     await sub.save();
@@ -912,7 +927,7 @@ export class SellerPlatformSubscriptionsService {
     sub.paymentProvider = 'manual';
     sub.scheduledPlanChange = null;
     sub.status = 'active';
-    sub.failedPaymentAttempts = 0;
+    sub.failedPaymentAttempts = 0; sub.pastDueSince = null;
     sub.cancelAtPeriodEnd = false;
     sub.canceledAt = null;
     sub.cancelReason = null;
@@ -1221,7 +1236,7 @@ export class SellerPlatformSubscriptionsService {
     sub.currentPeriodStart = now;
     sub.currentPeriodEnd = this.addPeriod(now, newInterval);
     sub.nextBillingDate = sub.currentPeriodEnd;
-    sub.failedPaymentAttempts = 0;
+    sub.failedPaymentAttempts = 0; sub.pastDueSince = null;
     sub.canceledAt = null;
     // Any change of plan — including re-subscribing before a scheduled
     // cancellation reached period end — implicitly clears that schedule.
@@ -1546,7 +1561,7 @@ export class SellerPlatformSubscriptionsService {
             sub.nextBillingDate = periodEnd;
             sub.totalPaidUSD = this.round(sub.totalPaidUSD + chargeAmount);
             sub.creditBalanceUSD = this.round((sub.creditBalanceUSD ?? 0) - creditToApply);
-            sub.failedPaymentAttempts = 0;
+            sub.failedPaymentAttempts = 0; sub.pastDueSince = null;
           } else {
             await this.applyDunningFailure(sub, chargeAmount);
           }
@@ -1860,7 +1875,9 @@ export class SellerPlatformSubscriptionsService {
     if (!providerSubscriptionId) return;
     const sub = await this.subModel.findOne({ providerSubscriptionId, isDelete: false });
     if (!sub) return; // not one of ours — belongs to the buyer-VIP-plan system instead
-    if (await this.invoiceModel.exists({ stripeInvoiceId: invoice.id })) return; // duplicate webhook delivery
+    // Duplicate webhook delivery. A 'failed' placeholder (written by handleInvoicePaymentFailed) is NOT a duplicate:
+    // Stripe's retry paying the same invoice must still be recorded as paid.
+    if (await this.invoiceModel.exists({ stripeInvoiceId: invoice.id, status: { $ne: 'failed' } })) return;
 
     // Stripe already moved the subscription to the scheduled price for this cycle — mirror it locally (see changePlan).
     if (invoice.billing_reason === 'subscription_cycle') await this.applyScheduledPlanChange(sub);
@@ -1873,6 +1890,9 @@ export class SellerPlatformSubscriptionsService {
     const line = invoice.lines?.data?.[0];
     const periodEnd = line?.period?.end ? new Date(line.period.end * 1000) : this.addPeriod(new Date(), sub.billingInterval as any);
     const providerChargeId = getInvoicePaymentIntentId(invoice);
+
+    // The invoice now paid had a 'failed' placeholder in Billing History: replace it with the paid record.
+    if (invoice.id) await this.invoiceModel.deleteOne({ stripeInvoiceId: invoice.id, status: 'failed' });
 
     // A generated invoiceNumber must be reserved BEFORE the transaction opens
     // (this counter update is its own atomic $inc, unrelated to the
@@ -1906,7 +1926,7 @@ export class SellerPlatformSubscriptionsService {
       sub.currentPeriodEnd = periodEnd;
       sub.nextBillingDate = periodEnd;
       sub.totalPaidUSD = this.round(sub.totalPaidUSD + amountUSD);
-      sub.failedPaymentAttempts = 0;
+      sub.failedPaymentAttempts = 0; sub.pastDueSince = null;
       await sub.save({ session });
     });
     await this.unlockStorefrontIfComingSoon(sub.storeId);
@@ -1919,6 +1939,77 @@ export class SellerPlatformSubscriptionsService {
       description: `Platform-plan Stripe invoice ${invoice.id} paid — $ ${amountUSD.toFixed(2)}`,
       actorRole: 'system', targetId: sub._id.toString(), targetType: 'seller_platform_subscription',
     });
+  }
+
+  /**
+   * Locks stores whose renewal has been unpaid ('past_due') for PAST_DUE_LOCK_DAYS.
+   * Before this, past_due only locked after 8 DISTINCT failed invoices (~8 months
+   * on monthly billing), so an unpaid store kept selling. The Stripe subscription
+   * is left untouched, so a later successful retry / card update still unlocks it
+   * (handleInvoicePaymentSucceeded -> active). Legacy free-eligible stores keep the
+   * old downgrade-to-free path. The clock starts at `pastDueSince`, or the unpaid
+   * period end for rows that became past_due before that field existed.
+   */
+  async lockOverduePastDue(now: Date = new Date()): Promise<{ locked: number }> {
+    const rows = await this.subModel.find({ status: 'past_due', isDelete: false, legacyFreeEligible: { $ne: true } });
+    const limitMs = PAST_DUE_LOCK_DAYS * 24 * 60 * 60 * 1000;
+    let locked = 0;
+    for (const sub of rows) {
+      try {
+        const since: Date | null = (sub as any).pastDueSince ?? (sub as any).currentPeriodEnd ?? null;
+        if (!since || now.getTime() - new Date(since).getTime() < limitMs) continue;
+
+        await this.lockStore(sub);
+        await sub.save();
+        locked++;
+
+        const { sellerName, sellerEmail, billingRecipients, storeName } = await this.getSellerAndStoreNames(sub.sellerId, sub.storeId);
+        if (sellerEmail) {
+          await this.notifications.sendStoreLocked(billingRecipients, { sellerName, storeName, reason: 'payment_failed' }).catch(() => {});
+        }
+        this.notificationsService.notify({
+          recipientId: sub.sellerId, recipientRole: 'seller', storeId: sub.storeId,
+          type: NOTIFICATION_TYPES.PLATFORM_PLAN_PAYMENT_FAILED,
+          title: 'Store locked',
+          body: `${storeName} was locked because the plan payment is ${PAST_DUE_LOCK_DAYS}+ days overdue — update your payment method to unlock it. Your data is safe.`,
+          data: { subscriptionId: String(sub._id) },
+        }).catch(() => {});
+        this.notificationsService.notifyAdmins({
+          type: NOTIFICATION_TYPES.ADMIN_PLATFORM_BILLING_FAILED,
+          title: 'Store locked — payment overdue',
+          body: `${storeName} was locked: plan payment overdue for ${PAST_DUE_LOCK_DAYS}+ days.`,
+          data: { storeId: sub.storeId, link: '/admin/billing' },
+        }).catch(() => {});
+        this.activityLogService.log({
+          storeId: sub.storeId, category: 'platform_plans', action: 'plan_locked_past_due',
+          description: `Store locked (selling restricted): renewal unpaid for ${PAST_DUE_LOCK_DAYS}+ days`,
+          actorRole: 'system', targetId: sub._id.toString(), targetType: 'seller_platform_subscription',
+        });
+      } catch (err: any) {
+        this.logger.error(`lockOverduePastDue: failed for store ${sub.storeId}: ${err?.message}`);
+      }
+    }
+    return { locked };
+  }
+
+  /** Puts an unpaid renewal into Billing History as 'failed' (with Stripe's pay link) so the seller can see and pay it. Never throws; replaced by the paid record if Stripe's retry succeeds. */
+  private async recordFailedInvoice(sub: any, invoice: any, amountUSD: number): Promise<void> {
+    try {
+      if (!invoice?.id || !sub.platformPlanId) return;
+      if (await this.invoiceModel.exists({ stripeInvoiceId: invoice.id })) return;
+      const { subtotalUSD, taxAmountUSD, taxRatePercent } = invoiceTaxSnapshot(invoice, amountUSD);
+      await this.invoiceModel.create({
+        storeId: sub.storeId, sellerId: sub.sellerId, platformPlanId: sub.platformPlanId,
+        invoiceNumber: await this.generateInvoiceNumber(),
+        type: invoice.billing_reason === 'subscription_create' ? 'initial' : 'recurring',
+        amountUSD, subtotalUSD, taxAmountUSD, taxRatePercent,
+        status: 'failed', paidAt: null, stripeInvoiceId: invoice.id,
+        hostedInvoiceUrl: invoice.hosted_invoice_url ?? null, invoicePdfUrl: invoice.invoice_pdf ?? null,
+        paymentMethodType: 'card',
+      });
+    } catch (err: any) {
+      this.logger.warn(`recordFailedInvoice: could not record failed invoice ${invoice?.id}: ${err?.message}`);
+    }
   }
 
   @OnEvent('stripe.invoice.payment_failed')
@@ -1934,8 +2025,11 @@ export class SellerPlatformSubscriptionsService {
     if (invoice.id && sub.lastFailedStripeInvoiceId === invoice.id) return;
     if (invoice.id) sub.lastFailedStripeInvoiceId = invoice.id;
     const amountUSD = this.round((invoice.amount_due ?? 0) / 100);
-    await this.applyDunningFailure(sub, amountUSD);
+    // Stripe's REAL next retry (null once Stripe stops retrying) — the seller is told this date, not our own guess.
+    const stripeRetryAt: Date | null = typeof invoice.next_payment_attempt === 'number' ? new Date(invoice.next_payment_attempt * 1000) : null;
+    await this.applyDunningFailure(sub, amountUSD, stripeRetryAt);
     await sub.save();
+    await this.recordFailedInvoice(sub, invoice, amountUSD);
   }
 
   /**
@@ -1964,8 +2058,23 @@ export class SellerPlatformSubscriptionsService {
     };
     const mapped = statusMap[subscription.status];
     if (mapped && mapped !== sub.status) {
+      // Never un-lock through this event: 'locked' is a local state that only a successful payment clears.
+      if (sub.status === 'locked' && mapped === 'past_due') return;
       sub.status = mapped;
+      if (mapped === 'past_due' && !sub.pastDueSince) sub.pastDueSince = new Date(); // starts the lock countdown (lockOverduePastDue)
+      if (mapped === 'active') sub.pastDueSince = null;
       await sub.save();
+      // Stripe gave up retrying (unpaid): the payment_failed event may never have told the seller.
+      if (subscription.status === 'unpaid') {
+        const { storeName } = await this.getSellerAndStoreNames(sub.sellerId, sub.storeId);
+        this.notificationsService.notify({
+          recipientId: sub.sellerId, recipientRole: 'seller', storeId: sub.storeId,
+          type: NOTIFICATION_TYPES.PLATFORM_PLAN_PAYMENT_FAILED,
+          title: 'Plan payment still unpaid',
+          body: `${storeName}'s plan payment is unpaid and automatic retries have stopped — update your payment method now to keep selling.`,
+          data: { subscriptionId: String(sub._id) },
+        }).catch(() => {});
+      }
     }
   }
 
