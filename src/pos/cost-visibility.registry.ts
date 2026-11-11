@@ -22,6 +22,8 @@ export const GLOBAL_COST_KEYS: ReadonlySet<string> = new Set([
   'netWithCostMinor', 'netNoCostMinor', 'costUnknownNetMinor', 'costCoveragePercent',
   // caught by the source scan when the registry was built (supply cost twins)
   'shippingCostMinor', 'taxCostMinor', 'itemUnitCostMinor',
+  // payables in a report (the profit report's note on supplier payments) — found on the screenshot pass
+  'supplierPaymentsMinor', 'supplierPayments', 'supplierPaymentsNote',
 ]);
 
 /** Route-scoped: [path prefix (after the host), keys that are cost on those routes only, and optionally a key PATTERN that is cost there]. */

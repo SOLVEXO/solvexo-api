@@ -106,6 +106,7 @@ describe('G4.8 · hide costs from managers', () => {
     expect(profit.data.costsHidden).toBe(true);
     expect(carriesCost(profit, GLOBAL_COST_KEYS)).toBe(false);
     expect(profit.data.totals.netSalesMinor).toBeDefined();
+    expect(profit.data.totals.supplierPaymentsMinor).toBeUndefined(); // payables are hidden too
     const sales: any = await costs.apply(device(s), `/api/pos/reports/sales/${s.storeId}`, await rep.sales(device(s) as any, s.storeId, { from: day, to: day }, M));
     expect(sales.data.costsHidden).toBe(true);
     expect(sales.data.totals.netSalesMinor).toBeDefined();
