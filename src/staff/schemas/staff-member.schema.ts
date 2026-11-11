@@ -115,11 +115,6 @@ export const STAFF_PERMISSIONS = [
   // SEO — a clean view/write split holds across all 10 seller-facing SEO
   // controllers; no third genuinely independent capability tier exists.
   'seo.view', 'seo.manage',
-  // AI Studio — `.use` covers every generation tool; there is no seller-
-  // facing "AI Studio settings" route to gate separately (credit top-up
-  // is a `platform-plans` addon purchase, a different controller/permission
-  // entirely — see `settings.billing.manage`).
-  'aistudio.view', 'aistudio.use',
   // Staff management itself
   'staff.manage',
 ] as const;

@@ -5,7 +5,7 @@ import { Document } from 'mongoose';
 export type AiCreditsWalletDocument = AiCreditsWallet & Document;
 
 /**
- * Store-scoped AI credit balance, spent by AI Studio and the AI SEO suggestions (AiCreditsService owns the rules).
+ * Store-scoped AI credit balance, spent by the AI SEO suggestions (AiCreditsService owns the rules).
  * `balance` is everything the store can spend now; `bonusBalance` is the part of it the seller BOUGHT (kept at the monthly reset).
  */
 @Schema({ timestamps: true })

@@ -18,7 +18,7 @@ export function balanceAfterReset(allowance: number, balance: number, bonusBalan
 }
 
 /**
- * AI credit ledger of a store, filled from its PlatformPlan (`aiCreditsPerMonth`) and spent by AI Studio and the AI SEO
+ * AI credit ledger of a store, filled from its PlatformPlan (`aiCreditsPerMonth`) and spent by the AI SEO
  * suggestions. The wallet follows the store's plan: it is created with the plan's allowance, brought in line the next time it
  * is used after a plan change (`alignToPlan`), and reset on the 1st of every month (bought credits are kept).
  */

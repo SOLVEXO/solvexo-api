@@ -6,7 +6,6 @@ export type PlatformConfigDocument = PlatformConfig & Document;
 
 @Schema({ _id: false })
 export class FeatureFlags {
-  @Prop({ type: Boolean, default: true }) aiStudio: boolean;
   @Prop({ type: Boolean, default: true }) marketplace: boolean;
   @Prop({ type: Boolean, default: true }) digitalUploads: boolean;
   @Prop({ type: Boolean, default: false }) affiliateProgram: boolean;

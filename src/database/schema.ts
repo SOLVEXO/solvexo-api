@@ -147,8 +147,6 @@ export { SeoAuditResult, SeoAuditResultDocument, SeoAuditResultSchema } from '..
 
 export { RecentSearch, RecentSearchDocument, RecentSearchSchema } from '../search/schemas/recent-search.schema';
 export { RecentlyViewed, RecentlyViewedDocument, RecentlyViewedSchema } from '../search/schemas/recently-viewed.schema';
-export { AiGeneration, AiGenerationDocument, AiGenerationSchema } from '../ai-studio/schemas/ai-generation.schema';
-export { AiCreditTransaction, AiCreditTransactionDocument, AiCreditTransactionSchema } from '../ai-studio/schemas/ai-credit-transaction.schema';
 
 export { Notification, NotificationDocument, NotificationSchema } from '../notifications/schemas/notification.schema';
 export { DeviceToken, DeviceTokenDocument, DeviceTokenSchema } from '../notifications/schemas/device-token.schema';

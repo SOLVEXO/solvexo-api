@@ -9,7 +9,7 @@ async function withoutJestWorker<T>(fn: () => Promise<T> | T): Promise<T> {
   try { return await fn(); } finally { if (saved !== undefined) process.env.JEST_WORKER_ID = saved; }
 }
 
-describe('AI Studio availability', () => {
+describe('AI text availability', () => {
   it('claude with a key is available', async () => {
     await withoutJestWorker(() => {
       const s = new TextGenerationService(config({ AI_PROVIDER: 'claude', ANTHROPIC_API_KEY: 'sk-test', NODE_ENV: 'production' }));

@@ -20,7 +20,7 @@ export const ACTIVITY_LOG_CATEGORIES = [
   'platform_plans',
   'seo',
   'integrations',
-  'ai_studio',
+  'ai_studio', // retired (AI Studio was removed): old log rows keep this category
   'announcements',
   'moderation',
   'promotions',

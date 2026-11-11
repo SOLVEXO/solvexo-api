@@ -1,7 +1,7 @@
 /**
- * AI Studio provider abstraction layer.
+ * AI text provider abstraction layer.
  *
- * Business logic (ai-studio.service.ts) talks ONLY to these interfaces —
+ * Callers (translation, sales agent) talk ONLY to these interfaces —
  * never to a vendor SDK directly. Concrete implementations today:
  *
  *   TextGenerationAdapter → ClaudeTextGenerationProvider (Anthropic Messages API)

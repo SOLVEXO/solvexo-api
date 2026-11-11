@@ -3,7 +3,6 @@ import { ApiProperty } from '@nestjs/swagger';
 import { IsBoolean, IsOptional } from 'class-validator';
 
 export class UpdateFeatureFlagsDto {
-  @ApiProperty({ required: false }) @IsOptional() @IsBoolean() aiStudio?: boolean;
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() marketplace?: boolean;
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() digitalUploads?: boolean;
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() affiliateProgram?: boolean;

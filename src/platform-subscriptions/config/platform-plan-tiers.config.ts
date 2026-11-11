@@ -36,7 +36,7 @@ export const PLATFORM_TIERS: Record<StorePlan, PlatformTierConfig> = {
     yearlyPriceUSD: null,
     productLimit: 10,
     posEligible: false,
-    features: ['Up to 10 products', 'Marketplace listing', 'AI Studio (basic)'],
+    features: ['Up to 10 products', 'Marketplace listing'],
   },
   [StorePlan.BASIC]: {
     tier: StorePlan.BASIC,

@@ -147,7 +147,7 @@ describe('AI credits are spent atomically', () => {
 
   it('writes a spend line with the balance after it', async () => {
     const { svc, wallets } = setup({ value: 100 }, { balance: 20, monthlyAllowance: 100 });
-    await svc.deduct('s1', 'sel1', 5, 'AI Studio');
+    await svc.deduct('s1', 'sel1', 5, 'AI SEO');
     const line = wallets.rows[0].ledger[wallets.rows[0].ledger.length - 1];
     expect(line.type).toBe('spend');
     expect(line.amount).toBe(-5);

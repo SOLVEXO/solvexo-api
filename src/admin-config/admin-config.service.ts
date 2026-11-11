@@ -14,7 +14,7 @@ import { UpdateFxConfigDto } from './dto/update-fx-config.dto';
 import { isRealCurrencyCode, ALL_CURRENCY_CODES } from '../common/currency-metadata.const';
 
 export type FeatureFlagKey =
-  | 'aiStudio' | 'marketplace' | 'digitalUploads' | 'affiliateProgram'
+  | 'marketplace' | 'digitalUploads' | 'affiliateProgram'
   | 'giftCards' | 'posMode' | 'storeBuilder' | 'bulkProductImport' | 'promotions'
   | 'storefrontBlog';
 

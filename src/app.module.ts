@@ -69,7 +69,7 @@ import { PlatformTaxModule } from './platform-tax/platform-tax.module';
 import { SeoModule } from './seo/seo.module';
 import { IntegrationsModule } from './integrations/integrations.module';
 import { CustomerSocialLoginModule } from './customer-social-login/customer-social-login.module';
-import { AiStudioModule } from './ai-studio/ai-studio.module';
+import { AiTextModule } from './ai/ai-text.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { OrderDocumentsModule } from './order-documents/order-documents.module';
 import { StoreTextTranslationsModule } from './store-text-translations/store-text-translations.module';
@@ -202,7 +202,7 @@ import { AppI18nModule } from './i18n/i18n.module';
     BookingsModule,
     PlatformPlansModule,
     PlatformTaxModule,
-    AiStudioModule,
+    AiTextModule,
     SchedulerModule,
     MarketingModule,
     LoyaltyModule,

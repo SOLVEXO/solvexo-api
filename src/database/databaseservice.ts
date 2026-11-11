@@ -312,12 +312,6 @@ export class DatabaseService {
     @InjectModel(schema.RecentlyViewed.name)
     private recentlyViewedModel: Model<schema.RecentlyViewedDocument>,
 
-    @InjectModel(schema.AiGeneration.name)
-    private aiGenerationModel: Model<schema.AiGenerationDocument>,
-
-    @InjectModel(schema.AiCreditTransaction.name)
-    private aiCreditTransactionModel: Model<schema.AiCreditTransactionDocument>,
-
     @InjectModel(schema.Notification.name)
     private notificationModel: Model<schema.NotificationDocument>,
 
@@ -638,8 +632,6 @@ export class DatabaseService {
       seoAuditResultModel: this.seoAuditResultModel,
       recentSearchModel: this.recentSearchModel,
       recentlyViewedModel: this.recentlyViewedModel,
-      aiGenerationModel: this.aiGenerationModel,
-      aiCreditTransactionModel: this.aiCreditTransactionModel,
       notificationModel: this.notificationModel,
       deviceTokenModel: this.deviceTokenModel,
       notificationPreferenceModel: this.notificationPreferenceModel,

@@ -331,7 +331,8 @@ export function buildFeatureBullets(
   if (changed('maxPosLocations')) {
     lines.push(l.maxPosLocations === -1 ? 'Unlimited POS & inventory locations' : `${money(l.maxPosLocations)} POS / inventory location${l.maxPosLocations === 1 ? '' : 's'}`);
   }
-  if (changed('aiCreditsPerMonth') && l.aiCreditsPerMonth > 0) lines.push(`${money(l.aiCreditsPerMonth)} AI Studio credits every month`);
+  // AI credits are only spent by AI SEO suggestions, so a plan without them does not advertise credits it can not use.
+  if (changed('aiCreditsPerMonth') && l.aiCreditsPerMonth > 0 && l.seoAiSuggestionsAllowed) lines.push(`${money(l.aiCreditsPerMonth)} AI credits every month (for AI SEO suggestions)`);
   if (changed('maxMarkets')) lines.push(l.maxMarkets === -1 ? 'Sell in unlimited currencies' : `Sell in up to ${money(l.maxMarkets)} currencies`);
   // Store banners and promotions are dead (see DEAD_LIMITS) and are never advertised.
   if (changed('monthlyEmailSends') && l.monthlyEmailSends > 0) lines.push(`${money(l.monthlyEmailSends)} marketing emails a month`);

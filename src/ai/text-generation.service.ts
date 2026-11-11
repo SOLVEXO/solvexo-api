@@ -61,21 +61,21 @@ export class TextGenerationService implements TextGenerationAdapter, OnModuleIni
     return this.mockAllowed;
   }
 
-  /** Called before anything is held or charged: AI Studio refuses instead of selling canned text for real credits. */
+  /** Called before anything is held or charged: the AI features refuse instead of passing canned text off as real. */
   assertAvailable(): void {
     if (!this.isAvailable) {
-      throw new ServiceUnavailableException('AI Studio is being set up and is not available yet. No credits were used.');
+      throw new ServiceUnavailableException('AI is being set up and is not available yet. No credits were used.');
     }
   }
 
   onModuleInit() {
-    this.logger.log(`AI Studio text generation running on provider: "${this.providerName}"`);
+    this.logger.log(`AI text generation running on provider: "${this.providerName}"`);
     if (this.keyMissing) {
-      this.logger.error('AI_PROVIDER=claude but ANTHROPIC_API_KEY is not set: AI Studio is OFF until the key is set.');
+      this.logger.error('AI_PROVIDER=claude but ANTHROPIC_API_KEY is not set: AI text features are OFF until the key is set.');
     } else if (this.providerName === 'mock') {
       this.logger.warn(this.mockAllowed
         ? 'AI_PROVIDER=mock — canned responses only (development/test). Set AI_PROVIDER=claude with ANTHROPIC_API_KEY for real generations.'
-        : 'AI_PROVIDER is not claude: AI Studio is OFF for sellers (canned text is never sold). Set AI_PROVIDER=claude with ANTHROPIC_API_KEY, or AI_ALLOW_MOCK=true for a demo.');
+        : 'AI_PROVIDER is not claude: AI text features are OFF in production (canned text is never passed off as real). Set AI_PROVIDER=claude with ANTHROPIC_API_KEY, or AI_ALLOW_MOCK=true for a demo.');
     }
   }
 

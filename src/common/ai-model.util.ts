@@ -1,5 +1,5 @@
 /**
- * ONE Claude model for every AI feature (AI Studio text tools, AI SEO suggestions, auto-translation, auth-photo vetting),
+ * ONE Claude model for every AI feature (AI SEO suggestions, auto-translation, the admin sales agent, auth-photo vetting),
  * so there is a single price to watch. Set `AI_MODEL` to change it for all of them at once. The old per-feature variables
  * (AI_TEXT_MODEL_STANDARD, AI_TEXT_MODEL_ADVANCED, AI_SEO_MODEL, AUTH_VISUAL_VETTING_MODEL) still win when someone sets
  * them, so nothing that is already configured changes behaviour.

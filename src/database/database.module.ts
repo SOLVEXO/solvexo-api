@@ -212,11 +212,6 @@ import { DatabaseService } from './databaseservice';
       { name: schema.SeoAuditResult.name, schema: schema.SeoAuditResultSchema },
       { name: schema.RecentSearch.name, schema: schema.RecentSearchSchema },
       { name: schema.RecentlyViewed.name, schema: schema.RecentlyViewedSchema },
-      { name: schema.AiGeneration.name, schema: schema.AiGenerationSchema },
-      {
-        name: schema.AiCreditTransaction.name,
-        schema: schema.AiCreditTransactionSchema,
-      },
       { name: schema.Notification.name, schema: schema.NotificationSchema },
       { name: schema.DeviceToken.name, schema: schema.DeviceTokenSchema },
       {

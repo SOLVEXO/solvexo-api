@@ -5,7 +5,7 @@ import {
 
 /**
  * Canned-response TextGenerationAdapter for local dev/testing — runs the whole
- * AI Studio flow (credits hold/capture, history, apply-to-product) end-to-end
+ * AI flow end-to-end
  * without an API key or token spend. Same mock/live pattern as
  * ManualPaymentProvider vs StripePaymentProvider in the Subscriptions module.
  *

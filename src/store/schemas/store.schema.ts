@@ -37,7 +37,7 @@ export enum StoreTool {
   DIGITAL_DELIVERY = 'digital_delivery',
   // educational
   EDU_RESOURCE_TOOLS = 'edu_resource_tools',
-  AI_WORKSHEET_BUILDER = 'ai_worksheet_builder',
+  AI_WORKSHEET_BUILDER = 'ai_worksheet_builder', // retired (AI Studio was removed): kept only so stores that already hold it still validate
   // services
   BOOKING_CALENDAR = 'booking_calendar',
   // subscriptions
@@ -45,7 +45,7 @@ export enum StoreTool {
   // pos
   POS_REGISTER = 'pos_register',
   // universal (hamesha on)
-  AI_STUDIO = 'ai_studio',
+  AI_STUDIO = 'ai_studio', // retired (AI Studio was removed): kept only so stores that already hold it still validate
   MARKETPLACE_LISTING = 'marketplace_listing',
 }
 
@@ -53,7 +53,7 @@ export enum StoreTool {
 export const PRODUCT_TYPE_TOOLS: Record<ProductType, StoreTool[]> = {
   [ProductType.PHYSICAL_PRODUCTS]:     [StoreTool.INVENTORY_MANAGER, StoreTool.SHIPPING_MANAGER],
   [ProductType.DIGITAL_DOWNLOADS]:     [StoreTool.DIGITAL_DELIVERY],
-  [ProductType.EDUCATIONAL_RESOURCES]: [StoreTool.EDU_RESOURCE_TOOLS, StoreTool.AI_WORKSHEET_BUILDER],
+  [ProductType.EDUCATIONAL_RESOURCES]: [StoreTool.EDU_RESOURCE_TOOLS],
   [ProductType.SERVICES_BOOKINGS]:     [StoreTool.BOOKING_CALENDAR],
   [ProductType.SUBSCRIPTIONS]:         [StoreTool.SUBSCRIPTIONS],
   [ProductType.IN_PERSON_POS]:         [StoreTool.POS_REGISTER],
@@ -61,7 +61,6 @@ export const PRODUCT_TYPE_TOOLS: Record<ProductType, StoreTool[]> = {
 
 // ye dono har product type ke saath on rehte hain
 export const UNIVERSAL_TOOLS: StoreTool[] = [
-  StoreTool.AI_STUDIO,
   StoreTool.MARKETPLACE_LISTING,
 ];
 

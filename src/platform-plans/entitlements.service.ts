@@ -170,7 +170,7 @@ export class EntitlementsService {
    * trialing or not — a trial sale still owes Solvexo its real commission.
    * `aiCreditsPerMonth` gets a small fixed trial allowance (TRIAL_AI_CREDITS)
    * when the plan gives less: a trialing store has no plan row, so it would
-   * otherwise get a wallet with 0 credits and AI Studio would be unusable all
+   * otherwise get a wallet with 0 credits and AI SEO suggestions would be unusable all
    * trial long. It is never `-1` because `AiCreditsService.deduct` treats a
    * negative balance as "insufficient", not "unlimited".
    *
