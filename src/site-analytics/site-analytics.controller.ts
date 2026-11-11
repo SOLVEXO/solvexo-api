@@ -9,6 +9,7 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { RequirePermission } from '../auth/decorators/require-permission.decorator';
 import { resolveCountryFromIp } from '../common/geo-locate.util';
 import { SiteAnalyticsService } from './site-analytics.service';
+import { StoreJourneyService } from './store-journey.service';
 import { SiteAnalyticsSettingsDto, SiteRangeDto } from './site-analytics.dto';
 
 /** Super Admin → Analytics → Website visitors. */
@@ -19,7 +20,7 @@ import { SiteAnalyticsSettingsDto, SiteRangeDto } from './site-analytics.dto';
 @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
 @Controller('api/admin/site-analytics')
 export class SiteAnalyticsAdminController {
-  constructor(private readonly svc: SiteAnalyticsService) {}
+  constructor(private readonly svc: SiteAnalyticsService, private readonly journey: StoreJourneyService) {}
 
   @RequirePermission('analytics.view')
   @Get('settings')
@@ -61,6 +62,19 @@ export class SiteAnalyticsAdminController {
   @Get('funnel')
   funnel(@Query() q: SiteRangeDto) {
     return this.svc.funnel(q.range ?? '28d');
+  }
+
+  @RequirePermission('analytics.view')
+  @Get('setup-steps')
+  setupSteps(@Query() q: SiteRangeDto) {
+    return this.svc.setupSteps(q.range ?? '28d');
+  }
+
+  /** Stores created in the period → product added → plan chosen → first order, from Solvexo's own data. */
+  @RequirePermission('analytics.view')
+  @Get('store-journey')
+  storeJourney(@Query() q: SiteRangeDto) {
+    return this.journey.journey(q.range ?? '28d');
   }
 }
 
