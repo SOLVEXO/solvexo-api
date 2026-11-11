@@ -39,6 +39,10 @@ export class TransactionFeeBill {
   @Prop({ type: Date, default: null }) dueAt: Date | null;
   @Prop({ type: String, default: null }) markedPaidBy: string | null;
   @Prop({ type: String, default: null }) paymentNote: string | null;
+
+  /** The seller pressed "I have paid" (bank transfer sent). Only a signal for the admin; the bill is closed by the admin. */
+  @Prop({ type: Date, default: null }) sellerReportedPaidAt: Date | null;
+  @Prop({ type: String, default: null }) sellerPaymentNote: string | null;
   @Prop({ type: String, default: null }) stripeInvoiceId: string | null;
   @Prop({ type: String, default: null }) hostedInvoiceUrl: string | null;
   @Prop({ type: Date, default: null }) paidAt: Date | null;

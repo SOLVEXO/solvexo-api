@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Injectable, Logger, Optional } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException, Optional } from '@nestjs/common';
 import { PlatformTaxService } from '@/platform-tax/platform-tax.service';
 import { getInvoiceTaxCents } from '@/platform-tax/platform-tax.util';
 import { OnEvent } from '@nestjs/event-emitter';
@@ -285,6 +285,35 @@ export class TransactionFeeBillingService {
       if (result === 'billed') collected++;
     }
     return collected;
+  }
+
+  /** The seller says the bank transfer was sent. This does not close the bill (only the admin can, after seeing the money); it tells the admin to look. Pressing it twice changes nothing. */
+  async reportPaid(storeId: string, billId: string, note?: string | null) {
+    const when = new Date();
+    const bill: any = await this.billModel.findOneAndUpdate(
+      { _id: billId, storeId, isDelete: false, status: 'awaiting_payment', sellerReportedPaidAt: null },
+      { $set: { sellerReportedPaidAt: when, sellerPaymentNote: note ? String(note).trim().slice(0, 300) || null : null } },
+      { new: true },
+    );
+    if (!bill) {
+      const existing: any = await this.billModel.findOne({ _id: billId, storeId, isDelete: false });
+      if (!existing) throw new NotFoundException('Bill not found.');
+      if (existing.status === 'awaiting_payment' && existing.sellerReportedPaidAt) return { alreadyReported: true, reportedAt: existing.sellerReportedPaidAt };
+      throw new BadRequestException('This bill is not waiting for a payment.');
+    }
+    const store: any = await this.db.repositories.storeModel.findById(storeId).select('name').lean();
+    this.activityLogService.log({
+      storeId, category: 'finance', action: 'transaction_fees_payment_reported',
+      description: `Seller reported a bank transfer for the ${bill.periodKey} transaction fees ($ ${Number(bill.amountUSD).toFixed(2)})`,
+      actorRole: 'seller', targetId: billId, targetType: 'transaction_fee_bill',
+    });
+    this.notificationsService?.notifyAdmins({
+      type: NOTIFICATION_TYPES.ADMIN_FEE_PAYMENT_REPORTED,
+      title: 'A seller says a fee bill was paid',
+      body: `${store?.name ?? 'A store'} reports a bank transfer for ${bill.periodKey} ($${Number(bill.amountUSD).toFixed(2)}). Check your bank, then mark the bill paid.`,
+      data: { storeId, billId, link: '/admin/finance' },
+    } as any)?.catch?.(() => undefined);
+    return { alreadyReported: false, reportedAt: when };
   }
 
   /** The admin received the money (a bank transfer): close the bill. Only a bill that is still waiting for a payment can be closed this way. */

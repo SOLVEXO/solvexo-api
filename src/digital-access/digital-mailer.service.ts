@@ -52,8 +52,7 @@ export class DigitalMailerService {
 
   /** The key is shown in the mail itself (the buyer paid for it) and stays in the buyer's /licenses page. */
   licenseKeyIssued(storeId: string, customerId: string, productName: string, licenseKey: string, activationLimit: number) {
-    const activationText = activationLimit > 1 ? `This key works on up to ${activationLimit} devices.` : 'This key works on 1 device.';
-    return this.send('license_key_issued', storeId, customerId, { productName, licenseKey, activationText }, '/licenses');
+    return this.send('license_key_issued', storeId, customerId, { productName, licenseKey, activationLimit: String(Math.max(1, activationLimit)) }, '/licenses');
   }
 
   fileUpdated(storeId: string, customerId: string, v: { productName: string; fileName: string; version: string; changelog: string | null }) {

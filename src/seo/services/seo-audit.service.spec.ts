@@ -3,8 +3,10 @@ import { FakeModel } from '../../digital-access/testing/fake-db.kit-spec';
 
 /** The audit judges the title and description a visitor really gets (the storefront falls back to automatic text), and scores fairly. */
 
-function setup(store: any, products: any[], categories: any[] = []) {
-  const m = { storeModel: new FakeModel(), productModel: new FakeModel(), categoryModel: new FakeModel(), seoAuditResultModel: new FakeModel() };
+function setup(store: any, products: any[], categories: any[] = [], extra: { collections?: any[]; pages?: any[] } = {}) {
+  const m = { storeModel: new FakeModel(), productModel: new FakeModel(), categoryModel: new FakeModel(), seoAuditResultModel: new FakeModel(), collectionModel: new FakeModel({ isDelete: false, status: 'active', type: 'manual' }), storePageModel: new FakeModel({ isDelete: false, type: 'custom', status: 'published' }) };
+  (extra.collections ?? []).forEach((c, i) => m.collectionModel.rows.push({ _id: `c${i + 1}`, storeId: 's1', isDelete: false, status: 'active', type: 'manual', productIds: ['p1'], ...c }));
+  (extra.pages ?? []).forEach((pg, i) => m.storePageModel.rows.push({ _id: `g${i + 1}`, storeId: 's1', isDelete: false, type: 'custom', status: 'published', ...pg }));
   m.storeModel.rows.push({ _id: 's1', name: 'Shop One', ...store });
   products.forEach((p, i) => m.productModel.rows.push({ _id: `p${i + 1}`, storeId: 's1', isDelete: false, images: ['a.jpg'], description: 'x'.repeat(200), ...p }));
   categories.forEach((c) => m.categoryModel.rows.push(c));
@@ -104,5 +106,52 @@ describe('the score', () => {
   it('stays between 0 and 100', () => {
     expect(computeScore(Array.from({ length: 999 }, () => warn), 0, 1)).toBe(0);
     expect(computeScore([], 100, 1)).toBe(100);
+  });
+});
+
+describe('collections, pages and the sitemap', () => {
+  it('a collection with a description and no meta text is fine', async () => {
+    const { svc } = setup(storeOk, [], [], { collections: [{ name: 'Summer', description: 'Light things for hot days.', seo: {} }] });
+    const r: any = await svc.run('s1');
+    expect(r.issues.filter((i: any) => i.entityType === 'collection')).toEqual([]);
+  });
+  it('a collection with neither a description nor meta text is reported', async () => {
+    const { svc } = setup(storeOk, [], [], { collections: [{ name: 'Summer', description: '', seo: {} }] });
+    const r: any = await svc.run('s1');
+    expect(r.issues.some((i: any) => i.entityType === 'collection' && i.code === 'description_length')).toBe(true);
+  });
+  it('a written collection title that is too long is reported', async () => {
+    const { svc } = setup(storeOk, [], [], { collections: [{ name: 'Summer', description: 'd'.repeat(100), seo: { metaTitle: 'x'.repeat(90) } }] });
+    expect(codes(await svc.run('s1'))).toContain('title_length');
+  });
+  it('an empty hand-picked collection is reported, an automatic one is not', async () => {
+    const empty = setup(storeOk, [], [], { collections: [{ name: 'Empty', description: 'd'.repeat(100), seo: {}, productIds: [] }] });
+    expect(codes(await empty.svc.run('s1'))).toContain('thin_content');
+    const auto = setup(storeOk, [], [], { collections: [{ name: 'Auto', type: 'automatic', description: 'd'.repeat(100), seo: {}, productIds: [] }] });
+    expect(codes(await auto.svc.run('s1')).includes('thin_content')).toBe(false);
+  });
+  it('a custom page with no meta text is fine; badly sized written text is reported', async () => {
+    const fine = setup(storeOk, [], [], { pages: [{ title: 'About', seo: {} }] });
+    expect((await fine.svc.run('s1') as any).issues.filter((i: any) => i.entityType === 'page')).toEqual([]);
+    const bad = setup(storeOk, [], [], { pages: [{ title: 'About', seo: { metaTitle: 'x'.repeat(90), metaDescription: 'tiny' } }] });
+    expect((await bad.svc.run('s1') as any).issues.filter((i: any) => i.entityType === 'page').length).toBe(2);
+  });
+  it('a password protected store is an error: search engines can not see it', async () => {
+    const { svc } = setup({ ...storeOk, privacyMode: 'password' }, []);
+    const r: any = await svc.run('s1');
+    const issue = r.issues.find((i: any) => i.code === 'sitemap_excluded');
+    expect(issue.severity).toBe('error');
+  });
+  it('noindex products are mentioned once, as info', async () => {
+    const { svc } = setup(storeOk, [{ name: 'A', status: 'active', seo: { noindex: true } }, { name: 'B', status: 'active', seo: { noindex: true } }, { name: 'C', status: 'active', seo: {} }]);
+    const r: any = await svc.run('s1');
+    const list = r.issues.filter((i: any) => i.code === 'sitemap_excluded');
+    expect(list.length).toBe(1);
+    expect(list[0].severity).toBe('info');
+    expect(list[0].message).toContain('2 products');
+  });
+  it('a normal public store has no sitemap issue', async () => {
+    const { svc } = setup(storeOk, [{ name: 'A', status: 'active', seo: {} }]);
+    expect(codes(await svc.run('s1')).includes('sitemap_excluded')).toBe(false);
   });
 });

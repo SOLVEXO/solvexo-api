@@ -90,3 +90,34 @@ describe('the license key is e-mailed to the buyer when the order is paid', () =
     expect(s.keys.rows.length).toBe(1);
   });
 });
+
+import { CUSTOMER_EMAIL_CATALOG } from '../notifications/customer-email-events';
+import { CUSTOMER_EMAIL_DEFAULTS_BY_LOCALE } from '../notifications/customer-email-locales';
+
+describe('the license key email text', () => {
+  it('the device limit is a number the text can put in any language', () => {
+    expect(CUSTOMER_EMAIL_CATALOG.license_key_issued.variables).toContain('activationLimit');
+    expect(CUSTOMER_EMAIL_CATALOG.license_key_issued.defaultBody).toContain('{{activationLimit}}');
+  });
+  it('has an Urdu default that uses only tags the event allows', () => {
+    const ur = (CUSTOMER_EMAIL_DEFAULTS_BY_LOCALE as any).ur.license_key_issued;
+    expect(!!ur).toBe(true);
+    const allowed = new Set(CUSTOMER_EMAIL_CATALOG.license_key_issued.variables);
+    for (const text of [ur.subject, ur.body]) {
+      for (const m of String(text).matchAll(/\{\{\s*(\w+)\s*\}\}/g)) expect(allowed.has(m[1])).toBe(true);
+    }
+    expect(ur.body).toContain('{{licenseKey}}');
+  });
+  it('the mailer sends the device limit as a plain number', async () => {
+    const sent: any[] = [];
+    const { DigitalMailerService } = require('../digital-access/digital-mailer.service');
+    const db: any = { repositories: { storeModel: new FakeModel(), userModel: new FakeModel() } };
+    db.repositories.storeModel.rows.push({ _id: 's1', slug: 'shop', name: 'Shop' });
+    db.repositories.userModel.rows.push({ _id: 'c1', name: 'Sana', email: 'sana@x.com' });
+    const svc = new DigitalMailerService(db, { sendCustomerEmail: async (a: any) => { sent.push(a); } } as any);
+    await svc.licenseKeyIssued('s1', 'c1', 'App', 'AAAA-BBBB-CCCC-DDDD', 3);
+    expect(sent[0].event).toBe('license_key_issued');
+    expect(sent[0].vars.activationLimit).toBe('3');
+    expect(sent[0].vars.licenseKey).toBe('AAAA-BBBB-CCCC-DDDD');
+  });
+});

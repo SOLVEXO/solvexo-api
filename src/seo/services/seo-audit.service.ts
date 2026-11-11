@@ -13,7 +13,7 @@ interface AuditIssue {
   severity: 'info' | 'warning' | 'error';
   code: string;
   message: string;
-  entityType?: 'product' | 'category' | 'store' | null;
+  entityType?: 'product' | 'category' | 'store' | 'collection' | 'page' | null;
   entityId?: string | null;
 }
 
@@ -77,11 +77,14 @@ export class SeoAuditService {
 
   /** Invoked by SeoAuditProcessor — runs every enabled built-in check against the store's products + store meta, scores the result, and persists it. */
   async run(storeId: string) {
-    const [settings, store, products, checklist] = await Promise.all([
+    const [settings, store, products, checklist, collections, pages] = await Promise.all([
       this.platformSeoService.getSettings(),
       this.db.repositories.storeModel.findById(storeId).lean(),
       this.db.repositories.productModel.find({ storeId, isDelete: false }).lean(),
       this.storeSeoService.getChecklist(storeId),
+      this.db.repositories.collectionModel.find({ storeId, isDelete: false, status: 'active' }).select('name description type productIds seo').lean(),
+      // Only the pages a visitor can open: published custom pages (the home page is judged as the store).
+      this.db.repositories.storePageModel.find({ storeId, isDelete: false, type: 'custom', status: 'published' }).select('title seo').lean(),
     ]);
     if (!store) throw new NotFoundException('Store not found.');
 
@@ -183,6 +186,65 @@ export class SeoAuditService {
       }
     }
 
+    // ── Collections: same rule as products. A collection page falls back to its name and description, so only a written
+    //    title that is too long, a description that is missing everywhere or badly sized, and an EMPTY collection are reported.
+    {
+      const max = threshold('title_length', 'max', 60);
+      const min = threshold('description_length', 'min', 70);
+      const maxDesc = threshold('description_length', 'max', 160);
+      for (const c of collections as any[]) {
+        const ref = { entityType: 'collection' as const, entityId: String(c._id) };
+        const seo = c.seo ?? {};
+        if (isEnabled('title_length') && seo.metaTitle && seo.metaTitle.length > max) {
+          issues.push({ severity: severityOf('title_length', 'warning'), code: 'title_length', message: `Collection "${c.name}" meta title exceeds ${max} characters.`, ...ref });
+        }
+        if (isEnabled('description_length')) {
+          if (seo.metaDescription) {
+            if (seo.metaDescription.length < min || seo.metaDescription.length > maxDesc) {
+              issues.push({ severity: severityOf('description_length', 'info'), code: 'description_length', message: `Collection "${c.name}" meta description is outside the ideal ${min}-${maxDesc} character range.`, ...ref });
+            }
+          } else if (!String(c.description ?? '').trim()) {
+            issues.push({ severity: severityOf('description_length', 'warning'), code: 'description_length', message: `Collection "${c.name}" has no meta description and no description, so search results have nothing to show.`, ...ref });
+          }
+        }
+        // A hand-picked collection with no products is in the sitemap but has nothing on it (an automatic one is filled by its rules).
+        if (isEnabled('thin_content') && c.type === 'manual' && (c.productIds?.length ?? 0) === 0) {
+          issues.push({ severity: severityOf('thin_content', 'warning'), code: 'thin_content', message: `Collection "${c.name}" has no products, but it is listed in your sitemap.`, ...ref });
+        }
+      }
+    }
+
+    // ── Custom pages: a page can always be read from its content, so only badly sized written meta text is reported.
+    {
+      const max = threshold('title_length', 'max', 60);
+      const min = threshold('description_length', 'min', 70);
+      const maxDesc = threshold('description_length', 'max', 160);
+      for (const pg of pages as any[]) {
+        const ref = { entityType: 'page' as const, entityId: String(pg._id) };
+        const seo = pg.seo ?? {};
+        const description: string | null = seo.metaDescription || seo.metaDesc || null;
+        if (isEnabled('title_length') && seo.metaTitle && seo.metaTitle.length > max) {
+          issues.push({ severity: severityOf('title_length', 'warning'), code: 'title_length', message: `Page "${pg.title}" meta title exceeds ${max} characters.`, ...ref });
+        }
+        if (isEnabled('description_length') && description && (description.length < min || description.length > maxDesc)) {
+          issues.push({ severity: severityOf('description_length', 'info'), code: 'description_length', message: `Page "${pg.title}" meta description is outside the ideal ${min}-${maxDesc} character range.`, ...ref });
+        }
+      }
+    }
+
+    // ── Sitemap and visibility: what search engines are allowed to see at all.
+    if (isEnabled('sitemap_excluded')) {
+      const mode = (store as any).privacyMode ?? 'public';
+      if (mode !== 'public') {
+        issues.push({ severity: 'error', code: 'sitemap_excluded', message: mode === 'password' ? 'Your store is password protected, so search engines can not see it and it is left out of the sitemap.' : 'Your store is in "coming soon" mode, so search engines can not see it and it is left out of the sitemap.', entityType: 'store', entityId: storeId });
+      } else {
+        const hidden = (products as any[]).filter((p) => p.status === 'active' && p.seo?.noindex).length;
+        if (hidden > 0) {
+          issues.push({ severity: severityOf('sitemap_excluded', 'info'), code: 'sitemap_excluded', message: `${hidden} product${hidden === 1 ? ' is' : 's are'} set to "noindex", so ${hidden === 1 ? 'it is' : 'they are'} hidden from search and left out of the sitemap.`, entityType: 'store', entityId: storeId });
+        }
+      }
+    }
+
     const storeSeo = storeSeo0;
     // The store page falls back to the store name as its title, so only a missing NAME is a real problem; a description is
     // served from the store's own description when there is no meta description.
@@ -194,7 +256,7 @@ export class SeoAuditService {
     }
 
     const checklistCompletionPercent = checklist.length ? Math.round((checklist.filter((c) => c.done).length / checklist.length) * 100) : 0;
-    const score = computeScore(issues, checklistCompletionPercent, (products as any[]).length + 1);
+    const score = computeScore(issues, checklistCompletionPercent, (products as any[]).length + (collections as any[]).length + (pages as any[]).length + 1);
 
     const result = await this.db.repositories.seoAuditResultModel.create({
       storeId, score, issues, checklistCompletionPercent, runAt: new Date(),

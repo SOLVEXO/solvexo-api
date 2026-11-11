@@ -15,7 +15,7 @@ export class SeoAuditIssue {
   @Prop({ type: String, required: true })
   message: string;
 
-  @Prop({ type: String, enum: ['product', 'category', 'store'], default: null })
+  @Prop({ type: String, enum: ['product', 'category', 'store', 'collection', 'page'], default: null })
   entityType: string | null;
 
   @Prop({ type: String, default: null })

@@ -30,12 +30,13 @@ function setup(opts: { customer?: string | null; feeUSD?: number; tax?: number; 
     },
   };
   const notes: any[] = [];
-  const notifications: any = { notify: async (n: any) => { notes.push(n); } };
+  const adminNotes: any[] = [];
+  const notifications: any = { notify: async (n: any) => { notes.push(n); }, notifyAdmins: async (n: any) => { adminNotes.push(n); } };
   const logs: any[] = [];
   const tax: any = opts.tax ? { quoteForStore: async (_s: string, net: number) => ({ netUSD: net, taxUSD: Math.round(net * opts.tax!) / 100, totalUSD: 0 }), taxRateIdForStore: async () => null } : undefined;
   const db: any = { repositories: { transactionModel: tx, transactionFeeBillModel: bills, storeModel: stores, sellerModel: sellers } };
   const svc = new TransactionFeeBillingService(db, { stripeClient: stripe } as any, { convert: async (a: number) => a } as any, { log: (l: any) => logs.push(l) } as any, tax, notifications);
-  return { svc, tx, bills, sellers, notes, logs, stripeCalls };
+  return { svc, tx, bills, sellers, notes, adminNotes, logs, stripeCalls };
 }
 
 describe('fees of a seller with no card on file', () => {
@@ -60,7 +61,8 @@ describe('fees of a seller with no card on file', () => {
     expect(k.notes.length).toBe(1);
     expect(k.notes[0].type).toBe(NOTIFICATION_TYPES.TRANSACTION_FEE_DUE);
     expect(k.notes[0].recipientRole).toBe('seller');
-    expect(k.notes[0].title).toContain('20.00');
+    expect(k.notes[0].title).toContain('$20.00');
+expect(k.notes[0].body).toContain('$20.00');
     expect(k.notes[0].body).toContain('bank transfer');
   });
 
@@ -68,7 +70,8 @@ describe('fees of a seller with no card on file', () => {
     const k = setup({ feeUSD: 100, tax: 18 });
     await k.svc.billAccruedFees(NOW);
     expect(k.bills.rows[0].taxAmountUSD).toBe(18);
-    expect(k.notes[0].title).toContain('118.00');
+    expect(k.notes[0].title).toContain('$118.00');
+expect(k.notes[0].body).toContain('(including $18.00 tax)');
   });
 
   it('running again the same month neither bills nor notifies twice', async () => {
@@ -137,5 +140,50 @@ describe('the seller adds a card later', () => {
     expect(k.bills.rows[0].status).toBe('awaiting_payment');
     expect(String(k.bills.rows[0].failureReason)).toContain('declined');
     expect(k.tx.rows[0].metadata.billing.status).toBe('invoiced');
+  });
+});
+
+describe('the seller says the bank transfer was sent', () => {
+  it('records it, keeps the bill open, and tells the admin once', async () => {
+    const k = setup();
+    await k.svc.billAccruedFees(NOW);
+    const id = String(k.bills.rows[0]._id);
+    const r: any = await k.svc.reportPaid('s1', id, ' Ref 99812 ');
+    expect(r.alreadyReported).toBe(false);
+    expect(k.bills.rows[0].status).toBe('awaiting_payment');
+    expect(k.bills.rows[0].sellerPaymentNote).toBe('Ref 99812');
+    expect(k.bills.rows[0].sellerReportedPaidAt instanceof Date).toBe(true);
+    expect(k.adminNotes.length).toBe(1);
+    expect(k.adminNotes[0].type).toBe(NOTIFICATION_TYPES.ADMIN_FEE_PAYMENT_REPORTED);
+expect(k.adminNotes[0].body).toContain('($12.00)');
+  });
+  it('pressing it twice changes nothing and does not notify again', async () => {
+    const k = setup();
+    await k.svc.billAccruedFees(NOW);
+    const id = String(k.bills.rows[0]._id);
+    await k.svc.reportPaid('s1', id, 'first');
+    const again: any = await k.svc.reportPaid('s1', id, 'second');
+    expect(again.alreadyReported).toBe(true);
+    expect(k.bills.rows[0].sellerPaymentNote).toBe('first');
+    expect(k.adminNotes.length).toBe(1);
+  });
+  it('another store can not report a bill that is not theirs', async () => {
+    const k = setup();
+    await k.svc.billAccruedFees(NOW);
+    await expect(k.svc.reportPaid('s2', String(k.bills.rows[0]._id), 'x')).rejects.toThrow();
+    expect(k.bills.rows[0].sellerReportedPaidAt ?? null).toBeNull();
+  });
+  it('a bill that is already paid can not be reported', async () => {
+    const k = setup();
+    await k.svc.billAccruedFees(NOW);
+    const id = String(k.bills.rows[0]._id);
+    await k.svc.markPaidManually(id, 'admin1');
+    await expect(k.svc.reportPaid('s1', id, 'x')).rejects.toThrow();
+  });
+  it('a note longer than 300 characters is cut', async () => {
+    const k = setup();
+    await k.svc.billAccruedFees(NOW);
+    await k.svc.reportPaid('s1', String(k.bills.rows[0]._id), 'x'.repeat(500));
+    expect(k.bills.rows[0].sellerPaymentNote.length).toBe(300);
   });
 });

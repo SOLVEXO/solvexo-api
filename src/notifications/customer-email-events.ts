@@ -294,8 +294,8 @@ export const CUSTOMER_EMAIL_CATALOG: Record<CustomerEmailEvent, CustomerEmailEve
     description: 'Sent when a customer pays for a product that comes with a license key. The key is in the email, and stays in their account under License keys.',
     defaultSubject: 'Your license key for {{productName}}',
     defaultBody:
-      'Hi {{customerName}},\n\nThanks for your purchase! Here is your license key for {{productName}}:\n\n{{licenseKey}}\n\n{{activationText}}\n\nKeep this email. You can also find the key any time in your account:\n{{licensesUrl}}',
-    variables: ['storeName', 'customerName', 'productName', 'licenseKey', 'activationText', 'licensesUrl'],
+      'Hi {{customerName}},\n\nThanks for your purchase! Here is your license key for {{productName}}:\n\n{{licenseKey}}\n\nThis key works on up to {{activationLimit}} device(s).\n\nKeep this email. You can also find the key any time in your account:\n{{licensesUrl}}',
+    variables: ['storeName', 'customerName', 'productName', 'licenseKey', 'activationLimit', 'licensesUrl'],
     resendable: false,
   },
   digital_access_link: {
@@ -460,7 +460,7 @@ export const CUSTOMER_EMAIL_SAMPLE_VARS: Record<string, string> = {
   productName: 'Brand Kit',
   libraryUrl: 'https://example.com/library',
   licenseKey: 'AB7K-3MXQ-9PTD-HV2N',
-  activationText: 'This key works on up to 2 devices.',
+  activationLimit: '2',
   licensesUrl: 'https://example.com/licenses',
   fileName: 'brand-kit.zip',
   versionLabel: '2.0',
