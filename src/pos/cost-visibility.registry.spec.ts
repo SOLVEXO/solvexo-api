@@ -40,7 +40,9 @@ describe('cost field registry', () => {
     expect(close.data.denominations[0].valueMinor).toBe(500000); // a note's face value is not cost
     expect(close.data.items[0]).toEqual({ name: 'Milk', valueMinor: 1200, totalMinor: 500 });
     const sup = stripCost(body, costKeysFor('/api/pos/supply/orders/s1'));
-    expect(sup.data.items[0]).toEqual({ name: 'Milk', valueMinor: 1200 }); // PO totals go; valueMinor is cost on inventory routes only
+    expect(sup.data.items[0]).toEqual({ name: 'Milk' }); // under supply every minor amount goes (the pattern)
+    // payables aging buckets (and any other minor amount under supply) are caught by the supply pattern
+    expect(stripCost({ data: { totals: { d30Minor: 1, d90Minor: 2, currentMinor: 3 }, supplierName: 'X' } }, costKeysFor('/api/pos/supply/payables/s1'))).toEqual({ data: { totals: {}, supplierName: 'X' } });
     expect(carriesCost({ a: [{ b: { marginPercent: 3 } }] }, GLOBAL_COST_KEYS)).toBe(true);
     expect(carriesCost({ a: [{ totalMinor: 3 }] }, GLOBAL_COST_KEYS)).toBe(false);
   });

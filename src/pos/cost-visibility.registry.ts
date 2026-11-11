@@ -24,18 +24,20 @@ export const GLOBAL_COST_KEYS: ReadonlySet<string> = new Set([
   'shippingCostMinor', 'taxCostMinor', 'itemUnitCostMinor',
 ]);
 
-/** Route-scoped: [path prefix (after the host), keys that are cost on those routes only]. */
-export const SCOPED_COST_KEYS: ReadonlyArray<{ prefix: string; keys: ReadonlySet<string> }> = [
+/** Route-scoped: [path prefix (after the host), keys that are cost on those routes only, and optionally a key PATTERN that is cost there]. */
+export const SCOPED_COST_KEYS: ReadonlyArray<{ prefix: string; keys: ReadonlySet<string>; pattern?: RegExp }> = [
   // inventory: `value` / `valueMinor` = quantity × cost (stock rows, lots, movements)
   { prefix: '/api/pos/inventory/', keys: new Set(['value', 'valueMinor']) },
   // supply: purchase orders, receipts, supplier returns, payables and the supplier ledger — every amount there is a cost or a payable
   {
     prefix: '/api/pos/supply/',
+    // every minor-unit amount under supply (incl. the payables aging buckets d30Minor / d60Minor / d90Minor) — a pattern, so a new amount cannot leak
+    pattern: /Minor$/,
     keys: new Set([
       'amount', 'amountMinor', 'balance', 'balanceMinor', 'balanceAfter', 'balanceAfterMinor', 'total', 'totalMinor', 'subtotal', 'subtotalMinor',
       'lineTotal', 'lineTotalMinor', 'tax', 'taxMinor', 'shipping', 'shippingMinor', 'credit', 'creditMinor', 'current', 'currentMinor',
       'unit', 'unitMinor', 'prev', 'prevMinor', 'new', 'newMinor', 'paid', 'paidMinor', 'outstanding', 'outstandingMinor', 'overdueMinor',
-      'dueMinor', 'aging', 'agingMinor', 'payable', 'payableMinor', 'payables',
+      'dueMinor', 'aging', 'agingMinor', 'payable', 'payableMinor', 'payables', 'd30', 'd60', 'd90',
     ]),
   },
 ];
@@ -48,27 +50,34 @@ export const NOT_COST: ReadonlySet<string> = new Set([
   'costMinorMetrics', '_costDecimal', 'GLOBAL_COST_KEYS', 'SCOPED_COST_KEYS', 'NOT_COST',
 ]);
 
-export function costKeysFor(path: string): ReadonlySet<string> {
+/** Which keys are cost on [path]: the global ones, plus the route's scoped keys and pattern. */
+export type CostMatcher = (key: string) => boolean;
+export function costKeysFor(path: string): CostMatcher {
   const scoped = SCOPED_COST_KEYS.filter((s) => path.startsWith(s.prefix));
-  if (!scoped.length) return GLOBAL_COST_KEYS;
-  return new Set([...GLOBAL_COST_KEYS, ...scoped.flatMap((s) => [...s.keys])]);
+  return (k) => GLOBAL_COST_KEYS.has(k) || scoped.some((s) => s.keys.has(k) || (s.pattern?.test(k) ?? false));
+}
+const asMatcher = (m: CostMatcher | ReadonlySet<string>): CostMatcher => (typeof m === 'function' ? m : (k) => m.has(k));
+
+/** Does the (plain, JSON-ready) value carry a cost key anywhere? Cheap pre-check before any database read. */
+export function carriesCost(v: any, keys: CostMatcher | ReadonlySet<string>): boolean {
+  const is = asMatcher(keys);
+  const walk = (x: any): boolean => {
+    if (Array.isArray(x)) return x.some(walk);
+    if (!x || typeof x !== 'object' || x instanceof Date) return false;
+    for (const [k, y] of Object.entries(x)) if (is(k) || walk(y)) return true;
+    return false;
+  };
+  return walk(v);
 }
 
-/** Does the (plain, JSON-ready) value carry any of [keys] anywhere? Cheap pre-check before any database read. */
-export function carriesCost(v: any, keys: ReadonlySet<string>): boolean {
-  if (Array.isArray(v)) return v.some((x) => carriesCost(x, keys));
-  if (!v || typeof v !== 'object' || v instanceof Date) return false;
-  for (const [k, x] of Object.entries(v)) if (keys.has(k) || carriesCost(x, keys)) return true;
-  return false;
-}
-
-/** A copy of [v] without any of [keys] (at any depth). */
-export function stripCost<T>(v: T, keys: ReadonlySet<string>): T {
+/** A copy of [v] without any cost key (at any depth). */
+export function stripCost<T>(v: T, keys: CostMatcher | ReadonlySet<string>): T {
+  const is = asMatcher(keys);
   const walk = (x: any): any => {
     if (Array.isArray(x)) return x.map(walk);
     if (!x || typeof x !== 'object' || x instanceof Date) return x;
     const out: any = {};
-    for (const [k, y] of Object.entries(x)) if (!keys.has(k)) out[k] = walk(y);
+    for (const [k, y] of Object.entries(x)) if (!is(k)) out[k] = walk(y);
     return out;
   };
   return walk(JSON.parse(JSON.stringify(v)));
