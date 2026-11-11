@@ -1,6 +1,7 @@
 /* eslint-disable prettier/prettier */
 import * as fs from 'fs';
 import * as path from 'path';
+import mongoose from 'mongoose';
 import { GLOBAL_COST_KEYS, NOT_COST, SCOPED_COST_KEYS, carriesCost, costKeysFor, stripCost } from './cost-visibility.registry';
 
 /** G4.8: every cost-looking key in the POS / inventory / product sources must be classified — a new DTO field cannot leak cost unnoticed. */
@@ -45,5 +46,16 @@ describe('cost field registry', () => {
     expect(stripCost({ data: { totals: { d30Minor: 1, d90Minor: 2, currentMinor: 3 }, supplierName: 'X' } }, costKeysFor('/api/pos/supply/payables/s1'))).toEqual({ data: { totals: {}, supplierName: 'X' } });
     expect(carriesCost({ a: [{ b: { marginPercent: 3 } }] }, GLOBAL_COST_KEYS)).toBe(true);
     expect(carriesCost({ a: [{ totalMinor: 3 }] }, GLOBAL_COST_KEYS)).toBe(false);
+  });
+
+  it('a hydrated Mongoose document (what a handler may return, e.g. the created sale) and a cycle never blow the stack', () => {
+    const Doc = mongoose.model('CostProbe', new mongoose.Schema({ name: String, items: [{ costPriceMinor: Number, qty: Number }], storeId: mongoose.Schema.Types.ObjectId }));
+    const doc = new Doc({ name: 'S-1', items: [{ costPriceMinor: 120, qty: 2 }], storeId: new mongoose.Types.ObjectId() });
+    expect(carriesCost({ success: true, data: doc }, GLOBAL_COST_KEYS)).toBe(true);
+    expect(stripCost({ success: true, data: doc }, GLOBAL_COST_KEYS).data.items[0]).toEqual({ qty: 2, _id: expect.any(String) });
+    const plain = new Doc({ name: 'S-2', items: [{ qty: 1 }] });
+    expect(carriesCost({ data: plain }, GLOBAL_COST_KEYS)).toBe(false);
+    const a: any = { name: 'x' }; a.self = a;
+    expect(carriesCost({ data: a }, GLOBAL_COST_KEYS)).toBe(false);
   });
 });

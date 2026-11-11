@@ -7,6 +7,8 @@
  *   npx ts-node --transpile-only dev/seed.ts --extras-only    only the portal-e2e owners (owner2..5@solvexo.dev, ids in dev/.logs/seed-e2e.json); leaves the main data untouched
  *   npx ts-node --transpile-only dev/seed.ts --expire-plan    make the main store's POS plan expired (plan-expiry / restricted-mode flow)
  *   npx ts-node --transpile-only dev/seed.ts --restore-plan   give it 30 days again
+ *   npx ts-node --transpile-only dev/seed.ts --tamper-seal    G4.8: change one record of the latest sealed day (the integrity check must flag it)
+ *   npx ts-node --transpile-only dev/seed.ts --untamper-seal  put it back exactly
  */
 import * as fs from 'fs';
 import * as path from 'path';
@@ -14,6 +16,7 @@ const dotenv = require('dotenv');
 const mongoose = require('mongoose');
 const bcrypt = require('bcrypt');
 const schema = require('../dist/database/schema');
+import { seedG48, tamperSeal, untamperSeal } from './seed-g48';
 
 const DAY = 86_400_000;
 export const DEV = {
@@ -87,6 +90,14 @@ async function main() {
     const when = expire ? new Date(Date.now() - 2 * DAY) : new Date(Date.now() + 30 * DAY);
     const r = await PosPurchase.updateMany({ storeId: String(mainStore._id), source: 'manual', stripeCheckoutSessionId: /^manual_dev_seed/ }, { $set: { expiresAt: when, revokedAt: null, reversedAt: null } });
     console.log(`${expire ? 'Expired' : 'Restored'} the main store's POS plan (${r.modifiedCount} purchase updated; expiresAt=${when.toISOString()})`);
+    await conn.close();
+    return;
+  }
+
+  if (process.argv.includes('--tamper-seal') || process.argv.includes('--untamper-seal')) {
+    if (!mainStore) throw new Error('Seed first');
+    const r = process.argv.includes('--tamper-seal') ? await tamperSeal(conn, String(mainStore._id)) : await untamperSeal(conn);
+    console.log(JSON.stringify(r));
     await conn.close();
     return;
   }
@@ -222,6 +233,8 @@ async function main() {
   console.log(JSON.stringify(out, null, 2));
   await seedExtras();
   await seedG3(conn, storeId, sellerId);
+  const g48 = await seedG48(conn, storeId, sellerId);
+  console.log(JSON.stringify({ g48 }));
   await conn.close();
 }
 main().catch((e) => { console.error(e); process.exit(1); });

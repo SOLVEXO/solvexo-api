@@ -58,12 +58,23 @@ export function costKeysFor(path: string): CostMatcher {
 }
 const asMatcher = (m: CostMatcher | ReadonlySet<string>): CostMatcher => (typeof m === 'function' ? m : (k) => m.has(k));
 
-/** Does the (plain, JSON-ready) value carry a cost key anywhere? Cheap pre-check before any database read. */
+/**
+ * Does the value carry a cost key anywhere? Cheap pre-check before any database read. Walks what the response will SERIALIZE to: a Mongoose document,
+ * an ObjectId … are taken through their own `toJSON()` (as Nest's JSON serialization does), and a cycle is never followed — a hydrated document returned
+ * by a handler (e.g. the created sale) is full of internal back-references.
+ */
 export function carriesCost(v: any, keys: CostMatcher | ReadonlySet<string>): boolean {
   const is = asMatcher(keys);
+  const seen = new WeakSet<object>();
   const walk = (x: any): boolean => {
-    if (Array.isArray(x)) return x.some(walk);
     if (!x || typeof x !== 'object' || x instanceof Date) return false;
+    if (typeof x.toJSON === 'function') {
+      const j = x.toJSON();
+      if (j !== x) return walk(j);
+    }
+    if (seen.has(x)) return false;
+    seen.add(x);
+    if (Array.isArray(x)) return x.some(walk);
     for (const [k, y] of Object.entries(x)) if (is(k) || walk(y)) return true;
     return false;
   };
