@@ -28,6 +28,10 @@ export class PosInventoryController {
   @UseGuards(PosAuthGuard, RolesGuard) @Roles('seller') @Get('overview/:storeId')
   overview(@Req() req: any, @Param('storeId') storeId: string, @Headers('x-pos-employee-token') e?: string) { return this.svc.overview(req, storeId, this.t(e)); }
 
+  // G5.1: the locations a till may filter the stock list by
+  @UseGuards(PosAuthGuard, RolesGuard) @Roles('seller') @Get('locations/:storeId')
+  locations(@Req() req: any, @Param('storeId') storeId: string, @Headers('x-pos-employee-token') e?: string) { return this.svc.locations(req, storeId, this.t(e)); }
+
   @UseGuards(PosAuthGuard, RolesGuard) @Roles('seller') @Get('stock/:storeId')
   stock(@Req() req: any, @Param('storeId') storeId: string, @Query() q: any, @Headers('x-pos-employee-token') e?: string) { return this.svc.stock(req, storeId, q, this.t(e)); }
 

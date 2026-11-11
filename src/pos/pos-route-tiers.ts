@@ -19,6 +19,7 @@ export const POS_ROUTE_TIERS: Readonly<Record<string, PosTier>> = {
   'GET /api/pos/audit-logs/:storeId': 'manager-with-limit',
   'GET /api/pos/audit/verify/:storeId': 'manager-with-limit',
   'GET /api/pos/cash/daybook/:storeId': 'cashier',
+  'GET /api/pos/inventory/locations/:storeId': 'cashier', // G5.1: names / ids only, for the stock-list filter
   'POST /api/pos/cash/expenses/:storeId': 'cashier',
   'POST /api/pos/cash/expenses/:storeId/:id/decision': 'manager-with-limit',
   'POST /api/pos/cash/expenses/:storeId/:id/receipt': 'cashier',

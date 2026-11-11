@@ -136,6 +136,13 @@ export class PosInventoryService {
     return { success: true, data: { ...(await this.cur(storeId)), ...(locationId ? { locationId } : {}), items: rows.map((v) => ({ ...this.row(v, names.get(String(v.productId)), this.seesCost(a.role), exp), ...(atLocation ? { locationStock: atLocation.get(String(v._id)) ?? 0 } : {}) })), total, page, hasMore: page * limit < total } };
   }
 
+  /** G5.1: the store's locations for the till's stock-list filter (the owner-session locations route refuses device tokens): id, name, status only. */
+  async locations(req: Req, storeId: string, t: Tokens) {
+    await this.gate(req, storeId, 'inventory.view', t);
+    const rows: any[] = await this.r.storeLocationModel.find({ storeId, isDelete: { $ne: true } }).select('name status').sort({ name: 1 }).lean();
+    return { success: true, data: { locations: rows.map((l) => ({ id: String(l._id), name: l.name, status: l.status ?? 'active' })) } };
+  }
+
   async lookup(req: Req, storeId: string, code: string, t: Tokens) {
     const a = await this.gate(req, storeId, 'inventory.view', t);
     const term = (code ?? '').trim();

@@ -141,6 +141,8 @@ describe('G5.1 · small gaps', () => {
     expect([at.items.length, at.items[0].locationStock, at.locationId]).toEqual([1, 7, String(loc)]);
     expect((await inv.stock(device(w.s, w.M), w.s.storeId, { locationId: String(loc), filter: 'out' }, { employee: w.M })).data.items.length).toBe(0);
     expect(await code(inv.stock(device(w.s, w.M), w.s.storeId, { locationId: 'nope' }, { employee: w.M }))).toBe('LOCATION_INVALID');
+    // the till reads the locations for the filter (device + PIN session)
+    expect((await inv.locations(device(w.s, w.C), w.s.storeId, { employee: w.C })).data.locations).toEqual([{ id: String(loc), name: 'Back store', status: 'active' }]);
     expect(await code(inv.stock(device(w.s, w.M), w.s.storeId, { locationId: String(new Types.ObjectId()) }, { employee: w.M }))).toBe('LOCATION_INVALID');
   });
 
