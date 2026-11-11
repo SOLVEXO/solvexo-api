@@ -15,6 +15,7 @@ import { BuyerSubscriptionWindDownService } from '@/subscriptions/buyer-subscrip
 import { PlatformSubscriptionsService } from '@/platform-subscriptions/platform-subscriptions.service';
 import { FinanceService } from '@/finance/finance.service';
 import { RedisService } from '@/redis/redis.service';
+import { FbrDiService } from '../fbr-di/fbr-di.service';
 import { SellerPlatformSubscriptionsService } from '@/platform-plans/seller-platform-subscriptions.service';
 import { AiCreditsService } from '@/platform-plans/ai-credits.service';
 import { PlatformAddonsService } from '@/platform-plans/platform-addons.service';
@@ -61,6 +62,7 @@ export class SchedulerService {
     private readonly financeService: FinanceService,
     private readonly redis: RedisService,
     private readonly sellerPlatformSubscriptionsService: SellerPlatformSubscriptionsService,
+    private readonly fbrDiService: FbrDiService,
     private readonly aiCreditsService: AiCreditsService,
     private readonly platformAddonsService: PlatformAddonsService,
     private readonly seoSitemapService: SeoSitemapService,
@@ -470,6 +472,16 @@ export class SchedulerService {
       if (result.expired > 0) {
         this.logger.log(`Platform-plan trials expired: ${result.expired} store(s) moved off trial`);
       }
+    });
+  }
+
+  // Every 10 minutes: turns newly paid plan invoices / store orders into FBR records and files the ones that are due
+  // (retries with back-off). Does nothing until FBR invoicing is switched on in Admin / the store settings.
+  @Cron('*/10 * * * *')
+  async runFbrDigitalInvoicing() {
+    await this.runLocked('fbr-digital-invoicing', 9 * 60_000, async () => {
+      const r = await this.fbrDiService.runCycle();
+      if (r.created || r.attempted) this.logger.log(`FBR digital invoicing: ${r.created} queued, ${r.attempted} attempted, ${r.submitted} filed`);
     });
   }
 
