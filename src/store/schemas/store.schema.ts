@@ -233,7 +233,10 @@ export type BusinessType = (typeof BUSINESS_TYPES)[number];
 export const ID_DOCUMENT_TYPES = ['cnic', 'passport', 'national_id'] as const;
 export type IdDocumentType = (typeof ID_DOCUMENT_TYPES)[number];
 
-export const VERIFICATION_STATUSES = ['not_started', 'pending', 'under_review', 'verified', 'rejected'] as const;
+// `needs_info` — an admin asked the seller for more information (see
+// AdminMarketplaceService.requestInfo); the seller can edit again and
+// resubmits, which moves it back to `pending`.
+export const VERIFICATION_STATUSES = ['not_started', 'pending', 'under_review', 'needs_info', 'verified', 'rejected'] as const;
 export type VerificationStatus = (typeof VERIFICATION_STATUSES)[number];
 
 export const VERIFICATION_LEVELS = ['basic', 'business', 'enhanced'] as const;
@@ -244,8 +247,9 @@ export type VerificationLevel = (typeof VERIFICATION_LEVELS)[number];
 // fresh store can't be marked `verified` without ever having submitted.
 const VERIFICATION_TRANSITIONS: Record<VerificationStatus, VerificationStatus[]> = {
   not_started: ['pending'],
-  pending: ['under_review', 'verified', 'rejected'],
-  under_review: ['verified', 'rejected'],
+  pending: ['under_review', 'verified', 'rejected', 'needs_info'],
+  under_review: ['verified', 'rejected', 'needs_info'],
+  needs_info: ['pending'],
   verified: [],
   rejected: ['pending'],
 };
@@ -277,6 +281,8 @@ export const VERIFICATION_DOCUMENT_TYPES = [
   'address_proof',         // Proof of business address
   'owner_id',              // Government ID/passport/CNIC of the owner or authorized rep
   'authorization_proof',   // Authorization/ownership proof (e.g. rep isn't the owner)
+  'brand_authorization',   // Brand owner's authorization / distributor letter (sells branded goods)
+  'product_licence',       // Regulated-product licence (DRAP / PFA / PTA etc.)
 ] as const;
 export type VerificationDocumentType = (typeof VERIFICATION_DOCUMENT_TYPES)[number];
 
@@ -296,7 +302,7 @@ export const VerificationDocumentSchema = SchemaFactory.createForClass(Verificat
 // history) rather than only existing in the general ActivityLog stream.
 @Schema({ _id: false })
 export class VerificationHistoryEntry {
-  @Prop({ required: true }) action: string; // 'submitted' | 'resubmitted' | 'under_review' | 'approved' | 'rejected'
+  @Prop({ required: true }) action: string; // 'submitted' | 'resubmitted' | 'under_review' | 'approved' | 'rejected' | 'info_requested' | 'ntn_checked' | 'payout_hold' | 'payout_release' | 'reminder_sent'
   @Prop({ type: String, default: null }) note: string | null;
   @Prop({ type: String, default: null }) actorId: string | null;
   @Prop({ type: String, enum: ['seller', 'admin'], default: 'seller' }) actorRole: string;
@@ -313,6 +319,51 @@ export class AuthorizedContact {
 }
 export const AuthorizedContactSchema = SchemaFactory.createForClass(AuthorizedContact);
 
+// ── Products & services questionnaire (seller-editable) ──
+export const SOURCING_TYPES = ['manufacturer', 'reseller', 'importer', 'dropshipper'] as const;
+export const REGULATED_CATEGORIES = ['cosmetics', 'medicines', 'food', 'mobile_phones'] as const;
+export const PREMISES_TYPES = ['shop', 'warehouse', 'home'] as const;
+export const YEARS_SELLING = ['lt_6m', '6m_1y', '1_3y', 'gt_3y'] as const;
+export const DISPATCH_TIMES = ['same_day', '1_2_days', '3_plus_days'] as const;
+export const RETURN_POLICIES = ['7_day_returns', 'exchange_only', 'no_returns'] as const;
+export const MONTHLY_ORDERS = ['lt_50', '50_300', 'gt_300'] as const;
+export const NTN_CHECK_RESULTS = ['active', 'not_found', 'inactive'] as const;
+export type NtnCheckResult = (typeof NTN_CHECK_RESULTS)[number];
+
+@Schema({ _id: false })
+export class BusinessProfile {
+  @Prop({ type: String, enum: SOURCING_TYPES, default: null }) sourcing: string | null;
+  @Prop({ type: Boolean, default: null }) sellsBrandedGoods: boolean | null;
+  @Prop({ type: [String], default: [] }) regulatedCategories: string[];
+  @Prop({ type: String, enum: PREMISES_TYPES, default: null }) premises: string | null;
+  @Prop({ type: String, enum: YEARS_SELLING, default: null }) yearsSelling: string | null;
+  @Prop({ type: [String], default: [] }) otherChannels: string[];
+  @Prop({ type: [String], default: [] }) couriers: string[];
+  @Prop({ type: String, enum: DISPATCH_TIMES, default: null }) dispatchTime: string | null;
+  @Prop({ type: String, enum: RETURN_POLICIES, default: null }) returnPolicy: string | null;
+  @Prop({ type: String, enum: MONTHLY_ORDERS, default: null }) monthlyOrders: string | null;
+  @Prop({ type: Boolean, default: null }) bankAccountInOwnName: boolean | null;
+}
+export const BusinessProfileSchema = SchemaFactory.createForClass(BusinessProfile);
+
+// Admin-only: result of an admin manually checking the NTN on FBR's portal.
+@Schema({ _id: false })
+export class NtnCheck {
+  @Prop({ type: Date, default: null }) checkedAt: Date | null;
+  @Prop({ type: String, default: null }) checkedBy: string | null;
+  @Prop({ type: String, enum: NTN_CHECK_RESULTS, default: null }) result: NtnCheckResult | null;
+}
+export const NtnCheckSchema = SchemaFactory.createForClass(NtnCheck);
+
+@Schema({ _id: false })
+export class PayoutHold {
+  @Prop({ type: Boolean, default: false }) active: boolean;
+  @Prop({ type: String, default: null }) reason: string | null;
+  @Prop({ type: String, default: null }) by: string | null;
+  @Prop({ type: Date, default: () => new Date() }) at: Date;
+}
+export const PayoutHoldSchema = SchemaFactory.createForClass(PayoutHold);
+
 @Schema({ _id: false })
 export class SellerVerification {
   // NOT here — `businessType` lives on `Store` itself (top-level, see
@@ -326,6 +377,14 @@ export class SellerVerification {
   @Prop({ type: String, default: null }) taxId: string | null;
   @Prop({ type: String, default: null }) businessAddress: string | null;
   @Prop({ type: String, enum: ID_DOCUMENT_TYPES, default: null }) idDocumentType: IdDocumentType | null;
+  // PK: the owner's CNIC, stored normalized `12345-1234567-1`. Other countries:
+  // the number of the ID document picked in `idDocumentType` (free text).
+  @Prop({ type: String, default: null }) cnicNumber: string | null;
+  // PK sales-tax registration number — optional.
+  @Prop({ type: String, default: null }) strn: string | null;
+  // Admin-only (never accepted from the seller PATCH).
+  @Prop({ type: NtnCheckSchema, default: null }) ntnCheck: NtnCheck | null;
+  @Prop({ type: BusinessProfileSchema, default: () => ({}) }) businessProfile: BusinessProfile;
   @Prop({ type: AuthorizedContactSchema, default: () => ({}) }) authorizedContact: AuthorizedContact;
   @Prop({ type: [VerificationDocumentSchema], default: [] }) documents: VerificationDocument[];
   @Prop({ type: [VerificationHistoryEntrySchema], default: [] }) history: VerificationHistoryEntry[];
@@ -755,6 +814,47 @@ export class Store {
   // admin-granted badges, e.g. ['top_seller', 'verified', 'featured', 'verified_educator']
   @Prop({ type: [String], default: [] })
   badges: string[];
+
+  // ── Seller trust (see src/seller-trust/) ──
+  // Message from the admin's last "ask for more info" — shown on the seller's
+  // verification page while `verificationStatus` is 'needs_info'.
+  @Prop({ type: String, default: null })
+  infoRequestMessage: string | null;
+
+  // When the seller last submitted/resubmitted (sort key for the admin queue).
+  @Prop({ type: Date, default: null })
+  verificationSubmittedAt: Date | null;
+
+  // Deadline to be verified by — derived from the platform's
+  // sellerTrust.enforcementStartedAt/graceDays (see verificationDeadline()).
+  // Null = enforcement not started.
+  @Prop({ type: Date, default: null })
+  verificationDueAt: Date | null;
+
+  // Denormalized "trust-limited" flag: hidden from cross-store marketplace
+  // discovery (never from the store's own storefront). Kept in sync by
+  // SellerTrustService (verification changes, enforcement start, cron).
+  @Prop({ type: Boolean, default: false })
+  marketplaceHidden: boolean;
+
+  // Admin-only risk assessment — `select: false` so it never reaches the
+  // seller's own store reads (see computeStoreRisk()).
+  @Prop({ type: String, enum: ['low', 'medium', 'high'], default: 'low', select: false })
+  riskLevel: 'low' | 'medium' | 'high';
+
+  @Prop({ type: [{ code: String, label: String, severity: String, _id: false }], default: [], select: false })
+  riskReasons: { code: string; label: string; severity: 'info' | 'medium' | 'high' }[];
+
+  @Prop({ type: Date, default: null, select: false })
+  riskUpdatedAt: Date | null;
+
+  // Manual admin payout hold — blocks seller withdrawals and scheduled payouts.
+  @Prop({ type: PayoutHoldSchema, default: null })
+  payoutHold: { active: boolean; reason: string | null; by: string | null; at: Date } | null;
+
+  // Rate limit for admin verification reminders (one per store per 24h).
+  @Prop({ type: Date, default: null })
+  lastTrustReminderAt: Date | null;
 
   @Prop({ default: false })
   isDelete: boolean;
