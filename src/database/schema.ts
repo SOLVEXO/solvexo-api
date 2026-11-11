@@ -191,6 +191,7 @@ export { PurchaseReceipt, PurchaseReceiptDocument, PurchaseReceiptSchema } from 
 export { PosExpense, PosExpenseDocument, PosExpenseSchema, PosExpenseEvent, PosExpenseEventDocument, PosExpenseEventSchema } from '../pos/schemas/pos-expense.schema';
 export { PosAttendanceEvent, PosAttendanceEventDocument, PosAttendanceEventSchema, PosAttendanceState, PosAttendanceStateDocument, PosAttendanceStateSchema, PosRosterShift, PosRosterShiftDocument, PosRosterShiftSchema } from '../pos/schemas/pos-team.schema';
 export { PosAuditSeal, PosAuditSealDocument, PosAuditSealSchema } from '../pos/schemas/pos-audit-seal.schema';
+export { PosReprintEvent, PosReprintEventDocument, PosReprintEventSchema } from '../pos/schemas/pos-reprint-event.schema';
 export { PosModifierGroup, PosModifierGroupDocument, PosModifierGroupSchema, PosPriceBook, PosPriceBookDocument, PosPriceBookSchema } from '../pos/schemas/pos-catalog-extras.schema';
 export { SupplierLedgerEntry, SupplierLedgerEntryDocument, SupplierLedgerEntrySchema } from '../purchase-orders/schemas/supplier-ledger-entry.schema';
 export { StockCount, StockCountDocument, StockCountSchema } from '../stock-counts/schemas/stock-count.schema';

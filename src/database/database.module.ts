@@ -279,6 +279,7 @@ import { DatabaseService } from './databaseservice';
       { name: schema.PosAttendanceState.name, schema: schema.PosAttendanceStateSchema },
       { name: schema.PosRosterShift.name, schema: schema.PosRosterShiftSchema },
       { name: schema.PosAuditSeal.name, schema: schema.PosAuditSealSchema },
+      { name: schema.PosReprintEvent.name, schema: schema.PosReprintEventSchema },
       { name: schema.PosModifierGroup.name, schema: schema.PosModifierGroupSchema },
       { name: schema.PosPriceBook.name, schema: schema.PosPriceBookSchema },
       { name: schema.PosExpense.name, schema: schema.PosExpenseSchema },

@@ -35,6 +35,7 @@ const T: Record<PosAction, { below: [Exp, Exp, Exp]; above?: [Exp, Exp, Exp] }> 
   'catalog.import':               { below: ['deny', 'allow', 'allow'] },
   'catalog.modifiers.edit':       { below: ['deny', 'allow', 'allow'] },
   'catalog.pricebooks.edit':      { below: ['deny', 'allow', 'allow'] },
+  'sales.reprint':                { below: ['allow', 'allow', 'allow'] },
   'catalog.edit':                 { below: ['deny', 'allow', 'allow'] },
   'customers.view':               { below: ['allow', 'allow', 'allow'] },
   'customers.create':             { below: ['allow', 'allow', 'allow'] },

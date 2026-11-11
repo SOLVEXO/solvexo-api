@@ -143,6 +143,17 @@ body{margin:0;background:#f4f1ee;font:16px/1.45 -apple-system,BlinkMacSystemFont
     if (!sale) throw new NotFoundException('Sale not found');
     await this.pos.verifyStoreOwnership(sale.storeId, sellerId);
     const creditNotes = await this.r.posCreditNoteModel.find({ saleId }).sort({ seq: 1 }).lean();
-    return { success: true, data: { saleNumber: sale.saleNumber, status: sale.status, invoice: sale.invoice ?? null, creditNotes } };
+    // G4.8: how many times each document was reprinted (the print says "REPRINT #n")
+    const counts: any[] = this.r.posReprintEventModel ? await this.r.posReprintEventModel.aggregate([{ $match: { saleId: String(saleId) } }, { $group: { _id: { t: '$documentType', d: '$documentId' }, n: { $max: '$reprintNumber' } } }]) : [];
+    const n = (t: string, d: string) => counts.find((c) => c._id.t === t && c._id.d === d)?.n ?? 0;
+    return {
+      success: true,
+      data: {
+        saleNumber: sale.saleNumber, status: sale.status,
+        invoice: sale.invoice ? { ...sale.invoice, reprintCount: n('invoice', String(saleId)) } : null,
+        creditNotes: creditNotes.map((c: any) => ({ ...c, reprintCount: n('credit_note', String(c._id)) })),
+        receiptReprintCount: n('sale', String(saleId)),
+      },
+    };
   }
 }

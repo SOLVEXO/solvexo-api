@@ -64,6 +64,8 @@ export const POS_PERMISSIONS = {
   'catalog.import':            { label: 'Import products or categories from a CSV file', roles: MGR },
   'catalog.modifiers.edit':    { label: 'Edit modifier groups (sizes, extras …)', roles: MGR },
   'catalog.pricebooks.edit':   { label: 'Edit price books and assign them to customers', roles: MGR },
+  // G4.8: everyone may reprint; when the store requires a PIN to reprint, a cashier's reprint needs a manager (the reprint service applies the setting)
+  'sales.reprint':             { label: 'Reprint a receipt, invoice or credit note', roles: ALL },
   'catalog.edit':              { label: 'Edit price, barcode, category, HS code', roles: MGR },
   // ── customers / credit / loyalty (G3.3)
   'customers.view':            { label: 'Find customers and see their balance', roles: ALL },

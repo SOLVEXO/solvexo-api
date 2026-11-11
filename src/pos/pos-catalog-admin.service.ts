@@ -9,6 +9,7 @@ import { CategoriesService } from '../categories/categories.service';
 import { PosService } from './pos.service';
 import { PosAuthorizer } from './pos-authorizer.service';
 import { PosAction } from './pos-permissions.config';
+import { localDay, localKey } from './pos-day.util';
 
 type Req = any;
 interface Tokens { employee?: string }
@@ -237,13 +238,37 @@ export class PosCatalogAdminService {
   }
 
   // ── price books ──────────────────────────────────────────────────────────────
-  private bookView(b: any) {
-    return { id: String(b._id), name: b.name, active: b.active !== false, startsAt: b.startsAt ?? null, endsAt: b.endsAt ?? null, note: b.note ?? null, entries: (b.entries ?? []).map((e: any) => ({ variantId: e.variantId, priceMinor: Number(e.priceMinor) })) };
+  /**
+   * G4.8: besides the stored instants (`startsAt` / `endsAt`, unchanged), every book says WHEN it is valid as UTC instants computed in the STORE's time
+   * zone (`validFromUtc` = start of its first store day, `validToUtc` = end of its last store day, exclusive) and as store days, so a till whose clock is
+   * in another zone switches books at the store's midnight.
+   */
+  private bookView(b: any, tz: string) {
+    const from = b.startsAt ? new Date(b.startsAt) : null; const to = b.endsAt ? new Date(b.endsAt) : null;
+    return {
+      id: String(b._id), name: b.name, active: b.active !== false, startsAt: b.startsAt ?? null, endsAt: b.endsAt ?? null, note: b.note ?? null,
+      entries: (b.entries ?? []).map((e: any) => ({ variantId: e.variantId, priceMinor: Number(e.priceMinor) })),
+      timeZone: tz,
+      validFromUtc: from ? from.toISOString() : null, validToUtc: to ? to.toISOString() : null,
+      validFromDay: from ? localKey(from, tz) : null, validToDay: to ? localKey(new Date(to.getTime() - 1), tz) : null,
+    };
   }
   private async bookInput(storeId: string, body: any, partial: boolean) {
     const set: any = {};
+    // G4.8: store days — `validFrom` = the start of that day, `validTo` = the END of that day, both in the store's time zone (null clears)
+    const day = /^\d{4}-\d{2}-\d{2}$/;
+    if (body?.validFrom !== undefined || body?.validTo !== undefined) {
+      const tz = await this.pos.storeTz(storeId);
+      for (const [k, field, edge] of [['validFrom', 'startsAt', 'start'], ['validTo', 'endsAt', 'end']] as const) {
+        const v = body?.[k];
+        if (v === undefined) continue;
+        if (v !== null && (typeof v !== 'string' || !day.test(v))) throw err(400, 'INVALID_DATE', `${k} must be a store day YYYY-MM-DD`);
+        set[field] = v === null ? null : localDay(v, tz)[edge];
+      }
+      body = { ...body, startsAt: undefined, endsAt: undefined }; // the store days win over instants sent with them
+    }
     if (!partial || body?.name !== undefined) { const n = str(body?.name, 60); if (!n) throw err(400, 'NAME_REQUIRED', 'A price book needs a name'); set.name = n; }
-    for (const k of ['startsAt', 'endsAt'] as const) if (body?.[k] !== undefined) { if (body[k] === null) set[k] = null; else { const d = new Date(body[k]); if (Number.isNaN(d.getTime())) throw err(400, 'INVALID_DATE', `${k} is not a valid date`); set[k] = d; } }
+    for (const k of ['startsAt', 'endsAt'] as const) if (body?.[k] !== undefined && set[k] === undefined) { if (body[k] === null) set[k] = null; else { const d = new Date(body[k]); if (Number.isNaN(d.getTime())) throw err(400, 'INVALID_DATE', `${k} is not a valid date`); set[k] = d; } }
     if (set.startsAt && set.endsAt && set.endsAt <= set.startsAt) throw err(400, 'INVALID_DATE', 'The end must be after the start');
     if (body?.active !== undefined) set.active = body.active !== false;
     if (body?.note !== undefined) set.note = str(body.note, 300);
@@ -263,14 +288,15 @@ export class PosCatalogAdminService {
     await this.gate(req, storeId, 'inventory.view', t); // the till lists them at checkout
     const rows: any[] = await this.r.posPriceBookModel.find({ storeId }).sort({ name: 1 }).lean();
     const now = new Date();
-    return { success: true, data: { ...(await this.cur(storeId)), books: rows.map((b) => ({ ...this.bookView(b), inForce: b.active !== false && (!b.startsAt || b.startsAt <= now) && (!b.endsAt || b.endsAt > now) })) } };
+    const tz = await this.pos.storeTz(storeId);
+    return { success: true, data: { ...(await this.cur(storeId)), books: rows.map((b) => ({ ...this.bookView(b, tz), inForce: b.active !== false && (!b.startsAt || b.startsAt <= now) && (!b.endsAt || b.endsAt > now) })) } };
   }
   async priceBookCreate(req: Req, storeId: string, body: any, t: Tokens) {
     const a = await this.gate(req, storeId, 'catalog.pricebooks.edit', t);
     const set = await this.bookInput(storeId, body, false);
     const b = await this.r.posPriceBookModel.create({ storeId, ...set });
     await this.audit(storeId, a.employeeId, 'price_book_created', String(b._id), { name: set.name, entries: set.entries.length });
-    return { success: true, data: { ...(await this.cur(storeId)), book: this.bookView(b.toObject()) } };
+    return { success: true, data: { ...(await this.cur(storeId)), book: this.bookView(b.toObject(), await this.pos.storeTz(storeId)) } };
   }
   async priceBookUpdate(req: Req, storeId: string, id: string, body: any, t: Tokens) {
     const a = await this.gate(req, storeId, 'catalog.pricebooks.edit', t);
@@ -282,7 +308,7 @@ export class PosCatalogAdminService {
     if (s2 && e2 && new Date(e2) <= new Date(s2)) throw err(400, 'INVALID_DATE', 'The end must be after the start');
     const b: any = await this.r.posPriceBookModel.findOneAndUpdate({ _id: id, storeId }, { $set: set }, { new: true }).lean();
     await this.audit(storeId, a.employeeId, 'price_book_updated', id, { fields: Object.keys(set), entries: set.entries?.length });
-    return { success: true, data: { ...(await this.cur(storeId)), book: this.bookView(b) } };
+    return { success: true, data: { ...(await this.cur(storeId)), book: this.bookView(b, await this.pos.storeTz(storeId)) } };
   }
   /** Assign (or clear with null) a customer's price book. */
   async assignBook(req: Req, storeId: string, customerId: string, body: any, t: Tokens) {

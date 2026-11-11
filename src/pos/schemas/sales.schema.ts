@@ -356,6 +356,8 @@ export class Sale {
   /** G4.5: the price book the sale was priced with (picked at checkout, or the customer's) and its name at the time */
   @Prop({ type: String, default: null }) priceBookId?: string | null;
   @Prop({ type: String, default: null }) priceBookName?: string | null;
+  /** G4.8: how many times this sale's receipt was reprinted (the receipt prints "REPRINT #n"); the events are in posreprintevents */
+  @Prop({ type: Number, default: 0 }) reprintCount?: number;
 
   @Prop({ default: 'Walk-in' })
   customerName: string;

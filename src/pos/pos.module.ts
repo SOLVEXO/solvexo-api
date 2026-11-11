@@ -1,3 +1,7 @@
+import { PosReprintService } from './pos-reprint.service';
+import { PosReprintController } from './pos-reprint.controller';
+import { APP_INTERCEPTOR } from '@nestjs/core';
+import { CostVisibilityInterceptor } from './cost-visibility.interceptor';
 import { forwardRef, Module } from '@nestjs/common';
 import { PosController } from './pos.controller';
 import { PosService } from './pos.service';
@@ -45,8 +49,10 @@ import { PurchaseOrdersModule } from '@/purchase-orders/purchase-orders.module';
 
 @Module({
   imports: [AuthModule, RedisModule, AdminConfigModule, FinanceModule, InventoryModule, PurchaseOrdersModule, UploadModule, ProductsModule, ProductVariantsModule, CategoriesModule, StockCountsModule, PosPlansModule, KybModule, forwardRef(() => PaymentsCoreModule)],
-  controllers: [PosController, PublicReceiptController, PosInventoryController, PosCustomersController, PosSupplyController, PosCashController, PosTeamController, PosReportsController, PosStoreController, PosPermissionsStoreController, PosAuditController, PosCatalogAdminController],
-  providers: [PosService, StoreLocationService, PosDeviceService, PosTokenRevocationService, PosReceiptService, PosCatalogService, PosAuthorizer, PosInventoryService, PosCustomerCore, PosCustomersService, PosSupplyService, PosCashService, PosTeamService, PosReportsService, PosPermissionsStoreService, PosAuditSealService, PosStoreSettingsService, PosCatalogAdminService],
+  controllers: [PosController, PublicReceiptController, PosInventoryController, PosCustomersController, PosSupplyController, PosCashController, PosTeamController, PosReportsController, PosStoreController, PosPermissionsStoreController, PosAuditController, PosCatalogAdminController, PosReprintController],
+  providers: [PosService, StoreLocationService, PosDeviceService, PosTokenRevocationService, PosReceiptService, PosCatalogService, PosAuthorizer, PosInventoryService, PosCustomerCore, PosCustomersService, PosSupplyService, PosCashService, PosTeamService, PosReportsService, PosPermissionsStoreService, PosAuditSealService, PosStoreSettingsService, PosCatalogAdminService, PosReprintService,
+    // G4.8: "hide costs from managers" for every POS response, in one place
+    { provide: APP_INTERCEPTOR, useClass: CostVisibilityInterceptor }],
   exports: [PosService, PosAuthorizer],
 })
 export class PosModule {}

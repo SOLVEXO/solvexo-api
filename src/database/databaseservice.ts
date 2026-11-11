@@ -484,6 +484,8 @@ export class DatabaseService {
     private posRosterShiftModel: Model<schema.PosRosterShiftDocument>,
     @InjectModel(schema.PosAuditSeal.name)
     private posAuditSealModel: Model<schema.PosAuditSealDocument>,
+    @InjectModel(schema.PosReprintEvent.name)
+    private posReprintEventModel: Model<schema.PosReprintEventDocument>,
     @InjectModel(schema.PosModifierGroup.name)
     private posModifierGroupModel: Model<schema.PosModifierGroupDocument>,
     @InjectModel(schema.PosPriceBook.name)
@@ -730,6 +732,7 @@ export class DatabaseService {
       posAttendanceStateModel: this.posAttendanceStateModel,
       posRosterShiftModel: this.posRosterShiftModel,
       posAuditSealModel: this.posAuditSealModel,
+      posReprintEventModel: this.posReprintEventModel,
       posModifierGroupModel: this.posModifierGroupModel,
       posPriceBookModel: this.posPriceBookModel,
       posExpenseModel: this.posExpenseModel,
