@@ -17,6 +17,8 @@ export interface BuyerParty {
 export function buildPlanInvoiceInput(p: {
   invoice: { amountUSD: number; subtotalUSD: number | null; taxAmountUSD: number; taxRatePercent: number; paidAt: Date | null; createdAt?: Date };
   planName: string; fxPKRPerUSD: number; seller: PlatformSeller; buyer: BuyerParty;
+  /** Item text; defaults to the plan wording. Other Solvexo charges (add-ons, fee bills, ...) pass their own. */
+  description?: string;
 }): { input: FbrInvoiceInput; netPKR: number; taxPKR: number } {
   const { invoice, seller, buyer } = p;
   const netUSD = invoice.subtotalUSD ?? invoice.amountUSD - (invoice.taxAmountUSD ?? 0);
@@ -26,7 +28,7 @@ export function buildPlanInvoiceInput(p: {
   const registered = buyerNtn.length > 0;
   const item: FbrItemInput = {
     hsCode: normalizeHsCode(seller.hsCode),
-    productDescription: `Solvexo ${p.planName} plan subscription`,
+    productDescription: p.description ?? `Solvexo ${p.planName} plan subscription`,
     rate: rateString(invoice.taxRatePercent),
     uoM: seller.uom,
     quantity: 1,

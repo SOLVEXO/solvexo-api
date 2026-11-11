@@ -13,6 +13,12 @@ import { resolveStoreCountry } from '../integrations/payment-availability.util';
 import { verifyStoreOwnershipOrForbidden } from '../common/store-ownership.util';
 import { B2BCompany, B2BCompanyDocument } from '../b2b/b2b.schema';
 import { FbrDiSettings, FbrDiSettingsDocument, FbrInvoiceDocument, FbrInvoiceRecord, StoreFbrSettings, StoreFbrSettingsDocument } from './fbr-di.schemas';
+import { PlatformEinvoiceRecord, StoreEinvoiceRecord } from './einvoice-record.schemas';
+import { PlatformInvoice, PlatformInvoiceDocument } from '../platform-tax/schemas/platform-invoice.schema';
+import { TaxAuthorityRegistry } from '../tax-core/tax-authority.registry';
+import type { AuthorityResult, TaxAuthorityAdapter } from '../tax-core/tax-authority.adapter';
+import { decideOutcome } from '../tax-core/e-invoice-engine';
+import { PkFbrAdapter } from '../tax-authorities/pk-fbr/pk-fbr.adapter';
 import { FbrDiClient } from './fbr-di.client';
 import { assertProductionAllowed, PRODUCTION_LOCKED_MESSAGE } from './fbr-production-lock';
 import { buildOrderInput, buildPlanInvoiceInput } from './fbr-di.builders';
@@ -30,6 +36,9 @@ const PROVINCE_FALLBACK = ['PUNJAB', 'SINDH', 'KHYBER PAKHTUNKHWA', 'BALOCHISTAN
 
 /** Shown on every "needs a credit/debit note" record. The 72-hour and 180-day rules are the owner's research, still to be confirmed in writing by the accountant. */
 const ADJUSTMENT_RULES = 'Per FBR rules (still to be confirmed by your accountant): a filed invoice can be cancelled or edited only within 72 hours, through FBR\'s own system; after that only with the Commissioner\'s approval. A later return or discount needs a credit/debit note within 180 days. Solvexo does not file it for you.';
+const LEDGER_SOURCE_DESCRIPTION: Record<string, string> = {
+  addon_charge: 'Solvexo add-on', fee_bill: 'Solvexo transaction fee', pos_plan: 'Solvexo POS plan', promotion: 'Solvexo promotion', store_app: 'Solvexo store app fee',
+};
 const UNKNOWN_STALE_MESSAGE = 'The server stopped while this invoice was being sent, so it is not known whether FBR filed it. It is NOT sent again automatically. Check the FBR portal.';
 
 export interface UpdateSettingsInput {
@@ -47,7 +56,8 @@ export class FbrDiService {
   constructor(
     @InjectModel(FbrDiSettings.name) private readonly platformModel: Model<FbrDiSettingsDocument>,
     @InjectModel(StoreFbrSettings.name) private readonly storeModel: Model<StoreFbrSettingsDocument>,
-    @InjectModel(FbrInvoiceRecord.name) private readonly invoiceModel: Model<FbrInvoiceDocument>,
+    // Solvexo's own invoice records. A store's records are a SEPARATE collection (storeRecordModel below).
+    @InjectModel(PlatformEinvoiceRecord.name) private readonly invoiceModel: Model<FbrInvoiceDocument>,
     private readonly db: DatabaseService,
     private readonly client: FbrDiClient,
     private readonly platformTax: PlatformTaxService,
@@ -55,7 +65,20 @@ export class FbrDiService {
     private readonly activityLog: ActivityLogService,
     @Optional() private readonly notifications?: NotificationsService,
     @Optional() @InjectModel(B2BCompany.name) private readonly b2bCompanyModel?: Model<B2BCompanyDocument>,
+    @Optional() @InjectModel(StoreEinvoiceRecord.name) private readonly storeRecordModel?: Model<FbrInvoiceDocument>,
+    @Optional() private readonly registry?: TaxAuthorityRegistry,
+    @Optional() @InjectModel(PlatformInvoice.name) private readonly ledgerModel?: Model<PlatformInvoiceDocument>,
   ) {}
+
+  // ───────────────────────── records: two collections, never mixed ─────────────────────────
+  private get platformRecords(): Model<FbrInvoiceDocument> { return this.invoiceModel; }
+  /** Falls back to the platform model only in single-model setups (old specs); production always injects the store collection. */
+  private get storeRecords(): Model<FbrInvoiceDocument> { return this.storeRecordModel ?? this.invoiceModel; }
+  private recordsFor(issuer: string): Model<FbrInvoiceDocument> { return issuer === 'store' ? this.storeRecords : this.platformRecords; }
+  private allRecordModels(): Model<FbrInvoiceDocument>[] { return [...new Set([this.platformRecords, this.storeRecords])]; }
+
+  /** The authority adapter a record is filed through (Pakistan today). Without a registry the client is wrapped directly. */
+  private adapter(key = 'PK_FBR'): TaxAuthorityAdapter { return this.registry?.get(key) ?? new PkFbrAdapter(this.client); }
 
   // ───────────────────────── tokens ─────────────────────────
   /**
@@ -153,7 +176,7 @@ export class FbrDiService {
   private async runTest(input: FbrInvoiceInput, token: string): Promise<{ ok: boolean; message: string; errors: FbrResult['errors'] }> {
     const problems = validateInvoiceInput(input);
     if (problems.length) return { ok: false, message: problems[0], errors: problems.map((m) => ({ code: null, message: m })) };
-    const { result } = await this.client.validate(input, 'sandbox', token);
+    const { result } = await this.adapter().validate(input, 'sandbox', token);
     return { ok: result.ok, message: result.ok ? 'FBR sandbox accepted the sample invoice.' : result.errors[0]?.message ?? 'FBR did not accept the sample invoice.', errors: result.errors };
   }
 
@@ -177,7 +200,7 @@ export class FbrDiService {
     await verifyStoreOwnershipOrForbidden(this.db.repositories.storeModel, storeId, sellerId);
     const store = await this.loadStoreOrThrow(storeId);
     const s: any = { ...STORE_DEFAULTS, ...this.dropNullish(await this.storeModel.findOne({ storeId }).lean()) };
-    const needsInfo = await this.invoiceModel.countDocuments({ issuer: 'platform', storeId, status: 'needs_info' });
+    const needsInfo = await this.platformRecords.countDocuments({ issuer: 'platform', storeId, status: 'needs_info' });
     return {
       enabled: !!s.enabled, mode: s.mode ?? 'sandbox', province: s.province ?? '', legalName: s.legalName ?? '',
       scenarioId: s.scenarioId ?? 'SN002', hsCode: s.hsCode ?? '', uom: s.uom ?? 'Numbers, pieces, units',
@@ -277,7 +300,7 @@ export class FbrDiService {
 
   // ───────────────────────── listing ─────────────────────────
   private async stats(filter: Record<string, any>) {
-    const rows: any[] = await this.invoiceModel.aggregate([{ $match: filter }, { $group: { _id: '$status', n: { $sum: 1 } } }]);
+    const rows: any[] = await this.recordsFor(String(filter.issuer)).aggregate([{ $match: filter }, { $group: { _id: '$status', n: { $sum: 1 } } }]);
     const out: Record<string, number> = { pending: 0, submitted: 0, failed: 0, rejected: 0, needs_info: 0, needs_review: 0, skipped: 0, held_rule: 0, unknown_outcome: 0 };
     for (const r of rows) out[r._id] = r.n;
     return out;
@@ -290,19 +313,19 @@ export class FbrDiService {
     if (filter.storeId) q.storeId = filter.storeId;
     if (filter.status) q.status = filter.status;
     const [items, total] = await Promise.all([
-      this.invoiceModel.find(q).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit).lean(),
-      this.invoiceModel.countDocuments(q),
+      this.recordsFor(filter.issuer).find(q).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit).lean(),
+      this.recordsFor(filter.issuer).countDocuments(q),
     ]);
     return { items, total, page, limit };
   }
 
   async orderInvoice(storeId: string, orderId: string) {
-    const r: any = await this.invoiceModel.findOne({ issuer: 'store', source: 'order', sourceId: String(orderId), storeId, kind: 'sale' }).select('status mode fbrInvoiceNumber fbrDated qrText').lean();
+    const r: any = await this.storeRecords.findOne({ issuer: 'store', source: 'order', sourceId: String(orderId), storeId, kind: 'sale' }).select('status mode fbrInvoiceNumber fbrDated qrText').lean();
     return r ?? null;
   }
 
   async planInvoicesForStore(storeId: string) {
-    const rows: any[] = await this.invoiceModel.find({ issuer: 'platform', source: 'plan_invoice', storeId, kind: 'sale' }).select('sourceId status mode fbrInvoiceNumber fbrDated qrText').limit(500).lean();
+    const rows: any[] = await this.platformRecords.find({ issuer: 'platform', source: 'plan_invoice', storeId, kind: 'sale' }).select('sourceId status mode fbrInvoiceNumber fbrDated qrText').limit(500).lean();
     return rows;
   }
 
@@ -315,7 +338,7 @@ export class FbrDiService {
       this.platformTax.getSettings(),
       this.db.repositories.platformPlanModel.findById(inv.platformPlanId).select('name').lean(),
       this.db.repositories.storeModel.findById(storeId).select('name taxId taxRegistered businessAddress').lean(),
-      this.invoiceModel.findOne({ issuer: 'platform', source: 'plan_invoice', sourceId: String(inv._id), kind: 'sale' }).select('status mode fbrInvoiceNumber fbrDated qrText netAmount taxAmount fxRatePKRPerUSD').lean(),
+      this.platformRecords.findOne({ issuer: 'platform', source: 'plan_invoice', sourceId: String(inv._id), kind: 'sale' }).select('status mode fbrInvoiceNumber fbrDated qrText netAmount taxAmount fxRatePKRPerUSD').lean(),
       this.storeModel.findOne({ storeId }).select('legalName province').lean(),
       this.db.repositories.sellerModel.findById(sellerId).select('name address').lean(),
     ]);
@@ -333,7 +356,7 @@ export class FbrDiService {
   private async existingKeys(issuer: string, source: string, ids: string[]): Promise<Map<string, Set<string>>> {
     const map = new Map<string, Set<string>>();
     for (let i = 0; i < ids.length; i += 1000) {
-      const rows: any[] = await this.invoiceModel.find({ issuer, source, sourceId: { $in: ids.slice(i, i + 1000) } }).select('sourceId kind status').lean();
+      const rows: any[] = await this.recordsFor(issuer).find({ issuer, source, sourceId: { $in: ids.slice(i, i + 1000) } }).select('sourceId kind status').lean();
       for (const r of rows) {
         const set = map.get(r.sourceId) ?? new Set<string>();
         set.add(`${r.kind}:${r.status}`); set.add(r.kind);
@@ -344,7 +367,7 @@ export class FbrDiService {
   }
 
   private async createRecord(doc: Partial<FbrInvoiceRecord>): Promise<boolean> {
-    try { await this.invoiceModel.create(doc); return true; } catch (e: any) {
+    try { await this.recordsFor(String(doc.issuer)).create(doc); return true; } catch (e: any) {
       if (e?.code === 11000) return false; // already recorded by a parallel run
       throw e;
     }
@@ -381,6 +404,40 @@ export class FbrDiService {
           status: 'needs_review', note: `$${Number(inv.refundedAmountUSD).toFixed(2)} of this reported invoice was refunded. ${ADJUSTMENT_RULES}`,
         });
         if (ok) created++;
+      }
+    }
+    return created;
+  }
+
+  /**
+   * Eligible rows of the shadow ledger (a VERIFIED rule exists for the supply) -> pending platform records, for every Solvexo
+   * source: plan invoices, add-ons, fee bills, POS plans, promotions, store-app fees. Sandbox only (production is locked). The
+   * unique key (source, sourceId, kind, mode) means a charge that already has a record, filed or not, never gets a second one,
+   * whichever path created it first. Nothing is created while the ledger is off or has no eligible row.
+   */
+  async syncFromLedger(): Promise<number> {
+    if (!this.ledgerModel) return 0;
+    const s: any = { ...PLATFORM_DEFAULTS, ...this.dropNullish(await this.platformModel.findOne({ key: 'platform' }).lean()) };
+    if (!s?.enabled || !s.enabledSince) return 0;
+    const since = new Date(Math.max(new Date(s.enabledSince).getTime(), Date.now() - 45 * DAY));
+    const rows: any[] = await this.ledgerModel
+      .find({ 'routing.eligible': true, status: { $in: ['paid', 'partially_refunded', 'refunded'] }, paidAt: { $gte: since } })
+      .sort({ paidAt: 1 }).limit(5000).lean();
+    if (!rows.length) return 0;
+    const bySource = new Map<string, any[]>();
+    for (const r of rows) bySource.set(r.sourceType, [...(bySource.get(r.sourceType) ?? []), r]);
+    let created = 0;
+    for (const [source, list] of bySource) {
+      const known = await this.existingKeys('platform', source, list.map((r) => String(r.sourceId)));
+      for (const row of list) {
+        const id = String(row.sourceId);
+        const have = known.get(id);
+        const base = { issuer: 'platform', source, sourceId: id, storeId: row.customer?.storeId ?? '', sellerId: row.customer?.sellerId ?? '', mode: s.mode, authority: row.routing?.authority ?? 'PK_FBR', reference: `${source}:${id.slice(-8)}`, viaLedger: true } as any;
+        if (!have?.has('sale')) {
+          if (await this.createRecord({ ...base, kind: 'sale', status: 'pending', nextAttemptAt: new Date() })) created++;
+        } else if ((row.refundedUSD ?? 0) > 0 && have.has('sale:submitted') && !have.has('adjustment')) {
+          if (await this.createRecord({ ...base, kind: 'adjustment', status: 'needs_review', note: `$${Number(row.refundedUSD).toFixed(2)} of this reported invoice was refunded. ${ADJUSTMENT_RULES}` })) created++;
+        }
       }
     }
     return created;
@@ -438,14 +495,16 @@ export class FbrDiService {
    */
   async sweepStaleInFlight(): Promise<number> {
     const cutoff = new Date(Date.now() - FBR_STALE_IN_FLIGHT_MINUTES * MIN);
-    const stale: any[] = await this.invoiceModel.find({ inFlightAt: { $lte: cutoff } }).select('_id inFlightAt').lean();
     let n = 0;
-    for (const r of stale) {
-      const res = await this.invoiceModel.updateOne({ _id: r._id, inFlightAt: r.inFlightAt }, { $set: { status: 'unknown_outcome', inFlightAt: null, nextAttemptAt: null, authError: false, errors: [{ code: null, message: UNKNOWN_STALE_MESSAGE }] } });
-      if (res.modifiedCount > 0) {
-        n++;
-        const rec = await this.invoiceModel.findById(r._id).lean();
-        if (rec) await this.problem(rec, 'FBR invoice outcome unknown', UNKNOWN_STALE_MESSAGE);
+    for (const model of this.allRecordModels()) {
+      const stale: any[] = await model.find({ inFlightAt: { $lte: cutoff } }).select('_id inFlightAt').lean();
+      for (const r of stale) {
+        const res = await model.updateOne({ _id: r._id, inFlightAt: r.inFlightAt }, { $set: { status: 'unknown_outcome', inFlightAt: null, nextAttemptAt: null, authError: false, errors: [{ code: null, message: UNKNOWN_STALE_MESSAGE }] } });
+        if (res.modifiedCount > 0) {
+          n++;
+          const rec = await model.findById(r._id).lean();
+          if (rec) await this.problem(rec, 'FBR invoice outcome unknown', UNKNOWN_STALE_MESSAGE);
+        }
       }
     }
     return n;
@@ -454,19 +513,23 @@ export class FbrDiService {
   async processDue(limit = 50): Promise<{ attempted: number; submitted: number }> {
     await this.sweepStaleInFlight().catch((e) => this.logger.error(`FBR stale in-flight sweep failed: ${e.message}`));
     const now = new Date();
-    const main: any[] = await this.invoiceModel.find({ kind: 'sale', status: { $in: ['pending', 'failed'] }, nextAttemptAt: { $lte: now }, attempts: { $lt: FBR_MAX_ATTEMPTS }, inFlightAt: null })
-      .select('_id').sort({ nextAttemptAt: 1 }).limit(limit).lean();
-    // needs_info is checked again every hour for 14 days; it does not use up attempts.
     const cutoff = new Date(now.getTime() - FBR_NEEDS_INFO_MAX_DAYS * DAY);
-    const info: any[] = await this.invoiceModel.find({ kind: 'sale', status: 'needs_info', nextAttemptAt: { $lte: now }, inFlightAt: null })
-      .select('_id needsInfoSince').sort({ nextAttemptAt: 1 }).limit(limit).lean();
-    const ids = [...main.map((r) => r._id), ...info.filter((r) => !r.needsInfoSince || new Date(r.needsInfoSince) >= cutoff).map((r) => r._id)].slice(0, limit);
+    const ids: string[] = [];
+    for (const model of this.allRecordModels()) {
+      const main: any[] = await model.find({ kind: 'sale', status: { $in: ['pending', 'failed'] }, nextAttemptAt: { $lte: now }, attempts: { $lt: FBR_MAX_ATTEMPTS }, inFlightAt: null })
+        .select('_id').sort({ nextAttemptAt: 1 }).limit(limit).lean();
+      // needs_info is checked again every hour for 14 days; it does not use up attempts.
+      const info: any[] = await model.find({ kind: 'sale', status: 'needs_info', nextAttemptAt: { $lte: now }, inFlightAt: null })
+        .select('_id needsInfoSince').sort({ nextAttemptAt: 1 }).limit(limit).lean();
+      ids.push(...main.map((r) => String(r._id)), ...info.filter((r) => !r.needsInfoSince || new Date(r.needsInfoSince) >= cutoff).map((r) => String(r._id)));
+    }
+    const run = ids.slice(0, limit);
     let submitted = 0;
-    for (const _id of ids) {
-      const r = await this.attempt(String(_id));
+    for (const id of run) {
+      const r = await this.attempt(id);
       if (r?.status === 'submitted') submitted++;
     }
-    return { attempted: ids.length, submitted };
+    return { attempted: run.length, submitted };
   }
 
   /**
@@ -475,19 +538,30 @@ export class FbrDiService {
    * silently resent.
    */
   async attempt(id: string): Promise<FbrInvoiceDocument | null> {
+    for (const model of this.allRecordModels()) {
+      const done = await this.attemptIn(model, id);
+      if (done !== undefined) return done;
+    }
+    return null;
+  }
+
+  /** undefined = this collection does not hold the record; null = it does but nothing could be done now. */
+  private async attemptIn(model: Model<FbrInvoiceDocument>, id: string): Promise<FbrInvoiceDocument | null | undefined> {
+    const exists = await model.exists({ _id: id });
+    if (!exists) return undefined;
     const now = new Date();
     const lease = { nextAttemptAt: new Date(now.getTime() + 10 * MIN), lastAttemptAt: now };
-    let rec: any = await this.invoiceModel.findOneAndUpdate(
+    let rec: any = await model.findOneAndUpdate(
       { _id: id, kind: 'sale', status: { $in: ['pending', 'failed'] }, nextAttemptAt: { $lte: now }, inFlightAt: null },
       { $set: lease, $inc: { attempts: 1 } },
       { new: true },
     );
     let consumed = true; // this try counts as an attempt
     if (!rec) {
-      rec = await this.invoiceModel.findOneAndUpdate({ _id: id, kind: 'sale', status: 'needs_info', nextAttemptAt: { $lte: now }, inFlightAt: null }, { $set: lease }, { new: true });
+      rec = await model.findOneAndUpdate({ _id: id, kind: 'sale', status: 'needs_info', nextAttemptAt: { $lte: now }, inFlightAt: null }, { $set: lease }, { new: true });
       consumed = false;
       if (rec?.needsInfoSince && new Date(rec.needsInfoSince).getTime() < now.getTime() - FBR_NEEDS_INFO_MAX_DAYS * DAY) {
-        await this.invoiceModel.updateOne({ _id: id }, { $set: { nextAttemptAt: null } }); // 14 days passed: stop checking, a person can still press "Send again"
+        await model.updateOne({ _id: id }, { $set: { nextAttemptAt: null } }); // 14 days passed: stop checking, a person can still press "Send again"
         return null;
       }
     }
@@ -506,10 +580,10 @@ export class FbrDiService {
         });
       }
 
-      const flag = await this.invoiceModel.updateOne({ _id: rec._id, inFlightAt: null }, { $set: { inFlightAt: new Date() } });
+      const flag = await model.updateOne({ _id: rec._id, inFlightAt: null }, { $set: { inFlightAt: new Date() } });
       if (!flag.modifiedCount) return null; // someone else took it
       posting = true;
-      const { result, payload } = await this.client.post(ctx.input, ctx.mode, ctx.token);
+      const { result, payload } = await this.adapter(rec.authority || 'PK_FBR').post(ctx.input, ctx.mode, ctx.token);
       return await this.applyResult(rec, result, payload, ctx, restore);
     } catch (e) {
       this.logger.error(`FBR attempt for ${rec.reference} crashed: ${(e as Error).message}`);
@@ -525,26 +599,26 @@ export class FbrDiService {
     return out;
   }
 
-  private async applyResult(rec: any, r: FbrResult, payload: Record<string, unknown>, ctx: { net: number; tax: number; fx?: number | null }, restore: number) {
+  private async applyResult(rec: any, r: AuthorityResult, payload: Record<string, unknown>, ctx: { net: number; tax: number; fx?: number | null }, restore: number) {
     const common = { payload, netAmount: ctx.net, taxAmount: ctx.tax, ...(ctx.fx ? { fxRatePKRPerUSD: ctx.fx } : {}) };
-    if (r.locked) {
+    const outcome = decideOutcome(r, { attempts: rec.attempts, maxAttempts: FBR_MAX_ATTEMPTS, retryDelayMinutes });
+    if (outcome.kind === 'locked') {
       // Production filing is locked: nothing was sent and this try does not count.
       return this.finish(rec, { nextAttemptAt: new Date(Date.now() + 60 * MIN), attempts: restore, note: PRODUCTION_LOCKED_MESSAGE, errors: [] });
     }
-    if (r.ok && r.invoiceNumber) {
+    if (outcome.kind === 'submitted' && r.invoiceNumber) {
       this.activityLog.log({ storeId: rec.storeId, category: 'platform_plans', action: 'fbr_invoice_submitted', description: `FBR invoice ${r.invoiceNumber} filed for ${rec.reference} (${rec.mode})`, actorRole: 'system', targetId: String(rec._id), targetType: 'fbr_invoice' });
-      return this.finish(rec, { ...common, status: 'submitted', fbrInvoiceNumber: r.invoiceNumber, fbrDated: r.dated, qrText: qrText(r.invoiceNumber), errors: [], authError: false, nextAttemptAt: null });
+      return this.finish(rec, { ...common, status: 'submitted', fbrInvoiceNumber: r.invoiceNumber, fbrDated: r.dated, qrText: this.adapter(rec.authority || 'PK_FBR').qrFor(r.invoiceNumber), errors: [], authError: false, nextAttemptAt: null });
     }
-    if (r.authError) {
+    if (outcome.kind === 'auth_error') {
       await this.problem(rec, 'FBR rejected the security token', r.errors[0]?.message);
       return this.finish(rec, { ...common, status: 'failed', authError: true, errors: r.errors, nextAttemptAt: null });
     }
-    if (r.unknownOutcome) return this.markUnknown(rec, common, r.errors);
-    if (r.retryable) {
+    if (outcome.kind === 'unknown_outcome') return this.markUnknown(rec, common, r.errors);
+    if (outcome.kind === 'retry_later') {
       // Only reached when the request provably never left (DNS / connection refused): nothing can have been filed.
-      const giveUp = rec.attempts >= FBR_MAX_ATTEMPTS;
-      if (giveUp) await this.problem(rec, 'FBR invoice could not be sent after many tries', r.errors[0]?.message);
-      return this.finish(rec, { ...common, status: 'failed', authError: false, errors: r.errors, nextAttemptAt: giveUp ? null : new Date(Date.now() + retryDelayMinutes(rec.attempts) * MIN) });
+      if (outcome.giveUp) await this.problem(rec, 'FBR invoice could not be sent after many tries', r.errors[0]?.message);
+      return this.finish(rec, { ...common, status: 'failed', authError: false, errors: r.errors, nextAttemptAt: outcome.giveUp ? null : new Date(Date.now() + outcome.delayMinutes * MIN) });
     }
     await this.problem(rec, 'FBR rejected an invoice', r.errors[0]?.message);
     return this.finish(rec, { ...common, status: 'rejected', authError: false, errors: r.errors, nextAttemptAt: null });
@@ -552,8 +626,9 @@ export class FbrDiService {
 
   /** Saves the outcome and clears the in-flight mark. */
   private async finish(rec: any, set: Record<string, any>): Promise<FbrInvoiceDocument | null> {
-    await this.invoiceModel.updateOne({ _id: rec._id }, { $set: { ...set, inFlightAt: null } });
-    return this.invoiceModel.findById(rec._id) as any;
+    const model = this.recordsFor(rec.issuer);
+    await model.updateOne({ _id: rec._id }, { $set: { ...set, inFlightAt: null } });
+    return model.findById(rec._id) as any;
   }
 
   /**
@@ -564,7 +639,7 @@ export class FbrDiService {
     try {
       const body = `${rec.reference}: ${message ?? 'see the FBR invoice list for details'}`;
       this.activityLog.log({ storeId: rec.storeId, category: 'platform_plans', action: 'fbr_invoice_problem', description: `${title} — ${body}`, actorRole: 'system', targetId: String(rec._id), targetType: 'fbr_invoice' });
-      const claim = await this.invoiceModel.updateOne({ _id: rec._id, notifiedAt: null }, { $set: { notifiedAt: new Date() } });
+      const claim = await this.recordsFor(rec.issuer).updateOne({ _id: rec._id, notifiedAt: null }, { $set: { notifiedAt: new Date() } });
       if (!claim.modifiedCount) return;
       if (rec.issuer === 'platform') {
         await this.notifications?.notifyAdmins({ type: NOTIFICATION_TYPES.ADMIN_PLATFORM_BILLING_FAILED, title, body, data: { storeId: rec.storeId, link: '/admin/settings' } });
@@ -594,11 +669,24 @@ export class FbrDiService {
     if (s.mode !== rec.mode) return { skip: `Reporting mode changed from ${rec.mode} to ${s.mode} after this invoice was queued.` };
     const token = this.platformToken('sandbox');
     if (!token) return { problems: ['FBR_DI_TOKEN_SANDBOX is not set on the server.'] };
+    // Records that came from the ledger, and every source other than plan invoices, are re-checked against the ledger at send time:
+    // a rule that is no longer verified, or an unknown tax, puts the record back on hold. Nothing is sent on an old decision.
+    let row: any = null;
+    if (rec.viaLedger || rec.source !== 'plan_invoice') {
+      row = this.ledgerModel ? await this.ledgerModel.findOne({ sourceType: rec.source, sourceId: rec.sourceId }).lean() : null;
+      if (!row) return { skip: 'The ledger row for this charge no longer exists.' };
+      if (!row.routing?.eligible) return { heldRule: `No longer eligible for filing (${row.routing?.reason ?? 'unknown'}). It is on hold, not sent.` };
+      if (row.determination?.treatment === 'taxable' && !((row.chargedTaxUSD ?? 0) > 0)) return { heldRule: 'The rule says this supply is taxable but no tax was charged. That mismatch is held, not reported as zero-rated.' };
+    }
+    if (rec.source !== 'plan_invoice') return this.buildLedgerChargeContext(rec, row, s, token);
     const inv: any = await this.db.repositories.platformPlanInvoiceModel.findById(rec.sourceId).lean();
     if (!inv) return { skip: 'The plan invoice no longer exists.' };
     // Also applied to records queued before this rule existed: no verified treatment => on hold, never sent.
-    const treatment = platformInvoiceTreatment(inv);
-    if (!treatment.eligible) return { heldRule: treatment.reason };
+    // A record that came through the ledger was already approved by a VERIFIED rule, so the older Pakistan-only check does not apply to it.
+    if (!rec.viaLedger) {
+      const treatment = platformInvoiceTreatment(inv);
+      if (!treatment.eligible) return { heldRule: treatment.reason };
+    }
     const [plan, store, seller, sf]: any[] = await Promise.all([
       this.db.repositories.platformPlanModel.findById(inv.platformPlanId).select('name').lean(),
       this.db.repositories.storeModel.findById(inv.storeId).select('name taxId taxRegistered businessAddress').lean(),
@@ -616,6 +704,31 @@ export class FbrDiService {
     if (problems.length) {
       return { problems: problems.map((p) => (p.startsWith('Buyer province') || p.startsWith('Buyer address') ? `${p} The seller can add it in Settings → Taxes → FBR digital invoicing.` : p)) };
     }
+    return { input, mode: s.mode as FbrMode, token, net: netPKR, tax: taxPKR, fx };
+  }
+
+  /** Add-on charge, fee bill, POS plan, promotion or store-app fee: the invoice is built from its (eligible) ledger row. */
+  private async buildLedgerChargeContext(rec: any, row: any, s: any, token: string): Promise<any> {
+    if (row.netUSD === null || row.netUSD === undefined || row.chargedTaxUSD === null || row.chargedTaxUSD === undefined) {
+      return { heldRule: 'This charge has no recorded net amount or tax, so an invoice cannot be built from it. It is held, not guessed.' };
+    }
+    const [store, seller, sf]: any[] = await Promise.all([
+      this.db.repositories.storeModel.findById(rec.storeId).select('name taxId taxRegistered businessAddress').lean(),
+      rec.sellerId ? this.db.repositories.sellerModel.findById(rec.sellerId).select('name address').lean() : null,
+      this.storeModel.findOne({ storeId: rec.storeId }).select('legalName province').lean(),
+    ]);
+    const fx = rec.fxRatePKRPerUSD ?? (await this.exchangeRate.convert(1, 'USD', 'PKR').catch(() => null));
+    if (!fx || !(fx > 0)) return { hold: { minutes: 30, note: 'No USD to PKR exchange rate is available yet.' } };
+    const net = Number(row.netUSD); const tax = Number(row.chargedTaxUSD);
+    const rate = (row.taxLines ?? []).find((l: any) => typeof l.ratePercent === 'number')?.ratePercent ?? (net > 0 ? Math.round((tax / net) * 10000) / 100 : 0);
+    const { input, netPKR, taxPKR } = buildPlanInvoiceInput({
+      invoice: { amountUSD: row.totalUSD ?? net + tax, subtotalUSD: net, taxAmountUSD: tax, taxRatePercent: rate, paidAt: row.paidAt },
+      planName: '', description: LEDGER_SOURCE_DESCRIPTION[rec.source] ?? 'Solvexo service charge', fxPKRPerUSD: fx,
+      seller: { ntn: s.identity.ntn, legalName: s.identity.legalName, address: s.identity.address, province: s.province, scenarioId: s.scenarioId, hsCode: s.hsCode, uom: s.uom, saleType: s.saleType },
+      buyer: { name: sf?.legalName || store?.name || seller?.name || '', taxId: store?.taxId, taxRegistered: store?.taxRegistered !== false, address: store?.businessAddress || seller?.address || '', province: sf?.province ?? '' },
+    });
+    const problems = validateInvoiceInput(input);
+    if (problems.length) return { problems: problems.map((p) => (p.startsWith('Buyer province') || p.startsWith('Buyer address') ? `${p} The seller can add it in Settings → Taxes → FBR digital invoicing.` : p)) };
     return { input, mode: s.mode as FbrMode, token, net: netPKR, tax: taxPKR, fx };
   }
 
@@ -662,7 +775,8 @@ export class FbrDiService {
   async retry(id: string, scope: { issuer: 'platform' } | { issuer: 'store'; storeId: string }) {
     const q: Record<string, any> = { _id: id, issuer: scope.issuer, kind: 'sale' };
     if (scope.issuer === 'store') q.storeId = scope.storeId;
-    const rec: any = await this.invoiceModel.findOne(q).lean();
+    const model = this.recordsFor(scope.issuer);
+    const rec: any = await model.findOne(q).lean();
     if (!rec) throw new NotFoundException('Invoice not found');
     const blocked: Record<string, string> = {
       submitted: 'This invoice was already filed with FBR.',
@@ -672,9 +786,9 @@ export class FbrDiService {
     };
     if (blocked[rec.status]) throw new BadRequestException(blocked[rec.status]);
     if (rec.inFlightAt) throw new BadRequestException('This invoice is being sent right now. Wait a moment.');
-    await this.invoiceModel.updateOne({ _id: id }, { $set: { status: 'pending', attempts: 0, nextAttemptAt: new Date(), authError: false } });
+    await model.updateOne({ _id: id }, { $set: { status: 'pending', attempts: 0, nextAttemptAt: new Date(), authError: false } });
     const done = await this.attempt(id);
-    return done ?? (await this.invoiceModel.findById(id).lean());
+    return done ?? (await model.findById(id).lean());
   }
 
   /**
@@ -686,18 +800,19 @@ export class FbrDiService {
   async resolve(id: string, scope: { issuer: 'platform' } | { issuer: 'store'; storeId: string }, input: ResolveInput, actor: { id: string; role: 'admin' | 'seller' }) {
     const q: Record<string, any> = { _id: id, issuer: scope.issuer, kind: 'sale' };
     if (scope.issuer === 'store') q.storeId = scope.storeId;
-    const rec: any = await this.invoiceModel.findOne(q).lean();
+    const model = this.recordsFor(scope.issuer);
+    const rec: any = await model.findOne(q).lean();
     if (!rec) throw new NotFoundException('Invoice not found');
     if (rec.status !== 'unknown_outcome') throw new BadRequestException('Only an invoice whose outcome is unknown can be resolved.');
     if (rec.resolvedAt) throw new BadRequestException('This invoice was already resolved once. It cannot be resolved again.');
     let number = '';
     if (input.action === 'filed') {
       number = String(input.fbrInvoiceNumber ?? '').trim();
-      if (!isValidFbrInvoiceNumber(number)) throw new BadRequestException('Enter the FBR invoice number exactly as the FBR portal shows it (7-digit NTN or 13-digit CNIC, then DI, then 13 digits).');
+      if (!this.adapter(rec.authority || 'PK_FBR').isValidInvoiceNumber(number)) throw new BadRequestException('Enter the FBR invoice number exactly as the FBR portal shows it (7-digit NTN or 13-digit CNIC, then DI, then 13 digits).');
     } else if (input.action !== 'resend') {
       throw new BadRequestException('Unknown action.');
     }
-    const claim = await this.invoiceModel.updateOne({ _id: id, status: 'unknown_outcome', resolvedAt: null }, { $set: { resolvedAt: new Date(), resolvedBy: actor.id, resolution: input.action } });
+    const claim = await model.updateOne({ _id: id, status: 'unknown_outcome', resolvedAt: null }, { $set: { resolvedAt: new Date(), resolvedBy: actor.id, resolution: input.action } });
     if (!claim.modifiedCount) throw new BadRequestException('This invoice was already resolved.');
     this.activityLog.log({
       storeId: rec.storeId, category: 'platform_plans', action: input.action === 'filed' ? 'fbr_invoice_resolved_filed' : 'fbr_invoice_resolved_resend',
@@ -705,12 +820,12 @@ export class FbrDiService {
       actorId: actor.id, actorRole: actor.role, targetId: String(rec._id), targetType: 'fbr_invoice',
     });
     if (input.action === 'filed') {
-      await this.invoiceModel.updateOne({ _id: id }, { $set: { status: 'submitted', fbrInvoiceNumber: number, fbrDated: input.fbrDated?.trim() || null, qrText: qrText(number), errors: [], authError: false, nextAttemptAt: null, inFlightAt: null, note: 'Confirmed by a person from the FBR portal (the number was entered by hand, FBR did not return it to Solvexo).' } });
-      return this.invoiceModel.findById(id).lean();
+      await model.updateOne({ _id: id }, { $set: { status: 'submitted', fbrInvoiceNumber: number, fbrDated: input.fbrDated?.trim() || null, qrText: this.adapter(rec.authority || 'PK_FBR').qrFor(number), errors: [], authError: false, nextAttemptAt: null, inFlightAt: null, note: 'Confirmed by a person from the FBR portal (the number was entered by hand, FBR did not return it to Solvexo).' } });
+      return model.findById(id).lean();
     }
-    await this.invoiceModel.updateOne({ _id: id }, { $set: { status: 'pending', attempts: 0, nextAttemptAt: new Date(), authError: false, note: 'Sent again after a person checked the FBR portal and found no such invoice.' } });
+    await model.updateOne({ _id: id }, { $set: { status: 'pending', attempts: 0, nextAttemptAt: new Date(), authError: false, note: 'Sent again after a person checked the FBR portal and found no such invoice.' } });
     const done = await this.attempt(id);
-    return done ?? (await this.invoiceModel.findById(id).lean());
+    return done ?? (await model.findById(id).lean());
   }
 
   /** Guard used by the seller routes: a store may only touch its own records. */
@@ -721,6 +836,7 @@ export class FbrDiService {
   /** Runs one full cycle (called by the scheduler). */
   async runCycle(): Promise<{ created: number; attempted: number; submitted: number }> {
     const created = (await this.syncPlatform().catch((e) => { this.logger.error(`FBR platform sync: ${e.message}`); return 0; }))
+      + (await this.syncFromLedger().catch((e) => { this.logger.error(`FBR ledger sync: ${e.message}`); return 0; }))
       + (await this.syncStores().catch((e) => { this.logger.error(`FBR store sync: ${e.message}`); return 0; }));
     const { attempted, submitted } = await this.processDue();
     return { created, attempted, submitted };
