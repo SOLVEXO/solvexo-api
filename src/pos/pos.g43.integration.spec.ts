@@ -7,6 +7,7 @@ import { JobLeaseService } from '../common/job-lease/job-lease.service';
 import { JobLeaseSchema } from '../common/job-lease/job-lease.schema';
 import { PosAuditSealService, canonical } from './pos-audit-seal.service';
 import { MongoHarness, seedStore, startMongoHarness } from './testing/mongo-harness';
+import { moneyContractViolations } from './testing/money-contract';
 
 /** G4.3: nightly audit seals — one hash per store per store-day, chained, append-only; verify detects any change. */
 jest.setTimeout(300_000);
@@ -91,6 +92,7 @@ describe('verify detects any change', () => {
   it('untouched → ok', async () => {
     const s = await sealed();
     const v = await seals.verify(s.storeId);
+    expect(moneyContractViolations(v)).toEqual([]);
     expect([v.ok, v.days, v.results.every((x: any) => x.status === 'ok')]).toEqual([true, 3, true]);
   });
   it('an edited record (raw database write, bypassing the app) → changed, naming the collection', async () => {

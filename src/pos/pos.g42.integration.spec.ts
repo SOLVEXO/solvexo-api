@@ -6,6 +6,7 @@ import { PosAuthorizer } from './pos-authorizer.service';
 import { PosPermissionsStoreService } from './pos-permissions-store.service';
 import { PosInventoryService } from './pos-inventory.service';
 import { MongoHarness, seedStore, startMongoHarness } from './testing/mongo-harness';
+import { moneyContractViolations } from './testing/money-contract';
 import { effectiveRule, effectiveTable, evaluate, normalizeOverrides, overrideErrors, PINNED_ACTIONS, POS_ACTIONS, POS_PERMISSIONS, POS_ROLES, resolveLimits } from './pos-permissions.config';
 
 /** G4.2: the permission matrix, editable per store by the owner — invariants, effective table, the authorizer obeying it, versioning, reset, audit. */
@@ -75,6 +76,7 @@ describe('per-store matrix through the service and the authorizer', () => {
     const s = await seedStore(h);
     const M = { employee: tok(s, 'manager') }; const C = { employee: tok(s, 'cashier') };
     const got = (await perms.get(device(s), s.storeId, M)).data;
+    expect(moneyContractViolations(got)).toEqual([]); // the money contract (no amount without its currency) holds here too
     expect([got.version, got.canEdit, got.actions.length]).toEqual([0, false, POS_ACTIONS.length]);
     expect(await code(perms.get(device(s), s.storeId, C))).toBe('POS_ACTION_FORBIDDEN');
     expect(await code(perms.update(device(s), s.storeId, { changes: { 'inventory.writeoff': { roles: ['cashier', 'manager', 'owner'] } } }, M))).toBe('POS_ACTION_FORBIDDEN');

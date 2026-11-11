@@ -6,6 +6,7 @@ import { PosService } from './pos.service';
 import { PosAuthorizer } from './pos-authorizer.service';
 import { ALERT_DEFAULTS, PosStoreSettingsService, RECEIPT_DEFAULTS } from './pos-store-settings.service';
 import { MongoHarness, seedStore, startMongoHarness } from './testing/mongo-harness';
+import { moneyContractViolations } from './testing/money-contract';
 
 /** G4.4: settings hub — receipt designer, in-app alerts, security, sync status (owner edits, managers read, audited). */
 jest.setTimeout(300_000);
@@ -30,6 +31,7 @@ it('defaults = today\'s behaviour; a manager reads (cannot edit); a cashier cann
   const s = await seedStore(h);
   const M = { employee: tok(s, 'manager') };
   const g = (await st.get(device(s), s.storeId, M)).data;
+  expect(moneyContractViolations(g)).toEqual([]);
   expect(g.receipt).toMatchObject({ ...RECEIPT_DEFAULTS, header: null, footer: null });
   expect(g.alerts).toEqual(ALERT_DEFAULTS);
   expect([g.security.autoLockMinutes, g.canEdit]).toEqual([5, false]);
@@ -59,6 +61,7 @@ it('sync status: server time, store zone, devices with last seen, the latest aud
   await r.posDeviceModel.collection.insertMany([{ storeId: s.storeId, name: 'Front till', platform: 'ios', lastSeenAt: new Date(), revokedAt: null }, { storeId: s.storeId, name: 'Old', revokedAt: new Date() }]);
   await r.posAuditSealModel.create({ storeId: s.storeId, day: '2026-11-01', timeZone: 'UTC', from: new Date('2026-11-01'), to: new Date('2026-11-02'), algorithm: 'sha256-v1', parts: {}, count: 4, prevHash: null, hash: 'h' });
   const d = (await st.syncStatus(device(s), s.storeId, { employee: tok(s, 'manager') })).data;
+  expect(moneyContractViolations(d)).toEqual([]);
   expect(d.devices.map((x: any) => x.name)).toEqual(['Front till']);
   expect(d.lastSeal).toMatchObject({ day: '2026-11-01', records: 4 });
   expect(d.timeZone).toBe('UTC');
