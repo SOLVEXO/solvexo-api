@@ -153,6 +153,18 @@ export class PosTeamService {
     return done(ev.toObject(), false);
   }
 
+  // ── G5.1: the team list a TILL can read ───────────────────────────────────────
+  /**
+   * The store's team members for the till (the owner-session `GET /api/pos/employees` refuses device / PIN tokens): id, name, role, status and the e-mail
+   * the PIN login uses (clocking someone else asks THAT person for their PIN, which is checked by e-mail + PIN). Any PIN-signed-in member; no PINs, no
+   * personal details beyond that.
+   */
+  async members(req: Req, storeId: string, t: Tokens) {
+    await this.gate(req, storeId, 'team.attendance.own', t);
+    const rows: any[] = await this.r.employeeModel.find({ storeId, isDelete: { $ne: true } }).select('name email role status').sort({ name: 1 }).lean();
+    return { success: true, data: { members: rows.map((e) => ({ id: String(e._id), name: e.name, email: e.email ?? null, role: e.role, status: e.status ?? 'active' })) } };
+  }
+
   // ── G5.1: staff profile ───────────────────────────────────────────────────────
   /**
    * One team member at a glance: role, status, last PIN login (from the audit log), clocked in now, and their sales today / last 7 / last 30 store days

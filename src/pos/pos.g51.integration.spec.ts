@@ -171,6 +171,15 @@ describe('G5.1 · small gaps', () => {
     expect(hidden.data.productsSupplied[0].orderedQty).toBe(15);
   });
 
+  it('team members readable from a till (PIN session): names, roles, e-mails — no PINs; needs a PIN session', async () => {
+    const w = await world();
+    const d: any = (await team.members(device(w.s, w.C), w.s.storeId, { employee: w.C })).data;
+    expect(d.members.map((m: any) => m.name)).toContain('Sana (cashier 2)');
+    expect(JSON.stringify(d)).not.toMatch(/"pin"/);
+    expect(d.members.find((m: any) => m.id === w.other)).toMatchObject({ email: 'sana@e2e.test', role: 'cashier', status: 'active' });
+    expect(await code(team.members(device(w.s), w.s.storeId, {}))).toBe('POS_PIN_REQUIRED');
+  });
+
   it('staff profile: last PIN login, clocked in, sales today / 7 / 30 days in minor units; a cashier sees only themself', async () => {
     const w = await world();
     await r.posAuditLogModel.create([{ storeId: w.s.storeId, employeeId: w.s.cashierId, action: 'pin_login', targetId: w.s.cashierId, targetType: 'employee' }]);

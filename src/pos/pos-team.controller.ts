@@ -29,6 +29,10 @@ export class PosTeamController {
   // G5.4: `employeeId` in the body clocks ANOTHER team member — needs `x-pos-approver-token` = that member's PIN session or a manager's
   clock(@Req() req: any, @Param('storeId') s: string, @Body() body: any, @Headers('x-pos-employee-token') e?: string, @Headers('x-pos-approver-token') ap?: string) { return this.svc.clock(req, s, body, { employee: e, approver: ap }); }
 
+  // G5.1: the team list a till can read (device + PIN session) — the clock-someone-else picker, Team members, the Orders cashier filter
+  @UseGuards(PosAuthGuard, RolesGuard) @Roles('seller') @Get('members/:storeId')
+  members(@Req() req: any, @Param('storeId') s: string, @Headers('x-pos-employee-token') e?: string) { return this.svc.members(req, s, this.t(e)); }
+
   // G5.1: a team member's profile (last login, clocked in, sales today / 7 / 30 days)
   @UseGuards(PosAuthGuard, RolesGuard) @Roles('seller') @Get('profile/:storeId/:employeeId')
   profile(@Req() req: any, @Param('storeId') s: string, @Param('employeeId') id: string, @Headers('x-pos-employee-token') e?: string) { return this.svc.profile(req, s, id, this.t(e)); }
