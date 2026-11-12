@@ -11,6 +11,13 @@
 export type PosTier = 'owner' | 'manager-with-limit' | 'cashier' | 'public';
 
 export const POS_ROUTE_TIERS: Readonly<Record<string, PosTier>> = {
+  // G5.2: the product page (cost stripped for managers when hidden) and editing an existing product
+  'GET /api/pos/catalog-admin/products/:storeId/:productId': 'cashier',
+  'PATCH /api/pos/catalog-admin/products/:storeId/:productId': 'manager-with-limit',
+  'PATCH /api/pos/catalog-admin/products/:storeId/:productId/variants/:variantId': 'manager-with-limit',
+  'POST /api/pos/catalog-admin/products/:storeId/:productId/images': 'manager-with-limit',
+  'POST /api/pos/catalog-admin/products/:storeId/:productId/images/remove': 'manager-with-limit',
+  'POST /api/pos/catalog-admin/products/:storeId/:productId/images/primary': 'manager-with-limit',
   'POST /api/pos/employees/:storeId/:employeeId/unlock-pin': 'owner', // from main: the owner unlocks a locked-out PIN (owner session only)
   // public receipt links: no auth by design — trust is the unguessable token / client key; rate-limited, one 404 for anything unknown
   'GET /r/:token': 'public',

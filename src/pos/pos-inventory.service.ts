@@ -68,7 +68,7 @@ export class PosInventoryService {
     const costMinor = v.costPriceMinor ?? (v.costPrice != null ? toMinor(v.costPrice, exp) : null);
     return {
       variantId: String(v._id), productId: v.productId, productName: p?.name ?? '', image: p?.images?.[0] ?? null, sku: v.sku ?? null, barcode: v.barcode ?? null, options: v.options ?? [],
-      stock, committed: v.committedStock ?? 0, damaged: v.damagedStock ?? 0, unlimited: !!v.unlimitedStock, trackLots: !!v.trackLots, reorderPoint: reorder,
+      stock, committed: v.committedStock ?? 0, damaged: v.damagedStock ?? 0, unlimited: !!v.unlimitedStock, trackLots: !!v.trackLots, trackSerials: !!v.trackSerials, reorderPoint: reorder,
       expiredUnits: v.trackLots ? expiredUnits(v) : 0, nextExpiryAt: v.trackLots ? (v.expiryBuckets ?? []).find((b: any) => b?.at && new Date(b.at).getTime() > Date.now())?.at ?? null : null,
       out: !v.unlimitedStock && stock <= 0, low: !v.unlimitedStock && reorder > 0 && stock <= reorder,
       ...(cost ? { costMinor, valueMinor: costMinor != null ? costMinor * stock : null } : {}),

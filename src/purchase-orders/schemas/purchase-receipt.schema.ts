@@ -20,6 +20,8 @@ export class PurchaseReceiptLine {
   @Prop({ type: 'MinorMoney', required: true }) lineTotalMinor: number;
   @Prop({ type: String, default: null }) lotId: string | null;
   @Prop({ type: String, default: null }) lotNumber: string | null;
+  /** G5.2 (optional): the serial numbers received on this line (serial-tracked items), good units first */
+  @Prop({ type: [String], default: undefined }) serialNumbers?: string[];
   @Prop({ type: Date, default: null }) expiryDate: Date | null;
   /** how many of the good units have gone back to the supplier since (receipts stay append-only; the return documents hold the detail) — derived on read, never stored */
 }
