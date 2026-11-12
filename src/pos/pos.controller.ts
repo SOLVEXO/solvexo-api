@@ -473,8 +473,10 @@ export class PosController {
   @UseGuards(PosAuthGuard, RolesGuard)
   @Roles('seller')
   @Get('sales/:saleId')
-  getSaleById(@Req() req: any, @Param('saleId') saleId: string) {
-    return this.posService.getSaleById(req.user.userId, saleId);
+  async getSaleById(@Req() req: any, @Param('saleId') saleId: string) {
+    const res: any = await this.posService.getSaleById(req.user.userId, saleId);
+    await this.fiscal?.overlaySale(res?.data); // G5.5: a reprint shows the confirmed fiscal block (same `invoice.fiscal` shape)
+    return res;
   }
 
   @UseGuards(PosAuthGuard, RolesGuard, PosEntitlementGuard)

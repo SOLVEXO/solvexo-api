@@ -49,13 +49,25 @@ export class PosFiscalService {
     return stored ?? { status: 'not_enabled', externalInvoiceNumber: null, qrPayload: null, attempts: 0, lastError: null };
   }
 
+  /** A sale read: its invoice's `fiscal` field shows the latest fiscal attempt (unchanged when the store does not fiscalise and nothing was sent). */
+  async overlaySale(sale: any): Promise<void> {
+    try {
+      if (!sale?.invoice || !sale?._id) return;
+      const b = (await this.blocks([{ type: 'invoice', id: String(sale._id) }])).get(`invoice:${sale._id}`);
+      const on = b ? true : await this.enabled(String(sale.storeId));
+      if (b || on) sale.invoice = { ...sale.invoice, fiscal: PosFiscalService.view(sale.invoice.fiscal, b, on) };
+    } catch (e: any) { this.log.warn(`fiscal overlay: ${e?.message ?? e}`); }
+  }
+
   /** After a sale / refund / void response: fiscalise what it produced. Never throws (the sale stands; a failure stays pending for the sweep). */
   async afterSaleResponse(storeId: string | undefined, res: any): Promise<void> {
     try {
       const d = res?.data;
       const saleId = d?._id ? String(d._id) : d?.id ? String(d.id) : d?.saleId ? String(d.saleId) : null;
       if (!storeId || !saleId || !(await this.enabled(storeId))) return;
-      await this.fiscaliseSale(storeId, saleId);
+      const b = await this.fiscaliseSale(storeId, saleId);
+      // the response's invoice shows the outcome in its existing `fiscal` field (same shape) so the till prints the number / "Fiscal pending" at once
+      if (d?.invoice) d.invoice.fiscal = PosFiscalService.view(d.invoice.fiscal, b ?? undefined, true);
       if (d?.creditNote?.id) await this.fiscaliseCreditNote(storeId, String(d.creditNote.id));
     } catch (e: any) { this.log.warn(`fiscalise after response: ${e?.message ?? e}`); }
   }

@@ -124,3 +124,16 @@ describe('G5.5 · fiscal (mock provider)', () => {
     expect(fiscalProviderFor({ NODE_ENV: 'production', FISCAL_PROVIDER: 'mock' } as any)).toBeInstanceOf(NotConfiguredFiscalProvider);
   });
 });
+
+describe('G5.5 · sale reads and the sale response carry the fiscal block', () => {
+  it('createSale response (after fiscalising) and a later read show the confirmed number in invoice.fiscal', async () => {
+    const x = await fresh(); await r.posSettingsModel.updateOne({ storeId: x.s.storeId }, { $set: { 'connectorPrefs.fiscal': true } }, { upsert: true });
+    const f = new PosFiscalService({ repositories: r } as any, new MockFiscalProvider({}));
+    const res: any = await sell(x);
+    await f.afterSaleResponse(x.s.storeId, res);
+    expect(res.data.invoice.fiscal).toMatchObject({ status: 'confirmed', externalInvoiceNumber: `MOCK-FBR-I-${res.data.invoice.number}` });
+    const read: any = await x.svc.getSaleById(x.s.sellerId, String(res.data._id));
+    await f.overlaySale(read.data);
+    expect(read.data.invoice.fiscal.status).toBe('confirmed');
+  });
+});
