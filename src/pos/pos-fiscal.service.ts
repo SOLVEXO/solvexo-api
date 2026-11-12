@@ -1,0 +1,127 @@
+/* eslint-disable prettier/prettier */
+import { Injectable, Logger, Optional } from '@nestjs/common';
+import { Cron } from '@nestjs/schedule';
+import { DatabaseService } from '@/database/databaseservice';
+import { toMinor } from '@/common/money-minor.util';
+import { FiscalDocumentInput, FiscalProvider, fiscalProviderFor } from './connectors/fiscal';
+
+export const FISCAL_MAX_ATTEMPTS = 20;
+export type FiscalBlock = { status: 'not_enabled' | 'pending' | 'confirmed' | 'rejected'; fiscalInvoiceNumber: string | null; qrPayload: string | null; attempts: number; lastError: string | null; testMode?: boolean };
+
+/**
+ * G5.5 — fiscalisation (behind `connectors.fiscal`, OFF by default). After a sale with a tax invoice, a refund or a void (which makes a credit note), the
+ * document is sent to the fiscal provider; each attempt is an append-only `posfiscalrecords` row + an audit row, in one transaction. A provider outage
+ * leaves it `pending`; the sweep retries (and also picks up offline sales when they sync, and anything a crash left behind). Our numbers never change.
+ */
+@Injectable()
+export class PosFiscalService {
+  private readonly log = new Logger('PosFiscal');
+  private provider: FiscalProvider | null;
+  constructor(private readonly db: DatabaseService, @Optional() provider?: FiscalProvider) { this.provider = provider ?? fiscalProviderFor(); }
+  private get r(): any { return this.db.repositories; }
+  setProvider(p: FiscalProvider | null) { this.provider = p; }
+
+  async enabled(storeId: string): Promise<boolean> {
+    const s: any = await this.r.posSettingsModel.findOne({ storeId }).select('connectorPrefs').lean();
+    return s?.connectorPrefs?.fiscal === true;
+  }
+
+  /** The fiscal block of each document (latest attempt), keyed `invoice:<saleId>` / `credit_note:<id>`. */
+  async blocks(docs: Array<{ type: 'invoice' | 'credit_note'; id: string }>): Promise<Map<string, FiscalBlock>> {
+    const out = new Map<string, FiscalBlock>();
+    if (!docs.length || !this.r.posFiscalRecordModel) return out;
+    const rows: any[] = await this.r.posFiscalRecordModel.aggregate([
+      { $match: { $or: docs.map((d) => ({ documentType: d.type, documentId: d.id })) } },
+      { $sort: { attempt: -1 } },
+      { $group: { _id: { t: '$documentType', d: '$documentId' }, last: { $first: '$$ROOT' }, attempts: { $sum: 1 } } },
+    ]);
+    for (const r of rows) out.set(`${r._id.t}:${r._id.d}`, { status: r.last.status, fiscalInvoiceNumber: r.last.fiscalInvoiceNumber ?? null, qrPayload: r.last.qrPayload ?? null, attempts: r.attempts, lastError: r.last.error ?? null, testMode: !!r.last.testMode });
+    return out;
+  }
+
+  /**
+   * The `fiscal` block of a document as responses carry it (same shape as the stored placeholder: status / externalInvoiceNumber / qrPayload / attempts /
+   * lastError, + testMode). With the store switch on and no attempt yet it reads `pending` (the till prints "Fiscal pending").
+   */
+  static view(stored: any, block: FiscalBlock | undefined, storeOn: boolean) {
+    if (block) return { status: block.status, externalInvoiceNumber: block.fiscalInvoiceNumber, qrPayload: block.qrPayload, attempts: block.attempts, lastError: block.lastError, testMode: !!block.testMode };
+    if (storeOn) return { status: 'pending', externalInvoiceNumber: null, qrPayload: null, attempts: 0, lastError: null, testMode: false };
+    return stored ?? { status: 'not_enabled', externalInvoiceNumber: null, qrPayload: null, attempts: 0, lastError: null };
+  }
+
+  /** After a sale / refund / void response: fiscalise what it produced. Never throws (the sale stands; a failure stays pending for the sweep). */
+  async afterSaleResponse(storeId: string | undefined, res: any): Promise<void> {
+    try {
+      const d = res?.data;
+      const saleId = d?._id ? String(d._id) : d?.id ? String(d.id) : d?.saleId ? String(d.saleId) : null;
+      if (!storeId || !saleId || !(await this.enabled(storeId))) return;
+      await this.fiscaliseSale(storeId, saleId);
+      if (d?.creditNote?.id) await this.fiscaliseCreditNote(storeId, String(d.creditNote.id));
+    } catch (e: any) { this.log.warn(`fiscalise after response: ${e?.message ?? e}`); }
+  }
+
+  async fiscaliseSale(storeId: string, saleId: string): Promise<FiscalBlock | null> {
+    const sale: any = await this.r.saleModel.findOne({ _id: saleId, storeId }).lean();
+    if (!sale?.invoice?.number) return null;
+    const exp = sale.currencyExponent ?? 2;
+    return this.attempt(storeId, 'invoice', saleId, saleId, {
+      storeId, documentType: 'invoice', documentNumber: sale.invoice.number, againstInvoiceNumber: null, issuedAt: new Date(sale.invoice.issuedAt), currency: sale.currency, currencyExponent: exp,
+      netMinor: (sale.items ?? []).reduce((n: number, i: any) => n + (i.netMinor ?? 0), 0), taxMinor: sale.taxMinor ?? toMinor(sale.tax ?? 0, exp), totalMinor: sale.totalMinor ?? toMinor(sale.total ?? 0, exp),
+      seller: sale.invoice.seller ? { ntn: sale.invoice.seller.ntn ?? null, strn: sale.invoice.seller.strn ?? null, legalName: sale.invoice.seller.legalName ?? null } : null,
+      lines: (sale.items ?? []).map((i: any) => ({ name: i.name, qty: i.qty, hsCode: i.hsCode ?? null, netMinor: i.netMinor ?? 0, taxMinor: i.taxMinor ?? 0 })),
+    });
+  }
+
+  async fiscaliseCreditNote(storeId: string, creditNoteId: string): Promise<FiscalBlock | null> {
+    const cn: any = await this.r.posCreditNoteModel.findOne({ _id: creditNoteId, storeId }).lean();
+    if (!cn) return null;
+    return this.attempt(storeId, 'credit_note', String(cn._id), String(cn.saleId), {
+      storeId, documentType: 'credit_note', documentNumber: cn.number, againstInvoiceNumber: cn.invoiceNumber ?? null, issuedAt: new Date(cn.createdAt), currency: cn.currency, currencyExponent: cn.currencyExponent,
+      netMinor: cn.netMinor ?? 0, taxMinor: cn.taxMinor ?? 0, totalMinor: cn.totalMinor ?? 0,
+      seller: cn.seller ? { ntn: cn.seller.ntn ?? null, strn: cn.seller.strn ?? null, legalName: cn.seller.legalName ?? null } : null,
+      lines: (cn.lines ?? []).map((l: any) => ({ name: l.name, qty: l.qty, hsCode: l.hsCode ?? null, netMinor: l.netMinor ?? 0, taxMinor: l.taxMinor ?? 0 })),
+    });
+  }
+
+  private async attempt(storeId: string, type: 'invoice' | 'credit_note', documentId: string, saleId: string, input: FiscalDocumentInput): Promise<FiscalBlock | null> {
+    const prev = (await this.blocks([{ type, id: documentId }])).get(`${type}:${documentId}`);
+    if (prev && (prev.status === 'confirmed' || prev.status === 'rejected' || prev.attempts >= FISCAL_MAX_ATTEMPTS)) return prev;
+    const p = this.provider;
+    let res: { status: 'confirmed' | 'rejected' | 'pending'; fiscalInvoiceNumber: string | null; qrPayload: string | null; message?: string };
+    if (!p) res = { status: 'pending', fiscalInvoiceNumber: null, qrPayload: null, message: 'No fiscal provider is configured' };
+    else { try { res = await p.fiscalise(input); } catch (e: any) { res = { status: 'pending', fiscalInvoiceNumber: null, qrPayload: null, message: String(e?.message ?? e).slice(0, 300) }; } }
+    const attempt = (prev?.attempts ?? 0) + 1;
+    try {
+      await this.r.posFiscalRecordModel.db.transaction(async (tx: any) => {
+        await this.r.posFiscalRecordModel.create([{ storeId, documentType: type, documentId, saleId, documentNumber: input.documentNumber, attempt, status: res.status, fiscalInvoiceNumber: res.fiscalInvoiceNumber, qrPayload: res.qrPayload, error: res.status === 'confirmed' ? null : res.message ?? null, providerKey: p?.key ?? 'none', testMode: p?.testMode ?? false }], { session: tx });
+        await this.r.posAuditLogModel.create([{ storeId, employeeId: null, action: `fiscal_${res.status}`, targetId: documentId, targetType: type === 'invoice' ? 'sale' : 'credit_note', metadata: { documentNumber: input.documentNumber, attempt, fiscalInvoiceNumber: res.fiscalInvoiceNumber, provider: p?.key ?? null, testMode: p?.testMode ?? false, error: res.status === 'confirmed' ? null : res.message ?? null } }], { session: tx });
+      });
+    } catch (e: any) { if (e?.code !== 11000) throw e; } // two workers raced on the same attempt number: the other one recorded it
+    return (await this.blocks([{ type, id: documentId }])).get(`${type}:${documentId}`) ?? null;
+  }
+
+  /** The sweep: pending documents again, plus fiscal-enabled stores' recent invoices / credit notes that have no record yet (offline sales that synced, a crash). */
+  @Cron(process.env.POS_FISCAL_SWEEP_CRON || '*/2 * * * *')
+  async sweep(limit = 50): Promise<number> {
+    if (!this.r.posFiscalRecordModel) return 0;
+    const stores: string[] = (await this.r.posSettingsModel.find({ 'connectorPrefs.fiscal': true }).select('storeId').lean()).map((s: any) => s.storeId);
+    if (!stores.length) return 0;
+    let done = 0;
+    const since = new Date(Date.now() - 7 * 86_400_000);
+    for (const storeId of stores) {
+      const sales: any[] = await this.r.saleModel.find({ storeId, 'invoice.number': { $type: 'string' }, createdAt: { $gte: since } }).select('_id').sort({ createdAt: -1 }).limit(500).lean();
+      const cns: any[] = await this.r.posCreditNoteModel.find({ storeId, createdAt: { $gte: since } }).select('_id').sort({ createdAt: -1 }).limit(500).lean();
+      const docs = [...sales.map((s) => ({ type: 'invoice' as const, id: String(s._id) })), ...cns.map((c) => ({ type: 'credit_note' as const, id: String(c._id) }))];
+      const b = await this.blocks(docs);
+      for (const d of docs) {
+        if (done >= limit) return done;
+        const cur = b.get(`${d.type}:${d.id}`);
+        if (cur && cur.status !== 'pending') continue;
+        if (cur && cur.attempts >= FISCAL_MAX_ATTEMPTS) continue;
+        if (d.type === 'invoice') await this.fiscaliseSale(storeId, d.id); else await this.fiscaliseCreditNote(storeId, d.id);
+        done++;
+      }
+    }
+    return done;
+  }
+}

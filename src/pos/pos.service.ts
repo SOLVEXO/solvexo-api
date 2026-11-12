@@ -836,6 +836,12 @@ export class PosService {
           totalSalesMinor: (session as any).totalSalesMinor ?? toMinor((session as any).totalSales || 0, exp),
           refundsTotalMinor: toMinor(refundsTotal, exp),
           byPaymentMethod: Object.fromEntries(Object.entries(byPayment).map(([k, v]) => [k, { ...v, totalMinor: toMinor(v.total, exp) }])), // G1b minor twin per tender
+          // G5.4 (additive): card payments taken on a separate bank terminal, as their own line for the close (also inside byPaymentMethod.card)
+          cardExternalTerminal: (() => {
+            const lines = sales.flatMap((s: any) => (s.payments ?? []).filter((p: any) => p.method === 'card' && p.terminal?.approvalCode));
+            const totalMinor = lines.reduce((n: number, p: any) => n + (p.amountMinor ?? toMinor(p.amount ?? 0, exp)), 0);
+            return { count: lines.length, totalMinor, approvalCodes: lines.map((p: any) => p.terminal.approvalCode), terminals: [...new Set(lines.map((p: any) => p.terminal.label).filter(Boolean))] };
+          })(),
           cashFlow: {
             openingCash: (session as any).openingCash,
             cashSales: (session as any).cashSales,
@@ -1109,6 +1115,8 @@ export class PosService {
     let settled = isHeld
       ? null
       : settlePayments(totals.minor.total, money.exp, { payments: dto.payments, paymentMethod: dto.paymentMethod, amountTendered: dto.amountTendered, reference: dto.paymentReference }, { allowShort: off.isOffline });
+    // G5.4: "card (external terminal)" on → every card line needs the approval code from the bank terminal's slip (live sales; an offline replay is flagged, never refused)
+    if (settled) await this.assertCardApprovals(dto.storeId, settled.lines, off.isOffline);
     // G2.3: every digital (QR) line must point at a CONFIRMED, unused payment of this shift for exactly its amount — before stock is touched
     let digital: Array<{ intentId: string; providerRef: string }> = [];
     if (settled) {
@@ -1355,6 +1363,7 @@ export class PosService {
     assertClientTotal(dto.clientTotal, totals);
     if (!(dto.payments?.length) && isDigitalTender(String(dto.paymentMethod))) throw moneyError('QR_REQUIRES_PAYMENT_LINES', 'A Raast QR sale must send its payment as a payment line carrying the confirmed payment (payments[].intentId)');
     let settled = settlePayments(totals.minor.total, money.exp, { payments: dto.payments, paymentMethod: dto.paymentMethod, amountTendered: dto.amountTendered, reference: dto.paymentReference });
+    await this.assertCardApprovals(String((sale as any).storeId), settled.lines, false); // G5.4
     const verifiedDigital = await this.verifyDigitalLines(String((sale as any).storeId), String((sale as any).sessionId), settled.lines, money, false);
     settled = { ...settled, lines: verifiedDigital.lines };
     const digital = verifiedDigital.digital;
@@ -1678,6 +1687,9 @@ export class PosService {
       const existingCredit = keep.filter((t: any) => t.method === 'store_credit').reduce((s2: number, t: any) => s2 + toMinor(t.amount, exp), 0);
       tenders = [...keep.filter((t: any) => t.method !== 'store_credit'), { method: 'store_credit', amount: fromMinor(existingCredit + convertMinor, exp) }];
     }
+    // G5.4: a card refund goes back as "card (external terminal)" referencing the original slip's approval code(s)
+    const cardCodes = ((sale as any).payments ?? []).filter((p: any) => p.method === 'card' && p.terminal?.approvalCode).map((p: any) => p.terminal.approvalCode as string);
+    if (cardCodes.length) tenders = tenders.map((t: any) => (t.method === 'card' ? { ...t, approvalCodeRef: cardCodes.join(', '), externalTerminal: true } : t));
     const creditBackMinor = tenders.filter((t: any) => t.method === 'store_credit').reduce((s2: number, t: any) => s2 + toMinor(t.amount, exp), 0);
     if (creditBackMinor > 0) {
       if (!this.customers) throw businessConflict('STORE_CREDIT_NOT_ENABLED', 'Store credit is not switched on');
@@ -2615,7 +2627,7 @@ export class PosService {
       kind: a.kind, scope: a.scope, refundId: a.refundId, reasonCode: a.reason.code, reason: a.reason.note,
       lines, grossMinor: sum('grossMinor'), discountMinor: sum('discountMinor'), netMinor: sum('netMinor'), taxMinor: sum('taxMinor'), totalMinor: sum('totalMinor'),
       currency: a.currency, currencyExponent: a.exp,
-      tenders: a.tenders.map((t) => ({ method: t.method, amountMinor: t.amountMinor ?? toMinor(t.amount ?? 0, a.exp) })),
+      tenders: a.tenders.map((t: any) => ({ method: t.method, amountMinor: t.amountMinor ?? toMinor(t.amount ?? 0, a.exp), ...(t.approvalCodeRef ? { approvalCodeRef: t.approvalCodeRef } : {}) })),
       seller: a.sale.invoice?.seller ?? (await this.sellerSnapshot(String(a.sale.storeId), tx)), customerName: a.sale.customerName ?? null,
       employeeId: a.actorId, approvedBy: a.approvedBy, approvalReasons: a.approvalReasons,
       // the REFUNDING till / shift (whose drawer paid) …
@@ -2835,7 +2847,7 @@ export class PosService {
   /** One immutable PosPayment per tender line. (saleId, lineNo) and (store, idempotencyKey, lineNo) are unique → a retry cannot add a second row. */
   private async recordPayments(
     sale: any,
-    lines: Array<{ method: string; amount: number; tendered?: number | null; reference?: string | null; intentId?: string | null }>,
+    lines: Array<{ method: string; amount: number; tendered?: number | null; reference?: string | null; intentId?: string | null; terminal?: { approvalCode: string | null; last4: string | null; label: string | null } }>,
     ctx: { sessionId: string | null; registerId: string | null; shiftId: string | null; employeeId: string | null },
     tx?: ClientSession,
   ): Promise<void> {
@@ -2847,7 +2859,7 @@ export class PosService {
         tender: l.method, amount: l.amount, tendered: l.tendered ?? null,
         amountMinor: toMinor(l.amount, sale.currencyExponent ?? 2), ...(l.tendered !== undefined && l.tendered !== null ? { tenderedMinor: toMinor(l.tendered, sale.currencyExponent ?? 2) } : {}),
         currency: sale.currency ?? null, currencyExponent: sale.currencyExponent ?? null,
-        reference: l.reference ?? null, status: this.paymentStatus(l.method), confirmationSource: isDigitalTender(l.method) ? 'raast' : null, confirmedAt: isDigitalTender(l.method) ? new Date() : null,
+        reference: l.reference ?? null, ...(l.terminal ? { terminal: l.terminal } : {}), status: this.paymentStatus(l.method), confirmationSource: isDigitalTender(l.method) ? 'raast' : l.terminal?.approvalCode ? 'external_terminal' : null, confirmedAt: isDigitalTender(l.method) ? new Date() : null,
         paymentIntentId: isDigitalTender(l.method) ? (l.intentId ?? null) : null,
         storeId: sale.storeId, registerId: ctx.registerId, sessionId: ctx.sessionId, shiftId: ctx.shiftId, deviceId, employeeId: ctx.employeeId,
         ...(sale.idempotencyKey ? { idempotencyKey: sale.idempotencyKey } : {}),
@@ -3422,6 +3434,24 @@ export class PosService {
   }
 
   // ── POS SETTINGS ──────────────────────────────────────────────────────────
+
+  /** G5.5: the store a credit note belongs to (for fiscalising it after a refund). */
+  async creditNoteStore(creditNoteId: string): Promise<string | null> {
+    if (!Types.ObjectId.isValid(creditNoteId)) return null;
+    const cn: any = await this.r.posCreditNoteModel.findById(creditNoteId).select('storeId').lean();
+    return cn ? String(cn.storeId) : null;
+  }
+
+  /** G5.4: with the store's "card (external terminal)" switched on, a live card line must carry the terminal slip's approval code. */
+  private async assertCardApprovals(storeId: string, lines: Array<{ method: string; terminal?: { approvalCode: string | null } }>, offline: boolean) {
+    if (!lines.some((l) => l.method === 'card')) return;
+    const s: any = await this.r.posSettingsModel.findOne({ storeId }).select('connectorPrefs').lean();
+    if (s?.connectorPrefs?.cardExternalTerminal !== true) return;
+    const missing = lines.filter((l) => l.method === 'card' && !l.terminal?.approvalCode).length;
+    if (!missing) return;
+    if (offline) { await this.writeAuditLog({ storeId, employeeId: null, action: 'card_approval_missing_offline', targetId: null, targetType: 'sale', metadata: { cardLines: missing } }); return; }
+    throw moneyError('CARD_APPROVAL_REQUIRED', 'Enter the approval code from the card terminal slip');
+  }
 
   /** G4.9: `loyaltyBalanceAfterPoints` on the sale — the customer's points after this sale, read from the ledger inside the sale's transaction. */
   private async stampPointsAfter(tx: any, sale: any, storeId: string, ledgerId: string, known?: number) {

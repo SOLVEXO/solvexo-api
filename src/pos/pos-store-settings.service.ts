@@ -15,7 +15,7 @@ export const ALERT_DEFAULTS = { lowStock: true, expiringLots: true, largeRefund:
 /** Till security (the PIN and its lock-out rules stay as built; these are the knobs the owner turns). */
 export const SECURITY_DEFAULTS = { autoLockMinutes: 5, lockOnBackground: false, requirePinForReprint: false, hideCostsFromManagers: false };
 /** G5.3–G5.5 — provider-dependent features (pending-decision pattern): every one OFF by default; the admin panel / owner turns them on. */
-export const CONNECTOR_DEFAULTS = { emailReceipts: false, smsReceipts: false, cardExternalTerminal: false, cardGateway: false, fiscal: false };
+export const CONNECTOR_DEFAULTS = { emailReceipts: false, smsReceipts: false, cardExternalTerminal: false, cardGateway: false, fiscal: false, raastDisabled: false };
 /** G5.3: the printed receipt QR's lifetime is at least 30 days. */
 export const RECEIPT_LINK_MIN_DAYS = 30;
 export function receiptLinkDays(s: { receiptLinkDays?: number | null; returnApprovalAfterDays?: number | null } | null | undefined): number {

@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { ForbiddenException, Injectable, NotFoundException, Optional } from '@nestjs/common';
+import { PosFiscalService } from './pos-fiscal.service';
 import { randomBytes } from 'crypto';
 import { DatabaseService } from '@/database/databaseservice';
 import { RECEIPT_PUBLIC_ORIGIN } from '@/common/api-origin';
@@ -19,7 +20,7 @@ const METHOD_LABEL: Record<string, string> = { cash: 'Cash', card: 'Card', other
  */
 @Injectable()
 export class PosReceiptService {
-  constructor(private readonly db: DatabaseService, private readonly pos: PosService) {}
+  constructor(private readonly db: DatabaseService, private readonly pos: PosService, @Optional() private readonly fiscal?: PosFiscalService) {}
   private get r() { return this.db.repositories; }
 
   linkOf(token: string) { return { path: `/r/${token}`, url: `${RECEIPT_PUBLIC_ORIGIN}/r/${token}` }; } // G5.2.0b: the web domain when RECEIPT_PUBLIC_URL is set
@@ -88,6 +89,10 @@ export class PosReceiptService {
   }
 
   private async receiptHtml(sale: any): Promise<string> {
+    if (sale.invoice && this.fiscal) { // G5.5: the confirmed fiscal number / QR, once there is one
+      const b = (await this.fiscal.blocks([{ type: 'invoice', id: String(sale._id) }])).get(`invoice:${sale._id}`);
+      if (b) sale = { ...sale, invoice: { ...sale.invoice, fiscal: PosFiscalService.view(sale.invoice.fiscal, b, true) } };
+    }
     const [store, settings]: any[] = await Promise.all([
       this.r.storeModel.findById(sale.storeId).select('name logo').lean(),
       this.r.posSettingsModel.findOne({ storeId: sale.storeId }).select('businessName businessAddress businessTaxId receiptHeader receiptFooter').lean(),
@@ -182,6 +187,11 @@ body{margin:0;background:#f4f1ee;font:16px/1.45 -apple-system,BlinkMacSystemFont
     const n = (t: string, d: string) => counts.find((c) => c._id.t === t && c._id.d === d)?.n ?? 0;
     // G4.9: `printed` = the document has been printed at least once (its original is out) — the next print is a reprint
     const p = (t: string, d: string) => (counts.find((c) => c._id.t === t && c._id.d === d)?.prints ?? 0) > 0;
+    // G5.5: the fiscal block of each document = its latest fiscal attempt (append-only `posfiscalrecords`); the stored placeholder otherwise
+    const fiscalOn = this.fiscal ? await this.fiscal.enabled(String(sale.storeId)) : false;
+    const fb = this.fiscal ? await this.fiscal.blocks([...(sale.invoice ? [{ type: 'invoice' as const, id: String(saleId) }] : []), ...creditNotes.map((c: any) => ({ type: 'credit_note' as const, id: String(c._id) }))]) : new Map();
+    if (sale.invoice) sale.invoice = { ...sale.invoice, fiscal: PosFiscalService.view(sale.invoice.fiscal, fb.get(`invoice:${saleId}`), fiscalOn) };
+    for (const c of creditNotes as any[]) c.fiscal = PosFiscalService.view(c.fiscal, fb.get(`credit_note:${c._id}`), fiscalOn);
     return {
       success: true,
       data: {

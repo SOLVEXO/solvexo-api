@@ -33,6 +33,8 @@ export class PosPayment {
   @Prop({ type: Number, default: null }) currencyExponent: number | null;
   /** Card auth code / bank transfer ref typed by the cashier. */
   @Prop({ type: String, default: null }) reference: string | null;
+  /** G5.4 (optional): card on a separate bank terminal — approval code, last 4, terminal label */
+  @Prop({ type: Object, default: undefined }) terminal?: { approvalCode: string | null; last4: string | null; label: string | null };
 
   @Prop({ enum: PAYMENT_STATUSES, required: true }) status: string;
   /** What confirmed it: null today; later 'terminal' | 'gateway' | 'raast' | 'shift_reconciliation'. */

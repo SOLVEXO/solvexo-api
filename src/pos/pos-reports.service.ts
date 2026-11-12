@@ -252,7 +252,11 @@ export class PosReportsService {
     const methods = new Set([...paid.map((x) => x._id), ...refunded.map((x) => x._id)].filter(Boolean));
     const rows = [...methods].map((mth) => { const p = paid.find((x) => x._id === mth); const rf = refunded.find((x) => x._id === mth); return { method: mth, payments: p?.count ?? 0, paidMinor: p?.amountMinor ?? 0, refundedMinor: rf?.amountMinor ?? 0, netMinor: (p?.amountMinor ?? 0) - (rf?.amountMinor ?? 0) }; }).sort((a, b) => b.netMinor - a.netMinor);
     const total = rows.reduce((n, r) => n + r.netMinor, 0);
-    return { success: true, data: { ...this.head(c), methods: rows.map((r) => ({ ...r, sharePercent: total ? Math.round((r.netMinor / total) * 1000) / 10 : 0 })), netMinor: total } };
+    // G5.4 (additive): the card taken on a separate bank terminal, as its own line (it is also inside `card` above, so older clients are unchanged)
+    const [xp] = await this.r.saleModel.aggregate([{ $match: this.saleMatch(c, c.period) }, { $unwind: '$payments' }, { $match: { 'payments.method': 'card', 'payments.terminal.approvalCode': { $type: 'string' } } }, { $group: { _id: null, n: { $sum: 1 }, m: { $sum: { $ifNull: ['$payments.amountMinor', 0] } } } }]);
+    const [xr] = await this.r.posRefundModel.aggregate([{ $match: rm }, { $unwind: '$tenders' }, { $match: { 'tenders.method': 'card', 'tenders.externalTerminal': true } }, { $group: { _id: null, m: { $sum: { $ifNull: ['$tenders.amountMinor', 0] } } } }]);
+    const cardExternalTerminal = { payments: xp?.n ?? 0, paidMinor: xp?.m ?? 0, refundedMinor: xr?.m ?? 0, netMinor: (xp?.m ?? 0) - (xr?.m ?? 0) };
+    return { success: true, data: { ...this.head(c), methods: rows.map((r) => ({ ...r, sharePercent: total ? Math.round((r.netMinor / total) * 1000) / 10 : 0 })), netMinor: total, cardExternalTerminal } };
   }
 
   // ── 7 · cashier (+ staff stats) ───────────────────────────────────────────────

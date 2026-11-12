@@ -116,10 +116,19 @@ export function assertClientTotal(clientTotal: number | undefined | null, totals
 
 // ── Split tender ──────────────────────────────────────────────────────────────────────────────────
 
-export interface PaymentInput { method: string; amount: number; reference?: string | null; /** digital tenders: the confirmed payment (payment_intents id) this line settles */ intentId?: string | null }
+export interface PaymentInput { method: string; amount: number; reference?: string | null; /** digital tenders: the confirmed payment (payment_intents id) this line settles */ intentId?: string | null; /** G5.4 card on a separate bank terminal */ approvalCode?: string | null; last4?: string | null; terminalLabel?: string | null }
+/** G5.4 — a card payment taken on a separate bank terminal: the approval code from its slip (required when the store has this switched on), last 4 digits, terminal label. */
+export interface CardTerminal { approvalCode: string | null; last4: string | null; label: string | null }
+export function cardTerminalOf(p: PaymentInput): CardTerminal | undefined {
+  if (p.method !== 'card') return undefined;
+  const code = typeof p.approvalCode === 'string' && p.approvalCode.trim() ? p.approvalCode.trim().slice(0, 40) : null;
+  const last4 = typeof p.last4 === 'string' && /^\d{4}$/.test(p.last4.trim()) ? p.last4.trim() : null;
+  const label = typeof p.terminalLabel === 'string' && p.terminalLabel.trim() ? p.terminalLabel.trim().slice(0, 40) : null;
+  return code || last4 || label ? { approvalCode: code, last4, label } : undefined;
+}
 
 /** A stored payment line. `amount` is what was APPLIED to the sale; for cash `tendered` is what was handed over. */
-export interface PaymentLine { method: Tender; amount: number; tendered?: number; reference?: string | null; intentId?: string | null }
+export interface PaymentLine { method: Tender; amount: number; tendered?: number; reference?: string | null; intentId?: string | null; terminal?: CardTerminal }
 
 export interface SettledPayments {
   lines: PaymentLine[];
@@ -163,7 +172,7 @@ export function settlePayments(
     if (!TENDERS.includes(p.method as Tender)) throw moneyError('INVALID_PAYMENT_METHOD', `Unknown payment method "${p.method}"`);
     const m = toMinor(p.amount, exp);
     if (!(m > 0) && !(totalM === 0 && m === 0)) throw moneyError('INVALID_PAYMENT_AMOUNT', 'Every payment line must be more than zero');
-    return { method: p.method as Tender, amountM: m, reference: p.reference ? String(p.reference).slice(0, 120) : null, intentId: p.intentId ? String(p.intentId) : null };
+    return { method: p.method as Tender, amountM: m, reference: p.reference ? String(p.reference).slice(0, 120) : null, intentId: p.intentId ? String(p.intentId) : null, terminal: cardTerminalOf(p) };
   });
 
   const nonCashM = given.filter((g) => g.method !== 'cash').reduce((s, g) => s + g.amountM, 0);
@@ -187,7 +196,7 @@ export function settlePayments(
   const lines: PaymentLine[] = [];
   for (const g of given) {
     if (g.method !== 'cash') {
-      lines.push({ method: g.method, amount: fromMinor(g.amountM, exp), reference: g.reference, ...(g.intentId ? { intentId: g.intentId } : {}) });
+      lines.push({ method: g.method, amount: fromMinor(g.amountM, exp), reference: g.reference, ...(g.intentId ? { intentId: g.intentId } : {}), ...(g.terminal ? { terminal: g.terminal } : {}) });
       continue;
     }
     const applied = Math.min(g.amountM, remainingCash);

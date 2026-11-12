@@ -63,8 +63,8 @@ export class PosCreditNote {
   @Prop({ type: String, required: true }) currency: string;
   @Prop({ type: Number, required: true }) currencyExponent: number;
   /** how the money went back, per tender */
-  @Prop({ type: [{ _id: false, method: String, amountMinor: { type: 'MinorMoney' } }], default: [] })
-  tenders: Array<{ method: string; amountMinor: number }>;
+  @Prop({ type: [{ _id: false, method: String, amountMinor: { type: 'MinorMoney' }, approvalCodeRef: { type: String, default: undefined } }], default: [] })
+  tenders: Array<{ method: string; amountMinor: number; approvalCodeRef?: string }>;
 
   /** seller as registered (snapshot of the store tax profile at the time) */
   @Prop({ type: Object, default: null }) seller: { legalName: string | null; address: string | null; ntn: string | null; strn: string | null } | null;

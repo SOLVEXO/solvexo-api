@@ -118,6 +118,10 @@ export class SalePayment {
   // digital tenders (raast_qr): the confirmed payment (payment_intents id) this line settles; `reference` holds the provider's reference
   @Prop({ type: String, default: null })
   intentId?: string | null;
+
+  /** G5.4 (optional): a card payment taken on a separate bank terminal — approval code, last 4, terminal label */
+  @Prop({ type: Object, default: undefined })
+  terminal?: { approvalCode: string | null; last4: string | null; label: string | null };
 }
 export const SalePaymentSchema = SchemaFactory.createForClass(SalePayment);
 
@@ -134,8 +138,8 @@ export class SaleRefund {
   @Prop({ enum: ['full', 'partial'], required: true })
   kind: string;
 
-  @Prop({ type: [{ _id: false, method: String, amount: Number, amountMinor: { type: 'MinorMoney' } }], default: [] })
-  tenders: Array<{ method: string; amount: number; amountMinor?: number }>;
+  @Prop({ type: [{ _id: false, method: String, amount: Number, amountMinor: { type: 'MinorMoney' }, approvalCodeRef: { type: String, default: undefined }, externalTerminal: { type: Boolean, default: undefined } }], default: [] })
+  tenders: Array<{ method: string; amount: number; amountMinor?: number; approvalCodeRef?: string; externalTerminal?: boolean }>; // G5.4: a card refund names the original slip's approval code
 
   @Prop({ type: [{ _id: false, saleItemId: String, qty: Number }], default: [] })
   items: Array<{ saleItemId: string; qty: number }>;
