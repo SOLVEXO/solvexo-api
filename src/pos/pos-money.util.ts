@@ -1,6 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { BadRequestException } from '@nestjs/common';
-import { getCurrencyDecimals } from '@/common/currency-metadata.const';
+import { fromMinor, isoExponent, roundMoney, toMinor } from '@/common/money-minor.util';
 
 /**
  * POS money rules (Phase 5B, decision D1).
@@ -13,31 +13,22 @@ import { getCurrencyDecimals } from '@/common/currency-metadata.const';
  * trusts client-sent totals.
  */
 
-export type Tender = 'cash' | 'card' | 'other';
-export const TENDERS: Tender[] = ['cash', 'card', 'other'];
+export type Tender = 'cash' | 'card' | 'other' | 'raast_qr' | 'store_credit';
+export const TENDERS: Tender[] = ['cash', 'card', 'other', 'raast_qr', 'store_credit'];
+
+/** Tenders whose money arrives through a payment provider and must be CONFIRMED before the sale exists (never cash in the drawer). */
+export const DIGITAL_TENDERS: Tender[] = ['raast_qr'];
+export const isDigitalTender = (m: string): boolean => (DIGITAL_TENDERS as string[]).includes(m);
 
 /** Rejection with a machine-readable `code` (the app switches on it). */
 export function moneyError(code: string, message: string, extra: object = {}): BadRequestException {
   return new BadRequestException({ statusCode: 400, code, message, ...extra });
 }
 
-export const exponentOf = (currency: string | null | undefined): number => getCurrencyDecimals((currency || 'USD').toUpperCase());
+export const exponentOf = (currency: string | null | undefined): number => isoExponent(currency); // ISO 4217, never the storefront display decimals
 
-/** Round half away from zero to `exp` decimals, immune to binary-float noise (1.005 → 1.01 at 2dp). */
-export function roundMoney(n: number, exp: number): number {
-  return fromMinor(toMinor(n, exp), exp);
-}
-
-/** Major units → integer minor units. */
-export function toMinor(n: number, exp: number): number {
-  const f = 10 ** exp;
-  const scaled = Number((Math.abs(Number(n) || 0) * f).toPrecision(15));
-  return Math.sign(n || 0) * Math.round(scaled);
-}
-
-export function fromMinor(m: number, exp: number): number {
-  return Number((m / 10 ** exp).toFixed(exp));
-}
+// The conversion itself lives in common/money-minor.util.ts (G1b: moved unchanged; re-exported so every import keeps working).
+export { roundMoney, toMinor, fromMinor } from '@/common/money-minor.util';
 
 /** Half-away-from-zero rounding of an already-minor-unit fractional value (e.g. 12.5 → 13). */
 const roundHalfUp = (x: number): number => Math.sign(x) * Math.round(Number(Math.abs(x).toPrecision(15)));
@@ -49,6 +40,8 @@ export type DiscountType = 'amount' | 'percent';
 export interface Totals {
   exp: number;
   lineTotals: number[];
+  /** G1b: the same line totals in integer minor units (`toMinor(price × qty)` — authoritative, see G1B_PLAN §6). */
+  lineTotalsMinor: number[];
   subtotal: number;
   discount: number;
   tax: number;
@@ -63,7 +56,7 @@ export interface Totals {
  * Tax-exclusive pricing, same base the cashier sees on the receipt.
  */
 export function computeTotals(
-  lines: Array<{ price: number; qty: number }>,
+  lines: Array<{ price: number; qty: number; /** false = tax-exempt line (G2.4 custom item with taxCategory 'exempt'); default true */ taxable?: boolean }>,
   opts: { exp: number; discountType?: DiscountType; discountValue?: number; taxRate: number },
 ): Totals {
   const { exp } = opts;
@@ -87,14 +80,18 @@ export function computeTotals(
     });
   }
 
+  // tax base = the taxable lines minus THEIR share of the discount (all lines taxable → exactly subtotal − discount, as before)
+  const taxableSubtotalM = lines.reduce((sum, l, i) => sum + (l.taxable === false ? 0 : lineM[i]), 0);
+  const discountOnTaxableM = subtotalM > 0 ? (taxableSubtotalM === subtotalM ? discountM : roundHalfUp((discountM * taxableSubtotalM) / subtotalM)) : 0;
   const taxableM = subtotalM - discountM;
   const rate = Number(opts.taxRate) || 0;
-  const taxM = roundHalfUp(taxableM * rate);
+  const taxM = roundHalfUp((taxableSubtotalM - discountOnTaxableM) * rate);
   const totalM = taxableM + taxM;
 
   return {
     exp,
     lineTotals: lineM.map((m) => fromMinor(m, exp)),
+    lineTotalsMinor: lineM,
     subtotal: fromMinor(subtotalM, exp),
     discount: fromMinor(discountM, exp),
     tax: fromMinor(taxM, exp),
@@ -119,10 +116,10 @@ export function assertClientTotal(clientTotal: number | undefined | null, totals
 
 // ── Split tender ──────────────────────────────────────────────────────────────────────────────────
 
-export interface PaymentInput { method: string; amount: number; reference?: string | null }
+export interface PaymentInput { method: string; amount: number; reference?: string | null; /** digital tenders: the confirmed payment (payment_intents id) this line settles */ intentId?: string | null }
 
 /** A stored payment line. `amount` is what was APPLIED to the sale; for cash `tendered` is what was handed over. */
-export interface PaymentLine { method: Tender; amount: number; tendered?: number; reference?: string | null }
+export interface PaymentLine { method: Tender; amount: number; tendered?: number; reference?: string | null; intentId?: string | null }
 
 export interface SettledPayments {
   lines: PaymentLine[];
@@ -166,7 +163,7 @@ export function settlePayments(
     if (!TENDERS.includes(p.method as Tender)) throw moneyError('INVALID_PAYMENT_METHOD', `Unknown payment method "${p.method}"`);
     const m = toMinor(p.amount, exp);
     if (!(m > 0) && !(totalM === 0 && m === 0)) throw moneyError('INVALID_PAYMENT_AMOUNT', 'Every payment line must be more than zero');
-    return { method: p.method as Tender, amountM: m, reference: p.reference ? String(p.reference).slice(0, 120) : null };
+    return { method: p.method as Tender, amountM: m, reference: p.reference ? String(p.reference).slice(0, 120) : null, intentId: p.intentId ? String(p.intentId) : null };
   });
 
   const nonCashM = given.filter((g) => g.method !== 'cash').reduce((s, g) => s + g.amountM, 0);
@@ -190,7 +187,7 @@ export function settlePayments(
   const lines: PaymentLine[] = [];
   for (const g of given) {
     if (g.method !== 'cash') {
-      lines.push({ method: g.method, amount: fromMinor(g.amountM, exp), reference: g.reference });
+      lines.push({ method: g.method, amount: fromMinor(g.amountM, exp), reference: g.reference, ...(g.intentId ? { intentId: g.intentId } : {}) });
       continue;
     }
     const applied = Math.min(g.amountM, remainingCash);
@@ -261,14 +258,14 @@ export function tenderNets(
   const refundedM = sale.status === 'voided' ? Number.MAX_SAFE_INTEGER : toMinor(sale.refundedAmount ?? 0, exp);
   const ordered = refundOrder(lines);
   const gone = absorbedPerLine(ordered, refundedM, exp);
-  const net: Record<Tender, number> = { cash: 0, card: 0, other: 0 };
+  const net: Record<Tender, number> = { cash: 0, card: 0, other: 0, raast_qr: 0, store_credit: 0 };
   ordered.forEach((l, i) => { net[l.method] += toMinor(l.amount, exp) - gone[i]; });
-  return { cash: fromMinor(net.cash, exp), card: fromMinor(net.card, exp), other: fromMinor(net.other, exp) };
+  return { cash: fromMinor(net.cash, exp), card: fromMinor(net.card, exp), other: fromMinor(net.other, exp), raast_qr: fromMinor(net.raast_qr, exp), store_credit: fromMinor(net.store_credit, exp) };
 }
 
-/** Per-tender amounts as a plain object (`{cash, card, other}`), from a list of `{method, amount}`. */
+/** Per-tender amounts as a plain object (`{cash, card, other, raast_qr}`), from a list of `{method, amount}`. */
 export function byTender(parts: Array<{ method: Tender; amount: number }>): Record<Tender, number> {
-  const out: Record<Tender, number> = { cash: 0, card: 0, other: 0 };
+  const out: Record<Tender, number> = { cash: 0, card: 0, other: 0, raast_qr: 0, store_credit: 0 };
   for (const p of parts) out[p.method] += p.amount;
   return out;
 }
@@ -296,4 +293,17 @@ export function partialRefundAmount(
   if (subtotalM <= 0) return 0;
   const shareM = lines.reduce((s, l) => s + roundHalfUp((toMinor(l.price * l.qty, exp) * totalM) / subtotalM), 0);
   return fromMinor(Math.min(shareM, remainingM), exp);
+}
+
+/**
+ * How a cumulative refund splits across the sale's DIGITAL lines (one provider refund per payment). Same documented order as
+ * `allocateRefund` (non-cash first in the order taken, cash last), so the two always agree. Returns minor units per payment.
+ */
+export function digitalRefundPlan(lines: PaymentLine[], alreadyRefunded: number, amount: number, exp: number): Array<{ intentId: string; amountMinor: number }> {
+  const ordered = refundOrder(lines);
+  const before = absorbedPerLine(ordered, toMinor(alreadyRefunded, exp), exp);
+  const after = absorbedPerLine(ordered, toMinor(alreadyRefunded, exp) + toMinor(amount, exp), exp);
+  const out: Array<{ intentId: string; amountMinor: number }> = [];
+  ordered.forEach((l, i) => { const d = after[i] - before[i]; if (d > 0 && isDigitalTender(l.method) && l.intentId) out.push({ intentId: String(l.intentId), amountMinor: d }); });
+  return out;
 }

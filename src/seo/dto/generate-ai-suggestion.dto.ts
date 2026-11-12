@@ -14,6 +14,12 @@ export class GenerateAiSuggestionDto {
   entityId: string;
 }
 
+export class AcceptAiSuggestionDto {
+  @ApiProperty({ description: 'The id returned by generate: the suggestion to write onto the product or store' })
+  @IsString() @IsNotEmpty()
+  suggestionId: string;
+}
+
 export class GenerateAiSuggestionBulkDto {
   @ApiProperty({ enum: AI_SEO_ENTITY_TYPES })
   @IsIn(AI_SEO_ENTITY_TYPES)

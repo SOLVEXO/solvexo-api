@@ -24,12 +24,14 @@ import { OrdersModule } from '../orders/orders.module';
 import { MarketingAutomationsModule } from '../marketing-automations/marketing-automations.module';
 import { AdminAnnouncementsModule } from '../admin-announcements/admin-announcements.module';
 import { AuthModule } from '../auth/auth.module';
+import { FbrDiModule } from '../fbr-di/fbr-di.module';
 import { StoreModule } from '../store/store.module';
 import { StorePagesModule } from '../store-pages/store-pages.module';
 import { GiftCardsModule } from '../gift-cards/gift-cards.module';
+import { SellerTrustModule } from '../seller-trust/seller-trust.module';
 
 @Module({
-  imports: [ScheduleModule.forRoot(), MerchandisingModule, SubscriptionsModule, FinanceModule, RedisModule, SeoModule, AdminMarketingModule, PromotionsModule, ExchangeRateModule, AdminFinanceModule, BookingsModule, IntegrationsModule, AbandonedCartModule, AnalyticsModule, EmailCampaignsModule, InventoryModule, PurchaseOrdersModule, DraftOrdersModule, OrdersModule, MarketingAutomationsModule, AdminAnnouncementsModule, AuthModule, StoreModule, StorePagesModule, GiftCardsModule, MembershipsModule],
+  imports: [ScheduleModule.forRoot(), MerchandisingModule, SubscriptionsModule, FinanceModule, RedisModule, SeoModule, AdminMarketingModule, PromotionsModule, ExchangeRateModule, AdminFinanceModule, BookingsModule, IntegrationsModule, AbandonedCartModule, AnalyticsModule, EmailCampaignsModule, InventoryModule, PurchaseOrdersModule, DraftOrdersModule, OrdersModule, MarketingAutomationsModule, AdminAnnouncementsModule, AuthModule, StoreModule, StorePagesModule, GiftCardsModule, MembershipsModule, FbrDiModule, SellerTrustModule],
   providers: [SchedulerService],
 })
 export class SchedulerModule {}

@@ -12,10 +12,12 @@ import { Response } from 'express';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { PosService } from './pos.service';
 import { PosDeviceService } from './pos-device.service';
+import { PosReceiptService } from './pos-receipt.service';
 import { PosDeviceScopeInterceptor } from './pos-device-scope';
 import { RegisterDeviceDto } from './dto/register-device.dto';
 import { InventoryService } from '../inventory/inventory.service';
 import { PosPlansService } from '../pos-plans/pos-plans.service';
+import { KybGateService } from '../kyb/kyb-gate.service';
 import { StoreLocationService } from './store-location.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -36,6 +38,10 @@ import { QuoteSaleDto } from './dto/quote-sale.dto';
 import { CompleteSaleDto } from './dto/complete-sale.dto';
 import { CashAdjustmentDto } from './dto/cash-adjustment.dto';
 import { RefundSaleDto } from './dto/refund-sale.dto';
+import { PosCatalogService } from './pos-catalog.service';
+import { PosAuthorizer } from './pos-authorizer.service';
+import { PosInventoryService } from './pos-inventory.service';
+import { AdjustCatalogStockDto, UpdateCatalogVariantDto } from './dto/catalog.dto';
 import { ForceCloseSessionDto } from './dto/force-close-session.dto';
 import { UpdateRegisterDto } from './dto/update-register.dto';
 import { UpdateShiftDto } from './dto/update-shift.dto';
@@ -60,6 +66,11 @@ export class PosController {
     private readonly devices: PosDeviceService,
     private readonly inventoryService: InventoryService,
     private readonly posPlansService: PosPlansService,
+    private readonly kybGate: KybGateService,
+    private readonly receipts: PosReceiptService,
+    private readonly catalog: PosCatalogService,
+    private readonly authorizer: PosAuthorizer,
+    private readonly posInv: PosInventoryService,
   ) {}
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -126,8 +137,10 @@ export class PosController {
   @UseGuards(PosAuthGuard, RolesGuard)
   @Roles('seller')
   @Get('subscription/:storeId')
-  posSubscription(@Req() req: any, @Param('storeId') storeId: string) {
-    return this.posPlansService.getStatus(storeId, req.user.userId);
+  async posSubscription(@Req() req: any, @Param('storeId') storeId: string) {
+    const res: any = await this.posPlansService.getStatus(storeId, req.user.userId);
+    // G2.2 (additive): lets the app hide the QR option for a store that is not KYB-verified. Old builds ignore the field.
+    return { ...res, data: { ...res.data, digitalPaymentsEnabled: await this.kybGate.isEnabled(storeId) } };
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -324,8 +337,8 @@ export class PosController {
   @Roles('seller')
   @UseInterceptors(IdempotencyInterceptor)
   @Post('sessions/close')
-  closeSession(@Req() req: any, @Body() dto: CloseSessionDto) {
-    return this.posService.closeSession(req.user.userId, dto);
+  closeSession(@Req() req: any, @Body() dto: CloseSessionDto, @Headers('x-pos-employee-token') employeeToken?: string) {
+    return this.posService.closeSession(req.user.userId, dto, employeeToken);
   }
 
   @UseGuards(PosAuthGuard, RolesGuard)
@@ -333,6 +346,14 @@ export class PosController {
   @Get('sessions/active')
   getActiveSession(@Req() req: any, @Query('storeId') storeId: string, @Query('registerId') registerId: string) {
     return this.posService.getActiveSession(req.user.userId, storeId, registerId);
+  }
+
+  /** G4.6: the register's last closed shift (counted, expected, variance, by whom) — shown when the next shift opens. */
+  @UseGuards(PosAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Get('sessions/last-close')
+  getLastClose(@Req() req: any, @Query('storeId') storeId: string, @Query('registerId') registerId: string) {
+    return this.posService.lastClose(req.user.userId, storeId, registerId);
   }
 
   @UseGuards(PosAuthGuard, RolesGuard)
@@ -373,8 +394,14 @@ export class PosController {
   // and the `Idempotency-Key` header (replays the first response on an exact retry).
   @UseInterceptors(IdempotencyInterceptor)
   @Post('sales')
-  createSale(@Req() req: any, @Body() dto: CreateSaleDto, @Headers('x-pos-employee-token') employeeToken?: string) {
-    return this.posService.createSale(req.user.userId, dto, employeeToken);
+  async createSale(@Req() req: any, @Body() dto: CreateSaleDto, @Headers('x-pos-employee-token') employeeToken?: string, @Headers('x-pos-approver-token') approverToken?: string) {
+    // G3.2: "sell the expired units" is a permission-matrix action (a cashier needs a manager's PIN, audited); offline replays are never blocked and never ask
+    let expiredApproval: { employeeId: string; role: string } | undefined;
+    if (!dto.offline && dto.status !== 'held' && (dto.items ?? []).some((i) => i.sellExpired)) {
+      const a = await this.authorizer.authorize(req, { storeId: dto.storeId, action: 'inventory.lot.sellExpired', employeeToken, approverToken });
+      expiredApproval = { employeeId: a.approvedBy?.employeeId ?? a.employeeId ?? req.user.userId, role: a.approvedBy ? 'manager' : a.role };
+    }
+    return this.posService.createSale(req.user.userId, dto, employeeToken, { expiredApproval });
   }
 
   // Price a cart without selling it — gated exactly like selling (it is part of ringing a sale), no side effects.
@@ -383,6 +410,14 @@ export class PosController {
   @Post('sales/quote')
   quoteSale(@Req() req: any, @Body() dto: QuoteSaleDto) {
     return this.posService.quoteSale(req.user.userId, dto);
+  }
+
+  /** G2.7: find a sale by the number on the customer's receipt: OFF-… (offline), INV-…, the receipt number or a credit note (a return at another till). */
+  @UseGuards(PosAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Get('sales/lookup/:storeId')
+  lookupSales(@Req() req: any, @Param('storeId') storeId: string, @Query('ref') ref: string) {
+    return this.posService.lookupSales(req.user.userId, storeId, ref);
   }
 
   // Offline-sync review queue — static segments, declared before the parameterised `sales/:saleId` routes.
@@ -443,16 +478,17 @@ export class PosController {
   @Roles('seller')
   @UseInterceptors(IdempotencyInterceptor)
   @Post('sales/:saleId/refund')
-  refundSale(@Req() req: any, @Param('saleId') saleId: string, @Body() dto: RefundSaleDto, @Headers('x-pos-employee-token') employeeToken?: string) {
-    return this.posService.refundSale(req.user.userId, saleId, dto, employeeToken);
+  refundSale(@Req() req: any, @Param('saleId') saleId: string, @Body() dto: RefundSaleDto, @Headers('x-pos-employee-token') employeeToken?: string, @Headers('idempotency-key') idempotencyKey?: string) {
+    return this.posService.refundSale(req.user.userId, saleId, dto, employeeToken, idempotencyKey);
   }
 
   @UseGuards(PosAuthGuard, RolesGuard)
   @Roles('seller')
   @UseInterceptors(IdempotencyInterceptor)
   @Delete('sales/:saleId/discard')
-  discardHeldSale(@Req() req: any, @Param('saleId') saleId: string) {
-    return this.posService.discardHeldSale(req.user.userId, saleId);
+  discardHeldSale(@Req() req: any, @Param('saleId') saleId: string, @Body() body?: { reason?: string; reasonCode?: string }, @Query('reason') reasonQuery?: string, @Query('reasonCode') reasonCodeQuery?: string, @Headers('x-pos-employee-token') employeeToken?: string) {
+    // the reason may come in the body or the query string (DELETE bodies are dropped by some HTTP clients); old builds send none
+    return this.posService.discardHeldSale(req.user.userId, saleId, { reason: body?.reason ?? reasonQuery, reasonCode: body?.reasonCode ?? reasonCodeQuery, employeeToken });
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -581,8 +617,69 @@ export class PosController {
   @Roles('seller')
   @UseInterceptors(IdempotencyInterceptor)
   @Post('sales/:saleId/void')
-  voidSale(@Req() req: any, @Param('saleId') saleId: string, @Body() dto: { reason?: string }, @Headers('x-pos-employee-token') employeeToken?: string) {
+  voidSale(@Req() req: any, @Param('saleId') saleId: string, @Body() dto: { reason?: string; reasonCode?: string; registerId?: string }, @Headers('x-pos-employee-token') employeeToken?: string) {
     return this.posService.voidSale(req.user.userId, saleId, dto, employeeToken);
+  }
+
+  // ── G2.6 POS catalog edits (D3): a manager's PIN session; audited with before/after; the storefront reads the same documents ──
+  @UseGuards(PosAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Patch('catalog/:storeId/variants/:variantId')
+  updateCatalogVariant(@Req() req: any, @Param('storeId') storeId: string, @Param('variantId') variantId: string, @Body() dto: UpdateCatalogVariantDto, @Headers('x-pos-employee-token') employeeToken?: string) {
+    return this.catalog.updateVariant(req.user.userId, storeId, variantId, dto, employeeToken);
+  }
+
+  @UseGuards(PosAuthGuard, RolesGuard)
+  @Roles('seller')
+  @UseInterceptors(IdempotencyInterceptor)
+  @Post('catalog/:storeId/variants/:variantId/stock')
+  adjustCatalogStock(@Req() req: any, @Param('storeId') storeId: string, @Param('variantId') variantId: string, @Body() dto: AdjustCatalogStockDto, @Headers('x-pos-employee-token') employeeToken?: string) {
+    return this.catalog.adjustStock(req.user.userId, storeId, variantId, dto, employeeToken);
+  }
+
+  /**
+   * G2.6 Home dashboard (role-based): a cashier gets only their own open shift; a manager / owner get the store for today, plus low stock
+   * and what needs attention. Read-only, so it stays available when the POS plan has lapsed (like the reports).
+   */
+  @UseGuards(PosAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Get('dashboard/:storeId')
+  async dashboard(@Req() req: any, @Param('storeId') storeId: string, @Headers('x-pos-employee-token') employeeToken?: string) {
+    const res: any = await this.posService.getDashboard(req.user.userId, storeId, employeeToken);
+    if (res.data.role !== 'cashier') {
+      const low: any = await this.inventoryService.getLowStockSummary(req.user.userId, storeId).catch(() => null);
+      res.data.lowStock = low?.data ?? null;
+      res.data.expiring = await this.posInv.expiringSummary(storeId).catch(() => null); // G3.2: expired / expiring-soon lots on Home
+    } else {
+      res.data.lowStock = null; // a cashier does not see store-wide stock figures
+      res.data.expiring = null;
+    }
+    return res;
+  }
+
+  /** G2.5: the tax invoice and every credit note of a sale (for the till's order detail / print / share). */
+  @UseGuards(PosAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Get('sales/:saleId/documents')
+  saleDocuments(@Req() req: any, @Param('saleId') saleId: string) {
+    return this.receipts.documentsOf(req.user.userId, saleId);
+  }
+
+  /** G2.4 digital receipt link (same link every time until a manager revokes it). Any till of the store may ask; it is not a plan-gated action. */
+  @UseGuards(PosAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Get('sales/:saleId/receipt-link')
+  receiptLink(@Req() req: any, @Param('saleId') saleId: string) {
+    return this.receipts.getLink(req.user.userId, saleId);
+  }
+
+  @UseGuards(PosAuthGuard, RolesGuard)
+  @Roles('seller')
+  @RequireManagerPin()
+  @Post('sales/:saleId/receipt-link/revoke')
+  async revokeReceiptLink(@Req() req: any, @Param('saleId') saleId: string, @Headers('x-pos-employee-token') employeeToken?: string) {
+    const m = await this.posService.requireManagerEmployee(employeeToken, req.user.storeId ?? (await this.posService.storeIdOfSale(saleId)), 'revoke a receipt link');
+    return this.receipts.revoke(req.user.userId, saleId, m.employeeId);
   }
 
   @UseGuards(PosAuthGuard, RolesGuard, PosEntitlementGuard)

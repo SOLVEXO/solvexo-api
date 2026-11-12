@@ -32,6 +32,9 @@ import { RefundRequestModule } from './refund-request/refund-request.module';
 import { CheckoutModule } from './checkout/checkout.modoule';
 import { OrdersModule } from './orders/orders.module';
 import { PaymentModule } from './payment/payment.module';
+import { KybModule } from './kyb/kyb.module';
+import { JobLeaseModule } from './common/job-lease/job-lease.module';
+import { PaymentsCoreModule } from './payments-core/payments-core.module';
 import { StoreModule } from './store/store.module';
 import { InventoryModule } from './inventory/inventory.module';
 import { RatingModule } from './rating/rating.module';
@@ -69,7 +72,7 @@ import { PlatformTaxModule } from './platform-tax/platform-tax.module';
 import { SeoModule } from './seo/seo.module';
 import { IntegrationsModule } from './integrations/integrations.module';
 import { CustomerSocialLoginModule } from './customer-social-login/customer-social-login.module';
-import { AiStudioModule } from './ai-studio/ai-studio.module';
+import { AiTextModule } from './ai/ai-text.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { OrderDocumentsModule } from './order-documents/order-documents.module';
 import { StoreTextTranslationsModule } from './store-text-translations/store-text-translations.module';
@@ -78,6 +81,7 @@ import { StoreBadgesModule } from './store-badges/store-badges.module';
 import { AdminConfigModule } from './admin-config/admin-config.module';
 import { AdminAnnouncementsModule } from './admin-announcements/admin-announcements.module';
 import { AdminMarketplaceModule } from './admin-marketplace/admin-marketplace.module';
+import { AdminSellerTrustModule } from './admin-seller-trust/admin-seller-trust.module';
 import { AdminModerationModule } from './admin-moderation/admin-moderation.module';
 import { AdminUsersModule } from './admin-users/admin-users.module';
 import { AdminClientsModule } from './admin-clients/admin-clients.module';
@@ -94,6 +98,7 @@ import { StorePagesModule } from './store-pages/store-pages.module';
 import { AppsModule } from './apps/apps.module';
 import { StoreFaqModule } from './store-faq/store-faq.module';
 import { StoreChatSettingsModule } from './store-chat-settings/store-chat-settings.module';
+import { FbrDiModule } from './fbr-di/fbr-di.module';
 import { DigitalAccessModule } from './digital-access/digital-access.module';
 import { MembershipsModule } from './memberships/memberships.module';
 import { LicensesModule } from './licenses/licenses.module';
@@ -101,6 +106,8 @@ import { B2BModule } from './b2b/b2b.module';
 import { FulfillmentServicesModule } from './fulfillment-services/fulfillment.module';
 import { SellingPlansModule } from './selling-plans/selling-plans.module';
 import { CheckoutRulesModule } from './checkout-rules/checkout-rules.module';
+import { ExperimentsModule } from './experiments/experiments.module';
+import { AppPlatformModule } from './app-platform/app-platform.module';
 import { KhataModule } from './khata/khata.module';
 import { ProductFeedsModule } from './product-feeds/product-feeds.module';
 import { MerchantApiModule } from './merchant-api/merchant-api.module';
@@ -184,6 +191,9 @@ import { AppI18nModule } from './i18n/i18n.module';
     OrdersModule,
     // OrdersModule,
     PaymentModule,
+    JobLeaseModule,
+    KybModule,
+    PaymentsCoreModule,
     // PaymentProcessingModule,
     StoreModule,
     InventoryModule,
@@ -199,7 +209,7 @@ import { AppI18nModule } from './i18n/i18n.module';
     BookingsModule,
     PlatformPlansModule,
     PlatformTaxModule,
-    AiStudioModule,
+    AiTextModule,
     SchedulerModule,
     MarketingModule,
     LoyaltyModule,
@@ -222,6 +232,7 @@ import { AppI18nModule } from './i18n/i18n.module';
     AdminConfigModule,
     AdminAnnouncementsModule,
     AdminMarketplaceModule,
+    AdminSellerTrustModule,
     AdminModerationModule,
     AdminUsersModule,
     AdminClientsModule,
@@ -238,6 +249,7 @@ import { AppI18nModule } from './i18n/i18n.module';
     AppsModule,
     StoreFaqModule,
     StoreChatSettingsModule,
+    FbrDiModule,
     DigitalAccessModule,
     MembershipsModule,
     LicensesModule,
@@ -245,6 +257,8 @@ import { AppI18nModule } from './i18n/i18n.module';
     FulfillmentServicesModule,
     SellingPlansModule,
     CheckoutRulesModule,
+    ExperimentsModule,
+    AppPlatformModule,
     KhataModule,
     ProductFeedsModule,
     MerchantApiModule,

@@ -47,6 +47,7 @@ export class MarketingService {
       discountValue: dto.discountValue,
       minOrderAmount: dto.minOrderAmount ?? null,
       usageLimit: dto.usageLimit ?? null,
+      posEnabled: dto.posEnabled === true,
       customerSegmentId: dto.customerSegmentId ?? null,
       startsAt: dto.startsAt ? new Date(dto.startsAt) : null,
       expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : null,
@@ -105,6 +106,7 @@ export class MarketingService {
     if (dto.discountValue !== undefined) update.discountValue = dto.discountValue;
     if (dto.minOrderAmount !== undefined) update.minOrderAmount = dto.minOrderAmount;
     if (dto.usageLimit !== undefined) update.usageLimit = dto.usageLimit;
+    if (dto.posEnabled !== undefined) update.posEnabled = dto.posEnabled;
     if (dto.customerSegmentId !== undefined) {
       if (dto.customerSegmentId && !(await this.r.customerSegmentModel.exists({ _id: dto.customerSegmentId, storeId }))) {
         throw new BadRequestException('Customer segment not found for this store');

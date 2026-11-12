@@ -1,0 +1,133 @@
+/* eslint-disable prettier/prettier */
+import { APPROVAL_LIMITS, ActionContext, evaluate, LimitKey, POS_ACTIONS, POS_PERMISSIONS, POS_ROLES, PosAction, PosRole, resolveLimits } from './pos-permissions.config';
+
+/**
+ * The matrix is DATA, so the test is a table: for EVERY action × EVERY role, the expected outcome — allowed, denied, or needs approval (by whom) — below and
+ * above each limit. A new action or a changed rule fails here until the table says what it should now do.
+ */
+const L = resolveLimits(null, 2); // USD defaults: money limits are in cents
+const below = (a: PosAction): ActionContext => ({ qty: 1, valueMinor: 1, amountMinor: 1, points: 1 });
+const above = (a: PosAction): ActionContext => {
+  const c: ActionContext = {};
+  for (const r of (POS_PERMISSIONS as any)[a].approval ?? []) if (r.ctx && r.limit) (c as any)[r.ctx] = L[r.limit as LimitKey] + 1;
+  return c;
+};
+type Exp = 'allow' | 'deny' | 'manager' | 'owner';
+const out = (a: PosAction, r: PosRole, ctx: ActionContext): Exp => {
+  const d = evaluate(a, r, ctx, L);
+  return d.decision === 'allow' ? 'allow' : d.decision === 'deny' ? 'deny' : d.approver;
+};
+
+// expected: [cashier, manager, owner] for a use BELOW the limits, and ABOVE them
+const T: Record<PosAction, { below: [Exp, Exp, Exp]; above?: [Exp, Exp, Exp] }> = {
+  'inventory.view':               { below: ['allow', 'allow', 'allow'] },
+  'inventory.history.view':       { below: ['deny', 'allow', 'allow'] },
+  'inventory.adjust':             { below: ['allow', 'allow', 'allow'], above: ['manager', 'allow', 'allow'] },
+  'inventory.writeoff':           { below: ['deny', 'allow', 'allow'] },
+  'inventory.count.start':        { below: ['deny', 'allow', 'allow'] },
+  'inventory.count.enter':        { below: ['allow', 'allow', 'allow'] },
+  'inventory.count.finish':       { below: ['deny', 'allow', 'allow'] },
+  'inventory.transfer.create':    { below: ['deny', 'allow', 'allow'] },
+  'inventory.transfer.receive':   { below: ['deny', 'allow', 'allow'] },
+  'inventory.lot.sellExpired':    { below: ['manager', 'allow', 'allow'] }, // every use needs a manager: a cashier asks for the PIN, a manager is their own approver (audited)
+  'catalog.create':               { below: ['deny', 'allow', 'allow'] },
+  'catalog.categories.edit':      { below: ['deny', 'allow', 'allow'] },
+  'catalog.import':               { below: ['deny', 'allow', 'allow'] },
+  'catalog.modifiers.edit':       { below: ['deny', 'allow', 'allow'] },
+  'catalog.pricebooks.edit':      { below: ['deny', 'allow', 'allow'] },
+  'sales.reprint':                { below: ['allow', 'allow', 'allow'] },
+  'catalog.edit':                 { below: ['deny', 'allow', 'allow'] },
+  'customers.view':               { below: ['allow', 'allow', 'allow'] },
+  'customers.create':             { below: ['allow', 'allow', 'allow'] },
+  'customers.edit':               { below: ['deny', 'allow', 'allow'] },
+  'storeCredit.spend':            { below: ['allow', 'allow', 'allow'] },
+  'storeCredit.refundIssue':      { below: ['allow', 'allow', 'allow'], above: ['manager', 'allow', 'allow'] },
+  'storeCredit.adjust':           { below: ['deny', 'allow', 'allow'], above: ['deny', 'owner', 'allow'] },
+  'loyalty.redeem':               { below: ['allow', 'allow', 'allow'] },
+  'loyalty.configure':            { below: ['deny', 'deny', 'allow'] },
+  'loyalty.adjust':               { below: ['deny', 'allow', 'allow'], above: ['deny', 'owner', 'allow'] },
+  'supply.view':                  { below: ['deny', 'allow', 'allow'] },
+  'supply.po.write':              { below: ['deny', 'allow', 'allow'] },
+  'supply.po.approve':            { below: ['deny', 'allow', 'allow'], above: ['deny', 'owner', 'allow'] },
+  'supply.po.receive':            { below: ['allow', 'allow', 'allow'] }, // a cashier may receive against an APPROVED PO (costs stay hidden from them)
+  'supply.receive.direct':        { below: ['deny', 'allow', 'allow'] },
+  'supply.return':                { below: ['deny', 'allow', 'allow'] },
+  'supply.costs.view':            { below: ['deny', 'allow', 'allow'] },
+  'supply.payment':               { below: ['deny', 'allow', 'allow'], above: ['deny', 'owner', 'allow'] },
+  'cash.in':                      { below: ['allow', 'allow', 'allow'] },
+  'cash.out':                     { below: ['allow', 'allow', 'allow'], above: ['manager', 'allow', 'allow'] },
+  'expenses.record':              { below: ['allow', 'allow', 'allow'], above: ['manager', 'allow', 'allow'] },
+  'expenses.approve':             { below: ['deny', 'allow', 'allow'] },
+  'daybook.view':                 { below: ['allow', 'allow', 'allow'] }, // a cashier sees only their own shifts: the service filters
+  'team.attendance.own':          { below: ['allow', 'allow', 'allow'] },
+  'team.attendance.onBehalf':     { below: ['allow', 'allow', 'allow'] }, // G5.4: the PIN (member's or a manager's) is the control
+  'team.attendance.view':         { below: ['deny', 'allow', 'allow'] },
+  'team.roster.view':             { below: ['allow', 'allow', 'allow'] },
+  'team.attendance.edit':         { below: ['deny', 'allow', 'allow'] },
+  'team.roster.edit':             { below: ['deny', 'allow', 'allow'] },
+  'reports.view':                 { below: ['deny', 'allow', 'allow'] },
+  'reports.cashier.own':          { below: ['allow', 'allow', 'allow'] },
+  'settings.store.edit':          { below: ['deny', 'deny', 'allow'] },
+  'audit.verify':                 { below: ['deny', 'allow', 'allow'] },
+  'settings.permissions.view':    { below: ['deny', 'allow', 'allow'] },
+  'settings.permissions.edit':    { below: ['deny', 'deny', 'allow'] },
+  'settings.approvalLimits.view': { below: ['deny', 'allow', 'allow'] },
+  'settings.approvalLimits.edit': { below: ['deny', 'deny', 'allow'] },
+};
+
+describe('the permission matrix: every action × every role', () => {
+  it('the table covers EVERY action in the matrix (a new action without a row fails here)', () => {
+    expect(Object.keys(T).sort()).toEqual([...POS_ACTIONS].sort());
+  });
+
+  for (const action of POS_ACTIONS) {
+    POS_ROLES.forEach((role, i) => {
+      it(`${action} · ${role}: below the limits → ${T[action].below[i]}`, () => {
+        expect(out(action, role, below(action))).toBe(T[action].below[i]);
+      });
+      if (T[action].above) {
+        it(`${action} · ${role}: above the limits → ${T[action].above![i]}`, () => {
+          expect(out(action, role, above(action))).toBe(T[action].above![i]);
+        });
+      }
+    });
+  }
+
+  it('an action that needs approval ALWAYS (an expired lot) is allowed for a manager acting as their own approver; a cashier needs the manager', () => {
+    expect(out('inventory.lot.sellExpired', 'cashier', {})).toBe('manager');
+    expect(out('inventory.lot.sellExpired', 'manager', {})).toBe('allow');
+  });
+
+  it('exactly AT the limit is allowed; one above needs approval (the limit is inclusive)', () => {
+    expect(out('cash.out', 'cashier', { amountMinor: L.cashOutMinor })).toBe('allow');
+    expect(out('cash.out', 'cashier', { amountMinor: L.cashOutMinor + 1 })).toBe('manager');
+    expect(out('inventory.adjust', 'cashier', { qty: L.stockAdjustQty })).toBe('allow');
+    expect(out('inventory.adjust', 'cashier', { qty: L.stockAdjustQty + 1 })).toBe('manager');
+    // value is checked independently of quantity
+    expect(out('inventory.adjust', 'cashier', { qty: 1, valueMinor: L.stockAdjustValueMinor + 1 })).toBe('manager');
+  });
+
+  it('no role, an unknown action or a missing role is denied — never allowed by default', () => {
+    expect(evaluate('inventory.view', null, {}, L)).toEqual({ decision: 'deny', reason: 'role_not_allowed' });
+    expect(evaluate('nope.nothing', 'owner', {}, L)).toEqual({ decision: 'deny', reason: 'unknown_action' });
+  });
+});
+
+describe('limits (D6): per-store overrides over documented defaults', () => {
+  it('defaults are major units scaled by the currency exponent (USD ×100, JPY ×1, KWD ×1000); counts are not scaled', () => {
+    expect(resolveLimits(null, 2).cashOutMinor).toBe(10_000);
+    expect(resolveLimits(null, 0).cashOutMinor).toBe(100);
+    expect(resolveLimits(null, 3).cashOutMinor).toBe(100_000);
+    expect(resolveLimits(null, 2).stockAdjustQty).toBe(5);
+  });
+  it('a store override (minor units) wins; junk (negative, NaN, strings) is ignored and falls back to the default', () => {
+    const l = resolveLimits({ cashOutMinor: 25_000, expenseMinor: -1 as any, stockAdjustQty: 'x' as any }, 2);
+    expect([l.cashOutMinor, l.expenseMinor, l.stockAdjustQty]).toEqual([25_000, 10_000, 5]);
+    // and an override moves the decision
+    expect(out('cash.out', 'cashier', { amountMinor: 20_000 })).toBe('manager'); // default 10 000
+    expect(evaluate('cash.out', 'cashier', { amountMinor: 20_000 }, l)).toEqual({ decision: 'allow' });
+  });
+  it('every limit key has a default and a label (the documentation table is generated from it)', () => {
+    for (const [k, d] of Object.entries(APPROVAL_LIMITS)) expect([k, typeof d.default, d.label.length > 0]).toEqual([k, 'number', true]);
+  });
+});

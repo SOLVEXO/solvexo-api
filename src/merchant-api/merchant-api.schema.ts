@@ -14,6 +14,8 @@ export class WebhookSubscription {
   @Prop({ default: 0 }) consecutiveFailures: number;
   @Prop({ type: String, default: null }) disabledReason: string | null;
   @Prop({ type: String, default: '' }) description: string;
+  /** Set when this webhook belongs to an installed app (it dies with the install). */
+  @Prop({ type: String, default: null, index: true }) appInstallId: string | null;
 }
 export type WebhookSubscriptionDocument = HydratedDocument<WebhookSubscription>;
 export const WebhookSubscriptionSchema = SchemaFactory.createForClass(WebhookSubscription);
@@ -50,6 +52,8 @@ export class ApiToken {
   @Prop({ type: Date, default: null }) revokedAt: Date | null;
   @Prop({ type: Date, default: null }) lastUsedAt: Date | null;
   @Prop({ default: '' }) createdBy: string;
+  /** Set when this token belongs to an installed app (it dies with the install). */
+  @Prop({ type: String, default: null, index: true }) appInstallId: string | null;
 }
 export type ApiTokenDocument = HydratedDocument<ApiToken>;
 export const ApiTokenSchema = SchemaFactory.createForClass(ApiToken);

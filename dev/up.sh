@@ -12,7 +12,7 @@ export DEV_MAIL_LOG_FILE="$LOGS/mail.log"
 alive() { [ -f "$1" ] && kill -0 "$(cat "$1")" 2>/dev/null; }
 
 if ! alive "$RUN/mongod.pid"; then
-  nohup mongod --replSet rsdev --port $MONGO_PORT --bind_ip 127.0.0.1 --dbpath "$DATA/mongo" </dev/null >"$LOGS/mongod.log" 2>&1 &
+  nohup mongod --replSet rsdev --port $MONGO_PORT --bind_ip 127.0.0.1 --wiredTigerCacheSizeGB 0.25 --dbpath "$DATA/mongo" </dev/null >"$LOGS/mongod.log" 2>&1 &
   echo $! >"$RUN/mongod.pid"
 fi
 for i in $(seq 1 30); do mongosh --quiet --port $MONGO_PORT --eval 'db.runCommand({ping:1}).ok' >/dev/null 2>&1 && break; sleep 1; done

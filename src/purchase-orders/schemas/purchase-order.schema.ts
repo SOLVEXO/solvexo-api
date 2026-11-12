@@ -1,10 +1,12 @@
 /* eslint-disable prettier/prettier */
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument } from 'mongoose';
+import '../../common/schema-types/minor-money';
+import { purchaseOrderTwins } from '../../common/cost-minor.util';
 
 export type PurchaseOrderDocument = HydratedDocument<PurchaseOrder>;
 
-export const PURCHASE_ORDER_STATUSES = ['draft', 'ordered', 'partially_received', 'received', 'closed_short', 'cancelled'] as const;
+export const PURCHASE_ORDER_STATUSES = ['draft', 'approved', 'sent', 'ordered', 'partially_received', 'received', 'closed_short', 'cancelled'] as const;
 export type PurchaseOrderStatus = (typeof PURCHASE_ORDER_STATUSES)[number];
 
 @Schema({ _id: true })
@@ -30,6 +32,8 @@ export class PurchaseOrderItem {
   @Prop({ default: 0 }) quantityReturned: number;
 
   @Prop({ required: true }) unitCost: number;
+  /** G3.0 integer twin of `unitCost` (minor units of the PO's currency), written from the same value */
+  @Prop({ type: 'MinorMoney' }) unitCostMinor?: number;
 }
 
 export const PurchaseOrderItemSchema = SchemaFactory.createForClass(PurchaseOrderItem);
@@ -68,6 +72,11 @@ export class PurchaseOrder {
   @Prop({ type: Number, default: 0 }) shippingCost: number;
   @Prop({ type: Number, default: 0 }) taxCost: number;
   @Prop({ type: Number, default: 0 }) total: number;
+  /** G3.0 integer twins of the four totals above (minor units of `currency`) — dual-written by the hook below, never edited by hand */
+  @Prop({ type: 'MinorMoney' }) subtotalMinor?: number;
+  @Prop({ type: 'MinorMoney' }) shippingCostMinor?: number;
+  @Prop({ type: 'MinorMoney' }) taxCostMinor?: number;
+  @Prop({ type: 'MinorMoney' }) totalMinor?: number;
 
   @Prop({ type: String, required: true }) poNumber: string;
 
@@ -86,9 +95,25 @@ export class PurchaseOrder {
 
   @Prop({ type: String, required: true }) createdBy: string;
 
+  // G3.4 (till): approval + sending + a per-store sequence, all optional so every existing PO stays valid
+  @Prop({ type: Number, default: null }) seq: number | null;
+  @Prop({ type: String, default: null }) approvedBy: string | null;
+  @Prop({ type: Date, default: null }) approvedAt: Date | null;
+  @Prop({ type: Date, default: null }) sentAt: Date | null;
+  /** bumped at the start of every receipt transaction: two tills receiving the same PO line collide on this write, the loser re-reads and the line cap holds */
+  @Prop({ type: Number, default: 0 }) receiptRev: number;
+
   createdAt?: Date;
   updatedAt?: Date;
 }
 
 export const PurchaseOrderSchema = SchemaFactory.createForClass(PurchaseOrder);
+PurchaseOrderSchema.set('toJSON', { getters: true, virtuals: false });
+PurchaseOrderSchema.set('toObject', { getters: true, virtuals: false });
+// G3.0 dual-write: every save (create, edit, receive …) derives the minor twins from the SAME decimals and the PO's own currency
+PurchaseOrderSchema.pre('validate', function () {
+  const t = purchaseOrderTwins(this as any);
+  (this as any).subtotalMinor = t.subtotalMinor; (this as any).shippingCostMinor = t.shippingCostMinor; (this as any).taxCostMinor = t.taxCostMinor; (this as any).totalMinor = t.totalMinor;
+  ((this as any).items ?? []).forEach((it: any, i: number) => { it.unitCostMinor = t.itemUnitCostMinor[i]; });
+});
 PurchaseOrderSchema.index({ storeId: 1, status: 1, createdAt: -1 });

@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
-import { Controller, Get, Patch, Param, Body, Query, Req, Res, UseGuards } from '@nestjs/common';
+import { Controller, Get, Header, HttpCode, Patch, Post, Param, Body, Query, Req, Res, UseGuards } from '@nestjs/common';
+import { escapeHtml } from '../newsletter/marketing-email.util';
 import { Response } from 'express';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { AbandonedCartService } from './abandoned-cart.service';
@@ -12,6 +13,16 @@ import { actingSellerId } from '../common/acting-seller-id.util';
 import { UpdateAbandonedCartSettingsDto } from './dto/update-abandoned-cart-settings.dto';
 
 const PLATFORM_ORIGIN = 'https://solvexo.store';
+
+function unsubscribePage(ok: boolean, storeName: string | null): string {
+  const title = ok ? 'You are unsubscribed' : 'Link not valid';
+  const text = ok
+    ? `You will not get cart reminders or marketing emails from ${escapeHtml(storeName ?? 'this store')} anymore.`
+    : 'This unsubscribe link is invalid or has expired.';
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="robots" content="noindex"><title>${title}</title>
+<style>body{font-family:'Segoe UI',Tahoma,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#f8f9fa;color:#333}.card{background:#fff;border-radius:10px;padding:40px;box-shadow:0 2px 4px rgba(0,0,0,.1);text-align:center;max-width:420px}h1{font-size:20px;margin:0 0 8px}</style></head>
+<body><div class="card"><h1>${title}</h1><p>${text}</p></div></body></html>`;
+}
 
 @ApiTags('Abandoned Cart')
 @Controller('api/abandoned-cart')
@@ -61,8 +72,25 @@ export class AbandonedCartController {
   /** No auth — the whole point is a buyer clicking a link straight out of
    *  their inbox. Records the click, then sends them on to their real cart. */
   @Get('click/:token')
-  async trackClick(@Param('token') token: string, @Res() res: Response) {
-    await this.abandonedCartService.trackClick(token);
-    return res.redirect(302, `${PLATFORM_ORIGIN}/cart`);
+  async trackClick(@Param('token') token: string, @Query('s') storeId: string | undefined, @Res() res: Response) {
+    // The cart lives on the STORE's own address (never on the platform site), so the redirect goes there; an unknown link falls back to the platform home.
+    const target = await this.abandonedCartService.trackClick(token, typeof storeId === 'string' ? storeId : undefined);
+    return res.redirect(302, target ?? PLATFORM_ORIGIN);
+  }
+
+  /** No auth — the unsubscribe link in the footer of a recovery email (also the RFC 8058 List-Unsubscribe target). */
+  @Get('unsubscribe/:token')
+  @Header('Content-Type', 'text/html; charset=utf-8')
+  async unsubscribe(@Param('token') token: string) {
+    const r = await this.abandonedCartService.unsubscribeByToken(token);
+    return unsubscribePage(r.ok, r.storeName);
+  }
+
+  /** One-click unsubscribe POST that Gmail/Yahoo send from their "Unsubscribe" button. */
+  @Post('unsubscribe/:token')
+  @HttpCode(200)
+  async unsubscribeOneClick(@Param('token') token: string) {
+    await this.abandonedCartService.unsubscribeByToken(token);
+    return { success: true };
   }
 }

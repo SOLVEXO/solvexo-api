@@ -307,6 +307,11 @@ export class B2BAdminService {
     return data;
   }
 
+  /** How many live wholesale catalogs the store has — checked against the plan's `maxB2BCatalogs` before a new one is created. */
+  countCatalogs(storeId: string): Promise<number> {
+    return this.catalogs.countDocuments({ storeId, isDelete: false });
+  }
+
   async createCatalog(storeId: string, actor: { id: string; role: string }, body: any) {
     const data = this.catalogInput(body);
     try {

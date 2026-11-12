@@ -107,6 +107,9 @@ export class PlatformPlan {
       maxActivePromotions: 1,
       calculatedShippingRatesAllowed: false,
       maxMarkets: 3,
+      digitalCoursesAllowed: true,
+      maxB2BCatalogs: 3,
+      monthlyEmailSends: 2000,
     }),
   })
   limits: {
@@ -137,6 +140,9 @@ export class PlatformPlan {
     maxActivePromotions: number;           // -1 = unlimited — enforced by EntitlementsService.assertCanCreatePromotion
     calculatedShippingRatesAllowed: boolean; // live carrier rates (Shippo) — Shopify: "third-party calculated shipping rates"
     maxMarkets: number;                    // -1 = unlimited — max checkout currencies (Store.enabledCurrencies), base included
+    digitalCoursesAllowed: boolean;        // gates creating courses (Digital hub)
+    maxB2BCatalogs: number;                // -1 = unlimited — wholesale catalogs per store (Shopify caps non-Plus plans at 3)
+    monthlyEmailSends: number;             // marketing emails per calendar month: campaigns, automations (welcome, back in stock, price drop, win-back) and abandoned-cart reminders
   };
 
   @Prop({ type: String, enum: ['active', 'archived'], default: 'active' }) status: string;

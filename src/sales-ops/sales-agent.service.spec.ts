@@ -142,6 +142,13 @@ describe('SalesAgentService', () => {
     expect((await agent.chatConfig()).data.enabled).toBe(false);
   });
 
+  it('shares the WhatsApp sales number only once WhatsApp is connected', async () => {
+    const connected = setup({ settings: { ...ON, waPhoneNumberId: '123', waAccessTokenEnc: 'enc', waDisplayNumber: '+92 300 1234567' } });
+    expect((await connected.agent.chatConfig()).data.whatsappNumber).toBe('+92 300 1234567');
+    const half = setup({ settings: { ...ON, waDisplayNumber: '+92 300 1234567' } });
+    expect((await half.agent.chatConfig()).data.whatsappNumber).toBeNull();
+  });
+
   it('chats on the website, books a demo into the pipeline, and keeps the transcript', async () => {
     const { agent, ai, leads, chats, notifications } = setup({ settings: ON });
     const started = await agent.startChat({

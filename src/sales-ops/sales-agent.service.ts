@@ -15,7 +15,7 @@ import { DatabaseService } from '../database/databaseservice';
 import { ExchangeRateService } from '../exchange-rate/exchange-rate.service';
 import { EmailService } from '../otp/services/email.service';
 import { notificationEmailShell } from '../notifications/templates/notification-email.template';
-import { TextGenerationService } from '../ai-studio/providers/text-generation.service';
+import { TextGenerationService } from '../ai/text-generation.service';
 import { SalesLead, SalesLeadDocument } from './schemas/sales-lead.schema';
 import {
   SalesActivity,
@@ -213,6 +213,8 @@ export class SalesAgentService {
         enabled,
         agentName: s.aiAgentName || 'Sana',
         greeting: this.greeting(s),
+        // Solvexo's own WhatsApp Business number, once connected in Sales → WhatsApp (public: it is the sales line).
+        whatsappNumber: s.waPhoneNumberId && s.waAccessTokenEnc ? s.waDisplayNumber ?? null : null,
       },
     };
   }

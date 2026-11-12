@@ -41,7 +41,8 @@ export function campaignLinkTargets(html: string): Set<string> {
 export function renderCampaignEmail(input: CampaignEmailInput): { subject: string; html: string } {
   const vars = { customerName: input.customerName, storeName: input.storeName };
   const subject = renderMergeTags(input.subject, vars);
-  let body = renderMergeTags(input.message, vars);
+  // The body is HTML and the customer's name is buyer-controlled, so it is escaped; the subject is plain text and keeps it as typed.
+  let body = renderMergeTags(input.message, { customerName: escapeHtml(input.customerName), storeName: escapeHtml(input.storeName) });
   if (input.trackLink) body = trackLinks(body, input.trackLink);
   const storeName = escapeHtml(input.storeName);
 

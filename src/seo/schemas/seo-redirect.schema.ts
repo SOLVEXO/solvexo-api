@@ -19,6 +19,10 @@ export class SeoRedirect {
   @Prop({ type: String, required: true })
   source: string; // path, e.g. "/old-product-slug"
 
+  /** `source` in lower case, so "/Old-Page" and "/old-page" are the same redirect. Rows written before this field existed have none and are matched on `source`. */
+  @Prop({ type: String, default: null })
+  sourceKey: string | null;
+
   @Prop({ type: String, required: true })
   destination: string; // relative path or allow-listed absolute URL — validated in SeoRedirectsService
 
@@ -41,3 +45,4 @@ export class SeoRedirect {
 export const SeoRedirectSchema = SchemaFactory.createForClass(SeoRedirect);
 SeoRedirectSchema.index({ storeId: 1, source: 1 }, { unique: true });
 SeoRedirectSchema.index({ storeId: 1, isActive: 1 });
+SeoRedirectSchema.index({ storeId: 1, sourceKey: 1 });

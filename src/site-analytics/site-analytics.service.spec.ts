@@ -86,6 +86,23 @@ describe('SiteAnalyticsService', () => {
     ]);
   });
 
+  it('reports the store setup steps from page views of /onboard?step=…, then the store_created event', async () => {
+    const { svc, calls, setReply } = setup();
+    setReply(() => ({ json: { reports: [20, 15, 12, 10, 8].map((v) => totalsReport(['totalUsers'], [v])) } }));
+    const out = (await svc.setupSteps('7d')).data;
+    const filters = calls[0].body.requests.map((r: any) => r.dimensionFilter.filter);
+    expect(filters.slice(0, 4).map((f: any) => [f.fieldName, f.stringFilter.matchType, f.stringFilter.value])).toEqual([
+      ['pagePathPlusQueryString', 'CONTAINS', 'onboard?step=store-info'],
+      ['pagePathPlusQueryString', 'CONTAINS', 'onboard?step=checkout'],
+      ['pagePathPlusQueryString', 'CONTAINS', 'onboard?step=seller-type'],
+      ['pagePathPlusQueryString', 'CONTAINS', 'onboard?step=what-you-sell'],
+    ]);
+    expect(filters[4]).toMatchObject({ fieldName: 'eventName', stringFilter: { value: 'store_created' } });
+    expect(out.steps.map((s: any) => [s.key, s.users, s.fromPrevious])).toEqual([
+      ['store_info', 20, null], ['checkout', 15, 75], ['seller_type', 12, 80], ['what_you_sell', 10, 83.3], ['store_created', 8, 80],
+    ]);
+  });
+
   it('drops GA4 "(not set)" rows and reads realtime visitors', async () => {
     const { svc, setReply } = setup();
     setReply((url) => url.endsWith(':runRealtimeReport')

@@ -188,7 +188,8 @@ describe('section-settings.validator', () => {
     });
 
     it('product_catalog: rejects an invalid columns value', () => {
-      expect(() => validateSectionSettings('product_catalog', { columns: 5 })).toThrow(BadRequestException);
+      expect(() => validateSectionSettings('product_catalog', { columns: 9 })).toThrow(BadRequestException); // columns are 1-8 since main's 7b90f79
+      expect(() => validateSectionSettings('product_catalog', { columns: 5 })).not.toThrow();
       expect(() => validateSectionSettings('product_catalog', { columns: 3 })).not.toThrow();
     });
 
@@ -266,7 +267,7 @@ describe('section-settings.validator', () => {
     });
 
     it('collection_product_grid: rejects an invalid columns/defaultSort/showFilters value, accepts a valid one', () => {
-      expect(() => validateSectionSettings('collection_product_grid', { columns: 5 })).toThrow(BadRequestException);
+      expect(() => validateSectionSettings('collection_product_grid', { columns: 9 })).toThrow(BadRequestException); // 1-8 since main's 7b90f79
       expect(() => validateSectionSettings('collection_product_grid', { defaultSort: 'random' })).toThrow(BadRequestException);
       expect(() => validateSectionSettings('collection_product_grid', { showFilters: 'yes' })).toThrow(BadRequestException);
       expect(() => validateSectionSettings('collection_product_grid', { columns: 3, defaultSort: 'newest', showFilters: true })).not.toThrow();

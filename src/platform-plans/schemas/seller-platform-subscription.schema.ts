@@ -88,6 +88,11 @@ export class SellerPlatformSubscription {
   // already does via `PlatformPlanInvoice.stripeInvoiceId` — that path can't
   // be reused here since a failed invoice never creates one.
   @Prop({ type: String, default: null }) lastFailedStripeInvoiceId: string | null;
+  // When the store first entered 'past_due' (first failed renewal payment).
+  // The daily `lockOverduePastDue()` job locks the store this many days later
+  // (PAST_DUE_LOCK_DAYS) — Stripe/manual retries keep running meanwhile and a
+  // successful payment clears it. Null whenever the store is not past due.
+  @Prop({ type: Date, default: null }) pastDueSince: Date | null;
 
   // Set the moment this store enters 'locked'/'trial_ended' (now + the
   // plan's — or, for 'trial_ended', a fallback default — gracePeriodDays).

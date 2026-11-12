@@ -48,6 +48,12 @@ export class EmailCampaignsProcessor extends WorkerHost {
     const existing = await this.emailCampaignsService.getSendState(sendId);
     if (!existing || existing.sentAt || existing.failedAt) return;
 
+    // Consent can be withdrawn between queueing and sending (retries run up to ~14 minutes later).
+    if (existing.storeId && !(await this.emailCampaignsService.isStillSubscribed(existing.storeId, email))) {
+      await this.emailCampaignsService.markSendResult(sendId, campaignId, false, 'Unsubscribed before this email was sent');
+      return;
+    }
+
     try {
       // Every click routes through the tracking redirect first (the redirect
       // only honours targets that are really in this campaign); a real open

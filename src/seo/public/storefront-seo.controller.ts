@@ -5,6 +5,7 @@ import type { Response } from 'express';
 import { DatabaseService } from '@/database/databaseservice';
 import { SeoResolutionService } from '../services/seo-resolution.service';
 import { SeoRedirectsService } from '../services/seo-redirects.service';
+import { SeoCanonicalService } from '../services/seo-canonical.service';
 
 const PLATFORM_ROOT = 'solvexo.store';
 const MAX_URLS_PER_SITEMAP = 45_000;
@@ -14,7 +15,12 @@ const MAX_URLS_PER_SITEMAP = 45_000;
  * the original host in X-Forwarded-Host. */
 @Controller('api/storefront-seo')
 export class StorefrontSeoController {
-  constructor(private readonly db: DatabaseService, private readonly seo: SeoResolutionService, private readonly redirects: SeoRedirectsService) {}
+  constructor(
+    private readonly db: DatabaseService,
+    private readonly seo: SeoResolutionService,
+    private readonly redirects: SeoRedirectsService,
+    private readonly canonicalRules: SeoCanonicalService,
+  ) {}
 
   /** Host-aware document metadata and route existence for the Vercel HTML
    * shell. The Vercel function injects these tags into index.html before the
@@ -42,6 +48,12 @@ export class StorefrontSeoController {
 
     const meta: any = await this.routeMeta(store, storeId, routePath);
     if (meta.redirect) return meta;
+    // The seller's path-pattern canonical rules (e.g. /collections/:handle -> one preferred URL). An override set on the page itself
+    // (product / page / category / store) always wins, so a rule only applies when the page is still its own canonical.
+    if (!meta.noindex && meta.canonicalUrl === `${getCanonicalOrigin(store)}${routePath}`) {
+      const ruleTarget = await this.canonicalRules.resolveForPath(storeId, routePath).catch(() => null);
+      if (ruleTarget) { meta.canonicalUrl = ruleTarget; meta.url = ruleTarget; }
+    }
     const translation = meta._translations?.[language];
     delete meta._translations;
     if (language !== defaultLanguage && translation) {

@@ -13,6 +13,8 @@ import { resolveStoreCountry } from '../integrations/payment-availability.util';
 import { PlatformTaxSettings, PlatformTaxSettingsDocument } from './schemas/platform-tax-settings.schema';
 import { isValidTaxId, pickPlatformTaxRate, PlatformTaxPick, PlatformTaxRate, round2, taxOnNet } from './platform-tax.util';
 import { UpdatePlatformTaxDto } from './dto/update-platform-tax.dto';
+import { NotificationsService } from '../notifications/notifications.service';
+import { NOTIFICATION_TYPES } from '../notifications/notification.types';
 
 const KEY = 'platform';
 const EMPTY = { key: KEY, legalName: '', ntn: '', strn: '', authority: 'FBR', address: '', rates: [] as any[] };
@@ -28,7 +30,36 @@ export class PlatformTaxService {
     private readonly activityLogService: ActivityLogService,
     @Optional() @InjectModel(PlatformTaxRecord.name) private readonly recordModel?: Model<PlatformTaxRecordDocument>,
     @Optional() private readonly exchangeRate?: ExchangeRateService,
+    @Optional() private readonly notificationsService?: NotificationsService,
   ) {}
+
+  private readonly alertedAt = new Map<string, number>();
+
+  /**
+   * A tax problem must not block a sale, but it must never be silent either: the
+   * charge goes out WITHOUT tax, so the admin is told (in-app + log + activity log).
+   * One alert per store per 6 hours so a retry loop cannot flood the admin bell.
+   */
+  private reportTaxFailure(storeId: string, reason: string): void {
+    this.logger.error(`Platform tax NOT applied for store ${storeId}: ${reason}`);
+    const now = Date.now();
+    const last = this.alertedAt.get(storeId) ?? 0;
+    if (now - last < 6 * 60 * 60 * 1000) return;
+    if (this.alertedAt.size > 500) this.alertedAt.clear();
+    this.alertedAt.set(storeId, now);
+    try {
+      this.activityLogService.log({
+        storeId, category: 'platform_plans', action: 'platform_tax_not_applied',
+        description: `A Solvexo charge for this store went out without tax: ${reason}`, actorRole: 'system',
+      });
+      this.notificationsService?.notifyAdmins({
+        type: NOTIFICATION_TYPES.ADMIN_PLATFORM_BILLING_FAILED,
+        title: 'Tax was NOT applied to a charge',
+        body: `A plan charge for store ${storeId} went out without tax (${reason}). Check Settings → Tax.`,
+        data: { storeId, link: '/admin/settings' },
+      })?.catch(() => {});
+    } catch { /* alerting must never break billing */ }
+  }
 
   /** Remembers the tax collected on a paid one-off charge (promotion, store-app fee, POS plan). Idempotent per charge; never throws (billing must not fail over a report row). */
   async recordCollected(p: { source: 'promotion' | 'store_app' | 'pos_plan'; refId: string; storeId: string; taxMinor: number; currency: string }): Promise<void> {
@@ -91,10 +122,22 @@ export class PlatformTaxService {
         const prev = old.get(id);
         // A Stripe TaxRate cannot be edited: keep its id only while percentage/label/country are unchanged.
         const sameAsPrev = prev && prev.ratePercent === r.ratePercent && prev.label === label && prev.country === country;
+        // A rate that is NEWLY Confirmed (or a confirmed rate that is changed) must say where it comes from and who confirmed it.
+        // A rate that was already confirmed and is unchanged keeps charging exactly as before (legacy confirmed, no new claim).
+        let verification: { source: string; accountantName: string; verifiedAt: Date; verifiedBy: string } | null = null;
+        if (r.status === 'confirmed') {
+          if (prev && prev.status === 'confirmed' && sameAsPrev) verification = prev.verification ?? null;
+          else {
+            const source = r.verification?.source?.trim(); const accountantName = r.verification?.accountantName?.trim();
+            if (!source || !accountantName) throw new BadRequestException(`A rate cannot be Confirmed without naming its source and the accountant who confirmed it (${country} ${r.ratePercent}%).`);
+            verification = { source, accountantName, verifiedAt: new Date(), verifiedBy: adminId };
+          }
+        }
         return {
           id, country, label, ratePercent: r.ratePercent, status: r.status,
           effectiveFrom: r.effectiveFrom ? new Date(r.effectiveFrom) : null,
           stripeTaxRateId: sameAsPrev ? prev.stripeTaxRateId ?? null : null,
+          verification,
         };
       });
       const confirmedKeys = new Set<string>();
@@ -130,7 +173,7 @@ export class PlatformTaxService {
       const { taxUSD, totalUSD } = taxOnNet(netUSD, picked.rate.ratePercent);
       return { netUSD, taxUSD, totalUSD, ratePercent: picked.rate.ratePercent, label: picked.rate.label, country: picked.country };
     } catch (e) {
-      this.logger.error(`Could not quote platform tax for store ${storeId}: ${(e as Error).message}`);
+      this.reportTaxFailure(storeId, `quote failed: ${(e as Error).message}`);
       return { netUSD, taxUSD: 0, totalUSD: netUSD, ratePercent: 0, label: null, country: null };
     }
   }
@@ -141,7 +184,7 @@ export class PlatformTaxService {
       const picked = await this.resolveForStore(storeId);
       return picked.rate ? { ratePercent: picked.rate.ratePercent, label: picked.rate.label, country: picked.country } : null;
     } catch (e) {
-      this.logger.error(`Could not resolve platform tax rate for store ${storeId}: ${(e as Error).message}`);
+      this.reportTaxFailure(storeId, `rate lookup failed: ${(e as Error).message}`);
       return null;
     }
   }
@@ -178,9 +221,10 @@ export class PlatformTaxService {
       if (id && id !== picked.rate.stripeTaxRateId) {
         await this.model.updateOne({ key: KEY, 'rates.id': picked.rate.id }, { $set: { 'rates.$.stripeTaxRateId': id } });
       }
+      if (!id) this.reportTaxFailure(storeId, 'Stripe did not return a tax rate id');
       return id;
     } catch (e) {
-      this.logger.error(`Could not prepare platform tax rate for store ${storeId}: ${(e as Error).message}`);
+      this.reportTaxFailure(storeId, `Stripe tax rate setup failed: ${(e as Error).message}`);
       return null;
     }
   }

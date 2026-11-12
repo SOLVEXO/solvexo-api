@@ -13,6 +13,8 @@ import { drainLocationStock } from '../common/location-stock.util';
 import { consumeLots } from '../common/lot-consumption.util';
 import { refreshExpiredStock } from '../common/expired-stock.util';
 import { SUPPLIER_RETURN_REASONS } from './schemas/supplier-return.schema';
+import { costTwin, expOf, recordCostMinor } from '../common/cost-minor.util';
+import { roundMoney } from '../common/money-minor.util';
 import { toCsv } from '../analytics/utils/csv.util';
 
 const round = (n: number) => Math.round(n * 100) / 100;
@@ -33,6 +35,8 @@ export class CreateSupplierReturnDto {
   @IsOptional() @IsString() supplierName?: string;
   @IsOptional() @IsString() purchaseOrderId?: string;
   @IsOptional() @IsString() locationId?: string;
+  /** G3.4: the goods receipt the units came in on */
+  @IsOptional() @IsString() receiptId?: string;
   @IsOptional() @IsIn([...SUPPLIER_RETURN_REASONS]) reason?: string;
   @IsOptional() @IsString() @MaxLength(500) note?: string;
   /** client-generated per submit: a double click / retry returns the original instead of removing stock twice */
@@ -75,7 +79,7 @@ export class SupplierReturnsService implements OnModuleInit {
     return { needs: dto.items.some((l) => l.fromDamaged || l.quantity >= threshold), threshold };
   }
 
-  async create(storeId: string, sellerId: string, dto: CreateSupplierReturnDto, actorId?: string, actor?: { role?: string; permissions?: string[] | null }) {
+  async create(storeId: string, sellerId: string, dto: CreateSupplierReturnDto, actorId?: string, actor?: { role?: string; permissions?: string[] | null }, hooks?: { inTx?: (session: any, doc: any) => Promise<void> }) {
     await verifyStoreOwnershipOrForbidden(this.r.storeModel, storeId, sellerId);
     // A staff member below the approval bar (large or damaged-pool return, no inventory.approve) does not move stock: the request
     // is queued in the same approvals queue manual adjustments use, and applied verbatim when a manager approves it.
@@ -133,6 +137,9 @@ export class SupplierReturnsService implements OnModuleInit {
       }
     }
 
+    // G3.0: the store's currency (all costs here are in it) → the integer twins
+    const returnCurrency: string = ((await this.r.storeModel.findById(storeId).select('baseCurrency').lean()) as any)?.baseCurrency ?? 'USD';
+    const returnExp = expOf(returnCurrency);
     const returnNumber = `SR-${Date.now()}-${Math.floor(Math.random() * 9000 + 1000)}`;
     const reason = (dto.reason as any) ?? 'other';
 
@@ -203,7 +210,7 @@ export class SupplierReturnsService implements OnModuleInit {
             if (unitCost == null) unitCost = lot.costPrice;
           } else if (variant.trackLots) {
             const cost = await consumeLots(this.r, String(variant._id), qty, { session });
-            if (unitCost == null && cost != null) unitCost = round(cost / qty);
+            if (unitCost == null && cost != null) unitCost = roundMoney(cost / qty, returnExp);
           }
           const finalCost: number = unitCost ?? poItem?.unitCost ?? variant.costPrice ?? 0;
 
@@ -211,7 +218,7 @@ export class SupplierReturnsService implements OnModuleInit {
           const newStock = (before.stock ?? 0) - qty;
           if (variant.costPrice != null && newStock > 0) {
             const newAvg = ((before.stock ?? 0) * variant.costPrice - qty * finalCost) / newStock;
-            if (Number.isFinite(newAvg) && newAvg >= 0) await productVariantModel.updateOne({ _id: variant._id }, { $set: { costPrice: round(newAvg) } }, { session });
+            if (Number.isFinite(newAvg) && newAvg >= 0) await productVariantModel.updateOne({ _id: variant._id }, { $set: { costPrice: roundMoney(newAvg, returnExp), costPriceMinor: costTwin(roundMoney(newAvg, returnExp), returnExp) } }, { session });
           }
 
           if (poItem) await purchaseOrderModel.updateOne({ _id: poId, 'items._id': poItem._id }, { $inc: { 'items.$.quantityReturned': qty } }, { session });
@@ -228,14 +235,16 @@ export class SupplierReturnsService implements OnModuleInit {
           totalCredit += qty * finalCost;
           items.push({
             productId: variant.productId, variantId: String(variant._id), name, sku: variant.sku ?? null,
-            quantity: qty, unitCost: round(finalCost), lotId: line.lotId ?? null, fromDamaged: !!line.fromDamaged, purchaseOrderItemId: poItem ? String(poItem._id) : null,
+            quantity: qty, unitCost: roundMoney(finalCost, returnExp), lotId: line.lotId ?? null, fromDamaged: !!line.fromDamaged, purchaseOrderItemId: poItem ? String(poItem._id) : null,
           });
         }
 
         const [doc] = await (supplierReturnModel as any).create([{
           storeId, sellerId, returnNumber, supplierId, supplierName, purchaseOrderId: poId, locationId: dto.locationId ?? null,
-          reason, note: dto.note?.trim() || null, items, totalCredit: round(totalCredit), requestId: dto.requestId ?? null, createdBy: actorId ?? sellerId,
+          reason, note: dto.note?.trim() || null, items, totalCredit: roundMoney(totalCredit, returnExp), receiptId: dto.receiptId ?? null, currency: returnCurrency, requestId: dto.requestId ?? null, createdBy: actorId ?? sellerId,
         }], { session });
+        recordCostMinor('supplierReturn', doc, returnExp);
+        if (hooks?.inTx) await hooks.inTx(session, doc);
         return doc;
       });
     } catch (err: any) {

@@ -1,4 +1,5 @@
-import { BadRequestException, ForbiddenException, HttpException, HttpStatus, Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, HttpException, HttpStatus, Injectable, NotFoundException, Optional, UnauthorizedException } from '@nestjs/common';
+import { DigitalMailerService } from '../digital-access/digital-mailer.service';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { randomBytes } from 'crypto';
@@ -19,37 +20,63 @@ export class LicensesService {
     private readonly db: DatabaseService,
     private readonly redis: RedisService,
     @InjectModel(LicenseKey.name) readonly keyModel: Model<LicenseKeyDocument>,
+    @Optional() private readonly mailer?: DigitalMailerService,
   ) {}
 
   // ---------------- issuing ----------------
 
   /** One key per paid digital order item of a product that has license keys switched on. Idempotent (unique orderItemId). */
   async ensureFromOrders(storeId: string, customerId: string): Promise<void> {
-    const { orderModel, productModel } = this.db.repositories;
+    const { orderModel } = this.db.repositories;
     const orders = await orderModel.find({ userId: customerId, isPaid: true, isDelete: false, 'sellerOrders.storeId': storeId }).limit(200).lean();
-    for (const o of orders as any[]) {
-      for (const so of o.sellerOrders ?? []) {
-        if (so.storeId !== storeId) continue;
-        for (const item of so.items ?? []) {
-          if (item.type !== 'digital' || DEAD_ITEM.includes(item.status)) continue;
-          const p: any = await productModel.findOne({ _id: item.productId, storeId }).select('digital').lean();
-          const cfg = p?.digital?.licenseKeys;
-          if (!cfg?.enabled) continue;
-          const exists = await this.keyModel.exists({ storeId, orderItemId: String(item._id) });
-          if (exists) continue;
-          const key = generateLicenseKey();
-          try {
-            await this.keyModel.create({
-              storeId, productId: String(item.productId), customerId, orderId: String(o._id), orderItemId: String(item._id),
-              keyHash: hashKey(key), keyEnc: encryptCredential(key, 'INTEGRATIONS'), keyHint: key.slice(-4),
-              activationLimit: Number(cfg.activationLimit) > 0 ? Number(cfg.activationLimit) : 1,
-            });
-          } catch (e: any) {
-            if (e?.code !== 11000) throw e; // a parallel call created it first
+    for (const o of orders as any[]) await this.issueForOrderDoc(o, storeId);
+  }
+
+  /** Called the moment an order is paid (through the order event hook): the buyer's keys exist at once, so the seller sees
+   *  them and the buyer's /licenses page shows them without anyone having to open it first. Idempotent. */
+  async issueForOrder(orderId: string): Promise<number> {
+    const order: any = await this.db.repositories.orderModel.findOne({ _id: orderId, isPaid: true, isDelete: false }).lean();
+    if (!order) return 0;
+    let issued = 0;
+    for (const storeId of new Set<string>((order.sellerOrders ?? []).map((so: any) => String(so.storeId)))) {
+      issued += await this.issueForOrderDoc(order, storeId, true);
+    }
+    return issued;
+  }
+
+  /** One key per paid digital item of one order for one store, when the product has license keys switched on. Returns how many were created.
+   *  `notify` = e-mail the key to the buyer (only the payment-time path does: a key created later because the buyer opened /licenses
+   *  for an old order must not surprise them with a mail). A mail problem never fails the purchase. */
+  private async issueForOrderDoc(o: any, storeId: string, notify = false): Promise<number> {
+    const { productModel } = this.db.repositories;
+    let created = 0;
+    for (const so of o.sellerOrders ?? []) {
+      if (so.storeId !== storeId) continue;
+      for (const item of so.items ?? []) {
+        if (item.type !== 'digital' || DEAD_ITEM.includes(item.status)) continue;
+        const p: any = await productModel.findOne({ _id: item.productId, storeId }).select('digital name').lean();
+        const cfg = p?.digital?.licenseKeys;
+        if (!cfg?.enabled) continue;
+        const exists = await this.keyModel.exists({ storeId, orderItemId: String(item._id) });
+        if (exists) continue;
+        const key = generateLicenseKey();
+        try {
+          await this.keyModel.create({
+            storeId, productId: String(item.productId), customerId: String(o.userId), orderId: String(o._id), orderItemId: String(item._id),
+            keyHash: hashKey(key), keyEnc: encryptCredential(key, 'INTEGRATIONS'), keyHint: key.slice(-4),
+            activationLimit: Number(cfg.activationLimit) > 0 ? Number(cfg.activationLimit) : 1,
+          });
+          created++;
+          if (notify && this.mailer) {
+            const limit = Number(cfg.activationLimit) > 0 ? Number(cfg.activationLimit) : 1;
+            void Promise.resolve(this.mailer.licenseKeyIssued(storeId, String(o.userId), p?.name ?? item.name ?? 'your purchase', key, limit)).catch(() => undefined);
           }
+        } catch (e: any) {
+          if (e?.code !== 11000) throw e; // a parallel call created it first
         }
       }
     }
+    return created;
   }
 
   /** An item that was cancelled / refunded kills its key (checked on every validation too). */

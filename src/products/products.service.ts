@@ -314,10 +314,12 @@ export class ProductsService {
   private async restrictToActiveStores(query: any, excludeLocked = true): Promise<void> {
     // Marketplace-wide listings (no single storeId) also drop password-protected / coming_soon stores so a locked store never
     // leaks via search/category browse. A single exact storeId is left to the storefront-access middleware (owner/token bypass).
+    // Seller-trust limited stores (`marketplaceHidden`) are likewise left out of marketplace-wide listings only — a store's own
+    // storefront (single storeId) keeps showing its products.
     const wide = excludeLocked && typeof query.storeId !== 'string';
     const activeIds: string[] = (
       await this.databaseService.repositories.storeModel
-        .find({ status: 'active', isDelete: false, ...(wide ? { privacyMode: { $nin: ['password', 'coming_soon'] } } : {}) }, { _id: 1 })
+        .find({ status: 'active', isDelete: false, ...(wide ? { privacyMode: { $nin: ['password', 'coming_soon'] }, marketplaceHidden: { $ne: true } } : {}) }, { _id: 1 })
         .lean()
     ).map((s: any) => s._id.toString());
 
@@ -911,9 +913,10 @@ export class ProductsService {
     // Same real fix as getVariantById — a fully public route, and until now
     // every variant's `costPrice` (the seller's own margin data) leaked
     // straight through with no sanitization.
+    // the public view never carries cost (costPrice / costPriceMinor — G3.0)
     // Pre-order: expose only what a buyer needs (label, date, message, remaining) — never the raw sold counter/limit.
-    const publicVariants = variants.map((v: any) => { const { costPrice: _c, preorder, ...rest } = v; return { ...rest, preorder: preorderPublicView(preorder, availableStock(v)) }; });
-    const publicDefaultVariant = defaultVariant ? (() => { const { costPrice: _c, preorder, ...rest } = defaultVariant as any; return { ...rest, preorder: preorderPublicView(preorder, availableStock(defaultVariant as any)) }; })() : null;
+    const publicVariants = variants.map((v: any) => { const { costPrice: _c, costPriceMinor: _cm, preorder, ...rest } = v; return { ...rest, preorder: preorderPublicView(preorder, availableStock(v)) }; });
+    const publicDefaultVariant = defaultVariant ? (() => { const { costPrice: _c, costPriceMinor: _cm, preorder, ...rest } = defaultVariant as any; return { ...rest, preorder: preorderPublicView(preorder, availableStock(defaultVariant as any)) }; })() : null;
 
     // Bundles: "includes" list + derived availability (min over components of floor(available / qty)); null = unlimited.
     let bundle: { components: { name: string; image: string | null; quantity: number }[]; available: number | null } | null = null;
@@ -1012,7 +1015,7 @@ export class ProductsService {
     // while building the staff-facing `products.view_cost` permission split
     // — that split would have been cosmetic if the same cost figure leaked
     // to any anonymous caller regardless of permission.
-    const { costPrice: _costPrice, ...publicVariant } = variant as any;
+    const { costPrice: _costPrice, costPriceMinor: _costPriceMinor, ...publicVariant } = variant as any;
 
     return {
       message: 'Variant & Product fetched successfully',
@@ -1420,7 +1423,9 @@ export class ProductsService {
 
     const categoryId = await this.resolveProductCategoryId(storeId, store.categoryId, requestedCategoryId);
     // Prepared BEFORE the transaction: it can upload/derive a preview file, which must not hold a transaction open.
-    const digitalPayload = digital ? await this.prepareDigitalPreview(null, normalizeDigital(digital)) : null;
+    const normalizedDigital = digital ? normalizeDigital(digital) : null;
+    if (normalizedDigital?.licenseKeys?.enabled) await this.entitlementsService.assertFeatureAllowed(storeId, 'digitalLicensesAllowed', 'License keys');
+    const digitalPayload = normalizedDigital ? await this.prepareDigitalPreview(null, normalizedDigital) : null;
 
     const productId = new Types.ObjectId();
     const [sku] = generateSkus(String(productId), 1, []);
@@ -1682,7 +1687,12 @@ export class ProductsService {
       productUpdate.scheduledAt = resolveScheduledAt('scheduled', scheduledAt);
     }
     if (digital !== undefined && product.type === 'digital') {
-      productUpdate.digital = await this.prepareDigitalPreview(product.digital?.preview, normalizeDigital(digital, product.digital));
+      const nextDigital = normalizeDigital(digital, product.digital);
+      // Switching license keys ON is a plan feature; leaving them on (or switching off) for a store that downgraded is always allowed.
+      if (nextDigital?.licenseKeys?.enabled && !product.digital?.licenseKeys?.enabled) {
+        await this.entitlementsService.assertFeatureAllowed(String(product.storeId), 'digitalLicensesAllowed', 'License keys');
+      }
+      productUpdate.digital = await this.prepareDigitalPreview(product.digital?.preview, nextDigital);
     }
 
     if (educationLevel !== undefined && product.productType === 'educational') {

@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import '../../common/schema-types/minor-money';
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { attachResourceHooks, stockUpdateMatters } from '../../common/resource-events';
 import { Document } from 'mongoose';
@@ -113,6 +114,10 @@ export class ProductVariant {
   @Prop({ type: Number, default: null })
   costPrice: number | null;
 
+  // G3.0 integer twin of `costPrice` (minor units of the store's currency) — dual-written wherever costPrice is written
+  @Prop({ type: 'MinorMoney', default: null })
+  costPriceMinor: number | null;
+
   // physical only — when true, `stock` is ignored everywhere (cart, checkout,
   // payment, POS, inventory dashboard) and the product is always purchasable.
   @Prop({ default: false })
@@ -217,6 +222,8 @@ ProductVariantSchema.index(
   { unique: true, partialFilterExpression: { isDelete: false, storeId: { $type: 'string' }, sku: { $gt: '' } }, name: 'storeId_1_sku_1_unique_live' },
 );
 ProductVariantSchema.index({ barcode: 1 }, { sparse: true });
+ProductVariantSchema.set('toJSON', { getters: true, virtuals: false }); // G3.0: costPriceMinor (a MinorMoney) serialises as a plain integer
+ProductVariantSchema.set('toObject', { getters: true, virtuals: false });
 
 // Merchant webhooks: stock movements signal inventory.changed (common/resource-events.ts).
 attachResourceHooks(ProductVariantSchema, 'variant_stock', { matters: stockUpdateMatters, onUpdate: true });

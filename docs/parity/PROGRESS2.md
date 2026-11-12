@@ -10,7 +10,7 @@ Read MASTER2.md first. Update after every phase. Docs live in the API repo; web 
 | Q3 3PL / fulfillment services | done (registry, queue, signed callbacks, stock sync, UI) | next commit | real 3PL, Redis worker, browser |
 | Q4 Product subscriptions | done (manual-pay renewals only; plans, contracts, engine, dunning, UI) | next commit | card-on-file recurring (not built), browser, real cron |
 | Q5 Checkout rules | done (4 rule types, enforcement, test tool, branding in 3 themes) | next commit | real checkout run, browser, cart preview UI |
-| Q6 A/B experiments | not started | - | - |
-| Q7 App platform | not started | - | - |
+| Q6 A/B experiments | done (A/B on a section or theme settings, consent-respecting bucketing, results + verdict, winner) | next commit | real traffic, browser, flicker on first paint |
+| Q7 App platform | done (minimal: registry, consent + code exchange, scoped tokens, app webhooks, uninstall, embed) | next commit | real app, browser iframe, token expiry (none) |
 | Q8 Social creatives | not started | - | - |
 | Q9 Final audit | not started | - | - |

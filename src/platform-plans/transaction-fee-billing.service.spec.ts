@@ -25,7 +25,7 @@ function setup(opts: {
     findOne: jest.fn().mockResolvedValue(opts.existingBill ?? null),
     findOneAndUpdate: jest.fn().mockResolvedValue(bill),
     updateOne: jest.fn().mockResolvedValue({}),
-    find: jest.fn().mockReturnValue({ sort: () => ({ limit: () => ({ lean: () => Promise.resolve([]) }) }) }),
+    find: jest.fn().mockReturnValue({ limit: () => ({ lean: () => Promise.resolve([]) }), sort: () => ({ limit: () => ({ lean: () => Promise.resolve([]) }) }) }),
   };
   const storeModel = { findById: jest.fn().mockReturnValue({ select: () => ({ lean: () => Promise.resolve({ sellerId: SELLER, name: 'S' }) }) }) };
   const sellerModel = { findById: jest.fn().mockReturnValue({ select: () => ({ lean: () => Promise.resolve(opts.seller === undefined ? { stripeCustomerId: 'cus_1' } : opts.seller) }) }) };
@@ -52,7 +52,7 @@ describe('TransactionFeeBillingService.billAccruedFees', () => {
 
     const result = await service.billAccruedFees(NOW);
 
-    expect(result).toEqual({ stores: 1, billed: 1, carried: 0, skipped: 0, failed: 0 });
+    expect(result).toEqual({ stores: 1, billed: 1, awaitingPayment: 0, collectedFromCards: 0, carried: 0, skipped: 0, failed: 0 });
     expect(stripe.invoiceItems.create).toHaveBeenCalledWith(
       expect.objectContaining({ customer: 'cus_1', amount: 1234, currency: 'usd' }),
       expect.objectContaining({ idempotencyKey: expect.stringContaining('txfee-item-bill-1') }),
@@ -98,13 +98,17 @@ describe('TransactionFeeBillingService.billAccruedFees', () => {
     expect(stripe.invoiceItems.create).not.toHaveBeenCalled();
   });
 
-  it('leaves fees pending (and says so in the activity log) when the seller has no billing customer yet', async () => {
+  it('makes a bill that waits for a bank transfer when the seller has no billing customer (see transaction-fee-billing.manual.spec.ts)', async () => {
     const { service, stripe, activity, billModel } = setup({ seller: { stripeCustomerId: null } });
     const result = await service.billAccruedFees(NOW);
-    expect(result.skipped).toBe(1);
+    expect(result.awaitingPayment).toBe(1);
     expect(stripe.invoiceItems.create).not.toHaveBeenCalled();
-    expect(billModel.findOneAndUpdate).not.toHaveBeenCalled();
-    expect(activity.log).toHaveBeenCalledWith(expect.objectContaining({ action: 'transaction_fee_billing_skipped' }));
+    expect(billModel.findOneAndUpdate).toHaveBeenCalledWith(
+      { storeId: STORE, periodKey: '2026-10' },
+      expect.objectContaining({ $set: expect.objectContaining({ status: 'awaiting_payment', collectionMode: 'manual' }) }),
+      expect.anything(),
+    );
+    expect(activity.log).toHaveBeenCalledWith(expect.objectContaining({ action: 'transaction_fees_awaiting_payment' }));
   });
 
   it('records payment_failed (not paid) when Stripe cannot collect, keeping the invoice for Stripe\'s own retries', async () => {

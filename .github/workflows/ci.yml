@@ -2,7 +2,7 @@ name: CI (solvexo-api)
 on:
   pull_request:
   push:
-    branches-ignore: [main, staging]
+    branches-ignore: [main, staging, feature/jamibranch]   # feature/jamibranch is covered by tests.yml (the gate), so it is not run twice
 jobs:
   verify:
     runs-on: ubuntu-latest
@@ -14,6 +14,9 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
+      # production starts `node dist/main` (deploy.yml / staging.yml run `pm2 start dist/main.js`): fail here if the build did not
+      # emit that entry (a stray .ts file outside src/ moves the output to dist/src/main.js and a deploy would keep running stale code)
+      - run: test -f dist/main.js && test ! -e dist/src/main.js
       - run: npx jest --runInBand
       # Lint is informational only for now, not a required check — this
       # codebase has real, pre-existing lint debt (disclosed separately, not

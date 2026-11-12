@@ -25,7 +25,10 @@ export { ExchangeRate, ExchangeRateDocument, ExchangeRateSchema } from '../excha
 export { StripeWebhookEvent, StripeWebhookEventDocument, StripeWebhookEventSchema } from '../payment/schemas/stripe-webhook-event.schema';
 export { RefundRequest, RefundRequestDocument, RefundRequestSchema } from '../refund-request/schemas/refund-request.schema';
 export { ReconciliationRun, ReconciliationRunDocument, ReconciliationRunSchema } from '../admin-finance/schemas/reconciliation-run.schema';
+export { StoreCreditEntry, StoreCreditEntryDocument, StoreCreditEntrySchema, StoreCreditLot, StoreCreditLotDocument, StoreCreditLotSchema } from '../store-credit/schemas/store-credit-ledger.schema';
+export { PosCustomer, PosCustomerDocument, PosCustomerSchema } from '../pos/schemas/pos-customer.schema';
 export { StockAdjustment, StockAdjustmentDocument, StockAdjustmentSchema } from '../inventory/schemas/stock-adjustment.schema';
+export { StockMovement, StockMovementDocument, StockMovementSchema } from '../inventory/schemas/stock-movement.schema';
 export { VariantLocationStock, VariantLocationStockDocument, VariantLocationStockSchema } from '../inventory/schemas/variant-location-stock.schema';
 export { StockTransfer, StockTransferDocument, StockTransferSchema } from '../inventory/schemas/stock-transfer.schema';
 export { Bin, BinDocument, BinSchema } from '../inventory/schemas/bin.schema';
@@ -49,6 +52,9 @@ export { Employee, EmployeeDocument, EmployeeSchema } from '../pos/schemas/emplo
 export { RegisterSession, RegisterSessionDocument, RegisterSessionSchema } from '../pos/schemas/register-session.schema';
 export { Sale, SaleDocument, SaleSchema } from '../pos/schemas/sales.schema';
 export { PosAuditLog, PosAuditLogDocument, PosAuditLogSchema } from '../pos/schemas/pos-audit-log.schema';
+export { PosPayment, PosPaymentDocument, PosPaymentSchema } from '../pos/schemas/pos-payment.schema';
+export { PosRefund, PosRefundDocument, PosRefundSchema } from '../pos/schemas/pos-refund.schema';
+export { PosCreditNote, PosCreditNoteDocument, PosCreditNoteSchema } from '../pos/schemas/pos-credit-note.schema';
 export { PosSettings, PosSettingsDocument, PosSettingsSchema } from '../pos/schemas/pos-settings.schema';
 export { Conversation, ConversationDocument, ConversationSchema } from '../messaging/schemas/conversation.schema';
 export { Message, MessageDocument, MessageSchema } from '../messaging/schemas/message.schema';
@@ -147,8 +153,6 @@ export { SeoAuditResult, SeoAuditResultDocument, SeoAuditResultSchema } from '..
 
 export { RecentSearch, RecentSearchDocument, RecentSearchSchema } from '../search/schemas/recent-search.schema';
 export { RecentlyViewed, RecentlyViewedDocument, RecentlyViewedSchema } from '../search/schemas/recently-viewed.schema';
-export { AiGeneration, AiGenerationDocument, AiGenerationSchema } from '../ai-studio/schemas/ai-generation.schema';
-export { AiCreditTransaction, AiCreditTransactionDocument, AiCreditTransactionSchema } from '../ai-studio/schemas/ai-credit-transaction.schema';
 
 export { Notification, NotificationDocument, NotificationSchema } from '../notifications/schemas/notification.schema';
 export { DeviceToken, DeviceTokenDocument, DeviceTokenSchema } from '../notifications/schemas/device-token.schema';
@@ -183,6 +187,14 @@ export { DraftOrder, DraftOrderDocument, DraftOrderSchema } from '../draft-order
 export { Supplier, SupplierDocument, SupplierSchema } from '../purchase-orders/schemas/supplier.schema';
 export { PurchaseOrder, PurchaseOrderDocument, PurchaseOrderSchema } from '../purchase-orders/schemas/purchase-order.schema';
 export { SupplierReturn, SupplierReturnDocument, SupplierReturnSchema } from '../purchase-orders/schemas/supplier-return.schema';
+export { PurchaseReceipt, PurchaseReceiptDocument, PurchaseReceiptSchema } from '../purchase-orders/schemas/purchase-receipt.schema';
+export { PosExpense, PosExpenseDocument, PosExpenseSchema, PosExpenseEvent, PosExpenseEventDocument, PosExpenseEventSchema } from '../pos/schemas/pos-expense.schema';
+export { PosAttendanceEvent, PosAttendanceEventDocument, PosAttendanceEventSchema, PosAttendanceState, PosAttendanceStateDocument, PosAttendanceStateSchema, PosRosterShift, PosRosterShiftDocument, PosRosterShiftSchema } from '../pos/schemas/pos-team.schema';
+export { PosAuditSeal, PosAuditSealDocument, PosAuditSealSchema } from '../pos/schemas/pos-audit-seal.schema';
+export { PosReprintEvent, PosReprintEventDocument, PosReprintEventSchema } from '../pos/schemas/pos-reprint-event.schema';
+export { PosCashAttachment, PosCashAttachmentDocument, PosCashAttachmentSchema } from '../pos/schemas/pos-cash-attachment.schema';
+export { PosModifierGroup, PosModifierGroupDocument, PosModifierGroupSchema, PosPriceBook, PosPriceBookDocument, PosPriceBookSchema } from '../pos/schemas/pos-catalog-extras.schema';
+export { SupplierLedgerEntry, SupplierLedgerEntryDocument, SupplierLedgerEntrySchema } from '../purchase-orders/schemas/supplier-ledger-entry.schema';
 export { StockCount, StockCountDocument, StockCountSchema } from '../stock-counts/schemas/stock-count.schema';
 export { StoreCustomerMeta, StoreCustomerMetaDocument, StoreCustomerMetaSchema } from '../store/schemas/store-customer-meta.schema';
 export { BlogPost, BlogPostDocument, BlogPostSchema } from '../store-blog/schemas/blog-post.schema';

@@ -34,15 +34,33 @@ export interface PlatformPlanLimits {
   /** Shopify "markets" — how many checkout currencies a store may enable
    *  (Store.enabledCurrencies, base currency always included). -1 = unlimited. */
   maxMarkets: number;
+  /** Gates creating courses (Digital hub). */
+  digitalCoursesAllowed: boolean;
+  /** Wholesale catalogs per store (Shopify caps non-Plus plans at 3). -1 = unlimited. */
+  maxB2BCatalogs: number;
+  /** Marketing-campaign emails per calendar month. Automations and abandoned-cart mails are not counted (Shopify does not count abandoned checkout mails either). */
+  monthlyEmailSends: number;
 }
 
 /** Values used for any field an OLDER plan document doesn't have yet (a plan
  *  saved before that field existed). Merged under the plan's own limits so
- *  a missing field never reads as `undefined`. */
-const NEW_FIELD_DEFAULTS: Pick<PlatformPlanLimits, 'calculatedShippingRatesAllowed' | 'maxMarkets'> = {
+ *  a missing field never reads as `undefined`. Deliberately generous: an old
+ *  plan document must not suddenly lose something it never had a limit on. */
+const NEW_FIELD_DEFAULTS: Pick<PlatformPlanLimits, 'calculatedShippingRatesAllowed' | 'maxMarkets' | 'digitalCoursesAllowed' | 'maxB2BCatalogs' | 'monthlyEmailSends'> = {
   calculatedShippingRatesAllowed: false,
   maxMarkets: 3,
+  digitalCoursesAllowed: true,
+  maxB2BCatalogs: -1,
+  monthlyEmailSends: 10000,
 };
+
+/** AI credits a store gets while it is still on its free trial (no plan yet): enough to try the tools, small enough to cost little. */
+export const TRIAL_AI_CREDITS = 50;
+
+/** First day of the calendar month (UTC) a monthly allowance counts from. */
+export function startOfMonthUTC(d = new Date()): Date {
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
+}
 
 /** Keeps a store's checkout currencies within its plan's market limit —
  *  base currency always kept first, extras dropped in their saved order. */
@@ -71,8 +89,10 @@ const FALLBACK_LIMITS: PlatformPlanLimits = {
   digitalMembershipsAllowed: true, digitalLicensesAllowed: true, b2bWholesaleAllowed: true,
   dedicatedAccountManager: false, prioritySupport: false, marketplaceFeaturedBadge: false, slaUptimePercent: null,
   advancedSeoToolsAllowed: false, seoAiSuggestionsAllowed: false, searchConsoleIntegrationAllowed: false, customRedirectsAllowed: false,
-  maxActiveStoreBanners: 4, maxActivePromotions: 1,
+  maxActiveStoreBanners: -1, maxActivePromotions: -1,
   calculatedShippingRatesAllowed: false, maxMarkets: 1,
+  // A store with no resolvable plan (e.g. a standalone trial) can try wholesale and courses, but sends only a few campaign emails.
+  digitalCoursesAllowed: true, maxB2BCatalogs: 3, monthlyEmailSends: 500,
 };
 
 const BOOLEAN_FEATURES: Array<{ key: keyof PlatformPlanLimits; label: string }> = [
@@ -83,7 +103,8 @@ const BOOLEAN_FEATURES: Array<{ key: keyof PlatformPlanLimits; label: string }> 
   { key: 'abandonedCartRecoveryAllowed', label: 'Abandoned cart recovery' },
   { key: 'emailCampaignsAllowed', label: 'Email campaigns' },
   { key: 'digitalMembershipsAllowed', label: 'Memberships & access plans' },
-  { key: 'digitalLicensesAllowed', label: 'License keys' }, { key: 'b2bWholesaleAllowed', label: 'Wholesale (B2B)' },
+  { key: 'digitalLicensesAllowed', label: 'License keys' }, { key: 'digitalCoursesAllowed', label: 'Courses' },
+  { key: 'b2bWholesaleAllowed', label: 'Wholesale (B2B)' },
   { key: 'apiWebhooksAllowed', label: 'API access & webhooks' },
   { key: 'advancedSeoToolsAllowed', label: 'Advanced SEO tools (audit, score, checklist)' },
   { key: 'seoAiSuggestionsAllowed', label: 'AI-generated SEO suggestions' },
@@ -143,14 +164,15 @@ export class EntitlementsService {
    * location/banner/promotion cap and most boolean features — same
    * philosophy as Shopify's own trial (no plan needs to be chosen to use
    * the store-building features, only to keep selling once the trial
-   * ends). Deliberately does NOT touch `transactionFeeRate` or
-   * `aiCreditsPerMonth`: those aren't restrictions being tested, they're
-   * real revenue/cost mechanics that must stay exactly what the assigned
-   * plan defines whether trialing or not — a trial sale still owes Solvexo
-   * its real commission, and `aiCreditsPerMonth` also isn't a `-1`-aware
-   * field (`AiCreditsService.deduct` treats a negative balance as
-   * "insufficient", not "unlimited"), so overriding it here would silently
-   * break AI credits instead of opening them up.
+   * ends). Deliberately does NOT touch `transactionFeeRate` or `monthlyEmailSends`:
+   * those aren't restrictions being tested, they're real revenue/cost
+   * mechanics that must stay exactly what the assigned plan defines whether
+   * trialing or not — a trial sale still owes Solvexo its real commission.
+   * `aiCreditsPerMonth` gets a small fixed trial allowance (TRIAL_AI_CREDITS)
+   * when the plan gives less: a trialing store has no plan row, so it would
+   * otherwise get a wallet with 0 credits and AI SEO suggestions would be unusable all
+   * trial long. It is never `-1` because `AiCreditsService.deduct` treats a
+   * negative balance as "insufficient", not "unlimited".
    *
    * `customDomainAllowed` is the one deliberate EXCEPTION, always forced
    * `false` here regardless of the underlying plan — verified against
@@ -189,6 +211,9 @@ export class EntitlementsService {
       marketplaceFeaturedBadge: true,
       calculatedShippingRatesAllowed: true,
       maxMarkets: -1,
+      digitalCoursesAllowed: true,
+      maxB2BCatalogs: -1,
+      aiCreditsPerMonth: Math.max(limits.aiCreditsPerMonth, TRIAL_AI_CREDITS),
     };
   }
 
@@ -300,6 +325,52 @@ export class EntitlementsService {
     }
   }
 
+  /**
+   * Marketing emails this store has used this calendar month (UTC): campaign emails (queued), automation emails (welcome, back in
+   * stock, price drop, win-back: delivered ones) and abandoned-cart reminders. Order and account mails are not marketing and not counted.
+   */
+  async getMonthlyEmailUsage(storeId: string, now = new Date()): Promise<number> {
+    const from = startOfMonthUTC(now);
+    const r = this.db.repositories as any;
+    const [campaign, automation, abandoned, abandonedSecond] = await Promise.all([
+      r.emailCampaignSendModel.countDocuments({ storeId, createdAt: { $gte: from } }),
+      r.automationSendLogModel ? r.automationSendLogModel.countDocuments({ storeId, delivered: true, createdAt: { $gte: from } }) : 0,
+      r.checkoutModel ? r.checkoutModel.countDocuments({ abandonedEmailStoreId: storeId, abandonedEmailSentAt: { $gte: from } }) : 0,
+      r.checkoutModel ? r.checkoutModel.countDocuments({ abandonedEmailStoreId: storeId, abandonedSecondEmailSentAt: { $gte: from } }) : 0,
+    ]);
+    return campaign + automation + abandoned + abandonedSecond;
+  }
+
+  /** How many more marketing emails this store may send this month (0 when the plan has no marketing emails or the allowance is used up). */
+  async getEmailRoom(storeId: string, feature: 'emailCampaignsAllowed' | 'abandonedCartRecoveryAllowed' = 'emailCampaignsAllowed', now = new Date()): Promise<number> {
+    const limits = await this.getLimits(storeId);
+    if (!limits[feature]) return 0;
+    const used = await this.getMonthlyEmailUsage(storeId, now);
+    return Math.max(0, limits.monthlyEmailSends - used);
+  }
+
+  /** Throws if sending `recipients` more campaign emails would pass the plan's monthly allowance. Call BEFORE creating the send rows. */
+  async assertEmailAllowance(storeId: string, recipients: number, now = new Date()): Promise<void> {
+    const { monthlyEmailSends } = await this.getLimits(storeId);
+    const used = await this.getMonthlyEmailUsage(storeId, now);
+    if (used + recipients > monthlyEmailSends) {
+      const left = Math.max(0, monthlyEmailSends - used);
+      throw new BadRequestException(
+        `This campaign needs ${recipients.toLocaleString('en-US')} emails but your plan has ${left.toLocaleString('en-US')} left this month (${monthlyEmailSends.toLocaleString('en-US')} a month) — send to a smaller audience, wait for next month or upgrade your plan.`,
+      );
+    }
+  }
+
+  /** Throws if the store already has its plan's number of wholesale catalogs. `current` = how many it has now. */
+  async assertCanCreateB2BCatalog(storeId: string, current: number): Promise<void> {
+    const { maxB2BCatalogs } = await this.getLimits(storeId);
+    if (maxB2BCatalogs !== -1 && current >= maxB2BCatalogs) {
+      throw new BadRequestException(
+        `Your plan allows ${maxB2BCatalogs} wholesale catalog${maxB2BCatalogs === 1 ? '' : 's'} — upgrade your plan or delete one to add another.`,
+      );
+    }
+  }
+
   /** Generic boolean-feature gate — throws ForbiddenException with an upgrade hint if the store's plan doesn't include it. */
   async assertFeatureAllowed(storeId: string, feature: keyof PlatformPlanLimits, featureLabel: string): Promise<void> {
     const limits = await this.getLimits(storeId);
@@ -369,10 +440,16 @@ export class EntitlementsService {
       },
       aiCredits: {
         monthlyAllowance: limits.aiCreditsPerMonth,
-        balance: (aiWallet as any)?.balance ?? 0,
+        // A store that has not used AI yet has no wallet row: it will be created with the full allowance, so show that (not 0 = "all used").
+        // A wallet that has not seen its plan change yet is shown with the extra allowance it will get on its next use.
+        balance: aiWallet
+          ? ((aiWallet as any).balance ?? 0) + Math.max(0, limits.aiCreditsPerMonth - ((aiWallet as any).monthlyAllowance ?? 0))
+          : limits.aiCreditsPerMonth,
       },
       transactionFeeRate: limits.transactionFeeRate,
       maxMarkets: limits.maxMarkets,
+      maxB2BCatalogs: limits.maxB2BCatalogs,
+      monthlyEmailSends: limits.monthlyEmailSends,
       ...booleanFeatures,
       dedicatedAccountManager: !!limits.dedicatedAccountManager,
       prioritySupport: !!limits.prioritySupport,

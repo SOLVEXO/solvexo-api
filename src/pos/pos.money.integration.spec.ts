@@ -255,7 +255,7 @@ describe('expected cash after a partial CASH refund (the drawer reconciles)', ()
     expect((await session(sid)).cashSales).toBe(50); // the drawer paid 50 back
 
     const report: any = await svc.getSessionReport(s.sellerId, sid);
-    expect(report.data.summary.byPaymentMethod.cash).toEqual({ count: 1, total: 50 }); // partially refunded sale is still counted, net of the refund
+    expect(report.data.summary.byPaymentMethod.cash).toMatchObject({ count: 1, total: 50, totalMinor: 5000 }); // partially refunded sale is still counted, net of the refund
     expect(report.data.summary.refundsTotal).toBe(50);
 
     const closed: any = await svc.closeSession(s.sellerId, { sessionId: sid, closingCash: 150 } as any);
@@ -285,8 +285,8 @@ describe('reports show the right currency, decimals and partial refunds', () => 
     const r: any = await svc.getDailyReport(s.sellerId, s.storeId, {});
     expect(r.data).toMatchObject({ currency: 'USD', currencyExponent: 2 });
     expect(r.data.summary).toMatchObject({ totalTransactions: 2, totalRevenue: 150, netRevenue: 100, refundsCount: 1, refundsTotal: 50 });
-    expect(r.data.byPaymentMethod.cash).toEqual({ count: 1, total: 50 });
-    expect(r.data.byPaymentMethod.card).toEqual({ count: 1, total: 50 });
+    expect(r.data.byPaymentMethod.cash).toMatchObject({ count: 1, total: 50 });
+    expect(r.data.byPaymentMethod.card).toMatchObject({ count: 1, total: 50 });
   });
 
   it('range report mirrors it (JPY: integers)', async () => {

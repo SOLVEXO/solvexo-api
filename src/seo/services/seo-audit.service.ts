@@ -13,7 +13,7 @@ interface AuditIssue {
   severity: 'info' | 'warning' | 'error';
   code: string;
   message: string;
-  entityType?: 'product' | 'category' | 'store' | null;
+  entityType?: 'product' | 'category' | 'store' | 'collection' | 'page' | null;
   entityId?: string | null;
 }
 
@@ -77,11 +77,14 @@ export class SeoAuditService {
 
   /** Invoked by SeoAuditProcessor — runs every enabled built-in check against the store's products + store meta, scores the result, and persists it. */
   async run(storeId: string) {
-    const [settings, store, products, checklist] = await Promise.all([
+    const [settings, store, products, checklist, collections, pages] = await Promise.all([
       this.platformSeoService.getSettings(),
       this.db.repositories.storeModel.findById(storeId).lean(),
       this.db.repositories.productModel.find({ storeId, isDelete: false }).lean(),
       this.storeSeoService.getChecklist(storeId),
+      this.db.repositories.collectionModel.find({ storeId, isDelete: false, status: 'active' }).select('name description type productIds seo').lean(),
+      // Only the pages a visitor can open: published custom pages (the home page is judged as the store).
+      this.db.repositories.storePageModel.find({ storeId, isDelete: false, type: 'custom', status: 'published' }).select('title seo').lean(),
     ]);
     if (!store) throw new NotFoundException('Store not found.');
 
@@ -93,15 +96,29 @@ export class SeoAuditService {
     const issues: AuditIssue[] = [];
     const titleCounts = new Map<string, string[]>(); // for duplicate_meta
 
+    // The storefront does not leave a page without a title or description: it walks product -> category -> store -> platform
+    // template -> "Name – Store" (see SeoResolutionService). The audit judges the title/description a visitor and Google actually
+    // get, so a page that is fine on the automatic text is not reported as "missing".
+    const storeSeo0 = (store as any).seo ?? {};
+    const categoryIds = [...new Set((products as any[]).map((p) => p.categoryId).filter(Boolean).map(String))];
+    const categories: any[] = categoryIds.length
+      ? await this.db.repositories.categoryModel.find({ _id: { $in: categoryIds } }).select('seo').lean()
+      : [];
+    const categorySeo = new Map(categories.map((c) => [String(c._id), c.seo ?? {}]));
+
     for (const product of products as any[]) {
       const seo = product.seo ?? {};
       const productRef = { entityType: 'product' as const, entityId: product._id.toString() };
 
-      if (isEnabled('title_length')) {
+      // The text actually served when the seller wrote none: product, then its category, then the store.
+      const catSeo = categorySeo.get(String(product.categoryId)) ?? {};
+      const customTitle: string | undefined = seo.metaTitle || catSeo.metaTitle || storeSeo0.metaTitle || undefined;
+      const customDescription: string | undefined = seo.metaDescription || catSeo.metaDescription || storeSeo0.metaDescription || undefined;
+
+      if (isEnabled('title_length') && customTitle) {
+        // Only a title the seller (or the category / store) wrote can be too long; the automatic "Name – Store" title is not reported.
         const max = threshold('title_length', 'max', 60);
-        if (!seo.metaTitle) {
-          issues.push({ severity: severityOf('title_length', 'warning'), code: 'title_length', message: `Product "${product.name}" has no meta title.`, ...productRef });
-        } else if (seo.metaTitle.length > max) {
+        if (customTitle.length > max) {
           issues.push({ severity: severityOf('title_length', 'warning'), code: 'title_length', message: `Product "${product.name}" meta title exceeds ${max} characters.`, ...productRef });
         }
       }
@@ -109,10 +126,13 @@ export class SeoAuditService {
       if (isEnabled('description_length')) {
         const min = threshold('description_length', 'min', 70);
         const max = threshold('description_length', 'max', 160);
-        if (!seo.metaDescription) {
-          issues.push({ severity: severityOf('description_length', 'warning'), code: 'description_length', message: `Product "${product.name}" has no meta description.`, ...productRef });
-        } else if (seo.metaDescription.length < min || seo.metaDescription.length > max) {
-          issues.push({ severity: severityOf('description_length', 'info'), code: 'description_length', message: `Product "${product.name}" meta description is outside the ideal ${min}-${max} character range.`, ...productRef });
+        if (customDescription) {
+          if (customDescription.length < min || customDescription.length > max) {
+            issues.push({ severity: severityOf('description_length', 'info'), code: 'description_length', message: `Product "${product.name}" meta description is outside the ideal ${min}-${max} character range.`, ...productRef });
+          }
+        } else if (!String(product.description ?? '').trim()) {
+          // No meta description AND no product description: the page really has nothing to show in search results.
+          issues.push({ severity: severityOf('description_length', 'warning'), code: 'description_length', message: `Product "${product.name}" has no meta description and no product description, so search results have nothing to show.`, ...productRef });
         }
       }
 
@@ -136,11 +156,11 @@ export class SeoAuditService {
         issues.push({ severity: severityOf('missing_schema', 'info'), code: 'missing_schema', message: `Product "${product.name}" has no images, so its structured data won't qualify for rich results.`, ...productRef });
       }
 
-      if (seo.metaTitle) {
-        const list = titleCounts.get(seo.metaTitle) ?? [];
-        list.push(product._id.toString());
-        titleCounts.set(seo.metaTitle, list);
-      }
+      // Two products can share a title through the category or store meta, or simply by having the same name.
+      const effectiveTitle = (customTitle ?? ((store as any).name ? `${product.name} – ${(store as any).name}` : product.name)).trim().toLowerCase();
+      const list = titleCounts.get(effectiveTitle) ?? [];
+      list.push(product._id.toString());
+      titleCounts.set(effectiveTitle, list);
     }
 
     if (isEnabled('duplicate_meta')) {
@@ -166,16 +186,77 @@ export class SeoAuditService {
       }
     }
 
-    const storeSeo = (store as any).seo ?? {};
-    if (isEnabled('title_length') && !storeSeo.metaTitle) {
-      issues.push({ severity: 'warning', code: 'title_length', message: 'Store has no meta title set.', entityType: 'store', entityId: storeId });
+    // ── Collections: same rule as products. A collection page falls back to its name and description, so only a written
+    //    title that is too long, a description that is missing everywhere or badly sized, and an EMPTY collection are reported.
+    {
+      const max = threshold('title_length', 'max', 60);
+      const min = threshold('description_length', 'min', 70);
+      const maxDesc = threshold('description_length', 'max', 160);
+      for (const c of collections as any[]) {
+        const ref = { entityType: 'collection' as const, entityId: String(c._id) };
+        const seo = c.seo ?? {};
+        if (isEnabled('title_length') && seo.metaTitle && seo.metaTitle.length > max) {
+          issues.push({ severity: severityOf('title_length', 'warning'), code: 'title_length', message: `Collection "${c.name}" meta title exceeds ${max} characters.`, ...ref });
+        }
+        if (isEnabled('description_length')) {
+          if (seo.metaDescription) {
+            if (seo.metaDescription.length < min || seo.metaDescription.length > maxDesc) {
+              issues.push({ severity: severityOf('description_length', 'info'), code: 'description_length', message: `Collection "${c.name}" meta description is outside the ideal ${min}-${maxDesc} character range.`, ...ref });
+            }
+          } else if (!String(c.description ?? '').trim()) {
+            issues.push({ severity: severityOf('description_length', 'warning'), code: 'description_length', message: `Collection "${c.name}" has no meta description and no description, so search results have nothing to show.`, ...ref });
+          }
+        }
+        // A hand-picked collection with no products is in the sitemap but has nothing on it (an automatic one is filled by its rules).
+        if (isEnabled('thin_content') && c.type === 'manual' && (c.productIds?.length ?? 0) === 0) {
+          issues.push({ severity: severityOf('thin_content', 'warning'), code: 'thin_content', message: `Collection "${c.name}" has no products, but it is listed in your sitemap.`, ...ref });
+        }
+      }
     }
-    if (isEnabled('description_length') && !storeSeo.metaDescription) {
-      issues.push({ severity: 'warning', code: 'description_length', message: 'Store has no meta description set.', entityType: 'store', entityId: storeId });
+
+    // ── Custom pages: a page can always be read from its content, so only badly sized written meta text is reported.
+    {
+      const max = threshold('title_length', 'max', 60);
+      const min = threshold('description_length', 'min', 70);
+      const maxDesc = threshold('description_length', 'max', 160);
+      for (const pg of pages as any[]) {
+        const ref = { entityType: 'page' as const, entityId: String(pg._id) };
+        const seo = pg.seo ?? {};
+        const description: string | null = seo.metaDescription || seo.metaDesc || null;
+        if (isEnabled('title_length') && seo.metaTitle && seo.metaTitle.length > max) {
+          issues.push({ severity: severityOf('title_length', 'warning'), code: 'title_length', message: `Page "${pg.title}" meta title exceeds ${max} characters.`, ...ref });
+        }
+        if (isEnabled('description_length') && description && (description.length < min || description.length > maxDesc)) {
+          issues.push({ severity: severityOf('description_length', 'info'), code: 'description_length', message: `Page "${pg.title}" meta description is outside the ideal ${min}-${maxDesc} character range.`, ...ref });
+        }
+      }
+    }
+
+    // ── Sitemap and visibility: what search engines are allowed to see at all.
+    if (isEnabled('sitemap_excluded')) {
+      const mode = (store as any).privacyMode ?? 'public';
+      if (mode !== 'public') {
+        issues.push({ severity: 'error', code: 'sitemap_excluded', message: mode === 'password' ? 'Your store is password protected, so search engines can not see it and it is left out of the sitemap.' : 'Your store is in "coming soon" mode, so search engines can not see it and it is left out of the sitemap.', entityType: 'store', entityId: storeId });
+      } else {
+        const hidden = (products as any[]).filter((p) => p.status === 'active' && p.seo?.noindex).length;
+        if (hidden > 0) {
+          issues.push({ severity: severityOf('sitemap_excluded', 'info'), code: 'sitemap_excluded', message: `${hidden} product${hidden === 1 ? ' is' : 's are'} set to "noindex", so ${hidden === 1 ? 'it is' : 'they are'} hidden from search and left out of the sitemap.`, entityType: 'store', entityId: storeId });
+        }
+      }
+    }
+
+    const storeSeo = storeSeo0;
+    // The store page falls back to the store name as its title, so only a missing NAME is a real problem; a description is
+    // served from the store's own description when there is no meta description.
+    if (isEnabled('title_length') && !storeSeo.metaTitle && !String((store as any).name ?? '').trim()) {
+      issues.push({ severity: 'warning', code: 'title_length', message: 'Store has no name or meta title, so the home page has no title.', entityType: 'store', entityId: storeId });
+    }
+    if (isEnabled('description_length') && !storeSeo.metaDescription && !String((store as any).description ?? '').trim()) {
+      issues.push({ severity: 'warning', code: 'description_length', message: 'Store has no meta description and no store description, so the home page has nothing to show in search results.', entityType: 'store', entityId: storeId });
     }
 
     const checklistCompletionPercent = checklist.length ? Math.round((checklist.filter((c) => c.done).length / checklist.length) * 100) : 0;
-    const score = computeScore(issues, checklistCompletionPercent);
+    const score = computeScore(issues, checklistCompletionPercent, (products as any[]).length + (collections as any[]).length + (pages as any[]).length + 1);
 
     const result = await this.db.repositories.seoAuditResultModel.create({
       storeId, score, issues, checklistCompletionPercent, runAt: new Date(),
@@ -191,9 +272,18 @@ export class SeoAuditService {
   }
 }
 
-function computeScore(issues: AuditIssue[], checklistCompletionPercent: number): number {
+/** The most weight one page (a product, or the store) can lose across all checks; the score is measured against this budget. */
+const ISSUE_BUDGET_PER_ENTITY = 15;
+
+/**
+ * 0-100. The weight of every issue is compared with what the store could lose in total (pages checked x the budget per page),
+ * so a store with 500 products and a few problems is not scored 0 only because it is big, and a store with ten products that all
+ * have problems still scores low. A store with no issues scores 100 on content.
+ */
+export function computeScore(issues: AuditIssue[], checklistCompletionPercent: number, entityCount = 1): number {
   const deduction = issues.reduce((sum, issue) => sum + (SEVERITY_WEIGHT[issue.severity] ?? 1), 0);
-  const contentScore = Math.max(0, 100 - deduction);
+  const budget = Math.max(1, entityCount) * ISSUE_BUDGET_PER_ENTITY;
+  const contentScore = Math.max(0, 100 - (100 * deduction) / budget);
   // Weighted blend: content issues matter most, checklist completion is a smaller factor.
   return Math.round(contentScore * 0.8 + checklistCompletionPercent * 0.2);
 }

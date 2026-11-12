@@ -393,6 +393,10 @@ export const CUSTOMER_EMAIL_DEFAULTS_BY_LOCALE: Record<string, Partial<Record<Cu
       subject: "{{productName}} اپڈیٹ ہو گیا ہے",
       body: "سلام {{customerName}}،\n\n{{productName}} میں {{fileName}} کا نیا ورژن ({{versionLabel}}) دستیاب ہے۔\n{{changelog}}\n\nاسے اپنی لائبریری سے ڈاؤن لوڈ کریں:\n{{libraryUrl}}",
     },
+    license_key_issued: {
+      subject: "{{productName}} کے لیے آپ کی لائسنس کی",
+      body: "سلام {{customerName}}،\n\nآپ کی خریداری کا شکریہ! {{productName}} کے لیے آپ کی لائسنس کی یہ ہے:\n\n{{licenseKey}}\n\nیہ کی زیادہ سے زیادہ {{activationLimit}} ڈیوائسز پر کام کرتی ہے۔\n\nاس ای میل کو سنبھال کر رکھیں۔ آپ یہ کی اپنے اکاؤنٹ میں بھی کسی بھی وقت دیکھ سکتے ہیں:\n{{licensesUrl}}",
+    },
     digital_access_link: {
       subject: "{{storeName}} سے آپ کی ڈاؤن لوڈز",
       body: "سلام {{customerName}}،\n\nاپنی ڈاؤن لوڈز کھولنے کے لیے یہ لنک استعمال کریں۔ یہ 30 منٹ تک کام کرتا ہے:\n{{libraryUrl}}\n\nاگر آپ نے یہ درخواست نہیں کی تو اس ای میل کو نظر انداز کر دیں۔",

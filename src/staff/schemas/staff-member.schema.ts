@@ -95,6 +95,10 @@ export const STAFF_PERMISSIONS = [
   'product_subscriptions.view', 'product_subscriptions.manage',
   // Checkout rules
   'checkout_rules.view', 'checkout_rules.manage',
+  // A/B experiments
+  'experiments.view', 'experiments.manage',
+  // Apps (admin-approved apps with API access)
+  'apps.view', 'apps.manage',
   // Finance
   'finance.payouts.view', 'finance.payments.manage', 'finance.tax_documents.manage',
   // Messaging — no dedicated `:storeId` route param on this controller
@@ -111,11 +115,6 @@ export const STAFF_PERMISSIONS = [
   // SEO — a clean view/write split holds across all 10 seller-facing SEO
   // controllers; no third genuinely independent capability tier exists.
   'seo.view', 'seo.manage',
-  // AI Studio — `.use` covers every generation tool; there is no seller-
-  // facing "AI Studio settings" route to gate separately (credit top-up
-  // is a `platform-plans` addon purchase, a different controller/permission
-  // entirely — see `settings.billing.manage`).
-  'aistudio.view', 'aistudio.use',
   // Staff management itself
   'staff.manage',
 ] as const;

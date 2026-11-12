@@ -53,6 +53,12 @@ export class AdminClientsController {
   }
 
   @RequirePermission('clients.view')
+  @Get(':sellerId/business-profile')
+  getBusinessProfile(@Param('sellerId') sellerId: string) {
+    return this.adminClientsService.getBusinessProfile(sellerId);
+  }
+
+  @RequirePermission('clients.view')
   @Get(':sellerId/overview')
   getOverview(@Param('sellerId') sellerId: string) {
     return this.adminClientsService.getOverview(sellerId);

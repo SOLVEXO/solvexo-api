@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { MerchandisingService } from '@/merchandising/merchandising.service';
+import { SellerTrustService } from '@/seller-trust/seller-trust.service';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { MEMBERSHIP_BILLING_JOB, QUEUE_NAMES } from '../queues/queue.constants';
@@ -15,6 +16,8 @@ import { BuyerSubscriptionWindDownService } from '@/subscriptions/buyer-subscrip
 import { PlatformSubscriptionsService } from '@/platform-subscriptions/platform-subscriptions.service';
 import { FinanceService } from '@/finance/finance.service';
 import { RedisService } from '@/redis/redis.service';
+import { FbrDiService } from '../fbr-di/fbr-di.service';
+import { PlatformLedgerService } from '../platform-tax/platform-ledger.service';
 import { SellerPlatformSubscriptionsService } from '@/platform-plans/seller-platform-subscriptions.service';
 import { AiCreditsService } from '@/platform-plans/ai-credits.service';
 import { PlatformAddonsService } from '@/platform-plans/platform-addons.service';
@@ -61,6 +64,8 @@ export class SchedulerService {
     private readonly financeService: FinanceService,
     private readonly redis: RedisService,
     private readonly sellerPlatformSubscriptionsService: SellerPlatformSubscriptionsService,
+    private readonly fbrDiService: FbrDiService,
+    private readonly platformLedgerService: PlatformLedgerService,
     private readonly aiCreditsService: AiCreditsService,
     private readonly platformAddonsService: PlatformAddonsService,
     private readonly seoSitemapService: SeoSitemapService,
@@ -88,7 +93,28 @@ export class SchedulerService {
     private readonly giftCardsService: GiftCardsService,
     private readonly courierTrackingSyncService: CourierTrackingSyncService,
     private readonly merchandisingService: MerchandisingService,
+    private readonly sellerTrustService: SellerTrustService,
   ) {}
+
+  // Seller trust — daily: recompute every store's verification deadline,
+  // marketplace visibility and risk level (refund rate / reports / order-value
+  // spikes need fresh order data). 03:17 UTC, before the 10:00 payout batch.
+  @Cron('17 3 * * *')
+  async recomputeSellerTrust() {
+    await this.runLocked('seller-trust-recompute', 60 * 60_000, async () => {
+      const r = await this.sellerTrustService.recomputeAll();
+      this.logger.log(`Seller trust: ${r.stores} store(s) — ${r.high} high / ${r.medium} medium risk, ${r.hidden} limited`);
+    });
+  }
+
+  // Seller trust — hourly, cheap: hides a store from marketplace discovery
+  // within the hour of its verification deadline passing (set-based update).
+  @Cron('41 * * * *')
+  async syncSellerTrustVisibility() {
+    await this.runLocked('seller-trust-visibility', 10 * 60_000, async () => {
+      await this.sellerTrustService.syncMarketplaceHidden();
+    });
+  }
 
   /**
    * Every cron job in this service is wrapped in a Redis distributed lock.
@@ -111,6 +137,15 @@ export class SchedulerService {
     if (result === 'lock_not_acquired') {
       this.logger.debug(`Skipped "${jobName}" — another instance already holds the lock (or Redis is unavailable)`);
     }
+  }
+
+  /** Every 15 min: the read-only platform tax ledger (shadow copy of paid Solvexo charges). Does nothing unless PLATFORM_LEDGER_ENABLED=true; never files anything. */
+  @Cron('*/15 * * * *')
+  async syncPlatformLedger() {
+    if (!this.platformLedgerService.isEnabled()) return;
+    await this.runLocked('platform-ledger-sync', 14 * 60_000, async () => {
+      try { await this.platformLedgerService.sync({ dryRun: false }); } catch (e: any) { this.logger.error('Platform ledger sync failed: ' + (e?.message ?? e)); }
+    });
   }
 
   /** Hourly: membership reminders, payment-due and the dunning ladder (every step is a conditional update, so re-runs are safe). */
@@ -469,6 +504,29 @@ export class SchedulerService {
       const result = await this.sellerPlatformSubscriptionsService.expireTrials();
       if (result.expired > 0) {
         this.logger.log(`Platform-plan trials expired: ${result.expired} store(s) moved off trial`);
+      }
+    });
+  }
+
+  // Every 10 minutes: turns newly paid plan invoices / store orders into FBR records and files the ones that are due
+  // (retries with back-off). Does nothing until FBR invoicing is switched on in Admin / the store settings.
+  @Cron('*/10 * * * *')
+  async runFbrDigitalInvoicing() {
+    await this.runLocked('fbr-digital-invoicing', 9 * 60_000, async () => {
+      const r = await this.fbrDiService.runCycle();
+      if (r.created || r.attempted) this.logger.log(`FBR digital invoicing: ${r.created} queued, ${r.attempted} attempted, ${r.submitted} filed`);
+    });
+  }
+
+  // Runs daily at 02:30 (before the 03:00 grace job, so a store locked here
+  // starts its storefront countdown normally) — locks stores whose renewal
+  // has been unpaid ('past_due') for PAST_DUE_LOCK_DAYS.
+  @Cron('30 2 * * *')
+  async lockOverduePlanPayments() {
+    await this.runLocked('platform-plan-past-due-lock', 10 * 60_000, async () => {
+      const result = await this.sellerPlatformSubscriptionsService.lockOverduePastDue();
+      if (result.locked > 0) {
+        this.logger.log(`Platform-plan past-due lock: ${result.locked} store(s) locked`);
       }
     });
   }
