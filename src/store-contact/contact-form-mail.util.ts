@@ -36,7 +36,7 @@ export function buildAutoReply(opts: {
   const vars = { name: opts.name || 'there', store: opts.storeName, form: opts.formName || 'contact form' };
   const subject = fillContactTags((opts.subject || '').trim() || DEFAULT_AUTO_REPLY_SUBJECT, vars).slice(0, 150);
   const body = fillContactTags((opts.body || '').trim() || DEFAULT_AUTO_REPLY_BODY, vars);
-  const html = notificationEmailShell(escapeHtml(subject), textToParagraphs(body), undefined, { name: opts.storeName, logoUrl: opts.logoUrl ?? null });
+  const html = notificationEmailShell(escapeHtml(subject), textToParagraphs(body), undefined, { name: opts.storeName, logoUrl: opts.logoUrl ?? null, hideReceivingNotice: true });
   return { subject, html };
 }
 
