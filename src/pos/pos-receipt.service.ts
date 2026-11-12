@@ -7,6 +7,7 @@ import { PosService } from './pos.service';
 
 const esc = (v: unknown): string => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
 import { CLIENT_KEY, CLIENT_LINK_WINDOW_MS, PUBLIC_SLUG } from './pos-receipt-link.util';
+import { receiptLinkDays } from './pos-store-settings.service';
 export { SYNCING_PAGE } from './pos-receipt-link.util';
 const METHOD_LABEL: Record<string, string> = { cash: 'Cash', card: 'Card', other: 'Bank / other', raast_qr: 'Raast' };
 
@@ -72,9 +73,14 @@ export class PosReceiptService {
     const m = CLIENT_KEY.exec(clientKey ?? '');
     if (!m) return null;
     const madeAt = Number(m[1]) / 1000;
-    if (!Number.isFinite(madeAt) || madeAt > now.getTime() + 86_400_000 || madeAt < now.getTime() - CLIENT_LINK_WINDOW_MS) return null;
+    if (!Number.isFinite(madeAt) || madeAt > now.getTime() + 86_400_000) return null;
     const store: any = await this.r.storeModel.findOne({ slug: storePublicId }).select('_id').lean();
     if (!store) return null;
+    // G5.3: the store's receipt-link lifetime (≥ 30 days; the return window by default) for sales made since it was set; older links keep 30 days
+    const ps: any = madeAt < now.getTime() - CLIENT_LINK_WINDOW_MS ? await this.r.posSettingsModel.findOne({ storeId: String(store._id) }).select('receiptLinkDays receiptLinkDaysSince returnApprovalAfterDays').lean() : null;
+    const since = ps?.receiptLinkDaysSince ? new Date(ps.receiptLinkDaysSince).getTime() : null;
+    const windowMs = ps && since !== null && madeAt >= since ? receiptLinkDays(ps) * 86_400_000 : CLIENT_LINK_WINDOW_MS;
+    if (madeAt < now.getTime() - windowMs) return null;
     const sale: any = await this.r.saleModel.findOne({ storeId: String(store._id), idempotencyKey: clientKey }).lean();
     if (!sale) return 'syncing';
     if (sale.status === 'held' || sale.status === 'discarded' || sale.receipt?.revokedAt) return null;

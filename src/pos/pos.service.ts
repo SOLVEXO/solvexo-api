@@ -3441,6 +3441,8 @@ export class PosService {
     // The authoritative selling currency comes from the store, not from the free-text `currencySymbol`.
     await this.ensureVersionRow(storeId);
     const { currency, exp } = await this.moneyContext(storeId);
+    // G5.3: the per-store receipt-link lifetime starts counting from the first settings read after it shipped (older links keep 30 days)
+    if (!settings.receiptLinkDaysSince) await this.r.posSettingsModel.updateOne({ storeId, receiptLinkDaysSince: null }, { $set: { receiptLinkDaysSince: new Date() } });
     // G4.9: the store's public id + the base of the receipt link a till builds offline (`<base><sale client key>`), cached with the settings
     const store: any = await this.r.storeModel.findById(storeId).select('slug').lean();
     return { success: true, data: { ...settings, autoLockMinutes: settings.autoLockMinutes ?? 5, settingsVersion: settings.settingsVersion || 1, currency, currencyExponent: exp, ...offlineLinkBaseOf(store?.slug) } };

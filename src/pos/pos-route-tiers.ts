@@ -11,6 +11,7 @@
 export type PosTier = 'owner' | 'manager-with-limit' | 'cashier' | 'public';
 
 export const POS_ROUTE_TIERS: Readonly<Record<string, PosTier>> = {
+  'POST /api/pos/receipt-delivery/:storeId/:saleId': 'cashier', // G5.3: the public link by e-mail / SMS (flags off by default; consent; rate-limited)
   // G5.2: the product page (cost stripped for managers when hidden) and editing an existing product
   'GET /api/pos/catalog-admin/products/:storeId/:productId': 'cashier',
   'PATCH /api/pos/catalog-admin/products/:storeId/:productId': 'manager-with-limit',

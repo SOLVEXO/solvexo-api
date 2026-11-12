@@ -149,6 +149,14 @@ export class SmsGatewayService {
     return this.provider.send(c.http, { secret, sender: c.senderId }, to, withStopFooter(text));
   }
 
+  /** G5.3 (additive): one TRANSACTIONAL SMS (a receipt link the customer asked for) — no marketing opt-out footer. Off unless the store's gateway is enabled. */
+  async sendTransactional(storeId: string, to: string, text: string): Promise<SmsSendResult> {
+    const c0: any = await this.model.findOne({ storeId }).select('enabled verifiedAt').lean();
+    if (!c0?.enabled || !c0?.verifiedAt) return { success: false, error: 'The SMS gateway is not set up or switched off' };
+    const { c, secret } = await this.loaded(storeId);
+    return this.provider.send(c.http, { secret, sender: c.senderId }, to, text);
+  }
+
   /** New webhook secret for delivery reports / replies (shown once, only its hash is kept). */
   async rotateWebhookSecret(storeId: string) {
     if (!(await this.model.exists({ storeId }))) throw new BadRequestException('Set up your SMS gateway first.');

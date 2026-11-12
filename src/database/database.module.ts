@@ -281,6 +281,7 @@ import { DatabaseService } from './databaseservice';
       { name: schema.PosAuditSeal.name, schema: schema.PosAuditSealSchema },
       { name: schema.PosReprintEvent.name, schema: schema.PosReprintEventSchema },
       { name: schema.PosCashAttachment.name, schema: schema.PosCashAttachmentSchema },
+      { name: schema.PosReceiptDelivery.name, schema: schema.PosReceiptDeliverySchema },
       { name: schema.PosModifierGroup.name, schema: schema.PosModifierGroupSchema },
       { name: schema.PosPriceBook.name, schema: schema.PosPriceBookSchema },
       { name: schema.PosExpense.name, schema: schema.PosExpenseSchema },

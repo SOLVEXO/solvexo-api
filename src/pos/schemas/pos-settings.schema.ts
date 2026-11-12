@@ -64,6 +64,11 @@ export class PosSettings {
   @Prop({ type: Object, default: {} }) receiptOptions: Record<string, any>;
   @Prop({ type: Object, default: {} }) alertPrefs: Record<string, boolean>;
   @Prop({ type: Object, default: {} }) securityPrefs: Record<string, any>;
+  /** G5.3–G5.5: provider-dependent features, each OFF until the admin / owner turns it on (email / SMS receipts, external card terminal, card gateway, fiscal) */
+  @Prop({ type: Object, default: {} }) connectorPrefs: Record<string, any>;
+  /** G5.3: how long a printed receipt QR (client-key link) keeps working, in days (≥ 30; null = the larger of 30 and the return window). Applies to sales made from `receiptLinkDaysSince` on; older links keep 30 days. */
+  @Prop({ type: Number, default: null }) receiptLinkDays: number | null;
+  @Prop({ type: Date, default: null }) receiptLinkDaysSince: Date | null;
   /** a return above this amount (minor units) needs a manager; null = no amount limit */
   @Prop({ type: Number, default: null, min: 0 }) returnApprovalAboveMinor: number | null;
   /** a return later than this many days after the sale needs a manager; null = no day limit */

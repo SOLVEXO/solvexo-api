@@ -14,6 +14,13 @@ export const RECEIPT_DEFAULTS = { showLogo: true, showStoreAddress: true, showTa
 export const ALERT_DEFAULTS = { lowStock: true, expiringLots: true, largeRefund: true, cashVariance: true, attendanceAnomalies: true, unsyncedSales: true, sealFailure: true };
 /** Till security (the PIN and its lock-out rules stay as built; these are the knobs the owner turns). */
 export const SECURITY_DEFAULTS = { autoLockMinutes: 5, lockOnBackground: false, requirePinForReprint: false, hideCostsFromManagers: false };
+/** G5.3–G5.5 — provider-dependent features (pending-decision pattern): every one OFF by default; the admin panel / owner turns them on. */
+export const CONNECTOR_DEFAULTS = { emailReceipts: false, smsReceipts: false, cardExternalTerminal: false, cardGateway: false, fiscal: false };
+/** G5.3: the printed receipt QR's lifetime is at least 30 days. */
+export const RECEIPT_LINK_MIN_DAYS = 30;
+export function receiptLinkDays(s: { receiptLinkDays?: number | null; returnApprovalAfterDays?: number | null } | null | undefined): number {
+  return s?.receiptLinkDays ?? Math.max(RECEIPT_LINK_MIN_DAYS, s?.returnApprovalAfterDays ?? 0);
+}
 
 /**
  * G4.4 — store-level settings the settings hub edits (owner only; managers read): receipt designer, in-app alerts, security, plus the sync / backup status read-out.
@@ -26,12 +33,14 @@ export class PosStoreSettingsService {
 
   private async read(storeId: string) {
     await this.r.posSettingsModel.updateOne({ storeId }, { $setOnInsert: { storeId } }, { upsert: true });
-    const s: any = await this.r.posSettingsModel.findOne({ storeId }).select('receiptOptions alertPrefs securityPrefs autoLockMinutes receiptHeader receiptFooter businessName businessAddress businessTaxId').lean();
+    const s: any = await this.r.posSettingsModel.findOne({ storeId }).select('receiptOptions alertPrefs securityPrefs connectorPrefs receiptLinkDays receiptLinkDaysSince returnApprovalAfterDays autoLockMinutes receiptHeader receiptFooter businessName businessAddress businessTaxId').lean();
     return {
       receipt: { ...RECEIPT_DEFAULTS, ...(s?.receiptOptions ?? {}), header: s?.receiptHeader ?? null, footer: s?.receiptFooter ?? null },
       alerts: { ...ALERT_DEFAULTS, ...(s?.alertPrefs ?? {}) },
       security: { ...SECURITY_DEFAULTS, ...(s?.securityPrefs ?? {}), autoLockMinutes: s?.autoLockMinutes ?? SECURITY_DEFAULTS.autoLockMinutes },
       profile: { businessName: s?.businessName ?? null, businessAddress: s?.businessAddress ?? null, businessTaxId: s?.businessTaxId ?? null },
+      connectors: { ...CONNECTOR_DEFAULTS, ...(s?.connectorPrefs ?? {}) },
+      receiptLinks: { days: receiptLinkDays(s), custom: s?.receiptLinkDays ?? null, minDays: RECEIPT_LINK_MIN_DAYS, since: s?.receiptLinkDaysSince ?? null },
     };
   }
 
@@ -71,6 +80,13 @@ export class PosStoreSettingsService {
       bools(flags, SECURITY_DEFAULTS, 'security', 'securityPrefs');
       if (autoLockMinutes !== undefined) { if (!Number.isInteger(autoLockMinutes) || autoLockMinutes < 1 || autoLockMinutes > 240) throw bad('INVALID_SETTINGS', 'security.autoLockMinutes must be 1–240'); set.autoLockMinutes = autoLockMinutes; }
     }
+    bools(body?.connectors, CONNECTOR_DEFAULTS, 'connectors', 'connectorPrefs');
+    const rl = body?.receiptLinks;
+    if (rl !== undefined) {
+      const days = rl?.days;
+      if (days !== null && !(Number.isInteger(days) && days >= RECEIPT_LINK_MIN_DAYS && days <= 3650)) throw bad('INVALID_SETTINGS', `receiptLinks.days must be ${RECEIPT_LINK_MIN_DAYS}–3650 days, or null (= the return window, at least ${RECEIPT_LINK_MIN_DAYS})`);
+      set.receiptLinkDays = days; set.receiptLinkDaysSince = new Date(); // links of sales made before this change keep their 30 days
+    }
     if (!Object.keys(set).length) throw bad('NOTHING_TO_CHANGE', 'Nothing to change');
     await this.r.posSettingsModel.updateOne({ storeId }, { $set: set });
     const after = await this.read(storeId);
@@ -88,7 +104,7 @@ export class PosStoreSettingsService {
   }
 }
 const pick = (o: any, path: string) => {
-  const map: Record<string, string> = { receiptOptions: 'receipt', alertPrefs: 'alerts', securityPrefs: 'security', receiptHeader: 'receipt.header', receiptFooter: 'receipt.footer', autoLockMinutes: 'security.autoLockMinutes' };
+  const map: Record<string, string> = { receiptOptions: 'receipt', alertPrefs: 'alerts', securityPrefs: 'security', connectorPrefs: 'connectors', receiptLinkDays: 'receiptLinks.custom', receiptLinkDaysSince: 'receiptLinks.since', receiptHeader: 'receipt.header', receiptFooter: 'receipt.footer', autoLockMinutes: 'security.autoLockMinutes' };
   const [head, ...rest] = path.split('.');
   const p = (map[head] ?? head).split('.').concat(rest);
   return p.reduce((x, k) => (x == null ? x : x[k]), o);
