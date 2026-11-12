@@ -197,6 +197,7 @@ export { PosReprintEvent, PosReprintEventDocument, PosReprintEventSchema } from 
 export { PosCashAttachment, PosCashAttachmentDocument, PosCashAttachmentSchema } from '../pos/schemas/pos-cash-attachment.schema';
 export { PosReceiptDelivery, PosReceiptDeliveryDocument, PosReceiptDeliverySchema } from '../pos/schemas/pos-receipt-delivery.schema';
 export { PosFiscalRecord, PosFiscalRecordDocument, PosFiscalRecordSchema } from '../pos/schemas/pos-fiscal-record.schema';
+export { PosApiKey, PosApiKeyDocument, PosApiKeySchema, PosApiKeyWindow, PosApiKeyWindowDocument, PosApiKeyWindowSchema } from '../pos/schemas/pos-api-key.schema';
 export { PosModifierGroup, PosModifierGroupDocument, PosModifierGroupSchema, PosPriceBook, PosPriceBookDocument, PosPriceBookSchema } from '../pos/schemas/pos-catalog-extras.schema';
 export { SupplierLedgerEntry, SupplierLedgerEntryDocument, SupplierLedgerEntrySchema } from '../purchase-orders/schemas/supplier-ledger-entry.schema';
 export { StockCount, StockCountDocument, StockCountSchema } from '../stock-counts/schemas/stock-count.schema';

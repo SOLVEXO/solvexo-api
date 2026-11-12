@@ -237,6 +237,64 @@ export class PosReportsService {
   }
 
   // ── 6 · payment mix ──────────────────────────────────────────────────────────
+  /**
+   * G5.7 — accounting export (CSV) for the period, one row per document, in the store's time zone: tax invoices, credit notes (negative), expenses
+   * (not rejected; negative) and supplier payments (negative). Money in minor units with currency + exponent, plus the formatted amount. Cost columns
+   * appear only when the caller may see cost (hide-costs → a manager gets no cost columns). Audited (`accounting_export`).
+   */
+  async accountingCsv(req: Req, storeId: string, q: any, t: Tokens): Promise<{ filename: string; csv: string; rows: number; costsIncluded: boolean }> {
+    const c = await this.ctx(req, storeId, q, t, 'reports.view');
+    const ps: any = await this.r.posSettingsModel.findOne({ storeId }).select('securityPrefs').lean();
+    return this.buildAccounting(c, c.role === 'owner' || ps?.securityPrefs?.hideCostsFromManagers !== true, { employeeId: c.employeeId ?? null, role: c.role });
+  }
+
+  /** G5.7: the same export for a store API key (accounting:read) — never with cost columns; audited as the key. */
+  async accountingCsvForKey(storeId: string, q: any, key: { keyId: string; prefix: string }) {
+    const store: any = await this.r.storeModel.findById(storeId).select('baseCurrency').lean();
+    const tz = await this.pos.storeTz(storeId);
+    const currency = String(store?.baseCurrency || 'USD').toUpperCase();
+    const c = { storeId, tz, currency, currencyExponent: isoExponent(currency), period: this.periodOf(q?.from, q?.to, tz), previous: null, filters: {}, role: 'api_key', employeeId: null } as unknown as Ctx;
+    return this.buildAccounting(c, false, { employeeId: null, role: 'api_key', apiKey: key.prefix });
+  }
+
+  private async buildAccounting(c: Ctx, withCost: boolean, actor: { employeeId: string | null; role: string; apiKey?: string }): Promise<{ filename: string; csv: string; rows: number; costsIncluded: boolean }> {
+    const storeId = c.storeId;
+    const { start, end } = c.period;
+    const [sales, notes, expenses, payments]: any[][] = await Promise.all([
+      this.r.saleModel.find({ storeId, 'invoice.number': { $type: 'string' }, createdAt: { $gte: start, $lt: end } }).select('invoice saleNumber createdAt customerName items payments paymentMethod totalMinor taxMinor currency currencyExponent status').sort({ createdAt: 1 }).lean(),
+      this.r.posCreditNoteModel.find({ storeId, createdAt: { $gte: start, $lt: end } }).select('number kind invoiceNumber saleNumber customerName createdAt netMinor taxMinor totalMinor currency currencyExponent tenders').sort({ createdAt: 1 }).lean(),
+      this.r.posExpenseModel.find({ storeId, occurredAt: { $gte: start, $lt: end } }).select('number category payee method note occurredAt amountMinor currency currencyExponent').sort({ occurredAt: 1 }).lean(),
+      this.r.supplierLedgerEntryModel ? this.r.supplierLedgerEntryModel.find({ storeId, type: 'payment', createdAt: { $gte: start, $lt: end } }).select('supplierId amountMinor method reference createdAt currency currencyExponent').sort({ createdAt: 1 }).lean() : Promise.resolve([]),
+    ]);
+    const rejected = new Set(expenses.length ? (await this.r.posExpenseEventModel.find({ storeId, expenseId: { $in: expenses.map((e) => String(e._id)) }, type: 'rejected' }).select('expenseId').lean()).map((e: any) => String(e.expenseId)) : []);
+    const supplierIds = [...new Set(payments.map((p) => String(p.supplierId)))].filter((x) => Types.ObjectId.isValid(x));
+    const suppliers = new Map<string, string>(supplierIds.length ? (await this.r.supplierModel.find({ _id: { $in: supplierIds } }).select('name').lean()).map((x: any) => [String(x._id), x.name]) : []);
+    const day = new Intl.DateTimeFormat('en-CA', { timeZone: c.tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
+    const when = (d: any) => { const p = Object.fromEntries(day.formatToParts(new Date(d)).map((x) => [x.type, x.value])); return `${p.year}-${p.month}-${p.day} ${p.hour === '24' ? '00' : p.hour}:${p.minute}`; };
+    const fmt = (minor: number | null, exp: number) => (minor === null ? '' : (minor / 10 ** exp).toFixed(exp));
+    type Row = { date: string; type: string; number: string; reference: string; party: string; methods: string; currency: string; exp: number; net: number | null; tax: number | null; total: number; cost: number | null };
+    const rows: Row[] = [];
+    for (const x of sales) {
+      const exp = x.currencyExponent ?? c.currencyExponent;
+      const items: any[] = x.items ?? [];
+      const net = items.reduce((n, i) => n + (i.netMinor ?? 0), 0);
+      const known = items.length > 0 && items.every((i) => typeof i.unitCostMinor === 'number');
+      const cost = known ? items.reduce((n, i) => n + i.unitCostMinor * (i.qty ?? 0), 0) : null;
+      const methods = (x.payments?.length ? x.payments.map((p: any) => p.method) : [x.paymentMethod]).filter(Boolean);
+      rows.push({ date: when(x.invoice?.issuedAt ?? x.createdAt), type: x.status === 'voided' ? 'invoice (voided)' : 'invoice', number: x.invoice.number, reference: x.saleNumber ?? '', party: x.customerName ?? '', methods: [...new Set(methods)].join(' + '), currency: x.currency ?? c.currency, exp, net, tax: x.taxMinor ?? null, total: x.totalMinor ?? 0, cost });
+    }
+    for (const n of notes) rows.push({ date: when(n.createdAt), type: n.kind === 'void' ? 'credit note (void)' : 'credit note', number: n.number, reference: n.invoiceNumber ?? n.saleNumber ?? '', party: n.customerName ?? '', methods: [...new Set((n.tenders ?? []).map((t: any) => t.method))].join(' + '), currency: n.currency, exp: n.currencyExponent, net: -(n.netMinor ?? 0), tax: -(n.taxMinor ?? 0), total: -(n.totalMinor ?? 0), cost: null });
+    for (const e of expenses) if (!rejected.has(String(e._id))) rows.push({ date: when(e.occurredAt), type: `expense: ${e.category}`, number: e.number, reference: e.note ?? '', party: e.payee ?? '', methods: e.method, currency: e.currency, exp: e.currencyExponent, net: null, tax: null, total: -e.amountMinor, cost: null });
+    for (const p of payments) rows.push({ date: when(p.createdAt), type: 'supplier payment', number: String(p._id), reference: p.reference ?? '', party: suppliers.get(String(p.supplierId)) ?? '', methods: p.method ?? '', currency: p.currency ?? c.currency, exp: p.currencyExponent ?? c.currencyExponent, net: null, tax: null, total: p.amountMinor, cost: null }); // ledger payments are already negative
+    rows.sort((a, b) => a.date.localeCompare(b.date));
+    const esc = (v: unknown) => { const s = String(v ?? ''); const safe = /^[=+\-@\t\r]/.test(s) && !/^-?\d+(\.\d+)?$/.test(s) ? `'${s}` : s; return /[",\n\r]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe; }; // no spreadsheet formulas
+    const head = ['date_local', 'time_zone', 'type', 'number', 'reference', 'party', 'payment_methods', 'currency', 'currency_exponent', 'net_minor', 'tax_minor', 'total_minor', ...(withCost ? ['cost_minor'] : []), 'net', 'tax', 'total', ...(withCost ? ['cost'] : [])];
+    const lines = [head.join(',')];
+    for (const r of rows) lines.push([r.date, c.tz, r.type, r.number, r.reference, r.party, r.methods, r.currency, r.exp, r.net ?? '', r.tax ?? '', r.total, ...(withCost ? [r.cost ?? ''] : []), fmt(r.net, r.exp), fmt(r.tax, r.exp), fmt(r.total, r.exp), ...(withCost ? [fmt(r.cost, r.exp)] : [])].map(esc).join(','));
+    await this.r.posAuditLogModel.create([{ storeId, employeeId: actor.employeeId, action: 'accounting_export', targetId: storeId, targetType: 'report', metadata: { from: c.period.from, to: c.period.to, timeZone: c.tz, rows: rows.length, costsIncluded: withCost, role: actor.role, apiKey: actor.apiKey ?? null } }]);
+    return { filename: `accounting_${c.period.from}_${c.period.to}.csv`, csv: lines.join('\n') + '\n', rows: rows.length, costsIncluded: withCost };
+  }
+
   async payments(req: Req, storeId: string, q: any, t: Tokens) {
     const c = await this.ctx(req, storeId, q, t, 'reports.view');
     const paid: any[] = await this.r.saleModel.aggregate([

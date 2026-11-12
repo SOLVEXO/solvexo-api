@@ -68,6 +68,8 @@ export const COST_FIELD_DECISIONS: Readonly<Record<string, { classified: 'cost' 
 
 /** Cost-looking names that are NOT cost (settings, sale values, discounts, loyalty) — the scan test accepts these. */
 export const NOT_COST: ReadonlySet<string> = new Set([
+  'withCost', // G5.7: the accounting export's flag for including cost columns (decided by role + hide-costs)
+  'costsIncluded', // G5.7: a flag saying whether the accounting export carries cost columns (the columns themselves obey hide-costs)
   'hideCostsFromManagers', 'costsHidden', 'discountValue', 'discountValueMinor', 'redeemValueMinor', 'avgTransactionValue', 'avgTransactionValueMinor',
   'valueRemaining', 'useValue', 'defaultValue', 'value', 'costStore', 'expenses', 'expensesMinor', 'expensesByCategoryMinor',
   // internal names, never a response key

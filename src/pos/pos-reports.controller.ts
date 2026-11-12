@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
-import { Body, Controller, Get, Headers, Param, Patch, Post, Query, Req, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import { Body, Controller, Get, Headers, Param, Patch, Post, Query, Req, Res, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import { Response } from 'express';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
@@ -22,6 +23,18 @@ import { PosStoreSettingsService, RECEIPT_LOGO_MAX_BYTES } from './pos-store-set
 @Controller('api/pos/reports')
 export class PosReportsController {
   constructor(private readonly svc: PosReportsService) {}
+
+  /** G5.7: accounting export (CSV, store time zone, minor units + formatted amounts; cost columns obey hide-costs; audited). */
+  @UseGuards(PosAuthGuard, RolesGuard) @Roles('seller') @Get('accounting-export/:storeId')
+  async accountingExport(@Req() req: any, @Param('storeId') s: string, @Query() q: any, @Res() res: Response, @Headers('x-pos-employee-token') e?: string) {
+    const out = await this.svc.accountingCsv(req, s, q, { employee: e });
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${out.filename}"`);
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('X-Export-Rows', String(out.rows));
+    res.setHeader('X-Costs-Included', String(out.costsIncluded));
+    res.send(out.csv);
+  }
   private t = (e?: string) => ({ employee: e });
 
   @UseGuards(PosAuthGuard, RolesGuard) @Roles('seller') @Get('pulse/:storeId')

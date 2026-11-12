@@ -8,6 +8,7 @@ import { PosReceiptService } from './pos-receipt.service';
 import { PosFiscalService } from './pos-fiscal.service';
 import { MockFiscalProvider, NotConfiguredFiscalProvider, fiscalProviderFor } from './connectors/fiscal';
 import { MockCardGateway, NotConfiguredCardGateway, cardGatewayFor } from './connectors/card-gateway';
+import { moneyContractViolations } from './testing/money-contract';
 import { MongoHarness, seedStore, startMongoHarness } from './testing/mongo-harness';
 
 /** G5.4 (card on an external terminal) + G5.5 (fiscal provider, mock) on a real replica-set MongoDB. */
@@ -48,6 +49,7 @@ describe('G5.4 · card on an external terminal', () => {
     expect(sale.payments[0].terminal).toMatchObject({ approvalCode: 'A1B2C3', last4: '4242', label: 'HBL #1' });
     const rep: any = (await x.svc.getSessionReport(x.s.sellerId, x.sid)).data;
     expect(rep.summary.cardExternalTerminal).toMatchObject({ count: 1, approvalCodes: ['A1B2C3'], terminals: ['HBL #1'] });
+    expect(moneyContractViolations({ data: rep })).toEqual([]);
     const ref: any = await x.svc.refundSale(x.s.sellerId, String(sale._id), {}, tok(x.s));
     expect(ref.data.tenders.find((t: any) => t.method === 'card')).toMatchObject({ approvalCodeRef: 'A1B2C3', externalTerminal: true });
     const cn: any = await r.posCreditNoteModel.findOne({ saleId: String(sale._id) }).lean();

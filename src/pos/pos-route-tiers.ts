@@ -14,7 +14,16 @@ export const POS_ROUTE_TIERS: Readonly<Record<string, PosTier>> = {
   'POST /api/pos/store/settings/:storeId/receipt-logo': 'owner', // G5.6: receipt logo upload (content-checked, resized, audited)
   'POST /api/pos/store/settings/:storeId/receipt-logo/remove': 'owner',
   'POST /api/pos/permissions/:storeId/preset': 'owner', // G5.6: apply a role preset (proposed presets; preview first; audited; version-guarded)
-  'GET /api/pos/connectors/:storeId': 'cashier', // G5.4/G5.7: provider-dependent feature switches + provider status (read-only; switches change via owner store settings)
+  'GET /api/pos/connectors/:storeId': 'cashier',
+  // G5.7: store API keys — managed by the owner only; the secret shown once, hashed, expiring, revocable
+  'GET /api/pos/api-keys/:storeId': 'owner',
+  'POST /api/pos/api-keys/:storeId': 'owner',
+  'POST /api/pos/api-keys/:storeId/:keyId/revoke': 'owner',
+  // G5.7: the read-only external API — no PIN session: a store API key (X-Api-Key, scoped, rate-limited per key, every use audited); never cost data
+  'GET /api/pos/ext/v1/sales': 'public',
+  'GET /api/pos/ext/v1/inventory': 'public',
+  'GET /api/pos/ext/v1/accounting-export': 'public',
+  'GET /api/pos/reports/accounting-export/:storeId': 'manager-with-limit', // G5.7: accounting CSV (cost columns obey hide-costs; audited) // G5.4/G5.7: provider-dependent feature switches + provider status (read-only; switches change via owner store settings)
   'POST /api/pos/receipt-delivery/:storeId/:saleId': 'cashier', // G5.3: the public link by e-mail / SMS (flags off by default; consent; rate-limited)
   // G5.2: the product page (cost stripped for managers when hidden) and editing an existing product
   'GET /api/pos/catalog-admin/products/:storeId/:productId': 'cashier',
