@@ -43,7 +43,7 @@ Couriers (account + API keys + sandbox), Meta WhatsApp Business (token, template
 
 **Tests added in this run:** `navConfig.test.ts` (6, vitest), `seller-order-view.integration.spec.ts` (6, real Mongo, needs `ORDERVIEW_IT_MONGO`), `fulfil-stock.integration.spec.ts` (7, real Mongo, needs `STOCK_IT_MONGO`), `scheduler-guard.spec.ts` (8, static + fake Redis). Run with `scripts/mini-jest.cjs` (real jest does not load on the dev machine); the two integration specs also need a `beforeAll` shim there (they use plain jest hooks). Browser: sidebar at 1366 / 375 px, orders tabs, Customers tab strip, checked in Chrome against a MOCKED API.
 
-**Not verified in this run:** real backend + browser together; bulk Mark as paid / Export CSV clicked end to end; Edit order button; the new tabs at 375 px; Atlas `explain()`.
+**Verified on the real local stack (2026-11-12: real API build + local mongod 7 + fake Redis + vite + Chrome, seeded seller/store/3 COD orders):** `view` filter over HTTP (unfulfilled, open, unpaid, cod_awaiting), the six order tabs, no row menus, bulk Export selected (CSV downloaded), bulk Mark as paid (2 orders became paid + completed in the database), Edit order button on an editable order, no page errors. **Not verified:** real Stripe/SMTP/Redis, 375 px order and Customers pages, Atlas `explain()`. Found and fixed: bulk export button was labelled "Export CSV" like the page header button, now "Export selected".
 
 **Needs the owner (accounts, keys, documents), grouped by feature**
 | Feature | What to collect | Without it |
