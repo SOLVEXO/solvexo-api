@@ -13,4 +13,4 @@ Read MASTER2.md first. Update after every phase. Docs live in the API repo; web 
 | Q6 A/B experiments | done (A/B on a section or theme settings, consent-respecting bucketing, results + verdict, winner) | next commit | real traffic, browser, flicker on first paint |
 | Q7 App platform | done (minimal: registry, consent + code exchange, scoped tokens, app webhooks, uninstall, embed) | next commit | real app, browser iframe, token expiry (none) |
 | Q8 Social creatives | done (web-only canvas: 4 sizes, PNG download, caption copy) | next commit | real-browser canvas, CORS export, phone |
-| Q9 Final audit | not started | - | - |
+| Q9 Final audit | done (route auth scan spec + allow-list, categories check, LAUNCH-NOTES) | next commit | Atlas explain(), live services |
