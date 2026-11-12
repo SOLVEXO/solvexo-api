@@ -9,5 +9,6 @@
 import * as os from 'os';
 
 const adapters = require('mongodb/lib/runtime_adapters');
-adapters.resolveRuntimeAdapters = (options: { runtimeAdapters?: { os?: unknown } }) =>
-  Promise.resolve({ os: options?.runtimeAdapters?.os ?? os });
+adapters.resolveRuntimeAdapters = (options: {
+  runtimeAdapters?: { os?: unknown };
+}) => Promise.resolve({ os: options?.runtimeAdapters?.os ?? os });
