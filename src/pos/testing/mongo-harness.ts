@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { MongoMemoryServer } from 'mongodb-memory-server';
+import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import mongoose, { Connection, Types } from 'mongoose';
 import * as schema from '@/database/schema';
 
@@ -25,7 +25,7 @@ export async function startMongoHarness(): Promise<MongoHarness> {
   // Normal path: the ONE shared mongod started by test/jest-global-setup.ts, with a database of our own so
   // suites can't see each other's data. Fallback (e.g. running a spec outside jest's globalSetup): our own mongod.
   const sharedUri = process.env.TEST_MONGO_URI;
-  const own = sharedUri ? null : await MongoMemoryServer.create();
+  const own = sharedUri ? null : await MongoMemoryReplSet.create({ replSet: { count: 1 } });
   const dbName = `pos_test_${process.pid}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const conn = await mongoose.createConnection(sharedUri ?? own!.getUri(), { dbName }).asPromise();
 
@@ -38,9 +38,14 @@ export async function startMongoHarness(): Promise<MongoHarness> {
     productVariantModel: m(schema.ProductVariant, schema.ProductVariantSchema),
     productModel: m(schema.Product, schema.ProductSchema),
     posSettingsModel: m(schema.PosSettings, schema.PosSettingsSchema),
+    couponModel: m(schema.Coupon, schema.CouponSchema),
     variantLocationStockModel: m(schema.VariantLocationStock, schema.VariantLocationStockSchema),
     storeLocationModel: m(schema.StoreLocation, schema.StoreLocationSchema),
     posAuditLogModel: m(schema.PosAuditLog, schema.PosAuditLogSchema),
+    posPaymentModel: m(schema.PosPayment, schema.PosPaymentSchema),
+    posRefundModel: m(schema.PosRefund, schema.PosRefundSchema),
+    posCreditNoteModel: m(schema.PosCreditNote, schema.PosCreditNoteSchema),
+    categoryModel: m(schema.Category, schema.CategorySchema),
     orderModel: m(schema.Order, schema.OrderSchema),
     userModel: m(schema.User, schema.UserSchema),
     storeCustomerMetaModel: m(schema.StoreCustomerMeta, schema.StoreCustomerMetaSchema),
@@ -53,6 +58,10 @@ export async function startMongoHarness(): Promise<MongoHarness> {
     variantPriceHistoryModel: m(schema.VariantPriceHistory, schema.VariantPriceHistorySchema),
     refreshTokenFamilyModel: m(schema.RefreshTokenFamily, schema.RefreshTokenFamilySchema),
     idempotencyRecordModel: m(schema.IdempotencyRecord, schema.IdempotencyRecordSchema),
+    stockMovementModel: m(schema.StockMovement, schema.StockMovementSchema),
+    posCustomerModel: m(schema.PosCustomer, schema.PosCustomerSchema),
+    storeCreditEntryModel: m(schema.StoreCreditEntry, schema.StoreCreditEntrySchema),
+    storeCreditLotModel: m(schema.StoreCreditLot, schema.StoreCreditLotSchema),
   };
   // Build every index now (unique sale key, unique open session per register, …) so tests hit the real constraints.
   await Promise.all(Object.values(repos).map((model) => model.init()));
@@ -66,7 +75,8 @@ export async function startMongoHarness(): Promise<MongoHarness> {
       if (own) await own.stop();
     },
     reset: async () => {
-      for (const model of Object.values(repos)) await model.deleteMany({});
+      // raw collection delete: the audit / payment / refund models are append-only through Mongoose (that is the point)
+      for (const model of Object.values(repos)) await model.collection.deleteMany({});
     },
   };
 }
@@ -95,8 +105,8 @@ export async function seedStore(
   await r.productModel.collection.insertOne({ _id: new Types.ObjectId(productId), storeId: String(storeId), sellerId, name: 'Tea', type: 'physical', isDelete: false, status: 'active', gallery: [] });
   const variantId = oidStr();
   await r.productVariantModel.collection.insertOne({
-    _id: new Types.ObjectId(variantId), productId, sku: 'TEA-1', price: opts.price ?? 10,
-    stock: opts.stock ?? 5, committedStock: 0, unlimitedStock: opts.unlimited === true,
+    _id: new Types.ObjectId(variantId), productId, storeId: String(storeId), sku: 'TEA-1', price: opts.price ?? 10,
+    stock: opts.stock ?? 5, committedStock: 0, damagedStock: 0, inTransitStock: 0, unlimitedStock: opts.unlimited === true,
     isDelete: false, status: 'active', options: [], isDefault: true,
   });
   const managerId = oidStr();

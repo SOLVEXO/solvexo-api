@@ -1,6 +1,8 @@
 /* eslint-disable prettier/prettier */
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument } from 'mongoose';
+import '../../common/schema-types/minor-money';
+import { expOf, costTwin } from '../../common/cost-minor.util';
 
 export type SupplierReturnDocument = HydratedDocument<SupplierReturn>;
 
@@ -21,6 +23,8 @@ export class SupplierReturnItem {
   /** true when the units came out of the damaged (unsellable) pool instead of sellable stock */
   @Prop({ type: Boolean, default: false }) fromDamaged: boolean;
   @Prop({ type: String, default: null }) purchaseOrderItemId: string | null;
+  /** G3.0 integer twin of `unitCost` (minor units of the return's currency) */
+  @Prop({ type: 'MinorMoney' }) unitCostMinor?: number;
 }
 export const SupplierReturnItemSchema = SchemaFactory.createForClass(SupplierReturnItem);
 
@@ -37,10 +41,15 @@ export class SupplierReturn {
   @Prop({ type: String, required: true }) supplierName: string;
   @Prop({ type: String, default: null }) purchaseOrderId: string | null;
   @Prop({ type: String, default: null }) locationId: string | null;
+  /** G3.4: the goods receipt the units came in on (links the return to receipts and lots) */
+  @Prop({ type: String, default: null }) receiptId: string | null;
   @Prop({ type: String, enum: SUPPLIER_RETURN_REASONS, default: 'other' }) reason: SupplierReturnReason;
   @Prop({ type: String, default: null }) note: string | null;
   @Prop({ type: [SupplierReturnItemSchema], default: [] }) items: SupplierReturnItem[];
   @Prop({ type: Number, default: 0 }) totalCredit: number;
+  /** G3.0: the store's currency at the time (costs here were always in it) and the integer twin of `totalCredit` */
+  @Prop({ type: String, default: null }) currency: string | null;
+  @Prop({ type: 'MinorMoney' }) totalCreditMinor?: number;
   @Prop({ type: String, enum: SUPPLIER_RETURN_CREDIT_STATUSES, default: 'pending' }) creditStatus: string;
   @Prop({ type: Date, default: null }) creditReceivedAt: Date | null;
   @Prop({ type: String, default: null }) requestId: string | null;
@@ -50,6 +59,15 @@ export class SupplierReturn {
 }
 
 export const SupplierReturnSchema = SchemaFactory.createForClass(SupplierReturn);
+SupplierReturnSchema.set('toJSON', { getters: true, virtuals: false });
+SupplierReturnSchema.set('toObject', { getters: true, virtuals: false });
+SupplierReturnSchema.pre('validate', function () {
+  const cur = (this as any).currency;
+  if (!cur) return; // a legacy row without a currency is filled by the backfill, never guessed here
+  const exp = expOf(cur);
+  (this as any).totalCreditMinor = costTwin((this as any).totalCredit, exp);
+  ((this as any).items ?? []).forEach((it: any) => { it.unitCostMinor = costTwin(it.unitCost, exp); });
+});
 SupplierReturnSchema.index({ storeId: 1, createdAt: -1 });
 // duplicate-submit protection: one return per client request id per store
 SupplierReturnSchema.index({ storeId: 1, requestId: 1 }, { unique: true, partialFilterExpression: { requestId: { $type: 'string' } } });

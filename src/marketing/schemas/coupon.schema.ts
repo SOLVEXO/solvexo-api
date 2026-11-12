@@ -69,6 +69,10 @@ export class Coupon {
   @Prop({ type: Boolean, default: true })
   isActive: boolean;
 
+  // G2.4: usable at the POS till. OFF by default — an existing online coupon is never silently honoured in-store.
+  @Prop({ type: Boolean, default: false })
+  posEnabled: boolean;
+
   @Prop({ type: Boolean, default: false })
   isDelete: boolean;
 }

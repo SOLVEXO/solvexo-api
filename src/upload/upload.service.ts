@@ -177,6 +177,31 @@ export class UploadService {
     });
   }
 
+  /**
+   * Deletes a PRIVATE asset (KYB documents). `deleteFile` above omits `type: 'private'`, so for a private asset Cloudinary answers
+   * "not found" and deletes NOTHING (verified against the real account) — never use it for private files. Resolves when the asset is
+   * gone ('ok') or was already gone ('not found'); anything else throws so the caller can retry.
+   */
+  async deletePrivateFile(publicId: string, resourceType: string): Promise<'ok' | 'not found'> {
+    const r = await cloudinary.uploader.destroy(publicId, { resource_type: resourceType as any, type: 'private', invalidate: true });
+    if (r?.result === 'ok' || r?.result === 'not found') return r.result;
+    throw new Error(`Cloudinary refused to delete the private asset: ${r?.result ?? 'unknown'}`);
+  }
+
+  /**
+   * A REALLY short-lived link to a private asset (KYB documents). Built with Cloudinary's signed *download API* URL: `expires_at` is part
+   * of the signed request and enforced by Cloudinary (verified against the real account: HTTP 200 inside the window, 401 "Stale request"
+   * after it). `generateSignedUrl` above does NOT do this — a `type:'private'` delivery URL ignores `expires_at` and never expires — so
+   * never use that one for anything sensitive. `inline: true` serves the file for viewing, otherwise it downloads as `fileName`.
+   * The returned URL must never be logged.
+   */
+  generateExpiringPrivateUrl(publicId: string, resourceType: string = 'raw', expirySeconds: number = 300, opts: { inline?: boolean; fileName?: string } = {}): string {
+    const ttl = Math.min(Math.max(1, Math.floor(expirySeconds)), 300); // hard ceiling: 5 minutes
+    const expires_at = Math.floor(Date.now() / 1000) + ttl;
+    const attachment = opts.inline ? undefined : (opts.fileName ? opts.fileName.replace(/[^a-zA-Z0-9._-]/g, '_') : true);
+    return cloudinary.utils.private_download_url(publicId, '', { resource_type: resourceType as any, type: 'private', expires_at, ...(attachment ? { attachment: attachment as any } : {}) });
+  }
+
   // ── Private buffer download from Cloudinary (generic) ──
   async downloadPrivateFileBuffer(publicId: string, resourceType: string = 'raw'): Promise<Buffer> {
     const signedUrl = this.generateSignedUrl(publicId, resourceType, 300); // 5 min — sirf download ke liye

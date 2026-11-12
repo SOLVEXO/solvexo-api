@@ -79,6 +79,12 @@ export class DatabaseService {
 
     @InjectModel(schema.PosAuditLog.name)
     private posAuditLogModel: Model<schema.PosAuditLogDocument>,
+    @InjectModel(schema.PosPayment.name)
+    private posPaymentModel: Model<schema.PosPaymentDocument>,
+    @InjectModel(schema.PosRefund.name)
+    private posRefundModel: Model<schema.PosRefundDocument>,
+    @InjectModel(schema.PosCreditNote.name)
+    private posCreditNoteModel: Model<schema.PosCreditNoteDocument>,
 
     @InjectModel(schema.PosSettings.name)
     private posSettingsModel: Model<schema.PosSettingsDocument>,
@@ -468,6 +474,38 @@ export class DatabaseService {
 
     @InjectModel(schema.StockAdjustment.name)
     private stockAdjustmentModel: Model<schema.StockAdjustmentDocument>,
+    @InjectModel(schema.StockMovement.name)
+    private stockMovementModel: Model<schema.StockMovementDocument>,
+    @InjectModel(schema.PosAttendanceEvent.name)
+    private posAttendanceEventModel: Model<schema.PosAttendanceEventDocument>,
+    @InjectModel(schema.PosAttendanceState.name)
+    private posAttendanceStateModel: Model<schema.PosAttendanceStateDocument>,
+    @InjectModel(schema.PosRosterShift.name)
+    private posRosterShiftModel: Model<schema.PosRosterShiftDocument>,
+    @InjectModel(schema.PosAuditSeal.name)
+    private posAuditSealModel: Model<schema.PosAuditSealDocument>,
+    @InjectModel(schema.PosReprintEvent.name)
+    private posReprintEventModel: Model<schema.PosReprintEventDocument>,
+    @InjectModel(schema.PosCashAttachment.name)
+    private posCashAttachmentModel: Model<schema.PosCashAttachmentDocument>,
+    @InjectModel(schema.PosModifierGroup.name)
+    private posModifierGroupModel: Model<schema.PosModifierGroupDocument>,
+    @InjectModel(schema.PosPriceBook.name)
+    private posPriceBookModel: Model<schema.PosPriceBookDocument>,
+    @InjectModel(schema.PosExpense.name)
+    private posExpenseModel: Model<schema.PosExpenseDocument>,
+    @InjectModel(schema.PosExpenseEvent.name)
+    private posExpenseEventModel: Model<schema.PosExpenseEventDocument>,
+    @InjectModel(schema.PurchaseReceipt.name)
+    private purchaseReceiptModel: Model<schema.PurchaseReceiptDocument>,
+    @InjectModel(schema.SupplierLedgerEntry.name)
+    private supplierLedgerEntryModel: Model<schema.SupplierLedgerEntryDocument>,
+    @InjectModel(schema.PosCustomer.name)
+    private posCustomerModel: Model<schema.PosCustomerDocument>,
+    @InjectModel(schema.StoreCreditEntry.name)
+    private storeCreditEntryModel: Model<schema.StoreCreditEntryDocument>,
+    @InjectModel(schema.StoreCreditLot.name)
+    private storeCreditLotModel: Model<schema.StoreCreditLotDocument>,
 
     @InjectModel(schema.VariantLocationStock.name)
     private variantLocationStockModel: Model<schema.VariantLocationStockDocument>,
@@ -559,6 +597,9 @@ export class DatabaseService {
       registerSessionModel: this.registerSessionModel,
       saleModel: this.saleModel,
       posAuditLogModel: this.posAuditLogModel,
+      posPaymentModel: this.posPaymentModel,
+      posRefundModel: this.posRefundModel,
+      posCreditNoteModel: this.posCreditNoteModel,
       posSettingsModel: this.posSettingsModel,
       conversationModel: this.conversationModel,
       messageModel: this.messageModel,
@@ -692,6 +733,22 @@ export class DatabaseService {
       reconciliationRunModel: this.reconciliationRunModel,
       storeAppRequestModel: this.storeAppRequestModel,
       stockAdjustmentModel: this.stockAdjustmentModel,
+      stockMovementModel: this.stockMovementModel,
+      posAttendanceEventModel: this.posAttendanceEventModel,
+      posAttendanceStateModel: this.posAttendanceStateModel,
+      posRosterShiftModel: this.posRosterShiftModel,
+      posAuditSealModel: this.posAuditSealModel,
+      posReprintEventModel: this.posReprintEventModel,
+      posCashAttachmentModel: this.posCashAttachmentModel,
+      posModifierGroupModel: this.posModifierGroupModel,
+      posPriceBookModel: this.posPriceBookModel,
+      posExpenseModel: this.posExpenseModel,
+      posExpenseEventModel: this.posExpenseEventModel,
+      purchaseReceiptModel: this.purchaseReceiptModel,
+      supplierLedgerEntryModel: this.supplierLedgerEntryModel,
+      posCustomerModel: this.posCustomerModel,
+      storeCreditEntryModel: this.storeCreditEntryModel,
+      storeCreditLotModel: this.storeCreditLotModel,
       variantLocationStockModel: this.variantLocationStockModel,
       stockTransferModel: this.stockTransferModel,
       posPlanModel: this.posPlanModel,

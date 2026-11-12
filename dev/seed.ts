@@ -7,6 +7,8 @@
  *   npx ts-node --transpile-only dev/seed.ts --extras-only    only the portal-e2e owners (owner2..5@solvexo.dev, ids in dev/.logs/seed-e2e.json); leaves the main data untouched
  *   npx ts-node --transpile-only dev/seed.ts --expire-plan    make the main store's POS plan expired (plan-expiry / restricted-mode flow)
  *   npx ts-node --transpile-only dev/seed.ts --restore-plan   give it 30 days again
+ *   npx ts-node --transpile-only dev/seed.ts --tamper-seal    G4.8: change one record of the latest sealed day (the integrity check must flag it)
+ *   npx ts-node --transpile-only dev/seed.ts --untamper-seal  put it back exactly
  */
 import * as fs from 'fs';
 import * as path from 'path';
@@ -14,6 +16,7 @@ const dotenv = require('dotenv');
 const mongoose = require('mongoose');
 const bcrypt = require('bcrypt');
 const schema = require('../dist/database/schema');
+import { seedG48, tamperSeal, untamperSeal } from './seed-g48';
 
 const DAY = 86_400_000;
 export const DEV = {
@@ -23,6 +26,43 @@ export const DEV = {
   cashierEmail: 'cashier@solvexo.dev', cashierPin: '2222',
   storeSlug: 'dev-coffee', expiredStoreSlug: 'dev-expired-store',
 };
+
+/**
+ * G3.2 / G3.3 dev data: a lot-tracked product with an EXPIRED lot, one expiring in 3 days and one in 25 days; two till customers (one with 20.00 store credit and loyalty
+ * points, in the NEW ledger), and the loyalty rates (1 point per 10.00 spent, a point is worth 0.50). Idempotent.
+ */
+async function seedG3(conn: any, storeId: string, sellerId: string) {
+  const db = conn.db!;
+  const day = 86_400_000;
+  const prod: any = await db.collection('products').findOne({ storeId, name: 'Dev Yogurt (lots)' });
+  let pid = prod ? String(prod._id) : null;
+  if (!pid) {
+    const ins = await db.collection('products').insertOne({ sellerId, storeId, name: 'Dev Yogurt (lots)', slug: 'dev-yogurt', productType: 'physical', type: 'physical', isDelete: false, status: 'active', createdAt: new Date(), updatedAt: new Date() } as any);
+    pid = String(ins.insertedId);
+  }
+  await db.collection('productvariants').updateOne({ productId: pid, sku: 'DEV-YOGURT' }, { $set: { productId: pid, storeId, sku: 'DEV-YOGURT', price: 4, barcode: '1000000000059', stock: 12, committedStock: 0, damagedStock: 0, inTransitStock: 0, unlimitedStock: false, trackLots: true, reorderPoint: 3, costPrice: 2, costPriceMinor: 200, isDefault: true, status: 'active', isDelete: false, options: [], expiredStock: 0, expiryBuckets: [] }, $setOnInsert: { createdAt: new Date() } }, { upsert: true });
+  const variant: any = await db.collection('productvariants').findOne({ productId: pid, sku: 'DEV-YOGURT' });
+  const vid = String(variant._id);
+  await db.collection('stocklots').deleteMany({ variantId: vid });
+  const lot = (lotNumber: string, qty: number, days: number | null) => ({ storeId, productId: pid, variantId: vid, locationId: null, lotNumber, quantityReceived: qty, quantityRemaining: qty, costPrice: 2, costPriceMinor: 200, expiryDate: days === null ? null : new Date(Date.now() + days * day), supplierId: null, purchaseOrderId: null, receivedAt: new Date(Date.now() - 10 * day), status: 'active', createdAt: new Date(), updatedAt: new Date() });
+  await db.collection('stocklots').insertMany([lot('LOT-OLD', 4, -3), lot('LOT-SOON', 5, 3), lot('LOT-LATER', 3, 25)] as any[]);
+  await db.collection('productvariants').updateOne({ _id: variant._id }, { $set: { expiredStock: 4, expiryBuckets: [{ at: new Date(Date.now() + 3 * day), units: 5 }, { at: new Date(Date.now() + 25 * day), units: 3 }] } });
+
+  // loyalty rates (the program itself must be enabled) + two till customers
+  await db.collection('loyaltyprograms').updateOne({ storeId }, { $set: { storeId, isEnabled: true, posEarnSpendMinor: 1000, posRedeemMinorPerPoint: 50 }, $setOnInsert: { pointsPerDollar: 1, pointsPerReview: 0, pointsPerReferral: 0, birthdayBonusPoints: 0, pointsExpiryMonths: null, tiers: [{ name: 'Bronze', minPoints: 0, benefits: [] }, { name: 'Silver', minPoints: 100, benefits: [] }] } }, { upsert: true });
+  const mkCust = async (name: string, phone: string) => {
+    await db.collection('poscustomers').updateOne({ storeId, phone }, { $set: { storeId, name, phone, isDelete: false, source: 'dev-seed', marketingConsent: false }, $setOnInsert: { email: null, address: null, ntn: null, cnic: null, registrationType: null, group: null, notes: null, userId: null, createdAt: new Date(), updatedAt: new Date() } }, { upsert: true });
+    return String((await db.collection('poscustomers').findOne({ storeId, phone }))!._id);
+  };
+  const a = await mkCust('Dev Customer (credit)', '03001112222');
+  await mkCust('Dev Customer (new)', '03004445555');
+  if (!(await db.collection('storecreditentries').findOne({ storeId, customerId: a, legacyId: null }))) {
+    const entryId = new mongoose.Types.ObjectId(); const lotId = new mongoose.Types.ObjectId();
+    await db.collection('storecreditlots').insertOne({ _id: lotId, storeId, customerId: a, currency: 'USD', currencyExponent: 2, amountMinor: 2000, remainingMinor: 2000, expiresAt: null, expiredHandled: false, entryId: String(entryId), source: 'issue', legacyId: null, createdAt: new Date(), updatedAt: new Date() } as any);
+    await db.collection('storecreditentries').insertOne({ _id: entryId, storeId, customerId: a, currency: 'USD', currencyExponent: 2, type: 'issue', amountMinor: 2000, balanceAfterMinor: 2000, lotId: String(lotId), expiresAt: null, consumed: [], note: 'dev seed', idemKey: 'dev-seed-credit', actorId: 'seed', actorRole: 'seller', legacyId: null, createdAt: new Date() } as any);
+  }
+  await db.collection('loyaltymembers').updateOne({ storeId, userId: a }, { $set: { storeId, userId: a, pointsBalance: 40, lifetimePoints: 40, currentTier: 'Bronze', lastActivityAt: new Date() } }, { upsert: true });
+}
 
 async function main() {
   const envFile = path.join(__dirname, '.env.dev');
@@ -50,6 +90,14 @@ async function main() {
     const when = expire ? new Date(Date.now() - 2 * DAY) : new Date(Date.now() + 30 * DAY);
     const r = await PosPurchase.updateMany({ storeId: String(mainStore._id), source: 'manual', stripeCheckoutSessionId: /^manual_dev_seed/ }, { $set: { expiresAt: when, revokedAt: null, reversedAt: null } });
     console.log(`${expire ? 'Expired' : 'Restored'} the main store's POS plan (${r.modifiedCount} purchase updated; expiresAt=${when.toISOString()})`);
+    await conn.close();
+    return;
+  }
+
+  if (process.argv.includes('--tamper-seal') || process.argv.includes('--untamper-seal')) {
+    if (!mainStore) throw new Error('Seed first');
+    const r = process.argv.includes('--tamper-seal') ? await tamperSeal(conn, String(mainStore._id)) : await untamperSeal(conn);
+    console.log(JSON.stringify(r));
     await conn.close();
     return;
   }
@@ -120,11 +168,32 @@ async function main() {
   // --- POS settings: 10% tax (exclusive, applied to subtotal), USD ----------------------------------------
   await PosSettings.updateOne({ storeId }, { $set: { taxRate: 0.1, businessName: 'Dev Coffee', businessAddress: '1 Dev Street', businessTaxId: 'DEV-TAX-1', currencySymbol: '$' }, $setOnInsert: { saleCounter: 0 } }, { upsert: true });
   await PosSettings.updateOne({ storeId: String(expiredStore._id) }, { $set: { taxRate: 0.1 }, $setOnInsert: { saleCounter: 0 } }, { upsert: true });
+  // G2.3: the main store is business-verified with a (mock) provider sub-merchant, so Raast QR works in the dev stack; the "Expired Store"
+  // has NO verification (digital payments refused there). Documents / identifiers are not seeded — only the status the gate reads.
+  await conn.collection('store_kybs').updateOne(
+    { storeId },
+    { $set: { storeId, sellerId, status: 'verified', businessType: 'sole_proprietor', legalBusinessName: 'Dev Coffee', subMerchant: { ref: 'SM-DEV-1', providerKey: 'mock', setAt: new Date(), setBy: 'dev-seed' }, purgedAt: null }, $setOnInsert: { documents: [], history: [] } },
+    { upsert: true },
+  );
+  await conn.collection('store_kybs').deleteMany({ storeId: String(expiredStore._id) });
 
   // --- catalog ---------------------------------------------------------------------------------------------
   let category: any = await Category.findOne({ name: 'Dev Drinks', storeId });
   if (!category) category = await Category.create({ name: 'Dev Drinks', storeId, sellerId });
   const categoryId = String(category._id);
+  // G2.7: a small platform category TREE (storeId null, like the real marketplace tree) so the POS catalog "Category" dropdown can be tested.
+  const ensureCategory = async (name: string, parent: any | null, sortOrder: number) => {
+    let c: any = await Category.findOne({ name, storeId: null, parentId: parent ? String(parent._id) : null });
+    if (!c) c = await Category.create({ name, slug: `dev-${name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`, parentId: parent ? String(parent._id) : null, storeId: null, sortOrder, status: 'active', isDelete: false, createdByRole: 'admin' });
+    return c;
+  };
+  const catBeverages = await ensureCategory('Beverages', null, 1);
+  await ensureCategory('Hot drinks', catBeverages, 1);
+  await ensureCategory('Cold drinks', catBeverages, 2);
+  const catBakery = await ensureCategory('Bakery', null, 2);
+  await ensureCategory('Pastries', catBakery, 1);
+  const catPantry = await ensureCategory('Pantry', null, 3);
+  await ensureCategory('Coffee beans', catPantry, 1);
   const upsertProduct = async (name: string, sku: string, price: number, v: { stock: number; unlimited?: boolean; reorderPoint?: number; barcode?: string }) => {
     let p: any = await Product.findOne({ storeId, name });
     if (!p) p = new Product({ sellerId, storeId, name, slug: sku.toLowerCase(), productType: 'physical', type: 'physical', categoryId });
@@ -163,6 +232,9 @@ async function main() {
   fs.writeFileSync(path.join(__dirname, '.logs', 'seed.json'), JSON.stringify(out, null, 2));
   console.log(JSON.stringify(out, null, 2));
   await seedExtras();
+  await seedG3(conn, storeId, sellerId);
+  const g48 = await seedG48(conn, storeId, sellerId);
+  console.log(JSON.stringify({ g48 }));
   await conn.close();
 }
 main().catch((e) => { console.error(e); process.exit(1); });

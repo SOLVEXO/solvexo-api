@@ -264,7 +264,8 @@ describe('held sales (real Mongo)', () => {
     const sale: any = await h.repos.saleModel.collection.findOne({ _id: new Types.ObjectId(saleId) });
     const stock = await stockOf(h, s.variantId);
     // consistent either way: completed sale + stock taken, OR discarded sale + stock untouched — never a mix
-    if (sale) { expect(sale.status).toBe('completed'); expect(stock).toBe(8); } else { expect(stock).toBe(10); }
+    // (G1a: a discard is a soft delete, so the row always exists — what matters is that it ends in exactly one state)
+    if (sale?.status === 'completed') expect(stock).toBe(8); else { expect(sale?.status ?? 'discarded').toBe('discarded'); expect(stock).toBe(10); }
   });
 });
 

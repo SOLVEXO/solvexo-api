@@ -1,6 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { ApiProperty } from '@nestjs/swagger';
-import { IsString, IsNotEmpty, IsEnum, IsNumber, IsOptional, IsDateString, Min } from 'class-validator';
+import { IsString, IsNotEmpty, IsEnum, IsNumber, IsOptional, IsDateString, IsBoolean, Min } from 'class-validator';
 import { IsMongoId } from 'class-validator';
 
 export class CreateCouponDto {
@@ -23,6 +23,11 @@ export class CreateCouponDto {
   @IsNumber()
   @Min(0)
   minOrderAmount?: number;
+
+  @ApiProperty({ required: false, description: 'G2.4: honour this coupon at the POS till (default false)' })
+  @IsOptional()
+  @IsBoolean()
+  posEnabled?: boolean;
 
   @ApiProperty({ required: false, example: 100 })
   @IsOptional()

@@ -913,9 +913,10 @@ export class ProductsService {
     // Same real fix as getVariantById — a fully public route, and until now
     // every variant's `costPrice` (the seller's own margin data) leaked
     // straight through with no sanitization.
+    // the public view never carries cost (costPrice / costPriceMinor — G3.0)
     // Pre-order: expose only what a buyer needs (label, date, message, remaining) — never the raw sold counter/limit.
-    const publicVariants = variants.map((v: any) => { const { costPrice: _c, preorder, ...rest } = v; return { ...rest, preorder: preorderPublicView(preorder, availableStock(v)) }; });
-    const publicDefaultVariant = defaultVariant ? (() => { const { costPrice: _c, preorder, ...rest } = defaultVariant as any; return { ...rest, preorder: preorderPublicView(preorder, availableStock(defaultVariant as any)) }; })() : null;
+    const publicVariants = variants.map((v: any) => { const { costPrice: _c, costPriceMinor: _cm, preorder, ...rest } = v; return { ...rest, preorder: preorderPublicView(preorder, availableStock(v)) }; });
+    const publicDefaultVariant = defaultVariant ? (() => { const { costPrice: _c, costPriceMinor: _cm, preorder, ...rest } = defaultVariant as any; return { ...rest, preorder: preorderPublicView(preorder, availableStock(defaultVariant as any)) }; })() : null;
 
     // Bundles: "includes" list + derived availability (min over components of floor(available / qty)); null = unlimited.
     let bundle: { components: { name: string; image: string | null; quantity: number }[]; available: number | null } | null = null;
@@ -1014,7 +1015,7 @@ export class ProductsService {
     // while building the staff-facing `products.view_cost` permission split
     // — that split would have been cosmetic if the same cost figure leaked
     // to any anonymous caller regardless of permission.
-    const { costPrice: _costPrice, ...publicVariant } = variant as any;
+    const { costPrice: _costPrice, costPriceMinor: _costPriceMinor, ...publicVariant } = variant as any;
 
     return {
       message: 'Variant & Product fetched successfully',

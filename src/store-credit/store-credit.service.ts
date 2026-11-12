@@ -1,10 +1,20 @@
 /* eslint-disable prettier/prettier */
-import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import { DatabaseService } from '../database/databaseservice';
 import { ActivityLogService } from '../activity-log/activity-log.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { NOTIFICATION_TYPES } from '../notifications/notification.types';
 import { round } from '../common/number.util';
+import { fromMinor, toMinor } from '../common/money-minor.util';
+import { StoreCreditLedger } from './store-credit-ledger';
+
+/**
+ * Which ledger backs store credit (G3.3, option B of the migration): `legacy` (default — the original float lots in `storecredittransactions`), `migrating` (a short maintenance window
+ * while the migration runs: credit reads as 0 and every credit change is refused / reported, so NOTHING can be spent from either ledger), `new` (the minor-unit ledger — then the
+ * legacy collection is never read or written again). Set with the STORE_CREDIT_LEDGER environment variable at deploy time; the public methods and response shapes below never change.
+ */
+export type StoreCreditMode = 'legacy' | 'migrating' | 'new';
+export const storeCreditMode = (): StoreCreditMode => { const m = String(process.env.STORE_CREDIT_LEDGER ?? 'legacy').toLowerCase(); return m === 'new' || m === 'migrating' ? m : 'legacy'; };
 
 type Actor = { actorId: string | null; actorRole: 'seller' | 'staff' | 'admin' | 'user' | 'system' };
 
@@ -33,6 +43,11 @@ export class StoreCreditService {
   ) {}
 
   private get txModel() { return this.db.repositories.storeCreditTransactionModel; }
+  private _ledger?: StoreCreditLedger;
+  /** the minor-unit ledger (used when the mode is `new`; the till uses it directly) */
+  get ledger(): StoreCreditLedger { return (this._ledger ??= new StoreCreditLedger(this.db.repositories as any)); }
+  get mode(): StoreCreditMode { return storeCreditMode(); }
+  private busy(): never { throw new ServiceUnavailableException('Store credit is being updated — please try again in a few minutes.'); }
 
   private lotsFilter(storeId: string, customerId: string, currency: string, now: Date) {
     return {
@@ -50,6 +65,8 @@ export class StoreCreditService {
 
   /** What the customer can spend right now (non-expired credit), in the store's currency. */
   async getSpendableBalance(storeId: string, customerId: string, currency?: string, now = new Date()): Promise<number> {
+    if (this.mode === 'migrating') return 0;
+    if (this.mode === 'new') { const c = await this.ledger.currencyOf(storeId); return fromMinor(await this.ledger.balanceMinor(storeId, customerId, currency ?? c.currency, now), c.exp); }
     const cur = currency ?? (await this.getStoreCurrency(storeId));
     const rows: Array<{ total: number }> = await this.txModel.aggregate([
       { $match: this.lotsFilter(storeId, customerId, cur, now) },
@@ -61,6 +78,11 @@ export class StoreCreditService {
   /** Throws unless the customer still has at least `amount` spendable — used right before taking payment. */
   async assertCovers(storeId: string, customerId: string, amount: number): Promise<void> {
     if (!(amount > 0)) return;
+    if (this.mode === 'new') {
+      const c = await this.ledger.currencyOf(storeId);
+      if ((await this.ledger.balanceMinor(storeId, customerId, c.currency)) < toMinor(amount, c.exp)) throw new BadRequestException('Your store credit balance changed and no longer covers this order. Please review your checkout and apply store credit again.');
+      return;
+    }
     const balance = await this.getSpendableBalance(storeId, customerId);
     if (balance + 0.005 < amount) {
       throw new BadRequestException('Your store credit balance changed and no longer covers this order. Please review your checkout and apply store credit again.');
@@ -113,6 +135,8 @@ export class StoreCreditService {
     input: { amount: number; note?: string; expiresAt?: string | Date | null },
     actor: Actor,
   ) {
+    if (this.mode === 'migrating') this.busy();
+    if (this.mode === 'new') return this.adjustNew(storeId, customerId, Number(input.amount), input, actor);
     const amount = round(Number(input.amount));
     if (!amount || !Number.isFinite(amount)) throw new BadRequestException('A non-zero amount is required');
     const currency = await this.getStoreCurrency(storeId);
@@ -189,6 +213,7 @@ export class StoreCreditService {
   }
 
   private async overview(storeId: string, customerId: string, query: any) {
+    if (this.mode === 'new') return this.ledger.overview(storeId, customerId, query);
     const currency = await this.getStoreCurrency(storeId);
     const now = new Date();
     const page = Math.max(1, parseInt(query.page) || 1);
@@ -223,6 +248,7 @@ export class StoreCreditService {
 
   /** Spends credit for a placed order. Idempotent per checkout. Returns false (and logs) if the balance no longer covers it. */
   async redeemAtOrderPlacement(storeId: string, customerId: string, amount: number, checkoutId: string, orderId: string): Promise<boolean> {
+    if (this.mode !== 'legacy') return Number(amount) > 0 ? this.redeemNew(storeId, customerId, Number(amount), checkoutId, orderId) : true;
     const spend = round(amount);
     if (!(spend > 0)) return true;
     const idemKey = `redeem:${checkoutId}`;
@@ -276,8 +302,17 @@ export class StoreCreditService {
     storeId: string, customerId: string, amount: number,
     type: 'restore' | 'refund_credit', orderId: string, idemKey: string, note: string, actor: Actor,
   ): Promise<boolean> {
+    if (this.mode === 'new' && Number(amount) > 0) {
+      const c = await this.ledger.currencyOf(storeId);
+      return !!(await this.ledger.addLot({ storeId, customerId, amountMinor: toMinor(Number(amount), c.exp), type, idemKey, note, actor, refs: { orderId } }));
+    }
     const credit = round(amount);
     if (!(credit > 0)) return false;
+    if (this.mode === 'migrating') { this.logger.error(`store credit ${type} of ${credit} for order ${orderId} NOT applied: the ledger is being migrated — needs review`); return false; }
+    if (this.mode === 'new') {
+      const c = await this.ledger.currencyOf(storeId);
+      return !!(await this.ledger.addLot({ storeId, customerId, amountMinor: toMinor(credit, c.exp), type, idemKey, note, actor, refs: { orderId } }));
+    }
     if (await this.txModel.exists({ storeId, type, idemKey })) return false; // this refund event was already applied
     const currency = await this.getStoreCurrency(storeId);
     const before = await this.getSpendableBalance(storeId, customerId, currency);
@@ -297,6 +332,8 @@ export class StoreCreditService {
 
   /** Daily sweep: credit lots past their expiry date are zeroed and a ledger row records it. */
   async expireDueLots(now = new Date()) {
+    if (this.mode === 'new') return this.ledger.expireDue(now);
+    if (this.mode === 'migrating') return { expired: 0 };
     const due: any[] = await this.txModel
       .find({ expiresAt: { $ne: null, $lte: now }, remaining: { $gt: 0 }, expiredHandled: false })
       .limit(500).lean();
@@ -320,5 +357,51 @@ export class StoreCreditService {
       expired++;
     }
     return { expired };
+  }
+
+  // ── the minor-unit ledger (mode `new`): same behaviour and response shapes, different storage ──
+
+  private async adjustNew(storeId: string, customerId: string, amount: number, input: { amount: number; note?: string; expiresAt?: string | Date | null }, actor: Actor) {
+    const { currency, exp } = await this.ledger.currencyOf(storeId);
+    const now = new Date();
+    const note = (input.note ?? '').trim().slice(0, 300);
+    const minor = toMinor(amount, exp);
+    if (!minor || !Number.isFinite(amount)) throw new BadRequestException('A non-zero amount is required');
+    const act = { actorId: actor.actorId, actorRole: actor.actorRole };
+    const lotsById = async (lotId?: string | null) => new Map(lotId ? (await this.db.repositories.storeCreditLotModel.find({ _id: lotId }).lean()).map((l: any) => [String(l._id), l]) : []);
+    if (minor > 0) {
+      let expiresAt: Date | null = null;
+      if (input.expiresAt) {
+        expiresAt = new Date(input.expiresAt);
+        if (isNaN(expiresAt.getTime()) || expiresAt <= now) throw new BadRequestException('The expiry date must be in the future');
+      }
+      const hadAny = await this.db.repositories.storeCreditEntryModel.exists({ storeId, customerId, currency });
+      const made: any = await this.ledger.addLot({ storeId, customerId, amountMinor: minor, type: hadAny ? 'adjust_credit' : 'issue', expiresAt, note, actor: act });
+      const after = fromMinor(Number(made.entry.balanceAfterMinor), exp);
+      await this.afterAdjust(storeId, customerId, currency, fromMinor(minor, exp), actor, note, expiresAt);
+      return { success: true, message: 'Store credit added', data: { balance: after, currency, transaction: await this.ledger.legacyRow(made.entry.toObject(), await lotsById(made.entry.lotId)) } };
+    }
+    const take = -minor;
+    const spendable = await this.ledger.balanceMinor(storeId, customerId, currency, now);
+    if (take > spendable) throw new BadRequestException(`You can remove at most ${fromMinor(spendable, exp).toFixed(exp)} ${currency} — that's this customer's current balance.`);
+    const res = await this.ledger.spend({ storeId, customerId, amountMinor: take, type: 'adjust_debit', note, actor: act });
+    if (!res.ok) throw new BadRequestException('The balance changed while you were editing it — please try again.');
+    await this.afterAdjust(storeId, customerId, currency, -fromMinor(take, exp), actor, note, null, fromMinor(spendable - take, exp));
+    return { success: true, message: 'Store credit removed', data: { balance: fromMinor(spendable - take, exp), currency, transaction: await this.ledger.legacyRow(res.entry.toObject(), new Map()) } };
+  }
+
+  private async redeemNew(storeId: string, customerId: string, spend: number, checkoutId: string, orderId: string): Promise<boolean> {
+    if (this.mode === 'migrating') { this.logger.error(`store credit redeem for order ${orderId} NOT taken: the ledger is being migrated — needs review`); return false; }
+    const { currency, exp } = await this.ledger.currencyOf(storeId);
+    const res = await this.ledger.spend({ storeId, customerId, amountMinor: toMinor(spend, exp), type: 'redeem', idemKey: `redeem:${checkoutId}`, note: 'Applied at checkout', actor: { actorId: customerId, actorRole: 'user' }, refs: { orderId, checkoutId } });
+    if (!res.ok) {
+      this.activityLogService.log({
+        storeId, category: 'customers', action: 'store_credit_redeem_failed',
+        description: `Order ${orderId}: ${spend.toFixed(exp)} ${currency} store credit could not be taken (balance changed after checkout) — needs review`,
+        actorRole: 'system', targetId: customerId, targetType: 'customer', isSecurityAlert: true,
+      });
+      return false;
+    }
+    return true;
   }
 }

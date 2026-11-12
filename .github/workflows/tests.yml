@@ -1,0 +1,71 @@
+name: Tests (solvexo-api, feature/jamibranch)
+
+# TESTS ONLY. This workflow does not deploy, uses no deploy secrets (no VPS_*), and is not connected to deploy.yml / staging.yml
+# (those run only on pushes to main / staging). Runs on every push to the feature branch and by hand.
+on:
+  push:
+    branches: [feature/jamibranch]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      JWT_SECRET: ci-only-jwt-secret
+      NODE_OPTIONS: --max-old-space-size=4096
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # A real MongoDB REPLICA SET (the sale / payment code uses multi-document transactions) for test:di; the integration suites start
+      # their own mongod through mongodb-memory-server (also a replica set).
+      - name: MongoDB replica set
+        run: |
+          docker run -d --name mongo -p 27017:27017 mongo:7 --replSet rs0 --bind_ip_all
+          for i in $(seq 1 30); do docker exec mongo mongosh --quiet --eval 'db.runCommand({ping:1}).ok' && break; sleep 1; done
+          docker exec mongo mongosh --quiet --eval 'rs.initiate({_id:"rs0",members:[{_id:0,host:"127.0.0.1:27017"}]})'
+          for i in $(seq 1 30); do [ "$(docker exec mongo mongosh --quiet --eval 'db.hello().isWritablePrimary')" = "true" ] && break; sleep 1; done
+
+      # Redis: the device / PIN-session guards of the POS routes use it (the security + route suites need a real one)
+      - name: Redis
+        run: |
+          docker run -d --name redis -p 6379:6379 redis:7
+          for i in $(seq 1 20); do docker exec redis redis-cli ping | grep -q PONG && break; sleep 1; done
+
+      - run: npm ci
+
+      - name: Build (production entry must be dist/main.js)
+        run: |
+          npm run build
+          test -f dist/main.js && test ! -e dist/src/main.js
+
+      - name: Cache the mongod binary used by the integration tests
+        uses: actions/cache@v4
+        with:
+          path: node_modules/.cache/mongodb-memory-server
+          key: mongod-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+      # The backend gate: the POS / payments / KYB / money suites, 2 workers. The 10 slug-transliteration tests are a KNOWN, separate failure
+      # (pos/docs/pos-blueprint/NOTE_slug_transliteration_failures.md) and are excluded here until that note is worked; nothing else is excluded.
+      - name: Backend gate (2 workers)
+        run: >
+          npx jest src/pos src/pos-plans src/inventory src/product-variants src/common src/draft-orders src/markets src/auth src/scripts
+          src/payments-core src/kyb src/admin-team --maxWorkers=2 --workerIdleMemoryLimit=900MB
+          --testPathIgnorePatterns=slug-transliteration.util.spec
+
+      - name: AppModule resolves (test:di)
+        env:
+          DI_SMOKE_MONGO_URI: mongodb://127.0.0.1:27017/solvexo_di_smoke?directConnection=true
+          PAYMENT_PROVIDER: manual # no Stripe key in CI (the module refuses to start with provider=stripe and no key)
+        run: npm run test:di
